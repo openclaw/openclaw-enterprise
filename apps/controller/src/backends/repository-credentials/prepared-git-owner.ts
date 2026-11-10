@@ -11,28 +11,28 @@ import type {
   PreparedGitHubPullResult,
 } from "@openclaw-enterprise/contracts";
 import type { PostgresPool } from "@openclaw-enterprise/occ";
-import type { Clock } from "../../drivers/repo/credentials/backend-contracts.ts";
-import { createSystemClock } from "../../drivers/repo/credentials/clock.ts";
+import type { Clock } from "../../drivers/repo/access/backend-contracts.ts";
+import { createSystemClock } from "../../drivers/repo/access/clock.ts";
 import {
   githubProviderOrigin,
   preparationIssuerAuthority,
-} from "../../drivers/repo/github/credentials/origin.ts";
-import { createGitHubKeyOwner } from "../../drivers/repo/github/credentials/material.ts";
-import { createGitHubPreparationOwner } from "../../drivers/repo/github/credentials/prepared-owner.ts";
-import { retirePreparedGitHubToken } from "../../drivers/repo/github/credentials/prepared-retirement.ts";
-import { PreparedRepositoryGitStore } from "../../drivers/repo/github/credentials/prepared-repository-git.ts";
+} from "../../drivers/repo/github/access/origin.ts";
+import { createGitHubKeyOwner } from "../../drivers/repo/github/access/material.ts";
+import { createGitHubPreparationOwner } from "../../drivers/repo/github/access/prepared-owner.ts";
+import { retirePreparedGitHubToken } from "../../drivers/repo/github/access/prepared-retirement.ts";
+import { PreparedRepositoryGitStore } from "../../drivers/repo/github/access/prepared-repository-git.ts";
 import {
   validateGitHubRepositoryRegistry,
   resolveGitHubRepositoryBinding,
   resolveSelectedRepositoryGrant,
   resolveGitHubStandingApprovalScope,
   type GitHubRepositoryRegistry,
-} from "../../drivers/repo/github/credentials/registry.ts";
+} from "../../drivers/repo/github/access/registry.ts";
 import {
   protectedGitAdoption,
   installationGitAdoption,
   selectedGitAdoption,
-} from "../../drivers/repo/credentials/protected-repository-git-installation.ts";
+} from "../../drivers/repo/access/protected-repository-git-installation.ts";
 import { TokenService } from "../token-service/service.ts";
 import { servePrivateRepositoryRequest } from "./private-request-server.ts";
 
@@ -66,7 +66,7 @@ interface Options extends Omit<PreparedRepositoryGitConfiguration, "issuerCaPath
   ) => void;
   startWorker?: boolean;
   /** Private host selection; never derived from issuer configuration or a request. */
-  repositoryGitCustody?: RepositoryGitCustody;
+  repositoryGitCustody: RepositoryGitCustody;
   tokenService?: TokenService;
 }
 
@@ -198,9 +198,10 @@ export async function startPreparedGitHubGitOwner(
   options: Options,
   clock: Clock = createSystemClock(),
 ) {
-  const custodySelection: RepositoryGitCustody = options.repositoryGitCustody ?? {
-    kind: options.controlSocket === undefined ? "unavailable" : "native-broker",
-  };
+  const custodySelection = options.repositoryGitCustody;
+  if (custodySelection === undefined) {
+    throw new Error("REPOSITORY_GIT_CUSTODY_REQUIRED");
+  }
   const selected = custodySelection.kind === "selected";
   const registry = validateGitHubRepositoryRegistry(options.registry, options.backendId);
   for (const repo of registry.repositories) {
@@ -233,6 +234,17 @@ export async function startPreparedGitHubGitOwner(
     (session) => {
       const { driver, binding, namespaceId } = session;
       const { repositoryRef, profile } = binding;
+      if (session.standingApprovalId !== undefined) {
+        const scope = resolveGitHubStandingApprovalScope(registry, { namespaceId, binding });
+        if (
+          (profile === "github-repository" && session.bindings?.length !== 1) ||
+          !scope ||
+          session.standingApprovalScopeFingerprint !==
+            repositoryApprovalFingerprint({ namespaceId, agentId: session.agentId, binding, scope })
+        ) {
+          return;
+        }
+      }
       if (binding.profile === "github-repository") {
         if (
           !selected ||
@@ -277,16 +289,6 @@ export async function startPreparedGitHubGitOwner(
           : !repo || !pushRef || profile !== "git-write")
       ) {
         return;
-      }
-      if (session.standingApprovalId !== undefined) {
-        const scope = resolveGitHubStandingApprovalScope(registry, { namespaceId, binding });
-        if (
-          !scope ||
-          session.standingApprovalScopeFingerprint !==
-            repositoryApprovalFingerprint({ namespaceId, agentId: session.agentId, binding, scope })
-        ) {
-          return;
-        }
       }
       const admitted = resolveGitHubRepositoryBinding(registry, {
         namespaceId,

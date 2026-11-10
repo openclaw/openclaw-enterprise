@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
+import { Check } from "typebox/value";
 
-import type { NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
+import {
+  AgentListResponse,
+  type NamespaceWire,
+} from "../../packages/contracts/src/api/resources.ts";
 import type { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 
 import {
@@ -18,9 +22,11 @@ import {
   nativeValues,
   newPage,
   nonAuthWriteRequests,
+  recordFocusTrail,
   secretOptionLabel,
   selectSecret,
   settledView,
+  stopFocusTrail,
   waitForEnabled,
   waitForInputValue,
 } from "./console-agents-browser-helpers.ts";
@@ -65,10 +71,10 @@ test("a pending sign-in keeps keyboard focus without taking it back after a refu
       outsideOrigins.push(origin);
       return route.abort();
     });
-    // Only discovery is simulated. The local Controller refuses GitHub start with no provider
+    // Only discovery is simulated. The local Controller refuses Google start with no provider
     // configured, and it rejects the wrong password through the real sign-in route.
     await page.route("**/api/auth/providers", (route) =>
-      route.fulfill({ json: { data: { password: true, github: true }, meta: {} } }),
+      route.fulfill({ json: { data: { password: true, google: true }, meta: {} } }),
     );
     const discovery = lateDiscovery
       ? await holdRequests(t, page, `${fixture.origin}/api/auth/providers`, {
@@ -78,7 +84,7 @@ test("a pending sign-in keeps keyboard focus without taking it back after a refu
             json: {
               data: {
                 password: true,
-                github: true,
+                google: true,
                 oidc: true,
                 oidcSignIn: {
                   label: "Example SSO",
@@ -92,12 +98,13 @@ test("a pending sign-in keeps keyboard focus without taking it back after a refu
       : null;
     await page.goto(`${fixture.origin}/console/login`);
     const submit = page.getByRole("button", { name: "Sign in", exact: true });
-    const github = page.getByRole("button", { name: "Continue with GitHub", exact: true });
+    const google = page.getByRole("button", { name: "Continue with Google", exact: true });
     const password = page.getByLabel("Password", { exact: true });
     if (discovery) {
       await discovery.requested;
+      await page.getByRole("button", { name: "Recovery sign-in", exact: true }).click();
     } else {
-      await github.waitFor();
+      await google.waitFor();
     }
     await page.getByLabel("Email", { exact: true }).fill("synthetic@example.invalid");
     await password.fill("not-the-password");
@@ -105,11 +112,11 @@ test("a pending sign-in keeps keyboard focus without taking it back after a refu
     if (provider) {
       await page.keyboard.press("Tab");
     }
-    const trigger = provider ? github : submit;
-    const sibling = provider ? submit : github;
+    const trigger = provider ? google : submit;
+    const sibling = provider ? submit : google;
     assert.equal(await hasFocus(trigger), true, `${attempt}: keyboard reaches the control`);
 
-    const path = provider ? "/api/auth/providers/github/start" : "/api/auth/sign-in/email";
+    const path = provider ? "/api/auth/providers/google/start" : "/api/auth/sign-in/email";
     const url = `${fixture.origin}${path}`;
     const requests = apiRequests(page, fixture.origin);
     const held = await holdRequests(t, page, url, {
@@ -144,7 +151,7 @@ test("a pending sign-in keeps keyboard focus without taking it back after a refu
     held.release();
     assert.equal((await answered).status(), expectedStatus);
     const refusal = provider
-      ? "GitHub sign-in is unavailable. Try again or use your password."
+      ? "Google sign-in is unavailable. Try again or use your password."
       : "Could not sign in. Check your email and password.";
     await page.getByText(refusal, { exact: true }).waitFor();
     assert.equal(await hasFocus(attempt === "move" ? password : trigger), true);
@@ -193,6 +200,105 @@ test("refocusing the Agents list restores its focused link unless the reader mov
     read.release();
     await link.waitFor();
     assert.equal(await hasFocus(expectedFocus), true, "keep the reader's place after the check");
+  }
+});
+
+// The admitted selector becomes usable before the Agent list read settles. A reader who
+// tabs to it during the wait should keep that place when the shell redraws.
+test("The Namespace selector keeps keyboard focus acquired during Agents list revalidation", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Selected workspace");
+  const other = await fixture.createNamespace("Other workspace", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Visible Agent", nativeValues("visible"));
+  await fixture.createAgent(other.id, "Other Agent", nativeValues("other"));
+  const { page } = await newPage(t, fixture, {
+    browser,
+    context: { viewport: { width: 1440, height: 900 } },
+  });
+  await trackSettledFetches(page);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  const row = page.locator(settledView).getByRole("link", { name: "Visible Agent", exact: true });
+  await row.waitFor();
+  await waitForIdleFetches(page);
+
+  const requests = apiRequests(page, fixture.origin);
+  const selector = page.getByRole("combobox", { name: "Namespace", exact: true });
+  const navigation = page.getByRole("link", { name: "Namespaces", exact: true });
+  const listUrl = page.url();
+  const agentsUrl = `${fixture.origin}/namespaces/${namespace.id}/agents`;
+
+  for (const focus of ["navigation", "selector"] as const) {
+    await row.focus();
+    assert.equal(await hasFocus(row), true);
+    const read = await holdRequests(t, page, agentsUrl, {
+      once: true,
+      method: "GET",
+      afterServer: true,
+    });
+    await refocus(page);
+    const response = await read.requested;
+    assert.ok(response, "the hold received a real Controller response");
+    assert.equal(response.status(), 200, "the Controller admitted the selected list read");
+    const body: unknown = await response.json();
+    assert.ok(Check(AgentListResponse, body), "the Controller answered with the Agents list");
+    assert.deepEqual(
+      body.data.map(({ id }) => id),
+      [agent.id],
+    );
+
+    await page.locator(heldView).waitFor();
+    await waitForEnabled(selector);
+    await navigation.focus();
+    for (let step = 0; step < 6 && !(await hasFocus(selector)); step += 1) {
+      await page.keyboard.press("Tab");
+    }
+    const previous = await selector.elementHandle();
+    assert.equal(await hasFocus(previous), true, "Tab reached the admitted Namespace selector");
+    assert.equal(await selector.inputValue(), namespace.id);
+    if (focus === "navigation") {
+      await navigation.focus();
+      assert.equal(await hasFocus(navigation), true, "the reader moved away from the selector");
+    }
+
+    await recordFocusTrail(page);
+    const delivered = page.waitForResponse(
+      (answer) => answer.url() === agentsUrl && answer.request().method() === "GET",
+    );
+    read.release();
+    assert.equal((await delivered).status(), 200);
+    await row.waitFor();
+    assert.equal(
+      await previous.evaluate((node) => node.isConnected),
+      false,
+      "the shell replaced its selector",
+    );
+    assert.equal(await selector.isVisible(), true);
+    assert.equal(await selector.isEnabled(), true);
+    assert.equal(await selector.inputValue(), namespace.id);
+    assert.equal(page.url(), listUrl, "keyboard focus does not switch Namespace");
+    assert.equal(await page.getByRole("link", { name: "Other Agent", exact: true }).count(), 0);
+    assert.deepEqual(nonAuthWriteRequests(requests), [], "moving focus sends no writes");
+    assert.equal(
+      requests.some(({ path }) => path.startsWith(`/namespaces/${other.id}/`)),
+      false,
+    );
+
+    const { trail } = await stopFocusTrail(page);
+    const active = await page.evaluate(() => globalThis.document.activeElement?.tagName);
+    t.diagnostic(
+      `${focus} focus after the Controller read: ${trail.join(" → ")} (active ${active})`,
+    );
+    assert.equal(
+      trail.some((entry) => entry.endsWith(": Visible Agent")),
+      false,
+      "the old Agent link did not take focus back",
+    );
+    assert.equal(
+      await hasFocus(focus === "selector" ? selector : navigation),
+      true,
+      focus === "selector"
+        ? "focus remains on the current usable Namespace selector"
+        : "the Namespace selector does not take focus from navigation",
+    );
   }
 });
 
@@ -686,7 +792,43 @@ test("a session reply missing its binding blocks private reads until Retry", asy
   assert.ok((await account.innerText()).includes(fixture.credentials.email));
 });
 
-test("recovery-only discovery keeps focus on the empty sign-in form", async (t) => {
+for (const status of [200, 503]) {
+  test(`discovery ${status} preserves keyboard focus when revealing passwords`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const { page } = await newPage(t, fixture, { browser });
+    const discovery = await holdRequests(t, page, "**/api/auth/providers", {
+      method: "GET",
+      once: true,
+      fulfill:
+        status === 503
+          ? apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Sign-in discovery is unavailable.")
+          : {
+              status,
+              json: {
+                data: { google: true, oidc: false, password: true, sessionBinding: true },
+                meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+              },
+            },
+    });
+    await page.goto(`${fixture.origin}/console/login`);
+    await discovery.requested;
+    const recovery = page.getByRole("button", { name: "Recovery sign-in", exact: true });
+    await page.keyboard.press("Tab");
+    assert.equal(await hasFocus(recovery), true);
+
+    // Both ordinary password discovery and its failure fallback replace the
+    // focused recovery action with the form. Keyboard entry must remain usable.
+    discovery.release();
+    const email = page.getByLabel("Email", { exact: true });
+    await email.waitFor();
+    assert.equal(await hasFocus(email), true);
+    await page.keyboard.type("recovery@example.com");
+    assert.equal(await email.inputValue(), "recovery@example.com");
+  });
+}
+
+test("recovery-only discovery preserves explicitly opened recovery sign-in", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const { page } = await newPage(t, fixture, { browser });
@@ -698,7 +840,7 @@ test("recovery-only discovery keeps focus on the empty sign-in form", async (t) 
     fulfill: {
       status: 200,
       json: {
-        data: { github: true, google: false, password: false, sessionBinding: true },
+        data: { google: true, password: false, sessionBinding: true },
         meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
       },
     },
@@ -707,14 +849,16 @@ test("recovery-only discovery keeps focus on the empty sign-in form", async (t) 
   await page.goto(`${fixture.origin}/console/login`);
   await discovery.requested;
   const email = page.getByLabel("Email", { exact: true });
-  await email.waitFor();
-  await page.keyboard.press("Tab");
+  // Do not expose ordinary password sign-in before its policy is known. The
+  // recovery path remains available even if discovery never answers.
+  assert.equal(await email.isVisible(), false);
+  await page.getByRole("button", { name: "Recovery sign-in", exact: true }).click();
   assert.equal(await hasFocus(email), true);
   assert.equal(await email.inputValue(), "");
 
   discovery.release();
   assert.equal((await response).status(), 200);
-  await page.getByRole("button", { name: "Continue with GitHub", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Continue with Google", exact: true }).waitFor();
   assert.equal(await hasFocus(email), true);
   await page.getByText("Use the recovery account's email.", { exact: true }).waitFor();
   await page.keyboard.type("recovery@example.com");

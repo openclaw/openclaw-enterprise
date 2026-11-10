@@ -311,7 +311,7 @@ test(
 );
 
 test(
-  "stock draft preconditions require exact canonical body and give the durable owner fresh server identities",
+  "stock admits the shipped gh scoped draft and requires current owner authorization",
   { timeout: 10000 },
   async (t) => {
     const approvals = [];
@@ -336,12 +336,22 @@ test(
       draft: true,
       maintainer_can_modify: false,
     };
+    // gh 2.103.2 sent these visible headers in an offline capture of the draft POST
+    // with TZ=Etc/UTC and --input -. OpenShell omits credentials and wire framing.
+    const timeZone = { name: "time-zone", value: "Etc/UTC" };
     const draft = (value) => {
       const q = request(
         "/repos/example/project/pulls",
         "POST",
         Buffer.from(typeof value === "string" ? value : JSON.stringify(value)),
-        [{ name: "content-type", value: "application/json" }],
+        [
+          { name: "user-agent", value: "GitHub CLI 2.103.2" },
+          { name: "accept", value: "*/*" },
+          { name: "content-type", value: "application/json" },
+          timeZone,
+          { name: "x-github-api-version", value: "2026-03-10" },
+          { name: "accept-encoding", value: "gzip" },
+        ],
       );
       q.target.host = "api.github.com";
       return q;
@@ -365,13 +375,16 @@ test(
         reason_code: "request_not_allowed",
       });
     }
+    assert.equal(approvals.length, 0);
+    const q = draft(payload);
+    const admitted = await invoke(client, "EvaluateHttpRequest", q, bearer);
+    assert.equal(admitted.decision, 1, "the captured gh request must reach the owner");
+    assert.equal(admitted.has_body ?? false, false);
+    assert.deepEqual(admitted.header_mutations ?? [], []);
     assert.deepEqual(
       new Set(denials.map(({ reason, reasonCode }) => `${reason}:${reasonCode}`)),
       new Set(["draft_rejected:request_not_allowed"]),
     );
-    assert.equal(approvals.length, 0);
-    const q = draft(payload);
-    assert.equal(await evaluate(q), 1);
     const first = approvals[0];
     assert.equal(first.operation, "create-draft-pull");
     assert.deepEqual(
@@ -387,6 +400,27 @@ test(
     assert.match(
       first.pull.operationId,
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    const otherTimeZone = q.headers.map((header) =>
+      header === timeZone ? { ...header, value: "America/New_York" } : header,
+    );
+    for (const invalid of [
+      { ...q, headers: otherTimeZone },
+      { ...q, headers: [...q.headers, timeZone] },
+      { ...q, target: { ...q.target, path: "/repos/example/other/pulls" } },
+      { ...q, target: { ...q.target, method: "GET" } },
+      { ...q, target: { ...q.target, query: "page=1" } },
+      { ...q, target: { ...q.target, host: "github.com" } },
+    ]) {
+      assert.deepEqual(await invoke(client, "EvaluateHttpRequest", invalid, bearer), {
+        decision: 2,
+        reason_code: "request_not_allowed",
+      });
+    }
+    assert.equal(
+      approvals.length,
+      1,
+      "invalid requests must be refused before owner authorization",
     );
     // The durable owner's refusal is final; this RPC neither retries nor claims a PR outcome.
     allow = false;
@@ -869,6 +903,37 @@ test("repository API credential issuance is refused while ordinary collaboration
       assert.equal(result.has_body ?? false, false);
       assert.deepEqual(result.header_mutations ?? [], []);
     }
+    // gh 2.103.2 uses a 24-hour cache hint before PR search. The query shape
+    // comes from upstream feature_detection.go; only header names were observed
+    // in the native failure. This exercises middleware, not the gh executable.
+    const cachedSearch = (ttl = "24h0m0s") => {
+      const input = captured();
+      // Isolate the cache header so another metadata restriction cannot hide a regression.
+      input.headers = input.headers.filter(
+        (h) => h.name !== "graphql-features" && h.name !== "time-zone",
+      );
+      input.headers.push({ name: "x-gh-cache-ttl", value: ttl });
+      input.body = Buffer.from(
+        JSON.stringify({
+          query:
+            'query SearchType_enumValues { SearchType: __type(name: "SearchType") { enumValues(includeDeprecated: true) { name } } }',
+        }),
+      );
+      return input;
+    };
+    // The client owns duration parsing; OCE ignores the hint and never caches approval.
+    for (const ttl of ["24h0m0s", "5m0s", "1.5s", "ignored-by-client"]) {
+      const searchResult = await send(cachedSearch(ttl));
+      assert.equal(searchResult.decision, 1, "gh search capability query accepts its cache hint");
+      assert.equal(searchResult.has_body ?? false, false);
+      assert.deepEqual(searchResult.header_mutations ?? [], []);
+    }
+    const beforeSearchWithdrawal = approvals;
+    current = false;
+    assert.equal((await send(cachedSearch())).reason_code, "access_withdrawn");
+    assert.equal(approvals, beforeSearchWithdrawal + 1);
+    current = true;
+
     const beforeWithdrawal = approvals;
     current = false;
     assert.equal((await send(captured())).reason_code, "access_withdrawn");
@@ -897,8 +962,27 @@ test("repository API credential issuance is refused while ordinary collaboration
       ...captured(),
       body: Buffer.from(JSON.stringify({ query: "query { repository { tempCloneToken } }" })),
     });
+    const cacheHeader = { name: "x-gh-cache-ttl", value: "24h0m0s" };
+    const search = cachedSearch();
+    await refused({ ...search, headers: [...search.headers, cacheHeader] });
+    for (const ttl of ["", "24h\n", "24h\r", "24h\u0000", "24h\u007f", "1".repeat(65)]) {
+      await refused(cachedSearch(ttl));
+    }
+    for (const target of [
+      { host: "github.com" },
+      { method: "GET" },
+      { path: "/repos/openclaw/openclaw-enterprise" },
+    ]) {
+      await refused({ ...search, target: { ...search.target, ...target } });
+    }
+    await refused({ ...search, body: Buffer.from("not JSON") });
+    await refused({
+      ...search,
+      body: Buffer.from(JSON.stringify({ query: "query { repository { tempCloneToken } }" })),
+    });
     for (scope of ["github-installation", undefined]) {
       await refused(captured());
+      await refused(cachedSearch());
     }
   });
 });

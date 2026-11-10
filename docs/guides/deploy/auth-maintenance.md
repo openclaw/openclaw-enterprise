@@ -1,6 +1,6 @@
 # Maintain external sign-in with the API stopped
 
-Use `pnpm auth:maintain` when external sign-in (GitHub, Google, or OIDC) needs a change the online API
+Use `pnpm auth:maintain` when external sign-in (Google or OIDC) needs a change the online API
 cannot make: the recovery administrator is locked out, an account was never
 enrolled, sessions must be ended at once, or the Installation must return to
 password-only sign-in. `purge-sessions` also works on a password-only
@@ -79,34 +79,124 @@ or load balancer does.
   addresses, or serve the same host name on a private listener and point operator
   machines at it with a DNS override (a hosts entry, or `curl --resolve`).
 
-A `kubectl port-forward` to the API cannot verify sign-in. The API Service speaks plain
-HTTP behind your ingress, the session cookie is `Secure` with the `__Host-` prefix, the
-API compares `Origin` exactly, and an IdP returns the browser to the registered
-redirect URI on the canonical host, never to a forwarded port. Use a port-forward only
-for reads that need no session, such as `GET /api/auth/providers`.
+Do not use `kubectl port-forward` directly to the production API Pod or Service.
+The API binds the Pod IP, while port-forward connects through Pod loopback, so even
+reads that need no session, such as `GET /api/auth/providers`, cannot connect.
+Use the restricted canonical HTTPS origin above for these reads and sign-in checks.
+Session cookies require HTTPS. Starting external sign-in requires an `Origin` that
+exactly matches `OCC_AUTH_BASE_URL`; the identity provider returns the browser to
+its registered redirect URI on the canonical host.
 
 ## Run the command
 
-Run it from the installed controller image as a one-off Pod. The labels and
-service account reuse the initialization Job's database egress policy, which
-selects on the Helm release name (`RELEASE`); the Secret is the chart's
-`occ-database` with its `migration-url` key. The example mounts the
-`database.caSecretName` CA (key `ca.pem`) at the chart's `database.caMountPath`;
-without a database CA, drop `volumes` and `volumeMounts`.
+Run it from the installed controller image in a temporary Job. The Job controller
+owns its Pod; this matters on EKS, where NetworkPolicy enforcement can be unreliable
+for standalone Pods. The Pod labels below select the installed initialization
+NetworkPolicy for the Helm release (`RELEASE`), allowing DNS and database egress.
+Keep that policy and the `openclaw-enterprise-initialization` service account in place.
+
+The operator needs permission to create, read, watch, and delete Jobs, read Pods
+and their logs, and scale the API and worker Deployments. The maintenance Pod has
+no mounted service-account token. Use the installed database Secret name and
+migration key; the example uses the chart defaults `occ-database` and
+`migration-url`. Match `database.caKey`, `database.caMountPath`, and any
+`controlPlane.nodeSelector` to your installed values. Without a database CA,
+remove `volumes` and `volumeMounts`.
+
+Create one Job for the selected operation. `create` refuses an existing Job;
+finish inspecting and removing the previous maintenance Job before another run.
 
 ```bash
 export RELEASE=oce DATABASE_CA_SECRET='<database.caSecretName>'
 export CONTROLLER_IMAGE='<registry>/controller@sha256:<64-hex-digest>'
 kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
-  --namespace openclaw-system run occ-auth-maintain --rm -i --restart=Never \
-  --image "$CONTROLLER_IMAGE" \
-  --labels "app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=initialization" \
-  --overrides '{"spec":{"serviceAccountName":"openclaw-enterprise-initialization","automountServiceAccountToken":false,"securityContext":{"runAsNonRoot":true,"runAsUser":1000,"runAsGroup":1000,"seccompProfile":{"type":"RuntimeDefault"}},"volumes":[{"name":"database-ca","secret":{"secretName":"'"$DATABASE_CA_SECRET"'","items":[{"key":"ca.pem","path":"ca.pem"}]}}],"containers":[{"name":"occ-auth-maintain","image":"'"$CONTROLLER_IMAGE"'","args":["scripts/auth-maintain.mjs","status"],"env":[{"name":"NODE_ENV","value":"production"},{"name":"OCC_MIGRATION_DATABASE_URL","valueFrom":{"secretKeyRef":{"name":"occ-database","key":"migration-url"}}}],"volumeMounts":[{"name":"database-ca","mountPath":"/etc/openclaw/database-ca","readOnly":true}],"securityContext":{"allowPrivilegeEscalation":false,"readOnlyRootFilesystem":true,"capabilities":{"drop":["ALL"]}}}]}}'
+  --namespace openclaw-system create -f - <<EOF
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: occ-auth-maintain
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openclaw-enterprise
+        app.kubernetes.io/instance: "$RELEASE"
+        app.kubernetes.io/component: initialization
+    spec:
+      serviceAccountName: openclaw-enterprise-initialization
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: database-ca
+          secret:
+            secretName: "$DATABASE_CA_SECRET"
+            items:
+              - key: ca.pem
+                path: ca.pem
+      containers:
+        - name: occ-auth-maintain
+          image: "$CONTROLLER_IMAGE"
+          args: ["scripts/auth-maintain.mjs", "status"]
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: OCC_MIGRATION_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: occ-database
+                  key: migration-url
+          volumeMounts:
+            - name: database-ca
+              mountPath: /etc/openclaw/database-ca
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+EOF
 ```
 
 Replace `"status"` with the operation's arguments, for example
-`"deactivate","--writers-stopped"`. The Pod's own connection is excluded from
-the check; `kubectl run --rm` removes it afterwards.
+`"deactivate", "--writers-stopped"`. The Pod's own database connection is excluded
+from the writer check. The Job does not retry a failed Pod.
+
+Wait for completion, inspect the JSON output, then delete the Job and wait for
+its Pods to stop. This block attempts cleanup even after a failure and returns
+nonzero if completion, diagnostics, or cleanup fails. A timeout does not establish
+whether a change committed.
+
+```bash
+(
+  result=0
+  kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
+    --namespace openclaw-system wait --for=condition=Complete \
+    job/occ-auth-maintain --timeout=5m || result=$?
+  if [ "$result" -ne 0 ]; then
+    kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
+      --namespace openclaw-system get job/occ-auth-maintain -o yaml || result=$?
+  fi
+  kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
+    --namespace openclaw-system logs job/occ-auth-maintain -c occ-auth-maintain || result=$?
+  kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
+    --namespace openclaw-system delete job/occ-auth-maintain \
+    --cascade=foreground --wait=true --timeout=5m || result=$?
+  exit "$result"
+)
+```
+
+If cleanup fails, complete it before another operation or resuming writers. If
+the result was uncertain, run `status` in a new Job before deciding whether to
+retry a change. Confirm the intended database state before resuming writers.
 
 For `reset-recovery-password`, put the new password in a Secret, mount it
 read-only in the Pod, and pass the mounted path with `--password-file`. Delete
@@ -122,7 +212,7 @@ and reopen ingress.
 Deactivation returns the Installation to the legacy password profile and
 requires the API to be stopped. In one transaction it removes the recovery
 designation, enrolment, session bindings, pending external sign-in attempts, and
-every session. Linked GitHub, Google, and OIDC identities stay in the database but
+every session. Linked Google and OIDC identities stay in the database but
 are unused, so `status` still counts them under `externalMethods`.
 
 The legacy profile ignores account disablement, so `deactivate` refuses while any
@@ -131,13 +221,11 @@ accounts' passwords instead, so they still cannot sign in. Deactivation also
 removes the database fence on unbound sessions, so the older image and plain
 password sign-in work again.
 
-Then, in the protected values, set `auth.github.enabled`, `auth.google.enabled`,
-and `auth.oidc.enabled` all to `false`, clear both `auth.oidc.caSecretName` and
+Then, in the protected values, set `auth.google.enabled` and `auth.oidc.enabled` to `false`, remove `auth.oidc.enrollment`, clear both `auth.oidc.caSecretName` and
 `auth.oidc.caSecretKey`, remove `auth.recoveryUserId`, and reset
 `auth.passwordSignIn` to `all`. Run `helm upgrade`, which also restores the
-replicas. Without Helm, remove every `OCC_AUTH_GITHUB_*`, `OCC_AUTH_GOOGLE_*`,
-and `OCC_AUTH_OIDC_*` variable (including `OCC_AUTH_GITHUB_RECOVERY_USER_ID`) and
-`OCC_AUTH_PASSWORD_SIGN_IN` from the API environment before scaling it up. If any
+replicas. Without Helm, remove every `OCC_AUTH_GOOGLE_*` and `OCC_AUTH_OIDC_*` variable,
+`OCC_AUTH_RECOVERY_USER_ID`, and `OCC_AUTH_PASSWORD_SIGN_IN` from the API environment before scaling it up. If any
 provider is still configured, startup activates the profile again.
 
 Activating again later, at startup or with `activate`, enrolls every account

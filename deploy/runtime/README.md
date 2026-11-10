@@ -148,10 +148,12 @@ while IFS= read -r argument; do
 done <<< "$source_args"
 ```
 
-Keep this shell for the build. CI and the development launchers resolve the
-same manifest automatically. An explicitly selected prebuilt runtime image
-keeps its own identity. The separate [local OpenClaw checkout test path](../../docs/testing/openshell.md)
-builds its selected checkout and records that checkout's commit.
+Keep this shell for the build. CI and development launchers resolve the manifest
+automatically. [Local checkout tests](../../docs/testing/openshell.md) use their selected source.
+
+## Verify runtime source
+
+Local assembly omits broad suites. Run [source verification](../../docs/flows/container-publication.md#runtime-source-verification) for runtime changes.
 
 ## Build a local runtime image
 
@@ -192,8 +194,11 @@ Plugin chunks emitted directly under `dist` also need package-root resolution.
 The assembly links missing plugin dependencies into that root without replacing
 existing core dependencies.
 The custom npm-distribution packer rejects that combination because it requires
-one shared dependency version. Alternate
-`NODE_BASE_IMAGE` values must provide Node.js 24.22.1 or newer within the 24 series.
+one shared dependency version.
+
+Node bases require 24.22.1 on Bookworm. See the
+[worker-termination repair](node/README.md) for validation and provenance.
+
 The Dedicated command and bundled plugin both resolve the same
 [Codex 0.164.0](https://github.com/openai/codex/releases/tag/rust-v0.164.0) installation.
 For multi-architecture builds, the frozen npm install selects the stock

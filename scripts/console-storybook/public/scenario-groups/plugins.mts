@@ -59,7 +59,7 @@ export const pluginsScenarios = {
       "Click Add Calendar. Its tool defaults remain omitted until you change them.",
       "Choose Require approval for → Write actions. Reviewer stays separate; choose Human or Automatic review, or inherit the Harness reviewer.",
       "Click Done and confirm toolDefaults.approval is write_actions. New tools inherit this default without needing entries in tools.",
-      "Review the Driver-specific policy fields supplied by the capability descriptor.",
+      "Set Destructive tools to Disabled and leave Calendar tools enabled by default on Inherit default policy. Check that the hint is available with the Destructive tools control.",
       "Expand Create event, change a tool setting, then click Done and inspect Plugin selections JSON.",
       "Reopen Configure plugins, click inside its padding, then click the gray backdrop. Only the backdrop closes it; selections remain and focus returns to Configure plugins.",
       "In a frame 1100 px wide or narrower (Components / Dialogs / Plugins (tablet) is 1024 px), the catalog and detail stack: choose Calendar to see only its detail, then Back to plugins to return to the catalog. Wider, both panes show side by side.",
@@ -260,7 +260,8 @@ export const pluginsScenarios = {
       click("Add Google Workspace"),
     ],
     description:
-      "Toggle Enable plugin. Open More actions to find Remove Google Workspace. Compare the Plugin policies, Driver policy, and Tools sections. Each shows which settings Google Workspace supports. This fixture simulates the catalog.",
+      "Find Google Workspace in the fixture catalog. Toggle Enable plugin, then find Remove Google Workspace under More actions. Compare Plugin policies, Driver policy, and Tools to see which settings are supported.",
+    gap: "Storybook supplies the catalog and capabilities directly. The saved-Agent browser test checks catalog discovery through the Controller.",
   },
   pluginsNativeLimited: {
     group: "Components/Plugins",

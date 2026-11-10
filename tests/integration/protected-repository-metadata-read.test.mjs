@@ -13,12 +13,12 @@ import {
   receiveThroughFin,
 } from "../fixtures/repository-credentials/socket-observer.mjs";
 
-const { createRoutePolicy } = await appModule("drivers/repo/github/credentials/routes");
-const { createUpstreamSender } = await appModule("drivers/repo/credentials/transport/upstream");
-const { inspectRequestHead } = await appModule("drivers/repo/credentials/transport/request");
-const { sendError } = await appModule("drivers/repo/credentials/transport/errors");
-const { createSystemClock } = await appModule("drivers/repo/credentials/clock");
-const { validateServiceConfig } = await appModule("drivers/repo/credentials/configuration");
+const { createRoutePolicy } = await appModule("drivers/repo/github/access/routes");
+const { createUpstreamSender } = await appModule("drivers/repo/access/transport/upstream");
+const { inspectRequestHead } = await appModule("drivers/repo/access/transport/request");
+const { sendError } = await appModule("drivers/repo/access/transport/errors");
+const { createSystemClock } = await appModule("drivers/repo/access/clock");
+const { validateServiceConfig } = await appModule("drivers/repo/access/configuration");
 
 const target = "/repos/fixture/repository";
 const identity = { id: 73, full_name: "fixture/repository" };

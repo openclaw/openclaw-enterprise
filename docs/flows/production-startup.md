@@ -1,16 +1,15 @@
 ---
 created: 2026-08-25
-updated: "2026-11-04"
-last_updated_session: "authoring-run/48787d5f-913a-4fa5-910a-2f9ec35e504a"
+updated: "2026-11-08"
+last_updated_session: "authoring-run/ef34e45f-633b-49fb-8884-cdf519ed7d40"
 ---
 
 # Production Startup Flow
 
 ## Overview
 
-Prepare a fresh protected bootstrap PVC and install Helm with approved images,
-PostgreSQL/authentication credentials, trusted Installation YAML and policies.
-After private API/worker readiness, authenticate `/installation` with the service key.
+Helm initializes OCE from protected storage and approved inputs. After private
+API/worker readiness, authenticate `/installation` with the service key.
 
 [Deployment guide](../guides/deploy.md).
 
@@ -37,10 +36,13 @@ graph TD
         B["Create namespace and Secrets; check prerequisites"]
         C["Create fresh bootstrap PVC"]
         D["prepare-bootstrap-volume verifies empty output and root permissions"]
-        D --> RC["CLI snapshots inputs and syncs intent"]
+        D --> RC["Snapshot inputs and sync intent"]
+        RC --> RN{"Receipt notice write failed?"}
+        RN -->|Yes| RF["Preserve intent; stop before dispatch"]
+        RN -->|No| RD["Sync dispatch marker"]
     end
     subgraph Helm["Helm-owned startup"]
-        RC --> E["Run Helm install once with attempt marker"]
+        RD --> E["Run Helm install once with attempt marker"]
         E --> F["Run initialization Job with migrator and application roles"]
         F --> V{"PostgreSQL before 17?"}
         V -->|Yes| P["Refuse initialization before migration DDL"]
@@ -98,27 +100,28 @@ inputs, rewrites Driver configuration, nor infers runtime images.
 
 ### 2. Prepare the fresh bootstrap volume
 
-`scripts/prepare-bootstrap-volume:124`
+`scripts/prepare-bootstrap-volume:124` takes an existing
+`bootstrap.password.claimName` PVC, explicit kubeconfig/context/namespace/claim,
+an approved Node-capable image and optional `--node-selector KEY=VALUE` labels.
+It preserves namespace/selector strings, applying selectors before
+WaitForFirstConsumer binding. It requires an empty root except filesystem-owned
+`lost+found` and sets UID/GID `1000`, mode `0700`.
 
-Create the `bootstrap.password.claimName` PVC and run the helper with explicit
-kubeconfig, context, namespace, claim,
-approved Node-capable image, and optional `--node-selector KEY=VALUE` labels.
-The Pod preserves string namespaces and selector keys; selectors precede
-WaitForFirstConsumer binding. The helper requires an empty root except
-for filesystem-owned `lost+found`, and sets UID/GID `1000` with mode `0700`.
-
-If the Pod is forbidden, storage administration prepares the claim through an
-approved workflow for Helm. The helper neither creates PVCs nor
-repairs used claims, retrieves credentials, or changes controller configuration.
+If forbidden, storage administrators prepare the claim through approved procedures.
+The helper cannot create PVCs, repair used claims, retrieve credentials or
+change controller configuration.
 
 ### 3. Run Helm initialization
 
-`internal/occcli/installation_receipt.go:installationInstallCommand` snapshots the
-kubeconfig, chart and values privately and checks all release states. It syncs
-the intent, receipt directory entry and unknown dispatch marker before starting
-Helm. While Helm waits, `observeInstallationJob` records the first recognized
-install Job UID whose annotation matches the attempt. Upgrades omit the marker.
-Helm's exit outcome has a separate record.
+`internal/occcli/installation_receipt.go:installationInstallCommand` privately
+snapshots kubeconfig/chart/values, checks all release states and syncs
+`intent.json` and its directory entry. On stdout notice write error, it keeps
+intent, names the receipt directory and exits before `dispatch.json` or Helm
+install. Otherwise it syncs the unknown marker and starts Helm.
+`observeInstallationJob` records the first recognized Job UID matching the
+attempt annotation (installs only). Helm's outcome is separate. A final report
+write error also fails the command without changing that saved outcome or
+replaying the install.
 
 `deploy/helm/openclaw-enterprise/templates/bootstrap-networkpolicies.yaml:1`
 installs isolation before the Job; it and later policies grant configured
@@ -160,14 +163,13 @@ and `executionCluster.kubeconfigKey` must be Secret keys at most 253 characters,
 not `.` or a `..` prefix.
 
 For [handoff](../guides/deploy/production-handoff.md#resume-an-installation-in-progress),
-`internal/occcli/installation_doctor.go:installationHandoffCommand` verifies the
-receipt namespace, release and reader's cluster connection before a named Job read.
-`initializationEvidence` checks the marker, captured UID, chart steps, controller
-and terminal status. Missing UID, replacement, refusal or inconclusive status
-leaves the original checkpoint unknown. Doctor reports Helm's recorded outcome
-separately. Plan adds read-only recovery steps. Both buffer their report, including
-Helm outcome, and check `WriteTo` before returning Job status. Returned write
-errors reach `cmd/occ/main.go:main`, which reports stderr diagnostics and exits `1`.
+`internal/occcli/installation_doctor.go:installationHandoffCommand` verifies receipt
+namespace/release/cluster connection before reading the named Job.
+`initializationEvidence` checks marker, captured UID, chart steps, controller and
+terminal status. Missing UID, replacement, refusal or inconclusive status leaves
+the checkpoint unknown. Doctor separately reports Helm's outcome; plan adds
+read-only recovery. Both check the buffered report's `WriteTo` before returning
+Job status. Write errors reach `cmd/occ/main.go:main` for stderr diagnostics and exit `1`.
 
 `scripts/migrate-production.mjs:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
@@ -323,6 +325,9 @@ and displays the Installation. Its `ID` must match the key
 response's `meta.installationId`. The operator records that ID in the Installation
 startup Secret's `openclaw.dev/installation-id` annotation; coordinated upgrades
 use this marker to bind their OCC endpoint to the selected Installation.
+The quickstart's `docs/snippets/openshell-quickstart/operator-session.sh:upgrade_installation`
+checks Helm's deployed revision and API Pod binding, initializes missing annotations,
+patches using UID/resourceVersion preconditions, and sets `controlPlane.installationChecksum`.
 Agent runtime, Gateway WebSocket authentication and model calls remain unproven
 until tenant deployment/TUI procedures run.
 
@@ -378,6 +383,12 @@ until tenant deployment/TUI procedures run.
 
 ## Changelog
 
+- 2026-11-07 21:10: Stop install dispatch on intent output failure and return final report write errors. (authoring-run/f573af51-9766-49f8-88ff-2c6294283466 - 9b23338c49448b9fc56d637a53bd0d71ec3be76b)
+
+- 2026-11-08 07:15: Clarify receipt directory. (authoring-run/ef34e45f-633b-49fb-8884-cdf519ed7d40 - 7e2eb23a7f55b5f375e52883fcb6a7bb0f10049e)
+
+- 2026-11-08 05:16: Document the preserved intent and stop before dispatch when the receipt notice write fails. (authoring-run/5809b7e1-70ee-4446-8c3a-020e78a0e7af - e0d329d9ad9560e954ce94889079ef55ba43080f)
+
 - 2026-11-04 23:30: Check complete handoff reports, including receipt outcomes. (authoring-run/48787d5f-913a-4fa5-910a-2f9ec35e504a - ce06d47cfb0b4fb29495ad4bc85bb71aa5941975)
 
 - 2026-11-04 23:14: Document report write failures. (authoring-run/58196aeb-45b5-4ea5-850d-e368b48f15f9 - 582236adfbbb392c2247995dde054eef929ca6c1)
@@ -395,17 +406,5 @@ until tenant deployment/TUI procedures run.
 - 2026-11-03 18:03: Separate managed MCP discovery egress from model discovery. (authoring-run/0e69d668-c39a-4a60-b4ce-5556acb848b0 - c6be564e9f8b6186c53874ea26833a36f037c3db)
 
 - 2026-11-03 11:28: Reconcile PostgreSQL compatibility checks with default Helm private routing. (authoring-run/e9eeaa5b-19a6-4496-9c6e-98357b25ef83 - ccc8f0359924ed62b12e619b2ef9f3ef57a3dd7a)
-
-- 2026-11-02 15:26: Refuse incompatible PostgreSQL servers before catalog checks and migration. (authoring-run/c6926504-08f3-4eb6-ba6c-28b3e113eede - 9138a0f9617742d9c4997156e7a6cf19f6241c10)
-
-- 2026-11-02 14:57: Enable Helm private routing by default and retain prerequisite validation and explicit opt-out. (authoring-run/4fcd344c-7374-490d-979d-a6995b6a19dc - cf67413c378cce3989d28fa8178ed29a405b9ce6)
-
-- 2026-10-30 14:36: Attempt every worker resource close in order after a close fails. (authoring-run/b8400fae-dc1a-49fd-be49-5d07e9dbb899 - 2b3b206b63525e31a6170e239991394b7909fc15)
-
-- 2026-10-30 05:46: Attempt every PostgreSQL API resource close in order and preserve the original error. (authoring-run/3277ff6a-7559-43e6-842d-93513c8dd124 - 60b6beb56d038c012d318cc6249003707c7ec9d5)
-
-- 2026-10-30 03:58: Load the native repository transport only for explicit native delivery. (authoring-run/43b61103-4082-4fc2-b9a0-511a18ebc761 - 87ed6c37e543e5501eae6285450d01d03d8abe7d)
-
-- 2026-10-28: Give the worker a startup probe and 5-second exec probe timeouts.
 
 [Production startup documentation history](production-startup/history.md) preserves the older dated entries.

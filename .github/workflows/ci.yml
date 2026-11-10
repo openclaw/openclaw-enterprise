@@ -36,6 +36,9 @@ jobs:
       mode: ${{ steps.select.outputs.mode }}
       lanes: ${{ steps.select.outputs.lanes }}
       matrix: ${{ steps.matrix.outputs.matrix }}
+      image-matrix: ${{ steps.matrix.outputs.image-matrix }}
+      has-matrix: ${{ steps.matrix.outputs.has-matrix }}
+      has-images: ${{ steps.matrix.outputs.has-images }}
       fixture: ${{ steps.matrix.outputs.fixture }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -55,10 +58,17 @@ jobs:
           trap 'rm -f "$policy"' EXIT
           trusted_policy() {
             reason=bootstrap_non_pr_event
-            [ "${GITHUB_EVENT_NAME:-}" = pull_request ] || return 1
-            reason=bootstrap_event_unavailable
-            base=$(jq -er '.pull_request.base.sha | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
-            head=$(jq -er '.pull_request.head.sha | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+            if [ "${GITHUB_EVENT_NAME:-}" = push ]; then
+              [ "${GITHUB_REPOSITORY:-}" = openclaw/openclaw-enterprise ] && [ "${GITHUB_REF:-}" = refs/heads/main ] || return 1
+              reason=bootstrap_event_unavailable
+              base=$(jq -er '.before | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+              head=$(jq -er '.after | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+            else
+              [ "${GITHUB_EVENT_NAME:-}" = pull_request ] || return 1
+              reason=bootstrap_event_unavailable
+              base=$(jq -er '.pull_request.base.sha | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+              head=$(jq -er '.pull_request.head.sha | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+            fi
             reason=bootstrap_invalid_identity
             oid='^([0-9a-f]{40}|[0-9a-f]{64})$'
             [[ $base =~ $oid && $head =~ $oid && ${GITHUB_SHA:-} =~ $oid ]] || return 1
@@ -67,18 +77,25 @@ jobs:
             reason=bootstrap_checkout_mismatch
             [ "$actual" = "$GITHUB_SHA" ] || return 1
             reason=bootstrap_git_inspection_failed
-            parents=$(git show -s --format=%P "$GITHUB_SHA") || return 1
-            reason=bootstrap_checkout_mismatch
-            [[ $parents =~ ^([0-9a-f]{40}|[0-9a-f]{64})\ ([0-9a-f]{40}|[0-9a-f]{64})$ ]] || return 1
-            [ "${BASH_REMATCH[2]}" = "$head" ] || return 1
-            merge_base=${BASH_REMATCH[1]}
-            reason=bootstrap_git_inspection_failed
-            git cat-file -e "$merge_base^{commit}" && git cat-file -e "$head^{commit}" || return 1
-            # GitHub merges onto the base tip at merge time; base.sha lags it
-            # when the base moved after the push and is then not fetched.
-            reason=bootstrap_checkout_mismatch
-            if [ "$base" != "$merge_base" ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
-              git merge-base --is-ancestor "$base" "$merge_base" || return 1
+            if [ "${GITHUB_EVENT_NAME:-}" = push ]; then
+              reason=bootstrap_checkout_mismatch
+              [ "$head" = "$GITHUB_SHA" ] || return 1
+              git cat-file -e "$base^{commit}" && git merge-base --is-ancestor "$base" "$head" || return 1
+              merge_base=$base
+            else
+              parents=$(git show -s --format=%P "$GITHUB_SHA") || return 1
+              reason=bootstrap_checkout_mismatch
+              [[ $parents =~ ^([0-9a-f]{40}|[0-9a-f]{64})\ ([0-9a-f]{40}|[0-9a-f]{64})$ ]] || return 1
+              [ "${BASH_REMATCH[2]}" = "$head" ] || return 1
+              merge_base=${BASH_REMATCH[1]}
+              reason=bootstrap_git_inspection_failed
+              git cat-file -e "$merge_base^{commit}" && git cat-file -e "$head^{commit}" || return 1
+              # GitHub merges onto the base tip at merge time; base.sha lags it
+              # when the base moved after the push and is then not fetched.
+              reason=bootstrap_checkout_mismatch
+              if [ "$base" != "$merge_base" ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
+                git merge-base --is-ancestor "$base" "$merge_base" || return 1
+              fi
             fi
             reason=bootstrap_git_inspection_failed
             entry=$(git ls-tree "$merge_base" -- scripts/ci/impact.mjs) || return 1
@@ -120,34 +137,13 @@ jobs:
       # length. Part 3 also runs the CPU-contended model probe case beside
       # them; it waits out the 110 s probe cap at 500m on any runner and sets
       # part 3's length (it was a job of its own, Image Model Probes).
-      # Runners: the k3d fixture and observability lanes use blacksmith
-      # 32vcpu (8 CPUs). Its kernel enforces the NetworkPolicy proofs: with
-      # K3s policy enforcement disabled, production-network-access fails
-      # every deny case there. It ran these lanes about a minute faster than
-      # ubuntu-22.04 (4 CPUs). Image Runtime Startup and Startup 2 use 32vcpu
-      # too: their preparation is faster there, and Startup 2 runs its four
-      # files at once. Startup 3 (Docker only, no k3d) uses 16vcpu: its model
-      # probe case waits out the 110 s cap on any runner, its other three
-      # files run their cases two at a time beside it (45 s on 32vcpu), and
-      # 16vcpu jobs do not queue when 32vcpu jobs do (10-24: 21 % of 32vcpu
-      # jobs waited over 60 s for a runner, p90 268 s; no 16vcpu job over
-      # 12 s). PostgreSQL
-      # Application uses 32vcpu too: it runs up to eight of its twelve files at
-      # once, one per CPU (16vcpu caps it at four). Checks and Conformance 1
-      # uses it for the same reason: on 16vcpu it ran four files at a time,
-      # its tests took 112-192 s, and it finished last. So do Console
-      # Browser 2, Checks and Conformance 2 and Console Browser: on 16vcpu
-      # their files ran four at a time and were CPU-bound (their summed time
-      # rose and fell with the lane's; from 10-13 13:00Z files nobody changed
-      # took 20-30 % longer there while 32vcpu lanes stayed flat).
-      # Repository Credentials Platform stays on 16vcpu: on 32vcpu its image
-      # import and its long case took as long. The other lanes, Keycloak OIDC
-      # included, use blacksmith 16vcpu, which exposes 4 CPUs to the job
-      # (8vcpu exposes 2) and rarely waits for a runner (on 10-08/09, 15 % of
-      # 8vcpu jobs waited over a minute, none on 16vcpu). Keycloak OIDC moved
-      # off 8vcpu on 10-17: over 37 runs it waited 67 s for a runner at p90,
-      # while no 16vcpu job in 376 waited over 13 s. A label no runner serves
-      # leaves the job queued, so use only labels already in use here.
+      # Runner labels now expose their named CPU capacity. Restore the
+      # measured pre-November 3 allocations without changing lane concurrency.
+      # k3d keeps Blacksmith's kernel for NetworkPolicy checks. Runtime image lanes
+      # retain 8 CPUs / 30.4 GiB for their measured 15-20 GiB peaks. Browser
+      # lanes use 8 CPUs with their existing eight-file concurrency.
+      # Ordinary Conformance 1 uses 4 CPUs; Full Integration keeps 8 for its
+      # additional static checks. The test runner caps files to available CPUs.
       - id: matrix
         name: Build lane matrix
         env:
@@ -155,25 +151,26 @@ jobs:
           SELECT_LANES: ${{ steps.select.outputs.lanes }}
           LANE_TABLE: |
             [
-              {"lane": "checks-baseline-1", "title": "Checks and Conformance 1", "profile": "baseline", "timeout": 25, "runner": "blacksmith-32vcpu-ubuntu-2404"},
-              {"lane": "checks-baseline-2", "title": "Checks and Conformance 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-32vcpu-ubuntu-2404"},
-              {"lane": "checks-browser", "title": "Console Browser", "profile": "baseline", "timeout": 25, "runner": "blacksmith-32vcpu-ubuntu-2404"},
-              {"lane": "checks-browser-2", "title": "Console Browser 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-32vcpu-ubuntu-2404"},
-              {"lane": "postgres", "title": "PostgreSQL Migrations", "profile": "postgres", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
-              {"lane": "postgres-application", "title": "PostgreSQL Application", "profile": "postgres", "timeout": 25, "runner": "blacksmith-32vcpu-ubuntu-2404"},
-              {"lane": "postgres-auth", "title": "PostgreSQL Authentication", "profile": "postgres", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
-              {"lane": "postgres-platform", "title": "PostgreSQL Platform", "profile": "postgres", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
-              {"lane": "images-packaging", "title": "Images and Packaging", "profile": "full", "timeout": 45, "runner": "blacksmith-16vcpu-ubuntu-2404"},
-              {"lane": "images-runtime-startup", "title": "Image Runtime Startup", "profile": "full", "timeout": 30, "runner": "blacksmith-32vcpu-ubuntu-2404"},
-              {"lane": "images-runtime-startup-2", "title": "Image Runtime Startup 2", "profile": "images", "timeout": 30, "runner": "blacksmith-32vcpu-ubuntu-2404"},
-              {"lane": "images-runtime-startup-3", "title": "Image Runtime Startup 3", "profile": "images", "timeout": 30, "runner": "blacksmith-16vcpu-ubuntu-2404"},
-              {"lane": "k3d-fixture-configuration", "title": "k3d Fixture and Configuration", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
-              {"lane": "k3d-fixture-state", "title": "k3d State and Lifecycle", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
-              {"lane": "k3d-fixture-plugins", "title": "k3d Plugin Status", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
-              {"lane": "k3d-observability", "title": "Production Observability", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
-              {"lane": "logging-collector", "title": "Logging Collector", "profile": "images", "timeout": 30, "runner": "blacksmith-16vcpu-ubuntu-2404"},
-              {"lane": "repository-credentials-container", "title": "Repository Credentials", "profile": "images", "timeout": 40, "runner": "blacksmith-16vcpu-ubuntu-2404"},
-              {"lane": "keycloak-oidc", "title": "Keycloak OIDC", "profile": "postgres", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"}
+              {"lane": "checks-baseline-1", "title": "Checks and Conformance 1", "profile": "baseline", "timeout": 25, "runner": "blacksmith-4vcpu-ubuntu-2404"},
+              {"lane": "checks-baseline-2", "title": "Checks and Conformance 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
+              {"lane": "checks-browser", "title": "Console Browser", "profile": "baseline", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
+              {"lane": "checks-browser-2", "title": "Console Browser 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
+              {"lane": "postgres", "title": "PostgreSQL Migrations", "profile": "postgres", "timeout": 25, "runner": "blacksmith-4vcpu-ubuntu-2404"},
+              {"lane": "postgres-application", "title": "PostgreSQL Application", "profile": "postgres", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
+              {"lane": "postgres-auth", "title": "PostgreSQL Authentication", "profile": "postgres", "timeout": 25, "runner": "blacksmith-4vcpu-ubuntu-2404"},
+              {"lane": "postgres-platform", "title": "PostgreSQL Platform", "profile": "postgres", "timeout": 25, "runner": "blacksmith-4vcpu-ubuntu-2404"},
+              {"lane": "images-packaging", "title": "Images and Packaging", "profile": "full", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
+              {"lane": "images-runtime-startup", "title": "Image Runtime Startup", "profile": "full", "timeout": 30, "runner": "blacksmith-8vcpu-ubuntu-2404"},
+              {"lane": "images-runtime-startup-2", "title": "Image Runtime Startup 2", "profile": "images", "timeout": 30, "runner": "blacksmith-8vcpu-ubuntu-2404"},
+              {"lane": "images-runtime-startup-3", "title": "Image Runtime Startup 3", "profile": "images", "timeout": 30, "runner": "blacksmith-8vcpu-ubuntu-2404"},
+              {"lane": "k3d-fixture-configuration", "title": "k3d Fixture and Configuration", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
+              {"lane": "k3d-fixture-state", "title": "k3d State and Lifecycle", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
+              {"lane": "k3d-fixture-network", "title": "k3d Network Isolation", "profile": "k3d", "timeout": 45, "runner": "blacksmith-2vcpu-ubuntu-2404"},
+              {"lane": "k3d-fixture-plugins", "title": "k3d Plugin Status", "profile": "k3d", "timeout": 45, "runner": "blacksmith-2vcpu-ubuntu-2404"},
+              {"lane": "k3d-observability", "title": "Production Observability", "profile": "k3d", "timeout": 45, "runner": "blacksmith-2vcpu-ubuntu-2404"},
+              {"lane": "logging-collector", "title": "Logging Collector", "profile": "images", "timeout": 30, "runner": "blacksmith-2vcpu-ubuntu-2404"},
+              {"lane": "repository-credentials-container", "title": "Repository Credentials", "profile": "images", "timeout": 40, "runner": "blacksmith-4vcpu-ubuntu-2404"},
+              {"lane": "keycloak-oidc", "title": "Keycloak OIDC", "profile": "postgres", "timeout": 25, "runner": "blacksmith-4vcpu-ubuntu-2404"}
             ]
         run: |
           table=$(jq -ce 'if type == "array" and length > 0 then . else error("invalid lane table") end' <<<"$LANE_TABLE")
@@ -187,7 +184,9 @@ jobs:
             matrix=$table
             fixture=true
           fi
-          printf 'matrix=%s\nfixture=%s\n' "$matrix" "$fixture" >> "$GITHUB_OUTPUT"
+          images=$(jq -c '[.[] | select(.lane | startswith("images-"))]' <<<"$matrix")
+          matrix=$(jq -c '[.[] | select(.lane | startswith("images-") | not)]' <<<"$matrix")
+          printf 'matrix=%s\nimage-matrix=%s\nfixture=%s\nhas-matrix=%s\nhas-images=%s\n' "$matrix" "$images" "$fixture" "$(jq 'length > 0' <<<"$matrix")" "$(jq 'length > 0' <<<"$images")" >> "$GITHUB_OUTPUT"
 
       - name: Summarize impact selection
         if: ${{ always() }}
@@ -263,8 +262,8 @@ jobs:
     name: Suite Audit and Static Checks
     # Both run in every mode. Start beside CI Impact, audit the workflow and
     # suite first, then reuse this checkout, Node and runner for static checks.
-    # 16vcpu rarely waits for a runner (see the CI Impact lane table).
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    # The measured 3.2 GiB peak fits the 4-CPU / 15.2 GiB runner.
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -281,10 +280,12 @@ jobs:
         run: actionlint .github/workflows/*.yml
       - name: Audit suite manifest and workflows
         run: node scripts/ci/run-tests.mjs audit
+      - name: Audit the Full Integration OpenShell view
+        run: OCC_CI_SUITE_VIEW=full-integration node scripts/ci/run-tests.mjs audit
       - uses: ./.github/actions/setup-pnpm-store-cache
         with:
           node-version: ${{ env.NODE_VERSION }}
-          # This job only restores the store; it has no save step.
+          # The root workspace cache is saved by the test lanes.
           cache-mode: restore
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
@@ -300,8 +301,24 @@ jobs:
         run: pnpm format:check
       - name: Run OpenAPI check
         run: pnpm openapi:check
+      - name: Restore documentation dependencies
+        id: docs-store
+        uses: ./.github/actions/setup-pnpm-store-cache
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-file: scripts/docs-site/package.json
+          lockfile-path: scripts/docs-site/pnpm-lock.yaml
+          cache-mode: read-write
       - name: Check and build documentation
-        run: pnpm docs:install && pnpm openapi:lint && pnpm docs:check && pnpm docs:build
+        run: pnpm docs:install && pnpm openapi:lint && pnpm exec tsc --project scripts/docs-site/tsconfig.json --pretty false && pnpm docs:check && pnpm docs:build
+      - name: Save documentation dependencies
+        # This job owns the docs cache. The build must run Pagefind successfully
+        # before saving: installation can succeed without its optional binary.
+        if: success() && steps.docs-store.outputs.store-cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ steps.docs-store.outputs.store-path }}
+          key: ${{ steps.docs-store.outputs.store-cache-primary-key }}
   affected-packages:
     name: Affected Packages (advisory)
     needs: impact
@@ -325,7 +342,7 @@ jobs:
         if: ${{ always() }}
         run: |
           # Print to the log too: step summaries are not readable through the API.
-          report=$(node scripts/ci/pnpm-impact.mjs --summary) || report='Affected workspace packages: unavailable.'
+          report=$(node scripts/ci/pnpm-impact.ts --summary) || report='Affected workspace packages: unavailable.'
           printf '%s\n' "$report"
           if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
             printf '%s\n' "$report" >> "$GITHUB_STEP_SUMMARY" || true
@@ -334,7 +351,7 @@ jobs:
   pr-safe:
     name: ${{ matrix.title }}
     needs: impact
-    if: ${{ needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests' }}
+    if: ${{ (needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests') && needs.impact.outputs.has-matrix == 'true' }}
     # Each CI Impact lane-table row names its runner.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
@@ -364,6 +381,46 @@ jobs:
           path: ${{ runner.temp }}/state/repository-credentials-images.json
           if-no-files-found: error
           retention-days: 7
+
+  runtime-artifact:
+    name: Shared Runtime Image
+    needs: impact
+    if: ${{ needs.impact.outputs.mode == 'full' || (needs.impact.outputs.mode == 'tests' && needs.impact.outputs.has-images == 'true') }}
+    uses: ./.github/workflows/ci-runtime-artifact.yml
+
+  image-lanes:
+    permissions:
+      contents: read
+      actions: read
+    name: ${{ matrix.title }}
+    needs: [impact, runtime-artifact]
+    if: ${{ (needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests') && needs.impact.outputs.has-images == 'true' }}
+    # Each CI Impact lane-table row names its runner.
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Lane rows live in the CI Impact "Build lane matrix" step.
+        include: ${{ fromJSON(needs.impact.outputs.image-matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: ${{ matrix.lane }}
+          profile: ${{ matrix.profile }}
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: ci-results
+          job-timeout-minutes: ${{ matrix.timeout }}
+          # Static Checks runs them in this workflow.
+          static-checks: "false"
+          runtime-artifact-id: ${{ needs.runtime-artifact.outputs.artifact-id }}
+          runtime-artifact-sha256: ${{ needs.runtime-artifact.outputs.archive-sha256 }}
+          runtime-artifact-source-sha: ${{ needs.runtime-artifact.outputs.source-sha }}
+          runtime-artifact-run-id: ${{ needs.runtime-artifact.outputs.run-id }}
+          runtime-artifact-attempt: ${{ needs.runtime-artifact.outputs.producer-attempt }}
 
   runtime-image-fixture:
     name: Runtime Image Fixture
@@ -396,8 +453,11 @@ jobs:
   # Real Local Setup install on every PR and merge, with a stand-in model
   # provider and no secrets. Deliberately not a CI Required dependency yet.
   first-agent-smoke:
+    permissions:
+      contents: read
+      actions: read
     name: First Agent Smoke
-    needs: impact
+    needs: [impact, runtime-artifact]
     if: ${{ needs.impact.outputs.mode == 'full' }}
     # Local Setup refuses gateway trust unless NetworkPolicies are enforced,
     # which needs the bridge netfilter support of this runner kernel.
@@ -417,7 +477,9 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Set up CI tools
-        run: bash scripts/ci/setup-tools.sh k3d
+        uses: ./.github/actions/setup-ci-tools
+        with:
+          profile: k3d
       # Pull Docker Hub images through mirror.gcr.io without the runner's
       # Docker Hub sign-in (finding 973). This restarts the Engine, so it runs
       # before Buildx starts its builder container.
@@ -453,16 +515,45 @@ jobs:
             core.setSecret(token);
             core.setOutput('token', token);
             core.setOutput('url', url);
+      - name: Install runtime artifact transport
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install --no-install-recommends -y skopeo
+      - name: Download shared runtime image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          artifact-ids: ${{ needs.runtime-artifact.outputs.artifact-id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.runtime-artifact.outputs.run-id }}
+          path: ${{ runner.temp }}/runtime-artifact
+          merge-multiple: true
       - name: Build checkout images
         env:
+          OCC_CI_RUNTIME_ARTIFACT_DIRECTORY: ${{ runner.temp }}/runtime-artifact
+          OCC_CI_RUNTIME_ARTIFACT_SHA256: ${{ needs.runtime-artifact.outputs.archive-sha256 }}
+          OCC_CI_RUNTIME_ARTIFACT_SOURCE_SHA: ${{ needs.runtime-artifact.outputs.source-sha }}
+          OCC_CI_RUNTIME_ARTIFACT_RUN_ID: ${{ needs.runtime-artifact.outputs.run-id }}
+          OCC_CI_RUNTIME_ARTIFACT_ATTEMPT: ${{ needs.runtime-artifact.outputs.producer-attempt }}
           ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
           ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
         run: node scripts/ci/first-agent-smoke.mjs images
       - name: Install, deploy, chat, stop and start
+        id: smoke
         run: node scripts/ci/first-agent-smoke.mjs run
       - name: Show Docker Hub pull endpoints
         if: ${{ !cancelled() }}
         run: bash scripts/ci/docker-hub-mirror.sh report
+      - name: Upload First Agent Smoke timings
+        if: ${{ !cancelled() && (steps.smoke.outcome == 'success' || steps.smoke.outcome == 'failure') }}
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: first-agent-smoke-timing-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/first-agent-smoke-timing.json
+          if-no-files-found: ignore
+          retention-days: 7
 
   ci-required:
     name: CI Required
@@ -471,6 +562,8 @@ jobs:
       - impact
       - static-checks
       - pr-safe
+      - image-lanes
+      - runtime-artifact
       - runtime-image-fixture
     # always(): a failed or skipped dependency must still produce a failed
     # CI Required, never a skipped (passing) one.
@@ -506,10 +599,17 @@ jobs:
           trap 'rm -f "$policy"' EXIT
           trusted_policy() {
             reason=bootstrap_non_pr_event
-            [ "${GITHUB_EVENT_NAME:-}" = pull_request ] || return 1
-            reason=bootstrap_event_unavailable
-            base=$(jq -er '.pull_request.base.sha | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
-            head=$(jq -er '.pull_request.head.sha | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+            if [ "${GITHUB_EVENT_NAME:-}" = push ]; then
+              [ "${GITHUB_REPOSITORY:-}" = openclaw/openclaw-enterprise ] && [ "${GITHUB_REF:-}" = refs/heads/main ] || return 1
+              reason=bootstrap_event_unavailable
+              base=$(jq -er '.before | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+              head=$(jq -er '.after | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+            else
+              [ "${GITHUB_EVENT_NAME:-}" = pull_request ] || return 1
+              reason=bootstrap_event_unavailable
+              base=$(jq -er '.pull_request.base.sha | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+              head=$(jq -er '.pull_request.head.sha | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+            fi
             reason=bootstrap_invalid_identity
             oid='^([0-9a-f]{40}|[0-9a-f]{64})$'
             [[ $base =~ $oid && $head =~ $oid && ${GITHUB_SHA:-} =~ $oid ]] || return 1
@@ -518,18 +618,25 @@ jobs:
             reason=bootstrap_checkout_mismatch
             [ "$actual" = "$GITHUB_SHA" ] || return 1
             reason=bootstrap_git_inspection_failed
-            parents=$(git show -s --format=%P "$GITHUB_SHA") || return 1
-            reason=bootstrap_checkout_mismatch
-            [[ $parents =~ ^([0-9a-f]{40}|[0-9a-f]{64})\ ([0-9a-f]{40}|[0-9a-f]{64})$ ]] || return 1
-            [ "${BASH_REMATCH[2]}" = "$head" ] || return 1
-            merge_base=${BASH_REMATCH[1]}
-            reason=bootstrap_git_inspection_failed
-            git cat-file -e "$merge_base^{commit}" && git cat-file -e "$head^{commit}" || return 1
-            # GitHub merges onto the base tip at merge time; base.sha lags it
-            # when the base moved after the push and is then not fetched.
-            reason=bootstrap_checkout_mismatch
-            if [ "$base" != "$merge_base" ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
-              git merge-base --is-ancestor "$base" "$merge_base" || return 1
+            if [ "${GITHUB_EVENT_NAME:-}" = push ]; then
+              reason=bootstrap_checkout_mismatch
+              [ "$head" = "$GITHUB_SHA" ] || return 1
+              git cat-file -e "$base^{commit}" && git merge-base --is-ancestor "$base" "$head" || return 1
+              merge_base=$base
+            else
+              parents=$(git show -s --format=%P "$GITHUB_SHA") || return 1
+              reason=bootstrap_checkout_mismatch
+              [[ $parents =~ ^([0-9a-f]{40}|[0-9a-f]{64})\ ([0-9a-f]{40}|[0-9a-f]{64})$ ]] || return 1
+              [ "${BASH_REMATCH[2]}" = "$head" ] || return 1
+              merge_base=${BASH_REMATCH[1]}
+              reason=bootstrap_git_inspection_failed
+              git cat-file -e "$merge_base^{commit}" && git cat-file -e "$head^{commit}" || return 1
+              # GitHub merges onto the base tip at merge time; base.sha lags it
+              # when the base moved after the push and is then not fetched.
+              reason=bootstrap_checkout_mismatch
+              if [ "$base" != "$merge_base" ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
+                git merge-base --is-ancestor "$base" "$merge_base" || return 1
+              fi
             fi
             reason=bootstrap_git_inspection_failed
             entry=$(git ls-tree "$merge_base" -- scripts/ci/impact.mjs) || return 1

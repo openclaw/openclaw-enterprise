@@ -49,7 +49,7 @@ Check the browser values **before** the first Helm install. Keep port 18443 in t
 ```bash
 jq -e --arg d "$CLUSTER_NAME.oce.localhost" '
   .auth.baseUrl==("https://console."+$d+":18443") and .agentNativeAdmin.enabled
-  and .agentNativeAdmin.domain==("agents."+$d) and .agentNativeAdmin.sharedCookieDomain==$d' "$RUN_DIR/values.json"
+  and .agentNativeAdmin.domain==("agents."+$d)' "$RUN_DIR/values.json"
 ```
 
 The templates use `CLUSTER_DOMAIN` for route and certificate names; the browser listener uses namespace-relative Service DNS. Preserve mTLS, OpenShell PKI and JWT signing material through upgrades.
@@ -85,7 +85,7 @@ Use one raw URL per file. For this fresh installation, generate separate random
 mode 0600 and retain the keys for redeployment.
 
 Create the bootstrap claim and Secrets from the matching checkout with jq, yq v4,
-and Node.js 24.22.1 or newer. The OpenShell chart’s PKI job supplies
+and Node.js satisfying `engines.node` in the selected release checkout's `package.json`. The OpenShell chart’s PKI job supplies
 `openshell-client-tls`. Check that it exists before creating the OCC inputs.
 
 ```bash
@@ -184,10 +184,7 @@ bash "$assets/trusted-envoy-peers.sh" "$RUN_DIR/kubeconfig" > "$RUN_DIR/trusted-
 jq --slurpfile peers "$RUN_DIR/trusted-peers.json" \
   '.drivers.compute.configuration.network.gatewayTrustedProxyCidrs=$peers[0]' \
   "$RUN_DIR/installation.json" > "$RUN_DIR/installation-with-peers.json"
-peer_secret="occ-installation-peers-$(date +%s)"
-kubectl -n "$PLATFORM_NS" create secret generic "$peer_secret" \
-  --from-file="installation.yaml=$RUN_DIR/installation-with-peers.json"
-jq --arg secret "$peer_secret" '.installation.secretName=$secret | .worker.replicaCount=1' \
+jq '.worker.replicaCount=1' \
   "$RUN_DIR/values.json" > "$RUN_DIR/worker.json"
 # The API registers model credentials and the worker manages workspaces through OpenShell.
 kube -n "$PLATFORM_NS" get service openshell-gateway -o json |
@@ -205,9 +202,10 @@ kube -n "$PLATFORM_NS" get service openshell-gateway -o json |
          {to:[{podSelector:{matchLabels:$svc.selector}}],ports:[{protocol:"TCP",port:$port.targetPort}]}
        ]}}' > "$RUN_DIR/management-policy.json"
 kube create -f "$RUN_DIR/management-policy.json"
-helm upgrade oce "$OCE_CHART" -n "$PLATFORM_NS" -f "$RUN_DIR/worker.json" --wait
 cp "$RUN_DIR/installation-with-peers.json" "$INSTALLATION_FILE"
 cp "$RUN_DIR/worker.json" "$VALUES_FILE"
+save_session
+upgrade_installation
 ```
 
 Agent deployment pairs these egress rules with management ingress for the API, worker, selected tenant’s supervisors and Agent Gateway on TCP 8080. Keep both directions. Tenant callers must match the backing namespace name and its current `openclaw.dev/namespace` label. Supervisor grants apply per tenant and Gateway grants per Agent. To verify ownership-based withdrawal, inspect every grant for that namespace. For a live Agent in its verified namespace, stage the current platform helper and renderer and run `deployment_network` in its saved session to replace a name-only grant.

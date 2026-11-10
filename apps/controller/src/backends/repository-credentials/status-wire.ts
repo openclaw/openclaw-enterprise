@@ -1,4 +1,4 @@
-import { hasControlCharacter } from "../../drivers/repo/credentials/client-contracts.ts";
+import { hasControlCharacter } from "../../drivers/repo/access/client-contracts.ts";
 
 /** Identical private JSON primitives; each boundary owns its failure diagnostic. */
 export function createStatusWirePrimitives(invalid: () => never) {
@@ -34,5 +34,27 @@ export function createStatusWirePrimitives(invalid: () => never) {
     return value;
   }
 
-  return { object, identity, counter };
+  function parseCleanup(value: unknown) {
+    const parsed = object(value, [
+      "active",
+      "pending",
+      "revoked",
+      "expired",
+      "uncertain",
+      "auxiliaryPending",
+    ]);
+    if (typeof parsed.auxiliaryPending !== "boolean") {
+      return invalid();
+    }
+    return {
+      active: counter(parsed.active),
+      pending: counter(parsed.pending),
+      revoked: counter(parsed.revoked),
+      expired: counter(parsed.expired),
+      uncertain: counter(parsed.uncertain),
+      auxiliaryPending: parsed.auxiliaryPending,
+    };
+  }
+
+  return { object, identity, counter, parseCleanup };
 }

@@ -1,8 +1,13 @@
 import { isDeletionReceiptId } from "./agents/deletion-status.mjs";
+export const connectionTemplatesPage = "credentials/connection-templates";
+
+export const oauthClientsPage = "credentials/oauth-clients";
 
 export const pages = Object.freeze({
   agents: "Agents",
-  secrets: "Secrets",
+  secrets: "Credentials",
+  [connectionTemplatesPage]: "Credentials",
+  [oauthClientsPage]: "Credentials",
   backends: "Backends",
   namespaces: "Namespaces",
   settings: "Settings",
@@ -34,6 +39,7 @@ interface NavigationOptions {
 // are; `/console/` itself stays. The server answers both alike (console-assets.ts).
 function canonicalUrl(href: string) {
   const url = new URL(href);
+  url.searchParams.delete("debug");
   if (url.pathname.startsWith("/console/")) {
     url.pathname = `/console/${url.pathname.slice("/console/".length).replace(/\/+$/, "")}`;
   }
@@ -66,12 +72,7 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
 
   function pageUrl(feature: string, selection = getNamespaceId()) {
     const url = new URL(`/console/${feature}`, location.origin);
-    if (
-      !url.searchParams.has("debug") &&
-      new URL(location.href).searchParams.get("debug") === "true"
-    ) {
-      url.searchParams.set("debug", "true");
-    }
+    url.searchParams.delete("debug");
     if (selection !== null) {
       url.searchParams.set("namespace", selection);
     }

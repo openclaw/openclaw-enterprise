@@ -419,6 +419,40 @@ engine() {
   "${engine_command[@]}" "$@"
 }
 
+# Browser sessions always use the checkout's HTTPS Console and Agent DNS hosts.
+if [ "${OCC_AUTH_COOKIE_DOMAIN+x}" = x ] || [ "${OCC_DEVELOPMENT_AUTH_COOKIE_DOMAIN+x}" = x ]; then
+  fail "configuration" "cookie-domain overrides are no longer supported"
+fi
+if ! "$occ_cli" dev prepare-browser >"$temporary_directory/browser-environment"; then
+  fail "configuration" "could not prepare the loopback HTTPS browser endpoint"
+fi
+{
+  read -r OCC_DEVELOPMENT_BROWSER_ORIGIN
+  read -r OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN
+  read -r OCC_DEVELOPMENT_BROWSER_PORT
+  read -r OCC_DEVELOPMENT_BROWSER_TLS_CERT
+  read -r OCC_DEVELOPMENT_BROWSER_TLS_KEY
+} <"$temporary_directory/browser-environment"
+export OCC_DEVELOPMENT_BROWSER_ORIGIN OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN OCC_DEVELOPMENT_BROWSER_PORT
+export OCC_DEVELOPMENT_BROWSER_TLS_CERT OCC_DEVELOPMENT_BROWSER_TLS_KEY
+export OCC_AGENT_NATIVE_ADMIN_ENABLED=false
+browser_compose_file_selected=0
+for arg in "${compose_args[@]+${compose_args[@]}}"; do
+  case "$arg" in -f | --file | -f?* | --file=*) browser_compose_file_selected=1 ;; esac
+done
+if [ "$browser_compose_file_selected" -eq 0 ]; then
+  browser_files=()
+  if [ -n "${COMPOSE_FILE:-}" ]; then
+    IFS="${COMPOSE_PATH_SEPARATOR:-:}" read -r -a browser_files <<<"$COMPOSE_FILE"
+  else
+    browser_files=("$repo_root/compose.yaml")
+  fi
+  for browser_file in "${browser_files[@]}"; do
+    compose_args+=(-f "$browser_file")
+  done
+fi
+compose_args+=(-f "$repo_root/compose.native-admin.yaml")
+
 compose() {
   if [ "${#compose_args[@]}" -eq 0 ]; then
     "${compose_command[@]}" "$@"
@@ -792,6 +826,8 @@ cat <<EOF
 OpenClaw Enterprise development stack is ready.
 Container engine: $container_engine_label
 API URL: $api_url
+Browser console: $OCC_DEVELOPMENT_BROWSER_ORIGIN/console/
+Browser CA certificate: ${OCC_DEVELOPMENT_BROWSER_TLS_CERT%/*}/browser-ca.crt
 Installation ID: $installation_id
 Service key file: $key_output
 

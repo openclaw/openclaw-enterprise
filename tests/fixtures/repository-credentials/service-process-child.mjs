@@ -14,7 +14,7 @@ process.on("message", async ({ id, command, input }) => {
       const [{ loadGitHubRepositoryRegistry }, { createPreparedGitHubRegistryFactory }] =
         await Promise.all([
           appModule("composition/repository-credentials/registry"),
-          appModule("drivers/repo/github/credentials/warm-registry-factory"),
+          appModule("drivers/repo/github/access/warm-registry-factory"),
         ]);
       const registry = await loadGitHubRepositoryRegistry(input.registryFile, "github-fixture");
       const factory = createPreparedGitHubRegistryFactory({

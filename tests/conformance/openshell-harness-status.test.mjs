@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
 import { createServer as createSecureServer } from "node:https";
 import { createRequire } from "node:module";
-import { connect } from "node:net";
+import { connect, createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -14,10 +15,14 @@ import {
   NATIVE_WORKER_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellServiceTransportError } from "../../apps/controller/src/drivers/sandbox/openshell-service-transport.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 import { refusingPort } from "../helpers/available-port.mjs";
 import { selfSigned } from "../helpers/certificates.mjs";
+import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 
 // A provider-owned Codex Harness (OpenShell) receives only the transport token's
@@ -32,6 +37,482 @@ const started = { type: "thread.started", thread_id: "thread" };
 const turnStarted = { type: "turn.started" };
 const assistant = { type: "item.completed", item: { type: "agent_message", text: "READY" } };
 const completed = { type: "turn.completed" };
+
+test("OpenShell PAT readiness requires the serving process's authentication through its exact service", async (t) => {
+  const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+  const { WebSocketServer } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
+  const directory = temporaryDirectorySync(t, "openshell-pat-status-");
+  const certificate = await selfSigned(directory);
+  const peers = new WebSocketServer({ noServer: true });
+  const requests = [];
+  let answer = { authMethod: null, authToken: null, requiresOpenaiAuth: true };
+  let hold = false;
+  let requirements = null;
+  let advertisedPort = 9443;
+  let transportToken = TOKEN;
+  let targetPort = 8080;
+  const negotiated = [];
+  let plainRequests = 0;
+  const gateway = createSecureServer(
+    { key: certificate.key, cert: certificate.cert, ALPNProtocols: ["h2", "http/1.1"] },
+    (_request, response) => {
+      plainRequests += 1;
+      response.writeHead(404).end();
+    },
+  );
+  gateway.on("secureConnection", (socket) => negotiated.push(socket.alpnProtocol));
+  gateway.on("upgrade", (request, socket, head) => {
+    assert.equal(request.headers.host, `codex.example.test:${advertisedPort}`);
+    assert.equal(request.headers.authorization, `Bearer ${transportToken}`);
+    peers.handleUpgrade(request, socket, head, (peer) => {
+      peers.emit("connection", peer);
+      peer.on("message", (data) => {
+        const message = JSON.parse(data.toString());
+        requests.push(message);
+        if (message.method === "initialize") {
+          peer.send(
+            JSON.stringify({
+              id: message.id,
+              result: {
+                userAgent: "codex/0.164.0",
+                codexHome: "/synthetic",
+                platformFamily: "unix",
+                platformOs: "linux",
+              },
+            }),
+          );
+        } else if (message.method === "configRequirements/read") {
+          peer.send(JSON.stringify({ id: message.id, result: { requirements } }));
+        } else if (message.method === "getAuthStatus") {
+          if (hold) {
+            gateway.emit("auth-held", peer);
+          } else {
+            peer.send(JSON.stringify({ id: message.id, result: answer }));
+          }
+        }
+      });
+    });
+  });
+  const port = await listen(gateway);
+  t.after(async () => {
+    for (const peer of peers.clients) {
+      peer.terminate();
+    }
+    await new Promise((resolve) => peers.close(resolve));
+    await close(gateway);
+  });
+  const client = new GrpcOpenShellGatewayClient({
+    endpoint: `https://127.0.0.1:${port}`,
+    rootCertificatePath: certificate.certPath,
+    requestTimeoutMs: 1_000,
+  });
+  t.after(() => client.close());
+  const untrusted = new GrpcOpenShellGatewayClient({
+    endpoint: `https://127.0.0.1:${port}`,
+    requestTimeoutMs: 1_000,
+  });
+  t.after(() => untrusted.close());
+  assert.equal(
+    await untrusted.serviceCodexReadinessStatus(
+      "https://codex.example.test:9443/",
+      TOKEN,
+      true,
+      AbortSignal.timeout(5_000),
+    ),
+    "unavailable",
+  );
+  assert.equal(requests.length, 0, "an untrusted peer must receive no RPC");
+  // Only service discovery is controlled. The actual Driver, TLS routing, bearer,
+  // WebSocket codec and native JSON-RPC exchange determine readiness.
+  client.getService = async (_workspace, sandbox, name) => ({
+    sandbox,
+    name,
+    targetPort,
+    authorizationMode: "SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH",
+    url: `https://codex.example.test:${advertisedPort}/`,
+    advertisedUrl: `https://codex.example.test:${advertisedPort}/`,
+  });
+  const driver = new OpenShellSandboxDriver(
+    {
+      gateway: { workspaceMode: "operator" },
+      kubernetes: {
+        runtimeClassName: "openshell-sandbox",
+        serviceAccount: { mode: "gatewayConfigured" },
+        sandboxDataMount: {
+          subPath: "workspace",
+          mountPath: "/sandbox/enterprise",
+          readOnly: false,
+        },
+      },
+      policy: {
+        process: { runAsUser: "1000", runAsGroup: "1000" },
+        networkPolicies: [
+          {
+            name: "model-egress",
+            endpoints: [{ host: "chatgpt.com", ports: [443] }],
+            binaries: [{ path: "/app/bin/model-client" }],
+          },
+        ],
+      },
+    },
+    {
+      id: "sandbox-provider",
+      implementation: "openshell",
+      backend: {
+        id: "openshell",
+        drivers: { sandbox: "sandbox-provider" },
+        client: new OpenShellGateway(
+          { serviceName: "openshell-gateway" },
+          { gatewayClient: client },
+        ),
+      },
+    },
+  );
+  const context = {
+    namespace: {
+      id: "ns_00000000-0000-4000-8000-000000000001",
+      name: "tenant-auth",
+      status: "ready",
+    },
+    revision: {
+      id: "rev_00000000-0000-4000-8000-000000000003",
+      agentId: "agt_00000000-0000-4000-8000-000000000003",
+      sandboxDriverId: driver.id,
+      harness: { id: "codex", mode: "dedicated" },
+      harnessAuth: {
+        method: "credential_source",
+        loginMode: "codex_pat",
+        sourceId: "cs_00000000-0000-4000-8000-000000000001",
+        credentialGatewayId: "openshell-credentials",
+        sourceType: "codex-pat",
+      },
+    },
+    requirements: {
+      loginMode: "codex_pat",
+      environment: [{ name: "APP_SERVER_PORT", value: "8080" }],
+    },
+    transportToken: TOKEN,
+    signal: AbortSignal.timeout(15_000),
+  };
+  // The released process can initialize while PAT hydration has failed. Neither
+  // null auth nor a different/malformed credential status may activate that revision.
+  for (const status of [
+    answer,
+    { ...answer, authMethod: "apiKey" },
+    { ...answer, extra: "x".repeat(20_000) },
+    { authMethod: "personalAccessToken" },
+    { ...answer, authMethod: "personalAccessToken", authToken: "unexpected" },
+  ]) {
+    answer = status;
+    const observed = await driver.harnessStatus(context);
+    assert.equal(negotiated.at(-1), "http/1.1", "service upgrades require HTTP/1.1");
+    assert.deepEqual(observed, { state: "starting" });
+  }
+  answer = { authMethod: "personalAccessToken", authToken: null, requiresOpenaiAuth: true };
+  assert.deepEqual(await driver.harnessStatus(context), { state: "serving" });
+  // Native requirements include complete managed instructions. A legitimate
+  // policy larger than the small status budget must still reach PAT readiness.
+  requirements = {
+    allowedSandboxModes: ["read-only", "workspace-write", "danger-full-access"],
+    additionalDeveloperInstructions: "Native managed instruction. ".repeat(1_000),
+  };
+  assert.deepEqual(await driver.harnessStatus(context), { state: "serving" });
+  // The policy allowance must not enlarge the authentication/status budget.
+  answer = { ...answer, extra: "x".repeat(20_000) };
+  assert.deepEqual(await driver.harnessStatus(context), { state: "starting" });
+  delete answer.extra;
+  // Size takes priority even if a complete policy also denies the required sandbox mode.
+  requirements = {
+    allowedSandboxModes: ["read-only"],
+    modelProviders: { managed: { name: "x".repeat(1024 * 1024) } },
+  };
+  const beforeOversized = requests.length;
+  await assert.rejects(driver.harnessStatus(context), {
+    code: "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE",
+  });
+  assert.ok(!requests.slice(beforeOversized).some(({ method }) => method === "getAuthStatus"));
+  // Size alone is not enough to classify malformed or incomplete policy evidence.
+  requirements = { ...requirements, allowedSandboxModes: [true] };
+  assert.deepEqual(await driver.harnessStatus(context), { state: "starting" });
+  requirements = { modelProviders: { managed: { name: "x".repeat(2 * 1024 * 1024) } } };
+  assert.deepEqual(await driver.harnessStatus(context), { state: "starting" });
+  const apiKeyContext = {
+    ...context,
+    revision: {
+      ...context.revision,
+      harnessAuth: {
+        ...context.revision.harnessAuth,
+        loginMode: "api_key",
+        sourceType: "openai",
+      },
+    },
+  };
+  // A valid reply can independently deny each requirement or deny several at once.
+  for (const [target, policy, denials] of [
+    [
+      context,
+      {
+        allowedSandboxModes: ["read-only", "workspace-write"],
+        allowedPermissionProfiles: { ":danger-full-access": true },
+      },
+      ["sandbox-mode-denied"],
+    ],
+    [context, { allowedPermissionProfiles: { ":workspace": true } }, ["named-profile-denied"]],
+    [context, { allowedApprovalsReviewers: ["auto_review"] }, ["reviewer-denied"]],
+    [
+      apiKeyContext,
+      {
+        allowedSandboxModes: [],
+        allowedPermissionProfiles: { ":danger-full-access": false },
+        allowedApprovalsReviewers: ["guardian_subagent"],
+        additionalDeveloperInstructions: "SYNTHETIC_POLICY_TEXT_MUST_STAY_PRIVATE",
+      },
+      ["sandbox-mode-denied", "named-profile-denied", "reviewer-denied"],
+    ],
+  ]) {
+    requirements = policy;
+    await assert.rejects(driver.harnessStatus(target), (error) => {
+      assert.equal(error.code, "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE");
+      assert.deepEqual(error.permissionDenials, denials);
+      assert.doesNotMatch(
+        `${error.message}\n${JSON.stringify(error)}`,
+        /SYNTHETIC_POLICY_TEXT_MUST_STAY_PRIVATE/,
+      );
+      return true;
+    });
+  }
+  for (const policy of [
+    undefined,
+    { allowedSandboxModes: [true] },
+    { allowedSandboxModes: ["danger-full-access", "unrecognized"] },
+    { allowedApprovalsReviewers: ["user", "unrecognized"] },
+    { allowedApprovalsReviewers: ["unrecognized"] },
+    {
+      allowedSandboxModes: [],
+      allowedPermissionProfiles: { ":danger-full-access": "false" },
+    },
+  ]) {
+    requirements = policy;
+    assert.deepEqual(await driver.harnessStatus(context), { state: "starting" });
+  }
+  requirements = { allowedSandboxModes: ["danger-full-access"] };
+  const beforeNonPat = requests.length;
+  assert.deepEqual(await driver.harnessStatus(apiKeyContext), { state: "serving" });
+  assert.ok(!requests.slice(beforeNonPat).some(({ method }) => method === "getAuthStatus"));
+  requirements = null;
+  // A valid backend service port must not inherit Fetch's browser-only port blocklist.
+  // The real TLS endpoint remains on its ephemeral port; advertised Host selects the service.
+  advertisedPort = 10080;
+  assert.deepEqual(await driver.harnessStatus(context), { state: "serving" });
+  assert.equal(plainRequests, 0, "an upgraded Harness must not receive a plain status request");
+  assert.equal(requests.filter(({ method }) => method === "getAuthStatus").length, 9);
+  assert.ok(
+    requests
+      .filter(({ method }) => method === "getAuthStatus")
+      .every(({ params }) => params.includeToken === false && params.refreshToken === false),
+  );
+  assert.ok(
+    requests.every(({ method }) =>
+      ["initialize", "initialized", "configRequirements/read", "getAuthStatus"].includes(method),
+    ),
+  );
+
+  // Compose the real Compute readiness caller with the real Sandbox and TLS
+  // service transport. Kubernetes/provisioning remain the existing in-memory
+  // fixture; the controlled JSON-RPC peer supplies policy data.
+  const compute = providerEndpointFixture();
+  compute.sandbox.harnessStatus = driver.harnessStatus.bind(driver);
+  await compute.prepare();
+  compute.setGatewayServing();
+  compute.setSetupAvailable(true);
+  compute.observePods([compute.pod("ready")]);
+  transportToken = "test-transport";
+  targetPort = 18_790;
+  requirements = { allowedSandboxModes: ["read-only"] };
+  await assert.rejects(compute.prepare(), {
+    code: "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+    permissionDenials: ["sandbox-mode-denied"],
+  });
+  requirements = null;
+  assert.equal((await compute.prepare()).ready, true);
+  // A policy change after preparation must block Gateway replacement as well.
+  requirements = { allowedSandboxModes: ["read-only"] };
+  const beforeActivation = compute.writes.length;
+  await assert.rejects(compute.activate(), {
+    code: "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+    permissionDenials: ["sandbox-mode-denied"],
+  });
+  assert.equal(compute.writes.length, beforeActivation);
+  transportToken = TOKEN;
+  targetPort = 8080;
+  requirements = null;
+
+  // A connected but unresponsive process must retain the existing bounded read
+  // and caller cancellation semantics, without spending a model request.
+  hold = true;
+  await assert.rejects(
+    driver.harnessStatus(context),
+    (error) =>
+      error.cause instanceof OpenShellServiceTransportError && error.cause.reason === "timeout",
+  );
+  const cancelled = new AbortController();
+  const reason = new Error("cancelled readiness");
+  const received = once(gateway, "auth-held", { signal: AbortSignal.timeout(3_000) });
+  const reading = driver.harnessStatus({ ...context, signal: cancelled.signal });
+  const rejected = assert.rejects(reading, (error) => error === reason);
+  const [peer] = await Promise.race([
+    received,
+    rejected.then(() => {
+      throw new Error("read settled before the held authentication request");
+    }),
+  ]);
+  const closed = once(peer, "close", { signal: context.signal });
+  cancelled.abort(reason);
+  await rejected;
+  const [code] = await closed;
+  assert.equal(code, 1000);
+});
+
+// A completed read must not retain a detached upgraded socket when the peer never
+// acknowledges Close. Exercise success, deadline and cancellation through real TCP.
+test("OpenShell PAT status closes unresponsive upgraded peers within its cleanup bound", async (t) => {
+  const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+  const { Receiver, Sender } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
+  for (const outcome of ["serving", "timeout", "cancelled"]) {
+    await t.test(outcome, async (t) => {
+      const gateway = createServer();
+      const sockets = new Set();
+      const cancelled = new AbortController();
+      const reason = new Error("cancelled after authentication request");
+      let closeCode;
+      let closeReceivedAt;
+      gateway.on("upgrade", (request, socket, head) => {
+        sockets.add(socket);
+        const accept = createHash("sha1")
+          .update(`${request.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+          .digest("base64");
+        socket.write(
+          `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
+        );
+        const receiver = new Receiver({ isServer: true });
+        const sender = new Sender(socket);
+        const reply = (id, result) =>
+          sender.send(
+            JSON.stringify({ id, result }),
+            { binary: false, mask: false, compress: false, fin: true },
+            () => {},
+          );
+        receiver.on("message", (data) => {
+          const message = JSON.parse(data.toString());
+          if (message.method === "initialize") {
+            reply(message.id, {
+              userAgent: "codex/0.164.0",
+              codexHome: "/synthetic",
+              platformFamily: "unix",
+              platformOs: "linux",
+            });
+          } else if (message.method === "configRequirements/read") {
+            reply(message.id, { requirements: null });
+          } else if (message.method === "getAuthStatus") {
+            if (outcome === "serving") {
+              reply(message.id, {
+                authMethod: "personalAccessToken",
+                authToken: null,
+                requiresOpenaiAuth: true,
+              });
+            } else if (outcome === "cancelled") {
+              cancelled.abort(reason);
+            }
+          }
+        });
+        receiver.on("conclude", (code) => {
+          closeCode = code;
+          closeReceivedAt = performance.now();
+          // Intentionally neither acknowledge Close nor end TCP.
+        });
+        if (head.length > 0) {
+          receiver.write(head);
+        }
+        socket.pipe(receiver);
+      });
+      const port = await listen(gateway);
+      t.after(async () => {
+        for (const socket of sockets) {
+          socket.destroy();
+        }
+        await close(gateway);
+      });
+      const client = new GrpcOpenShellGatewayClient({
+        endpoint: `http://127.0.0.1:${port}`,
+        requestTimeoutMs: 1_000,
+      });
+      t.after(() => client.close());
+      const deadline = AbortSignal.timeout(4_000);
+      let endedAt;
+      const ended = once(gateway, "upgrade", { signal: deadline }).then(([, socket]) =>
+        once(socket, "end", { signal: deadline }).then(() => {
+          endedAt = performance.now();
+        }),
+      );
+      const started = performance.now();
+      const reading = client.serviceCodexReadinessStatus(
+        serviceUrl,
+        TOKEN,
+        true,
+        outcome === "cancelled" ? cancelled.signal : deadline,
+      );
+      const verified =
+        outcome === "serving"
+          ? reading.then((status) => {
+              assert.equal(status, "serving");
+              assert.equal(endedAt, undefined, "read result must precede cleanup");
+            })
+          : assert.rejects(reading, (error) =>
+              outcome === "cancelled"
+                ? error === reason
+                : error instanceof OpenShellServiceTransportError && error.reason === "timeout",
+            );
+      await Promise.all([verified, ended]);
+      assert.equal(closeCode, 1000);
+      assert.ok(endedAt - started >= 950, "normal Close must get its cleanup interval");
+      assert.ok(endedAt - closeReceivedAt < 1_500, "detached socket exceeded cleanup deadline");
+    });
+  }
+});
+
+test("OpenShell PAT cancellation releases a connection stalled before TLS completes", async (t) => {
+  const sockets = new Set();
+  const cancelled = new AbortController();
+  const reason = new Error("cancelled during TLS negotiation");
+  const gateway = createTcpServer((socket) => {
+    sockets.add(socket);
+    // Receive the real ClientHello but never finish negotiation. Cancellation must
+    // use the configured bound rather than the connector's longer default timeout.
+    socket.once("data", () => cancelled.abort(reason));
+    socket.resume();
+  });
+  const port = await listen(gateway);
+  t.after(async () => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    await close(gateway);
+  });
+  const client = new GrpcOpenShellGatewayClient({
+    endpoint: `https://127.0.0.1:${port}`,
+    requestTimeoutMs: 1_000,
+  });
+  t.after(() => client.close());
+  const deadline = AbortSignal.timeout(2_000);
+  const ended = once(gateway, "connection", { signal: deadline }).then(([socket]) =>
+    once(socket, "end", { signal: deadline }),
+  );
+  const rejected = assert.rejects(
+    client.serviceCodexReadinessStatus(serviceUrl, TOKEN, true, cancelled.signal),
+    (error) => error === reason,
+  );
+  await Promise.all([rejected, ended]);
+});
 
 function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
   const directory = mkdtempSync(join(tmpdir(), "openshell-held-failure-"));
@@ -369,6 +850,8 @@ test("the OpenShell client reaches a bearer-passthrough service through the gate
     const accept = createHash("sha1")
       .update(`${request.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
       .digest("base64");
+    // Consume the client's close frame so this raw upgrade fixture observes EOF.
+    socket.resume();
     socket.end(
       `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
     );
@@ -472,7 +955,13 @@ test("the OpenShell client reaches a bearer-passthrough service through the gate
     );
   }
   for (const origin of [
-    "http://user:pass@host/",
+    syntheticCredentialUrl({
+      protocol: "http",
+      username: "user",
+      password: "pass",
+      host: "host",
+      pathname: "/",
+    }),
     "http://host/path",
     "http://host/?query",
     "ftp://host/",
@@ -498,6 +987,107 @@ test("the OpenShell client reaches a bearer-passthrough service through the gate
     client.getServiceDocument(serviceUrl, "/openclaw/runtime/status", TOKEN, aborted.signal),
     /caller cancelled/,
   );
+});
+
+test("an accepted OpenShell probe closes its WebSocket normally without sending a Harness request", async (t) => {
+  const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+  const { WebSocketServer } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
+  const peers = new WebSocketServer({ noServer: true });
+  const gateway = createServer();
+  let requests = 0;
+  gateway.on("upgrade", (request, socket, head) => {
+    assert.equal(request.headers.authorization, `Bearer ${TOKEN}`);
+    peers.handleUpgrade(request, socket, head, (peer) => {
+      peer.on("message", () => requests++);
+      peers.emit("connection", peer);
+    });
+  });
+  const port = await listen(gateway);
+  t.after(async () => {
+    for (const peer of peers.clients) {
+      peer.terminate();
+    }
+    await new Promise((resolve) => peers.close(resolve));
+    await close(gateway);
+  });
+  const client = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${port}` });
+  t.after(() => client.close());
+  const deadline = AbortSignal.timeout(5_000);
+  const closed = once(peers, "connection", { signal: deadline }).then(([peer]) =>
+    once(peer, "close", { signal: deadline }),
+  );
+  const handshake = client
+    .serviceWebSocketHandshake(serviceUrl, TOKEN, deadline)
+    .then((accepted) => assert.equal(accepted, true));
+  // The real WebSocket peer reports 1006 when a probe drops TCP without a close frame.
+  const [, [code, reason]] = await Promise.all([handshake, closed]);
+  assert.equal(code, 1000);
+  assert.equal(reason.length, 0);
+  assert.equal(requests, 0, "readiness must not invoke the Harness");
+});
+
+test("an OpenShell probe gives a peer that delays TCP closure its full cleanup deadline", async (t) => {
+  const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+  const { Receiver, Sender } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
+  const gateway = createServer();
+  const sockets = new Set();
+  let closeCode;
+  let closeReceivedAt;
+  gateway.on("upgrade", (request, socket, head) => {
+    sockets.add(socket);
+    const accept = createHash("sha1")
+      .update(`${request.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+      .digest("base64");
+    socket.write(
+      `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
+    );
+    // Use the real protocol codec, but withhold TCP EOF after acknowledging Close.
+    const receiver = new Receiver({ isServer: true });
+    const sender = new Sender(socket);
+    receiver.once("conclude", (code, reason) => {
+      closeCode = code;
+      closeReceivedAt = performance.now();
+      sender.close(code, reason, false, () => {});
+    });
+    if (head.length > 0) {
+      receiver.write(head);
+    }
+    socket.pipe(receiver);
+  });
+  const port = await listen(gateway);
+  t.after(async () => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    await close(gateway);
+  });
+  const client = new GrpcOpenShellGatewayClient({
+    endpoint: `http://127.0.0.1:${port}`,
+    requestTimeoutMs: 1_000,
+  });
+  t.after(() => client.close());
+  const deadline = AbortSignal.timeout(5_000);
+  let endedAt;
+  const ended = once(gateway, "upgrade", { signal: deadline }).then(([, socket]) =>
+    once(socket, "end", { signal: deadline }).then(() => {
+      endedAt = performance.now();
+    }),
+  );
+  const started = performance.now();
+  const handshake = client
+    .serviceWebSocketHandshake(serviceUrl, TOKEN, deadline)
+    .then((accepted) => {
+      assert.equal(accepted, true);
+      // Readiness must be visible while the peer still holds TCP open, not after cleanup.
+      assert.equal(endedAt, undefined);
+      assert.ok(performance.now() - started < 750, "readiness waited for connection cleanup");
+    });
+  await Promise.all([handshake, ended]);
+  assert.equal(closeCode, 1000);
+  const cleanupElapsed = endedAt - closeReceivedAt;
+  // Allow scheduling tolerance, but detect both early FIN and a doubled cleanup deadline.
+  assert.ok(endedAt - started >= 950, "client ended TCP before the cleanup deadline");
+  assert.ok(cleanupElapsed < 1_500, "client exceeded the configured cleanup deadline");
 });
 
 test("a refused OpenShell WebSocket handshake releases an unfinished HTTP response", async () => {
@@ -616,6 +1206,8 @@ function tlsGateway(keyPath, certPath, seen) {
     const accept = createHash("sha1")
       .update(`${request.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
       .digest("base64");
+    // Consume the client's close frame so this raw upgrade fixture observes EOF.
+    socket.resume();
     socket.end(
       `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
     );
@@ -961,8 +1553,9 @@ function runNativeWorkerEntrypoint({ env = {}, upfrontStatus = 3, upfrontStdout,
         // under the fixture directory.
         return {
           ...realFs,
-          existsSync: () => true,
-          lstatSync: () => ({ isDirectory: () => true }),
+          existsSync: (path) => String(path).startsWith("/app/") || realFs.existsSync(path),
+          lstatSync: (path) =>
+            String(path).startsWith("/app/") ? { isDirectory: () => true } : realFs.lstatSync(path),
           readdirSync: (path) => (String(path).startsWith("/app/") ? ["asset"] : []),
           cpSync() {},
           chmodSync() {},

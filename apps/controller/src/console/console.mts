@@ -10,12 +10,15 @@ import type {
   LeaveGuard,
   TabNavigation,
 } from "./page-context.mjs";
+import { renderOAuthClients } from "./oauth-clients.mjs";
+import { renderConnectionTemplates } from "./connection-templates.mjs";
 import { renderInstallationConfigurations } from "./driver-configurations.mjs";
 import {
   element,
   button,
   requestIdDisclosure,
   setUnavailable,
+  setFieldError,
   statusBlock,
   trackVisualViewport,
 } from "./dom.mjs";
@@ -41,7 +44,12 @@ import {
   type RequestOptions,
 } from "./api-client.mjs";
 import { createViewLifetime } from "./view-lifetime.mjs";
-import { createNavigation, pages } from "./navigation.mjs";
+import {
+  connectionTemplatesPage,
+  oauthClientsPage,
+  createNavigation,
+  pages,
+} from "./navigation.mjs";
 import {
   brandContents,
   createShell,
@@ -165,7 +173,6 @@ let draftUserId: string | null = null;
 let pinnedSessionKey: string | null = null;
 let externalSessionBinding = false;
 const externalAttemptStorageKeys = {
-  github: "occ.console.githubAttempt",
   google: "occ.console.googleAttempt",
   oidc: "occ.console.oidcAttempt",
 };
@@ -205,11 +212,6 @@ const externalProviders: Record<
   Provider,
   { label: string; origin: string | null; pathname: string | null }
 > = {
-  github: {
-    label: "GitHub",
-    origin: "https://github.com",
-    pathname: "/login/oauth/authorize",
-  },
   google: {
     label: "Google",
     origin: "https://accounts.google.com",
@@ -452,7 +454,7 @@ function settleNotAdministrator() {
   observabilityUrl = null;
   installationAdmin = false;
   observabilityOwner = sessionOwnerKey(session);
-  shellUI.dropObservabilityLink();
+  shellUI.dropAdministrationLinks();
   if (ended) {
     for (const handler of mountedViewState?.administrationEnded ?? []) {
       handler();
@@ -523,7 +525,7 @@ async function rereadNamespacesAfterAdministration() {
   setNamespaces(readable);
   const current = route();
   if (
-    ["agents", "secrets"].includes(current.feature) &&
+    (current.feature === "agents" || current.feature === "secrets") &&
     !namespaces.some((item) => item.id === namespaceId)
   ) {
     clearRetainedViewsForNamespace(namespaceId);
@@ -897,7 +899,7 @@ const loadingMinimumMs = 300;
 const stillCheckingDelayMs = 1000;
 let mountedRouteKey: string | null = null;
 // The page whose shell is on screen. A held page keeps its own navigation and header.
-let shownFeature: string | null = null;
+let shownFeature: Page | null = null;
 // The shown header's page: an Agent's ({ agentId }), Create Agent ({ creating: true }) or null.
 let shownPage: Exclude<ShellState["page"], undefined> = null;
 let mountedAgent: AgentRead | null | undefined = null;
@@ -1081,9 +1083,9 @@ function showStillChecking() {
 // heading (which the console focused, say for a load this one replaces), or in the sidebar, whose
 // pressed link the pending shell replaces, moves to the held heading instead (findings 1626,
 // 1636, 1653).
-function holdShownView(current: Route, { busyCue = true, keepFocus = false } = {}) {
+function holdShownView({ busyCue = true, keepFocus = false } = {}) {
   const view = app.querySelector<HTMLDivElement>('.content [aria-live="polite"]');
-  if (!view) {
+  if (!view || shownFeature === null) {
     return null;
   }
   const focused = document.activeElement;
@@ -1100,9 +1102,9 @@ function holdShownView(current: Route, { busyCue = true, keepFocus = false } = {
       pageActions?.contains(focused) === true ||
       focused === app.querySelector<HTMLHeadingElement>(".content h1") ||
       app.querySelector(".sidebar")?.contains(focused) === true);
-  const shell = renderShell(shownFeature ?? current.feature, true, {
+  const shell = renderShell(shownFeature, true, {
     recovery,
-    page: shownFeature ? shownPage : headerPage(current),
+    page: shownPage,
   });
   if (title) {
     app.querySelector<HTMLHeadingElement>(".content h1")!.textContent = title;
@@ -1203,8 +1205,8 @@ function focusInShownView() {
 }
 
 // Mounts a retained view that revalidated unchanged, active at once.
-function mountRetainedView(current: Route, retained: RetainedView) {
-  const shell = renderShell(current.feature, false);
+function mountRetainedView(current: Route, retained: RetainedView, feature: Page) {
+  const shell = renderShell(feature, false);
   if (retained.title) {
     app.querySelector<HTMLHeadingElement>(".content h1")!.textContent = retained.title;
   }
@@ -1278,22 +1280,36 @@ function collectionPath(feature: string, namespacePath: string | null) {
   if (feature === "backends") {
     return "/backends";
   }
-  return namespacePath === null ? null : `${namespacePath}/${feature}`;
+  return namespacePath !== null && ["secrets", "agents"].includes(feature)
+    ? `${namespacePath}/${feature}`
+    : null;
+}
+
+const debugStorageKey = "oce.console.debug";
+
+function readDebugPreference() {
+  try {
+    return localStorage.getItem(debugStorageKey) === "true";
+  } catch {
+    return false;
+  }
 }
 
 function renderShell(
-  feature: string,
+  feature: Page,
   namespaceAdmissionPending = false,
   { recovery = true, page = headerPage(route()) }: Pick<ShellState, "page" | "recovery"> = {},
 ) {
   shownFeature = feature;
   shownPage = page;
-  const shell = shellUI.renderShell(feature as Page, {
+  const shell = shellUI.renderShell(feature, {
     session,
     namespaces,
     namespaceId,
     observabilityUrl,
+    debug: readDebugPreference(),
     namespaceAdmissionPending,
+    installationAdmin: installationAdmin === true,
     recovery,
     page,
   });
@@ -1303,7 +1319,7 @@ function renderShell(
   return shell;
 }
 
-function renderPendingNamespaceShell(feature: string) {
+function renderPendingNamespaceShell(feature: Page) {
   const shell = renderShell(feature, true);
   panel(shell.view, "Loading…", "Checking Namespace access.");
   return shell;
@@ -1370,7 +1386,7 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
   const usernameHint = element(
     "p",
     { id: "username-hint", className: "muted auth-intro" },
-    "Use your account email.",
+    "Checking sign-in methods…",
   );
   // Recovery-only password sign-in hides the form until the recovery path is chosen.
   let recoveryOnly = false;
@@ -1381,7 +1397,7 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
   );
   const form = element(
     "form",
-    {},
+    { hidden: true },
     element("label", { for: "username" }, "Email"),
     username,
     element("label", { for: "password" }, "Password"),
@@ -1434,25 +1450,33 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
     }
     return control;
   };
-  const github = providerButton("github");
   const google = providerButton("google");
   // Created once discovery has supplied its label and endpoint.
   let oidc: HTMLButtonElement | null = null;
   const recovery = button(
     "Recovery sign-in",
     () => {
-      recovery.hidden = true;
       feedback.textContent = "";
-      form.insertBefore(feedback, submit);
-      form.hidden = false;
-      usernameHint.hidden = false;
+      showPasswordForm();
       username.focus();
     },
-    { tone: "link", className: "auth-recovery", hidden: true },
+    { tone: "link", className: "auth-recovery" },
   );
+  function showPasswordForm() {
+    const recoveryFocused = document.activeElement === recovery;
+    recovery.hidden = true;
+    form.insertBefore(feedback, submit);
+    form.hidden = false;
+    usernameHint.hidden = false;
+    usernameHint.textContent = recoveryOnly
+      ? "Use the recovery account's email."
+      : "Use your account email.";
+    if (recoveryFocused) {
+      username.focus();
+    }
+  }
   function setButtonsUnavailable(unavailable: boolean) {
     setUnavailable(submit, unavailable, null);
-    setUnavailable(github, unavailable, null);
     setUnavailable(google, unavailable, null);
     if (oidc !== null) {
       setUnavailable(oidc, unavailable, null);
@@ -1504,6 +1528,7 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
       usernameHint,
       form,
       providers,
+      feedback,
       recovery,
     ),
     ...signInFooter(),
@@ -1513,9 +1538,6 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
       const available = responseFields(data);
       if (lifetime.isCurrent(loginView)) {
         externalSessionBinding = available?.sessionBinding === true;
-        if (available?.github === true) {
-          providers.append(github);
-        }
         if (available?.google === true) {
           providers.append(google);
         }
@@ -1524,33 +1546,27 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
           setUnavailable(oidc, pending, null);
           providers.append(oidc);
         }
-        // Only an explicit false hides the form: failed or older discovery keeps it.
-        if (
-          available?.password === false &&
-          (available.github || available.google || available.oidc)
-        ) {
+        // Wait for policy before offering passwords. Recovery remains available
+        // during discovery, and an explicitly opened form is never pulled away.
+        if (available?.password === false && (available.google || available.oidc)) {
           recoveryOnly = true;
           if (feedback.textContent === describe(true)) {
             feedback.textContent = describe(false);
           }
           usernameHint.textContent = "Use the recovery account's email.";
-          // Never pull the form away from someone already using it.
-          if (
-            !pending &&
-            username.value === "" &&
-            password.value === "" &&
-            !form.contains(document.activeElement)
-          ) {
-            form.hidden = true;
+          if (form.hidden) {
             usernameHint.hidden = true;
-            providers.after(feedback);
-            recovery.hidden = false;
           }
+        } else {
+          showPasswordForm();
         }
       }
     })
     .catch(() => {
       // Password sign-in remains available when provider discovery fails.
+      if (lifetime.isCurrent(loginView)) {
+        showPasswordForm();
+      }
     });
 }
 
@@ -1620,6 +1636,7 @@ async function loadPage({
   const resumingView = reuseView && !fromNavigation;
   const linkedSecretId = takeLinkedSecret(fromNavigation);
   const current = route();
+  const privatePage = hasKey(pages, current.feature) ? current.feature : null;
   const nativeIntent = takeNativeFragment(current);
   if (fromNavigation && nativeIntent === null) {
     pendingIntent = null;
@@ -1644,7 +1661,7 @@ async function loadPage({
     restoreHistory(mountedRouteKey);
     return;
   }
-  const knownPrivateState = session !== null && Object.hasOwn(pages, current.feature);
+  const knownPrivateState = session !== null && privatePage !== null;
   const abandonedCreation =
     fromNavigation &&
     discardCreationOnExit !== null &&
@@ -1708,7 +1725,7 @@ async function loadPage({
   const refocused = resumingView ? focusInShownView() : null;
   let shell: LoadingShell | null =
     knownPrivateState && !openingAgent
-      ? holdShownView(current, { busyCue: !resumingView, keepFocus: !resumingView })
+      ? holdShownView({ busyCue: !resumingView, keepFocus: !resumingView })
       : null;
   let held = shell !== null;
   // The stand-in's heading while it holds focus for the page loading behind it.
@@ -1733,7 +1750,7 @@ async function loadPage({
   let loadingShownAt: number | null = null;
   let sessionResolved = false;
   let accessResolved = false;
-  if (!Object.hasOwn(pages, current.feature) && current.feature !== "login") {
+  if (privatePage === null && current.feature !== "login") {
     publicPanel("Page not found", "This console page is unavailable.", "Go to Agents", () =>
       navigate("agents", current.namespace),
     );
@@ -1761,7 +1778,7 @@ async function loadPage({
   };
   const openingAgentTitle = "Agent details";
   const showOpeningPanel = () => {
-    shell = renderShell(current.feature, true);
+    shell = renderShell("agents", true);
     shell.view.replaceChildren(
       element(
         "section",
@@ -1779,7 +1796,7 @@ async function loadPage({
     openingAgentLoad = active;
     showOpeningPanel();
   } else if (!held) {
-    if (startup) {
+    if (startup || privatePage === null) {
       // An abandoned load may have left its Agent page hidden beside the status (finding 1537).
       for (const stale of app.querySelectorAll(":scope > .startup ~ *")) {
         stale.remove();
@@ -1788,7 +1805,7 @@ async function loadPage({
       // to loading at the same delay instead (finding 1554).
       showCheckingSession(() => !sessionResolved);
     } else {
-      shell = pendingNamespaceShell = renderPendingNamespaceShell(current.feature);
+      shell = pendingNamespaceShell = renderPendingNamespaceShell(privatePage);
     }
   }
   // A return or refocus that can reuse its retained view keeps the shown page and, past
@@ -1811,8 +1828,8 @@ async function loadPage({
             if (!lifetime.isCurrent(active)) {
               return;
             }
-            if (startup && !sessionResolved) {
-              // The startup status announces the session check itself.
+            if (privatePage === null || (startup && !sessionResolved)) {
+              // Public login stays outside the shell; startup announces the session check.
               return;
             }
             held = false;
@@ -1826,20 +1843,20 @@ async function loadPage({
               heldHeading?.focus({ preventScroll: true });
             };
             if (!accessResolved) {
-              shell = pendingNamespaceShell = renderPendingNamespaceShell(current.feature);
+              shell = pendingNamespaceShell = renderPendingNamespaceShell(privatePage);
               keepHeadingFocus();
               return;
             }
             // An Agent page rendering hidden behind the startup status keeps rendering behind
             // the loading page that now stands in for it (finding 1537).
             const behind = shownStandIn ? shell!.view : null;
-            shell = renderShell(current.feature, false);
+            shell = renderShell(privatePage, false);
             panel(
               shell.view,
               "Loading…",
               current.agentId
                 ? "Reading this Agent."
-                : `Reading ${pages[current.feature as Page].toLowerCase()}.`,
+                : `Reading ${pages[privatePage].toLowerCase()}.`,
             );
             if (behind) {
               shownStandIn = shell;
@@ -1906,7 +1923,7 @@ async function loadPage({
           : (pendingIntent ?? loginDestination(current));
       showLogin(
         providerError !== null
-          ? providerCallbackFailure(authError, providerError.label, authReason)
+          ? providerCallbackFailure(providerError.label, authReason)
           : hadSession &&
               current.feature !== "login" &&
               current.url.pathname !== "/console/" &&
@@ -1969,7 +1986,7 @@ async function loadPage({
       void loadPage({ chatLinkFailure: failure });
       return;
     }
-    if (destination || current.feature === "login") {
+    if (destination || privatePage === null) {
       pendingIntent = null;
       replaceUrl(intentUrl(destination) ?? "/console/agents");
       void loadPage();
@@ -1982,7 +1999,7 @@ async function loadPage({
       if (!shell && openingAgent && !startup) {
         showOpeningPanel();
       } else if (!shell) {
-        shell = pendingNamespaceShell = renderPendingNamespaceShell(current.feature);
+        shell = pendingNamespaceShell = renderPendingNamespaceShell(privatePage);
         loadingShownAt = performance.now();
       }
     }
@@ -2191,7 +2208,7 @@ async function loadPage({
       // Holding the page made it inert. If the reader moved on, don't reclaim focus even if
       // replacing the shell briefly leaves it on the body again.
       const restoreFocus = document.activeElement === document.body ? refocused : null;
-      const restoredShell = mountRetainedView(current, retainedView);
+      const restoredShell = mountRetainedView(current, retainedView, privatePage);
       shell = restoredShell;
       // The chat-link notice belongs to that landing: a refocus keeps it, a return does not.
       if (!resumingView) {
@@ -2251,7 +2268,7 @@ async function loadPage({
       // A Namespace the reader cannot read hides its Agent too: the panel takes the Agents list's
       // header, not the Agent page's ID, copy button and ← Agents link (finding 2400).
       shell = renderShell(
-        current.feature,
+        privatePage,
         false,
         scopedNamespaceUnavailable ? { page: null } : undefined,
       );
@@ -2345,6 +2362,41 @@ async function loadPage({
     };
     if (shell.diagnostics) {
       attachDiagnostics(shell.diagnostics);
+    }
+    if (current.feature === connectionTemplatesPage || current.feature === oauthClientsPage) {
+      // Re-enter with current administrator access and a fresh editor on history navigation.
+      viewState.reusable = false;
+      const view = shell.view;
+      const showRequiredAccess = () =>
+        panel(
+          view,
+          "Installation administrator access required",
+          current.feature === oauthClientsPage
+            ? "Installation administrators manage OAuth clients."
+            : "Installation administrators manage connection templates.",
+        );
+      if (installationAdmin) {
+        viewState.administrationEnded.add(showRequiredAccess);
+        const render =
+          current.feature === oauthClientsPage ? renderOAuthClients : renderConnectionTemplates;
+        view.append(
+          render(
+            { request: viewRequest, isCurrent: viewIsCurrent },
+            namespaces,
+            namespaces.find((item) => item.id === selectedNamespace)?.id ?? null,
+          ),
+        );
+      } else if (installationAdmin === false) {
+        showRequiredAccess();
+      } else {
+        panel(
+          view,
+          "Could not confirm administrator access",
+          "Refresh to check your Installation permissions.",
+        );
+      }
+      markMountedRoute(current);
+      return;
     }
     if (current.feature === "settings") {
       shell.view.append(settingsView(session.user));
@@ -2610,7 +2662,7 @@ async function loadPage({
             document.activeElement === pendingAgentHeading ||
             (heldHeading !== null && document.activeElement === heldHeading) ||
             shownNow.view.contains(document.activeElement);
-          const detailShell = renderShell(current.feature, false);
+          const detailShell = renderShell(privatePage, false);
           shell = detailShell;
           detailShell.view.replaceWith(detailView);
           detailShell.view = detailView;
@@ -2645,7 +2697,7 @@ async function loadPage({
           onProtectedReadDenied(error, receipt) {
             if (viewIsCurrent()) {
               agentContext.drafts.clear();
-              showAgentReadFailure(current, namespaceId, error, receipt);
+              showAgentReadFailure(namespaceId, error, receipt);
             }
           },
         },
@@ -2742,7 +2794,7 @@ async function loadPage({
       showExpiredLogin();
       return;
     }
-    if (!accessResolved) {
+    if (!accessResolved || privatePage === null) {
       // Uncertain shared admission invalidates every preview, not just this route. Drafts stay:
       // a later read clears them only if it proves their Namespace or account gone (finding 1935).
       const account = session;
@@ -2776,7 +2828,7 @@ async function loadPage({
       // stored answer, asks it too. Neither is audited.
       settleNotAdministrator();
     }
-    shell = renderShell(current.feature);
+    shell = renderShell(privatePage);
     if (current.agentId && status === 404 && current.namespace === null) {
       // A typed or shared link has no Namespace, so the console read the Agent in
       // the default selection. Agent IDs are unique: look in the others.
@@ -2971,7 +3023,6 @@ async function locateAgentNamespace(agentId: string, excluded: string | null) {
 }
 
 function showAgentReadFailure(
-  current: Route,
   selectedNamespace: string | null,
   error: unknown,
   receipt?: HTMLElement,
@@ -2981,7 +3032,7 @@ function showAgentReadFailure(
   if (isAccessRefusal(status)) {
     clearRetainedViewsForNamespace(selectedNamespace);
   }
-  const shell = renderShell(current.feature);
+  const shell = renderShell("agents");
   panel(
     shell.view,
     status === 403
@@ -3082,7 +3133,7 @@ async function revalidateMountedAgent(current: Route) {
     if (!namespaces.some((item) => item.id === selectedNamespace)) {
       clearRetainedViewsForNamespace(selectedNamespace);
       resetReads();
-      namespaceUnavailablePanel(renderShell(current.feature, false, { page: null }).view);
+      namespaceUnavailablePanel(renderShell("agents", false, { page: null }).view);
       return;
     }
     checking = "detail";
@@ -3173,7 +3224,7 @@ async function revalidateMountedAgent(current: Route) {
       showAdmissionUnavailable(checking !== "session", error, account);
       return;
     }
-    showAgentReadFailure(current, selectedNamespace, error);
+    showAgentReadFailure(selectedNamespace, error);
   } finally {
     clearTimeout(stillChecking);
     clearStillChecking?.();
@@ -3230,9 +3281,33 @@ function resumePage() {
   });
 }
 
-// Settings (UX spec 3.10): the signed-in account, and this session with Sign out. The session
+// Settings: the signed-in account, browser preferences, and this session with Sign out. The session
 // read carries no sign-in method, sign-in time or expiry, so the cards show only what it has.
 function settingsView(user: Session["user"]) {
+  const debug = element("input", {
+    type: "checkbox",
+    role: "switch",
+    id: "settings-debug",
+    "aria-describedby": "settings-debug-help",
+  });
+  debug.checked = readDebugPreference();
+  debug.addEventListener("change", () => {
+    try {
+      localStorage.setItem(debugStorageKey, String(debug.checked));
+    } catch {
+      debug.checked = readDebugPreference();
+      setFieldError(
+        debug,
+        "Could not save this preference. Check your browser’s site storage settings and try again.",
+      );
+      return;
+    }
+    // Rebuild diagnostics with the new preference; retained pages must not restore old panels.
+    retainedViews.clear();
+    void loadPage().then(() => {
+      app.querySelector<HTMLInputElement>("#settings-debug")?.focus({ preventScroll: true });
+    });
+  });
   return element(
     "div",
     { className: "settings-page" },
@@ -3259,6 +3334,17 @@ function settingsView(user: Session["user"]) {
           element("dt", {}, "Email"),
           element("dd", {}, user.email),
         ),
+      ),
+    ),
+    element(
+      "section",
+      { className: "card" },
+      element("h2", {}, "Browser preferences"),
+      element("label", { className: "settings-debug-control" }, debug, "Debug mode"),
+      element(
+        "p",
+        { className: "hint", id: "settings-debug-help" },
+        "Show the OCE commit and Agent runtime images. Saved for this installation in this browser.",
       ),
     ),
     element(
@@ -3299,7 +3385,7 @@ function showAdmissionUnavailable(
   account: Session | null,
 ) {
   const current = route();
-  if (unreachable(error) && account && Object.hasOwn(pages, current.feature)) {
+  if (unreachable(error) && account && hasKey(pages, current.feature)) {
     // The account alone stays known, so Retry, Refresh and a refocus hold this shell while they
     // check again, and a 401 then still signs the tab out.
     session = account;

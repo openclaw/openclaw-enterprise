@@ -1,3 +1,4 @@
+import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "./sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -17,7 +18,7 @@ import {
   signInToControllerApp,
   createTestAuthPrincipal,
 } from "./auth-session.mjs";
-import { createTestConfigurationDriver } from "./configuration-driver.mjs";
+import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createReadyComputeDriver } from "./development.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { grantRole } from "./iam-grants.mjs";
@@ -76,13 +77,19 @@ export function createRuntimeLogComputeDriver(options = {}) {
     state,
     podName,
     validateHarnessAuth() {},
-    ...(options.sandboxNamespace === undefined
+    async resolveSandboxNamespaceContext(namespace, signal) {
+      return { namespace: await this.resolveSandboxNamespace(namespace), kubernetes: {}, signal };
+    },
+    ...(options.sandboxNamespaceName === undefined
       ? {}
       : {
           // Compute's placement of the Namespace, where the Sandbox Driver finds the Sandbox.
           async resolveSandboxNamespace(namespace) {
             calls.push({ operation: "resolveSandboxNamespace", namespaceId: namespace.id });
-            return Object.freeze({ ...namespace, name: options.sandboxNamespace });
+            return Object.freeze({
+              ...namespace,
+              name: options.sandboxNamespaceName(namespace.id),
+            });
           },
         }),
     ...(options.withoutDescribe
@@ -329,7 +336,7 @@ export async function createRuntimeLogFixture(options = {}) {
     auth: admin.auth,
     iamDriver,
     auditSink,
-    development: { enabled: true, installationId },
+    development: { enabled: true, installationId, browserOrigin: "https://console.oce.localhost" },
     computeDriver,
     ...(options.sandboxDriver === undefined ? {} : { sandboxDriver: options.sandboxDriver }),
     configurationDriver: createTestConfigurationDriver({ id: "runtime-log-configuration" }),
@@ -342,6 +349,10 @@ export async function createRuntimeLogFixture(options = {}) {
     createController(installation) {
       controller = new OpenClawController(installation, {
         state: new InMemoryPlatformState({ auditSink }),
+        namespaceLifecycleBindings:
+          options.sandboxDriver?.ensureNamespace === undefined
+            ? []
+            : [sandboxNamespaceLifecycleBinding(computeDriver, options.sandboxDriver)],
         recordOperations: false,
         driverConfigurations: options.driverConfigurations,
       });
@@ -353,7 +364,7 @@ export async function createRuntimeLogFixture(options = {}) {
   async function request(method, path, { session = adminSession, serviceKey, body } = {}) {
     const response = await app.fetch(
       new Request(
-        new URL(path, "http://127.0.0.1"),
+        new URL(path, "https://console.oce.localhost"),
         jsonRequestInit(
           method,
           body,

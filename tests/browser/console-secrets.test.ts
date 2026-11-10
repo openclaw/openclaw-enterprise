@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { Page } from "playwright";
+import type { Locator, Page } from "playwright";
 
 import {
   NamespaceCallerPermissionsResponse,
@@ -34,6 +34,8 @@ import {
   SECRET_UPDATE_DENIED,
   tooManyRequestsIn,
 } from "../helpers/refusal-text.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { consoleStorage } from "../helpers/console-storage.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -70,6 +72,508 @@ async function createFromConsole(page: Page, name: string, value: string) {
   await form.getByRole("button", { name: "Create Secret", exact: true }).click();
   await dialog(page, "Secret created").getByRole("button", { name: "Close" }).click();
 }
+
+async function fillDirectoryTemplate(editor: Locator) {
+  await editor.getByLabel("Template name").fill("Directory OAuth");
+  await editor.getByLabel("Issuer URL", { exact: true }).fill("https://identity.example.test");
+  await editor.getByLabel("Authorization URL").fill("https://identity.example.test/authorize");
+  await editor.getByLabel("Token URL").fill("https://identity.example.test/token");
+  await editor.getByRole("textbox", { name: "Host", exact: true }).fill("directory.example.test");
+}
+
+test("Credentials opens Secrets and lets an Installation administrator manage shared templates", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Template editors");
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, "/console/settings");
+  await page.getByRole("heading", { name: "Signed-in account" }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Create connection template" }).count(), 0);
+  await page.getByRole("link", { name: "Credentials", exact: true }).click();
+  const sections = page.getByRole("navigation", { name: "Credential sections" });
+  await sections
+    .getByRole("link", { name: "Secrets", exact: true })
+    .and(page.locator('[aria-current="page"]'))
+    .waitFor();
+  await sections.getByRole("link", { name: "Connection templates" }).click();
+  const editGoogle = page.getByRole("button", { name: "Edit Google OAuth", exact: true });
+  await editGoogle.click();
+  const googleEditor = dialog(page, "Edit connection template");
+  assert.equal(
+    await googleEditor.getByLabel("Template availability").locator("option:checked").textContent(),
+    "Installation-wide",
+  );
+  // Edit the installed template in place. Saving must not append another Google template.
+  const summary = googleEditor.locator("summary").filter({ hasText: /^API destinations \(26\)$/ });
+  const table = googleEditor.getByRole("table", { name: "HTTPS destinations" });
+  assert.equal(await table.isVisible(), false);
+  await summary.press("Enter");
+  const gmail = table
+    .getByRole("row")
+    .filter({ has: page.locator('input[value="gmail.googleapis.com"]') });
+  await gmail.getByRole("button", { name: "Remove destination" }).click();
+  await googleEditor.getByText("API destinations (25)", { exact: true }).waitFor();
+  assert.equal(await googleEditor.getByLabel("OAuth scope limit").inputValue(), "unrestricted");
+  const patch = page.waitForResponse(
+    (response) =>
+      response.request().method() === "PATCH" &&
+      new URL(response.url()).pathname.startsWith("/connection-templates/"),
+  );
+  await googleEditor.getByRole("button", { name: "Save new version", exact: true }).click();
+  const result = await patch;
+  assert.equal(result.status(), 200, await result.text());
+  const template = (await result.json()).data;
+  const savedDestinations: { host: string; path: string }[] = template.current.destinations;
+  assert.equal(
+    savedDestinations.some(({ host }) => host === "gmail.googleapis.com"),
+    false,
+  );
+  assert.ok(
+    savedDestinations.some(
+      ({ host, path }) => host === "www.googleapis.com" && path === "/calendar/**",
+    ),
+  );
+  assert.ok(
+    savedDestinations.some(
+      ({ host, path }) => host === "www.googleapis.com" && path === "/drive/**",
+    ),
+  );
+  assert.equal(template.current.oauthClientId, undefined);
+  assert.equal(template.current.version, 2);
+  await page.getByText("Saved Google OAuth, version 2.", { exact: true }).waitFor();
+  const googleRow = page.getByRole("row").filter({
+    has: page.getByRole("rowheader", { name: "Google OAuth", exact: true }),
+  });
+  await googleRow.getByRole("cell", { name: "No OAuth client assigned", exact: true }).waitFor();
+  await googleRow.getByRole("cell", { name: "2", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Create connection template" }).click();
+  const editor = dialog(page, "Create connection template");
+  const availability = editor.getByLabel("Template availability");
+  assert.equal(await availability.inputValue(), namespace.id);
+  await editor.getByLabel("OAuth client", { exact: true }).waitFor();
+  await editor.getByRole("button", { name: "Create template and register OAuth client" }).waitFor();
+  await editor.getByRole("button", { name: "Cancel" }).click();
+  await page.goBack();
+  await sections
+    .getByRole("link", { name: "Secrets", exact: true })
+    .and(page.locator('[aria-current="page"]'))
+    .waitFor();
+  // A bookmark naming an unavailable Namespace must not silently select the readable one.
+  await page.goto(
+    fixture.origin +
+      "/console/credentials/connection-templates?namespace=ns_00000000-0000-4000-8000-000000000999",
+  );
+  await page.getByRole("button", { name: "Create connection template" }).click();
+  assert.equal(await editor.getByLabel("Template availability").inputValue(), "");
+});
+
+test("a template needs an explicit availability when the administrator has no Namespace", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  restrict(fixture.policy, "read", "namespace");
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, "/console/secrets");
+  await page
+    .getByRole("navigation", { name: "Credential sections" })
+    .getByRole("link", { name: "Connection templates" })
+    .click();
+  await page.getByRole("button", { name: "Create connection template" }).click();
+  const editor = dialog(page, "Create connection template");
+  const availability = editor.getByLabel("Template availability");
+  assert.equal(await availability.inputValue(), "");
+  assert.equal(
+    await availability.getByRole("option", { name: "Choose availability" }).isDisabled(),
+    true,
+  );
+  await editor.getByLabel("Template name").fill("Company tools");
+  await editor.getByLabel("Issuer URL", { exact: true }).fill("https://identity.example.test");
+  await editor.getByLabel("Authorization URL").fill("https://identity.example.test/authorize");
+  await editor.getByLabel("Token URL").fill("https://identity.example.test/token");
+  await editor.getByRole("textbox", { name: "Host", exact: true }).fill("tools.example.test");
+  await editor.getByRole("button", { name: "Add destination" }).click();
+  const archive = editor.getByRole("row").last();
+  await archive.getByLabel("Host", { exact: true }).fill("archive.example.test");
+  await archive.getByLabel("Port", { exact: true }).fill("8443");
+  await archive.getByLabel("Path", { exact: true }).fill("/reports/**");
+  const register = editor.getByRole("button", {
+    name: "Create template and register OAuth client",
+  });
+  const save = editor.getByRole("button", { name: "Create template", exact: true });
+  const requests = apiRequests(page, fixture.origin);
+  for (const action of [register, save]) {
+    await action.click();
+    assert.equal(await availability.evaluate((el) => el === document.activeElement), true);
+    assert.deepEqual(
+      requests.filter((req) => req.method === "POST"),
+      [],
+    );
+  }
+  // Only the administrator's explicit selection permits saving an Installation-wide client.
+  await availability.selectOption({ label: "Installation-wide" });
+  const policy = editor.getByLabel("OAuth scope limit");
+  assert.equal(await policy.locator("option:checked").textContent(), "No template limit");
+  await policy.selectOption({ label: "Limit to approved scopes" });
+  // Whitespace in a restricted allowlist can never turn into an unrestricted template.
+  const scopes = editor.getByLabel("Approved OAuth scopes");
+  await scopes.fill("   ");
+  await save.click();
+  assert.equal(await scopes.evaluate((el) => el === document.activeElement), true);
+  assert.deepEqual(pathRequests(requests, "POST", "/connection-templates"), []);
+  await policy.selectOption({ label: "No template limit" });
+  const created = responseTo(page, "POST", fixture.origin + "/connection-templates");
+  await register.click();
+  const response = await created;
+  assert.equal(response.status(), 201, await response.text());
+  const template = (await response.json()).data;
+  assert.deepEqual(template.current.scopes, []);
+  assert.deepEqual(template.current.destinations, [
+    { host: "archive.example.test", port: 8443, path: "/reports/**" },
+    { host: "tools.example.test", port: 443, path: "/**" },
+  ]);
+  assert.equal(template.namespaceId, undefined);
+  const registration = dialog(page, "Register OAuth client");
+  assert.equal(
+    await registration.getByLabel("Client availability").inputValue(),
+    "Installation-wide",
+  );
+  await registration.getByLabel("OAuth client name").fill("Tools client");
+  await registration.getByLabel("Client ID", { exact: true }).fill("tools-client");
+  await registration.getByLabel("Client type", { exact: true }).selectOption({ label: "Public" });
+  const publicMethod = registration.getByLabel("Token endpoint authentication method", {
+    exact: true,
+  });
+  assert.equal(await publicMethod.inputValue(), "none");
+  assert.equal(await publicMethod.isDisabled(), true);
+  assert.equal(await registration.getByLabel("Client secret", { exact: true }).isVisible(), false);
+  const registered = responseTo(page, "POST", fixture.origin + "/oauth-clients");
+  await registration.getByRole("button", { name: "Register OAuth client" }).click();
+  const regResult = await registered;
+  assert.equal(regResult.status(), 201, await regResult.text());
+  const registeredId = (await regResult.json()).data.id;
+  assert.deepEqual(pathRequests(requests, "POST", "/oauth-clients")[0]?.body, {
+    connectionTemplateId: template.id,
+    connectionTemplateVersion: 1,
+    displayName: "Tools client",
+    clientId: "tools-client",
+    tokenEndpointAuthMethod: "none",
+  });
+  const editing = dialog(page, "Edit connection template");
+  assert.equal(
+    await editing.getByLabel("OAuth client", { exact: true }).inputValue(),
+    registeredId,
+  );
+  assert.equal(await editing.getByLabel("Template availability").isDisabled(), true);
+  assert.equal(
+    await editing.getByLabel("Template availability").locator("option:checked").textContent(),
+    "Installation-wide",
+  );
+  const savedPolicy = editing.getByLabel("OAuth scope limit");
+  assert.equal(await savedPolicy.locator("option:checked").textContent(), "No template limit");
+  await savedPolicy.selectOption({ label: "Limit to approved scopes" });
+  await editing.getByLabel("Approved OAuth scopes").fill("tools.read");
+  const updated = responseTo(
+    page,
+    "PATCH",
+    fixture.origin + "/connection-templates/" + template.id,
+  );
+  await editing.getByRole("button", { name: "Save new version" }).click();
+  const patch = await updated;
+  assert.equal(patch.status(), 200, await patch.text());
+  assert.deepEqual((await patch.json()).data.current.scopes, ["tools.read"]);
+  await page.getByRole("button", { name: "Edit Company tools" }).click();
+  const reopened = dialog(page, "Edit connection template");
+  assert.equal(await reopened.getByLabel("OAuth scope limit").inputValue(), "restricted");
+  assert.equal(await reopened.getByLabel("Approved OAuth scopes").inputValue(), "tools.read");
+});
+
+test("registering a provider-issued client uses a saved or newly created template without changing an existing default", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth client owners", {
+    publicOrigin: true,
+  });
+  const other = await fixture.createNamespace("Other client owners", { ready: true });
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, secretsUrl(namespace));
+  const sections = page.getByRole("navigation", { name: "Credential sections" });
+  await sections.getByRole("link", { name: "OAuth clients", exact: true }).click();
+  await page.getByRole("button", { name: "Register OAuth client" }).click();
+  const form = dialog(page, "Register OAuth client");
+  const templateChoice = form.getByLabel("Connection template", { exact: true });
+  const googleTemplate = await templateChoice
+    .getByRole("option", { name: "Google OAuth · Installation-wide", exact: true })
+    .getAttribute("value");
+  assert.ok(googleTemplate);
+  await form.getByRole("button", { name: "Create connection template", exact: true }).click();
+  const editor = dialog(page, "Create connection template");
+  await fillDirectoryTemplate(editor);
+  assert.equal(await editor.getByLabel("Template availability").inputValue(), namespace.id);
+  const posted = responseTo(page, "POST", fixture.origin + "/connection-templates");
+  await editor.getByRole("button", { name: "Create template", exact: true }).click();
+  const result = await posted;
+  assert.equal(result.status(), 201, await result.text());
+  const template = (await result.json()).data;
+  await form.getByLabel("Client ID", { exact: true }).waitFor();
+  assert.equal(await templateChoice.inputValue(), template.id);
+  assert.equal(
+    await form.getByLabel("Client availability").inputValue(),
+    "Namespace · OAuth client owners",
+  );
+  assert.equal(
+    await form.getByLabel("Redirect URI").inputValue(),
+    fixture.origin + "/oauth/callback",
+  );
+  assert.equal(await form.getByLabel("Issuer URL", { exact: true }).count(), 0);
+  assert.equal(await form.getByLabel("Token URL").count(), 0);
+  assert.equal(await form.getByLabel("Provider", { exact: true }).count(), 0);
+  const privateValue = "browser-write-only-client-material";
+  await form.getByLabel("OAuth client name").fill("Engineering directory");
+  await form.getByLabel("Client ID", { exact: true }).fill("engineering-directory");
+  await form.getByLabel("Client secret", { exact: true }).fill(privateValue);
+  // Opening and canceling another template editor preserves credentials for the original selection.
+  assert.deepEqual(
+    await templateChoice
+      .locator("option")
+      .evaluateAll((options) => options.map((option) => option.getAttribute("value"))),
+    ["", googleTemplate, template.id],
+  );
+  await form.getByRole("button", { name: "Create connection template", exact: true }).click();
+  await editor.getByRole("button", { name: "Cancel" }).click();
+  assert.equal(await templateChoice.inputValue(), template.id);
+  assert.equal(await form.getByLabel("OAuth client name").inputValue(), "Engineering directory");
+  assert.equal(
+    await form.getByLabel("Client ID", { exact: true }).inputValue(),
+    "engineering-directory",
+  );
+  assert.equal(await form.getByLabel("Client secret", { exact: true }).inputValue(), privateValue);
+  const method = form.getByRole("combobox", {
+    name: "Token endpoint authentication method",
+    exact: true,
+  });
+  const clientType = form.getByLabel("Client type", { exact: true });
+  assert.equal(await clientType.inputValue(), "confidential");
+  assert.equal(await method.getByRole("option", { name: "none", exact: true }).count(), 0);
+  for (const value of ["client_secret_basic", "client_secret_post"]) {
+    assert.equal(
+      await method.getByRole("option", { name: value, exact: true }).getAttribute("value"),
+      value,
+    );
+  }
+  assert.equal(await method.inputValue(), "client_secret_basic");
+  const registered = responseTo(page, "POST", fixture.origin + "/oauth-clients");
+  await form.getByRole("button", { name: "Register OAuth client" }).click();
+  const first = await registered;
+  assert.equal(first.status(), 201, await first.text());
+  const client = (await first.json()).data;
+  assert.equal(client.namespaceId, namespace.id);
+  assert.equal(Object.hasOwn(client, "clientSecret"), false);
+  const row = page.getByRole("row").filter({
+    has: page.getByRole("rowheader", { name: "Engineering directory", exact: true }),
+  });
+  await row.getByRole("cell", { name: client.issuer, exact: true }).waitFor();
+  await row.getByRole("cell", { name: "Namespace · OAuth client owners", exact: true }).waitFor();
+  await row.getByRole("cell", { name: "client_secret_basic", exact: true }).waitFor();
+  assert.equal((await page.locator("body").innerText()).includes(privateValue), false);
+
+  // Register another client from the saved template; choosing it as the default is a separate edit.
+  await page.getByRole("button", { name: "Register OAuth client" }).click();
+  await templateChoice.selectOption(template.id);
+  await form.getByLabel("OAuth client name").fill("Second directory");
+  await form.getByLabel("Client ID", { exact: true }).fill("keep-with-original-template");
+  await method.selectOption("client_secret_basic");
+  await form.getByLabel("Client secret", { exact: true }).fill(privateValue);
+  // Choosing a new, wider template must not carry confidential registration details across scopes.
+  await templateChoice.selectOption(googleTemplate);
+  assert.equal(await form.getByLabel("Client availability").inputValue(), "Installation-wide");
+  assert.equal(await form.getByLabel("Client ID", { exact: true }).inputValue(), "");
+  assert.equal(await form.getByLabel("Client secret", { exact: true }).inputValue(), "");
+  assert.equal(await method.inputValue(), "client_secret_post");
+  await templateChoice.selectOption(template.id);
+  await form.getByLabel("Client ID", { exact: true }).fill("second-directory");
+  await form.getByLabel("Client secret", { exact: true }).fill(privateValue);
+  await clientType.selectOption("public");
+  await clientType.selectOption("confidential");
+  assert.equal(await form.getByLabel("Client secret", { exact: true }).inputValue(), "");
+  await clientType.selectOption("public");
+  const secondRegistration = responseTo(page, "POST", fixture.origin + "/oauth-clients");
+  await form.getByRole("button", { name: "Register OAuth client" }).click();
+  const second = await secondRegistration;
+  assert.equal(second.status(), 201, await second.text());
+  await page.getByRole("rowheader", { name: "Second directory", exact: true }).waitFor();
+  // Switching Namespace keeps the current tab and hides the previous Namespace's clients and templates.
+  const selector = page.getByRole("combobox", { name: "Namespace", exact: true });
+  await selector.selectOption(other.id);
+  await page
+    .getByText("No OAuth clients are available for this selection.", { exact: true })
+    .waitFor();
+  assert.equal(new URL(page.url()).searchParams.get("namespace"), other.id);
+  await page.getByRole("button", { name: "Register OAuth client" }).click();
+  assert.equal(await templateChoice.getByRole("option", { name: /Directory OAuth/ }).count(), 0);
+  await templateChoice.selectOption(googleTemplate);
+  await form.getByRole("button", { name: "Cancel" }).click();
+  await sections.getByRole("link", { name: "Connection templates", exact: true }).click();
+  await page.getByRole("button", { name: "Edit Google OAuth" }).waitFor();
+  assert.equal(await selector.inputValue(), other.id);
+  assert.equal(await page.getByRole("button", { name: "Edit Directory OAuth" }).count(), 0);
+  await selector.selectOption(namespace.id);
+  const directoryRow = page.getByRole("row").filter({
+    has: page.getByRole("rowheader", { name: "Directory OAuth", exact: true }),
+  });
+  await directoryRow.getByRole("cell", { name: "Engineering directory", exact: true }).waitFor();
+  await directoryRow.getByRole("button", { name: "Edit Directory OAuth" }).click();
+  const edit = dialog(page, "Edit connection template");
+  assert.equal(await edit.getByLabel("OAuth client", { exact: true }).inputValue(), client.id);
+  await edit
+    .getByLabel("OAuth client", { exact: true })
+    .getByRole("option", { name: "Second directory" })
+    .waitFor({ state: "attached" });
+  await edit.getByRole("button", { name: "Cancel" }).click();
+  restrict(fixture.policy, "administer", "installation");
+  await page.goto(fixture.origin + "/console/credentials/oauth-clients?namespace=" + namespace.id);
+  await page.getByRole("heading", { name: "Installation administrator access required" }).waitFor();
+  assert.equal(await sections.getByRole("link", { name: "OAuth clients", exact: true }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Register OAuth client" }).count(), 0);
+});
+
+test("deleting a template and client targets the selected availability and preserves referenced clients", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Customer support");
+  const google = (await fixture.request("GET", "/connection-templates")).data.find(
+    (template: { displayName: string }) => template.displayName === "Google OAuth",
+  );
+  assert.ok(google);
+  const { issuer, authorizationUrl, tokenUrl, destinations } = google.current;
+  const local = await fixture.request("POST", "/connection-templates", {
+    body: {
+      namespaceId: namespace.id,
+      displayName: google.displayName,
+      mode: "manual",
+      issuer,
+      authorizationUrl,
+      tokenUrl,
+      scopes: [],
+      destinations,
+    },
+  });
+  assert.equal(local.status, 201);
+  // Both rows have the same visible name. Only their availability and resource IDs distinguish them.
+  async function register(templateId: string) {
+    const result = await fixture.request("POST", "/oauth-clients", {
+      body: {
+        connectionTemplateId: templateId,
+        connectionTemplateVersion: 1,
+        displayName: "Google app",
+        clientId: "google-app",
+        tokenEndpointAuthMethod: "none",
+      },
+    });
+    assert.equal(result.status, 201);
+    return result.data.id as string;
+  }
+  const clientId = await register(google.id);
+  await register(local.data.id);
+  const { page } = await newPage(t, fixture, {
+    browser,
+    context: { viewport: { width: 390, height: 844 } },
+  });
+  await login(page, fixture, secretsUrl(namespace));
+  const sections = page.getByRole("navigation", { name: "Credential sections" });
+  await sections.getByRole("link", { name: "OAuth clients", exact: true }).click();
+  const button = (name: string) => page.getByRole("button", { name, exact: true });
+  const removeClient = button("Delete Google app (Installation-wide)");
+  const removeTemplate = button("Delete Google OAuth (Installation-wide)");
+  const clientDialog = dialog(page, "Delete OAuth client");
+  const templateDialog = dialog(page, "Delete connection template");
+  const requests = apiRequests(page, fixture.origin);
+  await removeClient.click();
+  assert.match(await clientDialog.innerText(), /Installation-wide/);
+  await clientDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  assert.deepEqual(
+    requests.filter(({ method }) => method === "DELETE"),
+    [],
+  );
+
+  await removeClient.click();
+  const clientUrl = fixture.origin + "/oauth-clients/" + clientId;
+  const refused = responseTo(page, "DELETE", clientUrl);
+  await clientDialog.getByRole("button", { name: "Delete OAuth client", exact: true }).click();
+  assert.equal((await refused).status(), 409);
+  await clientDialog.getByText(/template version still references this OAuth client/i).waitFor();
+  await clientDialog.getByRole("button", { name: "Close", exact: true }).click();
+  await removeClient.waitFor();
+
+  await sections.getByRole("link", { name: "Connection templates", exact: true }).click();
+  await removeTemplate.click();
+  assert.match(await templateDialog.innerText(), /Google OAuth/);
+  assert.match(await templateDialog.innerText(), /Installation-wide/);
+  const deletedTemplate = responseTo(
+    page,
+    "DELETE",
+    fixture.origin + "/connection-templates/" + google.id,
+  );
+  await templateDialog
+    .getByRole("button", { name: "Delete connection template", exact: true })
+    .click();
+  assert.equal((await deletedTemplate).status(), 204);
+  await page.getByText("Deleted Google OAuth.", { exact: true }).waitFor();
+  await page.reload();
+  await button("Delete Google OAuth (Namespace · Customer support)").waitFor();
+  assert.equal(await removeTemplate.count(), 0);
+
+  await sections.getByRole("link", { name: "OAuth clients", exact: true }).click();
+  await removeClient.click();
+  const deletedClient = responseTo(page, "DELETE", clientUrl);
+  await clientDialog.getByRole("button", { name: "Delete OAuth client", exact: true }).click();
+  assert.equal((await deletedClient).status(), 204);
+  await page.getByText("Deleted Google app.", { exact: true }).waitFor();
+  await button("Delete Google app (Namespace · Customer support)").waitFor();
+  assert.equal(await removeClient.count(), 0);
+});
+
+test("a lost template creation response closes registration and reloads the committed template", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Registration recovery");
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, secretsUrl(namespace));
+  await page
+    .getByRole("navigation", { name: "Credential sections" })
+    .getByRole("link", { name: "OAuth clients", exact: true })
+    .click();
+  const open = page.getByRole("button", { name: "Register OAuth client", exact: true });
+  await open.click();
+  const registration = dialog(page, "Register OAuth client");
+  const choice = registration.getByLabel("Connection template", { exact: true });
+  await registration
+    .getByRole("button", { name: "Create connection template", exact: true })
+    .click();
+  const editor = dialog(page, "Create connection template");
+  await fillDirectoryTemplate(editor);
+  assert.equal(await editor.getByLabel("OAuth scope limit").inputValue(), "unrestricted");
+  // The real API commits the template. Only the browser response is lost.
+  await page.route(fixture.origin + "/connection-templates", async (route) => {
+    if (route.request().method() !== "POST") {
+      return route.continue();
+    }
+    const response = await route.fetch();
+    assert.equal(response.status(), 201);
+    await route.abort("failed");
+  });
+  await editor.getByRole("button", { name: "Create template", exact: true }).click();
+  await editor.getByText(/Could not confirm the template change/).waitFor();
+  const reloaded = responseTo(page, "GET", fixture.origin + "/connection-templates");
+  await editor.getByRole("button", { name: "Cancel" }).click();
+  const saved = (await (await reloaded).json()).data;
+  const committed = saved.filter(
+    (template: { namespaceId?: string }) => template.namespaceId === namespace.id,
+  );
+  assert.equal(committed.length, 1);
+  await registration.waitFor({ state: "hidden" });
+  await page.getByText(/Reopen registration and check the template list/).waitFor();
+  await open.click();
+  await choice.selectOption(committed[0].id);
+  assert.equal(
+    await choice.getByRole("option", { name: /Directory OAuth · Namespace/ }).count(),
+    1,
+  );
+  assert.equal(
+    await registration.getByLabel("Client availability").inputValue(),
+    "Namespace · Registration recovery",
+  );
+});
 
 test("console Secret creation, replacement, Agent consumers and cleanup use real API and IAM", async (t) => {
   const audit = new InMemoryAuditSink();
@@ -154,7 +658,7 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
     body: { configurationId: agent.configurationId, harnessAuth: null } satisfies UpdateAgentBody,
   });
   assert.equal(unbound.status, 200);
-  await page.getByRole("link", { name: "Secrets", exact: true }).click();
+  await page.getByRole("link", { name: "Credentials", exact: true }).click();
   await page.getByRole("button", { name: "Shared model", exact: true }).click();
   await dialog(page, "Shared model")
     .getByRole("button", { name: "Delete Secret", exact: true })
@@ -848,7 +1352,7 @@ test("pending Secret creation blocks navigation and replay, then session loss cl
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
-  await page.getByRole("link", { name: "Secrets", exact: true }).click();
+  await page.getByRole("link", { name: "Credentials", exact: true }).click();
   const held = await holdRequests(t, page, `${fixture.origin}${secretPath(namespace)}`, {
     method: "POST",
     afterServer: true,

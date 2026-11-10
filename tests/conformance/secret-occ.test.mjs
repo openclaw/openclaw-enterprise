@@ -19,7 +19,7 @@ import {
   SecretStorageDriverError,
   SecretValueError,
 } from "../../packages/occ/src/index.ts";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import {
   createDevelopmentComputeDriver,
   registerAndSelectDrivers,
@@ -632,7 +632,7 @@ const lookupAdmitted = (error) =>
 test("channel directory lookup refuses saved IDs with C0 controls or DEL before authorization", async () => {
   const lookup = directoryLookup();
   // The controller uses the shared @openclaw-enterprise/utils check, swept over every code
-  // unit in utils.test.mjs; these are its boundaries as seen through the lookup input.
+  // unit in utils.test.ts; these are its boundaries as seen through the lookup input.
   for (const code of [0x00, 0x09, 0x0a, 0x0d, 0x1b, 0x1f, 0x7f]) {
     const character = String.fromCharCode(code);
     for (const id of [`${character}U2`, `U${character}2`, `U2${character}`]) {

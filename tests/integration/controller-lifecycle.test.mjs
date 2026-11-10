@@ -23,7 +23,7 @@ import {
   OpenClawController,
   ScopeViolationError,
 } from "../../packages/occ/src/index.ts";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { registerAndSelectDrivers } from "../helpers/development.mjs";
 import { bindRole, permissionsFor } from "../helpers/iam-grants.mjs";
@@ -926,7 +926,12 @@ test("Agent configuration references stay mutable while deployment admits deeply
   assert.equal(first.configurationGeneration, 1);
   assert.equal(first.servicePrincipalId, agent.servicePrincipalId);
   assert.deepEqual(first.configuration, admittedConfiguration(servedAs(savedValues, agent.name)));
-  assert.deepEqual(first.harness, { ...harness, mode: "embedded" });
+  assert.deepEqual(first.harness, {
+    ...harness,
+    mode: "embedded",
+    overrides: {},
+    configuration: {},
+  });
   assert.deepEqual(first.compute, {
     id: "compute-driver-a",
     implementation: "test-only-compute",
@@ -1064,6 +1069,8 @@ test("Sandbox admission applies provider-owned Agent configuration before freezi
       assert.deepEqual(harness, {
         ...PRODUCTION_HARNESS_DESCRIPTOR,
         mode: "dedicated",
+        overrides: {},
+        configuration: {},
       });
       assert.equal(Object.isFrozen(harness), true);
       const configured = structuredClone(configuration);
@@ -1662,14 +1669,13 @@ test("incomplete and permanent lifecycle results preserve fail-closed Namespace 
     namespaceId: "namespace-foreign",
     namespaceReady: true,
   });
-  await assert.rejects(
-    controller.handleNamespaceLifecycle("principal-admin", invalid.id, "ready"),
-    DependencyUnavailableError,
-  );
+  // A foreign-scope observation is a permanent contract failure. Neither readiness nor
+  // the provider's foreign identifier can become the Namespace's persisted outcome.
   assert.equal(
-    (await controller.getNamespace("principal-admin", invalid.id)).status,
-    "provisioning",
+    (await controller.handleNamespaceLifecycle("principal-admin", invalid.id, "ready"))?.status,
+    "failed",
   );
+  assert.equal((await controller.getNamespace("principal-admin", invalid.id)).status, "failed");
 });
 
 test("a missing selected Compute Driver fails closed with attributable lifecycle audit", async () => {

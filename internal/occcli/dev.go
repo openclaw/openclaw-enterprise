@@ -106,6 +106,27 @@ func developmentCommand() *cobra.Command {
 			return occdev.CheckDevelopmentProfile()
 		},
 	})
+	command.AddCommand(&cobra.Command{
+		Use:    "prepare-browser",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			repository, err := developmentRepository()
+			if err != nil {
+				return err
+			}
+			environment, err := occdev.DockerBrowserEnvironment(repository, true)
+			if err != nil {
+				return err
+			}
+			for _, key := range []string{"OCC_DEVELOPMENT_BROWSER_ORIGIN", "OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN", "OCC_DEVELOPMENT_BROWSER_PORT", "OCC_DEVELOPMENT_BROWSER_TLS_CERT", "OCC_DEVELOPMENT_BROWSER_TLS_KEY"} {
+				if _, err := fmt.Fprintln(cmd.OutOrStdout(), environment[key]); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	})
 	var profile string
 	analyze := &cobra.Command{
 		Use:    "analyze-compose",
@@ -140,17 +161,39 @@ func developmentRepository() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	const declaration = "module github.com/openclaw/openclaw-enterprise"
 	for {
-		module, err := os.ReadFile(filepath.Join(directory, "go.mod"))
-		if err == nil && strings.HasPrefix(string(module), "module github.com/openclaw/openclaw-enterprise\n") {
-			if _, err := os.Stat(filepath.Join(directory, "compose.yaml")); err == nil {
-				return directory, nil
+		modulePath := filepath.Join(directory, "go.mod")
+		module, err := os.ReadFile(modulePath)
+		content := string(module)
+		line, _, hasNewline := strings.Cut(content, "\n")
+		if err == nil && hasNewline && strings.TrimSuffix(line, "\r") == declaration {
+			composePath := filepath.Join(directory, "compose.yaml")
+			info, err := os.Lstat(composePath)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return "", fmt.Errorf("inspect %q: %w", composePath, err)
+			}
+			if err == nil {
+				if info.Mode()&os.ModeSymlink != 0 {
+					info, err = os.Stat(composePath)
+					if err != nil {
+						return "", fmt.Errorf("inspect %q: %w", composePath, err)
+					}
+				}
+				if !info.Mode().IsRegular() {
+					return "", fmt.Errorf("%q must be a regular file", composePath)
+				}
+				if !strings.Contains(content, "\r\n") {
+					return directory, nil
+				}
+				return "", fmt.Errorf("%q uses CRLF line endings; convert it to LF before running occ dev", modulePath)
 			}
 		}
 		parent := filepath.Dir(directory)
 		if parent == directory {
-			return "", fmt.Errorf("run occ dev from an OpenClaw Enterprise source checkout")
+			break
 		}
 		directory = parent
 	}
+	return "", fmt.Errorf("run occ dev from an OpenClaw Enterprise source checkout")
 }
