@@ -33,7 +33,10 @@ import { postgresApp } from "./postgres-egress-app.mjs";
  * No installed OpenShell or workload execution is represented by this fixture. */
 export async function requestCredentialFixture(
   t: TestContext,
-  configuration: { credentialProxyCapacity?: Partial<CredentialProxyCapacity> } = {},
+  configuration: {
+    credentialProxyCapacity?: Partial<CredentialProxyCapacity>;
+    poolOptions?: { options: string };
+  } = {},
 ) {
   let owner!: InstalledDriver;
   let state!: PlatformStateStore;
@@ -53,7 +56,11 @@ export async function requestCredentialFixture(
       },
     ],
     appFactory: async (context: TestContext, options: object = {}) => {
-      const app = await postgresApp(context, { ...options, recordOperations: true });
+      const app = await postgresApp(context, {
+        ...options,
+        recordOperations: true,
+        poolOptions: configuration.poolOptions,
+      });
       state = app.state;
       pool = app.pool;
       return app;

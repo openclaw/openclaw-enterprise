@@ -58,6 +58,7 @@ export function postgresRequestCredentialApprovals(
     async insert(approval, now, limits) {
       // Serialize admission counts across API replicas on this transaction connection.
       // Callers already hold policy locks; no policy locks are acquired after this quota lock.
+      // Refuse snapshot isolation: its counts could miss a preceding lock holder's insertion.
       await client.query("SELECT pg_advisory_xact_lock(1868785008, 0)");
       await client.query(
         "DELETE FROM occ.request_credential_approvals WHERE replay_until_at <= $1",
@@ -68,6 +69,7 @@ export function postgresRequestCredentialApprovals(
           (recipient_id, request_id, binding_id, namespace_id, agent_id, revision_id, policy_digest, driver_ref, expires_at, replay_until_at)
          SELECT $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::timestamptz, $11::timestamptz
          WHERE $9::timestamptz > $10::timestamptz
+           AND current_setting('transaction_isolation') = 'read committed'
            AND (SELECT count(*) FROM occ.request_credential_approvals) < $12
            AND (SELECT count(*) FROM occ.request_credential_approvals WHERE recipient_id = $1) < $13
          ON CONFLICT DO NOTHING`,

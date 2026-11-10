@@ -113,7 +113,9 @@ admission. OpenShell uses the authenticated extension identity's expiry.
 `packages/occ/src/state/request-credential-approvals.ts` retains consumed or
 expired approvals until that horizon, so redemption expiry cannot permit
 reapproval of the same recipient/request ID. Its global and per-recipient ID
-quotas are durable and shared across API replicas; strict exchange ID maps
+quotas are durable and shared across API replicas. Admission requires PostgreSQL
+READ COMMITTED isolation so quota counts observe preceding holders of the
+transaction lock; other isolation levels deny admission. Strict exchange ID maps
 remain per process.
 
 ### 3. Redeem once against current authority

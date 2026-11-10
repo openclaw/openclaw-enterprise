@@ -1342,5 +1342,20 @@ test(
     );
     assert.equal(await replica(b).authorizeRequestCredential(b.request(), signal), "credential");
     assert.equal(await replica(c).authorizeRequestCredential(c.request(), signal), "credential");
+
+    // A transaction-wide snapshot cannot see quota changes committed while waiting
+    // for the admission lock. Refuse it instead of silently exceeding the shared cap.
+    const snapshot = await requestCredentialFixture(t, {
+      poolOptions: { options: "-c default_transaction_isolation=repeatable\\ read" },
+    });
+    assert.equal(
+      (await snapshot.f.pool.query("SHOW default_transaction_isolation")).rows[0]
+        .default_transaction_isolation,
+      "repeatable read",
+    );
+    assert.equal(
+      await snapshot.exchange.authorizeRequestCredential(snapshot.request(), signal),
+      undefined,
+    );
   },
 );
