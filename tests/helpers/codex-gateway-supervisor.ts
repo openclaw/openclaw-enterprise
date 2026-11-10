@@ -155,6 +155,9 @@ export async function startCodexGatewaySupervisor(
   if (savedFiles !== undefined) {
     fixture.files = new Map(savedFiles);
   }
+  // The kubelet creates an empty termination log for each container instance; /tmp, an
+  // emptyDir, keeps what an earlier instance of the Pod saved there.
+  fixture.files.set("/dev/termination-log", "");
   if (initialPeerStatus !== undefined) {
     fixture.peerStatus = initialPeerStatus;
   }
