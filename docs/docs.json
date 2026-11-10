@@ -374,6 +374,10 @@
                     "label": "Quickstart"
                   },
                   {
+                    "page": "reference/drivers/namespace-lifecycle",
+                    "label": "Namespace Lifecycle"
+                  },
+                  {
                     "group": "Compute",
                     "pages": [
                       {
@@ -445,6 +449,10 @@
                       {
                         "page": "reference/drivers/openshell-sandbox/harness-providers",
                         "label": "OpenShell Harness Providers"
+                      },
+                      {
+                        "page": "reference/drivers/openshell-sandbox/namespace-gateway",
+                        "label": "Namespace Gateway"
                       }
                     ]
                   },

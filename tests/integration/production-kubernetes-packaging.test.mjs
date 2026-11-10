@@ -3150,14 +3150,14 @@ test(
     assert.ok(!bindings.has(tenantApiRole.metadata.name));
     assert.ok(tenant.rules.some(({ resources }) => resources.includes("configmaps")));
     assert.deepEqual(tenantApiRole.rules, tenantApiRules());
-    // Only the unbound tenant-worker role can reconcile and remove an Agent-owned claim.
+    // Only the unbound tenant-worker role can list owned gateway claims and reconcile claims.
     assert.deepEqual(
       tenant.rules.filter(({ resources }) => resources.includes("persistentvolumeclaims")),
       [
         {
           apiGroups: [""],
           resources: ["persistentvolumeclaims"],
-          verbs: ["get", "create", "patch", "delete"],
+          verbs: ["get", "list", "create", "patch", "delete"],
         },
       ],
     );

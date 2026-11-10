@@ -916,6 +916,7 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
     assertImmutableImageReference(effectiveEnv.OPENCLAW_CI_K3S_IMAGE, "OPENCLAW_CI_K3S_IMAGE");
   }
   const openShellGatewayFile = [
+    "tests/integration/namespace-driver-openshell-k3d-real.test.ts",
     "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
     "tests/integration/openshell-gateway-tool-policy-real.test.ts",
     "tests/integration/openshell-refresh-real.test.ts",
