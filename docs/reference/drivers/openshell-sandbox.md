@@ -153,21 +153,18 @@ not satisfy the per-Agent production requirement below.
 
 ### Protected Codex artifact rules
 
-For protected, dedicated Codex repository execution, select
-[approved artifact rules](../../snippets/openshell-quickstart/plugin-network-policy.yaml)
-with `policy.codexArtifactRuleNames`, for example
-`codexArtifactRuleNames: [codex-plugin-artifacts]`. Each name must identify exactly
-one existing `policy.networkPolicies` rule. Omission grants no artifact access.
+For protected, dedicated Codex repository execution, list each approved
+`policy.networkPolicies` rule in `policy.codexArtifactRuleNames`. Omission grants
+no artifact access.
 
-Selected rules require the bundled Codex executable paths, exact DNS hosts,
-port 443, `protocol: rest`, `enforcement: enforce` and `access: read_only`.
-Omit `tls`: stock OpenShell 0.1.6 verifies and inspects REST TLS by default;
-explicit skip and deprecated termination modes are refused. Wildcards, numeric
-addresses, GitHub repository hosts, reserved names and credential/provider fields are refused.
+Rules require bundled Codex executable paths, exact DNS hosts, port 443,
+`protocol: rest`, `enforcement: enforce`, and `access: read_only`. Omit `tls`
+for verified inspection. Wildcards, numeric addresses, GitHub repository hosts,
+reserved names, and credential or provider fields are refused. For the
+registry-only Node exception, see [Enable protected npm reads](../../guides/deploy/local-sandbox-network-policy.md#enable-protected-npm-reads).
 
-Admission freezes only that qualified map with empty Agent additions. Preparation
-and replay use the revision, even if Installation defaults change. Select a new
-revision to change artifact authority. Live Agent policy apply remains unavailable.
+Admission freezes only the selected rules with empty Agent additions. Prepare
+a new revision to change them. Protected Agents cannot apply changes live.
 
 ### Gateway readiness and workspace
 
