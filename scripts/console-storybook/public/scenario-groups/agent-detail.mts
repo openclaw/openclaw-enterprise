@@ -56,6 +56,7 @@ type AgentDetailScenario = {
   scrollToTabs?: false;
   readOnlyPermissionSummary?: true;
   revisionHistory?: number;
+  unrecordedHarnessRevision?: number;
   earlierFailedVersion?: number;
   earlierVersionError?: AgentDeploymentStatusWire["error"];
   revisionPageSize?: number;
@@ -146,30 +147,6 @@ export function createAgentDetailScenarios({
     deploymentStatus: "queued",
     deploymentErrorCode: null,
   };
-
-  const retainedHarnessRevision: AgentRevisionSummaryWire = {
-    ...newerDeployment,
-    id: "rev_00000000-0000-4000-8000-000000000101",
-    revision: 1,
-    configurationGeneration: 1,
-    harness: { id: "codex", version: "demo", mode: "dedicated" },
-    createdAt: "2026-08-31T12:00:00.000Z",
-    deploymentStatus: "succeeded",
-  };
-  function retainedHarnessDetail(id: string) {
-    return {
-      id,
-      namespaceId: retainedHarnessRevision.namespaceId,
-      agentId: retainedHarnessRevision.agentId,
-      revision: 1,
-      backendId: retainedHarnessRevision.backendId,
-      createdAt: retainedHarnessRevision.createdAt,
-      configurationReadError: {
-        code: "SAVED_CONFIGURATION_UNREADABLE",
-        field: "configuration",
-      },
-    };
-  }
 
   const configurationConflictDraft = {
     group: "Pages/Agent detail",
@@ -355,40 +332,12 @@ export function createAgentDetailScenarios({
         path: revision,
         deployed: true,
         revisionHistory: 2,
-        rules: [
-          {
-            suffix: "/revisions",
-            data: [
-              {
-                ...newerDeployment,
-                id: "rev_00000000-0000-4000-8000-000000000001",
-                revision: 2,
-                configurationGeneration: 1,
-                createdAt: "2026-09-01T12:00:00.000Z",
-                harness: {
-                  ...newerDeployment.harness,
-                  configuration: {
-                    modelProvider: {
-                      baseUrl: "https://api.openai.com/v1",
-                      protocol: "openai-responses",
-                      supportsStandaloneWebSearch: false,
-                    },
-                  },
-                },
-                deploymentStatus: "succeeded",
-              },
-              retainedHarnessRevision,
-            ],
-          },
-          {
-            suffix: `/revisions/${retainedHarnessRevision.id}`,
-            data: retainedHarnessDetail(retainedHarnessRevision.id),
-          },
-        ],
+        revisionPageSize: 1,
+        unrecordedHarnessRevision: 1,
         description:
           "A retained version predates recorded Harness settings. Its metadata remains browsable beside a readable current version.",
         steps: [
-          "Select v1. Confirm the saved-settings warning appears without invented settings. Return to v2 and confirm its Configuration remains readable.",
+          "Load older versions, then select v1. Confirm the saved-settings warning appears without invented settings. Return to v2 and confirm its Configuration remains readable.",
         ],
         gap: "Simulated API responses matching the PostgreSQL history regression; no persistence or deployment proof.",
       },
@@ -397,16 +346,7 @@ export function createAgentDetailScenarios({
         name: "Retained Harness without overrides",
         path: revision,
         deployed: true,
-        rules: [
-          {
-            suffix: "/revisions",
-            data: [{ ...retainedHarnessRevision, id: "rev_00000000-0000-4000-8000-000000000001" }],
-          },
-          {
-            suffix: "/revisions/rev_00000000-0000-4000-8000-000000000001",
-            data: retainedHarnessDetail("rev_00000000-0000-4000-8000-000000000001"),
-          },
-        ],
+        unrecordedHarnessRevision: 1,
         description:
           "The last admitted version has no recorded Harness overrides. The draft must not offer to retain settings that are absent.",
         steps: [

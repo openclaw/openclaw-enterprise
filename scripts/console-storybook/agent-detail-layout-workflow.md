@@ -4,7 +4,8 @@ Use the desktop Console first, then a 390-pixel phone frame. These stories use
 simulated API state; they do not prove persistence or live runtime behavior.
 
 For retained Harness settings, open **Pages / Agent detail / Retained Harness
-history** (`retainedHarnessHistory`). Select v1 and read the saved-settings warning,
+history** (`retainedHarnessHistory`). Load older versions, select v1 and read the
+saved-settings warning,
 then return to v2 and confirm its Configuration remains readable. In **Retained
 Harness without overrides** (`retainedHarnessWithoutOverrides`), choose **Open
 draft**, then **Harness destination**. Only **Use Installation default** and
