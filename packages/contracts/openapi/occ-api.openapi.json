@@ -29888,7 +29888,7 @@
                     "data": {
                       "description": "Agent revisions that you can read, newest first.",
                       "items": {
-                        "description": "Agent revision summary without saved settings. Read this Agent revision for its configuration. If OCC cannot read the saved settings, the response contains `configurationReadError`.",
+                        "description": "Agent revision metadata with the Harness descriptor and any recorded Harness settings, without the native configuration document. Read this Agent revision for its full saved configuration or a `configurationReadError` when those settings are unreadable.",
                         "properties": {
                           "agentId": {
                             "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -29935,6 +29935,7 @@
                           },
                           "harness": {
                             "additionalProperties": false,
+                            "description": "Older revisions omit overrides and configuration when Harness settings were not recorded.",
                             "properties": {
                               "configuration": {
                                 "additionalProperties": {},
@@ -29955,7 +29956,7 @@
                               },
                               "version": { "minLength": 1, "type": "string" }
                             },
-                            "required": ["id", "version", "mode", "overrides", "configuration"],
+                            "required": ["id", "version", "mode"],
                             "type": "object"
                           },
                           "id": {
@@ -29976,8 +29977,8 @@
                           "backendId",
                           "configurationId",
                           "configurationGeneration",
-                          "harness",
                           "createdAt",
+                          "harness",
                           "deploymentStatus",
                           "deploymentErrorCode"
                         ],
