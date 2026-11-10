@@ -1,15 +1,14 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-10
-last_updated_session: authoring-run/7e421486-330f-4f04-b3b8-2b00f30f5647
+last_updated_session: authoring-run/64da6dd5-9c32-4858-b176-ff11e8c8ae92
 ---
 
 # OpenShell Sandbox provisioning flow
 
 ## Overview
 
-Kubernetes Compute provisions Codex and OpenClaw Harnesses through OpenShell.
-[Credential sources](credential-source-lifecycle.md) supply model access.
+Kubernetes Compute provisions Codex/OpenClaw through OpenShell.
 
 ## Entry Points
 
@@ -18,8 +17,8 @@ Kubernetes Compute provisions Codex and OpenClaw Harnesses through OpenShell.
 - Source: `apps/controller/src/drivers/sandbox/openshell.ts:ensureNamespace`
 - Source: `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 - Source: `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
-- Assumptions: shared `openshell` Backend, Namespace isolation and ready
-  operator-mode Gateway.
+- Assumptions: `openshell` Backend; ready operator-mode Gateway; Namespace isolation
+  [excludes Gateway authority](../reference/drivers/openshell-sandbox.md#gateway-kubernetes-authority).
 
 ## Flow
 
@@ -432,6 +431,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 12:22: Clarify Gateway authority. (authoring-run/64da6dd5-9c32-4858-b176-ff11e8c8ae92 - 3c5686897dcb09293562aa30d1a2cecaacc71353)
 
 - 2026-11-10 05:13: Bound complete Codex requirements separately and distinguish post-publication refusal. (authoring-run/7e421486-330f-4f04-b3b8-2b00f30f5647 - 1b3382ad62844cc821c9b004870d86f4814d0b39)
 
