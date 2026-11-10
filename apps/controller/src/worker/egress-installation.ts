@@ -87,12 +87,9 @@ function readCurrentInstallation(
     }
     const withdrawals = await view.credentialSources.listCredentialWithdrawals(namespaceId, id);
     const reductions = await view.credentialSources.listCredentialPolicyReductions(namespaceId, id);
-    const observedBindings = new Set(
-      reductions.filter((reduction) => reduction.observed).map((reduction) => reduction.bindingId),
-    );
     if (
       reductions.some((reduction) => !reduction.observed) ||
-      !routedWithdrawalsAreReduced(revision.egressPlan, withdrawals, observedBindings)
+      !routedWithdrawalsAreReduced(revision.egressPlan, withdrawals, reductions)
     ) {
       throw new DependencyUnavailableError("Credential policy reduction is not observed.");
     }
@@ -130,19 +127,15 @@ function planRoutesSource(plan: ProxyPlan | undefined, sourceId: string): boolea
 function routedWithdrawalsAreReduced(
   plan: ProxyPlan | undefined,
   withdrawals: readonly Readonly<CredentialWithdrawal>[],
-  observedBindings: ReadonlySet<string>,
+  observedReductions: readonly { readonly bindingId: string }[],
 ): boolean {
   if (!plan?.policyReductionVersion) {
     return true;
   }
-  for (const withdrawal of withdrawals) {
-    if (!planRoutesSource(plan, withdrawal.credentialSourceId)) {
-      continue;
-    }
-    const bindingId = `policy:source:${withdrawal.credentialSourceId}`;
-    if (!observedBindings.has(bindingId)) {
-      return false;
-    }
-  }
-  return true;
+  const observedBindings = new Set(observedReductions.map((reduction) => reduction.bindingId));
+  return withdrawals.every(
+    ({ credentialSourceId }) =>
+      !planRoutesSource(plan, credentialSourceId) ||
+      observedBindings.has(`policy:source:${credentialSourceId}`),
+  );
 }

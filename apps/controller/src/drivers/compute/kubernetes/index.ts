@@ -4765,7 +4765,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     topology: KubernetesHarnessTopology,
     harness: RevisionHarnessDescriptor,
     auth: HarnessAuthSnapshot,
-    configuration: OpenClawConfigurationDocument,
+    inputConfiguration: OpenClawConfigurationDocument,
     agentSave: boolean,
   ): {
     configuration: OpenClawConfigurationDocument;
@@ -4777,35 +4777,24 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // Configuration save keeps a draft that selects no model yet, and no topology here runs
     // without one, so admission names the setting instead of refusing the binding (finding 3022).
     if (stage === "admission") {
-      harnessPrimaryModel(configuration, () =>
+      harnessPrimaryModel(inputConfiguration, () =>
         callerSettingError(
           "agents.defaults.model",
           "is required to deploy on Kubernetes: set it, or each agents.entries model, to a model such as openai/gpt-5.1",
         ),
       );
     }
-    const models = nativeOpenAiModelSelections(configuration)?.map(({ reference }) => reference);
-    const authentication = harnessModelAuthentication(configuration, embedded);
-    if (
-      stage === "preparation" &&
-      this.usesModelProvider(harness, auth, configuration) !==
-        (savedModelProvider(harness.configuration) !== undefined)
-    ) {
-      throw new ConfigurationFailure(
-        "Saved Harness settings do not match its authentication and model selection.",
-      );
-    }
-    if (!agentSave) {
-      configuration = modelProviderConfiguration(
-        configuration,
-        harness,
-        savedModelProvider(
-          stage === "admission" && harness.configuration === undefined
-            ? this.resolveHarnessConfiguration(harness, auth, configuration)
-            : harness.configuration,
-        ),
-      );
-    }
+    const models = nativeOpenAiModelSelections(inputConfiguration)?.map(
+      ({ reference }) => reference,
+    );
+    const authentication = harnessModelAuthentication(inputConfiguration, embedded);
+    const configuration = this.harnessModelConfiguration(
+      stage,
+      harness,
+      auth,
+      inputConfiguration,
+      agentSave,
+    );
 
     // Every model selection (fallbacks, subagents, image, PDF, per-channel, ...) and every Agent
     // entry uses the primary model's provider, named by the setting (finding 1291). Dedicated
@@ -4854,6 +4843,32 @@ export class KubernetesComputeDriver implements ComputeDriver {
       managedGatewayConfiguration(configuration, configuration, codex, callerSettingError);
     }
     return { configuration, authentication };
+  }
+
+  private harnessModelConfiguration(
+    stage: "admission" | "preparation",
+    harness: RevisionHarnessDescriptor,
+    auth: HarnessAuthSnapshot,
+    configuration: OpenClawConfigurationDocument,
+    agentSave: boolean,
+  ): OpenClawConfigurationDocument {
+    if (
+      stage === "preparation" &&
+      this.usesModelProvider(harness, auth, configuration) !==
+        (savedModelProvider(harness.configuration) !== undefined)
+    ) {
+      throw new ConfigurationFailure(
+        "Saved Harness settings do not match its authentication and model selection.",
+      );
+    }
+    if (agentSave) {
+      return configuration;
+    }
+    const settings =
+      stage === "admission" && harness.configuration === undefined
+        ? this.resolveHarnessConfiguration(harness, auth, configuration)
+        : harness.configuration;
+    return modelProviderConfiguration(configuration, harness, savedModelProvider(settings));
   }
 
   private validateHarnessTopologyConfiguration(
