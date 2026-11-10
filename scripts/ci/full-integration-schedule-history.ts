@@ -40,7 +40,9 @@ type History = {
 };
 
 function requireValid(value: unknown): asserts value {
-  if (!value) throw new Error("Uncertain Full Integration metadata");
+  if (!value) {
+    throw new Error("Uncertain Full Integration metadata");
+  }
 }
 
 function record(value: unknown): Json {
@@ -79,14 +81,17 @@ async function markers(read: ReadGithub, name: string): Promise<Marker[]> {
   const results = [];
   for (const item of items) {
     requireValid(item.name === name && typeof item.expired === "boolean");
-    if (item.expired) continue;
+    if (item.expired) {
+      continue;
+    }
     const run = record(item.workflow_run);
     if (
       run.repository_id !== repositoryId ||
       run.head_repository_id !== repositoryId ||
       run.head_branch !== "main"
-    )
+    ) {
       continue;
+    }
     results.push({
       id: id(item.id),
       runId: id(run.id),
@@ -101,7 +106,9 @@ async function markers(read: ReadGithub, name: string): Promise<Marker[]> {
 async function officialAttempt(read: ReadGithub, marker: Marker): Promise<Json | null> {
   const run = record(await read(`/actions/runs/${marker.runId}/attempts/1`));
   requireValid(run.id === marker.runId && run.run_attempt === 1);
-  if (run.workflow_id !== workflowId) return null;
+  if (run.workflow_id !== workflowId) {
+    return null;
+  }
   requireValid(
     run.head_sha === marker.sha &&
       run.head_branch === "main" &&
@@ -160,7 +167,9 @@ async function workflowRuns(read: ReadGithub, event: UnmarkedEvent): Promise<Jso
     );
     total = count;
     runs.push(...records.map(record));
-    if (runs.length === total) break;
+    if (runs.length === total) {
+      break;
+    }
   }
   requireValid(new Set(runs.map((run) => id(run.id))).size === runs.length);
   return runs;
@@ -236,7 +245,9 @@ async function readUnmarkedClock(
         }
         continue;
       }
-      if (live) return { status: "active" };
+      if (live) {
+        return { status: "active" };
+      }
     }
     const occupied = jobs.filter(
       (job) =>
@@ -245,11 +256,15 @@ async function readUnmarkedClock(
         job.started_at != null,
     );
     if (live) {
-      if (run.status === "in_progress" || occupied.length > 0) return { status: "active" };
+      if (run.status === "in_progress" || occupied.length > 0) {
+        return { status: "active" };
+      }
       continue;
     }
     requireValid(run.status === "completed" && typeof run.conclusion === "string");
-    if (occupied.length === 0) continue;
+    if (occupied.length === 0) {
+      continue;
+    }
     const startedAt = Math.min(...occupied.map((job) => timestamp(job.started_at)));
     const finishedAt = Math.max(
       timestamp(run.updated_at),
@@ -270,7 +285,9 @@ async function readPrevious(read: ReadGithub, currentRunId: number): Promise<Pre
   for (const marker of previous) {
     requireValid(marker.runId !== currentRunId);
     const run = await officialAttempt(read, marker);
-    if (!run) continue;
+    if (!run) {
+      continue;
+    }
     if (["queued", "in_progress", "pending", "waiting", "requested"].includes(String(run.status))) {
       return { status: "active" };
     }
@@ -306,7 +323,9 @@ async function readCovered(
   for (const marker of await markers(read, exercisedName(mainSha))) {
     requireValid(marker.runId !== currentRunId && marker.sha === mainSha);
     const run = await officialAttempt(read, marker);
-    if (!run) continue;
+    if (!run) {
+      continue;
+    }
     if (run.status !== "completed" || !["success", "failure"].includes(String(run.conclusion))) {
       continue;
     }
@@ -318,9 +337,15 @@ async function readCovered(
 }
 
 function combineClocks(marked: PreviousFull, legacy: PreviousFull): PreviousFull {
-  if (marked.status === "active" || legacy.status === "active") return { status: "active" };
-  if (marked.status !== "finished") return legacy;
-  if (legacy.status !== "finished") return marked;
+  if (marked.status === "active" || legacy.status === "active") {
+    return { status: "active" };
+  }
+  if (marked.status !== "finished") {
+    return legacy;
+  }
+  if (legacy.status !== "finished") {
+    return marked;
+  }
   return {
     status: "finished",
     startedAt: Math.max(marked.startedAt, legacy.startedAt),
@@ -345,9 +370,13 @@ export async function readScheduleHistory(
   }
   const attemptReads = new Map<string, Promise<unknown>>();
   const readHistory: ReadGithub = (path) => {
-    if (!path.startsWith("/actions/runs/")) return read(path);
+    if (!path.startsWith("/actions/runs/")) {
+      return read(path);
+    }
     const existing = attemptReads.get(path);
-    if (existing) return existing;
+    if (existing) {
+      return existing;
+    }
     const pending = read(path);
     attemptReads.set(path, pending);
     return pending;

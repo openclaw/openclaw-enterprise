@@ -31,8 +31,12 @@ export function decideAdmission(input: AdmissionInput): Admission {
   ) {
     return uncertain;
   }
-  if (previousFull.status === "unknown") return uncertain;
-  if (previousFull.status === "active") return { result: "skip", reason: "active-full" };
+  if (previousFull.status === "unknown") {
+    return uncertain;
+  }
+  if (previousFull.status === "active") {
+    return { result: "skip", reason: "active-full" };
+  }
   if (previousFull.status === "finished") {
     const { startedAt, finishedAt } = previousFull;
     if (
@@ -44,9 +48,15 @@ export function decideAdmission(input: AdmissionInput): Admission {
       return uncertain;
     }
     const eligibleAt = Math.max(startedAt + 60 * minute, finishedAt + 15 * minute);
-    if (now < eligibleAt) return { result: "skip", reason: "cooldown", eligibleAt };
+    if (now < eligibleAt) {
+      return { result: "skip", reason: "cooldown", eligibleAt };
+    }
   }
-  if (eventSha !== mainSha) return { result: "skip", reason: "stale-event" };
-  if (mainSha === lastExercisedSha) return { result: "skip", reason: "unchanged-main" };
+  if (eventSha !== mainSha) {
+    return { result: "skip", reason: "stale-event" };
+  }
+  if (mainSha === lastExercisedSha) {
+    return { result: "skip", reason: "unchanged-main" };
+  }
   return { result: "admit", testedSha: mainSha };
 }

@@ -1313,9 +1313,13 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
     const authorized = approvalApi();
     const github = async (request) => {
       calls.push(request.path);
-      if (request.path === "/git/ref/heads/main") return main(mainReads.shift());
+      if (request.path === "/git/ref/heads/main") {
+        return main(mainReads.shift());
+      }
       if (request.path.startsWith("/actions/artifacts?")) {
-        if (fail) throw new Error("metadata unavailable");
+        if (fail) {
+          throw new Error("metadata unavailable");
+        }
         return { artifacts: [], total_count: 0 };
       }
       if (request.path.startsWith("/actions/workflows/351990468/runs?")) {
@@ -1384,7 +1388,9 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
       job("Full Integration Aggregate", "Confirm full coverage marker", finishedAgo),
     ];
     return async ({ path }) => {
-      if (path === "/git/ref/heads/main") return main();
+      if (path === "/git/ref/heads/main") {
+        return main();
+      }
       if (path.startsWith("/actions/artifacts?")) {
         const name = new URLSearchParams(path.split("?")[1]).get("name");
         if (name !== "full-integration-admitted-v1" && !covered) {
@@ -1412,7 +1418,9 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
       if (path.startsWith("/actions/workflows/351990468/runs?")) {
         return { workflow_runs: [], total_count: 0 };
       }
-      if (path === `/actions/runs/${id}/attempts/1`) return run;
+      if (path === `/actions/runs/${id}/attempts/1`) {
+        return run;
+      }
       if (path === `/actions/runs/${id}/attempts/1/jobs?per_page=100`) {
         return { jobs, total_count: jobs.length };
       }
@@ -1451,8 +1459,12 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
         artifacts: [...earlier.artifacts, ...later.artifacts],
       };
     }
-    if (request.path.startsWith("/actions/runs/98/")) return olderAutomatic(request);
-    if (request.path.startsWith("/environments/")) return approvalApi()(request);
+    if (request.path.startsWith("/actions/runs/98/")) {
+      return olderAutomatic(request);
+    }
+    if (request.path.startsWith("/environments/")) {
+      return approvalApi()(request);
+    }
     return newerManual(request);
   };
   assert.deepEqual(await validateFullIntegrationPreflight({ env, github: overlapping }), {
@@ -1476,8 +1488,12 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
   };
   const unknownSelection = async (request) => {
     const { path } = request;
-    if (path === "/git/ref/heads/main") return main();
-    if (path.startsWith("/actions/artifacts?")) return { total_count: 0, artifacts: [] };
+    if (path === "/git/ref/heads/main") {
+      return main();
+    }
+    if (path.startsWith("/actions/artifacts?")) {
+      return { total_count: 0, artifacts: [] };
+    }
     if (path.startsWith("/actions/workflows/351990468/runs?")) {
       const manual = new URLSearchParams(path.split("?")[1]).get("event") === "workflow_dispatch";
       return {
@@ -1485,7 +1501,9 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
         workflow_runs: manual ? [approvedWithUnknownSelection] : [],
       };
     }
-    if (path === "/actions/runs/97/attempts/1") return approvedWithUnknownSelection;
+    if (path === "/actions/runs/97/attempts/1") {
+      return approvedWithUnknownSelection;
+    }
     if (path === "/actions/runs/97/attempts/1/jobs?per_page=100") {
       return {
         total_count: 1,
