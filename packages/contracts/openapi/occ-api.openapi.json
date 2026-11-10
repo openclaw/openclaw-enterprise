@@ -13872,7 +13872,8 @@
                               { "const": "openai-responses", "type": "string" },
                               { "const": "openai-completions", "type": "string" }
                             ]
-                          }
+                          },
+                          "settingsFingerprint": { "pattern": "^[a-f0-9]{64}$", "type": "string" }
                         },
                         "required": [
                           "id",
@@ -13880,7 +13881,8 @@
                           "baseUrl",
                           "protocol",
                           "models",
-                          "connectionTemplateId"
+                          "connectionTemplateId",
+                          "settingsFingerprint"
                         ],
                         "type": "object"
                       },
@@ -14134,7 +14136,8 @@
                             { "const": "openai-responses", "type": "string" },
                             { "const": "openai-completions", "type": "string" }
                           ]
-                        }
+                        },
+                        "settingsFingerprint": { "pattern": "^[a-f0-9]{64}$", "type": "string" }
                       },
                       "required": [
                         "id",
@@ -14142,7 +14145,8 @@
                         "baseUrl",
                         "protocol",
                         "models",
-                        "connectionTemplateId"
+                        "connectionTemplateId",
+                        "settingsFingerprint"
                       ],
                       "type": "object"
                     },
@@ -14359,7 +14363,8 @@
                             { "const": "openai-responses", "type": "string" },
                             { "const": "openai-completions", "type": "string" }
                           ]
-                        }
+                        },
+                        "settingsFingerprint": { "pattern": "^[a-f0-9]{64}$", "type": "string" }
                       },
                       "required": [
                         "id",
@@ -14367,7 +14372,8 @@
                         "baseUrl",
                         "protocol",
                         "models",
-                        "connectionTemplateId"
+                        "connectionTemplateId",
+                        "settingsFingerprint"
                       ],
                       "type": "object"
                     },
@@ -14504,6 +14510,7 @@
                     "type": "string"
                   },
                   "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                  "expectedSettingsFingerprint": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
                   "models": {
                     "items": {
                       "additionalProperties": false,
@@ -14548,7 +14555,8 @@
                   "baseUrl",
                   "protocol",
                   "models",
-                  "connectionTemplateId"
+                  "connectionTemplateId",
+                  "expectedSettingsFingerprint"
                 ],
                 "type": "object"
               }
@@ -14636,7 +14644,8 @@
                             { "const": "openai-responses", "type": "string" },
                             { "const": "openai-completions", "type": "string" }
                           ]
-                        }
+                        },
+                        "settingsFingerprint": { "pattern": "^[a-f0-9]{64}$", "type": "string" }
                       },
                       "required": [
                         "id",
@@ -14644,7 +14653,8 @@
                         "baseUrl",
                         "protocol",
                         "models",
-                        "connectionTemplateId"
+                        "connectionTemplateId",
+                        "settingsFingerprint"
                       ],
                       "type": "object"
                     },
@@ -14753,7 +14763,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Replace model provider settings",
+        "summary": "Replace model provider settings if the saved fingerprint matches",
         "tags": ["Installation"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -40013,7 +40023,8 @@
                               { "const": "openai-responses", "type": "string" },
                               { "const": "openai-completions", "type": "string" }
                             ]
-                          }
+                          },
+                          "settingsFingerprint": { "pattern": "^[a-f0-9]{64}$", "type": "string" }
                         },
                         "required": [
                           "id",
@@ -40021,7 +40032,8 @@
                           "baseUrl",
                           "protocol",
                           "models",
-                          "connectionTemplateId"
+                          "connectionTemplateId",
+                          "settingsFingerprint"
                         ],
                         "type": "object"
                       },
