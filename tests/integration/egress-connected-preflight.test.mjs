@@ -770,14 +770,18 @@ test("public egress observer requires the local mTLS profile before forwarding",
 
 test("public egress cleanup retains independent Configuration cleanup after admission or Role failures", async (t) => {
   // Actual Fastify, OCC and Native IAM enforce admission and mutate the in-memory
-  // store. Only an explicitly lost response is injected at the transport edge;
-  // no installed Kubernetes retirement or supplier behavior is claimed here.
+  // store. Transport uncertainty and a cluster guard failure are injected at
+  // their boundaries; no installed Kubernetes or supplier behavior is claimed.
   for (const scenario of [
     "agent-refused",
+    "agent-name-taken",
+    "agent-repository-unconfigured",
+    "cluster-identity-changed",
     "role-refused",
     "role-delete-refused",
     "role-delete-response-lost",
     "agent-create-response-unknown",
+    "agent-conflict-unknown",
   ]) {
     await t.test(scenario, async (t) => {
       const f = await createConsoleAppFixture(t, {
@@ -800,13 +804,28 @@ test("public egress cleanup retains independent Configuration cleanup after admi
       const observed = [];
       const request = async (method, path, body) => {
         if (
-          scenario === "agent-create-response-unknown" &&
+          (scenario === "agent-create-response-unknown" ||
+            scenario === "cluster-identity-changed") &&
           method === "POST" &&
           path.endsWith("/agents")
         ) {
           // The sender cannot tell whether a create reached the controller. An
           // empty read must not be promoted into proof that it can never commit.
           throw new Error("transport outcome unknown");
+        }
+        if (
+          scenario === "agent-conflict-unknown" &&
+          method === "POST" &&
+          path.endsWith("/agents")
+        ) {
+          // An unfamiliar conflict envelope is not proof of a pre-insertion refusal.
+          return {
+            status: 409,
+            body: {
+              error: { code: "RESOURCE_CONFLICT", message: "Unclassified conflict" },
+              meta: { requestId: "unknown-conflict" },
+            },
+          };
         }
         const wire = serializeConnectedRequest(method, path, body);
         const injected = await f.app.inject({
@@ -841,25 +860,67 @@ test("public egress cleanup retains independent Configuration cleanup after admi
         };
       };
       const receipts = new Map();
+      const clusterGuardError = new Error("cluster UID changed");
+      let clusterGuardReached = false;
       const resources = publicEgressResources({
         request,
         namespacePath: prefix,
+        checkCluster: async () => {
+          clusterGuardReached = true;
+          if (scenario === "cluster-identity-changed") {
+            throw clusterGuardError;
+          }
+        },
         retireAgent: async () => assert.fail("these scenarios never admit an Agent"),
         record: async (name, value) => receipts.set(name, value),
       });
-      const config = await resources.create("configuration", protectedConfigurationBody("gpt-6"));
+      const config = await resources.create(
+        "configuration",
+        scenario === "agent-name-taken" || scenario === "agent-repository-unconfigured"
+          ? { kind: "agent", values: {} }
+          : protectedConfigurationBody("gpt-6"),
+      );
       let role;
-      if (scenario.startsWith("agent-")) {
+      // The colliding Agent belongs to an earlier caller, with its own Configuration.
+      // A definitive name refusal must never recover or retire it by name.
+      const existing =
+        scenario === "agent-name-taken"
+          ? await f.createAgent(namespace.id, scenario, {}, { harnessAuth: null })
+          : undefined;
+      const existingBefore = existing
+        ? await f.request("GET", prefix + "/agents/" + existing.id)
+        : undefined;
+      if (scenario.startsWith("agent-") || scenario === "cluster-identity-changed") {
+        let expectedError = {
+          code: "ERR_ASSERTION",
+          message: /HTTP 409; error code RESOURCE_CONFLICT/,
+        };
+        if (scenario === "agent-refused") {
+          expectedError = { code: "ERR_ASSERTION", message: /HTTP 403; error code FORBIDDEN/ };
+        } else if (
+          scenario === "agent-create-response-unknown" ||
+          scenario === "cluster-identity-changed"
+        ) {
+          expectedError = { message: "transport outcome unknown" };
+        }
         await assert.rejects(
-          resources.create("agent", { name: scenario, configurationId: config.id }),
-          scenario === "agent-refused"
-            ? { code: "ERR_ASSERTION", message: /HTTP 403; error code FORBIDDEN/ }
-            : { message: "transport outcome unknown" },
+          resources.create("agent", {
+            name: scenario,
+            configurationId: config.id,
+            ...(scenario === "agent-repository-unconfigured"
+              ? {
+                  repositoryBindings: [
+                    { repositoryRef: "fixture-repository", profile: "github-repository" },
+                  ],
+                }
+              : {}),
+          }),
+          expectedError,
         );
         if (scenario === "agent-refused") {
           assert.equal(observed.at(-1).status, 403, "real IAM admission refused Agent creation");
         }
-      } else {
+      } else if (scenario !== "cluster-identity-changed") {
         const createRole = () =>
           resources.create("role", {
             name: scenario,
@@ -879,26 +940,57 @@ test("public egress cleanup retains independent Configuration cleanup after admi
         }
       }
       const unsettled =
-        scenario.includes("delete-") || scenario === "agent-create-response-unknown";
+        scenario.includes("delete-") ||
+        scenario === "agent-create-response-unknown" ||
+        scenario === "agent-conflict-unknown" ||
+        scenario === "cluster-identity-changed";
+      const requestsBeforeCleanup = observed.length;
       let cleanupError;
       try {
         await resources.cleanup();
       } catch (error) {
         cleanupError = error;
       }
+      if (scenario === "cluster-identity-changed") {
+        assert.equal(clusterGuardReached, true);
+        assert.equal(cleanupError, clusterGuardError);
+        assert.equal(
+          observed.length,
+          requestsBeforeCleanup,
+          "failed cluster guard makes no API request",
+        );
+      }
       const remaining = await f.request("GET", prefix + "/configurations/" + config.id);
-      const unknown = scenario === "agent-create-response-unknown";
+      const unknown =
+        scenario === "agent-create-response-unknown" ||
+        scenario === "agent-conflict-unknown" ||
+        scenario === "cluster-identity-changed";
       assert.equal(
         remaining.status,
         unknown ? 200 : 404,
         "only unresolved Agent admission blocks Configuration deletion",
       );
-      if (unsettled) {
+      if (unsettled && scenario !== "cluster-identity-changed") {
         assert.match(cleanupError?.message ?? "", /cleanup is unsettled/);
-      } else {
+      } else if (!unsettled) {
         assert.equal(cleanupError, undefined);
       }
       const receipt = receipts.get("cleanup");
+      if (scenario === "cluster-identity-changed") {
+        assert.equal(receipt.clusterVerified, false);
+        assert.deepEqual(receipt.resources.configuration, {
+          id: config.id,
+          name: undefined,
+          state: "unsettled",
+          createState: "created",
+        });
+        assert.deepEqual(receipt.resources.agent, {
+          id: undefined,
+          name: scenario,
+          state: "unsettled",
+          createState: "unconfirmed",
+        });
+      }
       assert.equal(receipt.settled, !unsettled);
       assert.equal(receipt.resources.configuration.state, unknown ? "unsettled" : "deleted");
       if (role) {
@@ -919,7 +1011,16 @@ test("public egress cleanup retains independent Configuration cleanup after admi
           204,
         );
       }
-      assert.equal((await f.request("GET", prefix + "/agents")).data.length, 0);
+      if (existing) {
+        const after = await f.request("GET", prefix + "/agents/" + existing.id);
+        assert.equal(after.status, 200);
+        assert.deepEqual(after.data, existingBefore.data, "pre-existing Agent is untouched");
+        assert.equal(
+          (await f.request("GET", prefix + "/configurations/" + existing.configurationId)).status,
+          200,
+        );
+      }
+      assert.equal((await f.request("GET", prefix + "/agents")).data.length, existing ? 1 : 0);
     });
   }
 });

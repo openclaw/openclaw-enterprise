@@ -109,7 +109,8 @@ delete does not prevent Configuration deletion; cleanup records each unresolved
 outcome. Uncertain Agent or Role creation is reconciled by the exact run-owned
 name, never replayed. An empty lookup is not proof that an uncertain create failed.
 An unconfirmed Configuration create cannot be looked up by name and leaves
-cleanup unsettled.
+cleanup unsettled. If the cluster identity check fails, cleanup retains all resources
+and records known resource IDs and pending intents locally as unsettled.
 
 ## Interpret results
 

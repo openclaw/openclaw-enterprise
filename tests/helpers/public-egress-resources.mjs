@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
 import { assertConnectedResponse } from "./egress-connected-inputs.mjs";
+import { AGENT_NAME_CONFLICT, REPOSITORY_SETTINGS_MISSING } from "./refusal-text.mjs";
 
 // This connected scenario owns these three resources. Keep a definitive admission
 // refusal distinct from a missing response; neither permits replaying a create.
-export function publicEgressResources({ request, namespacePath, retireAgent, record }) {
+export function publicEgressResources({
+  request,
+  namespacePath,
+  retireAgent,
+  record,
+  checkCluster,
+}) {
   const resources = {
     configuration: { path: "/configurations", state: "not-started" },
     agent: { path: "/agents", state: "not-started" },
@@ -19,12 +26,17 @@ export function publicEgressResources({ request, namespacePath, retireAgent, rec
       item.name = body.name;
       item.state = "unconfirmed";
       const response = await request("POST", namespacePath + item.path, body);
-      // These canonical admission responses precede mutation. Other errors stay
-      // uncertain, including dependency failures after a write may have begun.
+      // These admission responses precede mutation. In particular, a name-taken
+      // refusal never grants ownership of the existing Agent. Unlisted conflicts
+      // and dependency failures remain uncertain: a write may have begun.
       if (
         (response.status === 400 && response.body?.error?.code === "INVALID_REQUEST") ||
         (response.status === 401 && response.body?.error?.code === "UNAUTHENTICATED") ||
-        (response.status === 403 && response.body?.error?.code === "FORBIDDEN")
+        (response.status === 403 && response.body?.error?.code === "FORBIDDEN") ||
+        (kind === "agent" &&
+          response.status === 409 &&
+          response.body?.error?.code === "RESOURCE_CONFLICT" &&
+          [AGENT_NAME_CONFLICT, REPOSITORY_SETTINGS_MISSING].includes(response.body.error.message))
       ) {
         assertConnectedResponse(response, response.status);
         item.state = "refused";
@@ -39,7 +51,21 @@ export function publicEgressResources({ request, namespacePath, retireAgent, rec
       const outcomes = {};
       let agentSettled = false;
       for (const [kind, item] of Object.entries(resources)) {
-        outcomes[kind] = { id: item.value?.id, state: item.state };
+        outcomes[kind] = { id: item.value?.id, name: item.name, state: item.state };
+      }
+      try {
+        await checkCluster();
+      } catch (error) {
+        // Local evidence is still safe when the cluster cannot be authenticated.
+        // Do not reconcile names or perform any mutation against that target.
+        for (const outcome of Object.values(outcomes)) {
+          outcome.createState = outcome.state;
+          if (outcome.state !== "not-started" && outcome.state !== "refused") {
+            outcome.state = "unsettled";
+          }
+        }
+        await record("cleanup", { resources: outcomes, settled: false, clusterVerified: false });
+        throw error;
       }
       // Retirement is the prerequisite for deleting its Configuration and Role.
       // A Role failure must not prevent the independent Configuration deletion.

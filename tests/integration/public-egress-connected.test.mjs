@@ -132,6 +132,7 @@ test(
       "tests/integration/public-egress-connected.test.mjs",
       "tests/helpers/public-egress-workflow.mjs",
       "tests/helpers/public-egress-resources.mjs",
+      "tests/helpers/refusal-text.mjs",
       "tests/helpers/egress-connected-inputs.mjs",
     ];
     const sourceHashes = Object.fromEntries(
@@ -299,6 +300,7 @@ test(
     const resources = publicEgressResources({
       request,
       namespacePath,
+      checkCluster,
       record: (name, value) => save(name, { runId, ...value }),
       retireAgent: async (agent) => {
         agentPath = namespacePath + "/agents/" + agent.id;
@@ -341,10 +343,7 @@ test(
       },
     });
     // Arm cleanup before the first create, including failed evidence writes.
-    cleanup = async () => {
-      await checkCluster();
-      await resources.cleanup();
-    };
+    cleanup = () => resources.cleanup();
     const config = await resources.create("configuration", { kind: "agent", values });
     const agent = await resources.create("agent", {
       name: agentName,
