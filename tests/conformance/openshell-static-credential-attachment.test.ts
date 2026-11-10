@@ -234,7 +234,55 @@ test("startup composes both OpenShell members from one Backend for static source
   )("@kubernetes/client-node");
   clients.objects = Object.assign(Object.create(KubernetesObjectApi.prototype), clients.objects);
   const listPods = clients.core.listNamespacedPod;
+  let supervisorVisible = true;
+  let delegateHostname = false;
   clients.core.listNamespacedPod = async (request) => {
+    if (
+      observed.sandbox &&
+      request.labelSelector?.includes("openshell.ai/boundary-role=supervisor")
+    ) {
+      const id = observed.sandbox.id;
+      return {
+        items: supervisorVisible
+          ? [
+              {
+                metadata: {
+                  uid: "supervisor-uid",
+                  name: "os-supervisor-" + id,
+                  namespace,
+                  labels: {
+                    "openshell.ai/sandbox-id": id,
+                    "openshell.ai/boundary-pair": id,
+                    "openshell.ai/boundary-role": "supervisor",
+                    "openshell.ai/component": "supervisor",
+                    "openshell.ai/managed-by": "openshell",
+                  },
+                  ownerReferences: [
+                    {
+                      apiVersion: "agents.x-k8s.io/v1beta1",
+                      kind: "Sandbox",
+                      name: observed.sandbox.name,
+                      uid: "sandbox-uid",
+                    },
+                  ],
+                },
+                spec: {
+                  containers: [
+                    {
+                      name: "supervisor",
+                      command: [
+                        "/openshell-supervisor",
+                        ...(delegateHostname ? ["--upstream-proxy-connect-by-hostname"] : []),
+                      ],
+                    },
+                  ],
+                },
+                status: { phase: "Running" },
+              },
+            ]
+          : [],
+      };
+    }
     if (observed.sandbox && request.labelSelector?.includes("openclaw.dev/workload-role=agent")) {
       return {
         items: [
@@ -361,6 +409,68 @@ test("startup composes both OpenShell members from one Backend for static source
     controller.registerDriver(selected);
     controller.selectDriver(selected.capability, selected.id);
   }
+  // The execution-plane API returns the model Service the Installation administrator selected.
+  const modelService = {
+    kind: "Service",
+    metadata: { namespace: "inference", name: "model", uid: randomUUID() },
+    spec: {
+      type: "ClusterIP",
+      clusterIP: "10.43.0.70",
+      selector: { app: "inference" },
+      ports: [{ port: 443, targetPort: 9443, protocol: "TCP" }],
+    },
+  };
+  objects.set("Service:inference:model", modelService);
+  const settings = {
+    baseUrl: "https://model.inference.svc.cluster.local/v1",
+    protocol: "openai-responses" as const,
+  };
+  const template = await controller.createConnectionTemplate(
+    principal,
+    {
+      displayName: "Inference key",
+      mode: "static_bearer",
+      ...settings,
+      privatePeer: { kind: "kubernetes_service", namespace: "inference", name: "model" },
+    },
+    async () => {
+      throw new Error("Static templates have no discovery");
+    },
+  );
+  const named = await controller.saveModelProvider(
+    principal,
+    undefined,
+    {
+      ...settings,
+      displayName: "Local inference",
+      connectionTemplateId: template.id,
+      models: [{ id: "gpt-5.6-sol" }],
+    },
+    (id) => ({
+      id: randomUUID(),
+      installationId: controller.installation.id,
+      occurredAt: tenant.createdAt,
+      kind: "mutation",
+      actorId: principal,
+      action: "openclaw.model_providers.create",
+      resource: { kind: "installation", id: controller.installation.id },
+      outcome: "success",
+      details: { providerId: id },
+    }),
+  );
+  assert.equal(template.current.mode, "static_bearer");
+  assert.ok(template.current.mode === "static_bearer" && template.current.privatePeer);
+  for (const bound of [source, otherSource]) {
+    Object.assign(bound, {
+      config: { authorized_base_url: settings.baseUrl },
+      staticKeyGrant: {
+        ...settings,
+        connectionTemplateId: template.id,
+        connectionTemplateVersion: template.current.version,
+        privatePeer: template.current.privatePeer,
+      },
+    });
+  }
   // The Kubernetes fixture represents an initialized Namespace and registered source.
   await controller.transact(async (unit) => {
     await unit.namespaces.createNamespace({ ...tenant, status: "ready" });
@@ -385,6 +495,7 @@ test("startup composes both OpenShell members from one Backend for static source
     name: "Static attachment",
     configurationId: saved.id,
     executionMode: "dedicated",
+    modelProviderId: named.id,
     harnessAuth: { method: "credential_source", sourceId: source.id },
     credentialSources: [{ sourceId: source.id }],
   });
@@ -428,6 +539,46 @@ test("startup composes both OpenShell members from one Backend for static source
   const workspace = openShellWorkspaceName({ ...tenant, status: "ready", name: namespace });
   assert.ok(observed.sandbox, "preparation creates the real Sandbox request");
   const sandbox = observed.sandbox;
+  const privatePolicies = Array.from(objects.values()).filter(
+    (obj) =>
+      obj.kind === "NetworkPolicy" && obj.metadata.name.startsWith("allow-private-inference-"),
+  );
+  assert.equal(privatePolicies.length, 1, "a retry reconciles the same policy");
+  assert.equal(privatePolicies[0]?.metadata.namespace, namespace);
+  assert.deepEqual(privatePolicies[0]?.spec, {
+    podSelector: {
+      matchLabels: {
+        "openshell.ai/sandbox-id": sandbox.id,
+        "openshell.ai/boundary-role": "supervisor",
+      },
+    },
+    policyTypes: ["Egress"],
+    egress: [
+      { to: [{ ipBlock: { cidr: "10.43.0.70/32" } }], ports: [{ protocol: "TCP", port: 443 }] },
+      {
+        to: [
+          {
+            namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": "inference" } },
+            podSelector: { matchLabels: { app: "inference" } },
+          },
+        ],
+        ports: [{ protocol: "TCP", port: 9443 }],
+      },
+    ],
+  });
+  supervisorVisible = false;
+  await assert.rejects(driver.prepareRevision(revision, context), /per-Sandbox supervisor Pod/);
+  supervisorVisible = true;
+  delegateHostname = true;
+  await assert.rejects(driver.prepareRevision(revision, context), /validated destination IP/);
+  delegateHostname = false;
+  const originalUid = modelService.metadata.uid;
+  modelService.metadata.uid = randomUUID();
+  await assert.rejects(
+    driver.prepareRevision(revision, context),
+    /private inference peer is unavailable or changed/,
+  );
+  modelService.metadata.uid = originalUid;
   const providers = sandbox.spec?.providers;
   assert.ok(Array.isArray(providers));
   assert.deepEqual(
@@ -666,6 +817,7 @@ test("startup composes both OpenShell members from one Backend for static source
         connectionTemplateVersion: 1,
         baseUrl,
         protocol: "openai-completions",
+        privatePeer: { kind: "private_ipv4", address: "10.77.43.42" },
       },
     };
     await gateway.registerSource(
@@ -687,6 +839,7 @@ test("startup composes both OpenShell members from one Backend for static source
         port: 443,
         protocol: "rest",
         path,
+        allowedIps: ["10.77.43.42"],
         rules: [{ allow: { method: "POST", path } }],
       },
     ]);

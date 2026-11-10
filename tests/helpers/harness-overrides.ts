@@ -6,7 +6,8 @@ import type {
   EgressRoute,
 } from "../../packages/contracts/src/index.ts";
 import type { PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
-import { staticEgressFixture } from "./static-egress.mjs";
+import { openShellEgressConfiguration } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { staticEgressFixture, loadGatewayDefinition } from "./static-egress.mjs";
 
 // Exercise HTTP, IAM, Compute resolution and Proxy admission with the supplied State implementation.
 // External runtime observations remain the existing wire fixture, not live-cluster evidence.
@@ -203,7 +204,10 @@ export async function exerciseHarnessOverrides(
   return { fixture: f, revisions };
 }
 
-export async function exerciseNamedProvider(f: Awaited<ReturnType<typeof staticEgressFixture>>) {
+export async function exerciseNamedProvider(
+  f: Awaited<ReturnType<typeof staticEgressFixture>>,
+  kind: "private_ipv4" | "kubernetes_service",
+) {
   assert.ok("grant" in f);
   const root = `/namespaces/${f.namespace.id}`;
   const request = async (method: string, path: string, body: unknown, status: number) => {
@@ -211,15 +215,27 @@ export async function exerciseNamedProvider(f: Awaited<ReturnType<typeof staticE
     assert.equal(result.status, status, JSON.stringify(result.body));
     return result.data;
   };
-  const template = await request(
-    "POST",
-    "/connection-templates",
-    { displayName: "Inference key", mode: "static_bearer", ...f.modelProvider },
-    201,
-  );
+  const service = f.modelService;
+  const privatePeer =
+    kind === "private_ipv4"
+      ? { kind, address: "10.77.43.42" }
+      : { kind, namespace: service.metadata.namespace, name: service.metadata.name };
+  const endpoint = {
+    ...f.modelProvider,
+    ...(kind === "kubernetes_service"
+      ? { baseUrl: "https://model.inference.svc.cluster.local/v1" }
+      : {}),
+  };
+  const templateSettings = {
+    displayName: "Inference key",
+    mode: "static_bearer",
+    ...endpoint,
+    privatePeer,
+  };
+  const template = await request("POST", "/connection-templates", templateSettings, 201);
   const values = {
     displayName: "Research models",
-    ...f.modelProvider,
+    ...endpoint,
     connectionTemplateId: template.id,
     models: [{ id: "fixture-model", contextWindow: 8192, maxTokens: 512 }, { id: "another-model" }],
   };
@@ -276,6 +292,31 @@ export async function exerciseNamedProvider(f: Awaited<ReturnType<typeof staticE
   const saved = await f.controller.transact((state: PlatformUnitOfWork) =>
     state.revisions.findRevision(f.namespace.id, revision.agentId, revision.id),
   );
+  const approved = template.current.privatePeer;
+  assert.deepEqual(revision.harness.privateInferencePeer, approved);
+  assert.deepEqual(saved?.harness.privateInferencePeer, approved);
+  assert.ok(saved?.egressPlan);
+  // Round-trip the admitted route through the stock protobuf to catch SDK fields lost on the wire.
+  const config = openShellEgressConfiguration(
+    saved.egressPlan,
+    { middlewareName: "oce-authority", authorityScope: "execution" },
+    saved,
+  );
+  const wire = loadGatewayDefinition()["openshell.v1.SandboxPolicy"];
+  const received = wire.deserialize(wire.serialize(config)).network_policies["oce-egress-0"]
+    .endpoints;
+  const dest = new URL(values.baseUrl);
+  assert.deepEqual(received, [
+    {
+      host: dest.hostname,
+      ports: [Number(dest.port || 443)],
+      protocol: "rest",
+      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      path: "/v1/responses",
+      allowed_ips: [approved.address],
+      rules: [{ allow: { method: "POST", path: "/v1/responses" } }],
+    },
+  ]);
   // The request sender receives only the admitted protocol's operation, even though the legacy source permits both.
   assert.deepEqual(
     saved?.egressPlan?.routes.map((route: EgressRoute) => [
@@ -295,7 +336,7 @@ export async function exerciseNamedProvider(f: Awaited<ReturnType<typeof staticE
   // A legacy credential approves the same URL but has no consent for this template.
   const unapproved = await create("legacy-key-agent", f.source.id);
   await request("POST", unapproved + "/deploy", {}, 409);
-  await request(
+  const modified = await request(
     "PUT",
     "/model-providers/" + provider.id,
     {
@@ -308,4 +349,47 @@ export async function exerciseNamedProvider(f: Awaited<ReturnType<typeof staticE
   await request("POST", first + "/deploy", {}, 400);
   const original = await request("GET", first + "/revisions/" + revision.id, undefined, 200);
   assert.deepEqual(original.configuration, revision.configuration);
+  await request(
+    "PUT",
+    "/model-providers/" + provider.id,
+    {
+      ...values,
+      expectedSettingsFingerprint: modified.settingsFingerprint,
+    },
+    200,
+  );
+  if (kind === "kubernetes_service") {
+    const servicePort = service.spec.ports[0]!;
+    Object.assign(servicePort, { targetPort: "model" });
+    await request("PATCH", "/connection-templates/" + template.id, templateSettings, 409);
+    Object.assign(servicePort, { targetPort: 9443 });
+    await request(
+      "POST",
+      "/connection-templates",
+      {
+        ...templateSettings,
+        ...f.modelProvider,
+        privatePeer: { kind: "private_ipv4", address: "169.254.99.4" },
+      },
+      409,
+    );
+    // The same Service FQDN and IP now route to a different workload.
+    service.spec.selector.app = "replaced";
+    await request("POST", first + "/deploy", {}, 409);
+  }
+  const changedPeer = kind === "private_ipv4" ? { kind, address: "10.77.43.43" } : privatePeer;
+  const edited = await request(
+    "PATCH",
+    "/connection-templates/" + template.id,
+    { ...templateSettings, privatePeer: changedPeer },
+    200,
+  );
+  assert.equal(edited.current.version, 2);
+  // The URL and protocol still match, but the credential owner has not approved the new peer.
+  await request("POST", first + "/deploy", {}, 409);
+  assert.deepEqual(
+    (await request("GET", first + "/revisions/" + revision.id, undefined, 200)).harness
+      .privateInferencePeer,
+    approved,
+  );
 }
