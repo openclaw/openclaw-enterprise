@@ -2577,6 +2577,26 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
     JSON.parse(await configuration.inputValue()).agents.defaults.model,
     "codex/gpt-returned-model",
   );
+  // Codex can also run an advanced configuration with openai/<id> model references.
+  // An alternate must extend that catalog so the selected provider can resolve the model.
+  const advanced = structuredClone(selection);
+  const defaults = advanced.agents.defaults;
+  defaults.models = { "openai/gpt-6-luna": defaults.models[defaults.model] };
+  defaults.model = "openai/gpt-6-luna";
+  defaults.modelPolicy.allow = [defaults.model];
+  advanced.models.providers = { openai: advanced.models.providers.codex };
+  await configuration.fill(JSON.stringify(advanced));
+  await page.getByRole("checkbox", { name: "gpt-6-sol", exact: true }).check();
+  const routed = JSON.parse(await configuration.inputValue());
+  assert.deepEqual(routed.agents.defaults.modelPolicy.allow, [
+    "openai/gpt-6-luna",
+    "openai/gpt-6-sol",
+  ]);
+  assert.deepEqual(
+    routed.models.providers.openai.models.map((row: { id: string }) => row.id),
+    ["gpt-6-luna", "gpt-6-sol"],
+  );
+  assert.equal(routed.models.providers.codex, undefined);
   await page.getByLabel("Agent name").fill("Discarded draft");
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Start over" }).click();
