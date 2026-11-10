@@ -72,7 +72,7 @@ export class OpenShellGitGrantExchange {
     identity: OpenShellOnlineGitIdentity,
     signal: AbortSignal,
   ): Promise<string | undefined> {
-    if (!binding.grantCredentialIdentity) {
+    if (!binding.grantCredentialIdentity || !binding.installed.route) {
       return;
     }
     const now = Date.now();
@@ -107,7 +107,12 @@ export class OpenShellGitGrantExchange {
     };
     this.pending.set(key, pending);
     try {
-      const replyBy = await this.owner.approve(request, binding.installed, approval, signal);
+      const replyBy = await this.owner.approve(
+        request,
+        { route: binding.installed.route },
+        approval,
+        signal,
+      );
       if (!replyBy || signal.aborted || this.pending.get(key) !== pending) {
         return;
       }
@@ -149,12 +154,18 @@ export class OpenShellGitGrantExchange {
         },
         signal,
       );
-      if (!isDeepStrictEqual(live, pending.binding) || signal.aborted || !(deadline > Date.now())) {
+      const route = live?.installed.route;
+      if (
+        !route ||
+        !isDeepStrictEqual(live, pending.binding) ||
+        signal.aborted ||
+        !(deadline > Date.now())
+      ) {
         return;
       }
       return await this.owner.redeem(
         { ...pending.request, deadlineAt: new Date(deadline).toISOString() },
-        pending.binding.installed,
+        { route },
         grant,
         signal,
       );

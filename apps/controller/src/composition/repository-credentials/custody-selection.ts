@@ -90,5 +90,9 @@ export function repositoryGitAuthority(drivers: InstallationRuntimeDrivers) {
         kind:
           drivers.repositoryOwner?.controlSocket === undefined ? "unavailable" : "native-broker",
       };
-  return { tokenService, repositoryGitCustody };
+  return {
+    tokenService,
+    repositoryGitCustody,
+    prepareGitOnDemand: repositoryTransport?.prepareGitOnDemand ?? false,
+  };
 }

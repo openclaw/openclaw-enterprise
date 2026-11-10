@@ -309,10 +309,9 @@ confirm expired launch identity through fresh Sandbox and main-process readback.
 [Freshness limits](../reference/repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery)
 govern subtraction and succession. Installation and post-detach completion require ready credentials.
 
-`ControllerWorker.assertRepositoryGitMaterial` awaits committed tokens after activation.
-Quarantine/timeout fails deployment. For existing Agents, `continueRevisionWithoutGit`
-atomically records `REPOSITORY_GIT_TOKEN_QUARANTINED` or `REPOSITORY_GIT_TOKEN_PENDING`
-and maintenance, or retires the version ([first-token handling](../reference/repository-credentials/prepared-native-git.md#deployment-and-the-first-token)).
+Prepared delivery [waits for committed material](../reference/repository-credentials/prepared-native-git.md#deployment-and-the-first-token).
+Read-only grant activation verifies the hook. Authenticated redemption starts issuance.
+The broker rechecks live authority before release.
 
 Missing standing evidence closes Git. Within five seconds, the worker rechecks model authority, withdrawal, stop and replacement without preparation or activation ([test](../../tests/integration/postgres-standing-session-worker.test.ts)).
 

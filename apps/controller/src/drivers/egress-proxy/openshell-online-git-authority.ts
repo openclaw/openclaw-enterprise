@@ -1,5 +1,8 @@
 import { HARNESS_GIT_PROBE_PREFIX } from "../compute/harness-egress-enrollment.ts";
-import type { InstalledGitMaterial } from "../repo/github/access/prepared-repository-git.ts";
+import type {
+  InstalledGitMaterial,
+  InstalledGitRoute,
+} from "../repo/github/access/prepared-repository-git.ts";
 import type { PreparedGitGrantRequest } from "../repo/github/access/prepared-git-redemption.ts";
 import { createHash, randomUUID } from "node:crypto";
 import type { Server } from "@grpc/grpc-js";
@@ -38,7 +41,7 @@ type GitBindingIdentity = {
   readonly sessionId: string;
   readonly providerInstanceId: string;
   readonly grantId: string;
-  readonly installed: InstalledGitMaterial;
+  readonly installed: InstalledGitMaterial | InstalledGitRoute;
   readonly grantCredentialIdentity?: string;
 };
 
@@ -206,8 +209,9 @@ function validBinding(
       binding.providerInstanceId,
       binding.scope ? binding.installationId : binding.repositoryId,
       binding.grantId,
-      binding.installed?.preparationAttemptId,
-      binding.installed?.materialVersion,
+      ...(binding.installed.materialVersion !== undefined
+        ? [binding.installed.preparationAttemptId, binding.installed.materialVersion]
+        : []),
     ].every((id) => typeof id === "string" && /^[\x21-\x7e]{1,256}$/.test(id)) &&
     (binding.scope !== undefined
       ? /^[1-9][0-9]{0,15}$/.test(binding.installationId) &&
@@ -368,6 +372,9 @@ export function createOpenShellOnlineGitAuthority(
           return replyBy && !signal.aborted && Date.parse(replyBy) <= Date.parse(request.deadlineAt)
             ? { kind: "allow", replyBy }
             : deny("approval_denied", operation);
+        }
+        if (installed.materialVersion === undefined) {
+          return deny("binding_mismatch", q.operation);
         }
         const result = await options.authorizeOnlineRequest(q, installed, signal);
         if (result.kind === "denied") {
