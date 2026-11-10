@@ -14392,32 +14392,51 @@ export class OpenClawController {
     });
   }
 
+  /**
+   * Status follows the Agent; completion follows the verified finalizing actor. While the Agent
+   * exists, its deletion status needs `read` on that exact Agent, like any other Agent read.
+   * Once it is deleted, `deleted` is visible to a caller who still holds Agent read at
+   * Namespace scope, or to the actor the worker verified when it finalized the deletion, while
+   * that actor holds Namespace read. Every other caller gets this Agent read's denial, which
+   * reads the same whether the Agent still exists, was deleted or never existed.
+   */
   async getAgentDeletionStatus(
     principalId: string,
     namespaceId: string,
     agentId: string,
-    receiptId?: string,
   ): Promise<AgentDeletionStatusResponse["data"]> {
-    // A receipt follows the caller's accepted DELETE, including an idempotent repeat or
-    // authorized takeover. The finalizer removes Agent grants, but never Namespace access.
-    const resource: ResourceRef =
-      receiptId === undefined
-        ? { kind: "agent", id: agentId, namespaceId }
-        : { kind: "namespace", id: namespaceId, namespaceId };
-    await this.authorize(principalId, "read", resource);
-    const status = await this.read((state) =>
-      state.operations.findAgentDeletionStatus({
-        installationId: this.installation.id,
-        namespaceId,
-        agentId,
-        ...(receiptId === undefined ? {} : { receipt: { id: receiptId, actorId: principalId } }),
-      }),
-    );
+    this.namespaceIdentity(namespaceId);
+    if (!isNonEmptyString(agentId)) {
+      throw new ScopeViolationError("The exact Agent identity is missing.");
+    }
+    const lookup = { installationId: this.installation.id, namespaceId, agentId };
+    try {
+      await this.authorize(principalId, "read", { kind: "agent", id: agentId, namespaceId });
+    } catch (denial) {
+      if (
+        !(denial instanceof AuthorizationDeniedError) ||
+        Object.getPrototypeOf(denial) !== AuthorizationDeniedError.prototype
+      ) {
+        throw denial;
+      }
+      // Only a completed deletion this caller finalized, never live state, and only while the
+      // caller can still read the Namespace. Anything else answers with the same denial.
+      if (
+        (await this.canRead(principalId, { kind: "namespace", id: namespaceId, namespaceId })) &&
+        (await this.read((state) =>
+          state.operations.agentDeletionCompletedBy({ ...lookup, actorId: principalId }),
+        ))
+      ) {
+        return { namespaceId, agentId, status: "deleted" };
+      }
+      throw denial;
+    }
+    const status = await this.read((state) => state.operations.findAgentDeletionStatus(lookup));
     if (status === undefined) {
-      // A missing, wrong-subject or wrong-target receipt must not fall back to the live read.
+      // A readable Agent with no deletion recorded, or no such Agent in a readable scope.
       throw new ScopeViolationError("The requested Agent deletion status is unavailable.");
     }
-    return { namespaceId, agentId, ...(receiptId === undefined ? {} : { receiptId }), ...status };
+    return { namespaceId, agentId, ...status };
   }
 
   /** Observe resources only; the caller owns authorization, claims, and status commits. */

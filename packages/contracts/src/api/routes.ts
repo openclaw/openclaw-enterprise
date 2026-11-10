@@ -41,7 +41,6 @@ import {
   AgentDeploymentBody,
   FirstDeploymentRecoveryTuple,
   AgentId,
-  AuditId,
   NamespaceId,
   SecretId,
   AgentProvisioningParams,
@@ -93,7 +92,6 @@ import {
 } from "./common.ts";
 import {
   AgentListResponse,
-  AgentDeletionAcceptedResponse,
   AgentDeletionStatusResponse,
   FirstDeploymentReceiptResponse,
   FirstDeploymentRecoveryResponse,
@@ -1947,7 +1945,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: AgentParams,
-      response: { 202: AgentDeletionAcceptedResponse, ...mutationErrors },
+      response: { 202: AgentResponse, ...mutationErrors },
     },
   },
   {
@@ -1957,14 +1955,11 @@ export const occApiRoutes = [
     action: "openclaw.agents.deletion_status.read",
     iamAction: "read",
     resourceKind: "agent",
-    authorizationTarget: "agent_deletion_status",
-    summary: "Follow an Agent deletion, including its confirmed completion with your receipt",
+    authorizationTarget: "agent",
+    summary: "Follow an Agent deletion through its confirmed completion",
     tags: ["Agents"],
     schema: {
-      querystring: Type.Object(
-        { receiptId: Type.Optional(AuditId) },
-        { additionalProperties: false },
-      ),
+      querystring: EmptyQuery,
       params: AgentParams,
       response: { 200: AgentDeletionStatusResponse, ...readErrors },
     },

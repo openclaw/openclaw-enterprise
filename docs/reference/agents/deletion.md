@@ -2,22 +2,24 @@
 
 A bodyless `DELETE /namespaces/:namespaceId/agents/:agentId` requires exact-Agent
 `delete`, sets `status: deleting` and desired state `stopped`, queues teardown,
-and returns `202` with `meta.deletionReceiptId`. Keep that receipt to follow the
-deletion after the Agent and its access grants are removed. While the Agent exists,
-updates, deployment, credential provisioning, and workspace writes return `409`.
+and returns `202` with the deleting Agent. While the Agent exists, updates,
+deployment, credential provisioning, and workspace writes return `409`.
 Repeated DELETE leaves queued or running work unchanged.
 
 ## Follow deletion
 
-Read `GET /namespaces/:namespaceId/agents/:agentId/deletion-status?receiptId=…`
-as the same signed-in Principal, with current read permission on that Namespace.
-The receipt acknowledges your accepted request, including a repeat of deletion
-someone else started. It grants no access to the Agent, audit events or retries.
-Losing Agent access does not revoke this receipt; losing Namespace access does.
-Without a receipt, a caller with read permission on the Agent can see only deletion
-work on that still-existing Agent. A failed read, including `403` or `404`, cannot
-establish that deletion finished. After an uncertain DELETE, check status before
-deciding whether to send a new request.
+Read `GET /namespaces/:namespaceId/agents/:agentId/deletion-status`. Status follows
+the Agent; completion follows the verified finalizing actor:
+
+- While the Agent exists, the read needs current read permission on that Agent.
+- After deletion commits, `deleted` is returned to a caller with Agent read across
+  the Namespace, or to the actor whose delete permission the worker rechecked when
+  it finalized the deletion, while that actor can still read the Namespace.
+
+Every other caller gets the same `403` whether the Agent exists, was deleted or
+never existed. Removing someone's Agent access ends what they can learn about it.
+A `403` or `404` never establishes that deletion finished. After an uncertain
+DELETE, check status before deciding whether to send a new request.
 
 Status moves from `queued` to `running` when a worker claims deletion. `waiting`
 means a retry is deferred or an expired claim awaits recovery. When provided,
@@ -29,7 +31,8 @@ repository cleanup can still be running.
 ## Cleanup and retry
 
 The worker reauthorizes the caller, binds the saved identity to
-Compute, retires every version, and removes runtime credentials. It
+Compute, retires every version, and removes runtime credentials. It rechecks
+the caller's delete permission in the finalizing transaction, then
 atomically deletes the Agent, its Agent revisions, service principal, API keys, and
 exact IAM bindings and restrictions. Kubernetes retirement waits for owned Pods
 and removes owned artifacts, including workspace data. Namespace Configurations

@@ -275,9 +275,10 @@ deploy a new version; old versions cannot be restarted. See
 
 ## Deletion
 
-[Delete an Agent and follow its progress](agents/deletion.md). The controller returns a
-receipt with `202 Accepted`. Use it to confirm when deletion finishes, including after
-the Agent and its access grants are removed. A failed status read cannot confirm deletion.
+[Delete an Agent and follow its progress](agents/deletion.md). Status follows the Agent
+while it exists. After the Agent and its access grants are removed, only the actor who
+finished the deletion or a Namespace-wide Agent reader can confirm it. A failed status
+read cannot confirm deletion.
 
 ## Editable configuration
 

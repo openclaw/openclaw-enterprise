@@ -1127,15 +1127,28 @@ export type PlatformOperation =
       readonly operationId?: never;
     });
 
+export interface AgentDeletionLookup {
+  readonly installationId: string;
+  readonly namespaceId: string;
+  readonly agentId: string;
+}
+
 export interface PlatformOperationReadRepository {
   list(): Promise<readonly Readonly<PlatformOperation>[]>;
-  /** An exact live deletion, or the outcome of this actor's receipted DELETE. */
-  findAgentDeletionStatus(request: {
-    readonly installationId: string;
-    readonly namespaceId: string;
-    readonly agentId: string;
-    readonly receipt?: { readonly id: string; readonly actorId: string };
-  }): Promise<Pick<AgentDeletionStatusResponse["data"], "status" | "nextAttemptAt"> | undefined>;
+  /**
+   * An exact live deletion while the Agent exists, or `deleted` once the finalizer removed it
+   * and recorded AGENT_DELETED. The caller has already authorized Agent read.
+   */
+  findAgentDeletionStatus(
+    request: AgentDeletionLookup,
+  ): Promise<Pick<AgentDeletionStatusResponse["data"], "status" | "nextAttemptAt"> | undefined>;
+  /**
+   * True only when the Agent is gone and its AGENT_DELETED record names `actorId`: the actor
+   * whose delete grant the worker verified when it finalized the deletion.
+   */
+  agentDeletionCompletedBy(
+    request: AgentDeletionLookup & { readonly actorId: string },
+  ): Promise<boolean>;
   findWork(idempotencyKey: string): Promise<Readonly<ControllerWork> | undefined>;
   findWorkAttempt(idempotencyKey: string): Promise<Readonly<ControllerWorkAttempt> | undefined>;
   /** Whether this revision completed maintenance requiring fresh repository execution. */
@@ -1808,6 +1821,33 @@ function repositories(
   iamSubjects: IAMSubjectSource,
   preparedTokenProof: PreparedTokenCurrentProof,
 ): PlatformUnitOfWork {
+  const liveNamespace = (installationId: string, namespaceId: string) => {
+    const namespace = snapshot.namespaces.get(namespaceId);
+    return (
+      snapshot.installation?.id === installationId &&
+      namespace !== undefined &&
+      namespace.deletedAt === undefined
+    );
+  };
+  // The finalizer's committed AGENT_DELETED record, optionally for the actor it verified.
+  const agentDeleted = (
+    installationId: string,
+    namespaceId: string,
+    agentId: string,
+    actorId?: string,
+  ) =>
+    snapshot.audit.some(
+      (event) =>
+        event.kind === "mutation" &&
+        event.outcome === "success" &&
+        event.installationId === installationId &&
+        event.namespaceId === namespaceId &&
+        event.resource.kind === "agent" &&
+        event.resource.id === agentId &&
+        event.action === "openclaw.agents.lifecycle.delete" &&
+        event.details?.reasonCode === "AGENT_DELETED" &&
+        (actorId === undefined || event.actorId === actorId),
+    );
   const installations: InstallationRepository = {
     findInstallation: async (installationId) =>
       snapshot.installation?.id === installationId
@@ -4361,31 +4401,8 @@ function repositories(
         Object.freeze(snapshot.operations.map((operation) => immutableCopy(operation))),
       // The in-memory operation log has no executing or terminal work records.
       retryFailedAgentDeletion: async () => false,
-      findAgentDeletionStatus: async ({ installationId, namespaceId, agentId, receipt }) => {
-        if (snapshot.installation?.id !== installationId) {
-          return undefined;
-        }
-        const namespace = snapshot.namespaces.get(namespaceId);
-        if (namespace === undefined || namespace.deletedAt !== undefined) {
-          return undefined;
-        }
-        const exactSuccess = (event: AuditEvent) =>
-          event.kind === "mutation" &&
-          event.outcome === "success" &&
-          event.installationId === installationId &&
-          event.namespaceId === namespaceId &&
-          event.resource.kind === "agent" &&
-          event.resource.id === agentId;
-        if (
-          receipt &&
-          !snapshot.audit.some(
-            (event) =>
-              event.id === receipt.id &&
-              event.actorId === receipt.actorId &&
-              event.action === "openclaw.agents.delete" &&
-              exactSuccess(event),
-          )
-        ) {
+      findAgentDeletionStatus: async ({ installationId, namespaceId, agentId }) => {
+        if (!liveNamespace(installationId, namespaceId)) {
           return undefined;
         }
         const agent = snapshot.agents.get(agentKey(namespaceId, agentId));
@@ -4402,16 +4419,14 @@ function repositories(
             );
           return queued ? { status: "queued" } : undefined;
         }
-        const completed =
-          receipt !== undefined &&
-          snapshot.audit.some(
-            (event) =>
-              event.action === "openclaw.agents.lifecycle.delete" &&
-              exactSuccess(event) &&
-              event.details?.reasonCode === "AGENT_DELETED",
-          );
-        return completed ? { status: "deleted" } : undefined;
+        return agentDeleted(installationId, namespaceId, agentId)
+          ? { status: "deleted" }
+          : undefined;
       },
+      agentDeletionCompletedBy: async ({ installationId, namespaceId, agentId, actorId }) =>
+        liveNamespace(installationId, namespaceId) &&
+        !snapshot.agents.has(agentKey(namespaceId, agentId)) &&
+        agentDeleted(installationId, namespaceId, agentId, actorId),
       retryFailedNamespaceDeletion: async () => false,
       expediteCredentialWithdrawalWork: async () => false,
       findWorkAttempt: async () => undefined,

@@ -4,7 +4,6 @@ import { ComputePreparationFailureEvidenceSchema } from "../compute-preparation.
 
 import {
   AgentId,
-  AuditId,
   AgentProvisioningWorkId,
   PresetId,
   PresetTemplateSchema,
@@ -1266,24 +1265,12 @@ export const AgentResponse = Type.Object(
   { additionalProperties: false },
 );
 
-export const AgentDeletionAcceptedResponse = Type.Object(
-  {
-    data: AgentSchema,
-    meta: Type.Object(
-      { ...Meta.properties, deletionReceiptId: AuditId },
-      { additionalProperties: false },
-    ),
-  },
-  { additionalProperties: false },
-);
-
 export const AgentDeletionStatusResponse = Type.Object(
   {
     data: Type.Object(
       {
         namespaceId: NamespaceId,
         agentId: AgentId,
-        receiptId: Type.Optional(AuditId),
         status: Type.Union([
           Type.Literal("queued"),
           Type.Literal("running", { description: "A worker holds an unexpired deletion claim." }),
@@ -2116,7 +2103,6 @@ export type AgentReadWire = Type.Static<typeof AgentReadSchema>;
 export type AgentRevisionReadWire = Type.Static<typeof AgentRevisionReadSchema>;
 export type AgentRevisionSummaryWire = Type.Static<typeof AgentRevisionSummarySchema>;
 export type AgentReadResponse = Type.Static<typeof AgentReadResponse>;
-export type AgentDeletionAcceptedResponse = Type.Static<typeof AgentDeletionAcceptedResponse>;
 export type AgentDeletionStatusResponse = Type.Static<typeof AgentDeletionStatusResponse>;
 export type AgentRevisionReadResponse = Type.Static<typeof AgentRevisionReadResponse>;
 export type AgentWire = Type.Static<typeof AgentSchema>;

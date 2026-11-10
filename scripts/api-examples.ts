@@ -257,7 +257,6 @@ const savedAccount = {
 };
 
 export const parameterExamples = {
-  receiptId: id("aud"),
   "x-occ-session-key": "s".repeat(43),
   origin: "https://console.example.com",
   oauthClientId,
@@ -466,7 +465,7 @@ export const responseExamples = {
   deleteNamespace: { ...namespace, status: "deleting" },
   listAgents: [agent],
   getAgent: agent,
-  getAgentDeletionStatus: { agentId, namespaceId, receiptId: id("aud"), status: "deleted" },
+  getAgentDeletionStatus: { agentId, namespaceId, status: "deleted" },
   createAgent: agent,
   updateAgent: agent,
   deleteAgent: { ...agent, status: "deleting" },

@@ -13,6 +13,7 @@ export function createPlatformReadView(
       "list",
       "findWork",
       "findAgentDeletionStatus",
+      "agentDeletionCompletedBy",
       "findWorkAttempt",
       "hasRepositoryExecutionRedeployRequired",
       "hasOutstandingCredentialWithdrawalWork",

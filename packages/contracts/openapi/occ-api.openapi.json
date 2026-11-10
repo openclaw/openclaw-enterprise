@@ -19505,10 +19505,7 @@
                         "servicePrincipalId": "principal-docs-agent",
                         "status": "deleting"
                       },
-                      "meta": {
-                        "deletionReceiptId": "aud_123e4567-e89b-42d3-a456-426614174000",
-                        "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-                      }
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
                     }
                   }
                 },
@@ -19787,16 +19784,12 @@
                     "meta": {
                       "additionalProperties": false,
                       "properties": {
-                        "deletionReceiptId": {
-                          "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                          "type": "string"
-                        },
                         "requestId": {
                           "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         }
                       },
-                      "required": ["requestId", "deletionReceiptId"],
+                      "required": ["requestId"],
                       "type": "object"
                     }
                   },
@@ -21642,24 +21635,9 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/deletion-status": {
       "get": {
-        "description": "Without receiptId, requires read permission on the requested Agent and reports only deletion still recorded on that Agent. With receiptId, requires current read permission on the requested Namespace and the caller's own accepted DELETE receipt for that exact Agent. The receipt remains readable after Agent grants are removed and grants no access to the Agent or audit events.",
+        "description": "Requires read permission on the requested Agent. Without Agent read, reports only a completed deletion, and only to the actor whose delete grant the worker verified when it finalized that deletion, while that actor can read the requested Namespace. Every other caller receives the Agent read denial, whether or not the Agent exists.",
         "operationId": "getAgentDeletionStatus",
         "parameters": [
-          {
-            "examples": {
-              "example": {
-                "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "aud_123e4567-e89b-42d3-a456-426614174000"
-              }
-            },
-            "in": "query",
-            "name": "receiptId",
-            "required": false,
-            "schema": {
-              "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string"
-            }
-          },
           {
             "examples": {
               "example": {
@@ -21702,7 +21680,6 @@
                       "data": {
                         "agentId": "agt_123e4567-e89b-42d3-a456-426614174000",
                         "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-                        "receiptId": "aud_123e4567-e89b-42d3-a456-426614174000",
                         "status": "deleted"
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
@@ -21726,10 +21703,6 @@
                         "nextAttemptAt": {
                           "format": "date-time",
                           "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
-                          "type": "string"
-                        },
-                        "receiptId": {
-                          "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
                         "status": {
@@ -21837,18 +21810,13 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Follow an Agent deletion, including its confirmed completion with your receipt",
+        "summary": "Follow an Agent deletion through its confirmed completion",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "agent", "scope": "requested" },
           {
             "action": "read",
-            "condition": "without_deletion_receipt",
-            "resourceKind": "agent",
-            "scope": "requested"
-          },
-          {
-            "action": "read",
-            "condition": "deletion_receipt",
+            "condition": "deletion_completion",
             "resourceKind": "namespace",
             "scope": "requested"
           }
