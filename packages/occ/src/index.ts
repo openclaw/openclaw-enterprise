@@ -2826,14 +2826,16 @@ export class OpenClawController {
               namespaceId: namespace.id,
               parentAgentId: agent.id,
             });
-            const revision = await state.revisions.findRevision(
+            const revision = await state.revisions.findRevisionForBrowsing(
               namespace.id,
               agent.id,
               agent.activeRevisionId,
             );
             revisions.set(
               agent.activeRevisionId,
-              revision?.id === agent.activeRevisionId &&
+              revision !== undefined &&
+                !("configurationReadError" in revision) &&
+                revision.id === agent.activeRevisionId &&
                 revision.namespaceId === namespace.id &&
                 revision.agentId === agent.id
                 ? revision

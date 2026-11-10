@@ -32,6 +32,12 @@ Drivers. A changed inventory refuses the read. The
 [upgrade helper](../../guides/deploy/production-upgrade.md#prepare-the-release) rechecks
 before stopping writers; operators must still exclude concurrent deployment.
 
+An unreadable saved revision snapshot yields `unknown` for that Agent; the
+inventory retains its active revision ID and the rest of the authorized fleet.
+Database and identity failures still fail the read. This does not make the
+snapshot executable: deployment reads and the upgrade helper's saved-Harness
+validation remain strict.
+
 The optional `ComputeDriver.repositoryWorkerRestartDisposition(revision, signal)`
 operation receives the immutable revision. Kubernetes Compute delegates to
 `SandboxRepositoryAccess.repositoryWorkerRestartDisposition(context)`, passing

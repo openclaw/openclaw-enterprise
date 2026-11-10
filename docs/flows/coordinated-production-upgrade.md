@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-10"
-last_updated_session: "authoring-run/38bf80b2-72d7-4de5-8ae3-6f161a5a5296"
+last_updated_session: "authoring-run/f2adfad8-a3ec-4d5a-a92c-96e12e671ed8"
 ---
 
 # Production image upgrade flow
@@ -94,18 +94,18 @@ live comparison stays exact. Immutable reference switches require
 string keys. Startup validates controllers; broker checks references,
 not contents.
 
-`read_restart_inventory` requires one complete authorized inventory with valid
+`read_restart_inventory` requires complete authorized inventory with valid
 ownership, IDs and selection states. Retained running revisions need an accepted
 [restart disposition](../reference/repository-credentials/worker-replacement.md).
-Controller-only
-`occ agent revision AGENT_ID REVISION_ID` must return one owned revision with
-object-valued Harness settings. Retain IDs and validation outcome; drafts cannot
-substitute. Runtime upgrades record replacements; draft validation requires image
+Controller-only `occ agent revision AGENT_ID REVISION_ID` still requires one owned
+revision with object-valued Harness settings; retain IDs and validation outcome.
+Drafts cannot substitute. Runtime upgrades record replacements; draft validation requires image
 support and size compliance. Quiescence is nonatomic; repository continuity is unverified.
 
-`OpenClawController.getInstallationDeploymentInventory` invokes Compute outside
-State transactions with a shared ten-second budget, then rechecks authorized
-fleet/Driver selections. Changes refuse; observation failures yield `unknown`.
+`OpenClawController.deploymentInventorySnapshot` uses `findRevisionForBrowsing`:
+unreadable snapshots yield `unknown`; database/identity errors propagate. `getInstallationDeploymentInventory` invokes Compute outside State
+transactions under one ten-second budget, then rechecks authorized fleet/Driver
+selections. Changes refuse; owner failures yield `unknown`.
 
 Refuse nonterminal deployments. Runtime upgrades require baseline versions/ready Namespaces. Exclude stopped/deleting
 Agents; allow pending repository cleanup.
@@ -141,11 +141,9 @@ mounts and service accounts into single-Pod Jobs with the candidate Secret,
 no retries and the selected deadline. `preflight_startup` verifies Job UID/child ownership, waiting for children and
 refusing replacements or multiple children. Job failure overrides child success.
 
-The API loads themes with
-`apps/controller/src/composition/console-theme.ts:loadConsoleTheme`. Invalid bundles
-stop preflight; workers skip themes. Both call
-`loadStartupConfigurationSnapshot` and `loadInstallationConfiguration` to resolve
-Drivers and Preset files without opening the database.
+API `apps/controller/src/composition/console-theme.ts:loadConsoleTheme` rejects invalid
+bundles; workers skip themes. Both resolve Drivers and Presets through
+`loadStartupConfigurationSnapshot` and `loadInstallationConfiguration` without database access.
 `apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure` formats
 typed configuration refusals with up to 32 field diagnostics through the API/worker
 log filter. Before and after log retrieval, it checks Job/Pod identity; it rejects NUL bytes
@@ -273,10 +271,10 @@ through that check, dispatch and completion.
 `scripts/upgrade-production-images:confirmed_deployment_status` and
 `scripts/upgrade-dispatch-state.py:transition`
 
-Flush intent before dispatch. Unresolved intents block
-later sends. The journal records accepted revisions and definite refusals; resume may retry
-refusals. Superseded receipts remain; replacements must name the current
-failed revision. Unknown outcomes or stale journals require
+Flush intent before dispatch; unresolved intents block sends.
+The journal retains accepted revisions, definite refusals and superseded receipts.
+Resume may retry refusals; replacements must name the current failed revision.
+Unknown outcomes or stale journals require
 [recovery](../guides/deploy/production-upgrade-recovery.md).
 
 Verify authorized deployment status, version and Pod readiness on the candidate digest. Before startup, `openClawStateMigrationHelper` in
@@ -286,9 +284,8 @@ refusal holds `state-migration` unready; ordinary warnings do not. A private pen
 marker forces interrupted or refused maintenance to retry after restart, even with current schemas. The same step
 runs before Harness native setup or native-worker connection. Embedded execution
 requires one runtime container; dedicated execution requires Gateway and Agent containers.
-Each replacement gateway runs read-only
-`openclaw doctor --lint --json --severity-min error`, one at a time, with a heap cap
-(`--doctor-heap-mib`, default 384 MiB). Doctor shares the gateway's memory limit;
+Replacement gateways run read-only `openclaw doctor --lint --json --severity-min error`
+serially, with a heap cap (`--doctor-heap-mib`, default 384 MiB). Doctor shares the gateway's memory limit;
 an OOM kill can stop both. The cgroup v2 check (`gateway_free_memory`) requires
 one reading with cap plus 640 MiB free or two consecutive readings with cap plus
 256 MiB. This reserves no memory. Transient failures are retried.
@@ -307,10 +304,10 @@ resume checks the replacement.
 
 `docs/guides/deploy/production-upgrade.md:Verify the release`
 
-Completion requires expected Helm revision and OCC access, plus deployment,
-readiness and Doctor success for runtime upgrades. For selected-Agent checks,
-`verify_agent_continuity` waits before terminal controller/Helm checks.
-Each role needs one Running, Ready Pod; replacement UIDs/completed init containers are valid. An eight-Pod result hits the endpoint cap and cannot prove uniqueness.
+Completion requires the expected Helm revision and OCC access; runtime upgrades
+also require deployment, readiness and Doctor success.
+For selected-Agent checks, `verify_agent_continuity` precedes terminal controller/Helm checks.
+Each role needs one Running, Ready Pod; replacement UIDs/completed init containers are valid. Eight results hit the endpoint cap and cannot prove uniqueness.
 Previously observed provider Harness status must remain running. Failure retains
 observations without `completed`; resume rechecks without rerunning successful Helm.
 
@@ -335,8 +332,7 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 - Read `helm-attempts/<UUID>/{render-error.log,server-dry-run-error.log}` for native
   preparation failures; `server-dry-run.txt` retains successful output. Inspect
   `preflight-<api|worker>.log` and `-status.json` for rejected candidates.
-- For scale, Helm upgrade, or rollout failures, inspect
-  `native-command-failures.tsv`; see [upgrade recovery](../guides/deploy/production-upgrade-recovery.md).
+- Inspect `native-command-failures.tsv` for scale, Helm upgrade or rollout failures; see [upgrade recovery](../guides/deploy/production-upgrade-recovery.md).
 - For runtime failures, inspect `dispatch/*.error`, `dispatch/*.rejected`,
   version history, and `status/*.json`. Doctor failures: `status/*.doctor.json` and `status/*.doctor.error`.
 - Compare `before-workloads.json` and `after-workloads.json`. After a controller-only release, expect one same-image Pod template
@@ -360,6 +356,8 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 08:20: Classify unreadable snapshots. (authoring-run/f2adfad8-a3ec-4d5a-a92c-96e12e671ed8 - 6665c7f7e3c8ef13f8d7eb8962749840ff82f6c5)
 
 - 2026-11-10 07:56: Merge restart and migration checks. (authoring-run/38bf80b2-72d7-4de5-8ae3-6f161a5a5296 - 71d4ad6cdb9587a86c46c64c661a9009d413e51f)
 

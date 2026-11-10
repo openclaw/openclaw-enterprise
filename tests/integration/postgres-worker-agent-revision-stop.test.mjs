@@ -1175,6 +1175,63 @@ test(
     assert.equal(await inventory.read(), "not-applicable");
     assert.deepEqual(await repositoryRestartState(fixture.observerPool, revision.id), before);
     assert.equal((await fixture.currentAgent(owner)).activeRevisionId, revision.id);
+
+    // A previously accepted plugin enum can remain in an immutable revision after
+    // the reader changes. It must not make the entire fleet inventory unavailable.
+    const historicalId = `rev_${randomUUID()}`;
+    const historicalPlugins = {
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+      plugins: { "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "prompt" } } },
+    };
+    await assert.rejects(
+      fixture.state.transact((unit) =>
+        unit.revisions.createRevision({
+          ...revision,
+          id: historicalId,
+          revision: revision.revision + 1,
+          plugins: historicalPlugins,
+        }),
+      ),
+      /AgentRevision plugin state is invalid/u,
+    );
+    await fixture.observerPool.query(
+      `INSERT INTO occ.agent_revisions
+         (id, namespace_id, agent_id, revision_number, backend_id,
+          admitted_spec, admitted_at, gateway_managed_mode)
+       SELECT $1, namespace_id, agent_id, revision_number + 1, backend_id,
+              jsonb_set(admitted_spec, '{plugins}', $2::jsonb), admitted_at, gateway_managed_mode
+       FROM occ.agent_revisions WHERE id = $3`,
+      [historicalId, JSON.stringify(historicalPlugins), revision.id],
+    );
+    const selectRevision = (expected, next) =>
+      fixture.state.transact((unit) =>
+        unit.agents.compareAndSetActiveRevision(fixture.namespace.id, owner.id, expected, next),
+      );
+    assert.ok(await selectRevision(revision.id, historicalId));
+    try {
+      const historicalBefore = await repositoryRestartState(fixture.observerPool, historicalId);
+      assert.equal(await inventory.read(historicalId), "unknown");
+      assert.deepEqual(
+        await repositoryRestartState(fixture.observerPool, historicalId),
+        historicalBefore,
+      );
+      await assert.rejects(
+        fixture.state.transact((unit) =>
+          unit.revisions.findRevision(fixture.namespace.id, owner.id, historicalId),
+        ),
+        /Persisted AgentRevision plugin state is invalid/u,
+      );
+    } finally {
+      assert.ok(await selectRevision(historicalId, revision.id));
+    }
+    assert.equal(await inventory.read(), "not-applicable");
+    assert.deepEqual(await repositoryRestartState(fixture.observerPool, revision.id), before);
+    assert.deepEqual(
+      await fixture.state.transact((unit) =>
+        unit.revisions.findRevision(fixture.namespace.id, owner.id, revision.id),
+      ),
+      revision,
+    );
   },
 );
 

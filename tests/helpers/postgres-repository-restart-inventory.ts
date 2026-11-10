@@ -177,7 +177,7 @@ export async function repositoryRestartInventory(
     { origin, cookie: cookieHeaderFromSetCookie(cookies) },
     { host: "console.oce.localhost" },
   );
-  const read = async () => {
+  const read = async (activeRevisionId = revision.id) => {
     const response = await app.inject({
       method: "GET",
       url: "/installation/deployment-inventory",
@@ -188,7 +188,7 @@ export async function repositoryRestartInventory(
       .json()
       .data.namespaces.find((entry: { id: string }) => entry.id === revision.namespaceId);
     const agent = namespace.agents.find((entry: { id: string }) => entry.id === revision.agentId);
-    assert.equal(agent.activeRevisionId, revision.id);
+    assert.equal(agent.activeRevisionId, activeRevisionId);
     return agent.repositoryWorkerRestart;
   };
   return { read, namespace };
