@@ -16,11 +16,14 @@ function waitForHarnessEgressEnrollment(enrollment) {
   const verifier = process.env.APP_TOKEN_SHA;
   const port = Number(process.env.APP_SERVER_PORT);
   const preview = enrollment?.repositoryGitAuthorization === "request-hook-observed";
-  const online = preview || enrollment?.repositoryGitAuthorization === "online-request";
+  const onlineGit = preview || enrollment?.repositoryGitAuthorization === "online-request";
+  const onlineModel = enrollment?.authorization === "online-request";
+  const online = onlineGit || onlineModel;
   const executionKeys = ["installationId", "namespaceId", "agentId", "servicePrincipalId", "revisionId", "executionId"];
   if (typeof verifier !== "string" || !/^[a-f0-9]{64}$/.test(verifier) ||
       !Number.isSafeInteger(port) || port < 1 || port > 65535 ||
-      !isPlainObject(enrollment) || Object.keys(enrollment).length !== (online ? 5 : 4) ||
+      !isPlainObject(enrollment) || Object.keys(enrollment).length !== 4 + Number(onlineGit) + Number(onlineModel) ||
+      (Object.hasOwn(enrollment, "authorization") && !onlineModel) ||
       (typeof enrollment.inference !== "boolean" && enrollment.inference !== "credential_source") ||
       !Number.isSafeInteger(enrollment.routeCount) || enrollment.routeCount < 0 ||
       !isPlainObject(enrollment.plan) || Object.keys(enrollment.plan).length !== 2 ||
@@ -107,7 +110,7 @@ function waitForHarnessEgressEnrollment(enrollment) {
           chunks.push(chunk);
         }
         const release = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-        if (online && Object.hasOwn(release, "probePath")) {
+        if (onlineGit && Object.hasOwn(release, "probePath")) {
           const {probePath, startupId} = release;
           if (probeSent || startupId !== challenge.startupId ||
               typeof probePath !== "string" || !${gitProbePath}.test(probePath)) {
@@ -156,8 +159,8 @@ function waitForHarnessEgressEnrollment(enrollment) {
         const now = Date.now();
         if (settled || released || performance.now() >= deadline ||
             !isDeepStrictEqual(release.challenge, challenge) || !isPlainObject(installation) ||
-            (online && (installation.repositoryGitRecipient?.authorization !== enrollment.repositoryGitAuthorization ||
-              Object.hasOwn(installation, "peerKeyId"))) ||
+            (onlineGit && installation.repositoryGitRecipient?.authorization !== enrollment.repositoryGitAuthorization) ||
+            (online && Object.hasOwn(installation, "peerKeyId")) ||
             (probeSent && !observed) ||
             (preview && (!observed || installation.repositoryGitRecipient?.observedHook?.startupId !== challenge.startupId)) ||
             !["sandboxId", "instanceId", "configurationId", ...(online ? [] : ["peerKeyId"])].every((k) =>

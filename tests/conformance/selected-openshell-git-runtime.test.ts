@@ -793,6 +793,16 @@ test("Git preparation refuses missing admission or plan identity before gateway 
     await assessor.runtime.repositoryWorkerRestartDisposition(selected, t.signal),
     "original-worker-required",
   );
+  const withModel: AgentRevision = {
+    ...selected,
+    executionAdmission: { mode: "protected", version: 9 },
+    egressPlan: { ...egressPlan, authorization: "online-request" },
+  };
+  assert.equal(
+    await assessor.runtime.repositoryWorkerRestartDisposition(withModel, t.signal),
+    "original-worker-required",
+    "adding request-time model delivery does not transfer a protected Git launch",
+  );
   assert.equal(
     await assessor.runtime.repositoryWorkerRestartDisposition(withoutRepository, t.signal),
     "not-applicable",

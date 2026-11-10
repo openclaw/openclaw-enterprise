@@ -1,4 +1,5 @@
 export { recognizedRuntimeFailureValues } from "./runtime-failure-cause.ts";
+import type { RequestCredentialApproval } from "./ports/request-credential-approvals.ts";
 import { deploymentRepositoryAccessStatus } from "./deployment-repository-access.ts";
 import { exchangeAuthorizationCode, startBrowserAuthorization } from "./browser-authorization.ts";
 import { NativeIAMDriver } from "@openclaw-enterprise/iam";
@@ -56,6 +57,8 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { EgressSendReceipts } from "./egress-send-receipts.ts";
 import type {
+  RequestCredentialInput,
+  CredentialReadLifetime,
   ExecutionAdmission,
   StaticEgressSource,
   ProxyPlan,
@@ -74,6 +77,7 @@ import {
   CredentialProxy,
   resolveCredentialProxyCapacity,
   type CredentialProxyCapacity,
+  type RequestCredentialRelease,
   type ExchangeProvider,
 } from "./credential-proxy.ts";
 import type { EgressExchangeOwner, CapturedEgressUse } from "@openclaw-enterprise/contracts";
@@ -1117,6 +1121,7 @@ export type CreateOAuthClientInput = Pick<
 };
 type DiscoverMcp = (serverUrl: string, issuer?: string) => Promise<McpAuthorizationMetadata>;
 export interface CreateCredentialSourceInput {
+  readonly authorization?: "online-request";
   readonly namespaceId: string;
   readonly name: string;
   readonly type: string;
@@ -7584,6 +7589,7 @@ export class OpenClawController {
 
   /** Trusted composition only: public workloads never supply an identity verifier. */
   createCredentialProxy(exchangeOwner: EgressExchangeOwner): CredentialProxy {
+    const owner = this.selections.has("credential_proxy") ? this.selectedProxyOwner() : undefined;
     return new CredentialProxy(
       {
         exchangeOwner,
@@ -7605,21 +7611,58 @@ export class OpenClawController {
           const secret = await this.state.read((state) =>
             state.secrets.findSecret(source.secret.namespaceId, source.secret.id),
           );
-          if (lifetime.signal.aborted || !secret || secret.driverId !== source.secretDriver.id) {
-            throw new DependencyUnavailableError("Selected credential material is unavailable.");
-          }
-          const driver = this.secretDriver(secret.driverId);
-          if (!driver.readCredentialInput) {
-            throw new DependencyUnavailableError("Versioned credential reading is unavailable.");
-          }
-          if (!isProviderCurrent()) {
-            throw new DependencyUnavailableError("Selected credential provider changed.");
-          }
-          return {
-            ...(await driver.readCredentialInput({ secret, lifetime, retention: "none" })),
-            materialId: secret.backendRef.uid,
-          };
+          return this.readEgressMaterial(secret, source, lifetime, isProviderCurrent);
         },
+        ...(owner?.require("credential_proxy").requestTimeCredentials && {
+          requestCredentials: {
+            sender: owner.require("credential_proxy").sourceControl.sender,
+            check: (request, signal, release) =>
+              this.checkRequestCredential(owner, request, signal, release),
+            validate: (source, value) => {
+              if (this.selectedProxyOwner() !== owner) {
+                return false;
+              }
+              const provider = registeredCredentialProvider(
+                owner.require("credential_proxy").sourceControl.providers,
+                source.key.provider,
+              );
+              if (
+                !provider ||
+                provider === "ambiguous" ||
+                provider.authorization !== "online-request"
+              ) {
+                return false;
+              }
+              provider.inject(value);
+              return true;
+            },
+            deny: (approval, code) =>
+              this.transact(async (state) => {
+                const { namespaceId, agentId, revisionId } = approval.execution;
+                const revision = await state.revisions.findRevision(
+                  namespaceId,
+                  agentId,
+                  revisionId,
+                );
+                const route = revision?.egressPlan?.routes.find(
+                  (candidate) => candidate.binding.binding.id === approval.bindingId,
+                );
+                if (revision && route) {
+                  await this.denyRequestCredential(
+                    state,
+                    approval,
+                    revision,
+                    route.binding.source.source.id,
+                    code,
+                  );
+                }
+              }),
+            consume: (grant) =>
+              this.transactReadCommitted((state) =>
+                state.requestCredentialApprovals.consume(grant, owner.ref, this.timestamp()),
+              ),
+          },
+        }),
         resolvePrepared: (key, options) =>
           this.tokenService().resolve(
             { kind: this.preparedIssuer(key.provider).tokenKind, key },
@@ -7744,6 +7787,338 @@ export class OpenClawController {
       },
       this.credentialProxyCapacity,
     );
+  }
+
+  private async denyRequestCredential(
+    state: PlatformUnitOfWork,
+    request: RequestCredentialInput | RequestCredentialApproval,
+    revision: AgentRevision,
+    sourceId: string,
+    code: string,
+  ): Promise<void> {
+    const { namespaceId, revisionId } = request.execution;
+    await state.audit.append({
+      id: `aud_${crypto.randomUUID()}`,
+      installationId: this.installation.id,
+      namespaceId,
+      occurredAt: this.timestamp(),
+      kind: "authorization_denial",
+      actorId: revision.servicePrincipalId,
+      source: "occ",
+      action: "openclaw.egress.authorize",
+      resource: { kind: "credential_source", namespaceId, id: sourceId },
+      outcome: "denied",
+      details: {
+        code,
+        phase: "http" in request ? "before_access" : "before_release",
+        requestId: request.requestId,
+        revisionId,
+      },
+    });
+  }
+
+  private async readEgressMaterial(
+    secret: Secret | undefined,
+    source: StaticEgressSource,
+    lifetime: CredentialReadLifetime,
+    isProviderCurrent: () => boolean,
+  ) {
+    if (lifetime.signal.aborted || !secret || secret.driverId !== source.secretDriver.id) {
+      throw new DependencyUnavailableError("Selected credential material is unavailable.");
+    }
+    const driver = this.secretDriver(secret.driverId);
+    const read = driver.readCredentialInput;
+    if (!read) {
+      throw new DependencyUnavailableError("Versioned credential reading is unavailable.");
+    }
+    if (!isProviderCurrent()) {
+      throw new DependencyUnavailableError("Selected credential provider changed.");
+    }
+    const material = await Reflect.apply(read, driver, [{ secret, lifetime, retention: "none" }]);
+    if (this.secretDriver(secret.driverId) !== driver || driver.readCredentialInput !== read) {
+      throw new DependencyUnavailableError("Selected credential material changed.");
+    }
+    return { ...material, materialId: secret.backendRef.uid };
+  }
+
+  private requestCredentialAuthority(): IAMDriver | undefined {
+    const authority = this.selectedDriver("iam");
+    return !this.authorization &&
+      NativeIAMDriver.usesStateForAuthorization(authority, authority.authorize, this.state)
+      ? authority
+      : undefined;
+  }
+
+  /** Verify the installed recipient before entering a fresh, short policy transaction. */
+  private async checkRequestCredential(
+    owner: InstalledDriver,
+    request: RequestCredentialInput | RequestCredentialApproval,
+    signal: AbortSignal,
+    release?: RequestCredentialRelease,
+  ): Promise<StaticEgressSource | undefined> {
+    if (
+      signal.aborted ||
+      this.transactionContext.getStore() ||
+      this.selectedProxyOwner() !== owner
+    ) {
+      return undefined;
+    }
+    const { namespaceId, agentId, revisionId } = request.execution;
+    const proxy = owner.require("credential_proxy");
+    const credentials = proxy.requestTimeCredentials;
+    if (!credentials) {
+      return undefined;
+    }
+    const { namespace, revision, installed } = await this.state.read(async (state) => ({
+      namespace: await state.namespaces.findNamespace(namespaceId),
+      revision: await state.revisions.findRevision(namespaceId, agentId, revisionId),
+      installed: await state.credentialSources.findEgressInstallation(
+        proxy.sourceControl.sender.id,
+        "recipient" in request ? request.recipient.id : request.recipientId,
+      ),
+    }));
+    const plan = revision?.egressPlan;
+    const routes = plan?.routes.filter((route) => route.binding.binding.id === request.bindingId);
+    const route = routes?.length === 1 ? routes[0] : undefined;
+    if (
+      namespace?.status !== "ready" ||
+      !revision ||
+      !plan ||
+      !installed ||
+      !isDeepStrictEqual(installed.plan, plan) ||
+      !route ||
+      plan.authorization !== "online-request" ||
+      !owner.ownsProxyPlan(plan) ||
+      revision.executionAdmission.mode !== "protected" ||
+      ![8, 9].includes(revision.executionAdmission.version)
+    ) {
+      return undefined;
+    }
+    const sourceId = route.binding.source.source.id;
+    const deny = (state: PlatformUnitOfWork, code: string) =>
+      this.denyRequestCredential(state, request, revision, sourceId, code);
+    const authority = this.requestCredentialAuthority();
+    if (!authority) {
+      await this.transactReadCommitted((state) => deny(state, "unsupported_authority"));
+      return undefined;
+    }
+    const authorize = authority.authorize;
+    const verifyRequestInstallation = credentials.verifyRequestInstallation;
+    if (
+      !(await Reflect.apply(verifyRequestInstallation, credentials, [
+        {
+          namespace: await this.credentialNamespace(namespace),
+          revision,
+          plan,
+          signal,
+        },
+        installed,
+        "recipient" in request ? request.recipient : { id: request.recipientId },
+      ]))
+    ) {
+      await this.transactReadCommitted((state) => deny(state, "stale_configuration"));
+      return undefined;
+    }
+    return this.transactReadCommitted(async (state) => {
+      const refuse = async (code: string) => {
+        await deny(state, code);
+        return undefined;
+      };
+      // Configured Roles can change without taking a Namespace lock. Match the
+      // configuration writer's lock order and retain its shared fence through release.
+      await state.installations.holdIAMConfiguration("shared");
+      const currentNamespace = await this.lockNamespace(state, namespaceId);
+      const agent = await state.agents.lockAgent(namespaceId, agentId);
+      if (
+        signal.aborted ||
+        Date.parse(request.deadlineAt) <= this.clock().getTime() ||
+        !isDeepStrictEqual(currentNamespace, namespace) ||
+        agent?.status !== "active" ||
+        agent.executionMode !== "dedicated" ||
+        agent.desiredRuntimeState !== "running" ||
+        agent.servicePrincipalId !== revision.servicePrincipalId ||
+        !agent.credentialSources?.some((binding) => binding.sourceId === sourceId)
+      ) {
+        return refuse("withdrawn");
+      }
+      if (agent.activeRevisionId !== revisionId) {
+        const latest = (await state.revisions.listRevisionMetadata(namespaceId, agentId)).at(-1);
+        const work = await state.operations.findWork(`agent_revision:${revisionId}:reconcile`);
+        if (
+          latest?.id !== revisionId ||
+          !work ||
+          controllerWorkDeploymentStatus(work, this.clock()) !== "running"
+        ) {
+          return refuse("withdrawn");
+        }
+      }
+      const source = await state.credentialSources.lockCredentialSource(namespaceId, sourceId);
+      const selected = source?.egress;
+      const control = proxy.sourceControl;
+      const currentInstalled = await state.credentialSources.findEgressInstallation(
+        control.sender.id,
+        "recipient" in request ? request.recipient.id : request.recipientId,
+      );
+      const provider = registeredCredentialProvider(
+        control.providers,
+        route.binding.source.provider,
+      );
+      if (
+        source?.state !== "ready" ||
+        installed?.sandboxId !==
+          ("recipient" in request ? request.recipient.id : request.recipientId) ||
+        !isDeepStrictEqual(currentInstalled, installed) ||
+        !isDeepStrictEqual(installed?.sender, control.sender) ||
+        selected?.adoption !== "live" ||
+        !this.currentCredentialSourceOwner(source, revision) ||
+        !isDeepStrictEqual(selected.key, route.binding.source) ||
+        !isDeepStrictEqual(selected.key.backend, control.backend) ||
+        !isDeepStrictEqual(selected.sender, control.sender) ||
+        !isDeepStrictEqual(selected.resolver, control.resolver) ||
+        !isDeepStrictEqual(route.binding.execution, plan.execution) ||
+        plan.execution.installationId !== this.installation.id ||
+        plan.execution.namespaceId !== namespaceId ||
+        plan.execution.agentId !== agentId ||
+        plan.execution.revisionId !== revisionId ||
+        plan.execution.servicePrincipalId !== agent.servicePrincipalId ||
+        !provider ||
+        provider === "ambiguous" ||
+        provider.authorization !== "online-request" ||
+        (await state.credentialSources.findCredentialWithdrawal(
+          namespaceId,
+          revisionId,
+          sourceId,
+        )) !== undefined
+      ) {
+        return refuse("stale_configuration");
+      }
+      const { routes: makeRoutes, classify, normalizeGrant } = provider;
+      if (
+        !Reflect.apply(makeRoutes, provider, [
+          source,
+          route.binding,
+          revision.harness.configuration,
+        ]).some((candidate) => isDeepStrictEqual(candidate, route))
+      ) {
+        return refuse("stale_configuration");
+      }
+      const policyDigest = createHash("sha256")
+        .update(
+          canonicalProvisioningJson({
+            source,
+            route,
+            driver: owner.ref,
+          }),
+        )
+        .digest("hex");
+      if ("http" in request) {
+        const { target, headers, body } = request.http;
+        if (
+          target.reportedScheme !== "https" ||
+          !Number.isInteger(target.port) ||
+          target.port < 1 ||
+          target.port > 65535 ||
+          !/^[a-zA-Z0-9.-]+$/.test(target.host) ||
+          !target.path.startsWith("/") ||
+          target.path.includes("?") ||
+          target.path.includes("#") ||
+          target.query.includes("#")
+        ) {
+          return refuse("unsupported_operation");
+        }
+        const operation = Reflect.apply(classify, provider, [
+          route,
+          {
+            id: request.requestId,
+            deadlineAt: request.deadlineAt,
+            bindingId: request.bindingId,
+            method: target.method,
+            url: `https://${target.host}${target.port === 443 ? "" : `:${target.port}`}${target.path}${target.query ? `?${target.query}` : ""}`,
+            headers,
+            body,
+          },
+        ]);
+        if (operation?.kind !== "inference") {
+          return refuse("unsupported_operation");
+        }
+      } else if (
+        request.policyDigest !== policyDigest ||
+        !isDeepStrictEqual(request.driver, owner.ref)
+      ) {
+        return refuse("stale_configuration");
+      }
+      const { decision } = await this.authorizationDecision(
+        revision.servicePrincipalId,
+        "operate",
+        { kind: "credential_source", namespaceId, id: sourceId },
+        authority,
+        authorize,
+      );
+      if (!decision.allowed) {
+        return refuse("unauthorized");
+      }
+      if (release) {
+        // updateSecret holds this Namespace lock through the backend write. Reuse the
+        // current unit for metadata so concurrent releases cannot exhaust the pool.
+        const secret = await state.secrets.findSecret(namespaceId, selected.secret.id);
+        if (
+          selected.secret.namespaceId !== namespaceId ||
+          !(await release(selected, () =>
+            this.readEgressMaterial(
+              secret,
+              selected,
+              { signal, deadlineAt: request.deadlineAt },
+              () => this.selectedProxyOwner() === owner,
+            ),
+          ))
+        ) {
+          return refuse("stale_material");
+        }
+      }
+      if (
+        signal.aborted ||
+        Date.parse(request.deadlineAt) <= this.clock().getTime() ||
+        this.selectedProxyOwner() !== owner ||
+        this.authorizationAuthority(revision.servicePrincipalId) !== authority ||
+        authority.authorize !== authorize ||
+        proxy.sourceControl !== control ||
+        proxy.requestTimeCredentials !== credentials ||
+        credentials.verifyRequestInstallation !== verifyRequestInstallation ||
+        provider.authorization !== "online-request" ||
+        registeredCredentialProvider(control.providers, route.binding.source.provider) !==
+          provider ||
+        provider.routes !== makeRoutes ||
+        provider.classify !== classify ||
+        provider.normalizeGrant !== normalizeGrant
+      ) {
+        return refuse("stale_configuration");
+      }
+      if ("http" in request) {
+        const inserted = await state.requestCredentialApprovals.insert(
+          {
+            recipientId: request.recipient.id,
+            requestId: request.requestId,
+            bindingId: request.bindingId,
+            execution: request.execution,
+            driver: owner.ref,
+            deadlineAt: request.deadlineAt,
+            replayUntilAt: request.replayUntilAt,
+            policyDigest,
+          },
+          this.timestamp(),
+          this.credentialProxyCapacity,
+        );
+        // A canceled admission must roll back its correlation, not merely hide the
+        // result while committing a row that a subsequent token request can redeem.
+        if (signal.aborted || Date.parse(request.deadlineAt) <= this.clock().getTime()) {
+          throw new DependencyUnavailableError("Request credential authorization expired.");
+        }
+        if (!inserted) {
+          return refuse("stale_configuration");
+        }
+      }
+      return selected;
+    });
   }
 
   /**
@@ -7900,6 +8275,7 @@ export class OpenClawController {
       this.denyEgressUse(state, use, code, material, stream);
     if (
       execution.installationId !== this.installation.id ||
+      use.installation.plan.authorization !== undefined ||
       !isDeepStrictEqual(execution, use.installation.plan.execution)
     ) {
       return deny("scope_mismatch");
@@ -8245,13 +8621,20 @@ export class OpenClawController {
     });
   }
 
-  private staticEgressProvider(type: string, previous?: EgressRef) {
+  private staticEgressProvider(
+    type: string,
+    previous?: EgressRef,
+    authorization?: "online-request",
+  ) {
     const driver = this.selectedDriver("credential_proxy");
     const control = driver.sourceControl;
-    // A new admission uses catalog order. An existing approval names a specific registration.
+    // Omission always selects the strict profile. Updates preserve their exact registration.
     const resolve = () => {
       const ref =
-        previous ?? control.providers.find((entry) => entry.sourceType.type === type)?.ref;
+        previous ??
+        control.providers.find(
+          (entry) => entry.sourceType.type === type && entry.authorization === authorization,
+        )?.ref;
       return ref ? registeredCredentialProvider(control.providers, ref) : undefined;
     };
     const provider = resolve();
@@ -8264,7 +8647,7 @@ export class OpenClawController {
       return undefined;
     }
     const ref = immutableCopy(provider.ref);
-    const { inject, normalizeConfig } = provider;
+    const { inject, normalizeConfig, authorization: profile } = provider;
     const assertCurrent = () => {
       if (
         this.selectedDriver("credential_proxy") !== driver ||
@@ -8272,7 +8655,8 @@ export class OpenClawController {
         resolve() !== provider ||
         !isDeepStrictEqual(provider.ref, ref) ||
         provider.inject !== inject ||
-        provider.normalizeConfig !== normalizeConfig
+        provider.normalizeConfig !== normalizeConfig ||
+        provider.authorization !== profile
       ) {
         throw new ResourceStateConflictError(
           "The selected credential provider changed during admission. Check the Installation's provider configuration before retrying this credential-source request.",
@@ -8291,7 +8675,7 @@ export class OpenClawController {
     config: Readonly<Record<string, string>>,
     references: Readonly<Record<string, SecretReference>>,
     generation: number,
-    selection = this.staticEgressProvider(type),
+    selection: ReturnType<OpenClawController["staticEgressProvider"]>,
   ): Promise<StaticEgressSource> {
     const control = this.selectedDriver("credential_proxy").sourceControl;
     if (
@@ -8312,7 +8696,22 @@ export class OpenClawController {
     Reflect.apply(normalizeConfig, provider, [config]);
     // An Installation property: a Proxy that cannot serve the source refuses it before any
     // Secret is read (finding 2360).
-    await control.assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS));
+    if (provider.authorization === "online-request") {
+      if (!this.requestCredentialAuthority()) {
+        throw new ResourceStateConflictError(
+          "Online request credentials require the native IAM Driver for this Installation.",
+        );
+      }
+      const requestCredentials = this.selectedDriver("credential_proxy").requestTimeCredentials;
+      if (!requestCredentials) {
+        throw new DependencyUnavailableError(
+          "Request-time credential authorization is unavailable.",
+        );
+      }
+      await requestCredentials.assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS));
+    } else {
+      await control.assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS));
+    }
     if (!reference) {
       throw new ScopeViolationError(
         "Protected source material must belong to the exact Namespace.",
@@ -8430,7 +8829,44 @@ export class OpenClawController {
       }
       throw new CredentialSourceUnprotectedError();
     }
-    if (sourceCount > 1 && !repositoryGit && driver.policyReduction?.version !== 1) {
+    const profiles = sources.map((source) => {
+      const provider = registeredCredentialProvider(
+        driver.sourceControl.providers,
+        source.egress!.key.provider,
+      );
+      if (!provider || provider === "ambiguous") {
+        throw new DependencyUnavailableError("The admitted credential provider is unavailable.");
+      }
+      return provider.authorization;
+    });
+    const online = profiles.includes("online-request");
+    if (online && profiles.some((profile) => profile !== "online-request")) {
+      throw new ResourceStateConflictError(
+        "Strict and online request credential sources cannot share one execution.",
+      );
+    }
+    if (online) {
+      if (!this.requestCredentialAuthority()) {
+        throw new ResourceStateConflictError(
+          "Online request credentials require the native IAM Driver for this Installation.",
+        );
+      }
+      if (
+        !driver.requestTimeCredentials ||
+        sources.some((source) => source.egress?.adoption !== "live")
+      ) {
+        throw new DependencyUnavailableError(
+          "Request-time credential authorization is unavailable.",
+        );
+      }
+      await driver.requestTimeCredentials.assertAvailable(
+        AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+      );
+    }
+    if (
+      (online && sources.length > 1) ||
+      (sourceCount > 1 && !repositoryGit && driver.policyReduction?.version !== 1)
+    ) {
       throw new CredentialProxyAdmissionError("oneSource");
     }
     // Deploy refuses a selected Sandbox with another execution mode first
@@ -8449,30 +8885,44 @@ export class OpenClawController {
       // that assertExecutionAdmission then rejects as an internal error.
       throw new RepositoryGitProfileUnsupportedError(repositoryGit.bindings.length);
     }
-    const gitAuthorization = await repositoryGitAuthorization(
-      driver.sourceControl,
-      AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-      gitProfile,
-    );
+    // Model-only request delivery already checked its own capability above. Without
+    // Git, do not negotiate the independent strict execution-exchange profile.
+    const gitAuthorization =
+      online && repositoryGit === undefined
+        ? undefined
+        : await repositoryGitAuthorization(
+            driver.sourceControl,
+            AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+            gitProfile,
+          );
     if (gitAuthorization === "unavailable") {
       throw new DependencyUnavailableError(
         "The selected Credential Proxy did not confirm installation-wide repository access.",
+      );
+    }
+    if (
+      online &&
+      (harnessCredentialSource || (repositoryGit && gitAuthorization !== "online-request"))
+    ) {
+      throw new ResourceStateConflictError(
+        "Online model requests require Proxy-held model credentials and online repository authorization when Git is attached.",
       );
     }
     const reducibleGit =
       gitProfile !== undefined &&
       gitAuthorization === "exact-dispatch" &&
       driver.policyReduction?.version === 2;
-    if (repositoryGit && sources.length && !reducibleGit) {
+    if (repositoryGit && sources.length && !reducibleGit && !online) {
       throw new CredentialProxyAdmissionError("gitAlone");
     }
-    if (reducibleGit && driver.policyReduction?.version === 2) {
+    if (!online && reducibleGit && driver.policyReduction?.version === 2) {
       await driver.policyReduction.assertAvailable(
         AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
       );
     }
-    let policyReductionVersion: ProxyPlan["policyReductionVersion"] = reducibleGit ? 2 : undefined;
-    if (!repositoryGit && sources.length > 0 && driver.policyReduction?.version === 1) {
+    let policyReductionVersion: ProxyPlan["policyReductionVersion"] =
+      !online && reducibleGit ? 2 : undefined;
+    if (!online && !repositoryGit && sources.length > 0 && driver.policyReduction?.version === 1) {
       policyReductionVersion = 1;
     }
     const selection = asRecord(asRecord(configuration.agents)?.defaults)?.model;
@@ -8536,6 +8986,7 @@ export class OpenClawController {
       sandboxDriverId,
       egressDriverId: driver.id,
       driver: owner.ref,
+      ...(online && { authorization: "online-request" as const }),
       ...(policyReductionVersion !== undefined && { policyReductionVersion }),
       ...(repositoryGit && { repositoryGit }),
       ...(repositoryGit &&
@@ -8563,6 +9014,10 @@ export class OpenClawController {
     if (!isName(input.name)) {
       throw new ScopeViolationError("The credential source name is invalid.");
     }
+    if (input.authorization !== undefined && input.authorization !== "online-request") {
+      throw new ScopeViolationError("The credential source authorization profile is invalid.");
+    }
+    const authorization = input.authorization;
     const written = Object.freeze({ ...(input.config ?? {}) });
     const secretRefs = Object.freeze({ ...(input.secrets ?? {}) });
     this.namespaceIdentity(input.namespaceId);
@@ -8586,6 +9041,17 @@ export class OpenClawController {
         throw new NamespaceNotReadyError();
       }
       const type = protectedType?.type ?? (await this.credentialSourceType(selected!, input.type));
+      if (
+        authorization &&
+        (protectedType ||
+          type.rotation === "refresh" ||
+          type.deviceAuthorization !== undefined ||
+          !this.selections.has("credential_proxy"))
+      ) {
+        throw new ResourceStateConflictError(
+          "Online request authorization requires a static source and a selected Credential Proxy.",
+        );
+      }
       credentialSourceFieldsMatch(type, "config", written);
       credentialSourceFieldsMatch(type, "secrets", secretRefs);
       // The Driver may return the configuration in the form it uses, such as a normalized URL:
@@ -8614,6 +9080,11 @@ export class OpenClawController {
           "Device login requires the selected Credential Refresh Driver's device authorization support.",
         );
       }
+      if (authorization && !this.staticEgressProvider(type.type, undefined, authorization)) {
+        throw new ResourceStateConflictError(
+          "The selected Credential Proxy does not support this source's authorization profile.",
+        );
+      }
       const sourceId = this.nextIdentifier("credential_source");
       const prepared = protectedType?.issuer
         ? await this.admitPreparedTokenSource(
@@ -8640,6 +9111,7 @@ export class OpenClawController {
                 config,
                 secretRefs,
                 1,
+                this.staticEgressProvider(type.type, undefined, authorization),
               )
             : undefined);
       const read =
@@ -8921,6 +9393,12 @@ export class OpenClawController {
             "Protected source changes require an unbound source.",
           );
         }
+        // Explicit re-adoption may upgrade a strict provider generation, but cannot
+        // change an existing source's provider identity or authorization profile.
+        const replacement =
+          !admitted && this.selections.has("credential_proxy")
+            ? this.staticEgressProvider(source.type)
+            : undefined;
         const egress = await this.admitStaticEgressSource(
           state,
           principalId,
@@ -8930,7 +9408,10 @@ export class OpenClawController {
           source.config,
           secretRefs,
           (source.egress?.key.source.generation ?? 0) + 1,
-          admitted,
+          admitted ??
+            (previous === undefined || previous.id === replacement?.ref.id
+              ? replacement
+              : undefined),
         );
         if (input.secrets !== undefined) {
           await state.credentialSources.replaceCredentialSourceSecrets(
@@ -13545,7 +14026,7 @@ export class OpenClawController {
       if (egressPlan === undefined) {
         executionAdmission = { version: 2, mode: "unprotected" };
       } else {
-        let version: 3 | 4 | 5 | 6 | 7 = 3;
+        let version: 3 | 4 | 5 | 6 | 7 | 8 | 9 = 3;
         if (egressPlan.repositoryGit) {
           version = 4;
         }
@@ -13557,6 +14038,9 @@ export class OpenClawController {
         }
         if (egressPlan.repositoryGit && egressPlan.policyReductionVersion === 2) {
           version = 7;
+        }
+        if (egressPlan.authorization === "online-request") {
+          version = egressPlan.repositoryGit ? 9 : 8;
         }
         executionAdmission = { version, mode: "protected" };
       }
@@ -14490,14 +14974,36 @@ export class OpenClawController {
 
   /** Stage resources, reconciliation intents, and audit evidence as one unit. */
   async transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
+    return this.transactWithIsolation(work, false);
+  }
+
+  private async transactReadCommitted<T>(
+    work: (state: PlatformUnitOfWork) => Promise<T>,
+  ): Promise<T> {
+    return this.transactWithIsolation(work, true);
+  }
+
+  private async transactWithIsolation<T>(
+    work: (state: PlatformUnitOfWork) => Promise<T>,
+    readCommitted: boolean,
+  ): Promise<T> {
     const active = this.transactionContext.getStore();
     if (active) {
+      if (readCommitted) {
+        throw new DependencyUnavailableError("Current policy requires an independent transaction.");
+      }
       return work(active);
+    }
+    const transact = readCommitted
+      ? this.state.transactReadCommitted?.bind(this.state)
+      : this.state.transact.bind(this.state);
+    if (!transact) {
+      throw new DependencyUnavailableError("Current-policy transactions are unavailable.");
     }
 
     const rollbacks: (() => Promise<void>)[] = [];
     try {
-      return await this.state.transact(async (state) =>
+      return await transact(async (state) =>
         this.transactionContext.run(state, () =>
           this.mutationRollbacks.run(rollbacks, async () => {
             const existing = await state.installations.getInstallation();

@@ -336,6 +336,7 @@
               }
             ],
             "hidden": [
+              "guides/credential-proxy/model-requests",
               "reference/console/debug-fields",
               "reference/console/theming",
               "reference/console/agent-sharing",
@@ -1285,6 +1286,7 @@
               "flows/repository-credential-configuration",
               "flows/agent-presets",
               "flows/credential-source-egress",
+              "flows/credential-source-egress/model-requests",
               "reference/sandbox-policies",
               "guides/topics/agent-sandbox-policy",
               "flows/agent-sandbox-policy"

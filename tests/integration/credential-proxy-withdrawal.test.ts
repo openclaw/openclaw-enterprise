@@ -1,10 +1,16 @@
+import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
+import { requestCredentialFixture } from "../helpers/request-credential-fixture.ts";
 import { createOpenAiStaticProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
 import assert from "node:assert/strict";
+import pg from "pg";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, request as httpRequest } from "node:http";
 import test, { type TestContext } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import type {
+  RequestCredentialInput,
+  ProxyPlan,
   CredentialProxyDriver,
   AcceptedEgressAssociation,
   AgentRevision,
@@ -19,7 +25,7 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import {
   InstalledDriver,
-  type OpenClawController,
+  OpenClawController,
   PostgresPlatformState,
   PostgresWorkQueue,
   reduceCredentialPolicy,
@@ -30,7 +36,7 @@ import { assertApiError } from "../helpers/api-error.mjs";
 import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
-import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { requestId, staticEgressFixture } from "../helpers/static-egress.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { CREDENTIAL_PROXY_ONE_SOURCE } from "../helpers/refusal-text.mjs";
@@ -885,3 +891,944 @@ test("Git reduction v7 preserves earlier admission meanings and rejects widening
     );
   }
 });
+
+test(
+  "online model requests redeem current material once after durable policy authorization (PostgreSQL)",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    const fixture = await requestCredentialFixture(t, {
+      credentialProxyCapacity: {
+        operations: 2,
+        authenticatingOperations: 2,
+        sandboxOperations: 2,
+      },
+    });
+    const { f, exchange, request, grant, revision } = fixture;
+    const stored = await f.pool.query<{
+      admitted_spec: {
+        execution_admission: { mode: string; version: number };
+        egress_plan: ProxyPlan;
+        harness_auth: { protectedExecutionVersion: number };
+      };
+    }>("SELECT admitted_spec FROM occ.agent_revisions WHERE id=$1", [revision.id]);
+    const baseline = stored.rows[0]!.admitted_spec;
+    const plan = baseline.egress_plan;
+    // Invalid persisted profiles must fail the database constraint, even outside API validation.
+    for (const invalid of [
+      { ...baseline, egress_plan: { ...plan, authorization: undefined } },
+      {
+        ...baseline,
+        execution_admission: { mode: "protected", version: 3 },
+        harness_auth: { ...baseline.harness_auth, protectedExecutionVersion: 3 },
+      },
+      { ...baseline, egress_plan: { ...plan, routes: [] } },
+      { ...baseline, egress_plan: { ...plan, policyReductionVersion: 1 } },
+      {
+        ...baseline,
+        egress_plan: {
+          ...plan,
+          routes: [
+            ...plan.routes,
+            {
+              ...plan.routes[0]!,
+              binding: {
+                ...plan.routes[0]!.binding,
+                source: {
+                  ...plan.routes[0]!.binding.source,
+                  source: { id: `cs_${randomUUID()}`, generation: 1 },
+                },
+              },
+            },
+          ],
+        },
+      },
+    ]) {
+      const id = `rev_${randomUUID()}`;
+      const candidate = {
+        ...invalid,
+        egress_plan: {
+          ...invalid.egress_plan,
+          execution: { ...plan.execution, revisionId: id },
+          routes: invalid.egress_plan.routes.map((route) => ({
+            ...route,
+            binding: {
+              ...route.binding,
+              execution: { ...route.binding.execution, revisionId: id },
+            },
+          })),
+        },
+      };
+      await assert.rejects(
+        f.pool.query(
+          `INSERT INTO occ.agent_revisions
+        (id,namespace_id,agent_id,revision_number,backend_id,gateway_managed_mode,admitted_spec,admitted_at)
+        SELECT $2,namespace_id,agent_id,revision_number+1,backend_id,gateway_managed_mode,$3::jsonb,admitted_at
+        FROM occ.agent_revisions WHERE id=$1`,
+          [revision.id, id, JSON.stringify(candidate)],
+        ),
+        { code: "23514", constraint: "agent_revisions_execution_admission" },
+      );
+    }
+    const signal = AbortSignal.timeout(50_000);
+    const first = request();
+    assert.equal(await exchange.authorizeRequestCredential(first, signal), "credential");
+
+    // Reconstruct the controller and repository wrappers: the approval is durable, not a local map.
+    const afterRestart = fixture.restartController().createCredentialProxy({
+      async verify() {
+        return undefined;
+      },
+      capture() {
+        return undefined;
+      },
+      owns() {
+        return false;
+      },
+    });
+    const beforeRead = f.secretReads;
+    const material = await afterRestart.resolveRequestCredential(grant(first), signal);
+    assert.equal(material?.value, "synthetic-key-initial");
+    assert.ok(material?.version);
+    assert.equal(
+      f.secretReads,
+      beforeRead + 3,
+      "two snapshots plus the fenced final observation protect held-read rotation",
+    );
+    assert.equal(await exchange.resolveRequestCredential(grant(first), signal), undefined);
+    assert.equal(
+      await exchange.authorizeRequestCredential(first, signal),
+      undefined,
+      "the consumed request remains a tombstone until expiry",
+    );
+
+    const bound = request();
+    assert.equal(await exchange.authorizeRequestCredential(bound, signal), "credential");
+    assert.equal(
+      await afterRestart.resolveRequestCredential(
+        { ...grant(bound), recipientId: randomUUID() },
+        signal,
+      ),
+      undefined,
+    );
+    assert.equal(
+      await afterRestart.resolveRequestCredential(
+        { ...grant(bound), bindingId: randomUUID() },
+        signal,
+      ),
+      undefined,
+    );
+    assert.equal(
+      await afterRestart.resolveRequestCredential(
+        { ...grant(bound), deadlineAt: new Date(0).toISOString() },
+        signal,
+      ),
+      undefined,
+    );
+    const concurrent = await Promise.all([
+      exchange.resolveRequestCredential(grant(bound), signal),
+      afterRestart.resolveRequestCredential(grant(bound), signal),
+    ]);
+    assert.equal(
+      concurrent.filter(Boolean).length,
+      1,
+      "independent authorities can redeem a request only once",
+    );
+
+    // Invalid request semantics and foreign identities cannot create a usable approval or read a Secret.
+    const foreign = await f.createNamespace(`request-other-${randomUUID().slice(0, 8)}`);
+    const readsBeforeDenials = f.secretReads;
+    for (const mutate of [
+      (input: RequestCredentialInput) => ({ ...input, recipient: { id: randomUUID() } }),
+      (input: RequestCredentialInput) => ({ ...input, bindingId: randomUUID() }),
+      (input: RequestCredentialInput) => ({
+        ...input,
+        execution: { ...input.execution, namespaceId: foreign.id },
+      }),
+      (input: RequestCredentialInput) => ({
+        ...input,
+        http: { ...input.http, target: { ...input.http.target, path: "/v1/chat/completions" } },
+      }),
+      (input: RequestCredentialInput) => ({
+        ...input,
+        http: {
+          ...input.http,
+          body: Buffer.from(
+            JSON.stringify({ model: "another-model", input: "hello", store: false }),
+          ),
+        },
+      }),
+    ]) {
+      const refused = mutate(request());
+      assert.equal(await exchange.authorizeRequestCredential(refused, signal), undefined);
+      assert.equal(await exchange.resolveRequestCredential(grant(refused), signal), undefined);
+    }
+    const saved = fixture.installation;
+    fixture.setInstallation({
+      ...saved,
+      enforcement: { ...saved.enforcement, policyHash: "b".repeat(64) },
+    });
+    assert.equal(
+      await exchange.authorizeRequestCredential(request(), signal),
+      undefined,
+      "a recipient that still exists cannot reuse an old installation fence",
+    );
+    fixture.setInstallation(saved);
+    assert.equal(f.secretReads, readsBeforeDenials);
+
+    // A held real Kubernetes GET contains the old version; a concurrent API update advances storage.
+    const rotating = request();
+    assert.equal(await exchange.authorizeRequestCredential(rotating, signal), "credential");
+    const barrier = f.pauseNextSecretRead();
+    t.after(() => barrier.release());
+    const resolving = exchange.resolveRequestCredential(grant(rotating), signal);
+    await barrier.reached;
+    try {
+      const update = await f.request(
+        "PATCH",
+        `/namespaces/${f.namespace.id}/secrets/${f.secret.id}`,
+        {
+          body: { value: "synthetic-key-rotated" },
+        },
+      );
+      assert.equal(update.status, 200, JSON.stringify(update.body));
+    } finally {
+      barrier.release();
+    }
+    assert.equal(
+      await resolving,
+      undefined,
+      "rotation while the first read is held must refuse release",
+    );
+    const rotated = request();
+    assert.equal(await exchange.authorizeRequestCredential(rotated, signal), "credential");
+    assert.equal(
+      (await exchange.resolveRequestCredential(grant(rotated), signal))?.value,
+      "synthetic-key-rotated",
+    );
+
+    // Rotation must win even after both reads selected the old value, including while the
+    // final external recipient observation is pending. These barriers do not replace decisions.
+    const lateRotations = [];
+    for (const stage of ["second-read", "final-verification"] as const) {
+      const input = request();
+      assert.equal(await exchange.authorizeRequestCredential(input, signal), "credential");
+      const firstRead = f.pauseNextSecretRead();
+      const pending = exchange.resolveRequestCredential(grant(input), signal);
+      await firstRead.reached;
+      const secondRead = f.pauseNextSecretRead();
+      firstRead.release();
+      await secondRead.reached;
+      const finalVerification =
+        stage === "final-verification" ? fixture.pauseNextVerification() : undefined;
+      if (finalVerification) {
+        secondRead.release();
+        await finalVerification.reached;
+      }
+      const value = `synthetic-key-${stage}`;
+      try {
+        const update = await f.request(
+          "PATCH",
+          `/namespaces/${f.namespace.id}/secrets/${f.secret.id}`,
+          { body: { value } },
+        );
+        assert.equal(update.status, 200, JSON.stringify(update.body));
+      } finally {
+        secondRead.release();
+        finalVerification?.release();
+      }
+      lateRotations.push({ stage, released: (await pending) !== undefined });
+      const fresh = request();
+      assert.equal(await exchange.authorizeRequestCredential(fresh, signal), "credential");
+      assert.equal((await exchange.resolveRequestCredential(grant(fresh), signal))?.value, value);
+    }
+    assert.deepEqual(lateRotations, [
+      { stage: "second-read", released: false },
+      { stage: "final-verification", released: false },
+    ]);
+
+    // A dependency that ignores cancellation may stay pending, but may not retain the
+    // Namespace lock or free its operation slot until its real I/O finally settles.
+    const stalled = request();
+    assert.equal(await exchange.authorizeRequestCredential(stalled, signal), "credential");
+    const pause = fixture.pauseFinalMaterialRead();
+    t.after(() => pause.release());
+    const cancelled = new AbortController();
+    const stalledRelease = exchange.resolveRequestCredential(grant(stalled), cancelled.signal);
+    await pause.reached;
+    cancelled.abort();
+    assert.equal(await stalledRelease, undefined);
+    const updateAfterAbort = await f.request(
+      "PATCH",
+      `/namespaces/${f.namespace.id}/secrets/${f.secret.id}`,
+      { body: { value: "synthetic-key-after-cancel" } },
+    );
+    assert.equal(updateAfterAbort.status, 200, "abandoned final reads must release policy locks");
+    const remainingSlot = exchange.acquireRequestAuthentication();
+    assert.ok(remainingSlot);
+    assert.equal(exchange.acquireRequestAuthentication(), undefined);
+    remainingSlot();
+    pause.release();
+    await pause.settled;
+    // Drain the read's promise continuations before testing the returned slot.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const restoredSlots = [
+      exchange.acquireRequestAuthentication(),
+      exchange.acquireRequestAuthentication(),
+    ];
+    assert.ok(restoredSlots.every(Boolean), "the settled read returns its capacity slot");
+    for (const release of restoredSlots) {
+      release?.();
+    }
+
+    // Authorization is checked again after durable approval; deleting the exact grant prevents redemption.
+    const revoked = request();
+    assert.equal(await exchange.authorizeRequestCredential(revoked, signal), "credential");
+    assert.equal(
+      (await f.request("DELETE", `/namespaces/${f.namespace.id}/iam/access-bindings/${f.grant.id}`))
+        .status,
+      204,
+    );
+    const readsBeforeRevocation = f.secretReads;
+    assert.equal(await afterRestart.resolveRequestCredential(grant(revoked), signal), undefined);
+    assert.equal(f.secretReads, readsBeforeRevocation);
+    const restored = await f.request("POST", `/namespaces/${f.namespace.id}/iam/access-bindings`, {
+      body: {
+        subjectKind: "identity",
+        subjectId: f.agent.servicePrincipalId,
+        roleId: f.grant.roleId,
+        resourceKind: "credential_source",
+        resourceId: f.source.id,
+      },
+    });
+    assert.equal(restored.status, 201, JSON.stringify(restored.body));
+    const withdrawn = request();
+    assert.equal(await exchange.authorizeRequestCredential(withdrawn, signal), "credential");
+    // A native approval cannot cross into an authority whose decision is not fenced
+    // by this State. Reject before invoking that external dependency or reading material.
+    let externalCalls = 0;
+    const externalController = fixture.restartController(undefined, async (authorization) => {
+      externalCalls += 1;
+      return externalController.selectedDriver("iam").authorize(authorization);
+    });
+    const externalExchange = externalController.createCredentialProxy({
+      async verify() {
+        return undefined;
+      },
+      capture() {
+        return undefined;
+      },
+      owns() {
+        return false;
+      },
+    });
+    const unsupported = request();
+    assert.equal(await exchange.authorizeRequestCredential(unsupported, signal), "credential");
+    const beforeUnsupported = f.secretReads;
+    const unsupportedApproval = await externalExchange.authorizeRequestCredential(
+      request(),
+      signal,
+    );
+    const unsupportedMaterial = await externalExchange.resolveRequestCredential(
+      grant(unsupported),
+      signal,
+    );
+    const unsupportedObserved = {
+      approved: unsupportedApproval !== undefined,
+      released: unsupportedMaterial !== undefined,
+      externalCalls,
+      secretReads: f.secretReads - beforeUnsupported,
+    };
+
+    // Cancellation after the real INSERT must roll it back, not leave a row that a
+    // subsequent authenticated redemption could still consume.
+    const canceledInput = request();
+    const canceledCall = new AbortController();
+    const inserted = fixture.pauseNextApprovalCommit();
+    t.after(() => inserted.release());
+    const canceling = exchange.authorizeRequestCredential(canceledInput, canceledCall.signal);
+    await inserted.reached;
+    canceledCall.abort();
+    inserted.release();
+    assert.equal(await canceling, undefined);
+    const canceledRows = await f.pool.query(
+      "SELECT count(*)::int AS count FROM occ.request_credential_approvals WHERE recipient_id=$1 AND request_id=$2",
+      [canceledInput.recipient.id, canceledInput.requestId],
+    );
+    const canceledMaterial = await exchange.resolveRequestCredential(grant(canceledInput), signal);
+    assert.deepEqual(
+      {
+        unsupportedObserved,
+        canceledRows: canceledRows.rows[0].count,
+        canceledReleased: canceledMaterial !== undefined,
+      },
+      {
+        unsupportedObserved: { approved: false, released: false, externalCalls: 0, secretReads: 0 },
+        canceledRows: 0,
+        canceledReleased: false,
+      },
+    );
+    // Admission also refuses the profile before resolving source material. Ordinary
+    // administrator authorization is separate from model-request authorization above.
+    const beforeAdmission = f.secretReads;
+    await assert.rejects(
+      externalController.createCredentialSource(fixture.principalId, {
+        namespaceId: f.namespace.id,
+        name: "unsupported-online-authority",
+        type: "openai",
+        authorization: "online-request",
+        config: { authorized_base_url: `${revision.egressPlan!.routes[0]!.origin}/v1` },
+        secrets: { api_key: f.secret.ref },
+      }),
+      /native IAM Driver/,
+    );
+    // The source and Agent predate the IAM switch, so source-creation refusal alone
+    // cannot protect a new deployment of this otherwise valid execution.
+    await assert.rejects(
+      externalController.deployAgent(
+        fixture.principalId,
+        { namespaceId: f.namespace.id, agentId: f.agent.id },
+        resolveApprovedHarness,
+      ),
+      /native IAM Driver/,
+    );
+    assert.equal(f.secretReads, beforeAdmission);
+    assert.equal(await exchange.authorizeRequestCredential(canceledInput, signal), "credential");
+    assert.equal(
+      (await exchange.resolveRequestCredential(grant(canceledInput), signal))?.value,
+      "synthetic-key-after-cancel",
+    );
+    const withdrawal = await f.request(
+      "POST",
+      `/namespaces/${f.namespace.id}/agents/${f.agent.id}/credential-sources/${f.source.id}/withdraw`,
+    );
+    assert.equal(withdrawal.status, 202, JSON.stringify(withdrawal.body));
+    assert.equal(await exchange.resolveRequestCredential(grant(withdrawn), signal), undefined);
+    assert.equal(await exchange.authorizeRequestCredential(request(), signal), undefined);
+    const audit = await f.pool.query(
+      "SELECT details FROM occ.audit_events WHERE actor_id = $1 AND action = 'openclaw.egress.authorize'",
+      [f.agent.servicePrincipalId],
+    );
+    assert.ok(audit.rows.some(({ details }) => details.code === "unauthorized"));
+    assert.ok(audit.rows.some(({ details }) => details.code === "stale_material"));
+  },
+);
+
+test(
+  "online request replay horizons and shared quotas survive API restart (PostgreSQL)",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    const a = await requestCredentialFixture(t);
+    const b = await requestCredentialFixture(t);
+    const c = await requestCredentialFixture(t);
+    const { rows } = await a.f.pool.query(
+      "SELECT count(*)::int AS retained FROM occ.request_credential_approvals WHERE replay_until_at > now()",
+    );
+    // Other cases own their correlations. Allocate three additional slots without deleting them.
+    const capacity = {
+      operations: 16,
+      authenticatingOperations: 4,
+      sandboxOperations: 8,
+      requestIds: rows[0].retained + 3,
+      sandboxRequestIds: 2,
+    };
+    const transport = {
+      async verify() {
+        return undefined;
+      },
+      capture() {
+        return undefined;
+      },
+      owns() {
+        return false;
+      },
+    };
+    const replica = (fixture: typeof a) =>
+      fixture.restartController(capacity).createCredentialProxy(transport);
+    const firstApi = replica(a);
+    const restartedApi = replica(a);
+    const signal = AbortSignal.timeout(40_000);
+    const horizon = Date.now() + 8_000;
+    const first = {
+      ...a.request(),
+      deadlineAt: new Date(Date.now() + 1_500).toISOString(),
+      replayUntilAt: new Date(horizon).toISOString(),
+    };
+    assert.equal(await firstApi.authorizeRequestCredential(first, signal), "credential");
+    assert.equal(
+      (await restartedApi.resolveRequestCredential(a.grant(first), signal))?.value,
+      "synthetic-key-initial",
+    );
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.max(0, Date.parse(first.deadlineAt) - Date.now() + 30)),
+    );
+    const renewed = { ...first, deadlineAt: new Date(horizon).toISOString() };
+    const reads = a.f.secretReads;
+    assert.equal(
+      await restartedApi.authorizeRequestCredential(renewed, signal),
+      undefined,
+      "a fresh redemption deadline cannot reopen the same authenticated request",
+    );
+    assert.equal(a.f.secretReads, reads);
+    const request = (fixture: typeof a) => ({
+      ...fixture.request(),
+      deadlineAt: new Date(horizon).toISOString(),
+      replayUntilAt: new Date(horizon).toISOString(),
+    });
+    assert.equal(await restartedApi.authorizeRequestCredential(request(a), signal), "credential");
+    assert.equal(
+      await firstApi.authorizeRequestCredential(request(a), signal),
+      undefined,
+      "consumed and pending IDs share the recipient quota across replicas",
+    );
+    // Different Namespaces have independent policy locks, so only the durable quota lock
+    // prevents both API replicas from taking the final global slot.
+    const concurrent = await Promise.all([
+      replica(b).authorizeRequestCredential(request(b), signal),
+      replica(c).authorizeRequestCredential(request(c), signal),
+    ]);
+    assert.equal(concurrent.filter((result) => result === "credential").length, 1);
+    const bounded = await a.f.pool.query(
+      "SELECT count(*)::int AS retained FROM occ.request_credential_approvals WHERE replay_until_at > now()",
+    );
+    assert.equal(bounded.rows[0].retained, capacity.requestIds);
+
+    // Once the authenticated horizon closes, fresh authentication may reuse the correlation,
+    // and expired tombstones release both global and recipient capacity.
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, horizon - Date.now() + 30)));
+    const next = a.request();
+    assert.equal(
+      await replica(a).authorizeRequestCredential({ ...next, requestId: first.requestId }, signal),
+      "credential",
+    );
+    assert.equal(await replica(b).authorizeRequestCredential(b.request(), signal), "credential");
+    assert.equal(await replica(c).authorizeRequestCredential(c.request(), signal), "credential");
+
+    // Online authorization and redemption select READ COMMITTED independently of a
+    // pool's default, so quota and policy reads see commits after lock acquisition.
+    const snapshot = await requestCredentialFixture(t, {
+      poolOptions: { options: "-c default_transaction_isolation=repeatable\\ read" },
+    });
+    assert.equal(
+      (await snapshot.f.pool.query("SHOW default_transaction_isolation")).rows[0]
+        .default_transaction_isolation,
+      "repeatable read",
+    );
+    const defaultIsolationInput = snapshot.request();
+    assert.equal(
+      await snapshot.exchange.authorizeRequestCredential(defaultIsolationInput, signal),
+      "credential",
+      "online admission must select current-policy isolation instead of the pool default",
+    );
+    assert.equal(
+      (
+        await snapshot.exchange.resolveRequestCredential(
+          snapshot.grant(defaultIsolationInput),
+          signal,
+        )
+      )?.value,
+      "synthetic-key-initial",
+    );
+
+    // Approve through an ordinary READ COMMITTED replica, then redeem on a replica
+    // whose connection default is REPEATABLE READ. Hold its final policy check after
+    // the initial database read; an actual IAM API deletion must invalidate that approval.
+    const committedPool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
+    t.after(() => committedPool.end());
+    const committedApi = snapshot
+      .restartController(undefined, undefined, committedPool)
+      .createCredentialProxy(transport);
+    const selected = snapshot.request();
+    assert.equal(await committedApi.authorizeRequestCredential(selected, signal), "credential");
+    const policy = snapshot.pauseFinalPolicyLock();
+    t.after(() => policy.release());
+    const releasing = snapshot.exchange.resolveRequestCredential(snapshot.grant(selected), signal);
+    await policy.reached;
+    try {
+      const deletion = await snapshot.f.request(
+        "DELETE",
+        `/namespaces/${snapshot.f.namespace.id}/iam/access-bindings/${snapshot.f.grant.id}`,
+      );
+      assert.equal(deletion.status, 204, JSON.stringify(deletion.body));
+    } finally {
+      policy.release();
+    }
+    assert.equal(
+      await releasing,
+      undefined,
+      "final authorization must observe grant withdrawal committed after its first database read",
+    );
+
+    // A contending global quota must not hold the policy locks needed for source withdrawal.
+    const quotaOwner = await b.f.pool.connect();
+    const contended = b.request();
+    const bApi = b.restartController().createCredentialProxy(transport);
+    const bReads = b.f.secretReads;
+    try {
+      await quotaOwner.query("BEGIN");
+      await quotaOwner.query("SELECT pg_advisory_xact_lock(1868785008, 0)");
+      const attempt = bApi.authorizeRequestCredential(contended, AbortSignal.timeout(100));
+      const outcome = await Promise.race([
+        attempt,
+        new Promise<string>((resolve) => setTimeout(() => resolve("quota wait"), 500)),
+      ]);
+      assert.equal(
+        outcome,
+        undefined,
+        "quota contention must fail without waiting on policy locks",
+      );
+      const withdrawalRequest = b.f.request(
+        "POST",
+        `/namespaces/${b.f.namespace.id}/agents/${b.f.agent.id}/credential-sources/${b.f.source.id}/withdraw`,
+      );
+      const withdrawal = await Promise.race([
+        withdrawalRequest,
+        new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 500)),
+      ]);
+      assert.ok(withdrawal, "quota contention must not delay source withdrawal");
+      assert.equal(withdrawal.status, 202, JSON.stringify(withdrawal.body));
+      assert.equal(await bApi.resolveRequestCredential(b.grant(contended), signal), undefined);
+      assert.equal(b.f.secretReads, bReads);
+    } finally {
+      await quotaOwner.query("ROLLBACK");
+      quotaOwner.release();
+    }
+
+    // Local identity clocks can disagree. A fast replica must not delete a correlation
+    // that is still eligible at the database, and a slow one cannot recreate it after expiry.
+    const slowApi = a
+      .restartController(undefined, undefined, a.f.pool, () => new Date(Date.now() - 2_000))
+      .createCredentialProxy(transport);
+    const fastApi = a
+      .restartController(undefined, undefined, a.f.pool, () => new Date(Date.now() + 2_000))
+      .createCredentialProxy(transport);
+    const ordinaryApi = a.restartController().createCredentialProxy(transport);
+    const databaseNow = (
+      await a.f.pool.query("SELECT clock_timestamp() AS time")
+    ).rows[0].time.getTime();
+    const skewed = {
+      ...a.request(),
+      deadlineAt: new Date(databaseNow + 1_000).toISOString(),
+      replayUntilAt: new Date(databaseNow + 1_500).toISOString(),
+    };
+    assert.equal(await slowApi.authorizeRequestCredential(skewed, signal), "credential");
+    assert.equal(
+      (await ordinaryApi.resolveRequestCredential(a.grant(skewed), signal))?.value,
+      "synthetic-key-initial",
+    );
+    const fastRequest = {
+      ...a.request(),
+      deadlineAt: new Date(databaseNow + 10_000).toISOString(),
+      replayUntilAt: new Date(databaseNow + 20_000).toISOString(),
+    };
+    assert.equal(await fastApi.authorizeRequestCredential(fastRequest, signal), "credential");
+    assert.equal(
+      await slowApi.authorizeRequestCredential(skewed, signal),
+      undefined,
+      "fast replica pruning must preserve a still-valid consumed correlation",
+    );
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.max(0, databaseNow + 1_550 - Date.now())),
+    );
+    assert.equal(
+      await slowApi.authorizeRequestCredential(skewed, signal),
+      undefined,
+      "the database rejects an expired correlation even when the replica clock lags",
+    );
+    assert.equal(
+      await ordinaryApi.authorizeRequestCredential(
+        { ...a.request(), requestId: skewed.requestId },
+        signal,
+      ),
+      "credential",
+      "fresh authentication can reuse the ID after the database retention horizon",
+    );
+  },
+);
+
+test(
+  "online approval expiry is bounded by database time despite issuer clock skew (PostgreSQL)",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    const fixture = await requestCredentialFixture(t);
+    const transport = {
+      async verify() {
+        return undefined;
+      },
+      capture() {
+        return undefined;
+      },
+      owns() {
+        return false;
+      },
+    };
+    const fastIssuer = fixture
+      .restartController(undefined, undefined, fixture.f.pool, () => new Date(Date.now() + 60_000))
+      .createCredentialProxy(transport);
+    const input = {
+      ...fixture.request(),
+      deadlineAt: new Date(Date.now() + 90_000).toISOString(),
+      replayUntilAt: new Date(Date.now() + 120_000).toISOString(),
+    };
+    const signal = AbortSignal.timeout(50_000);
+    assert.equal(await fastIssuer.authorizeRequestCredential(input, signal), "credential");
+    const observed = await fixture.f.pool.query(
+      "SELECT expires_at, replay_until_at, clock_timestamp() AS observed_at FROM occ.request_credential_approvals WHERE recipient_id=$1 AND request_id=$2",
+      [input.recipient.id, input.requestId],
+    );
+    const row = observed.rows[0];
+    assert.ok(row);
+    assert.equal(row.replay_until_at.toISOString(), input.replayUntilAt);
+    const immediate = { ...input, requestId: randomUUID() };
+    assert.equal(await fastIssuer.authorizeRequestCredential(immediate, signal), "credential");
+    const immediateGrant = {
+      ...fixture.grant(immediate),
+      deadlineAt: new Date(Date.now() + 20_000).toISOString(),
+    };
+    const material = await fixture.exchange.resolveRequestCredential(immediateGrant, signal);
+    assert.equal(material?.value, "synthetic-key-initial");
+    assert.ok(Date.parse(material.usableUntil) <= Date.parse(immediateGrant.deadlineAt));
+    const immediateStored = await fixture.f.pool.query(
+      "SELECT expires_at FROM occ.request_credential_approvals WHERE recipient_id=$1 AND request_id=$2",
+      [immediate.recipient.id, immediate.requestId],
+    );
+    assert.ok(Date.parse(material.usableUntil) <= immediateStored.rows[0].expires_at.getTime());
+
+    // The stored approval must also control release when the caller's grant lasts longer.
+    const limited = fixture.request();
+    assert.equal(await fixture.exchange.authorizeRequestCredential(limited, signal), "credential");
+    const limitedStored = await fixture.f.pool.query(
+      "SELECT expires_at FROM occ.request_credential_approvals WHERE recipient_id=$1 AND request_id=$2",
+      [limited.recipient.id, limited.requestId],
+    );
+    const longerGrant = {
+      ...fixture.grant(limited),
+      deadlineAt: new Date(Date.now() + 30_000).toISOString(),
+    };
+    const storedDeadline = limitedStored.rows[0].expires_at.toISOString();
+    assert.ok(Date.parse(storedDeadline) < Date.parse(longerGrant.deadlineAt));
+    const limitedMaterial = await fixture.exchange.resolveRequestCredential(longerGrant, signal);
+    assert.equal(limitedMaterial?.value, "synthetic-key-initial");
+    assert.equal(limitedMaterial.usableUntil, storedDeadline);
+
+    // Wait real elapsed time; changing only a fixture clock would not prove the database lease.
+    // The aligned caller supplies a fresh grant input with its own short deadline.
+    await new Promise((resolve) => setTimeout(resolve, 30_100));
+    const reads = fixture.f.secretReads;
+    assert.equal(
+      await fixture.exchange.resolveRequestCredential(
+        { ...fixture.grant(input), deadlineAt: new Date(Date.now() + 20_000).toISOString() },
+        signal,
+      ),
+      undefined,
+      "an unused approval cannot outlive thirty seconds because its issuer clock is ahead",
+    );
+    assert.equal(fixture.f.secretReads, reads);
+    assert.ok(row.expires_at.getTime() <= row.observed_at.getTime() + 30_000);
+    assert.equal(
+      await fastIssuer.authorizeRequestCredential(
+        { ...input, deadlineAt: input.replayUntilAt },
+        signal,
+      ),
+      undefined,
+      "shortening redemption must preserve the original replay tombstone",
+    );
+    const fresh = fixture.request();
+    assert.equal(await fixture.exchange.authorizeRequestCredential(fresh, signal), "credential");
+    assert.equal(
+      (await fixture.exchange.resolveRequestCredential(fixture.grant(fresh), signal))?.value,
+      "synthetic-key-initial",
+    );
+  },
+);
+
+test(
+  "online release expires on database time while a slow replica reads Secrets (PostgreSQL)",
+  { ...requiresPostgres, timeout: 30_000 },
+  async (t) => {
+    const fixture = await requestCredentialFixture(t);
+    const input = { ...fixture.request(), deadlineAt: new Date(Date.now() + 10_000).toISOString() };
+    const signal = AbortSignal.timeout(25_000);
+    assert.equal(await fixture.exchange.authorizeRequestCredential(input, signal), "credential");
+    const slow = fixture
+      .restartController(undefined, undefined, fixture.f.pool, () => new Date(Date.now() - 1_000))
+      .createCredentialProxy({
+        async verify() {
+          return undefined;
+        },
+        capture() {
+          return undefined;
+        },
+        owns() {
+          return false;
+        },
+      });
+    // Delay actual Driver results, including their original observation timestamps, past
+    // this replica's clock lag. Its freshness checks remain valid without rewriting evidence.
+    let paused = fixture.pauseMaterialRead();
+    t.after(() => paused.release());
+    const releasing = slow.resolveRequestCredential(fixture.grant(input), signal);
+    const waitForRead = async (label: string) => {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const outcome = await Promise.race([
+          paused.reached.then(() => "read"),
+          releasing.then(() => "resolver completed"),
+          new Promise<string>((resolve) => {
+            timeout = setTimeout(() => resolve("read timed out"), 5_000);
+          }),
+        ]);
+        assert.equal(outcome, "read", `must reach ${label} before the resolver completes`);
+      } finally {
+        clearTimeout(timeout);
+      }
+    };
+    for (let read = 0; read < 2; read += 1) {
+      await waitForRead(`outside-lock read ${read + 1}`);
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      const previous = paused;
+      paused = fixture.pauseMaterialRead();
+      previous.release();
+      await previous.settled;
+    }
+    await waitForRead("final read");
+    try {
+      // Synchronize on the actual final observation before crossing database expiry.
+      // Leave ample setup time; a correctly completed resolver must never strand a barrier.
+      const remaining = await fixture.f.pool.query(
+        "SELECT EXTRACT(EPOCH FROM (expires_at - clock_timestamp())) * 1000 AS remaining_ms FROM occ.request_credential_approvals WHERE request_id=$1",
+        [input.requestId],
+      );
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.max(1_100, Number(remaining.rows[0].remaining_ms) + 100)),
+      );
+      const expired = await fixture.f.pool.query(
+        "SELECT expires_at < clock_timestamp() AS expired FROM occ.request_credential_approvals WHERE request_id=$1",
+        [input.requestId],
+      );
+      assert.equal(expired.rows[0].expired, true);
+    } finally {
+      paused.release();
+    }
+    await paused.settled;
+    assert.equal(
+      await releasing,
+      undefined,
+      "a slow replica must not release material after the database lease expires during its final read",
+    );
+    assert.equal(
+      await fixture.exchange.resolveRequestCredential(fixture.grant(input), signal),
+      undefined,
+    );
+  },
+);
+
+test(
+  "online release serializes configured role revocation with its final Secret read (PostgreSQL)",
+  { ...requiresPostgres, timeout: 20_000 },
+  async (t) => {
+    const fixture = await requestCredentialFixture(t);
+    const { f, exchange, request, grant } = fixture;
+    const applicationName = `request-role-writer-${randomUUID()}`;
+    const writerPool = new pg.Pool({
+      connectionString: databaseUrl,
+      max: 2,
+      application_name: applicationName,
+    });
+    t.after(() => writerPool.end());
+    const writerState = new PostgresPlatformState(writerPool);
+    const writer = (operate: boolean) => {
+      const controller = new OpenClawController(f.controller.installation, {
+        state: writerState,
+        iamConfiguration: {
+          roles: [
+            {
+              id: "request_model",
+              permissions: [
+                { resourceKind: "credential_source", action: operate ? "operate" : "read" },
+              ],
+            },
+          ],
+          defaultUserGroups: [],
+          roleBindings: [],
+        },
+      });
+      const iam = new NativeIAMDriver(writerState, { id: "request-role-writer" });
+      controller.registerDriver(iam);
+      controller.selectDriver("iam", iam.id);
+      return controller;
+    };
+    await writer(true).applyIAMConfiguration();
+    // Seed the existing creator binding through Native IAM's production ownership port.
+    // The namespace policy HTTP API intentionally cannot bind configured Installation Roles.
+    const ownership = new NativeIAMDriver(writerState, { id: "request-owner-fixture" });
+    const binding = await writerState.transact(async (unit) => {
+      await unit.installations.holdIAMConfiguration("shared");
+      return ownership.createOwnerBinding(
+        { policy: unit.iamPolicy },
+        {
+          id: `binding_owner_${f.source.id}`,
+          namespaceId: f.namespace.id,
+          principalId: f.agent.servicePrincipalId,
+          roleId: "role_config_request_model",
+          resourceKind: "credential_source",
+          resourceId: f.source.id,
+        },
+      );
+    });
+    assert.equal(
+      (await f.request("DELETE", `/namespaces/${f.namespace.id}/iam/access-bindings/${f.grant.id}`))
+        .status,
+      204,
+    );
+    const signal = AbortSignal.timeout(12_000);
+    const input = request();
+    assert.equal(await exchange.authorizeRequestCredential(input, signal), "credential");
+    const held = fixture.pauseFinalMaterialRead();
+    t.after(() => held.release());
+    const releasing = exchange.resolveRequestCredential(grant(input), signal);
+    await held.reached;
+    // Only the configured Role changes. The unchanged binding supplies the Agent's
+    // sole operate permission, so this writer has no Namespace row to lock.
+    let committed = false;
+    const changing = writer(false)
+      .applyIAMConfiguration()
+      .then(() => {
+        committed = true;
+      });
+    let waited = false;
+    try {
+      const until = Date.now() + 5_000;
+      while (!committed && !waited && Date.now() < until) {
+        const activity = await f.pool.query(
+          "SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND application_name=$1 AND wait_event_type='Lock'",
+          [applicationName],
+        );
+        waited = activity.rowCount !== 0;
+        if (!waited) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      }
+    } finally {
+      held.release();
+    }
+    const material = await releasing;
+    await changing;
+    assert.equal(
+      waited,
+      true,
+      "configured role revocation must wait for the final material decision",
+    );
+    assert.equal(material?.value, "synthetic-key-initial");
+    const retained = await f.pool.query("SELECT role_id FROM occ.iam_access_bindings WHERE id=$1", [
+      binding.id,
+    ]);
+    assert.equal(retained.rows[0].role_id, "role_config_request_model");
+    const reads = f.secretReads;
+    assert.equal(
+      await exchange.authorizeRequestCredential(request(), signal),
+      undefined,
+      "the next request must observe the configured Role's revoked operate permission",
+    );
+    assert.equal(f.secretReads, reads);
+  },
+);

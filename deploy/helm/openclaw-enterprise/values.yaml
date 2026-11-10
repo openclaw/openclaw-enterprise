@@ -345,6 +345,12 @@ egressAuthority:
   # Only public.pem is projected from the Gateway's issuer Secret.
   # Every client requires both namespaceSelector and podSelector.matchLabels.
   clients: []
+  # Optional per-request model credential redemption; shares TLS and client scope above.
+  tokenGrant:
+    enabled: false
+    port: 9445 # decimal, without leading zeros
+    # Projects the public SPIFFE JWT bundle key bundle.json into the API only.
+    bundleConfigMapName: ""
 
 # Optional request-phase Git middleware listener in the worker.
 # Requires repositoryCredentials.authority: prepared-git and matching Installation

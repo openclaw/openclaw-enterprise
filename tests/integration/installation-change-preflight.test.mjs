@@ -127,6 +127,7 @@ test(
         environment(server, "OCC_CONFIG_PATH"),
         environment(server, "OCC_EGRESS_AUTHORITY_PORT"),
         environment(server, "OCC_OPENSHELL_GIT_PORT"),
+        environment(server, "OCC_TOKEN_GRANT_PORT"),
         ...("gatewayRouting.enabled" in values
           ? [environment(server, "OCC_CHART_GATEWAY_ROUTING")]
           : []),
@@ -138,6 +139,7 @@ test(
         "egressAuthority.enabled" in values ? "9444" : "disabled",
       );
       assert.equal(environment(check, "OCC_OPENSHELL_GIT_PORT").value, "disabled");
+      assert.equal(environment(check, "OCC_TOKEN_GRANT_PORT").value, "disabled");
       // Each file the check reads comes from the API's own volume at the API's path.
       const expected = ["installation-startup"];
       if (theme) {
@@ -365,8 +367,12 @@ test(
       const [check] = (await render(values, true)).hook.initContainers;
       return Object.fromEntries(
         check.env
-          .filter(
-            ({ name }) => name === "OCC_EGRESS_AUTHORITY_PORT" || name === "OCC_OPENSHELL_GIT_PORT",
+          .filter(({ name }) =>
+            [
+              "OCC_EGRESS_AUTHORITY_PORT",
+              "OCC_OPENSHELL_GIT_PORT",
+              "OCC_TOKEN_GRANT_PORT",
+            ].includes(name),
           )
           .map(({ name, value }) => [name, value]),
       );
@@ -379,6 +385,43 @@ test(
       const accepted = await runCheck(t, reachable, {}, () => enabled);
       assert.equal(accepted.status, 0, accepted.stderr);
       assert.equal(accepted.stdout, "installation-startup-ready\n");
+    }
+
+    // The same preflight guards the request token listener before a Recreate upgrade stops the API.
+    const requestCredentials = structuredClone(reachable);
+    requestCredentials.drivers.credential_proxy.configuration.tokenGrant = {
+      endpoint: "https://authority.example.test:9445/token",
+      port: 9445,
+      trustDomain: "example.test",
+      bundlePath: "/etc/openclaw/egress/token-grant/bundle.json",
+    };
+    const tokenEnvironment = await chartEnvironment({
+      ...preparedGitHubValues,
+      "egressAuthority.tokenGrant.enabled": "true",
+      "egressAuthority.tokenGrant.bundleConfigMapName": "supervisor-jwt-bundle",
+    });
+    const acceptedToken = await runCheck(t, requestCredentials, {}, () => tokenEnvironment);
+    assert.equal(acceptedToken.status, 0, acceptedToken.stderr);
+    const wrongBundle = structuredClone(requestCredentials);
+    wrongBundle.drivers.credential_proxy.configuration.tokenGrant.bundlePath =
+      "/unmounted/bundle.json";
+    for (const [configuration, environment, diagnostic] of [
+      [requestCredentials, enabled, /Helm egressAuthority.tokenGrant.enabled is false/],
+      [
+        requestCredentials,
+        { ...tokenEnvironment, OCC_TOKEN_GRANT_PORT: "9555" },
+        /Helm egressAuthority.tokenGrant.port is 9555/,
+      ],
+      [
+        wrongBundle,
+        tokenEnvironment,
+        /bundlePath must be \/etc\/openclaw\/egress\/token-grant\/bundle.json/,
+      ],
+    ]) {
+      const refused = await runCheck(t, configuration, {}, () => environment);
+      assert.equal(refused.status, 1);
+      assert.match(refused.stderr, /CHART_LISTENER_MISMATCH/);
+      assert.match(refused.stderr, diagnostic);
     }
 
     const loopback = structuredClone(reachable);

@@ -80,7 +80,9 @@ retry follows. Retain that uncertain receipt.
 
 ## Static source and response policy
 
-Fresh static sources select the first provider for their type in catalog order.
+Fresh sources without an authorization selection use the first strict provider
+for their type in catalog order. Explicit `authorization: "online-request"`
+selects the separate [online model profile](../drivers/credential-proxy.md#online-model-requests).
 The selected provider ID and generation must identify one registration; duplicates
 return `409` before credential material is read. Multiple distinct providers for
 the same type remain supported. Reordering distinct providers does not change the

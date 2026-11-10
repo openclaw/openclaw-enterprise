@@ -6,6 +6,11 @@ import {
   MAX_AGENT_CREDENTIAL_SOURCES,
 } from "@openclaw-enterprise/contracts";
 import { memoryEgressSendReceipts } from "./egress-send-receipts.ts";
+import type { RequestCredentialApprovalRepository } from "../ports/request-credential-approvals.ts";
+import {
+  memoryRequestCredentialApprovals,
+  type StoredRequestCredentialApproval,
+} from "./request-credential-approvals.ts";
 import type { EgressSendReceiptRepository, StoredSendReceipt } from "../egress-send-receipts.ts";
 import { isDeepStrictEqual } from "node:util";
 import type {
@@ -1192,6 +1197,7 @@ export interface PlatformReadView {
 
 export interface PlatformUnitOfWork extends PlatformReadView {
   readonly preparedTokenProof: PreparedTokenCurrentProof;
+  readonly requestCredentialApprovals: RequestCredentialApprovalRepository;
   readonly egressSendReceipts: EgressSendReceiptRepository;
   readonly sandboxPolicies: SandboxPolicyRepository;
   readonly installations: InstallationRepository;
@@ -1216,6 +1222,8 @@ export interface PlatformUnitOfWork extends PlatformReadView {
 export interface PlatformStateStore {
   read<T>(work: (state: PlatformReadView) => Promise<T>): Promise<T>;
   transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T>;
+  /** Observe committed changes after acquiring locks, independent of connection defaults. */
+  transactReadCommitted?<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T>;
 }
 
 export interface TransactionalAuditWriter {
@@ -1249,6 +1257,7 @@ interface IAMSubjectSource {
 }
 
 interface PlatformSnapshot {
+  readonly requestCredentialApprovals: Map<string, StoredRequestCredentialApproval>;
   readonly egressSendReceipts: Map<string, StoredSendReceipt>;
   installation: Readonly<Installation> | undefined;
   readonly namespaces: Map<string, Readonly<PersistedNamespace>>;
@@ -1393,6 +1402,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     presets: new Map(Array.from(snapshot.presets, ([key, preset]) => [key, storedCopy(preset)])),
     secrets: new Map(Array.from(snapshot.secrets, ([key, secret]) => [key, storedCopy(secret)])),
     egressRejected: new Set(snapshot.egressRejected),
+    requestCredentialApprovals: new Map(snapshot.requestCredentialApprovals),
     egressSendReceipts: new Map(snapshot.egressSendReceipts),
     egressInstallations: new Map(
       Array.from(snapshot.egressInstallations, ([key, value]) => [key, storedCopy(value)]),
@@ -4244,6 +4254,9 @@ function repositories(
     iamPolicy,
     repositorySessions,
     preparedTokenProof,
+    requestCredentialApprovals: memoryRequestCredentialApprovals(
+      snapshot.requestCredentialApprovals,
+    ),
     egressSendReceipts: memoryEgressSendReceipts(snapshot.egressSendReceipts),
     provisioning: {
       findByWorkId: provisioningAbsent,
@@ -4541,6 +4554,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     credentialWithdrawals: new Map(),
     egressInstallations: new Map(),
     egressRejected: new Set(),
+    requestCredentialApprovals: new Map(),
     egressSendReceipts: new Map(),
     serviceAccounts: new Map(),
     agents: new Map(),
@@ -4601,6 +4615,11 @@ export class InMemoryPlatformState implements PlatformStateStore {
         ),
       ),
     );
+  }
+
+  /** Serialized writers clone the current committed snapshot only after taking their turn. */
+  async transactReadCommitted<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
+    return this.transact(work);
   }
 
   /**

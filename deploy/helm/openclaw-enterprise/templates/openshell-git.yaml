@@ -1,7 +1,7 @@
 {{- if .Values.openshellGit.enabled }}
 {{- $git := .Values.openshellGit }}
-{{- if .Values.egressAuthority.enabled }}
-{{- fail "openshellGit cannot be combined with egressAuthority" }}
+{{- if and .Values.egressAuthority.enabled (not .Values.egressAuthority.tokenGrant.enabled) }}
+{{- fail "openshellGit cannot be combined with egressAuthority unless tokenGrant is enabled" }}
 {{- end }}
 {{- include "openclaw.validateResourceName" (dict "label" "openshellGit.tlsSecretName" "value" (required "openshellGit.tlsSecretName is required" $git.tlsSecretName)) }}
 {{- include "openclaw.validateResourceName" (dict "label" "openshellGit.issuerPublicKeyConfigMapName" "value" (required "openshellGit.issuerPublicKeyConfigMapName is required" $git.issuerPublicKeyConfigMapName)) }}

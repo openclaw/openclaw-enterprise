@@ -455,7 +455,7 @@ export class OpenShellGitRuntime {
         ? !this.configuration.observedHookPreviewWorkspace ||
           binding.profile !== githubInstallationProfile ||
           revision.egressPlan?.repositoryGitAuthorization !== observedRequestHook
-        : revision.executionAdmission?.version !== 5 ||
+        : ![5, 9].includes(revision.executionAdmission?.version) ||
           revision.egressPlan?.repositoryGitAuthorization !== "online-request" ||
           (binding.profile === githubInstallationProfile &&
             !!this.configuration.observedHookPreviewWorkspace)) ||
@@ -531,7 +531,7 @@ export class OpenShellGitRuntime {
       return;
     }
     const entry = await this.entries.get(revision.id);
-    if (!entry && revision.executionAdmission?.version !== 5) {
+    if (!entry && ![5, 9].includes(revision.executionAdmission?.version)) {
       return;
     }
     if (!entry && revision.repositoryCredentials?.standingApprovalId) {

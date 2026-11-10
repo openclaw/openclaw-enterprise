@@ -8,9 +8,11 @@ last_updated_session: authoring-run/098bcc8c-9e1b-4318-aff3-06c464edb33e
 
 ## Overview
 
-The supervisor holds an Agent's GitHub identity reply until OpenClaw Control Plane
-(OCC) permits release. See the [legacy supervisor cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
+The supervisor holds GitHub's identity reply until OpenClaw Control Plane (OCC)
+authorizes release. See the [legacy supervisor cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
 and [threat model](../reference/security/credential-proxy.md).
+[Online model requests](credential-source-egress/model-requests.md) use a separate
+approval and credential-release flow.
 
 ## Entry Points
 
@@ -25,8 +27,8 @@ and [threat model](../reference/security/credential-proxy.md).
 
 ### Follow the metadata GET
 
-Suppose the revision admits `github-app-metadata` for repository ID `12345`,
-`acme/widgets`, at `https://api.github.com`.
+A revision admits `github-app-metadata` for `acme/widgets` (ID `12345`) at
+`https://api.github.com`.
 
 1. **Match the request.** The supervisor binds the bodyless `GET /repos/acme/widgets`
    reply to its exchange. The GitHub adapter checks method, URL, headers and body
@@ -42,10 +44,9 @@ Suppose the revision admits `github-app-metadata` for repository ID `12345`,
 { "id": 12345, "full_name": "acme/widgets" }
 ```
 
-For ID `67890` under the same name, the supervisor withholds the response
-although GitHub received the request. With the credential-free
-profile the same filters apply, but resolution records `no_material_required`
-and the supervisor sends no credential header.
+The supervisor withholds a reply with ID `67890` after send. The credential-free
+profile applies the same filters and records `no_material_required` without
+sending a credential header.
 [GitHub metadata adapter](https://github.com/openclaw/openclaw-enterprise/blob/0418ef3a2c116b73f025281395d92477daf665d2/apps/controller/src/drivers/egress-proxy/github-metadata.ts)
 
 ```mermaid
@@ -315,9 +316,8 @@ verifies the original fence, recipient, material, policy and request without rea
 
 ## Debugging and Verification
 
-Follow the [testing guide](../testing/static-egress.md) to qualify model execution,
-response custody and NetworkPolicy on the selected deployment. Observe origin and
-caller independently.
+Use the [testing guide](../testing/static-egress.md) to qualify model execution,
+response custody and NetworkPolicy. Observe origin and caller independently.
 
 ## Related docs
 
@@ -337,6 +337,8 @@ None.
 - 2026-11-10 08:22: Accept empty metadata on replayed assistant output text. (authoring-run/098bcc8c-9e1b-4318-aff3-06c464edb33e - 33c820f6daf4ba6a1559680911ab2d509ee4a131)
 
 - 2026-11-10 07:15: Admit bounded Codex Git workspace metadata and passive MCP attribution on Responses requests. (authoring-run/13d2e44f-b996-453e-8cbc-db80b8f8e3e2 - f06bf60299ad29444685d70fb2708f3f0558a5ad)
+
+- 2026-11-10 02:54: Link the separate online model request flow. (authoring-run/a802f6ce-4398-4469-a79b-cc18fe9219a9 - a6ebd816924d1669911a07e09ecdebc3d8b3176e)
 
 - 2026-11-06 02:38: Refuse historical Git issuance and session renewal while preserving original detach recovery. (authoring-run/96255fab-cb34-45d9-b940-d3055029e29f - 37b81d16bbbb3f0c864fc652060075c06eb4dc52)
 

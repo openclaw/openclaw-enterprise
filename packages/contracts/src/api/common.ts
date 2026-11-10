@@ -432,6 +432,12 @@ export const CreateCredentialSourceBody = Type.Object(
   {
     name: Name,
     type: CredentialSourceType,
+    authorization: Type.Optional(
+      Type.Literal("online-request", {
+        description:
+          "Explicitly select an offered request-authorization profile. With a Credential Proxy selected, omission retains exact-dispatch admission for eligible static sources. Existing sources retain their original profile.",
+      }),
+    ),
     config: Type.Optional(CredentialSourceConfig),
     secrets: Type.Optional(CredentialSourceSecrets),
   },
