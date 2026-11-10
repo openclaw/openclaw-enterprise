@@ -334,13 +334,13 @@ messages and other headers. Interrupted or undecodable responses remain
 `unknown`. `lastApi` identifies the latest attempt. Cleanup preserves entries
 and requires its own successful checkpoint.
 
-`failure` names the failed operation. `failure.kubectl` records local outcome,
-exit code, signal, kill flag and abort state. Bounded Gateway exec failures
-report `failure.nativeExec` as `recorded`, `absent` or `invalid`. A recorded
-summary gives the local client step and last acknowledged RPC. Missing evidence
-leaves remote startup uncertain. Diagnostics omit raw output and never authorize
-replay. The terminal error preserves them if ledger writing fails. The deployed
-checkpoint identifies the admitted Harness source's public owner capability.
+The ledger records the failed operation and `failure.kubectl` outcome.
+`failure.nativeExec` is `recorded`, `absent` or `invalid`. A frame gives client step,
+last acknowledged RPC, failure site, URL shape and nonempty token presence.
+Missing frames leave startup uncertain. The pre-turn Pod declarations leave
+effective inputs unknown. The terminal error preserves bounded failure facts
+without raw output or replay authority. The deployed checkpoint records public
+owner capability.
 
 Cleanup removes the owned Agent, confirms API, Sandbox and workload Pod absence,
 removes supporting resources and closes the provider. Use the ledger to reconcile
