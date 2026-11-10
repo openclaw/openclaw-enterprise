@@ -12,7 +12,7 @@ log="$RUNNER_TEMP/oce-credentials/$phase.log"
 # Kill the setup process group before teardown can acquire its installation lock.
 limit=()
 if [[ $phase == setup ]]; then
-  limit=(timeout --signal=TERM --kill-after=15s 104m)
+  limit=(timeout --signal=TERM --kill-after=15s 102m)
 fi
 # Record source locations without tracing command arguments or variable values.
 if "${limit[@]}" bash -E -c '
@@ -52,7 +52,9 @@ else
           jq -r '[.items[] | select(.metadata.deletionTimestamp==null)] as $pods |
             "API Pods: " + ($pods|length|tostring) + ", Ready: " +
             ([$pods[] | select(any(.status.containerStatuses[]?; .name=="api" and .ready))]|length|tostring)' || true
-        if request GET "$base/agents/$agent/deployments/$revision" > "$RUN_DIR/capability-status.json"; then
+        if timeout --signal=TERM --kill-after=5s 20s bash -c \
+          'source "$1"; request GET "$2"' bash "$RUN_DIR/session.sh" \
+          "$base/agents/$agent/deployments/$revision" > "$RUN_DIR/capability-status.json"; then
           jq -r '.data.status | select(.=="succeeded" or .=="running" or .=="failed" or .=="cancelled" or .=="pending") | "Capability deployment status: " + .' "$RUN_DIR/capability-status.json"
           # The API contract strips provider text. Only emit codes also present
           # in this checkout, never server messages, URLs, or response bodies.
