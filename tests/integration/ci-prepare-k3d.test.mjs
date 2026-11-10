@@ -354,7 +354,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     test(`fixture preparation bounds ${stage} before publishing test inputs`, async (t) => {
       const version = stage === "fixture-engine-version";
       const commands = await fixtureImageCommands(t, "success", "k3d-fixture-network", {
-        OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS: version ? "1000" : "30000",
+        OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS: version ? "3000" : "30000",
         OPENCLAW_CI_COMMAND_KILL_GRACE_MS: version ? "3000" : "100",
         OPENCLAW_CI_IMAGE_BUILD_TEST_RESERVE_MS: "2000",
         // Invalid deadlines still need a finite engine-probe limit. The build uses
@@ -382,21 +382,31 @@ describe("CI k3d preparation", { concurrency: true }, () => {
           // PostgreSQL shares the version probe. Its unmodified caller finishes
           // normally; no arrival-order assumption selects the fixture's child.
           const original = join(dirname(commands.statePath), "bin", "docker.mjs.original");
+          if (version) {
+            // Allow command-server startup on busy runners without booting another
+            // Node process just to record the probe. The real CLI still kills the
+            // fixture probe before this delay ends; PostgreSQL completes normally.
+            return (
+              `printf '%s\\n' "$$" >> ${bashString(pidFile)}; ` +
+              `printf '%s\\n' 'private build output' >&2; ` +
+              `"$__sleep" 6; exec ${bashString(original)} ${args.map(bashString).join(" ")}`
+            );
+          }
           const program = `
             const { appendFileSync } = require("node:fs");
             const { spawn, spawnSync } = require("node:child_process");
             appendFileSync(${JSON.stringify(pidFile)}, process.pid + "\\n");
             process.stderr.write("private build output\\n");
-            if (!${version}) process.stderr.write(${JSON.stringify(buildOutput)});
-            const descendant = ${version} ? undefined : spawn(process.execPath, ["-e", ${JSON.stringify(`
+            process.stderr.write(${JSON.stringify(buildOutput)});
+            const descendant = spawn(process.execPath, ["-e", ${JSON.stringify(`
               require("node:fs").appendFileSync(${JSON.stringify(pidFile)}, process.pid + "\\n");
               process.on("SIGTERM", () => {});
               setTimeout(() => {}, 30_000);
             `)}], { stdio: "ignore" });
             setTimeout(() => {
-              descendant?.kill("SIGKILL");
+              descendant.kill("SIGKILL");
               process.exit(spawnSync(${JSON.stringify(original)}, ${JSON.stringify(args)}, { stdio: "inherit" }).status);
-            }, ${version ? 3000 : 10000});
+            }, 10000);
           `;
           return `exec ${bashString(process.execPath)} -e ${bashString(program)}`;
         }
@@ -443,8 +453,9 @@ describe("CI k3d preparation", { concurrency: true }, () => {
           .find((line) => line.includes(`"stage":"${stage}","status":"failed"`));
         const { elapsedMs } = JSON.parse(failed.slice(failed.indexOf("{")));
         // A prompt child exit releases its supervisor; do not wait on a stale
-        // group number for the three-second escalation timer to fire.
-        assert.ok(elapsedMs < 3000, `prompt timeout settlement took ${elapsedMs} ms`);
+        // group number until the three-second escalation grace expires.
+        // Two seconds of scheduling margin still excludes deadline + full grace.
+        assert.ok(elapsedMs < 5000, `prompt timeout settlement took ${elapsedMs} ms`);
       }
       if (!version) {
         assertStderrMatch(
