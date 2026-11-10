@@ -849,7 +849,13 @@ function externalGitJourney(
           assert.fail("V2 policy reduction belongs to the external Driver, not Compute");
         },
       }),
-      ...(conversation && { admitRevision: kube.admitRevision.bind(kube) }),
+      ...(conversation && {
+        // Freeze the model destination through the same configuration path as admission.
+        normalizeHarnessOverrides: kube.normalizeHarnessOverrides.bind(kube),
+        resolveHarnessConfiguration: kube.resolveHarnessConfiguration.bind(kube),
+        validateHarnessCredentialSources: kube.validateHarnessCredentialSources.bind(kube),
+        admitRevision: kube.admitRevision.bind(kube),
+      }),
       capability: "compute",
       async bindAgent(context) {
         if (
