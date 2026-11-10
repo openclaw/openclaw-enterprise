@@ -38,7 +38,7 @@
     "tests/integration/configuration-controller.test.mjs",
     "tests/integration/configuration-body-limits.test.mjs",
     "tests/integration/json-body-depth.test.mjs",
-    "tests/conformance/workspace-files.test.mjs",
+    "tests/conformance/workspace-files.test.ts",
     "tests/conformance/runtime-logs-sandbox.test.mjs",
     "tests/integration/device-authorization-api.test.mjs",
     "tests/integration/openshell-device-authorization-api.test.mjs",
@@ -83,17 +83,17 @@
     "tests/conformance/http-errors.test.mjs",
     "tests/conformance/docker-compute.test.mjs",
     "tests/conformance/secret-gateway-delivery.test.mjs",
-    "tests/conformance/runtime-logs-replay.test.mjs",
+    "tests/conformance/runtime-logs-replay.test.ts",
     "tests/conformance/codex-seccomp-profile.test.mjs",
     "tests/conformance/kubernetes-ownership.test.mjs",
     "tests/conformance/service-account-driver.test.mjs",
     "tests/conformance/iam.test.mjs",
     "tests/conformance/platform-state-memory.test.mjs",
     "tests/conformance/contracts.test.mjs",
-    "tests/conformance/presets.test.mjs",
+    "tests/conformance/presets.test.ts",
     "tests/integration/production-healthcheck.test.mjs",
     "tests/conformance/pr-status.test.ts",
-    "tests/conformance/codex-stderr-filter.test.mjs",
+    "tests/conformance/codex-stderr-filter.test.ts",
     "tests/docs/docs-server.test.mjs",
     "tests/integration/console-build-metadata.test.ts",
     "tests/conformance/console-design-tokens.test.ts",
@@ -260,10 +260,10 @@
       "path": "tests/conformance/runtime-logs-sandbox.test.mjs"
     },
     {
-      "path": "tests/conformance/runtime-logs-replay.test.mjs"
+      "path": "tests/conformance/runtime-logs-replay.test.ts"
     },
     {
-      "path": "tests/conformance/codex-stderr-filter.test.mjs"
+      "path": "tests/conformance/codex-stderr-filter.test.ts"
     },
     {
       "path": "tests/conformance/occ-read.test.mjs"
@@ -294,7 +294,7 @@
       "path": "tests/conformance/pr-status.test.ts"
     },
     {
-      "path": "tests/conformance/presets.test.mjs"
+      "path": "tests/conformance/presets.test.ts"
     },
     {
       "path": "tests/conformance/secret-gateway-delivery.test.mjs"
@@ -330,7 +330,7 @@
       "path": "tests/conformance/workspace-files-configuration.test.mjs"
     },
     {
-      "path": "tests/conformance/workspace-files.test.mjs"
+      "path": "tests/conformance/workspace-files.test.ts"
     },
     {
       "path": "tests/conformance/workspace-node-supervisor.test.mjs"

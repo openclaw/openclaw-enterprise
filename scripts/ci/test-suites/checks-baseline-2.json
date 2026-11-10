@@ -101,11 +101,11 @@
     "tests/conformance/repository-credentials-sessions.test.mjs",
     "tests/conformance/repository-credentials-admission.test.ts",
     "tests/integration/dev-codex-seccomp-failure.test.mjs",
-    "tests/conformance/runtime-probe-cpu-counter.test.mjs",
+    "tests/conformance/runtime-probe-cpu-counter.test.ts",
     "tests/conformance/runtime-gateway-state-migration.test.mjs",
     "tests/conformance/node-test-summary.test.mjs",
     "tests/conformance/repository-material-store.test.mjs",
-    "tests/conformance/plugin-runtime-templates.test.mjs",
+    "tests/conformance/plugin-runtime-templates.test.ts",
     "tests/integration/ci-logging.test.mjs",
     "tests/integration/ci-go-test.test.mjs",
     "tests/conformance/slack-proxy-reset.test.mjs",
@@ -120,7 +120,7 @@
     "tests/integration/client-address.test.mjs",
     "tests/integration/full-integration-preflight.test.mjs",
     "tests/integration/container-promote.test.mjs",
-    "tests/conformance/controller-stop-yields.test.mjs",
+    "tests/conformance/controller-stop-yields.test.ts",
     "tests/integration/dev-up-model-provider.test.mjs",
     "tests/integration/egress-connected-preflight.test.mjs",
     "tests/integration/credential-proxy-configuration.test.ts",
@@ -316,7 +316,7 @@
       "path": "tests/integration/ssh-compute-startup.test.mjs"
     },
     {
-      "path": "tests/conformance/runtime-probe-cpu-counter.test.mjs"
+      "path": "tests/conformance/runtime-probe-cpu-counter.test.ts"
     },
     {
       "path": "tests/conformance/runtime-gateway-state-migration.test.mjs"
@@ -355,7 +355,7 @@
       "path": "tests/conformance/hosted-plugin-discovery.test.mjs"
     },
     {
-      "path": "tests/conformance/plugin-runtime-templates.test.mjs"
+      "path": "tests/conformance/plugin-runtime-templates.test.ts"
     },
     {
       "path": "tests/integration/plugin-driver-startup.test.mjs"
@@ -620,7 +620,7 @@
       "path": "tests/conformance/schema-auth-boundary-v1.test.mjs"
     },
     {
-      "path": "tests/conformance/controller-stop-yields.test.mjs"
+      "path": "tests/conformance/controller-stop-yields.test.ts"
     },
     {
       "path": "tests/integration/dev-up-model-provider.test.mjs"
