@@ -6277,7 +6277,7 @@ test("Helm rejects obvious malformed quantity syntax", tooling, async () => {
 test(
   "the chart refuses control-plane node selectors the volume helper refuses",
   tooling,
-  async () => {
+  async (t) => {
     const valueMessage = /controlPlane\.nodeSelector values must be Kubernetes label values/;
     const keyMessage = /controlPlane\.nodeSelector keys must be Kubernetes label keys/;
     for (const [key, value, message] of [
@@ -6294,7 +6294,7 @@ test(
         `${key}=${value}`,
       );
     }
-    const directory = await mkdtemp(join(tmpdir(), "openclaw-node-selector-"));
+    const directory = await temporaryDirectory(t, "openclaw-node-selector-");
     const selectorValues = join(directory, "selector.yaml");
     await writeFile(
       selectorValues,
@@ -6304,7 +6304,6 @@ test(
       render({}, { valuesFiles: [selectorValues] }),
       ({ code, stderr }) => code !== 0 && keyMessage.test(stderr),
     );
-    await rm(directory, { recursive: true, force: true });
     const { stdout } = await render(
       {},
       {

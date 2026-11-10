@@ -564,6 +564,7 @@ export {
   TransientDependencyError,
   type ActivationFailedCode,
   type ActivationPendingCode,
+  type CodexPermissionDenial,
   type RuntimeLogsErrorCode,
   type TransientDependency,
   type TransientDependencyReason,

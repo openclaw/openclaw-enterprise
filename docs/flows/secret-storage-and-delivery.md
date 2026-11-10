@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: "2026-11-09"
-last_updated_session: "authoring-run/9e4bd520-55c8-4edd-bde2-4c149544135a"
+updated: "2026-11-10"
+last_updated_session: "authoring-run/c16642a2-889c-409e-833b-d6afc7957d68"
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -201,6 +201,8 @@ Agent revision ConfigMap mount, and a Running, Ready Gateway Pod before it sends
 prompt. It requires the OpenAI key in the Gateway container only for embedded
 OpenClaw; dedicated Codex keeps the key in its Codex Pod or Sandbox. Kubernetes Compute owns any experimental two-cluster placement; this
 local helper does not infer physical placement from the Agent execution mode.
+`scripts/first-agent.mjs:main` distinguishes credential rejection from policy refusal
+when reporting failed deployment, before model verification. See [deployment recovery](../guides/operate/local-setup-troubleshooting.md#first-agent-deployment-fails).
 After a model failure, the CLI prints the original error before a bounded
 [diagnostic snapshot](../../scripts/first-agent-diagnostics.mjs) from the existing
 revision-scoped runtime status and log API. The API resolves both Kubernetes and
@@ -335,6 +337,7 @@ credential at its issuer.
 
 ## Changelog
 
+- 2026-11-10 12:13: Distinguish first-Agent deployment policy refusal, authentication failure, and other failure advice. (authoring-run/c16642a2-889c-409e-833b-d6afc7957d68 - 3c5686897dcb09293562aa30d1a2cecaacc71353)
 - 2026-11-09 22:31: Document bounded first-Agent failure evidence, fixed diagnostic classifications, and exact Gateway stream ownership. (authoring-run/9e4bd520-55c8-4edd-bde2-4c149544135a - 3eae65fcdfe89b0ee7c1d6eaf757c8dddcdfefb9)
 - 2026-11-09 13:02: Require current Local Setup browser settings independently of the Sandbox Driver in the accompanying first-Agent fix. (authoring-run/4c855680-1f37-4507-8ded-fa8be08d1be2 - 8adaa729fa03df318246a2ba3318aae51c603f8d)
 

@@ -344,17 +344,18 @@ the install as ready:
   `runtime.gatewayStorageClassName` for gateway state.
 - For Codex, the configured localhost seccomp profile installed and verified on
   every node selected by `runtime.nodeSelector`.
-- For Slack, a proxy route for both gateway runtime traffic and Console
-  directory lookup. The managed proxy serves both; external proxies need both
-  URLs. Rendering proxy wiring does not enable a Slack consumer. Either profile
+- For Slack, give gateway runtime traffic a proxy route. The API Server can
+  connect directly to Slack for Console directory lookup. The managed proxy
+  serves both paths. Rendering proxy wiring does not enable a Slack consumer. Either profile
   can install the managed
   proxy for API directory lookup and dedicated gateway use, but Slack-enabled
   Agents require dedicated Codex execution. The example input sets
   `managedSlackProxy: true` to use the chart-managed proxy Service. Its network
   policy allows public IPv4 HTTPS, excluding private and reserved ranges, and the
   proxy authorizes Slack hostnames, so connectivity survives Slack DNS rotation.
-  For an external proxy, omit `managedSlackProxy` and provide literal IPv4
-  `runtimeProxyUrl` and `directoryProxyUrl` inputs.
+  For an external gateway proxy, omit `managedSlackProxy` and set
+  `runtimeProxyUrl` to its literal IPv4 URL. Set `directoryProxyUrl` if the
+  API Server must use a proxy for directory lookup.
 - For Codex hosted plugin discovery and runtime authentication, a
   same-Namespace `codex_pat` token Secret or a PAT entered during Agent creation.
   The API Server needs HTTPS access to `auth.openai.com` and `chatgpt.com`.

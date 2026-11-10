@@ -515,6 +515,7 @@ function summarizeWorkerEvent(event) {
       "code",
       "attempt",
       "cause",
+      "failure",
       "dependency",
       "method",
       "grpcStatus",
@@ -2456,8 +2457,22 @@ async function prepareProductionInstallation(
       pollIntervalMs: 50,
       leaseDurationMs: 60_000,
       maxAttempts: 40,
-      // The receipt time lets a failure diagnostic collapse repeated events into first/last.
-      emit: (event) => events.push({ ...event, observedAt: new Date().toISOString() }),
+      emit: (event) => {
+        // The receipt time lets a failure diagnostic collapse repeated events into first/last.
+        events.push({ ...event, observedAt: new Date().toISOString() });
+        // The in-process worker bypasses the normal worker log sink. Keep the fixed denial
+        // code on its own line before a failed deployment tears down the fixture.
+        if (
+          event.event === "worker.completed" &&
+          typeof event.failure === "string" &&
+          (event.code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE" ||
+            event.refusal === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE")
+        ) {
+          process.stderr.write(
+            `OpenShell Codex readiness refusal: ${JSON.stringify(summarizeWorkerEvent(event))}\n`,
+          );
+        }
+      },
     });
     await worker.start();
   };

@@ -232,8 +232,9 @@ and database migrations to retained volumes and local profile state.
 1. Install cluster prerequisites (on two clusters, upgrade the
    [execution chart](../../testing/kubernetes.md#upgrade-the-execution-chart)
    first) and reconcile protected inputs without replacing retained data.
-2. Run the canonical migration preflight. Stop if the history is unsupported or
-   a required quiescence step is unresolved.
+2. Run the [upgrade preflight](production-upgrade.md#rehearse-before-the-maintenance-window),
+   including the candidate's canonical migration check. Stop on unsupported
+   history or an unresolved required quiescence step.
 3. Upgrade the controller, worker, and Console. Wait for database migration,
    bootstrap, authenticated API recovery, and worker readiness. The old API Pod
    stops first and finishes admitted requests within its 30-second grace
