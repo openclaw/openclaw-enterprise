@@ -8,6 +8,7 @@ last_verified: "2026-11-06"
 Add managed plugins to a dedicated OpenClaw Agent on Kubernetes, deploy the revision, and verify tool execution through the OpenClaw terminal interface.
 
 This guide walks through two managed plugin types:
+
 - **CLI plugins** using **Google Workspace** (`occ-plugin:google@1.0.0`), which runs the pinned `gog` command on the worker.
 - **Hosted MCP plugins** using **Slack** (`occ-plugin:slack`), which connects to a streamable Model Context Protocol endpoint.
 
@@ -82,6 +83,7 @@ Hosted MCP packages declare a fixed remote HTTPS server endpoint and an authenti
 ### Installation prerequisites
 
 Managed MCP plugins require the worker Node executable to be allowed in the Credential Gateway configuration:
+
 - In your Helm values under `drivers.credential_gateway.configuration`, add `/usr/local/bin/node` to `toolBinaries`. Without this entry, bearer-token registration is rejected with `409 RESOURCE_CONFLICT`. See [OpenShell Credential Gateway configuration](../../reference/drivers/openshell-credential-gateway.md#configure-the-driver).
 
 ### Set up the credential source
@@ -172,6 +174,7 @@ Use Google Workspace to list the first 3 events from my primary calendar.
 ```
 
 **What to look for in the response:**
+
 - The Agent turn executes `gog` inside the dedicated worker container.
 - The tool result displays structured command output from Google APIs.
 - The model cites the returned calendar events in its final reply.
@@ -185,6 +188,7 @@ Search public Slack messages for "release notes" with limit 3.
 ```
 
 **What to look for in the response:**
+
 - In the TUI activity timeline, confirm a tool call event for `slack_search_public`.
 - The MCP request routes through the OpenShell sandbox with the `SLACK_MCP_TOKEN` placeholder injected securely.
 - The Agent returns the matching message excerpts from the MCP server response.
