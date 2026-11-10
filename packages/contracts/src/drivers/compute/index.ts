@@ -69,6 +69,24 @@ export interface ComputeLifecycleHooks {
 
 export type NamespaceLifecycleFailure = "retryable" | "permanent";
 
+export interface NamespaceLifecycleCheckpoint {
+  readonly revision: number;
+  readonly data: Readonly<Record<string, unknown>>;
+}
+
+/** Namespace-owned durable state. Callbacks reject lost work authority or binding drift. */
+export interface NamespaceLifecycleContext {
+  readonly lifecycleId: string;
+  readonly target: "ready" | "deleted";
+  readonly signal: AbortSignal;
+  read(): Promise<NamespaceLifecycleCheckpoint>;
+  /** Resolve only after COMMIT. On an unknown result, read before any further effect. */
+  checkpoint(
+    expectedRevision: number,
+    data: Readonly<Record<string, unknown>>,
+  ): Promise<NamespaceLifecycleCheckpoint>;
+}
+
 export interface NamespaceEnsureResult extends Scope {
   readonly namespaceId: string;
   readonly namespaceReady: boolean;
@@ -398,8 +416,14 @@ export interface ComputeDriver extends Driver {
    * grants. Undefined means unsupported; callers must not use the admin endpoint instead.
    */
   getGatewayChatEndpoint?(revision: AgentRevision): string | undefined;
-  ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult>;
-  deleteNamespace(namespace: Namespace): Promise<NamespaceDeleteResult>;
+  ensureNamespace(
+    namespace: Namespace,
+    lifecycle: NamespaceLifecycleContext,
+  ): Promise<NamespaceEnsureResult>;
+  deleteNamespace(
+    namespace: Namespace,
+    lifecycle: NamespaceLifecycleContext,
+  ): Promise<NamespaceDeleteResult>;
   /**
    * The Namespace as the paired Sandbox and Credential Gateway see it: `name` is this
    * Compute Driver's runtime placement. Required to register Credential Gateway sources.

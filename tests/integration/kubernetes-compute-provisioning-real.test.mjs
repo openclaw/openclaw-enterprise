@@ -32,6 +32,7 @@ import {
   deleteNamespaces,
 } from "../helpers/kubernetes-compute-real.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { namespaceLifecycleFixture } from "../helpers/namespace-lifecycle.mjs";
 
 test(
   "real Kubernetes Drivers safely use and preserve an externally managed tenant namespace",
@@ -108,12 +109,15 @@ test(
 
     // The reason is what the worker logs for the refusal (D521).
     async function assertPermanentlyRejected(reason, tenant = owner) {
-      assert.deepEqual(await driver.ensureNamespace(tenant), {
-        namespaceId: tenant.id,
-        namespaceReady: false,
-        failure: "permanent",
-        reason,
-      });
+      assert.deepEqual(
+        await driver.ensureNamespace(tenant, await namespaceLifecycleFixture(driver, tenant)),
+        {
+          namespaceId: tenant.id,
+          namespaceReady: false,
+          failure: "permanent",
+          reason,
+        },
+      );
     }
 
     // Explicit selection never creates the requested namespace or silently falls back to a new one.
@@ -139,10 +143,16 @@ test(
       existingNamespace: unclaimedName,
     };
     const untouchedNamespace = await resource("namespace", unclaimedName);
-    assert.deepEqual(await driver.deleteNamespace(unclaimedOwner), {
-      namespaceId: unclaimedOwner.id,
-      namespaceDeleted: true,
-    });
+    assert.deepEqual(
+      await driver.deleteNamespace(
+        unclaimedOwner,
+        await namespaceLifecycleFixture(driver, unclaimedOwner, "deleted"),
+      ),
+      {
+        namespaceId: unclaimedOwner.id,
+        namespaceDeleted: true,
+      },
+    );
     assert.deepEqual(await resource("namespace", unclaimedName), untouchedNamespace);
 
     await createExistingNamespace(existingName);
@@ -216,10 +226,13 @@ test(
 
     // Listing tenant NetworkPolicies is scoped RBAC: absent permission remains retryable and inert.
     const namespaceBeforeAuthorization = await resource("namespace", existingName);
-    assert.deepEqual(await driver.ensureNamespace(owner), {
-      namespaceId: owner.id,
-      namespaceReady: false,
-    });
+    assert.deepEqual(
+      await driver.ensureNamespace(owner, await namespaceLifecycleFixture(driver, owner)),
+      {
+        namespaceId: owner.id,
+        namespaceReady: false,
+      },
+    );
     assert.deepEqual(await resource("namespace", existingName), namespaceBeforeAuthorization);
     assert.equal(await missing("resourcequota", "openclaw-quota", existingName), true);
     await grantTenantAccess(existingName);
@@ -277,9 +290,12 @@ test(
       "--wait=true",
     );
 
-    await driver.ensureNamespace(owner);
+    await driver.ensureNamespace(owner, await namespaceLifecycleFixture(driver, owner));
     await waitFor("explicitly selected existing tenant namespace to become ready", async () => {
-      const observation = await driver.ensureNamespace(owner);
+      const observation = await driver.ensureNamespace(
+        owner,
+        await namespaceLifecycleFixture(driver, owner),
+      );
       assert.notEqual(observation.failure, "permanent");
       return observation.namespaceReady ? observation : undefined;
     });
@@ -293,6 +309,7 @@ test(
     assert.deepEqual(preparedNamespace.metadata.annotations, {
       ...originalNamespace.metadata.annotations,
       "openclaw.dev/namespace-id": owner.id,
+      "openclaw.dev/lifecycle-id": (await namespaceLifecycleFixture(driver, owner)).lifecycleId,
     });
     assert.equal(preparedNamespace.metadata.labels["app.kubernetes.io/managed-by"], "Helm");
     assert.equal(
@@ -410,13 +427,19 @@ test(
     // Namespace deletion is legal only for an owner with no Agents or Configurations.
     await createExistingNamespace(cleanupName);
     await grantTenantAccess(cleanupName);
-    await driver.ensureNamespace(cleanupOwner);
+    const originalCleanupNamespace = await resource("namespace", cleanupName);
+    await driver.ensureNamespace(
+      cleanupOwner,
+      await namespaceLifecycleFixture(driver, cleanupOwner),
+    );
     await waitFor("empty external tenant namespace to become ready", async () => {
-      const observation = await driver.ensureNamespace(cleanupOwner);
+      const observation = await driver.ensureNamespace(
+        cleanupOwner,
+        await namespaceLifecycleFixture(driver, cleanupOwner),
+      );
       assert.notEqual(observation.failure, "permanent");
       return observation.namespaceReady ? observation : undefined;
     });
-    const originalCleanupNamespace = await resource("namespace", cleanupName);
     const originalRoleBinding = await resource("rolebinding", "openclaw-controller", cleanupName);
     for (const kind of ["configmap", "secret"]) {
       await kubectl(
@@ -442,12 +465,15 @@ test(
     const orphanedConfigMap = kubernetesConfigurationName(orphanedConfiguration.id);
     await resource("configmap", orphanedConfigMap, cleanupName);
 
-    // Valid deletion removes fixed OCC infrastructure without touching the operator's namespace.
+    // Deletion preserves operator metadata and releases only the exact OCC claim.
     const deletingOwner = { ...cleanupOwner, status: "deleting" };
     await waitFor(
       "empty tenant infrastructure to be deleted without deleting its namespace",
       async () => {
-        const observation = await driver.deleteNamespace(deletingOwner);
+        const observation = await driver.deleteNamespace(
+          deletingOwner,
+          await namespaceLifecycleFixture(driver, deletingOwner, "deleted"),
+        );
         assert.notEqual(observation.failure, "permanent");
         return observation.namespaceDeleted ? observation : undefined;
       },
@@ -459,10 +485,12 @@ test(
     const preservedNamespace = await resource("namespace", cleanupName);
     assert.equal(preservedNamespace.metadata.uid, originalCleanupNamespace.metadata.uid);
     assert.deepEqual(preservedNamespace.metadata.labels, originalCleanupNamespace.metadata.labels);
-    assert.deepEqual(
-      preservedNamespace.metadata.annotations,
-      originalCleanupNamespace.metadata.annotations,
-    );
+    assert.deepEqual(preservedNamespace.metadata.annotations, {
+      ...originalCleanupNamespace.metadata.annotations,
+      "openclaw.dev/released-lifecycle": (
+        await namespaceLifecycleFixture(driver, deletingOwner, "deleted")
+      ).lifecycleId,
+    });
     assert.equal(
       (await resource("rolebinding", "openclaw-controller", cleanupName)).metadata.uid,
       originalRoleBinding.metadata.uid,
@@ -475,10 +503,16 @@ test(
       (await resource("secret", "operator-sentinel", cleanupName)).metadata.uid,
       originalOperatorSecret.metadata.uid,
     );
-    assert.deepEqual(await driver.deleteNamespace(deletingOwner), {
-      namespaceId: cleanupOwner.id,
-      namespaceDeleted: true,
-    });
+    assert.deepEqual(
+      await driver.deleteNamespace(
+        deletingOwner,
+        await namespaceLifecycleFixture(driver, deletingOwner, "deleted"),
+      ),
+      {
+        namespaceId: cleanupOwner.id,
+        namespaceDeleted: true,
+      },
+    );
   },
 );
 

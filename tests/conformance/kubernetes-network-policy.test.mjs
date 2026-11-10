@@ -9,6 +9,10 @@ import {
 import { networkPolicySpecToJson } from "../../apps/controller/src/drivers/kubernetes/network-policy.ts";
 import { sha256Hex } from "../../packages/utils/src/hashing.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import {
+  namespaceLifecycleClients,
+  namespaceLifecycleFixture,
+} from "../helpers/namespace-lifecycle.mjs";
 
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
@@ -109,6 +113,8 @@ test("sealed Namespace preparation admits a null NetworkPolicy list and rejects 
     metadata: {
       name: "operator-deny",
       namespace: namespaceName,
+      uid: "00000000-0000-4000-8000-000000000304",
+      resourceVersion: "1",
       labels: ownershipLabels,
       annotations: { "openclaw.dev/namespace-id": namespaceId },
     },
@@ -126,6 +132,7 @@ test("sealed Namespace preparation admits a null NetworkPolicy list and rejects 
     metadata: {
       name: namespaceName,
       uid,
+      resourceVersion: "1",
       labels: {
         ...ownershipLabels,
         "openclaw.dev/gateway-namespace": namespaceId,
@@ -146,43 +153,71 @@ test("sealed Namespace preparation admits a null NetworkPolicy list and rejects 
   const missing = async () => {
     throw Object.assign(new Error("Not found"), { code: 404 });
   };
-  const record = (kind) => async (request) => {
-    reconciled.push(`${kind}/${request.name}`);
-  };
-  driver.apiClients = Promise.resolve({
-    core: {
-      async readNamespace({ name }) {
-        assert.equal(name, namespaceName);
-        return structuredClone(namespace);
+  // Real lifecycle State records intent/bindings; these SDK responses model API-created UIDs.
+  // They do not replace the Driver's policy comparison or claim cluster/provider proof.
+  const objects = new Map();
+  let nextUid = 1;
+  const read =
+    (kind) =>
+    async ({ name }) => {
+      const object = objects.get(`${kind}/${name}`);
+      return object === undefined
+        ? missing()
+        : ObjectSerializer.deserialize(structuredClone(object), `V1${kind}`);
+    };
+  const apply =
+    (kind) =>
+    async ({ body }) => {
+      const object = ObjectSerializer.serialize(body, `V1${kind}`);
+      const previous = objects.get(`${kind}/${object.metadata.name}`);
+      if (previous !== undefined) {
+        assert.equal(object.metadata.uid, previous.metadata.uid);
+        assert.equal(object.metadata.resourceVersion, previous.metadata.resourceVersion);
+      }
+      object.metadata.uid = previous?.metadata.uid ?? `infrastructure-uid-${nextUid++}`;
+      object.metadata.resourceVersion = "1";
+      objects.set(`${kind}/${object.metadata.name}`, object);
+      reconciled.push(`${kind}/${object.metadata.name}`);
+      return ObjectSerializer.deserialize(structuredClone(object), `V1${kind}`);
+    };
+  driver.apiClients = Promise.resolve(
+    namespaceLifecycleClients({
+      core: {
+        async readNamespace({ name }) {
+          assert.equal(name, namespaceName);
+          return structuredClone(namespace);
+        },
+        readNamespacedResourceQuota: read("ResourceQuota"),
+        readNamespacedLimitRange: read("LimitRange"),
+        patchNamespacedResourceQuota: apply("ResourceQuota"),
+        patchNamespacedLimitRange: apply("LimitRange"),
       },
-      readNamespacedResourceQuota: missing,
-      readNamespacedLimitRange: missing,
-      patchNamespacedResourceQuota: record("ResourceQuota"),
-      patchNamespacedLimitRange: record("LimitRange"),
-    },
-    networking: {
-      async listNamespacedNetworkPolicy({ namespace: requested }) {
-        assert.equal(requested, namespaceName);
-        const result = ObjectSerializer.deserialize(
-          { items: [structuredClone(live)] },
-          "V1NetworkPolicyList",
-        );
-        const readback = JSON.parse(JSON.stringify(result.items[0].spec));
-        console.log(`proof readback ${JSON.stringify(readback)}`);
-        return result;
+      networking: {
+        async listNamespacedNetworkPolicy({ namespace: requested }) {
+          assert.equal(requested, namespaceName);
+          const result = ObjectSerializer.deserialize(
+            { items: [structuredClone(live)] },
+            "V1NetworkPolicyList",
+          );
+          const readback = JSON.parse(JSON.stringify(result.items[0].spec));
+          console.log(`proof readback ${JSON.stringify(readback)}`);
+          return result;
+        },
+        readNamespacedNetworkPolicy: read("NetworkPolicy"),
+        patchNamespacedNetworkPolicy: apply("NetworkPolicy"),
       },
-      readNamespacedNetworkPolicy: missing,
-      patchNamespacedNetworkPolicy: record("NetworkPolicy"),
-    },
-  });
-
-  console.log(`proof admission ${JSON.stringify(declared)}`);
-  const prepared = await driver.ensureNamespace({
+    }),
+  );
+  const tenant = {
     id: namespaceId,
     name: "null-policy-lists",
     status: "provisioning",
     createdAt: "2026-11-10T00:00:00.000Z",
-  });
+  };
+  const lifecycle = await namespaceLifecycleFixture(driver, tenant);
+
+  console.log(`proof admission ${JSON.stringify(declared)}`);
+  const prepared = await driver.ensureNamespace(tenant, lifecycle);
   console.log(
     `proof preparation ${JSON.stringify({
       namespaceReady: prepared.namespaceReady,
@@ -202,12 +237,8 @@ test("sealed Namespace preparation admits a null NetworkPolicy list and rejects 
   ]);
 
   live = policy({ ...admitted, ingress: [{}] });
-  const rejected = await driver.ensureNamespace({
-    id: namespaceId,
-    name: "null-policy-lists",
-    status: "provisioning",
-    createdAt: "2026-11-10T00:00:00.000Z",
-  });
+  live.metadata.resourceVersion = "2";
+  const rejected = await driver.ensureNamespace(tenant, lifecycle);
   console.log(
     `proof allow-all ${JSON.stringify({
       namespaceReady: rejected.namespaceReady,

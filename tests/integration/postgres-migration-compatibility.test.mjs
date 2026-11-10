@@ -1408,6 +1408,8 @@ async function assertCompletedHistory(db, previous = []) {
       ["occ.hold_account_administration_policy(text)", true],
       ["occ.record_repository_standing_execution(text,text,text,text,text)", true],
       ["occ.remove_sandbox_policy_access()", false, "search_path=pg_catalog, occ"],
+      // Only the Namespace insert trigger can reserve a fresh no-effects lifecycle.
+      ["occ.reserve_namespace_lifecycle()", false, "search_path=pg_catalog, occ"],
       ["occ.retry_failed_agent_deletion(text,text,text,text)", true],
       ["occ.retry_failed_namespace_deletion(text,text,text)", true],
       // The Agent trigger keeps the credential-source join table exact; occ_app cannot write it.
@@ -2192,6 +2194,7 @@ test(
       [73, "preFiniteRepositorySessionWithdrawal"],
       [74, "preHumanAuthenticationResults"],
       [75, "preNativeBrowserAccess"],
+      [76, "preNamespaceLifecycle"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2225,6 +2228,33 @@ test(
         assert.ok(existingBindings.rows.length > 0);
         assert.ok(existingBindings.rows.every((row) => row.first_deployment_digest === null));
         await assertUpgradedAuthentication(db);
+        if (
+          [
+            "preAgentDeployIntent",
+            "preAgentCredentialSourceLimit",
+            "preAgentPluginDriver",
+            "preConnectionTemplates",
+            "preSavedConnections",
+            "preDefaultUsers",
+            "preHarnessOverrides",
+            "preAccountAdministrationPolicy",
+            "preFiniteRepositorySessionWithdrawal",
+            "preHumanAuthenticationResults",
+            "preNamespaceLifecycle",
+          ].includes(history)
+        ) {
+          // Existing rows carry no proof that earlier infrastructure was never attempted.
+          // A schema upgrade must not invent initial lifecycle authority for them.
+          assert.equal(
+            (
+              await db.app.query(
+                "SELECT namespace_id FROM occ.namespace_lifecycle WHERE namespace_id=$1",
+                [namespaceId],
+              )
+            ).rowCount,
+            0,
+          );
+        }
         if (history === "preHumanAuthenticationResults") {
           await assertSignInResultStorage(db.app);
         }
@@ -2778,7 +2808,10 @@ test(
       const restored = await restoreHistoryArchive(context, fixture, archive);
       const accepted = await logicalRestoreSnapshot(restored);
       const restoredDigest = catalogDigest(accepted.occ);
-      context.diagnostic(`Restore ${lineage}: ${restoredDigest}`);
+      context.diagnostic(
+        `Catalog qualification: lineage=${lineage} native=${catalogDigest(native.occ)} restored=${restoredDigest}`,
+      );
+
       assert.notEqual(restoredDigest, catalogDigest(native.occ));
       assert.deepEqual(accepted.receipts, native.receipts);
       assert.deepEqual(accepted.drizzle, native.drizzle);
@@ -2810,10 +2843,11 @@ test(
           manifest.entries.map(({ sha256, when }) => [sha256, when]),
         );
         // The upgraded restore has its own completed catalog spelling.
-        assert.deepEqual(await runHistoryCommand(restored, "production", "--check"), {
-          ok: true,
-          history: "completed",
-        });
+        assert.deepEqual(
+          await runHistoryCommand(restored, "production", "--check"),
+          { ok: true, history: "completed" },
+          `Upgraded restore catalog: ${catalogDigest(await migrationCatalog(restored.migrator))}`,
+        );
         assert.deepEqual(await logicalRestoreSnapshot(restored), upgraded);
         assert.deepEqual(await canonicalData(restored), upgradedCanonicalData(nativeData));
         await assertPopulatedUpgradeReturn(context, fixture.container, restored, archive, {
@@ -2876,21 +2910,41 @@ test(
       }
     }
 
-    // Tables created after restoring a published prefix retain their native catalog spelling.
+    // Restore preserves the published prefix authority before adding current tables.
     for (const [prefix, history] of [
       [74, "preHumanAuthenticationResults"],
       [75, "preNativeBrowserAccess"],
+      [76, "preNamespaceLifecycle"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
+      const before = await logicalRestoreSnapshot(previous);
       const restored = await restoreHistoryArchive(
         context,
         fixture,
         await dumpHistoryArchive(fixture, previous),
       );
-      assert.deepEqual(await runHistoryMigration(restored, "production"), {
-        ok: true,
-        history,
-      });
+      const accepted = await logicalRestoreSnapshot(restored);
+      assert.deepEqual(accepted.receipts, before.receipts);
+      assert.deepEqual(accepted.drizzle, before.drizzle);
+      assert.deepEqual(accepted.identities, before.identities);
+      assert.deepEqual(accepted.sequence, before.sequence);
+      assert.deepEqual(await runHistoryMigration(restored, "production"), { ok: true, history });
+      const upgraded = await logicalRestoreSnapshot(restored);
+      const manifest = JSON.parse(
+        await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
+      );
+      assert.deepEqual(upgraded.receipts.slice(0, prefix), before.receipts);
+      assert.deepEqual(
+        upgraded.receipts.slice(prefix).map(({ hash, created_at }) => [hash, Number(created_at)]),
+        manifest.entries.slice(prefix).map(({ sha256, when }) => [sha256, when]),
+      );
+      assert.deepEqual(upgraded.drizzle, before.drizzle);
+      assert.deepEqual(upgraded.identities, before.identities);
+      assert.equal(Number(upgraded.sequence[0].last_value), manifest.entries.length);
+      assert.equal(upgraded.sequence[0].is_called, true);
+      context.diagnostic(
+        `Upgraded prefix${prefix} restore: ${catalogDigest(await migrationCatalog(restored.migrator))}`,
+      );
       assert.deepEqual(await runHistoryMigration(restored, "production", "--check"), {
         ok: true,
         history: "completed",

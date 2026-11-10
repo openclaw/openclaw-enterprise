@@ -1,4 +1,5 @@
 ---
+human_verified: true
 tags: [human_verified]
 # Backfilled from the verification tag recorded in 17ff921c5.
 last_verified: "2026-11-04"
@@ -41,49 +42,20 @@ To stop even a partially started environment, run:
 This deletes only the owned cluster and its database. For a Compose control
 plane, set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup.
 
+<a id="check-namespace-cleanup-without-a-model-turn"></a>
+
+## Check Namespace cleanup
+
+Follow [OpenShell Namespace cleanup tests](openshell-namespace-cleanup.md) for
+owned cluster, image and credential prerequisites, provider removal and endpoint-loss
+checks. The central case requires a real Agent/model/browser prelude; the separate
+bare-service case requires authenticated TLS but no model credential.
+
 ## Finite repository removal
 
-To qualify one Agent after repository-binding removal, set `file` to
-`tests/integration/openshell-git-finite-removal-real.test.ts`. Follow the lane
-prerequisites below; pass `--selected-file "$file"` to
-`scripts/ci/prepare.mjs --lane openshell`, then `--file "$file"` to
-`scripts/ci/run-tests.mjs run openshell`, using the same private `--state "$state"`.
-Always run `node scripts/ci/cleanup.mjs --state "$state"`, even after preparation
-or execution fails. The fixture owns a disposable Kubernetes control plane and
-PostgreSQL, a real OpenShell deployment, and a controlled HTTPS Git issuer. It requires
-authorized model credentials and immutable controller/runtime images matching
-the candidate checkout; relabeling an earlier image is not sufficient.
-
-The case first reads Git with the admitted credential and starts a real model
-conversation. It removes the binding before the original ten-minute deadline.
-The issuer refuses retirement of that exact credential with HTTP 503; direct
-HTTP 200 witnesses bracket each subsequent Git attempt. This keeps issuer
-validity separate from OpenShell's revocation of the Git provider.
-
-If the first denied request reaches the worker, it must receive a fresh signed
-`access_withdrawn` decision for the original revision. If provider detachment wins
-that race, the case requires the supervisor's ordered pre-HTTP policy refusal and
-records the signer as unexercised. It does not delay cleanup to force a signature.
-The signed-request PostgreSQL integration remains separate evidence for that boundary.
-After detachment and worker replacement, the case requires successful
-`REPOSITORY_ACCESS_WITHDRAWN` maintenance, Git revocation and model readiness on
-the same reduced supervisor generation, another ordered Git refusal without
-origin traffic or new issuance, and a reply in the original conversation and
-runtime. Finally, withdrawing required model authority must clear the active
-revision and remove the original Sandbox and Agent Pods before the same deadline.
-Queued retirement and fixture teardown do not satisfy this final assertion.
-
-In `openshell-git-retention-real.test.ts`, the natural-expiry case reads scoped
-and unscoped npm metadata from the protected Sandbox before expiry. In the
-two-Agent case, B reads after A's live denial and before worker replacement.
-After replacement, A remains denied before origin and continues its
-conversation on the same runtime. Exact-scope `retire-runtime` fails expiry
-immediately. Retain image digests, case results, and cleanup evidence.
-
-Finite-removal and two-Agent failures identify the failed conversation check:
-`execution identity`, `target discovery`, `gateway identity`, `model turn`, or
-`persisted reply`. These labels do not diagnose the cause. Raw command
-arguments, output, and error causes remain withheld.
+See [finite repository removal coverage](openshell-coverage.md#finite-repository-removal)
+for preparation, exact provider/issuer witnesses, runtime continuity and consequential
+failure limits.
 
 ## Codex plugin installation
 
@@ -157,11 +129,13 @@ OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL=1 \
   node --test tests/integration/dev-up-openshell-k3d-real.test.mjs
 ```
 
-Each command selects one case and skips the other. Both check setup, Workspace
-reconciliation, and cleanup. Kubernetes also checks browser access and a model
-reply from a real Agent, using an OIDC protocol fixture. Compose uses a
-synthetic credential without calling a model. Both default to Docker. Set
-`OCC_TEST_DEV_UP_CONTAINER_ENGINE=podman` for Podman.
+Each command selects one case and skips the other. Both verify setup and
+Workspace reconciliation. The Kubernetes case first uses the authorized Codex
+account with an OIDC protocol fixture for real Agent/browser/model checks, then runs the seven Namespace and
+revision cleanup scenarios. Those scenarios use synthetic source material and
+prevent Harness execution where preparation is refused. The Compose case uses
+synthetic material without Agent/model execution. Both default to Docker; set
+`OCC_TEST_DEV_UP_CONTAINER_ENGINE=podman` to use Podman.
 
 Set `OCC_TEST_NATIVE_BROWSER_RECEIPT` to a new file in an existing directory to
 retain the successful check's source, image identities, and assertion results.

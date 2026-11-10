@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { waitForResult } from "../helpers/wait-for.mjs";
+import { namespaceLifecycleFixture } from "../helpers/namespace-lifecycle.mjs";
 
 const execute = promisify(execFile);
 const selected = process.env.OCC_TEST_DOCKER_TOKEN_RETRY === "1";
@@ -324,7 +325,15 @@ test(
       }
       if (owner !== undefined) {
         try {
-          assert.equal((await driver.deleteNamespace(owner)).namespaceDeleted, true);
+          assert.equal(
+            (
+              await driver.deleteNamespace(
+                owner,
+                await namespaceLifecycleFixture(driver, owner, "deleted"),
+              )
+            ).namespaceDeleted,
+            true,
+          );
           // Inspect contains tokens; assert counts so failed cleanup cannot print it.
           assert.equal((await inspectContainers([[LABEL_NAMESPACE, owner.id]])).length, 0);
           assert.equal((await networkIds(owner.id)).length, 0);
@@ -355,10 +364,13 @@ test(
       revisionId: candidate.id,
       ready: true,
     };
-    assert.deepEqual(await driver.ensureNamespace(owner), {
-      namespaceId: owner.id,
-      namespaceReady: true,
-    });
+    assert.deepEqual(
+      await driver.ensureNamespace(owner, await namespaceLifecycleFixture(driver, owner)),
+      {
+        namespaceId: owner.id,
+        namespaceReady: true,
+      },
+    );
     assert.deepEqual(await driver.prepareRevision(candidate), expected);
     const first = await waitForRuntime(owner.id, candidate.agentId, candidate.id);
     const originalToken = containerEnv(first.agent, "APP_SERVER_TOKEN");
@@ -459,8 +471,17 @@ test(
       }
     });
     await driver.preflight();
+    // The fixture retains each Namespace's real memory-State journal through deletion and retry.
     for (const candidate of [owner, sibling]) {
-      assert.equal((await driver.ensureNamespace(candidate)).namespaceReady, true);
+      assert.equal(
+        (
+          await driver.ensureNamespace(
+            candidate,
+            await namespaceLifecycleFixture(driver, candidate),
+          )
+        ).namespaceReady,
+        true,
+      );
       const [network] = await networkIds(candidate.id);
       assert.ok(network);
       networks.push(network);
@@ -495,10 +516,16 @@ test(
     // worker must not settle deletion solely because the network is absent.
     await docker(["network", "disconnect", "--force", networks[0], containers[0]]);
     await docker(["network", "rm", networks[0]]);
-    assert.deepEqual(await driver.deleteNamespace(owner), {
-      namespaceId: owner.id,
-      namespaceDeleted: true,
-    });
+    assert.deepEqual(
+      await driver.deleteNamespace(
+        owner,
+        await namespaceLifecycleFixture(driver, owner, "deleted"),
+      ),
+      {
+        namespaceId: owner.id,
+        namespaceDeleted: true,
+      },
+    );
     assert.equal((await inspectContainers([[LABEL_NAMESPACE, owner.id]])).length, 0);
     assert.equal(
       (await dockerLines(["volume", "ls", "-q", "--filter", `name=${volume}`])).length,
@@ -507,10 +534,26 @@ test(
     assert.equal((await inspectContainers([[LABEL_NAMESPACE, sibling.id]])).length, 1);
     assert.equal((await networkIds(sibling.id)).length, 1);
     // Normal deletion and repeated deletion retain the same cleanup contract.
-    assert.equal((await driver.deleteNamespace(sibling)).namespaceDeleted, true);
+    assert.equal(
+      (
+        await driver.deleteNamespace(
+          sibling,
+          await namespaceLifecycleFixture(driver, sibling, "deleted"),
+        )
+      ).namespaceDeleted,
+      true,
+    );
     assert.equal((await inspectContainers([[LABEL_NAMESPACE, sibling.id]])).length, 0);
     assert.equal((await networkIds(sibling.id)).length, 0);
-    assert.equal((await driver.deleteNamespace(owner)).namespaceDeleted, true);
+    assert.equal(
+      (
+        await driver.deleteNamespace(
+          owner,
+          await namespaceLifecycleFixture(driver, owner, "deleted"),
+        )
+      ).namespaceDeleted,
+      true,
+    );
   },
 );
 

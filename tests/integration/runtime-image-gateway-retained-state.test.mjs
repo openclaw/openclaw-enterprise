@@ -13,6 +13,7 @@ import {
 } from "../helpers/harness-configuration.mjs";
 import { uncleanStopRestartTest } from "../helpers/runtime-image-gateway-restart.mjs";
 import { image, imageTestOptions, runtimeImageModel } from "../helpers/runtime-image-startup.mjs";
+import { namespaceLifecycleFixture } from "../helpers/namespace-lifecycle.mjs";
 
 uncleanStopRestartTest(
   "operator",
@@ -84,12 +85,14 @@ test(
       },
     };
     const completed = { id: setup.id, namespaceId: namespace.id, agentId, completed: true };
+    // Keep the State-backed Namespace journal while fresh Drivers replace workloads.
+    const lifecycle = await namespaceLifecycleFixture(driver, namespace);
     t.after(async () => {
-      const result = await driver.deleteNamespace(namespace);
+      const result = await driver.deleteNamespace(namespace, { ...lifecycle, target: "deleted" });
       assert.equal(result.namespaceDeleted, true, "owned containers, volumes and network removed");
     });
     await driver.preflight();
-    assert.equal((await driver.ensureNamespace(namespace)).namespaceReady, true);
+    assert.equal((await driver.ensureNamespace(namespace, lifecycle)).namespaceReady, true);
     const first = revisionAt(1);
     assert.equal((await driver.prepareRevision(first, { workspaceSetup: setup })).ready, true);
 

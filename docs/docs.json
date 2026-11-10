@@ -965,6 +965,7 @@
               "testing/slack",
               "testing/plugins",
               "testing/openshell",
+              "testing/openshell-namespace-cleanup",
               "testing/openshell-oauth",
               "testing/openshell-coverage",
               "testing/ci/openshell-execution",
@@ -1289,7 +1290,8 @@
               "flows/credential-source-egress",
               "reference/sandbox-policies",
               "guides/topics/agent-sandbox-policy",
-              "flows/agent-sandbox-policy"
+              "flows/agent-sandbox-policy",
+              "reference/drivers/compute-namespace-lifecycle"
             ]
           }
         ]

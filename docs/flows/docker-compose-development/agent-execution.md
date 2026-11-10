@@ -20,10 +20,12 @@ saving an Agent does not create its runtime.
 
 `apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver.ensureNamespace`
 
-The worker claims Namespace work and the Docker Driver creates or verifies one
-owned, labeled network through the selected engine's Docker-compatible API. The
-network is separate from the Compose management network. Readiness does not
-start a gateway or prove model access.
+The worker claims Namespace work. Its State-backed lifecycle context checks the
+live database lease and commits journal checkpoints with attributable audit.
+`docker/namespace-lifecycle.ts:DockerNamespaceJournal` binds the selected Engine
+ID and endpoint, records intent before creation, then saves the returned original
+network ID. The labeled network remains separate from Compose management.
+Readiness starts no gateway and proves no model access.
 
 ### 8. Agent deployment stops at harness authentication admission
 
@@ -49,8 +51,13 @@ supported on Docker or Podman.
 
 `apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver.deleteNamespace`
 
-Namespace deletion removes only resources labeled for that exact Namespace;
-foreign resources with colliding names are not adopted or removed. Use the
+Namespace deletion checks the saved Engine and original network ID, removes
+owned containers and volumes, then deletes the network by its saved ID. A
+same-name replacement refuses. Unknown creation without a committed ID remains
+incomplete; it cannot authorize another create or name-based deletion. A lost
+checkpoint reply can resume only if an authorized journal read recovers the
+committed ID. See the [lifecycle contract](../../reference/drivers/compute-namespace-lifecycle.md).
+Use the
 `dev-up` cleanup command to stop the Compose stack. Add volume removal only when
 intentionally deleting its persisted development Installation.
 

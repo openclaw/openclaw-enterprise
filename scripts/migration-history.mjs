@@ -292,6 +292,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 63) {
     return "preGatewayManagedMode";
   }
+  if (count === 76) {
+    return "preNamespaceLifecycle";
+  }
   refuse("an incomplete or unsupported development history is installed");
 }
 

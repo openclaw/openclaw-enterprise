@@ -66,7 +66,7 @@ kind: reference/driver
 ## Overview
 
 Compute manages Namespaces, Agent workloads, identity, isolation, readiness, and
-gateway routing. A paired [Sandbox Driver](sandbox.md) can provision Harnesses.
+gateway routing. Paired [Sandbox Drivers](sandbox.md) can provision Harnesses.
 
 ## Interface
 
@@ -115,11 +115,11 @@ gateway routing. A paired [Sandbox Driver](sandbox.md) can provision Harnesses.
 | <a id="method-validate-execution-admission"></a>`validateExecutionAdmission`                                         | Optional    | Check whether Compute supports the requested execution at admission and again before release. Without it the platform admits ordinary unprotected execution only.                                                                                                                                                                                         |
 | <a id="method-admit-revision"></a>`admitRevision`                                                                    | Optional    | Return Driver-owned admission data for OCC to save with the revision. Without it, OCC stores the revision without Driver admission data.                                                                                                                                                                                                                  |
 | <a id="method-activate-revision"></a>`activateRevision`, <a id="method-deactivate-revision"></a>`deactivateRevision` | Optional    | Switch traffic to a ready revision or withdraw an unpublished candidate. Production startup checks for both. A Driver selecting `beforeCommit` must also implement activation in development.                                                                                                                                                             |
-| <a id="method-requires-stopped-predecessors"></a>`requiresStoppedPredecessors`                                       | Optional    | Return `true` to stop older revisions before preparing a replacement. Otherwise the previous route can serve during preparation.                                                                                                                                                                                                                          |
-| <a id="method-describe-prepare-revision-failure"></a>`describePrepareRevisionFailure`                                | Optional    | Supply safe diagnostic fields for a rejected preparation. The worker validates the fields and excludes raw provider errors.                                                                                                                                                                                                                               |
+| <a id="method-requires-stopped-predecessors"></a>`requiresStoppedPredecessors`                                       | Optional    | Return `true` to stop older revisions before preparing replacements. Otherwise the previous route can serve during preparation.                                                                                                                                                                                                                           |
+| <a id="method-describe-prepare-revision-failure"></a>`describePrepareRevisionFailure`                                | Optional    | Supply safe diagnostic fields for a rejected preparation. The worker validates fields and excludes raw provider errors.                                                                                                                                                                                                                                   |
 | <a id="method-get-gateway-endpoint"></a>`getGatewayEndpoint`                                                         | Optional    | Private WSS address for workspace-file access and native administration, or `undefined`.                                                                                                                                                                                                                                                                  |
 | <a id="method-get-gateway-chat-endpoint"></a>`getGatewayChatEndpoint`                                                | Optional    | Revision's WSS chat endpoint and equivalent HTTPS UI. Enforce [`operator.sessions.write`](../agent-native-admin.md#native-authority-and-drift) across HTTP, WebSocket, and device grants. Omission/`undefined` means unsupported; never fall back to `getGatewayEndpoint`.                                                                                |
-| <a id="method-get-agent-runtime-credential-status"></a>`getAgentRuntimeCredentialStatus`                             | Optional    | Report whether the Agent's generated transport credentials are stored. Missing support prevents the status read.                                                                                                                                                                                                                                          |
+| <a id="method-get-agent-runtime-credential-status"></a>`getAgentRuntimeCredentialStatus`                             | Optional    | Report whether generated Agent transport credentials are stored. Missing support prevents status reads.                                                                                                                                                                                                                                                   |
 | <a id="method-provision-agent-runtime-credentials"></a>`provisionAgentRuntimeCredentials`                            | Optional    | Create initial transport credentials for the approved Agent. Missing support prevents provisioning.                                                                                                                                                                                                                                                       |
 | <a id="method-delete-agent-runtime-credentials"></a>`deleteAgentRuntimeCredentials`                                  | Optional    | Remove Agent-owned credentials after revision retirement. A Driver that provisions them but omits deletion fails Agent deletion permanently.                                                                                                                                                                                                              |
 | <a id="method-delete-service-account-credential"></a>`deleteServiceAccountCredential`                                | Optional    | On forced ServiceAccount deletion, remove the account-owned Secret when the ServiceAccount Driver can no longer revoke the token. OCC skips this call if absent.                                                                                                                                                                                          |
@@ -148,10 +148,13 @@ uses a 10-second timeout and accepts up to 4 MiB per response, ten pages, and
 
 ### Namespace and gateway results
 
-Return the requested `namespaceId`. Failures are `retryable` or `permanent`;
-ready/deleted flags succeed only without failure. Worker-log failure reasons allow
-256 characters: letters, digits, spaces, and `. _ : / @ -`. Exclude provider
-output and other tenants' values.
+Namespace calls require [durable context](compute-namespace-lifecycle.md), with
+confirmation committed before teardown.
+
+Return requested `namespaceId`. Failures are `retryable` or `permanent`;
+`namespaceReady`/`namespaceDeleted` succeeds only without failure. Worker-log
+reason limit: 256 characters: letters, digits, spaces, and
+`. _ : / @ -`. Exclude provider output and other tenants' values.
 
 Derive [gateway endpoints](kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
 from trusted settings and approved resource IDs, independently of readiness and authorization.
