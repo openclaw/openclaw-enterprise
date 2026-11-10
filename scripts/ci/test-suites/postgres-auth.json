@@ -3,6 +3,7 @@
     "postgres": true,
     "requiresPreparedStateForFile": true
   },
+  "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"],
   "fileConcurrency": 2,
   "parallelFiles": [
     "tests/integration/postgres-github-outage.test.mjs",

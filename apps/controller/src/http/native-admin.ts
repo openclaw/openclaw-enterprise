@@ -344,10 +344,10 @@ export function nativeAdminLaunchSchema(confirm: boolean): FastifySchema {
       ? nativeAdminConfirmOperation.operationId
       : nativeAdminLaunchOperation.operationId,
     summary: confirm ? nativeAdminConfirmOperation.summary : nativeAdminLaunchOperation.summary,
-    description: "Requires `administer` permission on the exact requested Agent.",
+    description: nativeAdminStatusSchema.description,
     tags: ["Agents"],
     security: [{ sessionCookie: [] }],
-    "x-openclaw-permissions": [{ action: "administer", resourceKind: "agent", scope: "requested" }],
+    "x-openclaw-permissions": nativeAdminStatusSchema["x-openclaw-permissions"],
     params: nativeAdminParamsSchema,
     headers: {
       type: "object",

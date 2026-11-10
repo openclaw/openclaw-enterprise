@@ -27393,7 +27393,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/native-admin/confirm": {
       "post": {
-        "description": "Requires `administer` permission on the exact requested Agent.",
+        "description": "Requires a human session with operate or administer permission on the exact Agent. Operate grants chat access; administer grants full native administration. Service API keys cannot launch or inspect native admin UI access.",
         "operationId": "confirmAgentNativeAdmin",
         "parameters": [
           {
@@ -27595,13 +27595,24 @@
         "summary": "Confirm a native Agent browser challenge",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
-          { "action": "administer", "resourceKind": "agent", "scope": "requested" }
+          {
+            "action": "operate",
+            "condition": "native_chat",
+            "resourceKind": "agent",
+            "scope": "requested"
+          },
+          {
+            "action": "administer",
+            "condition": "native_admin_alternative",
+            "resourceKind": "agent",
+            "scope": "requested"
+          }
         ]
       }
     },
     "/namespaces/{namespaceId}/agents/{agentId}/native-admin/launch": {
       "post": {
-        "description": "Requires `administer` permission on the exact requested Agent.",
+        "description": "Requires a human session with operate or administer permission on the exact Agent. Operate grants chat access; administer grants full native administration. Service API keys cannot launch or inspect native admin UI access.",
         "operationId": "launchAgentNativeAdmin",
         "parameters": [
           {
@@ -27787,7 +27798,18 @@
         "summary": "Create a browser-bound native Agent launch",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
-          { "action": "administer", "resourceKind": "agent", "scope": "requested" }
+          {
+            "action": "operate",
+            "condition": "native_chat",
+            "resourceKind": "agent",
+            "scope": "requested"
+          },
+          {
+            "action": "administer",
+            "condition": "native_admin_alternative",
+            "resourceKind": "agent",
+            "scope": "requested"
+          }
         ]
       }
     },

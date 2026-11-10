@@ -6704,11 +6704,12 @@ Confirm a native Agent browser challenge
 
 **Operation ID:** `confirmAgentNativeAdmin`
 
-**Permissions:** Requires `administer` permission on the exact requested Agent.
+**Permissions:** Requires a human session with operate or administer permission on the exact Agent. Operate grants chat access; administer grants full native administration. Service API keys cannot launch or inspect native admin UI access.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
-| `administer` | `agent` | `requested` |
+| `operate` | `agent` | `requested` (chat access) |
+| `administer` | `agent` | `requested` (full native administration, instead of `operate`) |
 
 ##### Parameters
 
@@ -6787,11 +6788,12 @@ Create a browser-bound native Agent launch
 
 **Operation ID:** `launchAgentNativeAdmin`
 
-**Permissions:** Requires `administer` permission on the exact requested Agent.
+**Permissions:** Requires a human session with operate or administer permission on the exact Agent. Operate grants chat access; administer grants full native administration. Service API keys cannot launch or inspect native admin UI access.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
-| `administer` | `agent` | `requested` |
+| `operate` | `agent` | `requested` (chat access) |
+| `administer` | `agent` | `requested` (full native administration, instead of `operate`) |
 
 ##### Parameters
 
