@@ -49,6 +49,9 @@ export async function registerCleanupAndStartProvider(
   // remains in the ledger for the parent; never replay a mutation to hide it.
   t.after(async () => {
     const failures = ledger.pendingCreate ? ["unconfirmed create; reconcile ledger"] : [];
+    if (ledger.pendingDeploy) {
+      failures.push("unreconciled deployment; inspect exact Agent operation in ledger");
+    }
     const clean = async (name, action) => {
       try {
         await action();

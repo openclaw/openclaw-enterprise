@@ -56,9 +56,10 @@ it sends no API or model operation through a mixed controller rollout.
 
 The test resumes after both B application containers are ready and the original
 API and Worker Pod identities are gone. It checks runtime container identities,
-unchanged controller configuration hashes, supplier processes, Installation ID,
+unchanged controller configuration and mounted Installation file hashes, supplier processes, Installation ID,
 grants, source generations/references, admitted revision, installation record and
-settled work. Image references prove selection; retain build receipts separately
+the original succeeded deployment work row. Late observations fail the checkpoint
+even when both replacement Pods eventually become ready. Image references prove selection; retain build receipts separately
 to establish source provenance.
 
 ## Read the result and preserve cleanup
@@ -68,7 +69,11 @@ and a new deployment must return the exact retirement `409` without new work,
 state changes or provider ingress. The same running packaged caller then completes
 a fresh turn. Existing checks continue through IAM revocation with no provider
 request or released response, regrant success, Secret-value rotation, hostile
-responses, withdrawal and absence of the original Sandbox. Expected total ingress
+responses and withdrawal. The bundled owner reports a pending withdrawal with
+`CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT`; the test then requests an
+Agent stop and observes completed stop work plus absence of the original Sandbox
+and runtime Pods. Stop leaves that withdrawal pending, which the test records
+from its original database row. Expected total ingress
 is twenty, including the extra retained turn. Counters are never reset.
 
 This connects installed admission, retained authority and withdrawal; it does not
@@ -78,8 +83,14 @@ The original job is already settled. B's supported withdrawal exercises its
 Worker against the retained owner. It also does not independently audit Secret
 reads; source-level refusal coverage and zero provider ingress are separate facts.
 
+Installation hashing runs inside each controller container and returns only the
+SHA-256 digest of its mounted Installation file. It does not read unrelated Secrets
+or rotating service-account tokens.
+
 Keep the run ledger and both upgrade/build receipts. Cleanup custody remains with
-the same test, including unexpected successful source creation. If the checkpoint
+the same test, including unexpected successful source creation. A deployment
+request with an unknown outcome remains in the ledger and prevents cleanup from
+reporting completion, even after the owned Agent's deletion. If the checkpoint
 expires or an outcome is unknown, inspect the ledger and restore API availability
 before reconciling cleanup. Do not rerun a mutation to erase uncertainty. The
 operator still owns disposal of the prepared outer stack. Passing this lane does

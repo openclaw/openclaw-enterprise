@@ -87,6 +87,48 @@ function controllerIdentities(pods, expectedImage) {
   });
 }
 
+async function observeControllerIdentities(setup, pods, expectedImage) {
+  const identities = controllerIdentities(pods, expectedImage);
+  const observed = [];
+  for (const identity of identities) {
+    const pod = pods.find(({ metadata }) => metadata.uid === identity.uid);
+    const container = [...pod.spec.containers, ...(pod.spec.initContainers ?? [])].find(
+      ({ name }) => name === identity.component,
+    );
+    assert.equal(
+      container.env?.find(({ name }) => name === "OCC_CONFIG_PATH")?.value,
+      "/etc/openclaw/installation/installation.yaml",
+      "hash the selected production Installation file",
+    );
+    const mount = container.volumeMounts.find(
+      ({ mountPath }) => mountPath === "/etc/openclaw/installation",
+    );
+    const volume = pod.spec.volumes.find(({ name }) => name === mount?.name);
+    assert.ok(
+      mount?.readOnly && volume?.secret?.items?.some(({ path }) => path === "installation.yaml"),
+      "select the production controller's mounted Installation input",
+    );
+    // Hash only the mounted Installation file, inside its owning container. Never
+    // return its bytes or read unrelated Secrets and rotating identity projections.
+    const digest = await setup.f.kubectl(
+      "exec",
+      identity.name,
+      "--namespace",
+      setup.input.controllerNamespace,
+      "--container",
+      identity.component,
+      "--",
+      "node",
+      "-e",
+      'const fs = require("node:fs"); const crypto = require("node:crypto"); process.stdout.write(crypto.createHash("sha256").update(fs.readFileSync("/etc/openclaw/installation/installation.yaml")).digest("hex"));',
+    );
+    assert.match(digest, /^[a-f0-9]{64}$/);
+    observed.push({ ...identity, installationSha256: digest });
+  }
+  assert.equal(observed[0].installationSha256, observed[1].installationSha256);
+  return observed;
+}
+
 function supplierIdentities(pods) {
   return pods
     .map((pod) => ({
@@ -165,7 +207,8 @@ export async function prepareControllerUpgrade(
     ...setup,
     input: { ...input, images: { ...input.images, controller: input.controllerUpgrade.fromImage } },
   };
-  const controllers = controllerIdentities(
+  const controllers = await observeControllerIdentities(
+    setup,
     await selectLiveControllerPods(initialSetup),
     input.controllerUpgrade.fromImage,
   );
@@ -175,6 +218,17 @@ export async function prepareControllerUpgrade(
   assert.equal(state.revisions.length, 1);
   assert.equal(state.revisions[0].id, deployment.revision.id);
   assert.equal(state.installations.length, 1);
+  const deploymentWork = state.work.filter(
+    (work) => work.idempotency_key === `agent_revision:${deployment.revision.id}:reconcile`,
+  );
+  assert.equal(deploymentWork.length, 1, "retain the original deployment work row");
+  assert.equal(deploymentWork[0].agent_id, deployment.agent.id);
+  assert.equal(deploymentWork[0].revision_id, deployment.revision.id);
+  assert.equal(deploymentWork[0].agent_target, null);
+  assert.equal(deploymentWork[0].state, "succeeded");
+  assert.ok(
+    ["REVISION_ACTIVATED", "REVISION_ALREADY_ACTIVE"].includes(deploymentWork[0].reason_code),
+  );
   const grants = await api("GET", `${namespacePath}/iam/access-bindings`);
   await checkpoint("controller-upgrade-ready", {
     fromCommit: input.controllerUpgrade.fromCommit,
@@ -200,14 +254,19 @@ export async function observeControllerUpgrade(
   const { api, checkpoint } = evidence;
   const { namespacePath } = stack;
   const beforeIngress = owned.provider.observations.length;
+  const deadline = Date.now() + input.controllerUpgrade.timeoutMs;
+  const withinDeadline = () =>
+    assert.ok(Date.now() < deadline, "controller upgrade checkpoint expired");
   // This is an operator checkpoint, not an arbitrary shell hook. Only Kubernetes
   // observations run while the operator replaces both application components.
   // Old and new processes may overlap during rollout; no model/API test call does.
   const pods = await waitFor(
     "both replacement controller components",
     async () => {
+      withinDeadline();
       const result = JSON.parse(
         await f.kubectl(
+          `--request-timeout=${Math.max(1, deadline - Date.now())}ms`,
           "get",
           "pods",
           "--namespace",
@@ -218,6 +277,7 @@ export async function observeControllerUpgrade(
           "json",
         ),
       ).items;
+      withinDeadline();
       if (
         result.length !== 2 ||
         result.some(
@@ -250,10 +310,15 @@ export async function observeControllerUpgrade(
     },
     { timeoutMs: input.controllerUpgrade.timeoutMs, intervalMs: 1000 },
   );
-  const controllers = controllerIdentities(pods, input.images.controller);
+  const controllers = await observeControllerIdentities(setup, pods, input.images.controller);
   for (const current of controllers) {
     const prior = retained.controllers.find(({ component }) => component === current.component);
     assert.notEqual(current.containerID, prior.containerID);
+    assert.equal(
+      current.installationSha256,
+      prior.installationSha256,
+      "keep the actual mounted Installation contents unchanged",
+    );
     assert.equal(
       current.configurationSha256,
       prior.configurationSha256,
@@ -314,6 +379,7 @@ export async function observeControllerUpgrade(
     beforeIngress,
     "controller replacement must not send provider traffic",
   );
+  withinDeadline();
   await checkpoint("controller-upgrade-observed", {
     controllers,
     retainedStateUnchanged: true,
@@ -356,6 +422,11 @@ export async function observeControllerUpgrade(
       evidence.ledger.pendingCreate = { kind: "credential-sources", name: request.body.name };
       await checkpoint("create-refusal-request", { kind: "credential-sources" });
     }
+    const deploying = request.phase === "new-deployment";
+    if (deploying) {
+      evidence.ledger.pendingDeploy = { agentId: deployment.agent.id, path: request.path };
+      await checkpoint("deploy-refusal-request", { agentId: deployment.agent.id });
+    }
     const response = await evidence.request(request.method, request.path, request.body);
     if (creation) {
       // A regression may unexpectedly admit the source. Keep custody even when
@@ -378,6 +449,9 @@ export async function observeControllerUpgrade(
     }
     const error = assertConnectedResponse(response, 409);
     assert.deepEqual(error, retirement);
+    if (deploying) {
+      delete evidence.ledger.pendingDeploy;
+    }
     assert.deepEqual(
       await retainedState(stack, deployment),
       retained.state,

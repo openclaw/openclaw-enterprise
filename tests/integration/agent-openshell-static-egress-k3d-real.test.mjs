@@ -711,37 +711,105 @@ async function observeCredentialLeaks(setup, stack, evidence, owned, deployment,
  */
 async function withdrawAndObserveSandboxAbsence(setup, stack, evidence, deployment, installed) {
   const {
-    f: { waitFor },
+    f: { waitFor, resources, customResources },
   } = setup;
-  const { namespacePath, placement, gatewayClient } = stack;
+  const { namespace, namespacePath, placement, gatewayClient, pool } = stack;
   const { api, checkpoint } = evidence;
-  const { agent, source } = deployment;
-  const { sandboxName } = installed;
-  // Initial withdrawal destroys the owned single-binding Sandbox. This is a
-  // separate lifecycle limitation, not proof of fresh central grant revocation.
-  await api(
-    "POST",
-    `${namespacePath}/agents/${agent.id}/credential-sources/${source.id}/withdraw`,
-    undefined,
-    202,
-  );
-  await waitFor(
-    "owned stop-based withdrawal",
+  const { agent, source, revision, sandbox, sandboxId } = deployment;
+  const { sandboxName, harness, supervisor, gatewayPods } = installed;
+  const agentPath = `${namespacePath}/agents/${agent.id}`;
+  await api("POST", `${agentPath}/credential-sources/${source.id}/withdraw`, undefined, 202);
+  const withdrawal = await waitFor(
+    "the recorded owner's withdrawal outcome",
     async () => {
-      const status = await api(
-        "GET",
-        `${namespacePath}/agents/${agent.id}/credential-sources/${source.id}/withdrawal`,
-      );
-      return status.state === "revoked" ? status : undefined;
+      const status = await api("GET", `${agentPath}/credential-sources/${source.id}/withdrawal`);
+      assert.equal(status.revisionId, revision.id);
+      assert.equal(status.credentialSourceId, source.id);
+      if (status.withdrawalInProgress) {
+        return undefined;
+      }
+      if (status.state === "revoked") {
+        assert.ok(!setup.input.controllerUpgrade, "the bundled retirement owner requires a stop");
+      } else {
+        assert.equal(status.state, "pending");
+        assert.equal(status.lastReason, "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT");
+      }
+      return status;
     },
     180_000,
   );
-  assert.equal(
-    await gatewayClient.getSandbox(
-      { workspace: placement, name: sandboxName },
-      AbortSignal.timeout(10_000),
-    ),
-    undefined,
+  await checkpoint("withdrawal-outcome", {
+    revisionId: revision.id,
+    state: withdrawal.state,
+    lastReason: withdrawal.lastReason,
+  });
+  // This Driver cannot reduce the retained policy in place. Stop through the
+  // Agent API; neither an accepted stop nor a pending withdrawal proves fencing.
+  const stopWork = () =>
+    pool.query(
+      "SELECT idempotency_key, state, reason_code FROM occ.controller_work WHERE namespace_id = $1 AND agent_id = $2 AND agent_target = 'stopped'",
+      [namespace.id, agent.id],
+    );
+  assert.equal((await stopWork()).rowCount, 0, "this owned Agent has not been stopped before");
+  await checkpoint("stop-request", { agentId: agent.id, revisionId: revision.id });
+  await api("POST", `${agentPath}/stop`, undefined, 202);
+  const stopped = await waitFor(
+    "owned Agent stop completion",
+    async () => {
+      const work = await stopWork();
+      if (work.rowCount === 0) {
+        return undefined;
+      }
+      assert.equal(work.rowCount, 1);
+      assert.notEqual(work.rows[0].state, "failed_permanent", "the supported stop must succeed");
+      return work.rows[0].state === "succeeded" ? work.rows[0] : undefined;
+    },
+    180_000,
   );
-  await checkpoint("stop-based-withdrawal", { sandboxAbsent: true });
+  const current = await api("GET", agentPath);
+  assert.equal(current.desiredRuntimeState, "stopped");
+  assert.equal(current.activeRevisionId, undefined);
+  const podUids = new Set(
+    [harness, supervisor, ...gatewayPods].map(({ metadata }) => metadata.uid),
+  );
+  await waitFor(
+    "original Sandbox and all owned runtime Pods absent",
+    async () => {
+      const observed = await gatewayClient.getSandbox(
+        { workspace: placement, name: sandboxName },
+        AbortSignal.timeout(10_000),
+      );
+      const pods = await resources("pods", placement);
+      const sandboxes = await customResources("sandboxes.agents.x-k8s.io", placement);
+      const owned = ({ metadata }) =>
+        podUids.has(metadata.uid) ||
+        metadata.uid === sandbox.metadata.uid ||
+        metadata.name === sandbox.metadata.name ||
+        metadata.labels?.["openclaw.dev/agent"] === agent.id ||
+        metadata.labels?.["openshell.ai/sandbox-id"] === sandboxId;
+      return observed === undefined && !pods.some(owned) && !sandboxes.some(owned)
+        ? true
+        : undefined;
+    },
+    180_000,
+  );
+  // Stop clears the active pointer, so the public withdrawal GET no longer
+  // selects this revision. Observe its retained row without manufacturing revoked.
+  const retained = await pool.query(
+    "SELECT state, last_reason, completed_at FROM occ.credential_withdrawals WHERE namespace_id = $1 AND agent_id = $2 AND revision_id = $3 AND credential_source_id = $4",
+    [namespace.id, agent.id, revision.id, source.id],
+  );
+  assert.equal(retained.rowCount, 1);
+  assert.equal(retained.rows[0].state, withdrawal.state);
+  assert.equal(retained.rows[0].last_reason, withdrawal.lastReason ?? null);
+  if (withdrawal.state === "pending") {
+    assert.equal(retained.rows[0].completed_at, null);
+  }
+  await checkpoint("stop-based-withdrawal", {
+    sandboxAbsent: true,
+    runtimePodsAbsent: true,
+    stopOperation: stopped.idempotency_key,
+    withdrawalState: retained.rows[0].state,
+    withdrawalReason: retained.rows[0].last_reason,
+  });
 }
