@@ -1,3 +1,8 @@
+import {
+  createInjectedControllerFixture,
+  identifier,
+  injectedRequest,
+} from "./occ-api-injected-fixture.ts";
 import { fetchLoopback } from "../helpers/console-fixture-transport.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
@@ -18,15 +23,13 @@ import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { AuthAccountRoleNotFoundError } from "../../apps/controller/src/auth/index.ts";
 import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { listManagedMcpToolNames } from "../../apps/controller/src/connections/mcp-tool-discovery.ts";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
-import { createControllerApp, createFastifyApp } from "../../apps/controller/src/index.ts";
-import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { NativeIAMDriver, validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
 import {
   AgentDeletingError,
@@ -34,17 +37,10 @@ import {
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
   ConfigurationHarnessError,
   DependencyUnavailableError,
-  InMemoryPlatformState,
-  OpenClawController,
   ResourceStateConflictError,
   ScopeViolationError,
 } from "../../packages/occ/src/index.ts";
-import {
-  authenticatedHeaders,
-  createTestAuthPrincipal,
-  signInWithEmailPassword,
-  signInToControllerApp,
-} from "../helpers/auth-session.mjs";
+import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
@@ -85,8 +81,6 @@ import { admittedConfiguration } from "../helpers/admitted-configuration.mjs";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const entrypoint = fileURLToPath(new URL("../../apps/controller/src/server.mjs", import.meta.url));
-const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
-const identifier = (prefix) => new RegExp(`^${prefix}_${uuidV4}$`);
 const missingRevisionId = "rev_3dd29693-ce8b-4b4c-97c4-14b4c68c6e9c";
 const missingAgentId = "agt_6f1c9b2d-8e34-4a1f-9c57-2d0b8e4a71c3";
 
@@ -425,220 +419,17 @@ function assertPolicyOnlyPlugin(selection) {
   }
 }
 
-async function createInjectedFixture(options = {}) {
-  const installationId = "ins_3033697e-6397-4cc6-9b04-8ec17af78cf1";
-  const authFixture = await createTestAuthPrincipal({
-    installationId,
-    email: `admin-${randomUUID()}@example.com`,
-    password: `generated-password-${randomUUID()}`,
-    name: "OCC API Administrator",
+function createInjectedFixture(options = {}) {
+  return createInjectedControllerFixture(options, {
+    wrapPlatformState(baseState) {
+      return options.deploymentWorks === undefined
+        ? baseState
+        : stateWithDeploymentWork(baseState, options.deploymentWorks);
+    },
+    invokeApplication(factory, appOptions) {
+      return factory(appOptions);
+    },
   });
-  const principal = authFixture.seed.principal;
-  const state = {
-    identities: [principal],
-    groups: [],
-    memberships: [],
-    roles: authFixture.seed.roles.map((role) => ({
-      ...role,
-      permissions: [...role.permissions],
-    })),
-    bindings: [
-      {
-        id: "binding-admin",
-        subjectKind: "identity",
-        subjectId: principal.id,
-        roleId: authFixture.seed.roles[0].id,
-      },
-    ],
-    restrictions: [],
-  };
-  const iamDriver =
-    options.iamDriver ??
-    new NativeIAMDriver({ loadNativeIAMState: async () => state }, { id: "iam-integration" });
-  const computeCalls = { ensureNamespace: [], deleteNamespace: [] };
-  const computeDriver =
-    options.computeDriver ??
-    createReadyComputeDriver("compute-integration", {
-      async ensureNamespace(namespace) {
-        computeCalls.ensureNamespace.push(namespace.id);
-        return {
-          namespaceId: namespace.id,
-          namespaceReady: true,
-        };
-      },
-      async deleteNamespace(namespace) {
-        computeCalls.deleteNamespace.push(namespace.id);
-        return {
-          namespaceId: namespace.id,
-          namespaceDeleted: true,
-        };
-      },
-      // OCC API coverage exercises admission; runtime compatibility belongs to Compute suites.
-      validateHarnessAuth() {},
-      async stopRevision() {},
-    });
-  const auditSink = options.auditSink ?? new InMemoryAuditSink();
-  const configurationDriver =
-    options.configurationDriver ??
-    createTestConfigurationDriver({ id: "configuration-integration" });
-  const secretDriver =
-    options.secretDriver ?? createTestSecretDriver({ id: "secret-api-integration" });
-  const sessionsByPrincipalId = new Map();
-  let controller;
-  let platformState;
-  let app;
-
-  async function installAuthSeed(seed, { auditEvent } = {}) {
-    const roleIds = new Set(state.roles.map((role) => role.id));
-    for (const binding of seed.bindings) {
-      if (!roleIds.has(binding.roleId)) {
-        throw new AuthAccountRoleNotFoundError(binding.roleId);
-      }
-    }
-    state.identities.push(seed.principal);
-    state.roles.push(...seed.roles);
-    state.bindings.push(...seed.bindings);
-    if (auditEvent !== undefined) {
-      await auditSink.append(auditEvent);
-    }
-  }
-
-  function createApp(identity = principal, createApplication = createControllerApp) {
-    const created = createApplication({
-      ...(controller
-        ? { controller }
-        : {
-            createController(installation) {
-              const baseState = new InMemoryPlatformState({
-                auditSink,
-                resolveIAMIdentity: (identityId) =>
-                  state.identities.find((identity) => identity.id === identityId),
-              });
-              platformState =
-                options.deploymentWorks === undefined
-                  ? baseState
-                  : stateWithDeploymentWork(baseState, options.deploymentWorks);
-              controller = new OpenClawController(installation, {
-                state: platformState,
-                recordOperations: options.recordOperations ?? false,
-                ...(options.backends === undefined ? {} : { backends: options.backends }),
-              });
-              if (options.channelDriver) {
-                controller.registerDriver(options.channelDriver);
-                controller.selectDriver("channel", options.channelDriver.id);
-              }
-              if (options.backends?.length) {
-                // Association alone must never provision an upstream account or credential.
-                const unexpectedBackendCall = async () => assert.fail("Unexpected Backend call");
-                controller.registerDriver({
-                  id: options.backends[0].drivers.service_account,
-                  implementation: "chatgpt",
-                  capability: "service_account",
-                  backendId: options.backends[0].id,
-                  create: unexpectedBackendCall,
-                  createCredential: unexpectedBackendCall,
-                  delete: unexpectedBackendCall,
-                });
-                controller.selectDriver(
-                  "service_account",
-                  options.backends[0].drivers.service_account,
-                );
-              }
-              return controller;
-            },
-          }),
-      iamDriver,
-      computeDriver,
-      configurationDriver,
-      secretDriver,
-      resolveHarness: resolveApprovedDevelopmentHarness,
-      auditSink,
-      ...(Object.hasOwn(options, "backendSummaries")
-        ? { backendSummaries: options.backendSummaries }
-        : {}),
-      development: {
-        enabled: true,
-        browserOrigin: "https://console.oce.localhost",
-        installationId,
-      },
-      auth: authFixture.auth,
-      ...(options.readManagedMcpToolNames === undefined
-        ? {}
-        : { readManagedMcpToolNames: options.readManagedMcpToolNames }),
-      ...(options.logger === undefined ? {} : { logger: options.logger }),
-      ...(options.provisionAuthAccount === undefined
-        ? {}
-        : {
-            // The memory composition has no State transaction; write the prepared
-            // account first and remove it when the fixture's provisioning fails.
-            provisionAuthAccount: async (seed, auditEvent, prepared) => {
-              await authFixture.auth.writePreparedAccount(prepared);
-              try {
-                await options.provisionAuthAccount(seed, {
-                  installAuthSeed,
-                  state,
-                  auditEvent,
-                });
-              } catch (error) {
-                await authFixture.auth.deleteAccount(prepared);
-                throw error;
-              }
-            },
-          }),
-    });
-    created.defaultSession = sessionsByPrincipalId.get(identity.id);
-    return created;
-  }
-
-  app = createApp();
-  sessionsByPrincipalId.set(principal.id, await signInToControllerApp(app, authFixture));
-  app.defaultSession = sessionsByPrincipalId.get(principal.id);
-
-  return {
-    app,
-    session: app.defaultSession,
-    authFixture,
-    auditSink,
-    computeCalls,
-    createApp,
-    async createAuthPrincipal(name) {
-      const email = `${name}-${randomUUID()}@example.com`;
-      const password = `generated-password-${randomUUID()}`;
-      const account = await authFixture.auth.createAccount({
-        email,
-        password,
-        name,
-      });
-      const seed = authFixture.auth.principalSeed(account, { grant: "none" });
-      sessionsByPrincipalId.set(
-        seed.principal.id,
-        await signInToControllerApp(app, { email, password }),
-      );
-      return {
-        principal: seed.principal,
-        session: sessionsByPrincipalId.get(seed.principal.id),
-      };
-    },
-    get iamDriver() {
-      return iamDriver;
-    },
-    get computeDriver() {
-      return computeDriver;
-    },
-    get configurationDriver() {
-      return configurationDriver;
-    },
-    installationId,
-    principal,
-    state,
-    get platformState() {
-      return platformState;
-    },
-    installAuthSeed,
-    get controller() {
-      return controller;
-    },
-  };
 }
 
 async function configuredController(options = {}) {
@@ -667,39 +458,6 @@ function stateWithDeploymentWork(state, deploymentWorks) {
       state.transactWithQueue((view, queue) => operation(withWork(view), queue), options),
     registerRollback: (rollback) => state.registerRollback(rollback),
   };
-}
-
-async function injectedRequest(app, method, pathname, options = {}) {
-  const headers = {
-    ...(options.identity === false
-      ? {}
-      : authenticatedHeaders(options.session ?? app.defaultSession)),
-    ...options.headers,
-  };
-  const hasBody = Object.hasOwn(options, "body");
-  const hasRawBody = Object.hasOwn(options, "rawBody");
-  if (hasBody || hasRawBody) {
-    headers["content-type"] ??= "application/json";
-  }
-  let payload;
-  if (hasRawBody) {
-    payload = options.rawBody;
-  } else if (hasBody) {
-    payload = JSON.stringify(options.body);
-  }
-  const response = await app.fetch(
-    new Request(`https://console.oce.localhost${pathname}`, {
-      method,
-      headers,
-      ...(payload === undefined ? {} : { body: payload }),
-    }),
-  );
-  if (response.status === 204) {
-    return { status: response.status, headers: response.headers };
-  }
-  const body = await response.json();
-  assert.match(body.meta?.requestId ?? "", identifier("req"));
-  return { status: response.status, headers: response.headers, body, data: body.data };
 }
 
 async function createInjectedConfiguration(fixture, namespaceId, values = {}) {
