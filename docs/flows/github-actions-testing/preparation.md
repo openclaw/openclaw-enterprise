@@ -1,6 +1,6 @@
 # CI resource preparation
 
-Prepare the resources for the selected source commit and test lane. See the [parent flow](../github-actions-testing.md) for its context and overall sequence.
+Prepare the selected commit and lane's resources. [Parent flow](../github-actions-testing.md).
 
 ## Execution trace
 
@@ -8,25 +8,31 @@ Prepare the resources for the selected source commit and test lane. See the [par
 
 `scripts/ci/prepare.mjs:prepareFile`, `scripts/ci/prepare.mjs:ensureK3dCluster`
 
-The static-checks job in `.github/workflows/ci.yml` also restores the pnpm store
-using `scripts/docs-site/pnpm-lock.yaml`. It alone saves that documentation key,
-after `docs:build` successfully runs Pagefind; installation can succeed even when
-Pagefind's optional native package is missing. `run-ci-lane` restores the same key
-before installing documentation dependencies for baseline part 1 and browser part 1.
-The shared setup action keys each store by OS, architecture, Node.js, pnpm version,
-and lockfile hash. Its existing prefix fallbacks can restore another lockfile's
-store; frozen installation still acquires any missing packages. Root workspace
-cache saves are unchanged.
+Static Checks restores the documentation pnpm store and alone saves it after
+Pagefind builds; installation can omit its optional native package.
+`run-ci-lane` restores that store for baseline part 1 and browser part 1.
+Keys include OS, architecture, Node.js, pnpm and lockfile hash. Prefix fallbacks
+can restore other lockfiles; frozen installation acquires missing packages.
+Root workspace cache saves are unchanged.
 
-First Agent Smoke and `run-ci-lane` both use `setup-ci-tools` to restore only yq and k3d downloads outside `PATH`. On Linux,
-`scripts/ci/setup-tools.sh` selects the checked-in platform checksum before any
-execution. `scripts/ci/download-pinned.sh` copies an installed PATH candidate or
-cached bytes to private staging,
-verifies that checksum, then atomically publishes the executable with mode 0755. Missing or corrupt entries
-use the existing pinned downloader; unavailable cache storage or service does not
-fail setup; verified cache hits do not rewrite the cache. PostgreSQL, image and
-Kubernetes profiles share the cache. Keys include OS, architecture and installer
-source. Direct callers can reuse verified installed bytes without a cache.
+First Agent Smoke and `run-ci-lane` use `setup-ci-tools` to restore yq and k3d
+downloads outside `PATH`. On Linux, `scripts/ci/setup-tools.sh` selects the
+checked-in platform checksum. `scripts/ci/download-pinned.sh` verifies installed
+or cached bytes in private staging before atomic publication with mode 0755.
+Missing or corrupt entries use the pinned downloader; unavailable cache storage
+or service does not fail setup. Verified hits do not rewrite the cache.
+PostgreSQL, image and Kubernetes profiles share OS-, architecture- and
+installer-source-keyed caches. Direct callers can reuse verified installed bytes.
+
+For packaging and shared-runtime artifact consumers,
+`scripts/ci/setup-registry-transport.sh:verify_skopeo` reuses working `PATH` tools;
+packaging requires version 1.13.3. Missing, broken or mismatched tools trigger
+APT update and installation from configured repositories with signature checks.
+Version probes allow 10 seconds plus 5 seconds before forced termination;
+each APT command allows 120 plus 10 seconds, three acquisition retries and
+20-second HTTP/HTTPS timeouts. Sudo is non-interactive. Index errors fail setup;
+failed updates prevent installation. Output and failure status are preserved.
+The final version probe must pass.
 
 `scripts/ci/image-pull.ts:pullImage` logs each failed pull attempt before deciding
 whether to retry, including the final attempt. It reports elapsed time, whether

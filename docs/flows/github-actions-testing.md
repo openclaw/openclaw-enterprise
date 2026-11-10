@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: 2026-11-08
-last_updated_session: authoring-run/7219e3b9-3091-4a5b-8712-c543ff5f0c68
+updated: 2026-11-10
+last_updated_session: authoring-run/dc4064e9-3291-42b3-aaf2-9c36fb81f1a6
 ---
 
 # GitHub Actions testing flow
@@ -252,6 +252,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 09:09: Document qualified registry-tool reuse and APT setup deadlines in the preparation flow. (authoring-run/dc4064e9-3291-42b3-aaf2-9c36fb81f1a6 - 49e3f601c762f94c8d7b97f594c4a342986d68bd)
 
 - 2026-11-08 08:28: Preserve matrix failure attribution alongside admitted CI reuse. (authoring-run/7219e3b9-3091-4a5b-8712-c543ff5f0c68 - 006cf6288913ff8eb56d0fbc2283885bd551ecc9)
 
