@@ -1,3 +1,9 @@
+export { rejectRequestClassification } from "./request-classification-audit.ts";
+import {
+  classifyForRequestAudit,
+  type ClassificationStage,
+} from "./request-classification-audit.ts";
+
 export { recognizedRuntimeFailureValues } from "./runtime-failure-cause.ts";
 import type { RequestCredentialApproval } from "./ports/request-credential-approvals.ts";
 import { deploymentRepositoryAccessStatus } from "./deployment-repository-access.ts";
@@ -7645,6 +7651,7 @@ export class OpenClawController {
     revision: AgentRevision,
     sourceId: string,
     code: string,
+    classificationStage?: ClassificationStage,
   ): Promise<void> {
     const { namespaceId, revisionId } = request.execution;
     await state.audit.append({
@@ -7660,6 +7667,7 @@ export class OpenClawController {
       outcome: "denied",
       details: {
         code,
+        ...(classificationStage && { classificationStage }),
         phase: "http" in request ? "before_access" : "before_release",
         requestId: request.requestId,
         revisionId,
@@ -7745,8 +7753,8 @@ export class OpenClawController {
       return undefined;
     }
     const sourceId = route.binding.source.source.id;
-    const deny = (state: PlatformUnitOfWork, code: string) =>
-      this.denyRequestCredential(state, request, revision, sourceId, code);
+    const deny = (state: PlatformUnitOfWork, code: string, stage?: ClassificationStage) =>
+      this.denyRequestCredential(state, request, revision, sourceId, code, stage);
     const authority = this.requestCredentialAuthority();
     if (!authority) {
       await this.transactReadCommitted((state) => deny(state, "unsupported_authority"));
@@ -7770,8 +7778,8 @@ export class OpenClawController {
       return undefined;
     }
     return this.transactReadCommitted(async (state) => {
-      const refuse = async (code: string) => {
-        await deny(state, code);
+      const refuse = async (code: string, stage?: ClassificationStage) => {
+        await deny(state, code, stage);
         return undefined;
       };
       const currentNamespace = await this.lockNamespace(state, namespaceId);
@@ -7871,22 +7879,19 @@ export class OpenClawController {
           target.path.includes("#") ||
           target.query.includes("#")
         ) {
-          return refuse("unsupported_operation");
+          return refuse("unsupported_operation", "target");
         }
-        const operation = Reflect.apply(classify, provider, [
-          route,
-          {
-            id: request.requestId,
-            deadlineAt: request.deadlineAt,
-            bindingId: request.bindingId,
-            method: target.method,
-            url: `https://${target.host}${target.port === 443 ? "" : `:${target.port}`}${target.path}${target.query ? `?${target.query}` : ""}`,
-            headers,
-            body,
-          },
-        ]);
+        const { operation, stage } = classifyForRequestAudit(classify, provider, route, {
+          id: request.requestId,
+          deadlineAt: request.deadlineAt,
+          bindingId: request.bindingId,
+          method: target.method,
+          url: `https://${target.host}${target.port === 443 ? "" : `:${target.port}`}${target.path}${target.query ? `?${target.query}` : ""}`,
+          headers,
+          body,
+        });
         if (operation?.kind !== "inference") {
-          return refuse("unsupported_operation");
+          return refuse("unsupported_operation", stage);
         }
       } else if (
         request.policyDigest !== policyDigest ||

@@ -1,3 +1,4 @@
+import { rejectRequestClassification } from "@openclaw-enterprise/occ";
 import {
   modelProviderBaseUrl,
   savedModelProvider,
@@ -36,8 +37,10 @@ function validHeaders(headers: EgressRequest["headers"], forbidden: string[]): b
 
 function jsonRequest(request: EgressRequest): Record<string, unknown> | undefined {
   const headers = request.headers;
+  if (!jsonType.test(contentType(headers))) {
+    return rejectRequestClassification(request, "media_type");
+  }
   if (
-    !jsonType.test(contentType(headers)) ||
     !validHeaders(headers, [
       "content-encoding",
       "transfer-encoding",
@@ -46,12 +49,15 @@ function jsonRequest(request: EgressRequest): Record<string, unknown> | undefine
       "x-oce-binding",
     ])
   ) {
-    return undefined;
+    return rejectRequestClassification(request, "headers");
   }
   try {
-    return asRecord(parseUnambiguousJson(utf8.decode(request.body)));
+    return (
+      asRecord(parseUnambiguousJson(utf8.decode(request.body))) ??
+      rejectRequestClassification(request, "json")
+    );
   } catch {
-    return undefined;
+    return rejectRequestClassification(request, "json");
   }
 }
 
@@ -207,7 +213,7 @@ export function createOpenAiStaticProvider(): CredentialProviderDefinition {
       try {
         url = new URL(request.url);
       } catch {
-        return undefined;
+        return rejectRequestClassification(request, "route");
       }
       if (
         url.href !== request.url ||
@@ -216,24 +222,30 @@ export function createOpenAiStaticProvider(): CredentialProviderDefinition {
         url.password ||
         url.search ||
         url.hash ||
-        request.method !== route.method ||
         url.origin !== route.origin ||
         url.pathname !== route.path
       ) {
-        return undefined;
+        return rejectRequestClassification(request, "route");
+      }
+      if (request.method !== route.method) {
+        return rejectRequestClassification(request, "method");
       }
       const body = jsonRequest(request);
+      if (!body) {
+        return undefined;
+      }
       if (
-        !body ||
         typeof body.model !== "string" ||
         route.binding.grant.kind !== "inference" ||
         route.binding.grant.providerTools !== "none" ||
         !route.binding.grant.models.includes(body.model)
       ) {
-        return undefined;
+        return rejectRequestClassification(request, "grant_model");
       }
       const valid = route.path.endsWith("/responses") ? validResponsesRequest : validChatRequest;
-      return valid(body) ? { kind: "inference", action: "generate", model: body.model } : undefined;
+      return valid(body)
+        ? { kind: "inference", action: "generate", model: body.model }
+        : rejectRequestClassification(request, "body_schema");
     },
     inject(value) {
       if (value.length < 8 || value.length > 8192 || /[^\x21-\x7e]/.test(value)) {

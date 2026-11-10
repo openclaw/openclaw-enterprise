@@ -278,6 +278,34 @@ test(
       ).decision,
       2,
     );
+    for (const [stage, change] of [
+      ["media_type", { headers: [] }],
+      [
+        "body_schema",
+        { body: Buffer.from(JSON.stringify({ model: "fixture-model", store: true })) },
+      ],
+    ] as const) {
+      const rejected = fixture.request();
+      const decision = await evaluate(rejected, signed, change);
+      assert.equal(decision.decision, 2);
+      assert.equal(decision.reason_code, "request_credential_denied");
+      const audit = await f.pool.query(
+        "SELECT details - '__occAuditMetadata' AS details FROM occ.audit_events WHERE action = 'openclaw.egress.authorize' AND details->>'requestId' = $1",
+        [rejected.requestId],
+      );
+      assert.deepEqual(
+        audit.rows.map((row) => row.details),
+        [
+          {
+            code: "unsupported_operation",
+            phase: "before_access",
+            requestId: rejected.requestId,
+            revisionId: fixture.revision.id,
+            classificationStage: stage,
+          },
+        ],
+      );
+    }
     assert.equal((await redeem(input)).status, 403, "no approval means no material");
     assert.equal(f.secretReads, reads);
     assert.equal((await evaluate(input)).decision, 1);
