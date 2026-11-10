@@ -32,7 +32,9 @@ import {
   takeConnectedControllerBinding,
   validateConnectedDatabaseUrl,
   validateConnectedInputs,
+  validatePublicEgressObserver,
 } from "../helpers/egress-connected-inputs.mjs";
+import { publicEgressResources } from "../helpers/public-egress-resources.mjs";
 import { listen } from "../helpers/listen.mjs";
 
 import {
@@ -737,5 +739,187 @@ test("failed custody deployment preserves worker event order across a reused att
       diagnostics.at(-1).includes(JSON.stringify(failure.workerEvents)),
       "public safe projection",
     );
+  }
+});
+
+test("public egress observer requires the local mTLS profile before forwarding", () => {
+  const valid = {
+    endpoint: "https://127.0.0.1:18443",
+    rootCertificatePath: "/fixture/ca.crt",
+    auth: {
+      mode: "mtls",
+      certificatePath: "/fixture/client.crt",
+      privateKeyPath: "/fixture/client.key",
+    },
+  };
+  assert.equal(validatePublicEgressObserver(valid).origin, valid.endpoint);
+  for (const changed of [
+    { auth: undefined },
+    { auth: { mode: "bearerTokenFile", path: "/fixture/token" } },
+    { rootCertificatePath: undefined },
+    { rootCertificatePath: "relative.crt" },
+    { auth: { ...valid.auth, certificatePath: undefined } },
+    { auth: { ...valid.auth, privateKeyPath: "relative.key" } },
+    { insecureTransport: true },
+  ]) {
+    assert.throws(() => validatePublicEgressObserver({ ...valid, ...changed }), {
+      code: "ERR_ASSERTION",
+    });
+  }
+});
+
+test("public egress cleanup retains independent Configuration cleanup after admission or Role failures", async (t) => {
+  // Actual Fastify, OCC and Native IAM enforce admission and mutate the in-memory
+  // store. Only an explicitly lost response is injected at the transport edge;
+  // no installed Kubernetes retirement or supplier behavior is claimed here.
+  for (const scenario of [
+    "agent-refused",
+    "role-refused",
+    "role-delete-refused",
+    "role-delete-response-lost",
+    "agent-create-response-unknown",
+  ]) {
+    await t.test(scenario, async (t) => {
+      const f = await createConsoleAppFixture(t, {
+        backends: [],
+        computeDriver: createReadyComputeDriver("cleanup-proof"),
+      });
+      await f.bootstrap("Public egress cleanup");
+      const admin = await f.signIn();
+      const namespace = await f.createNamespace(scenario, { ready: true });
+      const prefix = "/namespaces/" + namespace.id;
+      const member = await f.createNamespaceMember(scenario, namespace.id, [
+        ["read", "namespace"],
+        ["create", "configuration"],
+        ["delete", "configuration"],
+        ["read", "configuration"],
+        ["read", "agent"],
+      ]);
+      const limited = await f.signIn(member.credentials);
+      let session = scenario === "agent-refused" || scenario === "role-refused" ? limited : admin;
+      const observed = [];
+      const request = async (method, path, body) => {
+        if (
+          scenario === "agent-create-response-unknown" &&
+          method === "POST" &&
+          path.endsWith("/agents")
+        ) {
+          // The sender cannot tell whether a create reached the controller. An
+          // empty read must not be promoted into proof that it can never commit.
+          throw new Error("transport outcome unknown");
+        }
+        const wire = serializeConnectedRequest(method, path, body);
+        const injected = await f.app.inject({
+          method: wire.method,
+          url: wire.path,
+          headers: {
+            host: new URL(session.origin).host,
+            ...authenticatedHeaders(session, wire.headers),
+          },
+          payload: wire.body,
+        });
+        const response = {
+          status: injected.statusCode,
+          body: injected.statusCode === 204 ? undefined : injected.json(),
+        };
+        observed.push({ method, path, status: response.status });
+        if (
+          scenario === "role-delete-response-lost" &&
+          method === "DELETE" &&
+          path.includes("/iam/roles/")
+        ) {
+          assert.equal(
+            response.status,
+            204,
+            "the real deletion committed before its response was lost",
+          );
+          throw new Error("delete response lost");
+        }
+        return {
+          status: response.status,
+          body: response.status === 204 ? undefined : response.body,
+        };
+      };
+      const receipts = new Map();
+      const resources = publicEgressResources({
+        request,
+        namespacePath: prefix,
+        retireAgent: async () => assert.fail("these scenarios never admit an Agent"),
+        record: async (name, value) => receipts.set(name, value),
+      });
+      const config = await resources.create("configuration", protectedConfigurationBody("gpt-6"));
+      let role;
+      if (scenario.startsWith("agent-")) {
+        await assert.rejects(
+          resources.create("agent", { name: scenario, configurationId: config.id }),
+          scenario === "agent-refused"
+            ? { code: "ERR_ASSERTION", message: /HTTP 403; error code FORBIDDEN/ }
+            : { message: "transport outcome unknown" },
+        );
+        if (scenario === "agent-refused") {
+          assert.equal(observed.at(-1).status, 403, "real IAM admission refused Agent creation");
+        }
+      } else {
+        const createRole = () =>
+          resources.create("role", {
+            name: scenario,
+            permissions: [{ action: "read", resourceKind: "agent" }],
+          });
+        if (scenario === "role-refused") {
+          await assert.rejects(createRole(), {
+            code: "ERR_ASSERTION",
+            message: /HTTP 403; error code FORBIDDEN/,
+          });
+          assert.equal(observed.at(-1).status, 403, "real IAM admission refused Role creation");
+        } else {
+          role = await createRole();
+          if (scenario === "role-delete-refused") {
+            session = limited;
+          }
+        }
+      }
+      const unsettled =
+        scenario.includes("delete-") || scenario === "agent-create-response-unknown";
+      let cleanupError;
+      try {
+        await resources.cleanup();
+      } catch (error) {
+        cleanupError = error;
+      }
+      const remaining = await f.request("GET", prefix + "/configurations/" + config.id);
+      const unknown = scenario === "agent-create-response-unknown";
+      assert.equal(
+        remaining.status,
+        unknown ? 200 : 404,
+        "only unresolved Agent admission blocks Configuration deletion",
+      );
+      if (unsettled) {
+        assert.match(cleanupError?.message ?? "", /cleanup is unsettled/);
+      } else {
+        assert.equal(cleanupError, undefined);
+      }
+      const receipt = receipts.get("cleanup");
+      assert.equal(receipt.settled, !unsettled);
+      assert.equal(receipt.resources.configuration.state, unknown ? "unsettled" : "deleted");
+      if (role) {
+        assert.equal(
+          receipt.resources.role.state,
+          "unsettled",
+          "a missing or refused delete response is retained honestly",
+        );
+        const actual = await f.request("GET", prefix + "/iam/roles/" + role.id);
+        assert.equal(actual.status, scenario === "role-delete-refused" ? 200 : 404);
+        if (actual.status === 200) {
+          assert.equal((await f.request("DELETE", prefix + "/iam/roles/" + role.id)).status, 204);
+        }
+      }
+      if (unknown) {
+        assert.equal(
+          (await f.request("DELETE", prefix + "/configurations/" + config.id)).status,
+          204,
+        );
+      }
+      assert.equal((await f.request("GET", prefix + "/agents")).data.length, 0);
+    });
   }
 });

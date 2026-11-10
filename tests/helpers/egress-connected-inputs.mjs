@@ -6,6 +6,30 @@ import { createHarnessConfiguration } from "./harness-configuration.mjs";
 export const protectedEgressCapability =
   "openshell.supervisor-middleware.http-credential-access.v1";
 
+// The public-egress observer changes only the port of this local mTLS profile.
+// Production Backend callers retain their other supported authentication modes.
+export function validatePublicEgressObserver(backend) {
+  const endpoint = new URL(backend.endpoint);
+  assert.equal(endpoint.protocol, "https:");
+  assert.equal(endpoint.username + endpoint.password + endpoint.search + endpoint.hash, "");
+  assert.equal(endpoint.pathname, "/");
+  assert.equal(endpoint.hostname, "127.0.0.1");
+  assert.equal(backend.insecureTransport, undefined);
+  assert.equal(backend.auth?.mode, "mtls", "this observer requires the local mTLS profile");
+  assert.deepEqual(Object.keys(backend.auth).sort(), ["certificatePath", "mode", "privateKeyPath"]);
+  for (const path of [
+    backend.rootCertificatePath,
+    backend.auth.certificatePath,
+    backend.auth.privateKeyPath,
+  ]) {
+    assert.ok(
+      typeof path === "string" && isAbsolute(path),
+      "absolute private CA and client identity paths are required",
+    );
+  }
+  return endpoint;
+}
+
 export function validateConnectedDatabaseUrl(value) {
   assert.ok(value, "OCC_TEST_DATABASE_URL must select the prepared openclaw_k8s_* database");
   let database;

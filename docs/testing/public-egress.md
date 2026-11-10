@@ -22,7 +22,9 @@ with `networkEgressMode: restricted` and no credential-free artifact allowances.
 The test checks explicit modes; default selection belongs to packaging tests.
 
 Use the existing local Gateway TLS profile with `openShellBackend.endpoint` set
-to `https://127.0.0.1:<port>` and its CA and mTLS client paths. The scenario opens
+to `https://127.0.0.1:<port>`, `rootCertificatePath` to its private CA,
+and `auth.mode: mtls` with absolute `certificatePath` and `privateKeyPath`.
+Missing paths, bearer authentication and insecure transport are refused before forwarding. The scenario opens
 its own loopback forward to the exact selected supplier Pod and substitutes only
 the port, preserving certificate IP verification and client identity. It checks
 that Pod’s UID and image observations around the Gateway reads. Other observer
@@ -100,7 +102,14 @@ credential-use records must match the current workload network instance.
 When `pauseForAcceptance` is true, `public-egress-ready.json` retains that successor
 for separately authorized repository checks. Finish within 30 minutes, then write
 `acceptance-complete.json` with its unchanged `runId`, `agentId`,
-`baselineRevisionId` and `revisionId`. The runner retires its Agent and waits for identity bindings to disappear before deleting its Role and Configuration. Uncertain Agent or Role creation is reconciled by the exact run-owned name; it is not replayed. An unconfirmed Configuration create cannot be looked up by name and leaves cleanup unsettled.
+`baselineRevisionId` and `revisionId`. The runner retires its Agent and waits for identity bindings to disappear before
+deleting its Role and Configuration. An admission refusal does not trigger
+uncertain-create reconciliation. After confirmed Agent absence, a failed Role
+delete does not prevent Configuration deletion; cleanup records each unresolved
+outcome. Uncertain Agent or Role creation is reconciled by the exact run-owned
+name, never replayed. An empty lookup is not proof that an uncertain create failed.
+An unconfirmed Configuration create cannot be looked up by name and leaves
+cleanup unsettled.
 
 ## Interpret results
 

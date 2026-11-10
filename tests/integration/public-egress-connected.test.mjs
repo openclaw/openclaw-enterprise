@@ -17,7 +17,9 @@ import {
   serializeConnectedRequest,
   sendConnectedRequest,
   validateConnectedDatabaseUrl,
+  validatePublicEgressObserver,
 } from "../helpers/egress-connected-inputs.mjs";
+import { publicEgressResources } from "../helpers/public-egress-resources.mjs";
 import { codexRepositoryEvidenceScript } from "../helpers/normal-agent-tools.mjs";
 import {
   publicBootstrapProgram,
@@ -100,21 +102,7 @@ test(
         input.openShellGatewaySelector.length > 0 &&
         !/[\r\n]/u.test(input.openShellGatewaySelector),
     );
-    const supplierEndpoint = new URL(input.openShellBackend.endpoint);
-    assert.equal(supplierEndpoint.protocol, "https:");
-    assert.equal(
-      supplierEndpoint.username +
-        supplierEndpoint.password +
-        supplierEndpoint.search +
-        supplierEndpoint.hash,
-      "",
-    );
-    assert.equal(supplierEndpoint.pathname, "/");
-    assert.equal(
-      supplierEndpoint.hostname,
-      "127.0.0.1",
-      "this host-run lane retains the Gateway certificate's loopback IP identity",
-    );
+    const supplierEndpoint = validatePublicEgressObserver(input.openShellBackend);
     const databaseUrl = validateConnectedDatabaseUrl(process.env.OCC_TEST_DATABASE_URL);
     const f = createRealKubernetesFixture({
       kubeconfigPath: input.kubeconfigPath,
@@ -143,6 +131,8 @@ test(
       "apps/controller/src/drivers/credential-gateway/openshell.ts",
       "tests/integration/public-egress-connected.test.mjs",
       "tests/helpers/public-egress-workflow.mjs",
+      "tests/helpers/public-egress-resources.mjs",
+      "tests/helpers/egress-connected-inputs.mjs",
     ];
     const sourceHashes = Object.fromEntries(
       await Promise.all(
@@ -180,7 +170,7 @@ test(
       }
     });
     const namespacePath = "/namespaces/" + input.namespaceId;
-    const api = async (method, path, body, expected = 200) => {
+    const request = async (method, path, body) => {
       const response = await sendConnectedRequest(
         { apiOrigin: input.apiOrigin, serviceKey },
         serializeConnectedRequest(method, path, body),
@@ -188,11 +178,10 @@ test(
       );
       const text = await response.text();
       assert.equal(text.includes(serviceKey), false, "the controller must not echo its credential");
-      return assertConnectedResponse(
-        { status: response.status, body: text ? JSON.parse(text) : undefined },
-        expected,
-      );
+      return { status: response.status, body: text ? JSON.parse(text) : undefined };
     };
+    const api = async (method, path, body, expected = 200) =>
+      assertConnectedResponse(await request(method, path, body), expected);
     assert.equal((await api("GET", "/installation")).id, input.installationId);
     assert.equal((await api("GET", namespacePath)).status, "ready");
     const source = await api("GET", namespacePath + "/credential-sources/" + input.modelSourceId);
@@ -305,27 +294,13 @@ test(
     values.tools = { profile: "full" };
     const agentName = "public-egress-" + runId;
     const roleName = "public-egress-model-" + runId;
-    let config;
-    let configCreateAttempted = false;
-    let agent;
-    let agentCreateAttempted = false;
     let agentPath;
-    let role;
-    let roleCreateAttempted = false;
-    let binding;
     let active;
-    // Install cleanup before the first create, including evidence writes that can
-    // fail before Agent creation. Only exact run-owned resources may be retired.
-    cleanup = async () => {
-      await checkCluster();
-      if (agentCreateAttempted && !agent) {
-        const matches = (await api("GET", namespacePath + "/agents")).filter(
-          (item) => item.name === agentName,
-        );
-        assert.equal(matches.length, 1, "Agent creation outcome is unconfirmed; retain the stack");
-        agent = matches[0];
-      }
-      if (agent) {
+    const resources = publicEgressResources({
+      request,
+      namespacePath,
+      record: (name, value) => save(name, { runId, ...value }),
+      retireAgent: async (agent) => {
         agentPath = namespacePath + "/agents/" + agent.id;
         const approvals = await api("GET", agentPath + "/repository-approvals");
         for (const approval of approvals.filter((entry) => entry.status === "active")) {
@@ -363,66 +338,28 @@ test(
           },
           300000,
         );
-      }
-      if (roleCreateAttempted && !role) {
-        const matches = (await api("GET", namespacePath + "/iam/roles")).filter(
-          (item) => item.name === roleName,
-        );
-        assert.equal(matches.length, 1, "Role creation outcome is unconfirmed; retain the stack");
-        role = matches[0];
-      }
-      if (role) {
-        await api("DELETE", namespacePath + "/iam/roles/" + role.id, undefined, 204);
-      }
-      if (config) {
-        // Configuration deletion is valid only after the Agent row is finalized.
-        await api("DELETE", namespacePath + "/configurations/" + config.id, undefined, 204);
-      } else if (configCreateAttempted) {
-        throw new Error("Configuration creation outcome is unconfirmed; retain the stack");
-      }
-      await save("cleanup", {
-        runId,
-        agentId: agent?.id,
-        configurationId: config?.id,
-        roleId: role?.id,
-        bindingId: binding?.id,
-        settled: true,
-      });
+      },
+    });
+    // Arm cleanup before the first create, including failed evidence writes.
+    cleanup = async () => {
+      await checkCluster();
+      await resources.cleanup();
     };
-    await save("configuration-create-intent", { runId, namespaceId: input.namespaceId });
-    configCreateAttempted = true;
-    config = await api("POST", namespacePath + "/configurations", { kind: "agent", values }, 201);
-    await save("configuration-created", { runId, configurationId: config.id });
-    await save("agent-create-intent", { runId, name: agentName });
-    agentCreateAttempted = true;
-    agent = await api(
-      "POST",
-      namespacePath + "/agents",
-      {
-        name: agentName,
-        configurationId: config.id,
-        executionMode: "dedicated",
-        harnessAuth: { method: "credential_source", sourceId: input.modelSourceId },
-        credentialSources: [{ sourceId: input.modelSourceId }],
-        repositoryBindings: [{ repositoryRef: input.repositoryRef, profile: "github-repository" }],
-      },
-      201,
-    );
+    const config = await resources.create("configuration", { kind: "agent", values });
+    const agent = await resources.create("agent", {
+      name: agentName,
+      configurationId: config.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "credential_source", sourceId: input.modelSourceId },
+      credentialSources: [{ sourceId: input.modelSourceId }],
+      repositoryBindings: [{ repositoryRef: input.repositoryRef, profile: "github-repository" }],
+    });
     agentPath = namespacePath + "/agents/" + agent.id;
-    await save("agent-created", { runId, agentId: agent.id });
-    await save("role-create-intent", { runId, name: roleName });
-    roleCreateAttempted = true;
-    role = await api(
-      "POST",
-      namespacePath + "/iam/roles",
-      {
-        name: roleName,
-        permissions: [{ action: "operate", resourceKind: "credential_source" }],
-      },
-      201,
-    );
-    await save("role-created", { runId, roleId: role.id });
-    binding = await api(
+    const role = await resources.create("role", {
+      name: roleName,
+      permissions: [{ action: "operate", resourceKind: "credential_source" }],
+    });
+    const binding = await api(
       "POST",
       namespacePath + "/iam/access-bindings",
       {
