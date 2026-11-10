@@ -1431,6 +1431,9 @@ test("prepareOpenShell rejects source, chart, and image mismatches before cluste
     await rm(extra);
   }
 
+  // Git tracks the owner execute bit. An execute bit for others alone must
+  // leave this chart file non-executable in Git and reach the image check.
+  await chmod(values, 0o645);
   imageRevision = "0".repeat(40);
   await assert.rejects(prepare(), /image revision does not match the selected source revision/);
   assert.equal(registerImage.mock.callCount(), 0);

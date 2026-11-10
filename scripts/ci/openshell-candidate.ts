@@ -170,7 +170,7 @@ async function verifyChart(
           .update(`blob ${content.length}\0`)
           .update(content)
           .digest("hex");
-        if (oid !== entry.oid || ((info.mode & 0o111) !== 0) !== (entry.mode === "100755")) {
+        if (oid !== entry.oid || ((info.mode & 0o100) !== 0) !== (entry.mode === "100755")) {
           throw new Error("OpenShell candidate chart files differ from the selected commit.");
         }
       } finally {
