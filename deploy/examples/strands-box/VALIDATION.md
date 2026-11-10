@@ -2,6 +2,10 @@
 
 Standalone workspace verification passed on AWS Graviton with Box v0.2.1 and Codex 0.164.0. A separate Gateway run completed one chat with a local model fixture.
 
+The [current setup](README.md#prepare-the-host-and-verify-box) pins Box v0.2.2.
+The records below retain the versions actually tested; updating the setup pin
+does not repeat those qualification runs.
+
 | Check                                                        | Observed result                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Standalone native endpoint on emulated ARM Linux             | The original endpoint rejected missing and incorrect authentication, then initialized with valid authentication. A direct native command wrote a workspace marker and an independent read matched it. Attempts to read or write a sibling file were refused and its bytes stayed unchanged.                                                                                                                                                                          |

@@ -71,7 +71,7 @@ if ! timeout 8s unshare --user --map-current-user --mount --pid --fork --ipc --u
   exit 1
 fi
 
-# Box 0.2.1 constructs its isolated view below the host /tmp. Verify the
+# Box 0.2.2 constructs its isolated view below the host /tmp. Verify the
 # ordinary sticky directory and the runner's access without changing either.
 phase=runner-temporary-directory
 [[ -d /tmp && ! -L /tmp && "$(stat -c '%u:%a' /tmp)" = 0:1777 ]]
@@ -84,11 +84,11 @@ node_bin="$(realpath -e "$(command -v node)")"
 verify_shell="$(realpath -e /bin/sh)"
 run_root="$(mktemp -d "$host_home/.occbox.XXXXXXXX")"
 install -d -m 0700 "$run_root"/{box,codex,agent,run,workspace,held}
-box_archive_sha=9060a4ccca1d6d5153da31e9214d3fd64c9bab0aa7762b6556d2790a8a0f06c0
+box_archive_sha=7d77f8e261c5c6f4e37c74d77219e9ebb47725f3ced4c29e752c3f51abb789cc
 codex_archive_sha=048a62731ce28aa000508efcc032302e58488ca079970dcae06d28df39ae5ce0
 codex_sha=8813c8d8a4cea2eeba271b72ab22f49628b184b24ab18dbef06b4ce41e9a8d39
 curl --proto '=https' --fail --location --silent --show-error --max-time 90 \
-  https://github.com/strands-agents/box/releases/download/v0.2.1/box-v0.2.1-linux-arm64.tar.gz \
+  https://github.com/strands-agents/box/releases/download/v0.2.2/box-v0.2.2-linux-arm64.tar.gz \
   --output "$run_root/box.tgz"
 curl --proto '=https' --fail --location --silent --show-error --max-time 120 \
   https://registry.npmjs.org/@openai/codex/-/codex-0.164.0-linux-arm64.tgz \
@@ -107,7 +107,7 @@ for bin in "$run_root"/box/{box,strands-box-contain-trampoline,strands-box-sock-
   file -b "$bin" | grep -q 'ARM aarch64'
 done
 sanitized=(env -i "HOME=$host_home" "PATH=$(dirname "$node_bin"):/usr/bin:/bin" "LANG=C.UTF-8")
-"${sanitized[@]}" "$run_root/box/box" --version | grep -Fx 'strands-box 0.2.1'
+"${sanitized[@]}" "$run_root/box/box" --version | grep -Fx 'strands-box 0.2.2'
 install -d -m 0700 "$run_root/version-home"
 [[ "$("${sanitized[@]}" "CODEX_HOME=$run_root/version-home" "$codex_bin" --version)" = 'codex-cli 0.164.0' ]]
 
@@ -174,5 +174,5 @@ for control in ready.json capability app-server.sock pinned.sock; do
   [[ ! -e "$run_root/run/$control" && ! -L "$run_root/run/$control" ]]
 done
 [[ ! -e "$run_root/run-home" && ! -L "$run_root/run-home" ]]
-printf 'strands-box-native-ci: PASS source=%s kernel=%s arch=aarch64 box=0.2.1 codex=0.164.0 scope=standalone\n' \
+printf 'strands-box-native-ci: PASS source=%s kernel=%s arch=aarch64 box=0.2.2 codex=0.164.0 scope=standalone\n' \
   "$expected_sha" "$(uname -r)"

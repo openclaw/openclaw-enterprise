@@ -21,16 +21,17 @@ repository's [Node.js version](../../../package.json) and Codex from the matchin
 [OCE runtime build](../../runtime/README.md).
 
 From a new directory on the host, download the
-[Strands Box v0.2.1 Linux ARM64 release](https://github.com/strands-agents/box/releases/tag/v0.2.1).
+[Strands Box v0.2.2 Linux ARM64 release](https://github.com/strands-agents/box/releases/tag/v0.2.2).
 Verify the archive before extracting it. Keep Box and both helpers together.
+The Box release and the OCE Driver package have independent version numbers.
 
 ```bash
 curl --fail --location --remote-name \
-  https://github.com/strands-agents/box/releases/download/v0.2.1/box-v0.2.1-linux-arm64.tar.gz &&
+  https://github.com/strands-agents/box/releases/download/v0.2.2/box-v0.2.2-linux-arm64.tar.gz &&
 printf '%s  %s\n' \
-  '9060a4ccca1d6d5153da31e9214d3fd64c9bab0aa7762b6556d2790a8a0f06c0' \
-  'box-v0.2.1-linux-arm64.tar.gz' | sha256sum --check --strict &&
-tar -xzf box-v0.2.1-linux-arm64.tar.gz
+  '7d77f8e261c5c6f4e37c74d77219e9ebb47725f3ced4c29e752c3f51abb789cc' \
+  'box-v0.2.2-linux-arm64.tar.gz' | sha256sum --check --strict &&
+tar -xzf box-v0.2.2-linux-arm64.tar.gz
 ```
 
 From the OCE checkout, use the workspace toolchain to build the host helper.
@@ -113,8 +114,8 @@ read-only in one Worker and deploy the stopped Agent once; then use the
 Worker's original workspace claim to start the held host and verify the
 live socket before approval. The host cannot start before that claim exists.
 
-Box v0.2.1's HTTP egress proxy
-[refuses protocol upgrades](https://github.com/strands-agents/box/blob/e39544d49188b82933264b83159c7ccc278ced5a/crates/egress-gateway/src/intercept/mitm/http1.rs#L271-L289),
+Box v0.2.2's HTTP egress proxy
+[refuses protocol upgrades](https://github.com/strands-agents/box/blob/d9346bf0d281153ea7dc6338ad1f0b7e122be687/crates/egress-gateway/src/intercept/mitm/http1.rs#L277-L285),
 so the file node has a separate route to the Agent Gateway. The Box Harness
 still connects to the Gateway over the installed relay.
 

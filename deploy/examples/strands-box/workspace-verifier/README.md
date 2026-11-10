@@ -1,7 +1,7 @@
 # Read one synthetic marker through Box Shell Calls
 
 This optional Linux ARM64 fixture lets a Codex tool call read one pre-staged
-synthetic marker through stock Box v0.2.1. It grants neither a general shell
+synthetic marker through stock Box v0.2.2. It grants neither a general shell
 command nor additional native execution access to the agent. Leave the option
 unset in ordinary deployments.
 
@@ -45,7 +45,7 @@ shell are still refused by the Box broker.
 
 To run the independent stock Box integration case on a supported nonroot
 Linux ARM64 host, stage the verified helper as above and point the test at the
-v0.2.1 release executable with its two original helpers beside it:
+v0.2.2 release executable with its two original helpers beside it:
 
 ```sh
 OCC_TEST_STRANDS_BOX_SHELL_BOX=/absolute/verified-box/box \
@@ -60,5 +60,5 @@ the extra-argument, builtin, and nested-shell denials, and that the marker is
 unchanged. This direct Box test is separate from qualification of an installed
 Agent and Gateway chat.
 
-[shell]: https://github.com/strands-agents/box/blob/e39544d49188b82933264b83159c7ccc278ced5a/docs/user/shell.md#shellspawn
-[tool]: https://github.com/strands-agents/box/blob/e39544d49188b82933264b83159c7ccc278ced5a/docs/user/shell.md#toolname
+[shell]: https://github.com/strands-agents/box/blob/d9346bf0d281153ea7dc6338ad1f0b7e122be687/docs/user/shell.md#shellspawn
+[tool]: https://github.com/strands-agents/box/blob/d9346bf0d281153ea7dc6338ad1f0b7e122be687/docs/user/shell.md#toolname

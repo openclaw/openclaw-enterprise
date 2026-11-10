@@ -1,7 +1,7 @@
 # Reproduce one ordinary Gateway chat through Box
 
 Run one normal OpenClaw terminal chat against native Codex in stock Strands Box
-v0.2.1 on a dedicated Linux ARM64 placement. The model is a deterministic
+on a dedicated Linux ARM64 host. Use the Box release pinned in the host setup below. The model is a deterministic
 Responses fixture on loopback inside the same Box network namespace as Codex.
 It asks the normal Codex shell tool to try a forbidden argument and then read
 one synthetic workspace file using the
