@@ -2454,8 +2454,11 @@ function renderAgentForm(
       }
     }
   });
-  form.addEventListener("change", () => {
+  form.addEventListener("change", (event) => {
     edited = true;
+    if (event.target === namedProviders.credential) {
+      updateControls();
+    }
   });
   const restoredProvider = draft.inputs?.nativeProvider;
   if (restoredProvider && restoredProvider !== "openai" && restoredProvider !== "anthropic") {
@@ -2923,12 +2926,16 @@ function renderAgentForm(
   }
   // A member cannot provision, so its form registers the model source and saves a draft that the
   // member deploys (RFC-0026); an administrator's form provisions.
-  const credentialSourceRefused = () =>
-    (namedProviders.named() &&
-      (!selectedProvider() || !modelSourceType() || mode.value !== "dedicated")) ||
-    (credentialSourceTypes !== undefined &&
+  const credentialSourceRefused = () => {
+    if (namedProviders.named()) {
+      return !selectedProvider() || !namedProviders.credential.value || mode.value !== "dedicated";
+    }
+    return (
+      credentialSourceTypes !== undefined &&
       (binding?.method ?? authMethod.value) !== "credential_source" &&
-      (!(shouldProvision() || capabilitiesUnreadable) || !modelSourceType()));
+      (!(shouldProvision() || capabilitiesUnreadable) || !modelSourceType())
+    );
+  };
   const updateControls = () => {
     setText(intro, introText(!repositories.unavailable()));
     const saved = Boolean(savedConfiguration || savedAgent || provisioningAttempt);

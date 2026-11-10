@@ -66,7 +66,7 @@ const secretPath = (namespace: Namespace) => `/namespaces/${namespace.id}/secret
 const dialog = (page: Page, name: string) => page.getByRole("dialog", { name, exact: true });
 const SECRET_REFERENCED = "This Secret is referenced.";
 
-test("Settings saves a model provider and Secrets registers a key for its approved route", async (t) => {
+test("An Agent reuses a provider saved in Settings and a credential approved in Secrets", async (t) => {
   const fixture = await staticEgressFixture(t, { admitRevision: false });
   assert.ok(
     "origin" in fixture && "credentials" in fixture && "registerCleanupBeforeAppClose" in fixture,
@@ -122,6 +122,33 @@ test("Settings saves a model provider and Secrets registers a key for its approv
     connectionTemplateId: provider.connectionTemplateId,
     connectionTemplateVersion: 1,
   });
+
+  // This Installation saves drafts. An existing approved key can be reused without registering another source.
+  await page.goto(fixture.origin + "/console/agents/new?namespace=" + namespace.id);
+  const start = page.getByRole("button", { name: "Start without Preset" });
+  const providerPicker = page.locator("#model-provider");
+  await start.or(providerPicker).first().waitFor();
+  if (await start.isVisible()) {
+    await start.click();
+  }
+  await page.getByLabel("Agent name").fill("Research assistant");
+  await providerPicker.selectOption({ label: "Research inference" });
+  await page.getByLabel("Inference credential", { exact: true }).selectOption({ label: key.name });
+  assert.equal(
+    await page.getByLabel("Models offered by this provider").inputValue(),
+    "research-model",
+  );
+  const savedAgent = responseTo(
+    page,
+    "POST",
+    fixture.origin + "/namespaces/" + namespace.id + "/agents",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const agentResponse = await savedAgent;
+  assert.equal(agentResponse.status(), 201, await agentResponse.text());
+  const { data: agent } = await agentResponse.json();
+  assert.equal(agent.modelProviderId, provider.id);
+  assert.deepEqual(agent.harnessAuth, { method: "credential_source", sourceId: key.id });
 });
 
 async function createFromConsole(page: Page, name: string, value: string) {
