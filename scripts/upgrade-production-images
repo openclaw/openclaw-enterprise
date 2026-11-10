@@ -1440,14 +1440,15 @@ matches_yaml "${candidate_installation}.requested" "${candidate_installation}.re
 # Keep all settings protected except the supported database phase, proxy and curated catalog
 # selections. New configuration fields remain protected until explicitly reviewed.
 values_guard='del(.api.channelDirectoryProxyUrl, .installation.secretName, .database.upgradeMigration) | if .database == {} then del(.database) else . end | if .api == {} then del(.api) else . end | if .installation == {} then del(.installation) else . end'
-# Permit explicit removal of the obsolete empty override, without changing cookie scope.
-baseline_values_guard="$values_guard"
-if yq -e '(.agentNativeAdmin | has("sharedCookieDomain")) and (.agentNativeAdmin.sharedCookieDomain == "")' "$evidence_dir/before-values.yaml" >/dev/null 2>&1 &&
-  yq -e '.agentNativeAdmin | has("sharedCookieDomain") | not' "${candidate_values}.requested" >/dev/null 2>&1; then
-  baseline_values_guard="$values_guard | del(.agentNativeAdmin.sharedCookieDomain)"
-fi
-project_yaml "$evidence_dir/before-values.yaml" "$baseline_values_guard" "$evidence_dir/values-guard.json"
+project_yaml "$evidence_dir/before-values.yaml" "$values_guard" "$evidence_dir/values-guard.json"
 project_yaml "${candidate_values}.requested" "$values_guard" "$evidence_dir/candidate-values-guard.json"
+# Compare resolved values so YAML aliases have the same meaning as ordinary scalars.
+if jq -e --slurpfile candidate "$evidence_dir/candidate-values-guard.json" '
+  .agentNativeAdmin.sharedCookieDomain == "" and
+  ($candidate[0].agentNativeAdmin | has("sharedCookieDomain") | not)
+' "$evidence_dir/values-guard.json" >/dev/null; then
+  project_yaml "$evidence_dir/before-values.yaml" "$values_guard | del(.agentNativeAdmin.sharedCookieDomain)" "$evidence_dir/values-guard.json"
+fi
 cmp -s "$evidence_dir/values-guard.json" "$evidence_dir/candidate-values-guard.json" ||
   die "candidate values change a protected setting; only database.upgradeMigration, api.channelDirectoryProxyUrl or a validated immutable Installation Secret reference may change; an empty agentNativeAdmin.sharedCookieDomain may be removed."
 project_yaml "$evidence_dir/before-installation.yaml" '.' "$evidence_dir/installation-guard.json"
