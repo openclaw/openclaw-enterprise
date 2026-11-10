@@ -517,6 +517,7 @@ function externalGitJourney(
     let prepared: Awaited<ReturnType<typeof startPreparedGitHubGitOwner>> | undefined;
     let transport: Awaited<ReturnType<typeof bindRepositoryGitTransport>>;
     let releaseReduction: (() => void) | undefined;
+    let releaseTokenRetirement: (() => void) | undefined;
     let releaseStoppedBind: (() => void) | undefined;
     let pauseStoppedBind = false;
     let stoppedBindEntered = false;
@@ -588,6 +589,7 @@ function externalGitJourney(
         );
       }
       // Release test-owned holds before joining workers; close authority before its pool.
+      releaseTokenRetirement?.();
       releaseReduction?.();
       releaseStoppedBind?.();
       try {
@@ -2214,8 +2216,10 @@ function externalGitJourney(
 
       // Send another actual request to the same still-equipped sender. Check the transport and
       // HTTP boundaries before the client result, so an erroneous forward fails at the origin oracle.
+      let directProbeRequests = 0;
       const providerTraffic = () => ({
-        ...traffic(),
+        connections: traffic().connections - directProbeRequests,
+        requests: traffic().requests - directProbeRequests,
         // Token Service retirement is lifecycle traffic, not a workload send.
         apiRequests: broad?.installation.traffic().workloadRequests,
         issuerRequests: broad?.installation.traffic().issuerRequests,
@@ -2621,6 +2625,10 @@ function externalGitJourney(
         );
         await startWorker();
       }
+      // Keep the exact token usable through the denial control; cleanup may otherwise retire it.
+      if (broad && !stopDuringRemoval) {
+        releaseTokenRetirement = broad.installation.holdCurrentTokenRetirement();
+      }
       preparationsBeforeWithdrawal = preparations;
       withdrawalStarted = true;
       if (finiteRemoval) {
@@ -2644,11 +2652,6 @@ function externalGitJourney(
           approvalId,
           expectedGeneration: 1,
         });
-      }
-      if (builtIn) {
-        // The same due custody pass that just renewed under approval must now refuse issuance.
-        await prepared.maintain();
-        assert.deepEqual(await materialCounts(), materialBeforeWithdrawal);
       }
       const denied = await fetch(true);
       assert.deepEqual(
@@ -2681,6 +2684,22 @@ function externalGitJourney(
           before,
           "withdrawal denies Git writes before the origin",
         );
+      }
+      if (broad && !stopDuringRemoval) {
+        try {
+          await broad.installation.verifyTokenStillWorks();
+          // These two known direct requests are the only exception to the continuous baseline.
+          directProbeRequests += 2;
+          assert.deepEqual(providerTraffic(), before, "only the direct token control reaches Git");
+          t.diagnostic("withdrawn token accepted before retirement; direct Git probe requests=2");
+        } finally {
+          releaseTokenRetirement!();
+        }
+      }
+      if (builtIn) {
+        // Let real retirement finish, then require the same due pass to refuse new issuance.
+        await prepared.maintain();
+        assert.deepEqual(await materialCounts(), materialBeforeWithdrawal);
       }
       if (reducible) {
         releaseReduction!();
@@ -2826,9 +2845,7 @@ function externalGitJourney(
           `due renewal: authorized issuance=1, withdrawn issuance=0; provider ingress ${JSON.stringify(before)} -> ${JSON.stringify(providerTraffic())}; lifecycle traffic ${JSON.stringify(broad!.installation.traffic())}`,
         );
       }
-      if (broad) {
-        await broad.installation.verifyTokenStillWorks();
-      } else {
+      if (!broad) {
         assert.ok("tokenState" in gh);
         const [, live] = gh.tokenState();
         assert.equal(live?.uses, 2);
@@ -2837,13 +2854,14 @@ function externalGitJourney(
       }
       t.diagnostic(
         broad
-          ? "installation tokens, private Git v2 pack and two distinct commits pushed to the same PR head, updated PR readback, provider-protected ref, REST and GraphQL; fresh Git denied after withdrawal with no issuer or workload-provider request through a later maintenance pass, then direct proof the same token was still accepted"
+          ? "installation tokens, private Git v2 pack and two distinct commits pushed to the same PR head, updated PR readback, provider-protected ref, REST and GraphQL; fresh Git denied after withdrawal with no issuer or workload-provider request through a later maintenance pass, with separately counted direct proof the same token was accepted before retirement"
           : "fetched two previously absent commits using distinct material; withdrawn request reached the same sender, with zero additional origin connections or HTTP requests; a later maintenance pass did not prepare",
       );
     } catch (error) {
       failed = true;
       throw error;
     } finally {
+      releaseTokenRetirement?.();
       releaseReduction?.();
       releaseStoppedBind?.();
       await f.stop();

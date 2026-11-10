@@ -81,6 +81,7 @@ export async function installationOrigin(
   const issuedTokens = new Set<string>();
   let token: string | undefined;
   let expires = 0;
+  let heldRetirement: { token: string; released: Promise<void> } | undefined;
   const basic = (value: string) =>
     "Basic " + Buffer.from("x-access-token:" + value).toString("base64");
 
@@ -132,6 +133,10 @@ export async function installationOrigin(
       }
       if (req.method === "DELETE" && path === "/installation/token") {
         // Rotation retires the superseded token through the provider's real revoke protocol.
+        const held = heldRetirement;
+        if (held && auth === "Bearer " + held.token) {
+          await held.released;
+        }
         const revoked = auth?.startsWith("Bearer ") && issuedTokens.delete(auth.slice(7));
         res.writeHead(revoked ? 204 : 401).end();
         return;
@@ -231,6 +236,16 @@ export async function installationOrigin(
       repositoryRef,
       acceptedGitRequests: () => gitUses,
       traffic: () => ({ ...traffic }),
+      holdCurrentTokenRetirement() {
+        assert.ok(token && issuedTokens.has(token));
+        const { promise, resolve } = Promise.withResolvers<void>();
+        heldRetirement = { token, released: promise };
+        t.after(() => resolve());
+        return () => {
+          resolve();
+          heldRetirement = undefined;
+        };
+      },
       async verifyTokenStillWorks() {
         assert.ok(token && expires > Date.now());
         assert.equal(
@@ -241,7 +256,7 @@ export async function installationOrigin(
         assert.equal(
           await directGitStatus(basic(token)),
           200,
-          "after the withdrawal observation, the provider still accepts the exact token",
+          "before retirement completes, the provider still accepts the withdrawn token",
         );
       },
     },

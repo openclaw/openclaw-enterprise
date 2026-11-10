@@ -40,7 +40,11 @@ traffic. It restarts the Worker and custody owner, fetches a new commit through
 the original revision, then proves a due renewal issues and installs new material
 while approved. After withdrawal, the same due custody pass must issue nothing;
 fresh fetch and push fail before issuer or workload-provider ingress. Intentional
-token retirement is counted separately from workload traffic. This is local
+token retirement is counted separately from workload traffic. The provider holds
+retirement of the current token through the denied Git requests and a direct
+validity probe, then releases it before custody and Worker checks. The two direct
+probe requests are accounted for separately; issuer and workload baselines remain
+continuous. This is local
 protocol and persistence proof, not an installed OpenShell or live GitHub
 qualification.
 
