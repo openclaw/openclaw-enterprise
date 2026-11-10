@@ -979,6 +979,18 @@ preflight_startup() {
   secret="$release-upgrade-preflight-$suffix"
   yq -p=yaml -o=json -I=0 '.' "$rendered" >"$evidence_dir/preflight-rendered.jsonl" ||
     die "cannot read the rendered chart for the startup preflight; no OCC writer was stopped."
+  # Helm's server-side dry-run renders the release but does not submit each
+  # Certificate for admission. Check these before creating the startup Jobs.
+  local certificates="$evidence_dir/preflight-certificates.json"
+  jq -s '{apiVersion: "v1", kind: "List",
+    items: map(select(.apiVersion == "cert-manager.io/v1" and .kind == "Certificate"))}' \
+    "$evidence_dir/preflight-rendered.jsonl" >"$certificates" ||
+    die "cannot select rendered Certificates for preflight; no OCC writer was stopped."
+  if jq -e '.items | length > 0' "$certificates" >/dev/null; then
+    "${kube[@]}" --request-timeout=20s --namespace "$namespace" apply --dry-run=server \
+      --filename "$certificates" >/dev/null 2>"$evidence_dir/preflight-certificates.err" ||
+      die "certificate admission preflight failed; no OCC writer was stopped. Check cert-manager and see preflight-certificates.err in the evidence directory."
+  fi
   node scripts/upgrade-startup-preflight.mjs networkpolicy "$evidence_dir/preflight-rendered.jsonl" \
     "$secret" "$namespace" "$release" >"$evidence_dir/preflight-networkpolicy.json" ||
     die "cannot build the startup preflight NetworkPolicy from the rendered chart; no OCC writer was stopped."
