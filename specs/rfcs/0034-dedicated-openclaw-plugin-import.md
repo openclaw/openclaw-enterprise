@@ -6,8 +6,8 @@ author: stevenlee-oai
 
 # Import plugin releases for dedicated OpenClaw Agents
 
-- **ID** RFC-0033
-- **Implementation plan** [Deliver imported plugins](../plans/0033-dedicated-openclaw-plugin-import.md)
+- **ID** RFC-0034
+- **Implementation plan** [Deliver imported plugins](../plans/0034-dedicated-openclaw-plugin-import.md)
 
 ## Decision
 
@@ -71,4 +71,4 @@ Two Namespaces may independently publish the same package name and version, even
 
 ## Verification
 
-Qualify the feature through the [implementation plan](../plans/0033-dedicated-openclaw-plugin-import.md). A fresh model turn on a dedicated OpenClaw worker must use an imported skill and its supporting file. Repeat after update and removal, and verify a selected hosted tool produces a real result for a mixed release. Exercise the managed-mode refusal through a native Gateway client.
+Qualify the feature through the [implementation plan](../plans/0034-dedicated-openclaw-plugin-import.md). A fresh model turn on a dedicated OpenClaw worker must use an imported skill and its supporting file. Repeat after update and removal, and verify a selected hosted tool produces a real result for a mixed release. Exercise the managed-mode refusal through a native Gateway client.

@@ -627,6 +627,13 @@ test("a copied Agent chat link redirects an activated browser navigation to the 
   );
   assert.equal(sessionPage.statusCode, 302);
   assert.equal(sessionPage.headers.location, destination);
+  // Named sessions are valid copied chat URLs too, not only opaque hex IDs.
+  const namedSessionPath = `/chat/main/simple-test-session-${sessionSuffix}`;
+  const namedSession = await injectJson(context.fixture, "GET", namedSessionPath, {
+    headers: navigation,
+  });
+  assert.equal(namedSession.statusCode, 302, namedSession.body);
+  assert.equal(namedSession.headers.location, destination);
   const inventedKey = "f".repeat(32);
   const invented = await injectJson(context.fixture, "GET", "/chat/main", {
     headers: {
@@ -646,7 +653,13 @@ test("a copied Agent chat link redirects an activated browser navigation to the 
   // activation. Such a page load stays 403 without redirecting, but shows a sign-in link instead of
   // the JSON refusal.
   const { "sec-fetch-user": _activation, ...unactivated } = navigation;
-  for (const path of ["/", "/chat/main", "/chat/main/", `/chat/main/${sessionSuffix}`]) {
+  for (const path of [
+    "/",
+    "/chat/main",
+    "/chat/main/",
+    `/chat/main/${sessionSuffix}`,
+    namedSessionPath,
+  ]) {
     const signIn = await injectJson(context.fixture, "GET", path, { headers: unactivated });
     assert.equal(signIn.statusCode, 403, path);
     assert.equal(signIn.headers.location, undefined, path);
@@ -677,7 +690,7 @@ test("a copied Agent chat link redirects an activated browser navigation to the 
     ["GET", "/chat/main", { ...navigation, "sec-fetch-dest": "iframe" }],
     ["GET", "/chat/main", { ...navigation, "sec-fetch-mode": "cors" }],
     ["GET", "/chat/main", { ...navigation, accept: "text/html;q=0,application/json" }],
-    ["GET", "/chat/main/not-a-session", navigation],
+    ["GET", "/chat/main/session/extra", navigation],
     ["GET", "/settings", navigation],
     ["GET", "/", { ...navigation, "sec-fetch-mode": "cors" }],
     ["GET", "/", { ...navigation, "sec-fetch-dest": "iframe" }],

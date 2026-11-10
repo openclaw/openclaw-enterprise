@@ -16,7 +16,10 @@ hours). HTTP, WebSocket admission and renewal recheck the session, Principal,
 Agent, Namespace, revision and authorization. Neither cookie reaches the Gateway.
 
 Repeating **Open Agent UI** reuses a valid handle with the same authority and
-expiry, preserving existing WebSockets. Otherwise, redemption issues a new handle.
+expiry, preserving WebSockets. Otherwise, redemption issues a new handle.
+A version-change refusal on an [eligible HTML navigation](#authorization-and-availability)
+shows HTTP 403 **Agent version changed** with a Console return link. It never
+redirects or transfers access.
 
 ## Who can open it
 
@@ -107,7 +110,7 @@ logs one `native_admin.compute_owner_mismatch` warning per version and selected
 Driver, naming both Driver IDs and implementations. To restore access, select the
 version's Compute Driver again, with the same ID and implementation.
 
-Without a valid session, opening `/` or `/chat/main` redirects to the Console with `302`. Trailing slashes and 32-character lowercase hexadecimal session segments are accepted. Only the opaque host key survives in the fragment; session segments and queries are dropped. Responses set `Cache-Control: no-store` and `Referrer-Policy: no-referrer` without checking Agent existence.
+Without a valid session, `/` or `/chat/main[/<session>]` navigations can return to the Console. Session segments accept letters, digits, hyphens and underscores; trailing slashes are allowed. Only the opaque host key survives; paths and queries are dropped. Responses use `Cache-Control: no-store` and `Referrer-Policy: no-referrer`, without checking Agent existence.
 
 Only a user-activated (`Sec-Fetch-User: ?1`) top-level HTML navigation is redirected. The same page load without that header, including every Safari navigation, stays HTTP `403` with one **Sign in** link to that console URL. Link previews, API requests, and WebSocket upgrades send no navigation Fetch Metadata and keep their ordinary refusal.
 
@@ -153,8 +156,7 @@ Native chat or other activity in the Agent tab does not renew the console sessio
 
 Managed mode defaults on where the Compute Driver supports it. It prevents Gateway administrators from editing native
 configuration, installing or publishing skills, opening Gateway-local terminals, and running Gateway-hosted command jobs. An Installation administrator can change the setting in OCE for the next
-deployment. See [Gateway managed mode](agents/gateway-managed-mode.md) for runtime
-requirements and behavior when managed mode is off.
+deployment. See [Gateway managed mode](agents/gateway-managed-mode.md) for requirements and unmanaged behavior.
 
 ## Native authority and drift
 

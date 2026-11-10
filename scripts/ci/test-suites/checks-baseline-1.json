@@ -128,6 +128,7 @@
     "tests/integration/openshell-observed-request-hook.test.ts",
     "tests/integration/credential-free-online-grant.test.mjs",
     "tests/integration/credential-free-metadata-grant.test.ts",
+    "tests/integration/agent-grant-rehearsal.test.ts",
     "tests/integration/egress-enrollment.test.mjs",
     "tests/integration/protected-driver-registration.test.ts",
     "tests/integration/credential-policy-recovery.test.ts",
@@ -588,6 +589,7 @@
         "Responses output text assembled across parts and messages cannot reveal selected material",
         "Responses assistant projections protect independent items and seeded deltas",
         "Responses incremental text snapshots cannot reveal selected material",
+        "Responses follow-up replays assistant text with empty provider metadata",
         "signed Responses Plan projections protect completed and response-wide streamed text",
         "live-shaped Responses envelopes pass while undeclared or credential-bearing envelope fields refuse",
         "protected admission refuses an Agent's network policy additions instead of dropping them",
@@ -718,6 +720,15 @@
       "expectedTests": [
         "credential-free metadata exchange accepts a reordered Driver grant",
         "credential-free route admission rejects changed, missing and undefined extra grant fields"
+      ]
+    },
+    {
+      "path": "tests/integration/agent-grant-rehearsal.test.ts",
+      "expectedTests": [
+        "grant rehearsal rejects a cached or wrong Git object",
+        "grant rehearsal requires a fresh denial without origin traffic or object arrival",
+        "grant rehearsal requires a new model turn on the original Agent session",
+        "grant rehearsal fails when an adapter returns after Git refusal"
       ]
     },
     {

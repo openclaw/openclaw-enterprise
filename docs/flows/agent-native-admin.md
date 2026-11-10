@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: 2026-11-06
-last_updated_session: authoring-run/43cf1307-6d25-4d9d-951e-55fe09a514b8
+updated: 2026-11-10
+last_updated_session: authoring-run/37c71df8-7e9c-4224-bc36-e4091f387620
 ---
 
 # Agent Native Admin UI Flow
@@ -201,26 +201,29 @@ account or grant. See [session limits](../reference/agent-native-admin.md#host-o
 
 `apps/controller/src/http/native-admin.ts:interceptNativeAdminHttp`
 
-The `onRequest` hook intercepts the native admin domain before routing, so an
-Agent origin cannot expose console or controller routes. OCC authenticates the
-shared session or host-only handle, resolves the IAM identity and exact Agent, selects `admin` or `chat` from exact-Agent IAM grants,
-then checks the selected version and native configuration. An attributable IAM
-denial records the human and Agent in the denial audit.
-Admission owns one audit attempt per such denial, also when it arrives after the
-five-second admission wait, a client disconnect or the shutdown wait. A timely HTTP
-denial waits for its append before returning `403`; a failed append or admission
-timeout returns `503`.
+The `onRequest` hook intercepts the native domain before routing, preventing
+Agent origins from exposing controller routes. It authenticates the session or
+handle, resolves the exact Agent and IAM identity, selects `admin` or `chat`,
+and checks the selected version and native configuration.
+Attributable IAM denials receive one audit attempt, including after the
+five-second admission wait, disconnect or shutdown. Timely HTTP denials await
+that append before returning `403`; append failures or admission timeouts return `503`.
 
 Without a session, a user-activated top-level HTML GET to `/`, `/chat/main` or
-`/chat/main/<32 hex>`, optionally with a trailing slash, gets a `302` to the
-console; its fragment carries only the opaque host key. Without
+`/chat/main/<session>`, optionally with a trailing slash, gets a `302` to the
+console; session segments accept letters, digits, hyphens and underscores. The
+fragment carries only the opaque host key. Without
 `Sec-Fetch-User: ?1` (never sent by Safari) it gets a 403 **Sign in** link there.
 Link previews, APIs, writes and WebSockets keep their refusal.
 
-A signed-in denial of both browser permissions on a top-level page load stays HTTP 403. The page does
-not name the Agent and links **Go to your Agents** to `/console/agents` on the
-configured public origin. A JSON refusal names the required Agent access but not
-the Agent, the same for an unknown host; WebSocket refusals stay unchanged.
+When admission refuses a different version, eligible document navigations receive
+an HTTP 403 **Agent version changed** page with a Console return link. Other
+refusals keep their normal handling; no cookie changes or automatic relaunch occur.
+
+Denied browser permissions produce an HTTP 403 page linking to `/console/agents`
+on the configured public origin without naming the Agent. JSON refusals name
+the required permission, not the Agent; unknown hosts receive the same text.
+WebSocket refusals stay unchanged.
 
 Status and proxy checks reuse one Better Auth lookup for identity, expiry and
 attribution. Each WebSocket lease checks the original session, selected mode and Agent again. After handling
@@ -302,6 +305,8 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 08:30: Add named chat and stale-version browser recovery. (authoring-run/37c71df8-7e9c-4224-bc36-e4091f387620 - eef0b3f10d0e0f4ed09fd32086c84628c41f1b93)
 
 - 2026-11-09 14:07: Consolidate browser authorization and document current-cookie logout. (authoring-run/f217fd51-af6b-4d6a-a888-b2be4880aa91 - e39be9803)
 

@@ -309,7 +309,7 @@ test("production image upgrades preserve controller/runtime ownership and wait f
   const bin = join(directory, "bin");
   await mkdir(bin);
   // Use real JSON operations for the run's dispatch journal and receipts.
-  const dispatchJson = `if [[ "$*" == *'.revisionId'* || "$*" == *'.harness.overrides'* || "$*" == *'revisionId: .activeRevisionId'* || "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.baselineRevisionId'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$1" == '-ser' || "$1" == '-cser' ]]; then
+  const dispatchJson = `if [[ "\${!#}" == */before-helm-status.json || "$*" == *'.revisionId'* || "$*" == *'.harness.overrides'* || "$*" == *'revisionId: .activeRevisionId'* || "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.baselineRevisionId'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$1" == '-ser' || "$1" == '-cser' ]]; then
   PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
 fi
 `;
@@ -332,7 +332,9 @@ printf '600\\n'
   await writeCommand(
     bin,
     "helm",
-    `if [[ "$*" == *'get values'* ]]; then
+    `if [[ "$1" == status ]]; then
+  printf '%s\\n' '{"name":"oce","namespace":"openclaw-system","info":{"status":"deployed"},"version":1}'
+elif [[ "$*" == *'get values'* ]]; then
   cat "$LIVE_VALUES_FILE"
 elif [[ "$1" == "template" ]]; then
   exit 47
@@ -626,7 +628,7 @@ if [[ "$1" == status ]]; then
   if [[ -n "\${CURRENT_HELM_EVIDENCE:-}" && -f "$CURRENT_HELM_EVIDENCE/prepared" ]]; then
     state="$CURRENT_HELM_STATE"
   fi
-  printf '{"info":{"status":"%s"},"version":%s}\\n' "$state" "$revision"
+  printf '{"name":"oce","namespace":"openclaw-system","info":{"status":"%s"},"version":%s}\\n' "$state" "$revision"
 elif [[ "$*" == *'get values'* ]]; then
   cat "$LIVE_VALUES_FILE"
 elif [[ "$1" == upgrade && "$*" != *--dry-run=* ]]; then
@@ -823,8 +825,16 @@ esac
         JSON.parse(await readFile(join(evidence, "current-helm-status.json"), "utf8")).info.status,
         state,
       );
+      const commands = await readFile(commandLog, "utf8");
+      const statusReads = commands.split("\n").filter((line) => line.startsWith("helm status "));
+      assert.equal(statusReads.length, 2, "one preparation read and one live reread");
+      assert.ok(statusReads.every((line) => line.endsWith(" --output json")));
       assert.match(
-        await readFile(commandLog, "utf8"),
+        await readFile(join(evidence, "before-helm-status.txt"), "utf8"),
+        /NAME: oce\nNAMESPACE: openclaw-system\nSTATUS: deployed\nREVISION: 1\n$/u,
+      );
+      assert.match(
+        commands,
         /helm status [^\n]* --output json\n$/u,
         "no values, Secret, or mutating command may follow the refused current status",
       );
