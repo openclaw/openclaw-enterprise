@@ -8,7 +8,7 @@ import {
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import assert from "node:assert/strict";
-import { asRecord } from "@openclaw-enterprise/utils";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
