@@ -905,7 +905,7 @@ async function waitForGatewayProgrammed(platformNamespace, { resource, waitFor }
   });
 }
 
-async function runControllerProbe(topology, input) {
+export async function runControllerProbe(topology, input) {
   const kubeconfig = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
   const context = process.env.OCC_TEST_KUBERNETES_CONTEXT;
   const kubectl = process.env.OCC_KUBECTL_BIN ?? "kubectl";
@@ -944,7 +944,13 @@ async function runControllerProbe(topology, input) {
       if (code === 0) {
         resolve(JSON.parse(stdout));
       } else {
-        reject(new Error(`in-cluster gateway probe failed (${code}): ${stderr}`));
+        reject(
+          new Error(
+            input.action === "browser-boundary"
+              ? `in-cluster browser boundary probe failed (${code})`
+              : `in-cluster gateway probe failed (${code}): ${stderr}`,
+          ),
+        );
       }
     });
     child.stdin.once("error", reject);

@@ -69,6 +69,22 @@ with reduced scopes; session expiry and sign-in must retain the other profile.
 Delegated stock-UI connections must neither enroll devices nor receive reusable
 device tokens. Existing static-human device behavior is a separate native test.
 
+The dedicated case also provisions a second Agent through OCC and replays each
+Agent's actual delegation credential against the other's Envoy route. It replays
+the old credential after the existing stop/redeploy transition. Each target must
+accept its own active credential and reject the other credential. The same
+case distinguishes unauthenticated requests at Envoy from authorized machine
+requests: reserved identity headers cannot bypass edge authentication, and the
+machine route must remove browser delegation headers. An unlabelled Pod must
+not connect directly to either Envoy or the native Gateway.
+
+To test credential lookup failure, the case removes only the active revision's
+delegation Secret. OCC status and native proxy requests must return 503 without
+recreating the Secret or using machine access. A `finally` block restores its
+original ownership metadata, immutability and credential bytes. Reconnection
+must resolve the same native profile. These probes pass credentials on stdin;
+their results contain no credential values. They do not modify model Secrets.
+
 The existing topology starts production controller and worker entrypoints in
 Kubernetes. Its test ingress terminates local browser TLS. The API reaches the
 same Keycloak issuer through a namespace-local Service and a scoped container
@@ -82,10 +98,11 @@ or OpenShell. A selected case that skips, lacks prerequisites, or cannot finish
 a model turn is not a pass. Inspect the test result and captured browser/runtime
 evidence before reporting success.
 
-Browser spoof checks prove OCC sanitization, not every native admission path.
-Wrong-revision credentials, direct external ingress, concurrent profile creation,
-native role/credential changes, and profile-store failure need their owning
-native listener tests. OIDC email changes and provider-subject separation also
+Browser spoof checks prove OCC sanitization. The dedicated case adds the real
+Envoy credential and network boundaries described above; its unauthenticated
+Envoy requests originate from the network-admitted API Pod. Concurrent profile
+creation, native role/credential changes, and profile-store failure still need
+their owning native listener tests. OIDC email changes and provider-subject separation also
 need authentication persistence coverage. Keep these results separate from the
 browser journey and record the exact runtime image used.
 

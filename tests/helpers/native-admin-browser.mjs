@@ -19,6 +19,9 @@ import { promisify } from "node:util";
 
 import { chromium } from "playwright";
 
+import { runControllerProbe } from "./envoy-workspace-gateway.mjs";
+import { createKubernetesClient, explicitK3dSelection } from "./kubernetes-real.mjs";
+
 import { nativeAdminTarget } from "../../apps/controller/src/gateway/native-admin.ts";
 import {
   arrangeProductionTopology,
@@ -1241,6 +1244,228 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
   );
 }
 
+async function delegationSecret(topology) {
+  const name = topology.gatewayPod.spec.volumes.find(
+    (volume) => volume.name === "browser-delegation",
+  )?.secret?.secretName;
+  assert.ok(name, "the real Gateway must mount its revision delegation Secret");
+  const secret = await resource("secret", name, topology.gatewayPlacement);
+  assert.equal(secret.metadata.labels?.["openclaw.dev/agent"], topology.agent.id);
+  assert.equal(secret.metadata.labels?.["openclaw.dev/revision"], topology.revision.id);
+  assert.equal(secret.immutable, true);
+  assert.equal(secret.type, "Opaque");
+  assert.equal(Object.keys(secret.data).join(), "browser-key");
+  const key = Buffer.from(secret.data["browser-key"], "base64").toString("utf8");
+  assert.equal(/^[a-f0-9]{64}$/.test(key), true, "delegation credential has the supported format");
+  return { secret, key };
+}
+
+function boundaryProbe(
+  topology,
+  key,
+  { browser = true, authenticated = true, readProfile = true } = {},
+) {
+  const routing = topology.workspaceGateway.routing;
+  const authority = routing.endpointPort
+    ? `${routing.hostname}:${routing.endpointPort}`
+    : routing.hostname;
+  return runControllerProbe(topology, {
+    action: "browser-boundary",
+    url: `wss://${authority}${browser ? "/native-browser" : ""}/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`,
+    ...(authenticated ? { apiKey: topology.workspaceGateway.apiKey } : {}),
+    readProfile,
+    extraHeaders: {
+      "x-occ-identity": "oce:v1:" + "a".repeat(64),
+      "x-openclaw-scopes": "operator.admin",
+      ...(key === undefined ? {} : { "x-occ-browser-key": key }),
+    },
+  });
+}
+
+async function assertDelegationDenied(topology, key, description) {
+  const result = await boundaryProbe(topology, key);
+  assert.equal(result.connected, false, description);
+  assert.equal(result.authReason, "trusted_proxy_delegation_denied", description);
+}
+
+async function assertRevisionDelegationBoundaries(context, topology) {
+  const { key } = await delegationSecret(topology);
+  const valid = await boundaryProbe(topology, key);
+  assert.equal(valid.connected, true, "the active revision accepts its actual credential");
+  assert.ok(valid.profileId);
+  assert.deepEqual(valid.scopes, ["operator.admin"]);
+  assert.equal(valid.deviceTokenIssued, false);
+  await assertDelegationDenied(
+    topology,
+    undefined,
+    "reserved subjects require a delegation credential",
+  );
+  await assertDelegationDenied(
+    topology,
+    "b".repeat(64),
+    "a forged credential must not create a person",
+  );
+
+  // This is an untrusted request at the real Envoy listener, not an authorized
+  // machine call: even possession of a revision key cannot bypass edge auth.
+  const external = await boundaryProbe(topology, key, { authenticated: false });
+  assert.equal(external.connected, false);
+  assert.ok(
+    [401, 403].includes(external.httpStatus),
+    "external reserved identity spoofing must fail at Envoy",
+  );
+  const machine = await boundaryProbe(topology, key, { browser: false });
+  assert.equal(machine.connected, true, "authorized machine routing remains available");
+  assert.deepEqual(machine.scopes, ["operator.admin"]);
+  assert.equal(machine.deviceTokenIssued, false);
+  assert.ok(machine.profileId, "the routed machine identity resolves its native profile");
+  assert.notEqual(
+    machine.profileId,
+    valid.profileId,
+    "the machine route must strip browser identity and credential headers",
+  );
+  const connection = await topology.workspaceGateway.connect(topology);
+  await connection.assertSecurity();
+
+  // Provision another real Agent with an independent revision Secret. The
+  // existing model Secret is referenced through the API, never copied here.
+  const configuration = await topology.adminRequest(
+    "GET",
+    `/namespaces/${topology.agent.namespaceId}/configurations/${topology.agent.configurationId}`,
+  );
+  assert.equal(configuration.status, 200);
+  const admitted = await topology.adminRequest(
+    "POST",
+    `/namespaces/${topology.agent.namespaceId}/agents/provision`,
+    {
+      requestId: `req_${randomUUID()}`,
+      name: `delegation-boundary-${randomUUID()}`,
+      executionMode: "dedicated",
+      harnessAuth: topology.agent.harnessAuth,
+      nativeAdmin: true,
+      configuration: {
+        kind: "agent",
+        values: configuration.data.values,
+        ...(configuration.data.secretBindings
+          ? { secretBindings: configuration.data.secretBindings }
+          : {}),
+      },
+    },
+  );
+  assert.equal(admitted.status, 202, "the sibling Agent must be provisioned through OCC");
+  const provisioned = await waitFor("sibling Agent provisioning", async () => {
+    const result = await topology.adminRequest("GET", admitted.data.provisioning.url);
+    assert.equal(result.status, 200);
+    assert.notEqual(result.data.status, "failed", "sibling provisioning failed");
+    return result.data.revisionId ? result.data : undefined;
+  });
+  const base = `/namespaces/${topology.agent.namespaceId}/agents/${provisioned.agentId}`;
+  try {
+    const agent = await topology.adminRequest("GET", base);
+    const revision = await topology.adminRequest(
+      "GET",
+      `${base}/revisions/${provisioned.revisionId}`,
+    );
+    assert.equal(agent.status, 200);
+    assert.equal(revision.status, 200);
+    const sibling = { ...topology, agent: agent.data, revision: revision.data };
+    sibling.gatewayPod = await waitForReadyGatewayPod(sibling, revision.data.id);
+    const siblingKey = (await delegationSecret(sibling)).key;
+    assert.equal(siblingKey === key, false, "different Agents must have independent credentials");
+    await waitFor(
+      "sibling native route",
+      async () => (await boundaryProbe(sibling, siblingKey)).connected || undefined,
+    );
+    await assertDelegationDenied(sibling, key, "another Agent's real credential must be rejected");
+    await assertDelegationDenied(
+      topology,
+      siblingKey,
+      "credential isolation must hold in both directions",
+    );
+  } finally {
+    const removed = await topology.adminRequest("DELETE", base);
+    assert.equal(removed.status, 202, "the sibling Agent must enter normal deletion");
+  }
+  context.diagnostic(
+    "Real Envoy/native routes accepted their own revision credential and rejected absent, forged and cross-Agent credentials; unauthenticated edge spoofing and direct network access were denied.",
+  );
+  return key;
+}
+
+async function assertDelegationSecretRecovery(topology, nativePage, profileId) {
+  const { secret, key } = await delegationSecret(topology);
+  const { applyManifest } = createKubernetesClient({ selection: explicitK3dSelection() });
+  // The Pod retains its mounted bytes while lookup is unavailable. Only the
+  // exact test-owned immutable Secret is removed; restore the same material.
+  try {
+    await kubectl(
+      "delete",
+      "secret",
+      secret.metadata.name,
+      "--namespace",
+      topology.gatewayPlacement,
+      "--wait=true",
+    );
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const access = await topology.adminRequest(
+        "GET",
+        `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/native-admin`,
+      );
+      assert.equal(access.status, 503, "credential lookup failure must refuse access");
+      const status = await nativePage.evaluate(async () => (await fetch("/healthz")).status);
+      assert.equal(status, 503, "the native proxy must not fall back to machine credentials");
+      const recreated = await kubectl(
+        "get",
+        "secret",
+        secret.metadata.name,
+        "--namespace",
+        topology.gatewayPlacement,
+        "--ignore-not-found",
+        "-o",
+        "name",
+      );
+      assert.equal(recreated.trim(), "", "browser access must not reissue a missing Secret");
+    }
+  } finally {
+    await applyManifest(
+      JSON.stringify({
+        apiVersion: secret.apiVersion,
+        kind: secret.kind,
+        metadata: {
+          name: secret.metadata.name,
+          namespace: secret.metadata.namespace,
+          labels: secret.metadata.labels,
+          annotations: secret.metadata.annotations,
+          ownerReferences: secret.metadata.ownerReferences,
+        },
+        immutable: secret.immutable,
+        type: secret.type,
+        data: secret.data,
+      }),
+      { redactions: [key, secret.data["browser-key"]] },
+    );
+  }
+  await waitFor("native access after exact credential restoration", async () => {
+    const access = await topology.adminRequest(
+      "GET",
+      `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/native-admin`,
+    );
+    return access.status === 200 && access.data.status === "available";
+  });
+  assert.equal(
+    (await delegationSecret(topology)).key === key,
+    true,
+    "recovery restores the original credential",
+  );
+  await nativePage.reload({ waitUntil: "domcontentloaded" });
+  await waitForStockUi(nativePage);
+  assert.equal(
+    (await nativeProfile(nativePage, "operator.admin")).id,
+    profileId,
+    "Secret lookup recovery preserves the native person",
+  );
+}
+
 export async function runNativeAdminScenario(context) {
   const artifacts = await mkdtemp(join(tmpdir(), "openclaw-native-admin-browser-"));
   const media = await nativeMediaDirectory("native-admin");
@@ -1337,6 +1562,8 @@ export async function runNativeAdminScenario(context) {
     .waitFor();
   const nativePage = await openNativeAdminConsole(page, status.origin);
   const nativePerson = await nativeProfile(nativePage, "operator.admin");
+  const previousDelegationKey = await assertRevisionDelegationBoundaries(context, topology);
+  await assertDelegationSecretRecovery(topology, nativePage, nativePerson.id);
 
   const deepLink = new URL("/settings/advanced", status.origin);
   const deepLinkResponse = await nativePage.goto(deepLink.href);
@@ -1448,6 +1675,18 @@ export async function runNativeAdminScenario(context) {
     expectedManagedAccent,
     forbiddenRuntimeAccent: driftAccent,
   });
+  const activeKey = (await delegationSecret(topology)).key;
+  assert.equal(
+    activeKey === previousDelegationKey,
+    false,
+    "redeployment rotates the revision credential",
+  );
+  assert.equal((await boundaryProbe(topology, activeKey)).connected, true);
+  await assertDelegationDenied(
+    topology,
+    previousDelegationKey,
+    "the previous revision credential must be rejected by its successor",
+  );
   const currentStatus = await nativeAdminStatus(topology);
   assert.equal(currentStatus.status, "available");
   assert.equal(currentStatus.activeRevisionId, topology.revision.id);
