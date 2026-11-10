@@ -112,7 +112,7 @@ and plugin selection without rewriting existing saved presets. Custom templates
 remain optional `presets.files` entries.
 
 Source: [seeding](../../../packages/occ/src/index.ts),
-[existing preservation coverage](../../../tests/integration/presets-controller.test.mjs).
+[existing preservation coverage](../../../tests/integration/presets-controller.test.ts).
 
 ## Repository access
 
