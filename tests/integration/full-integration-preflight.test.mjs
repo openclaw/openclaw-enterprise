@@ -622,7 +622,7 @@ test("same-SHA reuse waits at most twelve minutes and falls back without delayin
   )("@kubernetes/client-node");
   const workflow = loadYaml(
     await readFile(
-      new URL("../../.github/workflows/full-integration.yml", import.meta.url),
+      new URL("../../.github/workflows/full-integration-execution.yml", import.meta.url),
       "utf8",
     ),
   );
@@ -691,7 +691,7 @@ test("same-SHA reuse runs the existing full-coverage validator and rejects damag
 test("full integration workflow carries QA and installation outcomes into selected aggregation", async (t) => {
   const directory = await temporaryDirectory(t, "qa-aggregate-");
   const workflow = await readFile(
-    new URL("../../.github/workflows/full-integration.yml", import.meta.url),
+    new URL("../../.github/workflows/full-integration-execution.yml", import.meta.url),
     "utf8",
   );
   const step = workflow.split("- name: Write selected job state")[1];
@@ -716,6 +716,71 @@ test("full integration workflow carries QA and installation outcomes into select
       }
     }
   }
+  const { loadYaml } = createRequire(
+    new URL("../../apps/controller/package.json", import.meta.url),
+  )("@kubernetes/client-node");
+  const aggregateJob = loadYaml(workflow).jobs["full-aggregate"];
+  const aggregate = aggregateJob.steps.find(
+    (item) => item.name === "Aggregate targeted runtime results",
+  );
+  // A rejected reusable-workflow string still reaches failure aggregation.
+  // It must remain data even when it contains shell command substitution.
+  const context = {
+    needs: { preflight: { result: "failure", outputs: { selected_lane: "" } } },
+    inputs: { lane: '$(touch "$RUNNER_TEMP/rejected-lane-command")' },
+  };
+  await assert.rejects(
+    validateFullIntegrationPreflight({
+      env: {
+        ...mainRun,
+        GITHUB_EVENT_NAME: "workflow_dispatch",
+        INPUT_LANE: context.inputs.lane,
+      },
+    }),
+    /Unknown lane/,
+  );
+  const requireSelection = aggregateJob.steps.find(
+    (item) => item.name === "Require validated selection",
+  );
+  assert.equal(workflowCondition(requireSelection.if, context), true);
+  const refusal = spawnSync("/bin/sh", ["-c", requireSelection.run], {
+    env: {},
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  assert.equal(refusal.error, undefined);
+  assert.equal(refusal.status, 1, refusal.stderr);
+  assert.match(refusal.stdout, /Preflight did not provide a validated selection/);
+  // Independently keep the shell boundary safe even if an invalid string is
+  // supplied as the selected value; validation must not be its only defense.
+  context.needs.preflight.outputs.selected_lane = context.inputs.lane;
+  const result = spawnSync(
+    "/bin/sh",
+    [
+      "-c",
+      aggregate.run.replace(/\$\{\{.*?\}\}/g, (expression) =>
+        workflowCondition(expression, context),
+      ),
+    ],
+    {
+      cwd: fileURLToPath(new URL("../../", import.meta.url)),
+      env: {
+        PATH: `${dirname(process.execPath)}:${process.env.PATH}`,
+        RUNNER_TEMP: directory,
+        ...Object.fromEntries(
+          Object.entries(aggregate.env ?? {}).map(([name, expression]) => [
+            name,
+            workflowCondition(expression, context),
+          ]),
+        ),
+      },
+      encoding: "utf8",
+      timeout: 30_000,
+    },
+  );
+  assert.equal(result.error, undefined);
+  assert.notEqual(result.status, 0, "The unknown lane must fail aggregation");
+  await assert.rejects(stat(join(directory, "rejected-lane-command")), { code: "ENOENT" });
 });
 
 test("full integration plans fresh fallback and attributes only published reuse to successful needs", async (t) => {
@@ -745,7 +810,7 @@ test("full integration plans fresh fallback and attributes only published reuse 
   assert.equal(values.matrix.length, 16);
   assert.ok(!values.matrix.some((row) => row.lane === "postgres"));
   const workflow = await readFile(
-    new URL("../../.github/workflows/full-integration.yml", import.meta.url),
+    new URL("../../.github/workflows/full-integration-execution.yml", import.meta.url),
     "utf8",
   );
   const script = workflow
@@ -1297,40 +1362,138 @@ test("verified docs pushes omit runtime lanes while keeping environment policy c
     selectLane({ eventName: "push", ref: "refs/heads/main", impactMode: "tests" }),
     "all",
   );
-  const workflow = await readFile(
-    new URL("../../.github/workflows/full-integration.yml", import.meta.url),
-    "utf8",
+  const { loadYaml } = createRequire(
+    new URL("../../apps/controller/package.json", import.meta.url),
+  )("@kubernetes/client-node");
+  const readWorkflow = async (name) =>
+    loadYaml(
+      await readFile(new URL(`../../.github/workflows/${name}.yml`, import.meta.url), "utf8"),
+    );
+  const dispatcher = await readWorkflow("full-integration");
+  // A workflow-level lock would let a docs-only push replace pending full work
+  // before the selector runs. Only the eligible reusable-workflow call may lock.
+  assert.equal(dispatcher.concurrency, undefined);
+  const execution = await readWorkflow("full-integration-execution");
+  const execute = dispatcher.jobs.execute;
+  assert.equal(execution.concurrency, undefined);
+  assert.deepEqual(
+    new Set(Object.keys(dispatcher.jobs)),
+    new Set(["manual-approval", "preflight", "execute", "reject-selection"]),
   );
-  const jobs = workflow
-    .slice(workflow.indexOf("\njobs:\n") + 7)
-    .split(/\n(?= {2}[a-z][a-z0-9-]+:)/);
-  for (const block of jobs) {
-    const name = /^ {2}([a-z][a-z0-9-]+):/.exec(block)?.[1];
-    const condition = /^ {4}if: (.+)$/m.exec(block)?.[1];
-    assert.ok(name && condition, "every Full Integration job has an explicit selection condition");
+  assert.equal(dispatcher.jobs.preflight.concurrency, undefined);
+  assert.equal(dispatcher.jobs["manual-approval"].concurrency, undefined);
+  assert.equal(execute.needs, "preflight");
+  assert.equal(execute.uses, "./.github/workflows/full-integration-execution.yml");
+  assert.deepEqual(execution.on, {
+    workflow_call: { inputs: { lane: { type: "string", default: "" } } },
+  });
+  assert.equal(execute.with.lane, "${{ inputs.lane || '' }}");
+  assert.equal(execute.secrets, "inherit");
+  assert.deepEqual(execution.permissions, dispatcher.permissions);
+  assert.deepEqual(execution.env, dispatcher.env);
+  const selectStep = (workflow) =>
+    workflow.jobs.preflight.steps.find((step) => step.id === "select");
+  assert.equal(selectStep(dispatcher).run.trim(), "node scripts/ci/full-integration-preflight.mjs");
+  assert.deepEqual(selectStep(execution), selectStep(dispatcher));
+  assert.ok(!JSON.stringify(dispatcher).includes("full-integration-admitted"));
+  assert.ok(
+    execution.jobs.preflight.steps.some(
+      (step) => step.with?.name === "full-integration-admitted-v1",
+    ),
+  );
+
+  const github = {
+    repository: mainRun.GITHUB_REPOSITORY,
+    ref: mainRun.GITHUB_REF,
+    ref_type: "branch",
+    event_name: "push",
+    run_attempt: "1",
+  };
+  for (const [file, workflow] of Object.entries({ dispatcher, execution })) {
+    for (const [name, job] of Object.entries(workflow.jobs)) {
+      assert.ok(job.if, "every Full Integration job has an explicit selection condition");
+      assert.equal(
+        workflowCondition(job.if, {
+          github,
+          needs: {
+            preflight: { result: "success", outputs: { selected_lane: "docs", run_all: "false" } },
+            "manual-approval": { result: "skipped" },
+            "runtime-artifact": { result: "skipped" },
+            slack: { result: "skipped" },
+          },
+          inputs: {},
+          always: () => true,
+        }),
+        name === "preflight",
+        `docs push: ${file}/${name}`,
+      );
+    }
+  }
+  // Feed real authorization decisions into the shipped call condition. This is
+  // local admission proof; GitHub's scheduler still needs hosted qualification.
+  for (const impactMode of ["docs", "tests", "full"]) {
+    const selected = await validateFullIntegrationPreflight({
+      env: mainRun,
+      github: approvalApi(),
+      impactMode,
+    });
+    const preflight = {
+      result: "success",
+      outputs: { selected_lane: selected.selectedLane, run_all: String(selected.runAll) },
+    };
     assert.equal(
-      workflowCondition(condition, {
-        github: {
-          repository: mainRun.GITHUB_REPOSITORY,
-          ref: mainRun.GITHUB_REF,
-          ref_type: "branch",
-          event_name: "push",
-          run_attempt: "1",
-        },
-        needs: {
-          preflight: { result: "success", outputs: { selected_lane: "docs", run_all: "false" } },
-          "manual-approval": { result: "skipped" },
-          "runtime-artifact": { result: "skipped" },
-          slack: { result: "skipped" },
-        },
-        inputs: {},
-        always: () => true,
-        cancelled: () => false,
-      }),
-      name === "preflight",
-      `docs push: ${name}`,
+      workflowCondition(execute.if, { github, needs: { preflight } }),
+      impactMode !== "docs",
+    );
+    assert.equal(
+      workflowCondition(execute.if, { github, needs: { preflight }, cancelled: () => true }),
+      false,
     );
   }
+  const reject = dispatcher.jobs["reject-selection"];
+  assert.deepEqual(reject.permissions, {});
+  assert.doesNotMatch(JSON.stringify(reject), /secrets\.|actions\/checkout/);
+  // Model completed-job output loss or inconsistency. A valid docs decision
+  // succeeds without the lock; every invalid decision reports failure outside it.
+  for (const eventName of ["push", "workflow_dispatch"]) {
+    for (const selectedLane of ["", "unknown-lane", "docs", "all", "gateway-routing"]) {
+      const context = {
+        github: { ...github, event_name: eventName },
+        inputs: { lane: "gateway-routing" },
+        needs: { preflight: { result: "success", outputs: { selected_lane: selectedLane } } },
+      };
+      const admitted =
+        eventName === "push" ? selectedLane === "all" : selectedLane === "gateway-routing";
+      const docs = eventName === "push" && selectedLane === "docs";
+      assert.equal(
+        workflowCondition(execute.if, context),
+        admitted,
+        `${eventName}: ${selectedLane}`,
+      );
+      assert.equal(
+        workflowCondition(reject.if, context),
+        !admitted && !docs,
+        `${eventName}: ${selectedLane}`,
+      );
+      if (!admitted && !docs) {
+        const result = spawnSync("/bin/sh", ["-c", reject.steps[0].run], {
+          encoding: "utf8",
+          timeout: 30_000,
+          env: {},
+        });
+        assert.equal(result.error, undefined);
+        assert.equal(result.status, 1, result.stderr);
+        assert.match(result.stdout, /Preflight did not publish a matching supported lane/);
+      }
+    }
+  }
+  const manualDocs = {
+    github: { ...github, event_name: "workflow_dispatch" },
+    inputs: { lane: "docs" },
+    needs: { preflight: { result: "success", outputs: { selected_lane: "docs" } } },
+  };
+  assert.equal(workflowCondition(execute.if, manualDocs), false);
+  assert.equal(workflowCondition(reject.if, manualDocs), true);
 });
 
 test("main pushes and retries require no manual approval or team credential", async () => {
@@ -1562,8 +1725,15 @@ test("workflow permits main push retries and refuses approval reuse on manual re
   );
   assert.deepEqual(workflow.on.push.branches, ["main"]);
   assert.equal(workflow.on.pull_request, undefined);
-  const jobs = Object.entries(workflow.jobs).filter(
-    ([name]) => !["manual-approval", "preflight", "full-aggregate"].includes(name),
+  const execution = loadYaml(
+    await readFile(
+      new URL("../../.github/workflows/full-integration-execution.yml", import.meta.url),
+      "utf8",
+    ),
+  );
+  const jobs = [...Object.entries(workflow.jobs), ...Object.entries(execution.jobs)].filter(
+    ([name]) =>
+      !["manual-approval", "preflight", "full-aggregate", "reject-selection"].includes(name),
   );
   assert.ok(jobs.length > 0);
   for (const [name, job] of jobs) {
@@ -1583,9 +1753,14 @@ test("workflow permits main push retries and refuses approval reuse on manual re
         slack: { result: "success" },
         "runtime-artifact": { result: "success" },
       };
-      assert.equal(workflowCondition(job.if, { github, needs }), true, `${name}: first attempt`);
+      const inputs = { lane: needs.preflight.outputs.selected_lane };
       assert.equal(
-        workflowCondition(job.if, { github: { ...github, run_attempt: "2" }, needs }),
+        workflowCondition(job.if, { github, needs, inputs }),
+        true,
+        `${name}: first attempt`,
+      );
+      assert.equal(
+        workflowCondition(job.if, { github: { ...github, run_attempt: "2" }, needs, inputs }),
         event_name === "push",
         `${name}: only main pushes can retry`,
       );
@@ -1595,7 +1770,7 @@ test("workflow permits main push retries and refuses approval reuse on manual re
         { event_name: "pull_request" },
       ]) {
         assert.equal(
-          workflowCondition(job.if, { github: { ...github, ...patch }, needs }),
+          workflowCondition(job.if, { github: { ...github, ...patch }, needs, inputs }),
           false,
           `${name}: ${JSON.stringify(patch)}`,
         );
@@ -1632,11 +1807,35 @@ test("workflow permits main push retries and refuses approval reuse on manual re
     assert.equal(
       workflowCondition(workflow.jobs.preflight.if, {
         github: { ...github, event_name, run_attempt: "2" },
-        needs: { "manual-approval": { result: event_name === "push" ? "skipped" : "success" } },
+        needs: { "manual-approval": { result: "skipped" } },
       }),
-      event_name === "push",
+      true,
+      "Retries reach preflight so refused manual reruns cannot silently skip every job",
     );
   }
+  assert.equal(
+    workflowCondition(manual.if, {
+      github: { ...github, event_name: "workflow_dispatch", run_attempt: "2" },
+    }),
+    false,
+  );
+  // Run the shipped preflight command: manual retries must report failure while
+  // the approval and expensive execution jobs remain excluded above.
+  const select = workflow.jobs.preflight.steps.find((step) => step.id === "select");
+  const refused = spawnSync("/bin/sh", ["-c", select.run], {
+    cwd: fileURLToPath(new URL("../../", import.meta.url)),
+    env: {
+      ...mainRun,
+      PATH: `${dirname(process.execPath)}:${process.env.PATH}`,
+      GITHUB_EVENT_NAME: "workflow_dispatch",
+      GITHUB_RUN_ATTEMPT: "2",
+    },
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  assert.equal(refused.error, undefined);
+  assert.equal(refused.status, 1, refused.stderr);
+  assert.match(refused.stderr, /Manual integration reruns are refused/);
   for (const result of ["skipped", "failure", "cancelled", "success"]) {
     assert.equal(
       workflowCondition(workflow.jobs.preflight.if, {
@@ -1653,7 +1852,8 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
     new URL("../../apps/controller/package.json", import.meta.url),
   )("@kubernetes/client-node");
   const read = (path) => readFile(new URL(`../../${path}`, import.meta.url), "utf8");
-  const workflow = loadYaml(await read(".github/workflows/full-integration.yml"));
+  const dispatcher = loadYaml(await read(".github/workflows/full-integration.yml"));
+  const workflow = loadYaml(await read(".github/workflows/full-integration-execution.yml"));
   const action = loadYaml(await read(".github/actions/run-ci-lane/action.yml"));
   const finalCleanup = action.runs.steps.find((step) => step.id === "cleanup-lane");
   assert.equal(finalCleanup.if, "always()");
@@ -1662,12 +1862,12 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
     'node scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json"',
   );
   const suites = JSON.parse(await read("scripts/ci/test-suites.json"));
-  assert.ok(workflow.on.workflow_dispatch.inputs.lane.options.includes("dev-up-k3d"));
-  assert.deepEqual(workflow.on.push.branches, ["main"]);
-  assert.equal(workflow.on.pull_request, undefined);
-  assert.equal(workflow.on.pull_request_target, undefined);
-  assert.equal(workflow.on.workflow_dispatch.inputs.source_ref, undefined);
-  for (const selected of Object.values(workflow.jobs)) {
+  assert.ok(dispatcher.on.workflow_dispatch.inputs.lane.options.includes("dev-up-k3d"));
+  assert.deepEqual(dispatcher.on.push.branches, ["main"]);
+  assert.equal(dispatcher.on.pull_request, undefined);
+  assert.equal(dispatcher.on.pull_request_target, undefined);
+  assert.equal(dispatcher.on.workflow_dispatch.inputs.source_ref, undefined);
+  for (const selected of [...Object.values(dispatcher.jobs), ...Object.values(workflow.jobs)]) {
     for (const step of selected.steps ?? []) {
       if (step.uses?.startsWith("actions/checkout@")) {
         assert.equal(step.with.ref, "${{ github.sha }}");
@@ -1678,11 +1878,11 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   // A pending manual approval cannot occupy the push queue or replace another
   // pending approval, even if both dispatchers select the same lane.
   const queue = (eventName, runId) =>
-    workflowCondition(workflow.concurrency.group, {
+    workflowCondition(dispatcher.jobs.execute.concurrency.group, {
       github: { event_name: eventName, run_id: runId },
       format: (template, value) => template.replace("{0}", value),
     });
-  assert.equal(workflow.concurrency["cancel-in-progress"], false);
+  assert.equal(dispatcher.jobs.execute.concurrency["cancel-in-progress"], false);
   const pushQueue = queue("push", "100");
   const manualQueue = queue("workflow_dispatch", "101");
   assert.equal(pushQueue, queue("push", "102"));
@@ -1691,7 +1891,7 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
 
   // Both event types acquire the same resource lock only after authorization.
   const queuedLanes = ["slack", "dev-up-k3d", "skipper-prepared-git-installed"];
-  assert.equal(workflow.concurrency.queue, undefined);
+  assert.equal(dispatcher.jobs.execute.concurrency.queue, undefined);
   const jobsWithQueue = Object.entries(workflow.jobs)
     .filter(([, job]) => job.concurrency?.queue !== undefined)
     .map(([lane]) => lane);
@@ -1767,7 +1967,7 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   assert.equal(run.with["artifact-prefix"], "full-results");
   assert.ok(workflow.jobs["full-aggregate"].needs.includes("dev-up-k3d"));
   assert.equal(suites.groups.ci.includes("dev-up-k3d"), false);
-  for (const lane of workflow.on.workflow_dispatch.inputs.lane.options) {
+  for (const lane of dispatcher.on.workflow_dispatch.inputs.lane.options) {
     if (lane !== "all") {
       assert.ok(suites.groups.full.includes(lane), `all must require ${lane} results`);
     }
