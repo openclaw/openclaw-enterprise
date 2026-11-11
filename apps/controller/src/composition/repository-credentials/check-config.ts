@@ -1,7 +1,7 @@
 import { pathToFileURL } from "node:url";
-import type { SafeConfigurationSummary } from "../../drivers/repo/credentials/service-contracts.ts";
-import { loadConfiguration } from "./config.ts";
-import { createSystemClock } from "../../drivers/repo/credentials/clock.ts";
+import type { SafeConfigurationSummary } from "../../drivers/repo/access/service-contracts.ts";
+import { loadConfiguration, RetiredGitHubAuthorityError } from "./config.ts";
+import { createSystemClock } from "../../drivers/repo/access/clock.ts";
 
 export async function checkConfiguration(
   path: string,
@@ -34,8 +34,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       process.stdout.write(
         `${JSON.stringify(await checkConfiguration(args[1]!, { developmentAuthority: development }))}\n`,
       );
-    } catch {
-      process.stderr.write("invalid-configuration\n");
+    } catch (error) {
+      process.stderr.write(
+        error instanceof RetiredGitHubAuthorityError
+          ? `${error.message}\n`
+          : "invalid-configuration\n",
+      );
       process.exitCode = 1;
     }
   }

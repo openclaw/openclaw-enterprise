@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: 2026-10-09
-last_updated_session: authoring-run/ee7a6b77-c247-4a57-8aa7-cfc15eb650a5
+updated: 2026-11-07
+last_updated_session: authoring-run/0e565cf9-f7ee-4e08-8c3f-e680ea2b0b94
 ---
 
 # Existing Kubernetes Namespace Placement Flow
@@ -28,6 +28,12 @@ in place when their tenant markers and OpenClaw manager label are exact.
   request. The worker cannot verify foreign-Pod absence. The caller holds both
   Namespace-create and Installation-`administer` authorization.
 
+Before this flow starts, API and worker startup load the Installation YAML and
+Kubernetes Compute validates `resources.namespace.quota`. Counted resources
+must pass the native integer-precision rule: `pods: "1.5"` is refused with a
+quota diagnostic before persistence or namespace operations. CPU `"500m"` and
+whole-count suffixes retain their values. See the [configuration reference](../reference/drivers/kubernetes-compute/configuration.md#images-and-resources).
+
 ## Flow
 
 ```mermaid
@@ -42,7 +48,7 @@ graph TD
   E --> F["Bind generated tenant identity while preserving external manager"]
   F --> G["Provision owned infrastructure and mark Namespace ready"]
   G --> H["Place workloads and ConfigMaps in the bound namespace"]
-  H --> I["Delete owned infrastructure only; retain external ownership"]
+  H --> I["Delete orphans and owned infrastructure; retain external ownership"]
 ```
 
 ## Execution Trace
@@ -84,12 +90,27 @@ metadata. Missing targets, termination, foreign ownership or additive policies,
 ambiguous identity, and revoked authorization fail closed without managed
 fallback. A missing worker RoleBinding keeps provisioning pending; a missing
 API RoleBinding instead makes subsequent Configuration operations return `503`.
+`KubernetesComputeDriver.validateConfiguration` checks counted quota precision
+through `resource-quantities.ts:hasIntegerQuotaPrecision` during startup, before
+`ensureNamespace` can copy these values into the ResourceQuota. Invalid counts
+therefore do not enter this adoption phase. This does not validate quota capacity
+or establish that a cluster is reachable.
+
 Compute reconciles its owned quota, limit range, and isolation policies; no
 worker pause, restart, or Installation setting is needed.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.networkPolicies`
 renders `allow-dns` with UDP and TCP ports `53` and `5353`, scoped to the
 [configured DNS peer](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
+
+For the separate [preprovisioned Namespace profile](../reference/drivers/kubernetes-compute/preprovisioned-namespace.md),
+`KubernetesComputeDriver.verifyExistingNetworkPolicies` compares admitted specs
+with the declared operator policies before initialization. The operator-owned
+`OpenShellSandboxDriver.ensureNamespaceWorkspace` check uses the same
+`drivers/kubernetes/network-policy.ts:networkPolicySpecToJson` projection on both
+observed and configured specs. It restores the SDK ingress alias and accepts
+omitted empty rule lists only for explicitly selected policy directions. Other
+spec differences still stop preparation; neither check repairs the policy.
 
 ### 3. Colocate Configuration and workload resources
 
@@ -125,11 +146,20 @@ gateway teardown removes the exact-owned private and shared claims by UID.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.deleteNamespace`
 
-OCC first rejects deletion while Agents, Configurations, or service accounts
-remain. Compute therefore removes only its owned `openclaw-quota`,
+OCC first rejects deletion while Agents, Configurations, Secrets, service
+accounts, or other Namespace contents remain. Any object still carrying this Namespace's ownership (the
+`app.kubernetes.io/managed-by=openclaw-enterprise` and `openclaw.dev/namespace`
+labels plus the `openclaw.dev/namespace-id` annotation) is therefore an orphan,
+for example a Configuration ConfigMap whose create applied but whose transaction
+then failed. Compute deletes such ConfigMaps and ServiceAccounts by UID, and such
+Secrets too when repository credentials are enabled, the only setup in which the
+single-cluster chart lets the worker list Secrets. Two-cluster Compute keeps
+Secrets and Configurations in the control-plane namespace, which it deletes. A failed list or delete keeps the Namespace `deleting`.
+Compute then removes its owned `openclaw-quota`,
 `openclaw-limits`, `allow-dns`, `allow-gateway-ingress`, and `default-deny`
 objects, preserving default-deny until last. External namespace objects, their
-tenant markers, RoleBindings, Secrets, and unrelated resources remain untouched.
+tenant markers, RoleBindings, the operator's Secrets, and unrelated resources
+remain untouched.
 Deleting a failed selection that was never bound to either tenant marker also
 leaves the external namespace untouched; partial or foreign markers fail
 closed. An already-missing namespace counts as deleted. After deleting an
@@ -159,6 +189,10 @@ complete-deletion lifecycle.
   NetworkPolicy the Namespace does not own; list those with `kubectl`. Old
   tenant markers are usually left by an earlier OCC Namespace on the same
   Kubernetes namespace.
+- In single-cluster Compute without repository credentials, an orphaned
+  Secret outlives deletion. List Secrets labelled `openclaw.dev/namespace=<id>`
+  and `app.kubernetes.io/managed-by=openclaw-enterprise` with `kubectl`, and
+  delete those whose `openclaw.dev/namespace-id` annotation is also `<id>`.
 - Run `node --test tests/conformance/kubernetes-compute.test.mjs` for driver
   contract coverage, including current managed placement, previous managed-name
   discovery, duplicate-claim rejection, foreign ownership rejection, and cleanup
@@ -181,6 +215,11 @@ complete-deletion lifecycle.
 
 ## Changelog
 
+- 2026-11-07 22:02: Trace the startup quota precision prerequisite before namespace placement. (authoring-run/0e565cf9-f7ee-4e08-8c3f-e680ea2b0b94 - 9b23338c49448b9fc56d637a53bd0d71ec3be76b)
+
+- 2026-11-06 17:40: Trace admitted empty NetworkPolicy rule lists in both operator-owned checks. (authoring-run/22fe6796-3f06-49bf-bb59-d9ac13bb66f7 - eb1ea7a5a6bf1bc706a41e00246cb795ed8dd703)
+
+- 2026-10-23 17:00: Deletion sweeps orphaned OCE-owned ConfigMaps, ServiceAccounts and, with repository credentials, Secrets. (fix-1400)
 - 2026-10-09 20:19: Refuse an explicitly empty CLI adoption flag before creating a client. (authoring-run/ee7a6b77-c247-4a57-8aa7-cfc15eb650a5 - c4cc1d9f23f9bebac8fd82881561cce48fb4fc6a)
 
 - 2026-10-06 18:55: A refused selection logs its reason in `worker.completed`, naming foreign markers by key only. (fix-d521)

@@ -1,13 +1,12 @@
-import { validateSandboxNetworkGrants } from "../packages/contracts/src/index.ts";
-import { createRequire } from "node:module";
+import {
+  ConfigurationValidationError,
+  requireConfiguration,
+  validateSandboxNetworkGrants,
+} from "../packages/contracts/src/index.ts";
 import {
   configurationSchema,
   validateConfiguration,
 } from "../apps/controller/src/drivers/sandbox/openshell.ts";
-
-const { Check } = createRequire(new URL("../apps/controller/package.json", import.meta.url))(
-  "typebox/value",
-);
 
 try {
   const chunks = [];
@@ -16,14 +15,15 @@ try {
   }
   const configuration = JSON.parse(Buffer.concat(chunks).toString("utf8"));
   if (process.argv[2] === "--ceiling") {
-    validateSandboxNetworkGrants(configuration);
+    validateSandboxNetworkGrants(configuration, "/grants");
   } else {
-    if (!Check(configurationSchema, configuration)) {
-      throw new Error("The policy does not match the OpenShell Driver configuration schema.");
-    }
-    validateConfiguration(configuration);
+    requireConfiguration({ configurationSchema, validateConfiguration }, configuration);
   }
 } catch (error) {
-  process.stderr.write(`${error.message}\n`);
+  process.stderr.write(
+    error instanceof ConfigurationValidationError
+      ? `${JSON.stringify(error.error)}\n`
+      : "Sandbox network policy validation failed.\n",
+  );
   process.exitCode = 1;
 }

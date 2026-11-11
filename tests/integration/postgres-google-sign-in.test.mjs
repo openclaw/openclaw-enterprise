@@ -1,45 +1,44 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import test from "node:test";
 import {
+  accountPrincipalId,
   assertConsoleSignIn,
   assertExternalSignInRefused,
   assertProviderAttached,
   assertReservedLane,
   authRowCounts,
+  changeAccount,
   clientAddresses,
-  composeProductionSignIn,
   consoleOrigin as origin,
   currentSession,
   fakeGoogle,
-  githubSignIn,
-  githubUpgradeSettings,
+  oidcSignIn,
+  oidcUpgradeSettings,
   googleSignIn,
   googleUpgradeSettings,
   loginDenialCount,
-  onboardPasswordAccounts,
   passwordSignIn,
-  postgresSignInState,
   readAccount,
   sessionCookieName,
   signedInHeaders,
-  startFakeGitHub,
+  fakeOidc,
+  fixtureOidcIssuer,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { injectLocalhost } from "../helpers/inject-json.mjs";
+import { providerInstanceId } from "../helpers/human-login-transport.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
-const adminEmail = "google-recovery@example.test";
-const password = "google-member-password";
-const authSecret = "google-sign-in-auth-test-secret-at-least-32-bytes";
 const googleClientId = "fixture-oce.apps.googleusercontent.com";
 const googleClientSecret = "fixture-google-client-secret";
 const hostedDomain = "example.test";
 const secrets = {
-  "occ-auth/secret": authSecret,
+  "occ-auth/secret": "google-sign-in-auth-test-secret-at-least-32-bytes",
   "occ-google-login/client-id": googleClientId,
   "occ-google-login/client-secret": googleClientSecret,
-  "occ-github-login/client-id": "google-suite-github-client-id",
-  "occ-github-login/client-secret": "google-suite-github-client-secret",
+  "occ-oidc-login/client-id": "google-suite-oidc-client-id",
+  "occ-oidc-login/client-secret": "google-suite-oidc-client-secret",
 };
 // The production slow lane with shorter floors (250 ms doubling to a 500 ms cap instead of
 // 1 s doubling to 8 s), as in postgres-password-sign-in-limit. This suite spends password
@@ -48,14 +47,16 @@ const secrets = {
 // otherwise.
 const slowLane = { floorMs: 250, maxFloorMs: 500 };
 
-const digest = (value) => createHash("sha256").update(value).digest("hex");
-const googleProviderId = `google:${digest(googleClientId)}`;
-const githubProviderId = `github:${digest("google-suite-github-client-id")}`;
+const googleProviderId = providerInstanceId("google", { clientId: googleClientId });
+const oidcProviderId = providerInstanceId("oidc", {
+  issuer: fixtureOidcIssuer.issuer,
+  clientId: "google-suite-oidc-client-id",
+});
 const memberSubject = "110000000000000000001";
 const strangerSubject = "110000000000000000002";
 const disabledSubject = "110000000000000000003";
 const bothSubject = "110000000000000000004";
-const bothGithubSubject = "9500004";
+const bothOidcSubject = "9500004";
 
 // The Google provider fixture replaces only Google's token and key endpoints. State,
 // audit, IAM, Better Auth, the guarded human-login profile and Fastify are production code.
@@ -64,7 +65,17 @@ test(
   requiresPostgres,
   async (t) => {
     let app;
-    const { pool, state } = postgresSignInState(t, () => [app]);
+    const { pool, state, onboard, composeApp } = await preparePostgresSignInInstallation(
+      t,
+      () => [app],
+      {
+        email: "google-recovery@example.test",
+        password: "google-member-password",
+        secrets,
+        // The OIDC-and-Google subtest starts OIDC; until then no OIDC stand-in runs.
+        oidc: false,
+      },
+    );
     const google = fakeGoogle(t, {
       clientId: googleClientId,
       clientSecret: googleClientSecret,
@@ -72,14 +83,7 @@ test(
     });
     const address = clientAddresses("198.19");
     // Password onboarding on the default install, before Google is configured.
-    const { admin, accounts } = await onboardPasswordAccounts(t, {
-      databaseUrl,
-      state,
-      pool,
-      email: adminEmail,
-      authSecret,
-      secrets,
-      password,
+    const { admin, accounts } = await onboard({
       passwordSlowLaneFloors: slowLane,
       remoteAddress: address(),
       accounts: {
@@ -91,13 +95,26 @@ test(
     const { member, disabled, both } = accounts;
 
     // A Google-only upgrade: no OCC_AUTH_GITHUB_CLIENT_*, hosted domain restricted.
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
+    app = await composeApp(googleUpgradeSettings(admin.id, [hostedDomain]), {
       passwordSlowLaneFloors: slowLane,
-      settings: googleUpgradeSettings(admin.id, [hostedDomain]),
-      secrets,
     });
     let adminHeaders = await signedInHeaders(app, origin, admin, address());
+    // A browser at a fresh client address starts Google sign-in, from the console by default.
+    const startGoogle = (headers = { origin }) =>
+      injectLocalhost(app, "POST", "/api/auth/providers/google/start", {
+        remoteAddress: address(),
+        headers,
+      });
+    // Google sends the member back to the callback for attempt `state` (authorized at `url`).
+    const googleCallback = (state, url, headers) =>
+      injectLocalhost(
+        app,
+        "GET",
+        `/api/auth/providers/google/callback?state=${state}&code=${google.authorize(url, {
+          subject: memberSubject,
+        })}`,
+        { remoteAddress: address(), headers },
+      );
 
     const counts = () => authRowCounts(pool);
     const denials = (reason) => loginDenialCount(state, reason);
@@ -132,7 +149,6 @@ test(
       async () => {
         const providers = await app.inject({ url: "/api/auth/providers" });
         assert.deepEqual(providers.json().data, {
-          github: false,
           google: true,
           oidc: false,
           password: true,
@@ -145,21 +161,14 @@ test(
         const recovery = await app.inject({ url: "/api/auth/recovery", headers: adminHeaders });
         assert.equal(recovery.statusCode, 200, recovery.body);
         assert.equal(recovery.json().data.userId, admin.id);
-        // GitHub stays unconfigured on a Google-only install.
-        const githubStart = await app.inject({
-          method: "POST",
-          url: "/api/auth/providers/github/start",
+        // OIDC stays unconfigured on a Google-only install.
+        const oidcStart = await injectLocalhost(app, "POST", "/api/auth/providers/oidc/start", {
           remoteAddress: address(),
           headers: { origin },
         });
-        assert.equal(githubStart.statusCode, 403, githubStart.body);
+        assert.equal(oidcStart.statusCode, 403, oidcStart.body);
         // The controller's fixed endpoints are the ones Google's discovery document names.
-        const start = await app.inject({
-          method: "POST",
-          url: "/api/auth/providers/google/start",
-          remoteAddress: address(),
-          headers: { origin },
-        });
+        const start = await startGoogle();
         assert.equal(start.statusCode, 200, start.body);
         const authorize = new URL(start.json().data.url);
         assert.equal(
@@ -205,30 +214,31 @@ test(
 
       const signIn = await assertGoogleSignIn(memberSubject, member.id);
       const setCookies = [signIn.callback.headers["set-cookie"]].flat();
-      assert.ok(
-        setCookies.some(
-          (cookie) =>
-            cookie.startsWith(`${sessionCookieName}=`) &&
-            /; Secure/i.test(cookie) &&
-            /; HttpOnly/i.test(cookie) &&
-            /; Path=\//i.test(cookie) &&
-            !/; Domain=/i.test(cookie),
-        ),
-        "the session cookie is a host-only __Host- cookie",
+      // Only an issued session proves shared scope; a cookie clearance cannot satisfy it.
+      const sessionCookies = setCookies.filter((cookie) =>
+        cookie.startsWith(`${sessionCookieName}=`),
       );
+      assert.equal(sessionCookies.length, 1);
+      const sessionCookie = sessionCookies[0];
+      assert.match(sessionCookie, /^__Secure-openclaw_occ_shared\.session_token=[^;]+;/);
+      assert.doesNotMatch(sessionCookie, /; Max-Age=0(?:;|$)/i);
+      assert.match(sessionCookie, /; Domain=oce\.example\.internal(?:;|$)/i);
+      assert.match(sessionCookie, /; Secure(?:;|$)/i);
+      assert.match(sessionCookie, /; HttpOnly(?:;|$)/i);
+      assert.match(sessionCookie, /; Path=\/(?:;|$)/i);
+      assert.match(sessionCookie, /; SameSite=Lax(?:;|$)/i);
       const receipt = setCookies.find((cookie) => cookie.startsWith("__Host-occ_login_receipt="));
       assert.ok(receipt, "the callback issues a __Host- receipt");
+      assert.doesNotMatch(receipt, /; Domain=/i);
       const token = google.tokens.at(-1);
       assert.equal(token.redirect_uri, `${origin}/api/auth/providers/google/callback`);
       assert.equal(token.grant_type, "authorization_code");
 
       const result = (headers, attemptId) =>
-        app.inject({
-          method: "POST",
-          url: "/api/auth/providers/google/result",
+        injectLocalhost(app, "POST", "/api/auth/providers/google/result", {
           remoteAddress: address(),
           headers,
-          payload: { attemptId },
+          body: { attemptId },
         });
       const cookie = signIn.cookie;
       assert.equal((await result({ cookie }, signIn.attemptId)).statusCode, 403, "Origin");
@@ -244,12 +254,7 @@ test(
       const replay = await result({ cookie, origin }, signIn.attemptId);
       assert.equal(replay.statusCode, 401, "the receipt is one-use");
 
-      const principalId = (
-        await pool.query(
-          "SELECT principal_id FROM occ.human_authentication_accounts WHERE user_id = $1",
-          [member.id],
-        )
-      ).rows[0].principal_id;
+      const principalId = await accountPrincipalId(pool, member.id);
       const audits = (await state.transact((unit) => unit.audit.list()))
         .filter(
           ({ action, outcome, details }) =>
@@ -259,7 +264,7 @@ test(
         )
         .map(({ action, actorId }) => [action, actorId]);
       assert.deepEqual(audits, [
-        ["authentication.method.attach", (await readRecoveryPrincipal()).principalId],
+        ["authentication.method.attach", await accountPrincipalId(pool, admin.id)],
         ["authentication.login", principalId],
       ]);
       // No Google token, code or email reaches storage or audit.
@@ -276,15 +281,6 @@ test(
       assert.equal(stored.includes("ya29."), false);
       assert.equal(stored.includes(`${memberSubject}@${hostedDomain}`), false);
     });
-
-    async function readRecoveryPrincipal() {
-      return (
-        await pool.query(
-          'SELECT principal_id AS "principalId" FROM occ.human_authentication_accounts WHERE user_id = $1',
-          [admin.id],
-        )
-      ).rows[0];
-    }
 
     await t.test(
       "an unattached Google identity is refused even with an existing account's email",
@@ -323,66 +319,32 @@ test(
     await t.test("a replayed state and a missing binding cookie are refused", async () => {
       const signIn = await assertGoogleSignIn(memberSubject, member.id);
       const before = await counts();
-      const replay = await app.inject({
-        url: `/api/auth/providers/google/callback?state=${signIn.state}&code=${google.authorize(
-          signIn.url,
-          { subject: memberSubject },
-        )}`,
-        remoteAddress: address(),
-        headers: { cookie: signIn.bindingCookie },
+      const replay = await googleCallback(signIn.state, signIn.url, {
+        cookie: signIn.bindingCookie,
       });
       assert.equal(replay.headers.location, "/console/?authError=google");
       assert.deepEqual(await counts(), before);
 
-      const start = await app.inject({
-        method: "POST",
-        url: "/api/auth/providers/google/start",
-        remoteAddress: address(),
-        headers: { origin },
-      });
+      const start = await startGoogle();
       const url = start.json().data.url;
       const state = new URL(url).searchParams.get("state");
       const tokensBefore = google.tokens.length;
-      const unbound = await app.inject({
-        url: `/api/auth/providers/google/callback?state=${state}&code=${google.authorize(url, {
-          subject: memberSubject,
-        })}`,
-        remoteAddress: address(),
-      });
+      const unbound = await googleCallback(state, url);
       assert.equal(unbound.headers.location, "/console/?authError=google");
       assert.equal(google.tokens.length, tokensBefore, "no code exchange without the browser");
       assert.deepEqual(await counts(), before);
       // Another browser's binding cookie does not complete this attempt either.
-      const other = await app.inject({
-        method: "POST",
-        url: "/api/auth/providers/google/start",
-        remoteAddress: address(),
-        headers: { origin },
-      });
-      const foreign = await app.inject({
-        url: `/api/auth/providers/google/callback?state=${state}&code=${google.authorize(url, {
-          subject: memberSubject,
-        })}`,
-        remoteAddress: address(),
-        headers: { cookie: cookieHeaderFromSetCookie(other.headers["set-cookie"]) },
+      const other = await startGoogle();
+      const foreign = await googleCallback(state, url, {
+        cookie: cookieHeaderFromSetCookie(other.headers["set-cookie"]),
       });
       assert.equal(foreign.headers.location, "/console/?authError=google");
       assert.deepEqual(await counts(), before);
       // Starting needs the exact Origin.
-      const crossOrigin = await app.inject({
-        method: "POST",
-        url: "/api/auth/providers/google/start",
-        remoteAddress: address(),
-        headers: { origin: "https://evil.example.test" },
-      });
+      const crossOrigin = await startGoogle({ origin: "https://evil.example.test" });
       assert.equal(crossOrigin.statusCode, 403);
       // Like sign-out, a supplied Sec-Fetch-Site must be same-origin.
-      const sameSite = await app.inject({
-        method: "POST",
-        url: "/api/auth/providers/google/start",
-        remoteAddress: address(),
-        headers: { origin, "sec-fetch-site": "same-site" },
-      });
+      const sameSite = await startGoogle({ origin, "sec-fetch-site": "same-site" });
       assert.equal(sameSite.statusCode, 403, sameSite.body);
       assert.equal(sameSite.headers["set-cookie"], undefined);
     });
@@ -429,12 +391,10 @@ test(
       await assertGoogleRefused({ subject: memberSubject }, "detached subject");
       // The reserved-lane check above spent the member's email budget. The browser's
       // known-device cookie from its Google sign-in keeps its own lane for password fallback.
-      const fallback = await app.inject({
-        method: "POST",
-        url: "/api/auth/sign-in/email",
+      const fallback = await injectLocalhost(app, "POST", "/api/auth/sign-in/email", {
         remoteAddress: address(),
-        headers: { origin, cookie },
-        payload: { email: member.email, password: member.password },
+        session: { cookie, origin },
+        body: { email: member.email, password: member.password },
       });
       assert.equal(fallback.statusCode, 200, fallback.body);
     });
@@ -442,12 +402,7 @@ test(
     await t.test("a disabled account is refused Google sign-in", async () => {
       await attach(disabled.id, "google", disabledSubject);
       const { cookie } = await assertGoogleSignIn(disabledSubject, disabled.id);
-      const disable = await app.inject({
-        method: "POST",
-        url: `/api/auth/accounts/${disabled.id}/disable`,
-        headers: adminHeaders,
-        payload: { expectedVersion: (await readAccount(app, adminHeaders, disabled.id)).version },
-      });
+      const disable = await changeAccount(app, adminHeaders, disabled.id, "disable");
       assert.equal(disable.statusCode, 200, disable.body);
       assert.equal(await currentSession(app, cookie), null);
       await assertGoogleRefused(
@@ -458,24 +413,28 @@ test(
       );
     });
 
-    await t.test("GitHub and Google together both sign in with distinct provider ids", async () => {
+    await t.test("OIDC and Google together both sign in with distinct provider ids", async () => {
       await app.close();
       app = undefined;
-      await startFakeGitHub(t);
-      app = await composeProductionSignIn(t, {
-        databaseUrl,
-        passwordSlowLaneFloors: slowLane,
-        settings: {
-          ...githubUpgradeSettings(admin.id),
+      const oidc = fakeOidc(t, {
+        clientId: secrets["occ-oidc-login/client-id"],
+        clientSecret: secrets["occ-oidc-login/client-secret"],
+      });
+      app = await composeApp(
+        {
+          ...oidcUpgradeSettings(admin.id),
           ...googleUpgradeSettings(admin.id, [hostedDomain]),
         },
-        secrets,
-      });
+        { passwordSlowLaneFloors: slowLane },
+      );
       adminHeaders = await signedInHeaders(app, origin, admin, address());
       assert.deepEqual((await app.inject({ url: "/api/auth/providers" })).json().data, {
-        github: true,
+        oidc: true,
         google: true,
-        oidc: false,
+        oidcSignIn: {
+          label: "single sign-on",
+          authorizationUrl: fixtureOidcIssuer.authorizationUrl,
+        },
         password: true,
         sessionBinding: true,
       });
@@ -486,9 +445,15 @@ test(
         "account-disabled",
       );
       await attach(both.id, "google", bothSubject);
-      await attach(both.id, "github", bothGithubSubject);
+      await attach(both.id, "oidc", bothOidcSubject);
       await assertGoogleSignIn(bothSubject, both.id);
-      const { callback } = await githubSignIn(app, origin, bothGithubSubject, address());
+      const { callback } = await oidcSignIn(
+        app,
+        origin,
+        oidc,
+        { subject: String(bothOidcSubject) },
+        address(),
+      );
       await assertConsoleSignIn(app, callback, both.id);
       const methods = (
         await pool.query(
@@ -498,14 +463,14 @@ test(
         )
       ).rows;
       assert.deepEqual(methods, [
-        { provider_id: githubProviderId, account_id: bothGithubSubject },
         { provider_id: googleProviderId, account_id: bothSubject },
+        { provider_id: oidcProviderId, account_id: bothOidcSubject },
       ]);
-      assert.notEqual(githubProviderId, googleProviderId);
-      // A Google subject never signs in through GitHub, nor the reverse.
-      const crossed = await githubSignIn(app, origin, "9500099", address());
-      assert.equal(crossed.callback.headers.location, "/console/?authError=github");
-      await assertGoogleRefused({ subject: bothGithubSubject }, "GitHub subject at Google");
+      assert.notEqual(oidcProviderId, googleProviderId);
+      // A Google subject never signs in through OIDC, nor the reverse.
+      const crossed = await oidcSignIn(app, origin, oidc, { subject: "9500099" }, address());
+      assert.equal(crossed.callback.headers.location, "/console/?authError=oidc");
+      await assertGoogleRefused({ subject: bothOidcSubject }, "OIDC subject at Google");
       const recovery = await app.inject({ url: "/api/auth/recovery", headers: adminHeaders });
       assert.equal(recovery.json().data.userId, admin.id);
     });

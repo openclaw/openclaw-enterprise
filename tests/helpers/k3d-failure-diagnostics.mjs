@@ -1,9 +1,12 @@
+import assert from "node:assert/strict";
+import { isDeepStrictEqual } from "node:util";
 import {
   isCredentialLine,
   maskPrivateKeyLines,
   newestMatchingLogLines,
   redactLogLine,
 } from "../../scripts/ci/failure-redaction.mjs";
+import { compareEvents, eventObservedTime } from "../../scripts/ci/kubernetes-event-time.ts";
 import { diagnosticDeadlinePassed, diagnosticRequestTimeout } from "./kubernetes-real.mjs";
 
 // Failure evidence for k3d tests whose own error says too little. Everything here is
@@ -14,8 +17,109 @@ const maxPods = 5;
 const maxLogContainers = 6;
 const credentialLineMarker = "[redacted credential-bearing line]";
 
-function eventTime(event) {
-  return String(event.lastTimestamp ?? event.eventTime ?? event.metadata?.creationTimestamp ?? "");
+function openShellEvent(line) {
+  const json = /\bOCSF-JSON (\{.*\})$/.exec(line);
+  let event;
+  try {
+    event = json && JSON.parse(json[1]);
+  } catch {
+    return null;
+  }
+  return Number.isSafeInteger(event?.time) && event.time > 0 ? event : null;
+}
+
+export function openShellSettingsChange(line) {
+  const event = openShellEvent(line);
+  if (
+    event?.class_uid !== 5019 ||
+    event.activity_id !== 1 ||
+    event.status_id !== 1 ||
+    typeof event.message !== "string"
+  ) {
+    return null;
+  }
+  // The message preserves u64 revision decimals; JSON numeric fields can round them.
+  const match =
+    /^Settings poll: config change detected \[old_revision:(\d+) new_revision:(\d+) policy_changed:(true|false) provider_env_changed:(true|false)\]$/.exec(
+      event.message,
+    );
+  return match
+    ? {
+        atMs: event.time,
+        oldRevision: match[1],
+        newRevision: match[2],
+        policyChanged: match[3] === "true",
+        providerEnvChanged: match[4] === "true",
+      }
+    : null;
+}
+
+// Only established relay failures carry both this event type and message.
+// Open/DENIED events can instead describe a new connection refused at admission.
+export function openShellStaleRelay(line, domain) {
+  const event = openShellEvent(line);
+  if (
+    event?.class_uid !== 4001 ||
+    event.activity_id !== 4 ||
+    event.status_id !== 2 ||
+    event.dst_endpoint?.domain !== domain ||
+    event.dst_endpoint.port !== 443 ||
+    typeof event.message !== "string" ||
+    !/^(TLS|L7|HTTP) relay error: /.test(event.message)
+  ) {
+    return null;
+  }
+  const match =
+    /policy generation is stale \[captured_generation:(\d+) current_generation:(\d+)\]/.exec(
+      event.message,
+    );
+  return match
+    ? {
+        atMs: event.time,
+        capturedGeneration: Number(match[1]),
+        currentGeneration: Number(match[2]),
+      }
+    : null;
+}
+
+export async function assertGatewayPolicyRunSucceeded(client, outcome, protectedUpdate) {
+  if (outcome.status === "ok") {
+    return;
+  }
+
+  const details = [];
+  if (protectedUpdate) {
+    const { attempt, before } = protectedUpdate;
+    let state = "unavailable";
+    try {
+      const after = await client.request("cron.get", { id: before.id }, { timeoutMs: 3_000 });
+      state = isDeepStrictEqual(after, before) ? "unchanged" : "changed";
+    } catch {
+      // A failed diagnostic read must preserve the original terminal failure.
+    }
+    details.push(`attempt=${attempt}`, `job=${state}`);
+  }
+  // A provider can put arbitrary text in error, stopReason, or terminalReply.
+  // Preserve only bounded Gateway facts. Job state alone cannot prove a denial.
+  if (typeof outcome.error === "string" && outcome.error.length > 0) {
+    details.push("errorText=present");
+  }
+  for (const [field, known] of [
+    ["stopReason", ["error", "timeout", "aborted", "restart", "superseded", "rpc", "stop"]],
+    ["timeoutPhase", ["queue", "preflight", "provider", "post_turn", "gateway_draining"]],
+  ]) {
+    if (outcome[field] !== undefined) {
+      details.push(`${field}=${known.includes(outcome[field]) ? outcome[field] : "other"}`);
+    }
+  }
+  if (typeof outcome.providerStarted === "boolean") {
+    details.push(`providerStarted=${outcome.providerStarted}`);
+  }
+  assert.equal(
+    ["pending", "timeout", "error"].includes(outcome.status) ? outcome.status : "other",
+    "ok",
+    `Gateway policy run ${outcome.runId} must succeed${details.length ? ` (${details.join(", ")})` : ""}`,
+  );
 }
 
 function containerState(state, secrets) {
@@ -186,14 +290,16 @@ export async function podFailureDiagnostic({
           eventPrefix === undefined ||
           String(event.involvedObject?.name ?? "").startsWith(eventPrefix),
       )
-      .sort((a, b) => eventTime(a).localeCompare(eventTime(b)));
+      .sort(compareEvents);
     const kept = [];
     let length = 0;
     for (const event of events.reverse()) {
       const object = event.involvedObject ?? {};
-      const count = (event.count ?? 1) > 1 ? ` x${event.count}` : "";
+      // events.k8s.io writers keep a repeat count in the series.
+      const repeats = event.series?.count ?? event.count ?? 1;
+      const count = repeats > 1 ? ` x${repeats}` : "";
       const line = redactedLine(
-        `${eventTime(event)} ${event.type} ${event.reason} ${object.kind}/${object.name}${count}: ${event.message ?? ""}`,
+        `${eventObservedTime(event) ?? "unknown-time"} ${event.type} ${event.reason} ${object.kind}/${object.name}${count}: ${event.message ?? ""}`,
         secrets,
         fieldChars,
       );
@@ -387,4 +493,58 @@ function completedSandboxCommands(messages) {
     }
   }
   return pending.size === 0 ? [...completed.values()] : undefined;
+}
+
+// The token echo (startTokenEcho in the OpenShell k3d test) answers each Harness curl call with
+// JSON holding a digest of the Authorization header it received. Output that is not one JSON
+// object comes back as `unparsed`, redacted and bounded (finding 1883). Placeholders keep only
+// their prefix, digests are masked, and values in `secrets` and token shapes are redacted.
+const echoOutputChars = 1_000;
+const echoShownChars = 300;
+const placeholderValue = /(openshell:resolve:)[^\s"'\\,;}\]]*/gu;
+const echoDigest = /("digest":\s*")[0-9a-f]{64}/gu;
+
+// Whitespace is collapsed only after redaction, so a secret value keeps its exact shape.
+function shownEchoText(text, secrets, limit) {
+  const masked = String(text ?? "")
+    .replace(placeholderValue, "$1[placeholder]")
+    .replace(echoDigest, "$1[sha256]");
+  return redactLogLine(masked, secrets, limit).replace(/\s+/gu, " ").trim();
+}
+
+/**
+ * The echo's reply to the Harness command that called `url`, with `shown`: that command, its
+ * exit code and the start of its output, redacted, for an assertion message.
+ */
+export function tokenEchoReply(commands, url, secrets) {
+  const echo = commands.find(({ command }) => String(command).includes(url));
+  assert.ok(echo, `the Harness must call ${url}`);
+  const output = String(echo.aggregatedOutput ?? "").trim();
+  const printed = output.length === 0 ? "nothing" : shownEchoText(output, secrets, echoShownChars);
+  const shown =
+    `\`${shownEchoText(echo.command, secrets, echoShownChars)}\` ` +
+    `(exit ${echo.exitCode ?? "unknown"}) printed ${printed}`;
+  let reply;
+  try {
+    reply = JSON.parse(output);
+  } catch {
+    // Not JSON: kept as `unparsed` below.
+  }
+  if (reply === null || typeof reply !== "object" || Array.isArray(reply)) {
+    return { unparsed: shownEchoText(output, secrets, echoOutputChars), shown };
+  }
+  return { ...reply, shown };
+}
+
+/**
+ * The digest in a token echo reply. Output that is not the echo's or OpenShell's JSON fails
+ * here, naming the command and what it printed (finding 2281: a curl error or two merged
+ * commands read as digest `undefined`). JSON without a digest, such as OpenShell's credential
+ * refusal, gives `undefined`, for the caller to judge with `reply.shown` in its message.
+ */
+export function tokenEchoDigest(reply) {
+  if (reply.unparsed !== undefined) {
+    assert.fail(`the token echo call must print JSON: ${reply.shown}`);
+  }
+  return typeof reply.digest === "string" ? reply.digest : undefined;
 }

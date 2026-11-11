@@ -5,6 +5,7 @@ on:
     paths:
       - ".github/workflows/observability-demo.yml"
       - ".github/actions/run-ci-lane/**"
+      - ".github/actions/setup-ci-tools/**"
       - ".github/actions/setup-pnpm-store-cache/**"
       - "deploy/helm/openclaw-observability-demo/**"
       - "tests/integration/observability-demo-chart.test.mjs"
@@ -19,6 +20,7 @@ on:
     paths:
       - ".github/workflows/observability-demo.yml"
       - ".github/actions/run-ci-lane/**"
+      - ".github/actions/setup-ci-tools/**"
       - ".github/actions/setup-pnpm-store-cache/**"
       - "deploy/helm/openclaw-observability-demo/**"
       - "tests/integration/observability-demo-chart.test.mjs"
@@ -57,7 +59,7 @@ jobs:
         with:
           lane: k3d-observability-demo
           profile: k3d
-          node-version: "24.16.0"
+          node-version: "24.22.1"
           artifact-prefix: demo-results
           job-timeout-minutes: 20
       - name: Show Docker Hub pull endpoints

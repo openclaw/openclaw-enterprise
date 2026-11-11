@@ -8,7 +8,7 @@ A Backend is Installation-owned configuration that gives related Drivers an
 authenticated client. The bundled ChatGPT client manages upstream service
 accounts. Its nullable Agent `backendId` association neither grants permissions
 nor changes model or Harness selection. The GitHub Backend owns repository
-credential configuration for the selected `RepoDriver` and uses the separate
+credential configuration for the built-in GitHub policy and uses the separate
 Agent `repositoryBindings` selection. The OpenShell Backend owns the gateway
 connection shared by the OpenShell Sandbox and Credential Gateway Drivers.
 Backends have no OCC resource or write API. Installation administrators can
@@ -97,20 +97,30 @@ backend:
       registryPath: /etc/openclaw/repository-registry/registry.json
     drivers:
       repo: repository-credentials
-drivers:
-  repo:
-    id: repository-credentials
-    configuration:
-      controlSocket: /run/openclaw/repository-control/private/control.sock
-      sessionDurationSeconds: 86400
-      publicCaPath: /etc/openclaw/repository-ca/ca.crt
+repository:
+  id: repository-credentials
+  configuration:
+    sessionDurationSeconds: 86400
+  nativeSender:
+    controlSocket: /run/openclaw/repository-control/private/control.sock
+    publicCaPath: /etc/openclaw/repository-ca/ca.crt
+  preparedGitHub:
+    custodyKeyPath: /etc/openclaw/prepared-repository/custody.key
+    privateKeyPath: /etc/openclaw/prepared-repository/private-key.pem
 ```
 
 Keep the ordinary required Driver settings alongside this fragment. One GitHub
 Backend is supported and may coexist with one ChatGPT Backend. Its member ID
-must match the selected `repo` Driver. The registry's Backend
-ID must match the definition, and the session duration must fit the registry's
-maximum. Unsupported Driver packages or configuration keys fail startup.
+must match `repository.id`. With this configuration, the API and worker use the
+built-in GitHub registry policy. They require no public Repo Driver registration.
+Omit both the GitHub Backend and `repository` to leave Git unconfigured.
+Existing configurations may keep or omit `repository.policyMode: built-in` with
+the same policy and protected sender identity. Startup rejects other values and
+the retired `drivers.repo` selection. Drain admitted work on its original owner
+before changing senders. The registry's Backend ID must match the definition,
+and the session duration must fit the registry's maximum.
+See [prepared native Git](repository-credentials/prepared-native-git.md#install-and-check)
+for delivery settings.
 
 The API, worker, and credential service consume the same immutable, versioned
 registry ConfigMap. Its exact Namespace, repository, and profile policies own
@@ -123,7 +133,12 @@ Driver; admitted Agents must use a supported
 
 ### OpenShell gateway
 
-The OpenShell Backend holds the connection to one OpenShell gateway deployment:
+The OpenShell Backend holds the connection to one OpenShell gateway deployment.
+These paths are the files Helm `backend.openshell.clientSecretName` projects
+(`ca.crt`, `tls.crt`, `tls.key` under `/etc/openclaw/openshell`). The chart
+mounts no bearer token file or separate `operatorTls` pair, so chart installs
+cannot retrieve Codex OAuth access tokens; other packaging must mount those files
+itself.
 
 ```yaml
 backend:
@@ -132,12 +147,10 @@ backend:
     configuration:
       endpoint: https://openshell-gateway.openshell-system.svc:8080
       auth:
-        mode: bearerTokenFile
-        path: /etc/openclaw/openshell/token
+        mode: mtls
+        certificatePath: /etc/openclaw/openshell/tls.crt
+        privateKeyPath: /etc/openclaw/openshell/tls.key
       rootCertificatePath: /etc/openclaw/openshell/ca.crt
-      operatorTls:
-        certificatePath: /etc/openclaw/openshell/operator.crt
-        privateKeyPath: /etc/openclaw/openshell/operator.key
     drivers:
       sandbox: openshell-sandbox
       credential_gateway: openshell-credentials
@@ -163,8 +176,10 @@ Its closed `configuration` accepts:
   hosts in the gateway's namespace only when OCE knows it: from a bare or
   `<service>.<namespace>` `serviceName`, or a `serviceName` or `endpoint` host
   `<service>.<namespace>.svc[.<cluster domain>]`.
-- `auth`: `{ mode: unauthenticated }` or `{ mode: bearerTokenFile, path }` with
-  an absolute path.
+- `auth`: `{ mode: unauthenticated }`, `{ mode: bearerTokenFile, path }`, or
+  `{ mode: mtls, certificatePath, privateKeyPath }`. File paths must be absolute.
+  mTLS requires HTTPS and supplies the client certificate and key to gRPC only.
+  Service HTTP/WebSocket requests retain their separate scoped bearer identity.
 - `requestTimeoutMs`: the per-call deadline, from 1000 to 30000 ms. The bound
   limits how late a timed-out credential registration can land. Sandbox
   deletion has its own 120-second bound: OpenShell answers only after the
@@ -177,7 +192,8 @@ Its closed `configuration` accepts:
   separate certificate-only channel to the same gateway, using the same server
   CA and no bearer header. Ordinary RPCs keep the configured `auth` identity.
 - `insecureTransport: network-policy`: required when the connection lacks TLS or
-  bearer-token authentication, and rejected otherwise. It declares that
+  bearer/mTLS authentication, and rejected otherwise. It cannot enable plaintext
+  mTLS. It declares that
   NetworkPolicy restricts the gateway to the OCE API, worker, and OpenShell
   supervisors. Credential registration sends resolved values over this
   connection, and OCC cannot verify the NetworkPolicy itself.
@@ -197,6 +213,22 @@ so mount their required credential files there, never in the Harness or Agent
 Gateway. Restart these processes after rotating an operator certificate to replace
 cached TLS channels. See the [operator trust requirements](drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc).
 
+Optional `drivers.credential_proxy` selects the paired
+[protected egress adapter](credential-sources/protected-inference.md). It requires an
+authenticated HTTPS gateway and the credential-access protocol. Released OpenShell
+`v0.1.4` supports OAuth refresh and operator `GetProviderCredentials`, but lacks
+the protected credential-access and loaded-enforcement contract. The protected
+counterpart has that contract, not the OAuth export RPC. Select and verify the
+deployed capability; the combined client schema is not a supplier capability claim.
+Protected revision admission refuses legacy credential attachments.
+
+For native OpenShell mTLS, a verified client certificate's CN becomes the User
+subject and OU values become roles. Without an OIDC administrator role configured,
+an authenticated User has platform administrator authority. Treat the dedicated
+client CA and every certificate it signs as administrator credentials. Keep the
+client key in the trusted control plane, never an Agent or Sandbox. With OIDC
+configured, its administrator-role check still applies; mTLS does not bypass it.
+
 ## Driver and client contract
 
 The [Backend contract](../../packages/contracts/src/index.ts) groups an ID,
@@ -210,12 +242,10 @@ ServiceAccount Driver. The worker receives nonsecret ChatGPT definitions for rec
 Existing Driver lifecycle, controller/state injection, Compute credential
 storage, installed factory signatures, and package trust rules remain unchanged.
 
-For GitHub, API and worker construct `GitHubRepoDriver` from
-`Backend<RepositoryCredentialControlClient>`, the validated registry, and the
-selected duration. Construction reads the public CA but never connects the
-private control socket. API resolution is local policy; the worker invokes
-session operations. The Backend client validates full private control responses;
-the Driver then returns the [four-field public status](repository-credentials.md#repo-driver-contract).
+For GitHub, the API and worker bind `GitHubRepositoryPolicy` to the configured
+Backend, validated registry and selected duration. API resolution uses local
+policy. For native delivery, the worker invokes session operations through the
+selected native sender and its private control socket.
 Only the separate service owns the App key, private TLS material, token
 acquisition, and forwarding engine.
 
@@ -233,9 +263,8 @@ acquisition, and forwarding engine.
 PATCH still requires `configurationId`. Malformed/empty IDs return
 `400 INVALID_REQUEST`; unknown nonempty IDs return `404 NOT_FOUND`.
 No Backend is inferred from model configuration or an account, and saving an
-Agent makes no upstream call. Deployment copies `backendId` into an immutable
-AgentRevision; later draft edits cannot change that snapshot. PostgreSQL stores
-the snapshot in the immutable Agent revision row's `backend_id` column.
+Agent makes no upstream call. At deployment, OCC writes the chosen Backend ID to the Agent revision.
+PostgreSQL stores it in the `backend_id` column. Later draft edits leave that value unchanged.
 
 A GitHub Backend ID is invalid in this field; the general `/backends` inventory
 includes both types. Configure this association through the Agent API or a Preset.
@@ -322,8 +351,7 @@ request. Successful issuance does not prove that an Agent can reach its model.
 The [lifecycle flow](../flows/service-account-driver-credential-delivery.md) names code and proof
 boundaries. Local API, PostgreSQL, Driver, and packaging tests do not prove live
 provider calls or model execution. See
-[service-account testing](../testing/slack.md#chatgpt-service-accounts) for real provider
-verification requirements.
+[service-account testing](../testing/slack.md#service-account-coverage) for the remaining coverage and its limits.
 
 ## Deferred behavior
 

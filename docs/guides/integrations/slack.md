@@ -13,6 +13,9 @@ go to the Agent's gateway; model credentials are configured separately.
   to receive channel mentions and [`chat:write`](https://docs.slack.dev/reference/scopes/chat.write/)
   to send replies. [Reinstall the Slack app](https://docs.slack.dev/app-management/distribution/#when-is-a-reinstall-required)
   if you add bot scopes to an existing installation.
+- Use one Slack app, with its own app-level and bot tokens, for each Agent.
+  Slack can deliver an event to any active Socket Mode connection for that app.
+  If Agents share an app, the intended Agent can miss the event.
 - Invite the app's bot to the channel. Your Installation operator must allow
   the gateway's Slack network traffic and provide a runtime image that includes
   the native Slack plugin.
@@ -115,8 +118,13 @@ Before handing off the Slack setup, verify both paths:
    upstream destination from the same permitted caller path.
 
 A directory response of `503` can indicate that the API cannot reach Slack;
-enable the managed Slack proxy or check the external proxy route. A
-missing-scope response requires updating the bot's Slack scopes. Missing gateway
+enable the managed Slack proxy or check the external proxy route. When the API
+has no Slack proxy and gets no answer from Slack, Agent provisioning and
+deployment answer `409` and ask for an Installation administrator to give the
+API a route to Slack: Helm `slackProxy.enabled` or
+`api.channelDirectoryProxyUrl`. If the API has
+another approved route to Slack, such as a sign-in setting with empty
+`egressCidrs`, try again; a timeout on that route gets the same answer. A missing-scope response requires updating the bot's Slack scopes. Missing gateway
 proxy configuration prevents Slack-enabled workload preparation. Resolve each path
 independently; entering exact IDs does not verify directory lookup.
 
@@ -126,8 +134,8 @@ independently; entering exact IDs does not verify directory lookup.
    **Channels** and **Configure Slack** (or **Edit Slack** for an existing setup).
    Start with **Slack credentials** at the top: select a Namespace Secret or
    **Create new Secret...** for each token. The bot token enables channel and
-   people name lookup; the app token is used for Socket Mode. Both are required
-   before deployment. Exact-ID entry remains available without name lookup.
+   people name lookup; the app token is used for Socket Mode. An enabled Slack
+   setup saves only with both. Exact-ID entry remains available without name lookup.
    Enable Slack and choose **Channels**, then select **Specific people** or
    **Everyone in these channels** under channel access. Leave **Require a mention**
    enabled for this setup. New Slack setups use
@@ -140,8 +148,8 @@ independently; entering exact IDs does not verify directory lookup.
    selected bindings. Cancelling the drawer discards selections but keeps any
    newly created Secrets. If multiple Agents use this Configuration, the edit
    also affects their future deployments.
-2. Open **Credentials**. If tokens are still missing, select their Secrets and
-   **Save channel Secrets**. OCC stores them as Namespace Secrets, grants the
+2. Open **Credentials**. If tokens are still missing (a Configuration saved
+   before this check), select their Secrets and **Save channel Secrets**. OCC stores them as Namespace Secrets, grants the
    Agent access, and saves Configuration bindings for gateway delivery. Stored
    Secret bindings confirm storage only; they do not prove Slack accepted the tokens.
    Bound tokens show a synthetic password mask. To replace one token, edit that
@@ -191,6 +199,8 @@ bot. To enable one-to-one messages:
   the gateway connected to Slack, the bot has joined the configured channel,
   and the channel ID is correct. Then send an explicit mention. Ask the
   operator to check gateway network access if it cannot connect.
+- **Some messages never reach the Agent:** check whether another Agent connects
+  to the same Slack app. Give each Agent its own app and use that app's tokens.
 - **Channel messages work but direct messages do not:** check the
   `message.im` subscription, the installed bot token's `im:history` scope,
   and whether the sender's Slack user ID is allowed by the native `allowFrom`

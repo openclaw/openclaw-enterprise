@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import test from "node:test";
 import { humanLoginConfiguration } from "../../apps/controller/src/auth/index.ts";
 import { oidcLoginConfiguration, oidcNonce } from "../../apps/controller/src/auth/oidc.ts";
@@ -11,6 +10,8 @@ import {
   expectProviderUnavailable,
   loginOrigin as origin,
   loginSecret as secret,
+  providerAttemptId,
+  providerInstanceId,
   redirectProviderFetch,
   startProviderServer,
   testOversizedProviderBodies,
@@ -29,10 +30,7 @@ const environment = {
 const oidc = oidcLoginConfiguration(environment);
 const pinned = new Set([oidc.tokenUrl, oidc.jwksUrl]);
 
-function digest(value) {
-  return createHash("sha256").update(value).digest("hex");
-}
-const providerId = `oidc:${digest(`${oidc.issuer}\0${oidc.clientId}`)}`;
+const providerId = providerInstanceId("oidc", { issuer: oidc.issuer, clientId: oidc.clientId });
 
 const signer = createIdTokenSigner();
 function idToken(state = callbackState, overrides = {}) {
@@ -52,8 +50,8 @@ function loginFixture(providers = { oidc }) {
   return createLoginFixture({ provider: "oidc", providers });
 }
 
-test("OIDC sign-in configuration shares the recovery user with GitHub and Google", () => {
-  const recovery = { OCC_AUTH_GITHUB_RECOVERY_USER_ID: "recovery-user" };
+test("OIDC sign-in configuration shares the recovery user with Google", () => {
+  const recovery = { OCC_AUTH_RECOVERY_USER_ID: "recovery-user" };
   assert.deepEqual(humanLoginConfiguration({ ...environment, ...recovery }), {
     oidc: { ...oidc, recoveryUserId: "recovery-user" },
   });
@@ -62,7 +60,7 @@ test("OIDC sign-in configuration shares the recovery user with GitHub and Google
     /OIDC sign-in requires its provider settings and a recovery user ID/,
   );
   assert.throws(
-    () => humanLoginConfiguration({ ...environment, OCC_AUTH_GITHUB_RECOVERY_USER_ID: " " }),
+    () => humanLoginConfiguration({ ...environment, OCC_AUTH_RECOVERY_USER_ID: " " }),
     /OIDC sign-in requires its provider settings and a recovery user ID/,
   );
 });
@@ -109,7 +107,7 @@ test("OIDC login fetches only its pinned URLs and binds the ID token to the atte
     assert.equal(parameters.get("nonce"), oidcNonce(secret, parameters.get("state")));
     const [attempt] = fixture.attempts;
     // Rotating the client secret voids pending attempts but keeps enrollment.
-    assert.equal(attempt.providerId, `${providerId}:${digest(oidc.clientSecret)}`);
+    assert.equal(attempt.providerId, providerAttemptId(providerId, oidc.clientSecret));
     assert.equal(fixture.login.oidcProviderId, providerId);
     assert.deepEqual(fixture.login.oidcSignIn, {
       label: "single sign-on",
@@ -130,7 +128,7 @@ test("OIDC login fetches only its pinned URLs and binds the ID token to the atte
     assert.equal(exchange.get("code"), code);
     assert.equal(exchange.get("client_secret"), oidc.clientSecret);
     assert.deepEqual(fixture.subjects, [[providerId, subject]]);
-    assert.deepEqual(fixture.denials, [["EXTERNAL_IDENTITY_REJECTED", "oidc"]]);
+    assert.deepEqual(fixture.denials, [["EXTERNAL_IDENTITY_REJECTED", "oidc", { subject }]]);
   });
 
   await t.test("a code over 4,096 characters is refused before any exchange", async () => {
@@ -250,18 +248,17 @@ test("OIDC login fetches only its pinned URLs and binds the ID token to the atte
     assert.deepEqual(fixture.operationalLogs(), []);
   });
 
-  await t.test("GitHub, Google and OIDC share the start budget", async () => {
+  await t.test("Google and OIDC share the start budget", async () => {
     const fixture = loginFixture({
       oidc,
-      github: { clientId: "github-client", clientSecret: "github-secret" },
       google: { clientId: "g.apps.googleusercontent.com", clientSecret: "g", allowedDomains: [] },
     });
-    for (let i = 0; i < 10; i += 1) {
-      for (const name of ["github", "google", "oidc"]) {
+    for (let i = 0; i < 15; i += 1) {
+      for (const name of ["google", "oidc"]) {
         assert.equal((await fixture.start("10.0.8.1", name)).status, 200);
       }
     }
-    for (const name of ["github", "google", "oidc"]) {
+    for (const name of ["google", "oidc"]) {
       assert.equal((await fixture.start("10.0.8.1", name)).status, 429);
     }
     assert.equal((await fixture.start("10.0.8.2")).status, 200);

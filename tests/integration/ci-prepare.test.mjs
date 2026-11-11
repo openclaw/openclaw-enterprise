@@ -1,29 +1,39 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { chmod, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { appendFile, chmod, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { connect, createServer } from "node:net";
 import { availableParallelism } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 import { describe, test } from "node:test";
+import { runInNewContext } from "node:vm";
 import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 import { prepareCodexSeccompProfile } from "../../scripts/ci/codex-seccomp.mjs";
 import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.mjs";
-import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
-import { withStateLock } from "../../scripts/ci/state-lock.mjs";
+import { defaultK3sImage, prepareLane, prepareFile } from "../../scripts/ci/prepare.mjs";
+import { withStateLock } from "../../scripts/ci/state-lock.ts";
+import { readJsonLines } from "../helpers/json-lines.mjs";
 import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
-import { nodeTestSummary } from "../helpers/node-test-summary.mjs";
+import { listen } from "../helpers/listen.mjs";
 import {
   assertStderrMatch,
   fixture,
+  fixtureCommandServer,
   fixtureImageCommands,
   fixturePreparationMetrics,
+  forwardedEnv,
   immutableImage,
   mutableImage,
   nodeBaseImage,
   spawnResult,
+  writeFixtureCommand,
 } from "../helpers/ci-prepare-fixture.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
+import { startFakePostgres } from "../helpers/fake-postgres-server.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const preparePath = join(repositoryRoot, "scripts/ci/prepare.mjs");
@@ -39,8 +49,62 @@ async function writeState(path, state) {
   await chmod(path, 0o600);
 }
 
-// A ready Compose PostgreSQL server, owned by its own preparation prefix.
-function composePostgres(name) {
+test("focused first-Agent preparation leaves installation to Local Setup and refuses another file", async (t) => {
+  const root = await fixture(t);
+  const saved = {
+    CODEX_ACCESS_TOKEN: process.env.CODEX_ACCESS_TOKEN,
+    OCC_HELM_BIN: process.env.OCC_HELM_BIN,
+    OCC_TEST_OPENAI_MODEL: process.env.OCC_TEST_OPENAI_MODEL,
+  };
+  // Fail before side effects if generic stack preparation is accidentally restored.
+  process.env.OCC_HELM_BIN = join(root, "unavailable-helm");
+  process.env.CODEX_ACCESS_TOKEN = "synthetic-model-credential";
+  process.env.OCC_TEST_OPENAI_MODEL = "synthetic-model";
+  t.after(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  });
+  for (const file of [
+    "tests/integration/local-first-agent-openshell-real.test.mjs",
+    "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
+  ]) {
+    const statePath = join(root, `${file.split("/").at(-1)}.json`);
+    const lane = await prepareLane({ lane: "openshell", statePath, file });
+    const prepared = await prepareFile({ lane: "openshell", statePath, file });
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    assert.deepEqual(state.resources, []);
+    assert.equal(prepared.env.OCC_TEST_DATABASE_URL, undefined);
+    assert.equal(prepared.env.OCC_TEST_KUBERNETES_CONTEXT, undefined);
+    assert.equal(prepared.env.OCC_TEST_LOCAL_FIRST_AGENT_REAL, "1");
+    await assert.rejects(
+      prepareFile({
+        lane: "openshell",
+        statePath,
+        file: "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+      }),
+      /Selected file must match/,
+    );
+    await prepared.cleanup();
+    await lane.cleanup();
+  }
+  await assert.rejects(
+    prepareLane({
+      lane: "openshell",
+      statePath: join(root, "invalid.json"),
+      file: "tests/integration/not-a-lane-file.test.ts",
+    }),
+    /Selected file must belong/,
+  );
+});
+
+// A ready Compose PostgreSQL server, owned by its own preparation prefix, published on port
+// (a fake server's, when the case runs SQL).
+function composePostgres(name, port = 45431) {
   return {
     id: `compose-postgres-${name}`,
     kind: "compose-postgres",
@@ -48,7 +112,7 @@ function composePostgres(name) {
     status: "ready",
     name: `openclaw_ci_pg_${name}`,
     composeFile: join(repositoryRoot, "compose.postgres.yaml"),
-    port: 45431,
+    port,
   };
 }
 
@@ -62,6 +126,33 @@ async function writePostgresState(statePath, server, ...resources) {
     statePath,
     resources: [server, ...resources],
   });
+}
+
+// A fake lane PostgreSQL server for one case (fake-postgres-server.mjs), stopped after it.
+// Each query is also appended to logPath as "postgres\t<database>\t<query>", beside the
+// fake commands' lines.
+async function laneFakePostgres(t, { logPath, onQuery = () => undefined } = {}) {
+  const postgres = await startFakePostgres({
+    onQuery: async (query, session) => {
+      if (logPath) {
+        await appendFile(logPath, `postgres\t${session.database}\t${query}\n`);
+      }
+      return onQuery(query, session);
+    },
+  });
+  t.after(() => postgres.close());
+  return postgres;
+}
+
+// Every session reached the lane server as the superuser compose.postgres.yaml creates.
+async function assertSuperuserSessions(postgres) {
+  const compose = await readFile(join(repositoryRoot, "compose.postgres.yaml"), "utf8");
+  const password = compose.match(/POSTGRES_PASSWORD: (\S+)/)[1];
+  assert.ok(postgres.sessions.length > 0);
+  for (const { user, password: sent } of postgres.sessions) {
+    assert.equal(user, "postgres");
+    assert.equal(sent, password);
+  }
 }
 
 // Runs a module program that imports prepare.mjs (argv[1]) and uses the state at argv[2].
@@ -81,6 +172,210 @@ function runPrepare(args, env = {}) {
   });
 }
 
+test(
+  "PostgreSQL preparation records staging before creating its directory",
+  {
+    skip:
+      process.platform === "win32" || process.getuid?.() === 0
+        ? "Requires POSIX permission enforcement for a non-root caller."
+        : false,
+  },
+  async (t) => {
+    const root = await fixture(t);
+    const stateDirectory = join(root, "state");
+    const runnerTemp = join(root, "runner-temp");
+    await mkdir(stateDirectory);
+    await mkdir(runnerTemp);
+    const statePath = join(stateDirectory, "state.json");
+    const docker = join(root, "docker.mjs");
+    await writeFile(
+      docker,
+      `#!${process.execPath}
+import { chmodSync } from "node:fs";
+// The initial state exists, but its next durable write must fail.
+chmodSync(process.env.CI_TEST_STATE_DIRECTORY, 0o500);
+console.log("29.9.2");
+`,
+      { mode: 0o700 },
+    );
+    let result;
+    try {
+      result = await runPrepare(["--lane", "postgres-auth", "--state", statePath], {
+        OCC_DOCKER_BIN: docker,
+        RUNNER_TEMP: runnerTemp,
+        CI_TEST_STATE_DIRECTORY: stateDirectory,
+      });
+    } finally {
+      await chmod(stateDirectory, 0o700);
+    }
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /EACCES/);
+    assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")).resources, []);
+    assert.deepEqual(await readdir(stateDirectory), ["state.json"]);
+    assert.deepEqual(await readdir(runnerTemp), []);
+  },
+);
+
+for (const retirementFails of [false, true]) {
+  test(
+    `PostgreSQL competing bootstrap survives cleanup (retirement fails: ${retirementFails})`,
+    {
+      skip:
+        process.platform === "win32" || process.getuid?.() === 0
+          ? "Requires POSIX permission enforcement for a non-root caller."
+          : false,
+    },
+    async (t) => {
+      const root = await fixture(t);
+      const stateDirectory = join(root, "state");
+      await mkdir(stateDirectory);
+      const statePath = join(stateDirectory, "state.json");
+      const contentionPath = join(root, "contention.json");
+      const preload = join(root, "competing-directory.mjs");
+      const docker = join(root, "docker.mjs");
+      await writeFile(docker, `#!${process.execPath}\nconsole.log("29.9.2");\n`, { mode: 0o700 });
+      // Schedule real competing filesystem operations at mkdir; do not replace its result.
+      // This proves EEXIST handling, not the operating system's scheduling behavior.
+      await writeFile(
+        preload,
+        `
+import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import { join, dirname } from "node:path";
+if (process.argv[1] === ${JSON.stringify(preparePath)}) {
+  const mkdir = fs.mkdir;
+  fs.mkdir = async (path, options) => {
+    const state = await fs.readFile(${JSON.stringify(statePath)}, "utf8")
+      .then(JSON.parse, (error) => { if (error.code === "ENOENT") return undefined; throw error; });
+    const resource = state?.resources.find((entry) => entry.kind === "compose-postgres");
+    if (resource?.directory === path) {
+      await mkdir(path, { mode: 0o700 });
+      await fs.writeFile(join(path, "init-local.sql"), "foreign bootstrap");
+      await fs.writeFile(${JSON.stringify(contentionPath)}, JSON.stringify({ directory: path }));
+      if (${retirementFails}) await fs.chmod(dirname(${JSON.stringify(statePath)}), 0o500);
+    }
+    return mkdir(path, options);
+  };
+  syncBuiltinESMExports();
+}
+`,
+      );
+      let result;
+      try {
+        result = await runPrepare(["--lane", "postgres-auth", "--state", statePath], {
+          OCC_DOCKER_BIN: docker,
+          NODE_OPTIONS: `--import=${preload}`,
+        });
+      } finally {
+        await chmod(stateDirectory, 0o700);
+      }
+      const { directory } = JSON.parse(await readFile(contentionPath, "utf8"));
+      const cleanup = await spawnResult(
+        process.execPath,
+        [join(repositoryRoot, "scripts/ci/cleanup.mjs"), "--state", statePath],
+        { env: { ...process.env, OCC_DOCKER_BIN: docker } },
+      );
+      assert.equal(await readFile(join(directory, "init-local.sql"), "utf8"), "foreign bootstrap");
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, retirementFails ? /EACCES/ : /EEXIST/);
+      if (retirementFails) {
+        assert.equal(cleanup.status, 1);
+        assert.match(cleanup.stderr, /unconfirmed PostgreSQL bootstrap ownership/);
+        const state = JSON.parse(await readFile(statePath, "utf8"));
+        assert.equal(state.resources.length, 1);
+        assert.equal(state.resources[0].directoryCreated, false);
+      } else {
+        assert.equal(cleanup.status, 0, cleanup.stderr);
+        await assert.rejects(stat(statePath), { code: "ENOENT" });
+      }
+    },
+  );
+}
+
+for (const scenario of ["symlink", "regular-file", "confirmation-failure"]) {
+  test(
+    `PostgreSQL staging preserves unconfirmed SQL after ${scenario}`,
+    {
+      skip:
+        process.platform === "win32" || process.getuid?.() === 0
+          ? "Requires POSIX symlinks and permission enforcement for a non-root caller."
+          : false,
+    },
+    async (t) => {
+      const root = await fixture(t);
+      const statePath = join(root, "state.json");
+      const target = join(root, "unrelated.sql");
+      await writeFile(target, "unrelated content");
+      const preload = join(root, "sql-write-boundary.mjs");
+      const docker = join(root, "docker.mjs");
+      await writeFile(
+        docker,
+        `#!${process.execPath}
+if (process.argv.includes("up")) process.exit(17);
+console.log("29.9.2");
+`,
+        { mode: 0o700 },
+      );
+      // Schedule real filesystem changes around the original writer, without replacing its result.
+      // A failed confirmation save must preserve even a file that this process successfully wrote.
+      await writeFile(
+        preload,
+        `
+import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import { dirname, join } from "node:path";
+if (process.argv[1] === ${JSON.stringify(preparePath)}) {
+  const writeFile = fs.writeFile;
+  fs.writeFile = async (path, data, options) => {
+    const state = await fs.readFile(${JSON.stringify(statePath)}, "utf8")
+      .then(JSON.parse, (error) => { if (error.code === "ENOENT") return undefined; throw error; });
+    const resource = state?.resources.find((entry) => entry.kind === "compose-postgres");
+    if (resource?.directory && path === join(resource.directory, "init-local.sql")) {
+      if (${scenario === "symlink"}) await fs.symlink(${JSON.stringify(target)}, path);
+      if (${scenario === "regular-file"}) await writeFile(path, "unrelated content");
+      const result = await writeFile(path, data, options);
+      if (${scenario === "confirmation-failure"}) await fs.chmod(dirname(${JSON.stringify(statePath)}), 0o500);
+      return result;
+    }
+    return writeFile(path, data, options);
+  };
+  syncBuiltinESMExports();
+}
+`,
+      );
+      let result;
+      try {
+        result = await runPrepare(["--lane", "postgres-auth", "--state", statePath], {
+          OCC_DOCKER_BIN: docker,
+          NODE_OPTIONS: `--import=${preload}`,
+        });
+      } finally {
+        await chmod(root, 0o700);
+      }
+      const state = JSON.parse(await readFile(statePath, "utf8"));
+      const initSql = join(state.resources[0].directory, "init-local.sql");
+      const expectedSql =
+        scenario === "confirmation-failure"
+          ? await readFile(join(repositoryRoot, "migrations/init-local.sql"), "utf8")
+          : "unrelated content";
+      const cleanup = await spawnResult(
+        process.execPath,
+        [join(repositoryRoot, "scripts/ci/cleanup.mjs"), "--state", statePath],
+        { env: { ...process.env, OCC_DOCKER_BIN: docker } },
+      );
+
+      assert.equal(await readFile(initSql, "utf8"), expectedSql);
+      assert.equal(await readFile(target, "utf8"), "unrelated content");
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, scenario === "confirmation-failure" ? /EACCES/ : /EEXIST/);
+      assert.equal(cleanup.status, 1);
+      assert.match(cleanup.stderr, /unconfirmed PostgreSQL bootstrap SQL ownership/);
+      assert.equal(state.resources[0].initSqlCreated, false);
+      assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
+    },
+  );
+}
+
 // Most cases wait on preparation children: fake engines, deliberate command timeouts
 // and retry backoff, so a few run at once: two per CPU, at most four. With four copies
 // of this file on one CPU, four at once still passed, while all at once missed the 3 s
@@ -91,15 +386,34 @@ describe("CI preparation", { concurrency }, () => {
   for (const { scenario, error } of [
     { scenario: "success" },
     { scenario: "podman-success" },
+    { scenario: "docker-manifest" },
+    // An index digest can agree across nodes without identifying a platform image.
+    { scenario: "oci-index", error: /Imported.*does not identify an image manifest/ },
+    { scenario: "docker-manifest-list", error: /Imported.*does not identify an image manifest/ },
     { scenario: "delayed-overlay-route" },
     { scenario: "missing-tag", error: /Unable to find imported OCI manifest digest/ },
     {
       scenario: "missing-alias",
-      error: /Unable to find imported OCC_TEST_KUBERNETES_IMAGE reference/,
+      error: /canonical image not found/,
     },
     { scenario: "missing-cri", error: /synthetic CRI image not found/ },
     { scenario: "missing-worker-cri", error: /synthetic CRI image not found/ },
     { scenario: "lagging-worker-cri" },
+    // A present image may still await the CRI label event, but missing retention
+    // must never publish successful offline workload inputs.
+    { scenario: "lagging-worker-pin" },
+    { scenario: "lagging-worker-missing-pin" },
+    // Malformed CRI fields are not delayed cache or pin observations.
+    { scenario: "string-worker-cri-digests", error: /CRI.*does not match the imported.*digest/ },
+    { scenario: "mixed-worker-cri-digests", error: /CRI.*does not match the imported.*digest/ },
+    { scenario: "malformed-worker-cri-pin", error: /CRI.*reported a malformed.*pin/ },
+    // The worker must independently match containerd even if CRI would agree.
+    {
+      scenario: "wrong-worker-containerd-digest",
+      error: /containerd.*does not match the imported.*digest/,
+    },
+    { scenario: "unpinned-worker-cri", error: /CRI.*did not report the imported.*image pinned/ },
+    { scenario: "wrong-worker-cri-digest", error: /CRI.*does not match the imported.*digest/ },
     { scenario: "absent-worker-cri", error: /level=fatal msg="no such image / },
     // A hung check fails at its own timeout (3 s here, so a busy runner does not trip the
     // host inspects that share it), never retried as a cache miss.
@@ -173,18 +487,56 @@ describe("CI preparation", { concurrency }, () => {
       }
 
       const preparation = await commands.commands();
+      if (scenario === "success") {
+        // The lane's disposable PostgreSQL server gives up durability right after it
+        // starts, before any database is created or migrated, over its published port.
+        const started = preparation.findIndex(
+          ({ command, args }) =>
+            command === "docker" &&
+            args[0] === "compose" &&
+            args.slice(5).join(" ") === "up -d --wait",
+        );
+        assert.notEqual(started, -1, "preparation starts its PostgreSQL server");
+        const sql = (entries) =>
+          entries.filter(({ command }) => command === "postgres").map(({ args }) => args);
+        assert.deepEqual(sql(preparation.slice(0, started)), [], "no SQL before the server");
+        assert.deepEqual(sql(preparation.slice(started)).slice(0, 4), [
+          ["postgres", "ALTER SYSTEM SET fsync = off"],
+          ["postgres", "ALTER SYSTEM SET synchronous_commit = off"],
+          ["postgres", "ALTER SYSTEM SET full_page_writes = off"],
+          ["postgres", "SELECT pg_catalog.pg_reload_conf()"],
+        ]);
+        assert.ok(
+          preparation
+            .slice(started)
+            .every(
+              ({ command, args }) =>
+                command !== "docker" || !args.includes("exec") || args[0] !== "compose",
+            ),
+          "no docker compose exec for SQL",
+        );
+      }
       const criLookups = (suffix) =>
         preparation.filter(
           ({ args }) => args[1] === `k3d-${cluster.name}-${suffix}` && args[2] === "crictl",
         ).length;
-      // Only CRI's "no such image" answer waits for its event-fed cache; other
-      // CRI failures stay final on the first lookup.
+      // Cache misses and valid unpinned observations can lag containerd events;
+      // malformed fields and identity mismatches stay final on the first lookup.
       const expectedWorkerLookups = {
         "missing-worker-cri": 1,
         "lagging-worker-cri": 3,
+        "lagging-worker-pin": 3,
+        "lagging-worker-missing-pin": 3,
+        "string-worker-cri-digests": 1,
+        "mixed-worker-cri-digests": 1,
+        "malformed-worker-cri-pin": 1,
+        "wrong-worker-containerd-digest": 0,
+        "oci-index": 0,
+        "docker-manifest-list": 0,
+        "wrong-worker-cri-digest": 1,
         "hung-worker-cri": 1,
       }[scenario];
-      if (expectedWorkerLookups) {
+      if (expectedWorkerLookups !== undefined) {
         assert.equal(criLookups("agent-0"), expectedWorkerLookups);
       }
       if (scenario === "missing-cri") {
@@ -310,6 +662,72 @@ describe("CI preparation", { concurrency }, () => {
     });
   }
 
+  // The fakes' command server listens on loopback, where any local user can connect. It
+  // must run nothing for a request without its client token (the same request with the
+  // token writes the metadata file), and a shim must run nothing from another listener.
+  test("the fake command server and its shims run nothing for each other's impostors", async (t) => {
+    const root = await fixture(t);
+    const server = await fixtureCommandServer(t, root);
+    const metadata = join(root, "metadata.json");
+    const args = [
+      "buildx",
+      "build",
+      "--output",
+      "type=image,push=false,store=false",
+      "--provenance=false",
+      "--metadata-file",
+      metadata,
+      ".",
+    ];
+    // A shim's complete request: its argv, then each forwarded variable ("=" + value if set).
+    const env = forwardedEnv.map((name) => (name === "CI_FIXTURE_SCENARIO" ? "=success" : ""));
+    const request = (token) =>
+      new Promise((resolve, reject) => {
+        const fields = [...token, "docker", root, String(args.length), ...args, ...env];
+        let reply = "";
+        const socket = connect(server.port, "127.0.0.1", () =>
+          socket.write(fields.map((field) => field + "\0").join("")),
+        );
+        socket.setTimeout(30_000, () => {
+          socket.destroy();
+          reject(new Error("the command server neither answered nor closed the connection"));
+        });
+        socket.setEncoding("utf8");
+        socket.on("data", (chunk) => (reply += chunk));
+        // The server may reset the connection it refuses.
+        socket.on("error", (error) => error.code === "ECONNRESET" || reject(error));
+        socket.on("close", () => resolve(reply));
+      });
+    // The protocol without a token, a wrong token, and the server token sent back.
+    for (const token of [[], ["0".repeat(64)], [server.serverToken]]) {
+      assert.equal(await request(token), "", "an unauthenticated client gets no reply");
+    }
+    // Read, not stat: nothing was written, and no check precedes the read below.
+    await assert.rejects(readFile(join(root, "commands.jsonl")), { code: "ENOENT" });
+    await assert.rejects(readFile(metadata), { code: "ENOENT" });
+    const served = await request([server.clientToken]);
+    assert.match(served, new RegExp(`^${server.serverToken}\n[^]*exit 0\n$`));
+    assert.equal(
+      JSON.parse(await readFile(metadata, "utf8"))["containerimage.config.digest"],
+      "sha256:" + "f".repeat(64),
+    );
+
+    // A listener that is not the fixture's server, as if another user took the port.
+    const impostor = createServer((socket) => {
+      socket.on("error", () => {});
+      socket.once("data", () => socket.end("printf impostor-ran\nexit 0\n"));
+    });
+    const impostorPort = await listen(t, impostor);
+    const misdirected = join(root, "misdirected-docker");
+    await writeFixtureCommand(misdirected, "docker", server, impostorPort);
+    const refused = await spawnResult(misdirected, ["version"], {
+      env: { PATH: "/nonexistent", CI_FIXTURE_SCENARIO: "success" },
+    });
+    assert.equal(refused.status, 125);
+    assert.equal(refused.stdout, "");
+    assert.match(refused.stderr, /fixture command server did not authenticate/);
+  });
+
   // A hosted image lane's cache inputs; the token must reach no build argument or output.
   const imageCacheEnv = {
     GITHUB_ACTIONS: "true",
@@ -318,53 +736,10 @@ describe("CI preparation", { concurrency }, () => {
     ACTIONS_RESULTS_URL: "https://cache.example.test/",
   };
 
-  // The docker shim records argv only: this proves the cache credential stays out of
-  // build arguments and every output preparation hands on, not out of docker's environment.
-  test("repository platform preparation restores the runtime image cache without exporting it", async (t) => {
-    const commands = await fixtureImageCommands(
-      t,
-      "success",
-      "repository-credentials-platform",
-      imageCacheEnv,
-    );
-    const prepared = await commands.prepare();
-    assert.equal(prepared.status, 0, prepared.stderr);
-    const calls = (await commands.commands()).filter(({ command }) => command === "docker");
-    const runtime = calls.filter(({ args }) => args[0] === "buildx" && args.includes("--load"));
-    assert.equal(runtime.length, 1);
-    const { args } = runtime[0];
-    // The engine lacked the probed image, so the lane loaded the build.
-    const probes = calls.filter(({ args }) => args[0] === "buildx" && args.includes("--output"));
-    assert.deepEqual(
-      probes.map(({ args: probe }) => probe.slice(7)),
-      [args.slice(3)],
-    );
-    assert.deepEqual(args.slice(0, 3), ["buildx", "build", "--load"]);
-    assert.equal(
-      args[args.indexOf("--cache-from") + 1],
-      `type=gha,version=2,scope=oce-ci-runtime-${process.platform}-${process.arch}-v1,timeout=60s`,
-    );
-    assert.equal(args.includes("--cache-to"), false);
-    // The fixture derives from the loaded runtime image through the engine's own builder.
-    const fixtureBuilds = calls.filter(({ args }) => args[0] === "build");
-    assert.equal(fixtureBuilds.length, 1);
-    assert.equal(fixtureBuilds[0].args[fixtureBuilds[0].args.indexOf("--builder") + 1], "default");
-    assert.ok(fixtureBuilds[0].args.includes(`RUNTIME_IMAGE=${args[args.indexOf("-t") + 1]}`));
-    const state = await readFile(commands.statePath, "utf8");
-    const githubEnv = await readFile(commands.githubEnv, "utf8");
-    assert.match(githubEnv, /^OCC_TEST_REPOSITORY_CREDENTIALS_PLATFORM_IMAGE=/m);
-    assert.doesNotMatch(
-      JSON.stringify(calls) + state + githubEnv + prepared.stdout + prepared.stderr,
-      /synthetic-cache-credential/,
-    );
-    const cleaned = await commands.cleanup();
-    assert.equal(cleaned.status, 0, cleaned.stderr);
-  });
-
   test("image cache preparation refuses missing credentials and unmapped lanes before building", async (t) => {
     for (const [lane, env] of [
       // A cache lane without its runtime token.
-      ["repository-credentials-platform", { ...imageCacheEnv, ACTIONS_RUNTIME_TOKEN: "" }],
+      ["images-packaging", { ...imageCacheEnv, ACTIONS_RUNTIME_TOKEN: "" }],
       // A lane outside the cache map, even with credentials.
       [
         "docker-model",
@@ -394,14 +769,35 @@ describe("CI preparation", { concurrency }, () => {
 
   // Only main's warm job exports: a lane export on main could land after a newer
   // commit's warm export and replace main's cache with older layers.
-  test("Images and Packaging only restores the image caches, on main pushes too", async (t) => {
-    for (const event of ["pull_request", "merge_group", "workflow_dispatch", "push"]) {
-      const commands = await fixtureImageCommands(t, "success", "images-packaging", {
+  test("image-building lanes restore read-only caches, on main pushes too", async (t) => {
+    const source = JSON.parse(
+      await readFile(join(repositoryRoot, "deploy/runtime/openclaw-source.json"), "utf8"),
+    );
+    for (const [lane, event, scenario] of [
+      ...["pull_request", "merge_group", "workflow_dispatch", "push"].map((event) => [
+        "images-packaging",
+        event,
+        "success",
+      ]),
+      ["k3d-otel", "push", "save-failed"],
+    ]) {
+      const commands = await fixtureImageCommands(t, scenario, lane, {
         ...imageCacheEnv,
         GITHUB_EVENT_NAME: event,
+        NODE_BASE_IMAGE: packagingNodeBaseImage,
+        OPENAI_API_KEY: "synthetic-model-key",
+        OCC_TEST_OPENAI_MODEL: "synthetic-model",
       });
       const prepared = await commands.prepare();
-      assert.equal(prepared.status, 0, `${event}: ${prepared.stderr}`);
+      if (lane === "k3d-otel") {
+        // Stop at image export after both real preparation builds, before routing
+        // downloads. This proves cache orchestration, not Docker or OTLP execution.
+        assert.equal(prepared.status, 1, prepared.stderr);
+        assert.match(prepared.stderr, /synthetic export failure/);
+        await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
+      } else {
+        assert.equal(prepared.status, 0, `${event}: ${prepared.stderr}`);
+      }
       const calls = (await commands.commands()).filter(({ args }) => args[0] === "buildx");
       const builds = calls.filter(({ args }) => args.includes("--load"));
       assert.equal(builds.length, 2, event);
@@ -411,6 +807,20 @@ describe("CI preparation", { concurrency }, () => {
       // the probe must resolve the same ID the build would load.
       for (const { args } of calls) {
         assert.equal(args[args.indexOf("SOURCE_DATE_EPOCH=0") - 1], "--build-arg", event);
+        // The cache probe and final build must select the same upstream source;
+        // the controller image has no OpenClaw source build.
+        const sourceArguments = args.filter((arg) => /^OPENCLAW_/.test(arg));
+        assert.deepEqual(
+          sourceArguments,
+          args.includes("--target")
+            ? []
+            : [
+                `OPENCLAW_COMMIT=${source.commit}`,
+                `OPENCLAW_SOURCE_SHA256=${source.sourceArchiveSha256}`,
+                `OPENCLAW_BUILD_TIMESTAMP=${source.buildTimestamp}`,
+              ],
+          event,
+        );
       }
       assert.match(prepared.stderr, /"stage":"controller-image-reuse","outcome":"absent"/, event);
       assert.match(prepared.stderr, /"stage":"runtime-image-reuse","outcome":"absent"/, event);
@@ -420,9 +830,112 @@ describe("CI preparation", { concurrency }, () => {
         assert.equal(args[args.indexOf("--cache-from") + 1], `${cache},timeout=60s`, event);
         assert.equal(args.includes("--cache-to"), false, event);
       }
+      assert.doesNotMatch(
+        JSON.stringify(calls) +
+          (await readFile(commands.statePath, "utf8")) +
+          (prepared.status === 0 ? await readFile(commands.githubEnv, "utf8") : "") +
+          prepared.stdout +
+          prepared.stderr,
+        /synthetic-cache-credential/,
+      );
       const cleaned = await commands.cleanup();
       assert.equal(cleaned.status, 0, `${event}: ${cleaned.stderr}`);
     }
+  });
+
+  test("installer preparation populates its builder even when the engine holds the images", async (t) => {
+    for (const file of [undefined, "tests/integration/qa-matrix-real.test.mjs"]) {
+      const commands = await fixtureImageCommands(t, "engine-holds-images", "qa-matrix", {
+        ...imageCacheEnv,
+        NODE_BASE_IMAGE: packagingNodeBaseImage,
+        BUILDX_BUILDER: "owned-installer-builder",
+      });
+      // Full Integration selects the whole lane. It needs the same preparation as
+      // a focused file while retaining whole-lane accounting and installer builds.
+      const prepared = await commands.prepare(file ? ["--selected-file", file] : []);
+      assert.equal(prepared.status, 0, prepared.stderr);
+      const builds = (await commands.commands()).filter(({ args }) => args[0] === "buildx");
+      // Tagging an engine image cannot supply this builder's layers. This proves
+      // orchestration, not live cache availability or installation performance.
+      assert.equal(builds.length, 2);
+      assert.ok(
+        builds.every(({ args }) => args.includes("--load") && args.includes("--cache-from")),
+      );
+      assert.ok(builds.every(({ args }) => !args.includes("--cache-to")));
+      const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+      assert.equal(state.selectedFile, file);
+      assert.equal(state.env.BUILDX_BUILDER, "owned-installer-builder");
+      assert.equal(state.env.SOURCE_DATE_EPOCH, "0");
+      assert.equal(state.env.OCC_TEST_QA_RUNTIME_IMAGE, undefined);
+      assert.doesNotMatch(JSON.stringify(state), /synthetic-cache-credential/);
+    }
+  });
+
+  test("whole-lane source builds require their selected builder before setup", async (t) => {
+    for (const [lane, view] of [
+      ["qa-matrix", "default"],
+      ["dev-up-k3d", "default"],
+      ["openshell", "default"],
+      ["openshell-policy", "full-integration"],
+      ["openshell-installers", "full-integration"],
+    ]) {
+      const commands = await fixtureImageCommands(t, "engine-holds-images", lane, {
+        ...imageCacheEnv,
+        OCC_CI_SUITE_VIEW: view,
+        NODE_BASE_IMAGE: packagingNodeBaseImage,
+        CODEX_ACCESS_TOKEN: "synthetic-model-credential",
+        OCC_TEST_OPENAI_MODEL: "synthetic-model",
+        // The hosted action must supply its builder for the full lane, even
+        // though no individual test file was selected. Fail before tool calls.
+        BUILDX_BUILDER: "",
+        OCC_HELM_BIN: "/missing-helm-must-not-run",
+      });
+      const prepared = await commands.prepare();
+      assert.equal(prepared.status, 1, lane);
+      assertStderrMatch(
+        prepared.stderr,
+        /Installer image preparation requires its selected job builder/,
+        lane,
+      );
+      const state = await commands.readState();
+      assert.deepEqual(state.resources, []);
+      await commands.cleanupSuccessfully();
+    }
+  });
+
+  test("full OpenShell preparation reaches stack setup without a duplicate image warm-up", async (t) => {
+    const commands = await fixtureImageCommands(t, "engine-holds-images", "openshell-policy", {
+      ...imageCacheEnv,
+      OCC_CI_SUITE_VIEW: "full-integration",
+      NODE_BASE_IMAGE: packagingNodeBaseImage,
+      CODEX_ACCESS_TOKEN: "synthetic-model-credential",
+      OCC_TEST_OPENAI_MODEL: "synthetic-model",
+      BUILDX_BUILDER: "owned-installer-builder",
+    });
+    const root = dirname(commands.statePath);
+    // Stop at the first shared-stack tool check. This exercises the valid-builder
+    // path without downloading kubectl or simulating the OpenShell installation.
+    await writeFile(
+      join(root, "bin", "helm"),
+      `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(join(root, "commands.jsonl"))}, JSON.stringify({ command: "helm", args: process.argv.slice(2) }) + "\\n");
+process.exit(73);
+`,
+      { mode: 0o700 },
+    );
+    const prepared = await commands.prepare();
+    assert.equal(prepared.status, 1);
+    const calls = await commands.commands();
+    assert.deepEqual(
+      calls.filter(({ command }) => command === "helm").map(({ args }) => args),
+      [["version", "--short"]],
+    );
+    // A separate installer warm-up would perform two Buildx builds here before
+    // the shared stack builds the same images again.
+    assert.equal(calls.filter(({ args }) => args[0] === "buildx").length, 0);
+    assert.deepEqual((await commands.readState()).resources, []);
+    await commands.cleanupSuccessfully();
   });
 
   test("image lanes tag the engine's copy when the restored cache resolves to an image it holds", async (t) => {
@@ -580,6 +1093,21 @@ describe("CI preparation", { concurrency }, () => {
         prepared.stderr,
         new RegExp(`"stage":"runtime-image-reuse","outcome":"${outcome}"`),
       );
+      // Finding 2710: the stopped build's last progress names the step it was on.
+      const progress = {
+        "image-probe-hung": "#12 [openclaw-build 5/9] RUN pnpm build",
+        "image-build-hung": "#14 exporting to image",
+      }[scenario];
+      if (progress) {
+        assertStderrMatch(
+          prepared.stderr,
+          new RegExp(
+            `\\[image-build\\] the runtime image build's last output:\\n${RegExp.escape(progress)}\\n`,
+          ),
+        );
+      } else {
+        assert.doesNotMatch(prepared.stderr, /\[image-build\]/);
+      }
       const calls = (await commands.commands()).filter(({ command }) => command === "docker");
       const builds = calls.filter(({ args }) => args[0] === "buildx");
       assert.equal(
@@ -616,9 +1144,28 @@ describe("CI preparation", { concurrency }, () => {
     assert.match(warmed.stderr, /^\[image-cache-warm\] runtime build$/m);
     assert.match(warmed.stderr, /^\[image-cache-warm\] controller cache export$/m);
     assert.match(warmed.stderr, /^\[image-cache-warm\] runtime cache export$/m);
-    const buildx = (await commands.commands()).filter(({ args }) => args[0] === "buildx");
+    const all = (await commands.commands()).filter(({ args }) => args[0] === "buildx");
+    // The runtime image's OpenClaw build runs alone before that image's build, which
+    // reuses it: on the warm runner it cannot fit beside the bridge tests.
+    const stage = all.filter(({ args }) => args.includes("openclaw-build"));
+    const buildx = all.filter((call) => !stage.includes(call));
     const builds = buildx.filter(({ args }) => args.includes("--load"));
     const exports = buildx.filter(({ args }) => !args.includes("--load"));
+    assert.match(warmed.stderr, /^\[image-cache-warm\] runtime openclaw-build build$/m);
+    const runtimeLoad = builds.find(({ args }) => !args.includes("--target"));
+    assert.equal(stage.length, 1);
+    assert.ok(all.indexOf(stage[0]) < all.indexOf(runtimeLoad));
+    const runtimeTag = runtimeLoad.args.indexOf("-t");
+    assert.deepEqual(stage[0].args, [
+      "buildx",
+      "build",
+      "--output",
+      "type=cacheonly",
+      "--target",
+      "openclaw-build",
+      ...runtimeLoad.args.slice(3, runtimeTag),
+      ...runtimeLoad.args.slice(runtimeTag + 2),
+    ]);
     assert.deepEqual(
       builds.map(({ args }) => (args.includes("--target") ? "controller" : "runtime")).sort(),
       ["controller", "runtime"],
@@ -811,6 +1358,18 @@ describe("CI preparation", { concurrency }, () => {
         [],
         /Image caching requires the hosted image lane/,
       ],
+      [
+        "malformed run ID",
+        { GITHUB_RUN_ID: "0" },
+        [],
+        /Image CI state requires a valid run ID and attempt/,
+      ],
+      [
+        "malformed run attempt",
+        { GITHUB_RUN_ATTEMPT: "01" },
+        [],
+        /Image CI state requires a valid run ID and attempt/,
+      ],
     ]) {
       const commands = await fixtureImageCommands(t, "success", "images-packaging", {
         ...warmCacheEnv,
@@ -901,6 +1460,7 @@ describe("CI preparation", { concurrency }, () => {
     for (const input of [
       ".dockerignore",
       "scripts/ci/prepare.mjs",
+      "scripts/ci/resource-names.ts",
       "scripts/ci/test-suites/images-packaging.json",
       ".github/workflows/ci-image-cache.yml",
     ]) {
@@ -911,100 +1471,22 @@ describe("CI preparation", { concurrency }, () => {
   test("ordinary k3d preparation rejects mutable K3s overrides before creating state", async (t) => {
     const root = await fixture(t);
     const statePath = join(root, "state.json");
-    const result = await runPrepare(
-      ["--lane", "repository-credentials-platform", "--state", statePath],
-      {
-        OPENCLAW_CI_K3S_IMAGE: "rancher/k3s:latest",
-        OCC_DOCKER_BIN: join(root, "no-docker-command"),
-      },
-    );
+    const result = await runPrepare(["--lane", "k3d-fixture-state", "--state", statePath], {
+      OPENCLAW_CI_K3S_IMAGE: "rancher/k3s:latest",
+      OCC_DOCKER_BIN: join(root, "no-docker-command"),
+    });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /OPENCLAW_CI_K3S_IMAGE must be an immutable/);
     await assert.rejects(() => stat(statePath), { code: "ENOENT" });
-  });
-
-  test("repository platform preparation binds runtime clients, an owned gateway and a fresh migrated database", async (t) => {
-    const commands = await fixtureImageCommands(t, "success", "repository-credentials-platform");
-    const prepared = await commands.prepare();
-    assert.equal(prepared.status, 0, prepared.stderr);
-    for (const phase of [
-      "postgres-start",
-      "k3d-create",
-      "runtime-image-build",
-      "platform-fixture-build",
-      "postgres-cluster-image-build",
-      "image-stream-import",
-      "platform-image-import",
-    ]) {
-      assert.match(
-        prepared.stderr,
-        new RegExp(
-          `\\[ci-timing\\] lane=repository-credentials-platform phase=${phase} duration_ms=\\d+`,
-        ),
-      );
-    }
-    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
-    const cluster = state.resources.find(({ kind }) => kind === "k3d-cluster");
-    assert.equal(state.env.OCC_TEST_REPOSITORY_CREDENTIALS_PLATFORM, "1");
-    assert.equal(state.env.OCC_TEST_REPOSITORY_CREDENTIALS_HOST_ADDRESS, "172.19.0.1");
-    assert.match(
-      state.env.OCC_TEST_REPOSITORY_CREDENTIALS_PLATFORM_IMAGE,
-      new RegExp(
-        `^localhost/openclaw-ci-image-[a-z0-9-]+/repository-platform@sha256:${"c".repeat(64)}$`,
-      ),
-    );
-    const imported = state.resources.find(({ kind }) => kind === "k3d-image");
-    assert.equal(imported.cluster, cluster.name);
-    assert.equal(imported.status, "ready");
-    assert.equal(state.env.OPENAI_API_KEY, undefined);
-
-    const file = await commands.prepareFile(
-      "tests/integration/repository-credentials-platform.test.mjs",
-    );
-    assert.equal(file.status, 0, file.stderr);
-    const migrated = JSON.parse(await readFile(commands.statePath, "utf8"));
-    const database = migrated.resources.find(({ kind }) => kind === "postgres-database");
-    assert.match(database.name, /^openclaw_k8s_/);
-    assert.equal(database.status, "ready");
-    const calls = await commands.commands();
-    assert.ok(
-      calls.some(({ command, args }) => command === "corepack" && args[1] === "db:migrate"),
-    );
-    const builds = calls.filter(({ command, args }) => command === "docker" && args[0] === "build");
-    assert.equal(builds.length, 2);
-    for (const { args } of builds) {
-      assert.equal(args[args.indexOf("--builder") + 1], "default");
-      assert.ok(args.includes("--load"));
-    }
-    assert.ok(
-      builds[1].args.includes(`RUNTIME_IMAGE=${builds[0].args[builds[0].args.indexOf("-t") + 1]}`),
-    );
-    const cleaned = await commands.cleanup();
-    assert.equal(cleaned.status, 0, cleaned.stderr);
-    await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
   });
 
   test("PostgreSQL CI selects and contains the per-file IAM barrier fixture", async (t) => {
     const root = await fixture(t);
     const statePath = join(root, "state.json");
     const logPath = join(root, "fake-commands.log");
-    const dockerPath = join(root, "fake-docker.mjs");
     const corepackPath = join(root, "fake-corepack.mjs");
-    await writePostgresState(statePath, composePostgres("synthetic"));
-    await writeFile(
-      dockerPath,
-      `#!${process.execPath}
-import assert from "node:assert/strict";
-import { appendFileSync } from "node:fs";
-const args = process.argv.slice(2);
-assert.equal(args[0], "compose");
-assert.equal(args[1], "-f");
-assert.equal(args[3], "-p");
-assert.deepEqual(args.slice(5, 9), ["exec", "-T", "postgres", "psql"]);
-appendFileSync(process.env.CI_SYNTHETIC_LOG, "docker-exec\\t" + args.at(-1) + "\\n");
-`,
-      { mode: 0o700 },
-    );
+    const postgres = await laneFakePostgres(t);
+    await writePostgresState(statePath, composePostgres("synthetic", postgres.port));
     await writeFile(
       corepackPath,
       `#!${process.execPath}
@@ -1038,11 +1520,12 @@ assert.equal(app.host, migrator.host);
 assert.equal(app.pathname, migrator.pathname);
 assert.equal(app.pathname, "/" + selected.env.OCC_TEST_NATIVE_IAM_BARRIER_DATABASE);
 assert.match(app.pathname, /^\\/openclaw_ci_postgres_native_iam_policy_barrier_[a-f0-9]{12}$/);
+const databases = (state) => state.resources.filter((resource) => resource.kind === "postgres-database" && resource.laneTemplate === undefined);
 const prepared = JSON.parse(await readFile(statePath, "utf8"));
-assert.equal(prepared.resources.filter((resource) => resource.kind === "postgres-database").length, 1);
+assert.equal(databases(prepared).length, 1);
 await selected.cleanup();
 const settled = JSON.parse(await readFile(statePath, "utf8"));
-assert.equal(settled.resources.filter((resource) => resource.kind === "postgres-database").length, 0);
+assert.equal(databases(settled).length, 0);
 const other = await prepareFile({
   lane,
   file: "tests/integration/postgres-worker-agent-revision.test.mjs",
@@ -1053,25 +1536,34 @@ assert.equal(other.env.OCC_TEST_NATIVE_IAM_BARRIER_DATABASE, undefined);
 assert.equal(other.env.OCC_TEST_NATIVE_IAM_BARRIER_MIGRATION_DATABASE_URL, undefined);
 await other.cleanup();
 const finalState = JSON.parse(await readFile(statePath, "utf8"));
-assert.equal(finalState.resources.length, 1);
+// The server and its lane template, which lane cleanup drops.
+assert.deepEqual(finalState.resources.map(({ kind, laneTemplate }) => [kind, laneTemplate]), [["compose-postgres", undefined], ["postgres-database", "ci"]]);
 `;
     const fakeEnv = {
       PATH: root,
       LANG: "C",
-      OCC_DOCKER_BIN: dockerPath,
+      // SQL reaches the server over its port; no container engine command runs.
+      OCC_DOCKER_BIN: join(root, "must-not-run"),
       OPENCLAW_CI_COREPACK_BIN: corepackPath,
       CI_SYNTHETIC_LOG: logPath,
     };
     const result = await runProgram(program, statePath, fakeEnv, 20_000);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, "");
-    const commandLog = (await readFile(logPath, "utf8")).trim().split("\n");
-    assert.equal(commandLog.length, 8);
+    const sessions = () => [
+      ...postgres.sessionLines(),
+      ...readFileSync(logPath, "utf8").trim().split("\n"),
+    ];
+    const commandLog = sessions();
+    // One migrated lane template, then a copy per file, each copy one session.
+    assert.equal(commandLog.length, 7);
+    assert.equal(commandLog.filter((line) => line.startsWith("migrate\t")).length, 1);
     const createCommands = commandLog.filter((line) => line.includes("CREATE DATABASE"));
     const dropCommands = commandLog.filter((line) => line.includes("DROP DATABASE"));
-    assert.equal(createCommands.length, 2);
+    assert.equal(createCommands.length, 3);
+    assert.equal(createCommands.filter((line) => line.includes(" TEMPLATE ")).length, 2);
     assert.equal(dropCommands.length, 2);
-    assert.ok(createCommands.every((line) => line.startsWith("docker-exec\tCREATE DATABASE ")));
+    assert.ok(createCommands.every((line) => line.startsWith("postgres\tCREATE DATABASE ")));
     const githubEnv = join(root, "github.env");
     // Neither GITHUB_ENV nor --github-env may publish the barrier outside the runner.
     for (const [env, extra] of [
@@ -1096,16 +1588,16 @@ assert.equal(finalState.resources.length, 1);
       assert.match(blocked.stderr, /must be prepared within the test runner/);
       await assert.rejects(() => stat(githubEnv), { code: "ENOENT" });
     }
-    assert.equal((await readFile(logPath, "utf8")).trim().split("\n").length, 8);
+    assert.equal(sessions().length, 7);
   });
 
   test("prepareFile copies a per-test database from a ready template it owns without migrating", async (t) => {
     const root = await fixture(t);
     const statePath = join(root, "state.json");
     const logPath = join(root, "fake-commands.log");
-    const dockerPath = join(root, "fake-docker.mjs");
     const corepackPath = join(root, "fake-corepack.mjs");
-    const server = composePostgres("synthetic");
+    const postgres = await laneFakePostgres(t, { logPath });
+    const server = composePostgres("synthetic", postgres.port);
     const database = (name, extra = {}) => ({
       id: `postgres-database-${name}`,
       kind: "postgres-database",
@@ -1123,17 +1615,6 @@ assert.equal(finalState.resources.length, 1);
       database("openclaw_ci_planned", { status: "planned" }),
       database("openclaw_ci_other_project", { composeProject: "openclaw_ci_pg_other" }),
       database("openclaw_ci_other_port", { port: 45432 }),
-    );
-    await writeFile(
-      dockerPath,
-      `#!${process.execPath}
-import assert from "node:assert/strict";
-import { appendFileSync } from "node:fs";
-const args = process.argv.slice(2);
-assert.deepEqual(args.slice(5, 9), ["exec", "-T", "postgres", "psql"]);
-appendFileSync(process.env.CI_SYNTHETIC_LOG, "docker-exec\\t" + args.at(-3) + "\\t" + args.at(-1) + "\\n");
-`,
-      { mode: 0o700 },
     );
     await writeFile(
       corepackPath,
@@ -1179,7 +1660,8 @@ assert.deepEqual(
 );
 await copy.cleanup();
 await template.cleanup();
-console.error(new URL(template.env.OCC_TEST_DATABASE_URL).pathname.slice(1) + " " + copied.pathname.slice(1));
+const laneTemplate = prepared.resources.find((resource) => resource.laneTemplate === "ci").name;
+console.error(laneTemplate + " " + new URL(template.env.OCC_TEST_DATABASE_URL).pathname.slice(1) + " " + copied.pathname.slice(1));
 `;
     const result = await runProgram(
       program,
@@ -1187,36 +1669,48 @@ console.error(new URL(template.env.OCC_TEST_DATABASE_URL).pathname.slice(1) + " 
       {
         PATH: root,
         LANG: "C",
-        OCC_DOCKER_BIN: dockerPath,
+        OCC_DOCKER_BIN: join(root, "must-not-run"),
         OPENCLAW_CI_COREPACK_BIN: corepackPath,
         CI_SYNTHETIC_LOG: logPath,
       },
       20_000,
     );
     assert.equal(result.status, 0, result.stderr);
-    const [templateName, copyName] = result.stderr.trim().split(" ");
+    await assertSuperuserSessions(postgres);
+    const [laneTemplateName, templateName, copyName] = result.stderr.trim().split(" ");
+    assert.match(laneTemplateName, /^openclaw_ci_lane_template_[a-f0-9]{12}$/);
     assert.deepEqual((await readFile(logPath, "utf8")).trim().split("\n"), [
-      `docker-exec\tpostgres\tCREATE DATABASE "${templateName}"`,
-      `docker-exec\t${templateName}\tGRANT CREATE ON DATABASE "${templateName}" TO occ_migrator; CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
-      `migrate\t/${templateName}`,
-      // The copy keeps the template's schemas and migrations; only the database grant is new.
-      `docker-exec\tpostgres\tCREATE DATABASE "${copyName}" TEMPLATE "${templateName}"`,
-      `docker-exec\t${copyName}\tGRANT CREATE ON DATABASE "${copyName}" TO occ_migrator;`,
-      `docker-exec\tpostgres\tDROP DATABASE IF EXISTS "${copyName}" WITH (FORCE)`,
-      `docker-exec\tpostgres\tDROP DATABASE IF EXISTS "${templateName}" WITH (FORCE)`,
+      // The lane's one migration, which each file's database copies.
+      `postgres\tpostgres\tCREATE DATABASE "${laneTemplateName}"`,
+      `postgres\t${laneTemplateName}\tGRANT CREATE ON DATABASE "${laneTemplateName}" TO occ_migrator; CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
+      `migrate\t/${laneTemplateName}`,
+      // A copy keeps the template's schemas and migrations; only the database grant is new.
+      `postgres\tpostgres\tCREATE DATABASE "${templateName}" TEMPLATE "${laneTemplateName}"`,
+      `postgres\tpostgres\tGRANT CREATE ON DATABASE "${templateName}" TO occ_migrator;`,
+      `postgres\tpostgres\tCREATE DATABASE "${copyName}" TEMPLATE "${templateName}"`,
+      `postgres\tpostgres\tGRANT CREATE ON DATABASE "${copyName}" TO occ_migrator;`,
+      `postgres\tpostgres\tDROP DATABASE IF EXISTS "${copyName}" WITH (FORCE)`,
+      `postgres\tpostgres\tDROP DATABASE IF EXISTS "${templateName}" WITH (FORCE)`,
+    ]);
+    // Each copy and its grant share one session, as each drop has its own.
+    assert.deepEqual(postgres.sessionLines().slice(2), [
+      `postgres\tCREATE DATABASE "${templateName}" TEMPLATE "${laneTemplateName}"\tGRANT CREATE ON DATABASE "${templateName}" TO occ_migrator;`,
+      `postgres\tCREATE DATABASE "${copyName}" TEMPLATE "${templateName}"\tGRANT CREATE ON DATABASE "${copyName}" TO occ_migrator;`,
+      `postgres\tDROP DATABASE IF EXISTS "${copyName}" WITH (FORCE)`,
+      `postgres\tDROP DATABASE IF EXISTS "${templateName}" WITH (FORCE)`,
     ]);
   });
 
   test("prepareFile and cleanup in two processes keep each other's state entries", async (t) => {
     const root = await fixture(t);
     const statePath = join(root, "state.json");
-    const dockerPath = join(root, "fake-docker.mjs");
     const corepackPath = join(root, "fake-corepack.mjs");
-    const server = composePostgres("synthetic");
+    // Each statement and command takes a little while, so the two processes' state updates
+    // overlap.
+    const postgres = await laneFakePostgres(t, { onQuery: () => delay(10) });
+    const server = composePostgres("synthetic", postgres.port);
     await writePostgresState(statePath, server);
-    // Each command takes a little while, so the two processes' state updates overlap.
     const slow = `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);\n`;
-    await writeFile(dockerPath, `#!${process.execPath}\n${slow}`, { mode: 0o700 });
     await writeFile(corepackPath, `#!${process.execPath}\n${slow}`, { mode: 0o700 });
     // A template per process, then a copy per test, like the worker revision suite, whose
     // template is the database the runner prepared for its file.
@@ -1241,7 +1735,7 @@ await template.cleanup();
         {
           PATH: root,
           LANG: "C",
-          OCC_DOCKER_BIN: dockerPath,
+          OCC_DOCKER_BIN: join(root, "must-not-run"),
           OPENCLAW_CI_COREPACK_BIN: corepackPath,
         },
         60_000,
@@ -1251,12 +1745,22 @@ await template.cleanup();
       assert.equal(result.status, 0, result.stderr);
     }
     const settled = JSON.parse(await readFile(statePath, "utf8"));
-    assert.deepEqual(settled.resources, [server]);
-    assert.deepEqual((await readdir(root)).sort(), [
-      "fake-corepack.mjs",
-      "fake-docker.mjs",
-      "state.json",
-    ]);
+    // Both processes copied one lane template, which stays until lane cleanup.
+    assert.deepEqual(settled.resources[0], server);
+    assert.deepEqual(
+      settled.resources.slice(1).map(({ kind, laneTemplate, status }) => ({
+        kind,
+        laneTemplate,
+        status,
+      })),
+      [{ kind: "postgres-database", laneTemplate: "ci", status: "ready" }],
+    );
+    assert.deepEqual((await readdir(root)).sort(), ["fake-corepack.mjs", "state.json"]);
+    // Every copy and drop reached the server: per process a copy of the lane template for
+    // its file and 10 per-test copies, each dropped again.
+    const statements = postgres.queries();
+    assert.equal(statements.filter((line) => / TEMPLATE /.test(line)).length, 22);
+    assert.equal(statements.filter((line) => /\tDROP DATABASE /.test(line)).length, 22);
   });
 
   test("the CI state lock removes an exited holder's lock and waits for a live one", async (t) => {
@@ -1266,12 +1770,27 @@ await template.cleanup();
     const exited = spawnSync(process.execPath, ["-e", ""]);
     assert.equal(exited.status, 0);
     await writeFile(lockPath, `${exited.pid} abandoned\n`, { mode: 0o600 });
+    // Places in the queue older than any live waiter's: the exited process's, and one past
+    // its deadline whose pid reads as alive (reused, here this process's).
+    const ticket = (clock, expiry, pid) =>
+      writeFile(
+        join(
+          root,
+          `.state.json.lock.${clock.padStart(20, "0")}.${expiry.padStart(20, "0")}.${pid}.${randomUUID()}.ticket`,
+        ),
+        `${pid} queued\n`,
+        { mode: 0o600 },
+      );
+    await ticket("1", String(process.hrtime.bigint() + 10n ** 12n), exited.pid);
+    await ticket("2", "3", process.pid);
     // A nested call in the same async context reuses the held lock.
     assert.equal(
-      await withStateLock(statePath, () => withStateLock(statePath, async () => "ran")),
+      await withStateLock(statePath, () => withStateLock(statePath, async () => "ran"), {
+        timeoutMs: 10_000,
+      }),
       "ran",
     );
-    await assert.rejects(() => stat(lockPath), { code: "ENOENT" });
+    assert.deepEqual(await readdir(root), []);
 
     const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], {
       stdio: "ignore",
@@ -1289,7 +1808,7 @@ await template.cleanup();
           { timeoutMs: 300 },
         ),
       new RegExp(
-        `Timed out after 300 ms waiting for the CI state lock .* \\(held by pid ${holder.pid}\\)`,
+        `Timed out after 300 ms waiting for the CI state lock .* \\(held by pid ${holder.pid}, 0 waiting ahead\\)`,
       ),
     );
     assert.equal(ran, false);
@@ -1297,114 +1816,119 @@ await template.cleanup();
     assert.deepEqual((await readdir(root)).sort(), ["state.json.lock"]);
   });
 
-  test("repository platform preparation refuses a public relay gateway before importing images", async (t) => {
-    const commands = await fixtureImageCommands(
-      t,
-      "public-gateway",
-      "repository-credentials-platform",
-    );
-    const prepared = await commands.prepare();
-    assert.equal(prepared.status, 1);
-    assert.match(prepared.stderr, /private IPv4 Docker host gateway/);
-    // The image builds overlap cluster creation; nothing reaches the refused cluster.
-    assert.equal(
-      (await commands.commands()).some(({ args }) => args[0] === "exec" && args[1] === "-i"),
-      false,
-    );
-    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
-    assert.equal(
-      state.resources.some(({ kind }) => kind === "k3d-image"),
-      false,
-    );
-    assert.equal(state.env, undefined);
-    await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
-    const cleaned = await commands.cleanup();
-    assert.equal(cleaned.status, 0, cleaned.stderr);
+  test("the CI state lock serves waiters in arrival order across processes", async (t) => {
+    const root = await fixture(t);
+    const statePath = join(root, "state.json");
+    const orderPath = join(root, "order");
+    const lock = new URL("../../scripts/ci/state-lock.ts", import.meta.url).href;
+    // Each contender takes the lock `times` times in a row and records its name while
+    // holding it for 50 ms.
+    const contender = (name, times) =>
+      spawnResult(process.execPath, [
+        "--input-type=module",
+        "-e",
+        `import { appendFileSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
+const { withStateLock } = await import(${JSON.stringify(lock)});
+const [statePath, orderPath, name, times] = process.argv.slice(1);
+for (let index = 0; index < Number(times); index += 1) {
+  await withStateLock(statePath, async () => {
+    appendFileSync(orderPath, name + "\\n");
+    await delay(50);
+  });
+}`,
+        statePath,
+        orderPath,
+        name,
+        String(times),
+      ]);
+    // Each waiter holds a ticket next to the lock while it waits.
+    const waiting = (count) =>
+      waitUntil(
+        `${count} waiters to queue`,
+        async () =>
+          (await readdir(root)).filter((name) => name.endsWith(".ticket")).length >= count,
+        { timeoutMs: 20_000, intervalMs: 10 },
+      );
+    let release;
+    const holding = withStateLock(statePath, () => new Promise((resolve) => (release = resolve)));
+    await waitUntil("the test to hold the state lock", () => release, { intervalMs: 10 });
+    // The contenders queue one at a time, behind this process's hold. "first" asks again as
+    // soon as it releases: before tickets, its process re-took the lock at once, and a
+    // waiter that had backed off to 100 ms polls lost to newer ones (finding 2179).
+    const runs = [];
+    for (const [index, [name, times]] of [
+      ["first", 2],
+      ["second", 1],
+      ["third", 1],
+      ["fourth", 1],
+    ].entries()) {
+      runs.push(contender(name, times));
+      await waiting(index + 1);
+    }
+    // A second call from this process queues behind them too.
+    const local = withStateLock(statePath, () => appendFile(orderPath, "local\n"));
+    await waiting(5);
+    const released = Date.now();
+    release();
+    await holding;
+    for (const result of await Promise.all(runs)) {
+      assert.equal(result.status, 0, result.stderr);
+    }
+    await local;
+    const elapsed = Date.now() - released;
+    assert.deepEqual((await readFile(orderPath, "utf8")).trim().split("\n"), [
+      "first",
+      "second",
+      "third",
+      "fourth",
+      "local",
+      "first",
+    ]);
+    // Five 50 ms holds; each hand-off is a 5 ms poll by the next waiter.
+    t.diagnostic(`six waiters served in ${elapsed} ms`);
+    assert.ok(elapsed < 5_000, `six waiters took ${elapsed} ms`);
+    assert.deepEqual(await readdir(root), ["order"]);
   });
 
-  test("installed repository preparation is refused before prerequisite checks or side effects", async (t) => {
+  test("retired repository lane is unknown before inputs, state, or commands", async (t) => {
     const root = await fixture(t);
-    const statePath = join(root, "installed-state.json");
-    const configPath = join(root, "app.json");
-    const keyPath = join(root, "app.pem");
-    await writeFile(configPath, "{}", { mode: 0o600 });
-    await writeFile(keyPath, "test-only key", { mode: 0o600 });
-    const args = ["--lane", "repository-credentials-installed", "--state", statePath];
-
-    // An operator who selects the lane without any inputs learns that it is
-    // unavailable, instead of being asked for model, App and image inputs first.
-    const unprepared = await runPrepare(args, {});
-    assert.equal(unprepared.status, 1);
-    assert.match(
-      unprepared.stderr,
-      /Installed repository qualification is temporarily unavailable/,
+    const manifest = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
+    assert.equal(Object.hasOwn(manifest.lanes, "repository-credentials-installed"), false);
+    const program = `
+import assert from "node:assert/strict";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+let commands = 0;
+childProcess.spawn = () => {
+  commands += 1;
+  throw new Error("Preparation must not run commands");
+};
+syncBuiltinESMExports();
+const { prepareLane, prepareFile } = await import(process.argv[1]);
+for (const prepare of [prepareLane, prepareFile]) {
+  await assert.rejects(
+    prepare({
+      lane: "repository-credentials-installed",
+      ...(prepare === prepareFile
+        ? { file: "tests/integration/repository-credentials-k3d-real.test.mjs" }
+        : {}),
+      statePath: process.argv[2],
+    }),
+    { message: "Unknown CI lane: repository-credentials-installed" },
+  );
+}
+assert.equal(commands, 0);
+`;
+    const result = await runProgram(
+      program,
+      join(root, "state.json"),
+      // No ambient credentials or real input files; even command lookup is isolated.
+      { PATH: root },
+      10_000,
     );
-    assert.doesNotMatch(unprepared.stderr, /Missing required CI input/);
-    await assert.rejects(() => stat(statePath), { code: "ENOENT" });
-
-    // Inputs that previously passed the early checks cannot create a preparation state
-    // while remote cleanup lacks a safe ownership boundary.
-    const blocked = await runPrepare(args, {
-      OPENAI_API_KEY: "test-only-model-key",
-      OCC_TEST_OPENAI_MODEL: "test-model",
-      NODE_BASE_IMAGE: "",
-      OCC_TEST_REPOSITORY_CREDENTIALS_AUTHORIZED: "1",
-      OCC_TEST_REPOSITORY_CREDENTIALS_REPOSITORY: "fixture/repository",
-      OCC_TEST_REPOSITORY_CREDENTIALS_APP_CONFIG_FILE: configPath,
-      OCC_TEST_REPOSITORY_CREDENTIALS_APP_KEY_FILE: keyPath,
-      OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE: immutableImage,
-      OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE_MODE: "release",
-      OCC_TEST_REPOSITORY_CREDENTIALS_UPSTREAM_CIDRS: "203.0.113.1/32",
-      OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: immutableImage,
-      OCC_TEST_KUBERNETES_RUNTIME_IMAGE: immutableImage,
-      OCC_TEST_PRODUCTION_POSTGRES_IMAGE: immutableImage,
-      OCC_TEST_PRODUCTION_NODE_IMAGE: immutableImage,
-    });
-    assert.equal(blocked.status, 1);
-    assert.match(blocked.stderr, /Installed repository qualification is temporarily unavailable/);
-    await assert.rejects(() => stat(statePath), { code: "ENOENT" });
-
-    // Per-file preparation, which the test runner uses, is refused the same way.
-    const perFile = await runPrepare(
-      [...args, "--file", "tests/integration/repository-credentials-k3d-real.test.mjs"],
-      {},
-    );
-    assert.equal(perFile.status, 1);
-    assert.match(perFile.stderr, /Installed repository qualification is temporarily unavailable/);
-    await assert.rejects(() => stat(statePath), { code: "ENOENT" });
-  });
-
-  test("the installed repository journey refuses direct execution before fixture setup", async (t) => {
-    const root = await fixture(t);
-    // Direct execution must fail at the safety guard even without credentials or
-    // a cluster, before any setup or provider operation can be attempted.
-    const result = await spawnResult(
-      process.execPath,
-      [
-        "--test",
-        "--test-name-pattern=^installed ",
-        "tests/integration/repository-credentials-k3d-real.test.mjs",
-      ],
-      {
-        env: {
-          HOME: root,
-          PATH: process.env.PATH,
-          OCC_TEST_REPOSITORY_CREDENTIALS_REAL: "1",
-        },
-        timeout: 15000,
-      },
-    );
-    assert.equal(result.status, 1);
-    const output = `${result.stdout}\n${result.stderr}`;
-    // Every selected installed case refuses; read the run's own totals rather
-    // than hard-coding how many installed cases that file has (finding 1032).
-    const summary = nodeTestSummary(output);
-    assert.ok(summary.tests >= 1, JSON.stringify(summary));
-    assert.equal(summary.fail, summary.tests, JSON.stringify(summary));
-    assert.equal(
-      (output.match(/Installed repository qualification is temporarily unavailable/g) ?? []).length,
-      summary.tests,
-    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(await readdir(root), []);
   });
 
   test("production upgrade preparation requires two distinct immutable image pairs before creating resources", async (t) => {
@@ -1494,11 +2018,10 @@ await template.cleanup();
     ]);
   });
 
-  test("ordinary CI groups require platform proof and exclude installed live repository writes", async () => {
+  test("ordinary CI groups require controlled repository coverage and exclude installed live repository writes", async () => {
     const manifest = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
     for (const name of ["ci", "full"]) {
-      assert.ok(manifest.groups[name].includes("repository-credentials-platform"));
-      assert.ok(!manifest.groups[name].includes("repository-credentials-installed"));
+      assert.ok(manifest.groups[name].includes("repository-credentials-container"));
       for (const lane of manifest.groups[name]) {
         assert.notEqual(manifest.lanes[lane].env?.OCC_TEST_REPOSITORY_CREDENTIALS_REAL, "1");
       }
@@ -1508,7 +2031,7 @@ await template.cleanup();
   test("CI installs browsers for the PostgreSQL sign-in suite's owning lane", async () => {
     const manifest = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
     const owners = Object.entries(manifest.lanes).filter(([, lane]) =>
-      lane.files.some((file) => file.path === "tests/integration/postgres-github-sign-in.test.mjs"),
+      lane.files.some((file) => file.path === "tests/integration/postgres-oidc-sign-in.test.mjs"),
     );
     assert.equal(owners.length, 1);
     const [lane] = owners[0];
@@ -1524,6 +2047,496 @@ await template.cleanup();
       browserSetup.if.split(/\s*\|\|\s*/).includes(`inputs.lane == '${lane}'`),
       `${lane} must install browsers before running the PostgreSQL sign-in suite`,
     );
+  });
+
+  test("focused CI selection fails before tool setup or lane preparation", async () => {
+    const action = loadYaml(
+      await readFile(join(repositoryRoot, ".github/actions/run-ci-lane/action.yml"), "utf8"),
+    );
+    const steps = action.runs.steps;
+    const index = steps.findIndex((step) => step.name === "Validate focused test selection");
+    assert.ok(index >= 0);
+    const validation = steps[index];
+    assert.equal(validation.if, "inputs.test-file != ''");
+    assert.notEqual(validation["continue-on-error"], true);
+    for (const name of [
+      "Set up CI tools",
+      "Build Go CLI for development installation proof",
+      "Prepare lane",
+    ]) {
+      assert.ok(
+        index < steps.findIndex((step) => step.name === name),
+        `Validate selection before ${name}`,
+      );
+    }
+    // Execute the action's real guard, using a real manifest member and a file owned by another lane.
+    for (const [file, status] of [
+      ["tests/integration/local-first-agent-openshell-real.test.mjs", 0],
+      ["tests/integration/ci-runner.test.mjs", 1],
+      ["tests/integration/../integration/local-first-agent-openshell-real.test.mjs", 1],
+    ]) {
+      const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", validation.run], {
+        cwd: repositoryRoot,
+        env: { ...process.env, CI_SELECTED_LANE: "openshell", CI_SELECTED_TEST_FILE: file },
+        encoding: "utf8",
+      });
+      assert.equal(result.status, status, result.stderr);
+      if (status !== 0) {
+        assert.match(result.stderr, /invalid-file-selection/);
+      }
+    }
+  });
+
+  test("advisory labels select only requested jobs and bind focused proof to the PR merge", async (t) => {
+    const workflow = loadYaml(
+      await readFile(join(repositoryRoot, ".github/workflows/qa-advisory.yml"), "utf8"),
+    );
+    const selector = workflow.jobs.eligibility.steps.find(({ id }) => id === "selection");
+    // Matrix selection must reach the same narrow leaf invocation and isolated evidence.
+    for (const [name, lane, runner, environment, prefix] of [
+      [
+        "openshell",
+        "openshell",
+        "ubuntu-24.04",
+        "integration-qa-pr",
+        "qa-advisory-${{ matrix.shard }}",
+      ],
+      [
+        "local-installation",
+        "dev-up-k3d",
+        "ubuntu-22.04",
+        undefined,
+        "qa-advisory-local-installation-${{ matrix.shard }}",
+      ],
+      [
+        "qa",
+        "qa-matrix",
+        "blacksmith-8vcpu-ubuntu-2404",
+        "integration-qa-pr",
+        "qa-advisory-${{ matrix.installation }}",
+      ],
+    ]) {
+      const job = workflow.jobs[name];
+      const action = job.steps.find((step) => step.uses === "./.github/actions/run-ci-lane");
+      assert.equal(job["runs-on"], runner);
+      assert.equal(job.environment, environment);
+      assert.equal(job.strategy["fail-fast"], false);
+      assert.equal(action.with.lane, lane);
+      assert.equal(
+        action.with["test-file"],
+        name === "qa" ? "tests/integration/qa-matrix-real.test.mjs" : "${{ matrix.file }}",
+      );
+      assert.equal(action.with["artifact-prefix"], prefix);
+    }
+    const root = await fixture(t);
+    const source = join(root, "source");
+    await mkdir(source);
+    const git = (cwd, ...args) => {
+      const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+      return result.stdout.trim();
+    };
+    git(source, "init", "-b", "main");
+    git(source, "config", "user.name", "Fixture");
+    git(source, "config", "user.email", "fixture@example.invalid");
+    const manifestDirectory = "scripts/ci/test-suites";
+    await mkdir(join(source, manifestDirectory), { recursive: true });
+    const manifests = {};
+    for (const lane of ["openshell", "dev-up-k3d"]) {
+      const text = await readFile(join(repositoryRoot, manifestDirectory, `${lane}.json`), "utf8");
+      manifests[lane] = JSON.parse(text).files.map(({ path }) => path);
+      await writeFile(join(source, manifestDirectory, `${lane}.json`), text);
+    }
+    git(source, "add", ".");
+    git(source, "commit", "-m", "base");
+    git(source, "checkout", "-b", "feature");
+    git(source, "commit", "--allow-empty", "-m", "head");
+    const head = git(source, "rev-parse", "HEAD");
+    git(source, "checkout", "main");
+    git(source, "commit", "--allow-empty", "-m", "base advance");
+    const base = git(source, "rev-parse", "HEAD");
+    git(source, "merge", "--no-ff", "feature", "-m", "merge");
+    const sha = git(source, "rev-parse", "HEAD");
+    // Checkout uses shallow history: parent identity must come from the commit headers.
+    const checkout = join(root, "checkout");
+    git(root, "clone", "--depth=1", `file://${source}`, checkout);
+    assert.equal(git(checkout, "rev-parse", "--is-shallow-repository"), "true");
+    const evaluate = (expression, context) =>
+      runInNewContext(
+        expression
+          .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+          .replaceAll("labels.*.name", "labels.map(({ name }) => name)")
+          .replace(/\.([a-zA-Z][\w]*-[\w-]+)/g, '["$1"]'),
+        {
+          // Actions string comparisons, including contains, ignore case.
+          contains: (list, value) =>
+            list.some((entry) => entry.toLowerCase() === value.toLowerCase()),
+          format: (text, value) => text.replace("{0}", value),
+          fromJSON: JSON.parse,
+          ...context,
+        },
+      );
+    const event = (labels) => ({
+      action: "synchronize",
+      number: 7,
+      pull_request: {
+        user: { login: "contributor" },
+        labels: labels.map((name) => ({ name })),
+        base: { sha: base },
+        head: { sha: head, repo: { full_name: "example/oce" } },
+      },
+    });
+    const context = (payload, name = "pull_request") => ({
+      github: {
+        event: payload,
+        event_name: name,
+        ref: name === "pull_request" ? "refs/pull/7/merge" : "refs/heads/main",
+        repository: "example/oce",
+        actor: "contributor",
+        sha,
+        run_id: "123",
+      },
+      vars: { QA_ADVISORY_ON_PUSH: "true" },
+    });
+    const keycloak = "qa-keycloak-installation";
+    const model = "qa-openclaw-model-ui";
+    const compose = "qa-openshell-compose";
+    const run = async (payload, name = "pull_request", overrides = {}) => {
+      const input = join(root, "event.json");
+      const output = join(root, "output");
+      const summary = join(root, "summary");
+      await writeFile(input, JSON.stringify(payload));
+      await writeFile(output, "");
+      await writeFile(summary, "");
+      const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", selector.run], {
+        cwd: checkout,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GITHUB_EVENT_PATH: input,
+          GITHUB_EVENT_NAME: name,
+          GITHUB_REF: context(payload, name).github.ref,
+          GITHUB_SHA: sha,
+          GITHUB_RUN_ID: "123",
+          GITHUB_RUN_ATTEMPT: "1",
+          GITHUB_OUTPUT: output,
+          GITHUB_STEP_SUMMARY: summary,
+          ...overrides,
+        },
+      });
+      const outputs = Object.fromEntries(
+        (await readFile(output, "utf8"))
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => {
+            const index = line.indexOf("=");
+            return [line.slice(0, index), line.slice(index + 1)];
+          }),
+      );
+      return { ...result, outputs, summary: await readFile(summary, "utf8") };
+    };
+    const fullCounts = [manifests["dev-up-k3d"].length, 2, manifests.openshell.length, 1];
+    for (const [labels, counts, name = "pull_request"] of [
+      [["Full-QA", model], fullCounts],
+      [
+        ["QA-Keycloak-Installation", "qa-OpenClaw-model-ui"],
+        [1, 1, 0, 0],
+      ],
+      [
+        [keycloak, "QA-KEYCLOAK-INSTALLATION"],
+        [1, 0, 0, 0],
+      ],
+      [[keycloak], [1, 0, 0, 0]],
+      [[model], [0, 1, 0, 0]],
+      [[compose], [0, 0, 1, 0]],
+      [
+        [keycloak, model],
+        [1, 1, 0, 0],
+      ],
+      [
+        [compose, model],
+        [0, 1, 1, 0],
+      ],
+      [
+        [compose, keycloak],
+        [1, 0, 1, 0],
+      ],
+      [
+        [compose, keycloak, model],
+        [1, 1, 1, 0],
+      ],
+      [["full-qa"], fullCounts],
+      [["full-qa", compose, keycloak, model], fullCounts],
+      [[], fullCounts, "schedule"],
+      [[], fullCounts, "workflow_dispatch"],
+      [[], [0, ...fullCounts.slice(1)], "push"],
+    ]) {
+      const payload = event(labels);
+      const ctx = context(payload, name);
+      assert.equal(evaluate(workflow.jobs.eligibility.if, ctx), true);
+      const result = await run(payload, name);
+      assert.equal(result.status, 0, result.stderr);
+      const outputs = Object.fromEntries(
+        Object.entries(workflow.jobs.eligibility.outputs).map(([key, expression]) => [
+          key,
+          evaluate(expression, { ...ctx, steps: { selection: { outputs: result.outputs } } }),
+        ]),
+      );
+      ctx.needs = { eligibility: { outputs } };
+      const groups = ["local-installation", "qa", "openshell", "oidc-agent-chat"];
+      for (const [index, group] of groups.entries()) {
+        const job = workflow.jobs[group];
+        const enabled = evaluate(job.if, ctx);
+        assert.equal(enabled, counts[index] > 0, `${name}/${labels}: ${group} gate`);
+        if (enabled && job.strategy) {
+          const rows = evaluate(job.strategy.matrix, ctx).include;
+          assert.equal(rows.length, counts[index], `${name}/${labels}: ${group} rows`);
+          if (group === "qa") {
+            for (const matrix of rows) {
+              const rowContext = { ...ctx, matrix };
+              for (const [variable, expected] of [
+                ["OCC_TEST_QA_INSTALLATION", matrix.installation],
+                ["OCC_TEST_QA_PRESET", matrix.preset],
+                ["OCC_TEST_QA_SCENARIOS", matrix.scenarios],
+                ["OCC_TEST_QA_SOURCE_SHA", matrix.focused ? sha : "working-tree"],
+                ["OCC_TEST_BROWSER_EXECUTABLE", matrix.focused ? "/usr/bin/google-chrome" : ""],
+              ]) {
+                assert.equal(evaluate(job.env[variable], rowContext), expected);
+              }
+              for (const [step, expected] of [
+                ["Materialize focused OpenClaw credentials", matrix.focused],
+                ["Materialize selected QA credentials", !matrix.focused],
+              ]) {
+                assert.equal(
+                  evaluate(job.steps.find(({ name }) => name === step).if, rowContext),
+                  expected,
+                );
+              }
+            }
+            assert.deepEqual(
+              JSON.parse(JSON.stringify(rows)),
+              labels.some((label) => label.toLowerCase() === "full-qa") || name !== "pull_request"
+                ? ["compose", "kubernetes"].map((installation) => ({
+                    installation,
+                    preset: "Codex",
+                    scenarios: "console-secrets",
+                    focused: false,
+                  }))
+                : [
+                    {
+                      installation: "kubernetes",
+                      preset: "OpenClaw",
+                      scenarios: "model-ui",
+                      focused: true,
+                    },
+                  ],
+            );
+          } else {
+            assert.equal(new Set(rows.map(({ shard }) => shard)).size, rows.length);
+            const expected = group === "openshell" ? manifests.openshell : manifests["dev-up-k3d"];
+            assert.deepEqual(
+              rows.map(({ file }) => file),
+              counts[index] === expected.length
+                ? expected
+                : [
+                    group === "openshell"
+                      ? "tests/integration/local-first-agent-openshell-real.test.mjs"
+                      : "tests/integration/dev-up-k3d-keycloak-real.test.ts",
+                  ],
+            );
+          }
+        }
+      }
+      assert.match(result.summary, new RegExp(sha));
+      if (name === "pull_request" && !labels.some((label) => label.toLowerCase() === "full-qa")) {
+        assert.match(result.summary, new RegExp(base));
+        assert.match(result.summary, new RegExp(head));
+      }
+    }
+    // Admission and cancellation use the added label, while selection uses all current labels.
+    for (const label of [keycloak, model, compose, "full-qa", "unrelated"]) {
+      const payload = { ...event([keycloak, label]), action: "labeled", label: { name: label } };
+      const ctx = context(payload);
+      const allowed = label !== "unrelated";
+      assert.equal(evaluate(workflow.jobs.eligibility.if, ctx), allowed);
+      const group = workflow.concurrency.group.replace(/\$\{\{([\s\S]*?)\}\}/g, (_, expression) =>
+        String(evaluate(expression, ctx)),
+      );
+      assert.match(group, allowed ? /pr-7/ : /run-123/);
+    }
+    for (const ctx of [
+      context(event([])),
+      context({
+        ...event([keycloak]),
+        pull_request: {
+          ...event([keycloak]).pull_request,
+          head: { sha: head, repo: { full_name: "fork/oce" } },
+        },
+      }),
+      {
+        ...context(event([keycloak])),
+        github: { ...context(event([keycloak])).github, actor: "dependabot[bot]" },
+      },
+      context({
+        ...event([keycloak]),
+        pull_request: { ...event([keycloak]).pull_request, user: { login: "dependabot[bot]" } },
+      }),
+      { ...context(event([]), "push"), vars: { QA_ADVISORY_ON_PUSH: "false" } },
+    ]) {
+      assert.equal(evaluate(workflow.jobs.eligibility.if, ctx), false);
+    }
+    for (const [payload, overrides] of [
+      [event([keycloak]), { GITHUB_SHA: head }],
+      [
+        {
+          ...event([model]),
+          pull_request: { ...event([model]).pull_request, base: { sha: head } },
+        },
+        {},
+      ],
+    ]) {
+      const result = await run(payload, "pull_request", overrides);
+      assert.notEqual(
+        result.status,
+        0,
+        "Mismatched source must fail before publishing job selection.",
+      );
+      assert.deepEqual(result.outputs, {});
+    }
+    // Full selection must reject an empty manifest; intentionally unselected groups stay empty.
+    for (const lane of ["openshell", "dev-up-k3d"]) {
+      const path = join(checkout, manifestDirectory, `${lane}.json`);
+      const original = await readFile(path, "utf8");
+      await writeFile(path, JSON.stringify({ ...JSON.parse(original), files: [] }));
+      const result = await run(event(["full-qa"]));
+      assert.notEqual(result.status, 0, `Full selection must not silently drop ${lane}.`);
+      assert.deepEqual(result.outputs, {});
+      await writeFile(path, original);
+    }
+    const manifestPath = join(checkout, manifestDirectory, "dev-up-k3d.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    manifest.files = manifest.files.filter(({ path }) => !path.includes("keycloak"));
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    assert.notEqual(
+      (await run(event([keycloak]))).status,
+      0,
+      "A missing fixed file must fail closed.",
+    );
+  });
+
+  test("focused advisory QA validates its inputs and materializes only the selected provider", async (t) => {
+    const workflow = loadYaml(
+      await readFile(join(repositoryRoot, ".github/workflows/qa-advisory.yml"), "utf8"),
+    );
+    const job = workflow.jobs.qa;
+    const selected = job.steps.find(
+      ({ name }) => name === "Materialize focused OpenClaw credentials",
+    );
+    const original = job.steps.find(({ name }) => name === "Materialize selected QA credentials");
+    assert.equal(job.environment, "integration-qa-pr");
+    assert.deepEqual(selected.env, { OPENAI_API_KEY: "${{ secrets.OPENAI_API_KEY }}" });
+    assert.deepEqual(original.env, { CODEX_ACCESS_TOKEN: "${{ secrets.CODEX_ACCESS_TOKEN }}" });
+    assert.equal(selected.if, "matrix.focused");
+    assert.equal(original.if, "${{ !matrix.focused }}");
+    assert.equal(workflow.jobs["local-installation"].environment, undefined);
+    assert.equal(
+      job.env.OCC_TEST_QA_OPENAI_MODEL,
+      "${{ matrix.focused && vars.OCC_TEST_OPENAI_MODEL || '' }}",
+    );
+    assert.equal(
+      job.env.OCC_TEST_QA_SOURCE_SHA,
+      "${{ matrix.focused && github.sha || 'working-tree' }}",
+    );
+    const root = await fixture(t);
+    for (const [index, [key, model, expected]] of [
+      ["", "model", 1],
+      ["key", " ", 1],
+      ["synthetic-key", "synthetic-model", 0],
+    ].entries()) {
+      const runRoot = join(root, String(index));
+      await mkdir(runRoot);
+      const environment = join(runRoot, "environment");
+      const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", selected.run], {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          RUNNER_TEMP: runRoot,
+          GITHUB_ENV: environment,
+          OPENAI_API_KEY: key,
+          CODEX_ACCESS_TOKEN: "",
+          OCC_TEST_QA_INSTALLATION: "kubernetes",
+          OCC_TEST_QA_PRESET: "OpenClaw",
+          OCC_TEST_QA_SCENARIOS: "model-ui",
+          OCC_TEST_QA_OPENAI_MODEL: model,
+        },
+      });
+      assert.equal(result.status, expected, result.stderr);
+      if (expected === 0) {
+        const entries = (await readFile(environment, "utf8")).trim().split("\n");
+        assert.equal(entries.length, 2);
+        assert.match(entries[1], /^OCC_TEST_QA_ARTIFACTS=/);
+        assert.match(entries[0], /^OCC_TEST_QA_OPENAI_KEY_FILE=/);
+        const path = entries[0].split("=")[1];
+        assert.equal(await readFile(path, "utf8"), key);
+        assert.equal((await stat(path)).mode & 0o777, 0o600);
+        assert.equal((await stat(dirname(path))).mode & 0o777, 0o700);
+        assert.ok(!result.stdout.includes(key));
+      } else {
+        await assert.rejects(stat(join(runRoot, "qa-matrix-credentials")), { code: "ENOENT" });
+      }
+    }
+  });
+
+  test("installer cache selection covers whole lanes and preserves focused image selection", async (t) => {
+    const action = loadYaml(
+      await readFile(join(repositoryRoot, ".github/actions/run-ci-lane/action.yml"), "utf8"),
+    );
+    const select = action.runs.steps.find((step) => step.id === "image-mode");
+    const root = await fixture(t);
+    for (const [index, [lane, file, sourceBuild, firstAgent, view = "default"]] of [
+      ["dev-up-k3d", "", "true", "false"],
+      ["qa-matrix", "", "true", "false"],
+      ["openshell", "", "true", "false"],
+      ["qa-matrix", "tests/integration/qa-matrix-real.test.mjs", "true", "false"],
+      ["dev-up-k3d", "tests/integration/dev-up-k3d-keycloak-real.test.ts", "true", "false"],
+      ["openshell", "tests/integration/dev-up-openshell-k3d-real.test.mjs", "true", "false"],
+      ["openshell", "tests/integration/local-first-agent-openshell-real.test.mjs", "false", "true"],
+      ["openshell", "tests/integration/openshell-refresh-real.test.ts", "false", "false"],
+      ["openshell-policy", "", "true", "false", "full-integration"],
+      ["openshell-installers", "", "true", "false", "full-integration"],
+      [
+        "openshell-policy",
+        "tests/integration/openshell-refresh-real.test.ts",
+        "false",
+        "false",
+        "full-integration",
+      ],
+    ].entries()) {
+      const output = join(root, `image-mode-${index}`);
+      // Run the action's actual selector: confusing these paths can replace source-build proof
+      // with selected images, or leave whole-lane installer builds without a primed builder.
+      const result = spawnSync("bash", ["-e", "-c", select.run], {
+        cwd: repositoryRoot,
+        env: {
+          ...process.env,
+          CI_SELECTED_LANE: lane,
+          CI_SELECTED_TEST_FILE: file,
+          OCC_CI_SUITE_VIEW: view,
+          GITHUB_OUTPUT: output,
+        },
+        encoding: "utf8",
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const outputs = Object.fromEntries(
+        (await readFile(output, "utf8"))
+          .trim()
+          .split("\n")
+          .map((line) => line.split("=")),
+      );
+      assert.deepEqual(outputs, { "source-build": sourceBuild, "first-agent": firstAgent });
+    }
   });
 
   test("Kubernetes test helper passes an explicit Codex localhost seccomp profile into runtime config", () => {
@@ -1665,7 +2678,7 @@ await template.cleanup();
           cluster,
           image: immutableImage,
           // The current runtime must still reject unrelated setup failures before node writes.
-          codexVersion: "0.163.0-alpha.2",
+          codexVersion: "0.164.0",
           execFile: execFileForRuntimeDefaultFailure((command, args) => {
             const commandText = `${command} ${args.join(" ")}`;
             assert.match(commandText, /--namespace/);
@@ -1857,15 +2870,11 @@ await template.cleanup();
     assert.match(seccomp.profileSha256, /^[a-f0-9]{64}$/);
     assert.equal(
       seccomp.dockerProfilePath,
-      join(
-        clusterDirectory,
-        "docker-seccomp",
-        `codex-0.163.0-alpha.2-${seccomp.profileSha256}.json`,
-      ),
+      join(clusterDirectory, "docker-seccomp", `codex-0.164.0-${seccomp.profileSha256}.json`),
     );
     const profileData = await readFile(seccomp.dockerProfilePath, "utf8");
     assert.deepEqual(JSON.parse(profileData), installedProfile);
-    assert.equal((await stat(seccomp.dockerProfilePath)).mode & 0o777, 0o644);
+    assert.equal((await stat(seccomp.dockerProfilePath)).mode & 0o777, 0o600);
   });
 
   test("prepareLane fails closed instead of overwriting an existing CI state file", async (t) => {
@@ -1898,12 +2907,114 @@ await template.cleanup();
     assert.equal((await stat(statePath)).mode & 0o777, 0o600);
   });
 
+  test("prepareFile refuses a state file it does not own before using it", async (t) => {
+    const root = await fixture(t);
+    const statePath = join(root, "state.json");
+    const owned = {
+      version: 1,
+      repositoryRoot,
+      lane: "postgres-application",
+      prefix: "openclaw-ci-local-foreign-state",
+      statePath,
+      resources: [composePostgres("foreign_state")],
+    };
+    for (const [label, change, error] of [
+      ["another version", { version: 2 }, /Unsupported CI state version: 2/],
+      [
+        "another checkout",
+        { repositoryRoot: join(root, "other-checkout") },
+        /CI state belongs to another repository root/,
+      ],
+      [
+        "another prefix",
+        { prefix: "someone-else" },
+        /CI state prefix is not an OpenClaw Enterprise CI prefix/,
+      ],
+      ["no resource list", { resources: {} }, /CI state resources must be an array/],
+    ]) {
+      const state = { ...owned, ...change };
+      await writeState(statePath, state);
+      const result = await runPrepare(
+        [
+          "--lane",
+          "postgres-application",
+          "--file",
+          "tests/integration/postgres-worker-agent-revision.test.mjs",
+          "--state",
+          statePath,
+        ],
+        { OCC_DOCKER_BIN: join(root, "must-not-run") },
+      );
+      assert.equal(result.status, 1, label);
+      assertStderrMatch(result.stderr, error, label);
+      assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state, label);
+    }
+  });
+
+  test("prepareLane reports skipped image pulls when logging image configuration cannot be read", async (t) => {
+    const root = await fixture(t);
+    const summary = join(root, "summary.md");
+    const preload = join(root, "fail-collector-config.mts");
+    const prepareUrl = new URL("../../scripts/ci/prepare.mjs", import.meta.url).href;
+    // The preload also supplies the logging module when the prepare CLI imports it.
+    await writeFile(
+      preload,
+      `import { registerHooks } from "node:module";
+
+export function prepareLogging(): never {
+  throw new Error("unexpected logging setup");
+}
+
+export async function readDefaultCollectorImage(): Promise<never> {
+  throw new Error("fixture collector config read failed");
+}
+
+const prepareUrl = ${JSON.stringify(prepareUrl)};
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier === "./logging.mjs" && context.parentURL === prepareUrl) {
+      return { url: import.meta.url, shortCircuit: true };
+    }
+    return nextResolve(specifier, context);
+  },
+});
+`,
+    );
+    const result = await spawnResult(
+      process.execPath,
+      [
+        "--import",
+        preload,
+        preparePath,
+        "--lane",
+        "logging-collector",
+        "--state",
+        join(root, "state.json"),
+      ],
+      {
+        env: {
+          ...process.env,
+          GITHUB_ENV: "",
+          GITHUB_OUTPUT: "",
+          GITHUB_STEP_SUMMARY: summary,
+          OCC_DOCKER_BIN: join(root, "must-not-run"),
+        },
+      },
+    );
+
+    assert.equal(result.status, 1, result.stderr);
+    assertStderrMatch(result.stderr, /^fixture collector config read failed$/m);
+    assert.doesNotMatch(result.stderr, /\[ci-timing\]/);
+    assert.equal(await readFile(summary, "utf8"), "- logging-collector / image-pulls: skipped\n");
+  });
+
   test("prepareLane pre-pulls logging and metrics images with retry and preserves its Node override", async (t) => {
     for (const failure of ["transient", "missing-manifest"]) {
       await t.test(failure, async (t) => {
         const root = await fixture(t);
         const statePath = join(root, "logging-state.json");
         const githubEnv = join(root, "github.env");
+        const summary = join(root, "summary.md");
         const customNodeImage =
           "docker.io/library/node:24-bookworm@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
         const collectorImage = loadYaml(
@@ -1959,13 +3070,17 @@ process.exit(2);
             OCC_DOCKER_BIN: dockerPath,
             OCC_TEST_LOGGING_NODE_IMAGE: customNodeImage,
             CI_METRICS_PULL_FAILURE: failure,
+            GITHUB_STEP_SUMMARY: summary,
           },
         );
 
-        const pulls = (await readFile(join(root, "docker.jsonl"), "utf8"))
-          .trim()
-          .split("\n")
-          .map((line) => JSON.parse(line))
+        const outcome = failure === "missing-manifest" ? "failure" : "success";
+        assert.match(
+          await readFile(summary, "utf8"),
+          new RegExp(`^- logging-collector / image-pulls: ${outcome} \\(\\d+ ms\\)\\n$`),
+        );
+
+        const pulls = (await readJsonLines(join(root, "docker.jsonl")))
           .filter((args) => args[0] === "pull")
           .map((args) => args[1]);
         if (failure === "missing-manifest") {
@@ -2031,14 +3146,14 @@ process.exit(2);
     const laneTable = /^ {10}LANE_TABLE: \|\n((?: {12}.*\n)+)/m.exec(ciWorkflow);
     assert.ok(laneTable, "ci.yml declares the CI Impact lane table");
     const fullIntegration = await readFile(
-      join(repositoryRoot, ".github/workflows/full-integration.yml"),
+      join(repositoryRoot, ".github/workflows/full-integration-execution.yml"),
       "utf8",
     );
     const toolProfiles = [
       ...JSON.parse(laneTable[1]).map(({ lane, profile }) => [`ci.yml ${lane}`, lane, profile]),
       ...[
         ...fullIntegration.matchAll(/- lane: ([a-z0-9-]+)\n\s+title: .*\n\s+profile: ([a-z]+)/g),
-      ].map(([, lane, profile]) => [`full-integration.yml ${lane}`, lane, profile]),
+      ].map(([, lane, profile]) => [`full-integration-execution.yml ${lane}`, lane, profile]),
     ];
     for (const [where, lane, profile] of toolProfiles) {
       if (manifest.lanes[lane]?.prepare?.codexSeccomp) {
@@ -2056,7 +3171,10 @@ process.exit(2);
     // so a channel-server outage fails every Compose QA run (finding 1056).
     const workflows = [
       [".github/workflows/qa-advisory.yml", (workflow) => workflow.jobs.qa.env],
-      [".github/workflows/full-integration.yml", (workflow) => workflow.jobs["qa-matrix"].env],
+      [
+        ".github/workflows/full-integration-execution.yml",
+        (workflow) => workflow.jobs["qa-matrix"].env,
+      ],
     ];
     for (const [path, env] of workflows) {
       const workflow = loadYaml(await readFile(join(repositoryRoot, path), "utf8"));
@@ -2099,6 +3217,21 @@ process.exit(2);
     );
     assert.equal(invalid.status, 1);
     assert.match(invalid.stderr, /NODE_BASE_IMAGE must be an immutable/);
+
+    const otherNode = await runPrepare(
+      ["--lane", "images-packaging", "--file", file, "--state", statePath],
+      { NODE_BASE_IMAGE: customNodeBaseImage.replace("node:24-", "node:22-") },
+    );
+    assert.equal(otherNode.status, 1);
+    assertStderrMatch(otherNode.stderr, /NODE_BASE_IMAGE must select an approved Node 24 image/);
+
+    // A blank override is a missing input, not a reason to fall back to the default.
+    const blank = await runPrepare(
+      ["--lane", "images-packaging", "--file", file, "--state", statePath],
+      { NODE_BASE_IMAGE: "   " },
+    );
+    assert.equal(blank.status, 1);
+    assertStderrMatch(blank.stderr, /Missing required CI input\(s\): NODE_BASE_IMAGE/);
   });
 
   // This command fixture tests preparation ordering only. The real launcher case
@@ -2143,12 +3276,7 @@ if (args[0] === "pull") {
         // The launcher engine selection must win over the general CI engine override.
         OCC_DOCKER_BIN: join(root, "must-not-run"),
       },
-      commands: async () =>
-        (await readFile(join(root, "commands.jsonl"), "utf8"))
-          .trim()
-          .split("\n")
-          .filter(Boolean)
-          .map(JSON.parse),
+      commands: () => readJsonLines(join(root, "commands.jsonl"), { skipBlank: true }),
     };
   }
 
@@ -2233,43 +3361,313 @@ if (args[0] === "pull") {
     }
   });
 
-  test("provider-account preparation accepts absent image inputs before prepared state exists", async (t) => {
+  test("OpenShell preparation requires the selected owner's credential before side effects", async (t) => {
     const root = await fixture(t);
-    const adminKeyPath = join(root, "chatgpt-admin.key");
-    const statePath = join(root, "missing-state.json");
-    await writeFile(adminKeyPath, "admin key\n", { mode: 0o600 });
-    await chmod(adminKeyPath, 0o600);
-
-    const result = await runPrepare(
-      [
-        "--lane",
-        "provider-account",
-        "--file",
-        "tests/integration/service-account-driver-real.test.mjs",
-        "--state",
-        statePath,
-      ],
+    const owner = "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs";
+    const other = "tests/integration/local-first-agent-openshell-real.test.mjs";
+    const cases = [
+      { harness: "codex", credentials: ["CODEX_ACCESS_TOKEN", "OPENAI_API_KEY"] },
+      { harness: "codex", credentials: ["CODEX_ACCESS_TOKEN"] },
+      { harness: "codex", credentials: ["OPENAI_API_KEY"], missing: "CODEX_ACCESS_TOKEN" },
+      { harness: "openclaw", credentials: ["OPENAI_API_KEY"], missing: "CODEX_ACCESS_TOKEN" },
+      { harness: "openclaw", credentials: ["OPENAI_API_KEY"], file: owner },
       {
-        OCC_TEST_OPENAI_MODEL: "gpt-test",
-        OCC_TEST_CHATGPT_WORKSPACE_ID: "workspace-test",
-        OCC_TEST_CHATGPT_ADMIN_KEY_PATH: adminKeyPath,
-        OCC_TEST_KUBERNETES_GATEWAY_IMAGE: "",
-        OCC_TEST_KUBERNETES_AGENT_IMAGE: "",
+        harness: "openclaw",
+        credentials: ["CODEX_ACCESS_TOKEN"],
+        file: owner,
+        missing: "OPENAI_API_KEY",
       },
-    );
+      { harness: "codex", endpoint: true, credentials: ["OPENAI_API_KEY"], file: owner },
+      {
+        harness: "codex",
+        endpoint: true,
+        credentials: ["CODEX_ACCESS_TOKEN"],
+        missing: "OPENAI_API_KEY",
+        file: owner,
+      },
+      {
+        harness: "openclaw",
+        credentials: ["OPENAI_API_KEY"],
+        missing: "CODEX_ACCESS_TOKEN",
+        file: other,
+      },
+      {
+        harness: "openclaw",
+        credentials: ["CODEX_ACCESS_TOKEN", "OPENAI_API_KEY"],
+        file: other,
+      },
+      {
+        harness: "codex",
+        endpoint: true,
+        credentials: ["OPENAI_API_KEY"],
+        missing: "CODEX_ACCESS_TOKEN",
+        prepareLane: true,
+      },
+      {
+        harness: "openclaw",
+        credentials: ["OPENAI_API_KEY"],
+        file: owner,
+        prepareLane: true,
+      },
+      {
+        harness: "codex",
+        endpoint: true,
+        credentials: ["OPENAI_API_KEY"],
+        file: owner,
+        prepareLane: true,
+      },
+    ];
+    // Each split owner must retain the credential admission gate before any resource is created.
+    for (const file of [
+      "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+      "tests/integration/openshell-credentials-real.test.ts",
+      "tests/integration/openshell-withdrawal-real.test.ts",
+      "tests/integration/openshell-upstream-real.test.ts",
+      "tests/integration/openshell-refresh-real.test.ts",
+    ]) {
+      cases.push(
+        { harness: "codex", credentials: ["OPENAI_API_KEY"], file, missing: "CODEX_ACCESS_TOKEN" },
+        {
+          harness: "codex",
+          endpoint: true,
+          credentials: ["CODEX_ACCESS_TOKEN"],
+          file,
+          missing: "OPENAI_API_KEY",
+        },
+        { harness: "codex", endpoint: true, credentials: ["OPENAI_API_KEY"], file },
+      );
+    }
+    for (const [index, value] of cases.entries()) {
+      const statePath = join(root, `credential-${index}.json`);
+      const env = {
+        OPENAI_API_KEY: "",
+        CODEX_ACCESS_TOKEN: "",
+        ...Object.fromEntries(
+          value.credentials.map((name) => [name, "synthetic-fixture-credential"]),
+        ),
+        OCC_TEST_OPENAI_MODEL: "fixture-model",
+        OCC_TEST_OPENSHELL_HARNESS: value.harness,
+        OCC_TEST_OPENSHELL_MODEL_BASE_URL: value.endpoint ? "https://api.openai.com/v1" : "",
+        // Stop after input validation even when the selected credential exists.
+        OCC_TEST_KUBERNETES_GATEWAY_IMAGE: mutableImage,
+      };
+      const result = value.prepareLane
+        ? await runProgram(
+            `const { prepareLane } = await import(process.argv[1]);
+             await prepareLane({ lane: "openshell", statePath: process.argv[2], file: ${JSON.stringify(value.file)} });`,
+            statePath,
+            { ...process.env, GITHUB_ENV: "", GITHUB_OUTPUT: "", ...env },
+            10_000,
+          )
+        : await runPrepare(
+            [
+              "--lane",
+              "openshell",
+              "--state",
+              statePath,
+              ...(value.file ? ["--file", value.file] : []),
+            ],
+            env,
+          );
+      assert.equal(result.status, 1);
+      assert.match(
+        result.stderr,
+        value.missing
+          ? new RegExp(`Missing required CI input\\(s\\): ${value.missing}`)
+          : /OCC_TEST_KUBERNETES_GATEWAY_IMAGE must be an immutable/,
+      );
+      await assert.rejects(() => stat(statePath), { code: "ENOENT" });
+    }
+  });
 
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /requires a prior prepareLane/);
-    assert.doesNotMatch(result.stderr, /OCC_TEST_KUBERNETES_.*IMAGE/);
-    await assert.rejects(() => stat(statePath), { code: "ENOENT" });
+  test("OpenShell prepares the source selection once and passes the resulting inputs to a gateway file", async (t) => {
+    const root = await fixture(t);
+    const lane = "openshell";
+    const file = "tests/integration/openshell-refresh-real.test.ts";
+    const sourceRevision = "a".repeat(40);
+    const baseEnv = {
+      CODEX_ACCESS_TOKEN: "synthetic-fixture-credential",
+      OCC_TEST_OPENAI_MODEL: "fixture-model",
+      OCC_HELM_BIN: join(root, "must-not-run-helm"),
+      OCC_DOCKER_BIN: join(root, "must-not-run-docker"),
+    };
+    const invalidState = join(root, "incomplete.json");
+    const incomplete = await runProgram(
+      `const { prepareLane } = await import(process.argv[1]);
+       await prepareLane({ lane: ${JSON.stringify(lane)}, file: ${JSON.stringify(file)}, statePath: process.argv[2] });`,
+      invalidState,
+      { ...baseEnv, OCC_TEST_OPENSHELL_SOURCE_REVISION: sourceRevision },
+      10_000,
+    );
+    assert.equal(incomplete.status, 1);
+    assert.match(
+      incomplete.stderr,
+      /requires a source revision, all three images, and both Helm charts/,
+    );
+    await assert.rejects(() => stat(invalidState), { code: "ENOENT" });
+
+    // Model the already-prepared state and GITHUB_ENV export. The file copies
+    // its database but must not reacquire or reinspect the lane's source inputs.
+    const postgres = await laneFakePostgres(t);
+    const server = composePostgres("openshell_handoff", postgres.port);
+    const template = {
+      id: "postgres-database-openshell_handoff",
+      kind: "postgres-database",
+      owner: server.owner,
+      status: "ready",
+      name: "openclaw_k8s_openshell_handoff",
+      composeProject: server.name,
+      port: server.port,
+      laneTemplate: "k8s",
+    };
+    const preparedInputs = {
+      OCC_TEST_OPENSHELL_HELM_CHART: join(root, "prepared-gateway-chart"),
+      OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART: join(root, "prepared-workspace-chart"),
+      OCC_TEST_OPENSHELL_GATEWAY_IMAGE: immutableImage,
+      OCC_TEST_OPENSHELL_SANDBOX_IMAGE: immutableImage,
+      OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: immutableImage,
+    };
+    for (const [name, version] of [
+      ["stock", { OCC_TEST_OPENSHELL_CHART_VERSION: "0.1.6" }],
+      [
+        "candidate",
+        {
+          OCC_TEST_OPENSHELL_SOURCE_REVISION: sourceRevision,
+          OCC_TEST_OPENSHELL_CHART_VERSION: "0.0.0",
+        },
+      ],
+    ]) {
+      const statePath = join(root, name + ".json");
+      const env = { ...preparedInputs, ...version };
+      await writeState(statePath, {
+        version: 1,
+        repositoryRoot,
+        lane,
+        prefix: server.owner,
+        statePath,
+        selectedFile: file,
+        resources: [server, template],
+        env,
+      });
+      const result = await runProgram(
+        `import assert from "node:assert/strict";
+         const { prepareFile } = await import(process.argv[1]);
+         const prepared = await prepareFile({
+           lane: ${JSON.stringify(lane)}, file: ${JSON.stringify(file)}, statePath: process.argv[2],
+         });
+         for (const [key, value] of Object.entries(${JSON.stringify(env)})) {
+           assert.equal(prepared.env[key], value);
+         }
+         assert.equal(new URL(prepared.env.OCC_TEST_DATABASE_URL).username, "occ_app");
+         await prepared.cleanup();`,
+        statePath,
+        { ...baseEnv, ...env },
+        10_000,
+      );
+      assert.equal(result.status, 0, result.stderr);
+      const settled = JSON.parse(await readFile(statePath, "utf8"));
+      assert.deepEqual(settled.resources, [server, template]);
+    }
+  });
+
+  test("Kubernetes runtime image overrides require a complete pair before preparation", async (t) => {
+    const root = await fixture(t);
+    for (const [lane, file] of [
+      ["k3d-model", "tests/integration/harness-topology-k3d-real.test.mjs"],
+      ["slack", "tests/integration/harness-topology-k3d-slack-real.test.mjs"],
+    ]) {
+      for (const selection of ["gateway", "agent", "both", "neither"]) {
+        await t.test(`${lane}: ${selection}`, async () => {
+          const statePath = join(root, `${lane}-${selection}.json`);
+          const partial = selection === "gateway" || selection === "agent";
+          // Partial overrides must fail before state or infrastructure is created.
+          // Complete/default selections reach the existing prepared-state boundary.
+          const result = await runPrepare(
+            ["--lane", lane, "--state", statePath, ...(partial ? [] : ["--file", file])],
+            {
+              OPENAI_API_KEY: "test-openai-key",
+              OCC_TEST_OPENAI_MODEL: "gpt-test",
+              NODE_BASE_IMAGE: nodeBaseImage,
+              ...(lane === "slack"
+                ? {
+                    OCC_TEST_SLACK_CHANNEL_ID: "C0123456789",
+                    OCC_TEST_SLACK_SENDER_BOT_TOKEN: "xoxb-sender",
+                    SLACK_APP_TOKEN: "xapp-test",
+                    SLACK_BOT_TOKEN: "xoxb-test",
+                  }
+                : {}),
+              OCC_DOCKER_BIN: join(root, "docker-must-not-run"),
+              OCC_TEST_KUBERNETES_GATEWAY_IMAGE:
+                selection === "gateway" || selection === "both" ? immutableImage : "",
+              OCC_TEST_KUBERNETES_AGENT_IMAGE:
+                selection === "agent" || selection === "both" ? immutableImage : "",
+              OCC_TEST_KUBERNETES_RUNTIME_IMAGE: "",
+              OCC_TEST_KUBERNETES_CODEX_IMAGE: "",
+            },
+          );
+          assert.equal(result.status, 1);
+          assertStderrMatch(
+            result.stderr,
+            partial
+              ? /OCC_TEST_KUBERNETES_GATEWAY_IMAGE and OCC_TEST_KUBERNETES_AGENT_IMAGE must be supplied together/
+              : /requires a prior prepareLane/,
+          );
+          await assert.rejects(() => stat(statePath), { code: "ENOENT" });
+        });
+      }
+    }
+  });
+
+  test("runtime artifact selection rejects unsupported lanes before preparation", async (t) => {
+    const root = await fixture(t);
+    const commandLog = join(root, "commands.log");
+    const commandGuard = join(root, "must-not-run");
+    await writeFile(
+      commandGuard,
+      `#!${process.execPath}\nimport { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(commandLog)}, "called\\n");\nprocess.exit(97);\n`,
+      { mode: 0o700 },
+    );
+    // These lanes share build caches, but cannot consume a runtime artifact.
+    // A complete selection must be refused before state or source builds exist.
+    for (const [lane, file] of [
+      ["dev-up-k3d", "tests/integration/dev-up-k3d-real.test.mjs"],
+      ["qa-matrix", "tests/integration/qa-matrix-real.test.mjs"],
+    ]) {
+      const statePath = join(root, `${lane}.json`);
+      const result = await spawnResult(
+        process.execPath,
+        [preparePath, "--lane", lane, "--state", statePath, "--selected-file", file],
+        {
+          env: {
+            HOME: root,
+            PATH: root,
+            RUNNER_TEMP: root,
+            OCC_CI_IMAGE_CACHE: "1",
+            BUILDX_BUILDER: "artifact-selection-test",
+            OCC_DOCKER_BIN: commandGuard,
+            OPENCLAW_CI_K3D_BIN: commandGuard,
+            OCC_KUBECTL_BIN: commandGuard,
+            OCC_CI_RUNTIME_ARTIFACT_DIRECTORY: join(root, "missing-artifact"),
+            OCC_CI_RUNTIME_ARTIFACT_SHA256: "a".repeat(64),
+            OCC_CI_RUNTIME_ARTIFACT_SOURCE_SHA: "a".repeat(40),
+            OCC_CI_RUNTIME_ARTIFACT_RUN_ID: "123456",
+            OCC_CI_RUNTIME_ARTIFACT_ATTEMPT: "1",
+          },
+        },
+      );
+      assert.equal(result.status, 1, lane);
+      assertStderrMatch(
+        result.stderr,
+        /Runtime artifacts are supported only by Docker Model Runtime and the ordinary image lanes/,
+        lane,
+      );
+      await assert.rejects(() => stat(statePath), { code: "ENOENT" });
+      await assert.rejects(() => stat(commandLog), { code: "ENOENT" });
+    }
   });
 
   test("prepareLane rejects mutable Kubernetes image inputs before creating state", async (t) => {
     const root = await fixture(t);
-    const adminKeyPath = join(root, "admin.key");
-    await writeFile(adminKeyPath, "admin key\n", { mode: 0o600 });
-    await chmod(adminKeyPath, 0o600);
-
     const optionalKubernetesImages = {
       OCC_TEST_KUBERNETES_GATEWAY_IMAGE: "",
       OCC_TEST_KUBERNETES_AGENT_IMAGE: "",
@@ -2328,22 +3726,10 @@ if (args[0] === "pull") {
           NODE_BASE_IMAGE: nodeBaseImage,
           ...k3dImages,
           OCC_TEST_KUBERNETES_GATEWAY_IMAGE: mutableImage,
-          OCC_TEST_SLACK_PROXY_URL: "http://127.0.0.1:3000",
           OCC_TEST_SLACK_CHANNEL_ID: "C0123456789",
           OCC_TEST_SLACK_SENDER_BOT_TOKEN: "xoxb-sender",
           SLACK_APP_TOKEN: "xapp-test",
           SLACK_BOT_TOKEN: "xoxb-test",
-        },
-      },
-      {
-        lane: "provider-account",
-        envName: "OCC_TEST_KUBERNETES_AGENT_IMAGE",
-        env: {
-          ...k3dImages,
-          OCC_TEST_KUBERNETES_AGENT_IMAGE: mutableImage,
-          OCC_TEST_OPENAI_MODEL: "gpt-test",
-          OCC_TEST_CHATGPT_WORKSPACE_ID: "workspace-test",
-          OCC_TEST_CHATGPT_ADMIN_KEY_PATH: adminKeyPath,
         },
       },
       {
@@ -2420,8 +3806,9 @@ if (args[0] === "pull") {
   });
 
   for (const scenario of [
-    { stage: "database-create", failure: "exit", exitCode: 42, signal: null },
-    { stage: "database-schema", failure: "exit", exitCode: 43, signal: null },
+    { stage: "database-create", failure: "query" },
+    { stage: "database-create", failure: "connect" },
+    { stage: "database-schema", failure: "query" },
     { stage: "database-migrate", failure: "exit", exitCode: 44, signal: null },
     { stage: "database-migrate", failure: "spawn" },
     { stage: "database-migrate", failure: "signal", exitCode: null, signal: "SIGTERM" },
@@ -2430,25 +3817,37 @@ if (args[0] === "pull") {
       const root = await fixture(t);
       const statePath = join(root, "state.json");
       const commandsPath = join(root, "commands.jsonl");
-      const dockerPath = join(root, "docker.mjs");
       const corepackPath = join(root, "corepack.mjs");
-      await writePostgresState(statePath, composePostgres("diagnostics"));
+      const stageOf = (query) =>
+        query.startsWith("CREATE DATABASE") ? "database-create" : "database-schema";
+      const postgres = await laneFakePostgres(t, {
+        onQuery: async (query) => {
+          const stage = stageOf(query);
+          await appendFile(commandsPath, JSON.stringify(stage) + "\n");
+          if (stage === scenario.stage) {
+            return { error: "secret-canary-server-message" };
+          }
+        },
+      });
+      // A connect failure: nothing listens on the published port any more.
+      if (scenario.failure === "connect") {
+        await postgres.close();
+      }
+      await writePostgresState(statePath, composePostgres("diagnostics", postgres.port));
       const commandSource = `#!${process.execPath}
 import { appendFileSync } from "node:fs";
-const args = process.argv.slice(2);
-const stage = args[0] === "pnpm" ? "database-migrate" :
-  args.at(-1).startsWith("CREATE DATABASE") ? "database-create" : "database-schema";
-appendFileSync(process.env.CI_DIAGNOSTIC_COMMANDS, JSON.stringify(stage) + "\\n");
-if (stage === ${JSON.stringify(scenario.stage)}) {
-  process.stdout.write("secret-canary-stdout");
-  process.stderr.write("secret-canary-stderr");
-  ${scenario.failure === "signal" ? 'process.kill(process.pid, "SIGTERM");' : `process.exit(${scenario.exitCode ?? 45});`}
-}
+appendFileSync(process.env.CI_DIAGNOSTIC_COMMANDS, JSON.stringify("database-migrate") + "\\n");
+process.stdout.write("secret-canary-stdout");
+process.stderr.write("secret-canary-stderr");
+${scenario.failure === "signal" ? 'process.kill(process.pid, "SIGTERM");' : `process.exit(${scenario.exitCode ?? 45});`}
 `;
-      await writeFile(dockerPath, commandSource, { mode: 0o700 });
       if (scenario.failure !== "spawn") {
         await writeFile(corepackPath, commandSource, { mode: 0o700 });
       }
+      const expectProcess =
+        scenario.stage === "database-migrate"
+          ? `assert.equal(error.exitCode, ${JSON.stringify(scenario.exitCode)}); assert.equal(error.signal, ${JSON.stringify(scenario.signal)});`
+          : "assert.equal(error.exitCode, undefined); assert.equal(error.signal, undefined);";
       const program = `
 import assert from "node:assert/strict";
 const { prepareFile } = await import(process.argv[1]);
@@ -2458,7 +3857,7 @@ await assert.rejects(() => prepareFile({ lane: "postgres-application",
     assert.equal(error.code, "CI_PREPARATION_COMMAND_FAILED");
     assert.equal(error.stage, ${JSON.stringify(scenario.stage)});
     assert.equal(error.failure, ${JSON.stringify(scenario.failure)});
-    ${scenario.failure === "spawn" ? "" : `assert.equal(error.exitCode, ${JSON.stringify(scenario.exitCode)}); assert.equal(error.signal, ${JSON.stringify(scenario.signal)}); assert.equal(error.timedOut, false);`}
+    ${scenario.failure === "spawn" ? "" : `${expectProcess} assert.equal(error.timedOut, false);`}
     return true;
   });
 `;
@@ -2467,18 +3866,23 @@ await assert.rejects(() => prepareFile({ lane: "postgres-application",
         statePath,
         {
           PATH: root,
-          OCC_DOCKER_BIN: dockerPath,
+          OCC_DOCKER_BIN: join(root, "must-not-run"),
           OPENCLAW_CI_COREPACK_BIN: corepackPath,
           CI_DIAGNOSTIC_COMMANDS: commandsPath,
         },
         10_000,
       );
       assert.equal(result.status, 0, result.stderr);
-      const commands = (await readFile(commandsPath, "utf8")).trim().split("\n").map(JSON.parse);
+      const commands = scenario.failure === "connect" ? [] : await readJsonLines(commandsPath);
       const expected = ["database-create", "database-schema", "database-migrate"];
       assert.deepEqual(
         commands,
-        expected.slice(0, scenario.failure === "spawn" ? 2 : expected.indexOf(scenario.stage) + 1),
+        scenario.failure === "connect"
+          ? []
+          : expected.slice(
+              0,
+              scenario.failure === "spawn" ? 2 : expected.indexOf(scenario.stage) + 1,
+            ),
       );
       const state = JSON.parse(await readFile(statePath, "utf8"));
       assert.notEqual(

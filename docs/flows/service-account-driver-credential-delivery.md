@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-14
-last_updated_session: issue-2411
+updated: 2026-11-04
+last_updated_session: authoring-run/390095eb-01a9-4e24-b609-791b49f19f81
 ---
 
 # Service Account Driver Credential Delivery Flow
@@ -20,7 +20,7 @@ with the projected access token.
 - Trigger: `POST /namespaces/:namespaceId/service-accounts`, then
   `POST /namespaces/:namespaceId/service-accounts/:serviceAccountId/credentials`,
   Agent association, and deployment.
-- Sources: `apps/controller/src/server.mjs:start`,
+- Sources: `apps/controller/src/api-startup.mjs:startApi`,
   `apps/controller/src/drivers/service-account/chatgpt.ts:ChatGPTServiceAccountDriver`,
   `packages/occ/src/index.ts:OpenClawController`.
 - Requires PostgreSQL, a ready Namespace, exact OCC permissions, the selected
@@ -60,11 +60,11 @@ graph TD
 
 ### 1. Compose the Backend and its ServiceAccount Driver
 
-`apps/controller/src/server.mjs:start`
+`apps/controller/src/api-startup.mjs:startApi`
 
 `loadInstallationConfiguration` validates the singular `backend` array and
 requires each ChatGPT Backend to declare the selected `service_account` member
-Driver. `server.mjs:start` then reads the mounted `apiKeyPath`, constructs
+Driver. `api-startup.mjs:startApi` then reads the mounted `apiKeyPath`, constructs
 `Backend<ChatGPTClient>`, and injects it into the bundled
 `ChatGPTServiceAccountDriver` factory. That client and admin key stay on the API
 side. The worker receives only nonsecret Backend definitions so it can reject
@@ -187,17 +187,13 @@ Refresh, rotation, and automated reconciliation remain deferred.
 
 ## Debugging and Verification
 
-- Run `node --test tests/conformance/service-account-driver.test.mjs` for
+- Run `node --test tests/conformance/service-account-driver.test.ts` for
   controller lifecycle coverage and native HTTPS response-release regressions.
   The latter call the actual Backend with built-in fetch, a single-connection
   pool and a loopback TLS server. They prove recovery after rejected 429, 503 and
   oversized declared responses. The same suite checks that an oversized
   chunked body is cancelled at its byte limit. These cases do not prove live
   provider accounts or model execution.
-- Run `node --test tests/integration/service-account-driver-real.test.mjs`
-  with `OCC_TEST_CHATGPT_SERVICE_ACCOUNT_REAL=1`, a protected admin-key file,
-  `OCC_TEST_CHATGPT_WORKSPACE_ID`, disposable Kubernetes/PostgreSQL, and real
-  digest-pinned OpenClaw/Codex images; do not use `OPENAI_API_KEY`.
 - Verify the provider account, private credential ID, exact-account Secret,
   Codex-only projection for that Agent revision, and genuine model response. For ownership,
   compensation, and ambiguous commits, see the [service-account guide](../reference/service-accounts.md)
@@ -219,6 +215,7 @@ Refresh, rotation, and automated reconciliation remain deferred.
 
 ## Changelog
 
+- 2026-11-04 09:42: Remove the retired hosted Provider Account test from verification instructions; retain service-account implementation coverage. (authoring-run/390095eb-01a9-4e24-b609-791b49f19f81 - e2311f4d2250874d622ab12c2fe8588a076bd19b)
 - 2026-10-15 05:30: Issuance and account deletion reclaim the token Secret and provider credential of an issuance that never committed. (fix-1397, finding 1397)
 - 2026-10-14 18:44: Cancel oversized chunked ChatGPT Admin API responses while reading, before complete buffering. (issue-2411 - 1dae0cc9b76f034f5ca8e1ff500c9b545aa44501)
 

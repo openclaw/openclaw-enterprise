@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -12,6 +13,10 @@ import { createKubernetesComputeDriver } from "../../apps/controller/src/drivers
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.mjs";
+import {
+  RenderRefusal,
+  renderInstallationProfile,
+} from "../../scripts/render-installation-profile.mjs";
 
 // Each case runs through the profile preflight and through `helm template`, so the
 // renderer cannot accept a value the chart then refuses (or refuse one it accepts).
@@ -35,6 +40,7 @@ function input(controlPlane) {
       clusterName: "profile-qualification",
       controllerImage: `registry.example.invalid/openclaw-enterprise/controller@sha256:${"a".repeat(64)}`,
       authBaseUrl: "https://console.oce.example.internal",
+      agentNativeAdminDomain: "agents.oce.example.internal",
       adminEmail: "admin@example.invalid",
       bootstrapPasswordClaimName: "occ-bootstrap-admin-password",
       apiClients: [{ namespace: "operator-tools", podLabels: { app: "occ-operator" } }],
@@ -51,7 +57,7 @@ function input(controlPlane) {
         scraperPodLabels: { app: "prometheus" },
       },
       recoveryUserId: "recovery-admin_1",
-      github: { egressCidrs: ["140.82.112.0/20"] },
+      google: { egressCidrs: ["192.0.2.20/32"] },
       trustedProxy: { preset: "ingress-nginx", cidrs: ["10.42.0.0/16"] },
       ...controlPlane,
     },
@@ -76,6 +82,8 @@ function codexInput(codex = {}) {
 
 const repositoryInput = {
   enabled: true,
+  authority: "prepared-git",
+  preparedCustodySecretName: "occ-repository-custody",
   image: `registry.example.invalid/repository@sha256:${"c".repeat(64)}`,
   backendId: "github-primary",
   registryConfigMapName: "occ-repository-registry",
@@ -85,6 +93,21 @@ const repositoryInput = {
   publicCaSecretName: "occ-repository-ca",
   upstreamCidrs: ["192.0.2.30/32"],
 };
+
+test("profile renderer refuses the retired signing gateway without preparing outputs", async () => {
+  for (const authority of [undefined, "github-app", "github-app-registry"]) {
+    await withProfile(
+      { ...input({}), ...codexInput(), repository: { ...repositoryInput, authority } },
+      ({ directory, renderer }) => {
+        assert.equal(renderer.ok, false);
+        assert.match(renderer.output, /repository.authority must explicitly select prepared-git/);
+        assert.equal(existsSync(join(directory, "values.yaml")), false);
+        assert.equal(existsSync(join(directory, "installation.yaml")), false);
+      },
+      "codex",
+    );
+  }
+});
 
 const oidcEndpoints = {
   issuer: "https://sso.example.com/realm",
@@ -102,9 +125,10 @@ const namespaceRefusal = (field) =>
     `${escape(field)} must be a Kubernetes namespace name \\(a DNS label of at most 63 characters\\)`,
   );
 
-// Each case spawns its renderer and helm children in turn. A test runs its cases in at most
-// one worker per CPU (and at least two), and the tests run one after another, so this file
-// runs at most that many children at once (the CI lane may run other files beside it).
+// Each case renders its profile in-process, then spawns its helm child. A test runs its
+// cases in at most one worker per CPU (and at least two), and the tests run one after
+// another, so this file runs at most that many helm children at once (the CI lane may run
+// other files beside it).
 const slots = Math.max(2, availableParallelism());
 async function each(cases, check) {
   let next = 0;
@@ -126,9 +150,16 @@ async function each(cases, check) {
   }
 }
 
+// Runs one `helm template`. Each run exits within a fraction of a second, so Go's garbage
+// collector only adds CPU: GOGC=off cuts about a quarter of helm's CPU time for under 10 MB
+// more peak memory per child. GOMEMLIMIT still collects if a child nears 512 MiB.
 function run(command, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: repository, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, args, {
+      cwd: repository,
+      env: { ...process.env, GOGC: "off", GOMEMLIMIT: "512MiB" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8").on("data", (chunk) => (stdout += chunk));
@@ -140,19 +171,28 @@ function run(command, args) {
   });
 }
 
+// Renders in-process through the function the CLI calls. `renderer.output` is what the CLI
+// prints: the preflight summary on stdout, or its stderr line for a refusal without one.
+// profile-renderer.test.mjs covers the CLI process itself (argv, exit status, stdout).
 async function renderProfile(profileInput, profile = "openclaw") {
   const directory = mkdtempSync(join(tmpdir(), "oce-profile-parity-"));
   try {
     writeFileSync(join(directory, "input.json"), JSON.stringify(profileInput));
-    const renderer = await run(process.execPath, [
-      "scripts/render-installation-profile.mjs",
-      "--profile",
-      profile,
-      "--input",
-      join(directory, "input.json"),
-      "--out-dir",
-      directory,
-    ]);
+    let renderer;
+    try {
+      const preflight = await renderInstallationProfile({
+        profile,
+        input: join(directory, "input.json"),
+        outDir: directory,
+      });
+      renderer = { ok: preflight.ok, output: `${JSON.stringify(preflight, null, 2)}\n` };
+    } catch (error) {
+      // Only a refusal is a verdict; a renderer crash fails the case.
+      if (!(error instanceof RenderRefusal)) {
+        throw error;
+      }
+      renderer = { ok: false, output: `render-installation-profile: ${error.message}\n` };
+    }
     return { directory, renderer };
   } catch (error) {
     rmSync(directory, { recursive: true, force: true });
@@ -265,12 +305,22 @@ function fieldParity(
 
 // Compute must admit or refuse the same value at Driver creation.
 const configured = conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["10.42.0.0/16"] });
-function assertCompute(overrides, accepted, refusal, label) {
+function assertCompute(overrides, accepted, refusal, label, path, code = "INVALID_FORMAT") {
   const create = () => createKubernetesComputeDriver({ ...configured, ...overrides });
   if (accepted) {
     assert.doesNotThrow(create, label);
   } else {
-    assert.throws(create, refusal, label);
+    assert.throws(
+      create,
+      (error) => {
+        assert.ok(error instanceof ConfigurationValidationError);
+        assert.equal(error.error.details[0].path, path);
+        assert.equal(error.error.details[0].code, code);
+        assert.match(error.error.details[0].message, refusal);
+        return true;
+      },
+      label,
+    );
   }
 }
 
@@ -456,6 +506,7 @@ test(
         accepted,
         /Gateway routing Envoy namespace must be a Kubernetes namespace name/,
         `${label}: Compute`,
+        "/gatewayRouting/envoyNamespace",
       );
     });
   },
@@ -520,6 +571,7 @@ test(
         accepted,
         /DNS peer namespace must be a Kubernetes namespace name/,
         `dns ${label}: Compute`,
+        "/network/dns/namespace",
       );
     });
   },
@@ -616,11 +668,11 @@ const peerSelectorCases = [
   [{ [`${"a".repeat(253)}/Name`]: "" }, true],
   [{ [`${"a".repeat(64)}.example/zone`]: "east" }, true],
   [{ 123: "0" }, true],
-  [{ app: "kube/dns" }, false],
-  [{ app: "a".repeat(64) }, false],
-  [{ app: "value\n" }, false],
-  [{ app: "-dns" }, false],
-  [{ app: "@platform" }, false],
+  [{ app: "kube/dns" }, false, /^Configuration does not satisfy pattern\.$/],
+  [{ app: "a".repeat(64) }, false, /^Configuration does not satisfy maxLength\.$/, "TOO_LONG"],
+  [{ app: "value\n" }, false, /^Configuration does not satisfy pattern\.$/],
+  [{ app: "-dns" }, false, /^Configuration does not satisfy pattern\.$/],
+  [{ app: "@platform" }, false, /^Configuration does not satisfy pattern\.$/],
   [{ "k8s.io/name/extra": "dns" }, false],
   [{ "example.com/": "dns" }, false],
   [{ "Example.com/Name": "dns" }, false],
@@ -637,16 +689,18 @@ test("peer Pod selectors get Compute's verdict in preflight, and the chart rende
     "controlPlane.metrics.scraperNamespaceLabels",
     "controlPlane.metrics.scraperPodLabels",
   ];
-  const admitDns = (dns, accepted, label) =>
+  const admitDns = (dns, accepted, label, refusal, code) =>
     assertCompute(
       { network: { ...configured.network, dns } },
       accepted,
-      /DNS peer label (?:keys|values) must be Kubernetes/,
+      refusal ?? /DNS peer label keys must be Kubernetes/,
       label,
+      "/network/dns/podLabels",
+      code,
     );
-  return each(peerSelectorCases, async ([podLabels, accepted]) => {
+  return each(peerSelectorCases, async ([podLabels, accepted, refusal, code]) => {
     const label = JSON.stringify(podLabels);
-    admitDns({ namespace: "kube-system", podLabels }, accepted, label);
+    admitDns({ namespace: "kube-system", podLabels }, accepted, label, refusal, code);
     const profile = input({});
     // Each path names the field to set and, below, the field the refusal must name.
     for (const path of peers) {
@@ -681,6 +735,39 @@ test("peer Pod selectors get Compute's verdict in preflight, and the chart rende
 });
 
 test(
+  "a DNS Pod selector without the chart's default label selects only the labelled DNS Pods",
+  { skip: helmSkip },
+  () => {
+    // OpenShift DNS Pods have no k8s-app label. Helm merges values over chart defaults, so the
+    // rendered values must drop that default or the DNS egress rule matches no Pod.
+    const podLabels = { "dns.operator.openshift.io/daemonset-dns": "default" };
+    return withProfile(
+      input({ dns: { namespace: "openshift-dns", podLabels } }),
+      async ({ directory, renderer }) => {
+        assert.equal(renderer.ok, true, renderer.output);
+        const chart = await helmTemplate([join(directory, "values.yaml")]);
+        assert.equal(chart.ok, true, chart.output);
+        const peers = chart.output
+          .split(/^---$/m)
+          .filter((document) => document.includes("kind: NetworkPolicy"))
+          .map((document) => loadYaml(document))
+          .flatMap((policy) => policy.spec.egress ?? [])
+          .flatMap((rule) => rule.to ?? [])
+          .filter(
+            (peer) =>
+              peer.namespaceSelector?.matchLabels?.["kubernetes.io/metadata.name"] ===
+              "openshift-dns",
+          );
+        assert.notEqual(peers.length, 0);
+        for (const peer of peers) {
+          assert.deepEqual(peer.podSelector.matchLabels, podLabels);
+        }
+      },
+    );
+  },
+);
+
+test(
   "external sign-in credential keys get the same verdict from preflight and the chart",
   { skip: helmSkip },
   () => {
@@ -693,20 +780,20 @@ test(
       [{ clientIdKey: "client-secret" }, false],
       [{ clientSecretKey: "client-id" }, false],
     ];
-    const cases = ["github", "google", "oidc"].flatMap((provider) =>
+    const cases = ["google", "oidc"].flatMap((provider) =>
       keyCases.map(([keys, accepted]) => [provider, keys, accepted]),
     );
     return each(cases, ([provider, keys, accepted]) => {
       const settings = { ...(provider === "oidc" ? oidcEndpoints : {}), ...keys };
       return assertParity({
         label: `${provider}: ${JSON.stringify(keys)}`,
-        controlPlane: { github: undefined, [provider]: settings },
+        controlPlane: { google: undefined, [provider]: settings },
         values: {
-          auth: { github: { enabled: false }, [provider]: { enabled: true, ...settings } },
+          auth: { google: { enabled: false }, [provider]: { enabled: true, ...settings } },
         },
         accepted,
         chartError:
-          /auth\.(github|google|oidc) client ID and client secret must use different Secret keys/,
+          /auth\.(google|oidc) client ID and client secret must use different Secret keys/,
       });
     });
   },
@@ -782,6 +869,7 @@ test(
               false,
               /Gateway image repository path must be lowercase/,
               name,
+              "/images/gateway",
             );
             return;
           }
@@ -925,6 +1013,7 @@ test("image references get Kubernetes' verdict in preflight and Compute", () =>
         ? /Gateway image repository path must be lowercase/
         : /Gateway image must be a container image reference Kubernetes can pull/,
       label,
+      "/images/gateway",
     );
     const accepted = immutableImageAccepted(image, problem);
     // One profile carries the reference in all three image fields; preflight refuses each.
@@ -1012,29 +1101,31 @@ test(
 // The chart checks the percent-decoded host for invisible characters that Node's host
 // parser drops.
 const invisibleHost = /auth\.baseUrl must not contain spaces, invisible characters, < or >/;
+const sharedDnsSuffix =
+  /auth\.baseUrl and agentNativeAdmin\.domain must share a non-public DNS suffix/;
 fieldParity("auth base URLs get the same verdict from preflight and the chart", {
   cases: [
-    ["https://[::1]", true],
-    ["https://[::192.0.2.1]", true],
-    ["https://[64:ff9b::192.0.2.1]:8443", true],
-    ["https://[::ffff:1:2:3]", true],
-    ["https://ex%C3%A4.com", true],
+    ["https://[::1]", false, sharedDnsSuffix],
+    ["https://[::192.0.2.1]", false, sharedDnsSuffix],
+    ["https://[64:ff9b::192.0.2.1]:8443", false, sharedDnsSuffix],
+    ["https://[::ffff:1:2:3]", false, sharedDnsSuffix],
+    ["https://ex%C3%A4.oce.example.internal", true],
     ...["%C2%AD", "%E2%80%8B", "%E2%81%A0", "%EF%BB%BF", "%E1%A0%8E", "%F0%9D%85%B3"].map(
       (escaped) => [`https://ex${escaped}ample.com`, false, invisibleHost],
     ),
     ["https://ex%e2%80%8bample.com:8443", false, invisibleHost],
     // A joiner may sit inside a label, encoded or not, but not at the start or end of the URL.
-    ["https://\u0915\u094d\u200d\u0937.example", true],
-    ["https://\u0915\u094d%E2%80%8D\u0937.example", true],
+    ["https://\u0915\u094d\u200d\u0937.oce.example.internal", true],
+    ["https://\u0915\u094d%E2%80%8D\u0937.oce.example.internal", true],
     [
       "https://example.\u0915\u094d\u200d",
       false,
       /auth\.baseUrl must not begin or end with Unicode spaces or invisible characters/,
     ],
-    // Only ::ffff:0:0/96 is IPv4-mapped.
-    ["https://[::1:ffff:c000:201]", true],
+    // Unmapped IPv6 still cannot share a DNS cookie scope.
+    ["https://[::1:ffff:c000:201]", false, sharedDnsSuffix],
     // An uppercase scheme still gets the IPv4 and percent-escape checks.
-    ["HTTPS://192.0.2.10", true],
+    ["HTTPS://192.0.2.10", false, sharedDnsSuffix],
     ["HTTPS://ex%61mple.com", false, /invalid URL escape "%61"/],
     // Sprig urlParse refuses every ASCII escape in the host, in either hex case.
     ["https://ex%7Eample.com", false, /invalid URL escape "%7E"/],
@@ -1057,8 +1148,8 @@ fieldParity("auth base URLs get the same verdict from preflight and the chart", 
 });
 
 // Helm built with Go 1.24.9 (Helm 3.19.2) refuses an IPv4-mapped IPv6 host in any spelling
-// as an invalid IPv6 host; Helm built with newer Go accepts it. Preflight refuses it, so the
-// outcome does not depend on the Helm build.
+// as an invalid IPv6 host; newer Go reaches shared DNS scope validation. Both layers
+// refuse IP-based browser origins regardless of the Helm build.
 test(
   "IPv4-mapped auth base URL hosts fail preflight under every Helm build",
   { skip: helmSkip },
@@ -1079,9 +1170,12 @@ test(
             await baselineValues(),
             writeOverride(directory, { auth: { baseUrl: url } }),
           ]);
-          if (!chart.ok) {
-            assert.match(chart.output, /invalid IPv6 host/, url);
-          }
+          assert.equal(chart.ok, false, `${url}: helm template\n${chart.output}`);
+          assert.match(
+            chart.output,
+            /invalid IPv6 host|auth\.baseUrl and agentNativeAdmin\.domain must share a non-public DNS suffix/,
+            url,
+          );
         }),
     ),
 );
@@ -1112,46 +1206,39 @@ test(
     // [label, controlPlane providers, accepted]. The chart compares each enabled provider's
     // Secret, default or explicit, with the platform Secrets and each provider before it.
     const cases = [
-      ["defaults", { github: {}, google: {}, oidc: oidcEndpoints }, true],
+      ["defaults", { google: {}, oidc: oidcEndpoints }, true],
       [
         "distinct custom names",
-        {
-          github: { secretName: "login-a" },
-          google: { secretName: "login-b" },
-          oidc: { ...oidcEndpoints, secretName: "login-c" },
-        },
+        { google: { secretName: "login-a" }, oidc: { ...oidcEndpoints, secretName: "login-b" } },
         true,
       ],
-      // GitHub is disabled, so Google may use GitHub's default name.
-      ["google alone", { github: undefined, google: { secretName: "occ-github-login" } }, true],
-      ["gateway API key", { github: { secretName: "occ-private-gateway-key" } }, false],
-      // cert-manager writes the Gateway Secrets the chart generates (finding 1046).
-      ["generated Gateway TLS", { github: { secretName: "oce-agent-gateways-tls" } }, false],
+      ["google alone", { google: { secretName: "custom-login" } }, true],
+      ["gateway API key", { google: { secretName: "occ-private-gateway-key" } }, false],
+      ["generated Gateway TLS", { google: { secretName: "oce-agent-gateways-tls" } }, false],
       ["generated Gateway root CA", { google: { secretName: gatewayRootSecret } }, false],
-      ["installation", { github: { secretName: "occ-installation-startup" } }, false],
+      ["installation", { google: { secretName: "occ-installation-startup" } }, false],
       ["database", { google: { secretName: "occ-database" } }, false],
-      ["auth", { oidc: { ...oidcEndpoints, secretName: "occ-auth" } }, false],
+      ["auth", { google: undefined, oidc: { ...oidcEndpoints, secretName: "occ-auth" } }, false],
       [
-        "github and google share",
-        { github: { secretName: "shared" }, google: { secretName: "shared" } },
+        "google and oidc share",
+        { google: { secretName: "shared" }, oidc: { ...oidcEndpoints, secretName: "shared" } },
         false,
       ],
-      ["google default taken", { github: { secretName: "occ-google-login" }, google: {} }, false],
       [
-        "oidc matches github",
-        { github: {}, oidc: { ...oidcEndpoints, secretName: "occ-github-login" } },
+        "google default taken",
+        { google: {}, oidc: { ...oidcEndpoints, secretName: "occ-google-login" } },
         false,
       ],
       [
         "oidc default taken",
-        { github: undefined, google: { secretName: "occ-oidc-login" }, oidc: oidcEndpoints },
+        { google: { secretName: "occ-oidc-login" }, oidc: oidcEndpoints },
         false,
       ],
     ];
     return each(cases, ([label, providers, accepted]) => {
       const auth = {};
-      for (const name of ["github", "google", "oidc"]) {
-        const settings = name in providers ? providers[name] : name === "github" ? {} : undefined;
+      for (const name of ["google", "oidc"]) {
+        const settings = name in providers ? providers[name] : name === "google" ? {} : undefined;
         auth[name] = settings === undefined ? { enabled: false } : { enabled: true, ...settings };
       }
       return assertParity({
@@ -1159,7 +1246,7 @@ test(
         controlPlane: providers,
         values: { auth },
         accepted,
-        chartError: /auth\.(github|google|oidc)\.secretName must name a dedicated Secret/,
+        chartError: /auth\.(google|oidc)\.secretName must name a dedicated Secret/,
       });
     });
   },
@@ -1417,8 +1504,8 @@ test(
         "gatewayRouting.apiKeySecretName must name a dedicated Secret; occ-private-gateway-key is also database.caSecretName",
       ],
       [
-        "occ-github-login",
-        "auth.github.secretName must name a dedicated Secret; occ-github-login is also database.caSecretName",
+        "occ-google-login",
+        "auth.google.secretName must name a dedicated Secret; occ-google-login is also database.caSecretName",
       ],
       [
         "occ-database",
@@ -1520,10 +1607,10 @@ for (const [field, chartField, controlPlane, values] of [
     (gatewayClassName) => ({ gatewayRouting: { gatewayClassName } }),
   ],
   [
-    "controlPlane.github.secretName",
-    "auth.github.secretName",
-    (secretName) => ({ github: { egressCidrs: ["140.82.112.0/20"], secretName } }),
-    (secretName) => ({ auth: { github: { secretName } } }),
+    "controlPlane.google.secretName",
+    "auth.google.secretName",
+    (secretName) => ({ google: { egressCidrs: ["192.0.2.20/32"], secretName } }),
+    (secretName) => ({ auth: { google: { secretName } } }),
   ],
 ]) {
   test(`${field} and ${chartField} refuse the same malformed names`, { skip: helmSkip }, () =>

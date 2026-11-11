@@ -1,6 +1,8 @@
 #!/usr/bin/env node
+import { oidcEnrollmentPolicy } from "../apps/controller/src/auth/oidc-enrollment.ts";
 import { createHash } from "node:crypto";
 import dns from "node:dns/promises";
+import { realpathSync, statSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { isIP } from "node:net";
@@ -10,6 +12,7 @@ import {
   isKubernetesNamespaceName,
   isKubernetesResourceName,
 } from "../apps/controller/src/drivers/compute/kubernetes/resource-name.ts";
+import { modelEgressWarning } from "../apps/controller/src/drivers/compute/kubernetes/model-egress.ts";
 
 import {
   normalizeOpenAiBaseUrl,
@@ -18,6 +21,10 @@ import {
 } from "../apps/controller/src/drivers/openai-endpoint.ts";
 import { isBackendId, isName, NAME_RULE } from "../packages/contracts/src/api/plain-text.ts";
 import { imageReferenceProblem } from "../packages/occ/src/image-reference.ts";
+import {
+  preparedRepositoryBackend,
+  preparedRepositoryInstallation,
+} from "./lib/prepared-repository-installation.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
@@ -101,9 +108,12 @@ const googleHostedDomain =
 const chatGptWorkspaceId =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+// A refusal that writes no preflight. The CLI prints it to stderr and exits 1;
+// in-process callers of renderInstallationProfile receive it as a rejection.
+export class RenderRefusal extends Error {}
+
 function fail(message) {
-  process.stderr.write(`render-installation-profile: ${message}\n`);
-  process.exit(1);
+  throw new RenderRefusal(message);
 }
 
 function usage() {
@@ -139,15 +149,7 @@ function parseArgs(argv) {
       fail(`unsupported argument ${arg}.\n\n${usage()}`);
     }
   }
-  if (!allowedProfiles.has(parsed.profile)) {
-    fail("--profile must be one of: openclaw, codex.");
-  }
-  if (parsed.input === undefined) {
-    fail("--input is required.");
-  }
-  if (parsed.outDir === undefined) {
-    fail("--out-dir is required.");
-  }
+  // renderInstallationProfile checks the parsed arguments, for in-process callers too.
   return parsed;
 }
 
@@ -266,10 +268,6 @@ function renderYaml(value) {
   return `${toYaml(value)}\n`;
 }
 
-async function writeYaml(path, value) {
-  await writeFile(path, renderYaml(value));
-}
-
 function sha256Hex(value) {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
@@ -303,9 +301,9 @@ function asString(source, path, diagnostics, { pattern, validate, description } 
 
 // Kubernetes Compute startup's rule and messages (finding 1296). The normalized URL is the one
 // Compute uses.
-function codexModelBaseUrl(runtime, diagnostics) {
-  const field = "runtime.codexModelBaseUrl";
-  const value = asString(runtime, field.split("."), diagnostics);
+function sharedModelBaseUrl(runtime, diagnostics) {
+  const field = "runtime.modelProvider.baseUrl";
+  const value = asString(runtime.modelProvider, field.split("."), diagnostics);
   // Normalize only after the raw spelling is accepted. `https://192.168.1/v1` would otherwise
   // become `https://192.168.0.1/v1` and pass Compute.
   if (typeof value === "string" && value !== "" && openAiBaseUrlRewritesIpv4(value)) {
@@ -321,7 +319,40 @@ function codexModelBaseUrl(runtime, diagnostics) {
         `${field} requires HTTPS, a nonzero port, and a path ending in /v1 without credentials, wildcards, query, or fragment.`,
     );
   }
+  // Compute startup warns too: an operator's own NetworkPolicy can admit it (finding 2284).
+  const blocked = url === undefined ? undefined : modelEgressWarning(field, url);
+  if (blocked !== undefined) {
+    diagnostics.warnings.push(blocked);
+  }
   return url ?? value;
+}
+
+function sharedModelProvider(runtime, diagnostics) {
+  const provider = record(runtime.modelProvider, "runtime.modelProvider", diagnostics);
+  closed(
+    provider,
+    "runtime.modelProvider",
+    ["protocol", "baseUrl", "supportsStandaloneWebSearch"],
+    diagnostics,
+  );
+  if (!["openai-responses", "openai-completions"].includes(provider.protocol)) {
+    diagnostics.errors.push(
+      "runtime.modelProvider.protocol must be openai-responses or openai-completions.",
+    );
+  }
+  return {
+    protocol: provider.protocol,
+    baseUrl: sharedModelBaseUrl(runtime, diagnostics),
+    ...(provider.supportsStandaloneWebSearch === undefined
+      ? {}
+      : {
+          supportsStandaloneWebSearch: asBoolean(
+            provider,
+            ["runtime", "modelProvider", "supportsStandaloneWebSearch"],
+            diagnostics,
+          ),
+        }),
+  };
 }
 
 // URL parsing strips only C0 controls and spaces (U+0000 to U+0020) from the ends.
@@ -716,71 +747,39 @@ function sourceCidrs(controlPlane, key, diagnostics, { warnWide = false } = {}) 
   return cidrs;
 }
 
-// The API refuses a public-suffix shared cookie domain at startup (normalizeSharedCookieDomain)
-// with tldts and its bundled list. Resolve the controller's pinned copy so both use the same
-// list without a new root dependency; load it only when native admin is configured.
-function isPublicSuffix(hostname) {
-  const require = createRequire(new URL("../apps/controller/package.json", import.meta.url));
-  let tldts;
-  try {
-    tldts = require("tldts");
-  } catch {
-    return undefined;
-  }
-  const parsed = tldts.parse(hostname, { allowPrivateDomains: true, validateHostname: true });
-  return parsed.isIp || parsed.domain === null || parsed.publicSuffix === hostname;
-}
-
-function validateNativeAdminDomains(domain, sharedCookieDomain, authBaseUrl, diagnostics) {
-  const lowerDomain = domain.toLowerCase();
-  const lowerSharedCookieDomain = sharedCookieDomain.toLowerCase();
-  if (!dnsHostname.test(lowerDomain)) {
+function validateNativeAdminDomains(domain, authBaseUrl, diagnostics) {
+  if (!dnsHostname.test(domain.toLowerCase())) {
     diagnostics.errors.push(
       "controlPlane.agentNativeAdminDomain must be a DNS hostname without a wildcard, port, scheme, or path.",
     );
-  }
-  if (!dnsHostname.test(lowerSharedCookieDomain)) {
-    diagnostics.errors.push(
-      "controlPlane.sharedCookieDomain must be a DNS hostname without a wildcard, port, scheme, or path.",
-    );
-  } else {
-    const publicSuffix = isPublicSuffix(lowerSharedCookieDomain);
-    if (publicSuffix === undefined) {
-      diagnostics.errors.push(
-        "controlPlane.sharedCookieDomain needs the public suffix list: run pnpm install first.",
-      );
-    } else if (publicSuffix) {
-      diagnostics.errors.push("controlPlane.sharedCookieDomain must not be a public suffix.");
-    }
-  }
-  if (
-    dnsHostname.test(lowerDomain) &&
-    dnsHostname.test(lowerSharedCookieDomain) &&
-    lowerDomain !== lowerSharedCookieDomain &&
-    !lowerDomain.endsWith(`.${lowerSharedCookieDomain}`)
-  ) {
-    diagnostics.errors.push(
-      "controlPlane.agentNativeAdminDomain must be inside controlPlane.sharedCookieDomain.",
-    );
-  }
-  // The API refuses these at startup: shared session cookies are secure-only, and the
-  // console host must be inside their parent.
-  let baseUrl;
-  try {
-    baseUrl = new URL(authBaseUrl);
-  } catch {
-    // asString already reported it as not an absolute HTTP(S) origin.
     return;
   }
-  if (baseUrl.protocol !== "https:") {
-    diagnostics.errors.push("controlPlane.authBaseUrl must use HTTPS with native admin.");
-  } else if (dnsHostname.test(lowerSharedCookieDomain)) {
-    const host = baseUrl.hostname.replace(/\.$/, "");
-    if (host !== lowerSharedCookieDomain && !host.endsWith(`.${lowerSharedCookieDomain}`)) {
-      diagnostics.errors.push(
-        "controlPlane.authBaseUrl host must be inside controlPlane.sharedCookieDomain.",
-      );
+  if (diagnostics.errors.some((error) => error.startsWith("controlPlane.authBaseUrl"))) {
+    return;
+  }
+  // Load the auth owner lazily so a plain checkout still writes a useful preflight refusal.
+  let deriveSharedCookieDomain;
+  try {
+    ({ deriveSharedCookieDomain } = createRequire(import.meta.url)(
+      "../apps/controller/src/auth/configuration.ts",
+    ));
+  } catch (error) {
+    if (error.code !== "MODULE_NOT_FOUND" && error.code !== "ERR_MODULE_NOT_FOUND") {
+      throw error;
     }
+    diagnostics.errors.push(
+      "Shared browser sessions need the public suffix list: run pnpm install first.",
+    );
+    return;
+  }
+  try {
+    deriveSharedCookieDomain(authBaseUrl, domain);
+  } catch {
+    diagnostics.errors.push(
+      new URL(authBaseUrl).protocol !== "https:"
+        ? "controlPlane.authBaseUrl must use HTTPS for shared browser sessions."
+        : "controlPlane.authBaseUrl and controlPlane.agentNativeAdminDomain must share a non-public DNS suffix.",
+    );
   }
 }
 
@@ -816,8 +815,6 @@ function clientSelectors(source, diagnostics) {
 }
 
 const recoveryUserIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
-const githubOrganization = /^[a-z0-9][a-z0-9-]{0,38}$/;
-const githubTeam = /^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9_-]{0,99}$/;
 const trustedProxyPresets = ["ingress-nginx", "aws", "generic"];
 const passwordSignInPolicies = ["all", "recovery-only"];
 
@@ -894,26 +891,6 @@ function signInProvider(source, name, diagnostics) {
       nonempty: false,
     });
   }
-  // GitHub's organization and team allowlist (RFC-0061), as the chart and API accept it.
-  if (source.allowedOrgs !== undefined) {
-    rendered.allowedOrgs = stringArray(source, [...path, "allowedOrgs"], diagnostics, {
-      validate: (value) => githubOrganization.test(value),
-      description: "a lowercase GitHub organization login such as acme",
-      nonempty: false,
-    });
-  }
-  if (source.allowedTeams !== undefined) {
-    rendered.allowedTeams = stringArray(source, [...path, "allowedTeams"], diagnostics, {
-      validate: (value) => githubTeam.test(value),
-      description: "a lowercase org/team-slug entry such as acme/platform",
-      nonempty: false,
-    });
-  }
-  if ((rendered.allowedOrgs?.length ?? 0) + (rendered.allowedTeams?.length ?? 0) > 10) {
-    diagnostics.errors.push(
-      "controlPlane.github.allowedOrgs and allowedTeams list at most 10 entries together.",
-    );
-  }
   if (source.egressCidrs !== undefined) {
     rendered.egressCidrs = stringArray(source, [...path, "egressCidrs"], diagnostics, {
       validate: isIpv4Cidr,
@@ -986,27 +963,27 @@ function renderOidc(source, diagnostics) {
   if (displayName !== undefined) {
     rendered.displayName = displayName;
   }
+  if (source.enrollment !== undefined) {
+    try {
+      rendered.enrollment = oidcEnrollmentPolicy(source.enrollment);
+    } catch (error) {
+      diagnostics.errors.push(`controlPlane.oidc.enrollment: ${error.message}`);
+    }
+  }
   return rendered;
 }
 
-// Mirrors the chart's auth.github/auth.google/auth.oidc checks. Activation is one-way, so every
+// Mirrors the chart's auth.google/auth.oidc checks. Activation is one-way, so every
 // profile rerender after activation must keep rendering these values.
-function renderExternalSignIn(controlPlane, github, google, oidc, authBaseUrl, diagnostics) {
+function renderExternalSignIn(controlPlane, google, oidc, authBaseUrl, diagnostics) {
   // The scheme as URL parsing reads it, like the API: HTTPS:// and surrounding spaces pass.
   if (!URL.canParse(authBaseUrl) || new URL(authBaseUrl).protocol !== "https:") {
     diagnostics.errors.push("controlPlane.authBaseUrl must use HTTPS with external sign-in.");
   }
-  for (const key of ["agentNativeAdminDomain", "sharedCookieDomain"]) {
-    if (controlPlane[key] !== undefined) {
-      diagnostics.errors.push(
-        `controlPlane.${key} is not consumed with external sign-in: GitHub, Google and OIDC sign-in disable native admin.`,
-      );
-    }
-  }
   let recoveryUserId;
   if (controlPlane.recoveryUserId === undefined) {
     diagnostics.errors.push(
-      "controlPlane.recoveryUserId is required with controlPlane.github, controlPlane.google or controlPlane.oidc.",
+      "controlPlane.recoveryUserId is required with controlPlane.google or controlPlane.oidc.",
     );
   } else {
     recoveryUserId = asString(controlPlane, ["controlPlane", "recoveryUserId"], diagnostics, {
@@ -1026,9 +1003,6 @@ function renderExternalSignIn(controlPlane, github, google, oidc, authBaseUrl, d
   return {
     recoveryUserId,
     ...(passwordSignIn === undefined ? {} : { passwordSignIn }),
-    ...(controlPlane.github === undefined
-      ? {}
-      : { github: signInProvider(github, "github", diagnostics) }),
     ...(controlPlane.google === undefined
       ? {}
       : { google: signInProvider(google, "google", diagnostics) }),
@@ -1166,7 +1140,7 @@ function buildInput(rawInput, diagnostics) {
       "gatewayClassName",
       "gatewayApiKeySecretName",
       "agentNativeAdminDomain",
-      "sharedCookieDomain",
+      "agentNativeAdminSessionMode",
       "gatewayTrustedProxyCidrs",
       "pluginStatusProxySourceCidrs",
       "nodeSelector",
@@ -1177,7 +1151,6 @@ function buildInput(rawInput, diagnostics) {
       "observabilityUrl",
       "recoveryUserId",
       "passwordSignIn",
-      "github",
       "google",
       "oidc",
       "trustedProxy",
@@ -1194,7 +1167,7 @@ function buildInput(rawInput, diagnostics) {
       "gatewayNodeSelector",
       "transportSecretPrefix",
       "codexSeccompProfile",
-      "codexModelBaseUrl",
+      "modelProvider",
     ],
     diagnostics,
   );
@@ -1210,6 +1183,8 @@ function buildInput(rawInput, diagnostics) {
     "repository",
     [
       "enabled",
+      "authority",
+      "preparedCustodySecretName",
       "image",
       "backendId",
       "registryConfigMapName",
@@ -1236,13 +1211,11 @@ function buildInput(rawInput, diagnostics) {
   closed(databaseCa, "controlPlane.databaseCa", ["secretName", "key", "mountPath"], diagnostics);
   const loggingCollector = section(controlPlane, "loggingCollector", diagnostics, false);
   closed(loggingCollector, "controlPlane.loggingCollector", ["enabled", "exporter"], diagnostics);
-  const github = section(controlPlane, "github", diagnostics, false);
-  closed(
-    github,
-    "controlPlane.github",
-    ["secretName", "clientIdKey", "clientSecretKey", "allowedOrgs", "allowedTeams", "egressCidrs"],
-    diagnostics,
-  );
+  if (controlPlane.github !== undefined) {
+    diagnostics.errors.push(
+      "controlPlane.github was removed; use controlPlane.oidc.enrollment. See docs/guides/deploy/oidc-upgrade.md.",
+    );
+  }
   const google = section(controlPlane, "google", diagnostics, false);
   closed(
     google,
@@ -1255,6 +1228,7 @@ function buildInput(rawInput, diagnostics) {
     oidc,
     "controlPlane.oidc",
     [
+      "enrollment",
       "issuer",
       "authorizationUrl",
       "tokenUrl",
@@ -1296,7 +1270,6 @@ function buildInput(rawInput, diagnostics) {
     loggingCollector,
     managedServiceAccounts,
     presets,
-    github,
     google,
     oidc,
     trustedProxy,
@@ -1311,7 +1284,6 @@ const chartSecrets = {
   auth: "occ-auth",
 };
 const signInSecretDefaults = {
-  github: "occ-github-login",
   google: "occ-google-login",
   oidc: "occ-oidc-login",
 };
@@ -1367,10 +1339,12 @@ function dedicatedSecrets(values, releaseName, namespace, diagnostics) {
       ]),
     ...(repository.enabled
       ? [
-          ...["serviceConfigSecretName", "appKeySecretName", "tlsSecretName"].map((key) => [
-            `repository.${key}`,
-            repository[key],
-          ]),
+          ...[
+            "serviceConfigSecretName",
+            "appKeySecretName",
+            "preparedCustodySecretName",
+            "tlsSecretName",
+          ].map((key) => [`repository.${key}`, repository[key]]),
           ["repository.publicCaSecretName", repository.publicCaSecretName, "ca"],
         ]
       : []),
@@ -1459,7 +1433,6 @@ function buildRendered(profile, parsed, diagnostics) {
     loggingCollector,
     managedServiceAccounts,
     presets,
-    github,
     google,
     oidc,
     trustedProxy,
@@ -1493,12 +1466,9 @@ function buildRendered(profile, parsed, diagnostics) {
     validate: httpOrigin,
     description: "an absolute HTTP(S) origin URL without a path, query, fragment, or user info",
   });
-  const externalSignIn =
-    controlPlane.github !== undefined ||
-    controlPlane.google !== undefined ||
-    controlPlane.oidc !== undefined;
+  const externalSignIn = controlPlane.google !== undefined || controlPlane.oidc !== undefined;
   const signIn = externalSignIn
-    ? renderExternalSignIn(controlPlane, github, google, oidc, authBaseUrl, diagnostics)
+    ? renderExternalSignIn(controlPlane, google, oidc, authBaseUrl, diagnostics)
     : {};
   // Without a trusted proxy the API sees the ingress as every browser's address. Existing
   // source-preserving setups (such as an NLB) stay valid, so this warns rather than fails
@@ -1512,40 +1482,38 @@ function buildRendered(profile, parsed, diagnostics) {
   }
   if (!externalSignIn && controlPlane.recoveryUserId !== undefined) {
     diagnostics.errors.push(
-      "controlPlane.recoveryUserId requires controlPlane.github, controlPlane.google or controlPlane.oidc.",
+      "controlPlane.recoveryUserId requires controlPlane.google or controlPlane.oidc.",
     );
   }
   if (!externalSignIn && controlPlane.passwordSignIn !== undefined) {
     diagnostics.errors.push(
-      "controlPlane.passwordSignIn requires controlPlane.github, controlPlane.google or controlPlane.oidc.",
+      "controlPlane.passwordSignIn requires controlPlane.google or controlPlane.oidc.",
     );
   }
-  // Helm refuses native admin with external sign-in (host-only cookies only).
-  let agentNativeAdmin = { enabled: false };
-  if (!externalSignIn) {
-    const agentNativeAdminDomain = asString(
-      controlPlane,
-      ["controlPlane", "agentNativeAdminDomain"],
-      diagnostics,
+  const sessionMode =
+    optionalString(controlPlane, ["controlPlane", "agentNativeAdminSessionMode"], diagnostics, {
+      validate: (value) => ["shared-cookie", "host-only-exchange"].includes(value),
+      description: "shared-cookie or host-only-exchange",
+    }) ?? "shared-cookie";
+  const agentNativeAdminDomain = asString(
+    controlPlane,
+    ["controlPlane", "agentNativeAdminDomain"],
+    diagnostics,
+  );
+  validateNativeAdminDomains(agentNativeAdminDomain, authBaseUrl, diagnostics);
+  if (
+    sessionMode === "host-only-exchange" &&
+    (controlPlane.oidc === undefined || controlPlane.google !== undefined)
+  ) {
+    diagnostics.errors.push(
+      "controlPlane.agentNativeAdminSessionMode host-only-exchange requires OIDC sign-in without Google.",
     );
-    const sharedCookieDomain = asString(
-      controlPlane,
-      ["controlPlane", "sharedCookieDomain"],
-      diagnostics,
-    );
-    validateNativeAdminDomains(
-      agentNativeAdminDomain,
-      sharedCookieDomain,
-      authBaseUrl,
-      diagnostics,
-    );
-    // The API lowercases both at startup; the chart accepts only lowercase.
-    agentNativeAdmin = {
-      enabled: true,
-      domain: agentNativeAdminDomain.toLowerCase(),
-      sharedCookieDomain: sharedCookieDomain.toLowerCase(),
-    };
   }
+  const agentNativeAdmin = {
+    enabled: controlPlane.google === undefined,
+    domain: agentNativeAdminDomain.toLowerCase(),
+    ...(sessionMode === "host-only-exchange" ? { sessionMode } : {}),
+  };
   const envoyNamespace =
     optionalString(controlPlane, ["controlPlane", "envoyNamespace"], diagnostics, namespaceRule) ??
     "envoy-gateway-system";
@@ -1559,7 +1527,7 @@ function buildRendered(profile, parsed, diagnostics) {
   if (profile.name === "openclaw" && Object.keys(codex).length > 0) {
     diagnostics.errors.push("codex inputs are only consumed by the codex profile.");
   }
-  for (const key of ["codexSeccompProfile", "codexModelBaseUrl"]) {
+  for (const key of ["codexSeccompProfile"]) {
     if (profile.name === "openclaw" && runtime[key] !== undefined) {
       diagnostics.errors.push(`runtime.${key} is only consumed by the codex profile.`);
     }
@@ -1843,12 +1811,14 @@ function buildRendered(profile, parsed, diagnostics) {
             // scheduling reservation unchanged. Memory requests cover measured
             // use between turns, so the scheduler places Agents by what they
             // actually hold; limits cover measured peaks.
-            // Gateways, embedded or dedicated, held 1.2-1.6 GiB between turns
-            // and peaked at 1.8-2.2 GiB; a dedicated Codex Gateway serving native
-            // admin chat was OOM-killed at 2Gi on its first coding turn.
+            // Since the OpenClaw pin of #2982, an embedded Gateway holds 2.3-2.4 GiB
+            // between turns and peaks at 2.5-2.8 GiB on its first turn, when
+            // OpenClaw starts most of its worker threads (finding 2700); a
+            // dedicated Codex Gateway serving native admin chat was OOM-killed
+            // at 2Gi on its first coding turn.
             gateway: {
-              requests: { cpu: "100m", memory: "1792Mi" },
-              limits: { cpu: "4", memory: "3Gi" },
+              requests: { cpu: "100m", memory: "2560Mi" },
+              limits: { cpu: "4", memory: "4Gi" },
             },
             // A Codex Harness held 0.45-0.57 GiB between turns and peaked at
             // 1 GiB running a test suite and 1.9 GiB running tsc; lint, tsc and
@@ -1920,6 +1890,9 @@ function buildRendered(profile, parsed, diagnostics) {
                   "a prefix producing a DNS-safe Secret name of at most 253 characters with its 12-character suffix",
               },
             ),
+            ...(runtime.modelProvider === undefined
+              ? {}
+              : { modelProvider: sharedModelProvider(runtime, diagnostics) }),
             ...(profile.name === "codex"
               ? {
                   codexSeccompProfile: asString(
@@ -1932,9 +1905,6 @@ function buildRendered(profile, parsed, diagnostics) {
                         "a relative localhost profile path without traversal or unconfined mode",
                     },
                   ),
-                  ...(runtime.codexModelBaseUrl === undefined
-                    ? {}
-                    : { codexModelBaseUrl: codexModelBaseUrl(runtime, diagnostics) }),
                 }
               : {}),
             ...(managedSlackProxyEnabled
@@ -2038,9 +2008,20 @@ function buildRendered(profile, parsed, diagnostics) {
   }
 
   if (repositoryEnabled) {
-    const repoDriverId = "repository-credentials";
+    if (repository.authority !== "prepared-git") {
+      diagnostics.errors.push(
+        "repository.authority must explicitly select prepared-git. The GitHub App signing gateway is retired; stop admissions and drain accepted work on its original owner before switching to worker Token Service custody. Do not transfer keys or replay uncertain work.",
+      );
+    }
     values.repositoryCredentials = {
       enabled: true,
+      authority: "prepared-git",
+      preparedCustodySecretName: asString(
+        repository,
+        ["repository", "preparedCustodySecretName"],
+        diagnostics,
+        resourceNameRule,
+      ),
       image: asString(repository, ["repository", "image"], diagnostics, {
         pattern: digestImage,
         validate: pullableImageReference,
@@ -2091,24 +2072,10 @@ function buildRendered(profile, parsed, diagnostics) {
         description: "an IPv4 CIDR",
       }),
     };
-    installation.backend.push({
-      id: values.repositoryCredentials.backendId,
-      type: "github",
-      configuration: {
-        registryPath: "/etc/openclaw/repository-registry/registry.json",
-      },
-      drivers: {
-        repo: repoDriverId,
-      },
-    });
-    installation.drivers.repo = {
-      id: repoDriverId,
-      configuration: {
-        controlSocket: "/run/openclaw/repository-control/private/control.sock",
-        sessionDurationSeconds: 86_400,
-        publicCaPath: "/etc/openclaw/repository-ca/ca.crt",
-      },
-    };
+    installation.backend.push(
+      preparedRepositoryBackend({ backendId: values.repositoryCredentials.backendId }),
+    );
+    installation.repository = preparedRepositoryInstallation({ sessionDurationSeconds: 86_400 });
     installation.drivers.compute.configuration.network.repositoryCredentials = {
       namespace,
       podLabels: {
@@ -2163,19 +2130,22 @@ function buildRendered(profile, parsed, diagnostics) {
 
   diagnostics.prerequisites.push(
     "Default ReadWriteOnce storage class available for dedicated Codex workspace claims.",
-    "Envoy Gateway and cert-manager installed before applying gatewayRouting values.",
+    "Envoy Gateway and cert-manager ready, their CRDs and Gateway API CRDs Established, and the configured GatewayClass Accepted before Helm installation; the chart does not install these prerequisites.",
+    "Configured gatewayApiKeySecretName Secret created with key occ in the control-plane namespace before Helm installation; private routing is enabled by default.",
+  );
+  diagnostics.prerequisites.push(
+    "HTTPS Console and Agent DNS hosts configured under a shared non-public DNS suffix.",
   );
   if (agentNativeAdmin.enabled) {
-    diagnostics.prerequisites.push(
-      "Wildcard DNS and TLS configured for the native admin domain and shared cookie parent.",
-    );
-  } else {
+    diagnostics.prerequisites.push("Wildcard DNS and TLS configured for the native admin domain.");
+  }
+  if (externalSignIn) {
     diagnostics.prerequisites.push(
       "External sign-in Secrets created, and controlPlane.recoveryUserId read from a verified password administrator's session, before the first helm upgrade that renders them.",
     );
     if (signIn.passwordSignIn === "recovery-only") {
       diagnostics.prerequisites.push(
-        "A GitHub, Google or OIDC identity attached to every ordinary account before the helm upgrade that renders passwordSignIn: recovery-only; accounts without one cannot sign in until an administrator attaches it.",
+        "A Google or OIDC identity attached to every ordinary account before the helm upgrade that renders passwordSignIn: recovery-only; accounts without one cannot sign in until an administrator attaches it.",
       );
     }
   }
@@ -2229,15 +2199,38 @@ function buildRendered(profile, parsed, diagnostics) {
     "Retrieve the bootstrap service key from the protected bootstrap PVC and verify authenticated OCC access.",
   );
 
-  return { values, installation };
+  const backendIds = new Set();
+  for (const backend of installation.backend) {
+    if (backendIds.has(backend.id)) {
+      diagnostics.errors.push(
+        `Generated Backend IDs must be unique; repository.backendId ${JSON.stringify(backend.id)} is already used by another configured Backend.`,
+      );
+    }
+    backendIds.add(backend.id);
+  }
+
+  // Helm merges these values over the chart default `dns.podLabels` (`k8s-app: kube-dns`), and
+  // the DNS egress rule needs every merged label. A null deletes the default for a selector
+  // without it. `installation` keeps the exact selector, as Compute does not merge.
+  const dnsPodLabels = values.dns.podLabels;
+  return {
+    values: {
+      ...values,
+      dns: {
+        ...values.dns,
+        podLabels: { ...dnsPodLabels, ...("k8s-app" in dnsPodLabels ? {} : { "k8s-app": null }) },
+      },
+    },
+    installation,
+  };
 }
 
 async function resolveHostedDiscoveryCidrs(profile, parsed, values, diagnostics) {
-  const plugin = profile.installation.drivers.plugin;
-  if (
-    plugin.id !== "codex-plugin" ||
-    (plugin.configuration?.catalogSource ?? "hosted") !== "hosted"
-  ) {
+  const hostedDiscovery = profile.installation.drivers.plugin.some(
+    (entry) =>
+      entry.id === "codex-plugin" && (entry.configuration?.catalogSource ?? "hosted") === "hosted",
+  );
+  if (!hostedDiscovery) {
     return;
   }
   const hosts = ["auth.openai.com", "chatgpt.com"];
@@ -2291,46 +2284,101 @@ async function writePreflight(outDir, profile, diagnostics, output = {}) {
   return preflight;
 }
 
-const args = parseArgs(process.argv.slice(2));
-const outDir = resolve(args.outDir);
-await mkdir(outDir, { recursive: true });
-const output = {
-  values: resolve(outDir, "values.yaml"),
-  installation: resolve(outDir, "installation.yaml"),
-  preflight: resolve(outDir, "preflight.json"),
-};
-// A failed rerender must not expose artifacts or a success report from a prior run.
-await Promise.all(Object.values(output).map((path) => rm(path, { force: true })));
-const diagnostics = { errors: [], warnings: [], prerequisites: [], nextSteps: [] };
-const [profile, rawInput] = await Promise.all([
-  readProfile(args.profile),
-  readJson(resolve(args.input), "input"),
-]);
-const parsed = buildInput(rawInput, diagnostics);
-const { values, installation } = buildRendered(profile, parsed, diagnostics);
-
-if (diagnostics.errors.length === 0) {
-  await resolveHostedDiscoveryCidrs(profile, parsed, values, diagnostics);
+function sameProfileFile(input, output) {
+  try {
+    const inputFile = statSync(input, { bigint: true });
+    const outputFile = statSync(output, { bigint: true });
+    return inputFile.dev === outputFile.dev && inputFile.ino === outputFile.ino;
+  } catch {
+    // Normal cleanup and input loading own missing, inaccessible, or looping paths.
+    return false;
+  }
 }
 
-if (diagnostics.errors.length === 0) {
-  const installationYaml = renderYaml(installation);
-  values.controlPlane = {
-    ...(values.controlPlane ?? {}),
-    installationChecksum: sha256Hex(installationYaml),
+// Renders one profile in-process: writes the same files as the CLI and returns its
+// preflight summary. `args` takes the CLI's parsed shape: { profile, input, outDir }.
+// It never writes to stdout or stderr or exits; a refusal without a preflight rejects.
+export async function renderInstallationProfile(args) {
+  if (!allowedProfiles.has(args.profile)) {
+    fail("--profile must be one of: openclaw, codex.");
+  }
+  if (args.input === undefined) {
+    fail("--input is required.");
+  }
+  if (args.outDir === undefined) {
+    fail("--out-dir is required.");
+  }
+  const outDir = resolve(args.outDir);
+  await mkdir(outDir, { recursive: true });
+  const output = {
+    values: resolve(outDir, "values.yaml"),
+    installation: resolve(outDir, "installation.yaml"),
+    preflight: resolve(outDir, "preflight.json"),
   };
-  await Promise.all([
-    writeYaml(output.values, values),
-    writeFile(output.installation, installationYaml),
+  // Check file identity before cleanup, including symlink and case-insensitive aliases.
+  if (Object.values(output).some((path) => sameProfileFile(resolve(args.input), path))) {
+    fail(
+      "--input must not name a generated output file; choose another input name or output directory.",
+    );
+  }
+  // A failed rerender must not expose artifacts or a success report from a prior run.
+  await Promise.all(Object.values(output).map((path) => rm(path, { force: true })));
+  const diagnostics = { errors: [], warnings: [], prerequisites: [], nextSteps: [] };
+  const [profile, rawInput] = await Promise.all([
+    readProfile(args.profile),
+    readJson(resolve(args.input), "input"),
   ]);
+  const parsed = buildInput(rawInput, diagnostics);
+  const { values, installation } = buildRendered(profile, parsed, diagnostics);
+
+  if (diagnostics.errors.length === 0) {
+    await resolveHostedDiscoveryCidrs(profile, parsed, values, diagnostics);
+  }
+
+  if (diagnostics.errors.length === 0) {
+    const installationYaml = renderYaml(installation);
+    values.controlPlane = {
+      ...(values.controlPlane ?? {}),
+      installationChecksum: sha256Hex(installationYaml),
+    };
+    // Render both before writing either, so a render error leaves neither file behind.
+    const valuesYaml = renderYaml(values);
+    await Promise.all([
+      writeFile(output.values, valuesYaml),
+      writeFile(output.installation, installationYaml),
+    ]);
+  }
+  return writePreflight(
+    outDir,
+    profile.name,
+    diagnostics,
+    diagnostics.errors.length === 0 ? output : { preflight: output.preflight },
+  );
 }
-const preflight = await writePreflight(
-  outDir,
-  profile.name,
-  diagnostics,
-  diagnostics.errors.length === 0 ? output : { preflight: output.preflight },
-);
-process.stdout.write(`${JSON.stringify(preflight, null, 2)}\n`);
-if (!preflight.ok) {
-  process.exit(1);
+
+// Run the CLI only when this file is the entry point, not when a test imports it.
+// Node before 24.2 lacks import.meta.main; its entry URL is the realpath of argv[1].
+function startedAsEntryPoint() {
+  try {
+    return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    // No argv[1], or not a file (node --eval with arguments): this module was imported.
+    return false;
+  }
+}
+const isEntryPoint = import.meta.main ?? startedAsEntryPoint();
+if (isEntryPoint) {
+  try {
+    const preflight = await renderInstallationProfile(parseArgs(process.argv.slice(2)));
+    process.stdout.write(`${JSON.stringify(preflight, null, 2)}\n`);
+    if (!preflight.ok) {
+      process.exit(1);
+    }
+  } catch (error) {
+    if (!(error instanceof RenderRefusal)) {
+      throw error;
+    }
+    process.stderr.write(`render-installation-profile: ${error.message}\n`);
+    process.exit(1);
+  }
 }

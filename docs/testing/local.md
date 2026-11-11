@@ -1,3 +1,9 @@
+---
+tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
+---
+
 # Local, browser, and metrics tests
 
 ## Overview
@@ -46,7 +52,7 @@ finding that replaces an old one.
 `tests/conformance/iam.test.mjs` and `tests/integration/occ-api.test.mjs` cover
 identity, authorization, isolation, and audit behavior. The service API key
 suite uses memory storage. Run the [PostgreSQL tests](postgresql.md) for
-persistence and GitHub sign-in; memory-backed success does not prove them.
+persistence and external sign-in; memory-backed success does not prove them.
 
 `tests/integration/oidc-ca-trust.test.mjs` requires Helm, yq, and OpenSSL;
 `OCC_HELM_BIN` can select Helm. It exercises loopback TLS trust and callback
@@ -54,7 +60,7 @@ transport, not a live IdP, PostgreSQL authentication, or an installed deployment
 
 ## Packaged-driver integration
 
-`tests/integration/driver-plugin-installation.test.mjs` installs precompiled
+`tests/integration/driver-plugin-installation.test.ts` installs precompiled
 Driver tarballs in an isolated dependency root and exercises production startup
 with in-memory state. It does not prove database persistence, Kubernetes, a real
 gateway, or a model turn.
@@ -72,18 +78,32 @@ Set `OCC_TEST_BROWSER_EXECUTABLE` to use an approved existing browser. The test
 fails if no browser is available; it does not install one. Do not change managed
 browser policies. Set `OCC_TEST_CONSOLE_ARTIFACT_DIR` to retain screenshots.
 
+The three native Agent admin cases use Linux Chromium's NSS trust store. The
+Console browser command reports these three as skipped on macOS and Windows.
+For the full suite, use a disposable Ubuntu VM with Chromium sandbox support,
+`libnss3-tools`, and the Go version in `go.mod`. Set up the checkout as above,
+then run the Console browser command or just the Agent detail cases:
+
+```sh
+node --test 'tests/browser/console-agent-detail-2.test.{mjs,ts}'
+```
+
+The existing **Console Browser** check on a pull request also runs these
+cases. The tests create and remove their own certificates and browser trust
+store.
+
 The browser fixture uses real controller routes with in-memory state and test
 Drivers. It does not prove persistence, routing through a deployed gateway, or
 Agent runtime behavior. The API checks can run without a browser:
 
 ```sh
-node --test tests/integration/console-api.test.mjs
+node --test tests/integration/console-api.test.ts
 ```
 
 ### Browser failure diagnostics
 
 Failed `checks-browser` CI lanes retain `browser-failures-*` artifacts for three
-days. Use the [CI evidence overrides](ci.md#local-runner-overrides) to collect them
+days. Use the [CI evidence overrides](ci/configuration.md#runner-overrides) to collect them
 locally, including an optional Playwright trace. Open a trace with
 `pnpm exec playwright show-trace`.
 
@@ -95,11 +115,16 @@ After changing API routes or schemas, run `pnpm openapi:generate`, then
 OpenAPI contract without controller dependencies, run:
 
 ```sh
-node scripts/generate-occ-api-reference.mjs --check
+node scripts/generate-occ-api-reference.ts --check
 ```
 
 Run `pnpm hooks:install` to reinstall the managed pre-push hook. It refuses to
-replace an unmanaged hook and preserves `core.hooksPath`.
+replace an unmanaged hook and preserves `core.hooksPath`. The hook requires the
+Bun version in `.bun-version` and invokes that executable's formatter directly,
+without running package scripts. It checks files on disk in the active checkout,
+including unstaged edits. To verify formatting
+for a trusted outgoing commit, run `pnpm format:check` in a clean, isolated
+checkout of its exact commit ID with matching dependencies already installed.
 
 ## Metrics and observability tests
 
@@ -176,10 +201,12 @@ It proves collection and dashboard provisioning, not live Agent behavior.
 
 ### Kubernetes observability acceptance
 
-With Node 24+, pinned pnpm and installed dependencies, Helm, kubectl, k3d,
-and Docker or an explicitly selected compatible Podman engine, run the
-credential-free lane on a disposable loopback cluster. NetworkPolicy must be
-enforced. Use a fresh private state directory for each run:
+Use Node matching `package.json`, pinned pnpm and installed dependencies, the Go
+toolchain in `go.mod`, Helm, kubectl, k3d, and the
+[production helper prerequisites](../guides/deploy/production-upgrade.md#prepare-the-release),
+including jq and yq. Run this credential-free lane with Docker or an explicitly
+selected compatible Podman engine on a disposable loopback cluster with enforced
+NetworkPolicy. Use a fresh private state directory for each run:
 
 ```sh
 OBS_LANE=k3d-observability
@@ -194,7 +221,12 @@ or testing, including failure, run `node scripts/ci/cleanup.mjs --state
 confirm owned subprocesses have stopped before cleanup. See [CI testing](ci.md).
 
 This lane checks Helm-installed OCC metrics and logs, with no model calls or
-Prometheus, Grafana, or Loki. For the demo smoke, install Playwright Chromium
+Prometheus, Grafana, or Loki. It also checks separate database upgrades: revoked
+application access must fail the real migration hook without restarting either
+writer; after grant repair and an independent migration Job, Helm must recover
+the API and worker and deploy an Agent. The PostgreSQL lane separately verifies
+that pending migration history is refused without applying SQL.
+For the demo smoke, install Playwright Chromium
 with `pnpm exec playwright install --with-deps chromium`, use a fresh directory,
 and set `OBS_LANE=k3d-observability-demo` in the commands above. It checks a
 fixture dashboard stack, not OCC runtime behavior. CI retains `demo-log-dashboard`
@@ -224,3 +256,46 @@ For model builds, first pull `NODE_BASE_IMAGE` and the base pinned in
 [`deploy/runtime/Dockerfile`](../../deploy/runtime/Dockerfile); the external
 receiver files in `RUNNER_TEMP` must be visible to the host and VM. Do not weaken
 permission checks.
+
+### Worker termination observer
+
+The `k3d-observability` lane also runs the observer against actual Helm-installed
+workers. A namespace-scoped ServiceAccount lists and watches Pods. The test sends
+SIGTERM to each worker twice, waits for kubelet to restart the container in the
+same Pod, and checks that the OTLP receiver still holds both terminations
+after the second restart. The two cases cover the ordinary worker container and
+the native repository sender profile, where the worker is a restartable init
+container. The latter uses generated keys and an unadmitted test repository; it
+does not call a Git provider or prove repository operations. The lane builds the
+real native sender image and requires `OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE` in
+its prepared state. To run both installed cases in that environment:
+
+```sh
+OCC_TEST_PRODUCTION_OBSERVABILITY=1 node --test tests/integration/production-observability-k3d.test.mjs
+```
+
+Both cases must pass. The receiver writes decoded OTLP to a temporary volume.
+Its contents verify receipt after the second restart. Backend retention over
+time needs a separate check against the operator's storage policy.
+
+For the synthetic LIST/WATCH case, use Node.js 24+ and `kubectl`:
+
+```sh
+OCC_TEST_WORKER_COLLECTOR_BIN=/trusted/bin/otelcol-contrib \
+  node --test tests/integration/worker-termination-observer.test.ts
+```
+
+In CI, the test extracts `/otelcol-contrib` from the host image pinned by
+`logging.collector.image` in the production chart. It creates a temporary
+container with `--pull=never` and removes it after copying the binary.
+`OCC_TEST_OBSERVABILITY_COLLECTOR_IMAGE` identifies the separate k3d import.
+`OCC_DOCKER_BIN` and `OCC_KUBECTL_BIN` select the executables. The standalone
+binary override above bypasses image extraction and requires a verified 0.159.0
+Collector.
+
+The synthetic API exercises backoff before the restart count advances, distinct
+139/137 exits, missing status, and watch closure. The real Collector reads the
+private file, rejects malformed records and excludes canaries from OTLP. Set
+`OCC_TEST_WORKER_OBSERVATION_EVIDENCE` to a new private file path to retain the
+synthetic batches. See the [operator guide](../guides/observability/worker-terminations.md)
+for deployment and retention.

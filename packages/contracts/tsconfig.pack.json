@@ -1,0 +1,5 @@
+{
+  // TypeScript does not inherit project references. Check utils through its
+  // workspace source export and emit only this package when packing contracts.
+  "extends": "./tsconfig.json"
+}

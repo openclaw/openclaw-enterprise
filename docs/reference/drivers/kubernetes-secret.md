@@ -78,6 +78,12 @@ ambient kubeconfig fallback, unverified TLS, caller-selected Kubernetes
 namespaces, or caller-selected Kubernetes Secret names. Backend identity is
 OCC-owned metadata.
 
+## Installation-private OAuth client secrets
+
+Helm provisions a separate Kubernetes namespace for confidential registrations and configures both the API and worker to use it. Outside Helm, use `OCC_INSTALLATION_SECRET_NAMESPACE` to select a dedicated namespace. The driver defaults to `oce-installation-secrets`. Grant the API permission to get, create, update, and delete Secrets there. Grant the worker get and delete. Keep workloads and tenant RoleBindings out of this namespace.
+
+The Driver creates one Opaque Secret per registration. Rotation replaces its value in place. Before using or deleting the Secret, the Driver checks its Installation, registration, and Driver identity. Kubernetes resource versions fence concurrent changes.
+
 ## Create a Namespace-owned Secret
 
 Create the Secret after the OpenClaw Namespace is ready. An Agent does not need
@@ -180,7 +186,7 @@ the exact Secret grant through the Namespace IAM policy API before a
 Secret-backed deployment is admitted.
 
 Deployment freezes the normalized bindings and selected Secret Driver ID in the
-immutable AgentRevision. It does not snapshot backend locators or value bytes.
+AgentRevision. It does not snapshot backend locators or value bytes.
 The API authorizes the deploying actor and the consuming Agent service principal,
 then asks the selected Secret Driver to validate the backend during admission.
 The worker rechecks the actor and Agent service principal before resolving
@@ -251,6 +257,10 @@ request is named only for the actor that started it. OCC examines at most 50
 references, ordered by kind and ID; `truncated: true` means more exist. An Agent
 that uses a listed Configuration but has not deployed it is not listed; its next
 deployment reads the current value.
+
+The same read returns `callerPermissions`: whether you may replace (`update`) and
+delete (`delete`) the Secret now. It is advisory and records no denial; the write
+is still authorized when you send it.
 
 ## Delete
 

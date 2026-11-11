@@ -16,6 +16,7 @@ grouped by purpose under `src/`; `src/index.ts` exports the public surface.
 | `errors.ts`     | `numericErrorStatus`                        | Reads an HTTP status (100-599) from `code`, `statusCode`, `response.statusCode`, then `response.status`; skips gRPC and DOMException codes.          |
 | `http.ts`       | `cookieHeaderFromSetCookie`                 | Converts separate Set-Cookie fields to a Cookie header, stripping attributes without splitting Expires commas. It does not authenticate requests.    |
 | `text.ts`       | `hasControlCharacter`                       | Detects C0 controls and DEL only. C1 controls, U+2028/U+2029 and other Unicode pass; callers add stricter rules.                                     |
+| `timers.ts`     | `MAX_TIMER_DELAY_MS`                        | The longest delay a Node.js timer honours. Callers keep their own setting names, messages and checks.                                                |
 
 Add a utility when multiple modules need the same behavior. Keep authorization,
 resource ownership, schema validation, credential handling, Driver lifecycle
@@ -27,7 +28,7 @@ scripts cannot import this package from tenant images.
 Verify the shared behavior with:
 
 ```sh
-node --test tests/conformance/utils.test.mjs
+node --test tests/conformance/utils.test.ts
 ```
 
 Also run the affected consumers' conformance or integration tests. Fixed digest

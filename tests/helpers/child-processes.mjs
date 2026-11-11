@@ -40,10 +40,19 @@ export function concurrencyLimit(size = Math.max(2, availableParallelism())) {
 
 // Spawns `program` with piped output and resolves on close with
 // { status, signal, stdout, stderr }; `encoding: null` keeps the output as Buffers.
+// `input`, when given, is written to its standard input (otherwise it has none).
 // Rejects only when the process cannot start.
-export function captureChild(program, args, { encoding = "utf8", ...options } = {}) {
+export function captureChild(program, args, { encoding = "utf8", input, ...options } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(program, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(program, args, {
+      ...options,
+      stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+    });
+    if (input !== undefined) {
+      // A child that exits before reading all of it closes the pipe; its status reports why.
+      child.stdin.on("error", () => {});
+      child.stdin.end(input);
+    }
     const stdout = [];
     const stderr = [];
     child.stdout.on("data", (chunk) => stdout.push(chunk));

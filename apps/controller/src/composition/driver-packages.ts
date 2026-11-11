@@ -1,3 +1,4 @@
+import { InstalledDriver } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { findPackageJSON } from "node:module";
@@ -7,6 +8,7 @@ import type {
   ComputeDriver,
   ConfigurationDriver,
   DriverImplementation,
+  DriverRegistration,
   IAMDriver,
   SandboxDriver,
 } from "@openclaw-enterprise/contracts";
@@ -447,4 +449,31 @@ export function createExternalDriver(
     throw new Error("drivers.compute factory returned invalid lifecycle Driver wiring.");
   }
   return created as unknown as ConfigurationDriver | IAMDriver | ComputeDriver | SandboxDriver;
+}
+
+/** Load one package instance for the selected capabilities; the sandbox selection owns its configuration. */
+export function createExternalProtectedDriver(
+  implementation: ExternalDriverModule,
+  selection: SelectedDriverConfiguration,
+  // Composition that changes the installed authority must also change its durable identity.
+  repositoryAuthorityIdentity?: string,
+): InstalledDriver {
+  const { id, configuration } = selection;
+  const registration = asRecord(
+    implementation.createDriver({ id, configuration, implementation: selection.implementation }),
+  );
+  if (!registration || !asRecord(registration.capabilities)) {
+    throw new Error(
+      "The selected package must return one Driver registration for Sandbox and Credential Proxy.",
+    );
+  }
+  const owner = new InstalledDriver(
+    repositoryAuthorityIdentity === undefined
+      ? selection
+      : { ...selection, configuration: { sandbox: configuration, repositoryAuthorityIdentity } },
+    registration as unknown as DriverRegistration,
+  );
+  owner.require("sandbox");
+  owner.require("credential_proxy");
+  return owner;
 }

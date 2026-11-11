@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import slugify, { slugifyWithCounter } from "@sindresorhus/slugify";
+import uncachedSlugify from "@sindresorhus/slugify";
 import { Parser } from "htmlparser2";
 import MarkdownIt from "markdown-it";
 import anchor from "markdown-it-anchor";
@@ -234,11 +234,12 @@ function prepareDocument(input, { sourceFile, root, seen = new Set() }, firstLin
   }
   const placeholder = new RegExp(`${prefix}(\\d+)END`, "g");
   const restore = (text) => text.replace(placeholder, (_, index) => saved[Number(index)]);
-  const hold = (value) => {
+  const stash = (value) => {
     const key = `${prefix}${saved.length}END`;
-    saved.push(restore(value));
+    saved.push(value);
     return key;
   };
+  const hold = (value) => stash(restore(value));
   const jsxComments = new Set();
   let text = new DocsSource(input, firstLine).replace(
     /<!--[^]*?-->|\{\/\*[^]*?\*\/\}|<(pre|code|script|style|textarea)\b[^>]*>[^]*?<\/\1\s*>/g,
@@ -326,7 +327,27 @@ function prepareDocument(input, { sourceFile, root, seen = new Set() }, firstLin
           seen.has(target) ||
           !fs.existsSync(target)
         ) {
+          if (attrs.lang !== undefined) {
+            throw new Error(`Missing or out-of-scope code snippet in ${sourceFile}: ${ref}`);
+          }
           return "";
+        }
+        if (attrs.lang !== undefined) {
+          const actual = path.relative(fs.realpathSync(root), fs.realpathSync(target));
+          if (actual.startsWith("..") || path.isAbsolute(actual)) {
+            throw new Error(`Code snippet outside the documentation root in ${sourceFile}: ${ref}`);
+          }
+          if (!/^[a-z0-9_+-]+$/i.test(attrs.lang)) {
+            throw new Error(`Invalid snippet language in ${sourceFile}: ${attrs.lang}`);
+          }
+          const raw = fs.readFileSync(target, "utf8");
+          // Keep source code literal, including imports, component tags and embedded fences.
+          let fence = "```";
+          while (raw.includes(fence)) {
+            fence += "`";
+          }
+          const newline = raw.endsWith("\n") ? "" : "\n";
+          return `\n${stash(`${fence}${attrs.lang}\n${raw}${newline}${fence}`)}\n`;
         }
         const content = parseFrontmatter(fs.readFileSync(target, "utf8")).content;
         return `\n${prepareDocument(content, { sourceFile: target, root, seen: new Set([...seen, target]) }).text.trim()}\n`;
@@ -336,6 +357,42 @@ function prepareDocument(input, { sourceFile, root, seen = new Set() }, firstLin
   }
   text = preprocess(text);
   return text.replace(placeholder, (_, index) => saved[Number(index)], false);
+}
+
+// slugify 2.2.1 builds a RegExp for each of about 2,000 transliteration entries
+// on every call, and a build slugs the same titles again and again: each page is
+// parsed for validation and again for rendering, and the heading counter slugs
+// each base slug once more. A slug depends only on its title and options, so each
+// process computes it once.
+const slugs = new Map();
+function slugify(title, options = {}) {
+  const key = `${JSON.stringify(options)}\0${title}`;
+  let slug = slugs.get(key);
+  if (slug === undefined) {
+    slug = uncachedSlugify(title, options);
+    slugs.set(key, slug);
+  }
+  return slug;
+}
+// slugify 2.2.1's slugifyWithCounter, unchanged except that it uses the cache above.
+function slugifyWithCounter() {
+  const occurrences = new Map();
+  const countable = (string, options) => {
+    string = slugify(string, options);
+    if (!string) {
+      return "";
+    }
+    const stringLower = string.toLowerCase();
+    const numberless = occurrences.get(stringLower.replace(/(?:-\d+?)+?$/, "")) || 0;
+    const counter = occurrences.get(stringLower);
+    occurrences.set(stringLower, typeof counter === "number" ? counter + 1 : 1);
+    const newCounter = occurrences.get(stringLower) || 2;
+    if (newCounter >= 2 || numberless > 2) {
+      string = `${string}-${newCounter}`;
+    }
+    return string;
+  };
+  return countable;
 }
 
 // mint@4.2.808/common@1.0.1096 published these suffixes before counting.

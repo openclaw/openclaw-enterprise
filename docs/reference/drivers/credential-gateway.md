@@ -1,3 +1,7 @@
+---
+kind: reference/driver
+---
+
 # CredentialGatewayDriver contract
 
 ## Overview
@@ -25,7 +29,7 @@ there is no fallback to environment delivery.
 
 ### Core interface
 
-The [shared interface](../../../packages/contracts/src/index.ts) requires every
+The [shared interface](../../../packages/contracts/src/drivers/credential-gateway/index.ts) requires every
 method below. Startup rejects a Driver that omits one.
 
 | Operation              | Inputs and preconditions                                                                         | Result or side effects                                                                                                                                         | Failure or absence                                                                     |
@@ -36,7 +40,7 @@ method below. Startup rejects a Driver that omits one.
 | `updateSource`         | Existing source and new resolved values.                                                         | Replaces the stored values for processes started afterwards and returns the source state.                                                                      | `failed` or `absent` fails the update; OCC keeps the Secret references unchanged.      |
 | `sourceStatus`         | Existing source.                                                                                 | Live source state and an optional safe reason.                                                                                                                 | OCC reports `failed` with a fixed reason when the call throws.                         |
 | `removeSource`         | Source record.                                                                                   | Deletes the stored copy. An already-absent source counts as removed.                                                                                           | A failure leaves the OCC record `deleting` for retry.                                  |
-| `attachForRevision`    | Namespace, immutable Agent revision, and the bound source records.                               | Exactly one `{ sourceId, ref }` attachment per bound source. `ref` is opaque to OCC.                                                                           | Throws when a source is unavailable or foreign; the Agent revision does not provision. |
+| `attachForRevision`    | Namespace, Agent revision, and the bound source records.                                         | Exactly one `{ sourceId, ref }` attachment per bound source. `ref` is opaque to OCC.                                                                           | Throws when a source is unavailable or foreign; the Agent revision does not provision. |
 | `attachmentStatus`     | The same context plus the provisioned `SandboxResourceRef`.                                      | Per-source state: `ready`, `pending`, `withheld`, `failed`, `revoked`, or `absent`.                                                                            | Compute blocks activation on any state other than `ready` or `pending`.                |
 | `withdraw`             | Placement, Agent revision, its required `SandboxResourceRef`, and one source ID; no source list. | Revokes that Agent revision's access, including running processes. `revoked` only on gateway evidence, `absent` when the Sandbox is gone, otherwise `pending`. | Anything but `revoked` or `absent` keeps the OCC withdrawal `pending` for retry.       |
 
@@ -81,6 +85,10 @@ Gateway and paired Sandbox that already provide OAuth token injection. The
 experimental OpenShell `codex-oauth` type requires the upstream gateway API and
 alias-enabled supervisor described in the [OpenShell Driver reference](openshell-credential-gateway.md#experimental-codex-oauth-poc).
 
+For an OAuth attachment used by a managed request guard, `requestScope` carries
+the provider’s host, port, path and configured OAuth scopes to the paired Sandbox.
+The Sandbox uses these non-secret limits when it prepares the revision’s request policy.
+
 For an `openai`/`chatgptAuthTokens` source, `attachForRevision` must return
 `externalChatgptAuth` on the source's attachment: `accessTokenPlaceholder`,
 `accountId`, `planType`, and optional `userId`, `accountUserId`, `email`, and `isFedramp`. The
@@ -113,8 +121,13 @@ bundle or native-refresh fallback is supported. See
 
 Device-login source types require the paired [Credential Refresh Driver](credential-refresh.md#device-authorization)
 to implement authorization. The Gateway registers the source before login and
-owns its attachment and access-token retrieval; it receives no device-grant
-refresh material.
+owns its attachment. It receives no device-grant refresh material.
+
+The trusted bundled OpenShell Backend reader performs ordinary metadata lookup
+and operator-mTLS export for plugin discovery. An external Credential Gateway
+retains the optional `withSourceToken(context, use)` callback. Both paths require
+the same exact Gateway owner match and Namespace checks; neither falls back to
+another Gateway or tenant. The bundled reader does not take over refresh.
 
 `withSourceToken(context, use)` supplies a usable `CredentialSourceToken` only for
 an authorized configuration callback: access token and optional trusted account
@@ -124,8 +137,9 @@ and successor-token persistence; this operation must never return refresh
 material. OCC does not implement refresh or retain the returned access token
 outside the callback.
 
-OCC authorizes the source before retrieval, and the callback rechecks authorization
-before provider I/O. Cancellation or a failed recheck does not undo refresh already
+OCC checks authorization, source readiness, attachment where required, and the
+selected catalog before retrieval, then rechecks before catalog dispatch.
+Cancellation or a failed recheck does not undo refresh already
 started by the external service. Source withdrawal and token readiness remain
 that service's responsibility.
 
@@ -195,8 +209,9 @@ credentialGatewayId, sourceType, loginMode }` in the Agent revision. The source 
 4. **Provisioning.** Compute calls `attachForRevision` with the Harness source
    first and the other sources after it, and passes the result in
    `HarnessWorkloadRequirements.credentialAttachments` to `provisionHarness`.
-   The paired Sandbox must consume every attachment and reject any it did not
-   issue.
+   The Credential Gateway issues one reference per bound source. Its paired
+   Sandbox must consume every attachment and reject references from any other
+   provider.
 5. **Activation.** After the Harness is ready, Compute calls
    `attachmentStatus`. `pending` or a missing status retries reconciliation;
    `failed`, `withheld`, `revoked`, or `absent` fails it. Only `ready` for every

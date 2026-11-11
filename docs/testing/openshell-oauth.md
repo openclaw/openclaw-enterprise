@@ -1,3 +1,9 @@
+---
+tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
+---
+
 # Test experimental OpenShell OAuth
 
 Verify the [experimental Codex OAuth source](../reference/drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc)
@@ -6,18 +12,20 @@ environment; this procedure does not establish production support.
 
 ## Prepare images and trust
 
-Select official OpenShell `v0.1.4`, source commit
-`5a7728c304b5528e954e9ae900cf21f84e1a12b1`, for the gateway, supervisor, and
-static sandbox launcher. Use immutable image digests and gateway/Workspace Helm
-charts from that version. This release includes operator `GetProviderCredentials`
+Select official OpenShell `v0.1.6`, source commit
+`ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47`, for the gateway, supervisor, and
+static sandbox launcher. Use the immutable digests of the stable `0.1.6` image
+tags and gateway/Workspace Helm charts from that version. The stable release
+rebuilds its images, so the source-commit image tags select different digests. This release includes emSign public-key distrust from
+[OpenShell #4794](https://github.com/NVIDIA/OpenShell/pull/4794), as well as operator `GetProviderCredentials`
 from [OpenShell #4357](https://github.com/NVIDIA/OpenShell/pull/4357) and the alias
 resolver correction in [#4390](https://github.com/NVIDIA/OpenShell/pull/4390).
 
 | Component               | Immutable image                                                                                               |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------- |
-| Gateway                 | `ghcr.io/nvidia/openshell/gateway@sha256:bdb4fe248070032c88be78f029dad9325cb698480e90486e1413a674a5d8edc8`    |
-| Supervisor              | `ghcr.io/nvidia/openshell/supervisor@sha256:aa681d8264af6ee860e38349ed3c76609a51778eb6d0f02743df03787b80a290` |
-| Static sandbox launcher | `ghcr.io/nvidia/openshell/sandbox@sha256:ca00c094aeaa60681b8196cda18ab3c5dd5f7d782d4c36798256427b67599070`    |
+| Gateway                 | `ghcr.io/nvidia/openshell/gateway@sha256:f0b36dba21d282c52e498c25289658cfd6cd4f343b0069fde5609e25b002cdea`    |
+| Supervisor              | `ghcr.io/nvidia/openshell/supervisor@sha256:ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b` |
+| Static sandbox launcher | `ghcr.io/nvidia/openshell/sandbox@sha256:1038eb5c1f191fa3c34684fd7041b891c78ec570979d487f36e06e08f91bfb63`    |
 
 OCE keeps its JWT wrapper: Codex needs the local account claims, while the
 supervisor replaces the whole alias with the live credential. Stable-handle
@@ -30,11 +38,19 @@ imports these same pins. When installing separately, select all three immutable
 references through `gateway.image`, `supervisor.image`, and `sandboxRuntime.image`.
 Selecting local charts alone does not select those binaries. Record actual launched
 versions. Earlier `dev.8` and `dev.47` evidence remains bound to its tested pins;
-neither qualifies `v0.1.4`. The release update does not establish a fix for the
+neither qualifies `v0.1.6`. The release update does not establish a fix for the
 known provider-environment disconnect or a successful restart/withdrawal proof.
 
-The previous selection was `0.1.4-dev.47+g6a6401b9c`, source commit
-`6a6401b9c359b66a3202f584a715fc24c13429d6`.
+The previous selection was `v0.1.5`, source commit
+`bdb956f2cd65a635f1294fccf1d138d263bf650f`.
+
+Upgrade the supervisor and static sandbox launcher together. New 0.1.6
+sandboxes reverse the control-connection direction; mixed runtime binaries are
+unsupported. Preserve the configured gateway JWT, OIDC or mTLS authentication.
+The opt-in observed-hook repository credential preview admits 0.1.5 and 0.1.6.
+Use patched 0.1.6 with the existing dedicated workspace, held-launcher challenge
+and live policy/recipient checks. This remains startup observation, not mandatory
+request-hook enforcement for every future request.
 
 Configure the shared [OpenShell Backend](../reference/backends.md#openshell-gateway)
 with its selected `credential_refresh` member, ordinary bearer authentication,
@@ -57,9 +73,9 @@ uses only the operator certificate. Do not put both identities on one request.
 Gateway also needs to trust the private CA for OpenShell's advertised `wss`
 Harness endpoint.
 
-Build the base OCE image using the OpenClaw, Codex, and Node versions pinned by
-[the runtime Dockerfile](../../deploy/runtime/Dockerfile) and follow the
-[runtime recipe](../../deploy/runtime/README.md). Keep its frozen lockfile,
+Build the base OCE image through the [runtime recipe](../../deploy/runtime/README.md).
+Its [source manifest](../../deploy/runtime/openclaw-source.json) selects OpenClaw;
+the Dockerfile selects Codex and Node. Keep its frozen lockfile,
 source checksum, and native filesystem checks. Record the tested source commit
 and actual launched versions with each proof; earlier runtime evidence does not
 qualify a newer pin.

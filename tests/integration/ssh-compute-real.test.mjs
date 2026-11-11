@@ -1,4 +1,4 @@
-import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 // Opt-in real SSH, systemd and OpenClaw gateway proof on a disposable Linux host.
 // OCC_TEST_SSH_MODEL also verifies real provider calls and runtime-owned credential behavior.
 import assert from "node:assert/strict";

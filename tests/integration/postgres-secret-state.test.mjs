@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { SECRET_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
 
 function identifier(kind) {
   return `${kind}_${randomUUID()}`;
@@ -144,14 +145,22 @@ function revisionFor(agent, configuration, storedSecret, revisionNumber = 1) {
     configurationKind: configuration.kind,
     configurationGeneration: configuration.generation,
     backendId: null,
+    gatewayManagedMode: agent.gatewayManagedMode,
     harnessAuth: {
       method: "codex_pat",
       source: { kind: "secret", namespaceId: agent.namespaceId, id: storedSecret.id },
       secretDriverId: storedSecret.driverId,
     },
     configuration: { models: { providers: { codex: {} } } },
-    harness: { id: "codex", version: "1.0.0", mode: agent.executionMode },
+    harness: {
+      id: "codex",
+      version: "1.0.0",
+      mode: agent.executionMode,
+      overrides: {},
+      configuration: {},
+    },
     compute: { id: "compute-test", implementation: "deterministic-test" },
+    executionAdmission: { version: 2, mode: "unprotected" },
     servicePrincipalId: agent.servicePrincipalId,
     createdAt: new Date().toISOString(),
     secretDriverId: "kubernetes-secret",
@@ -174,7 +183,7 @@ async function ensureInstallation(store) {
 
 async function exerciseRepository(store) {
   await ensureInstallation(store);
-  const { namespace, configuration, agent } = resources();
+  const { namespace, configuration, agent: initialAgent } = resources();
   const storedSecret = secret(namespace.id);
   const siblingConfiguration = {
     ...configuration,
@@ -183,14 +192,14 @@ async function exerciseRepository(store) {
   };
   const secondSharedSecret = secret(namespace.id);
   const siblingAgent = {
-    ...agent,
+    ...initialAgent,
     id: identifier("agt"),
     name: `Sibling ${randomUUID()}`,
     servicePrincipalId: `service-agent-${randomUUID()}`,
     configurationId: siblingConfiguration.id,
   };
 
-  await store.transact(async (state) => {
+  const agent = await store.transact(async (state) => {
     await state.namespaces.createNamespace(namespace);
     assert.equal(await state.namespaces.hasSecrets(namespace.id), false);
     // Namespace-owned Secrets can be registered before any Agent exists.
@@ -203,7 +212,7 @@ async function exerciseRepository(store) {
       ...configuration,
       secretBindings: acceptedBindings(storedSecret),
     });
-    await state.agents.createAgent(agent);
+    return state.agents.createAgent(initialAgent);
   });
 
   await store.transact(async (state) => {
@@ -220,7 +229,7 @@ async function exerciseRepository(store) {
     ),
     {
       name: "ResourceStateConflictError",
-      message: "A Secret with this name already exists in this Namespace. Choose a different name.",
+      message: SECRET_NAME_CONFLICT,
     },
   );
 
@@ -601,15 +610,23 @@ test(
             configuration_kind: "agent",
             configuration_generation: 1,
             draft_spec: {},
-            harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+            harness: {
+              id: "openclaw",
+              version: "1.0.0",
+              mode: "embedded",
+              overrides: {},
+              configuration: {},
+            },
             compute: { id: "compute-test", implementation: "deterministic-test" },
             secret_driver_id: "kubernetes-secret",
             secret_bindings: bindingFor(sqlSecret),
+            harness_auth: { method: "runtime" },
+            execution_admission: { version: 2, mode: "unprotected" },
             unexpected: true,
           }),
         ],
       ),
-      { code: "23514" },
+      { code: "23514", constraint: "agent_revisions_admitted_snapshot" },
     );
 
     await pool.query(

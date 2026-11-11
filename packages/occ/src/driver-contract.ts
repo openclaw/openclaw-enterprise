@@ -1,16 +1,20 @@
 import type {
   ComputeLifecycleHooks,
+  NamespaceLifecycleHooks,
   Driver,
   DriverCapability,
   SandboxFacet,
 } from "@openclaw-enterprise/contracts";
-import { DRIVER_CAPABILITIES, SANDBOX_FACETS } from "@openclaw-enterprise/contracts";
+import {
+  DRIVER_CAPABILITIES,
+  HARNESS_EXECUTION_MODES,
+  SANDBOX_FACETS,
+} from "@openclaw-enterprise/contracts";
+import { asRecord } from "@openclaw-enterprise/utils";
 
 const COMPUTE_LIFECYCLE_PHASES = [
-  "afterNamespacePrepared",
   "beforeWorkloadStart",
   "beforeWorkloadStop",
-  "beforeNamespaceDelete",
 ] as const satisfies readonly (keyof ComputeLifecycleHooks)[];
 
 export function capability(value: unknown): value is DriverCapability {
@@ -32,6 +36,8 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
         "getNamespaceAccessBinding",
         "createNamespaceAccessBinding",
         "deleteNamespaceAccessBinding",
+        "createOwnerBinding",
+        "applyConfiguredPolicy",
       ].every(
         (operation) =>
           candidate[operation] === undefined || typeof candidate[operation] === "function",
@@ -48,7 +54,44 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
       ["create", "update", "delete", "resolve"].every(
         (operation) => typeof candidate[operation] === "function",
       ) &&
-      (candidate.withValue === undefined || typeof candidate.withValue === "function")
+      (candidate.withValue === undefined || typeof candidate.withValue === "function") &&
+      (candidate.readCredentialInput === undefined ||
+        typeof candidate.readCredentialInput === "function")
+    );
+  }
+  if (driver.capability === "credential_proxy") {
+    const control = asRecord(candidate.sourceControl);
+    const reduction = asRecord(candidate.policyReduction);
+    return (
+      (candidate.bindExchange === undefined || typeof candidate.bindExchange === "function") &&
+      (candidate.bindRepositoryGit === undefined ||
+        typeof candidate.bindRepositoryGit === "function") &&
+      (candidate.policyReduction === undefined ||
+        ((reduction?.version === 1 ||
+          (reduction?.version === 2 && typeof reduction.assertAvailable === "function")) &&
+          typeof reduction.apply === "function" &&
+          typeof reduction.observe === "function")) &&
+      control !== undefined &&
+      typeof control.assertAvailable === "function" &&
+      Array.isArray(control.providers) &&
+      (control.providers.length > 0 || typeof candidate.bindRepositoryGit === "function") &&
+      control.providers.every((value) => {
+        const provider = asRecord(value);
+        return (
+          provider !== undefined &&
+          [
+            "normalizeConfig",
+            "normalizeGrant",
+            "routes",
+            "classify",
+            "inject",
+            "protectResponse",
+          ].every((operation) => typeof provider[operation] === "function")
+        );
+      }) &&
+      ["configureRevision", "wiringStatus", "verifyInstallation", "removeRevision"].every(
+        (operation) => typeof candidate[operation] === "function",
+      )
     );
   }
   if (driver.capability === "credential_gateway") {
@@ -75,9 +118,35 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
     );
   }
   if (driver.capability === "sandbox") {
+    const support = asRecord(candidate.supportsHarnessExecutionMode);
+    const openclaw = asRecord(support?.openclaw);
     return (
+      support !== undefined &&
+      Object.isFrozen(support) &&
+      openclaw !== undefined &&
+      Object.isFrozen(openclaw) &&
+      HARNESS_EXECUTION_MODES.every((mode) => {
+        const entry = asRecord(openclaw[mode]);
+        return (
+          entry !== undefined &&
+          Object.isFrozen(entry) &&
+          (entry.supported === true
+            ? entry.reason === undefined
+            : entry.supported === false &&
+              (entry.reason === undefined ||
+                (typeof entry.reason === "string" && entry.reason.trim().length > 0)))
+        );
+      }) &&
       sandboxFacets(candidate.facets) &&
       sandboxPolicyContract(candidate) &&
+      (candidate.repositoryAccess === undefined ||
+        [
+          "verifyExecution",
+          "retireExpired",
+          "routeReadiness",
+          "materialSettledAt",
+          "isRouteBlockedError",
+        ].every((name) => typeof asRecord(candidate.repositoryAccess)?.[name] === "function")) &&
       (candidate.harnessHome === undefined || absolutePosixPath(candidate.harnessHome)) &&
       (candidate.validateWorkspaceSetup === undefined ||
         typeof candidate.validateWorkspaceSetup === "function") &&
@@ -93,7 +162,10 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
     );
   }
   if (driver.capability === "plugin") {
-    return typeof candidate.listCatalog === "function";
+    return (
+      (candidate.harnessId === "openclaw" || candidate.harnessId === "codex") &&
+      typeof candidate.listCatalog === "function"
+    );
   }
   if (driver.capability === "channel") {
     return (
@@ -103,20 +175,24 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
     );
   }
   if (driver.capability === "repo") {
-    return (
-      ["listOptions", "resolve", "open", "status", "close"].every(
-        (operation) => typeof candidate[operation] === "function",
-      ) &&
-      typeof candidate.maintenanceIntervalMs === "number" &&
-      Number.isFinite(candidate.maintenanceIntervalMs) &&
-      candidate.maintenanceIntervalMs > 0
-    );
+    return ["listOptions", "resolve"].every((method) => typeof candidate[method] === "function");
   }
   return (
+    [
+      "normalizeHarnessOverrides",
+      "resolveHarnessConfiguration",
+      "validateHarnessCredentialSources",
+    ].every(
+      (method) => candidate[method] === undefined || typeof candidate[method] === "function",
+    ) &&
+    (candidate.normalizeHarnessOverrides === undefined ||
+      typeof candidate.resolveHarnessConfiguration === "function") &&
     typeof candidate.ensureNamespace === "function" &&
     typeof candidate.deleteNamespace === "function" &&
     typeof candidate.prepareRevision === "function" &&
     typeof candidate.retireRevision === "function" &&
+    (candidate.getGatewayChatEndpoint === undefined ||
+      typeof candidate.getGatewayChatEndpoint === "function") &&
     (candidate.getRuntimeImages === undefined ||
       typeof candidate.getRuntimeImages === "function") &&
     (candidate.resolveSandboxNamespace === undefined ||
@@ -139,6 +215,7 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
 function sandboxPolicyContract(candidate: Record<string, unknown>): boolean {
   const policy = candidate.networkPolicy;
   const methods = [
+    "admitProtectedCodexArtifactPolicy",
     "admitNetworkPolicy",
     "observeNetworkPolicy",
     "applyNetworkPolicy",
@@ -195,7 +272,25 @@ function sandboxFacets(value: unknown): value is readonly SandboxFacet[] {
   return true;
 }
 
+export function validNamespaceLifecycleHooks(value: unknown): value is NamespaceLifecycleHooks {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const hooks = value as Record<string, unknown>;
+  return (
+    typeof hooks.ensureNamespace === "function" &&
+    (hooks.deleteNamespace === undefined || typeof hooks.deleteNamespace === "function") &&
+    Object.keys(hooks).every((key) => key === "ensureNamespace" || key === "deleteNamespace")
+  );
+}
+
 export function driverHasValidLifecycleHooks(driver: Driver): boolean {
+  if (
+    driver.namespaceLifecycleHooks !== undefined &&
+    !validNamespaceLifecycleHooks(driver.namespaceLifecycleHooks)
+  ) {
+    return false;
+  }
   const hooks: unknown = driver.computeLifecycleHooks;
   if (hooks === undefined) {
     return true;

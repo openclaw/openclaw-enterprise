@@ -41,6 +41,8 @@ const WRAPPER_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freez
     "elapsedMs",
     "capMs",
     "cpuWaitMs",
+    "pressureWaitMs",
+    "throttledWaitMs",
     "code",
     "providerStatus",
     "providerCode",
@@ -48,7 +50,15 @@ const WRAPPER_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freez
     "bodyShape",
     "providerErrorCode",
     "providerErrorType",
+    // The error code alone when the probe directory could not be removed (finding 2610).
+    "cleanupError",
+    // The CPU reading of OpenClaw's own timeout window (finding 2675).
+    "timeoutWindowMs",
+    "timeoutWindowCpuWaitMs",
+    "timeoutWindowIdleMs",
   ],
+  // One failed native Codex login attempt (finding 2017); a reliability failure is retried.
+  "codex.login": ["attempt", "elapsedMs", "exitCode"],
   "codex.model_probe": [
     "attempt",
     "elapsedMs",
@@ -62,11 +72,12 @@ const WRAPPER_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freez
   "runtime.gateway_settings_overridden": ["container"],
 });
 
-// A failed Codex login (`runtime.startup_phase`) or model check (`codex.model_probe`)
-// names the class of Codex's error output (finding 2017). Only a value from the
-// contract's closed list is kept; anything else is dropped, never shown.
+// A failed Codex login (`runtime.startup_phase`, and `codex.login` per attempt) or model
+// check (`codex.model_probe`) names the class of Codex's error output (finding 2017). Only
+// a value from the contract's closed list is kept; anything else is dropped, never shown.
 const FAILURE_CLASS_EVENTS: ReadonlySet<string> = new Set([
   "runtime.startup_phase",
+  "codex.login",
   "codex.model_probe",
 ]);
 const FAILURE_CLASSES: ReadonlySet<string> = new Set(CODEX_FAILURE_OUTPUT_CLASSES);
@@ -95,6 +106,29 @@ function overriddenSettings(value: unknown): string | undefined {
 const WRAPPER_ERROR_LINES: ReadonlySet<string> = new Set([
   "Harness model authentication probe failed.",
 ]);
+
+// Known plain-text lines of OpenClaw's node host (`src/node-host/runner.ts` upstream),
+// which the dedicated Harness prints to stderr. They stay `text` records but carry a
+// level, so a level floor hides reconnect chatter instead of keeping it as `unknown`.
+// Longest prefixes first; matched at the start of the trimmed line.
+const NODE_HOST_LEVELS: readonly (readonly [string, RuntimeLogLevel])[] = [
+  ["node host gateway permanently rejected connection", "error"],
+  ["node host gateway connect failed:", "warn"],
+  ["node host gateway closed (", "warn"],
+  ["node host gateway reconnect paused", "error"],
+  ["node host gateway endpoint persistence failed:", "error"],
+  ["node host gateway connected:", "info"],
+  ["[node-host] advertised commands:", "info"],
+];
+
+function textLevel(trimmed: string): RuntimeLogLevel {
+  for (const [prefix, value] of NODE_HOST_LEVELS) {
+    if (trimmed.startsWith(prefix)) {
+      return value;
+    }
+  }
+  return "unknown";
+}
 
 // Operational keys only. Anything else, and every free-text or payload key
 // (`args`, `payload`, `body`, `prompt`, `messages`, `content`, `text`, `transcript`,
@@ -294,11 +328,13 @@ function classifyStructured(value: Readonly<Record<string, unknown>>): Classifie
     const failed =
       value.outcome === "failed" ||
       (typeof value.code === "string" && value.code !== "READY" && event.endsWith("model_probe"));
+    // A failed login attempt may be retried; the startup phase line reports the outcome.
+    const retried = event === "codex.login";
     return {
       type: "line",
       kind: "wrapper",
       // The Gateway ignored owner settings: the owner should see it at the default level.
-      level: failed ? "error" : overridden ? "warn" : "info",
+      level: failed ? "error" : overridden || retried ? "warn" : "info",
       message: event,
       ...(fields === undefined ? {} : { fields }),
     };
@@ -580,7 +616,7 @@ function classify(line: string, block: JsonBlock): Classified {
   if (WRAPPER_ERROR_LINES.has(trimmed)) {
     return { type: "line", kind: "wrapper", level: "error", message: trimmed };
   }
-  return { type: "line", kind: "text", level: "unknown", message: text };
+  return { type: "line", kind: "text", level: textLevel(trimmed), message: text };
 }
 
 function parsesAlone(trimmed: string): boolean {
@@ -791,6 +827,8 @@ const SANDBOX_FIELDS: ReadonlySet<string> = new Set([
   "action",
   "disposition",
   "dst_host",
+  // OpenShell's policy DNS placeholder address, kept apart from `dst_host` (D771).
+  "dst_placeholder_ip",
   "dst_port",
   "method",
   "path",

@@ -13,6 +13,8 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/openclaw/openclaw-enterprise/internal/devtls"
 )
 
 func TestDevelopmentBrowserCertificateLimitsInstallationAndAgentHosts(t *testing.T) {
@@ -77,7 +79,7 @@ func TestDevelopmentBrowserCertificateLimitsInstallationAndAgentHosts(t *testing
 // console and Agent hosts, even when its key is used to sign another name.
 func TestDevelopmentBrowserCAIsNameConstrainedToTheInstallation(t *testing.T) {
 	console, agentDomain, _ := developmentBrowserHosts("occ-dev-example")
-	files, caKey, err := generateDevelopmentTLS("browser", "OCC development browser CA", []string{console, "*." + agentDomain})
+	files, caKey, err := devtls.Generate("browser", "OCC development browser CA", []string{console, "*." + agentDomain})
 	if err != nil {
 		t.Fatal(err)
 	}

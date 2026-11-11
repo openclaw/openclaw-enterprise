@@ -11,6 +11,7 @@ import {
   redactLogLine,
   redactOutputLine,
 } from "./failure-redaction.mjs";
+import { compareEventTimes, eventObservedTime } from "./kubernetes-event-time.ts";
 
 export async function k3dHostMetrics(directory) {
   const disk = await statfs(directory).catch(() => undefined);
@@ -126,6 +127,11 @@ function takeWithin(lines, { lines: maxLines = Infinity, chars }, fromEnd = fals
   return fromEnd ? taken.reverse() : taken;
 }
 
+// Canonical UTC keys contain ASCII digits and punctuation, independent of locale.
+function compareTimestamps(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 // Docker returns a container's stdout and stderr separately; --timestamps lets
 // the excerpt restore their order. Unstamped fragments (an output cap can cut a
 // stream mid-line) are dropped unread, and a redacted line keeps only its
@@ -147,7 +153,12 @@ export function nodeLogExcerpt(stdout = "", stderr = "", note) {
         continue;
       }
       entries.push({
-        at: Date.parse(stamp),
+        // Docker timestamps are UTC. Canonical decimal fractions preserve precision
+        // and compare equal when their only difference is trailing zeroes.
+        at: stamp.replace(
+          /(?:\.(\d+))?Z$/u,
+          (_match, fraction = "") => `.${fraction.replace(/0+$/u, "")}`,
+        ),
         stream,
         index: entries.length,
         // Test the whole line for credentials before truncating it.
@@ -157,7 +168,7 @@ export function nodeLogExcerpt(stdout = "", stderr = "", note) {
       });
     }
   }
-  entries.sort((a, b) => a.at - b.at || a.stream - b.stream || a.index - b.index);
+  entries.sort((a, b) => compareTimestamps(a.at, b.at) || a.stream - b.stream || a.index - b.index);
   const kept = [];
   const problems = new Set();
   const retries = new Map();
@@ -183,7 +194,7 @@ export function nodeLogExcerpt(stdout = "", stderr = "", note) {
     // the order they first appeared.
     ...[...retries]
       .map((entry, order) => ({ entry, order }))
-      .sort((a, b) => b.entry[1].lastAt - a.entry[1].lastAt)
+      .sort((a, b) => compareTimestamps(b.entry[1].lastAt, a.entry[1].lastAt))
       .slice(0, KUBECTL_RETRY_KINDS)
       .sort((a, b) => a.order - b.order)
       .map(
@@ -437,11 +448,16 @@ function podStatus(type, pod) {
   };
 }
 
+// Projected events carry their latest observation as lastTimestamp (eventStatus).
+function compareEventTimestamps(left, right) {
+  return compareEventTimes(left.lastTimestamp, right.lastTimestamp);
+}
+
 // Projects raw watch streams into bounded Agent namespace activity: Pod status
 // transitions for Compute-managed Pods and the Kubernetes events of the
 // namespaces that ran them. Pod specs, environments and credential-bearing
 // event lines are never retained.
-export function projectAgentNamespaceActivity(eventsText, podsText) {
+export function projectAgentNamespaceActivity(eventsText, podsText, secrets = []) {
   const namespaces = new Set();
   const pods = [];
   const lastByPod = new Map();
@@ -467,13 +483,11 @@ export function projectAgentNamespaceActivity(eventsText, podsText) {
     }
     // Later watch records for the same event carry its updated count.
     events.set(object.metadata.uid ?? `${namespace}/${object.metadata.name}`, {
-      ...eventStatus(object),
+      ...eventStatus(object, secrets),
       namespace,
     });
   }
-  const orderedEvents = [...events.values()].sort((left, right) =>
-    String(left.lastTimestamp ?? "").localeCompare(String(right.lastTimestamp ?? "")),
-  );
+  const orderedEvents = [...events.values()].sort(compareEventTimestamps);
   return {
     namespaces: [...namespaces].sort(),
     pods: pods.slice(-MAX_ACTIVITY_RECORDS),
@@ -497,17 +511,24 @@ const MAX_CONTAINER_LOG_INPUT_BYTES = 4 * 1024 * 1024;
 const CONTAINER_LOG_LINES = 1_500;
 const CONTAINER_LOG_LINE_CHARS = 1_000;
 
-function eventStatus(object) {
+function eventStatus(object, secrets = []) {
   return {
     namespace: object.metadata?.namespace ?? object.involvedObject?.namespace,
     kind: object.involvedObject?.kind,
     name: object.involvedObject?.name,
     type: object.type,
     reason: object.reason,
-    message: safeText(object.message)?.slice(0, 512),
-    count: object.count,
+    // Mask whole multiline keys and registered values before the publication limit.
+    message:
+      typeof object.message === "string"
+        ? maskPrivateKeyLines(object.message.split("\n"))
+            .map((line) => redactLogLine(redactCredentialLine(line), secrets, 512))
+            .join("\n")
+            .slice(0, 512)
+        : undefined,
+    count: object.series?.count ?? object.count,
     firstTimestamp: object.firstTimestamp ?? object.eventTime,
-    lastTimestamp: object.lastTimestamp ?? object.eventTime,
+    lastTimestamp: eventObservedTime(object),
   };
 }
 
@@ -583,12 +604,9 @@ export function projectContainerLog(value, secrets = []) {
         events: (Array.isArray(snapshot.events) ? snapshot.events : [])
           .filter(record)
           .map((event) => {
-            const status = eventStatus(event);
-            return { ...status, message: text(status.message, 512) };
+            return eventStatus(event, secrets);
           })
-          .sort((left, right) =>
-            String(left.lastTimestamp ?? "").localeCompare(String(right.lastTimestamp ?? "")),
-          )
+          .sort(compareEventTimestamps)
           .slice(-MAX_ACTIVITY_RECORDS),
       })),
     omittedLines: count(value.omittedLines) + lines.length - kept.length,
@@ -760,6 +778,7 @@ export async function startAgentNamespaceCapture({ statePath, lane, file }) {
           const activity = projectAgentNamespaceActivity(
             await readWatchTail(paths.events),
             await readWatchTail(paths.pods),
+            failureSecrets([process.env, env]),
           );
           await Promise.all(Object.values(paths).map((path) => rm(path, { force: true })));
           if (activity.namespaces.length > 0) {

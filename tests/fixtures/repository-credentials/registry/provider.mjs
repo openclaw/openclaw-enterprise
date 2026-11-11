@@ -1,27 +1,7 @@
 import { createServer, request as httpsRequest } from "node:https";
-import { startGitHubFixture, fixtureInstallationId } from "../github.mjs";
+import { startGitHubFixture } from "../github.mjs";
 import { startGitSmartHttpFixture } from "../git.mjs";
 import { listen } from "../process.mjs";
-
-function providerToken(authorization) {
-  if (authorization?.startsWith("Basic ")) {
-    return Buffer.from(authorization.slice(6), "base64").toString().split(":").slice(1).join(":");
-  }
-  return authorization?.replace(/^(Bearer|token) /, "");
-}
-
-async function issuanceBody(request) {
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of request) {
-    size += chunk.length;
-    if (size > 1024 * 1024) {
-      throw new Error("fixture request limit");
-    }
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks);
-}
 
 async function startProviderTransport(resources, { tls, select }) {
   const outgoing = new Set();
@@ -54,11 +34,7 @@ async function startProviderTransport(resources, { tls, select }) {
       upstream.setTimeout(30000, () => upstream.destroy(new Error("provider fixture timeout")));
       response.once("close", () => upstream.destroy());
       request.once("error", () => upstream.destroy());
-      if (selected.body !== undefined) {
-        upstream.end(selected.body);
-      } else {
-        request.pipe(upstream);
-      }
+      request.pipe(upstream);
     })().catch(() => response.destroy());
   });
   const origin = await listen(resources, server);
@@ -70,27 +46,17 @@ async function startProviderTransport(resources, { tls, select }) {
   return origin;
 }
 
-export async function startRegistryProviderFixtures(
-  resources,
-  { definitions, clock, tls, keyPair, tokenLifetimeMs },
-) {
-  const tokenOwners = new Map();
+export async function startRegistryProviderFixtures(resources, { definitions, clock, tls }) {
   const repositories = [];
   for (const definition of definitions) {
     const entry = { ...definition };
     entry.github = await startGitHubFixture(resources, {
       clock,
       tls,
-      keyPair,
       repository: entry.repository,
       repositoryId: entry.repositoryId,
       description: entry.description,
       beforeMetadataResponse: entry.beforeMetadataResponse,
-      tokenLifetimeMs: tokenLifetimeMs,
-      tokenResponse(packet) {
-        tokenOwners.set(packet.token, entry);
-        return packet;
-      },
     });
     entry.git = await startGitSmartHttpFixture(resources, {
       tls,
@@ -103,28 +69,12 @@ export async function startRegistryProviderFixtures(
     tls,
     async select(request) {
       const pathname = new URL(request.url, "https://api.github.com").pathname;
-      if (
-        request.method === "POST" &&
-        pathname === `/app/installations/${fixtureInstallationId}/access_tokens`
-      ) {
-        const body = await issuanceBody(request);
-        const ids = JSON.parse(body.toString()).repository_ids;
-        const entry =
-          Array.isArray(ids) && ids.length === 1
-            ? repositories.find((item) => item.repositoryId === String(ids[0]))
-            : undefined;
-        return entry && { origin: entry.github.origin, body };
-      }
       const repository = repositories.find((entry) => {
         const prefix = `/repos/${entry.repository}`;
         return pathname === prefix || pathname.startsWith(`${prefix}/`);
       });
       if (repository) {
         return { origin: repository.github.origin };
-      }
-      if (["/graphql", "/installation/token", "/meta"].includes(pathname)) {
-        const entry = tokenOwners.get(providerToken(request.headers.authorization));
-        return entry && { origin: entry.github.origin };
       }
       return undefined;
     },

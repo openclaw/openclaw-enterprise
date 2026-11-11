@@ -12,7 +12,7 @@ Prove the resulting dedicated Codex runtime can call a selected plugin through
 a real Agent turn. A catalog entry, saved selection, or successful deployment
 alone is not proof of installation, account eligibility, or tool execution.
 
-At `ee53c7b562ab0d593a3bfb8ecfd6e700ee98a716`, the [creation form](../../apps/controller/src/console/agents/create.mjs)
+At `ee53c7b562ab0d593a3bfb8ecfd6e700ee98a716`, the [creation form](https://github.com/openclaw/openclaw-enterprise/blob/ee53c7b562ab0d593a3bfb8ecfd6e700ee98a716/apps/controller/src/console/agents/create.mjs)
 saves Configuration then Agent and does not deploy. Agent contracts have no
 selected-plugin field. The native Configuration's `plugins.entries.codex`
 enables the OpenClaw harness extension; it is not a curated-app selection list.

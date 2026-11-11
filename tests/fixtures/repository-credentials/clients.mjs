@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { constants } from "node:fs";
+import { access, cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { appRoot, appExtension, appModule, credentialClientPath } from "./runtime.mjs";
 import { cleanEnvironment, run, temporaryDirectory } from "./process.mjs";
 
@@ -12,13 +13,13 @@ export async function createNativeClientMaterial(t, entries, { ca, root } = {}) 
   root ??= await temporaryDirectory(t, "repository-native-material-");
   await mkdir(join(root, "sessions"), { mode: 0o700 });
   const { readClientConfiguration, writeClientConfiguration } = await appModule(
-    "drivers/repo/github/credentials/client/config",
+    "drivers/repo/github/access/client/config",
   );
   const { readRuntimeRepositoryManifest } = await appModule(
-    "drivers/repo/github/credentials/client/manifest",
+    "drivers/repo/github/access/client/manifest",
   );
   const { renderNativeGitConfiguration } = await appModule(
-    "drivers/repo/github/credentials/client/native-git",
+    "drivers/repo/github/access/client/native-git",
   );
   const bindings = [];
   for (const { opened, clientDirectory, repositoryRef, publicCa = ca } of entries) {
@@ -54,9 +55,15 @@ export async function createNativeClientMaterial(t, entries, { ca, root } = {}) 
     bindings,
   };
   await writeFile(join(root, "manifest.json"), JSON.stringify(manifest), { mode: 0o600 });
-  const helper = join(appRoot, `drivers/repo/github/credentials/client/git-helper.${appExtension}`);
+  const helper = join(appRoot, `drivers/repo/github/access/client/git-helper.${appExtension}`);
+  const requiresHooks = bindings.some(({ client }) => client.pushRefAllowlist !== undefined);
   let hooks;
-  if (bindings.some(({ client }) => client.pushRefAllowlist !== undefined)) {
+  if (requiresHooks && appExtension === "js") {
+    // Packaged qualification must execute the delivered hooks, without source mounts
+    // or replacement wrappers hiding a missing/non-executable installed hook.
+    hooks = join(dirname(helper), "hooks");
+    await access(join(hooks, "pre-push"), constants.X_OK);
+  } else if (requiresHooks) {
     // Executable test wrappers belong to a separate image stand-in, never to
     // the private material generation. They run the actual client dispatcher.
     hooks = await temporaryDirectory(t, "repository-native-hooks-");
@@ -93,12 +100,13 @@ export async function createNativeClientMaterial(t, entries, { ca, root } = {}) 
 /** Execute stock Git with a real native include; gh retains its private session configuration. */
 export async function runPinnedClients(t, fixture, { signal = t.signal } = {}) {
   const directory = await temporaryDirectory(t, "repository-credentials-client-work-");
-  const launcher = join(appRoot, `drivers/repo/github/credentials/client/launch.${appExtension}`);
+  const launcher = join(appRoot, `drivers/repo/github/access/client/launch.${appExtension}`);
   const material = await createNativeClientMaterial(t, [
     { clientDirectory: fixture.clientDirectory, repositoryRef: "fixture" },
   ]);
   const env = cleanEnvironment({
     HOME: directory,
+    XDG_CONFIG_HOME: join(directory, ".config"),
     GIT_CONFIG_SYSTEM: join(material.root, "gitconfig"),
   });
   delete env.GIT_CONFIG_NOSYSTEM;
@@ -109,7 +117,7 @@ export async function runPinnedClients(t, fixture, { signal = t.signal } = {}) {
       { env, cwd: directory, signal, ...options },
     );
   const version = await run("gh", ["--version"], { env, signal });
-  assert.match(version.stdout, /^gh version 2\.100\.0\b/);
+  assert.match(version.stdout, /^gh version 2\.103\.2\b/);
   return {
     directory,
     material,

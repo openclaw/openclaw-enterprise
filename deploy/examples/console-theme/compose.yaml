@@ -1,0 +1,11 @@
+# From the repository root, with OCC_CONSOLE_THEME_DIRECTORY set to an absolute path:
+# podman compose -f compose.yaml -f deploy/examples/console-theme/compose.yaml up -d
+services:
+  controller:
+    environment:
+      OCC_CONSOLE_THEME_DIR: /etc/openclaw/console-theme
+    volumes:
+      - type: bind
+        source: ${OCC_CONSOLE_THEME_DIRECTORY:?Set an absolute theme directory}
+        target: /etc/openclaw/console-theme
+        read_only: true

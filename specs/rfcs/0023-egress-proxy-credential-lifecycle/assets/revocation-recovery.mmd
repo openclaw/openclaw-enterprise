@@ -1,0 +1,65 @@
+---
+title: "Proposed withdrawal and recovery"
+config:
+  theme: base
+  htmlLabels: true
+  themeVariables:
+    fontFamily: "Arial, sans-serif"
+    fontSize: "16px"
+    actorBkg: "#EDF2F7"
+    actorBorder: "#879AB0"
+    actorTextColor: "#25364A"
+    noteBkgColor: "#F7F1E5"
+    noteBorderColor: "#B3A078"
+    noteTextColor: "#344054"
+    signalColor: "#748798"
+    signalTextColor: "#25364A"
+  sequence:
+    useMaxWidth: false
+    actorMargin: 18
+    width: 116
+    height: 44
+    diagramMarginX: 12
+    diagramMarginY: 12
+    messageMargin: 16
+    noteMargin: 8
+    mirrorActors: true
+    wrap: true
+---
+sequenceDiagram
+  participant C as OCC / reconciler
+  participant E as CredentialProxyDriver
+  participant B as Sandbox
+  participant F as Credential Proxy
+  participant R as Resolver
+  Note over C,R: Proposed flow, exact operations and cleanup survive restart
+  C->>C: Commit denial and durable withdrawal intent
+  C->>E: withdrawBinding(exact binding)
+  E->>E: Persist tombstone<br/>Advance policy generation
+  Note over E,B: Sandbox applies authenticated ProxyWiring<br/>Late installs cannot restore a tombstoned binding
+  C->>E: wiringStatus
+  E-->>C: Successor: remaining routes and bindings
+  C->>B: applyCredentialProxy(successor, Command)
+  C->>B: credentialProxyStatus for exact successor
+  B-->>C: Receipt: binding set and policy generation
+  C->>E: wiringStatus / inspect / reconcile
+  E-->>C: Detached evidence or outstanding cleanup
+  F->>C: RequestAuthorizer.check for next operation
+  C-->>F: Deny withdrawn authority
+  Note over C,F: Accepted final-check race remains, original deadlines bound in-flight work<br/>Logical denial, detach and provider revocation are distinct<br/>Revoke only if supported, no exported bearer recall or undo of sent effects
+  opt Credential rejection
+    F->>R: reportRejection
+    R->>R: Authenticate receipt and exact material version
+    alt Invalid or unauthorized feedback
+      R-->>F: Refusal, no state change
+    else Duplicate or obsolete feedback
+      R-->>F: Recorded outcome or obsolete, no new work
+    else New authenticated feedback
+      R->>R: Durably commit dedup record and exact-version fence<br/>Include required coalesced recovery obligation
+      Note over F,R: Static: no replacement approval<br/>Dynamic: owner handles recovery
+      R-->>F: recorded, only after durable commit
+    end
+    Note over F,R: Exact source, grant, store, version<br/>Fence survives eviction / reread<br/>Late N cannot invalidate N+1<br/>or schedule its recovery
+    F->>F: Return SafeResponse<br/>No automatic retry
+  end
+  Note over C,R: Unknown send / refresh / clone effects retain their original owner and attempt<br/>Known partial failure retains cleanup obligations, never blind replay

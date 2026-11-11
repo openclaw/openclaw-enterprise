@@ -1,5 +1,7 @@
+import { postgresStandingRepositoryApprovals } from "./postgres-standing-repository-approvals.ts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
-import { DependencyUnavailableError } from "../errors.ts";
+import { repositoryRemovalWorkKey } from "../repository-withdrawal.ts";
+import { DependencyUnavailableError, ScopeViolationError } from "../errors.ts";
 import type {
   RepositorySessionAttempt,
   RepositoryBrokerReceipt,
@@ -10,7 +12,7 @@ import type { PostgresQueryClient } from "./postgres-work-queue.ts";
 
 const columns = `namespace_id, agent_id, revision_id, repository_ref, admission_id,
   duration_seconds, deadline_wall_ms, phase, session_id, created_at, updated_at,
-  live_revision_id, cleanup_context, broker_protocol`;
+  live_revision_id, cleanup_context, broker_protocol, predecessor_admission_id, execution_fingerprint`;
 
 function attemptFromRow(value: unknown): Readonly<RepositorySessionAttempt> {
   const row = value as Record<string, unknown>;
@@ -37,7 +39,7 @@ function attemptFromRow(value: unknown): Readonly<RepositorySessionAttempt> {
     durationSeconds <= 0 ||
     !Number.isSafeInteger(deadlineWallMs) ||
     deadlineWallMs <= 0 ||
-    ![0, 1].includes(brokerProtocol) ||
+    ![0, 1, 2, 3].includes(brokerProtocol) ||
     !["opening", "open", "closing", "disposed", "invalidated"].includes(phase)
   ) {
     throw new DependencyUnavailableError("Persisted repository session input or phase is invalid.");
@@ -53,7 +55,13 @@ function attemptFromRow(value: unknown): Readonly<RepositorySessionAttempt> {
     durationSeconds,
     deadlineWallMs,
     phase: phase as RepositorySessionPhase,
-    brokerProtocol: brokerProtocol as 0 | 1,
+    brokerProtocol: brokerProtocol as 0 | 1 | 2 | 3,
+    ...(row.predecessor_admission_id == null
+      ? {}
+      : { predecessorAdmissionId: text("predecessor_admission_id") }),
+    ...(row.execution_fingerprint == null
+      ? {}
+      : { executionFingerprint: text("execution_fingerprint") }),
     ...(row.session_id === null ? {} : { sessionId: text("session_id") }),
     createdAt: timestamp("created_at"),
     updatedAt: timestamp("updated_at"),
@@ -100,6 +108,63 @@ export function postgresRepositorySessions(
   client: PostgresQueryClient,
 ): RepositorySessionRepository {
   return {
+    ...postgresStandingRepositoryApprovals(client),
+    async findStandingExecution(owner) {
+      const r = await client.query(
+        'SELECT execution_id AS "executionId", fingerprint, closed FROM occ.repository_standing_executions WHERE namespace_id=$1 AND agent_id=$2 AND revision_id=$3',
+        [owner.namespaceId, owner.agentId, owner.revisionId],
+      );
+      return r.rows[0] as { executionId: string; fingerprint: string; closed: boolean } | undefined;
+    },
+    async recordStandingExecution(owner, execution) {
+      await client.query("SELECT occ.record_repository_standing_execution($1,$2,$3,$4,$5)", [
+        owner.namespaceId,
+        owner.agentId,
+        owner.revisionId,
+        execution.executionId,
+        execution.fingerprint,
+      ]);
+    },
+    async withdrawFinite(owner, at) {
+      const key = repositoryRemovalWorkKey(owner.revisionId);
+      // The caller holds the Agent lock. Read existing immutable ownership without
+      // locking the cleanup row: its worker takes that row before the Agent lock.
+      const result = await client.query(
+        `SELECT work.actor_id, cleanup.idempotency_key IS NOT NULL AS existing,
+          (cleanup.namespace_id,cleanup.agent_id,cleanup.revision_id,cleanup.actor_id)=
+            (v.namespace_id,v.agent_id,v.id,work.actor_id)
+            AND cleanup.agent_target IS NULL AND cleanup.namespace_target IS NULL AS same_owner
+         FROM occ.agent_revisions v JOIN occ.agents a
+           ON (a.namespace_id,a.id,a.active_revision_id)=(v.namespace_id,v.agent_id,v.id)
+         JOIN occ.controller_work work ON (work.namespace_id,work.agent_id,work.revision_id)=(v.namespace_id,v.agent_id,v.id)
+           AND work.idempotency_key='agent_revision:' || v.id || ':reconcile'
+           AND work.agent_target IS NULL AND work.namespace_target IS NULL
+         LEFT JOIN occ.controller_work cleanup ON cleanup.idempotency_key=$4
+         WHERE (v.namespace_id,v.agent_id,v.id)=($1,$2,$3)
+           AND a.status='active'
+           AND v.admitted_spec->'repository_credentials' IS NOT NULL
+           AND NOT (v.admitted_spec->'repository_credentials' ? 'standingApprovalId')`,
+        [owner.namespaceId, owner.agentId, owner.revisionId, key],
+      );
+      const recorded = result.rows[0] as
+        { actor_id: string; existing: boolean; same_owner: boolean | null } | undefined;
+      if (!recorded || (recorded.existing && !recorded.same_owner)) {
+        throw new ScopeViolationError("Finite withdrawal requires the exact active revision.");
+      }
+      if (!recorded.existing) {
+        await client.query(
+          `INSERT INTO occ.controller_work
+            (idempotency_key,namespace_id,agent_id,revision_id,actor_id,state,available_at,created_at,updated_at)
+           VALUES ($4,$1,$2,$3,$5,'queued',clock_timestamp(),clock_timestamp(),clock_timestamp())`,
+          [owner.namespaceId, owner.agentId, owner.revisionId, key, recorded.actor_id],
+        );
+      }
+      await client.query(
+        `UPDATE occ.repository_session_attempts SET phase='closing',updated_at=greatest(updated_at,$4::timestamptz)
+         WHERE (namespace_id,agent_id,revision_id)=($1,$2,$3) AND phase IN ('opening','open')`,
+        [owner.namespaceId, owner.agentId, owner.revisionId, at],
+      );
+    },
     lockAttempt: async (admissionId) => {
       const result = await client.query(
         `SELECT ${columns} FROM occ.repository_session_attempts WHERE admission_id = $1 FOR UPDATE`,
@@ -179,8 +244,8 @@ export function postgresRepositorySessions(
       const result = await client.query(
         `INSERT INTO occ.repository_session_attempts
          (namespace_id, agent_id, revision_id, repository_ref, admission_id,
-          duration_seconds, deadline_wall_ms, phase, session_id, created_at, updated_at, broker_protocol)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'opening', NULL, $8, $8, $9)
+          duration_seconds, deadline_wall_ms, phase, session_id, created_at, updated_at, broker_protocol, predecessor_admission_id, execution_fingerprint)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'opening', NULL, $8, $8, $9, $10, $11)
          RETURNING ${columns}`,
         [
           input.namespaceId,
@@ -192,6 +257,8 @@ export function postgresRepositorySessions(
           input.deadlineWallMs,
           input.createdAt,
           input.brokerProtocol ?? 0,
+          input.predecessorAdmissionId ?? null,
+          input.executionFingerprint ?? null,
         ],
       );
       return attemptFromRow(result.rows[0]);

@@ -127,7 +127,7 @@ rollout that re-adds it can force-delete; avoid forcing until the rollout ends.
 ## Version snapshots and credential delivery
 
 Deploying an Agent freezes the account ID, credential kind, Secret reference,
-and nullable `backendId` in its immutable AgentRevision. It does not copy
+and nullable `backendId` in its AgentRevision. It does not copy
 credential bytes into the version. Later account edits do not rewrite that snapshot. A Secret reference
 is not a snapshot of the Secret's value. Before dispatch, the worker reauthorizes
 exact-account `read` for the actor who requested the deployment.
@@ -236,7 +236,7 @@ admission, association, deletion, and version snapshots. The
 owns private upstream bindings and compensation; the
 [worker](../../apps/controller/src/worker.ts) reauthorizes the deployment actor.
 
-- [Service-account testing](../testing/slack.md#chatgpt-service-accounts)
+- [Service-account testing](../testing/slack.md#service-account-coverage)
 - [ServiceAccountDriver contract](drivers/service-account.md)
 - [Kubernetes Compute reference](drivers/kubernetes-compute.md)
 - [Authorization](authorization.md)

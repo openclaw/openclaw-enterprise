@@ -15,7 +15,7 @@ from each trace; for commands to run locally, see [Testing](../testing/README.md
 
 ## Console, configuration, and Agents
 
-- [Platform console](../flows/platform-console.md), [Agent creation](../flows/platform-console/agent-creation.md), [Agent editing](../flows/platform-console/agent-editing.md), and [stop and deletion](../flows/platform-console/agent-stop-and-deletion.md)
+- [Platform console](../flows/platform-console.md), [Agent creation](../flows/platform-console/agent-creation.md), [Agent editing](../flows/platform-console/agent-editing.md), [workspace files](../flows/platform-console/agent-workspace-files.md), and [stop and deletion](../flows/platform-console/agent-stop-and-deletion.md)
 - [Agent Presets](../flows/agent-presets.md): template admission, variable rendering, and independent draft creation
 - [Agent provisioning](../flows/agent-provisioning.md): separate Secret saving, queued setup, resource creation, safe retries, and first deployment handoff
 - [Agent native admin UI](../flows/agent-native-admin.md): console access, shared-session admission, and private gateway proxying

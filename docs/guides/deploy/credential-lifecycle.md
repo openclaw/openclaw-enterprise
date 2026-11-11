@@ -6,6 +6,12 @@ and every application or Agent that uses it. After replacing a credential,
 verify it through the affected application before revoking the old value, unless
 the old value has been compromised.
 
+For Credential Proxy setup, protected source withdrawal, and Gateway replacement,
+use [Credential Proxy setup](../credential-proxy.md) and its
+[upgrade procedure](credential-proxy-upgrade.md). Existing static Gateway owners
+can remain. Do not apply a copied-key rotation procedure to live Secret resolution
+or worker-prepared tokens: their owners and recovery requirements differ.
+
 ## Before changing a credential
 
 Record the responsible administrator, non-secret credential ID, expiry, affected
@@ -25,6 +31,7 @@ and who can stop affected workloads if access must be revoked immediately.
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Human password and session           | The administrator owns the account; Better Auth verifies sessions for OCC API clients.                                         | Sign-out revokes the current session. Admins create accounts; no endpoint resets passwords. External sign-in adds online disable and revocation; password-only ends others' sessions only by [stopped maintenance](auth-maintenance.md#choose-the-operation). See [authentication](../../reference/authentication.md#session-lifecycle). |
 | OCC service API key                  | An Installation administrator issues keys for a non-Agent IAM service principal; automation clients consume them.              | Multiple keys may overlap. Revocation rejects subsequent requests; an already-authorized request may finish. See [service keys](../../reference/authentication/service-api-keys.md).                                                                                                                                                     |
+| GitHub repository token              | The worker issues, renews, and retires the token. The repository sender uses it for approved requests.                         | A finite grant ends at its original deadline even after [token renewal](../../reference/repository-credentials.md#token-service-lifecycle). Standing approval can authorize a new session for the same running Agent. To end access, follow the [withdrawal procedure](../credential-proxy.md#withdraw-repository-access).               |
 | Backend-managed account credential   | The selected ServiceAccount Driver manages the upstream account, credential, and account-owned Secret.                         | Issuance is separate from creation. A second issuance conflicts; refresh and rotation are not implemented. See [service accounts](../../reference/service-accounts.md#account-and-credential-lifecycle).                                                                                                                                 |
 | Native OCC ServiceAccount credential | The operator owns the referenced source Secret.                                                                                | The API can replace a native `api_key` reference; that reference cannot select model authentication. See [native API-key references](../../reference/service-accounts.md#native-api-key-references).                                                                                                                                     |
 | Harness API key                      | The upstream provider issues the key; the selected Secret Driver stores it as an OCC Secret.                                   | Bind its exact same-Namespace reference through Agent `harnessAuth`. Update the source, explicitly deploy each consumer, verify model access, then revoke the old key upstream.                                                                                                                                                          |
@@ -123,18 +130,42 @@ existing Agent, exact Agent `read`/`update` replaces Agent-create. Only the acto
 who started a session can poll or close it. Source use has its own exact
 `credential_source:operate` authorization; it is not tied to the login session.
 
-The session Secret stores only an opaque login handle and source identity.
+The session Secret binds an opaque login handle to the actor, scope, and source.
 The Refresh Driver hands exchanged credentials to the external service. A pending session uses
 the provider deadline; a completed session closes after 24 hours on its next
 access. **Close login** discards the handle without revoking the source or
 interrupting a deployed Agent. Failed and abandoned sources remain visible in
 credential-source management; delete unused sources separately and remove their
-unreferenced session Secrets. An uncertain exchange requires a new login.
+unreferenced session Secrets.
 
 If sign-in is unavailable, check the selected Gateway and Refresh capabilities. For a
 `503 DEPENDENCY_UNAVAILABLE`, check connectivity from OCC to that Gateway and its
 upstream provider. The paired Refresh Driver owns the provider exchange; OCC keeps only the
 opaque session handle. See [storage and limits](../../reference/drivers/kubernetes-compute/codex-oauth-storage.md).
+
+### Recover an interrupted Codex sign-in
+
+If the Console says **Sign-in may have started**, do not start again. The Console
+did not receive a usable session reference, so it cannot poll or cancel that
+attempt. Give an administrator the time, Namespace, Agent ID if already saved,
+and OCC request ID if available. Do not share the device code or Secret value.
+
+Using [approved audit access](../topics/audit-log.md#access-and-limitations), look
+for a successful `openclaw.agents.device_authorization.start` for that actor and
+request with `details.phase: "session_pending"`. OCC commits this event with the
+session Secret, before sending the reply. It confirms that OCC saved the session,
+not that sign-in completed, and does not include the session ID.
+
+The `source_registering` and `source_ready` phases confirm only source registration;
+they can exist even when provider login fails before OCC saves a session. A missing
+`session_pending` event does not rule out a partial start. Do not guess the session
+from a name or timestamp, or start again while the outcome is unknown.
+
+If the Console says **Cancel this login and sign in again** while checking a known
+session, choose **Cancel login**. Start a new sign-in only after cancellation
+succeeds. Cancelling discards the session without revoking the Credential Source.
+OCC does not repeat an exchange whose outcome is uncertain. A **Service unavailable**
+message alone does not tell you whether OCC reached that exchange.
 
 ## Preserve administrator recovery
 

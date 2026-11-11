@@ -291,12 +291,12 @@ test(
       ],
       ["missing env Secret", { ...loggingValues, "logging.collector.envSecretName": "" }],
       [
-        "shared GitHub sign-in Secret",
+        "shared Google sign-in Secret",
         {
           ...loggingValues,
-          "auth.github.enabled": "true",
+          "auth.google.enabled": "true",
           "auth.recoveryUserId": "Xk3u9pQ2rT7vW1yZ",
-          "logging.collector.envSecretName": "occ-github-login",
+          "logging.collector.envSecretName": "occ-google-login",
         },
       ],
     ]) {
@@ -347,6 +347,8 @@ test(
     };
     const repositoryCredentials = {
       "repositoryCredentials.enabled": "true",
+      "repositoryCredentials.authority": "prepared-git",
+      "repositoryCredentials.preparedCustodySecretName": "repository-custody",
       "repositoryCredentials.image": `registry.example.invalid/repository-credentials@sha256:${"b".repeat(64)}`,
       "repositoryCredentials.backendId": "github-primary",
       "repositoryCredentials.registryConfigMapName": "repository-registry-v1",
@@ -367,7 +369,13 @@ test(
       [gatewayRouting, ["occ-gateway-api-key"]],
       [
         repositoryCredentials,
-        ["repository-config", "repository-app-key", "repository-tls", "repository-public-ca"],
+        [
+          "repository-config",
+          "repository-app-key",
+          "repository-custody",
+          "repository-tls",
+          "repository-public-ca",
+        ],
       ],
       [executionCluster, ["execution-api", "execution-worker"]],
     ]) {

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-09-28
-last_updated_session: authoring-run/185ec4e3-7292-41e3-a669-f574bccc3b16
+updated: 2026-10-24
+last_updated_session: merge-readiness-20261025T022847Z
 ---
 
 # OCC CLI publication flow
@@ -48,8 +48,10 @@ those separate releases from the same source.
 
 ### 2. Prepare the binaries before write access
 
-`scripts/ci/cli-release.mjs:packageCli` builds with `CGO_ENABLED=0` for Darwin
-and Linux on amd64 and arm64 using pinned Go 1.27.1. The build embeds
+`scripts/ci/cli-release.mjs:packageCli` resolves its output directory to an absolute
+path, including when the caller supplies `.`. Native verification executes that
+file without searching `PATH`. It builds with `CGO_ENABLED=0` for Darwin
+and Linux on amd64 and arm64 using pinned Go 1.27.3. The build embeds
 `v<version>` in the CLI, checks the source commit and Go platform metadata,
 runs `--version` and `--help` on the runner-native
 binary, and writes `SHA256SUMS`. The prepare job has read-only repository
@@ -81,7 +83,8 @@ provenance.
 
 - Run `node --test tests/integration/cli-release.test.mjs` with a writable Go
   cache to build all four binaries, run the native command, and reject a changed
-  binary. This does not publish to GitHub.
+  binary. The retry uses current-directory output in a disposable source fixture.
+  This does not publish to GitHub.
 - Check the selected workflow run's source SHA, prepare artifact, tag target,
   release assets, and `SHA256SUMS`. A draft means publication stopped before the
   user-facing release became available.
@@ -100,6 +103,10 @@ provenance.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-24 21:35: Retained current-directory packaging and Go 1.27.3 during the main-branch sync (merge-readiness-20261025T022847Z - c27fb27edfa1fdcb3417494f2bac8814d0631a63)
+- 2026-10-24 13:47: Documented absolute packaging paths and current-directory retry verification (authoring-run/13963312-37cc-41b3-9ddb-00da20e78c92 - 7f39fb17418ed8653f1dfb71b0204a65f636aa7e)
+- 2026-10-23 15:28: Require Go 1.27.3 for the existing clean-source CLI packaging gate (authoring-run/9b2870c6-312f-48b7-a654-186ae5ec4668 - 5370e972f8b1d51222d79b64c375e8e13a2bd452)
 
 - 2026-09-28 17:25: Clarified draft lookup and failed-job artifact reuse (authoring-run/185ec4e3-7292-41e3-a669-f574bccc3b16 - fd9ed7f3f50c8e1f9867acb55b2b7bce00c341fa)
 - 2026-09-28 15:34: Documented the CLI release build, gate and draft publication path (authoring-run/9245ac4f-d350-4d1e-920b-3d9d638de966 - 7cd4a210d8cf63e6b541427c7d46d7524736a8dc)

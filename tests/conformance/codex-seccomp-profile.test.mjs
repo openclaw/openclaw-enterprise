@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
@@ -12,6 +11,8 @@ import {
 } from "../../scripts/lib/codex-seccomp-profile.mjs";
 
 import { prepareCodexSeccompProfile } from "../../scripts/lib/codex-seccomp-k3d.mjs";
+import { writeCommand } from "../helpers/fake-commands.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const generatorPath = join(repositoryRoot, "scripts/generate-codex-seccomp.mjs");
@@ -25,11 +26,8 @@ const runtimeDefaultBaseline = Object.freeze({
   ],
 });
 
-async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), "codex-seccomp-profile-test-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  await mkdir(root, { recursive: true });
-  return root;
+function fixture(t) {
+  return temporaryDirectory(t, "codex-seccomp-profile-test-");
 }
 
 async function writeJson(path, value) {
@@ -39,7 +37,7 @@ async function writeJson(path, value) {
 
 test("codex seccomp profile derivation preserves RuntimeDefault and adds only reviewed bwrap rules", () => {
   const profile = deriveCodexBwrapProfile(runtimeDefaultBaseline, {
-    codexVersion: "0.163.0-alpha.2",
+    codexVersion: "0.164.0",
   });
   const added = profile.syscalls.slice(runtimeDefaultBaseline.syscalls.length);
 
@@ -162,7 +160,7 @@ test("offline codex seccomp generator writes immutable profile and nonsecret pro
       "--baseline",
       baselinePath,
       "--codex-version",
-      "0.163.0-alpha.2",
+      "0.164.0",
       "--out",
       profilePath,
       "--provenance-out",
@@ -180,7 +178,7 @@ test("offline codex seccomp generator writes immutable profile and nonsecret pro
   assert.deepEqual(profile.syscalls.slice(0, runtimeDefaultBaseline.syscalls.length), [
     ...runtimeDefaultBaseline.syscalls,
   ]);
-  assert.equal(provenance.codexVersion, "0.163.0-alpha.2");
+  assert.equal(provenance.codexVersion, "0.164.0");
   assert.equal(provenance.runtimeDefaultSha256, summary.runtimeDefaultSha256);
   assert.equal(provenance.profileSha256, summary.profileSha256);
   assert.equal(provenance.addedRules, 78);
@@ -193,7 +191,7 @@ test("offline codex seccomp generator writes immutable profile and nonsecret pro
       "--baseline",
       baselinePath,
       "--codex-version",
-      "0.163.0-alpha.2",
+      "0.164.0",
       "--out",
       profilePath,
       "--provenance-out",
@@ -295,6 +293,11 @@ function probeEvidence(args, stage, exit, entered, detail = "") {
   return `${prefix}START\n${entered ? `${prefix}ENTERED\n` : ""}${detail ? `${detail}\n` : ""}${prefix}END:${stage}:${exit}\n`;
 }
 
+const baselineContainerId = "b".repeat(64);
+const installedContainerId = "c".repeat(64);
+const probePodUid = "8c00ce88-c148-4c3e-a2e8-32c4dbf39c89";
+const probeImageDigest = `sha256:${"a".repeat(64)}`;
+
 // Exercise the real preparation/cleanup path with injected command responses.
 // These ordered API observations are synthetic, not a claimed live Pod transition.
 async function missingProfileFixture(t, observations, options = {}) {
@@ -323,6 +326,7 @@ async function missingProfileFixture(t, observations, options = {}) {
       }
       if (args.includes("delete")) {
         cleanupCalls += 1;
+        options.beforeCleanup?.();
         assert.ok(args.includes("--wait=false"));
         if (options.cleanupError) {
           throw options.cleanupError;
@@ -363,13 +367,15 @@ async function missingProfileFixture(t, observations, options = {}) {
         }
         return {
           stdout: JSON.stringify({
-            metadata: { name },
+            ...applied.get(name),
+            metadata: { name, uid: probePodUid },
             status: {
               containerStatuses: [
                 {
                   name: "probe",
                   ready: true,
-                  containerID: `containerd://${profile ? "installed" : "runtime-default"}`,
+                  imageID: `registry.invalid/runtime@${probeImageDigest}`,
+                  containerID: `containerd://${profile ? installedContainerId : baselineContainerId}`,
                 },
               ],
             },
@@ -401,7 +407,7 @@ async function missingProfileFixture(t, observations, options = {}) {
     }
     if (command === "docker") {
       if (args[0] === "exec" && args[2] === "crictl") {
-        const seccomp = args[4] === "runtime-default" ? runtimeDefaultBaseline : installedProfile;
+        const seccomp = args[4] === baselineContainerId ? runtimeDefaultBaseline : installedProfile;
         return {
           stdout: JSON.stringify({ info: { runtimeSpec: { linux: { seccomp } } } }),
           stderr: "",
@@ -436,6 +442,7 @@ async function missingProfileFixture(t, observations, options = {}) {
       ),
     reads: () => missingReads,
     installations: () => installations,
+    applied: () => [...applied.values()],
     async assertCleanup() {
       assert.equal(cleanupCalls, 1);
       assert.equal(
@@ -482,6 +489,21 @@ for (const [label, first] of [
     await control.assertCleanup();
   });
 }
+
+// Each probe's Node process is PID 1 and ignores SIGTERM. Local Setup's cleanup
+// (prepareDevelopmentCodexSeccompProfile) waits for the probe Namespace, so the
+// default 30 s grace was idle time. Both paths share this Pod spec; the CI path
+// is the one with an offline fixture.
+test("codex seccomp probe Pods stop within a one-second grace period", async (t) => {
+  const control = await missingProfileFixture(t, [missingProfileWaiting]);
+  await control.run();
+  const pods = control.applied();
+  assert.equal(pods.length, 3, "RuntimeDefault, installed-profile and missing-profile probes");
+  for (const pod of pods) {
+    assert.equal(pod.spec.terminationGracePeriodSeconds, 1, pod.metadata.name);
+  }
+  await control.assertCleanup();
+});
 
 test("missing-profile preparation preserves pending timeout and cleanup", async (t) => {
   const control = await missingProfileFixture(t, [{ name: "probe" }], { timeoutMs: 5 });
@@ -638,7 +660,7 @@ async function runGeneratedProbe(args, root, mode) {
   const shellArgs = args.slice(args.indexOf("--") + 2);
   assert.equal(shellArgs[0], "-c");
   assert.equal(shellArgs[2], "codex-sandbox-probe");
-  assert.equal(shellArgs[3], "0.163.0-alpha.2");
+  assert.equal(shellArgs[3], "0.164.0");
   assert.match(shellArgs[4], /^[a-f0-9]{32}$/);
   assert.equal(shellArgs.length, 5);
   assert.equal(
@@ -653,12 +675,11 @@ async function runGeneratedProbe(args, root, mode) {
   assert.equal(syntax.status, 0, syntax.stderr);
   const tools = join(root, "tools");
   await mkdir(tools, { recursive: true });
-  const codex = join(tools, "codex");
-  await writeFile(
-    codex,
-    `#!/bin/sh
-if [ "$1" = --version ]; then
-  if [ "$PROBE_MODE" = version ]; then echo 'codex 0.0.0'; else echo 'codex 0.163.0-alpha.2'; fi
+  await writeCommand(
+    tools,
+    "codex",
+    `if [ "$1" = --version ]; then
+  if [ "$PROBE_MODE" = version ]; then echo 'codex 0.0.0'; else echo 'codex 0.164.0'; fi
   exit 0
 fi
 # Validate the real command's sandbox arguments, independently of its shell layout.
@@ -681,25 +702,22 @@ chmod 600 "$PROBE_ROOT/home/codex-seccomp-outside"
 if [ "$PROBE_MODE" = assertion ]; then echo changed > "$PROBE_ROOT/home/codex-seccomp-outside"; fi
 exit "$result"
 `,
-    { mode: 0o700 },
   );
   // Fail actual shell commands at preparation and cleanup, leaving the probe's
   // trap and stage transitions responsible for reporting the failure.
-  await writeFile(
-    join(tools, "mkdir"),
-    `#!/bin/sh
-if [ "$PROBE_MODE" = prepare ]; then exit 73; fi
+  await writeCommand(
+    tools,
+    "mkdir",
+    `if [ "$PROBE_MODE" = prepare ]; then exit 73; fi
 exec /bin/mkdir "$@"
 `,
-    { mode: 0o700 },
   );
-  await writeFile(
-    join(tools, "rm"),
-    `#!/bin/sh
-if [ "$PROBE_MODE" = cleanup ] && [ -f "$PROBE_ROOT/workspace/codex-seccomp-ok" ]; then exit 74; fi
+  await writeCommand(
+    tools,
+    "rm",
+    `if [ "$PROBE_MODE" = cleanup ] && [ -f "$PROBE_ROOT/workspace/codex-seccomp-ok" ]; then exit 74; fi
 exec /bin/rm "$@"
 `,
-    { mode: 0o700 },
   );
   const command = shellArgs[1]
     .replaceAll("/home/node", join(root, "home"))
@@ -755,6 +773,71 @@ for (const [mode, stage, exit, entered] of [
   });
 }
 
+test("failed installed sandbox probe reports its verified profile and exact context before cleanup", async (t) => {
+  const output = [];
+  const prefix = "OCE_CODEX_SECCOMP_PROBE_FAILURE ";
+  const write = process.stderr.write.bind(process.stderr);
+  t.mock.method(process.stderr, "write", (chunk, ...args) => {
+    if (typeof chunk === "string" && chunk.startsWith(prefix)) {
+      output.push(chunk);
+      return true;
+    }
+    return write(chunk, ...args);
+  });
+  const control = await missingProfileFixture(t, [missingProfileWaiting], {
+    probeExec(args, { baseline }) {
+      throw Object.assign(new Error("probe refused"), {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: "private-probe-stdout",
+        stderr: probeEvidence(
+          args,
+          "SANDBOX",
+          1,
+          false,
+          baseline ? "bwrap namespace denied" : "private-probe-stderr",
+        ),
+      });
+    },
+    beforeCleanup() {
+      assert.equal(output.length, 1, "the failure must reach stderr before Namespace deletion");
+    },
+  });
+  await assert.rejects(control.run, { message: "probe refused" });
+  assert.equal(output.length, 1);
+  assert.doesNotMatch(output[0], /private-probe|OCE_SANDBOX_PROBE_V1/);
+  const report = JSON.parse(output[0].slice(prefix.length));
+  assert.equal(report.mode, "Localhost");
+  assert.equal(report.podUid, probePodUid);
+  assert.equal(report.containerId, installedContainerId);
+  assert.equal(report.node, "k3d-openclaw-k8s-poll-server-0");
+  assert.equal(report.runtimeImageDigest, probeImageDigest);
+  assert.equal(report.observedImageDigest, probeImageDigest);
+  assert.equal(report.profileVerification, "passed");
+  const installed = deriveCodexBwrapProfile(runtimeDefaultBaseline, { codexVersion: "0.164.0" });
+  assert.equal(
+    report.effectiveProfileSha256,
+    createHash("sha256")
+      .update(`${JSON.stringify(installed, null, 2)}\n`)
+      .digest("hex"),
+  );
+  assert.equal(report.expectedCodexVersion, "0.164.0");
+  assert.equal(report.verifiedCodexVersion, "0.164.0");
+  assert.deepEqual(report.probe, { stage: "SANDBOX", exit: 1, entered: false });
+  assert.deepEqual(report.security, {
+    runAsNonRoot: true,
+    runAsUser: 1000,
+    runAsGroup: 1000,
+    allowPrivilegeEscalation: false,
+    readOnlyRootFilesystem: true,
+    dropAllCapabilities: true,
+  });
+  assert.ok(Date.parse(report.startedAt) <= Date.parse(report.finishedAt));
+  assert.match(report.guide, /codex-sandbox\.md#identify-the-restriction$/);
+  await control.assertCleanup();
+});
+
 test("generated negative and positive probes complete the real profile preparation path", async (t) => {
   const control = await missingProfileFixture(t, [missingProfileWaiting], {
     probeExec: (args, { baseline, root }) =>
@@ -773,8 +856,11 @@ test("relocated preparation entrypoints require and deliver the local shell asse
   await mkdir(join(scripts, "lib"));
   for (const path of [
     "ci/codex-seccomp.mjs",
+    "lib/assert-inside-directory.ts",
     "lib/codex-seccomp-k3d.mjs",
+    "lib/private-owned-path.mjs",
     "lib/codex-seccomp-profile.mjs",
+    "lib/codex-seccomp-profile.ts",
     "prepare-development-codex-seccomp.mjs",
   ]) {
     await writeFile(join(scripts, path), await readFile(join(repositoryRoot, "scripts", path)));
@@ -840,10 +926,10 @@ for (const mode of ["exit1", "exit2", "signal", "done_error", "success"]) {
     await writeFile(join(state, "kubeconfig"), "{}\n", { mode: 0o600 });
     // These are inert external commands. The actual preparation entrypoint owns
     // the execFile callback and error propagation; no Kubernetes or Docker runs.
-    await writeFile(
-      join(tools, "kubectl"),
-      `#!${process.execPath}
-const args = process.argv.slice(2);
+    await writeCommand(
+      tools,
+      "kubectl",
+      `const args = process.argv.slice(2);
 const a = args.slice(args.indexOf('--request-timeout') + 2);
 if (a[0] === 'get' && a[1] === 'nodes') {
   process.stdout.write(JSON.stringify({items:[{metadata:{name:'k3d-occ-dev-origin-fixture-server-0'}}]}));
@@ -862,16 +948,16 @@ if (a[0] === 'get' && a[1] === 'nodes') {
   else process.exit(process.env.PROBE_MODE === 'success' ? 0 : process.env.PROBE_MODE === 'exit2' ? 2 : 1);
 }
 `,
-      { mode: 0o700 },
+      { interpreter: process.execPath },
     );
     // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
-    await writeFile(
-      join(tools, "docker"),
-      `#!${process.execPath}
-process.getBuiltinModule('node:fs').writeFileSync(process.env.PROBE_REACHED, 'reached');
+    await writeCommand(
+      tools,
+      "docker",
+      `process.getBuiltinModule('node:fs').writeFileSync(process.env.PROBE_REACHED, 'reached');
 process.exit(71);
 `,
-      { mode: 0o700 },
+      { interpreter: process.execPath },
     );
     const result = spawnSync(
       process.execPath,
