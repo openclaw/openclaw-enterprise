@@ -339,7 +339,7 @@ None.
 
 ## Changelog
 
-- 2026-11-10 02:40: Withhold selected material split across one reasoning part.
+- 2026-11-10 02:40: Withhold selected material split across one reasoning part. (codex/six-nov10-05-summary-index - dcb26d2300091d9124a32e0abb1bf296bfeac86c)
 - 2026-11-10 08:22: Accept empty metadata on replayed assistant output text. (authoring-run/098bcc8c-9e1b-4318-aff3-06c464edb33e - 33c820f6daf4ba6a1559680911ab2d509ee4a131)
 
 - 2026-11-10 07:15: Admit bounded Codex Git workspace metadata and passive MCP attribution on Responses requests. (authoring-run/13d2e44f-b996-453e-8cbc-db80b8f8e3e2 - f06bf60299ad29444685d70fb2708f3f0558a5ad)
