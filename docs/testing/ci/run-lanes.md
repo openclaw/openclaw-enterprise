@@ -67,6 +67,14 @@ still builds its controller, and each lane owns its other preparation and tests.
 [First Agent Smoke](first-agent-smoke.md#trigger) adds runtime trust and reuses
 its WebSocket package for the provider loaded into the job's Docker engine.
 
+Full Integration also shares this runtime with Docker Model Runtime, Gateway
+Routing and Production TUI. When Gateway Routing or Production TUI selects the
+current runtime, both full and focused runs wait for the producer. Their job
+budgets cover import, controller preparation and tests. Focused Gateway runs
+with explicit Gateway/Agent images skip the producer; full runs still wait for
+it because other lanes need it. Local TUI upgrade checks retain their selected
+baseline and candidate images.
+
 The shared action passes the downloaded directory in
 `OCC_CI_RUNTIME_ARTIFACT_DIRECTORY` and the producer outputs in
 `OCC_CI_RUNTIME_ARTIFACT_SHA256`, `OCC_CI_RUNTIME_ARTIFACT_SOURCE_SHA`,
