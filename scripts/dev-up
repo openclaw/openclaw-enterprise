@@ -12,7 +12,9 @@ repo_root="$(CDPATH="" cd "$script_dir/.." && pwd)"
 occ_cli="$repo_root/bin/occ"
 CDPATH="" cd "$repo_root"
 
-development_compute_driver="${OCC_DEVELOPMENT_COMPUTE_DRIVER:-docker}"
+# Match occ dev up: unset Compute selects Kubernetes, whose unset control plane
+# is the Kubernetes-only profile. occ dev up names Docker when it runs this script.
+development_compute_driver="${OCC_DEVELOPMENT_COMPUTE_DRIVER:-kubernetes}"
 development_sandbox_driver="${OCC_DEVELOPMENT_SANDBOX_DRIVER:-none}"
 development_control_plane="${OCC_DEVELOPMENT_CONTROL_PLANE:-}"
 case "$development_sandbox_driver" in
@@ -542,6 +544,8 @@ PY
       --build-arg "OPENCLAW_SOURCE_SHA256=$openclaw_archive_sha256"
       --build-arg "OPENCLAW_BUILD_TIMESTAMP=$openclaw_build_timestamp"
       --tag "$DEFAULT_RUNTIME_IMAGE" .)
+    # Matches internal/occdev's note for the Kubernetes profiles.
+    echo "dev-up: Building the runtime image. With no build cache, this compiles Node.js from source first: 15-60 minutes or longer, depending on CPUs and memory; later builds reuse the cache." >&2
     if ! engine "${runtime_build_args[@]}"; then
       fail "runtime image" "could not build $DEFAULT_RUNTIME_IMAGE" "${engine_command[@]}" "${runtime_build_args[@]}"
     fi
@@ -840,6 +844,8 @@ next_check_command="$(quote_command "OCC_URL=$api_url" "OCC_SERVICE_KEY_FILE=$ke
 cat <<EOF
 OpenClaw Enterprise development stack is ready.
 Container engine: $container_engine_label
+Control plane: Compose
+Compute Driver: Docker (control-plane preview; it cannot deploy Agents)
 API URL: $api_url
 Browser console: $OCC_DEVELOPMENT_BROWSER_ORIGIN/console/
 Browser CA certificate: ${OCC_DEVELOPMENT_BROWSER_TLS_CERT%/*}/browser-ca.crt

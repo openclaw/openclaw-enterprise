@@ -44,6 +44,13 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
     result.stdout,
   );
   assert.ok(result.stdout.includes("API URL: http://127.0.0.1:3000"));
+  // The ready text names the profile, which cannot deploy Agents (finding 3165).
+  assert.ok(
+    result.stdout.includes(
+      "Control plane: Compose\nCompute Driver: Docker (control-plane preview; it cannot deploy Agents)",
+    ),
+    result.stdout,
+  );
   assert.ok(result.stdout.includes(`Installation ID: ${matchingInstallationId}`));
   assert.ok(result.stdout.includes(`Service key file: ${keyOutput}`));
   assert.ok(result.stdout.includes(`OCC_SERVICE_KEY_FILE=${keyOutput.replaceAll(" ", "\\ ")}`));
@@ -61,6 +68,11 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
     await readFile(new URL("../../deploy/runtime/openclaw-source.json", import.meta.url), "utf8"),
   );
   const runtimeBuild = dockerLogs.find((entry) => entry.args[0] === "build");
+  // A missing runtime tag means a first build, which compiles Node.js with no build cache.
+  assert.match(
+    result.stderr,
+    /dev-up: Building the runtime image\. With no build cache, this compiles Node\.js/,
+  );
   assert.deepEqual(runtimeBuild?.args, [
     "build",
     "-f",
@@ -164,6 +176,7 @@ test("dev-up preserves a selected custom runtime image and skips the quickstart 
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /API URL: http:\/\/127\.0\.0\.1:4137/);
+  assert.doesNotMatch(result.stderr, /Building the runtime image/);
   const dockerLogs = await readJsonLines(fixture.dockerLog);
   assert.ok(
     dockerLogs.some((entry) => entry.args.join(" ") === "image inspect custom-runtime:local"),
@@ -974,14 +987,39 @@ test("dev-up routes Kubernetes Compute through the unified entry point", async (
   assert.match(result.stdout, /occ dev up/);
 });
 
-test("development entry points default to the Compose profile", async (t) => {
+test("development entry points default to the Kubernetes-only profile", async (t) => {
   const fixture = await createFixture(t);
   const env = { ...fixture.env };
   delete env.OCC_DEVELOPMENT_COMPUTE_DRIVER;
   delete env.OCC_DEVELOPMENT_CONTROL_PLANE;
   delete env.OCC_DEVELOPMENT_SANDBOX_DRIVER;
+  env.OCC_DEVELOPMENT_STATE_DIRECTORY = join(fixture.directory, "default-state");
 
-  // Both entry points must start the same Compose profile when no selector is set.
+  // With no selector set, both entry points must choose the same Kubernetes-only
+  // profile. Only that profile refuses Compose options, before any mutation; the
+  // Docker profile would start Compose with them.
+  for (const result of [
+    await runDevUp(["--", "--env-file", fixture.emptyEnv], env),
+    await runCommand(fixture.cli, ["dev", "up", "--", "--env-file", fixture.emptyEnv], {
+      cwd: fixture.fixtureRepository,
+      env,
+    }),
+  ]) {
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Kubernetes-only profile does not accept Compose options/);
+  }
+  await assert.rejects(stat(env.OCC_DEVELOPMENT_STATE_DIRECTORY), { code: "ENOENT" });
+  assert.equal((await readJsonLines(fixture.dockerLog)).length, 0);
+});
+
+test("explicit Docker Compute keeps the Compose profile through both entry points", async (t) => {
+  const fixture = await createFixture(t);
+  const env = { ...fixture.env, OCC_DEVELOPMENT_COMPUTE_DRIVER: "docker" };
+  delete env.OCC_DEVELOPMENT_CONTROL_PLANE;
+  delete env.OCC_DEVELOPMENT_SANDBOX_DRIVER;
+
+  // Docker Compute without a control-plane selection must still resolve the
+  // Compose control plane, not the Kubernetes default, in both entry points.
   const options = composeOptions(fixture);
   const script = await runDevUp(
     ["--key-output", join(fixture.directory, "script-key.json"), "--", ...options],

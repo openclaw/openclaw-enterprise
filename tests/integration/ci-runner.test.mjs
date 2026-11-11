@@ -745,6 +745,78 @@ test(
   },
 );
 
+test("runner applies file environment over real preparation defaults without replacing generated values", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state/lane.json");
+  const resultsPath = join(root, "results/file-env.json");
+  const first = "tests/integration/first.test.mjs";
+  const second = "tests/integration/second.test.mjs";
+  const laneName = "checks-baseline-2";
+  const lane = JSON.parse(
+    await readFile(join(repositoryRoot, "scripts/ci/test-suites/checks-baseline-2.json"), "utf8"),
+  );
+  // Use the real no-infrastructure preparer, including its persisted lane state.
+  await writeFile(
+    join(root, "scripts/ci/prepare.mjs"),
+    `import { prepareLane, prepareFile } from ${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.mjs")).href)};
+await prepareLane({ lane: ${JSON.stringify(laneName)}, statePath: ${JSON.stringify(statePath)} });
+export { prepareFile };
+`,
+  );
+  await writeFile(
+    join(root, first),
+    `import assert from "node:assert/strict";
+import test from "node:test";
+test("opt-in case runs", { skip: process.env.OCC_TEST_NAMESPACE_OPENSHELL_REAL !== "1" }, () => {
+  assert.equal(process.env.OCC_TEST_FILE_ONLY, "configured");
+  assert.equal(process.env.NODE_OPTIONS, "--max-old-space-size=2048");
+  assert.equal(process.env.OPENCLAW_ENTERPRISE_CI_STATE, ${JSON.stringify(statePath)});
+});
+`,
+  );
+  await writeFile(
+    join(root, second),
+    `import assert from "node:assert/strict";
+import test from "node:test";
+test("sibling keeps lane defaults", () => {
+  assert.equal(process.env.OCC_TEST_NAMESPACE_OPENSHELL_REAL, undefined);
+  assert.equal(process.env.OCC_TEST_FILE_ONLY, undefined);
+  assert.equal(process.env.NODE_OPTIONS, ${JSON.stringify(lane.env.NODE_OPTIONS)});
+  assert.equal(process.env.OPENCLAW_ENTERPRISE_CI_STATE, ${JSON.stringify(statePath)});
+});
+`,
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    groups: { ci: [laneName] },
+    lanes: {
+      [laneName]: {
+        env: lane.env,
+        files: [
+          {
+            path: first,
+            expectedTests: ["opt-in case runs"],
+            env: {
+              OCC_TEST_NAMESPACE_OPENSHELL_REAL: "1",
+              OCC_TEST_FILE_ONLY: "configured",
+              NODE_OPTIONS: "--max-old-space-size=2048",
+              OPENCLAW_ENTERPRISE_CI_STATE: "must-not-replace-prepared-state",
+            },
+          },
+          { path: second, expectedTests: ["sibling keeps lane defaults"] },
+        ],
+      },
+    },
+  });
+
+  const result = run(root, laneArgs(root, laneName, statePath, resultsPath));
+  assert.equal(result.status, 0, result.stderr);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  assert.deepEqual(summary.counts, { passed: 2, failed: 0, skipped: 0, todo: 0, total: 2 });
+  assert.ok(summary.files.every((file) => file.cleanup.status === "passed"));
+  await assert.rejects(readFile(statePath, "utf8"), { code: "ENOENT" });
+});
+
 test("run resolves lane documents relative to the manifest and preserves ordered case accounting", async (t) => {
   const root = await fixture(t);
   const statePath = join(root, "state/lane.jsonl");
@@ -5455,6 +5527,51 @@ waitingTest(
   },
 );
 
+test("invalid prepared defaults keep bounded cleanup and its failure without starting a child", async (t) => {
+  const root = await fixture(t);
+  const files = ["clean", "failed-cleanup"].map((name) => `tests/integration/${name}.test.mjs`);
+  for (const file of files) {
+    await writeFile(join(root, file), 'throw new Error("child must not start");\n');
+  }
+  await writeSingleLaneManifest(
+    root,
+    "invalid-defaults",
+    files.map((path) => ({ path })),
+    { ci: ["invalid-defaults"] },
+  );
+  await writeFile(
+    join(root, "scripts/ci/prepare.mjs"),
+    `
+import { writeFile, rm } from "node:fs/promises";
+export async function prepareFile({ file }) {
+  const name = file.path.endsWith("failed-cleanup.test.mjs") ? "failed-cleanup" : "clean";
+  const owned = new URL("../../" + name, import.meta.url);
+  await writeFile(owned, "owned resource");
+  return { defaults: { FLAG: 1 }, cleanup: async () => {
+    await rm(owned);
+    if (name === "failed-cleanup") throw new Error("cleanup failure");
+  } };
+}
+`,
+  );
+  const result = run(
+    root,
+    laneArgs(root, "invalid-defaults", "state/lane.json", "results/defaults.json"),
+  );
+  assert.equal(result.status, 1);
+  const summary = JSON.parse(await readFile(join(root, "results/defaults.json"), "utf8"));
+  assert.deepEqual(
+    summary.files.map((file) => file.cleanup?.status),
+    ["passed", "failed"],
+  );
+  assert.equal(summary.issues.filter(({ code }) => code === "prepare-failed").length, 2);
+  assert.equal(summary.issues.filter(({ code }) => code === "cleanup-failed").length, 1);
+  assert.ok(summary.files.every((file) => file.nodeExitCode === null && file.tests.length === 0));
+  for (const name of ["clean", "failed-cleanup"]) {
+    await assert.rejects(readFile(join(root, name)), { code: "ENOENT" });
+  }
+});
+
 test("run records a preparation failure's redacted message in the diagnostics report", async (t) => {
   const root = await fixture(t);
   const resultsPath = join(root, "results/prepare.json");
@@ -5466,10 +5583,10 @@ test("run records a preparation failure's redacted message in the diagnostics re
       "export async function prepareFile({ file, statePath }) {",
       "  if (file.path.endsWith('broken.test.mjs')) {",
       "    // The lane state's env holds prepared values the job env never had.",
-      "    await writeFile(statePath, JSON.stringify({ env: { OCC_TEST_STATE_IMAGE: 'stateonlyopaque-image-ref' } }));",
+      "    await writeFile(statePath, JSON.stringify({ env: { OCC_TEST_STATE_IMAGE: 'stateonlyopaque-image-ref' }, defaults: { OCC_TEST_SELECTED_IMAGE: 'selectedopaque-image-ref' } }));",
       `    const pullUrl = ${JSON.stringify(syntheticCredentialUrl({ username: "user", password: "hunter2pass", host: "registry.example", pathname: "/x" }))};`,
       "    const error = new Error(",
-      "      `image import failed for ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL} stateonlyopaque-image-ref\\nAuthorization: Bearer abcdefghijklmnop0123\\npull ${pullUrl}`,",
+      "      `image import failed for ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL} stateonlyopaque-image-ref selectedopaque-image-ref\\nAuthorization: Bearer abcdefghijklmnop0123\\npull ${pullUrl}`,",
       "    );",
       "    error.stderr = 'child output secretauthvalue-stderr';",
       "    throw error;",
@@ -5500,7 +5617,10 @@ test("run records a preparation failure's redacted message in the diagnostics re
   const prepareIssue = summary.issues.find((entry) => entry.code === "prepare-failed");
   assert.deepEqual(prepareIssue.error, { name: "Error" });
   const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
-  assert.doesNotMatch(text, /secretauthvalue|abcdefghijklmnop0123|hunter2pass|stateonlyopaque/);
+  assert.doesNotMatch(
+    text,
+    /secretauthvalue|abcdefghijklmnop0123|hunter2pass|stateonlyopaque|selectedopaque/,
+  );
   const report = JSON.parse(text);
   assert.equal(report.failures.length, 1);
   const [record] = report.failures;
@@ -5509,7 +5629,7 @@ test("run records a preparation failure's redacted message in the diagnostics re
   assert.equal(record.error.name, "Error");
   assert.equal(
     record.error.message,
-    "image import failed for [env:CI_RUNNER_FIXTURE_CREDENTIAL] [env:OCC_TEST_STATE_IMAGE]\n[redacted credential-bearing line]\n[redacted credential-bearing line]",
+    "image import failed for [env:CI_RUNNER_FIXTURE_CREDENTIAL] [env:OCC_TEST_STATE_IMAGE] [env:OCC_TEST_SELECTED_IMAGE]\n[redacted credential-bearing line]\n[redacted credential-bearing line]",
   );
   assert.match(record.error.stack, /^at prepareFile \(.*scripts\/ci\/prepare\.mjs:7:\d+\)/);
 });
@@ -5946,6 +6066,30 @@ test("audit fails when a referenced lane cannot be loaded", async (t) => {
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /ENOENT.*missing-lane\.json/);
   assert.equal(missing.stdout, "");
+});
+
+test("audit rejects prototype keys instead of silently dropping file environment", async (t) => {
+  const root = await fixture(t);
+  await writeFile(join(root, "tests/integration/env.test.mjs"), "import 'node:test';\n");
+  const result = await auditManifest(root, {
+    lanes: {
+      baseline: {
+        files: [
+          {
+            path: "tests/integration/env.test.mjs",
+            env: JSON.parse('{"__proto__":"configured"}'),
+          },
+        ],
+      },
+    },
+  });
+  assert.equal(result.status, 1);
+  const summary = JSON.parse(result.stdout);
+  assert.deepEqual(
+    summary.issues.map(({ code }) => code),
+    ["invalid-manifest"],
+  );
+  assert.match(summary.issues[0].message, /files\.0\.env\.__proto__/);
 });
 
 test("audit rejects obsolete manifest selectors", async (t) => {
