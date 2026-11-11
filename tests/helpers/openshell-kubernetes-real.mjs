@@ -614,6 +614,11 @@ export function createOpenShellInstallationConfiguration({
         userNamespaces: false,
       },
       policy: {
+        filesystem: {
+          includeWorkdir: true,
+          readOnly: ["/bin", "/usr", "/lib", "/proc", "/dev/urandom", "/etc", "/var/log", "/app"],
+          readWrite: ["/sandbox/.openclaw-runtime", "/dev/null"],
+        },
         process: { runAsUser: "1000", runAsGroup: "1000" },
         networkPolicies: [
           {
