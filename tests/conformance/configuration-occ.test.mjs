@@ -1314,7 +1314,11 @@ test("deployment admission keeps apply_patch in the workspace, the sandbox off, 
       { channels: { slack: { enabled: true, accounts: { work: { allowBots: false } } } } },
       "per-account-channel-peer",
     ],
-    ["an explicit main with a channel", { channels: { slack }, session: { dmScope: "main" } }, "main"],
+    [
+      "an explicit main with a channel",
+      { channels: { slack }, session: { dmScope: "main" } },
+      "main",
+    ],
   ]) {
     const values = { ...codexValues, ...settings };
     const channelRevision = await deploy(values, "dedicated");

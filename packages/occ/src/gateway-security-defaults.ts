@@ -22,8 +22,7 @@ const channelEnabled = (_parent: ConfigurationObject, root: ConfigurationObject)
   isObject(root.channels) &&
   Object.entries(root.channels).some(
     ([provider, channel]) =>
-      !SHARED_CHANNEL_KEYS.includes(provider) &&
-      !(isObject(channel) && channel.enabled === false),
+      !SHARED_CHANNEL_KEYS.includes(provider) && !(isObject(channel) && channel.enabled === false),
   );
 // No legacy exec policy beside the setting: OpenClaw reads a mode over `security` and `ask`.
 const noExecPolicy = (exec: ConfigurationObject) =>
