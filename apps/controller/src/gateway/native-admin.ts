@@ -105,6 +105,11 @@ export function nativeAdminConfigurationSupported(
   );
 }
 
+/** Whether the Configuration turns on the browser UI at all; the native admin opt-in sets it. */
+export function nativeAdminControlUiEnabled(revision: Readonly<AgentRevision>): boolean {
+  return asRecord(asRecord(revision.configuration.gateway)?.controlUi)?.enabled === true;
+}
+
 /** Prepare the explicit opt-in before provisioning saves the initial Configuration. */
 export function prepareNativeAdminConfiguration(
   values: Readonly<OpenClawConfigurationDocument>,
