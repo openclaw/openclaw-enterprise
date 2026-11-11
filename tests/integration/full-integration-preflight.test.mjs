@@ -952,10 +952,29 @@ test("full integration plans fresh fallback and attributes only published reuse 
     (step) => step.name === "Download committed reused results",
   );
   assert.ok(retained, "retained evidence must have a separately gated download");
-  assert.ok(!retained.with.name.startsWith("full-results-"));
+  assert.ok(!retained.with.pattern.startsWith("full-results-"));
+  assert.equal(retained.uses, "./.github/actions/download-results");
+  const freshDownload = execution.jobs["full-aggregate"].steps.find(
+    (step) => step.name === "Download full integration results",
+  );
+  assert.notEqual(
+    retained.with.path,
+    freshDownload.with.path,
+    "retry cleanup must not remove fresh results",
+  );
+  const combine = execution.jobs["full-aggregate"].steps.find(
+    (step) => step.name === "Combine committed reused results",
+  );
+  for (const outcome of ["success", "failure", "skipped", "cancelled"]) {
+    assert.equal(
+      workflowCondition(combine.if, { steps: { "reused-results": { outcome } } }),
+      outcome === "success",
+    );
+  }
+
   assert.equal(
     execution.jobs["ci-reuse"].steps.find((step) => step.id === "upload").with.name,
-    retained.with.name,
+    retained.with.pattern,
   );
   // A failed optional job may expose partial outputs after uploading. Neither
   // those outputs nor an orphaned artifact may displace fresh execution.
@@ -1095,6 +1114,20 @@ test("full integration plans fresh fallback and attributes only published reuse 
     ]);
     assert.equal(result.status, 0, result.stderr);
   }
+  // The retry action owns a separate directory. Combine its completed download
+  // with a fresh runner receipt without deleting the fresh evidence.
+  await mkdir(join(directory, "reused-results"));
+  const retainedReceipt = await readFile(join(directory, "results/postgres.json"));
+  const freshReceipt = await readFile(join(directory, "results/postgres-auth.json"));
+  await writeFile(join(directory, "reused-results/postgres.json"), retainedReceipt);
+  await rm(join(directory, "results/postgres.json"));
+  const combined = spawnSync("bash", ["-e", "-c", combine.run], {
+    encoding: "utf8",
+    env: { ...process.env, RUNNER_TEMP: directory },
+  });
+  assert.equal(combined.status, 0, combined.stderr);
+  assert.deepEqual(await readFile(join(directory, "results/postgres.json")), retainedReceipt);
+  assert.deepEqual(await readFile(join(directory, "results/postgres-auth.json")), freshReceipt);
   const aggregate = () =>
     runner(["aggregate", "ci", "--results-dir", "results", "--needs", "needs.json"]);
   await execute("success");

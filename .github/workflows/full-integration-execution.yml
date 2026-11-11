@@ -693,11 +693,15 @@ jobs:
       # Reuse uploads can outlive a timed-out planner. Read them only when its
       # completed plan also selected the reduced matrix above.
       - name: Download committed reused results
+        id: reused-results
         if: needs.ci-reuse.result == 'success' && needs.ci-reuse.outputs.matrix != '' && needs.ci-reuse.outputs.lanes != '[]'
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        uses: ./.github/actions/download-results
         with:
-          name: full-ci-reused-results
-          path: ${{ runner.temp }}/results
+          pattern: full-ci-reused-results
+          path: ${{ runner.temp }}/reused-results
+      - name: Combine committed reused results
+        if: steps.reused-results.outcome == 'success'
+        run: cp "$RUNNER_TEMP/reused-results/"*.json "$RUNNER_TEMP/results/"
       - name: Write selected job state
         env:
           NEEDS_JSON: ${{ toJson(needs) }}
