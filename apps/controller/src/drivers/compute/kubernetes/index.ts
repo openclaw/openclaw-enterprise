@@ -162,6 +162,7 @@ import {
   CredentialWithdrawalRefusedError,
   DEDICATED_OPENCLAW_SANDBOX_REQUIRED,
   DependencyUnavailableError,
+  RuntimeDiagnosticsTransportError,
   SandboxRepositoryRecipientUnverifiedError,
   imageReferenceProblem,
   keyedSettingPath,
@@ -5053,11 +5054,23 @@ export class KubernetesComputeDriver implements ComputeDriver {
           { namespaceId: revision.namespaceId },
           external,
         );
+        const deferDeadlineFailure = (error: unknown): undefined => {
+          // Let the shared deadline settle the Gateway diagnostics read before reporting
+          // a generic timeout. Caller cancellation and other failures still reject directly.
+          if (deadline.aborted && error === deadline.reason && !ownerSignal?.aborted) {
+            return undefined;
+          }
+          throw error;
+        };
         const reports = await Promise.all(
           this.runtimeStatusContainers(revision).map(async (container) => {
             const [checks, heldFailure] = await Promise.all([
-              this.runtimeDiagnosticChecks(revision, namespace, container),
-              this.heldRuntimeFailureCheck(revision, namespace, container),
+              this.runtimeDiagnosticChecks(revision, namespace, container).catch(
+                deferDeadlineFailure,
+              ),
+              this.heldRuntimeFailureCheck(revision, namespace, container).catch(
+                deferDeadlineFailure,
+              ),
             ]);
             return {
               heldFailure,
@@ -5073,6 +5086,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             };
           }),
         );
+        deadline.throwIfAborted();
         // Held startup failures lead, so the check cap never drops them.
         return {
           revisionId: revision.id,
@@ -5089,7 +5103,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (ownerSignal?.aborted) {
         throw ownerSignal.reason;
       }
-      if (deadline.aborted) {
+      if (deadline.aborted && !(error instanceof RuntimeDiagnosticsTransportError)) {
         throw new DependencyUnavailableError("Runtime diagnostics timed out.");
       }
       throw error;
@@ -11088,6 +11102,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
         throw error;
       }
+    }).catch((error: unknown) => {
+      if (container === "gateway" && path === RUNTIME_DIAGNOSTICS_PATH) {
+        throw new RuntimeDiagnosticsTransportError();
+      }
+      throw error;
     });
     if (raw === notServing) {
       return undefined;

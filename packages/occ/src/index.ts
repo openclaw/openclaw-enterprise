@@ -319,6 +319,7 @@ import {
   DedicatedOpenClawSandboxError,
   DeletionRetryOwnedError,
   DependencyUnavailableError,
+  RuntimeDiagnosticsTransportError,
   DeviceAuthorizationStartError,
   DriverSelectionError,
   ModelDiscoveryError,
@@ -489,6 +490,7 @@ export {
   DedicatedOpenClawSandboxError,
   DeletionRetryOwnedError,
   DependencyUnavailableError,
+  RuntimeDiagnosticsTransportError,
   PersistedStateInvalidError,
   DeviceAuthorizationStartError,
   DriverSelectionError,
@@ -4394,8 +4396,11 @@ export class OpenClawController {
     let collected: AgentDeploymentDiagnostics;
     try {
       collected = await driver.diagnoseAgentDeployment!(binding);
-    } catch {
+    } catch (error) {
       observation.abort();
+      if (error instanceof RuntimeDiagnosticsTransportError) {
+        throw new RuntimeDiagnosticsTransportError();
+      }
       // Native Driver failures can contain private runtime or credential details.
       throw new DependencyUnavailableError("Runtime diagnostics are unavailable.");
     }
