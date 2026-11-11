@@ -157,7 +157,8 @@ Local assembly omits broad suites. Run [source verification](../../docs/flows/co
 
 ## Build a local runtime image
 
-After [resolving the build arguments](#resolve-openclaw-build-arguments), run:
+For paired builds, see [QA prebuilds and caching](../../docs/testing/ci/qa-advisory.md#prebuild-local-qa-images).
+Otherwise [resolve build arguments](#resolve-openclaw-build-arguments) and run:
 
 ```bash
 docker build -f deploy/runtime/Dockerfile \

@@ -28,6 +28,7 @@ import {
   secretProviderDefaultsProblem,
   trustedProxyIdentitiesProblem,
   unreadablePluginSecretInput,
+  workspaceNodeGatewayPasswordProblem,
 } from "../environment-references.mjs";
 import {
   button,
@@ -152,13 +153,48 @@ import {
   secretSourceForBinding,
 } from "./secret-picker.mjs";
 
-type DetailContext = ConsolePageContext & {
+type ForegroundAgentRecheck = AgentRecheck & { isCurrent(): boolean };
+export type AgentRecheckHandler = (recheck: ForegroundAgentRecheck) => void | Promise<void>;
+
+type DetailContext = Omit<ConsolePageContext, "onRechecked"> & {
+  onRechecked?(handler: AgentRecheckHandler): void;
   namespaceId: string;
   agentId: string;
   onProtectedReadDenied(error: unknown, receipt: HTMLElement): void;
   isPageCurrent?(): boolean;
 };
 type Permissions = Static<typeof AgentCallerPermissionsResponse>["data"];
+const unconfirmedPermissions: Permissions = {
+  update: false,
+  deploy: false,
+  operate: false,
+  delete: false,
+  administer: false,
+  configurationUpdate: false,
+  configurationRead: false,
+  configurationSecretsOperate: false,
+  configurationSecretsOperateDeniedBindings: [],
+  agentSourcesOperate: false,
+  sandboxPolicyRead: false,
+  readLogs: false,
+};
+
+export function isAgentPermissionSummary(answer: unknown): answer is Permissions {
+  const fields = responseFields(answer);
+  const keys = Object.keys(unconfirmedPermissions);
+  const { configurationSecretsOperateDeniedBindings: denied } = fields;
+  return (
+    Object.keys(fields).length === keys.length &&
+    Array.isArray(denied) &&
+    denied.length <= 64 &&
+    denied.every((name) => typeof name === "string" && name.length > 0) &&
+    keys.every(
+      (key) =>
+        key === "configurationSecretsOperateDeniedBindings" || typeof fields[key] === "boolean",
+    )
+  );
+}
+
 type RevisionPage = Awaited<ReturnType<typeof readRevisionPage>>;
 type Revision = RevisionPage["revisions"][number];
 type RevisionResult = PromiseSettledResult<RevisionPage>;
@@ -458,11 +494,12 @@ const CHECKING_COMPUTE_CONFIGURATION =
 const ENTRY_KEY_STEP = "Fix the plugin entry key";
 const CODEX_PLUGIN_STEP = "Let the codex plugin run";
 const TRUSTED_PROXY_STEP = "Fix the Gateway authentication";
+const GATEWAY_PASSWORD_STEP = "Fix the gateway password";
 // The Configuration step that names each OCC stored-row rule's refusal (configurationRefusal).
 const STORED_RULE_STEPS: Readonly<Record<StoredConfigurationRule, string>> = {
   include: "Remove the $include setting",
   secretProviderDefaults: "Fix the secret provider alias",
-  gatewayPassword: "Fix the gateway password",
+  gatewayPassword: GATEWAY_PASSWORD_STEP,
   workspaceBootstrap: "Fix the workspace bootstrap setting",
   retiredSetting: "Remove the retired setting",
   openClawSandbox: "Turn off OpenClaw's sandbox",
@@ -555,7 +592,10 @@ function takeLinkedVersionView(key: string) {
 
 export async function renderAgentDetail(
   context: DetailContext,
-  { agent: preloadedAgent }: { agent?: AgentRead | null } = {},
+  {
+    agent: preloadedAgent,
+    confirmPermissions = false,
+  }: { agent?: AgentRead | null; confirmPermissions?: boolean } = {},
 ): Promise<AgentRead | null> {
   const { view, namespaceId, agentId, request, url } = context;
   const path = `${namespacePath(namespaceId)}/agents/${encodeURIComponent(agentId)}`;
@@ -668,8 +708,12 @@ export async function renderAgentDetail(
     return page;
   }
 
-  function readPermissions(): Promise<Permissions> {
-    return request(`${path}/permissions`) as Promise<Permissions>;
+  async function readPermissions(validateSummary = false): Promise<Permissions> {
+    const answer = await request(`${path}/permissions`, { expectedStatus: 200 });
+    if (validateSummary && !isAgentPermissionSummary(answer)) {
+      throw new Error("Invalid Agent permission response");
+    }
+    return answer as Permissions;
   }
   // The readable Secrets this caller may not operate: each Secret field lists them disabled and
   // never stages one, since the save would answer 403 (finding 2453). Read when a field first
@@ -678,15 +722,23 @@ export async function renderAgentDetail(
   const secretsOperateAnswer = secretOperateAnswer(() => request(`${path}/permissions/secrets`));
   const secretsOperateDenied = secretsOperateAnswer.read;
   context.setTitle(agent.name);
-  // A missing summary leaves each control on its usual path, except failed-version
-  // recovery, which waits for a positive answer before offering a draft link.
+  // Ordinary navigation keeps each control's missing-summary behavior. A replacement after
+  // refocus starts with restricted controls unless this view's permission read confirms them.
   let callerPermissions: Permissions | null = null;
   let callerPermissionsSettled = false;
-  const callerPermissionsRead = readPermissions()
-    .then(
-      (permissions) => (callerPermissions = permissions),
-      () => null,
-    )
+  let foregroundPermissionGeneration = 0;
+  let pendingForegroundPermissionScope: (() => boolean) | undefined;
+  const callerPermissionsRead: Promise<Permissions | null> = readPermissions(confirmPermissions)
+    .catch(() => (confirmPermissions ? unconfirmedPermissions : null))
+    .then((permissions) => {
+      if (foregroundPermissionGeneration !== 0) {
+        return latestPermissionsRead;
+      }
+      if (context.isCurrent() && appliedReread === 0) {
+        callerPermissions = permissions;
+      }
+      return callerPermissions;
+    })
     .finally(() => {
       callerPermissionsSettled = true;
     });
@@ -703,6 +755,12 @@ export async function renderAgentDetail(
   // The newest permission read. Logs compares a remembered status denial with it, so an
   // operate grant read since the page was built applies (finding 1579).
   let latestPermissionsRead = callerPermissionsRead;
+  if (confirmPermissions) {
+    await callerPermissionsRead;
+    if (!context.isCurrent()) {
+      return null;
+    }
+  }
   function retireSaveRead(error: unknown, receipt: string) {
     const { requestId } = requestFailure(error);
     context.onProtectedReadDenied(
@@ -718,7 +776,9 @@ export async function renderAgentDetail(
 
   let permissionsReadSettled = false;
   void callerPermissionsRead.then(() => {
-    permissionsReadSettled = latestPermissionsRead === callerPermissionsRead;
+    if (latestPermissionsRead === callerPermissionsRead) {
+      permissionsReadSettled = true;
+    }
   });
   // A caller who may neither update the Agent nor its Configuration reads the draft; the page
   // says so instead of addressing an editor (finding 2421). An unknown answer keeps the editor.
@@ -1920,13 +1980,14 @@ export async function renderAgentDetail(
   // A refocus recheck reads the permission answer again too, so a re-granted Stop, Delete or
   // draft edit applies once the reader comes back to the window, as on the Agents list; only
   // header Refresh did (r54 row 11).
-  context.onRechecked?.(() => {
+  context.onRechecked?.(async (recheck) => {
     if (!context.isCurrent() || deleting) {
       return;
     }
-    agentSaveDenied = rereadPermissions().then((permissions) =>
+    agentSaveDenied = rereadPermissions(recheck).then((permissions) =>
       agentSaveDenial(permissions, agent),
     );
+    await agentSaveDenied;
   });
   // Shown once by the tab a draft refresh rebuilds after a save (finding 1445).
   let savedNotice = "";
@@ -2640,6 +2701,11 @@ export async function renderAgentDetail(
             : `${NEUTRAL_DEPLOYMENT_NOTES.superseded}.`;
       } else if (!latestDeploymentStatus) {
         note = "Recorded deployment status could not be read.";
+      } else if (deploymentPending(latestDeploymentStatus)) {
+        const wait = latestDeploymentRecord?.progress?.lastAttempt?.message;
+        if (wait) {
+          note = latestDeploymentUnavailable ? `Update delayed. Last recorded: ${wait}` : wait;
+        }
       }
       setText(latestDeploymentNote, note);
     }
@@ -3551,7 +3617,9 @@ export async function renderAgentDetail(
     // also refuses a plugins setting on which a Dedicated Codex Gateway would not start (finding
     // 3096), so a Dedicated Codex draft with one asks the same way (finding 3105), and an invalid
     // gateway.auth.trustedProxy allowlist or deviceAutoApprove on any of its topologies (finding
-    // 3032), so a draft stored with one before that rule asks too (finding 3121).
+    // 3032), so a draft stored with one before that rule asks too (finding 3121). Where it applies
+    // the workspace node at runtime it refuses a Dedicated Codex draft without gateway.auth.password
+    // (finding 3132), so a draft stored without one asks too (finding 3138).
     async function checkComputeEntryKeys() {
       const checked = values;
       computeEntryKeyValues = checked;
@@ -3569,14 +3637,20 @@ export async function renderAgentDetail(
           );
         }
       }
-      const codex =
-        executionMode === "dedicated" && configuredHarnessId(checked) === "codex"
-          ? codexPluginPolicyProblem(plugins)
-          : undefined;
+      const dedicatedCodex =
+        executionMode === "dedicated" && configuredHarnessId(checked) === "codex";
+      const codex = dedicatedCodex ? codexPluginPolicyProblem(plugins) : undefined;
       if (codex !== undefined) {
         refusals.set(
           configurationSettingMessage(codex.setting, codex.requirement),
           CODEX_PLUGIN_STEP,
+        );
+      }
+      const password = dedicatedCodex ? workspaceNodeGatewayPasswordProblem(checked) : undefined;
+      if (password !== undefined) {
+        refusals.set(
+          configurationSettingMessage(password.setting, password.requirement),
+          GATEWAY_PASSWORD_STEP,
         );
       }
       const trustedProxy = responseFields(
@@ -4431,8 +4505,7 @@ export async function renderAgentDetail(
     return ownGrants && names.length ? secretOperateRefusal(names) : undefined;
   }
 
-  // Reads the caller's permission answer again; a failed read keeps the last answer.
-  function rereadPermissions() {
+  function rereadPermissions(recheck?: ForegroundAgentRecheck) {
     // Rechecking grants invalidates names immediately. The admitted answer refreshes the
     // existing authorized Secret reads; an older metadata completion cannot restore them.
     ++agentNamesGeneration;
@@ -4442,42 +4515,58 @@ export async function renderAgentDetail(
     secretsOperateAnswer.reset();
     const previous = latestPermissionsRead;
     const reread = ++permissionsRereads;
-    const read = readPermissions().then(
-      (permissions) => {
-        // An older reread still applies when no newer one has answered: a newer read that
-        // fails resolves to this answer. The summary and the controls take it together, so
-        // the failed-version recovery and Delete never keep an answer that Stop has left
-        // (finding 2329).
-        if (context.isCurrent() && reread > appliedReread) {
-          appliedReread = reread;
-          callerPermissions = permissions;
-          if (permissions && reread === permissionsRereads) {
-            refreshDeniedSecretNames?.();
-          }
-          // Views built from now on take this answer; shown ones follow it below (finding 2470).
-          // While a newer reread is in flight, views built meanwhile wait for it instead, so
-          // Plugins sends no read it denies (findings D795, 2902). A newer reread that fails
-          // resolves to this answer.
-          agentSaveDenied =
-            reread === permissionsRereads
-              ? Promise.resolve(agentSaveDenial(permissions, agent))
-              : latestPermissionsRead.then((newest) => agentSaveDenial(newest, agent));
-          if (latestDeploymentStatus === "failed" && !deleting) {
-            renderLatestDeployment();
-          }
-          // A grant or revocation since the last answer relabels the draft (finding 2421).
-          applyDraftAccess();
-          deletion.applyDelete(permissions?.delete, reread);
-          applyOperateAnswer(permissions?.operate, reread);
+    if (recheck) {
+      ++foregroundPermissionGeneration;
+      pendingForegroundPermissionScope = recheck.isCurrent;
+    }
+    // Reads that predate admission stay superseded after the pending scope is cleared.
+    const generation = foregroundPermissionGeneration;
+    const foreground = pendingForegroundPermissionScope;
+    const superseded = () =>
+      generation !== foregroundPermissionGeneration ||
+      (foreground !== undefined && reread < permissionsRereads);
+    const apply = (permissions: Permissions) => {
+      if (superseded()) {
+        return latestPermissionsRead;
+      }
+      if (context.isCurrent() && (foreground?.() ?? true) && reread > appliedReread) {
+        appliedReread = reread;
+        callerPermissions = permissions;
+        if (
+          permissions &&
+          permissions !== unconfirmedPermissions &&
+          reread === permissionsRereads
+        ) {
+          refreshDeniedSecretNames?.();
         }
-        return permissions;
-      },
-      () => previous,
-    );
+        agentSaveDenied =
+          reread === permissionsRereads
+            ? Promise.resolve(agentSaveDenial(permissions, agent))
+            : latestPermissionsRead.then((newest) => agentSaveDenial(newest, agent));
+        if (latestDeploymentStatus === "failed" && !deleting) {
+          renderLatestDeployment();
+        }
+        applyDraftAccess();
+        deletion.applyDelete(permissions?.delete, reread);
+        applyOperateAnswer(permissions?.operate, reread);
+        nativeAdmin.launch.inert =
+          permissions?.administer === false && permissions.operate === false;
+      }
+      return callerPermissions;
+    };
+    const read = readPermissions(true).then(apply, () => {
+      if (superseded()) {
+        return latestPermissionsRead;
+      }
+      return foreground === undefined ? previous : apply(unconfirmedPermissions);
+    });
     latestPermissionsRead = read;
     permissionsReadSettled = false;
     const settle = () => {
-      permissionsReadSettled = latestPermissionsRead === read;
+      if (latestPermissionsRead === read) {
+        pendingForegroundPermissionScope = undefined;
+        permissionsReadSettled = true;
+      }
     };
     void read.then(settle, settle);
     return read;
@@ -6350,7 +6439,8 @@ export async function renderAgentDetail(
         outcomeUnknown,
         reloadRequired,
       });
-      save.disabled = pending || outcomeUnknown || reloadRequired || !dirty;
+      save.disabled =
+        pending || outcomeUnknown || reloadRequired || !dirty || configurationReadOnly();
       // A save in flight is busy, not unavailable: the progress cursor (finding 1927). Written
       // only on a change, so a rerender is no DOM mutation.
       if (save.getAttribute("aria-busy") !== String(pending)) {
@@ -6406,7 +6496,7 @@ export async function renderAgentDetail(
     };
 
     async function saveConfiguration() {
-      if (pending || outcomeUnknown || !currentDirty()) {
+      if (pending || outcomeUnknown || configurationReadOnly() || !currentDirty()) {
         return;
       }
       const nextValues = parseEditor(true);
@@ -6606,12 +6696,15 @@ export async function renderAgentDetail(
     render();
     // An answer that lands after this view changes whether it is read-only (finding 2421).
     followConfigurationAccess(() => {
-      if (context.isCurrent() && !editing) {
-        if (configurationReadOnly() !== shownReadOnly) {
-          render();
-        } else if (shownReadOnly) {
-          readOnlyHint.textContent = configurationReadOnlyReason();
-        }
+      if (!context.isCurrent()) {
+        return;
+      }
+      if (editing) {
+        updateState();
+      } else if (configurationReadOnly() !== shownReadOnly) {
+        render();
+      } else if (shownReadOnly) {
+        readOnlyHint.textContent = configurationReadOnlyReason();
       }
     });
     return container;

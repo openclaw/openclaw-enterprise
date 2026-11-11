@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createGunzip, createZstdDecompress } from "node:zlib";
 import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -202,7 +203,33 @@ async function readMetadata(path, signal) {
   }
 }
 
-async function inspectLayout(directory, sourceSha, signal) {
+// A named context may trust the config's diff IDs without hashing uncompressed
+// content. Check them before making a layout available without Docker import.
+async function verifyLayerDiffId(directory, layer, expected, signal) {
+  const decoder = layer.mediaType.endsWith("+gzip")
+    ? createGunzip()
+    : layer.mediaType.endsWith("+zstd")
+      ? createZstdDecompress()
+      : undefined;
+  if (!decoder) {
+    assert.equal(layer.digest, expected, "OCI layer diff ID mismatch.");
+    return;
+  }
+  const hash = createHash("sha256");
+  await pipeline(
+    createReadStream(join(directory, "blobs/sha256", layer.digest.slice(7)), { signal }),
+    decoder,
+    async (chunks) => {
+      for await (const chunk of chunks) {
+        hash.update(chunk);
+      }
+    },
+    { signal },
+  );
+  assert.equal(`sha256:${hash.digest("hex")}`, expected, "OCI layer diff ID mismatch.");
+}
+
+async function inspectLayout(directory, sourceSha, signal, verifyDiffIds) {
   const verified = new Set();
   async function blob(descriptor, parse = true) {
     assert.match(descriptor.digest ?? "", digestPattern);
@@ -267,7 +294,7 @@ async function inspectLayout(directory, sourceSha, signal) {
   for (const digest of config.rootfs.diff_ids) {
     assert.match(digest, digestPattern);
   }
-  for (const layer of manifest.layers) {
+  for (const [index, layer] of manifest.layers.entries()) {
     assert.ok(
       [
         "application/vnd.oci.image.layer.v1.tar",
@@ -276,6 +303,9 @@ async function inspectLayout(directory, sourceSha, signal) {
       ].includes(layer.mediaType),
     );
     await blob(layer, false);
+    if (verifyDiffIds) {
+      await verifyLayerDiffId(directory, layer, config.rootfs.diff_ids[index], signal);
+    }
   }
   return {
     indexDigest,
@@ -376,18 +406,12 @@ function imageConfiguration(config) {
   );
 }
 
-export async function loadRuntimeArtifact(selection, deadlineMs) {
-  const { directory, archiveSha256, tag } = selection;
+async function readVerifiedRuntimeLayout(selection, deadlineMs, verifyDiffIds = false) {
+  const { directory, archiveSha256 } = selection;
   const signal =
     deadlineMs === undefined
       ? undefined
       : AbortSignal.timeout(importTimeout(deadlineMs, 2 ** 31 - 1));
-  verifyContext(selection, deadlineMs);
-  assert.match(archiveSha256, /^[a-f0-9]{64}$/);
-  assert.ok(
-    typeof tag === "string" && tag.startsWith("localhost/"),
-    "A caller-owned local image tag is required.",
-  );
   const receipt = JSON.parse(
     await readFile(join(directory, "receipt.json"), { encoding: "utf8", signal }),
   );
@@ -406,10 +430,46 @@ export async function loadRuntimeArtifact(selection, deadlineMs) {
   const cleanup = () => rm(layoutDirectory, { recursive: true, force: true });
   try {
     await extractLayout(archive, layoutDirectory, signal);
-    const verified = await inspectLayout(layoutDirectory, selection.sourceSha, signal);
+    const verified = await inspectLayout(
+      layoutDirectory,
+      selection.sourceSha,
+      signal,
+      verifyDiffIds,
+    );
     for (const key of ["indexDigest", "platformManifestDigest", "configDigest"]) {
       assert.equal(receipt[key], verified[key], `Runtime receipt ${key} mismatch.`);
     }
+    return { layoutDirectory, verified, cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
+export async function prepareRuntimeArtifactLayout(selection, deadlineMs) {
+  verifyContext(selection, deadlineMs);
+  assert.match(selection.archiveSha256, /^[a-f0-9]{64}$/);
+  const { layoutDirectory, verified, cleanup } = await readVerifiedRuntimeLayout(
+    selection,
+    deadlineMs,
+    true,
+  );
+  return { layoutDirectory, platformManifestDigest: verified.platformManifestDigest, cleanup };
+}
+
+export async function loadRuntimeArtifact(selection, deadlineMs) {
+  const { tag } = selection;
+  verifyContext(selection, deadlineMs);
+  assert.match(selection.archiveSha256, /^[a-f0-9]{64}$/);
+  assert.ok(
+    typeof tag === "string" && tag.startsWith("localhost/"),
+    "A caller-owned local image tag is required.",
+  );
+  const { layoutDirectory, verified, cleanup } = await readVerifiedRuntimeLayout(
+    selection,
+    deadlineMs,
+  );
+  try {
     // Docker's supported API floor can be newer than Skopeo's daemon client.
     // Keep conversion local and let the installed Docker CLI negotiate loading.
     const importDirectory = join(layoutDirectory, "import");

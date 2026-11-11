@@ -39,7 +39,7 @@
     "tests/integration/configuration-body-limits.test.mjs",
     "tests/integration/json-body-depth.test.mjs",
     "tests/conformance/workspace-files.test.ts",
-    "tests/conformance/runtime-logs-sandbox.test.mjs",
+    "tests/conformance/runtime-logs-sandbox.test.ts",
     "tests/integration/device-authorization-api.test.mjs",
     "tests/integration/openshell-device-authorization-api.test.mjs",
     "tests/integration/dependency-unavailable-log.test.mjs",
@@ -52,7 +52,7 @@
     "tests/integration/startup-ipv6-loopback.test.mjs",
     "tests/docs/generated-api-reference.test.mjs",
     "tests/integration/service-api-keys.test.ts",
-    "tests/integration/driver-plugin-installation.test.mjs",
+    "tests/integration/driver-plugin-installation.test.ts",
     "tests/conformance/workspace-files-configuration.test.mjs",
     "tests/integration/common-logging.test.mjs",
     "tests/docs/docs-length.test.mjs",
@@ -71,22 +71,22 @@
     "tests/conformance/openshell-codex-device.test.mjs",
     "tests/conformance/openshell-harness-status.test.mjs",
     "tests/integration/bootstrap-volume.test.ts",
-    "tests/integration/secret-driver-startup.test.mjs",
+    "tests/integration/secret-driver-startup.test.ts",
     "tests/conformance/kubernetes-configuration.test.mjs",
     "tests/conformance/occ-read.test.mjs",
-    "tests/integration/controller-lifecycle.test.mjs",
+    "tests/integration/controller-lifecycle.test.ts",
     "tests/conformance/configuration-occ.test.mjs",
     "tests/conformance/credential-source-occ.test.mjs",
     "tests/conformance/kubernetes-real-kubectl.test.ts",
     "tests/conformance/k3d-failure-diagnostics.test.ts",
-    "tests/conformance/secret-occ.test.mjs",
+    "tests/conformance/secret-occ.test.ts",
     "tests/conformance/http-errors.test.mjs",
     "tests/conformance/docker-compute.test.mjs",
     "tests/conformance/secret-gateway-delivery.test.mjs",
     "tests/conformance/runtime-logs-replay.test.ts",
     "tests/conformance/codex-seccomp-profile.test.mjs",
     "tests/conformance/kubernetes-ownership.test.mjs",
-    "tests/conformance/service-account-driver.test.mjs",
+    "tests/conformance/service-account-driver.test.ts",
     "tests/conformance/iam.test.mjs",
     "tests/conformance/platform-state-memory.test.mjs",
     "tests/conformance/contracts.test.mjs",
@@ -260,7 +260,7 @@
       "path": "tests/conformance/runtime-logs-content.test.mjs"
     },
     {
-      "path": "tests/conformance/runtime-logs-sandbox.test.mjs"
+      "path": "tests/conformance/runtime-logs-sandbox.test.ts"
     },
     {
       "path": "tests/conformance/runtime-logs-replay.test.ts"
@@ -303,7 +303,7 @@
       "path": "tests/conformance/secret-gateway-delivery.test.mjs"
     },
     {
-      "path": "tests/conformance/secret-occ.test.mjs"
+      "path": "tests/conformance/secret-occ.test.ts"
     },
     {
       "path": "tests/conformance/slack-configuration.test.mjs"
@@ -312,7 +312,7 @@
       "path": "tests/conformance/console-gateway-safety.test.ts"
     },
     {
-      "path": "tests/conformance/service-account-driver.test.mjs"
+      "path": "tests/conformance/service-account-driver.test.ts"
     },
     {
       "path": "tests/conformance/test-files.test.mjs"
@@ -392,10 +392,10 @@
       "path": "tests/integration/console-build-metadata.test.ts"
     },
     {
-      "path": "tests/integration/controller-lifecycle.test.mjs"
+      "path": "tests/integration/controller-lifecycle.test.ts"
     },
     {
-      "path": "tests/integration/driver-plugin-installation.test.mjs"
+      "path": "tests/integration/driver-plugin-installation.test.ts"
     },
     {
       "path": "tests/integration/git-hooks.test.mjs"
@@ -458,7 +458,7 @@
       "path": "tests/integration/runtime-credentials-api.test.ts"
     },
     {
-      "path": "tests/integration/secret-driver-startup.test.mjs"
+      "path": "tests/integration/secret-driver-startup.test.ts"
     },
     {
       "path": "tests/integration/service-api-keys.test.ts"
@@ -492,7 +492,12 @@
         "Kubernetes dev-up rolls back owned resources after node-dns-refused",
         "Kubernetes dev-down preserves recovery state after incomplete cleanup and can retry",
         "cancelling Kubernetes startup during readiness rolls back its owned resources",
-        "launcher case recovery follows real Go rollback after node-dns-refused"
+        "launcher case recovery follows real Go rollback after node-dns-refused",
+        "dev-down from a fresh shell stops the recorded Kubernetes stack",
+        "dev-down from a fresh shell in another checkout refuses the recorded Kubernetes stack",
+        "Kubernetes-only dev-up names a Docker stack holding its API port before creating anything",
+        "Kubernetes-only dev-up removes its state after a cluster create that k3d rolled back",
+        "Kubernetes-only dev-up names the explicit cleanup command when rollback is incomplete"
       ]
     },
     {
@@ -507,7 +512,15 @@
         "dev-up fails closed when the worker exits before readiness",
         "dev-up preserves a copied key when the authenticated installation check is rejected",
         "dev-up rejects an authenticated installation response for a different Installation",
-        "development cleanup defaults to the Compose profile"
+        "development cleanup without selectors stops Docker when no state is recorded",
+        "development cleanup without selectors refuses an unusable state directory",
+        "development cleanup with Compose options keeps the Docker profile",
+        "development cleanup treats a Kubernetes control plane without a Compute selection as Kubernetes",
+        "dev-up refuses Keycloak sign-in for the Docker profile before startup",
+        "dev-down removes the service key directory dev-up created and keeps a chosen key output",
+        "dev-down --volumes removes the Installation's Docker Compute Namespace networks",
+        "a failed dev-up removes the empty service key directory it created",
+        "dev-up records a clean key directory path when TMPDIR ends in a slash"
       ]
     },
     {

@@ -139,6 +139,8 @@ import { ControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createRuntimeLogDriverFixture } from "./kubernetes-runtime-log-fixture.ts";
 import { createDedicatedDeployKubernetesFixture } from "./kubernetes-dedicated-deploy-fixture.ts";
 import { createEmbeddedReplacementKubernetesFixture } from "./kubernetes-embedded-replacement-fixture.ts";
+import { OPENCLAW_CONFIG_ENVIRONMENT_COMMIT } from "../../apps/controller/src/drivers/compute/kubernetes/openclaw-config-environment.ts";
+import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
 
 const { kubeconfigPath, context: contextName } = conformanceKubeconfig;
 test("Kubernetes peer Pod selectors and node selectors reject labels the API refuses before provisioning", () => {
@@ -4001,6 +4003,151 @@ test("a pending dedicated deploy names a container image pull failure", async ()
   state.terminatingRole = undefined;
   assert.equal((await prepare()).pendingReason, undefined);
 });
+
+// A Gateway or Harness container that exits at every start fails startup once the kubelet
+// backs off after its third consecutive unexplained exit, instead of waiting for the
+// convergence deadline (finding 3041). Only the role's own container on a live Pod of the
+// revision counts. The Gateway wrapper states the count in its termination message, and its
+// deliberate restart (exit 75, or its message) never counts; without a count the restart
+// count plus one stands in, as the kubelet counts a restart only once it starts it.
+for (const embedded of [true, false]) {
+  test(`a pending ${embedded ? "embedded" : "dedicated"} deploy fails a crash-looping runtime container`, async () => {
+    const { state, clients, prepare } = dedicatedFirstDeployFixture({
+      clock: { now: 0 },
+      ...(embedded
+        ? {
+            revision: {
+              harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+              configuration: createHarnessConfiguration("openclaw", "gpt-5"),
+              plugins: undefined,
+            },
+          }
+        : {}),
+    });
+    // The kubelet's view of each role's Pod, merged into the fixture's running Pod.
+    let observed = {};
+    const list = clients.core.listNamespacedPod;
+    clients.core.listNamespacedPod = async (request) => {
+      const response = await list(request);
+      for (const pod of response.items) {
+        const status = observed[pod.metadata.labels["openclaw.dev/workload-role"]];
+        if (status !== undefined) {
+          pod.status = { ...pod.status, ...status };
+        }
+      }
+      return response;
+    };
+    const finishedAt = "2026-11-10T00:00:00Z";
+    const container = (
+      name,
+      { exitCode = 1, restartCount = 3, waiting = "CrashLoopBackOff", message } = {},
+    ) => ({
+      name,
+      ready: false,
+      restartCount,
+      state:
+        waiting === null
+          ? { running: { startedAt: finishedAt } }
+          : { waiting: { reason: waiting, message: "back-off 40s restarting failed container" } },
+      lastState: {
+        terminated: { exitCode, reason: "Error", finishedAt, ...(message ? { message } : {}) },
+      },
+    });
+    const exits = (count) => `consecutive unexplained exits: ${count}`;
+    const runtimeFailureWith = async (statuses) => {
+      observed = statuses;
+      const pass = await prepare();
+      observed = {};
+      assert.equal(pass.ready, false);
+      return pass;
+    };
+    for (const role of embedded ? ["gateway"] : ["gateway", "agent"]) {
+      // An unexplained exit, or an out-of-memory kill, at every start. The Gateway's third
+      // consecutive one fails it even after earlier deliberate restarts; a Harness never
+      // restarts on purpose, so an exit 75 counts too.
+      for (const options of [
+        { exitCode: 1 },
+        { exitCode: 137 },
+        // Three exits: in backoff the kubelet has restarted the container twice.
+        { restartCount: 2 },
+        ...(role === "gateway"
+          ? [{ restartCount: 5, message: exits(3) }]
+          : [{ exitCode: 75 }, { message: exits(1) }]),
+      ]) {
+        const failed = await runtimeFailureWith({
+          [role]: { containerStatuses: [container(role, options)] },
+        });
+        assert.deepEqual(failed.runtimeFailure, {
+          component: role,
+          check: "crash-loop",
+          code: "UNAVAILABLE",
+          checkedAt: finishedAt,
+        });
+        assert.equal(Object.hasOwn(failed, "pendingReason"), false, JSON.stringify(options));
+      }
+      for (const [scenario, statuses] of [
+        ...(role === "gateway"
+          ? [
+              // The wrapper stops its container on purpose, as for a changed Harness peer.
+              ["deliberate restarts", { containerStatuses: [container(role, { exitCode: 75 })] }],
+              // A deliberate restart killed while it stops exits with another status.
+              [
+                "a killed deliberate restart",
+                {
+                  containerStatuses: [
+                    container(role, {
+                      exitCode: 137,
+                      restartCount: 5,
+                      message: "deliberate restart: harness-peer-changed",
+                    }),
+                  ],
+                },
+              ],
+              // Two deliberate restarts, then two unexplained exits.
+              [
+                "two consecutive unexplained exits",
+                { containerStatuses: [container(role, { restartCount: 4, message: exits(2) })] },
+              ],
+            ]
+          : []),
+        ["two exits", { containerStatuses: [container(role, { restartCount: 1 })] }],
+        ["a running restart", { containerStatuses: [container(role, { waiting: null })] }],
+        [
+          "a pull back-off",
+          { containerStatuses: [container(role, { waiting: "ImagePullBackOff" })] },
+        ],
+        [
+          "an init container or sidecar",
+          {
+            initContainerStatuses: [container(role), container("prepare-private-state")],
+            containerStatuses: [container("workspace-node"), container(role, { waiting: null })],
+          },
+        ],
+      ]) {
+        const pass = await runtimeFailureWith({ [role]: statuses });
+        assert.equal(pass.runtimeFailure, undefined, `${role}: ${scenario}`);
+      }
+      // A Pod being deleted, as an old revision's during a rollout, never counts.
+      state.terminatingRole = role;
+      const terminating = await runtimeFailureWith({
+        [role]: { containerStatuses: [container(role)] },
+      });
+      state.terminatingRole = undefined;
+      assert.equal(terminating.runtimeFailure, undefined, `${role}: terminating`);
+    }
+    // A crash-looping container serves no runtime status: a refused status read still
+    // reports the crash loop.
+    const connect = clients.core.connectGetNamespacedPodProxyWithPath;
+    clients.core.connectGetNamespacedPodProxyWithPath = async () => {
+      throw Object.assign(new Error("container is not running"), { statusCode: 400 });
+    };
+    const unread = await runtimeFailureWith({
+      gateway: { containerStatuses: [container("gateway")] },
+    });
+    clients.core.connectGetNamespacedPodProxyWithPath = connect;
+    assert.equal(unread.runtimeFailure?.check, "crash-loop");
+  });
+}
 
 // A deploy whose Pods the Namespace's Pod quota refuses names the quota instead of a
 // bare wait (finding 1617). The Deployment controller copies its ReplicaSet's
@@ -10340,6 +10487,17 @@ test("Kubernetes Compute refuses another spelling of a plugin entry key it rende
   }
 });
 
+test("the OpenClaw Configuration environment mirror follows the runtime pin", async () => {
+  // A stale copy of OpenClaw's host environment policy could take a variable it drops as set,
+  // and admit a Gateway that exits at every start (finding 3059).
+  const { commit } = await readOpenclawSource();
+  assert.equal(
+    OPENCLAW_CONFIG_ENVIRONMENT_COMMIT,
+    commit,
+    "deploy/runtime/openclaw-source.json changed: review openclaw-config-environment.ts against it",
+  );
+});
+
 test("admission refuses a plugin secret input whose unset variable stops any Gateway", () => {
   // OpenClaw resolves an active plugin's Gateway-required secret inputs (no ownerKind in the
   // manifest: codex appServer.authToken and appServer.headers.*, google webSearch.headers.*) at
@@ -10720,6 +10878,43 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
   // an unset `${_NAME}` as written, never as a SecretRef.
   embeddedAdmission({ ...withBeam("${RELAY_TOKEN}"), ...allowlist(["RELAY_TOKEN"]) }, {});
   embeddedAdmission({ ...withBeam("${_RELAY}"), ...allowlist([]) }, {});
+  // OpenClaw applies the Configuration's own environment before it substitutes `${NAME}`
+  // (`applyConfigEnvVars`, finding 3059): a non-blank `env.vars` or other `env` string sets NAME
+  // (trimmed; Z_AI_API_KEY also sets ZAI_API_KEY), so these Gateways start unbound.
+  const withEnv = (configuration, env) => ({ ...configuration, env });
+  for (const configuration of [
+    withEnv(withSearchHeader("${RELAY_TOKEN}"), { vars: { RELAY_TOKEN: "literal" } }),
+    withEnv(withSearchHeader(" ${RELAY_TOKEN} "), { " RELAY_TOKEN ": "literal" }),
+    withEnv(withCodex({ config: { appServer: { headers: { "X-Relay": "${RELAY_TOKEN}" } } } }), {
+      vars: { RELAY_TOKEN: "$${ESCAPED}" },
+    }),
+    withEnv({ ...withBeam("${RELAY_TOKEN}"), ...allowlist(["OTHER"]) }, { RELAY_TOKEN: "x" }),
+    withEnv(withSearchHeader("${ZAI_API_KEY}"), { vars: { Z_AI_API_KEY: "literal" } }),
+  ]) {
+    embeddedAdmission(configuration, undefined);
+    embeddedAdmission(configuration, {});
+  }
+  // OpenClaw drops a blank value, one that holds a reference, a name outside the portable
+  // grammar and a name its host environment policy blocks (listed, or by prefix, or the Cargo
+  // runner pattern); the `$NAME` shorthand is an env SecretRef, left to the binding as before.
+  for (const [value, env, name = "RELAY_TOKEN"] of [
+    ["${RELAY_TOKEN}", { vars: { RELAY_TOKEN: " " } }],
+    ["${RELAY_TOKEN}", { vars: { RELAY_TOKEN: "${OTHER}" } }],
+    ["${RELAY_TOKEN}", { vars: { OTHER: "literal" } }],
+    ["${RELAY_TOKEN}", { vars: { RELAY_TOKEN: 1 } }],
+    ["$RELAY_TOKEN", { vars: { RELAY_TOKEN: "literal" } }],
+    ["${GITHUB_TOKEN}", { vars: { GITHUB_TOKEN: "literal" } }, "GITHUB_TOKEN"],
+    ["${AWS_SECRET_ACCESS_KEY}", { AWS_SECRET_ACCESS_KEY: "x" }, "AWS_SECRET_ACCESS_KEY"],
+    ["${GIT_CONFIG_RELAY}", { vars: { GIT_CONFIG_RELAY: "x" } }, "GIT_CONFIG_RELAY"],
+    ["${BASH_FUNC_RELAY}", { vars: { BASH_FUNC_RELAY: "x" } }, "BASH_FUNC_RELAY"],
+    ["${CARGO_TARGET_X_RUNNER}", { vars: { CARGO_TARGET_X_RUNNER: "x" } }, "CARGO_TARGET_X_RUNNER"],
+  ]) {
+    refusedUntilBound(embeddedAdmission, withEnv(withSearchHeader(value), env), [
+      searchHeader,
+      name,
+      "google",
+    ]);
+  }
   // An APP_SERVER_ name there is never set on an embedded or Dedicated OpenClaw Agent, and no
   // binding can set it, so the Agent's mode alone decides: deployment and Agent save refuse it
   // under an allowlist that omits it (finding 3060). A Dedicated Codex Gateway sets
@@ -14542,7 +14737,17 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         "MODEL_PROBE_FAILED",
         { kind: "INVALID_OUTPUT", detail: "json" },
       ],
+      // OpenClaw's own 15 s timer ends the probe. Its window is judged on the CPU wait the
+      // CLI preload read inside it, not on the whole run: a boot throttled at the CPU
+      // limit before that timer started is not starvation (finding 2675).
       ["provider timeout", "timeout", "MODEL_PROBE_TIMEOUT"],
+      ["provider timeout after a throttled boot", "timeout", "MODEL_PROBE_TIMEOUT"],
+      [
+        "provider timeout while waiting for CPU in its window",
+        "timeout",
+        "MODEL_PROBE_CPU_STARVED",
+      ],
+      ["provider timeout without a window reading", "timeout", "MODEL_PROBE_TIMEOUT"],
       // The wrapper's cap ends the probe. Only CPU waiting for most of it makes
       // the failure CPU starvation, which fails the deployment at once.
       ["cap exceeded while waiting for CPU", undefined, "MODEL_PROBE_CPU_STARVED"],
@@ -14674,6 +14879,18 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
                     const reads = starved ? throttledReads++ : 0;
                     return `usage_usec 1\nnr_throttled ${reads * 1000}\nthrottled_usec ${reads * 1e8}\n`;
                   }
+                  // The CLI preload's samples across OpenClaw's 15 s timeout window.
+                  if (
+                    path === "/isolated-probe/cpu-window.json" &&
+                    variant.startsWith("provider timeout") &&
+                    !variant.endsWith("without a window reading")
+                  ) {
+                    const waitMs = variant.endsWith("in its window") ? 9_000 : 500;
+                    return JSON.stringify([
+                      [1_000, 0, 0, 0],
+                      [16_000, waitMs, waitMs, 15_000],
+                    ]);
+                  }
                   throw Object.assign(new Error("unexpected read"), { code: "ENOENT" });
                 },
               };
@@ -14795,7 +15012,18 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         );
         if (!upfront) {
           assert.equal(probeCall.environment.TMPDIR, "/isolated-probe");
-          // 15 s model turn, 5 s slack, and 45 CPU-seconds at the 500m limit.
+          // The CLI loads the CPU window preload from its own probe directory.
+          assert.deepEqual(probeCall.args.slice(0, 3), [
+            "--require",
+            "/isolated-probe/cpu-window.cjs",
+            "/app/openclaw.mjs",
+          ]);
+          assert.match(
+            files.get("/isolated-probe/cpu-window.cjs"),
+            /\/isolated-probe\/cpu-window\.json/,
+          );
+          // OpenClaw's 15 s probe timeout (its whole isolated run), 5 s slack, and
+          // 45 CPU-seconds at the 500m limit.
           assert.equal(probeCall.timeout, 110_000);
           assert.equal(probeCall.environment.NODE_EXTRA_CA_CERTS, "/run/openshell/ca.crt");
           assert.equal(probeCall.environment.SSL_CERT_FILE, "/run/openshell/ca-bundle.crt");
@@ -14878,6 +15106,14 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         const waitMs =
           variant.includes("waiting for CPU") || variant.includes("throttled") ? 100_000 : 0;
         assert.equal(probeLog.cpuWaitMs, waitMs);
+        assert.deepEqual(
+          [probeLog.timeoutWindowMs, probeLog.timeoutWindowCpuWaitMs, probeLog.timeoutWindowIdleMs],
+          !variant.startsWith("provider timeout") || variant.endsWith("without a window reading")
+            ? [undefined, undefined, undefined]
+            : variant.endsWith("in its window")
+              ? [15_000, 9_000, 0]
+              : [15_000, 500, 15_000],
+        );
         // The event records each counter's delta; without pressure accounting PSI has none.
         assert.deepEqual(
           [probeLog.pressureWaitMs, probeLog.throttledWaitMs],
@@ -18111,6 +18347,21 @@ test("stopping a containment-only Kubernetes revision removes its workload befor
   }
 });
 
+function stopResourceNotFound() {
+  return Object.assign(new Error("Not found"), { code: 404 });
+}
+
+async function readAbsentStopResource() {
+  throw stopResourceNotFound();
+}
+
+const absentStopResourceReads = {
+  readNamespacedConfigMap: readAbsentStopResource,
+  readNamespacedSecret: readAbsentStopResource,
+  readNamespacedService: readAbsentStopResource,
+  readNamespacedServiceAccount: readAbsentStopResource,
+};
+
 // A dedicated revision whose Gateway and Agent Pods stay for `gatewayPodsLeft` and
 // `agentPodsLeft` observations. `events` records the Pod observations and the Agent Deployment's
 // deletion, in order; `gatewayReads` counts reads of the Gateway's Deployment, which its removal
@@ -18166,21 +18417,9 @@ function stopOrderFixture(id) {
     otherRevisionPod: false,
     gatewayReads: 0,
   };
-  const notFound = () => Object.assign(new Error("Not found"), { code: 404 });
   driver.apiClients = Promise.resolve({
     core: {
-      async readNamespacedConfigMap() {
-        throw notFound();
-      },
-      async readNamespacedSecret() {
-        throw notFound();
-      },
-      async readNamespacedService() {
-        throw notFound();
-      },
-      async readNamespacedServiceAccount() {
-        throw notFound();
-      },
+      ...absentStopResourceReads,
       ...namespaceReads,
       async listNamespacedPod(request) {
         const role = labelSelectorLabels(request.labelSelector)["openclaw.dev/workload-role"];
@@ -18208,7 +18447,7 @@ function stopOrderFixture(id) {
         if (name === deploymentName && fixture.deploymentPresent) {
           return structuredClone(deployment);
         }
-        throw notFound();
+        throw stopResourceNotFound();
       },
       async deleteNamespacedDeployment({ name }) {
         assert.equal(name, deploymentName);
@@ -18390,21 +18629,9 @@ test("stopping a provider-owned Kubernetes revision waits for Sandbox workload t
       },
     },
   };
-  const notFound = () => Object.assign(new Error("Not found"), { code: 404 });
   driver.apiClients = Promise.resolve({
     core: {
-      async readNamespacedConfigMap() {
-        throw notFound();
-      },
-      async readNamespacedSecret() {
-        throw notFound();
-      },
-      async readNamespacedService() {
-        throw notFound();
-      },
-      async readNamespacedServiceAccount() {
-        throw notFound();
-      },
+      ...absentStopResourceReads,
       ...namespaceReads,
       async listNamespacedPod(request) {
         const selected = labelSelectorLabels(request.labelSelector);
@@ -18422,7 +18649,7 @@ test("stopping a provider-owned Kubernetes revision waits for Sandbox workload t
     },
     apps: {
       async readNamespacedDeployment() {
-        throw notFound();
+        throw stopResourceNotFound();
       },
     },
     objects: {},

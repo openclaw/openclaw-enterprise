@@ -30,12 +30,16 @@ test(
 // Unauthenticated requests are Git's challenge round trip and stay silent.
 test("the broker process logs one line per refused credentialed request", async (t) => {
   const fixture = await startServiceProcessFixture(t);
-  const send = (authorization, host = new URL(fixture.config.gateway.publicOrigin).host) =>
+  const publicOrigin: unknown = fixture.config.gateway.publicOrigin;
+  assert.ok(typeof publicOrigin === "string");
+  const send = (authorization: string | undefined, host = new URL(publicOrigin).host) =>
     new Promise((resolve, reject) => {
+      const port: unknown = fixture.generation().port;
+      assert.ok(typeof port === "number");
       const outgoing = request(
         {
           hostname: "127.0.0.1",
-          port: fixture.generation().port,
+          port,
           path: `/${fixtureRepository}.git/info/refs?service=git-upload-pack`,
           ca: fixture.tls.ca,
           agent: false,
@@ -53,13 +57,23 @@ test("the broker process logs one line per refused credentialed request", async 
       outgoing.once("error", reject);
       outgoing.end();
     });
+  const stderr = (): string => {
+    const output: unknown = fixture.stderr();
+    assert.ok(typeof output === "string");
+    return output;
+  };
   const records = () =>
-    fixture
-      .stderr()
+    stderr()
       .split("\n")
       .filter((line) => line.startsWith("{"))
-      .map((line) => JSON.parse(line))
-      .filter((record) => record.event === "repository-credentials.denied");
+      .map((line): unknown => JSON.parse(line))
+      .filter(
+        (record) =>
+          record !== null &&
+          typeof record === "object" &&
+          "event" in record &&
+          record.event === "repository-credentials.denied",
+      );
 
   assert.equal(await send(undefined), 401);
   // A bearer of the right shape that no open session issued.
@@ -72,7 +86,7 @@ test("the broker process logs one line per refused credentialed request", async 
   assert.equal(await send(basic, "localhost"), 400);
   const status = await send(basic);
   assert.equal(status, 401);
-  let logged;
+  let logged: unknown[] | undefined;
   for (let i = 0; i < 100 && !(logged = records()).length; i++) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
@@ -84,5 +98,5 @@ test("the broker process logs one line per refused credentialed request", async 
       reason: "session_unavailable",
     },
   ]);
-  assert.ok(!fixture.stderr().includes(bearer), "the bearer is never logged");
+  assert.ok(!stderr().includes(bearer), "the bearer is never logged");
 });
