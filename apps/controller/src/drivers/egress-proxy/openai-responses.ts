@@ -27,18 +27,36 @@ const array =
     value.length <= maximum &&
     value.every(check);
 type Fields = Readonly<Record<string, Validator>>;
-function object(required: Fields, optional: Fields = {}): Validator {
+function object(
+  required: Fields,
+  optional: Fields = {},
+  refused?: (field?: string) => void,
+): Validator {
   const fields = { ...optional, ...required };
   const keys = Object.keys(required);
   return (value) => {
     const record = asRecord(value);
-    return (
-      record !== undefined &&
-      keys.every((key) => Object.hasOwn(record, key)) &&
-      Object.entries(record).every(
-        ([key, item]) => Object.hasOwn(fields, key) && fields[key]!(item),
-      )
-    );
+    if (record === undefined) {
+      refused?.();
+      return false;
+    }
+    for (const key of keys) {
+      if (!Object.hasOwn(record, key)) {
+        refused?.(key);
+        return false;
+      }
+    }
+    for (const [key, item] of Object.entries(record)) {
+      if (!Object.hasOwn(fields, key)) {
+        refused?.();
+        return false;
+      }
+      if (!fields[key]!(item)) {
+        refused?.(key);
+        return false;
+      }
+    }
+    return true;
   };
 }
 
@@ -383,30 +401,56 @@ const textSettings = optionalFields({
   format: (value) => plainTextFormat(value) || jsonFormat(value),
 });
 
-export const validResponsesRequest = object(
-  { model: text, input: (value) => text(value) || inputItems(value), store: oneOf(false) },
-  {
-    instructions: text,
-    tools,
-    tool_choice: toolChoice,
-    parallel_tool_calls: bool,
-    reasoning: nullable(reasoning),
-    stream: bool,
-    stream_options: optionalFields({
+// Stable provider-owned diagnostic IDs, not indexes or incoming field names.
+// Rule 1 means a non-object or unknown root member. Never reuse an assigned ID.
+function requestRule(id: number, check: Validator) {
+  return Object.assign((value: unknown) => check(value), { rule: id });
+}
+const requestRequired = {
+  model: requestRule(2, text),
+  input: requestRule(3, (value) => text(value) || inputItems(value)),
+  store: requestRule(4, oneOf(false)),
+};
+const requestOptional = {
+  instructions: requestRule(5, text),
+  tools: requestRule(6, tools),
+  tool_choice: requestRule(7, toolChoice),
+  parallel_tool_calls: requestRule(8, bool),
+  reasoning: requestRule(9, nullable(reasoning)),
+  stream: requestRule(10, bool),
+  stream_options: requestRule(
+    11,
+    optionalFields({
       include_usage: bool,
       include_obfuscation: bool,
       reasoning_summary_delivery: oneOf("sequential_cutoff"),
     }),
-    include: array(oneOf("reasoning.encrypted_content"), 1),
-    service_tier: oneOf("auto", "default", "flex", "priority"),
-    prompt_cache_key: text,
-    client_metadata: clientMetadata,
-    text: textSettings,
-    temperature: (value) => number(value) && Number(value) >= 0 && Number(value) <= 2,
-    top_p: (value) => number(value) && Number(value) >= 0 && Number(value) <= 1,
-    max_output_tokens: (value) => integer(value) && Number(value) > 0,
-  },
-);
+  ),
+  include: requestRule(12, array(oneOf("reasoning.encrypted_content"), 1)),
+  service_tier: requestRule(13, oneOf("auto", "default", "flex", "priority")),
+  prompt_cache_key: requestRule(14, text),
+  client_metadata: requestRule(15, clientMetadata),
+  text: requestRule(16, textSettings),
+  temperature: requestRule(
+    17,
+    (value) => number(value) && Number(value) >= 0 && Number(value) <= 2,
+  ),
+  top_p: requestRule(18, (value) => number(value) && Number(value) >= 0 && Number(value) <= 1),
+  max_output_tokens: requestRule(19, (value) => integer(value) && Number(value) > 0),
+};
+const requestFields: Record<string, Validator & { rule: number }> = {
+  ...requestOptional,
+  ...requestRequired,
+};
+
+/** Validate once; return only the first failing provider-owned root rule. */
+export function responsesRequestFailure(value: unknown): number | undefined {
+  let rule = 1;
+  const valid = object(requestRequired, requestOptional, (field) => {
+    rule = field === undefined ? 1 : requestFields[field]!.rule;
+  })(value);
+  return valid ? undefined : rule;
+}
 
 // The legacy Chat surface accepts plain message strings and no tools.
 const chatNumber: Validator = (value) => number(value) && Number(value) >= 0;
