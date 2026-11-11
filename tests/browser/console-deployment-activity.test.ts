@@ -35,6 +35,7 @@ async function deploymentFixture(t: TestContext) {
     unavailable: false,
     claimed: false,
     succeeded: false,
+    repositoryRedeployRequired: false,
     // A permanent failure whose failed preparation queued the version's retire cleanup.
     failed: false,
     cleanup: null as "queued" | "claimed" | "succeeded" | null,
@@ -49,6 +50,9 @@ async function deploymentFixture(t: TestContext) {
           ...view,
           operations: {
             ...view.operations,
+            async hasRepositoryExecutionRedeployRequired(owner) {
+              return owner.revisionId === revisionId && control.repositoryRedeployRequired;
+            },
             async findWork(key: string) {
               if (key === cleanupKey && control.cleanup !== null) {
                 // The cleanup row the worker would enqueue for this revision, in its states.
@@ -245,6 +249,42 @@ for (const source of ["selected", "automatic", "overlapping refresh", "regrant"]
       assert.equal((await repeated).status(), 200);
       await waitForIdleFetches(page);
       assert.deepEqual(counts, { record: 1, agent: 0, revisions: 0 });
+      if (source === "selected") {
+        // A later repository renewal condition does not rewrite the successful deployment.
+        // Exercise the real controller projection through the existing refresh control.
+        const mutations: string[] = [];
+        page.on("request", (request) => {
+          if (request.method() !== "GET") {
+            mutations.push(`${request.method()} ${new URL(request.url()).pathname}`);
+          }
+        });
+        control.repositoryRedeployRequired = true;
+        const refreshed = page.waitForResponse(url);
+        await refresh.press("Enter");
+        const repositoryAccess = (await (await refreshed).json()).data.repositoryAccess;
+        assert.equal(repositoryAccess.code, "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED");
+        await waitForIdleFetches(page);
+        assert.match(await card.innerText(), /Recorded outcome: Completed/);
+        assert.match(await activity.innerText(), /Recorded status: Completed/);
+        assert.equal(
+          await card.getByText(repositoryAccess.message, { exact: true }).isVisible(),
+          true,
+        );
+        assert.equal(
+          await activity.getByText(repositoryAccess.message, { exact: true }).isVisible(),
+          true,
+        );
+
+        // Another admitted version has no condition. Browsing it cannot inherit the old
+        // version's notice or request a deployment.
+        const next = await fixture.deployAgent(namespace.id, agent.id);
+        await activity.getByRole("button", { name: "Refresh deployment" }).click();
+        await page.getByLabel("Viewing version").selectOption(next.id);
+        await page.getByRole("tab", { name: "Deployment", exact: true }).click();
+        await card.getByText("Recorded outcome: Queued", { exact: true }).waitFor();
+        assert.equal(await card.getByText(repositoryAccess.message, { exact: true }).count(), 0);
+        assert.deepEqual(mutations, []);
+      }
     },
   );
 }

@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, copyFile, chmod, readFile, writeFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { nativeAdminTarget } from "../../apps/controller/src/gateway/native-admin.ts";
+import { prepareNativeAdminConfiguration } from "../../apps/controller/src/gateway/native-admin.ts";
 import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
 import { availablePort } from "./available-port.mjs";
 import { createNativePluginAssertions } from "./plugin-driver-real.mjs";
@@ -227,11 +227,15 @@ export async function runQaCommand(f, command, args, options = {}) {
 export async function deployQaAgentAndWait(
   f,
   agent,
-  { timeout = 600_000, interval = 1000, now = () => Date.now() } = {},
+  { timeout = 600_000, interval = 1000, now = () => Date.now(), harnessOverrides = undefined } = {},
 ) {
   const base = `/namespaces/${agent.namespaceId}/agents/${agent.id}`;
   agent.stopped = false;
-  agent.revision = await f.api("POST", base + "/deploy");
+  agent.revision = await f.api(
+    "POST",
+    base + "/deploy",
+    harnessOverrides === undefined ? undefined : { harnessOverrides },
+  );
   // A timeout names the deployment's last status and attempt, and how long it had that status
   // (finding 2106: six cells timed out at 600 s with no status).
   let last;
@@ -1054,35 +1058,18 @@ export async function createQaAgent(
   agent.configuration = configuration;
   agent.harnessAuth = auth;
   if (f.controlPlane === "kubernetes") {
-    const target = nativeAdminTarget({
+    // Persist the same native access opt-in as Agent provisioning, including the required scope header.
+    const nativeValues = prepareNativeAdminConfiguration(values, {
       publicOrigin: f.consoleUrl,
       installationId: f.installation.id,
       agent,
       domain: `agents.${f.cluster}.oce.localhost`,
     });
-    values.gateway.controlUi = {
-      ...values.gateway.controlUi,
-      enabled: true,
-      allowedOrigins: [target.origin],
-    };
-    // Apply the supported native-admin opt-in from the deployment guide. The
-    // compute Driver's runtime defaults do not change the admitted revision.
-    values.gateway.auth = {
-      ...values.gateway.auth,
-      mode: "trusted-proxy",
-      identityScopes: { "occ-workspace-files": ["operator.admin"] },
-      trustedProxy: {
-        ...values.gateway.auth.trustedProxy,
-        userHeader: "x-occ-identity",
-        allowUsers: ["occ-workspace-files"],
-        deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
-      },
-    };
     // Later provider changes must start from the admitted native-admin configuration.
     agent.configuration = await f.api(
       "PATCH",
       `/namespaces/${f.namespace.id}/configurations/${configuration.id}`,
-      { values },
+      { values: nativeValues },
     );
   }
   await grantQaSecret(f, agent, secret.id, `${agent.name}-model`);

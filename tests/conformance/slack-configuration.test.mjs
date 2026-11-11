@@ -7,6 +7,7 @@ import {
   enabledChannelEntries,
   requireChannelSecretBindings,
 } from "../../packages/occ/src/channel-secret-bindings.ts";
+import { admitGatewaySecurityDefaults } from "../../packages/occ/src/gateway-security-defaults.ts";
 
 // These are form inputs, not a replacement for configuration or threading logic.
 const fields = {
@@ -291,5 +292,32 @@ test("the deploy gate holds every Slack binding Configuration save requires", ()
         `${name} unbound: ${JSON.stringify(shape)}`,
       );
     }
+  }
+});
+
+// gateway-security-defaults.ts repeats the enabled-channel rule so it can stay import-free
+// (finding 3191). The session.dmScope fill must follow exactly the channels that start a
+// channel runtime and need Secret bindings.
+test("the session.dmScope fill follows enabledChannelEntries", () => {
+  for (const channels of [
+    undefined,
+    {},
+    [],
+    null,
+    { defaults: {} },
+    { modelByChannel: {} },
+    { slack: {} },
+    { slack: { enabled: false } },
+    { slack: { enabled: "false" } },
+    { slack: true },
+    { slack: null },
+    { defaults: {}, slack: { enabled: false }, msteams: {} },
+  ]) {
+    const values = channels === undefined ? {} : { channels };
+    assert.equal(
+      admitGatewaySecurityDefaults(values).session?.dmScope !== undefined,
+      enabledChannelEntries(values).length > 0,
+      JSON.stringify(channels),
+    );
   }
 });

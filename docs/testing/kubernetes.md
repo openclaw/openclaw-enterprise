@@ -31,8 +31,8 @@ state for `occ dev down`. See [hosted execution](README.md#run-the-hosted-local-
 ## Kubernetes HTTP fixture
 
 Use Kubernetes 1.35+, Docker, k3d, `kubectl`, and a
-[dedicated migrated database](postgresql.md#other-postgresql-suites). Choose a new
-cluster name if `oce` exists. These commands preserve the default kubeconfig and context.
+[dedicated migrated database](postgresql.md#other-postgresql-suites). Choose another
+cluster name if `oce` exists. Default kubeconfig and context remain unchanged.
 
 ```sh
 mkdir -m 700 -p /tmp/oce-k3d
@@ -47,6 +47,8 @@ chmod 600 /tmp/oce-k3d/kubeconfig
 docker build --pull=false -t oce-fixture:local tests/fixtures/kubernetes
 k3d image import oce-fixture:local -c oce
 
+docker exec k3d-oce-server-0 ctr -n k8s.io images list -q |
+  grep -Fx 'docker.io/library/oce-fixture:local' &&
 OCC_TEST_KUBERNETES_KUBECONFIG=/tmp/oce-k3d/kubeconfig \
 OCC_TEST_KUBERNETES_CONTEXT=k3d-oce \
 OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
@@ -56,13 +58,13 @@ OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/opencla
     tests/integration/kubernetes-compute-driver-real.test.mjs
 ```
 
-Run all cases sequentially against the shared database and require zero skips.
-Absent selectors or database skip their cases. Partial selectors fail. Coverage
-includes API, worker, Driver, RBAC, storage, lifecycle and network isolation.
-Cloud volume detach and node fencing require separate proof.
+Run sequentially against this database without skips.
+Missing selectors or database skip cases; partial selectors fail. Coverage:
+API, worker, Driver, RBAC, storage, lifecycle and network isolation.
+Verify cloud volume detach and node fencing separately.
 
-For live OAuth, use the [OpenShell OAuth](openshell-oauth.md) and
-[credentialed runtime](openshell.md) suites. Delete only your disposable cluster:
+For live OAuth, use [OpenShell OAuth](openshell-oauth.md) and
+[credentialed runtime](openshell.md). Delete only your disposable cluster:
 
 ```sh
 k3d cluster delete oce
@@ -129,12 +131,14 @@ the variable. For a custom Codex Responses endpoint, use:
   --base-url https://openrouter.ai/api/v1 --model-id z-ai/glm-5.3-flash
 ```
 
-Use `./scripts/k3d info` for connections and `./scripts/k3d reset` to reset
-its test data. Run `./scripts/k3d down` to remove helper-owned resources,
-including after a failed preparation. The helper leaves the default kubeconfig,
-active context, and unrelated resources unchanged. `OCC_K3D_CONTAINER_ENGINE`
-selects `docker` or `podman`; `OCC_K3D_STATE_DIR` overrides its state directory.
-For image upgrades see [local k3d image upgrades](../guides/deploy/local-k3d-image-upgrade.md).
+`./scripts/k3d info` shows connections; `reset` retains images.
+Fresh preparation pins images against kubelet collection. Recreate older
+environments with `./scripts/k3d down --harness codex`, then reprepare (`openclaw`
+for that harness). This deletes that environment; use before image changes or
+after preparation failures. Default kubeconfig/context and unrelated resources
+stay unchanged. `OCC_K3D_CONTAINER_ENGINE` selects `docker`/`podman`;
+`OCC_K3D_STATE_DIR` sets its directory.
+See [local k3d image upgrades](../guides/deploy/local-k3d-image-upgrade.md).
 
 ### Run the real-runtime suite directly
 
@@ -167,9 +171,10 @@ OCC_TEST_HARNESS_K3D_REAL=1 OCC_TEST_SLACK_LIVE=0 \
   node --env-file="$TEST_ENV_FILE" --test tests/integration/harness-topology-k3d-real.test.mjs
 ```
 
-All six non-Slack cases must pass: dedicated Codex, dedicated Skill source
-uploads, embedded OpenClaw, Secret lifecycle, and startup-failure evidence with
-plugins disabled and enabled. The Skill source case needs local `zip`. A
+Seven non-Slack cases must pass: dedicated Codex, dedicated Skill source
+uploads, embedded OpenClaw, Secret lifecycle, Default user deploy, and
+startup-failure evidence with and without plugins. The Skill source case needs
+local `zip`. A
 selected suite fails on missing prerequisites; an unselected suite skips. The
 suite does not install OCC with Helm. Credentials belong only in the selected
 runtime Pods, not controllers, logs, or shell history. For private workspace
@@ -225,11 +230,11 @@ container, private files, and the line it added. If passwordless `sudo` is
 unavailable, add this line yourself before preparation and remove it afterward:
 
 ```sh
-echo '127.0.0.1 keycloak.oce.localhost' | sudo tee -a /etc/hosts
+echo '127.0.0.1 keycloak.oce.localhost keycloak.oce.test' | sudo tee -a /etc/hosts
 ```
 
-The hostname must resolve to exactly `127.0.0.1`; a resolver that returns `::1`
-can cause failure. For preparation errors, check the named step: image pull,
+Resolve both names to `127.0.0.1`, optionally also `::1`, with no nonloopback
+answers. Readiness uses IPv4 to match Docker. For preparation errors, check the named step: image pull,
 port availability, placeholders, hosts resolution, or the printed Keycloak log
 for readiness errors.
 
@@ -292,12 +297,12 @@ routing policies, PostgreSQL or worker execution. Selecting only one image fails
 
 ### Native Gateway sharing
 
-The `gateway-routing` lane selects `tests/integration/native-admin-k3d-real.test.mjs`.
-The Dedicated case provisions native access on the first revision. Sharing cases
-check model turns, read/operate-only denial, and WebSocket closure after Agent
-permission withdrawal or session expiry, with device enrollment retained.
-Envoy logs verify denial before upstream I/O. These cases do not qualify
-account enrollment, per-chat authority, Git, or OpenShell.
+The `gateway-routing` lane checks native browser access, `agent:operate` chat,
+administration denial, and WebSocket closure after permission withdrawal or
+session expiry. Its combined QA journey adds real Keycloak sign-in. See
+[Native Agent browser tests](native-agent-browser.md) for selection, prerequisites,
+cleanup, and proof boundaries. These tests do not qualify automatic account
+enrollment, Git, or OpenShell.
 
 ## Production TUI tests
 

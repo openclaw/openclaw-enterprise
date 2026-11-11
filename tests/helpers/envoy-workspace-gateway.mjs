@@ -5,9 +5,9 @@ import { readFile } from "node:fs/promises";
 import dns from "node:dns";
 import { connect } from "node:net";
 import { basename } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { connect as connectTls } from "node:tls";
 import { availablePort } from "./available-port.mjs";
+import { startWorkspaceGatewayRelayContainer } from "./workspace-gateway-relay-container.mjs";
 import { request as requestHttps } from "node:https";
 import { promisify } from "node:util";
 
@@ -312,12 +312,7 @@ export async function startWorkspaceGatewayHostRelay(
   const forwardedPort = Number(new URL(forwarding.url).port);
   const relayName = `oce-openshell-routing-${hash(randomUUID())}`;
   // Bind/startup failure must still close the forwarding process and owned relay.
-  context.after(async () => {
-    await Promise.allSettled([
-      forwarding.stop(),
-      executeFile(containerEngine, ["stop", "--timeout", "2", relayName]),
-    ]);
-  });
+  context.after(() => forwarding.stop().catch(() => undefined));
   const relayProgram = [
     'const net = require("node:net");',
     "const targetPort = Number(process.argv[1]);",
@@ -330,37 +325,23 @@ export async function startWorkspaceGatewayHostRelay(
     `server.listen(443, ${JSON.stringify(usesContainerVm ? "0.0.0.0" : "127.0.0.1")});`,
     'process.on("SIGTERM", () => server.close(() => process.exit(0)));',
   ].join("\n");
-  await executeFile(containerEngine, [
-    "run",
-    "--rm",
-    "-d",
-    "--name",
+  await startWorkspaceGatewayRelayContainer(context, {
+    containerEngine,
     relayName,
-    ...(usesContainerVm ? ["--publish", `127.0.0.1:${endpointPort}:443`] : ["--network", "host"]),
-    "--user",
-    "0",
-    "--stop-timeout",
-    "2",
-    "--entrypoint",
-    "node",
-    dockerRuntimeImage,
-    "-e",
-    relayProgram,
-    String(forwardedPort),
-  ]);
-  await delay(250);
-  let relayRunning = false;
-  try {
-    const inspected = await executeFile(containerEngine, [
-      "inspect",
-      "--format={{.State.Running}}",
-      relayName,
-    ]);
-    relayRunning = inspected.stdout.trim() === "true";
-  } catch {
-    // --rm removes a relay that cannot bind its loopback listener.
-  }
-  assert.equal(relayRunning, true, "the exact host routing relay must own loopback port 443.");
+    runArguments: [
+      ...(usesContainerVm ? ["--publish", `127.0.0.1:${endpointPort}:443`] : ["--network", "host"]),
+      "--user",
+      "0",
+      "--stop-timeout",
+      "2",
+      "--entrypoint",
+      "node",
+      dockerRuntimeImage,
+      "-e",
+      relayProgram,
+      String(forwardedPort),
+    ],
+  });
   const originalLookup = dns.lookup;
   dns.lookup = function lookup(hostname, options, callback) {
     if (hostname !== gatewayHostname) {

@@ -17,10 +17,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const (
-	runtimeLogFollowInterval = 2 * time.Second
-	runtimeLogFollowTail     = "1000"
-)
+const runtimeLogFollowInterval = 2 * time.Second
 
 // sleepContext waits for d or until ctx is done. Tests replace it.
 var sleepContext = func(ctx context.Context, d time.Duration) error {
@@ -71,7 +68,9 @@ func (app *application) agentRevision(
 		if err != nil {
 			return "", nil, err
 		}
-		noticef(notices, "notice: agent %s has no active revision; using %s, the latest revision you can read", agentID, latest)
+		if err := noticef(notices, "notice: agent %s has no active revision; using %s, the latest revision you can read", agentID, latest); err != nil {
+			return "", nil, err
+		}
 		return latest, nil, nil
 	}
 	// A newer revision than the active one is being deployed or has failed; while
@@ -369,10 +368,12 @@ func (app *application) runAgentLogs(command *cobra.Command, agentID string, opt
 	for {
 		pageQuery := query
 		if cursor != "" {
-			// A cursor continues the view; the server derives the window from it.
+			// A cursor continues the same view. OCC binds that view to the tail
+			// accepted on the first page and derives the time window from the
+			// cursor, so a poll must repeat tailLines instead of widening it.
 			pageQuery = url.Values{
 				"source":    query["source"],
-				"tailLines": {runtimeLogFollowTail},
+				"tailLines": query["tailLines"],
 				"cursor":    {cursor},
 			}
 			if pod := query.Get("pod"); pod != "" {
@@ -416,7 +417,10 @@ func (app *application) runAgentLogs(command *cobra.Command, agentID string, opt
 			// A present stream ends the absence, even when it has no new records.
 			missingPod := string(page.Stream) == "null" || len(page.Stream) == 0
 			if missingPod && !noPod {
-				noticef(notices, "notice: revision %s has no running Pod for source %s", page.RevisionID, page.Source)
+				err := noticef(notices, "notice: revision %s has no running Pod for source %s", page.RevisionID, page.Source)
+				if err != nil && app.output != "json" {
+					return err
+				}
 			}
 			noPod = missingPod
 			read = true

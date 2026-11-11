@@ -1,3 +1,5 @@
+import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
@@ -21,7 +23,7 @@ import { createTestSecretDriver } from "./secret-driver.mjs";
 
 const adminEmail = "postgres-admin@openclaw.local";
 const adminPassword = "postgres-development-password";
-const origin = "http://127.0.0.1";
+const origin = "https://console.oce.localhost";
 
 // Bootstraps the shared development Installation once per database; later suites reuse it.
 export async function ensurePostgresAgentBootstrap(t, { label, authSecret }) {
@@ -37,6 +39,7 @@ export async function ensurePostgresAgentBootstrap(t, { label, authSecret }) {
     password: adminPassword,
     authSecret,
     authBaseURL: origin,
+    agentDomain: "agents.oce.localhost",
     installationName: `${label} PostgreSQL test`,
   });
 }
@@ -92,15 +95,23 @@ export async function createPostgresAgentApp(
     mode: "development",
     installationId: installation.id,
     baseURL: origin,
+    agentDomain: "agents.oce.localhost",
     secret: authSecret,
     pool,
   });
   const iamDriver = new NativeIAMDriver(state, { id: `${label}-pg-iam` });
-  const computeDriver = createRuntimeLogComputeDriver({ id: `${label}-pg-compute` });
+  const computeDriver = createRuntimeLogComputeDriver({
+    id: `${label}-pg-compute`,
+    ...(sandboxDriver === undefined ? {} : { sandboxNamespaceName: kubernetesNamespaceName }),
+  });
   const configurationDriver = createTestConfigurationDriver({ id: `${label}-pg-config` });
   const controller = new OpenClawController(installation, {
     state,
     recordOperations: false,
+    namespaceLifecycleBindings:
+      sandboxDriver?.ensureNamespace === undefined
+        ? []
+        : [sandboxNamespaceLifecycleBinding(computeDriver, sandboxDriver)],
     ...controllerOptions,
   });
   for (const driver of [iamDriver, computeDriver, configurationDriver, secretDriver]) {

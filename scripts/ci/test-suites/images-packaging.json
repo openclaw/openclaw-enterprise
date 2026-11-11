@@ -22,6 +22,7 @@
     "tests/integration/production-upgrade-signal-lock.test.ts",
     "tests/integration/codex-model-probe.test.mjs",
     "tests/integration/production-image-upgrade-recovery.test.mjs",
+    "tests/integration/upgrade-preflight-state.test.mjs",
     "tests/integration/docker-compute-token-retry.test.mjs",
     "tests/integration/workspace-setup-runtime.test.mjs",
     "tests/integration/production-kubernetes-packaging.test.mjs",
@@ -31,7 +32,7 @@
     "tests/integration/repository-runtime-volume.test.mjs",
     "tests/integration/production-image-qualification.test.mjs",
     "tests/integration/development-packaging.test.mjs",
-    "tests/integration/container-publication-workflow.test.mjs",
+    "tests/integration/container-publication-workflow.test.ts",
     "tests/integration/oidc-ca-trust.test.mjs",
     "tests/integration/ci-runtime-artifact.test.mjs"
   ],
@@ -40,7 +41,7 @@
       "path": "tests/integration/production-upgrade-signal-lock.test.ts"
     },
     {
-      "path": "tests/integration/container-publication-workflow.test.mjs",
+      "path": "tests/integration/container-publication-workflow.test.ts",
       "expectedTests": [
         "publication workflow requires explicit chart opt-in and a successful image job",
         "chart publication consumes the exact successful image receipt without archives",
@@ -72,6 +73,9 @@
     },
     {
       "path": "tests/integration/production-image-upgrade-recovery.test.mjs"
+    },
+    {
+      "path": "tests/integration/upgrade-preflight-state.test.mjs"
     },
     {
       "path": "tests/integration/production-image-qualification.test.mjs"

@@ -400,6 +400,21 @@ func TestInstallationDoctorIgnoresIncompleteKubectlDiagnostics(t *testing.T) {
 		t.Fatalf("result=%+v", result)
 	}
 
+	t.Run("partial Job stdout with NotFound stderr", func(t *testing.T) {
+		script := `#!/bin/sh
+printf '%s\n' '{"apiVersion":"batch/v1","kind":"Job","metadata":'
+printf '%s\n' 'Error from server (NotFound): jobs.batch "demo-initialization" not found' >&2
+exit 1
+`
+		if err := os.WriteFile(kubectl, []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+		result := readInitialization(context.Background(), "unused", "read", "operations", "demo-initialization", "demo", "")
+		if result.state != initializationUnreadable || !strings.Contains(result.message, "unknown. Could not read") {
+			t.Fatalf("result=%+v", result)
+		}
+	})
+
 	// An exact-looking NotFound line cannot establish absence when the other
 	// output stream exceeded the read bound.
 	if err := os.WriteFile(kubectl+".data", bytes.Repeat([]byte("x"), (4<<20)+1), 0600); err != nil {

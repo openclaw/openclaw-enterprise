@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { assertInsideDirectory } from "../lib/assert-inside-directory.ts";
 
 const envoyGateway = Object.freeze({
   name: "Envoy Gateway",
@@ -70,13 +71,6 @@ function assertCluster(cluster) {
     "cluster.context must select the owned k3d context.",
   );
   return { ...cluster, directory, kubeconfig: resolve(cluster.kubeconfig) };
-}
-
-function assertInsideDirectory(parent, child, description) {
-  const relativePath = relative(parent, resolve(child));
-  if (relativePath.startsWith("..") || isAbsolute(relativePath)) {
-    throw new Error(`${description} must stay inside ${parent}.`);
-  }
 }
 
 function namespacedKubectlArgs(cluster, args) {
@@ -344,7 +338,11 @@ async function applyControllers({ cluster, execFile, certManagerManifest, envoyG
   await rolloutDeployments(cluster, execFile, envoyGateway.namespace, [envoyGateway.deployment]);
 }
 
-export async function prepareGatewayRouting({ cluster, execFile }) {
+export async function prepareGatewayRouting({
+  cluster,
+  execFile,
+  downloadArtifact = downloadPinnedArtifact,
+}) {
   assert.equal(typeof execFile, "function", "prepareGatewayRouting requires an execFile callback.");
   const ownedCluster = assertCluster(cluster);
   // K3s installs the Gateway API CRDs with Traefik, and applyControllers waits for them, so
@@ -359,8 +357,8 @@ export async function prepareGatewayRouting({ cluster, execFile }) {
   await chmod(directory, 0o700);
 
   const [certManagerManifest, envoyGatewayManifest] = await Promise.all([
-    downloadPinnedArtifact({ artifact: certManager, directory }),
-    downloadPinnedArtifact({ artifact: envoyGateway, directory }),
+    downloadArtifact({ artifact: certManager, directory }),
+    downloadArtifact({ artifact: envoyGateway, directory }),
   ]);
   const ca = await createPrivateTestCa({ directory, execFile });
   await applyControllers({
@@ -373,7 +371,6 @@ export async function prepareGatewayRouting({ cluster, execFile }) {
   return {
     env: {
       OCC_TEST_GATEWAY_ROUTING_REAL: "1",
-      OCC_TEST_SLACK_LIVE: "0",
       OCC_TEST_ENVOY_GATEWAY_NAMESPACE: envoyGateway.namespace,
       OCC_TEST_CERT_MANAGER_NAMESPACE: certManager.namespace,
       OCC_TEST_GATEWAY_CA_CERT_PATH: ca.certPath,
