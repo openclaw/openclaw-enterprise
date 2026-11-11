@@ -1,4 +1,4 @@
-import { readRuntimeProvenance } from "./runtime-provenance.mjs";
+import { preparationIdentity, readRuntimeProvenance } from "./runtime-provenance.mjs";
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import {
@@ -1815,13 +1815,15 @@ async function runLane(root, manifest, laneName, statePath, resultsPath, selecte
   let preparationId = randomUUID();
   try {
     const state = JSON.parse(await readFile(statePath, "utf8"));
-    if (state.lane === laneName && typeof state.prefix === "string") {
-      preparationId = state.prefix;
+    if (state.lane === laneName) {
+      preparationId = preparationIdentity(state.prefix) ?? preparationId;
     }
   } catch {
     // Stateless runs still share one fresh identity across their files.
   }
 
+  const identity = { lane: laneName, preparationId };
+  const initialRuntimeProvenance = await readRuntimeProvenance(statePath, identity);
   const prepareFile = await loadPrepare(root);
   const startedAt = new Date().toISOString();
   const laneStarted = performance.now();
@@ -1910,7 +1912,8 @@ async function runLane(root, manifest, laneName, statePath, resultsPath, selecte
     version: 1,
     command: "run",
     sourceSha: source.sha,
-    runtimeProvenance: await readRuntimeProvenance(statePath),
+    runtimeProvenance:
+      (await readRuntimeProvenance(statePath, identity)) ?? initialRuntimeProvenance,
     lane: laneName,
     scope: selectedFile === undefined ? "full" : "focused",
     status,

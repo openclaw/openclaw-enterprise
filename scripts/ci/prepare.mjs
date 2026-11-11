@@ -45,7 +45,11 @@ import { pullImage } from "./image-pull.ts";
 import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.mjs";
 import { imageInventory, laneImagesResourceKind } from "./lane-images.ts";
 import { imageConfigDigest } from "./image-config-digest.ts";
-import { readImageCodexProvenance, readRuntimeProvenance } from "./runtime-provenance.mjs";
+import {
+  preparationIdentity,
+  readImageCodexProvenance,
+  readRuntimeProvenance,
+} from "./runtime-provenance.mjs";
 import { metricsMonitoringImages } from "./metrics-monitoring-images.mjs";
 import {
   prepareRepositoryCredentials,
@@ -2961,16 +2965,20 @@ async function retainRuntimeProvenance(statePath, state, cluster, image, role) {
     // Publish before later preparation or test failures can remove the cluster.
     try {
       const path = `${statePath}.diagnostics.json`;
-      let report = { lane: state.lane, preparationId: state.prefix };
+      const preparationId = preparationIdentity(state.prefix);
+      let report = { lane: state.lane, preparationId };
       try {
         const previous = JSON.parse(await readFile(path, "utf8"));
-        if (previous.lane === state.lane && previous.preparationId === state.prefix) {
+        if (previous.lane === state.lane && previous.preparationId === preparationId) {
           report = previous;
         }
       } catch {
         /* First diagnostic for this lane. */
       }
-      report.runtimeProvenance = await readRuntimeProvenance(statePath);
+      report.runtimeProvenance = await readRuntimeProvenance(statePath, {
+        lane: state.lane,
+        preparationId,
+      });
       await writeFile(path, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
     } catch {
       progress(state.lane, "Runtime provenance diagnostics unavailable.");

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import {
   extractImageFile,
@@ -37,10 +38,25 @@ export function codexProvenance(metadata, platform) {
   };
 }
 
-export async function readRuntimeProvenance(statePath) {
+// Publish an opaque attempt identity; the private prefix remains a resource owner.
+export function preparationIdentity(prefix) {
+  return typeof prefix === "string" && prefix.length > 0
+    ? createHash("sha256").update(prefix).digest("hex")
+    : undefined;
+}
+
+export async function readRuntimeProvenance(statePath, { lane, preparationId }) {
   let records;
   try {
-    records = JSON.parse(await readFile(statePath, "utf8")).runtimeProvenance;
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    if (
+      typeof preparationId !== "string" ||
+      state.lane !== lane ||
+      preparationIdentity(state.prefix) !== preparationId
+    ) {
+      return undefined;
+    }
+    records = state.runtimeProvenance;
   } catch {
     return undefined;
   }

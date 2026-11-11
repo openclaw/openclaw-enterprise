@@ -251,7 +251,7 @@ for (const scenario of [
             `${commands.statePath}.diagnostics.json`,
             JSON.stringify({
               lane: state.lane,
-              preparationId: state.prefix,
+              preparationId: createHash("sha256").update(state.prefix).digest("hex"),
               currentAttempt: "retain",
             }),
           );
@@ -355,7 +355,10 @@ for (const scenario of [
     assert.deepEqual(state.runtimeProvenance, expectedRoles);
     const diagnostics = await readFile(`${commands.statePath}.diagnostics.json`, "utf8");
     assert.deepEqual(JSON.parse(diagnostics).runtimeProvenance, expectedRoles);
-    assert.equal(JSON.parse(diagnostics).preparationId, state.prefix);
+    assert.equal(
+      JSON.parse(diagnostics).preparationId,
+      createHash("sha256").update(state.prefix).digest("hex"),
+    );
     assert.equal(JSON.parse(diagnostics).lane, state.lane);
     if (scenario === "manifest") {
       assert.equal(JSON.parse(diagnostics).currentAttempt, "retain");
@@ -375,6 +378,20 @@ for (const scenario of [
       assert.ok(
         (await commands.readState()).resources.some((resource) => resource.kind === "image-file"),
       );
+      if (scenario === "cleanup-failed") {
+        // Rejected receipt fields stay private, and failed cleanup retains its exact receipt.
+        const retained = await commands.readState();
+        for (const field of ["name", "owner"]) {
+          const malformed = structuredClone(retained);
+          malformed.resources.find((resource) => resource.kind === "image-file")[field] = canary;
+          await writeFile(commands.statePath, JSON.stringify(malformed));
+          const rejected = await commands.cleanup();
+          assert.equal(rejected.status, 1);
+          assert.ok(!rejected.stderr.includes(canary));
+          assert.deepEqual(await commands.readState(), malformed);
+        }
+        await writeFile(commands.statePath, JSON.stringify(retained));
+      }
       allowRemoval = true;
     }
     await commands.cleanupSuccessfully();
