@@ -7847,8 +7847,8 @@ test("first-Agent startup preserves bounded redacted stderr and the original fai
   const actionable =
     "failed to create network: Pool overlaps with other one on this address space\n";
   const sensitive =
-    "AUTHORIZATION: Bearer private-header-value\n" +
     "environment value: invented-fixture-input\n" +
+    "AUTHORIZATION: Bearer private-header-value\n" +
     "password: {\n  value: 'private-nested-value'\n}\n" +
     "-----BEGIN PRIVATE KEY-----\nprivate-key-body\n-----END PRIVATE KEY-----\n";
   const cases = [
@@ -7918,6 +7918,9 @@ test("startup", async (t) => {
       );
       if (scenario === "success") {
         // TAP keeps passing-test chatter, unlike the canonical runner's summary.
+        const directEnv = runnerEnv();
+        delete directEnv.NODE_TEST_CONTEXT;
+        delete directEnv.NODE_TEST_WORKER_ID;
         const direct = spawnSync(
           process.execPath,
           [
@@ -7925,9 +7928,10 @@ test("startup", async (t) => {
             "--test-reporter=tap",
             join(root, "tests/integration/startup-stderr.test.mjs"),
           ],
-          { encoding: "utf8", env: runnerEnv() },
+          { encoding: "utf8", env: directEnv },
         );
         assert.equal(direct.status, 0, direct.stderr);
+        assert.match(direct.stdout, /^ok \d+ - startup$/m);
         assert.doesNotMatch(
           direct.stdout + direct.stderr,
           /Pool overlaps|private|invented-fixture-input/,
@@ -7939,21 +7943,25 @@ test("startup", async (t) => {
       );
       assert.equal(result.status, scenario === "success" ? 0 : 1, result.stderr);
       assert.equal(await readFile(join(root, "cleanup.txt"), "utf8"), "done");
+      const privateValues =
+        /stdout-must-stay-private|private-header-value|invented-fixture-input|private-nested-value|private-key-body|private-cut-tail|opaque-object-canary|opaque-block-canary/;
+      assert.doesNotMatch(
+        result.stdout + result.stderr + (await readFile(resultsPath, "utf8")),
+        privateValues,
+      );
       if (scenario === "success") {
         return;
       }
       const diagnostics = JSON.parse(
         await readFile(join(root, "state/startup-stderr.jsonl.diagnostics.json"), "utf8"),
       );
+      assert.doesNotMatch(JSON.stringify(diagnostics), privateValues);
       const message = diagnostics.failures[0].tests.find(({ name }) => name === "startup").message;
       const helperMessage = JSON.parse(await readFile(join(root, "helper-error.json"), "utf8"));
       for (const text of [message, helperMessage]) {
         assert.match(text, /Start Local Setup exited with status 23/);
         assert.match(text, /Pool overlaps with other one on this address space/);
-        assert.doesNotMatch(
-          text,
-          /stdout-must-stay-private|private-header-value|invented-fixture-input|private-nested-value|private-key-body|private-cut-tail|opaque-object-canary|opaque-block-canary/,
-        );
+        assert.doesNotMatch(text, privateValues);
         assert.ok(text.isWellFormed(), "diagnostic cutoff must preserve Unicode characters");
         assert.ok(text.length < 2_500, "the individual error must be bounded");
       }
