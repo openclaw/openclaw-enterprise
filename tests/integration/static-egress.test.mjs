@@ -1275,6 +1275,45 @@ test("Responses admits bounded native agent messages", async (t) => {
   assert.equal(f.providerRequests.length, sends, "unsupported agent messages cannot send");
 });
 
+test("Codex manual compaction forwards its closed metadata through protected inference", async (t) => {
+  const f = await staticEgressFixture(t);
+  const key = "x-codex-turn-metadata";
+  const metadata = JSON.parse(wire.request.client_metadata[key]);
+  const compaction = {
+    trigger: "manual",
+    reason: "user_requested",
+    implementation: "responses",
+    phase: "standalone_turn",
+    strategy: "memento",
+  };
+  function request(record, kind = "compaction") {
+    return {
+      ...wire.request,
+      client_metadata: {
+        ...wire.request.client_metadata,
+        [key]: JSON.stringify({ ...metadata, request_kind: kind, compaction: record }),
+      },
+    };
+  }
+  const manual = request(compaction);
+  await responseChecks(f).events(responseEvents(), false, "manual compaction", true, manual);
+  assert.deepEqual(f.providerRequests.at(-1).body, manual);
+  const reads = f.secretReads;
+  const sends = f.providerRequests.length;
+  for (const invalid of [
+    request({ ...compaction, strategy: "unknown" }),
+    request({ ...compaction, phase: undefined }),
+    request({ ...compaction, authority: "owner" }),
+    request(compaction, "turn"),
+    { ...manual, tools: [{ type: "web_search" }] },
+    { ...manual, model: "outside-the-grant" },
+  ]) {
+    assert.ok((await f.resolve(f.capture(invalid))).refused);
+  }
+  assert.equal(f.secretReads, reads);
+  assert.equal(f.providerRequests.length, sends);
+});
+
 test("selected Codex Responses wire admits local tools and finite SSE while rejecting remote tools and unprotected events", async (t) => {
   const f = await staticEgressFixture(t);
   // Sanitized packaged 0.163.0-alpha.2 request and synthetic response consumed by that
