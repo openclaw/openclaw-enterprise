@@ -142,6 +142,15 @@ version and request and returns a deadline-bound decision. Match request and
 injection digests and enforce `sendStartBy` at the last controlled send boundary.
 Do not treat resolution as send permission.
 
+A provider's `classify` may synchronously report one stable rule ID (1–255) through
+its optional refusal callback. IDs must not encode request data or be reassigned.
+OCC records `classificationRule` only when no operation matches and exactly one
+refused route reports a valid ID. Accepted operations, missing or repeated reports,
+and ambiguous diagnostics provide no rule. The audit binds the authenticated
+execution, source and exact request ID without inventing an operation or accessing
+credentials. Interpretation belongs to the selected provider; the wire refusal
+remains generic. See the [diagnostic flow](../../flows/credential-source-egress.md#debugging-and-verification).
+
 Response acceptance and lease renewal remain bound to that exchange.
 `protectResponse` processes the complete response, including trailers; an
 undefined result must release no response. Positive provider rejection evidence

@@ -160,7 +160,13 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
   readonly requestDiagnostic?: {
     readonly method: string;
     readonly grpcStatus: number;
-    readonly validationCategory: "POLICY_SAFETY" | "POLICY_MIDDLEWARE_VALIDATION" | "UNKNOWN";
+    readonly validationCategory:
+      | "POLICY_SAFETY"
+      | "POLICY_MIDDLEWARE_VALIDATION"
+      | "PVC_ADMISSION_LABELS"
+      | "CLASS_ADMISSION_LABELS"
+      | "RESOURCE_METADATA_FORBIDDEN"
+      | "UNKNOWN";
   };
 
   constructor(
@@ -172,6 +178,14 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
     if (requestDiagnostic !== undefined) {
       this.requestDiagnostic = Object.freeze({ ...requestDiagnostic });
     }
+  }
+}
+
+/** A failed private runtime diagnostics transport read, without supplier details. */
+export class RuntimeDiagnosticsTransportError extends DependencyUnavailableError {
+  constructor() {
+    super("The private Gateway diagnostics transport is unavailable.");
+    this.name = "RuntimeDiagnosticsTransportError";
   }
 }
 
@@ -1040,6 +1054,13 @@ export class TransientDependencyError extends Error {
  * operator fixes that identity or grant, so Compute fails the Namespace step at once.
  * The message names only the provider's refusal code, never provider text.
  */
+export class SandboxNamespacePendingError extends Error {
+  constructor(message = "Sandbox Namespace resources have not converged.") {
+    super(message);
+    this.name = "SandboxNamespacePendingError";
+  }
+}
+
 export class SandboxNamespaceRefusedError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);

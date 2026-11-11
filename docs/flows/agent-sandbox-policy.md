@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-11-10"
-last_updated_session: "authoring-run/dcf2f9b4-d4f9-407c-a3e3-429a2ee380df"
+updated: "2026-10-29"
+last_updated_session: "01a1891d-5b6b-7071-b482-793a9dd01044"
 ---
 
 # Agent sandbox policy flow
@@ -91,11 +91,7 @@ That immutable snapshot remains ineligible for live apply. The policy view repor
 
 Protected Codex repository preparation compiles the revision's qualified artifact
 snapshot through `openshell-codex-artifacts.ts`; it never merges ambient defaults.
-Both paired compilers validate the complete map. For a selected
-[Node registry rule](../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules),
-`openShellProtectedCodexArtifacts` adds the encoded-slash setting to the policy
-sent to OpenShell. The revision keeps the original declaration.
-The Sandbox separately compares
+Both paired compilers validate the complete map. The Sandbox separately compares
 the final workspace enrollment rule with its validated Agent-owned setup binding,
 then returns the full immutable policy in `SandboxResourceRef.proxyWiring`.
 The proxy checks the complete artifact map and bounded auxiliary rule before
@@ -261,8 +257,6 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
-
-- 2026-11-10 11:14: Trace the protected Node registry rule from admission to OpenShell policy. (authoring-run/dcf2f9b4-d4f9-407c-a3e3-429a2ee380df - 45715576701d69ece9d9e4aab7966aebc2a1662b)
 
 - 2026-10-29 12:37: Link Installation inspection to its startup projection owner. (01a1891d-5b6b-7071-b482-793a9dd01044 - 32b59e204e)
 

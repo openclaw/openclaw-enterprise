@@ -4,9 +4,13 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RepositoryCredentialBoundSessionInput } from "../../../access/service-contracts.ts";
-import { readPrivateFile } from "./private-files.ts";
+import { clientSessionFileMaxBytes, readPrivateFile } from "./private-files.ts";
 import { hasControlCharacter } from "../../../access/client-contracts.ts";
-import type { ControlRequest, ControlResponse } from "../../../access/control-contracts.ts";
+import type {
+  ControlErrorCode,
+  ControlRequest,
+  ControlResponse,
+} from "../../../access/control-contracts.ts";
 import { assertClientDirectoryAvailable, writeClientConfiguration } from "./config.ts";
 
 export async function callControl(
@@ -186,6 +190,11 @@ function writeOutputRefusal(error: unknown): void {
   }
 }
 
+function reportControlError(error: ControlErrorCode): void {
+  process.stderr.write(`credential-operator-${error}\n`);
+  process.exitCode = 1;
+}
+
 async function main(): Promise<void> {
   const [operation, ...args] = process.argv.slice(2);
   const options = new Map<string, string>();
@@ -236,7 +245,7 @@ async function main(): Promise<void> {
     }
     const caPath = options.get("--ca");
     const ca = caPath ? await readFile(caPath) : undefined;
-    if (ca && ca.length > 64 * 1024) {
+    if (ca && ca.length > clientSessionFileMaxBytes["ca.pem"]) {
       throw new Error("invalid-ca");
     }
     const admissionId = options.get("--admission-id") ?? `${Date.now()}-${randomUUID()}`;
@@ -263,9 +272,7 @@ async function main(): Promise<void> {
       admissionId,
     );
     if ("error" in result) {
-      process.stderr.write(`credential-operator-${result.error}\n`);
-      process.exitCode = 1;
-      return;
+      return reportControlError(result.error);
     }
     if (!("bearer" in result)) {
       if (!("state" in result)) {
@@ -306,9 +313,7 @@ async function main(): Promise<void> {
         : { method: "POST", path: `/v1/sessions/${id}/close` },
     );
     if ("error" in result) {
-      process.stderr.write(`credential-operator-${result.error}\n`);
-      process.exitCode = 1;
-      return;
+      return reportControlError(result.error);
     }
     if (!("state" in result)) {
       throw new Error("invalid-control-response");

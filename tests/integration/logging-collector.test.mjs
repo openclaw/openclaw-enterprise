@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { createRequire } from "node:module";
+import { createConnection } from "node:net";
 
 import { createOccLogger, createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
 import { completeJsonLines } from "../helpers/ci-logging.mjs";
@@ -409,6 +410,7 @@ test(
       (kind) => `CANARY_${kind}_${fixture.suffix}`,
     );
     const payload = Object.fromEntries(canaries.map((value) => [value, value]));
+    let senderStdoutMatches = null;
 
     // The sender is deliberately synthetic: this exercises the real Engine ->
     // Fluent Forward -> Collector -> OTLP boundary, not gateway/Codex emission.
@@ -424,7 +426,7 @@ test(
       ];
       const script = `for(const line of ${JSON.stringify(stdout)})process.stdout.write(line+'\\n');for(const line of ${JSON.stringify(stderr)})process.stderr.write(line+'\\n');`;
       try {
-        await docker([
+        const output = await docker([
           "run",
           "--name",
           name,
@@ -444,6 +446,7 @@ test(
           "-e",
           script,
         ]);
+        senderStdoutMatches = output === stdout.join("\n").trim();
       } finally {
         await docker(["rm", "--force", name]).catch(() => {});
       }
@@ -461,12 +464,17 @@ test(
         "openclaw.agent.id": "forged-agent",
       });
     let lastMetrics;
-    const filtered = async () => {
-      const response = await fetch(`http://${metricsAddress}/metrics`);
+    const filtered = async (signal) => {
+      const response = await fetch(`http://${metricsAddress}/metrics`, { signal });
       lastMetrics = { httpStatus: response.status };
       const metrics = await response.text();
       // Keep counts only: labels and response bodies are not failure diagnostics.
       for (const [field, name] of [
+        ["connectionsOpened", "otelcol_fluent_opened_connections"],
+        ["connectionsClosed", "otelcol_fluent_closed_connections"],
+        ["eventsParsed", "otelcol_fluent_events_parsed"],
+        ["parseFailures", "otelcol_fluent_parse_failures"],
+        ["recordsGenerated", "otelcol_fluent_records_generated"],
         ["accepted", "otelcol_receiver_accepted_log_records"],
         ["refused", "otelcol_receiver_refused_log_records"],
         ["filtered", "otelcol_processor_filter_logs_filtered"],
@@ -481,9 +489,52 @@ test(
       return /otelcol_processor_filter_logs_filtered[^\n]* [1-9]/.test(metrics);
     };
 
+    // Docker's proxy can accept TCP before Fluent starts. Require the receiver
+    // to observe an empty connection opening and closing before sending records.
+    const forwardUrl = new URL(`tcp://${forwardAddress}`);
+    const readinessMs = 30_000;
+    const readinessDeadline = performance.now() + readinessMs;
+    const signal = AbortSignal.timeout(readinessMs);
+    const checkReadinessDeadline = () => {
+      // Timer dispatch can lag behind I/O completion.
+      if (performance.now() >= readinessDeadline) {
+        throw new Error("Fluent receiver readiness deadline expired");
+      }
+    };
+    let initiallyFiltered;
+    try {
+      for (;;) {
+        checkReadinessDeadline();
+        await new Promise((resolve) => {
+          const socket = createConnection({
+            host: forwardUrl.hostname,
+            port: Number(forwardUrl.port),
+            signal: AbortSignal.any([signal, AbortSignal.timeout(1_000)]),
+          });
+          socket.once("connect", () => socket.end());
+          socket.once("error", () => socket.destroy());
+          socket.once("close", resolve);
+        });
+        checkReadinessDeadline();
+        initiallyFiltered = await filtered(signal);
+        checkReadinessDeadline();
+        if (lastMetrics.connectionsOpened > 0 && lastMetrics.connectionsClosed > 0) {
+          break;
+        }
+        await delay(100, undefined, { signal });
+      }
+    } catch (error) {
+      const outcome = "the Fluent receiver to observe an empty connection";
+      const failure =
+        signal.aborted || performance.now() >= readinessDeadline
+          ? `Timed out waiting for ${outcome}.`
+          : `Waiting for ${outcome} failed: ${error.message}.`;
+      throw new Error(`${failure} ${await fixture.describe()}`, { cause: error });
+    }
+
     // No other records have entered this fresh Collector, so a filter count
     // proves the near-match was processed and rejected before capture assertions.
-    assert.equal(await filtered(), false);
+    assert.equal(initiallyFiltered, false);
     await send(
       "worker",
       [warningLine("compute.preflight-warning-unreviewed")],
@@ -493,7 +544,12 @@ test(
     try {
       await waitFor("the Collector to count the filtered near-match", filtered, fixture);
     } catch (error) {
-      t.diagnostic(`Last Collector metrics (null means absent): ${JSON.stringify(lastMetrics)}`);
+      t.diagnostic(
+        `Last Collector forwarding state (null means absent): ${JSON.stringify({
+          senderStdoutMatches,
+          metrics: lastMetrics,
+        })}`,
+      );
       throw error;
     }
 

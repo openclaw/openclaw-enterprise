@@ -1,5 +1,6 @@
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { createCredentialProxyInstallationConfiguration } from "./installation-driver-configuration.mjs";
+import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import { githubMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
 import {
@@ -271,6 +272,9 @@ async function buildStaticEgressFixture(
   const providers = new Map();
   const gatewayRequests = [];
   gateway.addService(Gateway.service, {
+    Health(_call, callback) {
+      callback(null, { status: "SERVICE_STATUS_HEALTHY" });
+    },
     GetProviderProfile(call, callback) {
       const profile = profiles.get(call.request.id);
       callback(profile ? null : { code: grpc.status.NOT_FOUND }, profile ? { profile } : undefined);
@@ -362,7 +366,13 @@ async function buildStaticEgressFixture(
       }
       callback(null, {
         workspace: {
-          metadata: { name: call.request.name },
+          metadata: {
+            name: call.request.name,
+            labels: {
+              "app.kubernetes.io/managed-by": "openclaw-enterprise",
+              "openclaw.dev/namespace-id": namespace.id,
+            },
+          },
           status: { phase: "WORKSPACE_PHASE_ACTIVE" },
         },
       });
@@ -610,6 +620,29 @@ async function buildStaticEgressFixture(
     modelProvider,
     authentication: { mode: "kubeconfig", kubeconfigPath, context: "fixture" },
   });
+  const computeDriver = {
+    ...createDevelopmentComputeDriver(),
+    normalizeHarnessOverrides: placement.normalizeHarnessOverrides.bind(placement),
+    resolveHarnessConfiguration: placement.resolveHarnessConfiguration.bind(placement),
+    validateHarnessCredentialSources: placement.validateHarnessCredentialSources.bind(placement),
+    // Schema/protocol fixture only: no workload is released by this Compute.
+    validateExecutionAdmission: assertExecutionAdmission,
+    async resolveSandboxNamespace(value) {
+      return physicalPlacement ? placement.resolveSandboxNamespace(value) : value;
+    },
+  };
+  computeDriver.resolveSandboxNamespaceContext = async (value, signal) => ({
+    namespace: await computeDriver.resolveSandboxNamespace(value),
+    kubernetes: {},
+    signal,
+  });
+  const installedDriver =
+    admissionDrivers?.owner ??
+    new InstalledDriver(
+      { id: sandbox.id, implementation: sandbox.implementation, configuration: egressOptions },
+      { capabilities: { sandbox, credential_proxy: egress } },
+      { sandbox: sandbox.id, credential_proxy: egress.id },
+    );
   const app = await appFactory(t, {
     now,
     provisionedPeople: [],
@@ -626,37 +659,30 @@ async function buildStaticEgressFixture(
     ],
     preparedTokenProof: preparedGitHub && { current: (...args) => owner.current(...args) },
     secretDriver,
-    computeDriver: {
-      ...createDevelopmentComputeDriver(),
-      normalizeHarnessOverrides: placement.normalizeHarnessOverrides.bind(placement),
-      resolveHarnessConfiguration: placement.resolveHarnessConfiguration.bind(placement),
-      validateHarnessCredentialSources: placement.validateHarnessCredentialSources.bind(placement),
-      // Schema/protocol fixture only: no workload is released by this Compute.
-      validateExecutionAdmission: assertExecutionAdmission,
-      async resolveSandboxNamespace(value) {
-        return physicalPlacement ? placement.resolveSandboxNamespace(value) : value;
-      },
-    },
+    computeDriver,
+    namespaceLifecycleBindings: [
+      sandboxNamespaceLifecycleBinding(computeDriver, sandbox, installedDriver),
+    ],
   });
   await app.bootstrap();
   if (!protectedSourceOnly) {
     app.controller.registerDriver(catalog);
     app.controller.selectDriver(catalog.capability, catalog.id);
   }
-  const installedDriver =
-    admissionDrivers?.owner ??
-    new InstalledDriver(
-      {
-        id: sandbox.id,
-        implementation: sandbox.implementation,
-        configuration: egressOptions,
-      },
-      { capabilities: { sandbox, credential_proxy: egress } },
-      { sandbox: sandbox.id, credential_proxy: egress.id },
-    );
   app.controller.registerDriver(installedDriver);
   app.controller.selectDriver("sandbox", sandbox.id);
-  namespace = await app.createNamespace(`egress-${randomUUID().slice(0, 8)}`, { ready: true });
+  namespace = await app.createNamespace(`egress-${randomUUID().slice(0, 8)}`);
+  runtimeNamespace = physicalPlacement
+    ? await placement.resolveSandboxNamespace(namespace)
+    : namespace;
+  // The protocol's owned Workspace is now addressable before Namespace reconciliation.
+  const ready = await app.controller.handleNamespaceLifecycle(
+    app.principal.id,
+    namespace.id,
+    "ready",
+  );
+  assert.equal(ready.status, "ready");
+  namespace = ready;
   runtimeNamespace = physicalPlacement
     ? await placement.resolveSandboxNamespace(namespace)
     : namespace;

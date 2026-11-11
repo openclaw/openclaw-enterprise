@@ -3,7 +3,20 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { cp, mkdtemp, mkdir, open, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import {
+  cp,
+  lstat,
+  mkdtemp,
+  mkdir,
+  open,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Readable } from "node:stream";
@@ -117,9 +130,12 @@ test("first-Agent starts without installed workspace dependencies", async (t) =>
   for (const path of [
     "package.json",
     "scripts/first-agent.mjs",
+    "scripts/first-agent.ts",
     "scripts/first-agent-database.mjs",
     "scripts/first-agent-api.mjs",
+    "scripts/first-agent-api.ts",
     "scripts/first-agent-diagnostics.mjs",
+    "scripts/first-agent-diagnostics.ts",
     "packages/contracts/src/runtime-failure.mjs",
     "scripts/first-agent-model.mjs",
     "scripts/lib/private-owned-path.mjs",
@@ -255,10 +271,19 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
   );
   // Each admission fill landed separately, so a saved revision can lack any subset of the
   // defaults (finding 2770). Only the identified prior revision gets them filled before comparing.
-  for (let mask = 0; mask < 2 ** GATEWAY_SECURITY_DEFAULTS.length - 1; mask += 1) {
-    const filled = GATEWAY_SECURITY_DEFAULTS.filter((_, index) => mask & (1 << index));
+  // The defaults that apply here: this Configuration enables no channel, so admission fills no
+  // session.dmScope (finding 3191).
+  const unfilled = values("danger-full-access", undefined, []);
+  const applicable = GATEWAY_SECURITY_DEFAULTS.filter(
+    (row) =>
+      JSON.stringify(values("danger-full-access", undefined, [row])) !== JSON.stringify(unfilled),
+  );
+  assert.ok(!applicable.some(({ path }) => path.join(".") === "session.dmScope"));
+  for (let mask = 0; mask < 2 ** applicable.length - 1; mask += 1) {
+    const filled = applicable.filter((_, index) => mask & (1 << index));
     const snapshot = values("danger-full-access", undefined, filled);
-    const missing = `without ${GATEWAY_SECURITY_DEFAULTS.filter((row) => !filled.includes(row))
+    const missing = `without ${applicable
+      .filter((row) => !filled.includes(row))
       .map(({ path }) => path.join("."))
       .join(", ")}`;
     assert.equal(matches(snapshot, "rev_saved"), true, `a prior revision ${missing}`);
@@ -693,6 +718,123 @@ test("first-Agent runs psql through the k3d PostgreSQL StatefulSet", async (t) =
       `^--kubeconfig \\S+ --context ${context} -n occ-system exec -i statefulset/postgres -c postgres -- psql `,
     ),
   );
+});
+
+test("first-Agent preserves live and abandoned locks until inspected recovery", async (t) => {
+  let agentReads = 0;
+  let holdOwner = true;
+  const entered = Promise.withResolvers();
+  const { directory, engineLog, env } = await k3dFixture(t, "none", (request, response) => {
+    if (request.url === "/namespaces/ns_test/agents") {
+      agentReads++;
+      if (holdOwner) {
+        entered.resolve();
+        return;
+      }
+    }
+    const data = {
+      "/installation": { id: "ins_test" },
+      "/namespaces": [{ id: "ns_test", name: "default" }],
+      "/namespaces/ns_test": { id: "ns_test", status: "ready" },
+      "/namespaces/ns_test/agents": [],
+    }[request.url];
+    response.writeHead(data === undefined ? 404 : 200, { "content-type": "application/json" });
+    response.end(JSON.stringify(data === undefined ? { error: { code: "NOT_FOUND" } } : { data }));
+  });
+  for (const name of [
+    "CODEX_ACCESS_TOKEN",
+    "CODEX_ACCESS_TOKEN_FILE",
+    "OPENAI_API_KEY",
+    "OPENAI_API_KEY_FILE",
+  ]) {
+    delete env[name];
+  }
+  const recordPath = join(
+    directory,
+    `first-agent-${createHash("sha256").update("state-contract-test").digest("hex").slice(0, 32)}.json`,
+  );
+  const lockPath = `${recordPath}.lock`;
+  // Hold a real CLI invocation after it has acquired its lock and saved its record.
+  const owner = spawn(process.execPath, [firstAgent, "state-contract-test"], {
+    cwd: repository,
+    env,
+    stdio: "ignore",
+    timeout: 10_000,
+  });
+  const ownerClosed = once(owner, "close");
+  t.after(async () => {
+    owner.kill("SIGKILL");
+    await ownerClosed;
+  });
+  await Promise.race([
+    entered.promise,
+    ownerClosed.then(() => {
+      throw new Error("Lock owner exited before its first Agent read");
+    }),
+  ]);
+  const snapshotLock = async () => {
+    const file = await open(lockPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const opened = await file.stat();
+      const named = await lstat(lockPath);
+      assert.equal(named.isFile(), true);
+      assert.equal(named.dev, opened.dev);
+      assert.equal(named.ino, opened.ino);
+      return { dev: opened.dev, ino: opened.ino, pid: await file.readFile("utf8") };
+    } finally {
+      await file.close();
+    }
+  };
+  const lock = await snapshotLock();
+  const record = await readFile(recordPath, "utf8");
+  assert.equal(lock.pid, String(owner.pid));
+  const assertUnchanged = async () => {
+    assert.deepEqual(await snapshotLock(), lock);
+    assert.equal(await readFile(recordPath, "utf8"), record);
+  };
+  const contender = await runFirstAgentAsync(env);
+  assert.match(contender, /lock exists|already using this Agent name/);
+  assert.equal(agentReads, 1);
+  await assertUnchanged();
+
+  // A killed owner leaves a genuine abandoned lock. Concurrent retries must not
+  // guess ownership from its dead PID and unlink a successor's directory entry.
+  owner.kill("SIGKILL");
+  await ownerClosed;
+  holdOwner = false;
+  const retries = await Promise.all([runFirstAgentAsync(env), runFirstAgentAsync(env)]);
+  assert.equal(agentReads, 1, "abandoned-lock retries must not enter the record workflow");
+  for (const output of retries) {
+    assert.match(output, /lock exists/);
+    assert.ok(output.includes(lockPath));
+  }
+  await assertUnchanged();
+  await assert.rejects(readFile(engineLog), { code: "ENOENT" });
+
+  // All children are reaped before the operator removes only the inspected lock.
+  // The preserved record is reused, and an ordinary action error releases the new lock.
+  await unlink(lockPath);
+  const resumed = await runFirstAgentAsync(env);
+  assert.match(resumed, /kubectl did not complete successfully \(exit 23\)/);
+  assert.equal(agentReads, 2);
+  assert.equal(await readFile(recordPath, "utf8"), record);
+  await assert.rejects(lstat(lockPath), { code: "ENOENT" });
+});
+
+test("first-Agent refuses a lock symlink without following or removing it", async (t) => {
+  const { directory, engineLog, env } = await k3dFixture(t);
+  const target = join(directory, "lock-target");
+  const lockPath = join(
+    directory,
+    `first-agent-${createHash("sha256").update("state-contract-test").digest("hex").slice(0, 32)}.json.lock`,
+  );
+  await writeFile(target, "untouched lock target", { mode: 0o600 });
+  await symlink(target, lockPath);
+  const output = await runFirstAgentAsync(env);
+  assert.match(output, /lock exists|must be private and owned/);
+  assert.equal((await lstat(lockPath)).isSymbolicLink(), true);
+  assert.equal(await readFile(target, "utf8"), "untouched lock target");
+  await assert.rejects(readFile(engineLog), { code: "ENOENT" });
 });
 
 test(

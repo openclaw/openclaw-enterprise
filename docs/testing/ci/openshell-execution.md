@@ -41,7 +41,8 @@ from the read-only cache. The real installer still builds from the checkout, wit
 the same builder and automatic engine loading. Hosted installer children also
 use preparation's fixed `SOURCE_DATE_EPOCH=0`; otherwise [BuildKit invalidates
 WORKDIR and subsequent cache entries](https://docs.docker.com/build/cache/invalidation/#workdir-and-source_date_epoch). Local installation and QA-matrix jobs use the
-same approach. Source-build preparation materializes layers on that builder even when the
+same approach for a selected source-build file or a whole lane containing one.
+Source-build preparation materializes layers on that builder even when the
 host engine already holds an identical image. The model-provider installation
 fixture uses the same selected builder for its checkout images. Cache credentials
 are not passed to tests. Other OpenShell files
@@ -108,6 +109,26 @@ candidate selection, preparation uses the pinned release charts and images.
 A mirror reference with the same released image digest keeps this release path.
 An image with a different digest requires the complete candidate selection.
 
+To check a candidate before starting installation, export all six inputs above
+and run from the OCE checkout with Node.js 24.22.1 (the repository minimum)
+or a newer supported version, Git, Docker, and Helm already available:
+
+```sh
+node scripts/ci/check-openshell-candidate.ts
+```
+
+The command reuses the preparation preflight. It inspects the three local
+immutable images and verifies both charts against the selected Git commit.
+It rejects no selection, release-only image mirrors, incomplete tuples, and
+failed verification with exit code 1. Success prints JSON with `outcome: verified`,
+the source commit, and elapsed milliseconds; failures include a fixed reason
+and timing, without raw error output.
+It creates and removes a private chart snapshot under the system temporary directory.
+`OCC_DOCKER_BIN` and `OCC_HELM_BIN` can select existing executables.
+It does not build, pull, tag, start infrastructure, or install Helm or charts.
+Use the result to choose reuse of matching supplier artifacts. It does not
+validate OCE images or source, independent build provenance, or installed behavior.
+
 ## Interpret timing and proof
 
 OpenShell lifecycle tests print live stage progress with their lane and file:
@@ -116,6 +137,24 @@ operation settles. Later stages identify model, policy and credential checks.
 A lone `started` message identifies the operation still running or interrupted;
 it does not establish failure or completion. Progress contains fixed categories
 only. Final timing receipts and test results remain the completion evidence.
+
+For canonical `openshell` and split `openshell-policy` runs, inspect
+`files[].installationPhases` in the lane result artifact for workspace Helm,
+gateway Helm and gateway Pod readiness intervals. These records do not appear
+in the live log. Each interval identifies its invocation, entry offset and
+outcome; a settled interval also has elapsed milliseconds. An entered phase
+without a terminal record remains `unknown`, including after interruption.
+The receipt retains up to eight invocations (24 intervals). The ninth invocation
+emits one workspace-entry marker that sets `truncated` if received; later
+invocations still run but emit no installation records. These intervals do not
+establish model execution or whole-file success.
+
+When a measured operation rejects, the [stage helper](../../../tests/helpers/openshell-stage.mjs)
+emits an `openshell-stage-failure` record before fixture cleanup. The CI runner
+shows its fixed category/code and workflow owner in the live log; direct Node
+runs show the structured progress record. The workflow owner is not the throw
+site. Messages, assertion values, stack text and property getters are excluded.
+Stage timings stop before diagnostics. Final test results still wait for cleanup.
 
 First-Agent stage measurements appear in `files[].measurements`: Local Setup,
 initial deployment and model calls, reuse after changing only the request nonce, native deployment, native
@@ -147,6 +186,19 @@ deploy request to Pod creation and time from creation to scheduling,
 initialization, running, readiness, and observation. They retain no Pod identity
 or configuration. Pod readiness timing does not replace the model and required
 worker proof.
+
+`tests/helpers/local-first-agent-native.mjs:nativeWorkerPlacementObservation`
+classifies public placement errors and projects environment/tunnel states, node
+connection and capability counts, and exact workspace-node matches. The expected
+node comes from the selected revision's Gateway Pod. Failure reads of
+`sessions.describe`, `environments.status` and `node.list` share a five-second
+budget. A matching session response is labeled `fresh`. If the refresh fails,
+placement is labeled `fallback` when an earlier observation exists, or `absent`
+otherwise.
+`scripts/ci/reporter.mjs:nativeFirstAgentProofDiagnostic` validates the fixed categories,
+booleans and counters again. Raw errors and identifiers do not enter the record.
+Public RPCs do not expose workspace-binding readiness or restoration; a workspace
+reference does not prove either state.
 
 Native first-Agent proof retains the exact run ID, explicit successful exec flag,
 standalone tool-proof line, and exact final nonce. After a turn is terminal, history

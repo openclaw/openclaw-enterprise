@@ -1,3 +1,4 @@
+import { extractImageFile as extractOpenShellImageFile } from "../../scripts/lib/image-file.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -21,6 +22,8 @@ import { availablePort } from "./available-port.mjs";
 import { localFirstAgentStack, ownFirstAgentWork } from "./local-first-agent-stack.mjs";
 import { localOpenShellGatewayOptions } from "./local-openshell-gateway.mjs";
 import { stopProcess } from "./stop-process.mjs";
+
+export { extractOpenShellImageFile };
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const { loadYaml } = await import(require.resolve("@kubernetes/client-node"));
@@ -193,83 +196,6 @@ async function certificates(command, directory, originHost, authorityHost) {
   };
 }
 
-export async function extractOpenShellImageFile({
-  command,
-  cleanup,
-  image,
-  filename,
-  destination,
-}) {
-  const name = `oce-git-extract-${randomUUID()}`;
-  let creationAcknowledged = false;
-  let removed = false;
-  const remove = async (final = false) => {
-    if (!removed) {
-      // A lost create reply still leaves this name owned. Cleanup must outlive
-      // cancellation, but shares one finite deadline for lookup and removal.
-      const options = {
-        signal: AbortSignal.timeout(30_000),
-        timeout: 30_000,
-      };
-      try {
-        while (true) {
-          const container = (
-            await command(
-              "docker",
-              ["ps", "--all", "--quiet", "--no-trunc", "--filter", `name=^/${name}$`],
-              options,
-            )
-          ).trim();
-          if (container) {
-            assert.match(container, /^[a-f0-9]{64}$/);
-            await command("docker", ["rm", container], options);
-            removed = true;
-            return;
-          }
-          if (creationAcknowledged) {
-            removed = true;
-            return;
-          }
-          // An unanswered create can finish after this empty snapshot. Retain
-          // ownership for teardown, where bounded reconciliation must settle it.
-          if (!final) {
-            return;
-          }
-          await delay(250, undefined, { signal: options.signal });
-        }
-      } catch (error) {
-        if (options.signal.aborted) {
-          throw new Error(`Image extraction cleanup is unresolved for container ${name}`, {
-            cause: error,
-          });
-        }
-        throw error;
-      }
-    }
-  };
-  cleanup.push(() => remove(true));
-  const errors = [];
-  try {
-    const container = (await command("docker", ["create", "--name", name, image])).trim();
-    creationAcknowledged = true;
-    assert.match(container, /^[a-f0-9]{64}$/);
-    await command("docker", ["cp", `${container}:${filename}`, destination]);
-  } catch (error) {
-    errors.push(error);
-  }
-  try {
-    await remove();
-  } catch (error) {
-    errors.push(error);
-  }
-  if (errors.length === 1) {
-    throw errors[0];
-  }
-  if (errors.length > 1) {
-    throw new AggregateError(errors, "Image extraction and container cleanup failed");
-  }
-}
-
 async function trustedSupervisor({ command, cleanup, directory, cluster, ca, checkpoint }) {
   // Read the same stock pin used by Local Setup rather than maintaining another
   // independent image version. Candidate supplier builds are rejected at entry.
@@ -340,11 +266,11 @@ async function trustedSupervisor({ command, cleanup, directory, cluster, ca, che
 }
 
 /** Installs the supported model + selected-repository path in its own k3d cluster. */
-export function createOpenShellGitInstallation(t, options = {}) {
-  return ownFirstAgentWork(t)(installOpenShellGit(t, options));
+export function createOpenShellGitInstallation(t, { witnessIssuedGit = false } = {}) {
+  return ownFirstAgentWork(t)(installOpenShellGit(t, witnessIssuedGit));
 }
 
-async function installOpenShellGit(t, { witnessIssuedGit = false, allowNpmRegistry = false }) {
+async function installOpenShellGit(t, witnessIssuedGit) {
   const eventually = (description, operation, timeout = 120_000) =>
     waitUntil(description, operation, timeout, t.signal);
   let tearingDown = false;
@@ -682,23 +608,6 @@ async function installOpenShellGit(t, { witnessIssuedGit = false, allowNpmRegist
   sandbox.configuration.policy.networkPolicies = networkPolicies.filter(
     (rule) => rule !== sourceControl[0],
   );
-  if (allowNpmRegistry) {
-    const policy = sandbox.configuration.policy;
-    policy.networkPolicies.push({
-      name: "node-packages",
-      binaries: [{ path: "/usr/local/bin/node" }],
-      endpoints: [
-        {
-          host: "registry.npmjs.org",
-          ports: [443],
-          protocol: "rest",
-          enforcement: "enforce",
-          access: "read_only",
-        },
-      ],
-    });
-    policy.codexArtifactRuleNames = [...(policy.codexArtifactRuleNames ?? []), "node-packages"];
-  }
   installation.backend.push({
     id: "repository-backend",
     type: "github",

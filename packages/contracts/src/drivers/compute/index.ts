@@ -1,3 +1,8 @@
+import type {
+  NamespaceEnsureResult,
+  NamespaceDeleteResult,
+  NamespaceDeletionEligibility,
+} from "../namespace-lifecycle.ts";
 import type { ConfigurationValidationOptions } from "../configuration/index.ts";
 import type { CredentialAttachmentStatus } from "../credential-gateway/index.ts";
 import type {
@@ -32,7 +37,7 @@ import type {
   AgentRuntimeLogChunk,
   AgentRuntimeLogRequest,
 } from "../../runtime-logs.ts";
-import type { SandboxHarnessObservation } from "../sandbox/index.ts";
+import type { SandboxNamespaceContext, SandboxHarnessObservation } from "../sandbox/index.ts";
 import type { WorkspaceSetup } from "../../workspace-setup.ts";
 
 export interface ComputeRevisionContext {
@@ -57,35 +62,12 @@ export interface WorkloadLaunchContext {
 }
 
 export interface ComputeLifecycleHooks {
-  afterNamespacePrepared?(namespace: Readonly<Namespace>, signal: AbortSignal): Promise<void>;
   beforeWorkloadStart?(
     revision: Readonly<AgentRevision>,
     launch: WorkloadLaunchContext,
     signal: AbortSignal,
   ): Promise<void>;
   beforeWorkloadStop?(revision: Readonly<AgentRevision>, signal: AbortSignal): Promise<void>;
-  beforeNamespaceDelete?(namespace: Readonly<Namespace>, signal: AbortSignal): Promise<void>;
-}
-
-export type NamespaceLifecycleFailure = "retryable" | "permanent";
-
-export interface NamespaceEnsureResult extends Scope {
-  readonly namespaceId: string;
-  readonly namespaceReady: boolean;
-  readonly failure?: NamespaceLifecycleFailure;
-  /**
-   * Optional bounded, non-secret operator explanation of `failure`, at most 256 printable
-   * characters. It names only this Namespace's own placement, never another tenant's
-   * identifiers or marker values. The worker logs it; status and audit keep only `failure`.
-   * The log keeps only letters, digits, spaces and `. _ : / @ -`; other text is dropped.
-   */
-  readonly reason?: string;
-}
-
-export interface NamespaceDeleteResult extends Scope {
-  readonly namespaceId: string;
-  readonly namespaceDeleted: boolean;
-  readonly failure?: NamespaceLifecycleFailure;
 }
 
 export interface PluginDeploymentWarning {
@@ -400,6 +382,14 @@ export interface ComputeDriver extends Driver {
   getGatewayChatEndpoint?(revision: AgentRevision): string | undefined;
   ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult>;
   deleteNamespace(namespace: Namespace): Promise<NamespaceDeleteResult>;
+  checkNamespaceDeletion?(
+    namespace: Readonly<Namespace>,
+    signal: AbortSignal,
+  ): Promise<NamespaceDeletionEligibility>;
+  resolveSandboxNamespaceContext?(
+    namespace: Readonly<Namespace>,
+    signal: AbortSignal,
+  ): Promise<SandboxNamespaceContext>;
   /**
    * The Namespace as the paired Sandbox and Credential Gateway see it: `name` is this
    * Compute Driver's runtime placement. Required to register Credential Gateway sources.

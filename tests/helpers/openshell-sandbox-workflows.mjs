@@ -1,4 +1,5 @@
-import { emitOpenShellProgress } from "../../scripts/ci/openshell-progress.mjs";
+import { runOpenShellStage } from "./openshell-stage.mjs";
+import { observeOpenShellPermissionRefusal } from "./openshell-permission-diagnostic.ts";
 import { openShellTurnoverQualification } from "../../scripts/ci/reporter.mjs";
 import {
   openShellGatewayGrpcChannel,
@@ -236,6 +237,7 @@ const {
   waitFor,
   validateOpenShellPrerequisites,
   readAgentTransportCredentials,
+  readPermissionHarnessLogs,
   waitForOpenShellGateway,
   installOpenShellGateway,
   startOpenShellGatewayPortForward,
@@ -257,7 +259,7 @@ const {
  * whose API server reaches a local Pod over the cni0 bridge, so the source is that bridge's
  * address, as `occ dev up` derives it. A configured lane value takes precedence.
  */
-async function apiServerPodProxySourceCidrs() {
+export async function apiServerPodProxySourceCidrs() {
   const configured = (process.env.OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS ?? "")
     .split(",")
     .map((cidr) => cidr.trim())
@@ -286,7 +288,7 @@ async function apiServerPodProxySourceCidrs() {
   return [`${source}/32`];
 }
 
-async function createScopedController(context, identifier, platformNamespace, kubeconfig) {
+export async function createScopedController(context, identifier, platformNamespace, kubeconfig) {
   const suffix = hash(identifier);
   const account = "openclaw-production-controller";
   const namespaceRole = `oce-openshell-namespaces-${suffix}`;
@@ -1204,17 +1206,13 @@ function bridgeRequirements(context, claimName, subPath) {
   };
 }
 
-function integrationGatewayClient(
-  GrpcOpenShellGatewayClient,
-  endpoint,
-  context,
-  { observeServiceUrl },
-) {
+function integrationGatewayClient(GrpcOpenShellGatewayClient, endpoint, { observeServiceUrl }) {
   const gateway = new GrpcOpenShellGatewayClient({ endpoint });
-  // Only Sandbox creation and service lookup are observed. Every other call, including the
-  // runtime provider-profile setup the Driver performs while provisioning, reaches the real
-  // gateway client unchanged.
   const observed = {
+    async serviceCodexReadinessStatus(serviceUrl, ...args) {
+      observeServiceUrl(serviceUrl);
+      return await gateway.serviceCodexReadinessStatus(serviceUrl, ...args);
+    },
     async createSandbox(request, signal) {
       const created = await gateway.createSandbox(request, signal);
       observeServiceUrl(created.serviceUrls[""]);
@@ -1410,6 +1408,7 @@ function createIntegrationSandboxDriverFactory(
   const gatewayState = new Map();
   const endpointClients = new Map();
   const policyWrites = [];
+  const permissionDiagnostics = new Set();
   let policyWriteBarrier;
   let backendDrivers;
 
@@ -1614,7 +1613,7 @@ function createIntegrationSandboxDriverFactory(
       const gatewayClient =
         context === undefined
           ? clientForEndpoint(endpoint)
-          : integrationGatewayClient(GrpcOpenShellGatewayClient, endpoint, context, {
+          : integrationGatewayClient(GrpcOpenShellGatewayClient, endpoint, {
               enableCompatibilityBridge: enableCompatibilityBridges,
               observeServiceUrl: (serviceUrl) => {
                 harnessServiceUrls.set(context.revision.id, serviceUrl);
@@ -1801,12 +1800,27 @@ function createIntegrationSandboxDriverFactory(
           sandboxServiceAccountName: agentSandboxServiceAccount(context),
           exact: context.requirements.workloadIdentity !== undefined,
         });
-        return await delegate(
-          context.requirements,
-          context.namespace.name,
-          endpoint,
-          context,
-        ).harnessStatus(context);
+        return await observeOpenShellPermissionRefusal(
+          () =>
+            delegate(context.requirements, context.namespace.name, endpoint, context).harnessStatus(
+              context,
+            ),
+          {
+            endpoint,
+            revisionId: context.revision.id,
+            cwd: "/sandbox/enterprise",
+            model: providerModel,
+            attempted: permissionDiagnostics,
+            serviceUrl: () => harnessServiceUrls.get(context.revision.id),
+            bearer: context.transportToken,
+            signal: context.signal,
+            readHarnessLogs: (since, signal) =>
+              readPermissionHarnessLogs(context.namespace.name, context.revision, since, signal),
+            requirePat:
+              context.revision.harnessAuth?.method === "credential_source" &&
+              context.revision.harnessAuth.loginMode === "codex_pat",
+          },
+        );
       },
       // Compute drops a native worker's exposure once its node has enrolled (finding 1657).
       async withdrawHarnessExposure(context) {
@@ -1959,7 +1973,7 @@ function createIntegrationSandboxDriverFactory(
   return createDriver;
 }
 
-function withFirstPrepareRevisionFailureDiagnostic(computeDriver) {
+export function withFirstPrepareRevisionFailureDiagnostic(computeDriver) {
   let reported = false;
   return new Proxy(computeDriver, {
     get(target, property) {
@@ -2658,6 +2672,7 @@ async function prepareProductionInstallation(
       request,
       agentPath: `/namespaces/${namespaceId}/agents/${agent.data.id}`,
       revisionId: deployed.data.id,
+      workerEvents: events,
     });
   } catch (error) {
     // These refusals already identify the failing readiness check. No Pod log read is needed.
@@ -7964,37 +7979,14 @@ const sandboxPhaseByStage = {
 // Exercise the regular dedicated Agent path with live inference and a real
 // administrator-origin chat. Direct tools.invoke probes are recorded separately:
 // an unavailable tool in a model response is not an invocation-denial proof.
-async function measureOpenShellStage(context, stage, operation) {
-  emitOpenShellProgress(stage, "started");
-  const started = performance.now();
-  let outcome = "failed";
-  try {
-    const result = await operation();
-    outcome = "passed";
-    return result;
-  } finally {
-    const elapsedMs = Math.round(performance.now() - started);
-    emitOpenShellProgress(stage, outcome);
-    if (stage !== "exposure-auth") {
-      context.diagnostic(
-        `openclaw-ci-measurement ${JSON.stringify({ kind: "openshell-stage", stage, outcome, elapsedMs })}`,
-      );
-    }
-    if (
-      selectedScenario === "full" &&
-      selectedHarness === "codex" &&
-      (!["untrusted-upstream", "model-outage"].includes(stage) || modelEndpointSupportsDnsProofs())
-    ) {
-      context.diagnostic(
-        `openclaw-ci-measurement ${JSON.stringify({
-          kind: "openshell-sandbox-phase",
-          stage: sandboxPhaseByStage[stage] ?? stage,
-          outcome,
-          elapsedMs,
-        })}`,
-      );
-    }
-  }
+function measureOpenShellStage(context, stage, operation) {
+  const sandboxPhase =
+    selectedScenario === "full" &&
+    selectedHarness === "codex" &&
+    (!["untrusted-upstream", "model-outage"].includes(stage) || modelEndpointSupportsDnsProofs())
+      ? (sandboxPhaseByStage[stage] ?? stage)
+      : undefined;
+  return runOpenShellStage(context, stage, operation, sandboxPhase);
 }
 
 export function registerGatewayToolPolicyTest() {

@@ -39,7 +39,10 @@ To stop even a partially started environment, run:
 ```
 
 This deletes only the owned cluster and its database. For a Compose control
-plane, set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup.
+plane, set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup: an unset
+control plane follows the Compute Driver, so
+`OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell`
+alone starts Kubernetes-only.
 
 ## Finite repository removal
 
@@ -73,12 +76,12 @@ runtime. Finally, withdrawing required model authority must clear the active
 revision and remove the original Sandbox and Agent Pods before the same deadline.
 Queued retirement and fixture teardown do not satisfy this final assertion.
 
-In `openshell-git-retention-real.test.ts`, the natural-expiry case reads scoped
-and unscoped npm metadata from the protected Sandbox before expiry. In the
-two-Agent case, B reads after A's live denial and before worker replacement.
-After replacement, A remains denied before origin and continues its
-conversation on the same runtime. Exact-scope `retire-runtime` fails expiry
-immediately. Retain image digests, case results, and cleanup evidence.
+`openshell-git-retention-real.test.ts` tests natural expiry separately. In its
+two-Agent case, B reads with its original grant after A's live denial, before
+worker replacement. After replacement, A must remain denied before origin and
+continue its conversation on the same runtime. This case does not qualify B's
+grant after replacement. Exact-scope `retire-runtime` fails expiry immediately;
+retain the selected image digests, case results and cleanup evidence.
 
 Finite-removal and two-Agent failures identify the failed conversation check:
 `execution identity`, `target discovery`, `gateway identity`, `model turn`, or
@@ -138,6 +141,8 @@ the standalone file. Missing inputs fail selected cases. Installation alone
 cannot prove a Linear tool call.
 
 ## Test setup and cleanup
+
+See [host relay diagnostics](docker.md#verify-host-routing-relay-diagnostics).
 
 Stop the reusable environment before running these tests. Each creates and
 removes its own disposable cluster. Install Docker or Podman, k3d, kubectl,

@@ -176,6 +176,29 @@
       ]
     },
     {
+      "path": "tests/integration/namespace-driver-openshell-k3d-real.test.ts",
+      "expectedTests": [
+        "bootstrap reconciles OpenShell gateways and Workspaces before any Agent, then runs Agents in both Namespaces"
+      ],
+      "requiredEnv": [
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+        "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+        "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+        "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+        "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+        "OCC_TEST_OPENSHELL_HELM",
+        "OCC_TEST_OPENSHELL_HELM_CHART",
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
+        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+      ],
+      "env": {
+        "OCC_TEST_NAMESPACE_OPENSHELL_REAL": "1",
+        "OCC_TEST_OPENSHELL_HARNESS": "openclaw"
+      }
+    },
+    {
       "path": "tests/integration/openshell-git-retention-real.test.ts",
       "expectedTests": [
         "OpenShell retains its runtime after Git expiry and worker restart",

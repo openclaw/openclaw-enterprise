@@ -18,6 +18,17 @@ export interface SessionStatus {
   }>;
 }
 
+export function hasUnsettledCleanupCounts(
+  status: Pick<SessionStatus, "activeUses" | "cleanup">,
+): boolean {
+  return (
+    status.activeUses !== 0 ||
+    status.cleanup.active !== 0 ||
+    status.cleanup.pending !== 0 ||
+    status.cleanup.uncertain !== 0
+  );
+}
+
 /** Protected single-repository operator input; registry admission uses the bound form. */
 export type RepositoryCredentialSessionInput = Readonly<{
   durationSeconds: number;

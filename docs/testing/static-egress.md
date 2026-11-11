@@ -233,9 +233,12 @@ cluster or model runtime and supplies no installation receipt.
 
 ## Select the prepared connected lane
 
-Run [the test](../../tests/integration/agent-openshell-static-egress-k3d-real.test.mjs)
-via manual `egress-connected`, outside CI. Authenticated controllers must accept
-fresh sources, or use [A-to-B](static-egress-upgrade.md) for bundled retirement.
+Run [the installed test](../../tests/integration/agent-openshell-static-egress-k3d-real.test.mjs)
+with manual `egress-connected`, outside CI/GitHub dispatch and generic `openshell`
+fixtures. Existing qualified installations require authenticated controllers and
+a supplier gateway. Missing inputs fail; discovery skips prove nothing.
+Authenticated controllers must accept fresh sources, or use
+[A-to-B](static-egress-upgrade.md) for bundled retirement.
 
 Use a ready Namespace with one placement in disposable loopback k3d, enforcing
 NetworkPolicies and the [OpenShell prerequisites](openshell.md).
@@ -312,8 +315,12 @@ Killing a local client does not establish remote termination. Never replay an un
 
 ### Read evidence and retain cleanup custody
 
-Retain `.build/egress-connected/runtime-<uuid>/`: atomic checkpoints, resource
-IDs, observations and cleanup custody. Never replay uncertain operations.
+Retain `.build/egress-connected/runtime-<uuid>/`. `apiOperations` records operation
+IDs, phases, HTTP statuses, allowlisted error codes (`UNKNOWN` otherwise), and
+canonical request IDs checked for known credentials. Bodies, messages and other
+headers are excluded. Interrupted or undecodable responses remain `unknown`.
+Cleanup preserves earlier entries and requires its own successful checkpoint.
+`lastApi` identifies the latest attempt.
 
 Gateway selection has a two-minute polling budget, subject to the existing
 command and overall deadlines. It requires exactly one nondeleting Pod for the

@@ -1,9 +1,8 @@
-import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import test from "node:test";
 import { promisify } from "node:util";
 
-import { redactedQaTail } from "../helpers/qa-secrets.mjs";
+import { pluginInstallOutcome } from "../helpers/openshell-plugin-install-reporter.ts";
 
 test(
   "OpenShell Agent workflow installs and retains selected Codex plugins",
@@ -21,23 +20,30 @@ test(
       process.execPath,
       [
         "--test",
-        "--test-reporter=tap",
-        "--test-name-pattern=^OpenShell installs selected Codex plugins",
+        "--test-reporter=./tests/helpers/openshell-plugin-install-reporter.ts",
+        "--test-name-pattern=^OpenShell installs selected Codex plugins before WebSocket startup$",
         "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
       ],
       { env, timeout: 2_650_000, maxBuffer: 32 * 1024 * 1024 },
-    ).catch((error) => {
-      const detail = redactedQaTail(`${error.stdout ?? ""}\n${error.stderr ?? ""}`, env, {
-        lines: 100,
-        lineChars: 2000,
-      }).join("\n");
-      throw new Error(`OpenShell plugin installation workflow failed:\n${detail}`);
-    });
-    assert.match(
-      result.stdout,
-      /ok 1 - OpenShell installs selected Codex plugins before WebSocket startup/,
+    ).then(
+      ({ stdout }) => ({ stdout, cleanExit: true, killedByTimeout: false }),
+      (error: unknown) => {
+        const details = error !== null && typeof error === "object" ? error : {};
+        return {
+          stdout: "stdout" in details && typeof details.stdout === "string" ? details.stdout : "",
+          cleanExit: false,
+          // execFile owns this kill marker: its only kill paths are timeout and
+          // maxBuffer. A nested runner may drain SIGTERM and close with exit 1.
+          killedByTimeout:
+            "killed" in details &&
+            details.killed === true &&
+            !("code" in details && details.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"),
+        };
+      },
     );
-    assert.match(result.stdout, /# pass 1\b/);
-    assert.match(result.stdout, /# skipped 0\b/);
+    const failure = pluginInstallOutcome(result.stdout, result.cleanExit, result.killedByTimeout);
+    if (failure !== undefined) {
+      throw new Error(failure);
+    }
   },
 );

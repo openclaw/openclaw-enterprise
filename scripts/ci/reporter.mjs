@@ -1,9 +1,11 @@
+import { skipperOperationDiagnostic } from "./skipper-release.ts";
 import {
   boundedProgressLines,
   openShellProgress,
   openShellProgressPrefix,
 } from "./openshell-progress.mjs";
 import { failureInputLimit } from "./failure-redaction.mjs";
+import { recordsCoverage } from "./full-integration-coverage.ts";
 import {
   openShellGitRetentionKind,
   projectOpenShellGitRetention,
@@ -142,6 +144,16 @@ const openShellPolicyChecks = new Set([
   "editing-state-enforcement",
   "grant-revocation",
 ]);
+const firstAgentStages = new Set([
+  "setup",
+  "cleanup",
+  "initial-deploy-and-model",
+  "reuse-model",
+  "native-deploy",
+  "native-model",
+  "native-redeploy",
+  "native-resumed-model",
+]);
 const openShellSandboxStages = new Set([
   "installation",
   "exposure-auth",
@@ -199,39 +211,13 @@ function safeMeasurement(value) {
     return validTurn && validStatus ? { kind, checkpoint, turn, status } : undefined;
   }
   if (isRecord(value) && value.kind === openShellStageMeasurementKind) {
-    if (
-      !openShellProgress({ kind: value.kind, stage: value.stage, outcome: value.outcome }) ||
-      value.stage === "exposure-auth" ||
-      !["passed", "failed"].includes(value.outcome) ||
-      !Number.isInteger(value.elapsedMs) ||
-      value.elapsedMs < 0 ||
-      value.elapsedMs > 7_200_000
-    ) {
-      return undefined;
-    }
-    return {
-      kind: value.kind,
-      stage: value.stage,
-      outcome: value.outcome,
-      elapsedMs: value.elapsedMs,
-    };
+    const { kind, stage, outcome } = value;
+    const allowedStage =
+      stage !== "exposure-auth" && Boolean(openShellProgress({ kind, stage, outcome }));
+    return safeStageMeasurement(value, allowedStage, 7_200_000);
   }
   if (isRecord(value) && value.kind === openShellSandboxMeasurementKind) {
-    if (
-      !openShellSandboxStages.has(value.stage) ||
-      !["passed", "failed"].includes(value.outcome) ||
-      !Number.isInteger(value.elapsedMs) ||
-      value.elapsedMs < 0 ||
-      value.elapsedMs > 2_400_000
-    ) {
-      return undefined;
-    }
-    return {
-      kind: value.kind,
-      stage: value.stage,
-      outcome: value.outcome,
-      elapsedMs: value.elapsedMs,
-    };
+    return safeStageMeasurement(value, openShellSandboxStages.has(value.stage), 2_400_000);
   }
   if (isRecord(value) && value.kind === openShellPolicyCheckKind) {
     return openShellPolicyChecks.has(value.check)
@@ -311,6 +297,7 @@ function safeMeasurement(value) {
         "unknown",
         "canceled",
         "deadline",
+        "controller-image-import",
         "routing",
         "network-verification",
         "network-cleanup",
@@ -506,30 +493,7 @@ function safeMeasurement(value) {
     return result;
   }
   if (isRecord(value) && value.kind === "local-first-agent") {
-    if (
-      ![
-        "setup",
-        "cleanup",
-        "initial-deploy-and-model",
-        "reuse-model",
-        "native-deploy",
-        "native-model",
-        "native-redeploy",
-        "native-resumed-model",
-      ].includes(value.stage) ||
-      !["passed", "failed"].includes(value.outcome) ||
-      !Number.isInteger(value.elapsedMs) ||
-      value.elapsedMs < 0 ||
-      value.elapsedMs > 7_200_000
-    ) {
-      return undefined;
-    }
-    return {
-      kind: value.kind,
-      stage: value.stage,
-      outcome: value.outcome,
-      elapsedMs: value.elapsedMs,
-    };
+    return safeStageMeasurement(value, firstAgentStages.has(value.stage), 7_200_000);
   }
   if (isRecord(value) && value.kind === "runtime-model-probe") {
     return safeModelProbeMeasurement(value);
@@ -706,6 +670,20 @@ function safeOpenShellInitialTurnoverMeasurement(value) {
   return measurement.qualification === openShellTurnoverQualification(measurement)
     ? measurement
     : undefined;
+}
+
+function safeStageMeasurement(value, allowedStage, maxElapsedMs) {
+  const { kind, stage, outcome, elapsedMs } = value;
+  if (
+    !allowedStage ||
+    (outcome !== "passed" && outcome !== "failed") ||
+    !Number.isInteger(elapsedMs) ||
+    elapsedMs < 0 ||
+    elapsedMs > maxElapsedMs
+  ) {
+    return undefined;
+  }
+  return { kind, stage, outcome, elapsedMs };
 }
 
 const modelProbeMeasurementCases = new Set([
@@ -1308,6 +1286,9 @@ function failureDiagnostic(error) {
   if (!isRecord(diagnostic)) {
     return undefined;
   }
+  if (diagnostic.kind === "skipper-operation") {
+    return skipperOperationDiagnostic(diagnostic);
+  }
   if (diagnostic.kind === "openshell-startup-process") {
     const keys = Reflect.ownKeys(diagnostic);
     if (!keys.includes("kind") || !keys.includes("outcome")) {
@@ -1732,7 +1713,7 @@ function* interruptedOutput({ lines, omitted }) {
   }
 }
 
-function location(data = {}) {
+function location(data = {}, recordCoverage = false) {
   const error = data.details?.error;
   const cause = error?.cause ?? error;
   const fileFailure = typeof data.file === "string" && data.name === data.file;
@@ -1758,6 +1739,22 @@ function location(data = {}) {
     type: data.type,
     testId: data.testId,
     parentId: data.parentId,
+    caseAssertionFailure:
+      recordCoverage &&
+      !fileFailure &&
+      data.details?.type === "test" &&
+      error?.failureType === "testCodeFailure" &&
+      cause?.code === "ERR_ASSERTION" &&
+      cause?.name === "AssertionError"
+        ? true
+        : undefined,
+    caseSubtestsFailed:
+      recordCoverage &&
+      !fileFailure &&
+      (data.details?.type === "test" || data.details?.type === "suite") &&
+      error?.failureType === "subtestsFailed"
+        ? true
+        : undefined,
     error: error
       ? {
           code: error.code === "ERR_TEST_FAILURE" ? "ERR_TEST_FAILURE" : undefined,
@@ -1793,6 +1790,7 @@ function location(data = {}) {
 // Only for scripts/ci/run-tests.mjs: failure text here is unredacted, so never
 // point a step whose stdout reaches a log or artifact at this reporter directly.
 export default async function* jsonLinesReporter(source) {
+  const recordCoverage = recordsCoverage(process.env.GITHUB_WORKFLOW);
   const output = outputTail();
   const progress = [];
   const readProgress = boundedProgressLines((line) => {
@@ -1864,6 +1862,19 @@ export default async function* jsonLinesReporter(source) {
     if (event.type === "test:fail") {
       failed = true;
     }
+    if (
+      recordCoverage &&
+      event.type === "test:summary" &&
+      typeof event.data?.file === "string" &&
+      event.data.counts
+    ) {
+      const { tests, passed, failed, cancelled, skipped, todo, suites } = event.data.counts;
+      yield `${JSON.stringify({
+        type: "test:summary",
+        data: { tests, passed, failed, cancelled, skipped, todo, suites },
+      })}\n`;
+      continue;
+    }
     if (event.type === "test:diagnostic") {
       const message = event.data?.message;
       if (typeof message !== "string") {
@@ -1895,7 +1906,7 @@ export default async function* jsonLinesReporter(source) {
 
     yield `${JSON.stringify({
       type: event.type,
-      data: location(event.data),
+      data: location(event.data, recordCoverage),
     })}\n`;
   }
   // Passing files send nothing extra.

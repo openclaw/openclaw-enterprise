@@ -8,7 +8,7 @@ import {
   readRuntimeRepositoryManifest,
   requireCurrentBinding,
 } from "./manifest.ts";
-import { readPrivateFile } from "./private-files.ts";
+import { clientSessionFileMaxBytes, readPrivateFile } from "./private-files.ts";
 import { isGitHubPullUrl, isSameGitHubRepository } from "../../../access/client-contracts.ts";
 
 const USAGE =
@@ -413,9 +413,12 @@ async function transport(head: string, base: string, manifestRoot?: string) {
   const check = () => requireCurrentBinding(b);
   check();
   const ca = b.configuration.hasPublicCa
-    ? await readPrivateFile(join(b.directory, "ca.pem"), 65536)
+    ? await readPrivateFile(join(b.directory, "ca.pem"), clientSessionFileMaxBytes["ca.pem"])
     : undefined;
-  const bearer = await readPrivateFile(join(b.directory, "bearer"), 256);
+  const bearer = await readPrivateFile(
+    join(b.directory, "bearer"),
+    clientSessionFileMaxBytes.bearer,
+  );
   return { client: b.client, ca, bearer, check, openShell: false };
 }
 /** The one stderr line for a failure, and the exit code: 2 for usage, 1 otherwise. */

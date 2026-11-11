@@ -3,13 +3,10 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs
 import { join, resolve } from "node:path";
 import { defaultK3sImage, lanesWithoutK3sAddons } from "../../scripts/ci/prepare.mjs";
 import { startFakePostgres } from "./fake-postgres-server.mjs";
-import {
-  commandShim as fixtureCommandShim,
-  startCommandServer,
-} from "./fixture-command-server.mjs";
+import { commandShim as fixtureCommandShim, startCommandServer } from "./fixture-command-server.ts";
 
 // The external commands preparation runs (docker, podman, k3d, kubectl, helm, yq,
-// corepack), faked for ci-prepare*.test.mjs through fixture-command-server.mjs: each is
+// corepack), faked for ci-prepare*.test.mjs through fixture-command-server.ts: each is
 // a bash script answered by the test's command server. scripts/ci/prepare.mjs and
 // cleanup.mjs still start every command as a real process and own its timeouts, signals
 // and pipes; only the scenario logic below runs in the test process. A command sends
@@ -266,7 +263,11 @@ async function fakeCommand({
         return finish();
       }
     }
-    if (scenario === "cache-progress" && equals(args.slice(0, 2), ["buildx", "build"])) {
+    if (
+      (scenario === "cache-progress" ||
+        (scenario === "save-failed" && env.CI_FIXTURE_LANE === "k3d-otel")) &&
+      equals(args.slice(0, 2), ["buildx", "build"])
+    ) {
       // Repeated RUN headers model BuildKit switching between active vertices.
       // Probe and load deliberately differ: a load can reuse work from the probe.
       // Include private-looking text to prove the summary never forwards raw output.
@@ -288,6 +289,16 @@ async function fakeCommand({
     // The cache-only probe reports each image's config digest. In the engine-*
     // scenarios the cache resolves to images the engine may hold: engine-holds-images
     // holds both; the others fail one step of the probe.
+    // Artifact validation can fail before a runtime tag is created. Model the
+    // Docker absence boundary; the real importer checks source/run/digest identity.
+    if (
+      scenario === "artifact-import" &&
+      ((equals(args.slice(0, 2), ["image", "inspect"]) && args[2]?.startsWith("localhost/")) ||
+        (equals(args.slice(0, 3), ["image", "rm", "-f"]) && args[3]?.startsWith("localhost/")))
+    ) {
+      stderr("Error response from daemon: No such image: " + args.at(-1) + "\n");
+      return exit(1);
+    }
     const heldImages = {
       controller: "sha256:" + "d".repeat(64),
       runtime: "sha256:" + "e".repeat(64),
@@ -391,7 +402,7 @@ async function fakeCommand({
       if (role === "controller" && scenario === "controller-cache-export-hung") {
         return hang();
       }
-      if (role === "controller" && scenario === "controller-cache-export-failed") {
+      if (scenario === `${role}-cache-export-failed`) {
         stderr("#52 exporting to GitHub Actions Cache\nERROR: synthetic export failure\n");
         return exit(1);
       }
@@ -444,6 +455,11 @@ async function fakeCommand({
       assert.match(args[3], /^localhost\/openclaw-ci-image-[a-z0-9-]+\/fixture:local$/);
       state.tag = args[3];
       return finish();
+    }
+    if (state.runtime && equals(args, ["image", "inspect", state.runtime])) {
+      // A source-built runtime can enter the same export path as the fixture image.
+      state.tag = state.runtime;
+      return finish("[]\n");
     }
     if (equals(args, ["image", "inspect", state.tag])) {
       if (scenario === "hung-host-owned") {
@@ -525,6 +541,8 @@ async function fakeCommand({
         "images",
         "import",
         "--all-platforms",
+        "--label",
+        "io.cri-containerd.pinned=pinned",
         "-",
       ]);
       // The worker's containerd stops answering during its first import (finding 1006). The
@@ -630,13 +648,22 @@ async function fakeCommand({
         return finish(
           "REF TYPE DIGEST SIZE PLATFORMS LABELS\n" +
             references
-              .map(
-                (ref) =>
-                  ref +
-                  " application/vnd.oci.image.manifest.v1+json " +
-                  manifestDigest +
-                  " 1 linux/amd64 -\n",
-              )
+              .map((ref) => {
+                const mediaType =
+                  {
+                    "oci-index": "application/vnd.oci.image.index.v1+json",
+                    "docker-manifest-list":
+                      "application/vnd.docker.distribution.manifest.list.v2+json",
+                    "docker-manifest": "application/vnd.docker.distribution.manifest.v2+json",
+                  }[scenario] ?? "application/vnd.oci.image.manifest.v1+json";
+                const digest =
+                  scenario === "wrong-worker-containerd-digest" &&
+                  node === "agent-0" &&
+                  ref === alias
+                    ? "sha256:" + "d".repeat(64)
+                    : manifestDigest;
+                return `${ref} ${mediaType} ${digest} 1 linux/amd64 -\n`;
+              })
               .join(""),
         );
       }
@@ -648,6 +675,18 @@ async function fakeCommand({
           state.aliases ??= {};
           state.aliases[node] = args[8];
         }
+        return finish();
+      }
+      if (scenario === "missing-alias" && equals(args.slice(2, 7), [...ctr, "label"])) {
+        stderr("ctr: canonical image not found\n");
+        return exit(1);
+      }
+      if (
+        equals(args.slice(2), [...ctr, "label", alias, "io.cri-containerd.pinned=pinned"]) &&
+        alias
+      ) {
+        state.pinned ??= {};
+        state.pinned[node] = true;
         return finish();
       }
       if (
@@ -687,7 +726,39 @@ async function fakeCommand({
           );
           return exit(1);
         }
-        return finish(JSON.stringify({ status: { id: configId, repoDigests: [alias] } }));
+        const status = {
+          id: configId,
+          repoDigests: [alias],
+          pinned:
+            state.pinned?.[node] === true &&
+            !(
+              node === "agent-0" &&
+              (scenario === "unpinned-worker-cri" ||
+                (scenario === "lagging-worker-pin" && state.criLookups[node] <= 2))
+            ),
+        };
+        if (node === "agent-0") {
+          switch (scenario) {
+            case "wrong-worker-cri-digest":
+              status.repoDigests = [alias.replace(manifestDigest, "sha256:" + "d".repeat(64))];
+              break;
+            case "string-worker-cri-digests":
+              status.repoDigests = `${alias}0`;
+              break;
+            case "mixed-worker-cri-digests":
+              status.repoDigests = [alias, 42];
+              break;
+            case "malformed-worker-cri-pin":
+              status.pinned = "true";
+              break;
+            case "lagging-worker-missing-pin":
+              if (state.criLookups[node] <= 2) {
+                delete status.pinned;
+              }
+              break;
+          }
+        }
+        return finish(JSON.stringify({ status }));
       }
     }
   }
@@ -745,12 +816,17 @@ async function fakeCommand({
       } else {
         assert.deepEqual(args.slice(5, 10), ["--servers", "1", "--agents", "0", "--api-port"]);
         assert.match(args[10], /^127\.0\.0\.1:\d+$/);
-        assert.deepEqual(args.slice(11), [
+        const options = [
           "--kubeconfig-update-default=false",
           "--kubeconfig-switch-context=false",
           "--no-lb",
           ...addonArgs,
-        ]);
+        ];
+        assert.ok(
+          equals(args.slice(11), options) ||
+            (env.CI_FIXTURE_LANE === "staging-signin" &&
+              equals(args.slice(11), [...options, "--no-rollback"])),
+        );
       }
       state.cluster = args[2];
       state.agents = Number(args[args.indexOf("--agents") + 1]);
@@ -1065,7 +1141,7 @@ async function fakeCommand({
   throw new Error("Unexpected external command: " + command + " " + JSON.stringify(args));
 }
 
-// A fake command for this fixture's server; see fixture-command-server.mjs.
+// A fake command for this fixture's server; see fixture-command-server.ts.
 export function commandShim(options) {
   return fixtureCommandShim({ ...options, forwardedEnv });
 }

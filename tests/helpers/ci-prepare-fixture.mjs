@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { commandShim, startFixtureCommandServer } from "./ci-prepare-fixture-command.mjs";
@@ -141,6 +141,7 @@ export async function fixtureImageCommands(
   for (const file of ["docker.mjs", "k3d.mjs", "kubectl.mjs", "podman", "corepack", "helm", "yq"]) {
     await writeFixtureCommand(join(bin, file), file.replace(/\.mjs$/, ""), server);
   }
+  await symlink(process.execPath, join(bin, "node"));
   const statePath = join(root, "state.json");
   const githubEnv = join(root, "github.env");
   // The fake PostgreSQL server's Unix socket (ci-prepare-fixture-command.mjs).
@@ -176,7 +177,22 @@ export async function fixtureImageCommands(
   return {
     statePath,
     githubEnv,
+    runShell: (script, extraEnv = {}) =>
+      spawnResult(hostProgram("bash"), ["-e", "-o", "pipefail", "-c", script], {
+        env: { ...env, ...extraEnv },
+      }),
     prepare: (args = [], options) => run("prepare.mjs", [...prepareArgs, ...args], options),
+    prepareStagingSignin: () =>
+      spawnResult(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          'import { prepareStagingSigninCluster } from "./scripts/ci/prepare.mjs"; await prepareStagingSigninCluster(process.argv[1]);',
+          statePath,
+        ],
+        { env },
+      ),
     warmImageCache: (args = []) =>
       run("prepare.mjs", ["--warm-image-cache", "--state", statePath, ...args]),
     prepareFile: (file) =>
