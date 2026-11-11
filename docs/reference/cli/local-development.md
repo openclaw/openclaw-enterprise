@@ -22,8 +22,9 @@ an outer checkout that could own a different stack.
 | `occ dev down --volumes`                        | Also removes Compose volumes. Docker Compute Namespace networks and local key files remain. Kubernetes cleanup already removes its volumes.                                        |
 
 `occ dev check` uses the current checkout's recorded state and loopback kubeconfig.
-It waits up to ten seconds for the Agent Sandbox controller rollout, requires a
-ready replica, and prints bounded rollout diagnostics on failure. It does not
+It requires an available Agent Sandbox controller replica and prints bounded
+rollout diagnostics on failure. A serving controller remains sufficient while
+its replacement starts. It does not
 change workloads or prove Agent, model, or external-service readiness. Docker
 Compute is unsupported; a recorded stack with no Sandbox Driver reports that
 no OpenShell dependency was checked. The first-Agent helper runs this check

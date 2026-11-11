@@ -464,21 +464,22 @@ async function k3dFixture(t, sandboxDriver = "none", handleRequest) {
   echo "Model credentials reached kubectl" >&2; exit 72
 fi
 case "$*" in
-  "rollout status "*) test "$FIRST_AGENT_TEST_CONTROLLER_UNAVAILABLE" != 1 ;;
-  *" get deployment "*) printf '%s' '${JSON.stringify({
-    items: [
-      {
-        kind: "Deployment",
-        name: "agent-sandbox-controller",
-        namespace: "agent-sandbox-system",
-        uid: "00000000-0000-4000-8000-000000000002",
-        selectorApp: "agent-sandbox-controller",
-        selectorLabels: 1,
-        readyReplicas: 1,
-        availableReplicas: 1,
-      },
-    ],
-  })}' ;;
+  *" get deployment "*) test "$FIRST_AGENT_TEST_CONTROLLER_UNAVAILABLE" != 1 || exit 1; printf '%s' '${JSON.stringify(
+    {
+      items: [
+        {
+          kind: "Deployment",
+          name: "agent-sandbox-controller",
+          namespace: "agent-sandbox-system",
+          uid: "00000000-0000-4000-8000-000000000002",
+          selectorApp: "agent-sandbox-controller",
+          selectorLabels: 1,
+          readyReplicas: 1,
+          availableReplicas: 1,
+        },
+      ],
+    },
+  )}' ;;
   *" config view "*) printf '%s' '${JSON.stringify({
     "current-context": context,
     clusters: [{ cluster: { server: "https://127.0.0.1:6443" } }],

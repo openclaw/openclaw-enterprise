@@ -345,15 +345,15 @@ test(
     // The controller can disappear after Local Setup has reported success. Exercise
     // first-agent's real preflight before any credential or Agent write, then restore
     // only this test-owned Deployment and continue the normal managed workflow.
-    const listAgents = async () =>
-      JSON.parse(
+    const listResourceIds = async (resource) => {
+      const items = JSON.parse(
         (
           await execute(
             occ,
             [
               "--namespace",
               namespaceList.items[0].metadata.labels["openclaw.dev/namespace"],
-              "agent",
+              resource,
               "list",
               "--output",
               "json",
@@ -369,7 +369,12 @@ test(
           )
         ).stdout,
       );
-    const agentsBefore = await listAgents();
+      assert.ok(Array.isArray(items));
+      return items.map((item) => item.id).sort();
+    };
+    const inventory = () =>
+      Promise.all(["agent", "secret", "credential-source"].map(listResourceIds));
+    const resourcesBefore = await inventory();
     const controllerArgs = ["-n", "agent-sandbox-system", "deployment/agent-sandbox-controller"];
     const controller = JSON.parse(
       (
@@ -431,6 +436,7 @@ test(
               "kubectl",
               [
                 ...kubectl,
+                "--request-timeout=3s",
                 "get",
                 "pods",
                 "-n",
@@ -440,7 +446,11 @@ test(
                 "-o",
                 "json",
               ],
-              { env: environment },
+              {
+                env: environment,
+                timeout: Math.min(5000, Math.max(1, deadline - Date.now())),
+                maxBuffer: 1024 * 1024,
+              },
             )
           ).stdout,
         );
@@ -466,7 +476,7 @@ test(
           { cwd: repository, env: environment, timeout: 45_000, maxBuffer: 256 * 1024 },
         ),
         (error) => {
-          assert.match(error.stderr, /Agent Sandbox controller is unavailable/);
+          assert.match(error.stderr, /Agent Sandbox controller readiness could not be verified/);
           assert.match(error.stderr, /ErrImageNeverPull/);
           assert.doesNotMatch(
             error.stderr,
@@ -476,9 +486,9 @@ test(
         },
       );
       assert.deepEqual(
-        await listAgents(),
-        agentsBefore,
-        "Dependency refusal must not create an Agent",
+        await inventory(),
+        resourcesBefore,
+        "Dependency refusal must not create an Agent, Secret, or Credential Source",
       );
     } finally {
       await patchController({

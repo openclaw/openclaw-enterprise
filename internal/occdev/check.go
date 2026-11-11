@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"time"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -43,33 +42,24 @@ func Check(ctx context.Context, opts Options) error {
 	if err := checkDevelopmentKubeconfig(kubeconfig, state.Cluster); err != nil {
 		return err
 	}
-	r.env["KUBECONFIG"] = kubeconfig
-	// Keep a bounded check separate from the longer initial installation wait.
-	// A failed dependency must not consume the first-Agent activation deadline.
-	checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	// kubectl config errors may include credentials. Emit only the bounded,
-	// structured diagnostic below, never this subprocess's raw output.
-	command := r.command(checkCtx, "kubectl", "rollout", "status", "deployment/"+agentSandboxName,
-		"--namespace", agentSandboxNamespace, "--timeout=10s", "--request-timeout=10s",
-		"--kubeconfig", kubeconfig, "--context", "k3d-"+state.Cluster)
-	command.WaitDelay = 200 * time.Millisecond
-	started := time.Now()
-	err = command.Run()
-	r.commandTiming("kubectl", command.Args[1:], started, err)
-	if err == nil {
-		observed := r.agentSandboxRead(checkCtx, state, "deployment", agentSandboxDeploymentTemplate, 1)
-		// A scaled-to-zero Deployment can have a completed rollout without a
-		// controller capable of creating the workload Pod.
-		if observed.Status != "ok" || len(observed.Items) != 1 || !agentSandboxDeploymentValid(observed.Items[0]) ||
-			observed.Items[0].ReadyReplicas < 1 || observed.Items[0].AvailableReplicas < 1 {
-			err = fmt.Errorf("the recorded Agent Sandbox controller has no verified ready replica")
-		}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	if err != nil {
-		fmt.Fprintln(r.opts.Err, "Agent Sandbox controller is unavailable; inspect its rollout and image-pull status.")
-		r.captureAgentSandboxRollout(state)
-		return fmt.Errorf("Agent Sandbox controller is unavailable; inspect its rollout and image-pull status in %s, restore it, then retry the same first-Agent command: %w", agentSandboxNamespace, err)
+	// Availability, not replacement rollout completion, gates new Agents. An
+	// existing ready controller can still provision while its replacement starts.
+	projection := agentSandboxTemplateCommon + `{"items":[{"kind":"Deployment",{{template "identity" .}},"readyReplicas":{{template "n" .status.readyReplicas}},"availableReplicas":{{template "n" .status.availableReplicas}}}]}`
+	observed := r.agentSandboxRead(ctx, state, "deployment", projection, 1)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if observed.Status != "ok" || len(observed.Items) != 1 || observed.Items[0].Kind != "Deployment" ||
+		observed.Items[0].Name != agentSandboxName || observed.Items[0].ReadyReplicas < 1 || observed.Items[0].AvailableReplicas < 1 {
+		fmt.Fprintln(r.opts.Err, "Agent Sandbox controller readiness could not be verified; inspect its image-pull status.")
+		r.captureAgentSandboxRollout(ctx, state)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return fmt.Errorf("Agent Sandbox controller readiness could not be verified; inspect %s, restore a ready replica, then retry the same first-Agent command", agentSandboxNamespace)
 	}
 	fmt.Fprintln(r.opts.Out, "Agent Sandbox controller is ready. Agent and model readiness were not checked.")
 	return nil
@@ -94,7 +84,8 @@ func checkDevelopmentKubeconfig(path, cluster string) error {
 		Clusters []struct {
 			Name    string `yaml:"name"`
 			Cluster struct {
-				Server string `yaml:"server"`
+				Server   string `yaml:"server"`
+				ProxyURL string `yaml:"proxy-url"`
 			} `yaml:"cluster"`
 		} `yaml:"clusters"`
 	}
@@ -109,6 +100,9 @@ func checkDevelopmentKubeconfig(path, cluster string) error {
 	}
 	for _, item := range config.Clusters {
 		if selected != "" && item.Name == selected {
+			if item.Cluster.ProxyURL != "" {
+				return fmt.Errorf("recorded Kubernetes endpoint must not use an explicit proxy")
+			}
 			server, err := url.Parse(item.Cluster.Server)
 			if err == nil && server.Scheme == "https" && server.User == nil && server.RawQuery == "" && server.Fragment == "" && (server.Path == "" || server.Path == "/") &&
 				(server.Hostname() == "localhost" || net.ParseIP(server.Hostname()).IsLoopback()) {
