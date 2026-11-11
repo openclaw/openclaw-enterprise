@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import pg from "pg";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
-import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { localMigratorDatabaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -28,7 +28,7 @@ test(
       label: "ceiling",
       authSecret: "ceiling-integration-session-secret-32-characters",
     });
-    const { controller, pool, state, principal } = fixture;
+    const { controller, pool, state, principal, databaseUrl: fixtureDatabaseUrl } = fixture;
     const request = async (method: string, body?: unknown) => {
       const response = await fixture.inject(method, path, body);
       return { status: response.statusCode, body: response.json(), data: response.json().data };
@@ -231,7 +231,7 @@ test(
       "exact Installation administer denials persist attributable evidence",
       async () => {
         const migrator = new pg.Pool({
-          connectionString: process.env.OCC_MIGRATION_DATABASE_URL,
+          connectionString: localMigratorDatabaseUrl(fixtureDatabaseUrl),
           max: 1,
         });
         const restriction = `ceiling-denial-${randomUUID()}`;
@@ -324,7 +324,7 @@ test(
       async () => {
         const name = `ceiling-lease-${randomUUID()}`;
         const leasePool = new pg.Pool({
-          connectionString: process.env.OCC_TEST_DATABASE_URL,
+          connectionString: fixtureDatabaseUrl,
           max: 2,
           application_name: name,
         });
@@ -474,7 +474,7 @@ test(
       async () => {
         // Only the migrator can delete this state. The application role cannot manufacture absence.
         const migrator = new pg.Pool({
-          connectionString: process.env.OCC_MIGRATION_DATABASE_URL,
+          connectionString: localMigratorDatabaseUrl(fixtureDatabaseUrl),
           max: 1,
         });
         try {
@@ -484,7 +484,7 @@ test(
           );
           assert.equal((await request("GET")).status, 503);
           const worker = createControllerWorker({
-            pool: new pg.Pool({ connectionString: process.env.OCC_TEST_DATABASE_URL }),
+            pool: new pg.Pool({ connectionString: fixtureDatabaseUrl }),
             computeDriver: createDevelopmentComputeDriver(),
             emit() {},
           });

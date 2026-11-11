@@ -18,7 +18,11 @@ import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.t
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import {
+  databaseUrl,
+  localMigratorDatabaseUrl,
+  requiresPostgres,
+} from "../helpers/postgres-database.mjs";
 import { expireWorkLease } from "../helpers/postgres-worker-revision-support.mjs";
 import { callerDenied, GRANT_EXCEEDS_CEILING } from "../helpers/refusal-text.mjs";
 
@@ -1167,7 +1171,7 @@ test(
     const fixture = await createPolicyApp(t, true);
     const { pool, state, inject, deployAgent, grant, sandboxDriver } = fixture;
     const migrator = new pg.Pool({
-      connectionString: process.env.OCC_MIGRATION_DATABASE_URL,
+      connectionString: localMigratorDatabaseUrl(fixture.databaseUrl),
       max: 1,
     });
     t.after(() => migrator.end());
@@ -1277,7 +1281,7 @@ test(
           }
           const computeDriver = fixture.computeDriver;
           worker = createControllerWorker({
-            pool: new pg.Pool({ connectionString: databaseUrl }),
+            pool: new pg.Pool({ connectionString: fixture.databaseUrl }),
             drivers: {
               installation: {
                 drivers: {

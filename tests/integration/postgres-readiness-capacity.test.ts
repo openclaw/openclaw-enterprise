@@ -103,7 +103,7 @@ test(
     let liveSockets = 0;
     let peakSockets = 0;
     const identify = (pool: pg.Pool) => {
-      if (pool.options.max === 1 && pool.options.connectionString === databaseUrl) {
+      if (pool.options.max === 2 && pool.options.connectionString === databaseUrl) {
         applicationPool ??= pool;
       }
     };
@@ -135,7 +135,7 @@ test(
         authSecret: secret,
         authBaseURL: origin,
         nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
-        poolMax: 1,
+        poolMax: 2,
         drivers: await productionDrivers(),
       });
       assert.ok(applicationPool, "observe the genuine composition-owned pool");
@@ -171,6 +171,10 @@ test(
       assert.equal(authorized.statusCode, 200);
       assert.ok("data" in authorized.json());
       assert.equal(pool.waitingCount, 0);
+      // One dedicated startup lease stays checked out; the other connection supplies
+      // all normal application and readiness work throughout this capacity proof.
+      assert.equal(pool.totalCount, 2);
+      assert.equal(pool.idleCount, 1);
 
       // An occupied real client and queued authenticated read reproduce the
       // capacity boundary without introducing extra database connections.

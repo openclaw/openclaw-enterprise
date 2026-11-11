@@ -91,15 +91,15 @@ Publish only as a draft while required proof or review remains incomplete.
 
 ## Verification
 
-| Outcome                     | Required proof                                                                               | Result or remaining proof                                                                                         |
-| --------------------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| Durable ownership and audit | Real Fastify, Native IAM and PostgreSQL, including startup lease loss and session revocation | Owner suite 11/11 passed, no skips                                                                                |
-| Agent workflow              | Real controller/worker queues and PostgreSQL admission/concurrency                           | Agent policy suite 37/37 passed, no skips                                                                         |
-| Console behavior            | Real Console, Fastify and IAM with in-memory state                                           | Combined browser suite 15/15 passed; status correction 5/5 passed                                                 |
-| Visual behavior             | Rebuilt Storybook, desktop/phone controls, screenshots and paced video                       | Desktop/phone captures and a 21-second walkthrough inspected; native GitHub uploads pending                       |
-| Runtime enforcement         | Selected Fedora VM, Podman, k3d and OpenShell                                                | VM started but waits for manual disk unlock; no runtime proof claimed                                             |
-| Repository contracts        | Format, lint, types, workspace, OpenAPI and docs checks                                      | Lint, types, formatting, workspace, OpenAPI, docs checks/build and flow render passed                             |
-| Independent review          | Task gates and full shared autoreview                                                        | Both task gates pass; authority and draft-status regressions fixed; full shared review awaits disclosure approval |
+| Outcome                     | Required proof                                                                               | Result or remaining proof                                                                     |
+| --------------------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Durable ownership and audit | Real Fastify, Native IAM and PostgreSQL, including startup lease loss and session revocation | Owner suite 11/11 passed, no skips                                                            |
+| Agent workflow              | Real controller/worker queues and PostgreSQL admission/concurrency                           | Agent policy suite 37/37 passed, no skips                                                     |
+| Console behavior            | Real Console, Fastify and IAM with in-memory state                                           | Combined browser suite 15/15 passed; status correction 5/5 passed                             |
+| Visual behavior             | Rebuilt Storybook, desktop/phone controls, screenshots and paced video                       | Desktop/phone captures and a 21-second walkthrough inspected; native GitHub uploads pending   |
+| Runtime enforcement         | Selected Fedora VM, Podman, k3d and OpenShell                                                | VM started but waits for manual disk unlock; no runtime proof claimed                         |
+| Repository contracts        | Format, lint, types, workspace, OpenAPI and docs checks                                      | Lint, types, formatting, workspace, OpenAPI, docs checks/build and flow render passed         |
+| Independent review          | Task gates and full shared autoreview                                                        | Task gates passed at reviewed revisions; CI repairs await full review and disclosure approval |
 
 ## Delivery record
 
@@ -114,9 +114,27 @@ race. Its regression failed before the fence fix and passed after it. A browser
 regression likewise proved the stale draft-status text before its correction.
 Final serial PostgreSQL verification passes 59/59 (owner, Agent policy and worker
 fixtures), and final combined browser verification passes 15/15, with no skips.
-The inspected UI revision is `402abe0e9`; desktop is 1440 × 1050 and phone is
+The inspected UI revision is `4be93f5a2`; desktop is 1440 × 1050 and phone is
 390 × 844. The saved WebM opens and plays at normal speed for 21 seconds.
 Storybook is simulated UI proof; native attachments remain a merge requirement.
+
+The first implementation CI run exposed additional startup, build, navigation and
+fixture gaps. Commits `4be93f5a2` and `fb4f4c742` separate actual PUT activity from
+reads, hide an unchanged ceiling after confirmed administration loss, install the
+Storybook workspace dependency graph, qualify restored migration catalogs, and
+close lost startup leases without querying a broken client. Original migration
+receipts and reviewed hashes remain unchanged. The affected browser cases pass
+8/8, module policy passes 2/2, lifecycle/security cases pass 54/54, and the complete
+selected logical-restore workflow passes. A 261/262 API/worker run had one missing-Go
+failure; after installing the pinned Go toolchain, that CLI case passes 3/3.
+The exact native-CI inventory and Kubernetes fixtures still need hosted verification.
+The prepared-CI database contract is also checked with the migration-only URL
+unset: owner and Agent suites pass 48/48 using the actual selected application
+host, port and database. The stored-name startup and two-connection readiness
+cases pass in separate fresh databases. The separate worker-process shutdown
+fixture initializes through API startup; its local run requires the Docker Engine
+socket available in hosted CI. These fixture corrections still need the next
+hosted run. The first implementation CI run is not a passing result.
 
 The existing registered `sandbox-policy` QA scenario now exercises administrator
 ceiling saves and subsequent Agent policy traffic, but it has not run here.
@@ -141,7 +159,7 @@ Automatic approval review rejected the final shared autoreview launch because it
 would send private source and supporting context to the configured Codex review
 service without explicit approval for that destination. Approval is requested;
 no final shared report exists. Publish the implementation as a draft while this
-review and required proof remain pending. Current main at `5d76d94ce` merged
+review and required proof remain pending. Current main at `f51ca631c` merged
 without conflicts, preserving history; RFC-0037 and migration 0077 remain unique.
 
 No Driver contract or default runtime image changed. Real runtime qualification,
