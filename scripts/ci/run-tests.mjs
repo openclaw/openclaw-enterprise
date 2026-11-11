@@ -1,3 +1,4 @@
+import { readRuntimeProvenance } from "./runtime-provenance.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import {
   closeSync,
@@ -1871,6 +1872,7 @@ async function runLane(root, manifest, laneName, statePath, resultsPath, selecte
     version: 1,
     command: "run",
     sourceSha: source.sha,
+    runtimeProvenance: await readRuntimeProvenance(statePath),
     lane: laneName,
     scope: selectedFile === undefined ? "full" : "focused",
     status,

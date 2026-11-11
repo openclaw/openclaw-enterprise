@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -98,6 +99,182 @@ async function interceptFixtureDocker(t, commands, scriptFor) {
   });
   t.after(() => server.close());
   await writeFixtureCommand(engine, "docker", server);
+}
+
+for (const scenario of [
+  "available",
+  "manifest",
+  "missing",
+  "invalid",
+  "different-image",
+  "cleanup-failed",
+  "replaced-container",
+]) {
+  test(`runtime provenance retains only verified metadata: ${scenario}`, async (t) => {
+    const commands = await fixtureImageCommands(t, "success", "k3d-model", {
+      NODE_BASE_IMAGE: nodeBaseImage,
+      OCC_TEST_KUBERNETES_GATEWAY_IMAGE: immutableImage,
+      OCC_TEST_KUBERNETES_AGENT_IMAGE: immutableImage,
+      OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: immutableImage,
+      OPENAI_API_KEY: "synthetic-model-key",
+      OCC_TEST_OPENAI_MODEL: "synthetic-model",
+      OCC_TEST_KUBERNETES_CODEX_VERSION: "not-reviewed",
+    });
+    const configId = `sha256:${"b".repeat(64)}`;
+    const imageId = scenario === "manifest" ? `sha256:${"9".repeat(64)}` : configId;
+    const containerId = "d".repeat(64);
+    const canary = "private-provenance-must-not-be-uploaded";
+    const metadata = {
+      commit: "e".repeat(40),
+      codex: {
+        architecture: "amd64",
+        version: "0.164.0",
+        binarySha256: "f".repeat(64),
+        config: canary,
+      },
+      private: canary,
+    };
+    let containerPresent = false;
+    const cleanupFailure = ["cleanup-failed", "replaced-container"].includes(scenario);
+    let allowRemoval = !cleanupFailure;
+    const manifest = JSON.stringify({ config: { digest: configId } });
+    const manifestDigest = `sha256:${createHash("sha256").update(manifest).digest("hex")}`;
+    let created = 0;
+    await interceptFixtureDocker(t, commands, async (args) => {
+      if (
+        scenario === "manifest" &&
+        args[0] === "image" &&
+        args[1] === "inspect" &&
+        args.includes("{{.Id}}")
+      ) {
+        return `printf '%s' ${bashString(imageId)}; exit 0`;
+      }
+      if (args[0] === "image" && args[1] === "inspect" && args.at(-1) === imageId) {
+        // Docker 29 selects a platform manifest from the immutable image index.
+        const selected = args.includes("--platform");
+        const descriptor = selected
+          ? { mediaType: "application/vnd.oci.image.manifest.v1+json", digest: manifestDigest }
+          : { mediaType: "application/vnd.oci.image.index.v1+json", digest: imageId };
+        return `printf '%s' ${bashString(
+          JSON.stringify([
+            {
+              Id: imageId,
+              Os: "linux",
+              Architecture: "amd64",
+              ...(scenario === "manifest" ? { Descriptor: descriptor } : {}),
+            },
+          ]),
+        )}; exit 0`;
+      }
+      if (scenario === "different-image" && args.includes("inspecti")) {
+        return `printf '%s' ${bashString(
+          JSON.stringify({
+            status: {
+              id: `sha256:${"a".repeat(64)}`,
+              repoDigests: [args.at(-1)],
+              pinned: true,
+            },
+          }),
+        )}; exit 0`;
+      }
+      if (scenario === "manifest" && args.includes("content") && args.at(-1) === manifestDigest) {
+        return `printf '%s' ${bashString(manifest)}; exit 0`;
+      }
+      if (args[0] === "create") {
+        assert.equal(args[args.indexOf("--platform") + 1], "linux/amd64");
+        assert.equal(
+          args.at(-1),
+          imageId,
+          "copy from the immutable image, never its mutable build tag",
+        );
+        const state = await commands.readState();
+        assert.ok(
+          state.resources.some(
+            (resource) => resource.kind === "image-file" && resource.name === args[2],
+          ),
+          "persist cleanup ownership before engine creation",
+        );
+        containerPresent = true;
+        created += 1;
+        return `printf '%s' ${bashString(containerId)}; exit 0`;
+      }
+      if (args[0] === "cp") {
+        assert.equal(args[1], `${containerId}:/opt/oce/runtime/provenance.json`);
+        if (scenario === "missing") {
+          return "exit 1";
+        }
+        await writeFile(
+          args[2],
+          JSON.stringify(
+            scenario === "invalid"
+              ? { ...metadata, codex: { ...metadata.codex, binarySha256: canary } }
+              : metadata,
+          ),
+        );
+        return "exit 0";
+      }
+      if (args[0] === "ps" && args.includes("--filter") && args.at(-1).includes("-provenance-")) {
+        const observedId =
+          scenario === "replaced-container" && !allowRemoval ? "e".repeat(64) : containerId;
+        return `printf '%s' ${bashString(containerPresent ? observedId : "")}; exit 0`;
+      }
+      if (args[0] === "rm" && args.at(-1) === containerId) {
+        assert.ok(args.includes("--volumes"), "remove anonymous extraction volumes");
+        if (!allowRemoval) {
+          return "printf 'retained extraction container' >&2; exit 1";
+        }
+        containerPresent = false;
+        return "exit 0";
+      }
+    });
+    const prepared = await commands.prepare();
+    assert.equal(
+      prepared.status,
+      1,
+      "the later unsupported seccomp version intentionally stops preparation",
+    );
+    assertStderrMatch(
+      prepared.stderr,
+      cleanupFailure ? /Runtime provenance cleanup failed/ : /limited to reviewed Codex versions/,
+    );
+    const state = await commands.readState();
+    const record = state.runtimeProvenance?.OCC_TEST_KUBERNETES_GATEWAY_IMAGE;
+    const expected = {
+      imageId,
+      manifestDigest: `sha256:${"c".repeat(64)}`,
+      status: ["available", "manifest"].includes(scenario) ? "available" : "unavailable",
+      ...(["available", "manifest"].includes(scenario)
+        ? {
+            platform: "linux/amd64",
+            openclawCommit: metadata.commit,
+            codex: { version: "0.164.0", binarySha256: "f".repeat(64) },
+          }
+        : {}),
+    };
+    assert.deepEqual(record, expected);
+    const diagnostics = await readFile(`${commands.statePath}.diagnostics.json`, "utf8");
+    assert.deepEqual(
+      JSON.parse(diagnostics).runtimeProvenance.OCC_TEST_KUBERNETES_GATEWAY_IMAGE,
+      expected,
+    );
+    assert.ok(!diagnostics.includes(canary));
+    assert.equal(
+      created,
+      scenario === "different-image" ? 0 : 1,
+      "reuse one extraction for the shared image",
+    );
+    assert.equal(containerPresent, cleanupFailure);
+    if (!allowRemoval) {
+      const failedCleanup = await commands.cleanup();
+      assert.equal(failedCleanup.status, 1);
+      assert.ok(
+        (await commands.readState()).resources.some((resource) => resource.kind === "image-file"),
+      );
+      allowRemoval = true;
+    }
+    await commands.cleanupSuccessfully();
+    assert.equal(containerPresent, false);
+  });
 }
 
 // Exercise the real preparation log projection with controlled command output;

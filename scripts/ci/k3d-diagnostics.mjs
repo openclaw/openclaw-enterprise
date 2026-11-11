@@ -1,3 +1,4 @@
+import { readRuntimeProvenance } from "./runtime-provenance.mjs";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -377,6 +378,7 @@ export async function captureK3dDiagnostics({
   const k3dCreateOutput = k3dOutputExcerpt(k3dOutput);
   const report = {
     capturedAt: new Date().toISOString(),
+    runtimeProvenance: await readRuntimeProvenance(statePath),
     lane,
     cluster: cluster.name,
     ...(failure ? { failure } : {}),
@@ -810,6 +812,7 @@ export async function startAgentNamespaceCapture({ statePath, lane, file }) {
         } catch {
           // The first passing file starts the report.
         }
+        report.runtimeProvenance = await readRuntimeProvenance(statePath);
         if (captured.length > 0) {
           report.agentNamespaces = [...(report.agentNamespaces ?? []), ...captured].slice(
             -MAX_ACTIVITY_FILES,

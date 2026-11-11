@@ -43,6 +43,8 @@ import { ownedName, randomSuffix, slug } from "./resource-names.ts";
 import { pullImage } from "./image-pull.ts";
 import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.mjs";
 import { imageInventory, laneImagesResourceKind } from "./lane-images.ts";
+import { imageConfigDigest } from "./image-config-digest.ts";
+import { readImageCodexProvenance, readRuntimeProvenance } from "./runtime-provenance.mjs";
 import { metricsMonitoringImages } from "./metrics-monitoring-images.mjs";
 import {
   prepareRepositoryCredentials,
@@ -2877,6 +2879,90 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
   return resource;
 }
 
+async function retainRuntimeProvenance(statePath, state, cluster, image, role) {
+  state.runtimeProvenance ??= {};
+  const record = {
+    imageId: image.hostImageId,
+    manifestDigest: `sha256:${immutableDigest(image.reference)}`,
+    status: "unavailable",
+  };
+  const matching = Object.values(state.runtimeProvenance).find(
+    (other) => other.imageId === record.imageId && other.manifestDigest === record.manifestDigest,
+  );
+  state.runtimeProvenance[role] = matching ? { ...matching } : record;
+  const command = async (_docker, args, options = {}) =>
+    (
+      await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, {
+        timeoutMs: options.timeout ?? 30_000,
+      })
+    ).stdout;
+  try {
+    if (matching) {
+      return;
+    }
+    let platform;
+    try {
+      const inspected = JSON.parse(
+        await command("docker", ["image", "inspect", image.hostImageId]),
+      )[0];
+      platform = `${inspected.Os}/${inspected.Architecture}`;
+      const readBlob = async (digest) =>
+        (
+          await k3dNodeImageCheck(
+            cluster.nodes[0],
+            ["ctr", "-n", "k8s.io", "content", "get", digest],
+            "containerd",
+          )
+        ).stdout;
+      const selected = JSON.parse(
+        await command("docker", ["image", "inspect", "--platform", platform, image.hostImageId]),
+      )[0];
+      const config = await imageConfigDigest(selected, readBlob);
+      const imported = JSON.parse(
+        (await k3dNodeImageCheck(cluster.nodes[0], ["crictl", "inspecti", image.reference], "CRI"))
+          .stdout,
+      );
+      if (!/^sha256:[a-f0-9]{64}$/.test(config) || imported.status?.id !== config) {
+        return;
+      }
+    } catch {
+      // An unavailable or mismatched image binding is not a readiness gate.
+      return;
+    }
+    const extraction = addResource(state, "image-file", {
+      name: `${state.prefix}-provenance-${randomSuffix()}`,
+    });
+    await writeState(statePath, state);
+    const metadata = await readImageCodexProvenance({
+      imageId: image.hostImageId,
+      platform,
+      directory: cluster.directory,
+      resource: extraction,
+      command,
+      persist: () => writeState(statePath, state),
+    });
+    if (metadata) {
+      Object.assign(record, { status: "available", ...metadata });
+    }
+  } finally {
+    await writeState(statePath, state);
+    // Publish before later preparation or test failures can remove the cluster.
+    try {
+      const path = `${statePath}.diagnostics.json`;
+      let report = { lane: state.lane };
+      try {
+        report = JSON.parse(await readFile(path, "utf8"));
+      } catch {
+        /* First diagnostic for this lane. */
+      }
+      report.runtimeProvenance = await readRuntimeProvenance(statePath);
+      await writeFile(path, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
+    } catch {
+      progress(state.lane, "Runtime provenance diagnostics unavailable.");
+    }
+  }
+}
+
 async function prepareK3dRuntimeImages(
   statePath,
   state,
@@ -2932,6 +3018,7 @@ async function prepareK3dRuntimeImages(
   for (const [name, value] of Object.entries(inputs)) {
     const image = await registerImageInK3d(statePath, state, cluster, value, name);
     env[name] = image.reference;
+    await retainRuntimeProvenance(statePath, state, cluster, image, name);
     if (name === "OCC_TEST_KUBERNETES_GATEWAY_IMAGE") {
       // Host relays need the Docker image, not the cluster's imported manifest reference.
       env.OCC_DOCKER_RUNTIME_IMAGE = image.hostImageId;
