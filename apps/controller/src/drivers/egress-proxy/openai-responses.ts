@@ -209,15 +209,15 @@ const agentInputMessage = object(
   },
   { id: name },
 );
-const reasoningItem = object(
-  { type: oneOf("reasoning"), summary: array(summary) },
-  {
-    id: text,
-    content: array(object({ type: oneOf("reasoning_text"), text })),
-    encrypted_content: nullable(text),
-    status,
-  },
-);
+const reasoningContent = array(object({ type: oneOf("reasoning_text"), text }));
+const reasoningItem = (content: Validator) =>
+  object(
+    { type: oneOf("reasoning"), summary: array(summary) },
+    { id: text, content, encrypted_content: nullable(text), status },
+  );
+// Codex replays an omitted provider reasoning content field as explicit null.
+const inputReasoningItem = reasoningItem(nullable(reasoningContent));
+const outputReasoningItem = reasoningItem(reasoningContent);
 const toolOutput = object(
   {
     type: oneOf("function_call_output", "custom_tool_call_output"),
@@ -247,7 +247,7 @@ const inputItems = array(
     plainInputMessage(item) ||
     assistantInputMessage(item) ||
     agentInputMessage(item) ||
-    reasoningItem(item) ||
+    inputReasoningItem(item) ||
     toolCall(item) ||
     toolOutput(item) ||
     additionalLocalTools(item),
@@ -442,7 +442,7 @@ const outputMessage = object(
   { status, phase },
 );
 const outputItem: Validator = (value) =>
-  outputMessage(value) || reasoningItem(value) || toolCall(value);
+  outputMessage(value) || outputReasoningItem(value) || toolCall(value);
 const usage = object(
   { input_tokens: integer, output_tokens: integer, total_tokens: integer },
   {

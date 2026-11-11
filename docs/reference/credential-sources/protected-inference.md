@@ -116,7 +116,10 @@ For `request_kind: "compaction"`, turn metadata may include a `compaction` objec
 with a native trigger, reason and phase, `implementation: "responses"` and
 `strategy: "memento"`. All five fields are required in that object.
 Replayed assistant `output_text` parts can include `annotations` and `logprobs`.
-Each field must be an empty array if present. The proxy refuses unknown request fields.
+Each field must be an empty array if present. Replayed `reasoning` items accept
+`content: null` or an array of `reasoning_text` parts. Codex can send null after
+loading a saved thread whose reasoning item omitted the field. The proxy refuses
+unknown request fields.
 
 In streamed Responses envelopes, tool echoes may contain null descriptions,
 `strict`, `defer_loading`, or custom-tool `format`; their nonnull values retain

@@ -1296,8 +1296,22 @@ test("Codex manual compaction forwards its closed metadata through protected inf
     };
   }
   const manual = request(compaction);
-  await responseChecks(f).events(responseEvents(), false, "manual compaction", true, manual);
+  const check = responseChecks(f);
+  await check.events(responseEvents(), false, "manual compaction", true, manual);
   assert.deepEqual(f.providerRequests.at(-1).body, manual);
+
+  // Codex serializes reasoning content as null when a prior provider item omitted it.
+  const reasoning = {
+    type: "reasoning",
+    id: "rs_fixture",
+    summary: [{ type: "summary_text", text: "Earlier reasoning" }],
+    content: null,
+    encrypted_content: "opaque reasoning fixture",
+  };
+  const replay = { ...manual, input: [...manual.input, reasoning] };
+  await check.events(responseEvents(), false, "manual compaction replays reasoning", true, replay);
+  assert.deepEqual(f.providerRequests.at(-1).body, replay);
+
   const reads = f.secretReads;
   const sends = f.providerRequests.length;
   for (const invalid of [
@@ -1307,6 +1321,11 @@ test("Codex manual compaction forwards its closed metadata through protected inf
     request(compaction, "turn"),
     { ...manual, tools: [{ type: "web_search" }] },
     { ...manual, model: "outside-the-grant" },
+    ...[{}, "text", [{ type: "input_text", text: "unexpected" }]].map((content) => ({
+      ...replay,
+      input: [...manual.input, { ...reasoning, content }],
+    })),
+    { ...replay, input: [...manual.input, { ...reasoning, unknown: null }] },
   ]) {
     assert.ok((await f.resolve(f.capture(invalid))).refused);
   }
