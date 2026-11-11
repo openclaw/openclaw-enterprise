@@ -58,7 +58,7 @@ jobs:
           status=$(git status --porcelain=v1 --untracked-files=all --ignore-submodules=none)
           if [[ -z "$status" ]]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            printf 'No contributor changes. No artifact uploaded.\n\nBase: `%s`\n\nRun: %s, attempt: %s\n' \
+            printf "No contributor changes. No artifact uploaded.\n\nBase: \`%s\`\n\nRun: %s, attempt: %s\n" \
               "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
@@ -90,5 +90,5 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$ARTIFACT_URL"
-          printf 'README patch uploaded; pending human README review.\n\nBase: `%s`\n\nPatch SHA-256: `%s`\n\nRun: %s, attempt: %s\n\n[Download patch artifact](%s)\n' \
+          printf "README patch uploaded; pending human README review.\n\nBase: \`%s\`\n\nPatch SHA-256: \`%s\`\n\nRun: %s, attempt: %s\n\n[Download patch artifact](%s)\n" \
             "$GITHUB_SHA" "$PATCH_SHA256" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$ARTIFACT_URL" >> "$GITHUB_STEP_SUMMARY"
