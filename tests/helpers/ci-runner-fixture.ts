@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -79,6 +80,32 @@ export function aggregateArgs(root: string, target: string) {
     "--results-dir",
     "results",
   ];
+}
+
+export function spawnLifecycleRunner(args: readonly string[], cwd: string, env: NodeJS.ProcessEnv) {
+  const child = spawn(process.execPath, args, {
+    cwd,
+    env,
+    detached: true,
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let stderr = "";
+  let exit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
+  child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+    stderr += chunk;
+  });
+  child.on("exit", (code, signal) => {
+    exit = { code, signal };
+  });
+  return { child, exit: () => exit, stderr: () => stderr };
+}
+
+export function lifecycleReady(path: string) {
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) !== null;
+  } catch {
+    return false;
+  }
 }
 
 // Field 5 of /proc/<pid>/stat is the process group; the name in parentheses may hold spaces.

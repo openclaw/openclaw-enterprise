@@ -20,8 +20,10 @@ import {
   aggregateArgs,
   killRecordedProcessGroupMembers,
   laneArgs,
+  lifecycleReady,
   procStat,
   runnerArtifactPaths,
+  spawnLifecycleRunner,
   writeFirstAgentCliFixture,
   writeJson,
   writeRunnerManifest,
@@ -1105,10 +1107,7 @@ function lifecycleProcessLive(record) {
 }
 
 async function startLifecycleFixture(t, options, env = {}) {
-  let fixture;
-  let child;
-  let exit;
-  let stderr = "";
+  let runner;
   let processes = [];
   // Reap only observed fixture identities, before temporaryDirectory removes the
   // evidence. Assertions below check termination before this fallback can run.
@@ -1122,25 +1121,16 @@ async function startLifecycleFixture(t, options, env = {}) {
         }
       }
     }
-    if (child && exit === undefined) {
-      child.kill("SIGKILL");
-      await waitFor(() => exit !== undefined, 2_000);
+    if (runner && runner.exit() === undefined) {
+      runner.child.kill("SIGKILL");
+      await waitFor(() => runner.exit() !== undefined, 2_000);
     }
   });
-  fixture = await lifecycleFixture(t, options);
-  child = spawn(process.execPath, [runnerPath, ...fixture.args], {
-    cwd: repositoryRoot,
-    env: runnerEnv(env),
-    detached: true,
-    stdio: ["ignore", "ignore", "pipe"],
-  });
-  child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
-  child.on("exit", (code, signal) => (exit = { code, signal }));
+  const fixture = await lifecycleFixture(t, options);
+  runner = spawnLifecycleRunner([runnerPath, ...fixture.args], repositoryRoot, runnerEnv(env));
   return {
     ...fixture,
-    child,
-    exit: () => exit,
-    stderr: () => stderr,
+    ...runner,
     remember: (records) => {
       processes = records;
     },
@@ -1225,49 +1215,38 @@ test(
   { skip: process.platform !== "linux" && "lifecycle process ownership reads /proc" },
   async (t) => {
     let fixture;
-    let child;
-    let exit;
+    let runner;
     // Release or stop the owned CLI before the fixture directory is removed.
     t.after(async () => {
-      if (!child || exit !== undefined) {
+      if (!runner || runner.exit() !== undefined) {
         return;
       }
       await writeFile(fixture.release, "release");
-      if (!(await waitFor(() => exit !== undefined, 2_000))) {
-        child.kill("SIGKILL");
-        await waitFor(() => exit !== undefined, 2_000);
+      if (!(await waitFor(() => runner.exit() !== undefined, 2_000))) {
+        runner.child.kill("SIGKILL");
+        await waitFor(() => runner.exit() !== undefined, 2_000);
       }
     });
     fixture = await lifecycleFixture(t, { hold: true });
-    child = spawn(process.execPath, [runnerPath, ...fixture.args], {
-      cwd: repositoryRoot,
-      env: runnerEnv({ CI_RUNNER_DEADLINE_MS: String(Date.now() + 30_000) }),
-      detached: true,
-      stdio: ["ignore", "ignore", "pipe"],
-    });
-    let stderr = "";
-    child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
-    child.on("exit", (code, signal) => (exit = { code, signal }));
-    assert.equal(
-      await waitFor(() => {
-        try {
-          return JSON.parse(readFileSync(fixture.ready, "utf8")) !== null;
-        } catch {
-          return false;
-        }
-      }, 15_000),
-      true,
-      stderr,
+    runner = spawnLifecycleRunner(
+      [runnerPath, ...fixture.args],
+      repositoryRoot,
+      runnerEnv({ CI_RUNNER_DEADLINE_MS: String(Date.now() + 30_000) }),
     );
-    process.kill(child.pid, "SIGTERM");
+    assert.equal(await waitFor(() => lifecycleReady(fixture.ready), 15_000), true, runner.stderr());
+    process.kill(runner.child.pid, "SIGTERM");
     // Release only after the real CLI acknowledges the signal; an arbitrary sleep
     // could let preparation finish before the cancellation latch is exercised.
-    assert.equal(await waitFor(() => stderr.includes("SIGTERM"), 5_000), true, stderr);
+    assert.equal(
+      await waitFor(() => runner.stderr().includes("SIGTERM"), 5_000),
+      true,
+      runner.stderr(),
+    );
     assert.equal(await readFile(fixture.trace, "utf8"), "prepare:start\n");
     await assert.rejects(readFile(fixture.results), { code: "ENOENT" });
     await writeFile(fixture.release, "release");
-    assert.ok(await waitFor(() => exit !== undefined, 10_000), stderr);
-    assert.deepEqual(exit, { code: 143, signal: null }, stderr);
+    assert.ok(await waitFor(() => runner.exit() !== undefined, 10_000), runner.stderr());
+    assert.deepEqual(runner.exit(), { code: 143, signal: null }, runner.stderr());
     const summary = JSON.parse(await readFile(fixture.results, "utf8"));
     assert.equal(summary.lifecycle.interrupted, "SIGTERM");
     assert.equal(summary.lifecycle.phases.prepare.status, "passed");
@@ -1459,17 +1438,7 @@ test(
   { skip: process.platform !== "linux" && "lifecycle process ownership reads /proc" },
   async (t) => {
     const winner = await startLifecycleFixture(t, { hold: true });
-    assert.equal(
-      await waitFor(() => {
-        try {
-          return JSON.parse(readFileSync(winner.ready, "utf8")) !== null;
-        } catch {
-          return false;
-        }
-      }, 15_000),
-      true,
-      winner.stderr(),
-    );
+    assert.equal(await waitFor(() => lifecycleReady(winner.ready), 15_000), true, winner.stderr());
     const state = await readFile(winner.state, "utf8");
     assert.equal(JSON.parse(state).version, 1);
     assert.equal((await stat(winner.attempt)).mode & 0o777, 0o700);
