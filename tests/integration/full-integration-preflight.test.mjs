@@ -2249,12 +2249,16 @@ test("OpenShell waits for its protected-input warm export before source builds",
   const consumer = execution.jobs.openshell;
   assert.equal(inputs.environment, "integration-main");
   assert.deepEqual(inputs.permissions, {});
+  const inputStep = inputs.steps.find((step) => step.id === "inputs");
+  assert.equal(inputStep.env.NODE_BASE_IMAGE, "${{ vars.CONTAINER_NODE_BASE_IMAGE }}");
+  assert.equal(inputs.outputs["node-base-image"], "${{ steps.inputs.outputs.node-base-image }}");
   assert.equal(producer.uses, "./.github/workflows/ci-image-cache.yml");
   assert.equal(producer.with["require-export"], true);
   assert.equal(producer.with["node-base-image"], consumer.env.NODE_BASE_IMAGE);
   assert.equal(producer.with["node-base-image"], consumer.env.OCC_DEVELOPMENT_NODE_BASE_IMAGE);
   assert.ok(producer.needs.includes("openshell-build-inputs"));
   assert.ok(consumer.needs.includes("openshell-image-cache"));
+  assert.ok(consumer.needs.includes("openshell-build-inputs"));
   assert.equal(warmer.concurrency.group, "ci-image-cache-${{ github.ref }}");
   assert.equal(warmer.concurrency.queue, "max");
   assert.equal(warmer.concurrency["cancel-in-progress"], false);
@@ -2304,7 +2308,7 @@ test("OpenShell waits for its protected-input warm export before source builds",
   // The actual resolver must not publish a missing or multiline environment value.
   const dir = await temporaryDirectory(t, "openshell-warm-inputs-");
   const output = join(dir, "output");
-  const script = inputs.steps[0].run;
+  const script = inputStep.run;
   for (const value of ["", "image\nother=value", "image\rother=value"]) {
     const result = spawnSync("bash", ["-e", "-c", script], {
       env: { PATH: process.env.PATH, NODE_BASE_IMAGE: value, GITHUB_OUTPUT: output },
