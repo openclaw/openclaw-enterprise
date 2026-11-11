@@ -3,6 +3,7 @@ import type { RequestOptions } from "node:https";
 import { isGitHubWireCredential } from "../wire-credential.ts";
 import type { GitHubPreparationAdmission } from "../prepared-contracts.ts";
 import { permissionsForProfile } from "../profiles.ts";
+import { parseCanonicalGitHubOrigin } from "../origin.ts";
 
 declare const scopeIdentity: unique symbol;
 export type ProviderScope = IssuanceProjection & Readonly<{ [scopeIdentity]: true }>;
@@ -70,8 +71,7 @@ export function prepareProviderScope(
   origin: string,
   scope: GitHubPreparationAdmission["grant"],
 ): ProviderScope {
-  const url = new URL(origin);
-  if (url.protocol !== "https:" || url.origin !== origin || url.username || url.password) {
+  if (parseCanonicalGitHubOrigin(origin) === undefined) {
     throw new Error("invalid-provider-origin");
   }
   const installationId = numericId(scope.installationId);
