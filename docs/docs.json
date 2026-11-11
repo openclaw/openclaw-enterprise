@@ -979,6 +979,7 @@
               "testing/openshell",
               "testing/openshell-oauth",
               "testing/openshell-coverage",
+              "testing/openshell-permission-diagnostics",
               "testing/ci/openshell-execution",
               "testing/repository-credentials",
               "testing/static-egress",
