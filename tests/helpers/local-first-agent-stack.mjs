@@ -296,13 +296,12 @@ function run(
               previousFailedStage = timing[1];
             }
           }
-          lineClipped = false;
           const known = phases.find(([prefix]) => line.startsWith(prefix));
           if (known) {
             phase = known[1];
           }
           const point = context && setupPoints.find(([prefix]) => line.startsWith(prefix));
-          if (startup && point) {
+          if (startup && point && !lineClipped) {
             lastSetupPoint = point[1];
           }
           if (point && !observed.has(point[1])) {
@@ -316,6 +315,7 @@ function run(
                 }),
             );
           }
+          lineClipped = false;
         }
       });
     }

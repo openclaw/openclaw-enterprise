@@ -7677,8 +7677,10 @@ test("first-Agent startup preserves bounded redacted stderr and the original fai
     // must stay private because it may instead be an orphaned multiline secret.
     ["early path", "__FIXTURE_ROOT__/compose.yaml warning\n" + actionable],
     ["early ansi", "\u001b[33mBuild progress\u001b[0m\n" + actionable],
-    ["early secret", sensitive + actionable],
+    ["early secret", sensitive + actionable + "x".repeat(20_000) + "private-cut-tail"],
     ["empty", ""],
+    ["clipped setup point", actionable],
+    ["last setup point", actionable],
   ];
   for (const [scenario, stderr] of cases) {
     await t.test(scenario, async (t) => {
@@ -7692,7 +7694,19 @@ if (process.argv[3] === "down") writeFileSync(new URL("../cleanup.txt", import.m
 if (process.argv[3] === "up") {
   process.stdout.write("stdout-must-stay-private\\n");
   process.stdout.write("Starting the Compose database, migration, and bootstrap services...\\n");
-  const stderr = ${JSON.stringify(stderr.replaceAll("__FIXTURE_ROOT__", root))};
+  if (${JSON.stringify(scenario)} === "clipped setup point") {
+    // A delayed newline leaves a clipped suffix that resembles a setup message.
+    writeSync(1, "x".repeat(8192) + "Preparing pinned OpenShell development assets".padEnd(4096, "x"));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    writeSync(1, "\\n");
+  }
+  if (${JSON.stringify(scenario)} === "last setup point") {
+    // Repeated points still update the error even when their measurement was emitted before.
+    writeSync(1, "Preparing pinned OpenShell development assets\\n");
+    writeSync(1, "Starting the Compose controller and Kubernetes worker\\n");
+    writeSync(1, "Preparing pinned OpenShell development assets\\n");
+  }
+  const stderr = ${JSON.stringify(stderr)}.replaceAll("__FIXTURE_ROOT__", process.cwd());
   // Independent writes may be coalesced by the pipe; both must be consumed.
   writeSync(2, stderr.slice(0, 90));
   writeSync(2, stderr.slice(90));
@@ -7774,7 +7788,12 @@ test("startup", async (t) => {
       const helperMessage = JSON.parse(await readFile(join(root, "helper-error.json"), "utf8"));
       for (const text of [message, helperMessage]) {
         assert.match(text, /Start Local Setup exited with status 23/);
-        assert.match(text, /last setup point: database-start/);
+        assert.match(
+          text,
+          scenario === "last setup point"
+            ? /last setup point: openshell-assets-start/
+            : /last setup point: database-start/,
+        );
         if (scenario.startsWith("early ")) {
           assert.doesNotMatch(text, /Pool overlaps|Build progress|compose\.yaml/);
           assert.match(text, /Startup stderr: withheld at a redaction boundary/);
@@ -7786,15 +7805,17 @@ test("startup", async (t) => {
         assert.doesNotMatch(text, privateValues);
         assert.ok(text.isWellFormed(), "diagnostic cutoff must preserve Unicode characters");
         assert.ok(text.length < 2_500, "the individual error must be bounded");
+        if (
+          ["short", "object", "yaml", "display boundary", "capture boundary"].includes(scenario)
+        ) {
+          assert.match(text, /remaining stderr withheld at a redaction boundary/);
+        }
+        if (["large", "capture boundary", "unicode", "early secret"].includes(scenario)) {
+          assert.match(text, /stderr truncated/);
+        }
       }
       if (scenario === "short") {
         assert.match(helperMessage, /unterminated actionable detail/);
-      }
-      if (["short", "object", "yaml", "display boundary", "capture boundary"].includes(scenario)) {
-        assert.match(helperMessage, /remaining stderr withheld at a redaction boundary/);
-      }
-      if (["large", "capture boundary", "unicode"].includes(scenario)) {
-        assert.match(helperMessage, /stderr truncated/);
       }
     });
   }
