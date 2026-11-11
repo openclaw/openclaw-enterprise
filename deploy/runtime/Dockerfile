@@ -471,7 +471,9 @@ RUN --mount=type=secret,id=build-ca,required=false \
 # it). The npm package only wraps a per-platform native binary behind a
 # postinstall, so the platform package is fetched directly, checked against its
 # pinned SHA-256, and only its binary is installed. The version check uses a
-# throwaway configuration directory, as the gh check does.
+# throwaway configuration directory, as the gh check does. Claude Code reads its
+# admin-managed settings even when OpenClaw selects no setting sources; the Gateway
+# entrypoint writes them Pod-locally behind this link (the root filesystem is read-only).
 ENV OCE_CLAUDE_CODE_VERSION=2.1.304
 RUN --mount=type=secret,id=build-ca,required=false \
     --mount=type=bind,source=scripts/ci/download-pinned.sh,target=/tmp/download-pinned.sh \
@@ -487,6 +489,7 @@ RUN --mount=type=secret,id=build-ca,required=false \
     bash /tmp/download-pinned.sh "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-${platform}/-/claude-code-linux-${platform}-${OCE_CLAUDE_CODE_VERSION}.tgz" /tmp/claude-code.tgz "${checksum}"; \
     tar -xzf claude-code.tgz package/claude; \
     install -m 0755 package/claude /usr/local/bin/claude; \
+    ln -s /home/node/.oce-claude-code /etc/claude-code; \
     rm -rf claude-code.tgz package; \
     claude_config="$(mktemp -d)"; \
     test "$(CLAUDE_CONFIG_DIR="$claude_config" DISABLE_AUTOUPDATER=1 /usr/local/bin/claude --version)" = "${OCE_CLAUDE_CODE_VERSION} (Claude Code)"; \

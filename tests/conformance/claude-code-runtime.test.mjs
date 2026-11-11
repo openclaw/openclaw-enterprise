@@ -16,7 +16,9 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 
 // The Gateway entrypoint's Claude Code preparation, run as the generated script runs it: real
-// filesystem under a scratch HOME, the `claude --version` child replaced by a recorder.
+// filesystem under a scratch HOME, the `claude --version` child replaced by a recorder. The
+// image links /etc/claude-code (Claude Code's admin-managed settings) to HOME's
+// .oce-claude-code; `link` stands in for that symlink, the only path outside the scratch HOME.
 const VERSION = "2.1.304";
 const PROBE_CONFIG = (provider) =>
   JSON.stringify({
@@ -24,9 +26,18 @@ const PROBE_CONFIG = (provider) =>
     models: { providers: { anthropic: provider } },
   });
 
-function prepare(t, { env, version = `${VERSION} (Claude Code)\n`, status = 0 }) {
+function prepare(t, { env, version = `${VERSION} (Claude Code)\n`, status = 0, link }) {
   const home = mkdtempSync(join(tmpdir(), "oce-claude-code-runtime-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
+  const linked = link === undefined ? join(home, ".oce-claude-code") : link;
+  const imageFs = {
+    ...fs,
+    readlinkSync: (path) => {
+      if (path !== "/etc/claude-code") return fs.readlinkSync(path);
+      if (linked === null) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      return linked;
+    },
+  };
   const calls = [];
   const spawnSync = (command, args, options) => {
     calls.push({ command, args, env: options.env });
@@ -39,10 +50,12 @@ function prepare(t, { env, version = `${VERSION} (Claude Code)\n`, status = 0 })
   };
   const result = vm.runInNewContext(
     `${CLAUDE_CODE_RUNTIME_HELPERS}\n({ selected: claudeCodeRuntimeSelected(), failure: prepareClaudeCodeRuntime(fs, spawnSync) })`,
-    { ...context, fs, spawnSync },
+    { ...context, fs: imageFs, spawnSync },
   );
   return { ...result, home, calls, env: context.process.env };
 }
+
+const managedSettings = (home) => join(home, ".oce-claude-code", "managed-settings.json");
 
 const selectedEnvironment = {
   OPENCLAW_HARNESS_AGENT_RUNTIME: "claude-cli",
@@ -119,14 +132,18 @@ test("the preparation is skipped unless Compute selected the Claude Code runtime
   assert.equal(prepare(t, { env: selectedEnvironment }).selected, true);
 });
 
-test("an API key and the default endpoint produce a hardened, private settings file", (t) => {
+test("an API key and the default endpoint produce hardened, private managed settings", (t) => {
   const { failure, home, calls, env } = prepare(t, { env: selectedEnvironment });
   assert.equal(failure, undefined);
   const directory = join(home, ".claude");
   assert.equal(env.CLAUDE_CONFIG_DIR, directory);
   assert.equal(statSync(directory).mode & 0o777, 0o700);
-  assert.equal(statSync(join(directory, "settings.json")).mode & 0o777, 0o600);
-  assert.deepEqual(JSON.parse(readFileSync(join(directory, "settings.json"), "utf8")), {
+  // OpenClaw runs agent turns with --setting-sources "", so a user settings file would be
+  // ignored; only the admin-managed file reaches Claude Code.
+  assert.equal(fs.existsSync(join(directory, "settings.json")), false);
+  assert.equal(statSync(join(home, ".oce-claude-code")).mode & 0o777, 0o700);
+  assert.equal(statSync(managedSettings(home)).mode & 0o777, 0o600);
+  assert.deepEqual(JSON.parse(readFileSync(managedSettings(home), "utf8")), {
     env: {
       ...ALWAYS,
       ...TELEMETRY_DENIAL,
@@ -161,7 +178,7 @@ test("only an explicit telemetry opt-in leaves Claude Code's telemetry on", (t) 
     assert.equal(failure, undefined);
     // The version check never reports, whatever the opt-in.
     assert.equal(calls[0].env.DISABLE_TELEMETRY, "1");
-    return JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf8")).env;
+    return JSON.parse(readFileSync(managedSettings(home), "utf8")).env;
   };
   assert.deepEqual(settings("enabled"), {
     ...ALWAYS,
@@ -189,7 +206,7 @@ test("a setup token becomes a bearer and a custom endpoint is carried without it
     },
   });
   assert.equal(failure, undefined);
-  const { env } = JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf8"));
+  const { env } = JSON.parse(readFileSync(managedSettings(home), "utf8"));
   assert.equal(env.ANTHROPIC_AUTH_TOKEN, "sk-ant-oat01-fixture-setup-token");
   assert.equal(Object.hasOwn(env, "ANTHROPIC_API_KEY"), false);
   assert.equal(env.ANTHROPIC_BASE_URL, "https://models.example.test/anthropic");
@@ -200,7 +217,7 @@ test("a provider without a configured endpoint leaves Claude Code on its default
     env: { ...selectedEnvironment, OPENCLAW_HARNESS_PROBE_CONFIG: PROBE_CONFIG({}) },
   });
   assert.equal(failure, undefined);
-  const { env } = JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf8"));
+  const { env } = JSON.parse(readFileSync(managedSettings(home), "utf8"));
   assert.equal(Object.hasOwn(env, "ANTHROPIC_BASE_URL"), false);
 });
 
@@ -220,7 +237,7 @@ test("missing inputs refuse before any file is written", (t) => {
     });
     assert.equal(failure, "NOT_CONFIGURED", name);
     assert.equal(calls.length, 0, name);
-    assert.equal(fs.existsSync(join(home, ".claude", "settings.json")), false, name);
+    assert.equal(fs.existsSync(managedSettings(home)), false, name);
     assert.equal(env.CLAUDE_CONFIG_DIR, undefined, name);
   }
 });
@@ -233,7 +250,20 @@ test("a binary that is missing or not the pinned version holds the Gateway witho
   ]) {
     const { failure, home, env } = prepare(t, { env: selectedEnvironment, ...options });
     assert.equal(failure, "UNAVAILABLE", name);
-    assert.equal(fs.existsSync(join(home, ".claude", "settings.json")), false, name);
+    assert.equal(fs.existsSync(managedSettings(home)), false, name);
+    assert.equal(env.CLAUDE_CONFIG_DIR, undefined, name);
+  }
+});
+
+test("an image without the managed settings link holds the Gateway without a settings file", (t) => {
+  for (const [name, link] of [
+    ["missing link", null],
+    ["link elsewhere", "/etc/claude-code-elsewhere"],
+  ]) {
+    const { failure, home, calls, env } = prepare(t, { env: selectedEnvironment, link });
+    assert.equal(failure, "UNAVAILABLE", name);
+    assert.equal(calls.length, 0, name);
+    assert.equal(fs.existsSync(managedSettings(home)), false, name);
     assert.equal(env.CLAUDE_CONFIG_DIR, undefined, name);
   }
 });

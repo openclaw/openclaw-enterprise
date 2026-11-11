@@ -1946,6 +1946,8 @@ assert.equal(execFileSync(process.execPath, [bundledCommand, "--version"], {enco
 // image's pinned native binary; the Gateway entrypoint refuses any other version at startup.
 assert.equal(process.env.OCE_CLAUDE_CODE_VERSION, "2.1.304");
 assert.equal(realpathSync(execFileSync("sh", ["-c", "command -v claude"], {encoding: "utf8"}).trim()), "/usr/local/bin/claude");
+// The entrypoint writes Claude Code's admin-managed settings behind this link.
+assert.equal(require("node:fs").readlinkSync("/etc/claude-code"), "/home/node/.oce-claude-code");
 {
   const claudeConfig = require("node:fs").mkdtempSync(require("node:path").join(require("node:os").tmpdir(), "oce-claude-"));
   assert.equal(

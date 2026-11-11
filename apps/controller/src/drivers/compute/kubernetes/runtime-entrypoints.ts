@@ -2512,10 +2512,11 @@ function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
 
 // Claude Code is the embedded Gateway's agent runtime when the admitted Configuration
 // selects the claude-cli model policy. OpenClaw's backend scrubs ANTHROPIC_* and
-// CLAUDE_CODE_* auth from the child's environment and lets the binary read its own
-// configuration directory, so the admitted endpoint and the bound credential go into a
-// Pod-local settings file under HOME (the runtime-state emptyDir): 0700 directory, 0600
-// file, written only after the HTTP model probe accepted the credential. A setup token
+// CLAUDE_CODE_* auth from the child's environment and runs agent turns with
+// --setting-sources "", so Claude Code ignores its user settings; it always reads its
+// admin-managed settings, whose directory the image links to a Pod-local one under HOME
+// (the runtime-state emptyDir). The admitted endpoint and the bound credential go there:
+// 0700 directory, 0600 file, written only after the HTTP model probe accepted the credential. A setup token
 // (sk-ant-oat...) is a bearer, as OpenClaw's own client sends it; anything else is an API
 // key. The binary must be the image's pinned version: a missing or different one holds
 // the Gateway unready with UNAVAILABLE, before any turn could reach it.
@@ -2570,8 +2571,11 @@ function claudeCodeTelemetryEnvironment() {
 function claudeCodeRuntimeSelected() {
   return process.env.OPENCLAW_HARNESS_AGENT_RUNTIME === CLAUDE_CODE_AGENT_RUNTIME;
 }
-// Returns undefined once the directory is ready and CLAUDE_CONFIG_DIR points at it, else a
-// code from the runtime failure vocabulary. Never the credential, a path, or native output.
+// deploy/runtime/Dockerfile links this to HOME's .oce-claude-code.
+const CLAUDE_CODE_MANAGED_SETTINGS_LINK = "/etc/claude-code";
+// Returns undefined once the settings are written and CLAUDE_CONFIG_DIR points at the
+// configuration directory, else a code from the runtime failure vocabulary. Never the
+// credential, a path, or native output.
 function prepareClaudeCodeRuntime(fs, spawnSync) {
   const expectedVersion = process.env.OCE_CLAUDE_CODE_VERSION;
   const credentialEnvironment = process.env.OPENCLAW_HARNESS_CREDENTIAL_ENV;
@@ -2589,9 +2593,13 @@ function prepareClaudeCodeRuntime(fs, spawnSync) {
   const home = process.env.HOME || "/home/node";
   if (!home.startsWith("/")) return "NOT_CONFIGURED";
   const directory = home + "/.claude";
+  const managed = home + "/.oce-claude-code";
   try {
-    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-    fs.chmodSync(directory, 0o700);
+    if (fs.readlinkSync(CLAUDE_CODE_MANAGED_SETTINGS_LINK) !== managed) return "UNAVAILABLE";
+    for (const path of [directory, managed]) {
+      fs.mkdirSync(path, { recursive: true, mode: 0o700 });
+      fs.chmodSync(path, 0o700);
+    }
   } catch { return "UNAVAILABLE"; }
   const version = spawnSync("claude", ["--version"], {
     env: {
@@ -2610,8 +2618,8 @@ function prepareClaudeCodeRuntime(fs, spawnSync) {
     [credential.startsWith("sk-ant-oat") ? "ANTHROPIC_AUTH_TOKEN" : "ANTHROPIC_API_KEY"]: credential,
   };
   try {
-    fs.writeFileSync(directory + "/settings.json", JSON.stringify({ env }) + "\n", { mode: 0o600 });
-    fs.chmodSync(directory + "/settings.json", 0o600);
+    fs.writeFileSync(managed + "/managed-settings.json", JSON.stringify({ env }) + "\n", { mode: 0o600 });
+    fs.chmodSync(managed + "/managed-settings.json", 0o600);
   } catch { return "UNAVAILABLE"; }
   process.env.CLAUDE_CONFIG_DIR = directory;
   return undefined;

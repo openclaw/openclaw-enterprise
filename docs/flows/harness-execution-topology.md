@@ -68,7 +68,7 @@ model and embedded execution and maps to the `openclaw` Harness
 (`harnessIdForAgentRuntime`). Compute's `harnessAuthEnvironment` passes
 `OPENCLAW_HARNESS_AGENT_RUNTIME` and `OCE_AGENT_RUNTIME_TELEMETRY` to the gateway.
 After the model probe, `runtime-entrypoints.ts:CLAUDE_CODE_RUNTIME_HELPERS` checks
-the pinned binary and writes the Pod-local settings file; transcripts use the private
+the pinned binary and writes Pod-local admin-managed settings; transcripts use the private
 state claim's `claude-projects` subPath. See the [Claude Code runtime](../reference/claude-code-runtime.md).
 Missing/ambiguous policies, unsupported IDs and incompatible modes fail closed.
 Compute's `apps/controller/src/drivers/compute/native-gateway-transport.ts:validatePlaintextNativeGateway`
