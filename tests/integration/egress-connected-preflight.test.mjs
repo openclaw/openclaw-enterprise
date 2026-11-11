@@ -651,23 +651,78 @@ test("failed custody deployment preserves worker event order across a reused att
   });
   const completions = [
     {
+      attempt: 5,
       outcome: "pending",
       code: "KUBERNETES_API_UNAVAILABLE",
+      dependency: "kubernetes_api",
       cause: "unavailable",
+      status,
       deployPasses: 5,
     },
     {
+      attempt: 5,
       outcome: "retry",
       code: "DEPENDENCY_UNAVAILABLE",
       cause: "DependencyUnavailableError",
+      method: "GetProviderProfile",
+      grpcStatus: 14,
+      validationCategory: "UNKNOWN",
+      cleanupCause: "KubernetesRequestTimeout",
       deployPasses: 6,
+    },
+    {
+      attempt: 6,
+      outcome: "retry",
+      code: "DEPENDENCY_UNAVAILABLE",
+      cause: "DependencyUnavailableError",
+      method: "CreateSandbox",
+      grpcStatus: 3,
+      validationCategory: "POLICY_SAFETY",
+      deployPasses: 7,
+    },
+    {
+      attempt: 7,
+      outcome: "retry",
+      code: "DEPENDENCY_UNAVAILABLE",
+      cause: "Error",
+      deployPasses: 8,
     },
   ];
   for (const completion of completions) {
     emit({ ...work, event: "worker.completed", result: completion.outcome, ...completion });
   }
+  // These records must not join the selected revision merely because the attempt matches.
+  for (const foreign of [
+    { namespaceId: "ns_other" },
+    { agentId: "agent_other" },
+    { revisionId: "rev_other" },
+    { workId: "agent_revision:rev_other:reconcile" },
+    { operation: "agent.delete" },
+    { attempt: 0 },
+    { attempt: 1.5 },
+  ]) {
+    emit({ ...work, ...foreign, event: "worker.completed", outcome: "retry" });
+  }
+  // A partial log line and unknown fields are diagnostic input, not valid Worker behavior.
+  lines.push("{partial\n", "null\n");
+  emit({
+    ...work,
+    event: "worker.completed",
+    outcome: sentinel,
+    code: sentinel,
+    cause: sentinel,
+    dependency: sentinel,
+    method: sentinel,
+    validationCategory: sentinel,
+    cleanupCause: sentinel,
+    grpcStatus: 17,
+    status: 99,
+    deployPasses: 0,
+    details: sentinel,
+  });
   const log = lines.join("");
   assert.ok(log.includes(sentinel), "private sentinel must actually reach the collector");
+  assert.ok(log.includes('"method":"' + sentinel + '"'), "unknown method reaches projection");
 
   // Use the actual installed response decoder, deploy failure, private ledger and public diagnostic.
   const diagnostics = [];
@@ -731,7 +786,21 @@ test("failed custody deployment preserves worker event order across a reused att
     const budgetAttempt = 5;
     assert.deepEqual(failure.workerEvents, [
       { event: "preparation", budgetAttempt, step, errorClass, status, cause: "other" },
-      ...completions.map((fields) => ({ event: "completion", budgetAttempt, ...fields })),
+      ...completions.map(({ attempt, ...fields }) => ({
+        event: "completion",
+        budgetAttempt: attempt,
+        ...fields,
+      })),
+      {
+        event: "completion",
+        budgetAttempt,
+        outcome: "other",
+        code: "other",
+        cause: "other",
+        dependency: "other",
+        method: "other",
+        cleanupCause: "other",
+      },
     ]);
     assert.ok(
       diagnostics.at(-1).includes(JSON.stringify(failure.workerEvents)),

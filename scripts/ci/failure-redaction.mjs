@@ -411,3 +411,76 @@ export function redactOutputLine(line, secrets, root, limit) {
   const redacted = redactText(line, limit, secrets, root) ?? "";
   return namesCredential(redacted) ? "[redacted credential-bearing line]" : redacted;
 }
+
+const workerErrorClasses =
+  "Error DependencyUnavailableError OwnershipFailure KubernetesApiError KubernetesApiUnavailableError KubernetesRequestTimeout OpenShellGatewayFailure SandboxGatewayUnavailableError";
+const workerMethods =
+  "GetSandboxConfig ListSandboxes ListWorkspaceMembers GetSandboxPolicyStatus UpdateConfig GetDraftPolicy ConfigureProviderRefresh RotateProviderCredential GetProviderRefreshStatus GetProviderCredentials Health GetGatewayInfo GetWorkspace CreateWorkspace DeleteWorkspace CreateSandbox GetSandbox GetService DeleteService DeleteSandbox GetSandboxLogs GetSandboxProviderStatus CreateProvider UpdateProvider DetachSandboxProvider GetProvider ListProviders DeleteProvider GetProviderProfile ListProviderProfiles LintProviderProfiles ImportProviderProfiles UpdateProviderProfiles DeleteProviderProfile DeleteProviderRefresh ExecSandbox";
+const knownWorkerValue = (value, literals) =>
+  value === undefined ? undefined : literals.split(" ").includes(value) ? value : "other";
+
+/** Canonical, idempotent projection for installed Worker diagnostics; never retain raw log fields. */
+export function projectInstalledWorkerEvent(value) {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    !Number.isSafeInteger(value.budgetAttempt) ||
+    value.budgetAttempt < 1
+  ) {
+    return undefined;
+  }
+  const { event, budgetAttempt } = value;
+  const status =
+    Number.isSafeInteger(value.status) && value.status >= 100 && value.status <= 599
+      ? value.status
+      : undefined;
+  if (event === "preparation") {
+    return {
+      event,
+      budgetAttempt,
+      step: knownWorkerValue(
+        value.step,
+        "prepare_revision sandbox_provision workspace_setup gateway_deployment",
+      ),
+      errorClass: knownWorkerValue(value.errorClass, workerErrorClasses),
+      status,
+      cause: knownWorkerValue(
+        value.cause,
+        "workload-not-terminated harness-transport-unavailable exact-installation-required",
+      ),
+    };
+  }
+  if (event !== "completion") {
+    return undefined;
+  }
+  return {
+    event,
+    budgetAttempt,
+    outcome: knownWorkerValue(value.outcome, "pending retry permanent success"),
+    code: knownWorkerValue(
+      value.code,
+      "DEPENDENCY_UNAVAILABLE AGENT_GATEWAY_UNAVAILABLE KUBERNETES_API_UNAVAILABLE SANDBOX_ADMISSION_LIMIT_REACHED SANDBOX_GATEWAY_UNAVAILABLE",
+    ),
+    cause: knownWorkerValue(value.cause, "unreachable timeout unavailable " + workerErrorClasses),
+    dependency: knownWorkerValue(
+      value.dependency,
+      "agent_gateway kubernetes_api sandbox_admission sandbox_gateway",
+    ),
+    method: knownWorkerValue(value.method, workerMethods),
+    grpcStatus:
+      Number.isSafeInteger(value.grpcStatus) && value.grpcStatus >= 0 && value.grpcStatus <= 16
+        ? value.grpcStatus
+        : undefined,
+    validationCategory: knownWorkerValue(
+      value.validationCategory,
+      "POLICY_SAFETY POLICY_MIDDLEWARE_VALIDATION UNKNOWN",
+    ),
+    status,
+    cleanupCause: knownWorkerValue(value.cleanupCause, workerErrorClasses),
+    deployPasses:
+      Number.isSafeInteger(value.deployPasses) && value.deployPasses > 0
+        ? value.deployPasses
+        : undefined,
+  };
+}

@@ -8,6 +8,7 @@ import {
 } from "../../packages/contracts/src/runtime-failure.mjs";
 
 import { openShellSetupProgress, openShellVerificationOperations } from "./openshell-progress.mjs";
+import { projectInstalledWorkerEvent } from "./failure-redaction.mjs";
 
 export const openShellGitRetentionKind = "openshell-git-retention";
 
@@ -355,6 +356,26 @@ const policyDenial = {
   endedAt: ["endedAt", count],
 };
 const events = {
+  "mixed-grant-deployment-failed": {
+    namespaceIdHash: ["namespaceIdHash", hash],
+    agentIdHash: ["agentIdHash", hash],
+    revisionIdHash: ["revisionIdHash", hash],
+    workIdHash: ["workIdHash", hash],
+    registrationStage: ["registrationStage", choice("before", "after")],
+    workerEvents: [
+      "workerEvents",
+      (value) => {
+        if (value === "unavailable") {
+          return value;
+        }
+        if (!Array.isArray(value) || value.length === 0 || value.length > 32) {
+          return undefined;
+        }
+        const selected = value.map(projectInstalledWorkerEvent);
+        return selected.every((event) => event !== undefined) ? selected : undefined;
+      },
+    ],
+  },
   "mixed-grant-failure": {
     method: [
       "method",
@@ -713,7 +734,9 @@ export function emitOpenShellGitRetention(t, value) {
   const projected = projectOpenShellGitRetention(value);
   assert.ok(projected, "qualification receipt must have a safe CI projection");
   const output =
-    value.event === "mixed-grant-setup" || value.event === "mixed-grant-failure"
+    value.event === "mixed-grant-setup" ||
+    value.event === "mixed-grant-failure" ||
+    value.event === "mixed-grant-deployment-failed"
       ? projected
       : value;
   t.diagnostic(`openclaw-ci-measurement ${JSON.stringify(output)}`);

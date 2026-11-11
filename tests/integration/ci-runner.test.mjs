@@ -1028,6 +1028,84 @@ test("mixed-grant output closes deployment codes and projects before diagnostics
   const installationUrl = new URL("../helpers/openshell-git-installation.mjs", import.meta.url)
     .href;
   const realTestUrl = new URL("./openshell-mixed-grant-real.test.ts", import.meta.url).href;
+  const identityHashes = Object.fromEntries(
+    ["namespaceId", "agentId", "revisionId", "workId"].map((field) => [
+      `${field}Hash`,
+      createHash("sha256").update(`PRIVATE_WORKER_${field}_CANARY`).digest("hex"),
+    ]),
+  );
+  const workerEvents = [
+    {
+      event: "preparation",
+      budgetAttempt: 1,
+      step: "prepare_revision",
+      errorClass: "DependencyUnavailableError",
+    },
+    {
+      event: "completion",
+      budgetAttempt: 1,
+      outcome: "retry",
+      code: "DEPENDENCY_UNAVAILABLE",
+      cause: "DependencyUnavailableError",
+      method: "CreateSandbox",
+      grpcStatus: 3,
+      validationCategory: "POLICY_SAFETY",
+      deployPasses: 1,
+    },
+    {
+      event: "completion",
+      budgetAttempt: 2,
+      outcome: "pending",
+      code: "KUBERNETES_API_UNAVAILABLE",
+      dependency: "kubernetes_api",
+      cause: "unavailable",
+      status: 503,
+      deployPasses: 2,
+    },
+  ];
+  const rejectedWorkerValues = {
+    event: "completion",
+    budgetAttempt: 3,
+    outcome: "PRIVATE_WORKER_OUTCOME_CANARY",
+    code: "PRIVATE_WORKER_CODE_CANARY",
+    cause: "PRIVATE_WORKER_CAUSE_CANARY",
+    dependency: "PRIVATE_WORKER_DEPENDENCY_CANARY",
+    method: "PRIVATE_WORKER_METHOD_CANARY",
+    grpcStatus: 17,
+    validationCategory: "PRIVATE_WORKER_CATEGORY_CANARY",
+    status: 700,
+    cleanupCause: "PRIVATE_WORKER_CLEANUP_CANARY",
+    deployPasses: 0,
+  };
+  const deploymentReceipts = [
+    {
+      kind: "openshell-git-retention",
+      event: "mixed-grant-deployment-failed",
+      ...identityHashes,
+      registrationStage: "before",
+      workerEvents: [
+        ...workerEvents,
+        {
+          event: "completion",
+          budgetAttempt: 3,
+          outcome: "other",
+          code: "other",
+          cause: "other",
+          dependency: "other",
+          method: "other",
+          validationCategory: "other",
+          cleanupCause: "other",
+        },
+      ],
+    },
+    {
+      kind: "openshell-git-retention",
+      event: "mixed-grant-deployment-failed",
+      ...identityHashes,
+      registrationStage: "after",
+      workerEvents: "unavailable",
+    },
+  ];
   for (const [code, registrationStage] of [
     ["PRIVATE_UPPERCASE_CANARY", "before"],
     ["SANDBOX_GATEWAY_UNAUTHORIZED", "after"],
@@ -1064,6 +1142,13 @@ test("closed diagnostic projection", (t) => {
   const common = { kind: "openshell-git-retention", phase: "installation", extra: "PRIVATE_FIELD_CANARY" };
   emitOpenShellGitRetention(t, { ...common, event: "mixed-grant-setup", phase: "verification", operation: "model before Git" });
   emitOpenShellGitRetention(t, { ...common, event: "mixed-grant-failure", category: "operation", httpStatus: null, method: "GetProviderProfile", grpcStatus: 14, details: "PRIVATE_RPC_DETAILS_CANARY" });
+  // Installed collection supplies hashes and canonical events. Projection must
+  // remove private fields before direct output and remain stable in the reporter.
+  const identities = ${JSON.stringify(identityHashes)};
+  const privateFields = { message: "PRIVATE_WORKER_MESSAGE_CANARY", stack: "PRIVATE_WORKER_STACK_CANARY", details: { token: "PRIVATE_WORKER_TOKEN_CANARY" }, namespaceId: "PRIVATE_WORKER_NAMESPACE_CANARY", agentId: "PRIVATE_WORKER_AGENT_CANARY", revisionId: "PRIVATE_WORKER_REVISION_CANARY", workId: "PRIVATE_WORKER_WORK_CANARY" };
+  const workerEvents = ${JSON.stringify([...workerEvents, rejectedWorkerValues])}.map((event) => ({ ...event, ...privateFields }));
+  emitOpenShellGitRetention(t, { ...common, ...privateFields, ...identities, event: "mixed-grant-deployment-failed", registrationStage: "before", workerEvents });
+  emitOpenShellGitRetention(t, { ...common, ...privateFields, ...identities, event: "mixed-grant-deployment-failed", registrationStage: "after", workerEvents: "unavailable" });
   // Existing events still supply the original identity for collector-side hashing.
   emitOpenShellGitRetention(t, { kind: common.kind, event: "mixed-grant-git-fetched", revisionId: "revision-identity", sha: "a".repeat(40), gitIssued: 1, gitRequests: 2 });
 });
@@ -1074,10 +1159,14 @@ await import(${JSON.stringify(realTestUrl)});
     await writeSingleLaneManifest(root, "closed-output", [{ path }], {});
     const directEnv = runnerEnv();
     delete directEnv.NODE_TEST_CONTEXT;
-    const direct = spawnSync(process.execPath, ["--test", join(root, path)], {
-      encoding: "utf8",
-      env: directEnv,
-    });
+    const direct = spawnSync(
+      process.execPath,
+      ["--test", "--test-reporter=tap", join(root, path)],
+      {
+        encoding: "utf8",
+        env: directEnv,
+      },
+    );
     assert.equal(direct.status, 1, direct.stderr);
     const expectedCode = code === "PRIVATE_UPPERCASE_CANARY" ? "UNKNOWN_DEPLOYMENT_FAILURE" : code;
     const expectedMessage = `MIXED_GRANT_DEPLOYMENT_FAILED: ${expectedCode}; selected revision failed ${registrationStage} provider registration; verification phase installation.`;
@@ -1092,10 +1181,17 @@ await import(${JSON.stringify(realTestUrl)});
     );
     assert.equal(result.status, 1, result.stderr);
     const raw = await readFile(join(root, "results/closed.json"), "utf8");
+    const diagnostics = await readFile(join(root, "state/closed.json.diagnostics.json"), "utf8");
     assert.doesNotMatch(
-      direct.stdout + direct.stderr + result.stdout + result.stderr + raw,
-      /PRIVATE_(UPPERCASE|FIELD|RPC_MESSAGE|RPC_DETAILS)_CANARY/,
+      direct.stdout + direct.stderr + result.stdout + result.stderr + raw + diagnostics,
+      /PRIVATE_[A-Za-z_]+_CANARY/,
     );
+    const directReceipts = direct.stdout
+      .split("\n")
+      .filter((line) => line.startsWith("# openclaw-ci-measurement "))
+      .map((line) => JSON.parse(line.slice("# openclaw-ci-measurement ".length)))
+      .filter((receipt) => receipt.event === "mixed-grant-deployment-failed");
+    assert.deepEqual(directReceipts, deploymentReceipts);
     const receipts = JSON.parse(raw).files[0].measurements;
     assert.deepEqual(receipts, [
       {
@@ -1113,6 +1209,7 @@ await import(${JSON.stringify(realTestUrl)});
         method: "GetProviderProfile",
         grpcStatus: 14,
       },
+      ...deploymentReceipts,
       {
         kind: "openshell-git-retention",
         event: "mixed-grant-git-fetched",

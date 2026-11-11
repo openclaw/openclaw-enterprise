@@ -22,6 +22,7 @@ import { availablePort } from "./available-port.mjs";
 import { localFirstAgentStack, ownFirstAgentWork } from "./local-first-agent-stack.mjs";
 import { localOpenShellGatewayOptions } from "./local-openshell-gateway.mjs";
 import { stopProcess } from "./stop-process.mjs";
+import { collectInstalledWorkerEvents } from "./installed-worker-events.mjs";
 import { deployMixedGrantAgent } from "./openshell-mixed-grant-agent.ts";
 import {
   mixedGrantSupplier,
@@ -1857,55 +1858,109 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
         assert.ok(Array.isArray(rows), "expected installed model approval records");
         return rows;
       },
-      deployMixedGrantAgent: () => {
+      deployMixedGrantAgent: async () => {
+        const since = new Date().toISOString();
+        const readControllerPods = async (timeout) =>
+          JSON.parse(
+            await kube([
+              "get",
+              "pods",
+              "-n",
+              platform,
+              "-l",
+              selector(workerLabels),
+              "-o",
+              "json",
+              timeout,
+            ]),
+          ).items;
+        // Pin the pre-deployment Worker; diagnostics must not follow a replacement.
+        const controllerPods = await readControllerPods("--request-timeout=8s").catch(() => []);
+        let target;
         setupCheckpoint("agent-admission", "deployment");
-        return deployMixedGrantAgent(t, {
-          ...fixture,
-          model: mixed.model,
-          modelTurns: mixed.modelTurns,
-          modelOrigin: mixed.modelOrigin,
-          readModelAdmission: async ({ agentId, revisionId }) => {
-            setupCheckpoint("committed-admission", "deployment");
-            const rows = JSON.parse(
-              await kube([
-                "exec",
-                "-n",
-                platform,
-                "deployment/openclaw-enterprise-api",
-                "--",
-                "node",
-                "--input-type=module",
-                "-e",
-                readModelAdmission,
-                namespace.id,
-                agentId,
-                revisionId,
-              ]),
+        try {
+          return await deployMixedGrantAgent(t, {
+            ...fixture,
+            model: mixed.model,
+            modelTurns: mixed.modelTurns,
+            modelOrigin: mixed.modelOrigin,
+            readModelAdmission: async ({ agentId, revisionId }) => {
+              setupCheckpoint("committed-admission", "deployment");
+              const rows = JSON.parse(
+                await kube([
+                  "exec",
+                  "-n",
+                  platform,
+                  "deployment/openclaw-enterprise-api",
+                  "--",
+                  "node",
+                  "--input-type=module",
+                  "-e",
+                  readModelAdmission,
+                  namespace.id,
+                  agentId,
+                  revisionId,
+                ]),
+              );
+              assert.ok(Array.isArray(rows), "expected committed model admission records");
+              assert.equal(rows.length, 1, "expected exactly one selected committed admission");
+              return rows[0];
+            },
+            stateDirectory: stack.directory,
+            after: (operation) => cleanup.push(operation),
+            registerProviders: (revision, agent) => {
+              target = { id: revision.id, agentId: agent.id, namespaceId: namespace.id };
+              setupCheckpoint("provider-registration", "deployment");
+              return registerMixedGrantProviders({
+                request,
+                namespace,
+                agent,
+                revision,
+                workspace: sandboxNamespace,
+                gatewayClient,
+                kube,
+                gatewayValues,
+                modelEndpoint,
+                gitEndpoint,
+                upgradeGateway,
+                signal: t.signal,
+              });
+            },
+          });
+        } catch (error) {
+          const failed =
+            error instanceof Error &&
+            /^MIXED_GRANT_DEPLOYMENT_FAILED: [A-Z_]+; selected revision failed (before|after) provider registration$/.exec(
+              error.message,
             );
-            assert.ok(Array.isArray(rows), "expected committed model admission records");
-            assert.equal(rows.length, 1, "expected exactly one selected committed admission");
-            return rows[0];
-          },
-          stateDirectory: stack.directory,
-          after: (operation) => cleanup.push(operation),
-          registerProviders: (revision, agent) => {
-            setupCheckpoint("provider-registration", "deployment");
-            return registerMixedGrantProviders({
-              request,
-              namespace,
-              agent,
-              revision,
-              workspace: sandboxNamespace,
-              gatewayClient,
-              kube,
-              gatewayValues,
-              modelEndpoint,
-              gitEndpoint,
-              upgradeGateway,
-              signal: t.signal,
-            });
-          },
-        });
+          if (target && failed) {
+            // Observe once before teardown. The selected API deployment, not a
+            // Worker outcome (which may still say retry), establishes failure.
+            try {
+              const workerEvents = await collectInstalledWorkerEvents({
+                controllerNamespace: platform,
+                controllerImage: values.images.controller,
+                controllerPods,
+                readControllerPods,
+                kubectl: (...args) => kube(args),
+                since,
+                target,
+              }).catch(() => "unavailable");
+              const hashIdentity = (value) => createHash("sha256").update(value).digest("hex");
+              await checkpoint("mixed-grant-deployment-failed", {
+                namespaceIdHash: hashIdentity(target.namespaceId),
+                agentIdHash: hashIdentity(target.agentId),
+                revisionIdHash: hashIdentity(target.id),
+                workIdHash: hashIdentity(`agent_revision:${target.id}:reconcile`),
+                registrationStage: failed[1],
+                workerEvents,
+              });
+            } catch {
+              // Observation failures must not replace the selected deployment failure.
+            }
+          }
+          throw error;
+        }
       },
     });
   }
