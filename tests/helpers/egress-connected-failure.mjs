@@ -19,6 +19,10 @@ const outcomes = new Set(["exit", "signal", "cancelled", "deadline", "transport"
 const failedOperations = new WeakMap();
 const kubectlOutcomes = new WeakMap();
 const custodyOutcomes = new WeakMap();
+const custodyContexts = new WeakMap();
+const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
+const custodyRequestId = /^[a-f0-9]{8}-[a-f0-9]{4}-7[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
+const containerIdentity = /^[a-z0-9]+:\/\/[a-f0-9]{64}$/;
 export const nativeFailureMarker = "OCC_NATIVE_FAILURE_V1 ";
 const acknowledgementsByPhase = new Map([
   ["connect", [null]],
@@ -345,8 +349,8 @@ export function rememberKubectlOutcome(
   return error;
 }
 
-// A fixed projection of observer-owned counters; supplier strings and request
-// IDs never become diagnostic fields, even when validation rejects a log entry.
+// Counters remain safe for terminal output. Validated correlation IDs are kept
+// separately for the private ledger, never copied from rejected tracing fields.
 export function rememberCustodyOutcome(error, value) {
   if (!(error instanceof Error)) {
     return error;
@@ -365,7 +369,40 @@ export function rememberCustodyOutcome(error, value) {
     "response_blocked",
     "response_delivery_incomplete",
   ]);
+  const input = value.evidence;
+  const evidence =
+    input &&
+    uuid.test(input.sandboxId) &&
+    uuid.test(input.supervisorUid) &&
+    containerIdentity.test(input.containerId)
+      ? {
+          sandboxId: input.sandboxId,
+          supervisorUid: input.supervisorUid,
+          containerId: input.containerId,
+          identityCheck: choice(input.identityCheck, [
+            "unobserved",
+            "pending",
+            "matched",
+            "failed",
+          ]),
+          expected: input.expected.filter((event) => labels.has(event)).slice(0, 9),
+          events: input.events
+            .slice(0, 9)
+            .filter(
+              (entry) =>
+                typeof entry.requestId === "string" &&
+                custodyRequestId.test(entry.requestId) &&
+                labels.has(entry.event),
+            )
+            .map(({ requestId, event }) => ({ requestId, event })),
+          truncated: input.truncated === true,
+          uniqueRequest: input.uniqueRequest === true,
+          singleRequest: input.singleRequest === true,
+          ordered: input.ordered === true,
+        }
+      : undefined;
   custodyOutcomes.set(error, {
+    evidence,
     readAttempts: count(value.readAttempts),
     successfulReads: count(value.successfulReads),
     lastRead: choice(value.lastRead, ["unobserved", "pending", "returned", "deadline", "error"]),
@@ -384,6 +421,67 @@ export function rememberCustodyOutcome(error, value) {
     labels: value.labels.filter((label) => labels.has(label)).slice(0, 9),
     sequence: choice(value.sequence, ["unobserved", "none", "partial", "complete", "invalid"]),
   });
+  return error;
+}
+
+// This context is owned by the turn caller. Session observations are independent
+// of custody request IDs: temporal proximity does not bind a request to a session.
+export function rememberCustodyContext(error, phase, sessions) {
+  if (error instanceof Error && /^[a-z][a-z0-9-]{0,79}$/.test(phase)) {
+    const time = (value) =>
+      typeof value === "string" &&
+      value.length <= 35 &&
+      /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(value) &&
+      Number.isFinite(Date.parse(value))
+        ? value
+        : null;
+    const gateways = (Array.isArray(sessions?.gateways) ? sessions.gateways : [])
+      .slice(0, 9)
+      .filter((entry) => uuid.test(entry?.podUid) && containerIdentity.test(entry?.containerId))
+      .map((entry) => ({
+        podUid: entry.podUid,
+        containerId: entry.containerId,
+        outcome: entry.outcome === "observed" ? "observed" : "unavailable",
+        stage: ["identity-before", "logs", "identity-after", "parse"].includes(entry.stage)
+          ? entry.stage
+          : null,
+        total:
+          Number.isSafeInteger(entry.total) && entry.total >= 0 && entry.total <= 2000
+            ? entry.total
+            : null,
+        truncated: entry.truncated === true,
+        events: (Array.isArray(entry.events) ? entry.events : [])
+          .slice(0, 9)
+          .filter(
+            (event) =>
+              uuid.test(event?.sessionId) &&
+              time(event?.at) &&
+              ["accepted", "inbound_eof", "gateway_closed", "ended"].includes(event?.event),
+          )
+          .map((event) => ({
+            sessionId: event.sessionId,
+            at: time(event.at),
+            event: event.event,
+            ...(typeof event.epoch === "string" &&
+            /^[1-9]\d{0,19}$/.test(event.epoch) &&
+            BigInt(event.epoch) <= 18446744073709551615n
+              ? { epoch: event.epoch }
+              : {}),
+          })),
+      }));
+    custodyContexts.set(error, {
+      turnPhase: phase,
+      sessions: {
+        outcome: ["observed", "timeout", "unavailable"].includes(sessions?.outcome)
+          ? sessions.outcome
+          : "unavailable",
+        since: time(sessions?.since),
+        requestSessionCorrelation: "unavailable",
+        truncated: sessions?.truncated === true,
+        gateways,
+      },
+    });
+  }
   return error;
 }
 
@@ -407,7 +505,10 @@ export async function safeConnectedFailure(error, stage, recordFailure) {
   const { operation = null, nativeTurnResult } = failedOperations.get(error) ?? {};
   const local = kubectlOutcomes.get(error);
   const kubectl = local?.kubectl ?? null;
-  const custody = custodyOutcomes.get(error);
+  const observedCustody = custodyOutcomes.get(error);
+  const { evidence: custodyEvidence, ...custodySummary } = observedCustody ?? {};
+  const custody = observedCustody ? custodySummary : undefined;
+  const custodyContext = custodyContexts.get(error);
   const nativeExec = operation === "gateway-codex-exec" ? local?.nativeExec : undefined;
   if (operation !== null || kubectl !== null) {
     try {
@@ -417,6 +518,8 @@ export async function safeConnectedFailure(error, stage, recordFailure) {
         kubectl,
         ...(nativeExec && { nativeExec }),
         ...(custody && { custody }),
+        ...(custodyEvidence && { custodyEvidence }),
+        ...(custodyContext && { custodyContext }),
         ...(nativeTurnResult && { nativeTurnResult }),
       });
     } catch {

@@ -5,6 +5,7 @@ import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-sta
 import { wirePolicy } from "../../apps/controller/src/drivers/egress-proxy/openshell-wire-policy.ts";
 import { openShellExchangeCapabilities as capabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
 import { connectedReceiptRevision } from "./egress-connected-inputs.mjs";
+import { createKubernetesClient, withinDiagnosticDeadline } from "./kubernetes-real.mjs";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -42,6 +43,101 @@ export function acceptedSupervisorSessions(text, sandboxId, instanceId) {
     sessions.set(event.sessionId, event);
   }
   return [...sessions.values()];
+}
+
+// Fixed server events only. These identify observed sessions, not the session
+// used by a custody request (the custody event does not carry that association).
+export function supervisorSessionLifecycle(text, sandboxId, instanceId) {
+  const events = [];
+  const endings = new Map([
+    ["stream closed by supervisor", "inbound_eof"],
+    ["superseded or closed by the gateway, shutting down", "gateway_closed"],
+    ["ended", "ended"],
+  ]);
+  for (const raw of text.split("\n")) {
+    const line = stripVTControlCharacters(raw);
+    const accepted = acceptedSupervisorSessions(line, sandboxId, instanceId);
+    if (accepted.length) {
+      events.push({ ...accepted[0], event: "accepted" });
+      continue;
+    }
+    const match = line.match(
+      /^\S+ \S+ +INFO +openshell_server::supervisor_session: supervisor session: (stream closed by supervisor|superseded or closed by the gateway, shutting down|ended) sandbox_id=(\S+) session_id=(\S+)$/,
+    );
+    if (!match || match[2] !== sandboxId) {
+      continue;
+    }
+    assert.ok(uuid.test(match[3]), "invalid lifecycle session ID");
+    const at = line.split(" ")[0];
+    assert.ok(Number.isFinite(Date.parse(at)), "lifecycle event needs a timestamp");
+    events.push({ sessionId: match[3], at, event: endings.get(match[1]) });
+  }
+  return { total: events.length, truncated: events.length > 9, events: events.slice(-9) };
+}
+
+// Failure-only bounded observation. No readiness, replay, renewal or authority
+// decision depends on these logs, and failure here must preserve the turn error.
+export async function observeFailedTurnSessions(setup, stack, installed, since) {
+  const { input, selection } = setup;
+  const { sandboxId } = installed.installation;
+  const instanceId = installed.receipt.enforcement.instance_id;
+  const client = createKubernetesClient({ selection });
+  return withinDiagnosticDeadline(
+    async () => {
+      const gateways = [];
+      for (const pod of stack.supplierPods.slice(0, 9)) {
+        let stage = "identity-before";
+        let expected;
+        try {
+          expected = processIdentity(pod, input.images.openShellGateway);
+          const before = await client.resource(
+            "pod",
+            expected.podName,
+            input.openShellGatewayNamespace,
+          );
+          assert.deepEqual(processIdentity(before, input.images.openShellGateway), expected);
+          stage = "logs";
+          const logs = await client.kubectl(
+            "logs",
+            expected.podName,
+            "--namespace",
+            input.openShellGatewayNamespace,
+            "--container",
+            expected.containerName,
+            "--timestamps=true",
+            "--request-timeout=3s",
+            `--since-time=${since}`,
+            "--tail=2000",
+            "--limit-bytes=1048576",
+          );
+          stage = "identity-after";
+          const after = await client.resource(
+            "pod",
+            expected.podName,
+            input.openShellGatewayNamespace,
+          );
+          assert.deepEqual(processIdentity(after, input.images.openShellGateway), expected);
+          stage = "parse";
+          const lifecycle = supervisorSessionLifecycle(logs, sandboxId, instanceId);
+          gateways.push({
+            podUid: expected.podUid,
+            containerId: expected.containerId,
+            outcome: "observed",
+            ...lifecycle,
+          });
+        } catch {
+          gateways.push({
+            podUid: expected?.podUid,
+            containerId: expected?.containerId,
+            outcome: "unavailable",
+            stage,
+          });
+        }
+      }
+      return { outcome: "observed", gateways, truncated: stack.supplierPods.length > 9 };
+    },
+    { timeoutMs: 10_000, timedOut: { outcome: "timeout", gateways: [] } },
+  );
 }
 
 function processIdentity(pod, image) {

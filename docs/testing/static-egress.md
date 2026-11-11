@@ -356,9 +356,10 @@ Controller attempts record operation IDs and uncertain outcomes; responses alone
 do not prove effects. Failures retain the operation and `failure.kubectl`.
 `failure.nativeExec` records bounded client progress, or `absent`/`invalid`; absent
 frames leave startup uncertain. Pod declarations do not prove effective inputs.
-`failure.custody` retains bounded read/ring counts, fixed failure categories and
-known transition labels without payloads/IDs. Failed reads preserve
-prior ring/sequence. Missing events are not `no_permit`. Errors omit raw output.
+`failure.custody` retains counts/categories. Private evidence adds bounded
+request-ID/event pairs, identity checks and uncorrelated session observations.
+Errors omit IDs/payloads. Failed reads preserve prior evidence; missing events
+never establish refusal.
 Deployment records public owner capability.
 
 Cleanup deletes owned Agents, confirms API/Sandbox/Pod absence, removes supporting

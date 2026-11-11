@@ -29,9 +29,13 @@ import {
 import {
   describeGatewayAppServerDeclaration,
   observeConnectedOperation,
+  rememberCustodyContext,
   safeConnectedFailure,
 } from "../helpers/egress-connected-failure.mjs";
-import { requireSupervisorReconnect } from "../helpers/egress-supervisor-reconnect.mjs";
+import {
+  observeFailedTurnSessions,
+  requireSupervisorReconnect,
+} from "../helpers/egress-supervisor-reconnect.mjs";
 import { tryDirectTcp } from "../helpers/egress-custody-observations.mjs";
 import {
   encodeSyntheticEvents,
@@ -325,6 +329,7 @@ async function observeRunningAgent(setup, stack, evidence, owned, deployment, in
     );
   };
   const turn = async (phase, expected = "completed", expectedHttpStatus = null) => {
+    const startedAt = new Date().toISOString();
     const nonce = `OCE-EGRESS-${randomUUID()}`;
     await checkpoint("turn-start", {
       gatewayAppServerDeclaration: describeGatewayAppServerDeclaration(gatewayPods[0], "gateway"),
@@ -390,7 +395,17 @@ async function observeRunningAgent(setup, stack, evidence, owned, deployment, in
           "permit_accepted",
           expected === "completed" ? "response_released" : "response_blocked",
         ];
-    const requestId = await custodyTransitions.expectAfter(before, transitions);
+    let requestId;
+    try {
+      requestId = await custodyTransitions.expectAfter(before, transitions);
+    } catch (error) {
+      // Preserve the exact failed observation without retrying the model request.
+      // Session events provide timing context, not a request/session binding.
+      const sessions = await observeFailedTurnSessions(setup, stack, installed, startedAt).catch(
+        () => ({ outcome: "unavailable", gateways: [] }),
+      );
+      throw rememberCustodyContext(error, phase, { ...sessions, since: startedAt });
+    }
     assert.deepEqual(provider.errors, [], "synthetic provider failed independently of enforcement");
     await checkpoint("turn-complete", {
       turnPhase: phase,

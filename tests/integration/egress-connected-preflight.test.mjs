@@ -21,6 +21,7 @@ import {
 import {
   describeGatewayAppServerDeclaration,
   observeConnectedOperation,
+  rememberCustodyContext,
   safeConnectedFailure,
 } from "../helpers/egress-connected-failure.mjs";
 import { createCustodyTransitions } from "../helpers/egress-supplier-custody-transitions.mjs";
@@ -54,7 +55,10 @@ import {
   validateConnectedDatabaseUrl,
   validateConnectedInputs,
 } from "../helpers/egress-connected-inputs.mjs";
-import { acceptedSupervisorSessions } from "../helpers/egress-supervisor-reconnect.mjs";
+import {
+  acceptedSupervisorSessions,
+  supervisorSessionLifecycle,
+} from "../helpers/egress-supervisor-reconnect.mjs";
 import { listen } from "../helpers/listen.mjs";
 
 import {
@@ -1987,23 +1991,65 @@ test("reconnect observer counts accepted sessions once and preserves uint64 epoc
       ),
     { name: "AssertionError", message: /conflicting accepted session event/ },
   );
+  const closed = `2026-01-01T00:00:01.000Z 2026-01-01T00:00:01Z  INFO openshell_server::supervisor_session: supervisor session: stream closed by supervisor sandbox_id=${sandboxId} session_id=${first}`;
+  const lifecycle = supervisorSessionLifecycle(
+    [accepted, closed].join("\n"),
+    sandboxId,
+    instanceId,
+  );
+  assert.deepEqual(lifecycle, {
+    total: 2,
+    truncated: false,
+    events: [
+      {
+        sessionId: first,
+        epoch: "9007199254740992",
+        at: "2026-01-01T00:00:00.000Z",
+        event: "accepted",
+      },
+      { sessionId: first, at: "2026-01-01T00:00:01.000Z", event: "inbound_eof" },
+    ],
+  });
+  assert.deepEqual(
+    supervisorSessionLifecycle(
+      closed.replace("openshell_server::", "untrusted::"),
+      sandboxId,
+      instanceId,
+    ).events,
+    [],
+  );
+  assert.throws(
+    () =>
+      supervisorSessionLifecycle(closed.replace(first, "unchecked-secret"), sandboxId, instanceId),
+    { code: "ERR_ASSERTION" },
+  );
+  const bounded = supervisorSessionLifecycle(
+    Array(12).fill(closed).join("\n"),
+    sandboxId,
+    instanceId,
+  );
+  assert.equal(bounded.total, 12);
+  assert.equal(bounded.truncated, true);
+  assert.equal(bounded.events.length, 9);
 });
 
 // Scripted log replies exercise the real observer and terminal projection, not
 // supplier emission or delivery. A final read failure must retain prior evidence.
 test("custody failures retain bounded last observations without supplier payloads", async (t) => {
   const marker = "PRIVATE-CUSTODY-DIAGNOSTIC-SENTINEL";
-  const sandboxId = "sandbox-observation";
+  const sandboxId = "10000000-0000-4000-8000-000000000001";
   const supervisor = {
     metadata: {
-      uid: "supervisor-uid",
+      uid: "20000000-0000-4000-8000-000000000001",
       namespace: "workspace",
       labels: {
         "openshell.ai/sandbox-id": sandboxId,
         "openshell.ai/boundary-role": "supervisor",
       },
     },
-    status: { containerStatuses: [{ containerID: "container-id", restartCount: 0 }] },
+    status: {
+      containerStatuses: [{ containerID: `containerd://${"a".repeat(64)}`, restartCount: 0 }],
+    },
   };
   const line = {
     sandboxId,
@@ -2017,6 +2063,107 @@ test("custody failures retain bounded last observations without supplier payload
       private: marker,
     },
   };
+  await t.test(
+    "missing resolution preserves private correlation without accepting the refusal",
+    async (t) => {
+      const evidence = await createRunEvidence(t, { input: { images: {} }, controller: {} }, {});
+      t.after(() => rm(evidence.directory, { recursive: true, force: true }));
+      let lines = [];
+      const custody = createCustodyTransitions({
+        workspace: "workspace",
+        sandbox: "sandbox",
+        sandboxId,
+        supervisor,
+        readSupervisor: async () => supervisor,
+        gatewayClient: { getSandboxLogs: async () => ({ lines, bufferTotal: lines.length }) },
+      });
+      const before = await custody.snapshot();
+      lines = ["no_permit", "response_blocked"].map((event) => ({
+        ...line,
+        fields: { ...line.fields, response_custody_event: event },
+      }));
+      await assert.rejects(
+        async () => {
+          try {
+            await custody.expectAfter(before, ["resolve_refused", "no_permit", "response_blocked"]);
+          } catch (error) {
+            rememberCustodyContext(error, "fresh-iam-revoked", {
+              outcome: "observed",
+              since: "2026-01-01T00:00:00.000Z",
+              raw: marker,
+              gateways: [
+                {
+                  podUid: supervisor.metadata.uid,
+                  containerId: supervisor.status.containerStatuses[0].containerID,
+                  outcome: "observed",
+                  total: 2,
+                  events: [
+                    {
+                      sessionId: sandboxId,
+                      at: "2026-01-01T00:00:01.000Z",
+                      event: "inbound_eof",
+                      raw: marker,
+                    },
+                    { sessionId: marker, at: "2026-01-01T00:00:01.000Z", event: "inbound_eof" },
+                  ],
+                },
+              ],
+            });
+            const safe = await safeConnectedFailure(error, "turn-result", evidence.recordFailure);
+            assert.equal(safe.message.includes(line.fields.request_id), false);
+            assert.equal(safe.message.includes(sandboxId), false);
+            assert.equal(safe.message.includes(marker), false);
+            throw safe;
+          }
+        },
+        { message: /Connected egress assertion failed.*after-custody-observation/ },
+      );
+      const { failure } = JSON.parse(
+        await readFile(evidence.directory + "/observations.json", "utf8"),
+      );
+      assert.deepEqual(
+        failure.custodyEvidence.events,
+        ["no_permit", "response_blocked"].map((event) => ({
+          requestId: line.fields.request_id,
+          event,
+        })),
+      );
+      assert.deepEqual(failure.custodyEvidence.expected, [
+        "resolve_refused",
+        "no_permit",
+        "response_blocked",
+      ]);
+      assert.equal(failure.custodyEvidence.identityCheck, "matched");
+      assert.equal(failure.custodyEvidence.uniqueRequest, true);
+      assert.equal(failure.custodyEvidence.singleRequest, true);
+      assert.equal(failure.custodyEvidence.ordered, false);
+      assert.equal(failure.custodyContext.turnPhase, "fresh-iam-revoked");
+      assert.equal(failure.custodyContext.sessions.requestSessionCorrelation, "unavailable");
+      assert.equal(failure.custodyContext.sessions.gateways[0].events.length, 1);
+      assert.equal(JSON.stringify(failure).includes(marker), false);
+      // A new baseline must not reuse the prior turn's private evidence.
+      const next = await custody.snapshot();
+      lines = [...lines, ...Array(12).fill(line)];
+      let second;
+      await assert.rejects(
+        async () => {
+          try {
+            await custody.expectAfter(next, ["resolve_accepted"]);
+          } catch (error) {
+            throw await safeConnectedFailure(error, "next-turn", async (value) => {
+              second = value;
+            });
+          }
+        },
+        { message: /Connected egress assertion failed.*after-custody-observation/ },
+      );
+      assert.equal(second.custodyEvidence.events.length, 9);
+      assert.equal(second.custodyEvidence.truncated, true);
+      assert.equal(second.custody.freshCount, 12);
+      assert.equal(second.custodyEvidence.uniqueRequest, false);
+      assert.equal(second.custodyContext, undefined);
+    },
+  );
   await t.test("multiline failure messages cannot choose the reported source frame", async () => {
     const spoofed = "egress-supplier-custody-transitions.mjs:12345:1234";
     for (const kind of ["operation", "assertion"]) {
@@ -2202,7 +2349,7 @@ test("custody failures retain bounded last observations without supplier payload
       assert.equal(recorded.custody.successfulReads, 2);
       assert.equal(recorded.custody.readAttempts, kind === "empty" || kind === "partial" ? 3 : 2);
       assert.equal(JSON.stringify(recorded).includes(marker), false);
-      assert.equal(JSON.stringify(recorded).includes(line.fields.request_id), false);
+      assert.equal(JSON.stringify(recorded).includes(line.fields.request_id), kind === "partial");
       if (kind === "empty" || kind === "partial") {
         assert.equal(recorded.custody.lastRead, "deadline");
         assert.equal(recorded.custody.ring, "valid");
