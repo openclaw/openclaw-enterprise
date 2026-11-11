@@ -1,3 +1,4 @@
+import { retryWriteBudget } from "./write-budget-retry.ts";
 import { openShellNamespaceObjects } from "./openshell-workspace-protocol.mjs";
 import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
@@ -667,13 +668,17 @@ export async function createConsoleAppFixture(t, options = {}) {
   }
 
   async function createConfiguration(namespaceId, values = {}, options = {}) {
-    const configuration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
-      body: {
-        kind: "agent",
-        values,
-        ...(options.secretBindings === undefined ? {} : { secretBindings: options.secretBindings }),
-      },
-    });
+    const configuration = await retryWriteBudget(() =>
+      request("POST", `/namespaces/${namespaceId}/configurations`, {
+        body: {
+          kind: "agent",
+          values,
+          ...(options.secretBindings === undefined
+            ? {}
+            : { secretBindings: options.secretBindings }),
+        },
+      }),
+    );
     return fixtureResponse(configuration, 201, ConfigurationResponse, "create Configuration").data;
   }
 

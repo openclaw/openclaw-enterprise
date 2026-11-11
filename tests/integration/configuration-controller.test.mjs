@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { retryWriteBudget } from "../helpers/write-budget-retry.ts";
 import { randomUUID } from "node:crypto";
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -267,7 +268,7 @@ async function saveFixture(t, computeDriver = createReadyComputeDriver("compute-
   return { ...context, root, stored: () => readdir(join(root, id)).catch(() => []) };
 }
 
-async function request(
+async function requestOnce(
   app,
   method,
   pathname,
@@ -286,8 +287,13 @@ async function request(
   );
   return {
     status: response.status,
+    headers: response.headers,
     body: response.status === 204 ? undefined : await response.json(),
   };
+}
+
+async function request(...args) {
+  return retryWriteBudget(() => requestOnce(...args));
 }
 
 function createOpenClawConfiguration() {
@@ -5478,9 +5484,14 @@ test("Configuration and Preset saves check a URL of many ${NAME:-fallback} refer
   const urls = [fallbacks("https://h.example/", ""), fallbacks("https://", "@h.example/v1")];
   // A refusal of a body-sized value: unbounded, this took 4 to 14 s; bounded, a few milliseconds.
   const refusedAtOnce = async (path, body, field) => {
-    const start = performance.now();
-    const response = await request(context.app, "POST", path, { body });
-    const elapsed = performance.now() - start;
+    let elapsed;
+    const response = await retryWriteBudget(async () => {
+      const start = performance.now();
+      const result = await requestOnce(context.app, "POST", path, { body });
+      // Measure parser work without including a client's Retry-After backoff.
+      elapsed = performance.now() - start;
+      return result;
+    });
     assertRefused(response, cost(field));
     assert.ok(elapsed < 500, `took ${elapsed} ms`);
   };

@@ -186,6 +186,9 @@ test("HTTP policy preview and save preserve 16,384 rules and reject excess entri
     {},
     { executionMode: "dedicated" },
   );
+  // Hold the limiter's clock still while proving burst admission: slow CI must not refill it.
+  const budgetNow = performance.now();
+  const rateClock = t.mock.method(performance, "now", () => budgetNow);
   const bursts = await Promise.all(
     Array.from({ length: 100 }, () =>
       fixture.request("POST", `${path}/validate`, {
@@ -232,6 +235,10 @@ test("HTTP policy preview and save preserve 16,384 rules and reject excess entri
   );
   assert.equal(configurationLimited.status, 429, JSON.stringify(configurationLimited.body));
   assert.equal(configurationLimited.body.error.code, "RATE_LIMITED");
+  rateClock.mock.restore();
+  // Setup clients recover using Retry-After once the shared budget is spent.
+  const recoveredConfiguration = await fixture.createConfiguration(namespace.id);
+  assert.ok(recoveredConfiguration.id.startsWith("cfg_"));
   const otherMember = await fixture.createNamespaceMember("policy-rate-other", namespace.id, [
     ["read", "namespace"],
     ["read", "agent"],

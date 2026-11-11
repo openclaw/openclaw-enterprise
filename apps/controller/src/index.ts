@@ -83,6 +83,7 @@ import Fastify, {
   type HTTPMethods,
   type InjectOptions,
   type RouteGenericInterface,
+  type RouteOptions,
 } from "fastify";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -4712,7 +4713,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ? { security: [{ sessionCookie: [] }] }
           : {}),
       } as DocumentedFastifySchema;
-      routes.route<RouteGenericInterface, { rateLimit?: RequestRateLimiter }>({
+      const routeOptions: RouteOptions = {
         method: operation.method as HTTPMethods,
         url: operation.path,
         ...(operation.operationId === "putAgentWorkspaceFile"
@@ -4731,48 +4732,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         operation.operationId === "updateAgentSandboxPolicy"
           ? {
               bodyLimit: options.maxBodyBytes ?? SANDBOX_POLICY_BODY_LIMIT,
-              config: { rateLimit: sandboxPolicyRateLimit },
             }
           : {}),
         schema,
-        onRequest: async (request, reply) => {
-          await admit(request, operation);
-          if (authorizesBeforeBody(operation)) {
-            const admitted = admissions.get(request);
-            if (admitted === undefined) {
-              throw dependencyUnavailable();
-            }
-            // Bound identity resolution too, without sharing a budget across clients behind NAT.
-            const identityKey = JSON.stringify([
-              admitted.method,
-              admitted.externalIdentity.issuer,
-              admitted.externalIdentity.subject,
-            ]);
-            const authorizationRetryAfter = preBodyAuthorizationRateLimit.consume(identityKey);
-            if (authorizationRetryAfter !== undefined) {
-              reply.header("retry-after", String(authorizationRetryAfter));
-              throw failure(429, "RATE_LIMITED", "Too many write requests. Wait before retrying.");
-            }
-            await resolveIdentity(request, operation);
-            const rateLimit = request.routeOptions.config.rateLimit;
-            if (rateLimit !== undefined) {
-              const context = contexts.get(request);
-              if (context === undefined) {
-                throw dependencyUnavailable();
-              }
-              const retryAfter = rateLimit.consume(context.actorId);
-              if (retryAfter !== undefined) {
-                reply.header("retry-after", String(retryAfter));
-                throw failure(
-                  429,
-                  "SANDBOX_POLICY_RATE_LIMITED",
-                  "Too many network policy requests. Wait before retrying.",
-                );
-              }
-            }
-            await authorizeBeforeBody(request, operation);
-          }
-        },
+        onRequest: async (request) => admit(request, operation),
         preValidation: async (request) => {
           const hasRequestBody =
             request.body !== undefined ||
@@ -4799,7 +4762,81 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ? {}
           : { preHandler: async (request: FastifyRequest) => resolveIdentity(request, operation) }),
         handler: async (request, reply) => performFenced(request, reply, operation),
-      });
+      };
+      if (authorizesBeforeBody(operation)) {
+        const { handler, ...bodyOptions } = routeOptions;
+        const writeOptions = {
+          ...bodyOptions,
+          config: { rateLimit: preBodyAuthorizationRateLimit },
+          onRequest: async (request: FastifyRequest, reply: FastifyReply) => {
+            await admit(request, operation);
+            const admitted = admissions.get(request);
+            if (admitted === undefined) {
+              throw dependencyUnavailable();
+            }
+            // Bound identity resolution too, without sharing a budget across clients behind NAT.
+            const identityKey = JSON.stringify([
+              admitted.method,
+              admitted.externalIdentity.issuer,
+              admitted.externalIdentity.subject,
+            ]);
+            const authorizationRetryAfter = preBodyAuthorizationRateLimit.consume(identityKey);
+            if (authorizationRetryAfter !== undefined) {
+              reply.header("retry-after", String(authorizationRetryAfter));
+              throw failure(429, "RATE_LIMITED", "Too many write requests. Wait before retrying.");
+            }
+            await resolveIdentity(request, operation);
+            if (
+              operation.operationId === "validateAgentSandboxPolicy" ||
+              operation.operationId === "updateAgentSandboxPolicy"
+            ) {
+              const rateLimit = sandboxPolicyRateLimit;
+              const context = contexts.get(request);
+              if (context === undefined) {
+                throw dependencyUnavailable();
+              }
+              const retryAfter = rateLimit.consume(context.actorId);
+              if (retryAfter !== undefined) {
+                reply.header("retry-after", String(retryAfter));
+                throw failure(
+                  429,
+                  "SANDBOX_POLICY_RATE_LIMITED",
+                  "Too many network policy requests. Wait before retrying.",
+                );
+              }
+            }
+            await authorizeBeforeBody(request, operation);
+          },
+        };
+        // Keep the limiter configuration attached to the guarded write registration.
+        switch (operation.method) {
+          case "POST":
+            routes.post<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
+              operation.path,
+              writeOptions,
+              handler,
+            );
+            break;
+          case "PUT":
+            routes.put<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
+              operation.path,
+              writeOptions,
+              handler,
+            );
+            break;
+          case "PATCH":
+            routes.patch<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
+              operation.path,
+              writeOptions,
+              handler,
+            );
+            break;
+          default:
+            throw new Error("A body-gated write requires POST, PUT, or PATCH.");
+        }
+      } else {
+        routes.route(routeOptions);
+      }
     }
   });
 
