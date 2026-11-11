@@ -112,12 +112,32 @@ test(
       }
       return cookies;
     }
-    async function live(cookies) {
+    async function live(cookies, methods = kinds) {
       const result = {};
-      for (const kind of kinds) {
+      for (const kind of methods) {
         result[kind] = (await currentSession(app, cookies[kind]))?.user?.id === member.id;
       }
       return result;
+    }
+    async function beginOidcSignIn() {
+      const start = await app.inject({
+        method: "POST",
+        url: "/api/auth/providers/oidc/start",
+        headers: { origin },
+        remoteAddress: address(),
+      });
+      assert.equal(start.statusCode, 200, start.body);
+      const authorization = new URL(start.json().data.url);
+      const code = idp.authorize(authorization.href, { subject: subjects.oidc });
+      const callback = new URL(authorization.searchParams.get("redirect_uri"));
+      callback.searchParams.set("state", authorization.searchParams.get("state"));
+      callback.searchParams.set("code", code);
+      return () =>
+        app.inject({
+          url: `${callback.pathname}${callback.search}`,
+          headers: { cookie: cookieHeaderFromSetCookie(start.headers["set-cookie"]) },
+          remoteAddress: address(),
+        });
     }
     const ended = async () =>
       (await state.transact((unit) => unit.audit.list())).filter(
@@ -128,28 +148,34 @@ test(
     async function assertEnds(cookies, options, overrides, gone) {
       const before = (await ended()).length;
       await restart(options, overrides);
+      const audits = (await ended()).slice(before);
+      assert.ok(audits.length > 0, `startup ends ${gone} sessions`);
+      const principalId = await memberPrincipal();
+      for (const audit of audits) {
+        assert.equal(audit.kind, "mutation");
+        assert.equal(audit.outcome, "success");
+        assert.equal(audit.actorId, principalId);
+        assert.equal(audit.details.userId, member.id);
+        assert.equal(audit.details.providerId, instances[gone]);
+        assert.equal(audit.details.reason, "PROVIDER_NOT_CONFIGURED");
+        const method = (
+          await pool.query("SELECT provider_id FROM occ.account WHERE id = $1", [
+            audit.details.methodId,
+          ])
+        ).rows[0];
+        assert.equal(method.provider_id, instances[gone]);
+      }
+      const unchanged = kinds.filter((kind) => kind !== gone);
+      assert.deepEqual(
+        await live(cookies, unchanged),
+        Object.fromEntries(unchanged.map((kind) => [kind, true])),
+      );
+      // Do not read the affected session until after restore. The old implementation only
+      // ended it on a request while the provider was absent.
+      await restart();
       const expected = Object.fromEntries(kinds.map((kind) => [kind, kind !== gone]));
       assert.deepEqual(await live(cookies), expected);
-      // A second read neither revives the session nor audits it again.
-      assert.deepEqual(await live(cookies), expected);
-      const audits = (await ended()).slice(before);
-      assert.equal(audits.length, 1, `one audit for the ${gone} session`);
-      const [audit] = audits;
-      assert.equal(audit.kind, "mutation");
-      assert.equal(audit.outcome, "success");
-      assert.equal(audit.actorId, await memberPrincipal());
-      assert.equal(audit.details.userId, member.id);
-      assert.equal(audit.details.providerId, instances[gone]);
-      assert.equal(audit.details.reason, "PROVIDER_NOT_CONFIGURED");
-      const method = (
-        await pool.query("SELECT provider_id FROM occ.account WHERE id = $1", [
-          audit.details.methodId,
-        ])
-      ).rows[0];
-      assert.equal(method.provider_id, instances[gone]);
-      // Restoring the configuration does not revive an ended session.
-      await restart();
-      assert.deepEqual(await live(cookies), expected);
+      assert.equal((await ended()).length, before + audits.length);
     }
 
     await t.test("attached identities sign in under every configured provider", async () => {
@@ -193,6 +219,7 @@ test(
 
     await t.test("an OIDC client secret rotation keeps every session", async () => {
       const cookies = await signInEverywhere();
+      const finishOldSignIn = await beginOidcSignIn();
       await restart({}, { "occ-oidc-login/client-secret": "session-provider-rotated-secret" });
       assert.deepEqual(await live(cookies), {
         password: true,
@@ -200,10 +227,19 @@ test(
         oidc: true,
       });
       await restart();
+      // Reverting a credential change does not resume a sign-in started before the rotation.
+      const stale = await finishOldSignIn();
+      assert.equal(stale.headers.location, "/console/?authError=oidc");
     });
 
     await t.test("removing OIDC ends only OIDC sessions", async () => {
-      await assertEnds(await signInEverywhere(), { providers: ["google"] }, {}, "oidc");
+      const cookies = await signInEverywhere();
+      const finishOldSignIn = await beginOidcSignIn();
+      await assertEnds(cookies, { providers: ["google"] }, {}, "oidc");
+      const stale = await finishOldSignIn();
+      assert.equal(stale.headers.location, "/console/?authError=oidc");
+      // The existing attachment still works with a fresh sign-in after restore.
+      await signInEverywhere();
     });
 
     await t.test("a Google client ID change ends only Google sessions", async () => {
@@ -216,7 +252,10 @@ test(
     });
 
     await t.test("removing Google ends only Google sessions", async () => {
+      const finishOidcSignIn = await beginOidcSignIn();
       await assertEnds(await signInEverywhere(), { providers: ["oidc"] }, {}, "google");
+      const finished = await finishOidcSignIn();
+      assert.equal(finished.headers.location, "/console/");
     });
 
     await t.test("password sessions survive when only one external provider remains", async () => {

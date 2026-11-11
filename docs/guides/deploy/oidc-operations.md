@@ -2,22 +2,22 @@
 
 These procedures keep a running [OIDC sign-in](oidc-sign-in.md) working: rotating the
 client secret and signing keys, reading an IdP outage, offboarding a person, and
-checking the audit record. Commands assume the chart's `openclaw-system` namespace and
-the `occ-oidc-login` Secret from [Configure the chart](oidc-sign-in.md#configure-the-chart).
+checking the audit record. Commands use the chart's `openclaw-system` namespace and
+the default Secret `occ-oidc-login`. For a named provider, use its Secret name and
+keys from [Configure the chart](oidc-sign-in.md#configure-the-chart).
 
 ## Rotate the client secret
 
-The API reads the client secret from the Secret only at startup, and OCE stores
-nothing derived from it, so a secret-only change needs one API restart. It needs no
-writer stop, no worker restart and no ingress closure. Attachments remain, because the
-provider instance comes from the issuer and client ID. Sign-ins started before the
-restart are invalidated and must be started again; existing sessions survive.
+The API reads the client secret at startup. Replace the Secret and restart the
+API. The worker keeps running. The issuer and client ID identify the provider,
+so attachments and existing sessions survive. Start any pending sign-in again
+after the restart.
 
 1. Create the new secret in the IdP. If the IdP can keep the previous secret valid for a
    grace period, as Keycloak's client-secret rotation policy can, sign-in keeps working
-   until step 3. Otherwise the IdP refuses the running API from this moment: every OIDC
-   sign-in fails as `PROVIDER_UNAVAILABLE` with `cause: client_rejected` until the API
-   restarts, so do steps 2 and 3 at once.
+   until step 3. If the IdP refuses the old secret, sign-in through this provider
+   fails as `PROVIDER_UNAVAILABLE` with `cause: client_rejected` until the API
+   restarts. In this case, do steps 2 and 3 together.
 2. Save the new secret to the protected file and replace the Secret in place. The plain
    `kubectl create secret` command fails once the Secret exists:
 
@@ -68,7 +68,8 @@ An IdP outage looks different depending on when the IdP fails:
 - **The IdP fails after the person signed in there**, at the token or JWKS step, or the
   API cannot reach it (blocked egress, DNS, TLS), or it refuses the configured client.
   The API waits at most 10 seconds, then returns the browser to
-  `/console/?authError=oidc&authReason=provider-unavailable`. The Console says that
+  `/console/?authError=oidc/keycloak&authReason=provider-unavailable` for a
+  provider named `keycloak`. The legacy route uses `authError=oidc`. The Console says that
   sign-in with the IdP is unavailable right now and to try again later; where password
   sign-in is `recovery-only`, it tells administrators to use **Recovery sign-in**. The
   audit row has reason `PROVIDER_UNAVAILABLE`, and the API logs
@@ -76,12 +77,13 @@ An IdP outage looks different depending on when the IdP fails:
   `cause`, such as `timeout`, `connect_refused` or `client_rejected`; see the
   [external sign-in reference](../../reference/authentication/external-sign-in.md#external-sign-in-profile).
 
-During an outage, existing sessions keep working, and so does password sign-in for the
-recovery administrator (and for everyone under `passwordSignIn: all`). Sign-in recovers
-as soon as the IdP answers again, without an API restart.
+During an outage, existing sessions keep working. Users can sign in through
+another configured provider on their account. The recovery administrator can
+sign in with a password, as can every password account under `passwordSignIn: all`.
+When the IdP answers again, users can retry sign-in.
 
 Other refusals look different. An identity that is not attached, or an ID token that
-fails verification, returns `/console/?authError=oidc`; the Console suggests asking an
+fails verification, returns the provider's `authError`; the Console suggests asking an
 administrator to attach the identity, and the audit reason is
 `EXTERNAL_IDENTITY_REJECTED`. A disabled account returns `authReason=account-disabled`.
 If OCE's own database or audit store fails during the callback, the browser returns

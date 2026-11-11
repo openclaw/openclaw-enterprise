@@ -1,11 +1,9 @@
 # Use Keycloak for OIDC sign-in
 
 Connect OpenClaw Enterprise (OCE) human sign-in to an organization-managed
-Keycloak through the existing [OIDC integration](oidc-sign-in.md). Choose a
-production Keycloak realm and create a dedicated confidential client for OCE.
-A person can use Keycloak to sign in only after an Installation administrator
-attaches that person's Keycloak subject to an existing OCE account; Keycloak
-groups, roles, and email do not grant OCE permissions.
+Keycloak through the [OIDC integration](oidc-sign-in.md). Choose a production
+realm and create a dedicated confidential client for OCE. You can use Keycloak
+as the only provider or alongside other sign-in providers.
 
 ## Prepare Keycloak and OCE
 
@@ -25,8 +23,8 @@ CI exercises; other versions, including other 26.x releases, are not verified.
 Qualify your actual production configuration before use.
 
 Prepare the [guarded OIDC profile](oidc-sign-in.md#requirements): one serving
-controller, PostgreSQL State, native IAM, one canonical HTTPS Console origin, and
-`agentNativeAdmin.enabled: false`. Rolling or mixed-version serving is unsupported.
+controller, PostgreSQL State, native IAM, and one canonical HTTPS Console origin.
+Rolling or mixed-version serving is unsupported.
 Verify access to a password recovery administrator before making changes. Configure
 [trusted proxy settings](../../reference/settings/production.md#external-sign-in-and-trusted-proxies) when
 the API otherwise sees a shared proxy address, so sign-in admission limits use the
@@ -42,7 +40,7 @@ certificate. OCE requires:
 - **A stable issuer:** configure Keycloak's fixed hostname, for example
   `https://sso.example.com` or `https://sso.example.com/auth` for a context path.
   The discovery document's issuer, such as
-  `https://sso.example.com/realms/acme`, must match `auth.oidc.issuer` and the
+  `https://sso.example.com/realms/acme`, must match the configured issuer and the
   ID token's `iss` exactly. Do not use a `*.localhost` name for a Keycloak the API
   must reach from a Pod: the controller image resolves it to loopback.
 - **RS256 and a client-only audience:** ID tokens must use an RSA signing key of
@@ -76,10 +74,12 @@ In the Keycloak admin console, create a client dedicated to OCE:
    access grants**, **Implicit flow**, **Service accounts roles**, **Standard
    Token Exchange**, **OAuth 2.0 Device Authorization Grant** and **OIDC CIBA
    Grant**.
-3. Set one **Valid redirect URI** to `OCC_AUTH_BASE_URL` followed by
-   `/api/auth/providers/oidc/callback`, for example
-   `https://occ.example.com/api/auth/providers/oidc/callback`. Leave **Web origins**
-   empty.
+3. Set one **Valid redirect URI** to the Console base URL followed by
+   `/api/auth/providers/oidc/keycloak/callback`, for example
+   `https://occ.example.com/api/auth/providers/oidc/keycloak/callback`. Replace
+   `keycloak` with your provider key. If you use flat settings or set
+   `legacyCallback: true`, use `/api/auth/providers/oidc/callback`. Leave
+   **Web origins** empty.
 4. Under **Logout settings**, turn off **Front channel logout** and **Backchannel
    logout session required**; OCE implements neither. Under **Advanced settings**,
    set **Proof Key for Code Exchange Code Challenge Method** to `S256`.
@@ -87,9 +87,11 @@ In the Keycloak admin console, create a client dedicated to OCE:
    protected files for the dedicated OCE Secret. The authenticator accepts
    `client_secret_post` and `client_secret_basic`.
 
-Leave client scopes and mappers at their defaults unless your organization has
-verified that changes meet OCE's token requirements. OCE requests only `openid`
-and reads no email or profile claims.
+OCE requests `openid`. With [OIDC enrollment](../../reference/authentication/team-enrollment.md)
+it also requests `email`, `profile`, and any scopes that you configure.
+If your enrollment rules use a group claim, configure a Keycloak mapper to put
+that claim in the ID token. Check the token requirements above after changing
+scopes or mappers.
 
 The checked-in realm and its fixed identities are **disposable CI/local fixtures**.
 Do not import the fixture realm as a production provisioning shortcut: its test
@@ -106,11 +108,15 @@ the test-only import and generated credentials, see the
    ```yaml
    auth:
      oidc:
-       issuer: https://sso.example.com/realms/acme
-       authorizationUrl: https://sso.example.com/realms/acme/protocol/openid-connect/auth
-       tokenUrl: https://sso.example.com/realms/acme/protocol/openid-connect/token
-       jwksUrl: https://sso.example.com/realms/acme/protocol/openid-connect/certs
-       tokenAuth: client_secret_post # client_secret_basic is also available
+       enabled: true
+       providers:
+         keycloak:
+           displayName: Keycloak
+           issuer: https://sso.example.com/realms/acme
+           authorizationUrl: https://sso.example.com/realms/acme/protocol/openid-connect/auth
+           tokenUrl: https://sso.example.com/realms/acme/protocol/openid-connect/token
+           jwksUrl: https://sso.example.com/realms/acme/protocol/openid-connect/certs
+           secretName: occ-keycloak-login
    ```
 
    These are example values; copy and review your own discovery values. OCE does
@@ -118,20 +124,22 @@ the test-only import and generated credentials, see the
    network access to the token and JWKS endpoints.
 
 2. Create the dedicated Secret from the protected client ID and secret files and
-   configure `auth.oidc.enabled`, `secretName`, the Secret keys,
-   `auth.recoveryUserId`, and the other chart values in
+   set `auth.recoveryUserId` and any other required chart values in
    [Configure the chart](oidc-sign-in.md#configure-the-chart).
 3. Follow the linked [stopped maintenance procedure](google-sign-in.md#enable-it):
    close ingress, stop identity writers, upgrade, and verify through restricted
    access before reopening ingress. Retain the verified password recovery account.
-4. Find each person's Keycloak `sub` and
-   [attach it to the person's existing OCE account](oidc-sign-in.md#attach-and-detach)
-   as a human Installation administrator. Grant the OCE permissions the person
-   needs using [IAM](../topics/iam.md); an attachment alone grants no permissions.
-   Verify browser sign-in and the person's expected OCE access.
-5. Verify that a valid, unattached Keycloak identity is refused and that the
-   recovery administrator can still sign in with a password, including during an
-   IdP outage. Password sign-in defaults to `all`. After every ordinary account
+4. Choose how people get access. An Installation administrator can
+   [attach a Keycloak identity](oidc-sign-in.md#attach-and-detach) to an
+   existing account. To let eligible users create an account at first sign-in,
+   [configure enrollment](../../reference/authentication/team-enrollment.md).
+   To let users connect Keycloak to an existing OCE account, enable
+   [self-service linking](oidc-sign-in.md#link-an-existing-account) on Keycloak
+   and the provider they already use.
+5. Verify browser sign-in, the expected OCE permissions, and refusal for an
+   identity that has neither an attachment nor permission to enroll. Verify that
+   the recovery administrator can sign in with a password during a Keycloak
+   outage. Password sign-in defaults to `all`. After every ordinary account
    has an attached external identity and each person has verified sign-in, follow
    the staged [recovery-only procedure](../../reference/authentication/external-sign-in.md#recovery-only-password-sign-in)
    if you choose to restrict password sign-in to the recovery administrator.

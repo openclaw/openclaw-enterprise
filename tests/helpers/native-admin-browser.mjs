@@ -5,7 +5,15 @@ import {
   waitForStockUi,
 } from "../helpers/native-ui-chat.mjs";
 import assert from "node:assert/strict";
+import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
 import { keycloakRealmAdmin } from "./ci-keycloak-realm.mjs";
+import {
+  keycloakInstructions,
+  keycloakLauncher,
+  launchTrustingBrowser,
+  publishedJSON,
+} from "./dev-up-keycloak.mjs";
+import { grantQaSecret, registerQaSecret } from "./qa-secrets.mjs";
 import { tlsPeerCertificate } from "./tls-peer-certificate.mjs";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID, X509Certificate } from "node:crypto";
@@ -369,13 +377,18 @@ async function assertServiceWorkerRegistrationBlockedByCsp(page) {
   assert.deepEqual(result.registrations, [], "native admin must not install a ServiceWorker");
 }
 
-async function openNativeAdminConsole(page, nativeOrigin, mode = "admin") {
+async function openNativeAdminConsole(
+  page,
+  nativeOrigin,
+  mode = "admin",
+  sessionMode = "shared-cookie",
+) {
   const link = page.getByRole("link", {
     name: mode === "chat" ? "Open chat" : "Open Agent UI",
     exact: true,
   });
   const root = new URL("/", nativeOrigin).href;
-  assert.equal(await link.getAttribute("href"), root);
+  assert.equal(await link.getAttribute("href"), sessionMode === "host-only-exchange" ? "#" : root);
   const [nativePage] = await Promise.all([page.waitForEvent("popup"), link.click()]);
   await waitForStockUi(nativePage);
   // Navigation Timing keeps the loaded document URL when the stock UI replaces "/" with chat.
@@ -1678,4 +1691,380 @@ export async function runOidcAgentChatScenario(context) {
   context.diagnostic(
     "Real Keycloak sign-in enabled ordinary-owner create/deploy and an exact-Agent operator model turn; native HTTP/WS administration and sibling access were denied.",
   );
+}
+
+export async function runInstalledOidcAgentChatScenario(context) {
+  const model = process.env.OCC_TEST_OPENAI_MODEL;
+  const modelCredential = process.env.OPENAI_API_KEY;
+  assert.ok(
+    model && modelCredential,
+    "Provide an authorized model and API key for real Agent chat",
+  );
+  registerQaSecret(modelCredential);
+  const fixture = await keycloakLauncher(context);
+  const up = await fixture.dev("up");
+  const instructions = keycloakInstructions(up.stdout);
+  const origin = new URL(instructions.consoleUrl).origin;
+  const state = JSON.parse(await fixture.read("state.json"));
+  assert.equal(state.cluster, fixture.cluster);
+  assert.equal(state.signIn, "keycloak");
+  const namespace = state.platformNamespace;
+  assert.equal(namespace, "oce-system");
+  const agentDomain = state.nativeAdminDomain;
+  assert.ok(agentDomain);
+  const before = JSON.parse(await fixture.read("helm-values.json"));
+  const { enabled, caSecretName, caSecretKey, ...primary } = before.auth.oidc;
+  assert.equal(enabled, true);
+  const keycloak = {
+    hostname: fixture.keycloakHost,
+    port: 443,
+    ca: await fixture.read("gateway-ca.crt"),
+  };
+  const token = await publishedJSON(keycloak, "/realms/master/protocol/openid-connect/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "password",
+      client_id: "admin-cli",
+      username: "admin",
+      password: (await fixture.read("keycloak-admin-password")).trim(),
+    }).toString(),
+  });
+  const providerAdmin = (method, path, expectedStatus, body) =>
+    publishedJSON(keycloak, "/admin/realms" + path, {
+      method,
+      expectedStatus,
+      headers: {
+        authorization: "Bearer " + token.access_token,
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  const [client] = await providerAdmin("GET", "/oce/clients?clientId=oce-console", 200);
+  const [carol] = await providerAdmin("GET", "/oce/users?username=carol&exact=true", 200);
+  const callback = (key) => origin + "/api/auth/providers/oidc/" + key + "/callback";
+  await providerAdmin("PUT", "/oce/clients/" + client.id, 204, {
+    ...client,
+    redirectUris: [...client.redirectUris, callback("keycloak")],
+  });
+  const password = (await fixture.read("keycloak-carol-password")).trim();
+  const partnerSubject = randomUUID();
+  const partnerClientId = "oce-partners-console";
+  const partnerClientSecret = randomUUID() + randomUUID();
+  const partnerRealm = "partners";
+  // The fixture owns the whole cluster, including both real realms and their keys.
+  await providerAdmin("POST", "", 201, {
+    realm: partnerRealm,
+    enabled: true,
+    sslRequired: "external",
+    clients: [
+      {
+        clientId: partnerClientId,
+        secret: partnerClientSecret,
+        enabled: true,
+        protocol: "openid-connect",
+        publicClient: false,
+        standardFlowEnabled: true,
+        directAccessGrantsEnabled: false,
+        redirectUris: [callback("partners")],
+        attributes: { "pkce.code.challenge.method": "S256" },
+      },
+    ],
+    users: [
+      {
+        id: partnerSubject,
+        username: "carol",
+        enabled: true,
+        email: carol.email,
+        emailVerified: true,
+        firstName: "Carol",
+        lastName: "Test",
+        credentials: [{ type: "password", value: password, temporary: false }],
+      },
+    ],
+  });
+  const partner = await publishedJSON(
+    keycloak,
+    "/realms/partners/.well-known/openid-configuration",
+  );
+  assert.notEqual(primary.issuer, partner.issuer);
+  const partnerSecret = "occ-test-partner-login";
+  const secretPath = join(fixture.root, "partner-login.json");
+  await writeFile(
+    secretPath,
+    JSON.stringify({
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: { name: partnerSecret, namespace },
+      stringData: { "client-id": partnerClientId, "client-secret": partnerClientSecret },
+    }),
+    { mode: 0o600 },
+  );
+  await fixture.kubectl(["create", "-f", secretPath]);
+  before.auth.oidc = {
+    enabled,
+    caSecretName,
+    caSecretKey,
+    providers: {
+      keycloak: primary,
+      partners: {
+        issuer: partner.issuer,
+        authorizationUrl: partner.authorization_endpoint,
+        tokenUrl: partner.token_endpoint,
+        jwksUrl: partner.jwks_uri,
+        displayName: "Keycloak Partners",
+        secretName: partnerSecret,
+        egressCidrs: primary.egressCidrs,
+      },
+    },
+  };
+  Object.assign(before.agentNativeAdmin, { enabled: true, sessionMode: "host-only-exchange" });
+  const valuesPath = join(fixture.root, "named-oidc-values.json");
+  await writeFile(valuesPath, JSON.stringify(before), { mode: 0o600 });
+  const helmScope = [
+    "--kubeconfig",
+    join(fixture.stateDirectory, "kubeconfig"),
+    "--kube-context",
+    `k3d-${fixture.cluster}`,
+    "--namespace",
+    namespace,
+  ];
+  const release = "openclaw-enterprise";
+  const helm = process.env.OCC_HELM_BIN ?? "helm";
+  await fixture.run(helm, [
+    "upgrade",
+    release,
+    "deploy/helm/openclaw-enterprise",
+    ...helmScope,
+    "--reset-values",
+    "--values",
+    valuesPath,
+    "--wait",
+    "--timeout",
+    "4m",
+  ]);
+  const installed = JSON.parse(
+    (await fixture.run(helm, ["status", release, ...helmScope, "-o", "json"])).stdout,
+  );
+  assert.equal(installed.info.status, "deployed");
+
+  const browser = await launchTrustingBrowser(chromium, fixture.root, {
+    caFiles: instructions.caFiles,
+    hosts: [...instructions.hosts, { host: `*.${agentDomain}`, address: "127.0.0.1" }],
+  });
+  context.after(() => browser.close());
+  const newPage = async () => {
+    const browserContext = await browser.newContext();
+    const page = await browserContext.newPage();
+    await page.goto(origin + "/console/");
+    return page;
+  };
+  const recoveryPage = await newPage();
+  await recoveryPage.getByRole("button", { name: "Recovery sign-in", exact: true }).click();
+  const recoveryPassword = (await fixture.read("initial-admin-password")).trim();
+  const [recoverySignedIn] = await Promise.all([
+    recoveryPage.waitForResponse(
+      (response) =>
+        response.url() === origin + "/api/auth/sign-in/email" &&
+        response.request().method() === "POST",
+    ),
+    login(recoveryPage, {
+      email: "admin@development.openclaw.invalid",
+      password: recoveryPassword,
+    }).catch(() => assert.fail("Could not submit the verified fixture recovery form")),
+  ]);
+  assert.equal(recoverySignedIn.status(), 200);
+  const endpoint = {
+    hostname: fixture.consoleHost,
+    port: fixture.browserPort,
+    ca: await fixture.read("browser-ca.crt"),
+  };
+  const consoleRequest = async (page, method, path, expectedStatus, body) =>
+    (
+      await publishedJSON(endpoint, path, {
+        method,
+        expectedStatus,
+        headers: {
+          origin,
+          cookie: (await page.context().cookies(origin))
+            .map(({ name, value }) => name + "=" + value)
+            .join("; "),
+          ...(body === undefined ? {} : { "content-type": "application/json" }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      })
+    )?.data;
+  const admin = (method, path, status = 200, body) =>
+    consoleRequest(recoveryPage, method, path, status, body);
+  const operator = await admin("POST", "/api/auth/accounts", 201, {
+    email: carol.email,
+    password: randomUUID() + randomUUID(),
+  });
+  const accountPath = "/api/auth/accounts/" + operator.id;
+  let account = await admin("GET", accountPath);
+  for (const [provider, subject] of [
+    ["keycloak", carol.id],
+    ["partners", partnerSubject],
+  ]) {
+    await admin("POST", accountPath + "/providers/oidc/" + provider, 200, {
+      subject,
+      expectedVersion: account.version,
+    });
+    account = await admin("GET", accountPath);
+  }
+  assert.deepEqual(
+    account.methods
+      .filter(({ providerId }) => providerId.startsWith("oidc:"))
+      .map(({ subject }) => subject)
+      .sort(),
+    [carol.id, partnerSubject].sort(),
+  );
+  const installation = await admin("GET", "/installation");
+  const initialNamespace = (await admin("GET", "/namespaces")).find(
+    ({ name }) => name === "default",
+  );
+  assert.ok(initialNamespace);
+  const scope = "/namespaces/" + initialNamespace.id;
+  const standard = (await admin("GET", scope + "/presets")).find(
+    ({ name }) => name === "Standard OpenClaw",
+  );
+  assert.ok(standard);
+  const preset = await admin("GET", scope + "/presets/" + standard.id);
+  const rendered = renderPresetTemplate(preset.template, {
+    name: "oidc-chat-" + randomUUID(),
+    model,
+    modelSecret: "provided-through-secret-api",
+  });
+  const secret = await admin("POST", scope + "/secrets", 201, {
+    name: rendered.agent.name + "-model",
+    value: modelCredential,
+  });
+  // Browser access prepares its own Gateway authentication for the shared Agent.
+  const chatConfiguration = structuredClone(rendered.configuration);
+  delete chatConfiguration.values.gateway.auth.password;
+  const configuration = await admin("POST", scope + "/configurations", 201, {
+    ...chatConfiguration,
+    kind: "agent",
+  });
+  const harnessAuth = {
+    method: "api_key",
+    source: { kind: "secret", namespaceId: initialNamespace.id, id: secret.id },
+  };
+  const agent = await admin("POST", scope + "/agents", 201, {
+    ...rendered.agent,
+    configurationId: configuration.id,
+    expectedConfigurationGeneration: configuration.generation,
+    harnessAuth,
+    nativeAdmin: true,
+  });
+  const agentPath = scope + "/agents/" + agent.id;
+  await grantQaSecret(
+    { api: (method, path, body) => admin(method, path, 201, body) },
+    agent,
+    secret.id,
+    rendered.agent.name + "-model",
+  );
+  const revision = await admin("POST", agentPath + "/deploy", 202);
+  await waitFor(
+    "Helm-installed OIDC chat Agent to become ready",
+    async () => (await admin("GET", agentPath)).activeRevisionId === revision.id,
+  );
+  const siblingConfiguration = await admin("POST", scope + "/configurations", 201, {
+    ...rendered.configuration,
+    kind: "agent",
+  });
+  const sibling = await admin("POST", scope + "/agents", 201, {
+    ...rendered.agent,
+    name: "unshared-" + randomUUID(),
+    configurationId: siblingConfiguration.id,
+    expectedConfigurationGeneration: siblingConfiguration.generation,
+    harnessAuth,
+  });
+  // The Console must find the Namespace before it can open the exact Agent.
+  const namespaceReader = await admin("POST", scope + "/iam/roles", 201, {
+    name: "OIDC chat Namespace reader",
+    permissions: [{ action: "read", resourceKind: "namespace" }],
+  });
+  await admin("POST", scope + "/iam/access-bindings", 201, {
+    subjectKind: "identity",
+    subjectId: operator.principalId,
+    roleId: namespaceReader.id,
+    resourceKind: "namespace",
+    resourceId: initialNamespace.id,
+  });
+  const role = await admin("POST", scope + "/iam/roles", 201, {
+    name: "OIDC chat operator",
+    permissions: ["read", "operate"].map((action) => ({ action, resourceKind: "agent" })),
+  });
+  await admin("POST", scope + "/iam/access-bindings", 201, {
+    subjectKind: "identity",
+    subjectId: operator.principalId,
+    roleId: role.id,
+    resourceKind: "agent",
+    resourceId: agent.id,
+  });
+  const target = expectedNativeAdminTarget({ installation, agent, revision }, origin, agentDomain);
+  assert.ok(target);
+  // Each clean browser must get the same restricted account through its own realm.
+  for (const [key, label, issuer] of [
+    ["keycloak", primary.displayName, primary.issuer],
+    ["partners", "Keycloak Partners", partner.issuer],
+  ]) {
+    const page = await newPage();
+    const name = "Continue with " + label;
+    await page.getByRole("button", { name, exact: true }).click();
+    await page.waitForURL(
+      (url) =>
+        url.origin === new URL(issuer).origin &&
+        url.pathname.startsWith(new URL(issuer).pathname + "/"),
+    );
+    await page.locator("#username").fill("carol");
+    await page
+      .locator("#password")
+      .fill(password)
+      .catch(() => assert.fail("Could not enter the password on the verified provider form"));
+    const [adopted] = await Promise.all([
+      page.waitForResponse(
+        (response) => response.url() === origin + "/api/auth/providers/oidc/" + key + "/result",
+      ),
+      page.locator("#kc-login").click(),
+    ]);
+    assert.equal(adopted.status(), 200);
+    assert.equal(
+      (await consoleRequest(page, "GET", "/api/auth/session", 200)).user.id,
+      operator.id,
+    );
+    await consoleRequest(page, "GET", "/installation", 403);
+    await consoleRequest(page, "GET", scope + "/agents/" + sibling.id, 403);
+    const access = await consoleRequest(page, "GET", agentPath + "/native-admin", 200);
+    assert.equal(access.mode, "chat");
+    assert.equal(access.origin, target.origin);
+    assert.equal(access.sessionMode, "host-only-exchange");
+    const frames = [];
+    page.context().on("page", (popup) =>
+      popup.on("websocket", (socket) => {
+        if (new URL(socket.url()).origin === target.origin.replace(/^http/, "ws")) {
+          socket.on("framereceived", (frame) => frames.push({ ...frame, socket, page: popup }));
+        }
+      }),
+    );
+    await page.goto(new URL(agentDetailPath({ agent, revision }), origin).href);
+    const chat = await openNativeAdminConsole(page, target.origin, "chat", access.sessionMode);
+    const consoleCookie = (await page.context().cookies(origin)).find(({ name }) =>
+      name.endsWith(".session_token"),
+    );
+    assert.ok(consoleCookie?.secure && consoleCookie.httpOnly);
+    assert.equal(consoleCookie.domain, fixture.consoleHost);
+    const agentCookies = await page.context().cookies(target.origin);
+    assert.ok(!agentCookies.some(({ name }) => name === consoleCookie.name));
+    const agentCookie = agentCookies.find(({ name }) => name === "__Host-occ_agent_access");
+    assert.ok(agentCookie?.secure && agentCookie.httpOnly);
+    assert.equal(agentCookie.domain, target.host);
+    await submitChatTurnWithAssistantProof(chat, `oidc-${key}-${randomUUID()}`, frames, waitFor);
+    await assertChatAdministrationDenied(chat);
+    await page.context().close();
+    context.diagnostic(
+      `${label}: real model reply, sibling Agent denied, native HTTP and WebSocket administration denied`,
+    );
+  }
 }

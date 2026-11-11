@@ -71,3 +71,24 @@ evidence before reporting success.
 Cleanup removes the test namespaces and its temporary network attachments.
 It preserves attachments that existed before the test; lane cleanup owns the
 prepared server and cluster resources.
+
+## Run Agent chat through two Helm-configured providers
+
+Use the [local Kubernetes installation prerequisites](kubernetes.md#local-kubernetes-installation).
+Provide an authorized `OPENAI_API_KEY` and set `OCC_TEST_OPENAI_MODEL` in
+the private test environment. Reserve `127.0.0.1:443` for this run.
+
+```sh
+OCC_TEST_QA_MATRIX=1 OCC_TEST_QA_SCENARIOS=helm-oidc-agent-chat \
+  OCC_TEST_QA_PRESET=OpenClaw OCC_TEST_QA_INSTALLATION=kubernetes \
+  node --test tests/integration/qa-matrix-real.test.mjs
+```
+
+The test starts its own k3d cluster, installs OpenClaw Enterprise with Helm,
+and configures two named sign-in options. Each option uses a different Keycloak
+realm and client. Both logins open the same operator account.
+
+For each login, the browser opens the shared Agent and receives a real model
+reply. The test checks that OpenClaw Enterprise denies access to a second Agent
+and refuses administration over HTTP and WebSocket. The fixture removes its
+cluster when the test ends.

@@ -233,6 +233,13 @@ test("exp, iat and nbf are enforced", () => {
   assert.equal(verified(token(claims({ nbf: null }))), undefined);
 });
 
+test("proof of an existing account requires a recent provider sign-in", () => {
+  const expected = { authenticatedAfter: now - 10_000 };
+  assert.equal(verified(token(claims({ auth_time: seconds - 5 })), expected), subject);
+  assert.equal(verified(token(), expected), undefined);
+  assert.equal(verified(token(claims({ auth_time: seconds - 71 })), expected), undefined);
+});
+
 test("only RS256 from a 2,048-bit JWKS key named by kid verifies", () => {
   const payload = claims();
   const unsigned = `${encode({ alg: "none", kid: current.kid })}.${encode(payload)}.`;

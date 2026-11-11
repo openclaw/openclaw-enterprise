@@ -428,6 +428,11 @@ export class PostgresHumanAuthenticationMaintenance {
         `DELETE FROM occ.human_authentication_attempts WHERE installation_id = $1`,
         [this.installationId],
       );
+      await this.query(
+        unit,
+        `DELETE FROM occ.human_authentication_links WHERE installation_id = $1`,
+        [this.installationId],
+      );
       const sessions = await this.query(unit, `DELETE FROM occ.session RETURNING id`);
       await this.query(unit, `DELETE FROM occ.human_authentication_sessions`);
       await this.query(

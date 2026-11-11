@@ -1,5 +1,6 @@
 {{- $repositoryBroker := .Values.repositoryCredentials.enabled }}
 {{- $repositoryGit := include "openclaw.repositoryCredentials.gitEnabled" . }}
+{{- $oidcProviders := include "openclaw.oidc.providers" . | fromJson }}
 {{- range $component := list "api" "worker" }}
 {{- $oidcCa := and (eq $component "api") $.Values.auth.oidc $.Values.auth.oidc.enabled $.Values.auth.oidc.caSecretName }}
 {{- $gatewayCa := and $.Values.gatewayRouting.enabled (or (not $.Values.gatewayRouting.issuerRef.name) $.Values.gatewayRouting.caSecretName) }}
@@ -410,28 +411,44 @@ spec:
               value: {{ join "," $.Values.auth.google.allowedDomains | quote }}
             {{- end }}
             {{- end }}
-            {{- if and $.Values.auth.oidc $.Values.auth.oidc.enabled }}
-            {{- if hasKey $.Values.auth.oidc "enrollment" }}
-            - name: OCC_AUTH_OIDC_ENROLLMENT
-              value: {{ toJson $.Values.auth.oidc.enrollment | quote }}
+            {{- if and $oidcProviders (not (hasKey $oidcProviders "")) }}
+            - name: OCC_AUTH_OIDC_PROVIDERS
+              value: {{ keys $oidcProviders | sortAlpha | join "," | quote }}
             {{- end }}
-            - name: OCC_AUTH_OIDC_ISSUER
-              value: {{ $.Values.auth.oidc.issuer | quote }}
-            - name: OCC_AUTH_OIDC_AUTHORIZATION_URL
-              value: {{ $.Values.auth.oidc.authorizationUrl | quote }}
-            - name: OCC_AUTH_OIDC_TOKEN_URL
-              value: {{ $.Values.auth.oidc.tokenUrl | quote }}
-            - name: OCC_AUTH_OIDC_JWKS_URL
-              value: {{ $.Values.auth.oidc.jwksUrl | quote }}
-            {{- include "openclaw.secretEnv" (dict "name" "OCC_AUTH_OIDC_CLIENT_ID" "secretName" $.Values.auth.oidc.secretName "key" $.Values.auth.oidc.clientIdKey) | nindent 12 }}
-            {{- include "openclaw.secretEnv" (dict "name" "OCC_AUTH_OIDC_CLIENT_SECRET" "secretName" $.Values.auth.oidc.secretName "key" $.Values.auth.oidc.clientSecretKey) | nindent 12 }}
-            {{- if and $.Values.auth.oidc.tokenAuth (ne $.Values.auth.oidc.tokenAuth "client_secret_post") }}
-            - name: OCC_AUTH_OIDC_TOKEN_AUTH
-              value: {{ $.Values.auth.oidc.tokenAuth | quote }}
+            {{- range $key, $provider := $oidcProviders }}
+            {{- $prefix := "OCC_AUTH_OIDC_" }}
+            {{- if $key }}
+            {{- $prefix = printf "OCC_AUTH_OIDC_%s_" ($key | replace "-" "_" | upper) }}
             {{- end }}
-            {{- if $.Values.auth.oidc.displayName }}
-            - name: OCC_AUTH_OIDC_DISPLAY_NAME
-              value: {{ $.Values.auth.oidc.displayName | quote }}
+            {{- if hasKey $provider "enrollment" }}
+            - name: {{ $prefix }}ENROLLMENT
+              value: {{ toJson $provider.enrollment | quote }}
+            {{- end }}
+            - name: {{ $prefix }}ISSUER
+              value: {{ $provider.issuer | quote }}
+            - name: {{ $prefix }}AUTHORIZATION_URL
+              value: {{ $provider.authorizationUrl | quote }}
+            - name: {{ $prefix }}TOKEN_URL
+              value: {{ $provider.tokenUrl | quote }}
+            - name: {{ $prefix }}JWKS_URL
+              value: {{ $provider.jwksUrl | quote }}
+            {{- include "openclaw.secretEnv" (dict "name" (printf "%sCLIENT_ID" $prefix) "secretName" $provider.secretName "key" $provider.clientIdKey) | nindent 12 }}
+            {{- include "openclaw.secretEnv" (dict "name" (printf "%sCLIENT_SECRET" $prefix) "secretName" $provider.secretName "key" $provider.clientSecretKey) | nindent 12 }}
+            {{- if and $provider.tokenAuth (ne $provider.tokenAuth "client_secret_post") }}
+            - name: {{ $prefix }}TOKEN_AUTH
+              value: {{ $provider.tokenAuth | quote }}
+            {{- end }}
+            {{- if or $provider.displayName $key }}
+            - name: {{ $prefix }}DISPLAY_NAME
+              value: {{ default $key $provider.displayName | quote }}
+            {{- end }}
+            {{- if and $key $provider.legacyCallback }}
+            - name: {{ $prefix }}LEGACY_CALLBACK
+              value: "true"
+            {{- end }}
+            {{- if and $key $provider.allowSelfLink }}
+            - name: {{ $prefix }}ALLOW_SELF_LINK
+              value: "true"
             {{- end }}
             {{- end }}
             {{- if $.Values.auth.recoveryUserId }}

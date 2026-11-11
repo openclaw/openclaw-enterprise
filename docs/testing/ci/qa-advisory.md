@@ -67,6 +67,7 @@ is in the [QA manifest](../../../scripts/ci/test-suites/qa-matrix.json).
 | `plugin-install`        | Yes — OpenShell jobs | Codex           | Install a dedicated Codex plugin, find it after the Codex process restarts, then remove it from the Agent selection.                                                 |
 | `model-ui`              | No                   | OpenClaw        | Real model turn and native browser response.                                                                                                                         |
 | `oidc-agent-chat`       | Yes, separate job    | OpenClaw        | Explicitly attached Default users, signed admission claims, Keycloak sign-in, owner creation and deployment, browser reply, administrative and sibling-Agent denial. |
+| `helm-oidc-agent-chat`  | Yes, separate job    | OpenClaw        | Two Helm-configured Keycloak realms. Verify the same account, Agent replies, and access denials.                                                                     |
 | `console-secrets`       | Yes (Codex)          | OpenClaw, Codex | Create and manage Console Secrets referenced by Agent drafts. Refusing Namespace deletion identifies the deployed Agent and links to its cleanup controls.           |
 | `git-write`             | No                   | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                                                          |
 | `git-push-denied`       | No                   | Codex           | Reject a push to any other branch and dispose credentials.                                                                                                           |
@@ -185,7 +186,7 @@ OpenShell files or the local installation suite. For those suites, follow
 `OCC_TEST_QA_SCENARIOS` accepts `all` (default) or comma-separated selectors.
 `all` excludes the explicit `sandbox-policy`, `plugin-install`,
 `openshell-linear-read`, `codex-search-config`, `harness-overrides` and
-`oidc-agent-chat` selectors.
+`oidc-agent-chat` and `helm-oidc-agent-chat` selectors.
 Invalid or wholly inapplicable selections fail before provisioning; missing
 inputs fail selected checks. Omitting `OCC_TEST_QA_MATRIX=1` skips the suite.
 
@@ -194,6 +195,9 @@ Select `oidc-agent-chat` alone with `kubernetes` and `OpenClaw`. It uses the
 runtime images. Follow the [native browser proof](../native-agent-browser.md)
 for inputs, execution and proof limits. It does not use the ordinary matrix's
 installation launcher.
+
+For `helm-oidc-agent-chat`, follow the
+[Helm OIDC chat procedure](../native-agent-browser.md#run-agent-chat-through-two-helm-configured-providers).
 
 Select `codex-search-config` alone. It requires `OCC_TEST_QA_CODEX_MODEL_BASE_URL`,
 `OCC_TEST_QA_CODEX_MODEL`, and an API key through `OCC_TEST_QA_MODEL_API_KEY` or

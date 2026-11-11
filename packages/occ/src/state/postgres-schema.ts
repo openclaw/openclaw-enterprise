@@ -1728,6 +1728,8 @@ export const humanAuthenticationAttempts = occSchema.table(
       .notNull()
       .default(sql`clock_timestamp()`),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    linkHash: text("link_hash"),
+    linkExisting: boolean("link_existing").notNull().default(false),
   },
   (table) => [
     check("human_authentication_state_hash", sql`${table.stateHash} ~ '^[a-f0-9]{64}$'`),
@@ -1748,7 +1750,51 @@ export const humanAuthenticationAttempts = occSchema.table(
       "human_authentication_attempt_lifetime",
       sql`${table.expiresAt} > ${table.createdAt} AND ${table.expiresAt} <= ${table.createdAt} + interval '5 minutes'`,
     ),
+    check(
+      "human_authentication_attempt_link",
+      sql`${table.linkHash} IS NULL OR (${table.linkHash} ~ '^[a-f0-9]{64}$' AND NOT ${table.linkExisting})`,
+    ),
     index("human_authentication_attempt_expiry").on(table.expiresAt),
+  ],
+);
+
+export const humanAuthenticationLinks = occSchema.table(
+  "human_authentication_links",
+  {
+    linkHash: text("link_hash").primaryKey(),
+    installationId: text("installation_id")
+      .notNull()
+      .references(() => installation.id, { onUpdate: "restrict", onDelete: "cascade" }),
+    attemptId: text("attempt_id").notNull(),
+    providerId: text("provider_id").notNull(),
+    providerBinding: text("provider_binding").notNull(),
+    subject: text("subject").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    check("human_authentication_link_hash", sql`${table.linkHash} ~ '^[a-f0-9]{64}$'`),
+    check("human_authentication_link_attempt", sql`${table.attemptId} ~ '^[A-Za-z0-9_-]{43}$'`),
+    check("human_authentication_link_provider", sql`${table.providerId} ~ '^oidc:[a-f0-9]{64}$'`),
+    check(
+      "human_authentication_link_binding",
+      sql`char_length(${table.providerBinding}) <= 200 AND starts_with(${table.providerBinding}, ${table.providerId} || ':')`,
+    ),
+    check(
+      "human_authentication_link_subject",
+      sql`char_length(${table.subject}) BETWEEN 1 AND 255`,
+    ),
+    check(
+      "human_authentication_link_lifetime",
+      sql`${table.expiresAt} > ${table.createdAt} AND ${table.expiresAt} <= ${table.createdAt} + interval '5 minutes'`,
+    ),
+    index("human_authentication_link_expiry").on(
+      table.installationId,
+      table.expiresAt,
+      table.linkHash,
+    ),
   ],
 );
 

@@ -24,6 +24,7 @@ import {
   betterAuthIssuer,
   createPostgresControllerAuth,
   type GoogleSignInConfiguration,
+  type NamedOidcProvider,
   type OidcSignInConfiguration,
   type PreparedAuthAccount,
 } from "../auth/index.ts";
@@ -66,6 +67,7 @@ export interface PostgresDevelopmentConfig {
   readonly authBaseURL: string;
   readonly google?: GoogleSignInConfiguration;
   readonly oidc?: OidcSignInConfiguration;
+  readonly oidcProviders?: readonly NamedOidcProvider<OidcSignInConfiguration>[];
   /** OCC_AUTH_PASSWORD_SIGN_IN=recovery-only; requires GitHub, Google or OIDC sign-in. */
   readonly passwordSignIn?: "recovery-only";
   readonly poolMax?: number;
@@ -267,6 +269,7 @@ export async function composePostgresDevelopment(
       defaultUserGroupIds: controller.defaultUserGroupIds,
       ...(config.google === undefined ? {} : { google: config.google }),
       ...(config.oidc === undefined ? {} : { oidc: config.oidc }),
+      ...(config.oidcProviders === undefined ? {} : { oidcProviders: config.oidcProviders }),
       ...(config.passwordSignIn === undefined ? {} : { passwordSignIn: config.passwordSignIn }),
       ...(config.logger === undefined
         ? {}

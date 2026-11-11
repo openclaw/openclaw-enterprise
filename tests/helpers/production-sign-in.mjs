@@ -215,6 +215,7 @@ export async function productionSignInConfiguration(
     nativeAdmin: {
       enabled: nativeAdminEnabled,
       domain: environment.OCC_AGENT_NATIVE_ADMIN_DOMAIN,
+      sessionMode: environment.OCC_AGENT_NATIVE_ADMIN_SESSION_MODE ?? "shared-cookie",
     },
     ...(logger === undefined ? {} : { logger }),
     ...(metrics === undefined ? {} : { metrics }),

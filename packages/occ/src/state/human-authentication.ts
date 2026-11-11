@@ -86,7 +86,23 @@ export interface HumanAuthenticationAttemptKey {
 export interface HumanAuthenticationAttempt extends HumanAuthenticationAttemptKey {
   readonly codeVerifier: string;
   readonly expiresAt: Date;
+  readonly linkExisting?: true;
+  readonly linkHash?: string;
 }
+
+export interface HumanAuthenticationLinkCandidate {
+  readonly linkHash: string;
+  readonly attemptId: string;
+  readonly providerId: string;
+  readonly providerBinding: string;
+  readonly subject: string;
+  readonly expiresAt: Date;
+}
+
+type HumanAuthenticationLink = Pick<
+  HumanAuthenticationLinkCandidate,
+  "linkHash" | "providerBinding"
+>;
 
 export type HumanAuthenticationDenial =
   | "INVALID_CREDENTIALS"
@@ -204,6 +220,7 @@ export function knownDeviceAccountState(
 
 // Pending external sign-in attempts per Installation. A full table evicts its oldest attempts.
 const pendingAttemptCapacity = 1000;
+const pendingLinkCapacity = 1000;
 
 const userColumns = `u.id AS user_id, u.email, u.name, u.email_verified, u.image,
   u.created_at AS user_created_at, u.updated_at AS user_updated_at`;
@@ -415,6 +432,67 @@ export class PostgresHumanAuthentication {
             principalId: row.principal_id as string,
             email: row.email as string,
           };
+    });
+  }
+
+  /** Retires state from inactive providers before the replacement API starts serving. */
+  async retireUnconfiguredProviders(
+    configuredAttempts: readonly Pick<
+      HumanAuthenticationAttemptKey,
+      "providerId" | "callbackURL"
+    >[],
+    configuredLinkProviderBindings: readonly string[],
+  ): Promise<void> {
+    const attemptProviderIds = configuredAttempts.map(({ providerId }) => providerId);
+    // The guarded profile has one serving API. The old API must stop before a replacement
+    // can apply a different provider configuration. Password sessions and methods stay intact.
+    await this.state.transact(async (unit) => {
+      const sessions = await this.query(
+        unit,
+        `DELETE FROM occ.session s
+         USING occ.human_authentication_sessions b, occ.human_authentication_accounts h, occ.account m
+         WHERE b.session_id = s.id AND b.user_id = s.user_id AND h.user_id = s.user_id
+           AND m.id = b.method_id AND m.user_id = s.user_id AND h.installation_id = $1
+           AND m.identity_only AND NOT (m.provider_id = ANY($2::text[]))
+           AND s.expires_at > clock_timestamp()
+         RETURNING s.user_id, h.principal_id, m.id AS method_id, m.provider_id`,
+        [this.installationId, this.externalProviderIds],
+      );
+      for (const session of sessions) {
+        await this.audit(unit, "authentication.session.end", session.principal_id as string, {
+          userId: session.user_id,
+          methodId: session.method_id,
+          providerId: session.provider_id,
+          reason: "PROVIDER_NOT_CONFIGURED",
+        });
+      }
+      await this.query(
+        unit,
+        `DELETE FROM occ.human_authentication_links
+         WHERE installation_id = $1 AND NOT (provider_binding = ANY($2::text[]))`,
+        [this.installationId, configuredLinkProviderBindings],
+      );
+      await this.query(
+        unit,
+        `DELETE FROM occ.human_authentication_attempts a
+         WHERE a.installation_id = $1 AND (
+           NOT EXISTS (
+             SELECT 1 FROM unnest($2::text[], $3::text[]) AS p(provider_id, callback_url)
+             WHERE p.provider_id = a.provider_id AND p.callback_url = a.callback_url
+           ) OR ((a.link_existing OR a.link_hash IS NOT NULL)
+             AND NOT (a.provider_id = ANY($4::text[])))
+           OR (a.link_hash IS NOT NULL AND NOT EXISTS (
+             SELECT 1 FROM occ.human_authentication_links l
+             WHERE l.installation_id = a.installation_id AND l.link_hash = a.link_hash
+           ))
+         )`,
+        [
+          this.installationId,
+          attemptProviderIds,
+          configuredAttempts.map(({ callbackURL }) => callbackURL),
+          configuredLinkProviderBindings,
+        ],
+      );
     });
   }
 
@@ -928,6 +1006,7 @@ export class PostgresHumanAuthentication {
       readonly attemptId: string;
     },
     resultAttemptId?: string,
+    link?: HumanAuthenticationLink,
   ): Promise<HumanAuthenticationSession & { resultExpiresAt?: number }> {
     if (
       resultAttemptId !== undefined &&
@@ -946,7 +1025,18 @@ export class PostgresHumanAuthentication {
     ) {
       throw new ScopeViolationError("The authentication audit identity is invalid.");
     }
+    if (
+      link !== undefined &&
+      (!proof.providerId.startsWith("oidc:") || resultAttemptId === undefined)
+    ) {
+      throw new ScopeViolationError(
+        "Account linking requires proof from an attached OIDC identity.",
+      );
+    }
     return this.state.transact(async (unit) => {
+      if (link !== undefined) {
+        await this.query(unit, "SET LOCAL lock_timeout = '5s'");
+      }
       const user = await this.lockUser(unit, proof.userId);
       const current = await this.snapshot(unit, user, proof.providerId, proof.subject);
       if (
@@ -961,6 +1051,10 @@ export class PostgresHumanAuthentication {
         current.proof.passwordHash !== proof.passwordHash
       ) {
         throw new ScopeViolationError("The authentication proof is no longer current.");
+      }
+      let version = proof.version;
+      if (link !== undefined) {
+        version = await this.completeExternalLink(unit, proof, link);
       }
       const [inserted] = await this.query(
         unit,
@@ -982,7 +1076,7 @@ export class PostgresHumanAuthentication {
         unit,
         `INSERT INTO occ.human_authentication_sessions (session_id, user_id, method_id, version, method_version)
          VALUES ($1, $2, $3, $4, $5)`,
-        [session.id, proof.userId, proof.methodId, proof.version, proof.methodVersion],
+        [session.id, proof.userId, proof.methodId, version, proof.methodVersion],
       );
       await this.audit(unit, "authentication.login", proof.principalId, {
         userId: proof.userId,
@@ -1328,26 +1422,7 @@ export class PostgresHumanAuthentication {
         }
         return { methodId: existing.id as string, created: false };
       }
-      const methodId = randomUUID();
-      try {
-        await this.query(
-          unit,
-          `INSERT INTO occ.account (id, account_id, provider_id, user_id, created_at, updated_at, identity_only) VALUES ($1, $2, $3, $4, clock_timestamp(), clock_timestamp(), true)`,
-          [methodId, subject, providerId, userId],
-        );
-      } catch (error) {
-        // A concurrent attach of the same identity committed first.
-        if (isExternalIdentityConflict(error)) {
-          throw new ResourceStateConflictError(EXTERNAL_IDENTITY_ASSIGNED);
-        }
-        throw error;
-      }
-      await this.query(
-        unit,
-        `UPDATE occ.human_authentication_accounts SET version = version + 1, changed_at = clock_timestamp() WHERE user_id = $1`,
-        [userId],
-      );
-      await this.query(unit, `DELETE FROM occ.session WHERE user_id = $1`, [userId]);
+      const { methodId } = await this.addExternalMethod(unit, userId, providerId, subject);
       await this.audit(unit, "authentication.method.attach", actor.principalId, {
         userId,
         methodId,
@@ -1355,6 +1430,79 @@ export class PostgresHumanAuthentication {
       });
       return { methodId, created: true };
     });
+  }
+
+  private async addExternalMethod(
+    unit: PlatformUnitOfWork,
+    userId: string,
+    providerId: string,
+    subject: string,
+  ): Promise<{ methodId: string; version: number }> {
+    const methodId = randomUUID();
+    try {
+      await this.query(
+        unit,
+        `INSERT INTO occ.account (id, account_id, provider_id, user_id, created_at, updated_at, identity_only)
+         VALUES ($1, $2, $3, $4, clock_timestamp(), clock_timestamp(), true)`,
+        [methodId, subject, providerId, userId],
+      );
+    } catch (error) {
+      // A concurrent attach of the same identity may commit first.
+      if (isExternalIdentityConflict(error)) {
+        throw new ResourceStateConflictError(EXTERNAL_IDENTITY_ASSIGNED);
+      }
+      throw error;
+    }
+    const [account] = await this.query(
+      unit,
+      `UPDATE occ.human_authentication_accounts
+       SET version = version + 1, changed_at = clock_timestamp()
+       WHERE user_id = $1 RETURNING version`,
+      [userId],
+    );
+    if (account === undefined) {
+      throw new ScopeViolationError("The authentication account is unavailable.");
+    }
+    await this.query(unit, "DELETE FROM occ.session WHERE user_id = $1", [userId]);
+    return { methodId, version: Number(account.version) };
+  }
+
+  private async completeExternalLink(
+    unit: PlatformUnitOfWork,
+    proof: HumanAuthenticationProof,
+    link: HumanAuthenticationLink,
+  ): Promise<number> {
+    const [candidate] = await this.query(
+      unit,
+      `DELETE FROM occ.human_authentication_links
+       WHERE installation_id = $1 AND link_hash = $2 AND provider_binding = $3
+         AND provider_id <> $4 AND provider_id = ANY($5)
+         AND expires_at > clock_timestamp()
+       RETURNING provider_id, subject, clock_timestamp() < expires_at AS live`,
+      [
+        this.installationId,
+        link.linkHash,
+        link.providerBinding,
+        proof.providerId,
+        this.externalProviderIds,
+      ],
+    );
+    // The row can expire while DELETE waits for its lock.
+    if (candidate?.live !== true) {
+      throw new ScopeViolationError("The account link is no longer current.");
+    }
+    const { methodId, version } = await this.addExternalMethod(
+      unit,
+      proof.userId,
+      candidate.provider_id as string,
+      candidate.subject as string,
+    );
+    await this.audit(unit, "authentication.method.link", proof.principalId, {
+      userId: proof.userId,
+      principalId: proof.principalId,
+      methodId,
+    });
+    return version;
   }
 
   /** Removes one external identity; the password method and recovery credential stay. */
@@ -1605,9 +1753,15 @@ export class PostgresHumanAuthentication {
       const [row] = await this.query(
         unit,
         `INSERT INTO occ.human_authentication_attempts
-         (state_hash, browser_hash, installation_id, provider_id, callback_url, code_verifier, created_at, expires_at)
-         SELECT $1, $2, $3, $4, $5, $6, t.now, t.now + interval '5 minutes'
-         FROM (SELECT clock_timestamp() AS now) t RETURNING created_at, expires_at`,
+         (state_hash, browser_hash, installation_id, provider_id, callback_url, code_verifier,
+          created_at, expires_at, link_hash, link_existing)
+         SELECT $1, $2, $3, $4, $5, $6, t.now, t.now + interval '5 minutes', $7, $8
+         FROM (SELECT clock_timestamp() AS now) t
+         WHERE $7::text IS NULL OR EXISTS (
+           SELECT 1 FROM occ.human_authentication_links
+           WHERE link_hash = $7 AND installation_id = $3 AND expires_at > t.now
+         )
+         RETURNING created_at, expires_at`,
         [
           attempt.stateHash,
           attempt.browserHash,
@@ -1615,9 +1769,14 @@ export class PostgresHumanAuthentication {
           attempt.providerId,
           attempt.callbackURL,
           attempt.codeVerifier,
+          attempt.linkHash ?? null,
+          attempt.linkExisting === true,
         ],
       );
-      return { createdAt: row!.created_at as Date, expiresAt: row!.expires_at as Date };
+      if (row === undefined) {
+        throw new ScopeViolationError("The account link is no longer current.");
+      }
+      return { createdAt: row.created_at as Date, expiresAt: row.expires_at as Date };
     });
   }
 
@@ -1638,8 +1797,73 @@ export class PostgresHumanAuthentication {
             codeVerifier: row.code_verifier as string,
             expiresAt: row.expires_at as Date,
             createdAt: row.created_at as Date,
+            ...(row.link_existing === true ? { linkExisting: true } : {}),
+            ...(typeof row.link_hash === "string" ? { linkHash: row.link_hash } : {}),
           };
     });
+  }
+
+  async createLinkCandidate(
+    candidate: Omit<HumanAuthenticationLinkCandidate, "expiresAt">,
+  ): Promise<void> {
+    if (!this.externalProviderIds.includes(candidate.providerId)) {
+      throw new ScopeViolationError("The account link provider is unavailable.");
+    }
+    await this.state.transact(async (unit) => {
+      await this.query(unit, "SELECT pg_advisory_xact_lock(1868785008, hashtext($1))", [
+        this.installationId,
+      ]);
+      await this.query(
+        unit,
+        `DELETE FROM occ.human_authentication_links
+         WHERE installation_id = $1 AND (
+           expires_at <= clock_timestamp() OR link_hash IN (
+             SELECT link_hash FROM occ.human_authentication_links
+             WHERE installation_id = $1 ORDER BY expires_at DESC, link_hash DESC OFFSET $2
+           )
+         )`,
+        [this.installationId, pendingLinkCapacity - 1],
+      );
+      await this.query(
+        unit,
+        `INSERT INTO occ.human_authentication_links
+         (link_hash, installation_id, attempt_id, provider_id, provider_binding, subject, created_at, expires_at)
+         SELECT $1, $2, $3, $4, $5, $6, t.now, t.now + interval '5 minutes'
+         FROM (SELECT clock_timestamp() AS now) t`,
+        [
+          candidate.linkHash,
+          this.installationId,
+          candidate.attemptId,
+          candidate.providerId,
+          candidate.providerBinding,
+          candidate.subject,
+        ],
+      );
+    });
+  }
+
+  async readLinkCandidate(
+    linkHash: string,
+    attemptId?: string,
+  ): Promise<HumanAuthenticationLinkCandidate | undefined> {
+    const [candidate] = await this.state.readStatement(
+      `SELECT attempt_id, provider_id, provider_binding, subject, expires_at
+       FROM occ.human_authentication_links
+       WHERE installation_id = $1 AND link_hash = $2
+         AND ($3::text IS NULL OR attempt_id = $3) AND expires_at > clock_timestamp()`,
+      [this.installationId, linkHash, attemptId ?? null],
+    );
+    if (candidate === undefined) {
+      return undefined;
+    }
+    return {
+      linkHash,
+      attemptId: candidate.attempt_id as string,
+      providerId: candidate.provider_id as string,
+      providerBinding: candidate.provider_binding as string,
+      subject: candidate.subject as string,
+      expiresAt: candidate.expires_at as Date,
+    };
   }
 
   /**

@@ -28,6 +28,7 @@
     "tests/integration/postgres-service-api-keys.test.mjs",
     "tests/integration/postgres-auth-binding.test.mjs",
     "tests/integration/postgres-oidc-enrollment.test.ts",
+    "tests/integration/postgres-oidc-linking.test.ts",
     "tests/integration/postgres-native-host-only-browser.test.ts"
   ],
   "files": [
@@ -172,6 +173,12 @@
       "path": "tests/integration/postgres-oidc-enrollment.test.ts",
       "expectedTests": [
         "OIDC enrollment creates scoped accounts and preserves explicit identity links"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-oidc-linking.test.ts",
+      "expectedTests": [
+        "named OIDC providers enforce separate policies and preserve exact identities"
       ]
     },
     {

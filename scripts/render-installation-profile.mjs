@@ -863,9 +863,8 @@ function isCidr(value) {
   return !coversIpv4;
 }
 
-function signInProvider(source, name, diagnostics) {
-  const path = ["controlPlane", name];
-  const rendered = { enabled: true };
+function signInProvider(source, path, diagnostics) {
+  const rendered = {};
   for (const key of ["secretName", "clientIdKey", "clientSecretKey"]) {
     const value = optionalString(
       source,
@@ -880,7 +879,7 @@ function signInProvider(source, name, diagnostics) {
   // Omitted keys retain these chart defaults; a one-key override can collide too.
   if ((rendered.clientIdKey ?? "client-id") === (rendered.clientSecretKey ?? "client-secret")) {
     diagnostics.errors.push(
-      `controlPlane.${name} client ID and client secret must use different Secret keys.`,
+      `${path.join(".")} client ID and client secret must use different Secret keys.`,
     );
   }
   if (source.allowedDomains !== undefined) {
@@ -905,6 +904,19 @@ function signInProvider(source, name, diagnostics) {
 // path without a query or fragment.
 const oidcEndpoint =
   /^https:\/\/((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)(?::443)?(?:\/[^?#]*)?$/i;
+const oidcProviderFields = [
+  "enrollment",
+  "issuer",
+  "authorizationUrl",
+  "tokenUrl",
+  "jwksUrl",
+  "secretName",
+  "clientIdKey",
+  "clientSecretKey",
+  "tokenAuth",
+  "displayName",
+  "egressCidrs",
+];
 
 // The OIDC URLs as both the chart and the API accept them: https on 443, a DNS host, and no
 // userinfo, query or fragment. Like both, it checks the value after JavaScript's trim, which
@@ -933,9 +945,8 @@ function oidcEndpointHost(value, { issuer = false } = {}) {
     : undefined;
 }
 
-function renderOidc(source, diagnostics) {
-  const path = ["controlPlane", "oidc"];
-  const rendered = signInProvider(source, "oidc", diagnostics);
+function renderOidcProvider(source, path, diagnostics) {
+  const rendered = signInProvider(source, path, diagnostics);
   const issuer = asString(source, [...path, "issuer"], diagnostics, {
     validate: (value) => oidcEndpointHost(value, { issuer: true }) !== undefined,
     description:
@@ -965,12 +976,66 @@ function renderOidc(source, diagnostics) {
   }
   if (source.enrollment !== undefined) {
     try {
-      rendered.enrollment = oidcEnrollmentPolicy(source.enrollment);
+      // Validate the policy but keep its input shape for the API's parser.
+      oidcEnrollmentPolicy(source.enrollment);
+      rendered.enrollment = source.enrollment;
     } catch (error) {
-      diagnostics.errors.push(`controlPlane.oidc.enrollment: ${error.message}`);
+      diagnostics.errors.push(`${path.join(".")}.enrollment: ${error.message}`);
     }
   }
   return rendered;
+}
+
+function renderOidc(source, diagnostics) {
+  const path = ["controlPlane", "oidc"];
+  if (source.providers === undefined) {
+    return { enabled: true, ...renderOidcProvider(source, path, diagnostics) };
+  }
+  const providerPath = [...path, "providers"];
+  const entries = Object.entries(record(source.providers, providerPath.join("."), diagnostics));
+  if (entries.length === 0) {
+    diagnostics.errors.push("controlPlane.oidc.providers must contain at least one provider.");
+  }
+  const providers = {};
+  let hasLegacyCallback = false;
+  for (const [key, value] of entries) {
+    const entryPath = [...providerPath, key];
+    const label = entryPath.join(".");
+    if (!/^[a-z][a-z0-9-]{0,31}$/.test(key)) {
+      diagnostics.errors.push(
+        `controlPlane.oidc.providers key ${JSON.stringify(key)} must start with a lowercase letter and use at most 32 lowercase letters, digits, and hyphens.`,
+      );
+      continue;
+    }
+    const entry = record(value, label, diagnostics);
+    closed(entry, label, [...oidcProviderFields, "legacyCallback", "allowSelfLink"], diagnostics);
+    if (entry.secretName === undefined) {
+      diagnostics.errors.push(`${label}.secretName is required.`);
+    }
+    const rendered = renderOidcProvider(entry, entryPath, diagnostics);
+    if (entry.allowSelfLink !== undefined) {
+      if (typeof entry.allowSelfLink !== "boolean") {
+        diagnostics.errors.push(`${label}.allowSelfLink must be a boolean.`);
+      } else {
+        rendered.allowSelfLink = entry.allowSelfLink;
+      }
+    }
+    if (entry.legacyCallback !== undefined) {
+      if (typeof entry.legacyCallback !== "boolean") {
+        diagnostics.errors.push(`${label}.legacyCallback must be a boolean.`);
+      } else if (entry.legacyCallback) {
+        if (hasLegacyCallback) {
+          diagnostics.errors.push(
+            "controlPlane.oidc.providers permits at most one legacyCallback: true.",
+          );
+        }
+        hasLegacyCallback = true;
+        rendered.legacyCallback = true;
+      }
+    }
+    providers[key] = rendered;
+  }
+  return { enabled: true, providers };
 }
 
 // Mirrors the chart's auth.google/auth.oidc checks. Activation is one-way, so every
@@ -1005,7 +1070,12 @@ function renderExternalSignIn(controlPlane, google, oidc, authBaseUrl, diagnosti
     ...(passwordSignIn === undefined ? {} : { passwordSignIn }),
     ...(controlPlane.google === undefined
       ? {}
-      : { google: signInProvider(google, "google", diagnostics) }),
+      : {
+          google: {
+            enabled: true,
+            ...signInProvider(google, ["controlPlane", "google"], diagnostics),
+          },
+        }),
     ...(controlPlane.oidc === undefined ? {} : { oidc: renderOidc(oidc, diagnostics) }),
   };
 }
@@ -1227,19 +1297,7 @@ function buildInput(rawInput, diagnostics) {
   closed(
     oidc,
     "controlPlane.oidc",
-    [
-      "enrollment",
-      "issuer",
-      "authorizationUrl",
-      "tokenUrl",
-      "jwksUrl",
-      "secretName",
-      "clientIdKey",
-      "clientSecretKey",
-      "tokenAuth",
-      "displayName",
-      "egressCidrs",
-    ],
+    oidc.providers === undefined ? oidcProviderFields : ["providers"],
     diagnostics,
   );
   const trustedProxy = section(controlPlane, "trustedProxy", diagnostics, false);
@@ -1283,10 +1341,6 @@ const chartSecrets = {
   database: "occ-database",
   auth: "occ-auth",
 };
-const signInSecretDefaults = {
-  google: "occ-google-login",
-  oidc: "occ-oidc-login",
-};
 // The chart's default Gateway name (openclaw.gatewayRouting.gatewayName): the profile
 // never sets gatewayRouting.gatewayName, so Compute's routing must use this exact name.
 function chartGatewayName(releaseName) {
@@ -1325,18 +1379,26 @@ function dedicatedSecrets(values, releaseName, namespace, diagnostics) {
     ]),
   ]);
   const repository = values.repositoryCredentials;
+  const oidc = values.auth.oidc;
+  const google = values.auth.google;
+  const oidcSecrets = [];
+  if (oidc?.providers !== undefined) {
+    for (const [key, provider] of Object.entries(oidc.providers)) {
+      oidcSecrets.push([`controlPlane.oidc.providers.${key}.secretName`, provider.secretName]);
+    }
+  } else if (oidc !== undefined) {
+    oidcSecrets.push(["controlPlane.oidc.secretName", oidc.secretName ?? "occ-oidc-login"]);
+  }
   const fields = [
     ...(values.backend?.chatgpt?.enabled
       ? [["codex.managedServiceAccounts.adminSecretName", values.backend.chatgpt.secretName]]
       : []),
     ["controlPlane.databaseCa.secretName", values.database.caSecretName, "ca"],
     ["controlPlane.gatewayApiKeySecretName", values.gatewayRouting.apiKeySecretName],
-    ...Object.entries(signInSecretDefaults)
-      .filter(([name]) => values.auth[name] !== undefined)
-      .map(([name, fallback]) => [
-        `controlPlane.${name}.secretName`,
-        values.auth[name].secretName ?? fallback,
-      ]),
+    ...(google === undefined
+      ? []
+      : [["controlPlane.google.secretName", google.secretName ?? "occ-google-login"]]),
+    ...oidcSecrets,
     ...(repository.enabled
       ? [
           ...[

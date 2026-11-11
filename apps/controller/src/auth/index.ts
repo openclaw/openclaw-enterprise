@@ -16,6 +16,7 @@ import {
 import {
   PostgresHumanAuthentication,
   CallerStateDeniedError,
+  ResourceConflictError,
   ScopeViolationError,
   type HumanAuthenticationActivation,
   type HumanAuthenticationActivationHooks,
@@ -38,7 +39,14 @@ import {
 } from "./human-login.ts";
 import type { ExternalProviderName } from "./human-login.ts";
 import { googleLoginConfiguration, type GoogleSignInConfiguration } from "./google.ts";
-import { oidcLoginConfiguration, oidcProviderId, type OidcSignInConfiguration } from "./oidc.ts";
+import {
+  oidcLoginConfiguration,
+  oidcLoginConfigurations,
+  oidcProviderId,
+  validateOidcProviders,
+  type NamedOidcProvider,
+  type OidcSignInConfiguration,
+} from "./oidc.ts";
 import { resolveOidcEnrollmentPolicy } from "./oidc-enrollment.ts";
 import { sessionBindingKey, sessionKeyHeader, sessionKeyMatches } from "./session-binding.ts";
 import { sessionAuthority } from "./session-authority.ts";
@@ -69,6 +77,7 @@ export {
 } from "./google.ts";
 export {
   oidcLoginConfiguration,
+  type NamedOidcProvider,
   type OidcLoginConfiguration,
   type OidcSignInConfiguration,
 } from "./oidc.ts";
@@ -89,6 +98,7 @@ export type PasswordSlowLaneFloors = Pick<
 export interface HumanLoginConfiguration {
   readonly google?: GoogleSignInConfiguration;
   readonly oidc?: OidcSignInConfiguration;
+  readonly oidcProviders?: readonly NamedOidcProvider<OidcSignInConfiguration>[];
   /** Set only for `recovery-only`; absent means every enrolled account keeps its password. */
   readonly passwordSignIn?: "recovery-only";
 }
@@ -126,10 +136,12 @@ export function humanLoginConfiguration(
     );
   }
   const google = googleLoginConfiguration(environment);
+  const oidcProviders = oidcLoginConfigurations(environment);
   const oidc = oidcLoginConfiguration(environment);
+  const hasOidc = oidc !== undefined || oidcProviders.length > 0;
   const recoveryUserId = environment.OCC_AUTH_RECOVERY_USER_ID;
   const passwordSignIn = passwordSignInPolicy(environment);
-  if (google === undefined && oidc === undefined) {
+  if (google === undefined && !hasOidc) {
     if (recoveryUserId !== undefined) {
       throw new Error(
         "External sign-in requires client ID, client secret and recovery user ID for Google or OIDC.",
@@ -144,12 +156,20 @@ export function humanLoginConfiguration(
   if (google !== undefined && recoveryMissing) {
     throw new Error("Google sign-in requires client ID, client secret and recovery user ID.");
   }
-  if (oidc !== undefined && recoveryMissing) {
+  if (hasOidc && recoveryMissing) {
     throw new Error("OIDC sign-in requires its provider settings and a recovery user ID.");
   }
   return {
     ...(google === undefined ? {} : { google: { ...google, recoveryUserId: recoveryUserId! } }),
     ...(oidc === undefined ? {} : { oidc: { ...oidc, recoveryUserId: recoveryUserId! } }),
+    ...(oidcProviders.length === 0
+      ? {}
+      : {
+          oidcProviders: oidcProviders.map((provider) => ({
+            ...provider,
+            config: { ...provider.config, recoveryUserId: recoveryUserId! },
+          })),
+        }),
     ...(passwordSignIn === "all" ? {} : { passwordSignIn }),
   };
 }
@@ -271,6 +291,7 @@ export interface PostgresControllerAuthOptions extends Omit<
   readonly defaultUserGroupIds?: readonly string[];
   readonly google?: GoogleSignInConfiguration;
   readonly oidc?: OidcSignInConfiguration;
+  readonly oidcProviders?: readonly NamedOidcProvider<OidcSignInConfiguration>[];
   /** Guarded profile only: `recovery-only` admits only the recovery account's password. */
   readonly passwordSignIn?: "recovery-only";
   /** Receives nonfatal startup conditions as structured log events. */
@@ -326,10 +347,12 @@ export interface ControllerAuth {
   googleCallback(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   googleResult(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   readonly oidcEnabled: boolean;
-  /** Provider-instance key for OIDC identities; set only while OIDC sign-in is configured. */
+  /** Provider-instance ID for the legacy OIDC route. */
   readonly oidcProviderId?: string;
-  /** What the Console needs to offer OIDC sign-in; set only while it is configured. */
+  /** Sign-in choice for clients that use the legacy OIDC route. */
   readonly oidcSignIn?: { readonly label: string; readonly authorizationUrl: string };
+  readonly oidcProviders?: readonly OidcBrowserProvider[];
+  oidcRoutesFor?(key: string): ExternalSignInRoutes | undefined;
   oidcStart(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   oidcCallback(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   oidcResult(request: FastifyRequest, reply: FastifyReply): Promise<void>;
@@ -348,6 +371,7 @@ export interface ControllerAuth {
     subject: string,
     actor: HumanAuthenticationActor,
     expectedVersion: number,
+    providerKey?: string,
   ): Promise<unknown>;
   changeAccount?(
     userId: string,
@@ -400,6 +424,20 @@ export interface ControllerAuth {
   }): Promise<ServiceKey & { readonly key: string }>;
   getServiceKey(id: string): Promise<ServiceKey | undefined>;
   revokeServiceKey(key: ServiceKey): Promise<void>;
+}
+
+interface OidcBrowserProvider {
+  readonly key: string;
+  readonly route: string;
+  readonly label: string;
+  readonly authorizationUrl: string;
+  readonly allowSelfLink: boolean;
+}
+
+interface ExternalSignInRoutes {
+  start(request: FastifyRequest, reply: FastifyReply): Promise<void>;
+  callback(request: FastifyRequest, reply: FastifyReply): Promise<void>;
+  result(request: FastifyRequest, reply: FastifyReply): Promise<void>;
 }
 
 function authHeaders(headers: AdmissionHeaders | FastifyRequest["headers"] | undefined): Headers {
@@ -966,7 +1004,9 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
   const humanLogin = options.humanLogin;
   if (
     hostBoundSession &&
-    (humanLogin?.oidcProviderId === undefined || humanLogin.googleProviderId !== undefined)
+    (humanLogin === undefined ||
+      (humanLogin.oidcProviderId === undefined && humanLogin.oidcProviders.length === 0) ||
+      humanLogin.googleProviderId !== undefined)
   ) {
     throw new Error("Host-only exchange requires guarded OIDC sign-in without Google.");
   }
@@ -1324,11 +1364,11 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
 
   // Browser endpoints for one external provider; its absence is a 403 (start/result) or
   // the console error redirect (callback), as before.
-  function externalProviderRoutes(name: "google" | "oidc", label: string) {
-    const configured =
-      name === "google"
-        ? humanLogin?.googleProviderId !== undefined
-        : humanLogin?.oidcProviderId !== undefined;
+  function externalProviderRoutes(
+    route: string,
+    label: string,
+    configured: boolean,
+  ): ExternalSignInRoutes {
     return {
       async start(request: FastifyRequest, reply: FastifyReply): Promise<void> {
         await sendAuthEndpoint(
@@ -1341,7 +1381,8 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
             // Sets the browser-binding cookie, so it takes the same exact-Origin and
             // Sec-Fetch-Site guard as sign-out and the result exchange.
             requireSessionMutationOrigin(authHeaders(request.headers), expectedBrowserOrigin);
-            return runPrivateEndpoint(request, `/oce/providers/${name}/start`);
+            const body = route === "google" ? undefined : authBody(request);
+            return runPrivateEndpoint(request, `/oce/providers/${route}/start`, body);
           },
           (value) => value,
           { refused: `${label} sign-in could not be started.`, action: `${label} sign-in` },
@@ -1354,9 +1395,11 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
           if (!configured) {
             throw new Error(`${label} sign-in unavailable.`);
           }
-          const result = await runPrivateEndpoint(request, `/oce/providers/${name}/callback`);
+          const result = await runPrivateEndpoint(request, `/oce/providers/${route}/callback`);
           setAuthHeaders(reply, result.headers);
-          reply.redirect("/console/");
+          const linkRequired =
+            (result.response as { linkRequired?: boolean }).linkRequired === true;
+          reply.redirect(linkRequired ? `/console/?authLink=${route}` : "/console/");
         } catch (error) {
           // A refusal keeps its reason. A callback that failed inside OCE (its database or
           // audit store) is an outage, not a refusal of this identity. Every other refusal,
@@ -1369,8 +1412,8 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
                 : undefined;
           reply.redirect(
             reason === undefined
-              ? `/console/?authError=${name}`
-              : `/console/?authError=${name}&authReason=${reason}`,
+              ? `/console/?authError=${route}`
+              : `/console/?authError=${route}&authReason=${reason}`,
           );
         }
       },
@@ -1385,7 +1428,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
             }
             // Reads the session cookie, so it takes the same exact-Origin guard as sign-out.
             requireSessionMutationOrigin(authHeaders(request.headers), expectedBrowserOrigin);
-            return runPrivateEndpoint(request, `/oce/providers/${name}/result`, authBody(request));
+            return runPrivateEndpoint(request, `/oce/providers/${route}/result`, authBody(request));
           },
           (value) => {
             const sessionKey = (value as { readonly sessionKey?: unknown } | null)?.sessionKey;
@@ -1396,8 +1439,21 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       },
     };
   }
-  const googleRoutes = externalProviderRoutes("google", "Google");
-  const oidcRoutes = externalProviderRoutes("oidc", "OIDC");
+  const googleRoutes = externalProviderRoutes(
+    "google",
+    "Google",
+    humanLogin?.googleProviderId !== undefined,
+  );
+  const oidcRoutes = externalProviderRoutes(
+    "oidc",
+    "OIDC",
+    humanLogin?.oidcProviderId !== undefined,
+  );
+  const namedOidcRoutes = new Map(
+    humanLogin?.oidcProviders
+      .filter(({ route }) => route !== "oidc")
+      .map(({ key, route, label }) => [key, externalProviderRoutes(route, label, true)]),
+  );
 
   async function signInEmail(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     await sendAuthEndpoint(
@@ -1658,6 +1714,8 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     googleResult: googleRoutes.result,
     oidcEnabled: humanLogin?.oidcProviderId !== undefined,
     ...(humanLogin?.oidcSignIn === undefined ? {} : { oidcSignIn: humanLogin.oidcSignIn }),
+    ...(humanLogin?.oidcProviders.length ? { oidcProviders: humanLogin.oidcProviders } : {}),
+    oidcRoutesFor: (key) => namedOidcRoutes.get(key),
     oidcStart: oidcRoutes.start,
     oidcCallback: oidcRoutes.callback,
     oidcResult: oidcRoutes.result,
@@ -1826,27 +1884,36 @@ export async function createPostgresControllerAuth(
     iamDriver,
     google,
     oidc: configuredOidc,
+    oidcProviders: configuredOidcProviders = [],
     defaultUserGroupIds = [],
     passwordSignIn,
     onWarning,
     onUnmatchedCallback,
     ...controllerOptions
   } = options;
-  const oidc =
+  if (configuredOidc !== undefined && configuredOidcProviders.length > 0) {
+    throw new Error("Use either named or single-provider OIDC settings.");
+  }
+  const providers =
     configuredOidc === undefined
-      ? undefined
-      : {
-          ...configuredOidc,
-          enrollment:
-            configuredOidc.enrollment === undefined
-              ? undefined
-              : resolveOidcEnrollmentPolicy(configuredOidc.enrollment, defaultUserGroupIds),
-        };
-  // Sessions from an external provider instance outside this set (removed, or a changed
-  // issuer or client ID) stop authenticating; password sessions are unaffected.
+      ? configuredOidcProviders
+      : [{ key: "default", route: "oidc", config: configuredOidc }];
+  validateOidcProviders(providers);
+  const oidcProviders = providers.map(({ config, ...provider }) => ({
+    ...provider,
+    config: {
+      ...config,
+      enrollment:
+        config.enrollment === undefined
+          ? undefined
+          : resolveOidcEnrollmentPolicy(config.enrollment, defaultUserGroupIds),
+    },
+  }));
+  // The replacement API retires sessions from external instances outside this set
+  // before serving. Password sessions are unaffected.
   const externalProviderIds = [
     ...(google === undefined ? [] : [googleProviderId(google)]),
-    ...(oidc === undefined ? [] : [oidcProviderId(oidc)]),
+    ...oidcProviders.map(({ config }) => oidcProviderId(config)),
   ];
   const persistence =
     state === undefined
@@ -1858,7 +1925,7 @@ export async function createPostgresControllerAuth(
           { externalProviderIds },
         );
   // Any external provider activates the guarded profile; all share its recovery user.
-  const recoveryUserId = google?.recoveryUserId ?? oidc?.recoveryUserId;
+  const recoveryUserId = google?.recoveryUserId ?? oidcProviders[0]?.config.recoveryUserId;
   const guarded = recoveryUserId !== undefined;
   const providerLabel = google !== undefined ? "Google" : "OIDC";
   if (!guarded && passwordSignIn !== undefined) {
@@ -1871,7 +1938,7 @@ export async function createPostgresControllerAuth(
   }
   if (guarded) {
     if (
-      [google, oidc].some(
+      [google, ...oidcProviders.map(({ config }) => config)].some(
         (provider) => provider !== undefined && provider.recoveryUserId !== recoveryUserId,
       )
     ) {
@@ -1887,11 +1954,13 @@ export async function createPostgresControllerAuth(
       throw new Error(`Production ${providerLabel} sign-in requires HTTPS.`);
     }
   }
-  if (oidc?.enrollment !== undefined) {
-    await persistence!.validateEnrollment({
-      groupIds: oidc.enrollment.groupIds,
-      role: oidc.enrollment.createAccount.role,
-    });
+  for (const { config } of oidcProviders) {
+    if (config.enrollment !== undefined) {
+      await persistence!.validateEnrollment({
+        groupIds: config.enrollment.groupIds,
+        role: config.enrollment.createAccount.role,
+      });
+    }
   }
   const humanLogin = !guarded
     ? undefined
@@ -1900,7 +1969,9 @@ export async function createPostgresControllerAuth(
         {
           recoveryUserId,
           ...(google === undefined ? {} : { google }),
-          ...(oidc === undefined ? {} : { oidc }),
+          ...(configuredOidc === undefined
+            ? { oidcProviders }
+            : { oidc: oidcProviders[0]!.config }),
           ...(passwordSignIn === undefined ? {} : { passwordSignIn }),
         },
         options.baseURL,
@@ -1970,12 +2041,10 @@ export async function createPostgresControllerAuth(
     // stored designation, never the environment seed, which may name a replaced holder.
     humanLogin!.designateRecovery(designation.email);
     if (passwordSignIn === "recovery-only") {
-      withoutExternalIdentity = await persistence!.accountsWithoutExternalIdentity(
-        [humanLogin!.googleProviderId, humanLogin!.oidcProviderId].filter(
-          (providerId): providerId is string => providerId !== undefined,
-        ),
-      );
+      withoutExternalIdentity =
+        await persistence!.accountsWithoutExternalIdentity(externalProviderIds);
     }
+    await humanLogin!.retireUnconfiguredProviders();
   }
   return {
     ...auth,
@@ -2018,7 +2087,7 @@ export async function createPostgresControllerAuth(
                     expectedVersion,
                   ),
               }),
-          ...(humanLogin.oidcProviderId === undefined
+          ...(oidcProviders.length === 0
             ? {}
             : {
                 attachOidc: (
@@ -2026,14 +2095,22 @@ export async function createPostgresControllerAuth(
                   subject: string,
                   actor: HumanAuthenticationActor,
                   expectedVersion: number,
-                ) =>
-                  persistence!.attachExternal(
+                  providerKey?: string,
+                ) => {
+                  const provider = oidcProviders.find(({ key, route }) =>
+                    providerKey === undefined ? route === "oidc" : key === providerKey,
+                  );
+                  if (provider === undefined) {
+                    throw new ResourceConflictError("OIDC sign-in is not configured.");
+                  }
+                  return persistence!.attachExternal(
                     userId,
-                    humanLogin.oidcProviderId!,
+                    oidcProviderId(provider.config),
                     subject,
                     actor,
                     expectedVersion,
-                  ),
+                  );
+                },
               }),
           changeAccount: (
             userId: string,

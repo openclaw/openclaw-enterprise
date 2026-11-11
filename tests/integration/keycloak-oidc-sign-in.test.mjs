@@ -1,6 +1,6 @@
-import { keycloakRealmAdmin } from "../helpers/ci-keycloak-realm.mjs";
+import { createKeycloakTestRealm, keycloakRealmAdmin } from "../helpers/ci-keycloak-realm.mjs";
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test, { after } from "node:test";
 import { tlsPeerCertificate } from "../helpers/tls-peer-certificate.mjs";
@@ -30,6 +30,7 @@ const issuer = process.env.OCC_TEST_KEYCLOAK_ISSUER;
 const secretsFile = process.env.OCC_TEST_KEYCLOAK_SECRETS_FILE;
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const consolePort = Number(process.env.OCC_TEST_KEYCLOAK_CONSOLE_PORT);
+const keycloakTlsPort = Number(process.env.OCC_TEST_KEYCLOAK_TLS_PORT ?? 443);
 const missing =
   !issuer ||
   !secretsFile ||
@@ -109,6 +110,15 @@ const deniedReason = "EXTERNAL_IDENTITY_REJECTED";
 // Keycloak 26's login-form error for a disabled user who enters the right password.
 const disabledMessage = /Account is disabled/;
 
+function keycloakEndpoints(issuer) {
+  return {
+    issuer,
+    authorizationUrl: `${issuer}/protocol/openid-connect/auth`,
+    tokenUrl: `${issuer}/protocol/openid-connect/token`,
+    jwksUrl: `${issuer}/protocol/openid-connect/certs`,
+  };
+}
+
 let installation;
 let browser;
 const cleanup = [];
@@ -118,12 +128,12 @@ after(async () => {
   }
 });
 
-/** The Keycloak leaf as served on 127.0.0.1:443, verified against the lane CA. */
+/** The Keycloak leaf, verified against the fixture CA. */
 async function keycloakLeaf() {
   const ca = await readFile(process.env.OCC_TEST_KEYCLOAK_CA_CERT);
   return tlsPeerCertificate({
     host: "127.0.0.1",
-    port: 443,
+    port: keycloakTlsPort,
     servername: new URL(issuer).hostname,
     ca,
   });
@@ -149,12 +159,7 @@ async function prepareInstallation(t) {
   });
   const adminId = (await pool.query('SELECT id FROM occ."user" WHERE email = $1', [adminEmail]))
     .rows[0].id;
-  const endpoints = {
-    issuer,
-    authorizationUrl: `${issuer}/protocol/openid-connect/auth`,
-    tokenUrl: `${issuer}/protocol/openid-connect/token`,
-    jwksUrl: `${issuer}/protocol/openid-connect/certs`,
-  };
+  const endpoints = keycloakEndpoints(issuer);
   const prepared = {
     pool,
     state,
@@ -170,12 +175,24 @@ async function prepareInstallation(t) {
       },
     },
     // The chart's OIDC upgrade, served from the lane's HTTPS origin.
-    settings: (tokenAuth) =>
-      Object.freeze({
+    settings: (tokenAuth, named) => {
+      const settings = {
         ...oidcUpgradeSettings(adminId, endpoints, { tokenAuth, displayName: "Keycloak" }),
         OCC_AUTH_BASE_URL: origin,
         OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.localhost",
-      }),
+      };
+      if (named) {
+        // Configure exactly one named provider using the same issuer and client.
+        for (const [name, value] of Object.entries(settings)) {
+          if (name.startsWith("OCC_AUTH_OIDC_")) {
+            settings[name.replace("OCC_AUTH_OIDC_", "OCC_AUTH_OIDC_KEYCLOAK_")] = value;
+            delete settings[name];
+          }
+        }
+        settings.OCC_AUTH_OIDC_PROVIDERS = "keycloak";
+      }
+      return Object.freeze(settings);
+    },
   };
   const roles = await installationRoles(state, pool);
   const app = await composeProductionSignIn(t, {
@@ -224,11 +241,11 @@ async function prepareInstallation(t) {
  * HTTPS origin. One composition serves every page a test opens, so a flow that spans two
  * sign-ins runs against one controller, never a restarted one.
  */
-async function serveConsole(t, tokenAuth) {
+async function serveConsole(t, tokenAuth, named = false, extraSettings = {}) {
   const prepared = await prepareInstallation(t);
   const app = await composeProductionSignIn(t, {
     ...prepared.composition,
-    settings: prepared.settings(tokenAuth),
+    settings: { ...prepared.settings(tokenAuth, named), ...extraSettings },
   });
   t.after(() => app.close());
   await app.listen({ host: "127.0.0.1", port: 0 });
@@ -246,14 +263,26 @@ async function serveConsole(t, tokenAuth) {
     browser = await chromium.launch({
       headless: true,
       // Trusts exactly the two lane leaves: the Console origin and Keycloak.
-      args: [chromiumTrustArg([tls.cert, await keycloakLeaf()])],
+      args: [
+        chromiumTrustArg([tls.cert, await keycloakLeaf()]),
+        // Native Keycloak can use a high loopback port while keeping its HTTPS issuer.
+        ...(keycloakTlsPort === 443
+          ? []
+          : [
+              `--host-resolver-rules=MAP ${new URL(issuer).hostname}:443 127.0.0.1:${keycloakTlsPort}`,
+            ]),
+      ],
       ...(process.env.OCC_TEST_BROWSER_EXECUTABLE
         ? { executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE }
         : {}),
     });
     cleanup.push(() => browser.close());
   }
-  return prepared;
+  return {
+    ...prepared,
+    callbackPath: named ? namedCallbackPath : callbackPath,
+    resultPath: named ? "/api/auth/providers/oidc/keycloak/result" : resultPath,
+  };
 }
 
 /** Waits for the next response on an API path, bounded by Playwright's default timeout. */
@@ -266,15 +295,8 @@ function nextResponse(page, pathname) {
   return response;
 }
 
-/**
- * Opens a fresh browser context (no Keycloak session) on the served Console. It records each
- * authorization request and the status Keycloak answered it with: 200 is its login form,
- * 302 a redirect from a live Keycloak session.
- */
-async function openPage(t, prepared) {
-  const context = await browser.newContext();
-  t.after(() => context.close());
-  const page = await context.newPage();
+/** Records the selected realm's authorization requests and the matching Console callback. */
+function observeProvider(page, prepared) {
   const authorizations = [];
   const authorizationStatuses = [];
   const callbacks = [];
@@ -285,7 +307,7 @@ async function openPage(t, prepared) {
     if (authorizationUrl(url)) {
       authorizations.push(url.searchParams);
     }
-    if (url.origin === origin && url.pathname === callbackPath) {
+    if (url.origin === origin && url.pathname === prepared.callbackPath) {
       callbacks.push(url);
     }
   });
@@ -300,22 +322,34 @@ async function openPage(t, prepared) {
     authorizations,
     authorizationStatuses,
     callbacks,
-    callback: nextResponse(page, callbackPath),
+    callback: nextResponse(page, prepared.callbackPath),
   };
 }
 
-async function openConsole(t, tokenAuth) {
-  return openPage(t, await serveConsole(t, tokenAuth));
+async function openPage(t, prepared) {
+  const context = await browser.newContext();
+  t.after(() => context.close());
+  return observeProvider(await context.newPage(), prepared);
+}
+
+async function openConsole(t, tokenAuth, named) {
+  return openPage(t, await serveConsole(t, tokenAuth, named));
 }
 
 const callbackPath = "/api/auth/providers/oidc/callback";
+const namedCallbackPath = "/api/auth/providers/oidc/keycloak/callback";
 const resultPath = "/api/auth/providers/oidc/result";
 
 /** Starts sign-in from the Console and fills Keycloak's real login form as `user`. */
 async function signInThroughKeycloak({ prepared, page }, user) {
   await page.goto(`${origin}/console/`);
-  await page.getByRole("button", { name: "Continue with Keycloak" }).click();
-  await page.waitForURL((url) => url.origin === new URL(issuer).origin);
+  await submitKeycloakLogin({ prepared, page }, user);
+}
+
+async function submitKeycloakLogin({ prepared, page }, user) {
+  const label = prepared.label ?? "Keycloak";
+  await page.getByRole("button", { name: `Continue with ${label}`, exact: true }).click();
+  await page.waitForURL((url) => url.origin === new URL(prepared.endpoints.issuer).origin);
   await page.locator("#username").fill(user);
   await page.locator("#password").fill(prepared.secrets.users[user].password);
   await page.locator("#kc-login").click();
@@ -331,8 +365,7 @@ function assertAuthorizationRequest(prepared, authorizations) {
   assert.match(parameters.get("code_challenge") ?? "", /^[A-Za-z0-9_-]{43}$/);
   assert.ok((parameters.get("nonce") ?? "").length > 0, "the request carries a nonce");
   assert.ok((parameters.get("state") ?? "").length > 0, "the request carries a state");
-  assert.equal(parameters.get("redirect_uri"), prepared.secrets.redirectUri);
-  assert.equal(prepared.secrets.redirectUri, `${origin}${callbackPath}`);
+  assert.equal(parameters.get("redirect_uri"), `${origin}${prepared.callbackPath}`);
 }
 
 /**
@@ -368,7 +401,7 @@ async function assertAliceSignedIn({ prepared, page }, callback, result) {
 
 /** Signs alice in through Keycloak's login form on a fresh page and checks the request. */
 async function signInAlice(opened) {
-  const result = nextResponse(opened.page, resultPath);
+  const result = nextResponse(opened.page, opened.prepared.resultPath);
   await signInThroughKeycloak(opened, "alice");
   const session = await assertAliceSignedIn(opened, opened.callback, result);
   assertAuthorizationRequest(opened.prepared, opened.authorizations);
@@ -378,6 +411,25 @@ async function signInAlice(opened) {
 
 const keycloakAdmin = (prepared, method, path, body) =>
   keycloakRealmAdmin(issuer, prepared.secrets.admin, method, path, body);
+
+async function registerNamedCallback(t, prepared) {
+  const [client] = await keycloakAdmin(
+    prepared,
+    "GET",
+    `/clients?clientId=${prepared.secrets.clientId}`,
+  );
+  assert.ok(client, "the fixture's confidential client exists");
+  const redirectUri = `${origin}${namedCallbackPath}`;
+  // Register the exact named callback in Keycloak before the browser uses it.
+  if (!client.redirectUris.includes(redirectUri)) {
+    const path = `/clients/${client.id}`;
+    await keycloakAdmin(prepared, "PUT", path, {
+      ...client,
+      redirectUris: [...client.redirectUris, redirectUri],
+    });
+    t.after(() => keycloakAdmin(prepared, "PUT", path, client));
+  }
+}
 
 /** The kid Keycloak signs RS256 tokens with: its highest-priority active RS256 key. */
 async function activeSigningKid(prepared) {
@@ -423,6 +475,150 @@ test(
   { skip: requiresKeycloak },
   async (t) => {
     await signInAlice(await openConsole(t, "client_secret_basic"));
+  },
+);
+
+test(
+  "one named Keycloak provider signs in through the Console",
+  { skip: requiresKeycloak },
+  async (t) => {
+    const prepared = await prepareInstallation(t);
+    await registerNamedCallback(t, prepared);
+    const opened = await openConsole(t, "client_secret_post", true);
+    const sessionsBefore = (await aliceSessions(prepared)).length;
+    await signInAlice(opened);
+    assert.equal((await aliceSessions(prepared)).length, sessionsBefore + 1);
+    const providers = await opened.page.evaluate(
+      async () => (await (await fetch("/api/auth/providers")).json()).data,
+    );
+    assert.equal(providers.oidc, false);
+    assert.deepEqual(providers.oidcProviders, [
+      {
+        key: "keycloak",
+        route: "oidc/keycloak",
+        label: "Keycloak",
+        authorizationUrl: prepared.endpoints.authorizationUrl,
+        allowSelfLink: false,
+      },
+    ]);
+  },
+);
+
+test(
+  "two named OIDC providers link and sign in through the Console",
+  { skip: requiresKeycloak },
+  async (t) => {
+    const prepared = await prepareInstallation(t);
+    await registerNamedCallback(t, prepared);
+    const realm = `oce-partners-${randomBytes(6).toString("hex")}`;
+    const endpoints = keycloakEndpoints(new URL(`/realms/${realm}`, issuer).href);
+    const partnerCallback = "/api/auth/providers/oidc/partners/callback";
+    const label = "Keycloak Partners";
+    const clientId = "oce-partners-console";
+    const clientSecret = randomBytes(32).toString("base64url");
+    const subject = randomUUID();
+    const password = randomBytes(24).toString("base64url");
+    // Give Alice a different subject in a real realm with its own client and signing keys.
+    t.after(
+      await createKeycloakTestRealm(issuer, prepared.secrets.admin, {
+        realm,
+        enabled: true,
+        sslRequired: "external",
+        clients: [
+          {
+            clientId,
+            secret: clientSecret,
+            enabled: true,
+            protocol: "openid-connect",
+            publicClient: false,
+            standardFlowEnabled: true,
+            directAccessGrantsEnabled: false,
+            redirectUris: [`${origin}${partnerCallback}`],
+            attributes: { "pkce.code.challenge.method": "S256" },
+          },
+        ],
+        users: [
+          {
+            id: subject,
+            username: "alice",
+            enabled: true,
+            email: "alice@example.test",
+            emailVerified: true,
+            firstName: "Alice",
+            lastName: "Test",
+            credentials: [{ type: "password", value: password, temporary: false }],
+          },
+        ],
+      }),
+    );
+    const primary = await serveConsole(t, "client_secret_post", true, {
+      OCC_AUTH_OIDC_PROVIDERS: "keycloak,partners",
+      OCC_AUTH_OIDC_KEYCLOAK_ALLOW_SELF_LINK: "true",
+      OCC_AUTH_OIDC_PARTNERS_ISSUER: endpoints.issuer,
+      OCC_AUTH_OIDC_PARTNERS_AUTHORIZATION_URL: endpoints.authorizationUrl,
+      OCC_AUTH_OIDC_PARTNERS_TOKEN_URL: endpoints.tokenUrl,
+      OCC_AUTH_OIDC_PARTNERS_JWKS_URL: endpoints.jwksUrl,
+      OCC_AUTH_OIDC_PARTNERS_CLIENT_ID: clientId,
+      OCC_AUTH_OIDC_PARTNERS_CLIENT_SECRET: clientSecret,
+      OCC_AUTH_OIDC_PARTNERS_DISPLAY_NAME: label,
+      OCC_AUTH_OIDC_PARTNERS_ALLOW_SELF_LINK: "true",
+    });
+    const partners = {
+      ...primary,
+      label,
+      endpoints,
+      secrets: { clientId, users: { alice: { password } } },
+      callbackPath: partnerCallback,
+      resultPath: "/api/auth/providers/oidc/partners/result",
+    };
+    const methods = async () =>
+      (
+        await prepared.pool.query(
+          "SELECT provider_id, account_id FROM occ.account WHERE user_id = $1 AND identity_only",
+          [prepared.aliceId],
+        )
+      ).rows;
+    await signInAlice(await openPage(t, primary));
+    const methodsBefore = await methods();
+    assert.equal(methodsBefore.length, 1);
+    const sessionsBefore = await aliceSessions(prepared);
+
+    const linking = await openPage(t, partners);
+    await linking.page.goto(`${origin}/console/`);
+    await linking.page
+      .getByRole("button", { name: "Continue with Keycloak", exact: true })
+      .waitFor();
+    await linking.page
+      .getByRole("button", { name: `Continue with ${label}`, exact: true })
+      .waitFor();
+    await linking.page.getByRole("button", { name: "Link an existing account" }).click();
+    await submitKeycloakLogin(linking, "alice");
+    assertAuthorizationRequest(partners, linking.authorizations);
+    assert.equal((await linking.callback).headers().location, "/console/?authLink=oidc/partners");
+
+    // A verified login from the new realm alone must not add a method or session.
+    assert.deepEqual(await methods(), methodsBefore);
+    assert.deepEqual(await aliceSessions(prepared), sessionsBefore);
+    await linking.page
+      .getByText(`To link ${label}, use a sign-in method already on your account.`)
+      .waitFor();
+
+    const confirmation = observeProvider(linking.page, primary);
+    const result = nextResponse(confirmation.page, primary.resultPath);
+    await submitKeycloakLogin(confirmation, "alice");
+    await assertAliceSignedIn(confirmation, confirmation.callback, result);
+    assertAuthorizationRequest(primary, confirmation.authorizations);
+
+    const linkedMethods = await methods();
+    assert.deepEqual(
+      linkedMethods.map(({ account_id }) => account_id).sort(),
+      [aliceSubject, subject].sort(),
+    );
+    assert.equal(new Set(linkedMethods.map(({ provider_id }) => provider_id)).size, 2);
+    // A fresh browser can now use the second button to open the original account.
+    const sessionsAfterLink = (await aliceSessions(prepared)).length;
+    await signInAlice(await openPage(t, partners));
+    assert.equal((await aliceSessions(prepared)).length, sessionsAfterLink + 1);
   },
 );
 

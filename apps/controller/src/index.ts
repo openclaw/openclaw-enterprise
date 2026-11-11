@@ -3574,7 +3574,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             required: ["google", "oidc", "password", "sessionBinding"],
             properties: {
               google: { type: "boolean" },
-              oidc: { type: "boolean" },
+              oidc: { type: "boolean", description: "The legacy OIDC route is available." },
               oidcSignIn: {
                 type: "object",
                 description:
@@ -3584,6 +3584,26 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 properties: {
                   label: { type: "string", minLength: 1, maxLength: 40 },
                   authorizationUrl: { type: "string", format: "uri" },
+                },
+              },
+              oidcProviders: {
+                type: "array",
+                description: "Configured named OIDC sign-in choices and their browser routes.",
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["key", "route", "label", "authorizationUrl", "allowSelfLink"],
+                  properties: {
+                    key: { type: "string", pattern: "^[a-z][a-z0-9-]{0,31}$" },
+                    route: { type: "string", pattern: "^oidc(/[a-z][a-z0-9-]{0,31})?$" },
+                    label: { type: "string", minLength: 1, maxLength: 40 },
+                    authorizationUrl: { type: "string", format: "uri" },
+                    allowSelfLink: {
+                      type: "boolean",
+                      description:
+                        "This provider permits self-service links to other opt-in providers.",
+                    },
+                  },
                 },
               },
               password: {
@@ -3600,6 +3620,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         reply.header("cache-control", "no-store");
         const google = options.auth.googleEnabled === true;
         const oidc = options.auth.oidcEnabled === true;
+        const oidcProviders = options.auth.oidcProviders;
         const password = options.auth.passwordSignIn !== "recovery-only";
         return {
           data: {
@@ -3608,8 +3629,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             ...(oidc && options.auth.oidcSignIn !== undefined
               ? { oidcSignIn: options.auth.oidcSignIn }
               : {}),
+            ...(oidcProviders === undefined ? {} : { oidcProviders }),
             password,
-            sessionBinding: google || oidc,
+            sessionBinding: google || oidc || (oidcProviders?.length ?? 0) > 0,
           },
           meta: { requestId: request.id },
         };
@@ -3619,18 +3641,72 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     const externalSignInProviders = [
       { name: "google", label: "Google", article: "a", operation: "Google" },
       { name: "oidc", label: "OIDC", article: "an", operation: "Oidc" },
+      { name: "oidc/:providerKey", label: "OIDC provider", article: "an", operation: "NamedOidc" },
     ] as const;
+    const providerKey = { type: "string", pattern: "^[a-z][a-z0-9-]{0,31}$" };
+    const providerParams = {
+      type: "object",
+      additionalProperties: false,
+      required: ["providerKey"],
+      properties: { providerKey },
+    };
     for (const provider of externalSignInProviders) {
+      const pathParameters =
+        provider.name === "oidc/:providerKey" ? { params: providerParams } : {};
+      async function handleSignIn(
+        action: "start" | "callback" | "result",
+        request: FastifyRequest,
+        reply: FastifyReply,
+      ): Promise<void> {
+        if (provider.name === "oidc/:providerKey") {
+          const { providerKey } = request.params as { providerKey: string };
+          const handlers = options.auth.oidcRoutesFor?.(providerKey);
+          if (handlers !== undefined) {
+            return handlers[action](request, reply);
+          }
+          if (action === "callback") {
+            reply.header("cache-control", "no-store");
+            reply.header("referrer-policy", "no-referrer");
+            reply.redirect(`/console/?authError=oidc/${providerKey}`);
+            return;
+          }
+          throw failure(403, "FORBIDDEN", "OIDC sign-in is unavailable.");
+        }
+        const suffix = { start: "Start", callback: "Callback", result: "Result" } as const;
+        return options.auth[`${provider.name}${suffix[action]}`](request, reply);
+      }
       routes.post(
         `/api/auth/providers/${provider.name}/start`,
         {
           schema: {
             operationId: `start${provider.operation}SignIn`,
-            summary: `Start ${provider.label} sign-in for an enrolled account`,
+            summary: `Start ${provider.label} sign-in`,
             description:
               "Requires the exact configured browser Origin and, when Sec-Fetch-Site is present, same-origin. Creates a one-use browser-bound login attempt and returns its public attemptId for the result exchange; does not create an account or grant access.",
             tags: ["Authentication"],
             security: [],
+            ...pathParameters,
+            ...(provider.name === "google"
+              ? {}
+              : {
+                  body: {
+                    type: "object",
+                    nullable: true,
+                    additionalProperties: false,
+                    not: { type: "object", required: ["linkExisting", "linkAttemptId"] },
+                    properties: {
+                      linkExisting: {
+                        type: "boolean",
+                        description: "Verify a new provider identity for an existing account.",
+                      },
+                      linkAttemptId: {
+                        type: "string",
+                        pattern: "^[A-Za-z0-9_-]{43}$",
+                        description: "The first sign-in attempt when proving an existing account.",
+                      },
+                    },
+                  },
+                }),
             response: {
               ...responses({
                 type: "object",
@@ -3645,22 +3721,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             },
           },
         },
-        async (request, reply) => options.auth[`${provider.name}Start`](request, reply),
+        async (request, reply) => handleSignIn("start", request, reply),
       );
       routes.get(
         `/api/auth/providers/${provider.name}/callback`,
         {
           schema: {
             operationId: `complete${provider.operation}SignIn`,
-            summary: `Complete an enrolled ${provider.label} sign-in`,
+            summary: `Complete ${provider.label} sign-in`,
             description:
-              "Consumes the browser-bound attempt before provider exchange. Redirects to Console after session and audit commit or with a fixed failure classification.",
+              "Consumes the browser-bound attempt before provider exchange. Redirects to Console after the session and audit commit, when the user must prove an existing account, or with a fixed failure classification.",
             tags: ["Authentication"],
             security: [],
+            ...pathParameters,
             response: { 302: { description: "Redirect to Console", type: "null" } },
           },
         },
-        async (request, reply) => options.auth[`${provider.name}Callback`](request, reply),
+        async (request, reply) => handleSignIn("callback", request, reply),
       );
       routes.post(
         `/api/auth/providers/${provider.name}/result`,
@@ -3672,6 +3749,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               "Requires the configured browser Origin, the one-use login receipt cookie set by the callback, the matching attemptId and the session cookie that callback issued. Returns that session's sessionKey; never issues or extends a session.",
             tags: ["Authentication"],
             security: [{ sessionCookie: [] }],
+            ...pathParameters,
             body: {
               type: "object",
               additionalProperties: false,
@@ -3692,7 +3770,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             },
           },
         },
-        async (request, reply) => options.auth[`${provider.name}Result`](request, reply),
+        async (request, reply) => handleSignIn("result", request, reply),
       );
     }
 
@@ -3949,6 +4027,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         summary: "Attach an exact OIDC identity to an existing account",
       },
       {
+        operationName: "oidc",
+        path: "/api/auth/accounts/:userId/providers/oidc/:providerKey",
+        operationId: "attachNamedOidcIdentity",
+        summary: "Attach an exact identity from a named OIDC provider to an existing account",
+      },
+      {
         operationName: "disable",
         path: "/api/auth/accounts/:userId/disable",
         operationId: "disableAuthAccount",
@@ -3983,6 +4067,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
     };
     for (const { operationName, path, operationId, summary } of accountOperations) {
+      const namedOidc = operationId === "attachNamedOidcIdentity";
       const operation = {
         operationId,
         method: "POST",
@@ -4008,7 +4093,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             "x-openclaw-permissions": [
               { action: "administer", resourceKind: "installation", scope: "requested" },
             ],
-            params: operationName === "detach" ? methodParams : accountParams,
+            params: namedOidc
+              ? {
+                  ...accountParams,
+                  required: [...accountParams.required, "providerKey"],
+                  properties: { ...accountParams.properties, providerKey },
+                }
+              : operationName === "detach"
+                ? methodParams
+                : accountParams,
             body: {
               type: "object",
               additionalProperties: false,
@@ -4061,11 +4154,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             const { subject } = request.body as { subject: string };
             await options.auth.attachGoogle(userId, subject, actor, expectedVersion);
           } else if (operationName === "oidc") {
-            if (!options.auth.attachOidc || !options.auth.oidcEnabled) {
+            if (!options.auth.attachOidc || (!namedOidc && !options.auth.oidcEnabled)) {
               throw failure(409, "RESOURCE_CONFLICT", "OIDC sign-in is not configured.");
             }
             const { subject } = request.body as { subject: string };
-            await options.auth.attachOidc(userId, subject, actor, expectedVersion);
+            const { providerKey } = request.params as { providerKey?: string };
+            await options.auth.attachOidc(userId, subject, actor, expectedVersion, providerKey);
           } else if (operationName === "detach") {
             if (!options.auth.detachMethod) {
               throw dependencyUnavailable();

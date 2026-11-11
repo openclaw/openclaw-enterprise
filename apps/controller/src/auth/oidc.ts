@@ -15,7 +15,7 @@ import {
   type ResolvedOidcEnrollmentPolicy,
 } from "./oidc-enrollment.ts";
 
-// Generic OpenID Connect sign-in against one operator-configured issuer. The four URLs are
+// Generic OpenID Connect sign-in against operator-configured issuers. The four URLs are
 // configuration copied from the IdP's discovery document; the controller never runs
 // discovery, so nothing at request time chooses what it fetches.
 
@@ -44,6 +44,15 @@ export interface OidcSignInConfiguration extends OidcLoginConfiguration {
 export interface ResolvedOidcLoginConfiguration extends Omit<OidcLoginConfiguration, "enrollment"> {
   readonly enrollment?: ResolvedOidcEnrollmentPolicy | undefined;
 }
+
+export interface NamedOidcProvider<Configuration = OidcLoginConfiguration> {
+  readonly key: string;
+  readonly route: string;
+  readonly allowSelfLink?: boolean;
+  readonly config: Configuration;
+}
+
+const oidcProviderKey = /^[a-z][a-z0-9-]{0,31}$/;
 
 export const OIDC_DEFAULT_DISPLAY_NAME = "single sign-on";
 
@@ -158,6 +167,70 @@ export function oidcLoginConfiguration(
   };
 }
 
+export function oidcLoginConfigurations(
+  environment: Readonly<Record<string, string | undefined>>,
+): readonly NamedOidcProvider[] {
+  const keys = environment.OCC_AUTH_OIDC_PROVIDERS;
+  if (keys === undefined) {
+    return [];
+  }
+  const variables = [...requiredVariables, ...optionalVariables];
+  if (variables.some((name) => environment[name] !== undefined)) {
+    throw new Error("Use either named or single-provider OIDC settings.");
+  }
+  const base = "OCC_AUTH_OIDC_";
+  const providers = keys.split(",").map((key) => {
+    if (!oidcProviderKey.test(key)) {
+      throw new Error("Each OIDC provider key must be a lower-case name of at most 32 characters.");
+    }
+    const prefix = `${base}${key.replaceAll("-", "_").toUpperCase()}_`;
+    const scoped = Object.fromEntries(
+      variables.map((name) => [name, environment[prefix + name.slice(base.length)]]),
+    );
+    scoped.OCC_AUTH_OIDC_DISPLAY_NAME = scoped.OCC_AUTH_OIDC_DISPLAY_NAME?.trim() || key;
+    const config = oidcLoginConfiguration(scoped)!;
+    const legacy = environment[`${prefix}LEGACY_CALLBACK`] ?? "false";
+    if (legacy !== "true" && legacy !== "false") {
+      throw new Error(`${prefix}LEGACY_CALLBACK must be true or false.`);
+    }
+    const allowSelfLink = environment[`${prefix}ALLOW_SELF_LINK`] ?? "false";
+    if (allowSelfLink !== "true" && allowSelfLink !== "false") {
+      throw new Error(`${prefix}ALLOW_SELF_LINK must be true or false.`);
+    }
+    return {
+      key,
+      route: legacy === "true" ? "oidc" : `oidc/${key}`,
+      allowSelfLink: allowSelfLink === "true",
+      config,
+    };
+  });
+  validateOidcProviders(providers);
+  return providers;
+}
+
+export function validateOidcProviders(providers: readonly NamedOidcProvider[]): void {
+  const keys = new Set<string>();
+  const routes = new Set<string>();
+  const ids = new Set<string>();
+  const labels = new Set<string>();
+  for (const { key, route, config } of providers) {
+    if (!oidcProviderKey.test(key) || (route !== "oidc" && route !== `oidc/${key}`)) {
+      throw new Error("Invalid OIDC provider key or route.");
+    }
+    const id = oidcProviderId(config);
+    const label = config.displayName.toLowerCase();
+    if (keys.has(key) || routes.has(route) || ids.has(id) || labels.has(label)) {
+      throw new Error(
+        "OIDC providers must have distinct keys, routes, issuer/client pairs, and labels.",
+      );
+    }
+    keys.add(key);
+    routes.add(route);
+    ids.add(id);
+    labels.add(label);
+  }
+}
+
 /**
  * The provider instance for an issuer and client: each attached method is then an exact
  * `(iss, sub)` pair for that client. Changing either makes a new instance.
@@ -203,6 +276,7 @@ export async function exchangeOidcSubject(
   redirectURI: string,
   nonce: string,
   deadlineMs = 10_000,
+  authenticatedAfter?: number,
 ): Promise<ProviderExchange> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deadlineMs);
@@ -235,6 +309,7 @@ export async function exchangeOidcSubject(
       nonce,
       jwks,
       now: Date.now(),
+      ...(authenticatedAfter === undefined ? {} : { authenticatedAfter }),
     });
     if (claims === undefined) {
       return { denial: "EXTERNAL_IDENTITY_REJECTED" };

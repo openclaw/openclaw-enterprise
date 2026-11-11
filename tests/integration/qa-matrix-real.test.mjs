@@ -75,6 +75,17 @@ test(
         "oidc-agent-chat",
       );
     }
+    if (selection.helmOidcAgentChat) {
+      const { runInstalledOidcAgentChatScenario } =
+        await import("../helpers/native-admin-browser.mjs");
+      await stage(
+        context,
+        "kubernetes/OpenClaw",
+        "Helm-installed OIDC sign-in, model replies and administrative denial",
+        () => runInstalledOidcAgentChatScenario(context),
+        "helm-oidc-agent-chat",
+      );
+    }
     if (selection.sandboxPolicy) {
       const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
       await stage(

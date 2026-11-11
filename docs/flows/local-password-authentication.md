@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: "2026-11-09 16:10"
-last_updated_session: "authoring-run/17c43ed1-f4cd-439d-adb5-d2532f4e7755"
+updated: "2026-11-10 14:49"
+last_updated_session: "authoring-run/0a21b7ac-a801-4bfa-991f-4703fe578258"
 ---
 
 # Bootstrap and human authentication flow
@@ -38,7 +38,7 @@ graph TD
     D --> E["Sync private key JSON and production password file"]
     E --> F["Commit Installation, IAM seed, and audit"]
   end
-  F --> G["Complete startup"]
+  F --> G["Validate sign-in and end removed provider sessions"]
   B --> G
   Bootstrap -->|Any error| H["Exit unsuccessfully; preserve tracked artifacts for manual repair"]
   subgraph Request["Human controller request"]
@@ -161,14 +161,18 @@ Better Auth releases the cookie. Session reads check the current account, method
 version, and Principal; sessions expire after eight hours without refresh. HTTPS uses the [shared session cookie](../reference/authentication.md#native-admin-shared-sessions);
 session reads and logout reject duplicates.
 
-For OIDC, the Console reads provider discovery and posts to
-`/api/auth/providers/oidc/start`. `auth/human-login.ts:oidcProvider` binds the
-five-minute attempt to the provider instance, client-secret digest, and effective
-enrollment-policy digest. `createPostgresControllerAuth` resolves omitted Group
-IDs from the Installation defaults before computing that digest.
-The attempt stores state and browser-secret digests, callback and PKCE verifier.
-A host-only HttpOnly cookie binds the browser. Callback consumption commits before
-code exchange, so an invalid or consumed attempt cannot exchange a code.
+The Console starts named OIDC sign-in at `/api/auth/providers/oidc/<key>/start`.
+The legacy path omits `<key>`. `auth/human-login.ts:oidcProvider` binds the
+five-minute attempt to the provider instance, client-secret digest, and enrollment
+policy with default Groups resolved. The attempt stores state and browser-secret
+digests, callback, and PKCE verifier. A host-only HttpOnly cookie binds the
+browser. The callback consumes the attempt before code exchange.
+
+At API startup, `apps/controller/src/auth/index.ts:createPostgresControllerAuth`
+calls
+`packages/occ/src/state/human-authentication.ts:retireUnconfiguredProviders`
+to end and audit active sessions for removed providers. The transaction
+deletes obsolete attempts and links. Attached methods remain.
 
 `apps/controller/src/auth/oidc.ts:exchangeOidcSubject` verifies the ID token and,
 when configured, its admission claim. A matching claim reaches account lookup;
@@ -208,10 +212,10 @@ credential refusals. Both return `400 INVALID_REQUEST` after the denial audit;
 a failed audit is a counted `503`. An exhausted shared lane rejects the invalid
 email without a reserved-account lookup. Password text is not checked.
 Valid email enters controller admission before `/oce/password`, with the
-recovery email reserved like an administrator's. Google and OIDC share process-local rate and concurrency limits
-for start, callback and result admission (`keyedAdmission`), keyed on
-client addresses behind trusted proxies and browser cookies otherwise. Provider
-HTTP shares a deadline and response-byte cap; State bounds pending attempts and expired cleanup.
+recovery email reserved like an administrator's. `keyedAdmission` shares rate
+and concurrency limits across providers for each sign-in step. It keys on a
+trusted client address or a browser cookie. With multiple providers, each can
+use half the callback slots. Provider HTTP has a deadline and byte limit.
 State persists attempt and session deadlines; cookie Max-Age subtracts monotonic
 elapsed work. Expired completion releases no cookie.
 
@@ -353,6 +357,8 @@ Run `tests/integration/` files with `node --test`.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 14:49: Trace session retirement on API replacement and callback limits for each provider. (authoring-run/0a21b7ac-a801-4bfa-991f-4703fe578258 - 3488c97f215ae3f80beb14ca3d11a6a6b8f011)
 
 - 2026-11-09 16:10: Trace startup policy resolution and the single external identity lookup. (authoring-run/17c43ed1-f4cd-439d-adb5-d2532f4e7755 - 65aa5bd78)
 

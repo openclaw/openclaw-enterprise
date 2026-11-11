@@ -104,6 +104,62 @@ true
 true
 {{- end -}}
 {{- end -}}
+{{- /* An empty key identifies the single-provider configuration. Named keys are also used in
+the environment variable names and callback paths. */ -}}
+{{- define "openclaw.oidc.providers" -}}
+{{- $oidc := default dict .Values.auth.oidc -}}
+{{- $providers := dict -}}
+{{- if and (hasKey $oidc "providers") (not (kindIs "map" $oidc.providers)) -}}
+{{- fail "auth.oidc.providers must be a map of OIDC providers" -}}
+{{- end -}}
+{{- if $oidc.providers -}}
+{{- if not (and (kindIs "bool" $oidc.enabled) $oidc.enabled) -}}
+{{- fail "auth.oidc.providers requires auth.oidc.enabled: true" -}}
+{{- end -}}
+{{- $singletonDefaults := dict "issuer" "" "authorizationUrl" "" "tokenUrl" "" "jwksUrl" "" "secretName" "occ-oidc-login" "clientIdKey" "client-id" "clientSecretKey" "client-secret" "tokenAuth" "client_secret_post" "displayName" "" "egressCidrs" (list) -}}
+{{- range $field, $value := $singletonDefaults -}}
+{{- if and (hasKey $oidc $field) (not (deepEqual (index $oidc $field) $value)) -}}
+{{- fail (printf "auth.oidc.%s belongs in auth.oidc.providers when named providers are configured" $field) -}}
+{{- end -}}
+{{- end -}}
+{{- if hasKey $oidc "enrollment" -}}
+{{- fail "auth.oidc.enrollment belongs in auth.oidc.providers when named providers are configured" -}}
+{{- end -}}
+{{- $legacy := "" -}}
+{{- $allowed := concat (keys $singletonDefaults) (list "enrollment" "legacyCallback" "allowSelfLink") -}}
+{{- range $key, $provider := $oidc.providers -}}
+{{- if not (regexMatch "^[a-z][a-z0-9-]{0,31}$" $key) -}}
+{{- fail (printf "auth.oidc.providers key %q must start with a lowercase letter and use at most 32 lowercase letters, digits, and hyphens" $key) -}}
+{{- end -}}
+{{- $label := printf "auth.oidc.providers.%s" $key -}}
+{{- if not (kindIs "map" $provider) -}}
+{{- fail (printf "%s must be a map" $label) -}}
+{{- end -}}
+{{- range $field := keys $provider -}}
+{{- if not (has $field $allowed) -}}
+{{- fail (printf "%s.%s is not supported" $label $field) -}}
+{{- end -}}
+{{- end -}}
+{{- if and (hasKey $provider "legacyCallback") (not (kindIs "bool" $provider.legacyCallback)) -}}
+{{- fail (printf "%s.legacyCallback must be a boolean" $label) -}}
+{{- end -}}
+{{- if and (hasKey $provider "allowSelfLink") (not (kindIs "bool" $provider.allowSelfLink)) -}}
+{{- fail (printf "%s.allowSelfLink must be a boolean" $label) -}}
+{{- end -}}
+{{- if $provider.legacyCallback -}}
+{{- if $legacy -}}
+{{- fail "auth.oidc.providers permits at most one legacyCallback: true" -}}
+{{- end -}}
+{{- $legacy = $key -}}
+{{- end -}}
+{{- $_ := set $providers $key (mergeOverwrite (dict "clientIdKey" "client-id" "clientSecretKey" "client-secret") $provider) -}}
+{{- end -}}
+{{- else if $oidc.enabled -}}
+{{- $_ := set $providers "" $oidc -}}
+{{- end -}}
+{{- $providers | toJson -}}
+{{- end -}}
+
 {{- define "openclaw.validate" -}}
 {{- $repositoryBroker := .Values.repositoryCredentials.enabled -}}
 {{- $repositoryGit := include "openclaw.repositoryCredentials.gitEnabled" . -}}
@@ -169,7 +225,8 @@ true
 {{- if and $recoveryUserId (not (regexMatch "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" $recoveryUserId)) -}}{{- fail "auth.recoveryUserId must be the existing local password administrator's user ID" -}}{{- end -}}
 {{- $google := .Values.auth.google -}}
 {{- $oidc := .Values.auth.oidc -}}
-{{- $external := or (and $google $google.enabled) (and $oidc $oidc.enabled) -}}
+{{- $oidcProviders := include "openclaw.oidc.providers" . | fromJson -}}
+{{- $external := or (and $google $google.enabled) $oidcProviders -}}
 {{- if and $recoveryUserId (not $external) -}}{{- fail "auth.recoveryUserId requires auth.google.enabled or auth.oidc.enabled" -}}{{- end -}}
 {{- $passwordSignIn := toString (default "all" .Values.auth.passwordSignIn) -}}
 {{- if not (has $passwordSignIn (list "all" "recovery-only")) -}}{{- fail "auth.passwordSignIn must be all or recovery-only" -}}{{- end -}}
@@ -218,36 +275,43 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not $oidcCa.caSecretName) (not $oidcCa.caSecretKey) -}}{{- fail "auth.oidc.caSecretName and auth.oidc.caSecretKey must be set together" -}}{{- end -}}
 {{- /* eq refuses to compare a string with a number or boolean, so check the type first for the documented message. */ -}}
 {{- if not (kindIs "invalid" $oidcCa.secretName) -}}{{- include "openclaw.requireString" (dict "label" "auth.oidc.secretName" "value" $oidcCa.secretName) -}}{{- end -}}
-{{- if eq $oidcCa.caSecretName $oidcCa.secretName -}}{{- fail "auth.oidc.caSecretName must differ from the OIDC client credential Secret" -}}{{- end -}}
+{{- if and (not $oidcCa.providers) (eq $oidcCa.caSecretName $oidcCa.secretName) -}}{{- fail "auth.oidc.caSecretName must differ from the OIDC client credential Secret" -}}{{- end -}}
 {{- if or (gt (len $oidcCa.caSecretName) 253) (not (regexMatch "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$" $oidcCa.caSecretName)) -}}{{- fail "auth.oidc.caSecretName must be a Kubernetes Secret name" -}}{{- end -}}
 {{- include "openclaw.validateSecretKey" (dict "label" "auth.oidc.caSecretKey" "value" $oidcCa.caSecretKey) -}}
 {{- if not .Values.database.caSecretName -}}{{- fail "auth.oidc CA configuration requires database.caSecretName and an explicit sslrootcert in the application database URL" -}}{{- end -}}
 {{- include "openclaw.requireString" (dict "label" "database.caSecretName" "value" .Values.database.caSecretName) -}}
 {{- if eq $oidcCa.caSecretName .Values.database.caSecretName -}}{{- fail "auth.oidc.caSecretName must differ from the database CA Secret" -}}{{- end -}}
 {{- end -}}
-{{- if and $oidc $oidc.enabled -}}
+{{- if $oidcProviders -}}
 {{- if not $recoveryUserId -}}{{- fail "auth.oidc.enabled requires auth.recoveryUserId: install without OIDC first, then upgrade with the administrator's user ID" -}}{{- end -}}
-{{- if or (not $oidc.secretName) (not $oidc.clientIdKey) (not $oidc.clientSecretKey) -}}{{- fail "auth.oidc requires a dedicated operator-created Secret name, client ID key, and client secret key" -}}{{- end -}}
-{{- include "openclaw.validateSecretKey" (dict "label" "auth.oidc.clientIdKey" "value" $oidc.clientIdKey) -}}
-{{- include "openclaw.validateSecretKey" (dict "label" "auth.oidc.clientSecretKey" "value" $oidc.clientSecretKey) -}}
-{{- if eq $oidc.clientIdKey $oidc.clientSecretKey -}}{{- fail "auth.oidc client ID and client secret must use different Secret keys" -}}{{- end -}}
 {{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.oidc requires an HTTPS auth.baseUrl" -}}{{- end -}}
+{{- range $key, $provider := $oidcProviders -}}
+{{- $label := "auth.oidc" -}}
+{{- if $key -}}{{- $label = printf "auth.oidc.providers.%s" $key -}}{{- end -}}
+{{- if or (not $provider.secretName) (not $provider.clientIdKey) (not $provider.clientSecretKey) -}}{{- fail (printf "%s requires a dedicated operator-created Secret name, client ID key, and client secret key" (ternary $label "auth.oidc.enabled" (ne $key ""))) -}}{{- end -}}
+{{- include "openclaw.validateSecretKey" (dict "label" (printf "%s.clientIdKey" $label) "value" $provider.clientIdKey) -}}
+{{- include "openclaw.validateSecretKey" (dict "label" (printf "%s.clientSecretKey" $label) "value" $provider.clientSecretKey) -}}
+{{- if eq $provider.clientIdKey $provider.clientSecretKey -}}{{- fail (printf "%s client ID and client secret must use different Secret keys" $label) -}}{{- end -}}
 {{- /* The API's startup checks, mirrored: https on 443, a DNS host, no userinfo, query or fragment, and one host for all four. */ -}}
 {{- $endpoint := "^(?i)https://(([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?)(:443)?(/[^?#]*)?$" -}}
-{{- $issuer := regexReplaceAll $jsTrim (toString (default "" $oidc.issuer)) "" -}}
-{{- if or (not (regexMatch $endpoint $issuer)) (regexMatch "^(?i)https://[^/]*:" $issuer) (gt (len (regexReplaceAll $endpoint $issuer "${1}")) 253) -}}{{- fail "auth.oidc.issuer must be an https URL on port 443 with a DNS host name and no query or fragment, written without a port" -}}{{- end -}}
+{{- $issuer := regexReplaceAll $jsTrim (toString (default "" $provider.issuer)) "" -}}
+{{- if or (not (regexMatch $endpoint $issuer)) (regexMatch "^(?i)https://[^/]*:" $issuer) (gt (len (regexReplaceAll $endpoint $issuer "${1}")) 253) -}}{{- fail (printf "%s.issuer must be an https URL on port 443 with a DNS host name and no query or fragment, written without a port" $label) -}}{{- end -}}
 {{- $host := lower (regexReplaceAll $endpoint $issuer "${1}") -}}
 {{- range $key := list "authorizationUrl" "tokenUrl" "jwksUrl" -}}
-{{- $url := regexReplaceAll $jsTrim (toString (default "" (index $oidc $key))) "" -}}
-{{- if or (not (regexMatch $endpoint $url)) (ne (lower (regexReplaceAll $endpoint $url "${1}")) $host) -}}{{- fail (printf "auth.oidc.%s must be an https URL on port 443 on the issuer's host, with no query or fragment" $key) -}}{{- end -}}
+{{- $url := regexReplaceAll $jsTrim (toString (default "" (index $provider $key))) "" -}}
+{{- if or (not (regexMatch $endpoint $url)) (ne (lower (regexReplaceAll $endpoint $url "${1}")) $host) -}}{{- fail (printf "%s.%s must be an https URL on port 443 on the issuer's host, with no query or fragment" $label $key) -}}{{- end -}}
 {{- end -}}
-{{- if not (has (toString (default "client_secret_post" $oidc.tokenAuth)) (list "client_secret_post" "client_secret_basic")) -}}{{- fail "auth.oidc.tokenAuth must be client_secret_post or client_secret_basic" -}}{{- end -}}
+{{- $tokenAuth := default "client_secret_post" $provider.tokenAuth -}}
+{{- if and $key (hasKey $provider "tokenAuth") -}}{{- $tokenAuth = $provider.tokenAuth -}}{{- end -}}
+{{- if not (has $tokenAuth (list "client_secret_post" "client_secret_basic")) -}}{{- fail (printf "%s.tokenAuth must be client_secret_post or client_secret_basic" $label) -}}{{- end -}}
 {{- /* The API trims the display name and uses its default when nothing is left. RE2's \p{C} has no unassigned code points, which the API refuses at startup; a positive class would instead refuse characters newer than Helm's Unicode tables that the API accepts, such as new emoji. */ -}}
-{{- $displayName := regexReplaceAll $jsTrim (toString (default "" $oidc.displayName)) "" -}}
-{{- if and $displayName (not (regexMatch "^[^\\p{C}\\p{Zl}\\p{Zp}]{1,40}$" $displayName)) -}}{{- fail "auth.oidc.displayName must be 1 to 40 printable characters" -}}{{- end -}}
-{{- if not (or (kindIs "invalid" $oidc.egressCidrs) (kindIs "slice" $oidc.egressCidrs)) -}}{{- fail "auth.oidc.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" -}}{{- end -}}
-{{- range $cidr := $oidc.egressCidrs -}}
-{{- include "openclaw.requireIpv4Cidr" (dict "label" "auth.oidc.egressCidrs" "cidr" $cidr) -}}
+{{- $displayName := regexReplaceAll $jsTrim (toString (default "" $provider.displayName)) "" -}}
+{{- if and $key (hasKey $provider "displayName") (or (not (kindIs "string" $provider.displayName)) (not $displayName)) -}}{{- fail (printf "%s.displayName must be a nonempty string when supplied" $label) -}}{{- end -}}
+{{- if and $displayName (not (regexMatch "^[^\\p{C}\\p{Zl}\\p{Zp}]{1,40}$" $displayName)) -}}{{- fail (printf "%s.displayName must be 1 to 40 printable characters" $label) -}}{{- end -}}
+{{- if not (or (kindIs "invalid" $provider.egressCidrs) (kindIs "slice" $provider.egressCidrs)) -}}{{- fail (printf "%s.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" $label) -}}{{- end -}}
+{{- range $cidr := $provider.egressCidrs -}}
+{{- include "openclaw.requireIpv4Cidr" (dict "label" (printf "%s.egressCidrs" $label) "cidr" $cidr) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- $proxy := default dict .Values.api.trustedProxy -}}
@@ -716,9 +780,13 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if $routing.sandbox.enabled -}}{{- $roles = append $roles (list "gatewayRouting.sandbox.tlsSecretName" $routing.sandbox.tlsSecretName) -}}{{- end -}}
 {{- $roles = concat $roles (list (list "gatewayRouting.apiKeySecretName" $routing.apiKeySecretName) (list "gatewayRouting.caSecretName" $routing.caSecretName "ca")) -}}
 {{- end -}}
-{{- range $provider := list "google" "oidc" -}}
-{{- $signIn := index $.Values.auth $provider -}}
-{{- if and $signIn $signIn.enabled -}}{{- $roles = append $roles (list (printf "auth.%s.secretName" $provider) $signIn.secretName) -}}{{- end -}}
+{{- if and .Values.auth.google .Values.auth.google.enabled -}}
+{{- $roles = append $roles (list "auth.google.secretName" .Values.auth.google.secretName) -}}
+{{- end -}}
+{{- range $key, $provider := $oidcProviders -}}
+{{- $label := "auth.oidc.secretName" -}}
+{{- if $key -}}{{- $label = printf "auth.oidc.providers.%s.secretName" $key -}}{{- end -}}
+{{- $roles = append $roles (list $label $provider.secretName) -}}
 {{- end -}}
 {{- if and .Values.auth.oidc .Values.auth.oidc.enabled -}}{{- $roles = append $roles (list "auth.oidc.caSecretName" .Values.auth.oidc.caSecretName "ca") -}}{{- end -}}
 {{- if .Values.executionCluster.enabled -}}

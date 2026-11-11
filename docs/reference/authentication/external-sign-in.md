@@ -29,28 +29,38 @@ Helm `auth.recoveryUserId`, to seed the first local recovery administrator.
 Activation enrolls qualifying existing accounts and reports accounts that cannot
 sign in. Account creation remains available after activation.
 
-A human administrator explicitly attaches the provider's immutable subject to an
-existing OCE account. Attachment keeps its user ID, Principal and grants, advances
-its account version, and invalidates sessions and pending proofs. An identity
-already held by another account returns `409 RESOURCE_CONFLICT`. Email association,
-identity transfer and self-service linking are unsupported. Opt-in
-[OIDC enrollment](team-enrollment.md) can create unknown identities and assign
-initial access; it never links them by email.
+A human administrator can attach a provider's immutable subject to an existing
+OCE account. Attachment keeps the user ID, Principal, and grants. It advances the
+account version and ends earlier sessions. If another account already has the
+identity, the API returns `409 RESOURCE_CONFLICT`.
 
-Changing a client ID, or the OIDC issuer, creates a new provider instance and ends
-old-instance sessions on their next request. Attach identities under the intended
-instance explicitly. Client-secret rotation invalidates pending attempts and
-preserves attachments. Direct GitHub browser sign-in is retired; follow the
+When both OIDC providers set `allowSelfLink: true`, a user can link a new identity.
+The user signs in with the new provider, then signs in again with a different
+OIDC provider already on the account. The pending link expires in five minutes.
+OpenClaw saves the link, audit event, and new session in one transaction.
+The account keeps its user ID, Principal, and grants. OpenClaw ends its earlier
+sessions. It verifies both sign-ins even when the emails match. A later sign-in
+applies the provider's configured Group enrollment rules.
+
+Opt-in [OIDC enrollment](team-enrollment.md) can create accounts for new
+identities and assign initial access.
+
+Changing a client ID or the OIDC issuer creates a new provider instance. Attach
+identities to the new instance. Client-secret rotation invalidates pending
+attempts and preserves attachments and sessions. Direct GitHub browser sign-in is retired; follow the
 [upgrade procedure](../../guides/deploy/oidc-upgrade.md) before installing this release.
 Repository GitHub credentials remain separate.
 
 ## Browser callback and audit
 
 `GET /api/auth/providers` returns `google`, `oidc`, `password` and `sessionBinding`.
-When OIDC is configured, `oidcSignIn` supplies its `label` and `authorizationUrl`.
-A same-origin `POST /api/auth/providers/oidc/start` returns `data.url` and a public
-`data.attemptId`, and sets a browser-binding cookie. Google uses the matching
-`google` routes. Callers cannot select callback or return destinations.
+For named providers, `oidcProviders` supplies the key, label, authorization URL,
+route, and `allowSelfLink` setting for each choice. When the legacy OIDC route is configured,
+`oidcSignIn` supplies its label and authorization URL.
+A same-origin `POST /api/auth/providers/oidc/<key>/start` returns `data.url` and
+`data.attemptId`, and sets a browser-binding cookie. The legacy OIDC route uses
+`oidc/start`. Google uses `google/start`. OpenClaw selects the callback and
+return destinations.
 
 The callback consumes a five-minute, browser-bound attempt before exchanging its
 code. Signature, issuer, audience, expiry and nonce checks precede identity lookup.
@@ -59,7 +69,7 @@ The starting tab posts `attemptId` to the provider's `/result` route and receive
 the callback session's `sessionKey` once, only while that session cookie is current.
 The exchange does not issue or extend a session.
 
-Failure returns to `/console/?authError=oidc` (or `google`) without automatic retry.
+Failure returns to the Console with the provider route in `authError`.
 An authenticated identity attached to a disabled account gets
 `authReason=account-disabled`, audited as `ACCOUNT_DISABLED`. Provider unavailability
 gets `authReason=provider-unavailable`, audited as `PROVIDER_UNAVAILABLE`.
@@ -78,7 +88,10 @@ Causes include network errors, timeout, redirect, HTTP failure, oversized or mal
 response, provider error, and rejected client configuration. Logs omit tokens,
 client secrets and response bodies. Check the endpoint, client credentials, TLS
 trust and API egress. Provider bodies share a 64 KiB limit and requests share a
-10-second deadline.
+10-second deadline. The API permits eight active callbacks in total and four
+per client address behind a trusted proxy, or per browser otherwise. With
+multiple providers, each can use at most four active callbacks and two per
+address or browser. All providers share the total limits.
 
 ## Recovery-only password sign-in
 
@@ -95,7 +108,8 @@ answer after the same password hashing, audited as `INVALID_CREDENTIALS`; no
 account is read, so the answer reveals nothing. `GET /api/auth/providers`
 reports `password: false`. The Console keeps the password form behind
 **Recovery sign-in** while discovering sign-in methods, then adds the configured
-provider buttons. During a provider outage only the recovery account can sign in.
+provider buttons. During a provider outage, users can still sign in through
+another configured provider on their account. The recovery password stays available.
 
 An account without an identity for a configured provider cannot sign in until an
 administrator attaches one. Each startup with `recovery-only` logs
@@ -125,12 +139,12 @@ Attach an identity explicitly to a manually created account, or use OIDC enrollm
 Password, Google and OIDC sessions share admission rules: an eight-hour lifetime without refresh, current account and
 method checks, and required audit before a cookie is released or, on logout,
 cleared. Older sessions without account/method binding are rejected; users sign in again.
-An external session authenticates only while its provider instance is configured: removing
-a provider, or changing its client ID (or OIDC issuer), ends that instance's sessions on their
-next request, audited once as `authentication.session.end` with reason
-`PROVIDER_NOT_CONFIGURED`. Password sessions are unaffected. Activation is one-way:
-removing every provider fails startup, and the database refuses sessions from older
-binaries. Returning to password-only sign-in needs [stopped maintenance](../../guides/deploy/auth-maintenance.md#deactivate-external-sign-in).
+When the replacement API starts, it ends active sessions for a removed provider
+or an old issuer and client ID. It records `authentication.session.end` with reason
+`PROVIDER_NOT_CONFIGURED` for each session. The account keeps its sign-in methods.
+If an operator restores that provider, users sign in again. Other providers'
+sessions and password sessions continue. To remove every provider and return to
+password-only sign-in, use [stopped maintenance](../../guides/deploy/auth-maintenance.md#deactivate-external-sign-in).
 
 The recovery user needs one local password, its Installation Principal, and
 native IAM Installation `administer`; disabling it returns `409`. Keep its password
@@ -157,12 +171,13 @@ successors lacking Installation `administer` return `409 RESOURCE_CONFLICT`.
 
 Send the version just read, such as `{"expectedVersion":1}`:
 
-| Operation                                                  | Effect                                                                                                |
-| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `POST /api/auth/accounts/:userId/disable`                  | Disables the account, invalidating sessions and pending proofs; refuses the recovery user.            |
-| `POST /api/auth/accounts/:userId/enable`                   | Re-enables a disabled account; users sign in again.                                                   |
-| `POST /api/auth/accounts/:userId/revoke`                   | Invalidates all account sessions and pending proofs; fresh sign-in still works.                       |
-| `POST /api/auth/accounts/:userId/methods/:methodId/detach` | Removes one attached external identity and ends every account session; password methods return `409`. |
+| Operation                                                     | Effect                                                                                                |
+| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `POST /api/auth/accounts/:userId/disable`                     | Disables the account, invalidating sessions and pending proofs; refuses the recovery user.            |
+| `POST /api/auth/accounts/:userId/enable`                      | Re-enables a disabled account; users sign in again.                                                   |
+| `POST /api/auth/accounts/:userId/revoke`                      | Invalidates all account sessions and pending proofs; fresh sign-in still works.                       |
+| `POST /api/auth/accounts/:userId/providers/oidc/:providerKey` | Attaches the requested subject from a named OIDC provider. Send `subject` and `expectedVersion`.      |
+| `POST /api/auth/accounts/:userId/methods/:methodId/detach`    | Removes one attached external identity and ends every account session; password methods return `409`. |
 
 `POST /api/auth/accounts/:userId/enrol` (no body) enrolls a skipped account holding
 its Principal and one password. These operations serialize with session issuance
