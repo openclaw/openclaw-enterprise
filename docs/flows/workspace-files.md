@@ -244,20 +244,15 @@ owns recovery. Native provisioning requires Sandbox; expired unpaired setup awai
   The memory flush run gets Gateway-local `read` and `write`, so
   `agents.defaults.compaction.memoryFlush.enabled` is `false`. Codex's native
   tools act in the Harness; file-transfer reaches it through the node.
-- The Harness reaches the model itself, so the Gateway's `codex` and `openai`
-  provider rows keep only their models: overrides (`request`, `headers`,
-  `params`, `localService`) are dropped, and an authored transport (always for
-  `codex`) becomes the `http://127.0.0.1:9` stub. A session switched to
-  OpenClaw's built-in runtime with
-  `/model <ref> --runtime openclaw` runs in the Gateway with no reachable model,
-  and Codex never hands that runtime a turn.
-  Model rows retain an authored, nonempty `compat.supportedReasoningEfforts`
-  list only when every entry is a native effort (`minimal`, `low`, `medium`,
-  `high`, `xhigh`, `max`, or `ultra`). The existing `reasoning` and
-  `thinkingLevelMap` metadata stays with the row. Other `compat` fields,
-  including `thinkingLevels`, are removed: the pinned native adapter treats
-  them as request overrides that can select the built-in runtime. This filter
-  preserves declared capabilities; it does not infer capabilities for a model.
+- Gateway `codex` and `openai` rows drop request-transport overrides; authored
+  transports (always for `codex`) become `http://127.0.0.1:9`. The stub blocks
+  Gateway-local model access, including `/model <ref> --runtime openclaw`.
+  `pinCodexProviderTransport` retains model `reasoning`, `thinkingLevelMap`, and
+  nonempty `compat.supportedReasoningEfforts` containing only recognized native
+  efforts. It drops other `compat`, including `thinkingLevels`: the pinned
+  adapter treats those as overrides requiring the Gateway-local runtime.
+  [Supported capability metadata](../reference/harness-execution.md#native-runtime-selection)
+  is authored, not inferred.
 - At startup Gateway emits `runtime.gateway_settings_overridden` naming, never
   valuing, replaced or dropped settings. `occ agent logs` exposes names; the
   Collector exports only the [event](common-logging.md#7-collector-exports-only-operational-classes).
