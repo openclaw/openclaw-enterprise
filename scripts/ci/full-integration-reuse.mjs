@@ -253,7 +253,7 @@ async function main(command) {
     if (
       process.env.GITHUB_REPOSITORY !== repository ||
       process.env.GITHUB_REF !== "refs/heads/main" ||
-      process.env.GITHUB_EVENT_NAME !== "push" ||
+      !["push", "schedule", "workflow_dispatch"].includes(process.env.GITHUB_EVENT_NAME) ||
       !/^[a-f0-9]{40}$/.test(sha || "")
     ) {
       await output(command === "discover" ? { artifact_ids: "" } : { lanes: [] });

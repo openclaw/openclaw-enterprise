@@ -77,6 +77,81 @@ async function reuseFixture() {
   return { rows, sha, run, jobs, artifacts, get };
 }
 
+test("scheduled and manual Full Integration discover immutable push CI results through the CLI", async (t) => {
+  const { get, sha, artifacts } = await reuseFixture();
+  const fixtureRoot = await temporaryDirectory(t, "full-ci-reuse-consumers-");
+  const routes = [
+    "/actions/workflows/ci.yml",
+    "/actions/workflows/456/runs?head_sha=" + sha + "&event=push&branch=main&per_page=20",
+    "/actions/runs/123/attempts/2/jobs?per_page=100",
+    "/actions/runs/123/artifacts?per_page=100",
+  ];
+  const responses = Object.fromEntries(
+    await Promise.all(routes.map(async (path) => [path, await get(path)])),
+  );
+  const preload = join(fixtureRoot, "fetch-fixture.mjs");
+  await writeFile(
+    preload,
+    [
+      "const responses = " + JSON.stringify(responses) + ";",
+      "const prefix = '/repos/openclaw/openclaw-enterprise';",
+      "globalThis.fetch = async (input) => {",
+      "  const url = new URL(input);",
+      "  const path = url.pathname.slice(prefix.length) + url.search;",
+      "  if (url.origin !== 'https://reuse-fixture.invalid' || !url.pathname.startsWith(prefix + '/') || !Object.hasOwn(responses, path)) {",
+      "    throw new Error('Unexpected reuse fixture request');",
+      "  }",
+      "  return Response.json(responses[path]);",
+      "};",
+    ].join("\n"),
+  );
+  for (const event of ["schedule", "workflow_dispatch", "push", "pull_request"]) {
+    const directory = join(fixtureRoot, event);
+    await mkdir(directory);
+    const output = join(directory, "step-output");
+    const result = spawnSync(
+      process.execPath,
+      ["--import", preload, "scripts/ci/full-integration-reuse.mjs", "discover"],
+      {
+        encoding: "utf8",
+        timeout: 5_000,
+        env: {
+          PATH: process.env.PATH,
+          RUNNER_TEMP: directory,
+          GITHUB_OUTPUT: output,
+          GITHUB_API_URL: "https://reuse-fixture.invalid",
+          GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",
+          GITHUB_REF: "refs/heads/main",
+          GITHUB_EVENT_NAME: event,
+          GITHUB_SHA: sha,
+          GH_TOKEN: "synthetic",
+        },
+      },
+    );
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stderr);
+    if (event === "pull_request") {
+      assert.equal(await readFile(output, "utf8"), "artifact_ids=\n");
+      await assert.rejects(readFile(join(directory, "ci-reuse", "producer.json")), {
+        code: "ENOENT",
+      });
+    } else {
+      assert.equal(
+        await readFile(output, "utf8"),
+        "run_id=123\nartifact_ids=" + artifacts.map(({ id }) => id).join(",") + "\n",
+        event,
+      );
+      const producer = JSON.parse(
+        await readFile(join(directory, "ci-reuse", "producer.json"), "utf8"),
+      );
+      assert.deepEqual(
+        { runId: producer.runId, attempt: producer.attempt, workflowId: producer.workflowId },
+        { runId: 123, attempt: 2, workflowId: 456 },
+      );
+    }
+  }
+});
+
 test("same-SHA reuse admits only successful canonical CI jobs and immutable current-attempt artifacts", async () => {
   const fixture = await reuseFixture();
   const { get, run, sha, rows, jobs, artifacts } = fixture;
