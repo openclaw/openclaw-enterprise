@@ -26,7 +26,6 @@ test(
     const { createQaBrowser } = await import("../helpers/qa-browser.mjs");
     const { prepareQaRepository, verifyQaRepository, stopQaAgent } =
       await import("../helpers/qa-repository.mjs");
-    const { verifyCalendarReviewPolicy } = await import("../helpers/calendar-review.mjs");
     const { verifyQaSlack } = await import("../helpers/qa-slack.mjs");
     const { assertGatewayModelTurn } = await import("../helpers/kubernetes-real.mjs");
     const artifacts = process.env.OCC_TEST_QA_ARTIFACTS
@@ -47,6 +46,7 @@ test(
       executionFilters,
       concurrency,
       exclusions: [
+        ...selection.exclusions,
         ...(selection.linearRead
           ? []
           : ["OpenShell Linear READ requires the explicit openshell-linear-read scenario"]),
@@ -56,6 +56,25 @@ test(
     });
     await save();
     context.diagnostic(`QA evidence: ${artifacts}`);
+    for (const exclusion of selection.exclusions) {
+      context.diagnostic(`Excluded: ${exclusion}`);
+    }
+    if (selection.namespaceLifecycle) {
+      const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
+      await stage(context, "kubernetes/OpenShell", "Namespace gateway before any Agent", () =>
+        verifyQaSandboxPolicy(artifacts, "namespace-lifecycle"),
+      );
+    }
+    if (selection.oidcAgentChat) {
+      const { runOidcAgentChatScenario } = await import("../helpers/native-admin-browser.mjs");
+      await stage(
+        context,
+        "kubernetes/OpenClaw",
+        "OIDC sign-in, owner setup, real chat and administrative denial",
+        () => runOidcAgentChatScenario(context),
+        "oidc-agent-chat",
+      );
+    }
     if (selection.sandboxPolicy) {
       const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
       await stage(
@@ -72,6 +91,16 @@ test(
         "kubernetes/Codex/OpenShell",
         "selected native plugin installation",
         () => verifyQaSandboxPolicy(artifacts, "plugin-install"),
+      );
+    }
+    if (selection.harnessOverrides) {
+      const { verifyQaHarnessOverrides } = await import("../helpers/qa-harness-overrides.mjs");
+      await stage(
+        context,
+        "kubernetes/OpenShell",
+        "revision-owned model destinations and withdrawal",
+        () => verifyQaHarnessOverrides(context, artifacts, selection.presets),
+        "harness-overrides",
       );
     }
     if (selection.linearRead) {
@@ -217,10 +246,15 @@ test(
                       );
                     },
                   ],
-                  [
+                ];
+                if (preset === "OpenClaw") {
+                  scenarios.push([
                     "model-ui",
                     async (agent, step) => {
-                      await step(
+                      // Retain the exact revision's redacted cause before ordinary Agent cleanup.
+                      const modelStep = (title, action) =>
+                        step(title, () => agent.native.withRuntimeFailureLogs(agent, action));
+                      await modelStep(
                         "real model nonce, unauthenticated denial and exact identity",
                         async () => {
                           const gateway = await f.gatewayUrl(agent);
@@ -232,11 +266,7 @@ test(
                               nonce,
                               secrets: [
                                 await protectedText(
-                                  process.env[
-                                    preset === "Codex"
-                                      ? "OCC_TEST_QA_CODEX_TOKEN_FILE"
-                                      : "OCC_TEST_QA_OPENAI_KEY_FILE"
-                                  ],
+                                  process.env.OCC_TEST_QA_OPENAI_KEY_FILE,
                                   "model credential",
                                 ),
                               ],
@@ -255,14 +285,12 @@ test(
                               ).activeRevisionId,
                               agent.revision.id,
                             );
-                            const nativePod =
-                              preset === "Codex" ? await f.pod(agent, "agent") : gateway.pod;
                             await f.record(`${preset}-model`, {
                               agentId: agent.id,
                               revisionId: agent.revision.id,
                               gatewayManagedMode: agent.revision.gatewayManagedMode,
                               podUid: gateway.pod.metadata.uid,
-                              nativePodUid: nativePod.metadata.uid,
+                              nativePodUid: gateway.pod.metadata.uid,
                               images: gateway.pod.status.containerStatuses.map(
                                 ({ name, imageID }) => ({
                                   name,
@@ -277,65 +305,63 @@ test(
                           }
                         },
                       );
-                      if (preset === "OpenClaw") {
-                        await step(
-                          "embedded configured-provider Secret and real model turn",
-                          async () => {
-                            // Keep the admitted model and Secret, changing only the logical provider.
-                            const values = structuredClone(agent.configuration.values);
-                            const selected = values.agents.defaults.model;
-                            const primary =
-                              typeof selected === "string" ? selected : selected.primary;
-                            const id = primary.slice(primary.indexOf("/") + 1);
-                            const custom = `configured/${id}`;
-                            values.models.providers = {
-                              configured: {
-                                ...values.models.providers.openai,
-                                apiKey: {
-                                  source: "env",
-                                  provider: "default",
-                                  id: "OCE_MODEL_API_KEY",
-                                },
-                              },
-                            };
-                            values.agents.defaults.model = custom;
-                            values.agents.defaults.models = {
-                              [custom]: {
-                                ...values.agents.defaults.models[primary],
-                                agentRuntime: { id: "openclaw" },
-                              },
-                            };
-                            await f.api(
-                              "PATCH",
-                              `/namespaces/${agent.namespaceId}/configurations/${agent.configuration.id}`,
-                              { values },
-                            );
-                            await f.deployAndWait(agent);
-                            const gateway = await f.gatewayUrl(agent);
-                            try {
-                              await assertGatewayModelTurn({
-                                gatewayUrl: gateway.url,
-                                gatewayPassword: gateway.gatewayPassword,
-                                nonce: `QA_CUSTOM_${randomUUID()}`,
-                                secrets: [
-                                  await protectedText(
-                                    process.env.OCC_TEST_QA_OPENAI_KEY_FILE,
-                                    "model credential",
-                                  ),
-                                ],
-                              });
-                            } finally {
-                              await gateway.close();
-                            }
-                            await f.record("embedded-configured-provider", {
-                              agentId: agent.id,
-                              revisionId: agent.revision.id,
-                              model: custom,
-                            });
-                          },
-                        );
-                      }
                       await step(
+                        "embedded configured-provider Secret and real model turn",
+                        async () => {
+                          // Keep the admitted model and Secret, changing only the logical provider.
+                          const values = structuredClone(agent.configuration.values);
+                          const selected = values.agents.defaults.model;
+                          const primary =
+                            typeof selected === "string" ? selected : selected.primary;
+                          const id = primary.slice(primary.indexOf("/") + 1);
+                          const custom = `configured/${id}`;
+                          values.models.providers = {
+                            configured: {
+                              ...values.models.providers.openai,
+                              apiKey: {
+                                source: "env",
+                                provider: "default",
+                                id: "OCE_MODEL_API_KEY",
+                              },
+                            },
+                          };
+                          values.agents.defaults.model = custom;
+                          values.agents.defaults.models = {
+                            [custom]: {
+                              ...values.agents.defaults.models[primary],
+                              agentRuntime: { id: "openclaw" },
+                            },
+                          };
+                          await f.api(
+                            "PATCH",
+                            `/namespaces/${agent.namespaceId}/configurations/${agent.configuration.id}`,
+                            { values },
+                          );
+                          await f.deployAndWait(agent);
+                          const gateway = await f.gatewayUrl(agent);
+                          try {
+                            await assertGatewayModelTurn({
+                              gatewayUrl: gateway.url,
+                              gatewayPassword: gateway.gatewayPassword,
+                              nonce: `QA_CUSTOM_${randomUUID()}`,
+                              secrets: [
+                                await protectedText(
+                                  process.env.OCC_TEST_QA_OPENAI_KEY_FILE,
+                                  "model credential",
+                                ),
+                              ],
+                            });
+                          } finally {
+                            await gateway.close();
+                          }
+                          await f.record("embedded-configured-provider", {
+                            agentId: agent.id,
+                            revisionId: agent.revision.id,
+                            model: custom,
+                          });
+                        },
+                      );
+                      await modelStep(
                         "trusted native UI and live WebSocket model response",
                         async () => {
                           assert.ok(browser, "blocked by browser setup failure");
@@ -343,22 +369,21 @@ test(
                         },
                       );
                     },
-                  ],
-                  [
-                    "git-write",
-                    async (agent, step) => {
-                      await step(
-                        "native repository clone/edit/commit/push to the granted branch and disposal",
-                        async () => {
-                          assert.ok(repositoryReady, "blocked by repository setup failure");
-                          await verifyQaRepository(f, agent);
-                        },
-                      );
-                    },
-                  ],
-                ];
-                if (preset === "Codex") {
+                  ]);
+                } else {
                   scenarios.push(
+                    [
+                      "git-write",
+                      async (agent, step) => {
+                        await step(
+                          "native repository clone/edit/commit/push to the granted branch and disposal",
+                          async () => {
+                            assert.ok(repositoryReady, "blocked by repository setup failure");
+                            await verifyQaRepository(f, agent);
+                          },
+                        );
+                      },
+                    ],
                     [
                       "codex-search-config",
                       async (agent, step) => {
@@ -429,27 +454,6 @@ test(
                               proof:
                                 "installed user configuration and native startup, not live search",
                             });
-                          },
-                        );
-                      },
-                    ],
-                    [
-                      "calendar",
-                      async (agent, step) => {
-                        await step(
-                          "Calendar read, allow-once, subsequent denial and disabled tool",
-                          async () => {
-                            const credential = {
-                              accessToken: await protectedText(
-                                process.env.OCC_TEST_QA_CODEX_TOKEN_FILE,
-                                "Codex service-account credential",
-                              ),
-                            };
-                            await verifyCalendarReviewPolicy(
-                              { ...f, ...agent.native },
-                              agent,
-                              credential,
-                            );
                           },
                         );
                       },

@@ -1,5 +1,14 @@
 self-hosted-runner:
   labels:
+    - blacksmith-2vcpu-ubuntu-2404
+    - blacksmith-4vcpu-ubuntu-2404
     - blacksmith-8vcpu-ubuntu-2404
     - blacksmith-16vcpu-ubuntu-2404
     - blacksmith-32vcpu-ubuntu-2404
+
+paths:
+  .github/workflows/full-integration-execution.yml:
+    ignore:
+      # TODO: Remove when actionlint supports concurrency.queue (rhysd/actionlint#654).
+      # The preflight workflow test checks the job allowlist, queue values and cancellation.
+      - '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$'

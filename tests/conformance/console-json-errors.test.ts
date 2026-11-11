@@ -209,6 +209,29 @@ test("deeply nested input still gets a position without overflowing the stack", 
   assert.equal(jsonErrorOffset("[".repeat(depth) + "]".repeat(depth)), undefined);
 });
 
+test("Configuration rejects nested numbers that would be saved as null", () => {
+  const problem = "A number is too large or too small to save. Use a number closer to zero.";
+  for (const number of ["1e400", "-1E400", "9".repeat(400)]) {
+    assert.equal(jsonObjectProblem(`{"thresholds":[1,{"value":${number}},3]}`), problem);
+  }
+  // Syntax and root-shape errors keep their existing, more specific feedback.
+  assert.equal(jsonObjectProblem('{"value":1e400,}'), at(1, 16));
+  assert.equal(
+    jsonObjectProblem("[1e400]"),
+    "Enter a valid JSON object, not an array or a single value.",
+  );
+});
+
+test("Configuration keeps finite exponents, null and numeric-looking strings valid at depth", () => {
+  const depth = 20_000;
+  const wrap = (value: string) => `{"nested":${"[".repeat(depth)}${value}${"]".repeat(depth)}}`;
+  assert.equal(jsonObjectProblem(wrap('[null,"1e400","-1E400",1e308,-1E308,2.5e-3,0]')), undefined);
+  assert.equal(
+    jsonObjectProblem(wrap("-1e400")),
+    "A number is too large or too small to save. Use a number closer to zero.",
+  );
+});
+
 test("the scan agrees with the engine wherever the engine names a position", () => {
   // Every one-character deletion, insertion and replacement of a document that uses each part
   // of the grammar: the scan finds an error exactly when JSON.parse throws, and at the same

@@ -7,7 +7,7 @@ import type {
   PlatformStateStore,
   PlatformUnitOfWork,
 } from "../../packages/occ/src/index.ts";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";

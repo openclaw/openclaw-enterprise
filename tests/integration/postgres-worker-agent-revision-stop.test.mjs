@@ -12,8 +12,15 @@ import {
   currentComputeAbortSignal,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
+import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import {
+  repositoryRestartInventory,
+  repositoryRestartState,
+} from "../helpers/postgres-repository-restart-inventory.ts";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor, within } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import {
   advanceCleanupRetries,
@@ -1110,6 +1117,125 @@ test(
 );
 
 test(
+  "deployment inventory allows a no-repository revision only while Compute owns its Namespace",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context);
+    const compute = createTestKubernetesComputeDriver("inventory-no-repository");
+    fixture.controller.registerDriver(compute);
+    fixture.controller.selectDriver("compute", compute.id);
+    const owner = await fixture.agent("inventory-no-repository");
+    const configuration = await fixture.controller.createConfiguration(fixture.actor.id, {
+      namespaceId: fixture.namespace.id,
+      kind: "agent",
+      values: createHarnessConfiguration("openclaw", "gpt-4.1"),
+    });
+    await fixture.controller.updateAgent(fixture.actor.id, {
+      namespaceId: fixture.namespace.id,
+      agentId: owner.id,
+      configurationId: configuration.id,
+      gatewayManagedMode: false,
+    });
+    // Admission uses the selected Kubernetes Compute; the worker controls only the
+    // unrelated workload transport, as in the existing revision lifecycle fixtures.
+    const revision = await fixture.controller.deployAgent(
+      fixture.actor.id,
+      { namespaceId: fixture.namespace.id, agentId: owner.id },
+      resolveApprovedHarness,
+    );
+    assert.equal(revision.repositoryCredentials, undefined);
+    assert.equal(revision.egressPlan?.repositoryGit, undefined);
+    assert.equal(revision.egressPlan?.repositoryGitAuthorization, undefined);
+    assert.equal(revision.compute.id, compute.id);
+    assert.equal(revision.compute.implementation, compute.implementation);
+    assert.match(revision.compute.admission, /^model-provider:v1:[a-f0-9]{64}:$/u);
+    await fixture.start({
+      ...fixture.compute,
+      id: compute.id,
+      implementation: compute.implementation,
+    });
+    await waitFor("the admitted no-repository revision to become active", async () => {
+      const status = await fixture.deploymentStatus(owner, revision);
+      return status.status === "succeeded" ? status : undefined;
+    });
+    await fixture.stop();
+
+    // A separately composed API must ask the real Compute owner rather than infer
+    // permission to restart from the absence of repository rows or a warm cache.
+    const inventory = await repositoryRestartInventory(context, revision, undefined, fixture);
+    const before = await repositoryRestartState(fixture.observerPool, revision.id);
+    assert.equal(await inventory.read(), "not-applicable");
+    assert.deepEqual(await repositoryRestartState(fixture.observerPool, revision.id), before);
+    const labels = inventory.namespace.metadata.labels;
+    const namespaceId = labels["openclaw.dev/namespace"];
+    labels["openclaw.dev/namespace"] = "ns_another_owner";
+    assert.equal(await inventory.read(), "unknown");
+    assert.deepEqual(await repositoryRestartState(fixture.observerPool, revision.id), before);
+    labels["openclaw.dev/namespace"] = namespaceId;
+    assert.equal(await inventory.read(), "not-applicable");
+    assert.deepEqual(await repositoryRestartState(fixture.observerPool, revision.id), before);
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, revision.id);
+
+    // A previously accepted plugin enum can remain in an immutable revision after
+    // the reader changes. It must not make the entire fleet inventory unavailable.
+    const historicalId = `rev_${randomUUID()}`;
+    const historicalPlugins = {
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+      plugins: { "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "prompt" } } },
+    };
+    await assert.rejects(
+      fixture.state.transact((unit) =>
+        unit.revisions.createRevision({
+          ...revision,
+          id: historicalId,
+          revision: revision.revision + 1,
+          plugins: historicalPlugins,
+        }),
+      ),
+      /AgentRevision plugin state is invalid/u,
+    );
+    await fixture.observerPool.query(
+      `INSERT INTO occ.agent_revisions
+         (id, namespace_id, agent_id, revision_number, backend_id,
+          admitted_spec, admitted_at, gateway_managed_mode)
+       SELECT $1, namespace_id, agent_id, revision_number + 1, backend_id,
+              jsonb_set(admitted_spec, '{plugins}', $2::jsonb), admitted_at, gateway_managed_mode
+       FROM occ.agent_revisions WHERE id = $3`,
+      [historicalId, JSON.stringify(historicalPlugins), revision.id],
+    );
+    const selectRevision = (expected, next) =>
+      fixture.state.transact((unit) =>
+        unit.agents.compareAndSetActiveRevision(fixture.namespace.id, owner.id, expected, next),
+      );
+    assert.ok(await selectRevision(revision.id, historicalId));
+    try {
+      const historicalBefore = await repositoryRestartState(fixture.observerPool, historicalId);
+      assert.equal(await inventory.read(historicalId), "unknown");
+      assert.deepEqual(
+        await repositoryRestartState(fixture.observerPool, historicalId),
+        historicalBefore,
+      );
+      await assert.rejects(
+        fixture.state.transact((unit) =>
+          unit.revisions.findRevision(fixture.namespace.id, owner.id, historicalId),
+        ),
+        /Persisted AgentRevision plugin state is invalid/u,
+      );
+    } finally {
+      assert.ok(await selectRevision(historicalId, revision.id));
+    }
+    assert.equal(await inventory.read(), "not-applicable");
+    assert.deepEqual(await repositoryRestartState(fixture.observerPool, revision.id), before);
+    assert.deepEqual(
+      await fixture.state.transact((unit) =>
+        unit.revisions.findRevision(fixture.namespace.id, owner.id, revision.id),
+      ),
+      revision,
+    );
+  },
+);
+
+test(
   "deployment inventory survives retained completed repository cleanup and preserves deployment guards",
   requiresPostgres,
   async (context) => {
@@ -1192,6 +1318,7 @@ test(
       assert.equal(namespace.agents.length, 1);
       return namespace.agents[0];
     }
+    // The selected development Compute Driver cannot assess worker restart safety.
     assert.deepEqual(await inventoryAgent(), {
       id: sibling.id,
       status: "active",
@@ -1199,6 +1326,7 @@ test(
       executionMode: "embedded",
       activeRevisionId: live.id,
       deploymentInProgress: false,
+      repositoryWorkerRestart: "unknown",
     });
 
     // Completed history must not mask a new deployment of a surviving Agent.
@@ -2818,6 +2946,116 @@ revisionTest(
     assert.deepEqual(stoppedRevisions, [[candidate.id, "succeeded"]]);
     assert.deepEqual(await stopAudit(fixture, owner), ["AGENT_STOPPED"]);
   },
+);
+
+revisionTest(
+  "ordinary activation retains maintenance when a later failed deployment supersedes Stop",
+  async (fixture) => {
+    const owner = await fixture.agent("stop-superseded-maintenance");
+    const first = await fixture.revision(owner, 1);
+    assert.equal(first.repositoryCredentials, undefined);
+    const replacementActor = `replacement-actor-${randomUUID()}`;
+    await fixture.copyActorGrants(replacementActor);
+    const activationStarted = Promise.withResolvers();
+    const releaseActivation = Promise.withResolvers();
+    const stopAuthorizationStarted = Promise.withResolvers();
+    const releaseStopAuthorization = Promise.withResolvers();
+    const prepared = [];
+    const stopped = [];
+    const compute = {
+      ...fixture.compute,
+      maintenanceIntervalMs: 3_600_000,
+      async prepareRevision(revision, deploymentContext) {
+        prepared.push(revision.id);
+        return fixture.compute.prepareRevision(revision, deploymentContext);
+      },
+      async activateRevision(revision) {
+        if (revision.id === first.id) {
+          activationStarted.resolve();
+          await releaseActivation.promise;
+        }
+      },
+      async stopRevision(revision) {
+        stopped.push(revision.id);
+        return fixture.compute.stopRevision(revision);
+      },
+    };
+    assert.equal(compute.requiresStoppedPredecessors, undefined, "replacement is non-exclusive");
+    try {
+      await fixture.start(compute, {
+        transformDrivers: (drivers) => {
+          const createIAMDriver = drivers.createIAMDriver;
+          return {
+            ...drivers,
+            createIAMDriver(state) {
+              const iam = createIAMDriver(state);
+              return {
+                id: iam.id,
+                implementation: iam.implementation,
+                capability: iam.capability,
+                lookupIdentity: iam.lookupIdentity.bind(iam),
+                async authorize(request) {
+                  if (
+                    request.action === "operate" &&
+                    request.resource.kind === "agent" &&
+                    request.resource.id === owner.id
+                  ) {
+                    stopAuthorizationStarted.resolve();
+                    await releaseStopAuthorization.promise;
+                  }
+                  return iam.authorize(request);
+                },
+              };
+            },
+          };
+        },
+      });
+      await within(activationStarted.promise, "original activation to start");
+      const stop = await fixture.requestStop(owner);
+      // The original claim acknowledges while Stop intent is still committed. There
+      // is no repository-removal owner to replace its ordinary maintenance chain.
+      assert.equal((await fixture.currentAgent(owner)).desiredRuntimeState, "stopped");
+      releaseActivation.resolve();
+      await fixture.work(first, "succeeded");
+      await within(stopAuthorizationStarted.promise, "Stop authorization to start");
+      assert.equal((await fixture.currentAgent(owner)).desiredRuntimeState, "stopped");
+
+      // Existing admission storage changes intent and queues the replacement. Revoke
+      // only its actor before dispatch, so real IAM refuses it before any cutover.
+      const second = await fixture.revision(owner, 2, { actorId: replacementActor });
+      await removeAccessBindings(fixture, replacementActor);
+      releaseStopAuthorization.resolve();
+      await fixture.work(stop, "succeeded");
+      assert.deepEqual(await stopAudit(fixture, owner), ["STOP_SUPERSEDED"]);
+      await fixture.work(second, "failed_permanent");
+      assert.equal((await fixture.workResult(second)).rows[0].reason_code, "AUTHORIZATION_DENIED");
+      const current = await fixture.currentAgent(owner);
+      assert.equal(current.activeRevisionId, first.id);
+      assert.equal(current.desiredRuntimeState, "running");
+      assert.deepEqual(prepared, [first.id], "the refused replacement never reaches Compute");
+      assert.deepEqual(stopped, [], "the superseded Stop never shuts down the active revision");
+
+      const due = await fixture.advanceMaintenance(first);
+      assert.equal(due.rowCount, 1, "the still-running original retains one maintenance item");
+      assert.equal(due.rows[0].actor_id, fixture.actor.id, "maintenance keeps the original actor");
+      const maintenance = { ...first, idempotencyKey: due.rows[0].idempotency_key };
+      await fixture.work(maintenance, "succeeded");
+      assert.deepEqual(prepared, [first.id, first.id], "the original's real maintenance runs");
+      assert.deepEqual(stopped, []);
+      const next = await fixture.observerPool.query(
+        `SELECT actor_id FROM occ.controller_work
+         WHERE revision_id=$1 AND state='queued' AND idempotency_key LIKE $2`,
+        [first.id, `agent_revision:${first.id}:maintenance:%`],
+      );
+      assert.deepEqual(next.rows, [{ actor_id: fixture.actor.id }], "one next observation remains");
+      assert.equal((await fixture.currentAgent(owner)).activeRevisionId, first.id);
+    } finally {
+      // Release worker calls before the fixture joins them during disposal.
+      releaseActivation.resolve();
+      releaseStopAuthorization.resolve();
+    }
+  },
+  { timeout: 60_000 },
 );
 
 revisionTest(

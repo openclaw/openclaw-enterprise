@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { createServer, connect } from "node:net";
 import test from "node:test";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
-import { PostgresMetricsSnapshot } from "../../packages/occ/src/index.ts";
+import { createPostgresPool, PostgresMetricsSnapshot } from "../../packages/occ/src/index.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { expireWorkLease } from "../helpers/postgres-worker-revision-support.mjs";
@@ -280,9 +280,8 @@ test(
     const leaseDurationMs = 1_500;
     const observerPool = new Pool({ connectionString: databaseUrl, max: 8 });
     const relay = await startDatabaseRelay(databaseUrl);
-    // The production worker pool settings: a silent query is abandoned only after 60 s.
-    const workerPool = new Pool({
-      connectionString: relay.url,
+    // Use the production pool: resetting the relay drops idle clients as well as active queries.
+    const workerPool = await createPostgresPool(relay.url, {
       max: 4,
       ...workerDatabasePoolOptions(60_000),
     });
@@ -590,8 +589,7 @@ async function heldRenewalHandoff(context, stage) {
   const leaseDurationMs = 1_500;
   const observerPool = new Pool({ connectionString: databaseUrl, max: 8 });
   const relay = await startDatabaseRelay(databaseUrl);
-  const stalePool = new Pool({
-    connectionString: relay.url,
+  const stalePool = await createPostgresPool(relay.url, {
     max: 4,
     ...workerDatabasePoolOptions(60_000),
   });
@@ -875,7 +873,12 @@ test(
       configurationKind: "agent",
       configurationGeneration: 1,
       gatewayManagedMode: owner.gatewayManagedMode,
-      harness: { ...PRODUCTION_HARNESS_DESCRIPTOR, mode: "dedicated" },
+      harness: {
+        ...PRODUCTION_HARNESS_DESCRIPTOR,
+        mode: "dedicated",
+        overrides: {},
+        configuration: {},
+      },
       compute: {
         id: compute.id,
         implementation: compute.implementation,

@@ -10,9 +10,9 @@ import { buffer } from "node:stream/consumers";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { startGitHubFixture } from "../fixtures/repository-credentials/github.mjs";
 import { loadGitHubRepositoryRegistry } from "../../apps/controller/src/composition/repository-credentials/registry.ts";
-import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
-import { callControl } from "../../apps/controller/src/drivers/repo/github/credentials/client/operator.ts";
-import type { OperationReceipt } from "../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts";
+import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import { callControl } from "../../apps/controller/src/drivers/repo/github/access/client/operator.ts";
+import type { OperationReceipt } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import { request as requestHttps } from "node:https";
 import { syncBuiltinESMExports } from "node:module";
 import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service.mjs";
@@ -42,13 +42,13 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
 import { credentialClientPath } from "../fixtures/repository-credentials/runtime.mjs";
-import type { RuntimeRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/credentials/client/manifest.ts";
-import type { ClientFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
+import type { RuntimeRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/access/client/manifest.ts";
+import type { ClientFiles } from "../../apps/controller/src/drivers/repo/github/access/client/config.ts";
 import type {
   SafeConfigurationSummary,
   SessionStatus,
   ShutdownSummary,
-} from "../../apps/controller/src/drivers/repo/credentials/service-contracts.ts";
+} from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 
 interface PortReservation {
   port: number;
@@ -111,14 +111,14 @@ test(
     assert.equal(built.status, 0, built.stdout + built.stderr);
     // Make the real emitted signer reachable under a new name. The package
     // builder must reject its authority rather than relying on a filename list.
-    const emittedCredentials = join(build, "apps/controller/dist/drivers/repo/github/credentials");
+    const emittedCredentials = join(build, "apps/controller/dist/drivers/repo/github/access");
     await cp(
       join(emittedCredentials, "material.js"),
       join(emittedCredentials, "package-issuer-control.js"),
     );
     await appendFile(
       join(build, "apps/controller/dist/repository-credentials.js"),
-      '\nimport "./drivers/repo/github/credentials/package-issuer-control.js";\n',
+      '\nimport "./drivers/repo/github/access/package-issuer-control.js";\n',
     );
     const issuerRejected = spawnSync(
       process.execPath,
@@ -128,7 +128,7 @@ test(
     assert.notEqual(issuerRejected.status, 0);
     assert.match(
       issuerRejected.stderr,
-      /Unsupported service cryptographic capability in drivers\/repo\/github\/credentials\/package-issuer-control\.js/,
+      /Unsupported service cryptographic capability in drivers\/repo\/github\/access\/package-issuer-control\.js/,
     );
     const artifact = join(build, ".build/repository-credentials/service");
     const runtime = join(temporary, "runtime");
@@ -153,7 +153,7 @@ test(
       "driver/retirement",
     ]) {
       assert.ok(
-        !emitted.includes(`drivers/repo/github/credentials/${module}.js`),
+        !emitted.includes(`drivers/repo/github/access/${module}.js`),
         `native package includes issuer module ${module}`,
       );
     }
@@ -169,16 +169,16 @@ test(
         .filter((path) => path.endsWith(".js"))
         .every(
           (path) =>
-            path.startsWith("drivers/repo/github/credentials/client/") ||
-            path === "drivers/repo/credentials/client-contracts.js",
+            path.startsWith("drivers/repo/github/access/client/") ||
+            path === "drivers/repo/access/client-contracts.js",
         ),
     );
-    assert.ok(clientModules.includes("drivers/repo/github/credentials/client/router.js"));
-    assert.ok(clientModules.includes("drivers/repo/github/credentials/client/draft-pr.js"));
-    assert.ok(clientModules.includes("drivers/repo/github/credentials/client/hook-dispatch.js"));
+    assert.ok(clientModules.includes("drivers/repo/github/access/client/router.js"));
+    assert.ok(clientModules.includes("drivers/repo/github/access/client/draft-pr.js"));
+    assert.ok(clientModules.includes("drivers/repo/github/access/client/hook-dispatch.js"));
     assert.equal(
-      (await lstat(join(client, "dist/drivers/repo/github/credentials/client/hooks/pre-push")))
-        .mode & 0o111,
+      (await lstat(join(client, "dist/drivers/repo/github/access/client/hooks/pre-push"))).mode &
+        0o111,
       0o111,
     );
     // Delete the emitted workspace and tooling links before starting either runtime.
@@ -524,7 +524,7 @@ test(
     const preparedRuntime = join(temporary, "prepared-runtime");
     await cp(runtime, preparedRuntime, { recursive: true });
     for (const module of ["config.js", "factory.js", "driver.js", "static-token.js"]) {
-      await rm(join(preparedRuntime, "dist/drivers/repo/github/credentials", module));
+      await rm(join(preparedRuntime, "dist/drivers/repo/github/access", module));
     }
     const preparedService = spawn(
       process.execPath,
@@ -742,7 +742,7 @@ test(
       );
       // The control socket is bound after the gateway port, so the hold can end.
       await serviceReservation.release();
-      const clientRoot = join(client, "dist/drivers/repo/github/credentials/client");
+      const clientRoot = join(client, "dist/drivers/repo/github/access/client");
       const invoke = (entrypoint: string, args: string[], input?: string) =>
         spawnSync(process.execPath, [join(clientRoot, entrypoint), ...args], {
           cwd: client,
@@ -895,10 +895,7 @@ test(
       // Relocated packages must resolve a linked wrapper from its installed location,
       // even after the build tree and its dependency graph have been removed.
       await symlink(
-        relative(
-          checkout,
-          join(client, "dist/drivers/repo/github/credentials/client/hooks/pre-push"),
-        ),
+        relative(checkout, join(client, "dist/drivers/repo/github/access/client/hooks/pre-push")),
         join(checkout, "managed-hook"),
       );
       await symlink("../../managed-hook", join(checkout, ".git/hooks/pre-push"));
@@ -971,20 +968,20 @@ test("credential artifact builder rejects dependencies outside its emitted closu
     { recursive: true },
   );
   await symlink(join(root, "node_modules"), join(temporary, "node_modules"));
-  const clientEntry = join(emitted, "drivers/repo/github/credentials/client/launch.js");
+  const clientEntry = join(emitted, "drivers/repo/github/access/client/launch.js");
   for (const path of [
     join(emitted, "repository-credentials.js"),
     entrypoint,
     join(emitted, "composition/repository-credentials/projected-inputs.js"),
     join(emitted, "composition/repository-credentials/probe.js"),
-    join(emitted, "drivers/repo/github/credentials/client/router.js"),
+    join(emitted, "drivers/repo/github/access/client/router.js"),
     clientEntry,
-    join(emitted, "drivers/repo/github/credentials/client/operator.js"),
-    join(emitted, "drivers/repo/github/credentials/client/git-helper.js"),
-    join(emitted, "drivers/repo/github/credentials/client/draft-pr.js"),
-    join(emitted, "drivers/repo/github/credentials/client/native-git.js"),
-    join(emitted, "drivers/repo/github/credentials/client/hook-dispatch.js"),
-    join(emitted, "drivers/repo/github/credentials/client/router.js"),
+    join(emitted, "drivers/repo/github/access/client/operator.js"),
+    join(emitted, "drivers/repo/github/access/client/git-helper.js"),
+    join(emitted, "drivers/repo/github/access/client/draft-pr.js"),
+    join(emitted, "drivers/repo/github/access/client/native-git.js"),
+    join(emitted, "drivers/repo/github/access/client/hook-dispatch.js"),
+    join(emitted, "drivers/repo/github/access/client/router.js"),
   ]) {
     await mkdir(join(path, ".."), { recursive: true });
     await writeFile(path, "export {};\n");
@@ -1082,7 +1079,7 @@ test("emitted credential Docker contexts contain only staged runtime inputs", as
               (name === "client" &&
                 hooks.includes(file.name) &&
                 relative(join(context, "dist"), file.parentPath) ===
-                  "drivers/repo/github/credentials/client/hooks"))),
+                  "drivers/repo/github/access/client/hooks"))),
       ),
       "runtime contexts exclude declarations, source maps, compiler state and linked inputs",
     );

@@ -9,8 +9,6 @@ import {
   fakeGoogle,
   fakeOidc,
   fixtureOidcIssuer,
-  githubSignIn,
-  githubUpgradeSettings,
   googleSignIn,
   googleUpgradeSettings,
   oidcSignIn,
@@ -24,21 +22,17 @@ import { providerInstanceId } from "../helpers/human-login-transport.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
-const githubClientId = "session-provider-github-client-id";
 const googleClientId = "session-provider.apps.googleusercontent.com";
 const oidcClientId = "session-provider-oidc-client";
 const oidcClientSecret = "session-provider-oidc-client-secret";
 const secrets = Object.freeze({
   "occ-auth/secret": "session-provider-auth-test-secret-at-least-32-bytes",
-  "occ-github-login/client-id": githubClientId,
-  "occ-github-login/client-secret": "session-provider-github-client-secret",
   "occ-google-login/client-id": googleClientId,
   "occ-google-login/client-secret": "session-provider-google-client-secret",
   "occ-oidc-login/client-id": oidcClientId,
   "occ-oidc-login/client-secret": oidcClientSecret,
 });
 const instances = {
-  github: providerInstanceId("github", { clientId: githubClientId }),
   google: providerInstanceId("google", { clientId: googleClientId }),
   oidc: providerInstanceId("oidc", { issuer: fixtureOidcIssuer.issuer, clientId: oidcClientId }),
 };
@@ -48,16 +42,14 @@ const movedIssuer = Object.freeze({
   issuer: "https://tenant.idp.example.test/v2/",
 });
 const subjects = {
-  github: "9700001",
   google: "110000000000000000071",
   oidc: "auth0|6500000000000000000000b1",
 };
-const kinds = ["password", "github", "google", "oidc"];
+const kinds = ["password", "google", "oidc"];
 
-// Settings for the providers named in `providers` (all three by default).
-function settingsFor(adminId, { providers = ["github", "google", "oidc"], issuer } = {}) {
+// Settings for the providers named in `providers` (both by default).
+function settingsFor(adminId, { providers = ["google", "oidc"], issuer } = {}) {
   return {
-    ...(providers.includes("github") ? githubUpgradeSettings(adminId) : {}),
     ...(providers.includes("google") ? googleUpgradeSettings(adminId) : {}),
     ...(providers.includes("oidc") ? oidcUpgradeSettings(adminId, issuer) : {}),
   };
@@ -104,7 +96,6 @@ test(
     // One session of the member per sign-in method, all under the full configuration.
     async function signInEverywhere() {
       const callbacks = {
-        github: (await githubSignIn(app, origin, subjects.github, address())).callback,
         google: (await googleSignIn(app, origin, google, { subject: subjects.google }, address()))
           .callback,
         oidc: (await oidcSignIn(app, origin, idp, { subject: subjects.oidc }, address())).callback,
@@ -164,7 +155,7 @@ test(
     await t.test("attached identities sign in under every configured provider", async () => {
       await restart();
       adminHeaders = await signedInHeaders(app, origin, admin, address());
-      for (const provider of ["github", "google", "oidc"]) {
+      for (const provider of ["google", "oidc"]) {
         await assertProviderAttached(app, adminHeaders, member.id, provider, subjects[provider]);
       }
       const methods = (await readAccount(app, adminHeaders, member.id)).methods
@@ -181,7 +172,6 @@ test(
       await restart();
       assert.deepEqual(await live(cookies), {
         password: true,
-        github: true,
         google: true,
         oidc: true,
       });
@@ -206,7 +196,6 @@ test(
       await restart({}, { "occ-oidc-login/client-secret": "session-provider-rotated-secret" });
       assert.deepEqual(await live(cookies), {
         password: true,
-        github: true,
         google: true,
         oidc: true,
       });
@@ -214,20 +203,7 @@ test(
     });
 
     await t.test("removing OIDC ends only OIDC sessions", async () => {
-      await assertEnds(await signInEverywhere(), { providers: ["github", "google"] }, {}, "oidc");
-    });
-
-    await t.test("a GitHub client ID change ends only GitHub sessions", async () => {
-      await assertEnds(
-        await signInEverywhere(),
-        {},
-        { "occ-github-login/client-id": "session-provider-other-github-client" },
-        "github",
-      );
-    });
-
-    await t.test("removing GitHub ends only GitHub sessions", async () => {
-      await assertEnds(await signInEverywhere(), { providers: ["google", "oidc"] }, {}, "github");
+      await assertEnds(await signInEverywhere(), { providers: ["google"] }, {}, "oidc");
     });
 
     await t.test("a Google client ID change ends only Google sessions", async () => {
@@ -240,7 +216,7 @@ test(
     });
 
     await t.test("removing Google ends only Google sessions", async () => {
-      await assertEnds(await signInEverywhere(), { providers: ["github", "oidc"] }, {}, "google");
+      await assertEnds(await signInEverywhere(), { providers: ["oidc"] }, {}, "google");
     });
 
     await t.test("password sessions survive when only one external provider remains", async () => {
@@ -248,7 +224,6 @@ test(
       await restart({ providers: ["oidc"] });
       assert.deepEqual(await live(cookies), {
         password: true,
-        github: false,
         google: false,
         oidc: true,
       });

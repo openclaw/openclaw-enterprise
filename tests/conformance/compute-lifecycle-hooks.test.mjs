@@ -47,10 +47,6 @@ test("selected hooks preserve controller order and revoke in reverse order", asy
   const calls = [];
   const owner = (capability, id) =>
     selectedDriver(capability, id, {
-      async afterNamespacePrepared(actualNamespace) {
-        assert.deepEqual(actualNamespace, namespace);
-        calls.push(`${id}:namespace-prepared`);
-      },
       async beforeWorkloadStart(actualRevision, launch) {
         assert.deepEqual(actualRevision, revision);
         launch.environment[`PLACEHOLDER_${id.toUpperCase()}`] = `opaque-${id}`;
@@ -60,10 +56,6 @@ test("selected hooks preserve controller order and revoke in reverse order", asy
         assert.deepEqual(actualRevision, revision);
         calls.push(`${id}:workload-stop`);
       },
-      async beforeNamespaceDelete(actualNamespace) {
-        assert.deepEqual(actualNamespace, namespace);
-        calls.push(`${id}:namespace-delete`);
-      },
     });
 
   // The controller supplies the trusted, deterministic selection order.
@@ -72,20 +64,14 @@ test("selected hooks preserve controller order and revoke in reverse order", asy
     owner("configuration", "settings"),
   ]);
 
-  await dispatcher.afterNamespacePrepared(namespace);
   const launch = await dispatcher.beforeWorkloadStart(revision);
   await dispatcher.beforeWorkloadStop(revision);
-  await dispatcher.beforeNamespaceDelete(namespace);
 
   assert.deepEqual(calls, [
-    "identity:namespace-prepared",
-    "settings:namespace-prepared",
     "identity:workload-start",
     "settings:workload-start",
     "settings:workload-stop",
     "identity:workload-stop",
-    "settings:namespace-delete",
-    "identity:namespace-delete",
   ]);
   assert.deepEqual(launch.environment, {
     PLACEHOLDER_SETTINGS: "opaque-settings",
@@ -121,34 +107,6 @@ test("workload hooks receive immutable Agent Configuration provenance and native
   assert.deepEqual(mutableRevision, revision);
 });
 
-test("failed namespace preparation rolls completed owners back in reverse order", async () => {
-  const calls = [];
-  const owners = ["a", "b", "c"].map((id) =>
-    selectedDriver("configuration", id, {
-      async afterNamespacePrepared() {
-        calls.push(`${id}:prepare`);
-        if (id === "c") {
-          throw new Error("sensitive-provider-token");
-        }
-      },
-      async beforeNamespaceDelete() {
-        calls.push(`${id}:revoke`);
-      },
-    }),
-  );
-
-  await assert.rejects(
-    new ComputeLifecycleDispatcher(owners).afterNamespacePrepared(namespace),
-    (error) => {
-      assert.match(error.message, /afterNamespacePrepared failed for configuration:c/);
-      assert.doesNotMatch(error.message, /sensitive-provider-token/);
-      assert.equal(error.cause, undefined);
-      return true;
-    },
-  );
-  assert.deepEqual(calls, ["a:prepare", "b:prepare", "c:prepare", "b:revoke", "a:revoke"]);
-});
-
 test("failed workload preparation compensates completed bindings before returning", async () => {
   const calls = [];
   const dispatcher = new ComputeLifecycleDispatcher([
@@ -174,40 +132,6 @@ test("failed workload preparation compensates completed bindings before returnin
     /beforeWorkloadStart failed for iam:second/,
   );
   assert.deepEqual(calls, ["first:bind", "second:bind", "first:revoke"]);
-});
-
-test("failed namespace preparation preserves tenant ownership during rollback", async () => {
-  const mutableNamespace = structuredClone(namespace);
-  const original = structuredClone(mutableNamespace);
-  const calls = [];
-  let revokedNamespace;
-  const dispatcher = new ComputeLifecycleDispatcher([
-    selectedDriver("configuration", "first", {
-      async afterNamespacePrepared(actualNamespace) {
-        assert.deepEqual(actualNamespace, original);
-        calls.push("first:prepare");
-      },
-      async beforeNamespaceDelete(actualNamespace) {
-        revokedNamespace = actualNamespace;
-        calls.push("first:revoke");
-      },
-    }),
-    selectedDriver("iam", "malicious", {
-      async afterNamespacePrepared(actualNamespace) {
-        calls.push("malicious:prepare");
-        actualNamespace.id = "foreign-tenant";
-      },
-    }),
-  ]);
-
-  await assert.rejects(
-    dispatcher.afterNamespacePrepared(mutableNamespace),
-    /afterNamespacePrepared failed for iam:malicious/,
-  );
-  assert.deepEqual(calls, ["first:prepare", "malicious:prepare", "first:revoke"]);
-  assert.deepEqual(revokedNamespace, original);
-  assert.deepEqual(mutableNamespace, original);
-  assert.equal(Object.isFrozen(mutableNamespace), false);
 });
 
 test("failed workload preparation preserves its exact tenant identity during revocation", async () => {
@@ -428,10 +352,8 @@ test("drivers without hooks remain valid selected owners", async () => {
   const driver = selectedDriver("configuration", "settings");
   const dispatcher = new ComputeLifecycleDispatcher([driver]);
 
-  assert.equal(await dispatcher.afterNamespacePrepared(namespace), undefined);
   assert.deepEqual(await dispatcher.beforeWorkloadStart(revision), { environment: {} });
   assert.equal(await dispatcher.beforeWorkloadStop(revision), undefined);
-  assert.equal(await dispatcher.beforeNamespaceDelete(namespace), undefined);
 });
 
 test("nested compute signals retain parent cancellation without a deadline", async () => {

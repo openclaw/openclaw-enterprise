@@ -19,8 +19,8 @@ export const agentPrincipalDenied = (agent, target, grant = "Secret operate") =>
 // A denial echoes the ID its request sent, so a real and an unknown ID get answers that match once
 // each answer's own ID is hidden: the text never says whether the resource exists.
 export const sentIdHidden = (text, id) => text.replaceAll(id, "<id>");
-// A create needs the collection grant, which no Role can hold: only an Installation
-// administrator creates one. `kinds` is the plural, such as "Secrets".
+// A create needs the collection grant, which only Roles from the Installation configuration
+// hold: an Installation administrator creates one. `kinds` is the plural, such as "Secrets".
 export const createDenied = (kind, namespaceId, kinds = `${kind}s`) =>
   `Not authorized: this needs ${kind} create in Namespace ${namespaceId}. Only an Installation administrator can create ${kinds}: ask one to create it.`;
 // The same create refused by a Restriction to a caller who administers the Installation, as the
@@ -37,7 +37,7 @@ export const GATEWAY_MANAGED_MODE_DENIED =
   "Not authorized: changing gatewayManagedMode needs Installation administer. Omit it, or ask an Installation administrator to change it.";
 // The native admin host names the grant but no Agent: the host, not the caller, names the Agent.
 export const NATIVE_ADMIN_DENIED =
-  "Not authorized: opening this Agent's native admin UI needs Agent administer on it. Ask an Installation administrator to grant it.";
+  "Not authorized: opening this Agent's browser UI needs Agent operate or administer on it. Ask an Installation administrator to grant it.";
 // An IAM AccessBinding subject that is an email, and one that is no eligible principal: an unknown
 // ID gets the same answer as an ineligible one (finding D753).
 export const BINDING_SUBJECT_EMAIL =
@@ -994,7 +994,7 @@ export const currentHarnessAuthDenied = (grant, target) =>
 // Native admin status for a caller without Agent administer, on an Installation with native admin
 // off: the grant alone would not open it (finding D762).
 export const nativeAdminOffDenied = (target) =>
-  `${callerDenied("Agent administer", target)} Native admin is also off on this Installation, so the grant alone would not open it.`;
+  `${callerDenied("Agent operate", target)} Native admin is also off on this Installation, so the grant alone would not open it.`;
 // A request path no route has (finding D764): a trailing slash says so; any other names no route.
 export const ROUTE_TRAILING_SLASH = "No API route has this path: remove the trailing slash.";
 export const ROUTE_NOT_FOUND = "No API route has this path. Check it against the API reference.";

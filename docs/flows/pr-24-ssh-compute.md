@@ -1,7 +1,7 @@
 ---
 created: 2026-09-07
-updated: 2026-11-05
-last_updated_session: 01a12074-7896-7f63-99fe-9f42e9041d02
+updated: 2026-11-07
+last_updated_session: authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1
 ---
 
 <a id="pr-24-ssh-compute-flow"></a>
@@ -68,8 +68,8 @@ Compute IDs select Kubernetes. Schema and semantic validation reject invalid
 host settings and Sandbox composition. Preflight checks the two local SSH
 files and probes each host's required executables and account-management tools.
 
-Namespace preparation creates or verifies its ownership marker before running
-`afterNamespacePrepared` hooks. After Agent revision authorization and provider
+Namespace preparation creates or verifies its ownership marker. OCC then runs
+selected [Namespace setup hooks](../reference/drivers/namespace-lifecycle.md). After Agent revision authorization and provider
 validation, the worker calls `bindAgent`; the driver copies the authoritative
 Namespace, Agent, and ServicePrincipal binding into its in-memory maps. Agent revision
 operations require matching bindings and the selected Compute identity.
@@ -210,7 +210,7 @@ Relinking permits cleanup after `disable` removed a custom directory's load-path
 
 `ssh/index.ts:deleteNamespace`, `ssh/remote-helper.cjs:removeNamespace`
 
-Deletion runs `beforeNamespaceDelete` hooks, then validates every Agent, Agent revision,
+Deletion validates every Agent, Agent revision,
 and unit in the deletion set before stopping gateways. The helper stops and
 disables owned units through `stopOwnedUnit`, removes their unit files, reloads systemd, and removes the
 Namespace tree, including persistent state, and its owned runtime accounts. A
@@ -256,6 +256,8 @@ retire, which frees its gateway port.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-07 01:04: Move Namespace setup orchestration to OCC and retain SSH host cleanup boundaries. (authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1 - 91b1a51eb)
 
 - 2026-11-05 23:35: Preserve pending-account recovery documentation in the reorganized Driver reference. (PR #2435 - b2a72414b9c071454d2b740b671fcf7a467af8c0)
 

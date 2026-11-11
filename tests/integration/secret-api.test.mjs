@@ -14,7 +14,7 @@ import {
   createTestAuthPrincipal,
   signInToControllerApp,
 } from "../helpers/auth-session.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -98,7 +98,11 @@ async function createFixture(options = {}) {
       secretDriver,
       resolveHarness: resolveApprovedDevelopmentHarness,
       auditSink,
-      development: { enabled: true, installationId },
+      development: {
+        enabled: true,
+        installationId,
+        browserOrigin: "https://console.oce.localhost",
+      },
       auth: authFixture.auth,
     });
     app.defaultSession = sessionsByPrincipalId.get(identity.id);
@@ -145,7 +149,7 @@ async function request(app, method, pathname, options = {}) {
     headers["content-type"] ??= "application/json";
   }
   const response = await app.fetch(
-    new Request(`http://127.0.0.1${pathname}`, {
+    new Request(`https://console.oce.localhost${pathname}`, {
       method,
       headers,
       ...(hasBody ? { body: JSON.stringify(options.body) } : {}),

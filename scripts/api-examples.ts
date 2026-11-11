@@ -7,6 +7,7 @@ const namespaceId = id("ns");
 const agentId = id("agt");
 const configurationId = id("cfg");
 const revisionId = id("rev");
+const nativeBrowserOrigin = "https://agent-0123456789abcdef0123456789abcdef.agents.example.com";
 const secretRef = { kind: "secret", namespaceId, id: id("sec") };
 const harnessAuth = { method: "api_key", source: secretRef };
 
@@ -87,7 +88,19 @@ const revision = {
   gatewayManagedMode: true,
   configuration,
   compute: { id: "kubernetes", implementation: "kubernetes" },
-  harness: { id: "codex", mode: "dedicated", version: "1" },
+  harness: {
+    id: "codex",
+    mode: "dedicated",
+    version: "1",
+    overrides: {},
+    configuration: {
+      modelProvider: {
+        protocol: "openai-responses",
+        baseUrl: "https://api.openai.com/v1",
+        supportsStandaloneWebSearch: false,
+      },
+    },
+  },
   backendId: null,
   harnessAuth,
   createdAt: time,
@@ -178,10 +191,80 @@ const authAccount = {
 };
 const sessionKey = "example-session-binding-not-a-credential";
 
+const connectionTemplateId = id("ctp");
+const oauthClientId = id("ccr");
+const oauthClientInput = {
+  displayName: "Example provider client",
+  clientId: "example-client",
+  tokenEndpointAuthMethod: "client_secret_basic",
+};
+const oauthClient = {
+  ...oauthClientInput,
+  issuer: "https://accounts.example.com",
+  tokenUrl: "https://accounts.example.com/token",
+  id: oauthClientId,
+  createdAt: time,
+};
+const connectionTemplateInput = {
+  mode: "manual",
+  issuer: oauthClient.issuer,
+  authorizationUrl: "https://accounts.example.com/authorize",
+  tokenUrl: oauthClient.tokenUrl,
+  oauthClientId,
+  scopes: ["profile.read"],
+  destinations: [{ host: "api.example.com", port: 443, path: "/profile" }],
+};
+const connectionTemplate = {
+  id: connectionTemplateId,
+  namespaceId,
+  displayName: "Example account",
+  createdAt: time,
+  current: {
+    ...connectionTemplateInput,
+    templateId: connectionTemplateId,
+    authorizationParameters: {},
+    version: 1,
+    createdAt: time,
+  },
+};
+const mcpServerUrl = "https://tools.example.com/mcp";
+const discovered = {
+  serverUrl: mcpServerUrl,
+  resource: mcpServerUrl,
+  issuers: [oauthClient.issuer],
+  issuer: oauthClient.issuer,
+  authorizationUrl: connectionTemplateInput.authorizationUrl,
+  tokenUrl: oauthClient.tokenUrl,
+  requestedScopes: ["profile.read"],
+  resourceScopes: ["profile.read"],
+  tokenEndpointAuthMethods: ["client_secret_basic"],
+};
+
+const savedAccount = {
+  issuer: oauthClient.issuer,
+  tokenUrl: oauthClient.tokenUrl,
+  oauthClientId,
+  clientId: oauthClient.clientId,
+  destinations: connectionTemplateInput.destinations,
+  requestedScopes: connectionTemplateInput.scopes,
+  grantedScopes: connectionTemplateInput.scopes,
+  namespaceId,
+  credentialSourceId: source.id,
+  ownerPrincipalId: userId,
+  connectionTemplateId,
+  connectionTemplateVersion: 1,
+  createdAt: time,
+};
+
 export const parameterExamples = {
+  "x-occ-session-key": "s".repeat(43),
+  origin: "https://console.example.com",
+  oauthClientId,
+  connectionTemplateId,
   key: "review-1",
   expectedConfigurationId: configurationId,
   expectedGeneration: "1",
+  harnessOverrides: "{}",
   namespaceId,
   agentId,
   configurationId,
@@ -214,12 +297,31 @@ export const parameterExamples = {
   limit: "20",
   cursor: "opaque-cursor-from-the-previous-response",
   code: "example-provider-code",
+  iss: connectionTemplateInput.issuer,
   state: "example-browser-bound-state",
   error: "access_denied",
   error_description: "The user declined sign-in.",
 };
 
 export const requestExamples = {
+  launchAgentNativeAdmin: {},
+  confirmAgentNativeAdmin: { intentId: uuid, challenge: "c".repeat(43) },
+  startNamespaceConnection: { connectionTemplateId },
+  createConnectionTemplate: {
+    ...connectionTemplateInput,
+    namespaceId,
+    displayName: connectionTemplate.displayName,
+  },
+  updateConnectionTemplate: { displayName: "Engineering account" },
+  discoverConnectionTemplate: { serverUrl: mcpServerUrl },
+  createOAuthClient: {
+    ...oauthClientInput,
+    connectionTemplateId,
+    connectionTemplateVersion: 1,
+    clientSecret: "example-client-secret",
+  },
+  rotateOAuthClientSecret: { clientSecret: "replacement-example-client-secret" },
+  deployAgent: {},
   deployAgentFirst: {
     key: "review-1",
     expectedConfigurationId: configurationId,
@@ -300,7 +402,6 @@ export const requestExamples = {
   disableAuthAccount: { expectedVersion: 1 },
   enableAuthAccount: { expectedVersion: 2 },
   detachAuthMethod: { expectedVersion: 1 },
-  attachGitHubIdentity: { expectedVersion: 1, subject: "12345678" },
   attachGoogleIdentity: { expectedVersion: 1, subject: "123456789012345678901" },
   attachOidcIdentity: { expectedVersion: 1, subject: "provider-subject-docs-admin" },
   revokeAuthAccountSessions: { expectedVersion: 1 },
@@ -315,13 +416,27 @@ export const requestExamples = {
     namespaceId,
     expiresIn: 86400,
   },
-  confirmGitHubSignIn: { attemptId: "example".padEnd(43, "0") },
   confirmGoogleSignIn: { attemptId: "example".padEnd(43, "0") },
   confirmOidcSignIn: { attemptId: "example".padEnd(43, "0") },
 };
 
 // Values below are data members. The generator adds the common meta envelope.
 export const responseExamples = {
+  listUsableConnectionTemplates: [connectionTemplate],
+  listNamespaceConnections: [savedAccount],
+  startNamespaceConnection: {
+    credentialSourceId: source.id,
+    authorizationUrl: "https://accounts.example.com/authorize?state=example-state",
+    expiresAt: time,
+  },
+  listConnectionTemplates: [connectionTemplate],
+  getConnectionTemplate: connectionTemplate,
+  createConnectionTemplate: connectionTemplate,
+  updateConnectionTemplate: { ...connectionTemplate, displayName: "Engineering account" },
+  discoverConnectionTemplate: discovered,
+  listOAuthClients: [oauthClient],
+  createOAuthClient: oauthClient,
+  rotateOAuthClientSecret: oauthClient,
   getInstallation: { id: id("ins"), name: "Engineering", createdAt: time },
   bootstrapInstallation: { id: id("ins"), name: "Engineering", createdAt: time },
   getInstallationDeploymentInventory: {
@@ -435,6 +550,16 @@ export const responseExamples = {
   },
   getAgentHarnessStatus: { status: "unobserved" },
   getAgentNativeAdmin: { status: "stopped" },
+  launchAgentNativeAdmin: {
+    intentId: uuid,
+    origin: nativeBrowserOrigin,
+    landingUrl: `${nativeBrowserOrigin}/__occ/native-admin/launch?intent=${uuid}`,
+  },
+  confirmAgentNativeAdmin: {
+    intentId: uuid,
+    exchange: "e".repeat(43),
+    redeemUrl: `${nativeBrowserOrigin}/__occ/native-admin/redeem`,
+  },
   getAgentRuntimeImages: { status: "undeployed", images: [] },
   getAgentRuntimeCredentials: { transportConfigured: true },
   provisionAgentRuntimeCredentials: { transportConfigured: true },
@@ -451,6 +576,22 @@ export const responseExamples = {
     readLogs: true,
     sandboxPolicyRead: true,
     update: true,
+  },
+  getNamespaceAgentCapabilities: {
+    capabilities: {
+      credentialSources: {
+        types: [
+          {
+            type: "openai",
+            config: [{ name: "authorized_base_url", required: false }],
+            secrets: [{ name: "api_key", required: true }],
+            rotation: "external",
+            harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+          },
+        ],
+      },
+      openclaw: { executionModes: ["dedicated"] },
+    },
   },
   getNamespaceCallerPermissions: {
     delete: true,
@@ -567,13 +708,11 @@ export const responseExamples = {
   disableAuthAccount: { userId },
   enableAuthAccount: { userId },
   detachAuthMethod: { userId },
-  attachGitHubIdentity: { userId },
   attachGoogleIdentity: { userId },
   attachOidcIdentity: { userId },
   revokeAuthAccountSessions: { userId },
   enrolAuthAccount: { userId, principalId: authAccount.principalId, version: 1, created: true },
   getAuthProviders: {
-    github: false,
     google: false,
     oidc: false,
     password: true,
@@ -598,10 +737,6 @@ export const responseExamples = {
     expiresAt: "2026-10-02T12:00:00.000Z",
   },
   revokeServiceKey: { id: "key-docs-automation", revoked: true },
-  startGitHubSignIn: {
-    attemptId: "example".padEnd(43, "0"),
-    url: "https://github.com/login/oauth/authorize?client_id=example&state=example-browser-bound-state",
-  },
   startGoogleSignIn: {
     attemptId: "example".padEnd(43, "0"),
     url: "https://accounts.google.com/o/oauth2/v2/auth?client_id=example&state=example-browser-bound-state",
@@ -610,7 +745,6 @@ export const responseExamples = {
     attemptId: "example".padEnd(43, "0"),
     url: "https://identity.example.com/authorize?client_id=example&state=example-browser-bound-state",
   },
-  confirmGitHubSignIn: { sessionKey },
   confirmGoogleSignIn: { sessionKey },
   confirmOidcSignIn: { sessionKey },
   resolveAgentNativeAdminReturn: { agentId, namespaceId },

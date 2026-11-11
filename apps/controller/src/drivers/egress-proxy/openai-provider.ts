@@ -1,7 +1,7 @@
 import {
   modelProviderBaseUrl,
+  savedModelProvider,
   requireModelSourceDestination,
-  type ModelProviderConfiguration,
 } from "../compute/model-provider.ts";
 import type {
   CredentialProviderDefinition,
@@ -13,7 +13,7 @@ import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
 import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
 import { validChatRequest, validResponsesRequest } from "./openai-responses.ts";
 import { protectedResponseOutput, protectedResponsesStream } from "./openai-responses-stream.ts";
-import { parseUnambiguousJson } from "../repo/credentials/json-members.ts";
+import { parseUnambiguousJson } from "../repo/access/json-members.ts";
 
 const maximumResponseBytes = 4 * 1024 * 1024;
 
@@ -144,13 +144,7 @@ function protectedResponse(
 }
 
 /** Bounded inference with Harness-local tools and complete finite Responses SSE custody. */
-export function createOpenAiStaticProvider(
-  modelProvider?: ModelProviderConfiguration,
-): CredentialProviderDefinition {
-  modelProvider =
-    modelProvider === undefined
-      ? undefined
-      : Object.freeze({ ...modelProvider, baseUrl: modelProviderBaseUrl(modelProvider) });
+export function createOpenAiStaticProvider(): CredentialProviderDefinition {
   return Object.freeze<CredentialProviderDefinition>({
     // Generation 3 separates destination authorization from routing. Existing
     // grants must not be reinterpreted under the shared provider contract.
@@ -162,8 +156,7 @@ export function createOpenAiStaticProvider(
         {
           name: "authorized_base_url",
           required: false,
-          description:
-            "Immutable destination authorization; must match the Installation model provider.",
+          description: "Immutable destination authorization; must match the revision destination.",
         },
       ],
       secrets: [{ name: "api_key", required: true }],
@@ -180,7 +173,6 @@ export function createOpenAiStaticProvider(
       if (!baseUrl) {
         throw new Error("Unsupported inference source endpoint.");
       }
-      requireModelSourceDestination(config, modelProvider);
       return { authorized_base_url: baseUrl };
     },
     normalizeGrant(models) {
@@ -189,8 +181,10 @@ export function createOpenAiStaticProvider(
       }
       return immutableCopy({ kind: "inference", models, providerTools: "none" as const });
     },
-    routes(source, binding) {
+    routes(source, binding, harnessConfiguration) {
       this.normalizeConfig(source.config);
+      const modelProvider = savedModelProvider(harnessConfiguration);
+      requireModelSourceDestination(source.config, modelProvider);
       const base = new URL(modelProviderBaseUrl(modelProvider));
       return ["responses", "chat/completions"].map((operation) =>
         immutableCopy({

@@ -16,7 +16,7 @@ import {
 import { basename, dirname, join } from "node:path";
 import test, { before } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
+import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/access/client/config.ts";
 import { repositoryClientData } from "../fixtures/repository-credentials/builders.mjs";
 import { projectRepositorySessions } from "../fixtures/repository-credentials/projection.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -175,12 +175,12 @@ test("the actual repository init process turns projected Secrets into private ru
   assert.equal(setting(`http.${client.gatewayOrigin}.followRedirects`), "false\n");
   assert.equal(
     setting(`credential.${client.gatewayOrigin}.helper`),
-    `\n!'/usr/local/bin/node' '/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/git-helper.js' manifest '/run/oce/repository-credentials' '${fixture.descriptor.manifest.generation}'\n`,
+    `\n!'/usr/local/bin/node' '/opt/oce/repository-credentials/dist/drivers/repo/github/access/client/git-helper.js' manifest '/run/oce/repository-credentials' '${fixture.descriptor.manifest.generation}'\n`,
   );
   const nativeConfig = await readFile(gitconfig, "utf8");
   assert.equal(
     setting("core.hooksPath").trim(),
-    "/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/hooks",
+    "/opt/oce/repository-credentials/dist/drivers/repo/github/access/client/hooks",
   );
   assert.equal(setting("oce.repository.manifestRoot").trim(), "/run/oce/repository-credentials");
   for (const [index, binding] of fixture.descriptor.manifest.bindings.entries()) {
