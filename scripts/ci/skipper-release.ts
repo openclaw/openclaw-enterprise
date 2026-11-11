@@ -128,6 +128,11 @@ export const skipperOperations = [
   "command-cleanup",
 ] as const;
 type SkipperOperation = (typeof skipperOperations)[number];
+export const skipperGatewayChatPhases = [
+  "before-private-git",
+  "native-git",
+  "after-withdrawal",
+] as const;
 
 /** Only this closed projection may leave the installed test's private result. */
 export function skipperOperationDiagnostic(value: unknown) {
@@ -142,9 +147,13 @@ export function skipperOperationDiagnostic(value: unknown) {
     return undefined;
   }
   const { operation, exitCode, signal, code, gatewayCategory, httpStatus } = diagnostic;
+  const gatewayChatPhase = skipperGatewayChatPhases.find(
+    (phase) => phase === diagnostic.gatewayChatPhase,
+  );
   return {
     kind: "skipper-operation",
     operation: operation as SkipperOperation,
+    ...(operation === "gateway-chat" && gatewayChatPhase ? { gatewayChatPhase } : {}),
     ...(typeof gatewayCategory === "string" &&
     [
       "gateway-credential-unavailable",

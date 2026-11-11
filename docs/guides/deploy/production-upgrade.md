@@ -53,8 +53,8 @@ Prepare:
 - Bash, Python 3, Node.js matching `package.json` `engines.node`, Helm, kubectl,
   jq, yq, cmp and mktemp. Use an identity authorized for the Helm upgrade.
   The helper lists Deployments, StatefulSets, Pods and PVCs cluster-wide.
-  In the release namespace, it creates and deletes preflight Jobs, Secrets and
-  NetworkPolicies, gets and lists Jobs, reads Pods, Pod logs and Installation
+  In the release namespace, it creates, reads and deletes preflight Jobs, Secrets and
+  NetworkPolicies, lists Jobs, reads Pods, Pod logs and Installation
   Secrets, and gets, patches and watches Deployments. Rendered cert-manager
   Certificates require server-side dry-run apply. Changed mutable Installation
   Secrets require `update` on the named Secret. Confirmed update denial stops
@@ -230,8 +230,8 @@ The migration Job uses the candidate controller, initializer's migrator credenti
 is allowed; migrations are not applied. The Helm hook rechecks history; separate
 migrations require completion with `--require-current`.
 
-Pods retain chart security and NetworkPolicy labels. Unconfirmed Job or child
-cleanup blocks Secret/policy removal and upgrade.
+Pods retain chart security and NetworkPolicy labels. Upgrade waits for Jobs and
+Pods to disappear, then Secrets and NetworkPolicies.
 
 With an immutable Installation Secret, keep the live configuration or
 [stage an immutable successor](immutable-installation-upgrade.md) before preflight.
