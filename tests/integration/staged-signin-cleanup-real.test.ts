@@ -8,7 +8,6 @@ import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { deleteOwnedK3dCluster } from "../../scripts/ci/cleanup.mjs";
-import { prepareStagingSigninCluster } from "../../scripts/ci/prepare.mjs";
 import {
   assertLocalRehearsalDaemon,
   bindLocalRehearsalCluster,
@@ -33,7 +32,7 @@ const evidenceRoot = process.env.OCC_TEST_STAGED_SIGNIN_CLEANUP_ARTIFACT_DIR;
 // the lane's other files. Every launched operation is awaited before teardown.
 const laneDeadline = Number(process.env.CI_RUNNER_DEADLINE_MS);
 const proofDeadline = Math.min(
-  Date.now() + 12 * 60_000,
+  Date.now() + 15 * 60_000,
   Number.isSafeInteger(laneDeadline) && laneDeadline > 0 ? laneDeadline - 3 * 60_000 : Infinity,
 );
 let previousCaseFailed = false;
@@ -102,9 +101,6 @@ async function fixture(
     assert.ok(ms > 0, "shared cleanup proof deadline expired");
     return ms;
   };
-  // Creation has its own bounded retries and readiness waits. Do not enter it
-  // near the sequence deadline, where only partial setup could be observed.
-  assert.ok(remaining() >= 9 * 60_000, "insufficient proof budget for another cluster");
   let uncertain = false;
   const command: FixtureRun = async (name, args, options = {}) => {
     try {
@@ -229,12 +225,23 @@ async function fixture(
   });
   await assertLocalRehearsalDaemon(command);
   const beforeVolumes = new Set(lines(await command("docker", ["volume", "ls", "-q"])));
-  const resource = await prepareStagingSigninCluster(statePath).catch((error: unknown) => {
-    uncertain ||= typeof error === "object" && error !== null && "k3dDiagnosticsCaptured" in error;
-    throw error;
-  });
-  // Preparation has bounded internal retries but no cancellation signal. The
-  // case owner waits for it to settle before this check or any final cleanup.
+  // Run the unchanged producer in its own bounded process. This test budget
+  // may truncate a slow retry; that is uncertain failure, never cleanup proof.
+  assert.ok(remaining() >= 4 * 60_000, "insufficient proof budget for another cluster");
+  const prepared = await command(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      'import { prepareStagingSigninCluster } from "./scripts/ci/prepare.mjs"; console.log(JSON.stringify(await prepareStagingSigninCluster(process.argv[1])));',
+      statePath,
+    ],
+    { cwd: root, timeout: 4 * 60_000 },
+  );
+  const resource = JSON.parse(prepared) as Record<string, unknown> & {
+    name: string;
+    nodeImage: string;
+  };
   signal.throwIfAborted();
   const current = await capture(resource.name, join(work, "original-kubeconfig"), command);
   captures.push(current.owned);
@@ -370,7 +377,12 @@ async function runCase(
     closing.abort();
     const [result] = await Promise.allSettled([work]);
     previousCaseFailed ||= result?.status === "rejected";
-    await cleanup();
+    try {
+      await cleanup();
+    } catch (error) {
+      previousCaseFailed = true;
+      throw error;
+    }
   });
   return work;
 }
