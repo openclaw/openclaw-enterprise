@@ -3932,6 +3932,17 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     if (state?.lane !== name) {
       throw new Error("Repository credential images require their own lane state.");
     }
+    const registeredFile = laneDefinition(name).files.find(({ path }) => path === relativeFile);
+    if (
+      registeredFile &&
+      !registeredFile.requiredEnv?.includes("REPOSITORY_CREDENTIALS_GH_BINARY")
+    ) {
+      return {
+        defaults: laneDefaults(name, { ...state.defaults, ...env }),
+        env,
+        cleanup: null,
+      };
+    }
     const prepared = await prepareRepositoryCredentialsFile({
       clientImage: env.REPOSITORY_CREDENTIALS_CLIENT_IMAGE,
       execFile,
