@@ -74,26 +74,10 @@ before running the launcher.
 
 ### Select another profile
 
-`./bin/occ dev up` and `./scripts/dev-up` resolve the same profile. Export a
-selection in the shell that runs startup:
-
-| Profile                             | `OCC_DEVELOPMENT_COMPUTE_DRIVER` | `OCC_DEVELOPMENT_CONTROL_PLANE` | `OCC_DEVELOPMENT_SANDBOX_DRIVER` |
-| ----------------------------------- | -------------------------------- | ------------------------------- | -------------------------------- |
-| Kubernetes-only (default)           | unset or `kubernetes`            | unset or `kubernetes`           | unset or `none`                  |
-| Kubernetes-only with OpenShell      | unset or `kubernetes`            | unset or `kubernetes`           | `openshell`                      |
-| Compose OCC with Kubernetes compute | unset or `kubernetes`            | `compose`                       | unset, `none`, or `openshell`    |
-| Docker Compute preview              | `docker`                         | unset or `compose`              | unset or `none`                  |
-
-An unset control plane follows the Compute Driver: Kubernetes Compute selects
-the Kubernetes control plane and Docker Compute selects Compose. Thus
-`OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell`
-alone starts the Kubernetes-only OpenShell profile. Set
-`OCC_DEVELOPMENT_CONTROL_PLANE=compose` for the Compose control plane.
-
-The Docker Compute preview runs OCC in Compose and cannot deploy Agents. Its
-ready text prints `Compute Driver: Docker`, and its service key is in a
-temporary directory outside the state directory. See
-[Docker Compose development](../../flows/docker-compose-development.md).
+Set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` for
+[Compose OCC](#run-occ-in-compose-with-kubernetes-compute), or
+`OCC_DEVELOPMENT_COMPUTE_DRIVER=docker` for the Docker Compute preview, which
+cannot deploy Agents. See the [profile table](../../reference/cli/local-development.md#select-a-profile).
 
 ### Sign in through Keycloak
 
@@ -427,10 +411,7 @@ Then remove only the cluster and private state the launcher recorded:
 
 Cleanup uses the recorded engine endpoint and cluster name. If deletion fails, it
 keeps the state directory so a retry never discovers or deletes an unrelated
-cluster. Without a profile selection, cleanup stops the stack recorded in the
-state directory; with no recorded state, it stops this checkout's Docker
-Compute preview. Stop that preview explicitly with
-`OCC_DEVELOPMENT_COMPUTE_DRIVER=docker ./bin/occ dev down`.
+cluster.
 
 ## Limits
 

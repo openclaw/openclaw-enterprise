@@ -12,9 +12,8 @@ last_updated_session: authoring-run/a9d9f372-a4a3-4832-9356-328d27967ab2
 The `scripts/dev-up` entry point selects the same profile. By default it starts the
 [local k3d-only profile](../guides/deploy/local-kubernetes-development.md):
 Kubernetes Compute with the Kubernetes control plane
-(`internal/occdev/profile.go:ResolveProfile`). Operators can explicitly select
-Kubernetes Compute with the Compose control plane, or Docker Compute, where OCC
-and PostgreSQL run in Compose. The
+(`internal/occdev/profile.go:ResolveProfile`). Operators can select the Compose
+control plane, or Docker Compute with OCC and PostgreSQL in Compose. The
 Kubernetes profile can select the OpenShell Sandbox Driver for its fail-closed
 path; it prepares pinned OpenShell infrastructure and reconciles rendered
 workspace-chart resources before reporting readiness.
