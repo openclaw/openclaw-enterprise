@@ -104,7 +104,14 @@ function gatewayFs(directory, mount) {
 
 function prepare(
   t,
-  { env, gatewayEnv = env, version = `${VERSION} (Claude Code)\n`, status = 0, mount = "ro", tamper },
+  {
+    env,
+    gatewayEnv = env,
+    version = `${VERSION} (Claude Code)\n`,
+    status = 0,
+    mount = "ro",
+    tamper,
+  },
 ) {
   const home = scratch(t, "oce-claude-code-runtime-");
   // The private-state init creates the configuration directory before the Gateway starts.
@@ -198,7 +205,10 @@ test("an init container writes the managed settings and the Gateway verifies the
   );
   assert.ok(GATEWAY_RUNTIME_ENTRYPOINT.includes(CLAUDE_CODE_RUNTIME_HELPERS));
   // The Gateway never writes the settings; it only checks the read-only mount.
-  assert.equal(GATEWAY_RUNTIME_ENTRYPOINT.includes("writeClaudeCodeManagedSettings(require("), false);
+  assert.equal(
+    GATEWAY_RUNTIME_ENTRYPOINT.includes("writeClaudeCodeManagedSettings(require("),
+    false,
+  );
   const probe = GATEWAY_RUNTIME_ENTRYPOINT.indexOf("probeOpenClawAuthenticationFailure();");
   const check = GATEWAY_RUNTIME_ENTRYPOINT.indexOf(
     `verifyClaudeCodeRuntime(require("node:fs"), require("node:child_process").spawnSync, ${JSON.stringify(CLAUDE_CODE_MANAGED_SETTINGS_DIRECTORY)});`,
@@ -423,9 +433,9 @@ test("a rerun of the init clears an earlier run's files and never writes through
   // A file symlink left in the directory is removed, not followed.
   const outside = scratch(t, "oce-claude-code-outside-");
   writeFileSync(join(outside, "target.json"), "kept\n");
-  reopened((directory) =>
-    symlinkSync(join(outside, "target.json"), managedSettings(directory)),
-  )(first.directory);
+  reopened((directory) => symlinkSync(join(outside, "target.json"), managedSettings(directory)))(
+    first.directory,
+  );
   assert.equal(writeSettings(t, selectedEnvironment, root).failure, undefined);
   assert.equal(readFileSync(join(outside, "target.json"), "utf8"), "kept\n");
   assert.equal(fs.lstatSync(managedSettings(first.directory)).isFile(), true);
