@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: "2026-11-11 23:11"
-last_updated_session: "authoring-run/0759ff85-9e18-4fc7-b2bb-29e29bb5935a"
+updated: "2026-11-11 23:18"
+last_updated_session: "authoring-run/1eb4586e-e5dd-41d2-80e3-338b75d13f6a"
 ---
 
 # GitHub Actions testing flow
@@ -188,9 +188,9 @@ generated values. Later values win.
 `scripts/ci/prepare.mjs:prepareFile` separates defaults from generated outputs.
 OpenShell admission includes declared file model selectors:
 `validateLaneInputsBeforeSideEffects` reads the selected manifest entry directly;
-`runFile` forwards inputs overlaid by `file.env`. Whole-lane prerequisites and raw
-custom-destination/provider-file guards still apply before setup. Other file values
-do not affect preparation; execution keeps the precedence above.
+`runFile` forwards inputs overlaid by `file.env`. Unfocused installer admission unions
+the cohort’s credential requirements before setup. Raw custom-destination/provider-file
+guards remain in force. Other file values do not affect preparation.
 
 The reporter retains names, locations, outcomes, failure messages (600 characters) and top frames (240). Redaction removes repository paths, substitutes nonpublic job/child values (8+ characters) with `[env:NAME]`, and masks token/key shapes, URL passwords and `password=` as `[redacted]`. Generated values require a matching shape.
 
@@ -291,6 +291,8 @@ awaits an approved resource ledger.
 
 ## Changelog
 
+- 2026-11-11 23:18: Require the complete installer cohort’s credentials before setup. (authoring-run/1eb4586e-e5dd-41d2-80e3-338b75d13f6a - 0e264d010c2f5c80f4077a1e9fee5515216bcfe4)
+
 - 2026-11-11 23:11: Include declared file model selectors in OpenShell credential admission. (authoring-run/0759ff85-9e18-4fc7-b2bb-29e29bb5935a - f63959062058a5e5c630f36318a381e27ac07cf2)
 
 - 2026-11-11 10:47: Fix PostgreSQL topology ordering. (01a1cbd6-deb9-71a1-bebc-ec5228d76c16 - 225ef5203)
@@ -387,7 +389,5 @@ awaits an approved resource ledger.
 - 2026-10-29 02:11: Add focused Compose OpenShell selection and sanitized native worker observations. (authoring-run/01a17fae-f253-7d71-af12-d3f259c4faf0 - aa2cfe543b3bba361679e7e1a3028c3327d2c388)
 
 - 2026-10-23 07:40: Preserve upstream CI selection alongside locale-independent timestamp ordering after conflict resolution. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - a6a49a5192fa1c9cc5035801eed7d64b03336491)
-
-- 2026-10-23 03:43: Order Docker timestamps and retain twelve latest retry kinds independently of locale. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - 9bca605f5175bb225a522c3d5537a7ee6e1a7751)
 
 [GitHub Actions testing documentation history](github-actions-testing/history.md) preserves the older dated entries.

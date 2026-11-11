@@ -1047,7 +1047,20 @@ async function validateLaneInputsBeforeSideEffects(lane, { file, modelSelectors 
       requireEnv(["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"], effectiveEnv);
     }
   }
-  requireEnv(openShellRequiredEnv(name, file, prepare.requireEnv ?? [], modelEnv), effectiveEnv);
+  const requiredInputs =
+    name === "openshell-installers" && file === undefined
+      ? [
+          ...new Set(
+            laneDefinition(name).files.flatMap((entry) =>
+              openShellRequiredEnv(name, entry.path, prepare.requireEnv ?? [], {
+                ...modelEnv,
+                ...entry.env,
+              }),
+            ),
+          ),
+        ]
+      : openShellRequiredEnv(name, file, prepare.requireEnv ?? [], modelEnv);
+  requireEnv(requiredInputs, effectiveEnv);
   if (prepare.nodeBaseImage) {
     assertNodeBaseImage(effectiveEnv.NODE_BASE_IMAGE);
   }
