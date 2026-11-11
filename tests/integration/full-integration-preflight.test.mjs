@@ -1584,7 +1584,7 @@ test("verified docs pushes omit runtime lanes while keeping environment policy c
   );
 });
 
-test("scheduled preflight admits the exact main SHA and fails closed on uncertain history", async () => {
+test("scheduled preflight admits the exact main SHA and fails closed on uncertain history", async (t) => {
   const sha = "a".repeat(40);
   const env = {
     ...mainRun,
@@ -1704,7 +1704,9 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
         };
       }
       if (path.startsWith("/actions/workflows/351990468/runs?")) {
-        return { workflow_runs: [], total_count: 0 };
+        return event === "workflow_dispatch" && path.includes("event=workflow_dispatch")
+          ? { workflow_runs: [run], total_count: 1 }
+          : { workflow_runs: [], total_count: 0 };
       }
       if (path === `/actions/runs/${id}/attempts/1`) {
         return run;
@@ -1718,6 +1720,7 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
   for (const [history, reason] of [
     [{ startedAgo: 40, finishedAgo: 30 }, "cooldown"],
     [{ startedAgo: 100, finishedAgo: 5 }, "cooldown"],
+    [{ startedAgo: 100, finishedAgo: 5, split: true, event: "workflow_dispatch" }, "cooldown"],
     [{ startedAgo: 100, finishedAgo: 0, active: true }, "active-full"],
     [{ startedAgo: 100, finishedAgo: 80, covered: true }, "unchanged-main"],
     [{ startedAgo: 100, finishedAgo: 80, covered: true, split: true }, "unchanged-main"],
@@ -1811,58 +1814,231 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
     reason: "cooldown",
   });
 
-  const approvedWithUnknownSelection = {
-    id: 97,
-    run_attempt: 1,
-    workflow_id: 351990468,
-    head_sha: sha,
-    repository: { id: 1350208775 },
-    head_repository: { id: 1350208775 },
-    head_branch: "main",
-    event: "workflow_dispatch",
-    status: "in_progress",
-    conclusion: null,
-    updated_at: new Date().toISOString(),
+  const earlier = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
+  const manualHistory = (
+    jobs,
+    { active = true, finishedAgo = 0, result = { conclusion: active ? null : "success" } } = {},
+  ) => {
+    const repository = { id: 1350208775 };
+    const run = {
+      id: 97,
+      run_attempt: 1,
+      workflow_id: 351990468,
+      head_sha: sha,
+      repository,
+      head_repository: repository,
+      head_branch: "main",
+      event: "workflow_dispatch",
+      status: active ? "in_progress" : "completed",
+      ...result,
+      updated_at: earlier(finishedAgo),
+    };
+    const { github } = fixtures([sha, sha, sha]);
+    return async (request) => {
+      const { path } = request;
+      if (
+        path.startsWith("/actions/workflows/351990468/runs?") &&
+        path.includes("event=workflow_dispatch")
+      ) {
+        return { total_count: 1, workflow_runs: [run] };
+      }
+      if (path === "/actions/runs/97/attempts/1") {
+        return run;
+      }
+      if (path === "/actions/runs/97/attempts/1/jobs?per_page=100") {
+        return {
+          total_count: jobs.length,
+          jobs: jobs.map((job) => ({ run_id: run.id, run_attempt: 1, head_sha: sha, ...job })),
+        };
+      }
+      return github(request);
+    };
   };
-  const unknownSelection = async (request) => {
-    const { path } = request;
-    if (path === "/git/ref/heads/main") {
-      return main();
+  const job = (name, start, finish, conclusion = "success") => ({
+    name,
+    status: conclusion === null ? "in_progress" : "completed",
+    conclusion,
+    started_at: start === null ? null : earlier(start),
+    completed_at: finish === null ? null : earlier(finish),
+  });
+  const reuseName = "Execute / Reuse successful same-SHA CI";
+  const imageName = "Execute / Shared Runtime Image / Build ordinary CI runtime";
+  const approved = job("Approve manual integration", 125, 124);
+  const preflight = job("Execute / Dispatch Preflight", 123, 122);
+  const skippedReuse = job(reuseName, 121, 121, "skipped");
+  const admitted = { selectedLane: "all", runAll: true };
+  const skipped = (reason) => ({ selectedLane: "skip", runAll: false, reason });
+
+  for (const lane of ["Gateway Routing", "Production TUI"]) {
+    for (const active of [true, false]) {
+      await t.test(
+        `targeted ${lane} with shared image: ${active ? "live" : "completed"}`,
+        async () => {
+          // Both targeted lanes can build the image while the full-only job is skipped.
+          const jobs = [
+            approved,
+            {
+              ...preflight,
+              steps: [
+                { name: "Prepare fresh lane fallback", status: "completed", conclusion: "skipped" },
+                {
+                  name: "Prepare full admission marker",
+                  status: "completed",
+                  conclusion: "skipped",
+                },
+              ],
+            },
+            skippedReuse,
+            job(imageName, 40, 35),
+            job("Execute / " + lane, 34, active ? null : 10, active ? null : "success"),
+          ];
+          assert.deepEqual(
+            await validateFullIntegrationPreflight({
+              env,
+              github: manualHistory(jobs, { active, finishedAgo: active ? 0 : 9 }),
+            }),
+            admitted,
+          );
+        },
+      );
     }
-    if (path.startsWith("/actions/artifacts?")) {
-      return { total_count: 0, artifacts: [] };
-    }
-    if (path.startsWith("/actions/workflows/351990468/runs?")) {
-      const manual = new URLSearchParams(path.split("?")[1]).get("event") === "workflow_dispatch";
-      return {
-        total_count: Number(manual),
-        workflow_runs: manual ? [approvedWithUnknownSelection] : [],
-      };
-    }
-    if (path === "/actions/runs/97/attempts/1") {
-      return approvedWithUnknownSelection;
-    }
-    if (path === "/actions/runs/97/attempts/1/jobs?per_page=100") {
-      return {
-        total_count: 1,
-        jobs: [
-          {
-            name: "Approve manual integration",
-            run_id: 97,
-            run_attempt: 1,
-            head_sha: sha,
-            status: "completed",
-            conclusion: "success",
-          },
-        ],
-      };
-    }
-    return approvalApi()(request);
-  };
-  await assert.rejects(
-    validateFullIntegrationPreflight({ env, github: unknownSelection }),
-    /could not verify admission metadata/,
+  }
+
+  await t.test("completed skipped reuse still requires a run conclusion", async () => {
+    const github = manualHistory([preflight, skippedReuse, job(imageName, 8, 4)], {
+      active: false,
+      finishedAgo: 3,
+      result: {},
+    });
+    await assert.rejects(
+      validateFullIntegrationPreflight({ env, github }),
+      /could not verify admission metadata/,
+    );
+  });
+
+  for (const [startedAgo, finishedAgo, expected] of [
+    [40, 20, skipped("cooldown")],
+    [100, 5, skipped("cooldown")],
+    [100, 20, admitted],
+  ]) {
+    await t.test(`unmarked full clock: start ${startedAgo}m, finish ${finishedAgo}m`, async () => {
+      // Start is measured from suite work, excluding early preflight and CI reuse.
+      const jobs = [
+        approved,
+        preflight,
+        job(reuseName, 121, 110, startedAgo === 40 ? "failure" : "success"),
+        job(imageName, startedAgo, startedAgo - 5),
+        job("Execute / Gateway Routing", startedAgo - 4, finishedAgo + 1),
+      ];
+      assert.deepEqual(
+        await validateFullIntegrationPreflight({
+          env,
+          github: manualHistory(jobs, { active: false, finishedAgo }),
+        }),
+        expected,
+      );
+    });
+  }
+
+  await t.test("completed full without reuse metadata keeps its cooldown", async () => {
+    const jobs = [preflight, job(imageName, 30, 25), job("Execute / Runtime Image Fixture", 28, 2)];
+    const github = manualHistory(jobs, { active: false, finishedAgo: 1 });
+    assert.deepEqual(await validateFullIntegrationPreflight({ env, github }), skipped("cooldown"));
+  });
+
+  await t.test(
+    "completed shared work without reuse metadata holds during the possible cooldown",
+    async () => {
+      const gateway = job("Execute / Gateway Routing", 39, 30);
+      const recent = manualHistory([preflight, job(imageName, 45, 40), gateway], {
+        active: false,
+        finishedAgo: 29,
+      });
+      await assert.rejects(
+        validateFullIntegrationPreflight({ env, github: recent }),
+        /could not verify admission metadata/,
+      );
+      // A long attempt with the same finish is outside both cadence bounds.
+      const expired = manualHistory([preflight, job(imageName, 70, 40), gateway], {
+        active: false,
+        finishedAgo: 29,
+      });
+      assert.deepEqual(await validateFullIntegrationPreflight({ env, github: expired }), admitted);
+    },
   );
+
+  // Marker upload is best effort. A skipped reuse job cannot undo earlier full selection.
+  const preparation = job("Execute / Dispatch Preflight", 11, 10);
+  const steps = [
+    ["Prepare fresh lane fallback", "success"],
+    ["Prepare full admission marker", "success"],
+    ["Upload full admission marker", "failure"],
+  ].map(([name, conclusion]) => ({
+    name,
+    status: "completed",
+    conclusion,
+    completed_at: preparation.completed_at,
+  }));
+  const preparedFullJobs = [
+    { ...preparation, steps },
+    job(imageName, 8, 4),
+    job(reuseName, 3, 3, "skipped"),
+  ];
+
+  for (const [name, active, result] of [
+    ["cancelled", false, { conclusion: "cancelled" }],
+    ["missing conclusion", false, {}],
+    ["null conclusion", false, { conclusion: null }],
+    ["still active", true, { conclusion: null }],
+  ]) {
+    await t.test(`skipped reuse after full preparation and shared work: ${name}`, async () => {
+      const github = manualHistory(preparedFullJobs, { active, finishedAgo: 3, result });
+      const admission = validateFullIntegrationPreflight({ env, github });
+      if (active) {
+        assert.deepEqual(await admission, skipped("active-full"));
+      } else {
+        await assert.rejects(admission, /could not verify admission metadata/);
+      }
+    });
+  }
+
+  await t.test("failed or cancelled preflight without suite work admits", async () => {
+    for (const conclusion of ["failure", "cancelled"]) {
+      const jobs = [approved, job("Dispatch Preflight", 10, 9, conclusion)];
+      const github = manualHistory(jobs, { active: false, finishedAgo: 8, result: { conclusion } });
+      assert.deepEqual(await validateFullIntegrationPreflight({ env, github }), admitted);
+    }
+  });
+
+  for (const [name, jobs, expected] of [
+    ["unapproved manual run", [], admitted],
+    [
+      "live true full",
+      [approved, preflight, job(reuseName, 110, null, null)],
+      skipped("active-full"),
+    ],
+    [
+      "manual preflight still resolving selection",
+      [approved, job("Execute / Dispatch Preflight", 123, null, null)],
+      skipped("active-full"),
+    ],
+    [
+      "shared build without a reuse record leaves selection uncertain",
+      [approved, preflight, job(imageName, 40, 35)],
+      skipped("active-full"),
+    ],
+    ["approved manual run with no visible selection", [approved], null],
+    ["duplicate same-SHA CI reuse metadata", [preflight, skippedReuse, { ...skippedReuse }], null],
+  ]) {
+    await t.test(name, async () => {
+      const result = validateFullIntegrationPreflight({ env, github: manualHistory(jobs) });
+      if (expected === null) {
+        await assert.rejects(result, /could not verify admission metadata/);
+      } else {
+        assert.deepEqual(await result, expected);
+      }
+    });
+  }
 
   const moved = fixtures([sha, sha, "b".repeat(40)]);
   assert.deepEqual(await validateFullIntegrationPreflight({ env, github: moved.github }), {
