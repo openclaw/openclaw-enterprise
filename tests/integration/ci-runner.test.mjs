@@ -17,7 +17,9 @@ import {
 } from "../../scripts/ci/skipper-release.ts";
 import {
   aggregateArgs,
+  killRecordedProcessGroupMembers,
   laneArgs,
+  procStat,
   runnerArtifactPaths,
   writeFirstAgentCliFixture,
   writeJson,
@@ -1873,18 +1875,6 @@ test("run records timeout cancellation without leaking child output", async (t) 
   assert.equal(record.timeoutMs, 100);
 });
 
-// Field 5 of /proc/<pid>/stat is the process group; the name in parentheses may hold spaces.
-function procStat(pid) {
-  try {
-    const fields = readFileSync(`/proc/${pid}/stat`, "utf8")
-      .replace(/^.*\) /su, "")
-      .split(" ");
-    return { state: fields[0], pgid: Number(fields[2]) };
-  } catch {
-    return undefined;
-  }
-}
-
 // The recorded fixture processes still in group `pgid` that nothing has killed. A process
 // counts as killed once it is gone, a zombie (Z) or dead and being reaped (X), or SIGKILL
 // is pending for its whole thread group. kill(-pgid, "SIGKILL") queues that shared signal
@@ -1948,15 +1938,7 @@ waitingTest(
     // Never leave the fixture's processes behind, whatever the outcome: only the exact
     // pids the fixture recorded, still in the fixture's group, never a group.
     t.after(() => {
-      for (const pid of [pids?.runner, pids?.file, pids?.grandchild]) {
-        if (Number.isSafeInteger(pid) && pid > 1 && procStat(pid)?.pgid === pids.pgid) {
-          try {
-            process.kill(pid, "SIGKILL");
-          } catch {
-            // Already gone.
-          }
-        }
-      }
+      killRecordedProcessGroupMembers(pids?.pgid, [pids?.runner, pids?.file, pids?.grandchild]);
     });
 
     // The runner's clock stands still from the start until the file has recorded its pids and
@@ -2022,14 +2004,7 @@ test(
     );
     let pids;
     t.after(() => {
-      const pid = pids?.grandchild;
-      if (Number.isSafeInteger(pid) && pid > 1 && procStat(pid)?.pgid === pids.pgid) {
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch {
-          // Already gone.
-        }
-      }
+      killRecordedProcessGroupMembers(pids?.pgid, [pids?.grandchild]);
     });
 
     const result = run(root, laneArgs(root, "leftover", statePath, resultsPath), {
@@ -2130,15 +2105,7 @@ for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
             }
           }
         }
-        for (const pid of [pids?.runner, pids?.file, pids?.grandchild]) {
-          if (Number.isSafeInteger(pid) && pid > 1 && procStat(pid)?.pgid === pids.pgid) {
-            try {
-              process.kill(pid, "SIGKILL");
-            } catch {
-              // Already gone.
-            }
-          }
-        }
+        killRecordedProcessGroupMembers(pids?.pgid, [pids?.runner, pids?.file, pids?.grandchild]);
       });
 
       const recorded = await waitFor(() => {
