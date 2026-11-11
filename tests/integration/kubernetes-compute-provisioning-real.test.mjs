@@ -1284,7 +1284,10 @@ test(
     await waitFor("configured Agent deletion to complete", async () => {
       const work = await fixture.readWork(`agent:${provisioned.agentId}:reconcile:deleted`);
       assert.notEqual(work?.state, "failed_permanent", JSON.stringify(work));
-      return work?.state === "succeeded" ? work : undefined;
+      // Successful deletion removes the Agent and its Work rows atomically.
+      const agent = await fixture.request("GET", provisionedPath);
+      assert.ok([200, 404].includes(agent.status), JSON.stringify(agent.body));
+      return agent.status === 404 ? true : undefined;
     });
     await waitFor("configured Gateway state claim cleanup", async () =>
       (await missing("persistentvolumeclaim", provisionedClaimName, gatewayPlacement))
