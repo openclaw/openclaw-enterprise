@@ -1,3 +1,4 @@
+import { prepareGatewayRouting } from "../../scripts/ci/routing.mjs";
 import { readRuntimeProvenance } from "../../scripts/ci/runtime-provenance.mjs";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -785,6 +786,50 @@ test(
   },
 );
 
+test("gateway routing preparation preserves infrastructure env without overriding Slack selection", async (t) => {
+  const directory = await temporaryDirectory(t, "openclaw-k8s-routing-selection-");
+  const prepared = await prepareGatewayRouting({
+    cluster: {
+      name: "openclaw-k8s-routing",
+      directory,
+      kubeconfig: join(directory, "kubeconfig"),
+      context: "k3d-openclaw-k8s-routing",
+    },
+    // Only infrastructure I/O is simulated; the environment comes from the real producer.
+    downloadArtifact: async ({ artifact, directory: artifactDirectory }) => {
+      const path = join(artifactDirectory, artifact.path);
+      await writeFile(path, "apiVersion: v1\nkind: List\nitems: []\n");
+      return path;
+    },
+    execFile: async (command, args) => {
+      if (command === "openssl") {
+        await writeFile(args[args.indexOf("-out") + 1], "synthetic certificate");
+        await writeFile(args[args.indexOf("-keyout") + 1], "synthetic key");
+      } else {
+        assert.deepEqual(args.slice(0, 4), [
+          "--kubeconfig",
+          join(directory, "kubeconfig"),
+          "--context",
+          "k3d-openclaw-k8s-routing",
+        ]);
+      }
+      return { stdout: "", stderr: "" };
+    },
+  });
+
+  // Shared routing preparation must leave opt-in selection to the runner's lane/file inputs.
+  assert.equal(prepared.env.OCC_TEST_SLACK_LIVE, undefined);
+  const caDirectory = join(directory, "gateway-routing", "test-ca");
+  assert.deepEqual(prepared.env, {
+    OCC_TEST_GATEWAY_ROUTING_REAL: "1",
+    OCC_TEST_ENVOY_GATEWAY_NAMESPACE: "envoy-gateway-system",
+    OCC_TEST_CERT_MANAGER_NAMESPACE: "cert-manager",
+    OCC_TEST_GATEWAY_CA_CERT_PATH: join(caDirectory, "cert.pem"),
+    OCC_TEST_GATEWAY_CA_KEY_PATH: join(caDirectory, "key.pem"),
+    NODE_EXTRA_CA_CERTS: join(caDirectory, "cert.pem"),
+  });
+});
+
 test("runner applies file environment over real preparation defaults without replacing generated values", async (t) => {
   const root = await fixture(t);
   const statePath = join(root, "state/lane.json");
@@ -807,7 +852,8 @@ export { prepareFile };
     join(root, first),
     `import assert from "node:assert/strict";
 import test from "node:test";
-test("opt-in case runs", { skip: process.env.OCC_TEST_NAMESPACE_OPENSHELL_REAL !== "1" }, () => {
+test("opt-in case runs", { skip: process.env.OCC_TEST_SLACK_LIVE !== "1" }, () => {
+  assert.equal(process.env.OCC_TEST_NAMESPACE_OPENSHELL_REAL, "1");
   assert.equal(process.env.OCC_TEST_FILE_ONLY, "configured");
   assert.equal(process.env.NODE_OPTIONS, "--max-old-space-size=2048");
   assert.equal(process.env.OPENCLAW_ENTERPRISE_CI_STATE, ${JSON.stringify(statePath)});
@@ -819,6 +865,7 @@ test("opt-in case runs", { skip: process.env.OCC_TEST_NAMESPACE_OPENSHELL_REAL !
     `import assert from "node:assert/strict";
 import test from "node:test";
 test("sibling keeps lane defaults", () => {
+  assert.equal(process.env.OCC_TEST_SLACK_LIVE, undefined);
   assert.equal(process.env.OCC_TEST_NAMESPACE_OPENSHELL_REAL, undefined);
   assert.equal(process.env.OCC_TEST_FILE_ONLY, undefined);
   assert.equal(process.env.NODE_OPTIONS, ${JSON.stringify(lane.env.NODE_OPTIONS)});
@@ -837,6 +884,7 @@ test("sibling keeps lane defaults", () => {
             path: first,
             expectedTests: ["opt-in case runs"],
             env: {
+              OCC_TEST_SLACK_LIVE: "1",
               OCC_TEST_NAMESPACE_OPENSHELL_REAL: "1",
               OCC_TEST_FILE_ONLY: "configured",
               NODE_OPTIONS: "--max-old-space-size=2048",
@@ -2379,6 +2427,7 @@ test("run clears inherited selectors and keep flags while preserving explicit la
       '  assert.equal(process.env.OCC_TEST_FILE_SELECTOR, "file");',
       "  assert.equal(process.env.OCC_TEST_FILE_ABSENT, undefined);",
       "  assert.equal(process.env.OCC_TEST_OPTIONAL_ABSENT, undefined);",
+      "  assert.equal(process.env.OCC_TEST_SLACK_LIVE, undefined);",
       "  assert.equal(process.env.OCC_TEST_LEAKED_SELECTOR, undefined);",
       '  assert.equal(process.env.OCC_PROBE_REQUIRED_SELECTOR, "required");',
       "  assert.equal(process.env.OCC_PROBE_LEAKED_SELECTOR, undefined);",
@@ -2431,6 +2480,7 @@ test("run clears inherited selectors and keep flags while preserving explicit la
     {
       KEEP: "1",
       OCC_RUNTIME_KEEP: "1",
+      OCC_TEST_SLACK_LIVE: "1",
       OCC_TEST_LEAKED_SELECTOR: "1",
       OCC_TEST_REQUIRED_SELECTOR: "required",
       OCC_TEST_OPTIONAL_SELECTOR: "selected",
