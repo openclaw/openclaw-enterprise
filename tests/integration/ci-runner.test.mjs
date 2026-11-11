@@ -1,3 +1,4 @@
+import { readRuntimeProvenance } from "../../scripts/ci/runtime-provenance.mjs";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -37,6 +38,57 @@ const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
 // checkout. Stop Git's repository search at tmpdir() so the runner never reads
 // that checkout's HEAD as the fixture's source SHA.
 const fixtureGitEnv = { GIT_CEILING_DIRECTORIES: tmpdir() };
+
+test("runtime provenance excludes structured image identities and invalid native metadata", async (t) => {
+  const root = await temporaryDirectory(t, "ci-provenance-projection-");
+  const statePath = join(root, "state.json");
+  const imageId = `sha256:${"a".repeat(64)}`;
+  const manifestDigest = `sha256:${"b".repeat(64)}`;
+  const role = "OCC_TEST_KUBERNETES_AGENT_IMAGE";
+  const prefix = "openclaw-ci-test-lane-123456789abc";
+  const identity = {
+    lane: "test-lane",
+    preparationId: createHash("sha256").update(prefix).digest("hex"),
+  };
+  for (const fields of [
+    { imageId: [imageId], manifestDigest },
+    { imageId, manifestDigest: [[manifestDigest]] },
+  ]) {
+    await writeJson(statePath, {
+      lane: identity.lane,
+      prefix,
+      runtimeProvenance: { [role]: { ...fields, status: "unavailable" } },
+    });
+    assert.equal(await readRuntimeProvenance(statePath, identity), undefined);
+  }
+  for (const version of ["0.164.0\nprivate-value", "0.164.0-..", "0.164.0-01", "01.164.0"]) {
+    await writeJson(statePath, {
+      lane: identity.lane,
+      prefix,
+      runtimeProvenance: {
+        [role]: {
+          imageId,
+          manifestDigest,
+          status: "available",
+          platform: "linux/amd64",
+          openclawCommit: "c".repeat(40),
+          codex: { version, binarySha256: "d".repeat(64) },
+        },
+      },
+    });
+    assert.deepEqual(await readRuntimeProvenance(statePath, identity), {
+      [role]: { imageId, manifestDigest, status: "unavailable" },
+    });
+  }
+  assert.equal(
+    await readRuntimeProvenance(statePath, { ...identity, lane: "another-lane" }),
+    undefined,
+  );
+  assert.equal(
+    await readRuntimeProvenance(statePath, { ...identity, preparationId: "0".repeat(64) }),
+    undefined,
+  );
+});
 
 test("installed Skipper publishes only verified coverage evidence from the runner", () => {
   const path = "tests/integration/skipper-prepared-git-installed.test.mjs";
@@ -5796,6 +5848,7 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
   const pairStatePath = join(root, "state/k3d-pair.json");
   await writeJson(pairStatePath, {
     lane: "k3d-pair",
+    prefix: "openclaw-ci-k3d-pair-23456789abcd",
     resources: JSON.parse(await readFile(statePath, "utf8")).resources,
   });
   const pairResultsPath = join(root, "results/k3d-pair.json");
@@ -5844,6 +5897,7 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
   const brokenStatePath = join(root, "state/k3d-broken.json");
   await writeJson(brokenStatePath, {
     lane: "k3d-lane",
+    prefix: "openclaw-ci-k3d-lane-3456789abcde",
     resources: [
       ...JSON.parse(await readFile(statePath, "utf8")).resources,
       {
@@ -8668,6 +8722,11 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
   const bin = join(root, "bin");
   await mkdir(bin);
   const kubectl = await writeK3dKubectl(bin, { kind: "stop", pod, events, logLines });
+  const kubectlCalls = join(root, "kubectl-calls.jsonl");
+  await writeFile(
+    kubectl,
+    `${await readFile(kubectl, "utf8")}\nimport { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(kubectlCalls)}, JSON.stringify(process.argv.slice(2)) + "\\n");\n`,
+  );
   await writeK3dChildTest(join(root, "tests/integration/stop.test.mjs"), { kind: "stop" });
   await writeK3dChildTest(join(root, "tests/integration/pass.test.mjs"), { kind: "passing" });
 
@@ -8679,6 +8738,41 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
     ],
     { OCC_TEST_CHILD_ONLY: childSecret },
   );
+  const provenanceCanary = "private-image-metadata";
+  const runtimeProvenance = {
+    OCC_TEST_KUBERNETES_GATEWAY_IMAGE: {
+      imageId: `sha256:${"a".repeat(64)}`,
+      manifestDigest: `sha256:${"b".repeat(64)}`,
+      status: "available",
+      platform: "linux/amd64",
+      openclawCommit: "c".repeat(40),
+      codex: { version: "0.164.0", binarySha256: "d".repeat(64) },
+    },
+    OCC_TEST_KUBERNETES_AGENT_IMAGE: {
+      imageId: `sha256:${"e".repeat(64)}`,
+      manifestDigest: `sha256:${"f".repeat(64)}`,
+      status: "unavailable",
+    },
+  };
+  const state = JSON.parse(await readFile(statePath, "utf8"));
+  state.prefix = provenanceCanary;
+  state.runtimeProvenance = structuredClone(runtimeProvenance);
+  state.runtimeProvenance.OCC_TEST_KUBERNETES_GATEWAY_IMAGE.config = provenanceCanary;
+  state.runtimeProvenance.OCC_TEST_KUBERNETES_AGENT_IMAGE.error = provenanceCanary;
+  await writeJson(statePath, state);
+  // The last file removes the private state, as per-file cleanup can. Earlier
+  // validated evidence must survive in both the final result and same-run sidecar.
+  const passingFile = join(root, "tests/integration/pass.test.mjs");
+  await writeFile(
+    passingFile,
+    `${await readFile(passingFile, "utf8")}\nimport { rm } from "node:fs/promises";\nawait rm(${JSON.stringify(statePath)});\n`,
+  );
+  await writeJson(`${statePath}.diagnostics.json`, {
+    lane: "previous-lane",
+    preparationId: "previous-preparation",
+    failures: [{ file: "previous-file", private: provenanceCanary }],
+    runtimeProvenance,
+  });
   const result = run(root, args, {
     OCC_KUBECTL_BIN: kubectl,
     PATH: `${bin}:${process.env.PATH}`,
@@ -8686,6 +8780,15 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
 
   assert.equal(result.status, 1, result.stderr);
   const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
+  const summary = JSON.parse(await readFile(join(root, "results/k3d.json"), "utf8"));
+  assert.deepEqual(summary.runtimeProvenance, runtimeProvenance);
+  assert.deepEqual(JSON.parse(text).runtimeProvenance, runtimeProvenance);
+  assert.equal(
+    JSON.parse(text).preparationId,
+    createHash("sha256").update(state.prefix).digest("hex"),
+  );
+  assert.ok(!JSON.stringify(summary).includes(provenanceCanary));
+  assert.ok(!text.includes(provenanceCanary));
   const { containerLogs } = JSON.parse(text);
   // Only the failed wait writes a record: not the wait that settled, not the passing file.
   assert.equal(containerLogs.length, 1);
@@ -8751,6 +8854,50 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
     (await readdir(clusterDirectory)).filter((name) => name.startsWith("container-logs-")),
     [],
   );
+
+  // A different lane must not inherit retained state or the sidecar from this lane.
+  await assert.rejects(readFile(statePath), { code: "ENOENT" });
+  await writeJson(statePath, state);
+  await writeFile(
+    join(root, "tests/integration/later.test.mjs"),
+    'import test from "node:test"; test("later failure", () => { throw new Error("later"); });\n',
+  );
+  await writeJson(join(root, "scripts/ci/k3d-lane.json"), {
+    files: [{ path: "tests/integration/later.test.mjs", expectedTests: ["later failure"] }],
+  });
+  await writeJson(join(root, "scripts/ci/suites.json"), {
+    version: 1,
+    lanes: { "later-lane": "./k3d-lane.json" },
+    groups: {},
+  });
+  const initialCalls = await readFile(kubectlCalls, "utf8");
+  assert.notEqual(initialCalls, "", "the original lane reached namespace capture");
+  for (const retainedState of [true, false]) {
+    if (!retainedState) {
+      await rm(statePath, { force: true });
+    }
+    const later = run(root, [args[0], "later-lane", ...args.slice(2)], {
+      OCC_KUBECTL_BIN: kubectl,
+      PATH: `${bin}:${process.env.PATH}`,
+    });
+    assert.equal(later.status, 1, later.stderr);
+    const laterSummary = JSON.parse(await readFile(join(root, "results/k3d.json"), "utf8"));
+    assert.equal(laterSummary.runtimeProvenance, undefined);
+    const next = JSON.parse(await readFile(`${statePath}.diagnostics.json`, "utf8"));
+    assert.equal(next.lane, "later-lane");
+    assert.equal(next.runtimeProvenance, undefined);
+    assert.equal(next.agentNamespaces, undefined);
+    assert.equal(
+      await readFile(kubectlCalls, "utf8"),
+      initialCalls,
+      "foreign state starts no capture",
+    );
+    assert.equal(next.containerLogs, undefined);
+    assert.deepEqual(
+      next.failures.map(({ file }) => file),
+      ["tests/integration/later.test.mjs"],
+    );
+  }
 });
 
 for (const earlyLogExit of [false, true]) {
