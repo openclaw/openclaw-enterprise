@@ -9,8 +9,9 @@ last_updated_session: authoring-run/8d183761-a61e-4f89-b6fa-aaf112a75fc6
 ## Overview
 
 `scripts/dev-up` runs PostgreSQL, migration, bootstrap, API, and worker in Compose
-or an owned k3d cluster. Startup requires authenticated Installation and bootstrap
-Namespace readiness, plus Workspace readiness for OpenShell.
+or an owned k3d cluster, by default the Kubernetes-only profile
+(`internal/occdev/profile.go:ResolveProfile`). Startup requires authenticated Installation and
+bootstrap Namespace readiness, plus Workspace readiness for OpenShell.
 
 ## Entry Points
 
@@ -30,7 +31,7 @@ graph TD
   A["<b>Start development</b><br/>scripts/dev-up"] --> B{"<b>Compute Driver</b><br/>Docker or Kubernetes"}
   B -- "Docker" --> C["<b>Render Compose</b><br/>Validate publications"]
   B -- "Kubernetes" --> D{"<b>Control plane</b><br/>Compose or Kubernetes"}
-  D -- "Kubernetes" --> E["<b>Owned k3d stack</b><br/>PostgreSQL and OCE"]
+  D -- "Kubernetes (default)" --> E["<b>Owned k3d stack</b><br/>PostgreSQL and OCE"]
   D -- "Compose" --> F["<b>Hybrid stack</b><br/>Compose OCC and k3d Compute"]
   C --> G["<b>Prove Installation</b><br/>Authenticated service key"]
   F --> F2{"<b>OpenShell selected?</b>"}
@@ -61,7 +62,7 @@ graph TD
 `internal/occdev/compose.go:AnalyzeCompose`,
 `deploy/runtime/Dockerfile`
 
-`bin/occ` (`pnpm cli:build`) is required; arguments after `--` go to Compose. For Kubernetes Compute, required by OpenShell, see
+`bin/occ` (`pnpm cli:build`) is required; arguments after `--` go to Compose. For Kubernetes Compute, see
 [step 12](#12-select-kubernetes-development-and-preserve-cleanup-ownership).
 Without a Sandbox Driver, Compose Kubernetes startup requires Node before creating resources.
 
@@ -250,8 +251,7 @@ snapshot, unaffected by later `.env` edits.
 With `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`, Compute enters
 `internal/occdev/openshell_k3d.go:upK3d` before Compose rendering and uses the
 engine only for k3d and images. Without OpenShell, the Installation selects the
-bundled Presets and Codex Plugin Driver and copies bootstrap credentials into
-private state.
+bundled Presets and Codex Plugin Driver and copies bootstrap credentials privately.
 
 `internal/occdev/repository_k3d.go` validates selected inputs and waits for
 authenticated bootstrap and Namespace readiness. It binds the server-assigned
@@ -260,8 +260,8 @@ inputs, and upgrades Helm with the Repo Driver and worker sidecar. Discovery mus
 match approved references and profiles; it proves no model turn, native sandbox,
 or Git operation. See [required inputs](../../guides/deploy/local-repository-credentials.md#prepare-the-approved-inputs).
 
-`OCC_DEVELOPMENT_CONTROL_PLANE` defaults to `compose`; unsupported values fail
-before resource creation. The
+`OCC_DEVELOPMENT_CONTROL_PLANE` defaults to `compose` for Docker Compute, else
+`kubernetes`; unsupported values fail before resource creation. The
 [OpenShell provisioning flow](../openshell-sandbox-provisioning.md#0-create-the-development-control-plane)
 owns both OpenShell control-plane sequences.
 
@@ -278,12 +278,12 @@ after creating PostgreSQL. For OpenShell,
 `internal/occdev/gateway_k3d.go:installDevelopmentRoutingControllers` starts after
 kubeconfig setup, alongside runtime import and OpenShell installation. Both finish
 before routing resolves PostgreSQL’s address and starts OCC. Failure cancels and
-drains siblings before rollback. Cold builds and Podman install routing after runtime preparation.
+drains siblings before rollback. Cold builds and Podman install routing afterward.
 
-Both concurrently install cert-manager and Envoy, verifying checksums, established CRDs and rollout before GatewayClass acceptance or routing
+Both concurrently install cert-manager and Envoy, verifying checksums, CRDs and rollout before GatewayClass acceptance or routing
 configuration. Envoy waits for k3s-owned Gateway API CRDs.
 Without OpenShell, `OCC_DEVELOPMENT_K3S_IMAGE` selects the node
-image; its default `+v1.35` resolves the latest K3s 1.35 patch. An explicit
+image; its default `+v1.35` resolves the latest 1.35 patch. An explicit
 image skips lookup. OpenShell uses its pinned image in both control-plane modes.
 Cluster creation binds the API to loopback and preserves the default kubeconfig
 and current context.

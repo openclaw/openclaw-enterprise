@@ -487,7 +487,7 @@
       "path": "tests/integration/dev-up.test.mjs",
       "expectedTests": [
         "Kubernetes dev-up authenticates the Installation and cleanup uses its saved endpoint and Compose configuration",
-        "Kubernetes Compute defaults to the Compose control plane",
+        "Kubernetes Compute defaults to the Kubernetes control plane",
         "Kubernetes dev-up rejects an unsupported control-plane selection",
         "Kubernetes dev-up rolls back owned resources after node-dns-refused",
         "Kubernetes dev-down preserves recovery state after incomplete cleanup and can retry",

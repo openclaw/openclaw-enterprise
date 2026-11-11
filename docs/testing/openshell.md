@@ -39,7 +39,10 @@ To stop even a partially started environment, run:
 ```
 
 This deletes only the owned cluster and its database. For a Compose control
-plane, set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup.
+plane, set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup: an unset
+control plane follows the Compute Driver, so
+`OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell`
+alone starts Kubernetes-only.
 
 ## Finite repository removal
 

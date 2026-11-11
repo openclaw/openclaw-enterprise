@@ -203,16 +203,18 @@ test("Kubernetes dev-up authenticates the Installation and cleanup uses its save
   assert.match(repeated.stderr, /no such file or directory/);
 });
 
-test("Kubernetes Compute defaults to the Compose control plane", async (t) => {
+test("Kubernetes Compute defaults to the Kubernetes control plane", async (t) => {
   const fixture = await kubernetesFixture(t);
   delete fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE;
 
-  // Kubernetes Compute remains available while the control plane defaults to Compose.
+  // Without a control-plane selection, Kubernetes Compute selects the Kubernetes-only
+  // profile, which refuses Compose options before it creates anything. The Compose
+  // control plane would accept them and start.
   const result = await fixture.start();
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Control plane: Compose/);
-  const cleaned = await runDevDown(fixture.env);
-  assert.equal(cleaned.status, 0, cleaned.stderr);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Kubernetes-only profile does not accept Compose options/);
+  await assert.rejects(stat(fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY), { code: "ENOENT" });
+  assert.deepEqual(await readJsonLines(fixture.env.SAFETY_LOG), []);
 });
 
 test("dev-down from a fresh shell stops the recorded Kubernetes stack", async (t) => {

@@ -122,9 +122,14 @@ PR dependency caches stay within GitHub's PR merge-ref scope; main caches stay m
 
 `scripts/ci/prepare.mjs:main` and `scripts/ci/prepare.mjs:ensureK3dCluster`
 
-[CI resource preparation](github-actions-testing/preparation.md) traces tool setup, image and cluster preparation, protected credentials, and resource ownership. Continue below when preparation has produced the lane state.
+[CI resource preparation](github-actions-testing/preparation.md) covers tools, images, clusters, credentials and ownership.
 
-For `logging-collector`, `scripts/ci/prepare.mjs:prepareLane` pre-pulls the pinned Collector, Node, Prometheus and Grafana images before publishing lane inputs. The metrics test and preparation share the digests in `scripts/ci/metrics-monitoring-images.mjs:metricsMonitoringImages`. `scripts/ci/prepare.mjs:ensureDockerSourceImage` reuses a verified local repository digest or pulls through `scripts/ci/image-pull.ts:pullImage`, then verifies that digest before tests start containers. Registry 5xx and rate limits retry within the shared pull budget; missing manifests and authorization refusals fail preparation immediately. Explicit unpinned Node overrides keep the existing test-owned pull behavior.
+For `logging-collector`, `scripts/ci/prepare.mjs:prepareLane` pre-pulls configured
+Collector and Node images and the shared Prometheus and Grafana pins.
+`ensureDockerSourceImage` reuses verified local digests or verifies downloads from
+`scripts/ci/image-pull.ts:pullImage` before publishing inputs. Registry 5xx/rate
+limits retry within the shared budget; missing manifests/authorization refusals
+fail immediately. Unpinned Node overrides retain test-owned pulls.
 
 `scripts/ci/prepare.mjs:imageBuildArgs` restores scoped BuildKit caches for hosted image jobs. Only the [CI Image Cache workflow](../../.github/workflows/ci-image-cache.yml) calls `warmImageCache` to export the shared controller/runtime cache. Full OpenShell lanes retain this builder and `SOURCE_DATE_EPOCH=0` through
 [source-build tests](../testing/ci/openshell-execution.md#hosted-preparation).
@@ -173,7 +178,13 @@ both commits.
 
 `scripts/ci/run-tests.mjs:main`, `scripts/ci/reporter.mjs:jsonLinesReporter` and `scripts/ci/failure-redaction.mjs:redactFailure`
 
-Files use scoped environments in one owning lane; differing prerequisites require separate files. The reporter records case names, locations and outcomes. Results and logs retain failure messages (600 characters) and top frames (240). Redaction removes repository paths, replaces nonpublic job/child environment values (8+ characters) with `[env:NAME]`, and masks token/key shapes, URL passwords and `password=` values as `[redacted]`; generated values require a matching shape.
+`scripts/ci/run-tests.mjs:normalizeFile` validates `file.env`.
+`runFile` merges, per child: filtered inherited values
+with declared inputs restored, `lane.env`, preparation defaults, `file.env`, then
+generated values. Later values win.
+`scripts/ci/prepare.mjs:prepareFile` separates re-resolved defaults from generated outputs. `file.env` affects neither preflight nor resource preparation. Keep differing prerequisites in separate files.
+
+The reporter records case names, locations and outcomes. Results and logs retain failure messages (600 characters) and top frames (240). Redaction removes repository paths, replaces nonpublic job/child environment values (8+ characters) with `[env:NAME]`, and masks token/key shapes, URL passwords and `password=` values as `[redacted]`; generated values require a matching shape.
 
 HTTP diagnostics retain numeric actual/expected statuses, allowlisted OCC codes and available ChatGPT operation/status. Denied traffic retains an allowlisted category and plugin failures an allowlisted readiness/rollout stage. Rollouts retain allowed Pod phases, readiness/scheduling flags, restart counts, exit codes and allowlisted reasons.
 
@@ -186,9 +197,6 @@ categories; `run-tests.mjs:runNode` adds lane/file labels. Installation ordinals
 and millisecond offsets enter [file receipts](../testing/ci/openshell-execution.md#interpret-timing-and-proof),
 not live logs. Readers bound partial records; parent byte limits apply first.
 Markers and separators stay out of failure tails. Timing and case accounting remain separate.
-
-For native first-Agent failure observations, see
-[interpret timing and proof](../testing/ci/openshell-execution.md#interpret-timing-and-proof).
 
 Required cases must pass; every skip or TODO fails the lane. There are no counterpart-skip lists or CI name filters. Synthetic file-wrapper success, missing output, zero cases, or interruption without final reporter output cannot establish coverage. Lane results retain failure, timeout and cleanup outcomes.
 
@@ -277,6 +285,10 @@ awaits an approved resource ledger.
 ## Changelog
 
 - 2026-11-11 02:49: Trace installed failure receipts. (authoring-run/ca550d16-3b1c-4ed9-9ec7-d10efbb6baf9 - 2f93d2d9a4e452c79813467b4fbe0f9218410835)
+
+- 2026-11-11 02:22: Persist defaults separately. (authoring-run/468c8b0e-17e2-4d4e-988e-f00f3434ccfa - 52faf13e94dab59c20c80b161169c1d32429da36)
+
+- 2026-11-11 02:08: Trace per-file environment precedence and preparation boundaries. (authoring-run/3950ed4c-e0a8-42f9-8fc0-6b5fa60d7d3a - 08c7419aea802667090483843a386071c13e9050)
 
 - 2026-11-11 01:21: Include the OTEL lane in sanitized image-cache observations. (authoring-run/d63d3aa5-5c9c-493a-b4ea-51a1d64e9454 - 60289cbf3d6995ed46960ddb32402e52bf5efad7)
 

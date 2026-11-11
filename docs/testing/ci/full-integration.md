@@ -130,7 +130,8 @@ Raw test output and diagnostics remain private. Failed native operations report 
 If the installed proof fails and the job can continue, look for
 `attempt-<attempt>-full-failure-skipper-prepared-git-installed`, retained for seven
 days. Its single JSON file records the run, attempt, source SHA, failed outcome,
-last entered stage and installed cleanup status. Missing or unrecognized
+last recorded stage and installed cleanup status. A missed checkpoint write can
+leave an earlier stage visible. Missing or unrecognized
 checkpoints become `unknown`; they do not establish successful cleanup.
 
 Cleanup `passed` covers registered teardown callbacks, verified cluster and
