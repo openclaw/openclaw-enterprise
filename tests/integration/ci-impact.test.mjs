@@ -1655,6 +1655,7 @@ test("failed lane summary preserves the first unsuccessful step", (t) => {
       env: { PATH: process.env.PATH, GITHUB_STEP_SUMMARY: output, ...env },
     });
     assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, `::notice title=CI lane first failure::${first}\n`);
     const receipt = readFileSync(output, "utf8");
     assert.equal(
       receipt,

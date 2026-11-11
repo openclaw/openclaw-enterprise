@@ -8,7 +8,6 @@ import {
   createFixture,
   customRuntimeOverride,
   defaultRuntimeImage,
-  fixtureNamespaceNetwork,
   matchingInstallationId,
   mismatchedInstallationId,
   perImageOverride,
@@ -249,113 +248,57 @@ async function ownedKeyDirectories(fixture) {
   );
 }
 
-test("dev-down removes the service key directory dev-up created and keeps a chosen key output", async (t) => {
+test("Compose shutdown keeps copied service keys and leaves Namespace networks to Docker Compute", async (t) => {
   const fixture = await createFixture(t);
   const options = composeOptions(fixture);
-
   const started = await runDevUp(["--", ...options], fixture.env);
   assert.equal(started.status, 0, started.stderr);
-  const [owned, ...others] = await ownedKeyDirectories(fixture);
-  assert.deepEqual(others, []);
-  const ownedKey = join(fixture.directory, owned, "initial-admin-service-key.json");
-  assert.ok(started.stdout.includes(`Service key file: ${ownedKey}`), started.stdout);
-  assert.match(await readFile(ownedKey, "utf8"), new RegExp(serviceKey));
+  const [created] = await ownedKeyDirectories(fixture);
+  const key = join(fixture.directory, created, "initial-admin-service-key.json");
+  assert.ok(started.stdout.includes(`Service key file: ${key}`), started.stdout);
+  const copy = await readFile(key, "utf8");
+  assert.match(copy, new RegExp(serviceKey));
 
-  // A key the operator placed with --key-output is theirs: down never removes it.
-  const chosenDirectory = join(fixture.directory, "chosen key directory");
-  await mkdir(chosenDirectory, { mode: 0o700 });
-  const chosenKey = join(chosenDirectory, "service-key.json");
-  const chosen = await runDevUp(["--key-output", chosenKey, "--", ...options], fixture.env);
-  assert.equal(chosen.status, 0, chosen.stderr);
+  // Older launchers shared one list across all projects in this checkout.
+  const [browser] = (await readdir(fixture.directory)).filter((name) =>
+    name.startsWith("occ-docker-"),
+  );
+  const record = join(fixture.directory, browser, "dev-up-key-directories");
+  await assert.rejects(stat(record), { code: "ENOENT" });
+  const other = join(fixture.directory, "openclaw-dev-up-key.other");
+  await mkdir(other, { mode: 0o700 });
+  const otherKey = join(other, "initial-admin-service-key.json");
+  await writeFile(otherKey, "other project", { mode: 0o600 });
+  const entries = `${join(fixture.directory, created)}\n${other}\n`;
+  await writeFile(record, entries, { mode: 0o600 });
 
-  const stopped = await runCommand(fixture.cli, ["dev", "down", "--", ...options], {
+  const before = (await readJsonLines(fixture.dockerLog)).length;
+  const stopped = await runCommand(fixture.cli, ["dev", "down", "--volumes", "--", ...options], {
     cwd: fixture.fixtureRepository,
     env: fixture.env,
   });
   assert.equal(stopped.status, 0, stopped.stderr);
-  assert.ok(
-    stopped.stdout.includes(`Removed service key directory ${join(fixture.directory, owned)}.`),
-    stopped.stdout,
-  );
-  assert.deepEqual(await ownedKeyDirectories(fixture), []);
-  assert.match(await readFile(chosenKey, "utf8"), new RegExp(serviceKey));
-});
-
-test("dev-up records a clean key directory path when TMPDIR ends in a slash", async (t) => {
-  const fixture = await createFixture(t);
-  const options = composeOptions(fixture);
-  // macOS sets TMPDIR to ".../T/".
-  const env = { ...fixture.env, TMPDIR: fixture.directory + "/" };
-
-  const started = await runDevUp(["--", ...options], env);
-  assert.equal(started.status, 0, started.stderr);
-  const [owned, ...others] = await ownedKeyDirectories(fixture);
-  assert.deepEqual(others, []);
-  const [browser] = (await readdir(fixture.directory)).filter((name) =>
-    name.startsWith("occ-docker-"),
-  );
-  assert.equal(
-    await readFile(join(fixture.directory, browser, "dev-up-key-directories"), "utf8"),
-    join(fixture.directory, owned) + "\n",
-  );
-
-  const stopped = await runCommand(fixture.cli, ["dev", "down", "--", ...options], {
-    cwd: fixture.fixtureRepository,
-    env,
-  });
-  assert.equal(stopped.status, 0, stopped.stderr);
-  assert.doesNotMatch(stopped.stderr, /kept service key directory/);
-  assert.deepEqual(await ownedKeyDirectories(fixture), []);
-});
-
-test("dev-down --volumes removes the Installation's Docker Compute Namespace networks", async (t) => {
-  const fixture = await createFixture(t);
-  const options = composeOptions(fixture);
-  const started = await runDevUp(["--", ...options], fixture.env);
-  assert.equal(started.status, 0, started.stderr);
-  const down = (args) =>
-    runCommand(fixture.cli, ["dev", "down", ...args, "--", ...options], {
-      cwd: fixture.fixtureRepository,
-      env: fixture.env,
-    });
-  const networkCommands = async () =>
-    (await readJsonLines(fixture.dockerLog)).filter(
-      (entry) => entry.args[0] === "network" || entry.args.includes("psql"),
-    );
-
-  // A plain down keeps the database, and the next start reuses its Namespace networks.
-  const kept = await down([]);
-  assert.equal(kept.status, 0, kept.stderr);
-  assert.deepEqual(await networkCommands(), []);
-
-  // Deleting the volumes deletes the Installation: down reads its Namespaces from the
-  // database first, then removes only networks labelled for those Namespaces.
-  const removed = await down(["--volumes"]);
-  assert.equal(removed.status, 0, removed.stderr);
-  assert.ok(
-    removed.stdout.includes(`Removed Docker Compute Namespace network ${fixtureNamespaceNetwork}.`),
-    removed.stdout,
-  );
-  const commands = await networkCommands();
-  assert.ok(commands[0].args.includes("psql"));
+  const calls = (await readJsonLines(fixture.dockerLog)).slice(before).map(({ args }) => args);
   assert.deepEqual(
-    commands.slice(1).map((entry) => entry.args),
+    calls.filter((args) => args.includes("down")),
     [
       [
-        "network",
-        "ls",
-        "--filter",
-        "label=org.openclaw.enterprise.managed=true",
-        "--filter",
-        "label=org.openclaw.enterprise.compute-driver=docker",
-        "--filter",
-        "label=org.openclaw.enterprise.namespace-id=namespace_fixture",
-        "--format",
-        "{{.Name}}",
+        "compose",
+        ...options,
+        "-f",
+        join(fixture.fixtureRepository, "compose.native-admin.yaml"),
+        "down",
+        "--volumes",
       ],
-      ["network", "rm", fixtureNamespaceNetwork],
     ],
   );
+  assert.deepEqual(
+    calls.filter((args) => args[0] === "network" || args.includes("psql")),
+    [],
+  );
+  assert.equal(await readFile(key, "utf8"), copy);
+  assert.equal(await readFile(otherKey, "utf8"), "other project");
+  assert.equal(await readFile(record, "utf8"), entries);
 });
 
 test("a failed dev-up removes the empty service key directory it created", async (t) => {
