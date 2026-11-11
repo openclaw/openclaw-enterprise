@@ -286,11 +286,11 @@ export async function requireSupervisorReconnect(setup, stack, evidence, deploym
       configurationMatches: before.enforcement.configurationId === live.configurationId,
       enforcementMatches: isDeepStrictEqual(before.enforcement, live),
     };
-    await checkpoint(phase, {
-      equalities,
-      policyVersion: status.active_version,
-      instanceId: live.instanceId,
-    });
+    await checkpoint(
+      phase,
+      { equalities },
+      { policyVersion: status.active_version, instanceId: live.instanceId },
+    );
     assert.ok(
       Object.values(equalities).every(Boolean),
       "reconnect policy comparison failed or raced; see equality checkpoint",
@@ -335,17 +335,20 @@ export async function requireSupervisorReconnect(setup, stack, evidence, deploym
     }
     return [...sessions.values()];
   };
-  await checkpoint("reconnect-wait-start", {
-    supplierCommit: input.supplierCommit,
-    supervisor: baselineProcess,
-    harness: baselineHarness,
-    supplierProcesses,
-    sandboxId,
-    agentId: agent.id,
-    revisionId: revision.id,
-    logSince: ledger.startedAt,
-    sessionCountKind: "observed-lower-bound",
-  });
+  await checkpoint(
+    "reconnect-wait-start",
+    { sessionCountKind: "observed-lower-bound" },
+    {
+      supplierCommit: input.supplierCommit,
+      supervisor: baselineProcess,
+      harness: baselineHarness,
+      supplierProcesses,
+      sandboxId,
+      agentId: agent.id,
+      revisionId: revision.id,
+      logSince: ledger.startedAt,
+    },
+  );
   const before = await snapshot("reconnect-before-policy");
   const baselineSessions = await readSessions(before.live.instanceId);
   assert.ok(baselineSessions.length > 0, "no accepted baseline supervisor session in bounded logs");
@@ -355,12 +358,11 @@ export async function requireSupervisorReconnect(setup, stack, evidence, deploym
     0n,
   );
   const baselineAt = new Date().toISOString();
-  await checkpoint("reconnect-baseline", {
-    baselineAt,
-    sessions: baselineSessions,
-    sessionCount: sessions.size,
-    sessionCountKind: "observed-lower-bound",
-  });
+  await checkpoint(
+    "reconnect-baseline",
+    { sessionCount: sessions.size, sessionCountKind: "observed-lower-bound" },
+    { baselineAt, sessions: baselineSessions },
+  );
   // Only acceptance after this baseline qualifies. Existing log history cannot
   // satisfy the gate; natural renewal must happen without any test mutation.
   const reconnect = await f.waitFor(
@@ -377,14 +379,16 @@ export async function requireSupervisorReconnect(setup, stack, evidence, deploym
     },
     180_000,
   );
-  await checkpoint("reconnect-accepted", {
-    baselineAt,
-    reconnect,
-    sessions: [...sessions.values()],
-    sessionCount: sessions.size,
-    sessionCountKind: "observed-lower-bound",
-    logThrough: new Date().toISOString(),
-  });
+  await checkpoint(
+    "reconnect-accepted",
+    { sessionCount: sessions.size, sessionCountKind: "observed-lower-bound" },
+    {
+      baselineAt,
+      reconnect,
+      sessions: [...sessions.values()],
+      logThrough: new Date().toISOString(),
+    },
+  );
   // Accepted precedes the execution enrollment ACK. A missing observation is
   // pending; a present observation with mismatching pins is an immediate failure.
   const after = await f.waitFor(
@@ -415,16 +419,18 @@ export async function requireSupervisorReconnect(setup, stack, evidence, deploym
     status.cleanup === null &&
     active.activeRevisionId === revision.id;
   await sameProcess();
-  await checkpoint("reconnect-before-turn", {
-    deploymentReady,
-    deploymentId: status.deploymentId,
-    status: status.status,
-    errorAbsent: status.error === null,
-    cleanupAbsent: status.cleanup === null,
-    activeRevisionMatches: active.activeRevisionId === revision.id,
-    supervisorUnchanged: true,
-    runtimeUnchanged: true,
-  });
+  await checkpoint(
+    "reconnect-before-turn",
+    {
+      deploymentReady,
+      errorAbsent: status.error === null,
+      cleanupAbsent: status.cleanup === null,
+      activeRevisionMatches: active.activeRevisionId === revision.id,
+      supervisorUnchanged: true,
+      runtimeUnchanged: true,
+    },
+    { deploymentId: status.deploymentId, status: status.status },
+  );
   assert.ok(
     deploymentReady,
     "deployment must have succeeded without error or cleanup before first turn",

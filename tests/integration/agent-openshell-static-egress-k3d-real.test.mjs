@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -67,34 +66,9 @@ test(
     try {
       const setup = await arrangeRealPrerequisites(t, progress, inputsPath, {
         wholeExecution: true,
+        allowControllerUpgrade: true,
       });
-      assert.equal(
-        execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
-        setup.input.harnessCommit,
-        "run this qualification from the selected harness checkout",
-      );
       const upgrade = setup.input.controllerUpgrade;
-      if (upgrade) {
-        assert.equal(
-          execFileSync("git", ["status", "--porcelain", "--untracked-files=all"], {
-            encoding: "utf8",
-          }).trim(),
-          "",
-          "upgrade qualification requires a clean candidate checkout",
-        );
-        execFileSync("git", [
-          "merge-base",
-          "--is-ancestor",
-          upgrade.fromCommit,
-          setup.input.oceCommit,
-        ]);
-        execFileSync("git", [
-          "merge-base",
-          "--is-ancestor",
-          setup.input.oceCommit,
-          setup.input.harnessCommit,
-        ]);
-      }
       evidence = await createRunEvidence(t, setup, progress);
       const initialSetup = upgrade
         ? {
@@ -547,11 +521,17 @@ async function revokeExactGrantAndObserveDenial(stack, evidence, owned, deployme
   );
   const knownDenials = new Set(beforeDenials.rows.map(({ id }) => id));
   const beforeDenied = provider.observations.length;
+  const beforeConnections = provider.tcpConnections;
   const { requestId } = await turn("fresh-iam-revoked", "failed", 403);
   assert.equal(
     provider.observations.length,
     beforeDenied,
     "fresh IAM denial must precede every provider send",
+  );
+  assert.equal(
+    provider.tcpConnections,
+    beforeConnections,
+    "fresh IAM denial must precede every provider connection",
   );
   const denials = await pool.query(
     "SELECT id, actor_id, resource_kind, resource_id, details, outcome FROM occ.audit_events WHERE namespace_id = $1 AND actor_id = $2 AND resource_id = $3 AND action = 'openclaw.egress.authorize'",

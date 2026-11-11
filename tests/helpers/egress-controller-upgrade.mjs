@@ -256,6 +256,7 @@ export async function observeControllerUpgrade(
   const { api, checkpoint } = evidence;
   const { namespacePath } = stack;
   const beforeIngress = owned.provider.observations.length;
+  const beforeConnections = owned.provider.tcpConnections;
   const deadline = Date.now() + input.controllerUpgrade.timeoutMs;
   const withinDeadline = () =>
     assert.ok(Date.now() < deadline, "controller upgrade checkpoint expired");
@@ -381,6 +382,11 @@ export async function observeControllerUpgrade(
     beforeIngress,
     "controller replacement must not send provider traffic",
   );
+  assert.equal(
+    owned.provider.tcpConnections,
+    beforeConnections,
+    "controller replacement must not open provider connections",
+  );
   withinDeadline();
   await checkpoint("controller-upgrade-observed", {
     controllers,
@@ -431,11 +437,19 @@ export async function observeControllerUpgrade(
     }
     const response = await evidence.request(request.method, request.path, request.body);
     if (creation) {
-      // A regression may unexpectedly admit the source. Keep custody even when
-      // the following expected-409 assertion fails; never replay the request.
+      // A regression may unexpectedly admit the source. Only adopt cleanup for
+      // a new, read-back identity matching this run; ambiguous creates stay pending.
       if (response.status === 201) {
         const source = assertConnectedResponse(response, 201);
         assert.ok(Check(CredentialSourceId, source?.id), "cleanup requires a valid source ID");
+        assert.ok(
+          !(retained.state.sources ?? []).some(({ id }) => id === source.id),
+          "cleanup must not adopt a source from the pre-upgrade baseline",
+        );
+        const observed = await api("GET", `${namespacePath}/credential-sources/${source.id}`);
+        assert.equal(observed.id, source.id, "cleanup requires the returned source ID");
+        assert.equal(observed.namespaceId, stack.namespace.id, "cleanup requires this Namespace");
+        assert.equal(observed.name, request.body.name, "cleanup requires this run-specific name");
         evidence.ledger.resources.push({ kind: "credential-sources", id: source.id });
         delete evidence.ledger.pendingCreate;
       }
@@ -459,6 +473,11 @@ export async function observeControllerUpgrade(
       owned.provider.observations.length,
       beforeIngress,
       "retirement must precede provider I/O",
+    );
+    assert.equal(
+      owned.provider.tcpConnections,
+      beforeConnections,
+      "retirement must precede provider connections",
     );
     // A refusal is accounted for only after its persisted and external effects
     // are checked. Read failures and unexpected work must retain cleanup custody.

@@ -15,7 +15,9 @@ block this proof; fixture-only results cannot replace it.
 
 Build A and B from reviewed commits and retain independent build receipts binding
 each source to its image. A must be an ancestor of B. Keep the same runtime and
-supplier images, trust, owner configuration and database. Install A through the
+supplier images, trust, owner configuration and database. A and B must use the same
+inference `/**` matcher. This procedure does not qualify upgrades from Sandboxes
+created without it. Install A through the
 production Helm path with exactly one API and one Worker Pod. Verify the
 [controller-only upgrade prerequisites](../guides/deploy/production-upgrade.md)
 and prepare its exact command before starting the test. The lane observes an

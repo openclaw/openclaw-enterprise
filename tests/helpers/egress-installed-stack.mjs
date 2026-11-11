@@ -11,6 +11,7 @@ import {
   assertConnectedResponse,
   takeConnectedControllerBinding,
   validateConnectedInputs,
+  assertConnectedCheckout,
   validateConnectedDatabaseUrl,
   serializeConnectedRequest,
   sendConnectedRequest,
@@ -51,6 +52,7 @@ export async function arrangeRealPrerequisites(t, progress, inputsPath, profile 
     controller,
     profile,
   );
+  assertConnectedCheckout(input);
   const databaseUrl = validateConnectedDatabaseUrl(process.env.OCC_TEST_DATABASE_URL);
   const selection = {
     kubeconfigPath: input.kubeconfigPath,

@@ -34,8 +34,10 @@ is checked before contacting the counterpart, so an unavailable Gateway cannot
 turn the refusal into a retryable error. Ask an Installation administrator to
 configure a supported model access path.
 
-Existing revisions keep the recorded provider for recovery and request
-authorization. Withdrawal and cleanup still go to their original owners.
+Existing revisions keep the recorded provider for request authorization and recovery
+under the current Sandbox contract. Adoption still requires the exact current spec,
+including the inference `/**` matcher; older Sandboxes without it are unsupported.
+Withdrawal and cleanup still go to their original owners.
 This restriction does not change ordinary Gateway-only OpenAI sources.
 
 ## Execution admission cutoff

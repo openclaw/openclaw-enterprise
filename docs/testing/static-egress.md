@@ -281,7 +281,8 @@ parameters, which can override host or database. Keep both files and credentials
 Set `authorityProfile: "fresh-whole-execution"` and omit `credentialConnector`.
 This lane requires execution authority, all five supplier capabilities, and a
 loaded managed policy with the `/**` binary matcher on each model route. Run from
-`harnessCommit`; `oceCommit` identifies the product.
+clean `harnessCommit`; `oceCommit` must be its ancestor (or equal). Both installed
+callers verify this before cluster checks. Image build receipts remain separate proof.
 
 The qualified supplier requires Helm value
 `gatewayConfig["openshell.gateway"].config_delivery_mode: push` (default: `poll`)

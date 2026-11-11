@@ -64,7 +64,8 @@ graph TD
 Bundled OpenShell rejects new static OpenAI use via
 `InstalledDriver.assertNewStaticProviderUse`: source refusal precedes material
 reads; deployment refusal precedes counterpart probes. Retained revisions keep
-their provider, authorization, withdrawal and cleanup.
+their provider, authorization, withdrawal and cleanup under the
+[current Sandbox contract](../reference/credential-sources/protected-inference.md#bundled-openshell-admission).
 
 OCC checks source and Secret permissions; existing sources need opt-in. Version 3
 binds Sandbox and Proxy to one registered Driver.
