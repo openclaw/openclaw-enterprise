@@ -61,15 +61,9 @@ test(
     const [ready] = await once(listener.child.stdout, "data");
     const port = JSON.parse(String(ready)).port;
     const reachable = { label: "control", host: "127.0.0.1", port, expect: "connected" };
-    // A real closed loopback port reproduces ECONNREFUSED, not policy enforcement.
-    const closed = createServer();
-    closed.listen(0, "127.0.0.1");
-    await once(closed, "listening");
-    const closedAddress = closed.address();
-    assert(closedAddress && typeof closedAddress !== "string");
-    const closedPort = closedAddress.port;
-    await new Promise<void>((resolve) => closed.close(() => resolve()));
-    const blocked = { label: "target", host: "127.0.0.1", port: closedPort, expect: "denied" };
+    // Destination port 0 gives a real connect refusal without releasing an
+    // ephemeral port that another concurrent test could acquire.
+    const blocked = { label: "target", host: "127.0.0.1", port: 0, expect: "denied" };
     const result = await run([reachable, blocked, { ...reachable, label: "control-after" }]);
     assert.equal(result.code, 0, result.stderr);
     assert.deepEqual(
@@ -78,7 +72,7 @@ test(
     );
     assert.equal(result.reports[1]!.code, "ECONNREFUSED");
     assert.equal(result.reports[1]!.host, blocked.host);
-    assert.equal(result.reports[1]!.port, closedPort);
+    assert.equal(result.reports[1]!.port, blocked.port);
     assert.equal(result.reports[1]!.syscall, "connect");
     assert.match(result.reports[1]!.message!, /ECONNREFUSED/);
 
@@ -152,19 +146,14 @@ test(
       attempts.map((_, i) => i + 1),
     );
 
-    const unavailable = createServer();
-    unavailable.listen(0, "127.0.0.1");
-    await once(unavailable, "listening");
-    const unavailableAddress = unavailable.address();
-    assert(unavailableAddress && typeof unavailableAddress !== "string");
-    const closedPort = unavailableAddress.port;
-    await new Promise<void>((resolve) => unavailable.close(() => resolve()));
-    const closed = { ...initial, port: closedPort };
+    // Keep the permanently refused control independent of ephemeral port reuse.
+    const closed = { ...initial, port: 0 };
     const started = performance.now();
     const never = await run([closed], options);
     assert.equal(never.code, 1);
     assert(never.reports.length > 1 && never.reports.length <= 33);
     assert(never.reports.every((report) => report.code === "ECONNREFUSED"));
+    assert(never.reports.every((report) => report.syscall === "connect"));
     assert(performance.now() - started < 12000, "initial control must exhaust its small deadline");
 
     const protectedTargets = await run(
