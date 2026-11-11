@@ -121,13 +121,13 @@ step 5a, accepting challenges only from that window and origin. Redemption
 clears `window.opener`; errors close the pending window. An audited `403` in tab `sessionStorage` suppresses reads
 until logout, sign-in, or a new tab. `activeRevisionId` or `desiredRuntimeState`
 changes refresh access; concurrent requests coalesce into one follow-up.
-Browsing a historical version does not change the selected destination.
-Stopped/unsupported states offer **Open draft**. Unavailable states offer
+Browsing history preserves the selected destination.
+Stopped/unsupported Agents offer **Open draft**. When unavailable, use
 **View deployment** for readable versions, otherwise **Refresh access**.
 
 `apps/controller/src/drivers/compute/runtime-startup.ts:gatewayManagedModeEnvironment`
 sets `OPENCLAW_CONFIG_READONLY_NOTICE` and `OPENCLAW_DISABLE_SKILL_INSTALLS=1`.
-[Managed Gateways](../reference/agents/gateway-managed-mode.md) refuse skill installs and uploads even for `operator.admin`.
+[Managed Gateways](../reference/agents/gateway-managed-mode.md) reject skill installs and uploads from `operator.admin` too.
 
 ### 2. OCC protects the availability route
 
