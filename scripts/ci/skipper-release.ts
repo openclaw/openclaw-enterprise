@@ -24,6 +24,30 @@ export function skipperInstalledProof(teamReview: boolean): string[] {
   ];
 }
 
+export function skipperTestCheckpoints(teamReview: boolean): string[] {
+  return [
+    ...skipperInstalledProof(teamReview).slice(0, -1), // Retirement can follow a failure before proof.
+    "create-synthetic-model-secret",
+    "deploy-request-started",
+    "observe-installed-agent-readonly-skill-directories",
+    "gateway-chat-refused",
+    "native-command-started",
+    "repository-binding-withdrawn-discovery-released",
+    "native-command-completion-mismatch",
+    "native-command-and-model-observed",
+  ];
+}
+
+export function skipperSelectedFailure(resultText: string) {
+  const files = record(JSON.parse(resultText)).files;
+  assert.ok(Array.isArray(files));
+  const file = files.map(record).find((entry) => entry.path === installedTestPath);
+  assert.ok(file && Array.isArray(file.tests));
+  const failed = file.tests.map(record).find((entry) => entry.status === "failed");
+  const fileFailure = failed?.error == null ? record(file.fileFailure) : undefined;
+  return { error: record(failed?.error ?? fileFailure?.error), fileFailure };
+}
+
 function record(value: unknown): Record<string, unknown> {
   assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
   return value as Record<string, unknown>;
@@ -95,7 +119,7 @@ export function projectSkipperRunnerReceipt(value: unknown) {
   };
 }
 
-const skipperOperations = [
+export const skipperOperations = [
   "command-input",
   "gateway-chat",
   "gateway-exec",
@@ -208,14 +232,8 @@ export function skipperFailureSummary(resultText: string, root: string, fallback
   let category;
   let operationDetail;
   try {
-    const files = record(JSON.parse(resultText)).files;
-    assert.ok(Array.isArray(files));
+    const { error, fileFailure } = skipperSelectedFailure(resultText);
     const path = installedTestPath;
-    const file = files.map(record).find((entry) => entry.path === path);
-    assert.ok(file && Array.isArray(file.tests));
-    const failed = file.tests.map(record).find((entry) => entry.status === "failed");
-    const fileFailure = failed?.error == null ? record(file.fileFailure) : undefined;
-    const error = record(failed?.error ?? fileFailure?.error);
     const cause = record(error.cause ?? {});
     const location = record(error.location ?? {});
     const diagnostic = skipperOperationDiagnostic(error.diagnostic);
