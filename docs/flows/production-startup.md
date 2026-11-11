@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-11-11"
-last_updated_session: "authoring-run/8367ab20-ba98-4ec6-9700-296442c6eb96"
+last_updated_session: "authoring-run/ba89e4f8-7809-490b-b98f-c8032300a4c1"
 ---
 
 # Production Startup Flow
@@ -143,7 +143,7 @@ API ports accept 1–65535 without leading zeros. The Compute Driver rejects mal
 IPv4 hostnames and numeric or hexadecimal sandbox domain suffixes.
 See [routing prerequisites and opt-out](../guides/deploy/workspace-routing.md#explicit-opt-out)
 and [values the candidate refuses](../guides/deploy/production-upgrade-recovery.md#correct-values-the-candidate-refuses).
-The metrics and repository listeners share a worker Pod and need different ports.
+Worker metrics and repository listeners need different ports.
 
 On upgrades, `deploy/helm/openclaw-enterprise/files/check-installation.mjs` validates
 Installation without database/Kubernetes access; refusal stops migration and API
@@ -212,12 +212,15 @@ IdP and Gateway roots for `NODE_EXTRA_CA_CERTS`;
 `deploy/helm/openclaw-enterprise/files/check-api-database-ca.mjs` preloads to refuse
 database TLS not pinned to that CA.
 
-After initialization, API readiness requires listener, Better Auth, database,
-Installation YAML, Driver, Backend membership, and Compute preflight validation. Private routes, `/healthz` and
-database-backed `/readyz` use the operator-managed endpoint. The startup probe
-allows 120 one-second failures: two minutes to listen, then readiness within a second.
-The worker's exec probes start Node inside its CPU limit, so each has a 5-second
-timeout; its startup probe allows 24 five-second failures, the same two minutes.
+API readiness validates the listener, Better Auth, database, Installation YAML,
+Driver, Backend membership, and Compute preflight. Private routes, `/healthz`, and database-backed `/readyz` use the operator-managed endpoint. API permits
+120 one-second startup failures, then requires one-second readiness. Worker exec
+probes start Node within its CPU limit and five-second timeout; startup allows
+24 failures.
+
+`apps/controller/src/metrics/listener.ts:startMetricsListener` holds slots
+until collection settles and response finishes or socket closes.
+[Host/Expect count toward capacity](../reference/metrics.md#configuration-and-access).
 
 `apps/controller/src/index.ts:createFastifyApp`
 
@@ -385,6 +388,12 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 17:55: Release metrics sockets. (authoring-run/ba89e4f8-7809-490b-b98f-c8032300a4c1 - 755ebc38280f84b3ec420cc0b2a475ed1fb2be0a)
+
+- 2026-11-11 17:38: Count implicit metrics responses. (authoring-run/36f5ccfa-01c1-4cdb-b694-2692e3715fd6 - 755ebc38280f84b3ec420cc0b2a475ed1fb2be0a)
+
+- 2026-11-11 17:15: Bound metrics pipelines. (authoring-run/bec1d5fe-2f91-4072-a8ee-b716656390ef - 755ebc38280f84b3ec420cc0b2a475ed1fb2be0a)
 
 - 2026-11-11 15:06: Preserve explicit PostgreSQL caller options after URL parsing. (authoring-run/8367ab20-ba98-4ec6-9700-296442c6eb96 - ee419a1969d414d4aa934c59b39b868e8777b127)
 

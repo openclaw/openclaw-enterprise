@@ -4051,7 +4051,10 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
       env.OCC_TEST_NATIVE_IAM_BARRIER_DATABASE = database.name;
       env.OCC_TEST_NATIVE_IAM_BARRIER_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
-    if (relativeFile.endsWith("occ-metrics.test.mjs")) {
+    if (
+      relativeFile.endsWith("occ-metrics.test.mjs") ||
+      relativeFile.endsWith("postgres-metrics-listener-capacity.test.ts")
+    ) {
       env.OCC_METRICS_TEST_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
     if (relativeFile.endsWith("auth-maintain.test.mjs")) {

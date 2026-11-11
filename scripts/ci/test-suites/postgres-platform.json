@@ -674,6 +674,10 @@
         "filesystem Configuration Driver validates gateway password reference placeholders",
         "Kubernetes Configuration Driver validates gateway password reference placeholders"
       ]
+    },
+    {
+      "path": "tests/integration/postgres-metrics-listener-capacity.test.ts",
+      "expectedTests": ["metrics listener bounds PostgreSQL scrape waiters and pipelined responses"]
     }
   ]
 }
