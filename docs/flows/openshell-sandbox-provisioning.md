@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-11
-last_updated_session: authoring-run/1354aaee-dc47-423c-864d-41dfc9608912
+last_updated_session: authoring-run/04448580-0c4a-4965-8c27-7f586386c885
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -98,7 +98,7 @@ graph TD
 `internal/occdev/openshell.go:prepareOpenShell`,
 `internal/occdev/kubernetes.go:writeInstallation`
 
-Both launchers require Landlock, verify the charts and pin the runtime images.
+Both launchers require Landlock, verify charts and pin runtime images.
 Importing OCE images first prevents k3s garbage collection. `writeInstallation`
 selects curated Codex plugins and the Credential Gateway supplies credentials.
 
@@ -219,7 +219,7 @@ calls. Labels outside `allowed_pod_labels` fail with `SANDBOX_POD_LABELS_NOT_PER
 `provisionHarness` creates or adopts the provider. Renewal checks its version
 and updates only `node_setup_json` through `UpdateProvider`. `sandboxCommand`
 adds workspace links, the setup wait and account bootstrap when applicable.
-Tests measure the resulting serialized command against a 64 KiB target.
+Tests measure serialized commands against a 64 KiB target.
 OpenShell allows 256 KiB of argument bytes in total and 32 KiB per argument.
 Adoption compares the complete Sandbox specification, including the command.
 For upgrades that change an immutable command, follow the
@@ -280,15 +280,14 @@ qualification is incomplete.
 
 `apps/controller/src/drivers/sandbox/openshell-gateway-client.ts:createSandbox`
 
-The client sends identity/spec, Workspace scope and one of 16 `request_id` values:
-the revision UUID, then 15 derived IDs. `REQUEST_OUTCOME_UNCERTAIN`,
-`REQUEST_ID_PAYLOAD_MISMATCH` or `REQUEST_REPLAY_UNAVAILABLE` advances only after
-`getSandbox` finds nothing. Unresolved IDs never expire; completed records expire
-after 24 hours. Names are Workspace-unique. At 1,000 live/unresolved records,
-`RESOURCE_EXHAUSTED` becomes `SANDBOX_ADMISSION_LIMIT_REACHED`: preparation waits
-without spending attempts until its deadline; Namespace work retries.
+Send Workspace-scoped identity/spec, a unique name and `request_id` (revision UUID, then 15 derived IDs).
+After `REQUEST_OUTCOME_UNCERTAIN`, `REQUEST_ID_PAYLOAD_MISMATCH` or `REQUEST_REPLAY_UNAVAILABLE`,
+advance only if `getSandbox` confirms absence. At 1,000 live/unresolved records, `RESOURCE_EXHAUSTED`
+([`SANDBOX_ADMISSION_LIMIT_REACHED`](../reference/drivers/openshell-sandbox.md#troubleshooting)) defers preparation until its deadline without spending attempts. Namespace work retries.
+After replay, [Worker diagnostics](../reference/drivers/openshell-sandbox.md#createsandbox-admission-failures) only explain refusals.
 
-Adoption, including `ALREADY_EXISTS`, requires matching Workspace, labels,
+Provisioning reads [Agent sizing and RuntimeClass](../reference/drivers/openshell-sandbox.md#configuration)
+from the current Installation. Adoption, including `ALREADY_EXISTS`, requires matching Workspace, labels,
 annotations/spec and a Sandbox that is neither stopped nor deleting. Workspace `sandbox:write`
 permits replacement. Each Harness has one unnamed bearer-passthrough
 `APP_SERVER_PORT` exposure; only Codex returns a URL. Native held-failure exposure
@@ -430,6 +429,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 06:13: Trace attachment refusals. (authoring-run/04448580-0c4a-4965-8c27-7f586386c885 - fef779767c622b30bab45c7a0a94f16fc04f70ab)
 
 - 2026-11-11 05:33: Record lazy packing and PAT evidence. (authoring-run/1354aaee-dc47-423c-864d-41dfc9608912 - f633bf27c890)
 

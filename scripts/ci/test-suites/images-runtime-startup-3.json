@@ -11,7 +11,8 @@
     "tests/integration/runtime-image-node-state-lock.test.ts",
     "tests/integration/runtime-image-state-migration.test.mjs",
     "tests/integration/runtime-image-native-listener.test.mjs",
-    "tests/integration/runtime-image-codex-local-plugins.test.ts"
+    "tests/integration/runtime-image-codex-local-plugins.test.ts",
+    "tests/helpers/workspace-gateway-relay-container.test.mjs"
   ],
   "files": [
     {
@@ -69,6 +70,22 @@
       "expectedTests": [
         "protected Codex empty selection exposes no locally known fixture skills",
         "stock Codex preparation loads only the selected read-only local package"
+      ]
+    },
+    {
+      "path": "tests/helpers/workspace-gateway-relay-container.test.mjs",
+      "expectedTests": [
+        "relay startup retains exit evidence and redacts bounded container logs",
+        "relay startup omits container output cut at the capture limit",
+        "relay startup omits interrupted diagnostic output",
+        "relay startup preserves engine launch errors before cleanup",
+        "running relay survives startup and is removed by context cleanup",
+        "relay name conflicts neither disclose nor remove the existing container",
+        "relay cleanup reports removal failure alongside the startup failure",
+        "relay cleanup accepts a lost removal acknowledgement only after confirming absence",
+        "fixture cleanup owns containers left by a rejected launch",
+        "relay cleanup waits for a delegated launch when setup is cancelled",
+        "relay cleanup reports an interrupted delegated launch as indeterminate"
       ]
     }
   ]

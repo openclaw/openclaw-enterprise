@@ -187,6 +187,28 @@ const assistantInputMessage = inputMessage(
   oneOf("assistant"),
   (value) => text(value) || assistantContentParts(value),
 );
+const agentPath: Validator = (value) =>
+  typeof value === "string" &&
+  value.length <= 4096 &&
+  /^\/root(?:\/(?!root(?:\/|$))[a-z0-9_]+)*$/u.test(value);
+const agentMessageText = object({ type: oneOf("input_text"), text });
+const agentMessageEncryptedContent = object({
+  type: oneOf("encrypted_content"),
+  encrypted_content: text,
+});
+// Native agent paths label inference input. They confer no proxy authority.
+const agentInputMessage = object(
+  {
+    type: oneOf("agent_message"),
+    author: agentPath,
+    recipient: agentPath,
+    content: (value) =>
+      Array.isArray(value) &&
+      agentMessageText(value[0]) &&
+      (value.length === 1 || (value.length === 2 && agentMessageEncryptedContent(value[1]))),
+  },
+  { id: name },
+);
 const reasoningItem = object(
   { type: oneOf("reasoning"), summary: array(summary) },
   {
@@ -224,6 +246,7 @@ const inputItems = array(
   (item) =>
     plainInputMessage(item) ||
     assistantInputMessage(item) ||
+    agentInputMessage(item) ||
     reasoningItem(item) ||
     toolCall(item) ||
     toolOutput(item) ||

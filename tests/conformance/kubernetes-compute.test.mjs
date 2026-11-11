@@ -17299,6 +17299,36 @@ test("gateway storage class names must be Kubernetes resource names", () => {
   }
 });
 
+test("Gateway storage capacity rejects invalid configuration before cluster operations", () => {
+  const runtime = { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" };
+  for (const gatewayStorageSizeGiB of [
+    0,
+    -1,
+    1.5,
+    65537,
+    Number.MAX_SAFE_INTEGER + 1,
+    NaN,
+    Infinity,
+    "100",
+    null,
+  ]) {
+    const configured = options({ runtime: { ...runtime, gatewayStorageSizeGiB } });
+    assert.throws(
+      () => requireConfiguration(KubernetesComputeDriver, configured),
+      SharedConfigurationValidationError,
+    );
+    assert.throws(
+      () => createKubernetesComputeDriver(configured),
+      SharedConfigurationValidationError,
+    );
+  }
+  for (const gatewayStorageSizeGiB of [1, 65536]) {
+    const configured = options({ runtime: { ...runtime, gatewayStorageSizeGiB } });
+    requireConfiguration(KubernetesComputeDriver, configured);
+    assert.doesNotThrow(() => createKubernetesComputeDriver(configured));
+  }
+});
+
 test("Gateway and Harness storage are separate and preserve ephemeral Codex credentials", () => {
   const driver = createKubernetesComputeDriver(
     options({
@@ -17848,6 +17878,7 @@ test("private gateway claim reuse and deletion verify exact ownership and storag
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
+        gatewayStorageSizeGiB: 1024,
       },
     }),
   );
@@ -17858,10 +17889,13 @@ test("private gateway claim reuse and deletion verify exact ownership and storag
     name: namespace,
     plane: "execution",
   });
+  assert.equal(desired.spec.resources.requests.storage, "1024Gi");
   let observed = {
     ...structuredClone(desired),
     metadata: { ...desired.metadata, uid: "claim-uid" },
   };
+  // Kubernetes serializes 1024Gi as 1Ti; reuse and deletion must compare capacity.
+  observed.spec.resources.requests.storage = "1Ti";
   const mutations = [];
   driver.apiClients = Promise.resolve({
     core: {
@@ -17900,7 +17934,19 @@ test("private gateway claim reuse and deletion verify exact ownership and storag
       claim.spec.storageClassName = "network-filesystem";
     },
     (claim) => {
-      claim.spec.resources.requests.storage = "40Gi";
+      claim.spec.resources.requests.storage = "1099511627775";
+    },
+    (claim) => {
+      claim.spec.resources.requests.storage = "1099511627777";
+    },
+    (claim) => {
+      claim.spec.resources.requests.storage = "invalid";
+    },
+    (claim) => {
+      delete claim.spec.resources.requests.storage;
+    },
+    (claim) => {
+      claim.spec.resources.requests.storage = 1099511627776;
     },
   ]) {
     observed = structuredClone(valid);
