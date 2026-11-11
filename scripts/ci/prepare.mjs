@@ -766,11 +766,23 @@ async function ensurePostgresServer(statePath, state) {
     throw error;
   }
   const docker = process.env.OCC_DOCKER_BIN ?? "docker";
-  const container = (
-    await execFile(docker, dockerArgsForPostgres(resource, "ps", "-q", "postgres"), {
-      env: { OCC_POSTGRES_PORT: "0", OPENCLAW_CI_POSTGRES_INIT_SQL: initSql },
-    })
-  ).stdout.trim();
+  // Standalone podman-compose does not accept a service argument to ps.
+  const lookup =
+    basename(docker) === "podman"
+      ? await execFile(docker, [
+          "ps",
+          "--no-trunc",
+          "--filter",
+          `label=com.docker.compose.project=${resource.name}`,
+          "--filter",
+          "label=com.docker.compose.service=postgres",
+          "--format",
+          "{{.ID}}",
+        ])
+      : await execFile(docker, dockerArgsForPostgres(resource, "ps", "-q", "postgres"), {
+          env: { OCC_POSTGRES_PORT: "0", OPENCLAW_CI_POSTGRES_INIT_SQL: initSql },
+        });
+  const container = lookup.stdout.trim();
   if (!/^[a-f0-9]{64}$/.test(container)) {
     throw new Error("Expected one owned PostgreSQL container for port discovery.");
   }
