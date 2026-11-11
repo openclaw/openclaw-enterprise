@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
 updated: 2026-11-11
-last_updated_session: authoring-run/c70a6869-705d-495a-85dd-f0c603db8196
+last_updated_session: authoring-run/2dccf6f5-0340-47b6-88a4-eb047f929fff
 ---
 
 # Agent Native Admin UI Flow
@@ -246,7 +246,24 @@ both sockets.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminHttp`
 
-The HTTP proxy normalizes URLs (maximum 4,096 characters), requires exact `Origin` except for GET/HEAD, and strips cookies, service keys, forwarding/identity/scope headers and upstream `Set-Cookie`. It blocks service-worker scripts, rewrites same-upstream redirects to the Agent origin, adds CSP `worker-src 'none'`, and forwards to private HTTPS. Avatar `502`s become empty `404`s, preserving the initials fallback. Both modes use `occ-workspace-files`; chat overwrites `x-openclaw-scopes` with `operator.sessions.write`. Runtime authority intersects that ceiling with identity/device grants; client headers cannot widen it.
+The HTTP proxy normalizes URLs (maximum 4,096 characters). It checks the exact
+Agent `Origin` and allows GET and HEAD to omit it. It strips cookies, service
+keys, and forwarding, identity, and scope headers. It forwards surviving
+`Content-Length` over private HTTPS. If inbound headers specify body framing
+and no length remains, it adds chunked framing.
+
+Both modes use `occ-workspace-files`. Chat sets `x-openclaw-scopes` to
+`operator.sessions.write`, which caps runtime authority alongside identity and
+device grants.
+
+The proxy blocks service-worker scripts, adds CSP `worker-src 'none'`, and
+rewrites same-upstream redirects to the Agent origin. It strips upstream
+`Set-Cookie` and `Clear-Site-Data`.
+
+If an upstream transfer fails, the proxy stops the upstream request. It returns
+`503` if response headers are still pending. It aborts the response if it has
+already sent headers. For an avatar `502`, it returns an empty `404` for the
+initials fallback and cancels the upstream response body.
 
 ### 7. OCC proxies native WebSocket upgrades
 
@@ -317,6 +334,10 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 23:34: Clarify request framing. (authoring-run/2dccf6f5-0340-47b6-88a4-eb047f929fff - a8ccd21095bf8f651c8dbc270e069808251fd0db)
+
+- 2026-11-11 23:20: Document native admin HTTP relay handling. (authoring-run/30741f75-946a-4c47-952b-1afd8ff10888 - a8ccd21095bf8f651c8dbc270e069808251fd0db)
 
 - 2026-11-11 21:13: Describe hostname validation before Agent-reference lookup. (authoring-run/c70a6869-705d-495a-85dd-f0c603db8196 - dfbdd7bfa6ccfba7d3d2e6b28f2770988c0cfc0d)
 

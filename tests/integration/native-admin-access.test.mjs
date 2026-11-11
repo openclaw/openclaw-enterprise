@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:https";
+import { request as httpRequest } from "node:http";
+import { createConnection } from "node:net";
 import { once } from "node:events";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import test from "node:test";
@@ -85,7 +87,7 @@ function nativeComputeDriver(upstreamPort, { exclusiveReplacement = false } = {}
   });
 }
 
-async function startNativeHttpsUpstream(t) {
+async function startNativeHttpsUpstream(t, { captureWire = false } = {}) {
   const directory = await temporaryDirectory(t, "openclaw-native-admin-upstream-");
   const { key, cert } = await selfSigned(directory, {
     keyPem: sharedRsaPrivateKeyPem("native-admin-upstream"),
@@ -93,7 +95,56 @@ async function startNativeHttpsUpstream(t) {
   });
 
   const requests = [];
+  const parsedRequests = [];
+  const wire = [];
+  const streams = new Map();
+  const parserErrors = [];
+  const sockets = new Set();
+  const startStream = (response, name, statusCode, { contentLength, continuous = false } = {}) => {
+    let resolveClosed;
+    const control = {
+      closed: false,
+      finished: false,
+      writes: 0,
+      close: new Promise((resolve) => {
+        resolveClosed = resolve;
+      }),
+      reset: () => response.destroy(),
+    };
+    streams.set(name, control);
+    const prefix = `native-${name}-prefix\n`;
+    let interval;
+    const deadline = setTimeout(() => response.destroy(), 4_000);
+    response.once("close", () => {
+      clearTimeout(deadline);
+      clearInterval(interval);
+      control.closed = true;
+      control.finished = response.writableFinished;
+      resolveClosed({ finished: control.finished, writes: control.writes });
+    });
+    response.writeHead(statusCode, {
+      "content-type": "text/plain; charset=utf-8",
+      ...(contentLength === undefined ? {} : { "content-length": String(contentLength) }),
+    });
+    response.write(prefix);
+    control.writes++;
+    if (continuous) {
+      interval = setInterval(() => {
+        if (control.writes >= 100) {
+          response.end();
+          return;
+        }
+        response.write(`native-${name}-tick\n`);
+        control.writes++;
+      }, 20);
+    }
+  };
   const server = createServer({ key, cert }, async (request, response) => {
+    parsedRequests.push({
+      method: request.method,
+      url: request.url,
+      headers: { ...request.headers },
+    });
     const chunks = [];
     for await (const chunk of request) {
       chunks.push(chunk);
@@ -104,6 +155,42 @@ async function startNativeHttpsUpstream(t) {
       headers: { ...request.headers },
       body: Buffer.concat(chunks).toString("utf8"),
     });
+    if (request.url?.endsWith("/integrity-response-reset")) {
+      startStream(response, "response-reset", 200);
+      return;
+    }
+    if (request.url?.endsWith("/integrity-response-short")) {
+      startStream(response, "response-short", 200, { contentLength: 512 });
+      return;
+    }
+    if (request.url?.endsWith("/integrity-response-pre-header")) {
+      request.socket.destroy();
+      return;
+    }
+    if (request.url?.endsWith("/integrity-response-complete")) {
+      response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+      response.end("native-complete-body\n");
+      return;
+    }
+    if (request.url?.endsWith("/integrity-response-headers")) {
+      response.writeHead(200, {
+        "clear-site-data": '"cookies"',
+        "set-cookie": "invented_native_integrity=never-publish; Path=/",
+        "content-security-policy": "default-src 'self'",
+        "content-type": "text/plain; charset=utf-8",
+        "x-native-upstream": "integrity-headers",
+      });
+      response.end("native-header-body\n");
+      return;
+    }
+    if (request.url?.endsWith("/api/users/integrity-avatar-stream/avatar")) {
+      startStream(response, "avatar-stream", 502, { continuous: true });
+      return;
+    }
+    if (request.url?.endsWith("/integrity-client-stream")) {
+      startStream(response, "client-stream", 200, { continuous: true });
+      return;
+    }
     if (request.url?.includes("/upstream-unavailable")) {
       // OpenClaw's answer when a Gravatar fallback cannot be fetched.
       response.writeHead(502, { "content-type": "application/json" });
@@ -140,22 +227,53 @@ async function startNativeHttpsUpstream(t) {
     });
     response.end("native admin upstream\n");
   });
+  // Register after HTTPS installs its parser: Node's data-listener wrapper then
+  // leaves optimized socket consumption and exposes the same decrypted bytes.
+  server.on("secureConnection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+    if (!captureWire) {
+      return;
+    }
+    const observation = { chunks: [], bytes: 0, overflow: false };
+    wire.push(observation);
+    socket.prependListener("data", (chunk) => {
+      if (observation.bytes + chunk.length > 65_536) {
+        observation.overflow = true;
+        return;
+      }
+      observation.chunks.push(Buffer.from(chunk));
+      observation.bytes += chunk.length;
+    });
+  });
+  if (captureWire) {
+    server.on("clientError", (error, socket) => {
+      parserErrors.push({ code: error.code });
+      socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    });
+  }
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   t.after(
     () =>
-      new Promise((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      ),
+      new Promise((resolve, reject) => {
+        for (const control of streams.values()) {
+          control.reset();
+        }
+        for (const socket of sockets) {
+          socket.destroy();
+        }
+        server.close((error) => (error ? reject(error) : resolve()));
+      }),
   );
   const address = server.address();
   assert.equal(typeof address, "object");
   assert.notEqual(address, null);
-  return { port: address.port, requests, cert };
+  return { port: address.port, requests, parsedRequests, wire, streams, parserErrors, cert };
 }
 
 async function createNativeAdminFixture(t, options = {}) {
-  const upstream = await startNativeHttpsUpstream(t);
+  const upstream = await startNativeHttpsUpstream(t, options.upstream);
   const fixture = await createConsoleAppFixture(t, {
     ...(options.state === undefined ? {} : { state: options.state }),
     publicOrigin: options.publicOrigin ?? publicOrigin,
@@ -1728,4 +1846,570 @@ test("a browser Back to a denied Agent gateway stays 403 and links to the consol
   assert.match(api.headers["content-type"], /^application\/json/);
   // The JSON refusal names the grant but not the Agent, which the host named, not the caller.
   assert.deepEqual(api.json().error, { code: "FORBIDDEN", message: NATIVE_ADMIN_DENIED });
+});
+
+async function liveNativeAdminFixture(t, options = {}) {
+  const context = await createNativeAdminFixture(t, options);
+  const native = (await nativeStatus(context)).data;
+  const session = await createExactAgentAdministerSession(context, "native-http-integrity");
+  trustLocalUpstreamCertificate(t, context.upstream.cert);
+  const address = context.fixture.app.server.address();
+  assert.equal(typeof address, "object");
+  assert.notEqual(address, null);
+  return {
+    ...context,
+    native,
+    port: address.port,
+    nativeHeaders: {
+      host: nativeAuthority(native),
+      origin: native.origin,
+      cookie: session.cookie,
+    },
+  };
+}
+
+function liveNativeRequest(context, path, options = {}) {
+  return new Promise((resolve) => {
+    const result = {
+      statusCode: null,
+      headers: {},
+      body: "",
+      complete: false,
+      ended: false,
+      aborted: false,
+      error: null,
+    };
+    let receivedResponse = false;
+    let settled = false;
+    let actedOnData = false;
+    const chunks = [];
+    let size = 0;
+    const finish = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(deadline);
+      result.body = Buffer.concat(chunks).toString("utf8");
+      resolve(result);
+    };
+    const request = httpRequest(
+      {
+        hostname: "127.0.0.1",
+        port: context.port,
+        path,
+        method: options.method ?? "GET",
+        agent: false,
+        headers: { ...context.nativeHeaders, ...options.headers },
+      },
+      (response) => {
+        receivedResponse = true;
+        result.statusCode = response.statusCode;
+        result.headers = { ...response.headers };
+        response.on("data", (chunk) => {
+          size += chunk.length;
+          if (size > 65_536) {
+            result.error = "response-bound-exceeded";
+            response.destroy();
+            return;
+          }
+          chunks.push(Buffer.from(chunk));
+          if (!actedOnData) {
+            actedOnData = true;
+            options.onFirstData?.(response, request);
+          }
+        });
+        response.once("aborted", () => {
+          result.aborted = true;
+        });
+        response.once("error", (error) => {
+          result.error = error.code ?? error.name;
+        });
+        response.once("end", () => {
+          result.ended = true;
+        });
+        response.once("close", () => {
+          result.complete = response.complete;
+          finish();
+        });
+      },
+    );
+    const deadline = setTimeout(() => {
+      result.error = "request-deadline";
+      request.destroy();
+      finish();
+    }, 6_000);
+    request.once("error", (error) => {
+      result.error ??= error.code ?? error.name;
+      if (!receivedResponse) {
+        finish();
+      }
+    });
+    for (const chunk of options.chunks ?? []) {
+      request.write(chunk);
+    }
+    request.end();
+  });
+}
+
+function rawNativeRequest(context, method, path, headers, body = "") {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let socketError;
+    const socket = createConnection({ host: "127.0.0.1", port: context.port });
+    const deadline = setTimeout(() => socket.destroy(new Error("raw request deadline")), 6_000);
+    socket.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > 65_536) {
+        socket.destroy(new Error("raw response bound exceeded"));
+        return;
+      }
+      chunks.push(Buffer.from(chunk));
+    });
+    socket.once("error", (error) => {
+      socketError = error;
+    });
+    socket.once("close", () => {
+      clearTimeout(deadline);
+      if (socketError) {
+        reject(socketError);
+      } else {
+        resolve(Buffer.concat(chunks).toString("latin1"));
+      }
+    });
+    socket.once("connect", () => {
+      const fields = { ...context.nativeHeaders, connection: "close", ...headers };
+      socket.write(
+        [
+          method + " " + path + " HTTP/1.1",
+          ...Object.entries(fields).map(([name, value]) => name + ": " + value),
+          "",
+          body,
+        ].join("\r\n"),
+      );
+    });
+  });
+}
+
+async function waitForNativeIntegrity(predicate, message, milliseconds = 2_000) {
+  const deadline = Date.now() + milliseconds;
+  while (!predicate()) {
+    assert.ok(Date.now() < deadline, message);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+function nativeIntegrityDiagnostic(t, findingId, observedBehavior, positiveControls) {
+  t.diagnostic(
+    "NATIVE_HTTP_INTEGRITY " + JSON.stringify({ findingId, observedBehavior, positiveControls }),
+  );
+}
+
+function streamResult(result) {
+  return {
+    statusCode: result.statusCode,
+    body: result.body,
+    complete: result.complete,
+    ended: result.ended,
+    aborted: result.aborted,
+    error: result.error,
+  };
+}
+
+test("native HTTP framing preserves bodyless requests and nominated lengths", async (t) => {
+  const context = await liveNativeAdminFixture(t, { upstream: { captureWire: true } });
+  const targetPrefix = "/namespaces/" + context.namespace.id + "/agents/" + context.agent.id;
+  const bodyless = [];
+  for (const method of ["GET", "HEAD"]) {
+    const path = "/integrity-bodyless-" + method.toLowerCase();
+    const expectedTarget = targetPrefix + path;
+    const beforeParsed = context.upstream.parsedRequests.length;
+    // Send no body framing on the genuine incoming wire. Ordinary page and asset
+    // requests must retain that shape after the controller admits the Agent host.
+    const downstream = await rawNativeRequest(context, method, path, {});
+    assert.match(downstream, /^HTTP\/1\.1 200 /);
+    const parsed = context.upstream.parsedRequests.slice(beforeParsed);
+    const observed = context.upstream.requests.filter((r) => r.url === expectedTarget);
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].method, method);
+    assert.equal(parsed[0].url, expectedTarget);
+    assert.equal(observed.length, 1);
+    assert.equal(observed[0].body, "");
+    const requestLine = method + " " + expectedTarget + " HTTP/1.1\r\n";
+    const capture = context.upstream.wire.find((w) =>
+      Buffer.concat(w.chunks).toString("latin1").includes(requestLine),
+    );
+    assert.ok(capture, "the real HTTPS wire must contain the bodyless request");
+    assert.equal(capture.overflow, false);
+    const wire = Buffer.concat(capture.chunks).toString("latin1");
+    const start = wire.indexOf(requestLine);
+    const headerEnd = wire.indexOf("\r\n\r\n", start);
+    assert.ok(headerEnd > start);
+    const frameHeaders = wire.slice(start, headerEnd);
+    assert.doesNotMatch(frameHeaders, /\r\n(?:content-length|transfer-encoding):/i);
+    assert.equal(parsed[0].headers["content-length"], undefined);
+    assert.equal(parsed[0].headers["transfer-encoding"], undefined);
+    bodyless.push({ method, parsedRequests: parsed.length, body: observed[0].body });
+  }
+
+  // Connection can remove Content-Length from the sanitized header map even
+  // though Node's incoming parser still delivers the length-delimited body.
+  const marker = "native-connection-nominated-length-body";
+  const path = "/integrity-nominated-content-length";
+  const expectedTarget = targetPrefix + path;
+  const beforeParsed = context.upstream.parsedRequests.length;
+  const downstream = await rawNativeRequest(
+    context,
+    "GET",
+    path,
+    {
+      connection: "close, Content-Length",
+      "content-length": String(Buffer.byteLength(marker)),
+    },
+    marker,
+  );
+  assert.match(downstream, /^HTTP\/1\.1 200 /);
+  const parsed = context.upstream.parsedRequests.slice(beforeParsed);
+  const observed = context.upstream.requests.filter((r) => r.url === expectedTarget);
+  assert.equal(parsed.length, 1, "one browser request must produce one upstream request");
+  assert.equal(parsed[0].method, "GET");
+  assert.equal(parsed[0].url, expectedTarget);
+  assert.equal(parsed[0].headers["content-length"], undefined);
+  assert.equal(parsed[0].headers["transfer-encoding"], "chunked");
+  assert.equal(observed.length, 1);
+  assert.equal(observed[0].body, marker);
+  const requestLine = "GET " + expectedTarget + " HTTP/1.1\r\n";
+  const capture = context.upstream.wire.find((w) =>
+    Buffer.concat(w.chunks).toString("latin1").includes(requestLine),
+  );
+  assert.ok(capture, "the real HTTPS wire must contain the body-bearing request");
+  assert.equal(capture.overflow, false);
+  const wire = Buffer.concat(capture.chunks).toString("latin1");
+  const start = wire.indexOf(requestLine);
+  const headerEnd = wire.indexOf("\r\n\r\n", start);
+  assert.ok(headerEnd > start);
+  const frameHeaders = wire.slice(start, headerEnd);
+  assert.doesNotMatch(frameHeaders, /\r\ncontent-length:/i);
+  assert.match(frameHeaders, /\r\ntransfer-encoding: chunked(?:\r\n|$)/i);
+  assert.ok(wire.slice(headerEnd + 4).endsWith("0\r\n\r\n"));
+  assert.deepEqual(context.upstream.parserErrors, []);
+  nativeIntegrityDiagnostic(
+    t,
+    "NATIVE-HTTP-FIX-01",
+    { bodyless, nominatedContentLength: { parsedRequests: parsed.length, body: observed[0].body } },
+    { exactTarget: true, reconstructedChunked: true, parserErrors: 0 },
+  );
+});
+
+test("native HTTP integrity 01 preserves framing for an admitted chunked GET", async (t) => {
+  const context = await liveNativeAdminFixture(t, { upstream: { captureWire: true } });
+  const safeHeaders = {
+    "x-forwarded-for": "203.0.113.10",
+    "x-occ-identity": "invented-browser-identity",
+    "x-openclaw-scopes": "invented-browser-scope",
+    "x-safe-client-header": "integrity-preserved",
+  };
+  const lengthBody = "native-content-length-control";
+  const length = await liveNativeRequest(context, "/integrity-content-length", {
+    headers: { ...safeHeaders, "content-length": String(Buffer.byteLength(lengthBody)) },
+    chunks: [lengthBody],
+  });
+  assert.equal(length.statusCode, 200);
+  assert.equal(length.complete, true);
+  const lengthObserved = context.upstream.requests.find((r) =>
+    r.url.endsWith("/integrity-content-length"),
+  );
+  assert.equal(lengthObserved?.body, lengthBody);
+  assert.equal(lengthObserved?.headers["content-length"], String(Buffer.byteLength(lengthBody)));
+  const posted = await liveNativeRequest(context, "/integrity-streamed-post", {
+    method: "POST",
+    headers: safeHeaders,
+    chunks: ["native-streamed-", "post-control"],
+  });
+  assert.equal(posted.statusCode, 200);
+  assert.equal(posted.complete, true);
+  const postObserved = context.upstream.requests.find((r) =>
+    r.url.endsWith("/integrity-streamed-post"),
+  );
+  assert.equal(postObserved?.body, "native-streamed-post-control");
+  assert.equal(postObserved?.headers["transfer-encoding"], "chunked");
+  const beforeDenied = context.upstream.parsedRequests.length;
+  const wrongOrigin = await liveNativeRequest(context, "/integrity-denied-origin", {
+    headers: { origin: "https://untrusted.example.test" },
+  });
+  const readOnly = await createReadOnlySession(context, "native-integrity-read-only");
+  const forbidden = await liveNativeRequest(context, "/integrity-denied-iam", {
+    headers: { cookie: readOnly.cookie },
+  });
+  assert.equal(wrongOrigin.statusCode, 403);
+  assert.equal(forbidden.statusCode, 403);
+  assert.equal(context.upstream.parsedRequests.length, beforeDenied);
+  const marker = "native-chunked-get-body";
+  const path = "/integrity-chunked-get";
+  const beforeParsed = context.upstream.parsedRequests.length;
+  const downstream = await rawNativeRequest(
+    context,
+    "GET",
+    path,
+    {
+      ...safeHeaders,
+      "transfer-encoding": "chunked",
+    },
+    Buffer.byteLength(marker).toString(16) + "\r\n" + marker + "\r\n0\r\n\r\n",
+  );
+  await waitForNativeIntegrity(
+    () => context.upstream.parsedRequests.some((r) => r.url.endsWith(path)),
+    "the real HTTPS parser must observe the admitted request",
+  );
+  const expectedTarget =
+    "/namespaces/" + context.namespace.id + "/agents/" + context.agent.id + path;
+  const parsed = context.upstream.parsedRequests.slice(beforeParsed);
+  const observed = context.upstream.requests.find((r) => r.url === expectedTarget);
+  const requestLine = "GET " + expectedTarget + " HTTP/1.1\r\n";
+  const capture = context.upstream.wire.find((w) =>
+    Buffer.concat(w.chunks).toString("latin1").includes(requestLine),
+  );
+  if (!capture) {
+    nativeIntegrityDiagnostic(
+      t,
+      "NATIVE-TRANSPORT-01",
+      {
+        captureReady: false,
+        wireConnections: context.upstream.wire.map((w) => ({
+          bytes: w.bytes,
+          chunks: w.chunks.length,
+          overflow: w.overflow,
+        })),
+        parsedRequests: parsed.map((r) => ({ method: r.method, url: r.url })),
+        parsedBody: observed?.body,
+        parserErrors: context.upstream.parserErrors,
+      },
+      {
+        contentLengthGet: length.statusCode,
+        streamedPost: posted.statusCode,
+        denialStatuses: [wrongOrigin.statusCode, forbidden.statusCode],
+      },
+    );
+  }
+  assert.ok(capture, "decrypted upstream wire capture must include the actual request");
+  assert.equal(capture.overflow, false);
+  const wire = Buffer.concat(capture.chunks).toString("latin1");
+  const start = wire.indexOf(requestLine);
+  const headerEnd = wire.indexOf("\r\n\r\n", start);
+  assert.ok(headerEnd > start);
+  const frameHeaders = wire.slice(start, headerEnd);
+  const wireBody = wire.slice(headerEnd + 4);
+  const framedByLength = new RegExp(
+    "\\r\\ncontent-length: " + Buffer.byteLength(marker) + "(?:\\r\\n|$)",
+    "i",
+  ).test(frameHeaders);
+  const framedByChunks = /\r\ntransfer-encoding: chunked(?:\r\n|$)/i.test(frameHeaders);
+  assert.equal(parsed.length, 1, "one browser request must produce one parsed upstream request");
+  assert.equal(parsed[0].url, expectedTarget);
+  assert.equal(parsed[0].headers["x-api-key"], nativeGatewayApiKey);
+  assert.equal(parsed[0].headers["x-safe-client-header"], "integrity-preserved");
+  for (const name of [
+    "cookie",
+    "authorization",
+    "x-forwarded-for",
+    "x-occ-identity",
+    "x-openclaw-scopes",
+  ]) {
+    assert.equal(parsed[0].headers[name], undefined, name + " must not reach the peer");
+  }
+  const positiveControls = {
+    contentLengthGet: {
+      status: length.statusCode,
+      complete: length.complete,
+      body: lengthObserved.body,
+    },
+    streamedPost: { status: posted.statusCode, complete: posted.complete, body: postObserved.body },
+    denialStatuses: [wrongOrigin.statusCode, forbidden.statusCode],
+    denialUpstreamContacts: context.upstream.parsedRequests.slice(beforeDenied, beforeParsed)
+      .length,
+    sanitizedExactTarget: true,
+  };
+  nativeIntegrityDiagnostic(
+    t,
+    "NATIVE-TRANSPORT-01",
+    {
+      downstreamStatus: Number(/^HTTP\/1.1 (\d+)/.exec(downstream)?.[1]),
+      parsedRequests: parsed.map((r) => ({ method: r.method, url: r.url })),
+      parsedBody: observed?.body,
+      framedByLength,
+      framedByChunks,
+      wireBody,
+      wire: wire.slice(start).replaceAll(nativeGatewayApiKey, "<invented-fixture-key>"),
+      parserErrors: context.upstream.parserErrors,
+    },
+    positiveControls,
+  );
+  assert.deepEqual(
+    {
+      framed: framedByLength || framedByChunks,
+      parsedBody: observed?.body,
+      wireContainsBody: wireBody.includes(marker),
+    },
+    { framed: true, parsedBody: marker, wireContainsBody: true },
+    "HTTP_INTEGRITY_01_REQUEST_FRAMING",
+  );
+});
+
+test("native HTTP integrity 02 preserves incomplete upstream responses", async (t) => {
+  const context = await liveNativeAdminFixture(t);
+  const complete = await liveNativeRequest(context, "/integrity-response-complete");
+  assert.equal(complete.statusCode, 200);
+  assert.equal(complete.body, "native-complete-body\n");
+  assert.equal(complete.complete, true);
+  const beforeHeaders = await liveNativeRequest(context, "/integrity-response-pre-header");
+  assert.equal(beforeHeaders.statusCode, 503);
+  assert.match(beforeHeaders.body, /native gateway is unavailable/);
+  assert.equal(beforeHeaders.complete, true);
+  const interrupted = await liveNativeRequest(context, "/integrity-response-reset", {
+    onFirstData: () => context.upstream.streams.get("response-reset").reset(),
+  });
+  const shortLength = await liveNativeRequest(context, "/integrity-response-short", {
+    onFirstData: () => context.upstream.streams.get("response-short").reset(),
+  });
+  const positiveControls = {
+    completeResponse: streamResult(complete),
+    preHeaderFailure: streamResult(beforeHeaders),
+  };
+  nativeIntegrityDiagnostic(
+    t,
+    "NATIVE-TRANSPORT-02",
+    {
+      interrupted: streamResult(interrupted),
+      shortContentLength: streamResult(shortLength),
+    },
+    positiveControls,
+  );
+  assert.equal(interrupted.statusCode, 200);
+  assert.equal(shortLength.statusCode, 200);
+  assert.deepEqual(
+    {
+      interruptedBody: interrupted.body,
+      interruptedComplete: interrupted.complete,
+      interruptedFallback: interrupted.body.includes("native gateway is unavailable"),
+      shortBody: shortLength.body,
+      shortComplete: shortLength.complete,
+      shortFallback: shortLength.body.includes("native gateway is unavailable"),
+    },
+    {
+      interruptedBody: "native-response-reset-prefix\n",
+      interruptedComplete: false,
+      interruptedFallback: false,
+      shortBody: "native-response-short-prefix\n",
+      shortComplete: false,
+      shortFallback: false,
+    },
+    "HTTP_INTEGRITY_02_INCOMPLETE_RESPONSE",
+  );
+});
+
+test("native HTTP integrity 03 keeps browser state headers controller-owned", async (t) => {
+  const context = await liveNativeAdminFixture(t);
+  const ordinary = await liveNativeRequest(context, "/settings/profile");
+  assert.equal(ordinary.statusCode, 200);
+  assert.equal(ordinary.headers["x-native-upstream"], "reached");
+  assert.equal(ordinary.headers["set-cookie"], undefined);
+  const redirected = await liveNativeRequest(context, "/redirect-root");
+  assert.equal(redirected.statusCode, 302);
+  assert.equal(
+    redirected.headers.location,
+    context.native.origin + "/settings/profile?from=redirect",
+  );
+  assert.match(redirected.headers["content-security-policy"], /default-src 'self'/);
+  assert.match(redirected.headers["content-security-policy"], /worker-src 'none'/);
+  const external = await liveNativeRequest(context, "/redirect-external");
+  const reserved = await liveNativeRequest(context, "/redirect-reserved");
+  assert.equal(external.statusCode, 502);
+  assert.equal(external.headers.location, undefined);
+  assert.equal(reserved.statusCode, 502);
+  assert.equal(reserved.headers.location, undefined);
+  const response = await liveNativeRequest(context, "/integrity-response-headers");
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body, "native-header-body\n");
+  assert.equal(response.headers["set-cookie"], undefined);
+  assert.equal(response.headers["x-native-upstream"], "integrity-headers");
+  assert.equal(response.headers["cache-control"], "no-store");
+  assert.match(response.headers["content-security-policy"], /default-src 'self'/);
+  assert.match(response.headers["content-security-policy"], /worker-src 'none'/);
+  const positiveControls = {
+    ordinaryStatus: ordinary.statusCode,
+    safeHeader: response.headers["x-native-upstream"],
+    setCookieRemoved: response.headers["set-cookie"] === undefined,
+    csp: response.headers["content-security-policy"],
+    cacheControl: response.headers["cache-control"],
+    redirectStatus: redirected.statusCode,
+    redirectLocation: redirected.headers.location,
+    unsafeRedirectStatuses: [external.statusCode, reserved.statusCode],
+  };
+  nativeIntegrityDiagnostic(
+    t,
+    "NATIVE-TRANSPORT-03",
+    {
+      status: response.statusCode,
+      clearSiteData: response.headers["clear-site-data"] ?? null,
+      body: response.body,
+    },
+    positiveControls,
+  );
+  assert.equal(
+    response.headers["clear-site-data"],
+    undefined,
+    "HTTP_INTEGRITY_03_BROWSER_STATE_HEADER",
+  );
+});
+
+test("native HTTP integrity 04 cancels discarded avatar error streams", async (t) => {
+  const context = await liveNativeAdminFixture(t);
+  const finiteAvatar = await liveNativeRequest(context, "/api/users/upstream-unavailable/avatar");
+  assert.equal(finiteAvatar.statusCode, 404);
+  assert.equal(finiteAvatar.body, "");
+  assert.equal(finiteAvatar.complete, true);
+  const finiteError = await liveNativeRequest(context, "/upstream-unavailable");
+  assert.equal(finiteError.statusCode, 502);
+  assert.match(finiteError.body, /avatar_upstream_unavailable/);
+  assert.equal(finiteError.complete, true);
+  const disconnected = await liveNativeRequest(context, "/integrity-client-stream", {
+    onFirstData: (response) => response.destroy(),
+  });
+  const ordinaryProducer = context.upstream.streams.get("client-stream");
+  await waitForNativeIntegrity(
+    () => ordinaryProducer.closed,
+    "client disconnect must close the ordinary producer",
+  );
+  assert.equal(ordinaryProducer.finished, false);
+  const avatar = await liveNativeRequest(context, "/api/users/integrity-avatar-stream/avatar");
+  assert.equal(avatar.statusCode, 404);
+  assert.equal(avatar.body, "");
+  assert.equal(avatar.complete, true);
+  const producer = context.upstream.streams.get("avatar-stream");
+  assert.ok(producer);
+  const writesAtFinal404 = producer.writes;
+  const closedAfter404 = await Promise.race([
+    producer.close.then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 300)),
+  ]);
+  const observed = {
+    downstream: streamResult(avatar),
+    producerClosedAfterFinal404: closedAfter404,
+    producerFinished: producer.finished,
+    writesAtFinal404,
+    writesAfterObservation: producer.writes,
+  };
+  producer.reset();
+  await producer.close;
+  const positiveControls = {
+    finiteAvatar: streamResult(finiteAvatar),
+    nonAvatarFiniteError: streamResult(finiteError),
+    clientDisconnect: streamResult(disconnected),
+    ordinaryProducerClosed: ordinaryProducer.closed,
+    ordinaryProducerFinished: ordinaryProducer.finished,
+    testOwnedProducerCleanup: producer.closed,
+  };
+  nativeIntegrityDiagnostic(t, "NATIVE-TRANSPORT-04", observed, positiveControls);
+  assert.equal(closedAfter404, true, "HTTP_INTEGRITY_04_DISCARDED_STREAM_CANCELLATION");
 });
