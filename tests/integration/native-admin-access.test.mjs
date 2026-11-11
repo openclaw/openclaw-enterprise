@@ -162,6 +162,7 @@ async function createNativeAdminFixture(t, options = {}) {
     authBaseURL: options.authBaseURL ?? authBaseURL,
     development: options.development ?? { enabled: false },
     auditSink: options.auditSink,
+    ...(options.logger === undefined ? {} : { logger: options.logger }),
     ...(options.recordOperations === undefined
       ? {}
       : { recordOperations: options.recordOperations }),
@@ -877,6 +878,74 @@ test("a copied Agent chat link redirects an activated browser navigation to the 
   assert.deepEqual(resumed.json().data, found.json().data);
 });
 
+test("native browser admission reports a failed session lookup and accepts the same session after recovery", async (t) => {
+  const logLines = [];
+  const context = await createNativeAdminFixture(t, {
+    logger: createOccLogger({
+      component: "native-admin-test",
+      level: "info",
+      destination: {
+        write(chunk) {
+          logLines.push(...String(chunk).split("\n").filter(Boolean));
+          return true;
+        },
+      },
+    }),
+  });
+  const status = await nativeStatus(context);
+  const headers = {
+    host: nativeAuthority(status.data),
+    cookie: context.session.cookie,
+    accept: "text/html,application/xhtml+xml",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-dest": "document",
+    "sec-fetch-user": "?1",
+  };
+  // Fail the backing session store below Better Auth while leaving the issued session intact.
+  const sessions = context.fixture.memoryDatabase.session;
+  Object.defineProperty(sessions, "filter", {
+    configurable: true,
+    value() {
+      throw new Error("Session store unavailable");
+    },
+  });
+  try {
+    const page = await injectJson(context.fixture, "GET", "/chat/main", { headers });
+    assert.equal(page.statusCode, 503);
+    assert.equal(page.json().error.code, "DEPENDENCY_UNAVAILABLE");
+    assert.equal(page.headers.location, undefined);
+    assert.equal(page.headers["set-cookie"], undefined);
+    const completed = logLines
+      .map((line) => JSON.parse(line))
+      .find(
+        (line) =>
+          line.event === "http.completed" && line.requestId === page.headers["x-request-id"],
+      );
+    assert.equal(completed?.nativeAdmissionReason, "dependency_failure");
+    assert.equal(completed?.status, 503);
+    assert.ok(!JSON.stringify(completed).includes("Session store unavailable"));
+    // The Control UI probes this route before offering a browser reconnect on 401 or 403.
+    const probe = await injectJson(context.fixture, "GET", "/healthz", {
+      headers: {
+        host: headers.host,
+        cookie: headers.cookie,
+        "x-openclaw-reachability-probe": "1",
+      },
+    });
+    assert.equal(probe.statusCode, 503);
+    assert.equal(probe.json().error.code, "DEPENDENCY_UNAVAILABLE");
+    assert.equal(probe.headers["set-cookie"], undefined);
+    assert.equal(context.upstream.requests.length, 0);
+  } finally {
+    Reflect.deleteProperty(sessions, "filter");
+  }
+
+  trustLocalUpstreamCertificate(t, context.upstream.cert);
+  const recovered = await injectJson(context.fixture, "GET", "/chat/main", { headers });
+  assert.equal(recovered.statusCode, 200);
+  assert.equal(recovered.headers["x-native-upstream"], "reached");
+});
+
 test("native admin proxy strips browser credentials and preserves the Agent gateway base path", async (t) => {
   const context = await createNativeAdminFixture(t);
   const status = await nativeStatus(context);
@@ -1096,10 +1165,10 @@ test("native admin proxy resolves a host only to the live Agent it names", async
   const installationId = fixture.controller.installation.id;
   // The installation administrator's session administers every Agent, so each refusal below
   // comes from host resolution, not from IAM.
-  const proxied = (namespaceId, agentId) => {
+  const proxied = (namespaceId, agentId, cookie = context.session.cookie) => {
     const origin = nativeOriginForAgent(installationId, namespaceId, agentId);
     return injectJson(fixture, "GET", "/settings/profile", {
-      headers: { host: new URL(origin).host, origin, cookie: context.session.cookie },
+      headers: { host: new URL(origin).host, origin, cookie },
     });
   };
 
@@ -1128,13 +1197,43 @@ test("native admin proxy resolves a host only to the live Agent it names", async
   assert.notEqual(otherHost.statusCode, 200, otherHost.body);
   assert.equal(upstream.requests.length, 1, "no refused host may reach a native gateway");
 
-  // A deleted Agent's host names nothing.
+  const chat = await createAgentPermissionSession(context, "deleting-agent-chat", {
+    agent: ["operate"],
+  });
+  const beforeDeletion = await proxied(namespace.id, agent.id, chat.cookie);
+  assert.equal(beforeDeletion.statusCode, 200, beforeDeletion.body);
   const deleted = await fixture.request("DELETE", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.equal(deleted.status, 202);
-  assert.equal(await state.completeAgentDeletion(namespace.id, agent.id), true);
+  const { response: deleting, denials: deletingDenials } = await denialsDuring(
+    fixture.auditSink,
+    () => proxied(namespace.id, agent.id, chat.cookie),
+  );
+
+  // Commit real deletion after the real host lookup, before admission's exact Agent read.
+  // The wrapper changes only ordering: no lookup result or failure is invented.
+  const resolve = fixture.controller.resolveAgentReference.bind(fixture.controller);
+  const lookup = t.mock.method(fixture.controller, "resolveAgentReference", async (...args) => {
+    const selected = await resolve(...args);
+    assert.equal(selected?.id, agent.id);
+    assert.equal(await state.completeAgentDeletion(namespace.id, agent.id), true);
+    return selected;
+  });
+  let racing;
+  try {
+    racing = await denialsDuring(fixture.auditSink, () => proxied(namespace.id, agent.id));
+  } finally {
+    lookup.mock.restore();
+  }
   const afterDeletion = await proxied(namespace.id, agent.id);
-  assert.equal(afterDeletion.statusCode, 403, afterDeletion.body);
-  assert.equal(upstream.requests.length, 1);
+  assert.deepEqual(
+    [deleting.statusCode, racing.response.statusCode, afterDeletion.statusCode],
+    [403, 403, 403],
+    "deleting and deleted Agents are refusals, not temporary dependency outages",
+  );
+  assert.deepEqual(racing.response.json().error, afterDeletion.json().error);
+  assert.deepEqual(deletingDenials, []);
+  assert.deepEqual(racing.denials, [], "deletion does not invent an attributable IAM denial");
+  assert.equal(upstream.requests.length, 2);
 });
 
 test("native admin status decodes only the revisions it uses", async (t) => {
@@ -1388,9 +1487,36 @@ for (const changedField of [undefined, "id", "implementation"]) {
     );
     const host = new URL(nativeOriginForAgent(controller.installation.id, namespace.id, agent.id))
       .host;
+    const proxyLogStart = logLines.length;
     const proxy = await injectJson({ app }, "GET", "/", {
       headers: { ...headers, host, origin: `https://${host}` },
     });
+    if (changedField === undefined) {
+      const proxyCompletions = logLines
+        .slice(proxyLogStart)
+        .map((line) => JSON.parse(line))
+        .filter((line) => line.event === "http.completed");
+      assert.equal(proxyCompletions.length, 1);
+      assert.equal(proxyCompletions[0].status, 200);
+      assert.ok(proxyCompletions[0].requestId);
+      assert.equal(proxyCompletions[0].nativeAdmissionReason, undefined);
+      const refused = await app.inject({
+        method: "GET",
+        url: "/?private=discard-query-marker",
+        headers: { host, cookie: "discard-cookie-marker=private" },
+      });
+      assert.equal(refused.statusCode, 403);
+      const completions = logLines
+        .map((line) => JSON.parse(line))
+        .filter((line) => line.event === "http.completed");
+      const completed = completions.find(
+        (line) => line.requestId === refused.headers["x-request-id"],
+      );
+      assert.ok(completed, "the refusal must correlate to its existing HTTP request ID");
+      assert.equal(completed.nativeAdmissionReason, "session_invalid");
+      assert.equal(completed.status, 403);
+      assert.ok(!JSON.stringify(completed).includes("discard-"));
+    }
     // A console poll repeats the status read; the mismatch is still warned only once.
     const repeated = await injectJson(
       { app },

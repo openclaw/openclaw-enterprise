@@ -277,6 +277,8 @@ Full runtime proof still requires a real browser test that loads native assets t
 
 ## Troubleshooting
 
+Match the refused request’s ID to `http.completed`. HTTP admission refusals carry `nativeAdmissionReason`; early guards and post-admission failures may omit it.
+
 | Symptom                                             | Check                                                                                                                                                                                                                     |
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Helm render fails                                   | Native access requires private gateway routing. All browser sessions require HTTPS and an Agent DNS suffix sharing a non-public suffix with the Console.                                                                  |
@@ -310,6 +312,9 @@ may have expired, or your access may have changed. If OCE asks you to sign in,
 it checks your access again and returns you to that Agent’s detail page. Select
 **Open Agent UI** to continue. With an older runtime, open the Agent root
 or its console page to start the same recovery.
+
+If the Agent host returns `503 DEPENDENCY_UNAVAILABLE`, check the controller and
+session store and retry after they recover.
 
 If expiry coincides with controller restarts, check persistent session storage
 and whether the configured auth secret changed. In-memory sessions disappear

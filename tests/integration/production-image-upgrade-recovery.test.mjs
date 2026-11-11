@@ -3323,9 +3323,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
 
   test("immutable Installation reference survives same-candidate Helm recovery and acknowledged resume", async (t) => {
     const f = await immutableInstallationSwitch(t, { recoveryHooks: true });
-    await f.failNext("lost-helm-response");
-    await assert.rejects(f.run(), injectedFault);
-    await completedHookInPendingRelease(f);
+    await loseHelmResponseWithCompletedHook(f);
     await f.failNext("fail-rollout-api");
     await assert.rejects(f.run(...recoverHelm), injectedFault);
     assert.equal((await f.state()).version, 3);
@@ -7005,7 +7003,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
 
   // These cases exercise the actual upgrade command against controlled Helm and
   // Kubernetes protocols. The separate disposable-cluster proof checks Helm itself.
-  async function completedHookInPendingRelease(f) {
+  async function loseHelmResponseWithCompletedHook(f, run = f.run) {
+    await f.failNext("lost-helm-response");
+    await assert.rejects(run(), injectedFault);
     const intent = await assertHelmIntent(f, 1, 2);
     const directory = join(f.evidence, "helm-attempts", intent.attempt.nonce);
     const docs = yamlDocuments(await readFile(join(directory, "rendered.yaml"), "utf8")).map(
@@ -7094,15 +7094,13 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
 
   async function interruptedUpgradeWithCompletedHook(t, initializationResources) {
     const f = await fixture(t, { recoveryHooks: true, initializationResources });
-    await f.failNext("lost-helm-response");
-    await assert.rejects(f.run(), injectedFault);
-    const state = await completedHookInPendingRelease(f);
+    const state = await loseHelmResponseWithCompletedHook(f);
     return { f, state };
   }
 
-  async function assertRecoveryRefusedBeforeRollback(f, state, refusal) {
+  async function assertRecoveryRefusedBeforeRollback(f, state, refusal, run = f.run) {
     await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
-    await assert.rejects(f.run(...recoverHelm), refusal);
+    await assert.rejects(run(...recoverHelm), refusal);
     assert.equal((await f.state()).rollbackSubmissions, undefined);
     assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
   }
@@ -7144,9 +7142,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     state.recoveryBaselineResources = selectedProxy ? [] : [policy];
     await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
     const run = (...args) => f.run("--candidate-values", candidatePath, ...args);
-    await f.failNext("lost-helm-response");
-    await assert.rejects(run(), injectedFault);
-    const pending = await completedHookInPendingRelease(f);
+    const pending = await loseHelmResponseWithCompletedHook(f, run);
     return { f, run, pending, policy, key: `${policy.kind}/${policy.metadata.name}` };
   }
 
@@ -7165,15 +7161,14 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
           delete state.recoveryResources[key];
           state.retiredResourceReadError = true;
         }
-        await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
-        await assert.rejects(
-          run(...recoverHelm),
+        await assertRecoveryRefusedBeforeRollback(
+          f,
+          state,
           mode === "forbidden"
             ? /Helm evidence command failed/
             : /predecessor-only resource still exists/,
+          run,
         );
-        assert.equal((await f.state()).rollbackSubmissions, undefined);
-        assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
       });
     }
     const withRetiredEnv = structuredClone(pending);
@@ -7181,10 +7176,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     withRetiredEnv.recoveryResources[
       "Deployment/openclaw-enterprise-api"
     ].spec.template.spec.containers[0].env.push(oldEnv);
-    await writeFile(join(f.directory, "state.json"), JSON.stringify(withRetiredEnv));
-    await assert.rejects(run(...recoverHelm), /live environment differs/);
-    assert.equal((await f.state()).rollbackSubmissions, undefined);
-    assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+    await assertRecoveryRefusedBeforeRollback(f, withRetiredEnv, /live environment differs/, run);
     // Explicit operator reconciliation removes the retired policy and env entry. If a later
     // acceptance step fails, its recreation must also block ordinary resume.
     await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
@@ -7263,15 +7255,14 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     initial.recoveryBaselineResources = [previous];
     initial.recoveryCandidateResources = [candidate];
     await writeFile(join(f.directory, "state.json"), JSON.stringify(initial));
-    await f.failNext("lost-helm-response");
-    await assert.rejects(f.run(), injectedFault);
-    const pending = await completedHookInPendingRelease(f);
+    const pending = await loseHelmResponseWithCompletedHook(f);
     const podSpec = pending.recoveryResources["Deployment/broker-worker"].spec.template.spec;
     podSpec.containers.push(worker);
-    await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
-    await assert.rejects(f.run(...recoverHelm), /retired container placement still exists/);
-    assert.equal((await f.state()).rollbackSubmissions, undefined);
-    assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+    await assertRecoveryRefusedBeforeRollback(
+      f,
+      pending,
+      /retired container placement still exists/,
+    );
     podSpec.containers.pop();
     await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
     await f.failNext("fail-rollout-api");
@@ -7311,17 +7302,16 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     initial.recoveryBaselineResources = [previous];
     initial.recoveryCandidateResources = [candidate];
     await writeFile(join(f.directory, "state.json"), JSON.stringify(initial));
-    await f.failNext("lost-helm-response");
-    await assert.rejects(f.run(), injectedFault);
-    const pending = await completedHookInPendingRelease(f);
+    const pending = await loseHelmResponseWithCompletedHook(f);
     pending.recoveryResources["EnvoyProxy/gateway"].metadata.uid = "envoy-proxy-uid";
     for (const spec of [previous.spec, { ...candidate.spec, admissionDefault: true }]) {
       const state = structuredClone(pending);
       state.recoveryResources["EnvoyProxy/gateway"].spec = spec;
-      await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
-      await assert.rejects(f.run(...recoverHelm), /changed custom-resource spec is not reconciled/);
-      assert.equal((await f.state()).rollbackSubmissions, undefined);
-      assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+      await assertRecoveryRefusedBeforeRollback(
+        f,
+        state,
+        /changed custom-resource spec is not reconciled/,
+      );
     }
     await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
     await f.failNext("fail-rollout-api");
@@ -7345,9 +7335,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     );
     await assert.rejects(f.run("--recovery-reviewed"), /requires --recover-helm/);
     assert.deepEqual(await f.events(), []);
-    await f.failNext("lost-helm-response");
-    await assert.rejects(f.run(), injectedFault);
-    await completedHookInPendingRelease(f);
+    await loseHelmResponseWithCompletedHook(f);
     const original = await readFile(join(f.evidence, "helm-started"), "utf8");
     // Rollback is acknowledged but ordinary acceptance is interrupted. Resume
     // must finish acceptance without rerunning migration or rollback.

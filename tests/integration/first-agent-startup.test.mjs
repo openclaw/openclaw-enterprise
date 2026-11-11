@@ -271,10 +271,19 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
   );
   // Each admission fill landed separately, so a saved revision can lack any subset of the
   // defaults (finding 2770). Only the identified prior revision gets them filled before comparing.
-  for (let mask = 0; mask < 2 ** GATEWAY_SECURITY_DEFAULTS.length - 1; mask += 1) {
-    const filled = GATEWAY_SECURITY_DEFAULTS.filter((_, index) => mask & (1 << index));
+  // The defaults that apply here: this Configuration enables no channel, so admission fills no
+  // session.dmScope (finding 3191).
+  const unfilled = values("danger-full-access", undefined, []);
+  const applicable = GATEWAY_SECURITY_DEFAULTS.filter(
+    (row) =>
+      JSON.stringify(values("danger-full-access", undefined, [row])) !== JSON.stringify(unfilled),
+  );
+  assert.ok(!applicable.some(({ path }) => path.join(".") === "session.dmScope"));
+  for (let mask = 0; mask < 2 ** applicable.length - 1; mask += 1) {
+    const filled = applicable.filter((_, index) => mask & (1 << index));
     const snapshot = values("danger-full-access", undefined, filled);
-    const missing = `without ${GATEWAY_SECURITY_DEFAULTS.filter((row) => !filled.includes(row))
+    const missing = `without ${applicable
+      .filter((row) => !filled.includes(row))
       .map(({ path }) => path.join("."))
       .join(", ")}`;
     assert.equal(matches(snapshot, "rev_saved"), true, `a prior revision ${missing}`);

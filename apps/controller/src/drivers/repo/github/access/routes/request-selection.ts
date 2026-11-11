@@ -5,7 +5,7 @@ import type {
   PreparedGitHubUseRequest,
 } from "@openclaw-enterprise/contracts";
 import type { RequestHead } from "../../../access/backend-contracts.ts";
-import { parseUnambiguousJson } from "../../../access/json-members.ts";
+import { parseUnambiguousJson } from "../../../../json-members.ts";
 import { planDraftPull } from "../prepared-draft-pull.ts";
 import { classifyRoute } from "./classification.ts";
 import { allowsGraphqlInput } from "../graphql-input.ts";

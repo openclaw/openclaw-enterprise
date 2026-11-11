@@ -450,7 +450,7 @@ describe("CI preparation", { concurrency }, () => {
       );
       const result = await commands.prepare();
       assert.equal(result.error, undefined);
-      const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+      const state = await commands.readState();
 
       if (error) {
         assert.equal(result.status, 1, "preparation must reject an unusable imported fixture");
@@ -885,7 +885,7 @@ describe("CI preparation", { concurrency }, () => {
         builds.every(({ args }) => args.includes("--load") && args.includes("--cache-from")),
       );
       assert.ok(builds.every(({ args }) => !args.includes("--cache-to")));
-      const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+      const state = await commands.readState();
       assert.equal(state.selectedFile, file);
       assert.equal(state.env.BUILDX_BUILDER, "owned-installer-builder");
       assert.equal(state.env.SOURCE_DATE_EPOCH, "0");
@@ -978,7 +978,7 @@ process.exit(73);
       "sha256:" + "d".repeat(64),
       "sha256:" + "e".repeat(64),
     ]);
-    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+    const state = await commands.readState();
     for (const { args } of tags) {
       const tagged = state.resources.find(
         ({ kind, name }) => kind === "image-tag" && name === args[2],
@@ -1002,8 +1002,7 @@ process.exit(73);
       JSON.stringify(calls) + prepared.stdout + prepared.stderr,
       /synthetic-cache-credential/,
     );
-    const cleaned = await commands.cleanup();
-    assert.equal(cleaned.status, 0, cleaned.stderr);
+    await commands.cleanupSuccessfully();
   });
 
   for (const { scenario, outcome, env = {} } of [
@@ -1047,7 +1046,7 @@ process.exit(73);
       // Both images build and load as if no probe had run.
       const builds = calls.filter(({ args }) => args[0] === "buildx" && args.includes("--load"));
       assert.equal(builds.length, 2);
-      const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+      const state = await commands.readState();
       for (const { args } of builds) {
         const tag = args[args.indexOf("-t") + 1];
         const tagged = state.resources.find(
@@ -1074,8 +1073,7 @@ process.exit(73);
           0,
         );
       }
-      const cleaned = await commands.cleanup();
-      assert.equal(cleaned.status, 0, cleaned.stderr);
+      await commands.cleanupSuccessfully();
     });
   }
 
@@ -1141,22 +1139,24 @@ process.exit(73);
         builds.filter(({ args }) => args.includes("--load")).length,
         scenario === "image-build-hung" ? 1 : 0,
       );
-      const cleaned = await commands.cleanup();
-      assert.equal(cleaned.status, 0, cleaned.stderr);
+      await commands.cleanupSuccessfully();
     });
   }
 
-  const warmCacheEnv = {
-    ...imageCacheEnv,
-    GITHUB_REF: "refs/heads/main",
-    GITHUB_EVENT_NAME: "push",
-    GITHUB_RUN_ID: "123",
-    GITHUB_RUN_ATTEMPT: "1",
-  };
+  async function runWarmImageCache(t, scenario, { env = {}, args = [] } = {}) {
+    const commands = await fixtureImageCommands(t, scenario, "images-packaging", {
+      ...imageCacheEnv,
+      GITHUB_REF: "refs/heads/main",
+      GITHUB_EVENT_NAME: "push",
+      GITHUB_RUN_ID: "123",
+      GITHUB_RUN_ATTEMPT: "1",
+      ...env,
+    });
+    return { commands, warmed: await commands.warmImageCache(args) };
+  }
 
   test("the main image cache warm job builds the packaging images, then exports both caches", async (t) => {
-    const commands = await fixtureImageCommands(t, "success", "images-packaging", warmCacheEnv);
-    const warmed = await commands.warmImageCache();
+    const { commands, warmed } = await runWarmImageCache(t, "success");
     assert.equal(warmed.status, 0, warmed.stderr);
     assert.match(
       warmed.stderr,
@@ -1250,8 +1250,7 @@ process.exit(73);
       new RegExp(`"stage":"runtime-image-kept","image":"sha256:${"b".repeat(64)}","tag":"${kept}"`),
     );
     assert.doesNotMatch(state, /openclaw-ci-main/);
-    const cleaned = await commands.cleanup();
-    assert.equal(cleaned.status, 0, cleaned.stderr);
+    await commands.cleanupSuccessfully();
     const removed = (await commands.commands()).filter(
       ({ args }) => args[0] === "image" && args[1] === "rm",
     );
@@ -1265,13 +1264,7 @@ process.exit(73);
   });
 
   test("the image cache warm job prints a failed build's output and fails", async (t) => {
-    const commands = await fixtureImageCommands(
-      t,
-      "controller-build-failed",
-      "images-packaging",
-      warmCacheEnv,
-    );
-    const warmed = await commands.warmImageCache();
+    const { commands, warmed } = await runWarmImageCache(t, "controller-build-failed");
     assert.notEqual(warmed.status, 0);
     assert.match(
       warmed.stderr,
@@ -1280,20 +1273,19 @@ process.exit(73);
     // A failed warm build keeps nothing.
     assert.equal((await commands.commands()).filter(({ args }) => args[0] === "tag").length, 0);
     assert.doesNotMatch(warmed.stdout + warmed.stderr, /synthetic-cache-credential/);
-    const cleaned = await commands.cleanup();
-    assert.equal(cleaned.status, 0, cleaned.stderr);
+    await commands.cleanupSuccessfully();
   });
 
   // A stalled upload once outlived BuildKit's own timeout=10m by 7 minutes, until
   // the build's 20-minute limit failed the job after the image had built (finding 1219).
   for (const scenario of ["controller-cache-export-hung", "controller-cache-export-failed"]) {
     test(`a warm cache export that cannot finish only warns: ${scenario}`, async (t) => {
-      const commands = await fixtureImageCommands(t, scenario, "images-packaging", {
-        ...warmCacheEnv,
-        OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS: "5000",
-        OPENCLAW_CI_COMMAND_KILL_GRACE_MS: "500",
+      const { commands, warmed } = await runWarmImageCache(t, scenario, {
+        env: {
+          OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS: "5000",
+          OPENCLAW_CI_COMMAND_KILL_GRACE_MS: "500",
+        },
       });
-      const warmed = await commands.warmImageCache();
       assert.equal(warmed.status, 0, warmed.stderr);
       const outcome = scenario.endsWith("-hung") ? "timed-out" : "failed";
       assert.match(
@@ -1317,7 +1309,7 @@ process.exit(73);
         );
       }
       // Both images stay built, and main's runtime image is still kept.
-      const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+      const state = await commands.readState();
       const tags = state.resources.filter(({ kind }) => kind === "image-tag");
       assert.deepEqual(
         tags.map(({ status }) => status),
@@ -1325,22 +1317,18 @@ process.exit(73);
       );
       assert.match(warmed.stderr, /"stage":"runtime-image-kept"/);
       assert.doesNotMatch(warmed.stdout + warmed.stderr, /synthetic-cache-credential/);
-      const cleaned = await commands.cleanup();
-      assert.equal(cleaned.status, 0, cleaned.stderr);
+      await commands.cleanupSuccessfully();
     });
   }
 
   // The schedule retries a store commit that lost to other jobs' commits (finding 1340).
   test("a scheduled run on main warms the image cache and keeps main's runtime image", async (t) => {
-    const commands = await fixtureImageCommands(t, "success", "images-packaging", {
-      ...warmCacheEnv,
-      GITHUB_EVENT_NAME: "schedule",
+    const { commands, warmed } = await runWarmImageCache(t, "success", {
+      env: { GITHUB_EVENT_NAME: "schedule" },
     });
-    const warmed = await commands.warmImageCache();
     assert.equal(warmed.status, 0, warmed.stderr);
     assert.match(warmed.stderr, /"stage":"runtime-image-kept"/);
-    const cleaned = await commands.cleanup();
-    assert.equal(cleaned.status, 0, cleaned.stderr);
+    await commands.cleanupSuccessfully();
   });
 
   test("the image cache warm job refuses refs other than main and lane arguments before building", async (t) => {
@@ -1394,11 +1382,7 @@ process.exit(73);
         /Image CI state requires a valid run ID and attempt/,
       ],
     ]) {
-      const commands = await fixtureImageCommands(t, "success", "images-packaging", {
-        ...warmCacheEnv,
-        ...env,
-      });
-      const warmed = await commands.warmImageCache(args);
+      const { commands, warmed } = await runWarmImageCache(t, "success", { env, args });
       assert.notEqual(warmed.status, 0, label);
       assert.match(warmed.stderr, error, label);
       const calls = await readFile(

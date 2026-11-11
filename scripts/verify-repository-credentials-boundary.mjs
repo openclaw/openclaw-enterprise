@@ -12,11 +12,13 @@ const credentialDirectories = [
   "backends/token-service",
 ];
 const sharedConfigurationFields = "composition/installation-fields.ts";
+const sharedJsonMembers = "drivers/json-members.ts";
 const openShellEvidence = "drivers/egress-proxy/openshell-repository-git-evidence.ts";
 const processEntrypoints = ["repository-credentials.ts", "repository-credentials.mjs"];
 const requiredEntrypoints = [
   ...processEntrypoints,
   sharedConfigurationFields,
+  sharedJsonMembers,
   openShellEvidence,
   "composition/repository-credentials/check-config.ts",
   "composition/repository-credentials/projected-inputs.ts",
@@ -724,7 +726,12 @@ export async function verifyRepositoryCredentialBoundary(root = sourceRoot) {
     }
     files.push(...owned.sort());
   }
-  for (const entrypoint of [...processEntrypoints, sharedConfigurationFields, openShellEvidence]) {
+  for (const entrypoint of [
+    ...processEntrypoints,
+    sharedConfigurationFields,
+    sharedJsonMembers,
+    openShellEvidence,
+  ]) {
     const path = join(root, entrypoint);
     const stat = await lstat(path).catch((error) => {
       if (error.code !== "ENOENT") {

@@ -3,6 +3,8 @@ import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import { InstallationFieldError } from "../../apps/controller/src/composition/installation-fields.ts";
+import { validateOpenShellRepositoryTransport } from "../../apps/controller/src/drivers/egress-proxy/openshell-configuration.ts";
 import type { OpenShellSandboxDriverOptions } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import type { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { loadInstallationFile } from "../helpers/installation-file.mjs";
@@ -346,4 +348,94 @@ test("shipped startup names a rejected OpenShell policy without logging its name
   ]);
   assert.equal(reservedEvent.reason, undefined);
   assert.equal(`${reserved.stdout}${reserved.stderr}`.includes("workspace-node-enrollment"), false);
+});
+
+test("repository.openShell names each unmet requirement, including ones earlier checks preempt", () => {
+  const configuration = {
+    registrationName: "oce-prepared-git",
+    authority: {
+      host: "127.0.0.1",
+      port: 8443,
+      certificatePath: "/certificate",
+      privateKeyPath: "/private-key",
+      issuerPublicKeyPath: "/issuer-public-key",
+      issuer: "issuer",
+      audience: "audience",
+      keyId: "key",
+    },
+  };
+  let messages: string[] = [];
+  const refusal = (input: Parameters<typeof validateOpenShellRepositoryTransport>[1]) => {
+    try {
+      validateOpenShellRepositoryTransport(configuration, input);
+    } catch (error) {
+      assert.ok(error instanceof InstallationFieldError);
+      messages = error.details.map(({ message }) => message);
+      return error.details.map(({ path, code }) => [path, code]);
+    }
+    return [];
+  };
+  const backend = {
+    id: "openshell",
+    type: "openshell",
+    configuration: {
+      endpoint: "https://gateway.example.test:8443",
+      auth: { mode: "mtls", certificatePath: "/c", privateKeyPath: "/k" },
+    },
+    drivers: { sandbox: "sandbox", credential_gateway: "gateway" },
+  } satisfies NonNullable<Parameters<typeof validateOpenShellRepositoryTransport>[1]["backend"]>;
+  const met = {
+    prepared: true,
+    repository: true,
+    backend,
+    backendIndex: 2,
+    sandbox: true,
+    external: false,
+    kubernetes: true,
+  };
+  assert.deepEqual(refusal(met), []);
+  assert.doesNotThrow(() =>
+    validateOpenShellRepositoryTransport(undefined, { ...met, prepared: false }),
+  );
+  assert.deepEqual(
+    refusal({
+      prepared: false,
+      repository: false,
+      backend: undefined,
+      backendIndex: -1,
+      sandbox: false,
+      external: false,
+      kubernetes: false,
+    }),
+    [
+      ["/repository/preparedGitHub", "REQUIRED"],
+      // The github entry; its message names the type.
+      ["/backend", "REQUIRED"],
+      ["/drivers/sandbox", "REQUIRED"],
+      ["/drivers/compute", "INVALID_VALUE"],
+      // The openshell entry.
+      ["/backend", "REQUIRED"],
+    ],
+  );
+  assert.deepEqual(refusal({ ...met, external: true }), [
+    ["/drivers/sandbox/package", "INVALID_VALUE"],
+  ]);
+  const { endpoint: _endpoint, auth: _auth, ...service } = backend.configuration;
+  assert.deepEqual(refusal({ ...met, backend: { ...backend, configuration: service } }), [
+    ["/backend/2/configuration/endpoint", "REQUIRED"],
+    ["/backend/2/configuration/auth", "REQUIRED"],
+  ]);
+  assert.equal(
+    messages[0],
+    "repository.openShell requires the openshell backend configuration.endpoint, an https:// URL, rather than serviceName and port.",
+  );
+  const unauthenticated = {
+    ...backend.configuration,
+    auth: { mode: "unauthenticated" },
+  } satisfies NonNullable<
+    Parameters<typeof validateOpenShellRepositoryTransport>[1]["backend"]
+  >["configuration"];
+  assert.deepEqual(refusal({ ...met, backend: { ...backend, configuration: unauthenticated } }), [
+    ["/backend/2/configuration/auth/mode", "INVALID_VALUE"],
+  ]);
 });
