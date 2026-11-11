@@ -280,7 +280,7 @@ export function registerInstallationKeycloak() {
       const values = JSON.parse(await fixture.read("helm-values.json"));
       assert.equal(values.auth.oidc.enabled, true);
       assert.equal(values.auth.passwordSignIn, "recovery-only");
-      assert.equal(values.agentNativeAdmin.enabled, false);
+      assert.equal(values.agentNativeAdmin.enabled, true);
       // Probe the actual API after the OIDC upgrade, when the additive policy is active.
       await verifyKeycloakAPIEgress(fixture, state, values);
       const issuer = `https://${fixture.keycloakHost}/realms/oce`;
@@ -394,9 +394,14 @@ export function registerInstallationKeycloak() {
               ({ name, value }) => name.endsWith(".session_token") && value,
             );
             assert.ok(sessionCookie);
-            assert.equal(sessionCookie.domain, fixture.consoleHost);
+            // The default session spans this cluster's Console and Agent hosts;
+            // its scope must not extend to another development installation.
+            assert.equal(sessionCookie.name, "__Secure-openclaw_occ_shared.session_token");
+            assert.equal(sessionCookie.domain, `.${fixture.cluster}.oce.localhost`);
             assert.equal(sessionCookie.secure, true);
             assert.equal(sessionCookie.httpOnly, true);
+            assert.equal(sessionCookie.path, "/");
+            assert.equal(sessionCookie.sameSite, "Lax");
 
             const endpoint = {
               hostname: fixture.consoleHost,

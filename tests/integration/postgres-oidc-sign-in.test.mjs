@@ -371,6 +371,23 @@ test(
       assert.equal(detached.statusCode, 200, detached.body);
       assert.equal(await currentSession(app, after), null, "detach ends sessions");
       await assertSignIn(memberSubject, member.id);
+
+      // The moved issuer still owns this subject for member. The original issuer
+      // can attach that same opaque subject to a different person independently.
+      await app.close();
+      app = undefined;
+      idp.issuer = fixtureOidcIssuer;
+      idp.tokenAuth = "client_secret_post";
+      app = await composeApp(oidcUpgradeSettings(admin.id));
+      adminHeaders = await signedInHeaders(app, origin, admin, address());
+      await assertRefused({ subject: memberSubject }, "detached original issuer subject");
+      assert.equal((await attach(stranded.id, memberSubject)).statusCode, 200);
+      await assertSignIn(memberSubject, stranded.id);
+      assert.notEqual(
+        await accountPrincipalId(pool, stranded.id),
+        await accountPrincipalId(pool, member.id),
+        "the same subject under different provider instances resolves distinct Principals",
+      );
     });
 
     await t.test("Google and OIDC sign in side by side with distinct instances", async () => {

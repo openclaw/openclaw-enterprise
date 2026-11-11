@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Implemented
 author: kevinlin-openai
 ---
 
@@ -25,7 +25,9 @@ per-person Gateway configuration is required.
 
 **The decision is to delegate identity and request authority to OCC while keeping
 profiles in OpenClaw.** This needs a native authentication extension and a
-Compute Driver contract change. Both remain proposed and unimplemented.
+Compute Driver contract change. The code is implemented; the
+[plan](../plans/0035-oidc-native-profiles.md#delivery-record) records qualification
+and review separately from this proposed decision.
 
 ## Why the current paths are insufficient
 
@@ -119,6 +121,9 @@ under the existing TLS, service-key, and exact-peer network controls. The
 credential authenticates OCC's authority to assert a person; it does not identify
 that person itself.
 
+Native delegation configuration names only the credential file. The authority
+`oce` and subject prefix `oce:v1:` are fixed protocol values, not settings.
+
 The native verifier requires the revision credential, a valid reserved subject,
 and an allowed scope together. An external ingress trusted for static users must
 not be able to assert an OCE identity. Reserve OCE subjects across every native
@@ -155,7 +160,7 @@ session policy; this feature adds no IdP revocation deadline.
 ## Acceptance Criteria
 
 The [verification plan](../plans/0035-oidc-native-profiles.md#verification) pairs
-these requirements with real dependencies and checks; none has run for this draft.
+these requirements with real dependencies and checks. The delivery record must distinguish source checks from completed runtime proof.
 
 - **AC-1 — Stable people:** Two enrolled OIDC users open one Agent and receive
   distinct profiles and creator/sender attribution. Reconnect, email change,
@@ -183,9 +188,15 @@ roster would require permission enumeration and synchronization; wildcard
 admission plus broad device grants would weaken the admission boundary.
 
 Use the [implementation plan](../plans/0035-oidc-native-profiles.md) for the native
-extension, Compute integration, and live proof. Submit this RFC for human review
-before changing the Driver contract. Qualify the native extension before enabling
-OCE delegation. No implementation or acceptance is claimed by this proposal.
+extension, Compute integration, and live proof. This RFC was submitted for human
+review in [PR #5320](https://github.com/openclaw/openclaw-enterprise/pull/5320)
+before Driver implementation. Qualify the native extension before enabling OCE
+delegation. The proposal's status does not claim acceptance or completed runtime proof.
+
+The [plan's delivery record](../plans/0035-oidc-native-profiles.md#delivery-record)
+records the implementation and a dated verification checkpoint. The
+[native access reference](../../docs/reference/agent-native-admin.md) and
+[Compute reference](../../docs/reference/drivers/compute.md) own current behavior.
 
 ## Manual Notes
 

@@ -88,8 +88,8 @@ export function withStubbedProviderEndpoint(configuration) {
 }
 
 // The Gateway auth of the native admin opt-in in the deployment guide: the Gateway trusts the
-// console's identity header for its one workspace-files user and approves that user's
-// operator.admin devices. Returns a new object on each call, so a test may change it.
+// machine identity header for workspace access. Human browser delegation is rendered by
+// Compute and does not enroll devices. Returns a new object on each call.
 export function nativeAdminGatewayAuth() {
   return {
     mode: "trusted-proxy",
@@ -97,7 +97,6 @@ export function nativeAdminGatewayAuth() {
       userHeader: "x-occ-identity",
       requiredHeaders: ["x-openclaw-scopes"],
       allowUsers: ["occ-workspace-files"],
-      deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
     },
     identityScopes: { "occ-workspace-files": ["operator.admin"] },
   };

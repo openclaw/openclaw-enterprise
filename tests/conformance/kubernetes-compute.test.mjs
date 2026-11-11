@@ -79,7 +79,10 @@ import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/man
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { managedGatewayConfiguration } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
 import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import {
+  createHarnessConfiguration,
+  withNativeAdminGateway,
+} from "../helpers/harness-configuration.mjs";
 import {
   ACCEPTED_DEVICE_AUTO_APPROVE,
   INVALID_ALLOW_USERS,
@@ -6623,92 +6626,175 @@ test("Kubernetes preserves explicit human proxy identities alongside workspace a
   }
 });
 
-test("gateway chat routes enforce a distinct exact-Agent scope ceiling", () => {
-  const driver = createKubernetesComputeDriver(routedOptions());
+test("browser delegation uses stable native subjects and revision-owned Gateway-only credentials", async () => {
+  const fixture = dedicatedFirstDeployFixture();
+  const { driver, revision, objects, read, key } = fixture;
+  revision.configuration = {
+    ...revision.configuration,
+    gateway: {
+      ...revision.configuration.gateway,
+      controlUi: { enabled: true, allowedOrigins: ["https://agent.example.test"] },
+      auth: {
+        mode: "trusted-proxy",
+        trustedProxy: {
+          userHeader: "x-occ-identity",
+          requiredHeaders: ["x-openclaw-scopes"],
+          allowUsers: ["occ-workspace-files"],
+        },
+        identityScopes: { "occ-workspace-files": ["operator.admin"] },
+      },
+    },
+  };
+  const input = { installationId: "installation-a", principalId: "principal-a", mode: "chat" };
+  const request = (value = input, target = revision) =>
+    driver.getGatewayBrowserRequest(target, value, AbortSignal.timeout(1000));
+  // Access cannot create a credential; only normal revision preparation provisions one.
+  await assert.rejects(request(), /browser credential is unavailable/);
+  assert.equal(
+    [...objects.values()].some((object) => object.metadata.name.startsWith("browser-delegation-")),
+    false,
+  );
+  await fixture.prepare();
+  const secret = [...objects.values()].find(
+    (object) => object.kind === "Secret" && object.metadata.name.startsWith("browser-delegation-"),
+  );
+  assert.ok(secret);
+  assert.equal(secret.immutable, true);
+  const original = structuredClone(secret);
+  const first = await request();
+  assert.equal(
+    first.headers["x-occ-identity"],
+    `oce:v1:${createHash("sha256").update('["installation-a","principal-a"]').digest("hex")}`,
+  );
+  assert.equal(
+    first.subject,
+    first.headers["x-occ-identity"],
+    "audit attribution must name the exact native identity",
+  );
+  assert.equal(first.headers["x-openclaw-scopes"], "operator.sessions.write");
+  assert.match(first.headers["x-occ-browser-key"], /^[a-f0-9]{64}$/);
+  assert.equal(
+    first.headers["x-occ-browser-key"],
+    Buffer.from(secret.data["browser-key"], "base64").toString(),
+  );
+  const admin = await request({ ...input, mode: "admin" });
+  assert.equal(admin.headers["x-occ-identity"], first.headers["x-occ-identity"]);
+  assert.equal(admin.headers["x-openclaw-scopes"], "operator.admin");
+  const other = await request({ ...input, principalId: "principal-b" });
+  assert.notEqual(other.headers["x-occ-identity"], first.headers["x-occ-identity"]);
+  assert.notEqual(
+    (await request({ ...input, installationId: "installation-b" })).headers["x-occ-identity"],
+    first.headers["x-occ-identity"],
+  );
+  await fixture.prepare();
+  assert.deepEqual(
+    read("Secret", secret.metadata.name),
+    original,
+    "reconciliation must preserve the active revision credential",
+  );
+  const gateway = read("Deployment", fixture.gatewayName).spec.template.spec;
+  const mount = gateway.containers[0].volumeMounts.find(
+    ({ name }) => name === "browser-delegation",
+  );
+  assert.deepEqual(mount, {
+    name: "browser-delegation",
+    mountPath: "/var/run/openclaw/browser-delegation",
+    readOnly: true,
+  });
+  assert.equal(
+    gateway.volumes.find(({ name }) => name === "browser-delegation").secret.secretName,
+    secret.metadata.name,
+  );
+  for (const deployment of [...objects.values()].filter(
+    (object) => object.kind === "Deployment" && object.metadata.name !== fixture.gatewayName,
+  )) {
+    assert.equal(
+      JSON.stringify(deployment).includes(secret.metadata.name),
+      false,
+      "Harness must never receive the browser credential",
+    );
+  }
+  await assert.rejects(
+    request(input, { ...revision, id: "unprepared-revision" }),
+    /browser credential is unavailable/,
+  );
+  objects.delete(key("Secret", secret.metadata.name));
+  await assert.rejects(request(), /browser credential is unavailable/);
+});
+
+test("gateway browser routes preserve delegated authority while machine and node routes remove it", () => {
+  const driver = createKubernetesComputeDriver(
+    routedOptions({
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+    }),
+  );
   const revision = routedRevision(driver);
-  assert.equal(driver.getGatewayChatEndpoint(revision), undefined);
   revision.configuration.gateway.controlUi = {
     enabled: true,
     allowedOrigins: ["https://agent.example.test"],
   };
-  revision.configuration.gateway.auth.trustedProxy.deviceAutoApprove = {
-    enabled: true,
-    scopes: ["operator.admin"],
-  };
-  // Old saved profiles do not promise fail-closed native scope admission.
-  assert.equal(driver.getGatewayChatEndpoint(revision), undefined);
   revision.configuration.gateway.auth.trustedProxy.requiredHeaders = ["x-openclaw-scopes"];
-  assert.equal(
-    driver.getGatewayChatEndpoint(revision),
-    `wss://${gatewayRouting.hostname}/native-chat/namespaces/${tenant.id}/agents/${revision.agentId}`,
-  );
   const ownership = { namespaceId: tenant.id, agentId: revision.agentId };
   const namespace = { name: kubernetesNamespaceName(tenant.id), plane: "execution" };
-  const service = driver.service("chat-gateway", ownership, namespace, {});
+  const service = driver.service("browser-gateway", ownership, namespace, {});
   const route = driver.gatewayRoute(revision, ownership, namespace, service);
-  const chatRules = route.spec.rules.filter((rule) =>
-    rule.matches.some(({ path }) => path.value.startsWith("/native-chat/")),
+  const browserRules = route.spec.rules.filter((rule) =>
+    rule.matches.some(({ path }) => path.value.startsWith("/native-browser/")),
   );
-  assert.equal(chatRules.length, 2);
+  assert.equal(browserRules.length, 2);
   assert.deepEqual(
-    chatRules.map(({ matches }) => matches),
+    browserRules.map(({ matches }) => matches[0].path),
     [
-      [
-        {
-          path: {
-            type: "Exact",
-            value: `/native-chat/namespaces/${tenant.id}/agents/${revision.agentId}`,
-          },
-        },
-      ],
-      [
-        {
-          path: {
-            type: "PathPrefix",
-            value: `/native-chat/namespaces/${tenant.id}/agents/${revision.agentId}/`,
-          },
-        },
-      ],
+      {
+        type: "Exact",
+        value: `/native-browser/namespaces/${tenant.id}/agents/${revision.agentId}`,
+      },
+      {
+        type: "PathPrefix",
+        value: `/native-browser/namespaces/${tenant.id}/agents/${revision.agentId}/`,
+      },
     ],
   );
-  // HTTP assets and WebSocket upgrades share the same private Service and scope cap.
-  for (const rule of chatRules) {
+  for (const rule of browserRules) {
     const headers = rule.filters.find(
       ({ type }) => type === "RequestHeaderModifier",
     ).requestHeaderModifier;
-    assert.ok(
-      headers.set.some(
-        ({ name, value }) => name === "x-occ-identity" && value === "occ-workspace-files",
-      ),
-    );
-    assert.ok(
-      headers.set.some(
-        ({ name, value }) => name === "x-openclaw-scopes" && value === "operator.sessions.write",
-      ),
-    );
+    // Only the trusted controller can reach this private, service-key protected route.
+    for (const name of ["x-occ-identity", "x-occ-browser-key", "x-openclaw-scopes"]) {
+      assert.equal(
+        headers.set.some((header) => header.name === name),
+        false,
+      );
+      assert.equal(headers.remove.includes(name), false);
+    }
     assert.ok(headers.remove.includes("authorization"));
     assert.ok(headers.remove.includes("cookie"));
     assert.deepEqual(rule.backendRefs, [
       { group: "", kind: "Service", name: service.metadata.name, port: 8080 },
     ]);
   }
-  assert.deepEqual(
-    chatRules.map(({ filters }) => filters[0].urlRewrite.path),
-    [
-      { type: "ReplaceFullPath", replaceFullPath: "/" },
-      { type: "ReplacePrefixMatch", replacePrefixMatch: "/" },
-    ],
-  );
-  const unqualified = structuredClone(revision);
-  delete unqualified.configuration.gateway.auth.trustedProxy.requiredHeaders;
-  assert.equal(
-    driver.gatewayRoute(unqualified, ownership, namespace, service).spec.rules.length,
-    2,
-  );
-  assert.equal(
-    createKubernetesComputeDriver(options()).getGatewayChatEndpoint(revision),
-    undefined,
-  );
+  for (const mode of ["operator", "node", "node-transfer"]) {
+    assert.ok(
+      driver
+        .gatewayRouteHeaderFilter(mode)
+        .requestHeaderModifier.remove.includes("x-occ-browser-key"),
+    );
+  }
+  const rendered = driver.kubernetesGatewayConfigurationDocument(revision.configuration);
+  assert.deepEqual(rendered.gateway.auth.trustedProxy.delegation, {
+    credentialFile: "/var/run/openclaw/browser-delegation/browser-key",
+  });
+  assert.equal(rendered.gateway.auth.trustedProxy.deviceAutoApprove, undefined);
+  for (const delegation of [
+    { ...rendered.gateway.auth.trustedProxy.delegation, authority: "oce" },
+    { ...rendered.gateway.auth.trustedProxy.delegation, subjectPrefix: "oce:v1:" },
+    { credentialFile: "/unsupported/browser-key" },
+  ]) {
+    assert.throws(
+      () => driver.validateGatewaySettings({ gateway: { auth: { trustedProxy: { delegation } } } }),
+      /delegation/,
+    );
+  }
 });
 
 test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", async () => {
@@ -6863,7 +6949,7 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
           { name: "x-openclaw-scopes", value: "operator.admin" },
           { name: "x-real-ip", value: "%DOWNSTREAM_DIRECT_REMOTE_ADDRESS_WITHOUT_PORT%" },
         ],
-        remove: ["authorization", "cookie", "forwarded", "x-forwarded-for"],
+        remove: ["authorization", "cookie", "forwarded", "x-forwarded-for", "x-occ-browser-key"],
       },
     },
   ]);
@@ -20975,7 +21061,16 @@ for (const method of ["api_key", "codex_pat"]) {
 
 for (const embedded of [true, false]) {
   test(`Kubernetes ${embedded ? "embedded" : "dedicated"} stop removes the stopped revision's credential copies and snapshots`, async () => {
-    const { driver, revision, namespace, context, objects } = workspaceSetupFixture(embedded);
+    const { driver, revision, namespace, context, objects } = workspaceSetupFixture(
+      embedded,
+      true,
+      undefined,
+      { gatewayRouting },
+    );
+    revision.configuration = withNativeAdminGateway(
+      revision.configuration,
+      "https://agent.example.test",
+    );
     revision.harnessAuth = { ...revision.harnessAuth, method: "api_key" };
     context.harnessAuth = { ...context.harnessAuth, method: "api_key" };
     await driver.prepareRevision(revision, context);
@@ -20998,6 +21093,7 @@ for (const embedded of [true, false]) {
         `ConfigMap:gateway-${digest(revision.agentId)}-rev-${digest(revision.id)}`,
       ),
     );
+    assert.ok(revisionScoped().includes(`Secret:browser-delegation-${revisionSuffix}`));
     await driver.stopRevision(revision);
     // A stopped revision keeps no copy of its credentials; preparing it again re-projects them.
     assert.deepEqual(revisionScoped(), []);

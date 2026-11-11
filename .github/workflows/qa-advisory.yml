@@ -168,29 +168,40 @@ jobs:
         run: rm -rf -- "$RUNNER_TEMP/qa-matrix-credentials"
 
   oidc-agent-chat:
-    name: QA advisory (OIDC Agent chat)
+    name: QA advisory (native Agent browser)
     needs: eligibility
     if: needs.eligibility.outputs.openshell-file == ''
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 120
     environment: integration-qa-pr
     env:
       NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
-      OCC_TEST_BROWSER_EXECUTABLE: /usr/bin/google-chrome
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - uses: ./.github/actions/run-ci-lane
+        id: native-browser-lane
+        env:
+          OPENCLAW_CI_NATIVE_BROWSER_EVIDENCE_DIR: ${{ runner.temp }}/native-browser-evidence
         with:
           lane: gateway-routing
-          test-file: tests/integration/oidc-agent-chat-k3d-real.test.ts
           profile: full
           node-version: "24.22.1"
           artifact-prefix: qa-advisory-oidc-agent-chat
           job-timeout-minutes: 120
+      - name: Retain native browser review media
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: native-browser-media-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/native-browser-evidence/**/*.png
+            ${{ runner.temp }}/native-browser-evidence/**/*.webm
+          if-no-files-found: ${{ steps.native-browser-lane.outcome == 'success' && 'error' || 'warn' }}
+          retention-days: 7
 
   openshell:
     name: QA advisory (OpenShell / ${{ matrix.shard }})

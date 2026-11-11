@@ -145,10 +145,10 @@ index 2708f32ef422ea9b6881005c190b3aceba53d80a..a498cbdcc3db389bc444faba94c36ed7
    let mobile = false;
    mockMobile(() => mobile);
 diff --git a/ui/src/app/app-shell-view.tsx b/ui/src/app/app-shell-view.tsx
-index 5117367f576956dc6c1f1aa39e68d7730500d364..522c770a6f823dd076cc442c205ed323954a02ac 100644
+index 9e4baf152526d2087533885b4d053ae5f482b170..4c31e3cc5780b6bbf70bda7cc2fc28bb828d7bd2 100644
 --- a/ui/src/app/app-shell-view.tsx
 +++ b/ui/src/app/app-shell-view.tsx
-@@ -101,6 +101,11 @@ export function ApplicationShell(props: {
+@@ -111,6 +111,11 @@ export function ApplicationShell(props: {
      projectOwner(sessionOwner(), (sessions) => sessions.state.result?.sessions),
    );
    const shellConnectionStatus = createMemo(() => view().shellConnectionStatus);
@@ -160,7 +160,7 @@ index 5117367f576956dc6c1f1aa39e68d7730500d364..522c770a6f823dd076cc442c205ed323
    const footerStatus = createMemo(() =>
      shellConnectionStatus() || view().connectionRecovery ? view().gatewayStatus : null,
    );
-@@ -363,6 +368,19 @@ export function ApplicationShell(props: {
+@@ -427,6 +432,19 @@ export function ApplicationShell(props: {
            onMouseDown={beginNativeWindowDragFromTopInset}
            inert={view().mobileNavLayout && view().navDrawerOpen}
          >
@@ -180,8 +180,8 @@ index 5117367f576956dc6c1f1aa39e68d7730500d364..522c770a6f823dd076cc442c205ed323
            <Show
              when={
                floatingSidebarAttentionVisible(view().floatingUpdateCard) ||
-@@ -386,8 +404,9 @@ export function ApplicationShell(props: {
-           >
+@@ -460,8 +478,9 @@ export function ApplicationShell(props: {
+             </Show>
              <RouterOutlet
                ref={(element) => (props.host.routeOutlet = element)}
 -              inert={view().reloadRequired}
@@ -255,10 +255,10 @@ index 8adcff4da2675804542eb7977d68fa12105d3f20..a5125ca83842490eae4731feed13bb6a
      const otherGateway = "wss://other-gateway.example.test";
      const selection = {
 diff --git a/ui/src/app/gateway-store.ts b/ui/src/app/gateway-store.ts
-index 8fa1879e4d4fbc89cb659cd84f68aeaa54677f83..1c58df9c09f730ce9ca7cc590d0daafb3d8e68a7 100644
+index aa98f4c2c37ba04cadea1ac1cd32fee1e76e2531..387a5c0bf33b4a78ea7263792b07e1965cbfc011 100644
 --- a/ui/src/app/gateway-store.ts
 +++ b/ui/src/app/gateway-store.ts
-@@ -190,6 +190,7 @@ export function createApplicationGateway(
+@@ -192,6 +192,7 @@ export function createApplicationGateway(
    };
    const setConnectionSnapshot = (patch: Partial<ApplicationGatewaySnapshot>) =>
      setSnapshot({
@@ -266,7 +266,7 @@ index 8fa1879e4d4fbc89cb659cd84f68aeaa54677f83..1c58df9c09f730ce9ca7cc590d0daafb
        hello: null,
        pluginCapabilities: null,
        canvasPluginSurfaceUrl: null,
-@@ -516,7 +517,7 @@ export function createApplicationGateway(
+@@ -514,7 +515,7 @@ export function createApplicationGateway(
        onConnecting: () => client === nextClient && setSnapshot({ reconnectAt: undefined }),
        onReconnectScheduled: (delayMs) =>
          client === nextClient && setSnapshot({ reconnectAt: Date.now() + delayMs }),
@@ -281,7 +281,7 @@ index 8fa1879e4d4fbc89cb659cd84f68aeaa54677f83..1c58df9c09f730ce9ca7cc590d0daafb
                    }),
 +          browserAccessDenied: everConnected && browserAccessDenied === true,
            lastErrorCode: startupPending ? null : busy ? "GATEWAY_BUSY" : lastErrorCode,
-           lastErrorAuthReason: startupPending ? null : readConnectionAuthReason(error?.details),
+           ...readConnectFailureDetails(error?.details, startupPending),
          });
 diff --git a/ui/src/app/gateway.ts b/ui/src/app/gateway.ts
 index 5419f99999f0837122e0c142600f8c0961de5223..4e196edb77a19f20a28e37fd58fe2201b0859fc4 100644

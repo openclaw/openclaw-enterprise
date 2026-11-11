@@ -16,8 +16,8 @@ QA Matrix Advisory is one workflow with four groups of test jobs:
 - **OpenShell:** eleven jobs with at most ten running at once for sandbox policy, credentials, Git expiry, plugins,
   installation, and Agent redeployment.
 - **Local installation:** the hosted local setup tests.
-- **OIDC Agent chat:** Keycloak sign-in, ordinary-owner setup, a real Agent reply,
-  and refusal of native administrative requests.
+- **Native Agent browser:** the full `gateway-routing` lane, including workspace
+  routing, native administration, selective sharing, and OIDC owner/operator chat.
 
 The six-hour schedule starts all four groups in the same workflow run. They use
 real dependencies on disposable installations. Results are advisory and do not
@@ -30,13 +30,13 @@ of this workflow; they do not require another schedule or manual invocation.
 
 ## Trigger
 
-| Trigger                                            | Jobs selected                                                                |
-| -------------------------------------------------- | ---------------------------------------------------------------------------- |
-| Schedule on `main`, every 6 hours at minute 17 UTC | All four groups                                                              |
-| Manual run of `qa-advisory.yml` on `main`          | All four groups                                                              |
-| Eligible PR with `full-qa`                         | All four groups                                                              |
-| Eligible PR with only `qa-openshell-compose`       | Compose OpenShell first-Agent job only                                       |
-| Push to `main`, when `QA_ADVISORY_ON_PUSH=true`    | QA matrix, OIDC Agent chat and all OpenShell jobs; no local installation job |
+| Trigger                                            | Jobs selected                                                                     |
+| -------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Schedule on `main`, every 6 hours at minute 17 UTC | All four groups                                                                   |
+| Manual run of `qa-advisory.yml` on `main`          | All four groups                                                                   |
+| Eligible PR with `full-qa`                         | All four groups                                                                   |
+| Eligible PR with only `qa-openshell-compose`       | Compose OpenShell first-Agent job only                                            |
+| Push to `main`, when `QA_ADVISORY_ON_PUSH=true`    | QA matrix, native Agent browser and all OpenShell jobs; no local installation job |
 
 PRs must come from this repository and must not be authored or triggered by
 Dependabot. A maintainer adds the label to a reviewed PR; create it first if
@@ -169,7 +169,7 @@ To run the same coverage as the schedule, configure the
 gh workflow run qa-advisory.yml --repo openclaw/openclaw-enterprise --ref main
 ```
 
-This starts the QA matrix, OIDC Agent chat, all twelve OpenShell jobs, and three local installation jobs.
+This starts the QA matrix, native Agent browser, all twelve OpenShell jobs, and three local installation jobs.
 For only OpenShell, use [Full Integration](full-integration.md#run-a-protected-integration-lane)
 with `lane=openshell`.
 
@@ -258,11 +258,12 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
 Check the tested commit, selected scenarios, failed or skipped tests, and cleanup.
 Missing, filtered, or interrupted tests are not passes.
 
-| Results                                             | Where to look                                                                 |
-| --------------------------------------------------- | ----------------------------------------------------------------------------- |
-| QA matrix stages (`passed`, `failed`, or `blocked`) | `matrix.json` in `qa-advisory-<installation>-<run-id>-<attempt>`              |
-| OpenShell tests                                     | `qa-advisory-<test-file-basename>-openshell` (omit `.test.mjs` or `.test.ts`) |
-| Local installation tests                            | `qa-advisory-local-installation-<test-file-basename>-dev-up-k3d`              |
+| Results                                             | Where to look                                                                                                                               |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| QA matrix stages (`passed`, `failed`, or `blocked`) | `matrix.json` in `qa-advisory-<installation>-<run-id>-<attempt>`                                                                            |
+| OpenShell tests                                     | `qa-advisory-<test-file-basename>-openshell` (omit `.test.mjs` or `.test.ts`)                                                               |
+| Native Agent browser                                | `qa-advisory-oidc-agent-chat-gateway-routing`; [browser media and review procedure](../native-agent-browser.md#collect-ci-browser-evidence) |
+| Local installation tests                            | `qa-advisory-local-installation-<test-file-basename>-dev-up-k3d`                                                                            |
 
 Startup command failures report elapsed time, the configured limit, and the observed
 exit code or signal. `timed out` means the command deadline fired; a following

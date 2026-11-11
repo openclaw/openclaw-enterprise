@@ -60,10 +60,10 @@ function nativeAdminHarnessConfiguration(nativeOrigin) {
     nativeOrigin,
   );
   // Preserve read/write device coverage: the machine identity supplies admin.
-  configuration.gateway.auth.trustedProxy.deviceAutoApprove.scopes = [
-    "operator.read",
-    "operator.write",
-  ];
+  configuration.gateway.auth.trustedProxy.deviceAutoApprove = {
+    enabled: true,
+    scopes: ["operator.read", "operator.write"],
+  };
   return configuration;
 }
 
@@ -78,8 +78,16 @@ function nativeComputeDriver(upstreamPort, { exclusiveReplacement = false } = {}
     getGatewayEndpoint(revision) {
       return `wss://localhost:${upstreamPort}/namespaces/${revision.namespaceId}/agents/${revision.agentId}/`;
     },
-    getGatewayChatEndpoint(revision) {
-      return `wss://localhost:${upstreamPort}/native-chat/namespaces/${revision.namespaceId}/agents/${revision.agentId}/`;
+    async getGatewayBrowserRequest(revision, { principalId, mode }) {
+      return {
+        endpoint: `wss://localhost:${upstreamPort}/native-browser/namespaces/${revision.namespaceId}/agents/${revision.agentId}/`,
+        subject: `test:${principalId}`,
+        headers: {
+          "x-occ-identity": `test:${principalId}`,
+          "x-occ-browser-key": "server-browser-credential",
+          "x-openclaw-scopes": mode === "admin" ? "operator.admin" : "operator.sessions.write",
+        },
+      };
     },
   });
 }
@@ -379,20 +387,20 @@ test("native browser status selects exact Agent authority and reports lifecycle 
   assert.equal(response.statusCode, 200, response.body);
   assert.equal(
     context.upstream.requests.at(-1).url,
-    `/native-chat/namespaces/${context.namespace.id}/agents/${context.agent.id}`,
+    `/native-browser/namespaces/${context.namespace.id}/agents/${context.agent.id}`,
   );
   await assertSiblingStatusDenied(context, operatorSession, (target) =>
     callerDenied("Agent operate", target),
   );
   const driver = context.fixture.controller.selectedDriver("compute");
-  const chatEndpoint = driver.getGatewayChatEndpoint;
-  driver.getGatewayChatEndpoint = undefined;
+  const chatEndpoint = driver.getGatewayBrowserRequest;
+  driver.getGatewayBrowserRequest = undefined;
   try {
     const unsupported = await nativeStatus(context, { session: operatorSession });
     assert.equal(unsupported.data.status, "unsupported");
     assert.equal(unsupported.data.mode, "chat");
   } finally {
-    driver.getGatewayChatEndpoint = chatEndpoint;
+    driver.getGatewayBrowserRequest = chatEndpoint;
   }
 
   const limitedSession = await createReadOnlySession(context, "native-admin-reader");
@@ -862,6 +870,7 @@ test("native admin proxy strips browser credentials and preserves the Agent gate
       cookie: nativeCookie,
       "x-forwarded-for": "203.0.113.1",
       "x-occ-identity": "must-not-forward",
+      "x-occ-browser-key": "must-not-forward",
       "x-openclaw-scopes": "must-not-forward",
       "x-safe-client-header": "preserved",
       "x-occ-session-key": nativeSessionKey,
@@ -877,19 +886,15 @@ test("native admin proxy strips browser credentials and preserves the Agent gate
   const observed = context.upstream.requests[0];
   assert.equal(
     observed.url,
-    `/namespaces/${context.namespace.id}/agents/${context.agent.id}/settings/profile?tab=devices`,
+    `/native-browser/namespaces/${context.namespace.id}/agents/${context.agent.id}/settings/profile?tab=devices`,
   );
   assert.equal(observed.headers.origin, status.data.origin);
   assert.equal(observed.headers["x-safe-client-header"], "preserved");
   assert.equal(observed.headers["x-api-key"], nativeGatewayApiKey);
-  for (const header of [
-    "authorization",
-    "cookie",
-    "x-forwarded-for",
-    "x-occ-identity",
-    "x-occ-session-key",
-    "x-openclaw-scopes",
-  ]) {
+  assert.equal(observed.headers["x-occ-browser-key"], "server-browser-credential");
+  assert.match(observed.headers["x-occ-identity"], /^test:/);
+  assert.equal(observed.headers["x-openclaw-scopes"], "operator.admin");
+  for (const header of ["authorization", "cookie", "x-forwarded-for", "x-occ-session-key"]) {
     assert.equal(observed.headers[header], undefined, `${header} must not reach native upstream`);
   }
 
@@ -1297,10 +1302,11 @@ for (const changedField of [undefined, "id", "implementation"]) {
     const compute = {
       ...nativeComputeDriver(upstream.port),
       ...(changedField === undefined ? {} : { [changedField]: `replacement-${changedField}` }),
-      getGatewayEndpoint(selectedRevision) {
+      async getGatewayBrowserRequest(selectedRevision, input, signal) {
         calls.endpoint += 1;
         assert.equal(selectedRevision.id, revision.id);
-        return originalCompute.getGatewayEndpoint(selectedRevision);
+        assert.equal(input.installationId, controller.installation.id);
+        return originalCompute.getGatewayBrowserRequest(selectedRevision, input, signal);
       },
     };
     controller.registerDriver(compute);

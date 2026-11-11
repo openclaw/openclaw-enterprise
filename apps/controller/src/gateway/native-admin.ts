@@ -84,7 +84,6 @@ export function nativeAdminConfigurationSupported(
   const auth = asRecord(gateway?.auth);
   const proxy = asRecord(auth?.trustedProxy);
   const ui = asRecord(gateway?.controlUi);
-  const approval = asRecord(proxy?.deviceAutoApprove);
   const scopes = asRecord(auth?.identityScopes)?.["occ-workspace-files"];
   return (
     auth?.mode === "trusted-proxy" &&
@@ -96,7 +95,6 @@ export function nativeAdminConfigurationSupported(
     proxy.allowUsers.includes("occ-workspace-files") &&
     Array.isArray(scopes) &&
     scopes.includes("operator.admin") &&
-    approval?.enabled === true &&
     ui?.enabled === true &&
     Array.isArray(ui.allowedOrigins) &&
     ui.allowedOrigins.includes(origin) &&
@@ -129,7 +127,6 @@ export function prepareNativeAdminConfiguration(
   const ui = record(gateway.controlUi, "gateway.controlUi");
   const auth = record(gateway.auth, "gateway.auth");
   const proxy = record(auth.trustedProxy, "gateway.auth.trustedProxy");
-  const approval = record(proxy.deviceAutoApprove, "gateway.auth.trustedProxy.deviceAutoApprove");
   const identities = record(auth.identityScopes, "gateway.auth.identityScopes");
   if (
     (auth.mode !== undefined && auth.mode !== "trusted-proxy") ||
@@ -189,15 +186,6 @@ export function prepareNativeAdminConfiguration(
             "occ-workspace-files",
             "gateway.auth.trustedProxy.allowUsers",
           ),
-          deviceAutoApprove: {
-            ...approval,
-            enabled: true,
-            scopes: append(
-              approval.scopes,
-              "operator.admin",
-              "gateway.auth.trustedProxy.deviceAutoApprove.scopes",
-            ),
-          },
         },
         identityScopes: {
           ...identities,

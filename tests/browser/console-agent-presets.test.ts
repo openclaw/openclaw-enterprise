@@ -2725,7 +2725,9 @@ function humanAllowlistVariable(template: VariablePresetTemplate) {
     password: (gateway.auth as { password: unknown }).password,
   };
   auth.trustedProxy.allowUsers = ["occ-workspace-files", "{{ vars.human }}"];
-  auth.trustedProxy.deviceAutoApprove.scopes = ["operator.read", "operator.write"];
+  Object.assign(auth.trustedProxy, {
+    deviceAutoApprove: { enabled: true, scopes: ["operator.read", "operator.write"] },
+  });
   gateway.controlUi = { enabled: true, allowedOrigins: ["http://127.0.0.1:18789"] };
   gateway.auth = auth;
 }

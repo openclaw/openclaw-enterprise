@@ -30,7 +30,10 @@ async function startGateway(t, reply) {
   const server = createServer({ key, cert }, (_request, response) => {
     response.writeHead(404).end();
   });
-  server.on("upgrade", (_request, socket) => {
+  server.on("upgrade", (request, socket) => {
+    assert.equal(request.headers["x-occ-identity"], "trusted-subject");
+    assert.equal(request.headers["x-occ-browser-key"], "trusted-browser-key");
+    assert.equal(request.headers["x-openclaw-scopes"], "operator.sessions.write");
     socket.on("error", () => {});
     socket.write(
       "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
@@ -78,6 +81,9 @@ async function relayToHeldBrowser(t, reply, relayOptions = {}) {
       url: "/session/socket",
       headers: {
         origin: agentOrigin,
+        "x-occ-identity": "spoofed-subject",
+        "x-occ-browser-key": "spoofed-key",
+        "x-openclaw-scopes": "operator.admin",
         "sec-websocket-key": randomBytes(16).toString("base64"),
         "sec-websocket-version": "13",
       },
@@ -88,6 +94,11 @@ async function relayToHeldBrowser(t, reply, relayOptions = {}) {
       gatewayBase: `https://localhost:${port}/`,
       agentOrigin,
       apiKey: "relay-test-key",
+      trustedHeaders: {
+        "x-occ-identity": "trusted-subject",
+        "x-occ-browser-key": "trusted-browser-key",
+        "x-openclaw-scopes": "operator.sessions.write",
+      },
     },
     connectionId: "relay-test",
     lease: async () => undefined,

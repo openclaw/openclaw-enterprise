@@ -5487,11 +5487,12 @@
      { name: "manual service", token: true, wrongGateway: false, args: ["--service"] },
 --- a/src/cli/connect-cli.test.ts
 +++ b/src/cli/connect-cli.test.ts
-@@ -54,6 +54,16 @@
+@@ -57,6 +57,17 @@
    tlsFingerprint: "ab".repeat(32),
  };
  
 +const acceptedConnection = {
++  connected: true,
 +  gateway: {
 +    host: "192.168.1.20",
 +    port: 8443,
@@ -5504,7 +5505,7 @@
  function setupCode(): string {
    return encodePairingSetupCode(payload);
  }
-@@ -76,20 +86,6 @@
+@@ -80,20 +91,6 @@
    expect(mocks.runNodeDaemonInstall).not.toHaveBeenCalled();
  }
  
@@ -5525,7 +5526,7 @@
  function expectBootstrap() {
    expect(mocks.runNodeHost).toHaveBeenCalledWith(
      expect.objectContaining({ stopAfterFirstConnect: true }),
-@@ -108,9 +104,12 @@
+@@ -112,9 +109,12 @@
  const tempDirs = useAutoCleanupTempDirTracker(afterEach);
  
  describe("connect cli", () => {
@@ -5539,7 +5540,7 @@
      mocks.runNodeDaemonInstall.mockResolvedValue(undefined);
      mocks.mutateConfigFileWithRetry.mockResolvedValue(undefined);
      mocks.runtime.exit.mockImplementation(() => {});
-@@ -150,6 +149,9 @@
+@@ -216,6 +216,9 @@
        ],
        gatewayBootstrapToken: "bootstrap-token",
        preferGatewayBootstrapToken: true,
@@ -5549,7 +5550,7 @@
        displayName: "Build Node",
      });
      expect(release).toHaveBeenCalledOnce();
-@@ -360,6 +362,7 @@
+@@ -426,6 +429,7 @@
        nodeHost: { skills: { enabled: false }, workerRuns: { enabled: true } },
      });
      expect(mocks.runNodeDaemonInstall).toHaveBeenCalledWith({
@@ -5557,7 +5558,7 @@
        displayName: "Runner Node",
        force: true,
      });
-@@ -390,6 +393,16 @@
+@@ -456,6 +460,16 @@
      expect(mocks.runNodeDaemonInstall).not.toHaveBeenCalled();
    });
  
@@ -5574,7 +5575,7 @@
    it("refuses plain HTTP join URLs for non-loopback gateways", async () => {
      await runConnect([`http://gateway.example/j/${"a".repeat(22)}`]);
  
-@@ -397,31 +410,141 @@
+@@ -463,31 +477,141 @@
      expect(mocks.fetchWithSsrFGuard).not.toHaveBeenCalled();
    });
  
@@ -5747,7 +5748,7 @@
  import {
    buildCloudflareAccessHeaders,
    CF_ACCESS_CLIENT_ID_HEADER,
-@@ -18,13 +19,13 @@
+@@ -19,13 +20,13 @@
  import { fetchWithSsrFGuard } from "../infra/net/fetch-guard.js";
  import { normalizeHostname } from "../infra/net/hostname.js";
  import { loadNodeHostConfig, type NodeHostGatewayConfig } from "../node-host/config.js";
@@ -5763,15 +5764,15 @@
  } from "../node-host/gateway-cloudflare-access.js";
  import { loadResumableNodeHostGateway, runNodeHost } from "../node-host/runner.js";
  import { isDevicePairingJoinCode } from "../pairing/join-code.js";
-@@ -41,6 +42,7 @@
+@@ -42,6 +43,7 @@
  type ConnectCommandOptions = {
    service?: boolean;
    ephemeral?: boolean;
 +  pairOrReconnect?: boolean;
    sessionHost?: boolean;
    targetFile?: string;
-   displayName?: string;
-@@ -233,6 +235,11 @@
+   discoveryUrl?: string;
+@@ -243,6 +245,11 @@
      .option("--service", "Install and run the node host as an OS service", false)
      .option("--ephemeral", "Run as an environment-managed disposable session host", false)
      .option(
@@ -5783,7 +5784,7 @@
        "--session-host",
        "Host worker sessions (process-scoped unless installed as a service)",
        false,
-@@ -256,6 +263,9 @@
+@@ -267,6 +274,9 @@
      )
      .action(async (target: string | undefined, opts: ConnectCommandOptions) => {
        try {
@@ -5793,7 +5794,7 @@
          if (opts.ephemeral && opts.sessionHost) {
            throw new Error("--ephemeral cannot be combined with --session-host.");
          }
-@@ -269,15 +279,10 @@
+@@ -300,15 +310,10 @@
          const joinTarget = parseJoinTarget(resolvedTarget);
          const signal = joinTarget ? getAsyncWorkSignal() : undefined;
          const saved = await loadNodeHostConfig();
@@ -5813,7 +5814,7 @@
          if (initialCloudflareAccess && joinTarget?.protocol !== "https:") {
            throw new Error("Cloudflare Access credentials require an HTTPS join URL.");
          }
-@@ -295,19 +300,22 @@
+@@ -326,19 +331,22 @@
            return;
          }
          const pair = resolveNodePairGatewayPayload(payload);
@@ -5846,7 +5847,7 @@
          });
          const forceWorkerRuns =
            opts.ephemeral === true || (opts.sessionHost === true && !opts.service);
-@@ -321,13 +329,15 @@
+@@ -352,13 +360,15 @@
              ? { gatewayCloudflareAccess: gatewayCandidates[0].cloudflareAccess }
              : {}),
            gatewayCandidates,
@@ -5864,13 +5865,13 @@
            ...(forceWorkerRuns ? { forceWorkerRuns: true } : {}),
            ...(opts.ephemeral === true ? { ephemeral: true } : {}),
            displayName: opts.displayName,
-@@ -342,7 +352,12 @@
+@@ -373,7 +383,12 @@
  
          // The first hello stores durable device auth and the winning endpoint before
          // installation, so the service never persists the one-shot bootstrap bearer.
 -        await runNodeHost({ ...nodeRunOptions, stopAfterFirstConnect: true });
 +        const connection = await runNodeHost({ ...nodeRunOptions, stopAfterFirstConnect: true });
-+        if (!connection) {
++        if (!connection || !("gateway" in connection)) {
 +          throw new Error(
 +            "Node pairing did not return an accepted connection; service installation was not authorized.",
 +          );
@@ -5878,7 +5879,7 @@
          if (opts.sessionHost) {
            await mutateConfigFileWithRetry({
              writeOptions: {
-@@ -358,6 +373,7 @@
+@@ -389,6 +404,7 @@
            });
          }
          await runNodeDaemonInstall({
@@ -6030,6 +6031,17 @@
    });
  
    it.each([
+--- a/src/cli/node-cli/daemon.test.ts
++++ b/src/cli/node-cli/daemon.test.ts
+@@ -1,7 +1,7 @@
+ import path from "node:path";
+ import { Command } from "commander";
+ import type { DaemonRuntimePinSnapshot } from "../../daemon/runtime-pin-types.js";
+-import { resolveNodeGatewayOptions } from "./gateway-options.js";
++import { resolveNodeGatewayOptions } from "../../node-host/gateway-options.js";
+ const pinSnapshotMock = vi.hoisted(() =>
+   vi.fn<() => DaemonRuntimePinSnapshot>(() => ({ revision: "empty", stored: false })),
+ );
 --- a/src/cli/node-cli/daemon.ts
 +++ b/src/cli/node-cli/daemon.ts
 @@ -40,7 +40,16 @@
@@ -6166,7 +6178,7 @@
  export async function runNodeDaemonInstall(opts: NodeDaemonInstallOptions) {
    const { json, stdout, warnings, warn, emit, emitMessage, fail } =
      createDaemonInstallActionContext(opts.json);
-@@ -130,10 +237,116 @@
+@@ -130,10 +237,121 @@
      return;
    }
  
@@ -6197,7 +6209,7 @@
 +      existingServiceOptions?.has("--require-device-auth") === true;
 +    requireDeviceAuth = !opts.authFromEnv && Boolean(opts.connection || existingRequiresDeviceAuth);
 +    if (opts.connection) {
-+      gatewayOptions = opts.connection.gateway;
++      gatewayOptions = { ...opts.connection.gateway, gatewayTarget: undefined };
 +      // Join Access may authorize a different origin from the accepted Gateway.
 +      delete installEnv.CF_ACCESS_CLIENT_ID;
 +      delete installEnv.CF_ACCESS_CLIENT_SECRET;
@@ -6222,6 +6234,7 @@
 +      // token on a later hello without rewriting the installed command.
 +      const hasSavedPairing = Boolean(
 +        saved?.gateway &&
++        saved.gateway.kind !== "openclaw-id" &&
 +        identity &&
 +        (await canReuseNodeHostDeviceToken({
 +          savedGateway: saved.gateway,
@@ -6230,7 +6243,11 @@
 +          env: installEnv,
 +        })),
 +      );
-+      if (existingManagedCommand && (existingRequiresDeviceAuth || hasSavedPairing)) {
++      if (
++        existingManagedCommand &&
++        saved?.gateway?.kind !== "openclaw-id" &&
++        (existingRequiresDeviceAuth || hasSavedPairing)
++      ) {
 +        const installed = readPairedServiceGateway(existingServiceOptions);
 +        const sameBinding = (candidate: Parameters<typeof nodeHostGatewaysShareScope>[0]) =>
 +          nodeHostGatewaysShareScope(installed, candidate) &&
@@ -6285,7 +6302,7 @@
    } catch (error) {
      fail(error instanceof Error ? error.message : String(error));
      return;
-@@ -155,21 +368,6 @@
+@@ -156,21 +374,6 @@
      fail("Cloudflare Access credentials require --tls for the node Gateway connection");
      return;
    }
@@ -6307,11 +6324,11 @@
    let pinSnapshot;
    try {
      pinSnapshot = await withDaemonRuntimePinMigration(
-@@ -302,23 +500,10 @@
-     // runtime toolchain on PATH for sibling binaries when needed.
-     extraPathDirs: resolveDaemonRuntimeBinDir(runtimePath),
-   });
--  if (!opts.authFromEnv) {
+@@ -313,23 +516,10 @@
+     delete environment.OPENCLAW_GATEWAY_PASSWORD;
+     delete environment.CF_ACCESS_CLIENT_ID;
+     delete environment.CF_ACCESS_CLIENT_SECRET;
+-  } else if (!opts.authFromEnv) {
 -    const savedGateway = (await loadNodeHostConfig(installEnv))?.gateway;
 -    const identity = savedGateway
 -      ? await loadDeviceIdentityIfPresentAsync({ env: installEnv })
@@ -6328,7 +6345,7 @@
 -      delete environment.OPENCLAW_GATEWAY_TOKEN;
 -      delete environment.OPENCLAW_GATEWAY_PASSWORD;
 -    }
-+  if (requireDeviceAuth) {
++  } else if (requireDeviceAuth) {
 +    programArguments.push("--require-device-auth");
 +    delete environment.OPENCLAW_GATEWAY_TOKEN;
 +    delete environment.OPENCLAW_GATEWAY_PASSWORD;
@@ -6382,7 +6399,7 @@
  
  describe("node gateway options", () => {
    it("preserves ordered pairing endpoint candidates and pins only the direct endpoint", () => {
-@@ -33,19 +67,86 @@
+@@ -33,19 +67,87 @@
      expect(resolveNodeGatewayOptions({}, null, pair).contextPath).toBe("/openclaw-gw");
    });
  
@@ -6429,6 +6446,7 @@
 +        tlsFingerprint: undefined,
 +        cloudflareAccess: undefined,
 +        cloudflareAccessFromSaved: false,
++        gatewayTarget: undefined,
 +        gatewayCandidates: explicitTls
 +          ? undefined
 +          : [{ host: "gateway.example", port: 443, tls: true }],
@@ -6482,7 +6500,7 @@
  
    it("collapses pairing candidates when an endpoint flag is explicit", () => {
      const pair = resolveNodePairGatewayOptions(
-@@ -62,6 +163,142 @@
+@@ -62,6 +164,142 @@
      });
    });
  
@@ -6625,7 +6643,7 @@
    it("canonicalizes explicit TLS pins and rejects invalid values", () => {
      const colonFingerprint = (TLS_FINGERPRINT.match(/.{2}/gu)?.join(":") ?? "").toUpperCase();
      expect(
-@@ -72,3 +309,59 @@
+@@ -72,3 +310,59 @@
      );
    });
  });
@@ -6700,7 +6718,7 @@
  import { decodePairingSetupCode } from "../../pairing/setup-code.js";
  
  type NodePairGatewayOptions = ReturnType<typeof resolveNodePairGatewayPayload>;
-@@ -49,68 +42,3 @@
+@@ -49,74 +42,3 @@
      candidates,
    };
  }
@@ -6748,10 +6766,15 @@
 -    !pair ||
 -    (config?.gateway !== undefined &&
 -      nodeHostGatewaysShareOrigin(config.gateway, pair.candidates[0]!));
--  const cloudflareAccess =
--    (!endpointChanged && savedGatewayMatchesBaseline
--      ? config?.gateway?.cloudflareAccess
--      : undefined) ?? nodeHostCloudflareAccessConfigFromEnv(env);
+-  const gatewayTarget =
+-    !pair && !hasExplicitEndpoint && config?.gateway?.kind === "openclaw-id"
+-      ? config.gateway
+-      : undefined;
+-  const cloudflareAccess = gatewayTarget
+-    ? undefined
+-    : ((!endpointChanged && savedGatewayMatchesBaseline
+-        ? config?.gateway?.cloudflareAccess
+-        : undefined) ?? nodeHostCloudflareAccessConfigFromEnv(env));
 -  const gatewayCandidates =
 -    pair && !hasExplicitEndpoint
 -      ? pair.candidates.map((candidate, index) =>
@@ -6767,6 +6790,7 @@
 -    tlsFingerprint,
 -    cloudflareAccess,
 -    gatewayCandidates,
+-    gatewayTarget,
 -  };
 -}
 --- a/src/cli/node-cli/register.test.ts
@@ -6778,7 +6802,7 @@
  import { encodePairingSetupCode } from "../../pairing/setup-code.js";
  import { registerNodeCli } from "./register.js";
  
-@@ -48,6 +48,9 @@
+@@ -51,6 +51,9 @@
    vi.clearAllMocks();
    mocks.loadNodeHostConfig.mockResolvedValue(null);
  });
@@ -6788,14 +6812,10 @@
  
  it.each([
    ["worker --desktop-sharing", mocks.runNodeHostWorker, [{ desktopSharingEnabled: true }]],
-@@ -58,10 +61,56 @@
-   expect(target).toHaveBeenCalledWith(...expected);
+@@ -105,6 +108,57 @@
+   expectHost({ ephemeral: true, resumeDeviceId: "device-1" });
  });
  
--it("passes exact-device resume to the node owner", async () => {
--  await run("run --ephemeral --resume-device device-1");
--  expectHost({ ephemeral: true, resumeDeviceId: "device-1" });
--});
 +it.each([true, false])(
 +  "selects mixed saved Access only for exact-device resume (resume=%s)",
 +  async (resume) => {
@@ -6846,10 +6866,11 @@
 +    });
 +  },
 +);
- 
++
  it.each([
    "--commands fixture.read,fixture.list install",
-@@ -108,6 +157,33 @@
+   "install --commands fixture.read --commands fixture.list,fixture.read",
+@@ -154,6 +208,33 @@
      gatewayBootstrapExpiresAtMs: 1,
      preferGatewayBootstrapToken: false,
    });
@@ -6883,7 +6904,7 @@
  });
  
  it("lets explicit gateway flags override --pair values", async () => {
-@@ -168,3 +244,46 @@
+@@ -214,3 +295,46 @@
      ...(!changed ? { gatewayHost: "10.0.0.2", gatewayPort: 19001 } : {}),
    });
  });
@@ -6948,7 +6969,7 @@
  
  function addNodeGatewayOptions(command: Command): Command {
    return command
-@@ -59,7 +60,13 @@
+@@ -83,7 +84,13 @@
          new Option(
            "--pair-if-needed <code-or-url>",
            "Use the saved device token when available; otherwise pair with this setup code",
@@ -6963,7 +6984,7 @@
        ),
    )
      .option("--session-host", "Host worker sessions for this foreground process")
-@@ -72,6 +79,12 @@
+@@ -96,6 +103,12 @@
      .option(
        "--auth-from-env",
        "Use environment Gateway credentials instead of the paired device token",
@@ -6976,7 +6997,7 @@
      )
      .addOption(new Option("--parent-stdin").hideHelp())
      .option("--share-installed-apps", "Share installed macOS applications with the Gateway")
-@@ -80,21 +93,35 @@
+@@ -104,14 +117,20 @@
        let pair;
        let gatewayOptions;
        try {
@@ -7004,24 +7025,15 @@
        } catch (error) {
          defaultRuntime.error(error instanceof Error ? error.message : String(error));
          defaultRuntime.exit(1);
-         return;
-       }
--      const { host, port, contextPath, tls, tlsFingerprint, cloudflareAccess, gatewayCandidates } =
--        gatewayOptions;
-+      const {
-+        host,
-+        port,
-+        contextPath,
-+        tls,
-+        tlsFingerprint,
-+        cloudflareAccess,
+@@ -124,6 +143,7 @@
+         tls,
+         tlsFingerprint,
+         cloudflareAccess,
 +        cloudflareAccessFromSaved,
-+        gatewayCandidates,
-+      } = gatewayOptions;
-       if (port === null) {
-         defaultRuntime.error(formatInvalidPortOption("--port"));
-         defaultRuntime.exit(1);
-@@ -107,16 +134,29 @@
+         gatewayCandidates,
+         gatewayTarget,
+       } = gatewayOptions;
+@@ -139,17 +159,30 @@
        }
        const { runNodeHost } = await import("../../node-host/runner.js");
        await runNodeHost({
@@ -7044,6 +7056,7 @@
          gatewayCloudflareAccess: cloudflareAccess,
 +        ...(cloudflareAccessFromSaved ? { gatewayCloudflareAccessFromSaved: true } : {}),
          gatewayCandidates,
+         gatewayTarget,
          gatewayBootstrapToken: pair?.bootstrapToken,
          gatewayBootstrapExpiresAtMs: pair?.expiresAtMs,
 -        preferGatewayBootstrapToken: opts.pair !== undefined,
@@ -7052,7 +7065,7 @@
          ...(opts.ephemeral === true || opts.sessionHost === true ? { forceWorkerRuns: true } : {}),
          ...(opts.ephemeral === true ? { ephemeral: true } : {}),
          nodeId: opts.nodeId,
-@@ -124,6 +164,7 @@
+@@ -157,6 +190,7 @@
          installedAppsSharing: opts.shareInstalledApps,
          desktopSharingEnabled: opts.desktopSharing,
          gatewayAuthFromEnv: opts.authFromEnv,
@@ -7114,8 +7127,8 @@
        );
 --- a/src/daemon/program-args.ts
 +++ b/src/daemon/program-args.ts
-@@ -306,10 +306,10 @@
-     args.push("--context-path", params.contextPath);
+@@ -339,10 +339,10 @@
+     }
    }
    if (params.nodeId) {
 -    args.push("--node-id", params.nodeId);
@@ -7607,6 +7620,16 @@
            ...(context.nodeRegistry.getActiveNode(connectedNodes)?.nodeId === id
              ? { active: true }
              : {}),
+--- a/src/gateway/server.auth.openclaw-id-node-host.test.ts
++++ b/src/gateway/server.auth.openclaw-id-node-host.test.ts
+@@ -329,7 +329,6 @@
+       onConnectError: rejectConnect,
+       onReconnectPaused: paused,
+       onClose: () => {},
+-      onWinningCandidate: () => {},
+     });
+     client.start();
+     try {
 --- a/src/gateway/server.node-bootstrap-reconnect.test.ts
 +++ b/src/gateway/server.node-bootstrap-reconnect.test.ts
 @@ -1,70 +1,430 @@
@@ -8529,8 +8552,8 @@
 +  };
    cloudflareAccessByCandidate?: ReadonlyMap<NodeHostGatewayConfig, CloudflareAccessCredentials>;
    clientOptions: CandidateConnectionOptions;
-   onEvent: (event: GatewayCandidateEvent) => void;
-@@ -38,11 +44,11 @@
+   candidateUrls?: ReadonlyMap<NodeHostGatewayConfig, string>;
+@@ -39,11 +45,11 @@
      url: string,
      tlsFingerprint?: string,
      cloudflareAccess?: CloudflareAccessCredentials,
@@ -8543,7 +8566,7 @@
  };
  
  export function formatGatewayCandidateUrl(gateway: NodeHostGatewayConfig): string {
-@@ -67,12 +73,25 @@
+@@ -74,13 +80,26 @@
    let currentCandidateIndex = 0;
    let stopped = false;
    let stopPromise: Promise<void> | undefined;
@@ -8557,7 +8580,7 @@
      | { caps: string[]; commands: string[]; computerUse?: ComputerUseCapabilityDescriptor }
      | undefined;
    let currentClient = createCandidateClient(currentCandidateIndex);
-+
+
 +  function stopCandidate(client: GatewayClient): Promise<void> {
 +    const existing = candidateStops.get(client);
 +    if (existing) {
@@ -8567,10 +8590,11 @@
 +    candidateStops.set(client, stopped);
 +    return stopped;
 +  }
- 
++
    function createCandidateClient(candidateIndex: number): GatewayClient {
      const candidate = params.candidates[candidateIndex];
-@@ -83,6 +102,9 @@
+     if (!candidate) {
+@@ -90,6 +109,9 @@
      const cloudflareAccess = params.cloudflareAccessByCandidate?.get(candidate);
      const candidateClient = new GatewayClient({
        ...params.clientOptions,
@@ -8580,7 +8604,7 @@
        url,
        tlsFingerprint: candidate.tlsFingerprint,
        ...(cloudflareAccess
-@@ -97,11 +119,14 @@
+@@ -104,11 +126,14 @@
          if (currentCandidateIndex !== candidateIndex) {
            return;
          }
@@ -8600,7 +8624,7 @@
        },
        onConnectError: (error) => {
          if (currentCandidateIndex === candidateIndex) {
-@@ -117,13 +142,15 @@
+@@ -124,13 +149,15 @@
          if (stopped || currentCandidateIndex !== candidateIndex) {
            return;
          }
@@ -8619,7 +8643,7 @@
            nextCandidateIndex >= params.candidates.length ||
            info?.phase !== "pre-hello" ||
            info.connectRequestSent !== false
-@@ -132,12 +159,31 @@
+@@ -139,12 +166,31 @@
          }
          currentCandidateIndex = nextCandidateIndex;
          candidateClient.stop();
@@ -8652,7 +8676,7 @@
          });
        },
      });
-@@ -156,12 +202,12 @@
+@@ -163,12 +209,12 @@
      },
      stop(): Promise<void> {
        stopped = true;
@@ -8776,7 +8800,7 @@
  }
 --- /dev/null
 +++ b/src/node-host/gateway-options.ts
-@@ -0,0 +1,106 @@
+@@ -0,0 +1,115 @@
 +import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 +import {
 +  normalizeTlsFingerprint,
@@ -8841,6 +8865,10 @@
 +    options.contextPath !== undefined ||
 +    options.tls !== undefined ||
 +    options.tlsFingerprint !== undefined;
++  const gatewayTarget =
++    !pair && !hasExplicitEndpoint && config?.gateway?.kind === "openclaw-id"
++      ? config.gateway
++      : undefined;
 +  const selectedGateway =
 +    pair && !hasExplicitEndpoint
 +      ? pair.candidates[0]!
@@ -8852,10 +8880,14 @@
 +      normalizeTlsFingerprint(candidate.tlsFingerprint)
 +      ? config.gateway.cloudflareAccess
 +      : undefined;
-+  const explicitAccess = nodeHostCloudflareAccessConfigFromEnv(env, {
-+    preservedAccess: completeManagedEndpoint ? savedAccessFor(selectedGateway) : undefined,
-+  });
-+  const cloudflareAccess = explicitAccess ?? savedAccessFor(selectedGateway);
++  const explicitAccess = gatewayTarget
++    ? undefined
++    : nodeHostCloudflareAccessConfigFromEnv(env, {
++        preservedAccess: completeManagedEndpoint ? savedAccessFor(selectedGateway) : undefined,
++      });
++  const cloudflareAccess = gatewayTarget
++    ? undefined
++    : (explicitAccess ?? savedAccessFor(selectedGateway));
 +  const gatewayCandidates =
 +    pair && !hasExplicitEndpoint
 +      ? pair.candidates.map((candidate, index) => {
@@ -8881,6 +8913,7 @@
 +        cloudflareAccess || gatewayCandidates?.some((candidate) => candidate.cloudflareAccess),
 +      ),
 +    gatewayCandidates,
++    gatewayTarget,
 +  };
 +}
 --- a/src/node-host/launcher-client.ts
@@ -8924,15 +8957,15 @@
  
 --- a/src/node-host/node-worker-journal.worker.ts
 +++ b/src/node-host/node-worker-journal.worker.ts
-@@ -7,6 +7,7 @@
+@@ -12,6 +12,7 @@
  } from "../state/worker-operation-registry.js";
  import {
    normalizeStoredNodeHostConfig,
 +  resolveNodeHostPolicy,
    type NodeHostConfig,
+   type NodeHostGatewayConfig,
    type PreparedNodeHostConfig,
- } from "./config-shared.js";
-@@ -31,16 +32,13 @@
+@@ -85,16 +86,13 @@
          (stored) => {
            const existing = stored === undefined ? undefined : normalizeStoredNodeHostConfig(stored);
            clearedCommands = input.allCommands === true && existing?.commands !== undefined;
@@ -8942,7 +8975,7 @@
              nodeId: input.explicitNodeId ?? existing?.nodeId ?? input.candidateNodeId,
              displayName:
                input.explicitDisplayName ?? existing?.displayName ?? input.fallbackDisplayName,
-             gateway: input.gateway,
+             gateway: mergeGatewayTrust(existing?.gateway, input.gateway),
 -            installedAppsSharing:
 -              input.installedAppsSharing ?? existing?.installedAppsSharing ?? false,
 -            ...(commands !== undefined ? { commands } : {}),
@@ -9609,7 +9642,7 @@
  }));
  
  vi.mock("../infra/machine-name.js", () => ({
-@@ -149,23 +159,25 @@
+@@ -151,23 +161,25 @@
  
  // mock-isolation: Synthetic node-host capabilities avoid real plugin discovery and lifecycle effects.
  vi.mock("./plugin-node-host.js", () => ({
@@ -9645,7 +9678,7 @@
  }));
  
  // mock-isolation: runner fixtures own MCP descriptors and shutdown without starting live clients.
-@@ -204,6 +216,7 @@
+@@ -206,6 +218,7 @@
          nativeInferenceEnabled: false,
          workerHostingDisabledReason: mocks.fakeRuntimeWorkerHostingDisabledReason,
          initialInventory: { skills: [], pluginTools: [] },
@@ -9653,7 +9686,7 @@
          start: (params) => {
            mocks.runnerCapacityChanged = params.onRunnerCapacityChanged;
            return mocks.activeRuntime;
-@@ -263,7 +276,16 @@
+@@ -265,7 +278,16 @@
    mocks.startGatewayClientWhenEventLoopReady.mockReset().mockResolvedValue(mocks.readiness(false));
    mocks.loadNodeHostConfig.mockReset().mockResolvedValue(null);
    mocks.loadDeviceAuthTokenReadOnly.mockReset().mockResolvedValue(null);
@@ -9670,15 +9703,6 @@
    mocks.getRuntimeConfig.mockReturnValue({ gateway: { handshakeTimeoutMs: 1_000 } });
  }
  
-@@ -271,7 +293,7 @@
- 
- export async function withReadyNodeHost(
-   runTest: (host: {
--    running: Promise<void>;
-+    running: ReturnType<typeof runNodeHost>;
-     stop: () => (() => void) | undefined;
-     client: (typeof mocks.capturedGatewayClients)[number];
-     options: GatewayClientOptions;
 --- a/src/node-host/runner.test.ts
 +++ b/src/node-host/runner.test.ts
 @@ -1,3 +1,5 @@
@@ -9687,15 +9711,15 @@
  import { PassThrough } from "node:stream";
  import { setImmediate } from "node:timers/promises";
  import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-@@ -7,6 +9,7 @@
- } from "../../packages/gateway-client/src/connect-auth.js";
- import { ConnectErrorDetailCodes } from "../../packages/gateway-protocol/src/connect-error-details.js";
+@@ -9,6 +11,7 @@
+ import { fingerprint } from "../../packages/openclaw-id-protocol/src/index.js";
+ import { buildWorld } from "../../packages/openclaw-id-protocol/src/testing/world.js";
  import { createDeferred } from "../../test/helpers/promise.js";
 +import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
  import * as oneShotExit from "../cli/one-shot-exit.js";
  import { getConfigResolutionFacts, setConfigResolutionFacts } from "../config/resolution-facts.js";
  import { GatewayClientRequestError, type GatewayClientOptions } from "../gateway/client.js";
-@@ -35,6 +38,7 @@
+@@ -39,6 +42,7 @@
    privateKeyPem: "private-key-test",
  };
  const pairedToken = { role: "node", token: "paired-node-token", scopes: [], updatedAtMs: 1 };
@@ -9703,7 +9727,7 @@
  const connectAuth = (storedToken: string | undefined = "paired-node-token") =>
    buildGatewayConnectAuth(selectGatewayConnectAuth({ ...lastCapturedOptions(), storedToken }));
  const remoteConfig = (
-@@ -118,6 +122,61 @@
+@@ -122,6 +126,61 @@
      vi.restoreAllMocks();
      vi.unstubAllEnvs();
    });
@@ -9765,7 +9789,7 @@
  
    it("retains managed state admission while an external signal closes the runtime", async () => {
      mocks.useFakeRuntime = true;
-@@ -166,44 +225,49 @@
+@@ -170,44 +229,49 @@
      }
    });
  
@@ -9853,7 +9877,7 @@
  
    it("routes invoke input, cancellation, and connection close to the runtime", async () => {
      mocks.useFakeRuntime = true;
-@@ -235,6 +299,137 @@
+@@ -239,6 +303,137 @@
        expect(mocks.activeRuntime.cancel).toHaveBeenCalledWith("invoke-1");
        expect(mocks.activeRuntime.cancelAll).toHaveBeenCalledOnce();
      });
@@ -9991,7 +10015,7 @@
    });
  
    it("strips remote credentials before resolving local node-host auth", async () => {
-@@ -320,14 +515,163 @@
+@@ -324,14 +519,163 @@
        expect(mocks.configureNodeHost).not.toHaveBeenCalled();
      });
  
@@ -10157,7 +10181,7 @@
          token: undefined,
          password: undefined,
        });
-@@ -377,34 +721,38 @@
+@@ -381,34 +725,38 @@
          mocks.loadDeviceIdentityIfPresent.mockResolvedValue(deviceIdentity);
        });
  
@@ -10220,7 +10244,7 @@
          ["missing gateway", () => mocks.loadNodeHostConfig.mockResolvedValue(null), {}],
          [
            "mixed gateway scopes",
-@@ -413,6 +761,7 @@
+@@ -417,6 +765,7 @@
              gatewayCandidates: [gateway, { ...gateway, contextPath: "/other-node" }],
            },
          ],
@@ -10228,7 +10252,7 @@
          ["forced pairing", () => {}, { preferGatewayBootstrapToken: true }],
        ])(
          "rejects expired pairing with %s before changing state",
-@@ -422,15 +771,58 @@
+@@ -426,15 +775,58 @@
              "Pairing setup code has expired.",
            );
            expect(mocks.configureNodeHost).not.toHaveBeenCalled();
@@ -10288,7 +10312,7 @@
  
        expect(connectAuth()).toMatchObject({
          deviceToken: "paired-node-token",
-@@ -439,6 +831,7 @@
+@@ -443,6 +835,7 @@
        });
        expect(mocks.resolveGatewayCredentialsWithSecretInputs).not.toHaveBeenCalled();
        expect(lastCapturedOptions()?.deviceToken).toBeUndefined();
@@ -10296,7 +10320,7 @@
      });
  
      it("uses explicitly requested environment auth instead of the paired token", async () => {
-@@ -467,57 +860,64 @@
+@@ -471,115 +864,140 @@
      });
    });
  
@@ -10312,45 +10336,6 @@
 -      mocks.startGatewayClientWhenEventLoopReady.mockReturnValueOnce(readiness.promise);
 -      mocks.closeMcpManager.mockReturnValueOnce(mcpClose.promise);
 -      const exit = vi.spyOn(oneShotExit, "requestExitAfterOneShotOutput").mockReturnValue(true);
--      await withReadyNodeHost(
--        async ({ running, stop, client, options }) => {
--          await vi.waitFor(() => expect(startNodeHostMcpManager).toHaveBeenCalled());
--          expect(setIntervalSpy).toHaveBeenCalledOnce();
--          expect(unref).not.toHaveBeenCalled();
--          expect(clearIntervalSpy).not.toHaveBeenCalledWith(interval);
--          if (reason === "signal") {
--            readiness.resolve(mocks.readiness(true));
--            expect(stop()).toBeTypeOf("function");
--          } else {
--            options.onReconnectPaused?.({
--              code: 1008,
--              reason: "connect failed",
--              detailCode: ConnectErrorDetailCodes.AUTH_TOKEN_MISMATCH,
--            });
--          }
--          await expectCalls(client.stopAndWait);
--          expect(clearIntervalSpy).not.toHaveBeenCalledWith(interval);
--          await expectCalls(mocks.closeMcpManager);
--          expect(exit).not.toHaveBeenCalled();
--          mcpClose.resolve(undefined);
--          if (reason !== "signal") {
--            await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(undefined, 1));
--          }
--          readiness.resolve(mocks.readiness(false));
--          await expect(running).resolves.toBeUndefined();
--          expect(clearIntervalSpy).toHaveBeenCalledWith(interval);
--          expect(mocks.closeMcpManager).toHaveBeenCalledOnce();
--          expect(client.stopAndWait).toHaveBeenCalledOnce();
--          expect(process.exitCode).toBe(reason === "signal" ? 143 : 1);
--        },
--        {},
--        () => {
--          mcpClose.resolve(undefined);
--          readiness.resolve(mocks.readiness(false));
--        },
--      );
--    },
--  );
 +  it.each([
 +    "signal",
 +    "terminal reconnect pause",
@@ -10409,9 +10394,163 @@
 +      },
 +    );
 +  });
++
++  it.each([false, true])(
++    "uses the logical tunnel target for OpenClaw ID hello and socket errors (one-shot=%s)",
++    async (oneShot) => {
++      const world = await buildWorld();
++      const url = "ws+unix:/tmp/oc-node-diagnostic/gateway.sock:/";
++      const label = `${world.binding.body.hostname} via OpenClaw ID (direct)`;
++      const formatDiagnostic = vi.fn((message: string) => message.replaceAll(url, label));
++      const closeTunnel = vi.fn(async () => {});
++      vi.spyOn(nodeTunnel, "startNodeTunnelTransport").mockResolvedValue({
++        url,
++        peerKey: "iroh:fixture",
++        formatDiagnostic,
++        close: closeTunnel,
++      });
++      const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+       await withReadyNodeHost(
+-        async ({ running, stop, client, options }) => {
+-          await vi.waitFor(() => expect(startNodeHostMcpManager).toHaveBeenCalled());
+-          expect(setIntervalSpy).toHaveBeenCalledOnce();
+-          expect(unref).not.toHaveBeenCalled();
+-          expect(clearIntervalSpy).not.toHaveBeenCalledWith(interval);
+-          if (reason === "signal") {
+-            readiness.resolve(mocks.readiness(true));
+-            expect(stop()).toBeTypeOf("function");
+-          } else {
+-            options.onReconnectPaused?.({
+-              code: 1008,
+-              reason: "connect failed",
+-              detailCode: ConnectErrorDetailCodes.AUTH_TOKEN_MISMATCH,
+-            });
++        async ({ options, running }) => {
++          const writesBeforeHello = mocks.configureNodeHost.mock.calls.length;
++          receiveHello(options);
++          expect(mocks.configureNodeHost).toHaveBeenCalledTimes(writesBeforeHello);
++          options.onConnectError?.(new Error(`socket failed ${url}`));
++          expect(stderr).toHaveBeenCalledWith(`node host gateway connected: ${label}\n`);
++          expect(stderr).toHaveBeenCalledWith(
++            `node host gateway connect failed: socket failed ${label}\n`,
++          );
++          if (oneShot) {
++            // A tunnel hello confirms enrollment without exposing its private socket as a direct endpoint.
++            await expect(running).resolves.toEqual({ connected: true });
++            expect(closeTunnel).toHaveBeenCalledOnce();
+           }
+-          await expectCalls(client.stopAndWait);
+-          expect(clearIntervalSpy).not.toHaveBeenCalledWith(interval);
+-          await expectCalls(mocks.closeMcpManager);
+-          expect(exit).not.toHaveBeenCalled();
+-          mcpClose.resolve(undefined);
+-          if (reason !== "signal") {
+-            await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(undefined, 1));
+-          }
+-          readiness.resolve(mocks.readiness(false));
+-          await expect(running).resolves.toBeUndefined();
+-          expect(clearIntervalSpy).toHaveBeenCalledWith(interval);
+-          expect(mocks.closeMcpManager).toHaveBeenCalledOnce();
+-          expect(client.stopAndWait).toHaveBeenCalledOnce();
+-          expect(process.exitCode).toBe(reason === "signal" ? 143 : 1);
+-        },
+-        {},
+-        () => {
+-          mcpClose.resolve(undefined);
+-          readiness.resolve(mocks.readiness(false));
++        },
++        {
++          stopAfterFirstConnect: oneShot,
++          gatewayTarget: {
++            kind: "openclaw-id",
++            openclawId: {
++              hostname: world.binding.body.hostname,
++              relayUrl: "https://relay.example/",
++              discoveryUrl: "https://discovery.example",
++              pin: {
++                claw_id: world.binding.body.claw_id,
++                root_fp: await fingerprint(world.rootPub),
++                binding_seq: 1,
++              },
++              evidence: { root_pub: world.rootPub, binding: world.binding },
++            },
++          },
+         },
+       );
+     },
+   );
+
+-  it("uses the logical tunnel target for OpenClaw ID hello and socket errors", async () => {
+-    const world = await buildWorld();
+-    const url = "ws+unix:/tmp/oc-node-diagnostic/gateway.sock:/";
+-    const label = `${world.binding.body.hostname} via OpenClaw ID (direct)`;
+-    const formatDiagnostic = vi.fn((message: string) => message.replaceAll(url, label));
+-    vi.spyOn(nodeTunnel, "startNodeTunnelTransport").mockResolvedValue({
+-      url,
+-      peerKey: "iroh:fixture",
+-      formatDiagnostic,
+-      close: async () => {},
+-    });
+-    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+-    await withReadyNodeHost(
+-      async ({ options }) => {
+-        const writesBeforeHello = mocks.configureNodeHost.mock.calls.length;
+-        receiveHello(options);
+-        expect(mocks.configureNodeHost).toHaveBeenCalledTimes(writesBeforeHello);
+-        options.onConnectError?.(new Error(`socket failed ${url}`));
+-        expect(stderr).toHaveBeenCalledWith(`node host gateway connected: ${label}\n`);
+-        expect(stderr).toHaveBeenCalledWith(
+-          `node host gateway connect failed: socket failed ${label}\n`,
+-        );
+-      },
+-      {
+-        gatewayTarget: {
+-          kind: "openclaw-id",
+-          openclawId: {
+-            hostname: world.binding.body.hostname,
+-            relayUrl: "https://relay.example/",
+-            discoveryUrl: "https://discovery.example",
+-            pin: {
+-              claw_id: world.binding.body.claw_id,
+-              root_fp: await fingerprint(world.rootPub),
+-              binding_seq: 1,
+-            },
+-            evidence: { root_pub: world.rootPub, binding: world.binding },
+-          },
+-        },
+-      },
+-    );
+-  });
+-
+   it.each([true, false])(
+     "reports first-connection success only after hello (hello=%s)",
+     async (hello) => {
+-      await withReadyNodeHost(
++      const scenario = withReadyNodeHost(
+         async ({ running, options, stop }) => {
+           if (hello) {
+             receiveHello(options);
+-            await expect(running).resolves.toEqual({ connected: true });
++            await expect(running).resolves.toMatchObject({
++              connected: true,
++              gateway: { host: "127.0.0.1", port: 18789 },
++            });
+           } else {
+             stop();
+-            await expect(running).resolves.toBeUndefined();
++            await expect(running).rejects.toThrow("Node pairing did not complete");
+           }
+         },
+         { stopAfterFirstConnect: true },
+       );
++      if (hello) {
++        await scenario;
++      } else {
++        await expect(scenario).rejects.toThrow("Node pairing did not complete");
++      }
+     },
+   );
  
-   it("keeps pairing reconnect pauses visible without stopping the foreground host", async () => {
-     await expectStartupTimeout();
 --- a/src/node-host/runner.ts
 +++ b/src/node-host/runner.ts
 @@ -1,7 +1,12 @@
@@ -10441,18 +10580,24 @@
  import {
    loadDeviceIdentityIfPresentAsync,
    loadOrCreateDeviceIdentityAsync,
-@@ -20,19 +27,31 @@
+@@ -20,12 +27,14 @@
  import { isTruthyEnvValue } from "../infra/env.js";
  import { throwCollectedErrors } from "../infra/error-graph-internal.js";
  import { formatErrorMessage } from "../infra/errors.js";
 +import { withFileLock } from "../infra/file-lock.js";
  import { getMachineDisplayName } from "../infra/machine-name.js";
  import { logInfo } from "../logger.js";
+ import { redactRegisteredSecretValues } from "../logging/secret-redaction-registry.js";
  import { getAsyncWorkSignal } from "../shared/async-work-scope.js";
  import { createDeferredCore } from "../shared/deferred.js";
  import { VERSION } from "../version.js";
 +import { resolveNodeHostPolicy } from "./config-shared.js";
- import { configureNodeHost, loadNodeHostConfig, type NodeHostGatewayConfig } from "./config.js";
+ import {
+   configureNodeHost,
+   loadNodeHostConfig,
+@@ -33,12 +42,22 @@
+   type NodeHostGatewayConfig,
+ } from "./config.js";
  import { startNodeHostConnection } from "./connection.js";
 -import { canReuseNodeHostDeviceToken } from "./gateway-auth.js";
 -import { createNodeHostGatewayCandidateConnection } from "./gateway-candidate-connection.js";
@@ -10475,9 +10620,9 @@
  import { resolveNodeHostGatewayPlatformIdentity } from "./gateway-platform-identity.js";
  import {
    coerceNodeInvokeCancelPayload,
-@@ -50,14 +69,20 @@
- 
- type NodeHostRunOptions = {
+@@ -63,14 +82,20 @@
+   preparedRuntime?: Awaited<ReturnType<typeof prepareNodeHostRuntime>>;
+   gatewayTarget?: NodeHostGatewayConfig;
    gatewayHost: string;
 +  gatewayOverrides?: NodeGatewayOverrides;
    gatewayPort: number;
@@ -10496,7 +10641,7 @@
    /** Stop cleanly after the first authenticated hello (used before service install). */
    stopAfterFirstConnect?: boolean;
    /** Host worker sessions for this process even when durable node config is disabled. */
-@@ -85,6 +110,7 @@
+@@ -98,6 +123,7 @@
  const NODE_HOST_EXIT_ON_RECONNECT_PAUSE_CODES: ReadonlySet<string> = new Set([
    ConnectErrorDetailCodes.AUTH_TOKEN_MISSING,
    ConnectErrorDetailCodes.AUTH_TOKEN_MISMATCH,
@@ -10504,7 +10649,7 @@
    ConnectErrorDetailCodes.AUTH_BOOTSTRAP_TOKEN_INVALID,
    ConnectErrorDetailCodes.AUTH_PASSWORD_MISSING,
    ConnectErrorDetailCodes.AUTH_PASSWORD_MISMATCH,
-@@ -151,6 +177,37 @@
+@@ -164,6 +190,37 @@
    return nextConfig;
  }
  
@@ -10542,19 +10687,22 @@
  /**
   * The saved Gateway endpoint when a node credential exists to reconnect without a setup code.
   * Node tokens are not bound to an endpoint, so callers must present the reconnect as conditional.
-@@ -170,9 +227,53 @@
+@@ -186,9 +243,54 @@
      : undefined;
  }
  
--export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
+-export async function runNodeHost(opts: NodeHostRunOptions): Promise<{ connected: true } | void> {
 +export type NodeHostConnectionResult = {
++  connected: true;
 +  gateway: NodeHostGatewayConfig & { host: string; port: number };
 +  cloudflareAccess?: CloudflareAccessCredentials;
 +};
 +
++type NodeHostRunResult = NodeHostConnectionResult | { connected: true };
++
 +export async function runNodeHost(
 +  opts: NodeHostRunOptions,
-+): Promise<NodeHostConnectionResult | undefined> {
++): Promise<NodeHostRunResult | undefined> {
    const workSignal = getAsyncWorkSignal();
    if (workSignal?.aborted) {
 +    if (opts.stopAfterFirstConnect) {
@@ -10586,9 +10734,7 @@
 +  }
 +}
 +
-+async function runNodeHostOwned(
-+  opts: NodeHostRunOptions,
-+): Promise<NodeHostConnectionResult | undefined> {
++async function runNodeHostOwned(opts: NodeHostRunOptions): Promise<NodeHostRunResult | undefined> {
 +  const workSignal = getAsyncWorkSignal();
 +  if (workSignal?.aborted) {
 +    if (opts.stopAfterFirstConnect) {
@@ -10597,7 +10743,7 @@
      return;
    }
    const { initializeSqliteRuntimeCapabilities } = await import("../infra/bun-sqlite-library.js");
-@@ -192,7 +293,20 @@
+@@ -208,7 +310,20 @@
        "node auto-update unavailable: this process bypasses the node launcher. Run openclaw doctor --fix to repair the installed node service, or start openclaw node run through the package CLI.",
      );
    }
@@ -10618,7 +10764,7 @@
    const resuming = opts.resumeDeviceId !== undefined;
    const resumeConfig = resuming ? savedConfig : undefined;
    const resumeIdentity = resuming ? await loadDeviceIdentityIfPresentAsync() : undefined;
-@@ -201,8 +315,9 @@
+@@ -217,8 +332,9 @@
      (!resumeConfig?.gateway ||
        !resumeIdentity ||
        resumeIdentity.deviceId !== opts.resumeDeviceId ||
@@ -10629,7 +10775,7 @@
        !(await canReuseNodeHostDeviceToken({
          savedGateway: resumeConfig.gateway,
          gatewayCandidates: [resumeConfig.gateway],
-@@ -210,6 +325,24 @@
+@@ -226,6 +342,25 @@
        })))
    ) {
      throw new Error("Saved node pairing is missing or changed; same-device resume refused");
@@ -10650,14 +10796,26 @@
 +      gatewayCloudflareAccess: selected.cloudflareAccess,
 +      gatewayCloudflareAccessFromSaved: selected.cloudflareAccessFromSaved,
 +      gatewayCandidates: selected.gatewayCandidates,
++      gatewayTarget: selected.gatewayTarget,
 +    };
    }
-   const plannedGateway: NodeHostGatewayConfig = resumeConfig?.gateway ?? {
-     host: opts.gatewayHost,
-@@ -219,24 +352,62 @@
-     contextPath: opts.gatewayContextPath,
-     cloudflareAccess: opts.gatewayCloudflareAccess,
-   };
+   const plannedGateway: NodeHostGatewayConfig = resumeConfig?.gateway ??
+     opts.gatewayTarget ?? {
+@@ -238,30 +373,72 @@
+     };
+   if (
+     plannedGateway.kind === "openclaw-id" &&
+-    (opts.gatewayBootstrapToken || opts.gatewayAuthFromEnv || opts.gatewayCandidates?.length)
++    (opts.gatewayBootstrapToken ||
++      opts.gatewayAuthFromEnv ||
++      opts.gatewayCandidates?.length ||
++      opts.pairOrReconnect ||
++      opts.requireDeviceAuth)
+   ) {
+     throw new Error(
+       "OpenClaw ID node targets use their enrolled key, not Gateway credentials or fallback endpoints",
+     );
+   }
 +  if (!resuming && opts.gatewayCloudflareAccessFromSaved && !opts.gatewayOverrides) {
 +    const inheritedAccess = (candidate: NodeHostGatewayConfig) =>
 +      nodeHostCloudflareAccessConfigFromEnv(process.env) ??
@@ -10722,7 +10880,7 @@
        }))
      ) {
        throw new Error("Pairing setup code has expired.");
-@@ -245,54 +416,65 @@
+@@ -270,54 +447,69 @@
      gatewayBootstrapToken = undefined;
      reuseDeviceTokenOnly = true;
    }
@@ -10802,6 +10960,10 @@
 -  gatewayCandidates.forEach((candidate, index) => {
 -    const credentials = resolvedCloudflareAccess[index];
 +  const prepareTransport = async (candidate: NodeHostGatewayConfig) => {
++    // The ID owner validates its enrolled target and opens the private Unix transport.
++    if (candidate.kind === "openclaw-id") {
++      return;
++    }
 +    resolveGatewayWebSocketTransport({
 +      url: formatGatewayCandidateUrl(candidate),
 +      tlsFingerprint: candidate.tlsFingerprint,
@@ -10826,23 +10988,23 @@
 +  await prepareTransport(firstGateway);
 +  // Resume retains the saved command and installed-app sharing policy.
 +  const effectivePolicy = resolveNodeHostPolicy(resuming ? {} : opts, savedConfig ?? undefined);
-   const preparedRuntime = await prepareNodeHostRuntime({
-     config: cfg,
-     env: process.env,
-@@ -300,318 +482,443 @@
-     receivesLocalMcpPolicy: true,
-     forceWorkerRuns: opts.forceWorkerRuns,
-     ephemeral: opts.ephemeral,
--    installedAppsSharingEnabled: config.installedAppsSharing,
-+    installedAppsSharingEnabled: effectivePolicy.installedAppsSharing,
-     desktopSharingEnabled: opts.desktopSharingEnabled,
--    commands: config.commands,
-+    commands: effectivePolicy.commands,
-   });
+   const preparedRuntime =
+     opts.preparedRuntime ??
+     (await prepareNodeHostRuntime({
+@@ -327,388 +519,519 @@
+       receivesLocalMcpPolicy: true,
+       forceWorkerRuns: opts.forceWorkerRuns,
+       ephemeral: opts.ephemeral,
+-      installedAppsSharingEnabled: config.installedAppsSharing,
++      installedAppsSharingEnabled: effectivePolicy.installedAppsSharing,
+       desktopSharingEnabled: opts.desktopSharingEnabled,
+-      commands: config.commands,
++      commands: effectivePolicy.commands,
+     }));
 -  logInfo(`node-host: advertised commands: ${preparedRuntime.manifest.commands.join(", ")}`);
 -  const deviceIdentity = resumeIdentity ?? (await loadOrCreateDeviceIdentityAsync());
 -  const { token, password } =
--    gatewayBootstrapToken || reuseDeviceTokenOnly
+-    gateway.kind === "openclaw-id" || gatewayBootstrapToken || reuseDeviceTokenOnly
 -      ? {}
 -      : await resolveNodeHostGatewayCredentials({
 -          config: cfg,
@@ -10850,6 +11012,12 @@
 -          savedGateway: savedConfig?.gateway,
 -          gatewayCandidates,
 -          deviceId: deviceIdentity.deviceId,
++  let closeTunnel: (() => Promise<void>) | undefined;
++  const closeOwnedTunnel = async () => {
++    const close = closeTunnel;
++    closeTunnel = undefined;
++    await close?.();
++  };
 +  try {
 +    if (!resuming && !opts.pairOrReconnect) {
 +      await retireChangedGatewayCredential({
@@ -10878,13 +11046,17 @@
 +    const nodeId = config.nodeId;
 +    const displayName = config.displayName ?? fallbackDisplayName;
 +    let configuredGateway = config.gateway;
++    const gateway = configuredGateway ?? firstGateway;
 +    logInfo(`node-host: advertised commands: ${preparedRuntime.manifest.commands.join(", ")}`);
 +    const deviceIdentity = resumeIdentity ?? (await loadOrCreateDeviceIdentityAsync());
 +    if (savedIdentity && savedIdentity.deviceId !== deviceIdentity.deviceId) {
 +      throw new Error("Node identity changed during pairing; retry the pairing command.");
 +    }
 +    const { token, password } =
-+      gatewayBootstrapToken || reuseDeviceTokenOnly || opts.requireDeviceAuth
++      firstGateway.kind === "openclaw-id" ||
++      gatewayBootstrapToken ||
++      reuseDeviceTokenOnly ||
++      opts.requireDeviceAuth
 +        ? {}
 +        : await resolveNodeHostGatewayCredentials({
 +            config: cfg,
@@ -10895,10 +11067,13 @@
 +          });
 +
 +    let oneShotConnected = false;
-+    let acceptedConnection: NodeHostConnectionResult | undefined;
++    let acceptedConnection: NodeHostRunResult | undefined;
 +    let completedExitCode: number | undefined;
 +    const assertOneShotCompleted = () => {
-+      if (opts.stopAfterFirstConnect && (!oneShotConnected || completedExitCode !== 0)) {
++      if (
++        opts.stopAfterFirstConnect &&
++        (!oneShotConnected || completedExitCode !== 0 || workSignal?.aborted)
++      ) {
 +        throw new Error("Node pairing did not complete; service installation was not authorized.");
 +      }
 +    };
@@ -10907,8 +11082,47 @@
 +    let autoUpdateStart: Promise<void> | undefined;
 +    let autoUpdater: { stop: () => Promise<void> } | undefined;
 +
++    const tunnel =
++      gateway.kind === "openclaw-id" && gateway.openclawId
++        ? await import("./openclaw-id-transport.js").then(({ startNodeTunnelTransport }) =>
++            startNodeTunnelTransport({
++              target: dialableNodeHostOpenClawIdTarget(gateway.openclawId!),
++              readTarget: async () => {
++                const current = await loadNodeHostConfig();
++                if (
++                  current?.nodeId !== nodeId ||
++                  current.gateway?.kind !== "openclaw-id" ||
++                  !current.gateway.openclawId
++                ) {
++                  throw new Error("OpenClaw ID node target changed; restart the node host");
++                }
++                const target = current.gateway.openclawId;
++                const initial = gateway.openclawId!;
++                if (!sameNodeHostOpenClawIdScope(target, initial)) {
++                  throw new Error("OpenClaw ID node target changed; restart the node host");
++                }
++                return dialableNodeHostOpenClawIdTarget(target);
++              },
++              persistTarget: (target, expected) =>
++                refreshNodeHostOpenClawIdTarget({ nodeId, expected, target }),
++              onTerminal: (error) => {
++                writeStderrLine(error.message);
++                void finish(1);
++              },
++              onRefusal: (error) =>
++                writeStderrLine(`OpenClaw ID connection refused: ${error.message}`),
++            }),
++          )
++        : undefined;
++    closeTunnel = tunnel ? () => tunnel.close() : undefined;
++    if (tunnel && gatewayCandidates.length !== 1) {
++      await closeOwnedTunnel();
++      throw new Error("OpenClaw ID node targets cannot fall back to another transport");
++    }
++
 +    const client = createNodeHostGatewayCandidateConnection({
 +      candidates: gatewayCandidates,
++      candidateUrls: tunnel ? new Map([[firstGateway, tunnel.url]]) : undefined,
 +      candidatePreparation: {
 +        prepare: async (candidate, signal) => {
 +          await prepareTransport(candidate);
@@ -10940,6 +11154,15 @@
 +      },
 +      cloudflareAccessByCandidate,
 +      clientOptions: {
++        ...(tunnel
++          ? {
++              hostDeps: {
++                loadDeviceAuthToken: () => null,
++                storeDeviceAuthToken: () => {},
++                clearDeviceAuthToken: () => {},
++              },
++            }
++          : {}),
 +        token: token || undefined,
 +        bootstrapToken: gatewayBootstrapToken,
 +        bootstrapExpiresAtMs: opts.gatewayBootstrapExpiresAtMs,
@@ -11022,21 +11245,26 @@
 +      },
 +      onHelloOk: (hello, url, tlsFingerprint, cloudflareAccess, cloudflareAccessConfig) => {
 +        consecutivePermanentGatewayRejections = 0;
-+        writeStderrLine(`node host gateway connected: ${url}`);
++        writeStderrLine(
++          `node host gateway connected: ${tunnel ? tunnel.formatDiagnostic(url) : url}`,
++        );
 +        if (opts.stopAfterFirstConnect) {
-+          const endpoint = new URL(url);
-+          acceptedConnection = {
-+            gateway: {
-+              ...configuredGateway,
-+              host: endpoint.hostname.replace(/^\[|\]$/g, ""),
-+              port: Number(endpoint.port || (endpoint.protocol === "wss:" ? 443 : 80)),
-+              tls: endpoint.protocol === "wss:",
-+              tlsFingerprint,
-+              contextPath: endpoint.pathname === "/" ? undefined : endpoint.pathname,
-+              cloudflareAccess: cloudflareAccessConfig,
-+            },
-+            cloudflareAccess,
-+          };
++          const endpoint = tunnel ? undefined : new URL(url);
++          acceptedConnection = endpoint
++            ? {
++                connected: true,
++                gateway: {
++                  ...configuredGateway,
++                  host: endpoint.hostname.replace(/^\[|\]$/g, ""),
++                  port: Number(endpoint.port || (endpoint.protocol === "wss:" ? 443 : 80)),
++                  tls: endpoint.protocol === "wss:",
++                  tlsFingerprint,
++                  contextPath: endpoint.pathname === "/" ? undefined : endpoint.pathname,
++                  cloudflareAccess: cloudflareAccessConfig,
++                },
++                cloudflareAccess,
++              }
++            : { connected: true };
 +          oneShotConnected = true;
 +          void finish(0);
 +          return;
@@ -11054,7 +11282,7 @@
 -  let autoUpdateStart: Promise<void> | undefined;
 -  let autoUpdater: { stop: () => Promise<void> } | undefined;
 -  const persistWinningGateway = (winningGateway: NodeHostGatewayConfig) => {
--    if (resumeConfig) {
+-    if (resumeConfig || gateway.kind === "openclaw-id") {
 +        void announceLauncherReady(
 +          url,
 +          tlsFingerprint,
@@ -11065,7 +11293,9 @@
 +        });
 +      },
 +      onConnectError: (error) => {
-+        writeStderrLine(`node host gateway connect failed: ${error.message}`);
++        writeStderrLine(
++          `node host gateway connect failed: ${tunnel ? tunnel.formatDiagnostic(error.message) : error.message}`,
++        );
 +        if (Boolean(isGatewayConnectAssemblyError(error))) {
 +          void finish(1);
 +          return;
@@ -11135,20 +11365,24 @@
 +      if (!isNodeHostLauncherChild() || opts.ephemeral || autoUpdateAbort.signal.aborted) {
 +        return;
 +      }
-+      const endpoint = new URL(url);
++      const endpoint = tunnel ? undefined : new URL(url);
 +      const args = [
 +        "node",
 +        "run",
-+        "--host",
-+        endpoint.hostname.replace(/^\[|\]$/g, ""),
-+        "--port",
-+        endpoint.port || (endpoint.protocol === "wss:" ? "443" : "80"),
++        ...(endpoint
++          ? [
++              "--host",
++              endpoint.hostname.replace(/^\[|\]$/g, ""),
++              "--port",
++              endpoint.port || (endpoint.protocol === "wss:" ? "443" : "80"),
++            ]
++          : []),
 +        `--node-id=${nodeId}`,
 +        `--display-name=${displayName}`,
-+        endpoint.protocol === "wss:" ? "--tls" : "--no-tls",
++        ...(endpoint ? [endpoint.protocol === "wss:" ? "--tls" : "--no-tls"] : []),
 +        config.installedAppsSharing ? "--share-installed-apps" : "--no-share-installed-apps",
 +      ];
-+      if (endpoint.pathname !== "/") {
++      if (endpoint && endpoint.pathname !== "/") {
 +        args.push("--context-path", endpoint.pathname);
 +      }
 +      if (tlsFingerprint) {
@@ -11224,7 +11458,7 @@
 +        await autoUpdateStart?.catch(() => undefined);
 +        await autoUpdater?.stop();
 +        const failures: unknown[] = [];
-+        for (const close of [() => client.stop(), () => activeRuntime.close()]) {
++        for (const close of [() => client.stop(), () => activeRuntime.close(), closeOwnedTunnel]) {
 +          try {
 +            await close();
 +          } catch (error) {
@@ -11280,10 +11514,58 @@
 -    });
 -  };
 -
+-  const tunnel =
+-    gateway.kind === "openclaw-id" && gateway.openclawId
+-      ? await import("./openclaw-id-transport.js").then(({ startNodeTunnelTransport }) =>
+-          startNodeTunnelTransport({
+-            target: dialableNodeHostOpenClawIdTarget(gateway.openclawId!),
+-            readTarget: async () => {
+-              const current = await loadNodeHostConfig();
+-              if (
+-                current?.nodeId !== nodeId ||
+-                current.gateway?.kind !== "openclaw-id" ||
+-                !current.gateway.openclawId
+-              ) {
+-                throw new Error("OpenClaw ID node target changed; restart the node host");
+-              }
+-              const target = current.gateway.openclawId;
+-              const initial = gateway.openclawId!;
+-              if (!sameNodeHostOpenClawIdScope(target, initial)) {
+-                throw new Error("OpenClaw ID node target changed; restart the node host");
+-              }
+-              return dialableNodeHostOpenClawIdTarget(target);
+-            },
+-            persistTarget: (target, expected) =>
+-              refreshNodeHostOpenClawIdTarget({ nodeId, expected, target }),
+-            onTerminal: (error) => {
+-              writeStderrLine(error.message);
+-              void finish(1);
+-            },
+-            onRefusal: (error) =>
+-              writeStderrLine(`OpenClaw ID connection refused: ${error.message}`),
+-          }),
+-        )
+-      : undefined;
+-  if (tunnel && gatewayCandidates.length !== 1) {
+-    await tunnel.close();
+-    throw new Error("OpenClaw ID node targets cannot fall back to another transport");
+-  }
+-  let firstHelloReceived = false;
+-  let stoppedSuccessfully = false;
 -  const client = createNodeHostGatewayCandidateConnection({
 -    candidates: gatewayCandidates,
+-    candidateUrls: tunnel ? new Map([[gateway, tunnel.url]]) : undefined,
 -    cloudflareAccessByCandidate,
 -    clientOptions: {
+-      ...(tunnel
+-        ? {
+-            hostDeps: {
+-              loadDeviceAuthToken: () => null,
+-              storeDeviceAuthToken: () => {},
+-              clearDeviceAuthToken: () => {},
+-            },
+-          }
+-        : {}),
 -      token: token || undefined,
 -      bootstrapToken: gatewayBootstrapToken,
 -      preferBootstrapToken: opts.preferGatewayBootstrapToken,
@@ -11345,8 +11627,11 @@
 -      }
 -    },
 -    onHelloOk: (hello, url, tlsFingerprint, cloudflareAccess) => {
+-      firstHelloReceived = true;
 -      consecutivePermanentGatewayRejections = 0;
--      writeStderrLine(`node host gateway connected: ${url}`);
+-      writeStderrLine(
+-        `node host gateway connected: ${tunnel ? tunnel.formatDiagnostic(url) : url}`,
+-      );
 -      if (opts.stopAfterFirstConnect) {
 -        void finish(0);
 -        return;
@@ -11363,7 +11648,9 @@
 -      });
 -    },
 -    onConnectError: (error) => {
--      writeStderrLine(`node host gateway connect failed: ${error.message}`);
+-      writeStderrLine(
+-        `node host gateway connect failed: ${tunnel ? tunnel.formatDiagnostic(error.message) : error.message}`,
+-      );
 -      const rejection =
 -        error instanceof GatewayClientRequestError && isRecord(error.details)
 -          ? error.details
@@ -11420,22 +11707,26 @@
 -    if (!isNodeHostLauncherChild() || opts.ephemeral || autoUpdateAbort.signal.aborted) {
 -      return;
 -    }
--    const endpoint = new URL(url);
+-    const endpoint = tunnel ? undefined : new URL(url);
 -    const args = [
 -      "node",
 -      "run",
--      "--host",
--      endpoint.hostname.replace(/^\[|\]$/g, ""),
--      "--port",
--      endpoint.port || (endpoint.protocol === "wss:" ? "443" : "80"),
+-      ...(endpoint
+-        ? [
+-            "--host",
+-            endpoint.hostname.replace(/^\[|\]$/g, ""),
+-            "--port",
+-            endpoint.port || (endpoint.protocol === "wss:" ? "443" : "80"),
+-          ]
+-        : []),
 -      "--node-id",
 -      nodeId,
 -      "--display-name",
 -      displayName,
--      endpoint.protocol === "wss:" ? "--tls" : "--no-tls",
+-      ...(endpoint ? [endpoint.protocol === "wss:" ? "--tls" : "--no-tls"] : []),
 -      config.installedAppsSharing ? "--share-installed-apps" : "--no-share-installed-apps",
 -    ];
--    if (endpoint.pathname !== "/") {
+-    if (endpoint && endpoint.pathname !== "/") {
 -      args.push("--context-path", endpoint.pathname);
 -    }
 -    if (tlsFingerprint) {
@@ -11500,7 +11791,11 @@
 -      await autoUpdateStart?.catch(() => undefined);
 -      await autoUpdater?.stop();
 -      const failures: unknown[] = [];
--      for (const close of [() => client.stop(), () => activeRuntime.close()]) {
+-      for (const close of [
+-        () => client.stop(),
+-        () => activeRuntime.close(),
+-        () => tunnel?.close(),
+-      ]) {
 -        try {
 -          await close();
 -        } catch (error) {
@@ -11508,17 +11803,6 @@
 -        }
 -      }
 -      throwCollectedErrors(failures, "node host shutdown cleanup failed");
--    } finally {
--      clearInterval(lifetimeInterval);
--    }
--  };
--  const finish = async (exitCode: number) => {
--    if (stopping) {
--      return;
--    }
--    stopping = true;
--    let finalExitCode = exitCode;
--    try {
 +      const readiness = await readinessPromise;
 +      if (!readiness.ready) {
 +        throw new Error("node host gateway event loop readiness timeout");
@@ -11530,12 +11814,33 @@
 +        return acceptedConnection;
 +      }
 +      removeSignalHandlers();
-       await stopClientAndMcp();
++      await stopClientAndMcp();
++      throw error;
++    }
++    await stopped;
++    assertOneShotCompleted();
++    return acceptedConnection;
++  } finally {
++    try {
++      await closeOwnedTunnel();
+     } finally {
+-      clearInterval(lifetimeInterval);
+-    }
+-  };
+-  const finish = async (exitCode: number) => {
+-    if (stopping) {
+-      return;
+-    }
+-    stopping = true;
+-    let finalExitCode = exitCode;
+-    try {
+-      await stopClientAndMcp();
 -    } catch (error) {
 -      finalExitCode = 1;
 -      writeStderrLine(`node host shutdown failed: ${formatErrorMessage(error)}`);
 -    } finally {
 -      removeSignalHandlers();
+-      stoppedSuccessfully = finalExitCode === 0;
 -      process.exitCode = finalExitCode;
 -      resolveStopped();
 -    }
@@ -11571,14 +11876,16 @@
 -    throw error;
 -  }
 -  await stopped;
-+      throw error;
+-  if (
+-    opts.stopAfterFirstConnect &&
+-    firstHelloReceived &&
+-    stoppedSuccessfully &&
+-    !workSignal?.aborted
+-  ) {
+-    return { connected: true };
++      await preparedRuntime.dispose();
 +    }
-+    await stopped;
-+    assertOneShotCompleted();
-+    return acceptedConnection;
-+  } finally {
-+    await preparedRuntime.dispose();
-+  }
+   }
  }
 --- a/src/node-host/runtime.test-support.ts
 +++ b/src/node-host/runtime.test-support.ts
@@ -13584,18 +13891,14 @@
    /** Watch availability; node shutdown awaits the returned cleanup callback. */
 --- a/test/node-host-launcher.test.ts
 +++ b/test/node-host-launcher.test.ts
-@@ -1,8 +1,9 @@
+@@ -1,5 +1,5 @@
  import assert from "node:assert/strict";
 -import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 +import { spawn, type ChildProcess } from "node:child_process";
  import { once } from "node:events";
  import fs from "node:fs/promises";
  import path from "node:path";
-+import { finished } from "node:stream/promises";
- import { pathToFileURL } from "node:url";
- import { build as esbuild } from "esbuild";
- import { afterEach, beforeAll, describe, expect, it } from "vitest";
-@@ -12,7 +13,7 @@
+@@ -13,7 +13,7 @@
  import { useAutoCleanupTempDirTracker } from "./helpers/temp-dir.js";
  
  const temporary = useAutoCleanupTempDirTracker(afterEach);
@@ -13604,7 +13907,7 @@
  let bootstrapSource: string;
  let launcherClientSource: string;
  
-@@ -79,6 +80,7 @@
+@@ -80,6 +80,7 @@
  import fs from 'node:fs';
  import {
    getManagedNodeHostStatePath,
@@ -13612,7 +13915,7 @@
    isNodeHostLauncherChild,
    notifyNodeHostLauncherReady,
    requestNodeHostLauncherBootstrap,
-@@ -89,6 +91,13 @@
+@@ -90,6 +91,13 @@
  const report = (value) => process.stdout.write(JSON.stringify(value) + '\\n');
  const ready = () => notifyNodeHostLauncherReady(version);
  const restart = () => requestNodeHostLauncherRestart({ runtimeRoot: process.env.TEST_RUNTIME_ROOT, version: process.env.TEST_VERSION });
@@ -13626,11 +13929,13 @@
  async function restartAndExit(failureLabel, successCode = 0, failureCode = 2) {
    try {
      await restart();
-@@ -239,11 +248,17 @@
+@@ -240,13 +248,17 @@
      child.stdout.on("data", (chunk: Buffer) => {
        output += chunk.toString();
      });
--    const closed = once(child, "close");
+-    // Locally disconnecting IPC need not emit the aggregate child "close" event.
+-    const exited = once(child, "exit");
+-    const joined = Promise.all([exited, finished(child.stdout), finished(child.stderr)]);
 +    // A parent-initiated IPC disconnect can omit ChildProcess's close event.
 +    // Wait for termination and both output pipes so failure diagnostics are complete.
 +    const completed = Promise.all([
@@ -13641,16 +13946,16 @@
      try {
        const ready = await Promise.race([
          once(child, "message").then(([message]) => message),
--        closed.then(([code]) => ({ exitedBeforeHandoff: code })),
+-        exited.then(([code]) => ({ exitedBeforeHandoff: code })),
 +        completed.then(([code]) => ({ exitedBeforeHandoff: code })),
        ]);
        expect(ready, stderr).toEqual({
          type: "openclaw.node.resume-ready",
-@@ -255,14 +270,17 @@
+@@ -258,14 +270,17 @@
        } else {
          child.disconnect();
        }
--      const [code] = await closed;
+-      const [[code]] = await joined;
 +      const [code] = await completed;
        expect(code).toBe(handoff === "commit" ? 0 : 1);
        expect(output).toBe(handoff === "commit" ? '{"entered":true}\n' : "");
@@ -13661,12 +13966,12 @@
        if (child.exitCode === null && child.signalCode === null) {
          child.kill("SIGKILL");
        }
--      await closed;
+-      await joined;
 +      await completed;
      }
    },
  );
-@@ -339,15 +357,18 @@
+@@ -342,15 +357,18 @@
    it("runs the stored node service command through a live launcher parent", async () => {
      const f = await fixture(`
  await ready();
@@ -13686,7 +13991,7 @@
        runtime: "node",
        runtimePath: process.execPath,
      });
-@@ -363,22 +384,83 @@
+@@ -366,24 +384,85 @@
      expect(child).toMatchObject({
        parentPid: service.child.pid,
        launcherChild: true,
@@ -13772,35 +14077,36 @@
 +    },
 +  );
  
-   it("restarts with paired arguments and revokes managed state when the healthy candidate disconnects", async () => {
-     const f = await fixture(`
+   it.each([[["connect"]], [["node", "join"]]])(
+     "%j restarts with paired arguments and revokes managed state when the healthy candidate disconnects",
+     async (command) => {
+       const f = await fixture(`
 -await setNodeHostLauncherRestartArguments(['node', 'run', '--display-name', 'paired']);
 +await setNodeHostLauncherRestartArguments(['node', 'run', '--display-name=--help', '--node-id=--version'], {CF_ACCESS_CLIENT_ID: null, CF_ACCESS_CLIENT_SECRET: null});
  ${requestUpdate}
  `);
-     const candidate = await f.release(`
-@@ -404,7 +486,15 @@
-     const lines = jsonLines(result.stdout);
-     expect(lines[0]).toMatchObject({ ok: true });
-     expect(lines[1]).toMatchObject({
--      argv: ["--profile", "work", "--no-color", "node", "run", "--display-name", "paired"],
-+      argv: [
-+        "--profile",
-+        "work",
-+        "--no-color",
-+        "node",
-+        "run",
-+        "--display-name=--help",
-+        "--node-id=--version",
-+      ],
-       cwd: f.base,
-       state: f.state,
-       disconnectedState: null,
-@@ -413,6 +503,147 @@
-     expect(lines[1].first).toBe(lines[1].second);
-     await expectSelection(f.current, candidate.prefix);
-     await expectMissing(f.lock);
-+  });
+       const candidate = await f.release(`
+@@ -409,7 +488,15 @@
+       const lines = jsonLines(result.stdout);
+       expect(lines[0]).toMatchObject({ ok: true });
+       expect(lines[1]).toMatchObject({
+-        argv: ["--profile", "work", "--no-color", "node", "run", "--display-name", "paired"],
++        argv: [
++          "--profile",
++          "work",
++          "--no-color",
++          "node",
++          "run",
++          "--display-name=--help",
++          "--node-id=--version",
++        ],
+         cwd: f.base,
+         state: f.state,
+         disconnectedState: null,
+@@ -420,6 +507,147 @@
+       await expectMissing(f.lock);
+     },
+   );
 +
 +  it.each([
 +    {
@@ -13941,10 +14247,11 @@
 +      unrelated: "retained",
 +      argv,
 +    });
-   });
++  });
  
    it("keeps an authenticated candidate serving when its selector cannot be persisted", async () => {
-@@ -498,7 +729,7 @@
+     const f = await fixture();
+@@ -504,7 +732,7 @@
  
    it("keeps the previous managed runtime serving after a failed candidate", async () => {
      const reportRuntime =
@@ -13953,7 +14260,7 @@
      const body = `
  ${reportRuntime}
  ${restartingRuntime("await ready(); await restartAndExit('old-runtime-serving', 3, 0);")}
-@@ -516,6 +747,7 @@
+@@ -522,6 +750,7 @@
          version,
          state: f.state,
          argv: ["node", "run"],

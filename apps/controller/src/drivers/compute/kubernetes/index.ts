@@ -1249,6 +1249,10 @@ const NATIVE_WORKER_COMPILE_CACHE = "/home/node/.openclaw-node/.cache/node-compi
 const AGENT_TRANSPORT_TOKEN_KEY = "app-server-token";
 const APP_TOKEN_SHA = "APP_TOKEN_SHA";
 const GATEWAY_PASSWORD_KEY = "gateway-password";
+const BROWSER_DELEGATION_KEY = "browser-key";
+const BROWSER_DELEGATION_HEADER = "x-occ-browser-key";
+const BROWSER_DELEGATION_DIRECTORY = "/var/run/openclaw/browser-delegation";
+const BROWSER_SUBJECT_PREFIX = "oce:v1:";
 const TRUSTED_PROXY_HEADER = "x-occ-identity";
 // The proxy header that caps a trusted-proxy request's operator scopes. Native HTTP
 // APIs ignore identityScopes: without it, OpenClaw grants its default operator scopes,
@@ -4929,18 +4933,78 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return `wss://${authority}${this.gatewayRoutePath(revision)}`;
   }
 
-  getGatewayChatEndpoint(revision: AgentRevision): string | undefined {
-    if (!this.usesWritableNativeAdminConfig(revision.configuration)) {
+  async getGatewayBrowserRequest(
+    revision: AgentRevision,
+    input: {
+      readonly installationId: string;
+      readonly principalId: string;
+      readonly mode: "admin" | "chat";
+    },
+    signal: AbortSignal,
+  ): Promise<
+    | {
+        readonly endpoint: string;
+        readonly subject: string;
+        readonly headers: Readonly<Record<string, string>>;
+      }
+    | undefined
+  > {
+    const endpoint = this.getGatewayBrowserEndpoint(revision);
+    if (endpoint === undefined) {
       return undefined;
     }
-    const gateway = asRecord(revision.configuration.gateway);
-    const requiredHeaders = asRecord(asRecord(gateway?.auth)?.trustedProxy)?.requiredHeaders;
+    return withComputeAbortSignal(signal, async () => {
+      try {
+        signal.throwIfAborted();
+        const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
+        const observedNamespace = await this.getNamespace(namespace);
+        if (
+          observedNamespace === undefined ||
+          observedNamespace.status?.phase !== "Active" ||
+          observedNamespace.metadata.deletionTimestamp !== undefined
+        ) {
+          throw new DependencyUnavailableError("The Agent browser namespace is unavailable.");
+        }
+        this.verifyNamespaceOwnership(
+          observedNamespace,
+          { namespaceId: revision.namespaceId },
+          external,
+        );
+        const gatewayNamespace = await this.requireGatewayNamespace(revision, namespace);
+        const credential = await this.browserDelegationCredential(
+          revision,
+          gatewayNamespace,
+          false,
+        );
+        const identity = createHash("sha256")
+          .update(
+            JSON.stringify([
+              required(input.installationId, "Installation ID"),
+              required(input.principalId, "Principal ID"),
+            ]),
+          )
+          .digest("hex");
+        const subject = `${BROWSER_SUBJECT_PREFIX}${identity}`;
+        return {
+          endpoint,
+          subject,
+          headers: {
+            [TRUSTED_PROXY_HEADER]: subject,
+            [BROWSER_DELEGATION_HEADER]: credential,
+            [TRUSTED_PROXY_SCOPES_HEADER]:
+              input.mode === "admin" ? "operator.admin" : "operator.sessions.write",
+          },
+        };
+      } catch {
+        throw new DependencyUnavailableError("The Agent browser credential is unavailable.");
+      }
+    });
+  }
+
+  private getGatewayBrowserEndpoint(revision: AgentRevision): string | undefined {
     if (
-      !Array.isArray(requiredHeaders) ||
-      !requiredHeaders.some(
-        (header) =>
-          typeof header === "string" && header.toLowerCase() === TRUSTED_PROXY_SCOPES_HEADER,
-      )
+      this.options.runtime === undefined ||
+      !this.usesWritableNativeAdminConfig(revision.configuration)
     ) {
       return undefined;
     }
@@ -4949,8 +5013,67 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return undefined;
     }
     const url = new URL(endpoint);
-    url.pathname = `/native-chat${url.pathname}`;
+    url.pathname = `/native-browser${url.pathname}`;
     return url.href;
+  }
+
+  private browserDelegationSecretName(revision: Pick<AgentRevision, "agentId" | "id">): string {
+    return `browser-delegation-${sha256Hex(revision.agentId, 12)}-${sha256Hex(revision.id, 12)}`;
+  }
+
+  private async browserDelegationCredential(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+    provision: boolean,
+  ): Promise<string> {
+    const name = this.browserDelegationSecretName(revision);
+    const ownership = this.pluginRuntimeOwnership(revision);
+    try {
+      let observed = await this.getOwned("Secret", name, namespace, ownership);
+      if (observed === undefined && provision) {
+        const credential = randomBytes(32).toString("hex");
+        const clients = await this.clients(namespace.plane);
+        try {
+          await this.request(
+            () =>
+              clients.core.createNamespacedSecret({
+                namespace: namespace.name,
+                body: {
+                  ...this.manifest("v1", "Secret", name, ownership, namespace),
+                  immutable: true,
+                  type: "Opaque",
+                  data: { [BROWSER_DELEGATION_KEY]: Buffer.from(credential).toString("base64") },
+                },
+              }),
+            { mutating: true },
+          );
+        } catch (error) {
+          if (numericErrorStatus(error) !== 409) {
+            throw error;
+          }
+        }
+        observed = await this.getOwned("Secret", name, namespace, ownership);
+      }
+      const data = observed?.data;
+      const encoded = data?.[BROWSER_DELEGATION_KEY];
+      const credential =
+        typeof encoded === "string" ? Buffer.from(encoded, "base64").toString("utf8") : "";
+      if (
+        observed?.type !== "Opaque" ||
+        observed.immutable !== true ||
+        !observed.metadata.uid ||
+        observed.metadata.deletionTimestamp !== undefined ||
+        Object.keys(data ?? {}).length !== 1 ||
+        !/^[a-f0-9]{64}$/.test(credential) ||
+        Buffer.from(credential).toString("base64") !== encoded
+      ) {
+        throw new Error("Invalid browser delegation credential.");
+      }
+      return credential;
+    } catch {
+      // Kubernetes failures can contain the Secret body. Never propagate private API details.
+      throw new DependencyUnavailableError("The Agent browser credential is unavailable.");
+    }
   }
 
   async getAgentRuntimeCredentialStatus(
@@ -6722,6 +6845,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     await this.prepareRevisionStage("workspace_setup", () =>
       this.deliverWorkspaceSetup(revision, workspaceSetup, namespace),
     );
+    if (this.getGatewayBrowserEndpoint(admittedRevision) !== undefined) {
+      await this.prepareRevisionStage("gateway_secret_environment", () =>
+        this.browserDelegationCredential(admittedRevision, gatewayNamespace, true),
+      );
+    }
     const configuration = await this.prepareRevisionStage("gateway_configuration", async () =>
       this.gatewayConfiguration(
         admittedRevision,
@@ -9129,6 +9257,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
         await this.controlNamespace(revision.namespaceId),
       );
     }
+    await this.deleteOwnedNamespacedResource(
+      "Secret",
+      this.browserDelegationSecretName(revision),
+      this.pluginRuntimeOwnership(revision),
+      gatewayNamespace,
+    );
     for (const name of [
       this.harnessSecretsName(revision.agentId, revision.id),
       this.gatewaySecretsName(revision.agentId, revision.id),
@@ -13606,6 +13740,17 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       throw new GatewaySettingFailure("gateway.auth.trustedProxy", "must be an object");
     }
     const trustedProxy = (trustedProxyRecord ?? {}) as Record<string, OpenClawConfigurationValue>;
+    if (
+      trustedProxy.delegation !== undefined &&
+      !isDeepStrictEqual(trustedProxy.delegation, {
+        credentialFile: `${BROWSER_DELEGATION_DIRECTORY}/${BROWSER_DELEGATION_KEY}`,
+      })
+    ) {
+      throw new GatewaySettingFailure(
+        "gateway.auth.trustedProxy.delegation",
+        "must match the Kubernetes Compute browser delegation policy",
+      );
+    }
     const identityScopesRecord = asRecord(auth.identityScopes);
     if (auth.identityScopes !== undefined && identityScopesRecord === undefined) {
       throw new GatewaySettingFailure("gateway.auth.identityScopes", "must be an object");
@@ -13797,6 +13942,15 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               : {}),
             userHeader: TRUSTED_PROXY_HEADER,
             allowUsers: allowUsers ?? [TRUSTED_PROXY_IDENTITY],
+            ...(this.options.runtime !== undefined &&
+            this.options.gatewayRouting !== undefined &&
+            this.usesWritableNativeAdminConfig(configuration)
+              ? {
+                  delegation: {
+                    credentialFile: `${BROWSER_DELEGATION_DIRECTORY}/${BROWSER_DELEGATION_KEY}`,
+                  },
+                }
+              : {}),
           },
           identityScopes: identityScopes ?? { [TRUSTED_PROXY_IDENTITY]: ["operator.admin"] },
         },
@@ -13809,7 +13963,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const auth = asRecord(gateway?.auth);
     const trustedProxy = asRecord(auth?.trustedProxy);
     const identityScopes = asRecord(auth?.identityScopes)?.["occ-workspace-files"];
-    const deviceAutoApprove = asRecord(trustedProxy?.deviceAutoApprove);
     const controlUi = asRecord(gateway?.controlUi);
     return (
       auth?.mode === "trusted-proxy" &&
@@ -13818,7 +13971,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       trustedProxy.allowUsers.includes("occ-workspace-files") &&
       Array.isArray(identityScopes) &&
       identityScopes.includes("operator.admin") &&
-      deviceAutoApprove?.enabled === true &&
       controlUi?.enabled === true &&
       Array.isArray(controlUi.allowedOrigins) &&
       controlUi.allowedOrigins.some(
@@ -13941,19 +14093,19 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   }
 
   private gatewayRouteHeaderFilter(
-    access: "operator" | "chat" | "node" | "node-transfer",
+    access: "operator" | "browser" | "node" | "node-transfer",
   ): KubernetesRecord {
     return {
       type: "RequestHeaderModifier",
       requestHeaderModifier: {
         set: [
-          ...(access === "operator" || access === "chat"
+          ...(access === "operator"
             ? [
                 { name: TRUSTED_PROXY_HEADER, value: TRUSTED_PROXY_IDENTITY },
                 // Replace client authority before either HTTP or WebSocket reaches native auth.
                 {
                   name: TRUSTED_PROXY_SCOPES_HEADER,
-                  value: access === "chat" ? "operator.sessions.write" : "operator.admin",
+                  value: "operator.admin",
                 },
               ]
             : []),
@@ -13967,6 +14119,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           "cookie",
           "forwarded",
           "x-forwarded-for",
+          ...(access === "browser" ? [] : [BROWSER_DELEGATION_HEADER]),
           ...(access === "node" || access === "node-transfer"
             ? [
                 TRUSTED_PROXY_SCOPES_HEADER,
@@ -13995,7 +14148,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   private gatewayRootRouteRule(
     service: ManagedKubernetesObject<"Service">,
     path: string,
-    access: "operator" | "chat" | "node",
+    access: "operator" | "browser" | "node",
     match: "Exact" | "PathPrefix",
   ): KubernetesRecord {
     return {
@@ -14177,18 +14330,18 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                   access,
                   "Exact",
                 ),
-                ...(access === "operator" && this.getGatewayChatEndpoint(revision) !== undefined
+                ...(access === "operator" && this.getGatewayBrowserEndpoint(revision) !== undefined
                   ? [
                       this.gatewayRootRouteRule(
                         service,
-                        `/native-chat${this.gatewayRoutePath(revision)}`,
-                        "chat",
+                        `/native-browser${this.gatewayRoutePath(revision)}`,
+                        "browser",
                         "Exact",
                       ),
                       this.gatewayRootRouteRule(
                         service,
-                        `/native-chat${this.gatewayRoutePath(revision)}/`,
-                        "chat",
+                        `/native-browser${this.gatewayRoutePath(revision)}/`,
+                        "browser",
                         "PathPrefix",
                       ),
                     ]
@@ -16431,6 +16584,30 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const privateHome = runtime !== undefined || dedicated || writableConfiguration;
     const volumes: V1Volume[] = [];
     const volumeMounts: V1VolumeMount[] = [];
+    if (
+      role === "gateway" &&
+      runtime !== undefined &&
+      this.options.gatewayRouting !== undefined &&
+      configuration?.usesWritableNativeAdminConfig
+    ) {
+      volumes.push({
+        name: "browser-delegation",
+        secret: {
+          secretName: this.browserDelegationSecretName({
+            agentId: required(ownership.agentId, "Gateway Agent ID"),
+            id: configuration.revisionId,
+          }),
+          optional: false,
+          items: [{ key: BROWSER_DELEGATION_KEY, path: BROWSER_DELEGATION_KEY }],
+        },
+      });
+      volumeMounts.push({
+        name: "browser-delegation",
+        mountPath: BROWSER_DELEGATION_DIRECTORY,
+        readOnly: true,
+      });
+    }
+
     const variables: V1EnvVar[] = [];
     const providerNetwork =
       providerEndpoint === undefined ? undefined : this.options.network.providerHarness;
