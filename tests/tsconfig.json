@@ -36,6 +36,7 @@
     "integration/occ-api-injected-fixture.ts",
     "integration/occ-api-resource-route-cases.ts",
     "integration/postgres-agent-provisioning-configuration-resend-cases.ts",
+    "integration/postgres-agent-provisioning-dependency-cases.ts",
     "integration/postgres-agent-provisioning-fixture.ts",
     "integration/postgres-agent-provisioning-refusal-cases.ts",
     "integration/postgres-agent-provisioning-transport-fixture.ts",
