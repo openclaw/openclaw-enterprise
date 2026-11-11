@@ -31,6 +31,7 @@ jobs:
     outputs:
       run_all: ${{ steps.select.outputs.run_all }}
       selected_lane: ${{ steps.select.outputs.selected_lane }}
+      matrix: ${{ steps.fresh-plan.outputs.matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -49,6 +50,15 @@ jobs:
           INPUT_LANE: ${{ inputs.lane }}
         run: |
           node scripts/ci/full-integration-preflight.mjs
+      - name: Prepare fresh lane fallback
+        id: fresh-plan
+        if: steps.select.outputs.run_all == 'true'
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+          const matrix = JSON.parse(fs.readFileSync("scripts/ci/full-integration-lanes.json", "utf8"));
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify(matrix)}\n`);
+          NODE
       - name: Prepare full admission marker
         id: prepare-admission-marker
         if: steps.select.outputs.run_all == 'true' && github.run_attempt == '1'
@@ -80,8 +90,9 @@ jobs:
     needs: preflight
     if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.preflight.result == 'success' && needs.preflight.outputs.run_all == 'true' }}
     timeout-minutes: 16
+    continue-on-error: true
     outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
+      matrix: ${{ steps.plan.outcome == 'success' && steps.plan.outputs.matrix || '' }}
       lanes: ${{ steps.plan.outputs.lanes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -119,7 +130,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: full-results-reused
+          name: full-ci-reused-results
           path: ${{ runner.temp }}/ci-reuse/accepted/*.json
           if-no-files-found: error
           retention-days: 7
@@ -142,7 +153,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.ci-reuse.outputs.matrix) }}
+        include: ${{ fromJSON(needs.ci-reuse.result == 'success' && needs.ci-reuse.outputs.matrix != '' && needs.ci-reuse.outputs.matrix || needs.preflight.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -679,6 +690,18 @@ jobs:
         with:
           pattern: full-results-*
           path: ${{ runner.temp }}/results
+      # Reuse uploads can outlive a timed-out planner. Read them only when its
+      # completed plan also selected the reduced matrix above.
+      - name: Download committed reused results
+        id: reused-results
+        if: needs.ci-reuse.result == 'success' && needs.ci-reuse.outputs.matrix != '' && needs.ci-reuse.outputs.lanes != '[]'
+        uses: ./.github/actions/download-results
+        with:
+          pattern: full-ci-reused-results
+          path: ${{ runner.temp }}/reused-results
+      - name: Combine committed reused results
+        if: steps.reused-results.outcome == 'success'
+        run: cp "$RUNNER_TEMP/reused-results/"*.json "$RUNNER_TEMP/results/"
       - name: Write selected job state
         env:
           NEEDS_JSON: ${{ toJson(needs) }}
@@ -690,7 +713,7 @@ jobs:
           const needs = JSON.parse(process.env.NEEDS_JSON);
           const lane = process.env.SELECTED_LANE;
           const out = { preflight: needs.preflight };
-          const reused = needs["ci-reuse"]?.result === "success" ? JSON.parse(process.env.REUSED_LANES || "[]") : [];
+          const reused = needs["ci-reuse"]?.result === "success" && needs["ci-reuse"].outputs?.matrix ? JSON.parse(process.env.REUSED_LANES || "[]") : [];
           if (lane === "all") {
             out["runtime-artifact"] = needs["runtime-artifact"] ?? { result: "missing" };
             out["runtime-image-fixture"] = needs["runtime-image-fixture"] ?? { result: "missing" };

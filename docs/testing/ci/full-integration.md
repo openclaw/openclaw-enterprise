@@ -31,8 +31,9 @@ has its own schedule.
 
 ## Scenarios
 
-Scheduled and manual dispatches run the selected lanes fresh. Dispatch Preflight
-checks environment policy; Full Integration Aggregate requires selected results.
+First-attempt scheduled and manual `all` runs can [reuse qualified CI results](#results-and-limits).
+Other selected lanes run fresh. Dispatch Preflight checks environment policy;
+Full Integration Aggregate requires selected results.
 QA waits for Slack to finish, including after Slack failure.
 Some lanes are also selected by [CI](required-checks.md) or
 [QA Advisory](qa-advisory.md); those pages own automatic selection rules.
@@ -148,9 +149,19 @@ its assigned files serially, and the aggregate requires both results. QA Advisor
 [parallel per-file runners](qa-advisory.md#openshell-file-coverage).
 Use the [shared cleanup procedure](run-lanes.md#results-and-cleanup) for local runs.
 
-Scheduled and manual runs plan fresh ordinary CI lanes. Earlier main-push
-runs could reuse qualified results from ordinary CI for the exact source SHA.
-The aggregate validates either source against the same case and cleanup rules.
+First-attempt scheduled and manual `all` runs can reuse eligible ordinary CI
+lanes from a successful push CI run on official `main` at the exact source SHA.
+Discovery waits at most 12 minutes. Required producer jobs must pass, and
+current-attempt artifacts must contain complete case and cleanup evidence.
+Validated results must be published as `full-ci-reused-results` before their lanes
+are omitted from fresh execution. Ineligible lanes and unavailable, invalid or
+unpublished results fall back to fresh runs. Preflight supplies the full matrix
+if the optional reuse job fails or times out before completing its plan; that
+failure alone does not fail the workflow. Aggregation reads
+retained results only for a successful plan; abandoned uploads cannot replace
+fresh evidence. The aggregate applies the same
+case and cleanup rules to both sources; reuse is not independent execution.
+Hosted discovery, publication and final reuse accounting remain unverified.
 
 ## Files
 

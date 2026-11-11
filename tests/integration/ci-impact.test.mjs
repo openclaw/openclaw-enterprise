@@ -1471,7 +1471,6 @@ test("full-integration preserves qualified runners for kernel, sandbox, and imag
       : runner;
   };
   const ciRunners = new Map(laneTable().map((row) => [row.lane, row.runner]));
-  assert.equal(job.strategy.matrix.include, "${{ fromJSON(needs.ci-reuse.outputs.matrix) }}");
   const lanes = JSON.parse(read("scripts/ci/full-integration-lanes.json")).map(
     (entry) => entry.lane,
   );
