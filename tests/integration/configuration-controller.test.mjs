@@ -3868,34 +3868,39 @@ for (const computeImplementation of ["occ/kubernetes", "kubernetes-local"]) {
   });
 }
 
+const offProviderImageModel = { imageModel: "anthropic/claude-opus-4" };
+const offProviderAnthropicApiKeyMessage = setting(
+  "models.providers.anthropic.apiKey",
+  "must be unset: the Agent's Harness authentication binding serves only openai models",
+);
+
+// A default model setting off the openai provider, and the refusal that names it.
+const offDefaults = (path, settings) => [
+  { agents: { defaults: { ...runtimeDefaults, ...settings } } },
+  setting(`agents.defaults.${path}`, openaiOnly),
+];
+
 test("Configuration save refuses a model selection or apiKey off the primary model's provider, naming the setting", async (t) => {
   // Findings 1298 and 1299: these saved and failed only at deployment, which named no setting
   // for a fallback. The rules depend only on the Configuration, so no Agent is consulted.
-  const configurationDriver = createConfigurationBackend();
-  const context = await fixture({
-    configurationDriver,
-    computeDriver: kubernetesRules("compute-model-provider-save", ...configurationRules),
-  });
-  const { namespace, collection } = context;
-  const valid = runtimeSelected;
-  const { created, configurationId, item, agentPath } = await deployableAgent(context, namespace, {
-    values: valid,
+  const context = await kubernetesRuleFixture("compute-model-provider-save", ...configurationRules);
+  const { collection } = context;
+  const agent = await storedRowAgent(context, runtimeSelected, {
     name: "Model provider consumer",
     secretName: "model-provider-key",
   });
-  const other = "anthropic/claude-opus-4";
-  const fallback = setting(
+  const { created, configurationId, item, agentPath, configurationDriver, valid } = agent;
+  const { imageModel: other } = offProviderImageModel;
+  const defaultsFallback = withModel({ primary: runtimeDefaults.model, fallbacks: [other] });
+  const defaultsFallbackMessage = setting(
     "agents.defaults.model.fallbacks",
     "must use the primary model's provider",
   );
-  // A default model setting off the openai provider, and the refusal that names it.
-  const offDefaults = (path, settings) => [
-    { agents: { defaults: { ...runtimeDefaults, ...settings } } },
-    setting(`agents.defaults.${path}`, openaiOnly),
-  ];
+  const imageModelCase = offDefaults("imageModel", offProviderImageModel);
+  const [imageModelValues, imageModelMessage] = imageModelCase;
   const offProvider = [
     offDefaults("subagents.model", { subagents: { model: other } }),
-    offDefaults("imageModel", { imageModel: other }),
+    imageModelCase,
     offDefaults("pdfModel.primary", { pdfModel: { primary: other } }),
     // Finding 1306: OpenClaw's explicit /model allowlist, on the defaults and on an Agent entry.
     offDefaults("modelPolicy.allow", { modelPolicy: { allow: [runtimeDefaults.model, other] } }),
@@ -3935,22 +3940,9 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
           },
         },
       },
-      setting(
-        "models.providers.anthropic.apiKey",
-        "must be unset: the Agent's Harness authentication binding serves only openai models",
-      ),
+      offProviderAnthropicApiKeyMessage,
     ],
-    [
-      {
-        agents: {
-          defaults: {
-            ...runtimeDefaults,
-            model: { primary: runtimeDefaults.model, fallbacks: [other] },
-          },
-        },
-      },
-      fallback,
-    ],
+    [defaultsFallback, defaultsFallbackMessage],
   ];
   // One subtest per refusal, so each stands on its own. The console's Save Configuration sends
   // the PATCH; a Preset save refuses the same text.
@@ -3973,18 +3965,14 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
       },
     };
     for (const [values, message] of [
-      [offProvider.at(-1)[0], fallback],
+      [defaultsFallback, defaultsFallbackMessage],
       [
         entryFallback,
         setting("agents.entries.main.model.fallbacks", "must use the primary model's provider"),
       ],
     ]) {
       const label = JSON.stringify(values);
-      await writePastOcc(configurationDriver, configurationId, values);
-      const agentSaved = await request(context.app, "PATCH", agentPath, {
-        body: { configurationId },
-      });
-      assertRefused(agentSaved, message, { label });
+      await refusedAtAgentSave(context, agent, values, message, label);
       assertRefused(await request(context.app, "POST", `${agentPath}/deploy`), message, { label });
       // Refused before a revision exists.
       const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
@@ -4092,12 +4080,12 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
     ];
     const memberAgentRead = await request(context.app, "GET", agentPath);
     assert.equal(memberAgentRead.status, 403, JSON.stringify(memberAgentRead.body));
-    const refused = await answers(offProvider[1][0], 400);
-    assert.equal(refused.message, offProvider[1][1]);
+    const refused = await answers(imageModelValues, 400);
+    assert.equal(refused.message, imageModelMessage);
     await answers(valid, 200);
     // A zero-grant member gets the uniform 403, whatever the values.
     role.permissions = [];
-    for (const values of [valid, offProvider[1][0]]) {
+    for (const values of [valid, imageModelValues]) {
       const denied = await answers(values);
       assert.equal(denied.code, "FORBIDDEN");
     }
@@ -4112,7 +4100,7 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
     t,
     kubernetesRules("compute-model-provider-preset", ...configurationRules),
   );
-  const other = "anthropic/claude-opus-4";
+  const { imageModel: other } = offProviderImageModel;
   const variables = {
     model: { type: "string" },
     provider: { type: "string" },
@@ -4126,10 +4114,7 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
     models: { "openai/{{ vars.model }}": { agentRuntime: { id: "openclaw" } } },
   };
   const refused = [
-    [
-      { agents: { defaults: { ...runtimeDefaults, imageModel: other } } },
-      setting("agents.defaults.imageModel", openaiOnly),
-    ],
+    offDefaults("imageModel", offProviderImageModel),
     [
       {
         agents: { defaults: { ...templated, subagents: { model: "anthropic/{{ vars.model }}" } } },
@@ -4152,10 +4137,7 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
         ...runtimeSelected,
         models: { providers: { anthropic: { apiKey: "${ANTHROPIC_API_KEY}" } } },
       },
-      setting(
-        "models.providers.anthropic.apiKey",
-        "must be unset: the Agent's Harness authentication binding serves only openai models",
-      ),
+      offProviderAnthropicApiKeyMessage,
     ],
     [
       { agents: { defaults: templated }, models: { providers: { openai: { apiKey: "${KEY}" } } } },
