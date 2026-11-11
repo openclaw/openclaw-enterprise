@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-11-04
-last_updated_session: authoring-run/06bc63c9-f110-4607-a058-a816a61dd579
+updated: 2026-11-11
+last_updated_session: authoring-run/e028dbec-8765-42b2-b94f-fafcd435d7bc
 ---
 
 # Agent deployment diagnostics flow
@@ -56,15 +56,20 @@ same resources, and selects the Compute Driver recorded in that version.
 ### 2. Read the current runtime
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.diagnoseAgentDeployment`
-checks the binding and owned Namespace, then reads each version Pod through
-the Kubernetes Pod proxy. Dedicated Gateways use their managed Gateway
-namespace; dedicated Harnesses use the tenant namespace. The Driver reads a
-private endpoint, then checks the Pod name, UID, and container ID again. Missing
-or replaced Pods produce `unknown` checks. Invalid endpoint data fails the
-request. Collection has a ten-second deadline and a 64 KiB response limit.
-The Driver's Kubernetes clients do not follow redirects. For a redirected Pod
-status response, the Driver requests body cancellation and fails the read without
-retrying.
+checks the binding and owned Namespace.
+`deployment-diagnostics.ts:collectDeploymentChecks` reads diagnostics and startup
+status concurrently for each runtime role under a shared ten-second deadline. In a
+two-cluster installation, dedicated Gateways use their managed Gateway namespace
+and dedicated Harnesses use the tenant namespace.
+
+`apps/controller/src/drivers/compute/kubernetes/private-status-proxy.ts:readPrivateStatusProxy`
+reads and decodes the private endpoint with a 64 KiB limit. A 404 or 503 means the
+endpoint is unavailable for this observation. A redirect fails the read and the
+Driver requests body cancellation without retrying. The Driver checks the Pod
+name, UID, and container ID again before using the decoded evidence. Missing or
+replaced Pods produce `unknown` checks. Invalid diagnostics data fails the
+request. When concurrent reads reach the shared deadline, the Driver can still
+classify a rejected Gateway diagnostics request before reporting a generic timeout.
 
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:PLUGIN_RUNTIME_HELPERS`
 calls `channels.status` through OpenClaw's public Gateway SDK on demand in the
@@ -90,13 +95,10 @@ private boundary accepts only real UTC timestamps, normalizing a valid whole-sec
 value to the public millisecond form. A failed, impossible-date, or otherwise
 invalid status read adds nothing.
 
-An [OpenShell](../reference/drivers/openshell-sandbox.md) Harness listens inside
-its Sandbox's own network namespace, not the Pod's, so the Kubernetes API
-answers Pod-proxy reads of its private port with `503`, which the Driver treats
-as not serving. Its `agent` `runtime-status` check is always `unknown` with code
-`UNAVAILABLE`, whether the Harness is healthy or holding a startup failure, and
-no held-failure check appears for it. Gateway checks, including a held Gateway
-failure, are unaffected.
+The Driver skips Harness Pod proxy reads when the revision's selected Sandbox
+Driver provisions the Harness. An [OpenShell](../reference/drivers/openshell-sandbox.md)
+Harness listens inside its own Sandbox network namespace. Its `agent` `runtime-status` check is `unknown` with code
+`UNAVAILABLE`. The Gateway can still report a held failure.
 
 Beside Compute's checks, `OpenClawController.diagnoseAgentDeployment` asks the
 version's Sandbox Driver for its record of a dedicated Harness Sandbox
@@ -114,7 +116,14 @@ Agent has no Sandbox, such as a stopped Agent's.
 the requested Agent revision ID, valid timestamps, and at most 32 checks with component, check, and code values of 1 to 64 allowed characters. A
 component, check or code outside `packages/contracts/src/runtime-failure.mjs`
 reads `UNRECOGNIZED`. Native Driver errors become `DEPENDENCY_UNAVAILABLE`
-without messages. Stored deployment status, startup evidence, plugin warnings
+without messages. A rejected private Gateway diagnostics Pod-proxy request instead
+retains the fixed `RuntimeDiagnosticsTransportError` class and message in the
+request-ID-correlated `http.dependency_unavailable` operator log. OCC reconstructs
+this error without supplier text or causes. The public response remains generic
+`503 DEPENDENCY_UNAVAILABLE`. This category identifies collection transport; it
+does not establish a channel failure or its network cause. Pod discovery, invalid
+endpoint data, redirects, and normal not-serving responses keep their existing
+handling. Stored deployment status, startup evidence, plugin warnings
 and Agent state stay unchanged.
 
 ## Guarded first admission
@@ -216,6 +225,10 @@ state after admission.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 02:04: Trace the private Pod proxy reader and shared diagnostics deadline. (authoring-run/e028dbec-8765-42b2-b94f-fafcd435d7bc - c5f99318f7e2495afac28ff7ec7b5f8e77891dfc)
+
+- 2026-11-10 23:59: Preserve a fixed private Gateway diagnostics transport category in operator logs. (authoring-run/028ba1b2-5a61-4135-8d59-b919ec55e0eb - 42ffbb69e04e306d32eddcec27e8ea3d9075ec42)
 
 - 2026-11-10 23:30: Count only consecutive unexplained Gateway exits toward a crash loop, from the wrapper's termination message. (crashloop-fix-2, finding 3041)
 

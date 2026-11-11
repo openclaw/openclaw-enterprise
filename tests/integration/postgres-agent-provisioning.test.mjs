@@ -16,6 +16,7 @@ import {
   ProvisioningSecretDriverError,
   ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
+import { registerConfigurationResendCases } from "./postgres-agent-provisioning-configuration-resend-cases.ts";
 import { createProvisioningFixture } from "./postgres-agent-provisioning-fixture.ts";
 import {
   createRuntimeComputeDriver,
@@ -28,7 +29,6 @@ import {
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
-import { ConfigurationConflictError } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import {
   assertProvisioningSourceStatus,
@@ -54,7 +54,7 @@ import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
-import { expireWorkLease, makeWorkDue } from "../helpers/postgres-worker-revision-support.mjs";
+import { expireWorkLease } from "../helpers/postgres-worker-revision-support.mjs";
 import {
   AGENT_NAME_CONFLICT,
   BROKER_PROXY_DISABLED,
@@ -226,60 +226,6 @@ function refuseProvisioningWithoutGatewayRouting(computeDriver) {
     routed: false,
   });
   computeDriver.validateAgentProvisioning = (input) => unrouted.validateAgentProvisioning(input);
-}
-
-// Stands in for the controller's 90 s Configuration settle window passing: the pending create's
-// database-clock start moves 91 s back, and its deferred work becomes claimable now. The
-// effect's owner and target stay exactly as the worker recorded them.
-async function elapseConfigurationSettleWindow(fixture, workId) {
-  const aged = await fixture.pool.query(
-    `UPDATE occ.agent_provisioning_work
-     SET progress = jsonb_set(
-       progress,
-       '{pendingEffect,startedAt}',
-       to_jsonb(to_char((clock_timestamp() - interval '91 seconds') AT TIME ZONE 'UTC',
-         'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
-     )
-     WHERE work_id = $1
-       AND progress -> 'pendingEffect' ->> 'kind' = 'configuration'
-       AND progress -> 'pendingEffect' ? 'startedAt'`,
-    [workId],
-  );
-  assert.equal(aged.rowCount, 1, "the pending Configuration create must record its start");
-  const woken = await makeWorkDue(fixture.pool, { key: workId, state: "queued" });
-  assert.equal(woken.rowCount, 1, "the provisioning work must be queued");
-}
-
-// Runs the worker until the first Configuration create has failed with an unknown outcome and
-// the next attempt has deferred inside the settle window, then stops it.
-async function provisionUntilConfigurationSettling(fixture, admitted, sent) {
-  const { workId } = admitted.data.provisioning;
-  await fixture.startWorker();
-  const deferred = await waitFor(
-    "the absent Configuration create to wait out its settle window",
-    async () => {
-      const observed = await fixture.request("GET", admitted.data.provisioning.url);
-      assert.equal(observed.status, 200, JSON.stringify(observed.body));
-      assert.notEqual(observed.data.status, "failed", JSON.stringify(observed.body));
-      const work = await fixture.pool.query(
-        `SELECT state, attempt_count,
-           available_at > clock_timestamp() + interval '30 seconds' AS deferred
-         FROM occ.controller_work WHERE idempotency_key = $1`,
-        [workId],
-      );
-      const [row] = work.rows;
-      return row?.state === "queued" && row.deferred ? row : undefined;
-    },
-  );
-  await fixture.stopWorker();
-  // Only the attempt that sent the create spent an attempt; nothing was sent again yet.
-  assert.equal(deferred.attempt_count, 1);
-  assert.equal(sent.length, 1);
-  const record = await fixture.pool.query(
-    "SELECT progress -> 'error' ->> 'code' AS code FROM occ.agent_provisioning_work WHERE work_id = $1",
-    [workId],
-  );
-  assert.deepEqual(record.rows, [{ code: "PROVISIONING_OUTCOME_UNKNOWN" }]);
 }
 
 async function ensureProvisioningBootstrap(context, state) {
@@ -2399,215 +2345,12 @@ test(
   },
 );
 
-test(
-  "a Configuration create that never reached the API server is sent again after its settle window",
-  { ...requiresPostgres, timeout: 60_000 },
-  async (context) => {
-    const computeDriver = createRuntimeComputeDriver();
-    const configurationDriver = createProvisioningConfigurationDriver({
-      id: "configuration-provisioning-resend",
-    });
-    const createExact = configurationDriver.createExact;
-    const sent = [];
-    configurationDriver.createExact = async (configuration) => {
-      sent.push(structuredClone(configuration));
-      if (sent.length === 1) {
-        // The write deadline passes before the API server receives the create: nothing is
-        // stored, and the worker cannot tell that from a create that landed (finding 911).
-        throw new Error("synthetic Configuration create timeout before the API server");
-      }
-      return createExact(configuration);
-    };
-    const fixture = await createFixture(context, { computeDriver, configurationDriver });
-    const namespace = await fixture.bootstrapNamespace();
-    const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
-
-    // Inside the window an absent Configuration may still be a late create, so the worker
-    // neither resends it nor spends the fixture's three attempts waiting.
-    await provisionUntilConfigurationSettling(fixture, admitted, sent);
-
-    await elapseConfigurationSettleWindow(fixture, admitted.data.provisioning.workId);
-    await fixture.startWorker();
-    const succeeded = await waitFor("Agent provisioning to succeed after the resend", async () => {
-      const observed = await fixture.request("GET", admitted.data.provisioning.url);
-      assert.equal(observed.status, 200, JSON.stringify(observed.body));
-      assert.notEqual(observed.data.status, "failed", JSON.stringify(observed.body));
-      return observed.data.status === "succeeded" ? observed.data : undefined;
-    });
-    fixture.cancelProvisioningAtTeardown(namespace.id, succeeded.agentId);
-    await fixture.stopWorker();
-
-    // The resend writes the same Configuration under the same identity, once.
-    assert.equal(sent.length, 2);
-    assert.deepEqual(sent[1], sent[0]);
-    const agent = await fixture.request(
-      "GET",
-      `/namespaces/${namespace.id}/agents/${succeeded.agentId}`,
-    );
-    assert.equal(agent.status, 200, JSON.stringify(agent.body));
-    assert.equal(agent.data.configurationId, sent[0].id);
-    assert.deepEqual(
-      await configurationDriver.read({ id: sent[0].id, namespaceId: namespace.id }),
-      sent[0],
-    );
-  },
-);
-
-test(
-  "a resent Configuration create that meets a late original settles only an exact match",
-  { ...requiresPostgres, timeout: 60_000 },
-  async (context) => {
-    const computeDriver = createRuntimeComputeDriver();
-    const configurationDriver = createProvisioningConfigurationDriver({
-      id: "configuration-provisioning-resend-conflict",
-    });
-    const createExact = configurationDriver.createExact;
-    const sent = [];
-    let lateOriginal;
-    configurationDriver.createExact = async (configuration) => {
-      sent.push(structuredClone(configuration));
-      if (sent.length === 1) {
-        throw new Error("synthetic Configuration create timeout");
-      }
-      // The first create lands just before the resend reaches the API server, which answers
-      // that resend and any later one with AlreadyExists, as the Kubernetes Driver reports it.
-      if (sent.length === 2) {
-        await lateOriginal(configuration);
-      }
-      throw new ConfigurationConflictError("The Kubernetes ConfigMap create conflicted.");
-    };
-    const fixture = await createFixture(context, { computeDriver, configurationDriver });
-    const namespace = await fixture.bootstrapNamespace();
-    const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const provision = async () => {
-      const admitted = await fixture.request(
-        "POST",
-        `/namespaces/${namespace.id}/agents/provision`,
-        {
-          body: provisioningBody(namespace.id, secrets, {
-            name: `Resend ${randomUUID().slice(0, 8)}`,
-          }),
-        },
-      );
-      assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
-      return admitted;
-    };
-
-    // The late original is the exact Configuration: the conflict proves it landed, and the
-    // exact inspection settles it.
-    lateOriginal = (configuration) => createExact(configuration);
-    const exact = await provision();
-    await provisionUntilConfigurationSettling(fixture, exact, sent);
-    await elapseConfigurationSettleWindow(fixture, exact.data.provisioning.workId);
-    await fixture.startWorker();
-    const succeeded = await waitFor("Agent provisioning to settle the late original", async () => {
-      const observed = await fixture.request("GET", exact.data.provisioning.url);
-      assert.equal(observed.status, 200, JSON.stringify(observed.body));
-      assert.notEqual(observed.data.status, "failed", JSON.stringify(observed.body));
-      return observed.data.status === "succeeded" ? observed.data : undefined;
-    });
-    fixture.cancelProvisioningAtTeardown(namespace.id, succeeded.agentId);
-    await fixture.stopWorker();
-    assert.equal(sent.length, 2);
-    assert.deepEqual(
-      await configurationDriver.read({ id: sent[0].id, namespaceId: namespace.id }),
-      sent[0],
-    );
-
-    // A different Configuration under the same name is never taken as this request's write:
-    // the work is not settled and runs out of attempts, and the stored document is untouched.
-    // (This test Driver's inspection answers not found for a mismatch; the Kubernetes one
-    // reports a conflict, which fails the attempt the same way.)
-    sent.length = 0;
-    const foreign = { model: "foreign-configuration" };
-    lateOriginal = (configuration) =>
-      configurationDriver.create({ ...configuration, values: foreign });
-    const mismatched = await provision();
-    await provisionUntilConfigurationSettling(fixture, mismatched, sent);
-    await elapseConfigurationSettleWindow(fixture, mismatched.data.provisioning.workId);
-    await fixture.startWorker();
-    const failed = await waitFor(
-      "Agent provisioning to refuse the foreign Configuration",
-      async () => {
-        const observed = await fixture.request("GET", mismatched.data.provisioning.url);
-        assert.equal(observed.status, 200, JSON.stringify(observed.body));
-        assert.notEqual(observed.data.status, "succeeded", JSON.stringify(observed.body));
-        return observed.data.status === "failed" ? observed.data : undefined;
-      },
-    );
-    await fixture.stopWorker();
-    assert.equal(failed.error?.code, "PROVISIONING_OUTCOME_UNKNOWN");
-    assert.equal(failed.agentId, undefined);
-    const stored = await configurationDriver.read({ id: sent[0].id, namespaceId: namespace.id });
-    assert.deepEqual(stored.values, foreign);
-    const metadata = await fixture.pool.query(
-      "SELECT count(*)::integer AS count FROM occ.configurations WHERE namespace_id = $1 AND id = $2",
-      [namespace.id, sent[0].id],
-    );
-    assert.equal(metadata.rows[0].count, 0);
-  },
-);
-
-test(
-  "a Configuration resend follows a fresh authority check and sends nothing once authority is revoked",
-  { ...requiresPostgres, timeout: 60_000 },
-  async (context) => {
-    const configurationDriver = createProvisioningConfigurationDriver({
-      id: "configuration-provisioning-resend-revoked",
-    });
-    const createExact = configurationDriver.createExact;
-    const inspectExact = configurationDriver.inspectExact;
-    const sent = [];
-    configurationDriver.createExact = async (configuration) => {
-      sent.push(structuredClone(configuration));
-      if (sent.length === 1) {
-        throw new Error("synthetic Configuration create timeout before the API server");
-      }
-      return createExact(configuration);
-    };
-    let revokeOnInspection;
-    configurationDriver.inspectExact = async (configuration) => {
-      const inspected = await inspectExact(configuration);
-      await revokeOnInspection?.();
-      return inspected;
-    };
-    const fixture = await createFixture(context, { configurationDriver });
-    const namespace = await fixture.bootstrapNamespace();
-    const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
-    const { workId } = admitted.data.provisioning;
-    await provisionUntilConfigurationSettling(fixture, admitted, sent);
-    await elapseConfigurationSettleWindow(fixture, workId);
-
-    // The actor loses authority after the attempt's first checks passed, while the worker is
-    // inspecting the absent Configuration, so only the check just before the resend sees it.
-    // Revoked authority must send nothing: the create stays an unknown outcome and the work
-    // runs out of attempts.
-    let inspections = 0;
-    revokeOnInspection = async () => {
-      inspections += 1;
-      if (inspections === 2) {
-        await fixture.revokeCurrentPrincipal();
-      }
-    };
-    await fixture.startWorker();
-    const work = await waitFor("the revoked provisioning work to run out of attempts", async () => {
-      const observed = await fixture.pool.query(
-        "SELECT state, reason_code FROM occ.controller_work WHERE idempotency_key = $1",
-        [workId],
-      );
-      return observed.rows[0]?.state === "failed_permanent" ? observed.rows[0] : undefined;
-    });
-    await fixture.stopWorker();
-    assert.equal(work.reason_code, "PROVISIONING_OUTCOME_UNKNOWN");
-    assert.equal(sent.length, 1, "revoked authority must not resend the Configuration create");
-    await assert.rejects(
-      configurationDriver.read({ id: sent[0].id, namespaceId: namespace.id }),
-      /does not exist/,
-    );
-  },
-);
+registerConfigurationResendCases({
+  createFixture,
+  createProvisioningConfigurationDriver,
+  createProvisioningSecrets,
+  requestAcceptedProvisioning,
+});
 
 test(
   "provisioning refuses a taken Agent name at admission; a same-name job admitted alongside fails permanently, says the name is taken and deletes the Configuration it wrote",

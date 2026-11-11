@@ -170,18 +170,38 @@ export function registerOpenShellInstallationCleanups(context, operations) {
 }
 
 export class OpenShellDeploymentFailedError extends Error {
-  constructor(revisionId, code) {
+  constructor(revisionId, code, workerEvents = []) {
     // Only emit codes from the controller's fixed deployment failure vocabulary.
     const reason =
       typeof code === "string" && Object.hasOwn(DEPLOYMENT_FAILURE_STEPS, code) ? code : undefined;
+    let detail = reason;
+    if (reason === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE") {
+      const completed = workerEvents.findLast(
+        (event) =>
+          event.event === "worker.completed" &&
+          event.revisionId === revisionId &&
+          event.code === reason,
+      );
+      // The worker joins these categories in canonical order. Omit the entire
+      // value if any part differs, including mixed known and unknown fields.
+      const categories = ["sandbox-mode-denied", "named-profile-denied", "reviewer-denied"];
+      const parts = typeof completed?.failure === "string" ? completed.failure.split("_") : [];
+      const denied = categories.filter((category) => parts.includes(category)).join("_");
+      if (denied && denied === completed.failure) {
+        detail = `${reason}: ${denied}`;
+      }
+    }
     super(
-      `OpenShell revision ${revisionId} deployment failed${reason === undefined ? "" : ` (${reason})`}.`,
+      `OpenShell revision ${revisionId} deployment failed${detail === undefined ? "" : ` (${detail})`}.`,
     );
     this.code = reason;
   }
 }
 
-export function waitForOpenShellRevisionActivation(waitFor, { request, agentPath, revisionId }) {
+export function waitForOpenShellRevisionActivation(
+  waitFor,
+  { request, agentPath, revisionId, workerEvents = [] },
+) {
   return waitFor(`OpenShell revision ${revisionId} activation`, async () => {
     const observed = await request("GET", agentPath);
     assert.equal(observed.status, 200, "OpenShell Agent status read failed.");
@@ -191,7 +211,11 @@ export function waitForOpenShellRevisionActivation(waitFor, { request, agentPath
     const deployment = await request("GET", `${agentPath}/deployments/${revisionId}`);
     assert.equal(deployment.status, 200, "OpenShell deployment status read failed.");
     if (deployment.data.status === "failed") {
-      throw new OpenShellDeploymentFailedError(revisionId, deployment.data.error?.code);
+      throw new OpenShellDeploymentFailedError(
+        revisionId,
+        deployment.data.error?.code,
+        workerEvents,
+      );
     }
     return undefined;
   });
@@ -616,7 +640,7 @@ export function createOpenShellInstallationConfiguration({
       policy: {
         filesystem: {
           includeWorkdir: true,
-          readOnly: ["/app"],
+          readOnly: ["/bin", "/usr", "/lib", "/proc", "/dev/urandom", "/etc", "/var/log", "/app"],
           readWrite: ["/sandbox/.openclaw-runtime", "/dev/null"],
         },
         process: { runAsUser: "1000", runAsGroup: "1000" },

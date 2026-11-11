@@ -17,6 +17,7 @@ import {
   skipperImageScope,
 } from "./skipper-release.ts";
 import { imageConfigDigest } from "./image-config-digest.ts";
+import { recordSkipperCheckpoint } from "./skipper-failure-receipt.ts";
 import { createInterface } from "node:readline";
 import {
   kubectl,
@@ -32,6 +33,7 @@ const lane = "skipper-prepared-git-installed";
 const minute = 60_000;
 const read = async (path) => JSON.parse(await readFile(path));
 const output = async (command, args) => (await run(command, args)).stdout.trim();
+await recordSkipperCheckpoint("skipper_stage", "preflight");
 const sourceCommit = await output("git", ["rev-parse", "HEAD"]);
 assert.equal(sourceCommit, env.GITHUB_SHA);
 assert.equal(await output("git", ["status", "--porcelain"]), "");
@@ -161,9 +163,12 @@ let phase = "fresh cluster preflight";
 let failed = false;
 let runnerReceipt;
 let imageDigests;
+let clusterCleanupVerified = false;
+let cleanupFailed = false;
 try {
   await noCluster();
   phase = "install checkout images, prepared repository service and fresh application database";
+  await recordSkipperCheckpoint("skipper_stage", "install");
   progress(phase);
   const stack = await startLocalSetup(install, { privateInstall: true });
   const { state, context, kubeconfig } = stack;
@@ -186,10 +191,12 @@ try {
       server.close();
       await once(server, "close");
     }
+    clusterCleanupVerified = true;
     progress("owned cluster and network removed; installation ports released");
   });
 
   phase = "bind installed image identities and model fixture";
+  await recordSkipperCheckpoint("skipper_stage", "bind-images");
   const helm = await read(join(stack.directory, "helm-values.json"));
   const config = JSON.parse(
     await output("yq", ["-o=json", ".", join(stack.directory, "installation.yaml")]),
@@ -228,6 +235,7 @@ try {
   });
 
   phase = "bind application database, namespace and owned cluster UID";
+  await recordSkipperCheckpoint("skipper_stage", "bind-database");
   const system = state.platformNamespace;
   const apiOrigin = stack.origin;
   const serviceKey = (await read(stack.keyPath)).data.key;
@@ -261,6 +269,7 @@ try {
   // Its raw result and runner diagnostics stay in the private directory. Publish only a pass
   // with the exact selected case, all required journey stages and allowlisted runner fields.
   phase = "run selected installed native Git test";
+  await recordSkipperCheckpoint("skipper_stage", "selected-test");
   progress(phase);
   const runner = await run(
     process.execPath,
@@ -403,6 +412,7 @@ try {
     console.error("Last observed installed test checkpoint: %s", last);
     assert.fail("selected test runner failed");
   }
+  await recordSkipperCheckpoint("skipper_stage", "verify-proof");
   assert.deepEqual(observed, proof);
   assert.equal(records.at(-1), proof.at(-1));
   const summary = await read(privateResult);
@@ -435,10 +445,20 @@ try {
       await release();
     } catch {
       failed = true;
+      cleanupFailed = true;
       console.error("Private Git acceptance: owned resource cleanup failed");
     }
   }
-  await rm(env.OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY, { recursive: true, force: true });
+  await rm(env.OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY, { recursive: true, force: true }).catch(
+    async (error) => {
+      await recordSkipperCheckpoint("skipper_installed_cleanup", "failed");
+      throw error;
+    },
+  );
+  await recordSkipperCheckpoint(
+    "skipper_installed_cleanup",
+    cleanupFailed ? "failed" : clusterCleanupVerified ? "passed" : "unknown",
+  );
 }
 
 if (failed || !runnerReceipt) {
@@ -446,6 +466,7 @@ if (failed || !runnerReceipt) {
 } else {
   // No raw ledger, test output, Git/model traffic, database URLs, kubeconfig or diagnostics.
   // Retain only actual, passing runner evidence accepted by Full Integration's aggregator.
+  await recordSkipperCheckpoint("skipper_stage", "write-success-receipt");
   const results = join(env.RUNNER_TEMP, "results");
   const receipt = {
     ...runnerReceipt,
@@ -471,4 +492,5 @@ if (failed || !runnerReceipt) {
   );
   await rm(directory, { recursive: true });
   progress("selected test 1 passed, 0 failed, 0 skipped; owned resources retired");
+  await recordSkipperCheckpoint("skipper_stage", "finish-fixture");
 }

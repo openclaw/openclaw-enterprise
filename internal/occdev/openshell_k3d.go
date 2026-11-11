@@ -175,6 +175,13 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	if err := r.pinEndpoint(ctx); err != nil {
 		return err
 	}
+	if err := r.checkDevelopmentHostPorts(ctx, developmentStack{cluster: state.Cluster}, []developmentHostPort{
+		{apiPort, "OPENCLAW_DEV_PORT"},
+		{browserPort, "OCC_DEVELOPMENT_BROWSER_PORT"},
+		{kubernetesPort, "OCC_DEVELOPMENT_KUBERNETES_API_PORT"},
+	}); err != nil {
+		return err
+	}
 	if err := r.validateOpenShellImageRevisions(ctx, openShellImages); err != nil {
 		return err
 	}
@@ -238,7 +245,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 			}
 		}
 		if cleanupErr != nil {
-			result = joinStartupCleanup(result, startupError("rollback", fmt.Errorf("rollback incomplete; preserving %s for occ dev down: %w", directory, cleanupErr)))
+			result = joinStartupCleanup(result, startupError("rollback", fmt.Errorf("rollback incomplete; preserving %s for occ dev down; clean up with %s: %w", directory, kubernetesDownCommand(directory, sandboxDriver, opts.Repository), cleanupErr)))
 		}
 	}()
 	if err := exclusiveWrite(filepath.Join(directory, ".openclaw-development"), []byte(stateMarker), 0600); err != nil {
@@ -270,7 +277,8 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	}
 	clusterAttempted = true
 	if err := r.createK3dCluster(ctx, clusterArgs...); err != nil {
-		clusterCreationFailed = true
+		// A create that k3d fully rolled back leaves nothing to clean up.
+		clusterCreationFailed = !r.k3dRolledBackCleanly(ctx, err, state.Cluster)
 		return err
 	}
 	if err := r.checkDevelopmentNodeDNS(ctx, state); err != nil {

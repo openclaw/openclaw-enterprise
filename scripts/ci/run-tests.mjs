@@ -116,7 +116,11 @@ function envObject(value, path, issues) {
 
   const env = {};
   for (const [name, envValue] of Object.entries(value)) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || typeof envValue !== "string") {
+    if (
+      name === "__proto__" ||
+      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ||
+      typeof envValue !== "string"
+    ) {
       issues.push(issue("invalid-manifest", `${path}.${name} must be a string env value`));
       continue;
     }
@@ -140,6 +144,7 @@ function normalizeFile(file, laneName, index, issues) {
   return {
     path: file.path,
     expectedTests: stringArray(file.expectedTests, `${path}.expectedTests`, issues),
+    env: envObject(file.env, `${path}.env`, issues),
     requiredEnv: stringArray(file.requiredEnv, `${path}.requiredEnv`, issues),
     optionalEnv: stringArray(file.optionalEnv, `${path}.optionalEnv`, issues),
   };
@@ -770,16 +775,21 @@ async function preparationFailureText(error, lane, statePath, root) {
     .filter((line) => /^\s+at\s/u.test(line))
     .map((line) => line.trim())
     .join("\n");
-  let stateEnv;
+  let state;
   try {
-    stateEnv = JSON.parse(await readFile(statePath, "utf8"))?.env;
+    state = JSON.parse(await readFile(statePath, "utf8"));
   } catch {
     // No lane state, or not JSON.
   }
   return (
     redactFailureDetail(
       { message: message.slice(0, failureInputLimit), stack: frames.slice(0, failureInputLimit) },
-      failureSecrets([process.env, lane.env, isObject(stateEnv) ? stateEnv : {}]),
+      failureSecrets([
+        process.env,
+        lane.env,
+        isObject(state?.defaults) ? state.defaults : {},
+        isObject(state?.env) ? state.env : {},
+      ]),
       root,
     ) ?? {}
   );
@@ -793,7 +803,11 @@ function validatePreparedEnv(value) {
     throw new Error("prepareFile env must be an object");
   }
   for (const [name, envValue] of Object.entries(value)) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || typeof envValue !== "string") {
+    if (
+      name === "__proto__" ||
+      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ||
+      typeof envValue !== "string"
+    ) {
       throw new Error("prepareFile env must contain string env values");
     }
   }
@@ -1363,7 +1377,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   const issues = [];
   const relativePath = repoRelativePath(root, file.path);
   const absolutePath = resolveRepoPath(root, file.path, issues, relativePath);
-  const prepared = { env: {}, cleanup: null };
+  const prepared = { defaults: {}, env: {}, cleanup: null };
   let cleanupResult = null;
 
   if (!absolutePath || !(await exists(absolutePath))) {
@@ -1411,11 +1425,14 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
             prepareLimitMs(),
           ),
         )) ?? {};
-      prepared.env = validatePreparedEnv(result.env);
-      prepared.cleanup = result.cleanup ?? null;
-      if (prepared.cleanup !== null && typeof prepared.cleanup !== "function") {
+      const cleanup = result.cleanup ?? null;
+      if (cleanup !== null && typeof cleanup !== "function") {
         throw new Error("prepareFile cleanup must be a function");
       }
+      // A returned resource owner still needs cleanup when its output is invalid.
+      prepared.cleanup = cleanup;
+      prepared.defaults = validatePreparedEnv(result.defaults);
+      prepared.env = validatePreparedEnv(result.env);
     } catch (error) {
       if (error instanceof StepTimeoutError) {
         // Its turn in the setup queue came after the deadline, or it ran into the deadline.
@@ -1441,7 +1458,9 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
         reason: "prepare",
         error: { ...sanitized, ...(await preparationFailureText(error, lane, statePath, root)) },
       });
-      return emptyFileResult(relativePath, issues);
+      if (!prepared.cleanup) {
+        return emptyFileResult(relativePath, issues);
+      }
     }
   }
 
@@ -1451,7 +1470,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   }
 
   const requiredEnv = [...lane.requiredEnv, ...file.requiredEnv];
-  const env = mergeEnv(inputs, prepared.env);
+  const env = mergeEnv(inputs, prepared.defaults, file.env, prepared.env);
   for (const name of openShellRequiredEnv(lane.name, relativePath, requiredEnv, env)) {
     if (env[name] === undefined || env[name] === "") {
       issues.push(

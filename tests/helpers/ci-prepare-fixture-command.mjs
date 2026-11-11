@@ -3,13 +3,10 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs
 import { join, resolve } from "node:path";
 import { defaultK3sImage, lanesWithoutK3sAddons } from "../../scripts/ci/prepare.mjs";
 import { startFakePostgres } from "./fake-postgres-server.mjs";
-import {
-  commandShim as fixtureCommandShim,
-  startCommandServer,
-} from "./fixture-command-server.mjs";
+import { commandShim as fixtureCommandShim, startCommandServer } from "./fixture-command-server.ts";
 
 // The external commands preparation runs (docker, podman, k3d, kubectl, helm, yq,
-// corepack), faked for ci-prepare*.test.mjs through fixture-command-server.mjs: each is
+// corepack), faked for ci-prepare*.test.mjs through fixture-command-server.ts: each is
 // a bash script answered by the test's command server. scripts/ci/prepare.mjs and
 // cleanup.mjs still start every command as a real process and own its timeouts, signals
 // and pipes; only the scenario logic below runs in the test process. A command sends
@@ -266,7 +263,11 @@ async function fakeCommand({
         return finish();
       }
     }
-    if (scenario === "cache-progress" && equals(args.slice(0, 2), ["buildx", "build"])) {
+    if (
+      (scenario === "cache-progress" ||
+        (scenario === "save-failed" && env.CI_FIXTURE_LANE === "k3d-otel")) &&
+      equals(args.slice(0, 2), ["buildx", "build"])
+    ) {
       // Repeated RUN headers model BuildKit switching between active vertices.
       // Probe and load deliberately differ: a load can reuse work from the probe.
       // Include private-looking text to prove the summary never forwards raw output.
@@ -1125,7 +1126,7 @@ async function fakeCommand({
   throw new Error("Unexpected external command: " + command + " " + JSON.stringify(args));
 }
 
-// A fake command for this fixture's server; see fixture-command-server.mjs.
+// A fake command for this fixture's server; see fixture-command-server.ts.
 export function commandShim(options) {
   return fixtureCommandShim({ ...options, forwardedEnv });
 }

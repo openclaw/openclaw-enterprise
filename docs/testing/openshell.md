@@ -39,7 +39,10 @@ To stop even a partially started environment, run:
 ```
 
 This deletes only the owned cluster and its database. For a Compose control
-plane, set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup.
+plane, set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup: an unset
+control plane follows the Compute Driver, so
+`OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell`
+alone starts Kubernetes-only.
 
 ## Finite repository removal
 
@@ -138,6 +141,8 @@ the standalone file. Missing inputs fail selected cases. Installation alone
 cannot prove a Linear tool call.
 
 ## Test setup and cleanup
+
+See [host relay diagnostics](docker.md#verify-host-routing-relay-diagnostics).
 
 Stop the reusable environment before running these tests. Each creates and
 removes its own disposable cluster. Install Docker or Podman, k3d, kubectl,

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-11-05
-last_updated_session: authoring-run/1a621287-125a-41d1-baae-06e4b9f829f7
+updated: 2026-11-10
+last_updated_session: authoring-run/1321c9af-ae4c-4a8f-bf46-69a02bbb2a8d
 ---
 
 # Agent Presets flow
@@ -132,11 +132,15 @@ Namespace. Explicit scopes remain unchanged for same-Namespace validation.
 Template structure, variable declarations, default types, and credential
 references are checked without requiring unfilled variables. Password definitions
 have no defaults and can appear only as whole tokens at `agent.harnessAuth.secret`;
-literal credentials and substitution into ordinary settings are rejected. Literal Agent
-launch fields get create's rules (`validatePresetLaunchFields`); tokens wait. When native values exist,
-the selected Configuration Driver's
-`validateValues` checks their native credential rules; missing capability fails
-closed. Core owns no native configuration interpretation.
+literal credentials and substitution into ordinary settings are rejected.
+`validatePresetLaunchFields` uses the shared tokenizer to distinguish declared,
+unescaped variable tokens from literal launch fields. Tokens wait for launch,
+including tokens with defaults; other text receives Agent create's rules.
+When native values exist, OCC and the selected Configuration Driver's
+`validateValues` check their credential rules. They defer a Gateway password only
+when the partial renderer identifies an unresolved whole-string variable at that
+exact field. The completed Configuration must contain an accepted credential
+reference. A missing Driver validation capability fails closed.
 
 The [repository](../../packages/occ/src/state/postgres-state.ts) stores the whole
 template in `occ.presets`. PATCH locks the resource and replaces an included
@@ -313,6 +317,8 @@ or an immutable saved version.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-10 23:35: Explain real-token Preset launch validation and deferred Gateway password references. (authoring-run/1321c9af-ae4c-4a8f-bf46-69a02bbb2a8d - 60cf8f904c39918ddd5b23a42fa2d7591c2eb193)
 
 - 2026-11-05 21:30: Explain the non-text primary refusal and retained chooser recovery. (authoring-run/1a621287-125a-41d1-baae-06e4b9f829f7 - 516f7563fffa2e2d3f626cbe21a81367281ba1a1)
 
