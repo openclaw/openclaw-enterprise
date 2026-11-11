@@ -283,17 +283,16 @@ OCC_K3D_CONTAINER_ENGINE=podman ./scripts/k3d test --harness openclaw \
   --base-url https://models.example.com/v1 --model-id vendor/model
 ```
 
-Set `OPENAI_API_KEY` privately to the endpoint's authorized key. The URL must
-use HTTPS port 443 and end in `/v1`. Use the provider's exact model ID, including
-its namespace. Both `test` and `demo` accept these flags. Without flags,
+Set `OPENAI_API_KEY` privately to the endpoint's authorized key. Use HTTPS port 443,
+a URL ending in `/v1`, and the provider's exact namespaced model ID. Without flags,
 `OCC_TEST_OPENSHELL_MODEL_BASE_URL` and `OCC_TEST_OPENAI_MODEL` select the endpoint
 and model. Explicit flags override inherited and prepared settings. Native helper
 bootstrap and its selected native test use `OPENAI_API_KEY`, not `CODEX_ACCESS_TOKEN`.
 Full OpenShell lane preparation still requires a token for its dedicated PAT cases.
-The upstream-outage test defaults to `https://api.openai.com/v1`. Custom endpoints
-require focused upstream, refresh, withdrawal, or Gateway tool-policy tests;
-native provider files require a guided first-Agent test. Whole-lane preparation
-rejects either override before setup.
+The local helper retains its destination through resource preparation and reset.
+In CI, custom endpoints require focused upstream, refresh, withdrawal, or Gateway
+tool-policy tests; native provider files require a guided first-Agent test.
+Whole-lane CI preparation rejects either override before setup.
 
 Both commands use the test-only bridge. `test` requires an authorized
 `OPENAI_API_KEY`; `demo` prompts for one if it is not set. `demo` leaves the
