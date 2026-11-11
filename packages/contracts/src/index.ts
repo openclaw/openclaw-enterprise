@@ -11,6 +11,13 @@ import type {
   ProxyPlan,
 } from "./drivers/credential-proxy/index.ts";
 
+export {
+  SHARING_RECIPIENT_SEARCH_LIMIT,
+  SHARING_RECIPIENT_SEARCH_MAX_LENGTH,
+  SHARING_RECIPIENT_SEARCH_MIN_LENGTH,
+  type SharingRecipient,
+} from "./sharing-recipient-search.ts";
+
 export type {
   CredentialPolicyReduction,
   CredentialPolicyObservation,

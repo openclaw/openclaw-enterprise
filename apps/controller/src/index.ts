@@ -24,6 +24,9 @@ import {
   PluginToolPolicySchema,
   PRESET_JSON_MAX_BYTES,
   SecretResponse,
+  SHARING_RECIPIENT_SEARCH_LIMIT,
+  SHARING_RECIPIENT_SEARCH_MAX_LENGTH,
+  SHARING_RECIPIENT_SEARCH_MIN_LENGTH,
   type Agent,
   type AgentRuntimeLogsQuery,
   type AuditEvent,
@@ -3796,7 +3799,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           readonly targetPrincipalId?: string;
           readonly successorPrincipalId?: string;
         }) => {
-          // State invokes this after its locks, on the same transaction as the write.
+          // State invokes this in the same transaction as its account operation.
           // Throw evidence back to the HTTP error handler; auditing here opens another unit.
           const resource: ResourceRef = { kind: "installation", id: installationId };
           let current;
@@ -3868,6 +3871,102 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         },
       };
     }
+    const recipientSearchOperation = {
+      operationId: "searchAgentSharingRecipients",
+      method: "POST",
+      path: "/api/auth/sharing-recipients/search",
+      action: "openclaw.auth.sharing-recipients.search",
+      iamAction: "administer",
+      resourceKind: "installation",
+      authorizationTarget: "installation",
+      tags: ["Authentication"],
+      summary: "Find existing people to share an Agent with",
+      schema: {},
+    } as unknown as OccApiRoute;
+    routes.post<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
+      recipientSearchOperation.path,
+      {
+        bodyLimit: 2048,
+        config: { rateLimit: new RequestRateLimiter(12, 3) },
+        schema: {
+          operationId: recipientSearchOperation.operationId,
+          summary: recipientSearchOperation.summary,
+          description:
+            "Read-only, requires a human Installation administrator's current session and trusted Origin. Searches enabled human accounts in this Installation by a case-insensitive name or verified email prefix. Input is limited to 120 characters and must have at least two characters after trimming. Returns at most 10 distinct Principals, ordered by normalized name with a stable tie-breaker.",
+          tags: [...recipientSearchOperation.tags],
+          security: [{ sessionCookie: [] }],
+          "x-openclaw-permissions": [
+            { action: "administer", resourceKind: "installation", scope: "requested" },
+          ],
+          body: {
+            type: "object",
+            additionalProperties: false,
+            required: ["prefix"],
+            properties: {
+              prefix: {
+                type: "string",
+                minLength: SHARING_RECIPIENT_SEARCH_MIN_LENGTH,
+                maxLength: SHARING_RECIPIENT_SEARCH_MAX_LENGTH,
+              },
+            },
+          },
+          response: {
+            ...responses({
+              type: "array",
+              maxItems: SHARING_RECIPIENT_SEARCH_LIMIT,
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["principalId", "name"],
+                properties: {
+                  principalId: { type: "string" },
+                  name: { type: "string" },
+                  email: { type: "string" },
+                },
+              },
+            }),
+            400: { description: "Bad Request", ...error },
+            403: { description: "Forbidden", ...error },
+            429: { description: "Too many recipient searches; wait for Retry-After", ...error },
+            ...bodyErrors,
+          },
+        } as DocumentedFastifySchema,
+        onRequest: async (request) => admit(request, recipientSearchOperation),
+        preValidation: async (request) => {
+          refuseUnstorableText(request);
+          await resolveIdentity(request, recipientSearchOperation);
+        },
+      },
+      async (request, reply) => {
+        const context = contexts.get(request);
+        if (!context) {
+          throw dependencyUnavailable();
+        }
+        const actor = await humanAccountActor(request, recipientSearchOperation, context);
+        const { prefix } = request.body as { prefix: string };
+        const query = prefix.trim();
+        if ([...query].length < SHARING_RECIPIENT_SEARCH_MIN_LENGTH) {
+          throw failure(400, "INVALID_REQUEST", "Enter at least two characters to search.");
+        }
+        if (!options.auth.searchSharingRecipients) {
+          throw dependencyUnavailable();
+        }
+        const retryAfter = request.routeOptions.config.rateLimit.consume(context.actorId);
+        if (retryAfter !== undefined) {
+          reply.header("retry-after", String(retryAfter));
+          throw failure(429, "RATE_LIMITED", "Too many recipient searches. Wait before retrying.");
+        }
+        const selected = selectedIAMDriver();
+        const recipients = await options.auth.searchSharingRecipients(query, actor, (input) =>
+          selected.lookupIdentity(input),
+        );
+        reply.header("cache-control", "no-store").send({
+          data: recipients,
+          meta: { requestId: request.id },
+        });
+      },
+    );
+
     routes.get(
       accountReadOperation.path,
       {

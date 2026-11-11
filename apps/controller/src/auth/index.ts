@@ -6,7 +6,11 @@ import { splitSetCookieHeader } from "better-auth/cookies";
 import { memoryAdapter, type MemoryDB } from "better-auth/adapters/memory";
 import { apiKey } from "@better-auth/api-key";
 import type { ApiKey } from "@better-auth/api-key/types";
-import type { ServicePrincipal } from "@openclaw-enterprise/contracts";
+import {
+  SHARING_RECIPIENT_SEARCH_LIMIT,
+  type ServicePrincipal,
+  type SharingRecipient,
+} from "@openclaw-enterprise/contracts";
 import {
   NativeIAMDriver,
   createAuthPrincipalSeed,
@@ -338,6 +342,11 @@ export interface ControllerAuth {
   oidcStart(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   oidcCallback(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   oidcResult(request: FastifyRequest, reply: FastifyReply): Promise<void>;
+  searchSharingRecipients?(
+    prefix: string,
+    actor: HumanAuthenticationActor,
+    lookupIdentity: IAMDriver["lookupIdentity"],
+  ): Promise<SharingRecipient[]>;
   readAccount?(
     userId: string,
     actor: HumanAuthenticationActor,
@@ -984,6 +993,16 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
   if (humanLogin !== undefined && typeof options.database !== "function") {
     throw new Error("The human authentication profile requires its guarded State adapter.");
   }
+  const accountDatabase =
+    options.database === undefined
+      ? (options.memoryDatabase ?? {
+          user: [],
+          session: [],
+          account: [],
+          verification: [],
+          apikey: [],
+        })
+      : undefined;
   const passwordHasher = options.passwordHasher ?? scryptPasswordHasher;
   const auth = betterAuth<BetterAuthOptions & { plugins: ControllerPlugins }>({
     appName: "OpenClaw Control Plane",
@@ -993,16 +1012,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     database:
       (humanLogin && typeof options.database === "function"
         ? humanLogin.database(options.database)
-        : options.database) ??
-      memoryAdapter(
-        options.memoryDatabase ?? {
-          user: [],
-          session: [],
-          account: [],
-          verification: [],
-          apikey: [],
-        },
-      ),
+        : options.database) ?? memoryAdapter(accountDatabase!),
     ...(humanLogin === undefined
       ? {
           // Credential refusals are Better Auth warnings with no request or account; the
@@ -1636,8 +1646,60 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     return session;
   }
 
+  async function searchSharingRecipients(
+    prefix: string,
+    actor: HumanAuthenticationActor,
+    lookupIdentity: IAMDriver["lookupIdentity"],
+  ): Promise<SharingRecipient[]> {
+    const query = prefix.toLowerCase();
+    const credentialUsers = new Set(
+      accountDatabase?.account
+        ?.filter(
+          (method) => method.providerId === "credential" && isNonEmptyString(method.password),
+        )
+        .map((method) => method.userId),
+    );
+    const candidates = (accountDatabase?.user ?? []).flatMap((user) => {
+      const { id, name, email, emailVerified } = user;
+      if (typeof id !== "string" || typeof name !== "string" || !credentialUsers.has(id)) {
+        return [];
+      }
+      const displayEmail = emailVerified === true && typeof email === "string" ? email : undefined;
+      if (!name.toLowerCase().startsWith(query) && !displayEmail?.toLowerCase().startsWith(query)) {
+        return [];
+      }
+      return [{ id, name, ...(displayEmail === undefined ? {} : { email: displayEmail }) }];
+    });
+    candidates.sort(
+      (left, right) =>
+        Buffer.compare(
+          Buffer.from(left.name.toLowerCase()),
+          Buffer.from(right.name.toLowerCase()),
+        ) || Buffer.compare(Buffer.from(left.id), Buffer.from(right.id)),
+    );
+    const recipients = new Map<string, SharingRecipient>();
+    // Resolve matching local users through the selected IAM Driver and Installation issuer.
+    for (const candidate of candidates) {
+      const { id, ...display } = candidate;
+      const principal = await lookupIdentity({ issuer, subject: id });
+      if (
+        principal?.kind === "principal" &&
+        principal.issuer === issuer &&
+        principal.subject === id
+      ) {
+        recipients.set(principal.id, { ...display, principalId: principal.id });
+        if (recipients.size === SHARING_RECIPIENT_SEARCH_LIMIT) {
+          break;
+        }
+      }
+    }
+    await actor.authorize({});
+    return [...recipients.values()];
+  }
+
   return {
     auth,
+    ...(accountDatabase === undefined ? {} : { searchSharingRecipients }),
     issuer,
     sessionCookieName,
     ...(sharedCookieDomain === undefined ? {} : { sharedCookieDomain }),
@@ -1999,6 +2061,20 @@ export async function createPostgresControllerAuth(
         throw new CallerStateDeniedError("The assigning session is no longer current.");
       }
     },
+    ...(persistence === undefined
+      ? {}
+      : {
+          searchSharingRecipients: (prefix: string, actor: HumanAuthenticationActor) =>
+            persistence.searchSharingRecipients(
+              prefix,
+              actor,
+              guarded
+                ? passwordSignIn === "recovery-only"
+                  ? "recovery-only"
+                  : "guarded"
+                : "password",
+            ),
+        }),
     ...(guarded && persistence ? { nativeBrowser: persistence.nativeBrowser } : {}),
     ...(activationSkipped.length === 0 ? {} : { activationSkipped }),
     ...(withoutExternalIdentity.length === 0 ? {} : { withoutExternalIdentity }),

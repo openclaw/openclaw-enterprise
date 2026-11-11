@@ -398,6 +398,7 @@ export const requestExamples = {
     name: "Documentation administrator",
     password: "replace-with-a-unique-password",
   },
+  searchAgentSharingRecipients: { prefix: "avery" },
   signInEmail: { email: "admin@example.com", password: "replace-with-a-unique-password" },
   disableAuthAccount: { expectedVersion: 1 },
   enableAuthAccount: { expectedVersion: 2 },
@@ -705,6 +706,13 @@ export const responseExamples = {
     principalId: authAccount.principalId,
   },
   getAuthAccount: authAccount,
+  searchAgentSharingRecipients: [
+    {
+      principalId: "prn_00000000-0000-4000-8000-000000000003",
+      name: "Avery Lee",
+      email: "avery.lee@example.com",
+    },
+  ],
   disableAuthAccount: { userId },
   enableAuthAccount: { userId },
   detachAuthMethod: { userId },

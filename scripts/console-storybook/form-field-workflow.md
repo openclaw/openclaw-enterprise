@@ -16,7 +16,8 @@ each story at 1440 and at 390.
    which moves focus to Model.
 3. Open **Pages / Create Agent / Create Secret required fields**. The dialog's
    Value field shows "Value is required." and has focus.
-4. Open **Pages / Agent detail / Share Agent required fields**. The Principal
+4. Open **Pages / Agent detail / Share Agent required fields**. This example uses
+   **Enter a Principal ID instead**. The Principal
    ID shows "Existing person’s Principal ID is required." and has focus; the
    acknowledgement shows "Check this box to continue." under it.
 5. Open **Pages / Agent detail / Plugin selections JSON error**. The JSON

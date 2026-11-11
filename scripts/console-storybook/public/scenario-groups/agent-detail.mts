@@ -240,6 +240,7 @@ export function createAgentDetailScenarios({
   };
 
   const shareExistingPerson = [
+    click("Enter a Principal ID instead"),
     { selector: "#share-principal-id", value: "prn_person-demo" },
     { selector: ".agent-access-consent input", click: true },
     click("Share Agent"),
@@ -514,12 +515,49 @@ export function createAgentDetailScenarios({
         name: "Share an Agent",
         path: `${draft}&tab=access`,
         description:
-          "Grant an existing person access to this Agent's full native Gateway. Other Agents and OCE administration remain separate.",
-        steps: [
-          "Enter prn_person-demo as the existing Principal ID.",
-          "Review the native-access disclosure, acknowledge it, and share.",
-          "Remove the direct binding with the red-edged destructive Remove binding button (it acts at once, with no confirmation); Namespace discovery remains available.",
+          "Find an existing person and grant access to this Agent's full native Gateway.",
+        rules: [
+          {
+            path: "/api/auth/sharing-recipients/search",
+            method: "POST",
+            data: [
+              {
+                principalId: "prn_person-demo",
+                name: "Avery Lee",
+                email: "avery.lee@example.test",
+              },
+              { principalId: "prn_person-other", name: "Avery Li", email: "avery.li@example.test" },
+            ],
+          },
         ],
+        steps: [
+          "Enter Avery in Search existing people and wait for two matches.",
+          "Use the arrow keys and Enter to select Avery Lee. Confirm the name and email shown below the search.",
+          "Review the native-access disclosure, acknowledge it, and select Share Agent.",
+          "Remove the direct grant with Remove binding. Namespace discovery remains available.",
+        ],
+      },
+      agentSharingSearchUnavailable: {
+        group: "Pages/Agent detail",
+        name: "People search unavailable",
+        path: `${draft}&tab=access`,
+        rules: [{ path: "/api/auth/sharing-recipients/search", method: "POST", status: 503 }],
+        description: "The Principal ID field stays available if people search fails.",
+        steps: [
+          "Enter Avery in Search existing people and wait for the unavailable message.",
+          "Choose Enter a Principal ID instead and enter prn_person-demo.",
+        ],
+      },
+      agentSharingNoMatches: {
+        group: "Pages/Agent detail",
+        name: "People search has no matches",
+        path: `${draft}&tab=access`,
+        rules: [
+          { path: "/api/auth/sharing-recipients/search", method: "POST", delayMs: 600, data: [] },
+        ],
+        description:
+          "Wait for search results, then try a different prefix or enter a Principal ID.",
+        steps: ["Enter Avery and read the searching and no matching people messages."],
       },
       agentSharingGranted: {
         group: "Pages/Agent detail",
@@ -672,7 +710,7 @@ export function createAgentDetailScenarios({
         group: "Pages/Agent detail",
         name: "Share Agent required fields",
         path: `${draft}&tab=access`,
-        actions: [click("Share Agent")],
+        actions: [click("Enter a Principal ID instead"), click("Share Agent")],
         description:
           "Share Agent with no Principal ID and no acknowledgement: both fields show their errors and focus moves to the Principal ID, with no browser bubble.",
       },

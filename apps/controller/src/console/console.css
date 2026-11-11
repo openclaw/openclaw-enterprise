@@ -3829,6 +3829,46 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   margin-top: calc(var(--space-1) - var(--space-3));
 }
 
+.share-recipient-mode {
+  justify-self: start;
+}
+
+.share-recipient-picker {
+  position: relative;
+}
+
+.share-recipient-results {
+  position: absolute;
+  z-index: 10;
+  inset: calc(100% + var(--space-1)) 0 auto;
+  max-height: 16rem;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+.share-recipient-results [role="option"] {
+  display: grid;
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.share-recipient-results [role="option"]:hover {
+  background: var(--surface-muted);
+}
+
+.share-recipient-results [aria-selected="true"] {
+  background: var(--color-info-subtle);
+  box-shadow: inset 3px 0 var(--color-info);
+}
+
+.share-recipient-field > [role="status"] {
+  min-height: 1.25em;
+}
+
 .agent-access-consent {
   display: flex;
   align-items: flex-start;

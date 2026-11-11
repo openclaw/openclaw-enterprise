@@ -1,4 +1,9 @@
-import type { Agent, Permission } from "@openclaw-enterprise/contracts";
+import type { Agent, Permission, SharingRecipient } from "@openclaw-enterprise/contracts";
+import {
+  SHARING_RECIPIENT_SEARCH_LIMIT,
+  SHARING_RECIPIENT_SEARCH_MAX_LENGTH,
+  SHARING_RECIPIENT_SEARCH_MIN_LENGTH,
+} from "../sharing-recipient-search.mjs";
 import {
   INSTALLATION_ADMINISTRATION,
   type RequestOptions,
@@ -23,18 +28,237 @@ import {
   policyList,
   policyRole,
 } from "./credential-access.mjs";
+import type { ConsolePageContext } from "../page-context.mjs";
 import { describeFailure, message, namespacePath } from "./list.mjs";
 
 const discoveryPermissions = [{ action: "read", resourceKind: "namespace" }] satisfies Permission[];
 // People receive `prn_` Principal IDs; emails and other text never name an IAM subject.
 const principalIdPattern = /^prn_[A-Za-z0-9-]{1,196}$/;
 
+function recipientSearch(
+  context: Pick<ConsolePageContext, "request" | "isCurrent">,
+  selectionChanged: () => void,
+) {
+  const help = element(
+    "p",
+    { id: "share-recipient-help", className: "hint" },
+    "Enter at least two characters from the start of a name or email.",
+  );
+  const search = element("input", {
+    id: "share-recipient-search",
+    type: "text",
+    autocomplete: "off",
+    maxlength: String(SHARING_RECIPIENT_SEARCH_MAX_LENGTH),
+    role: "combobox",
+    "aria-autocomplete": "list",
+    "aria-expanded": "false",
+    "aria-controls": "share-recipient-results",
+    "aria-describedby": "share-recipient-help",
+  });
+  const results = element("div", {
+    id: "share-recipient-results",
+    className: "share-recipient-results",
+    role: "listbox",
+    tabindex: "-1",
+    "aria-label": "Matching people",
+  });
+  const status = element("p", { className: "hint", role: "status" });
+  const field = element(
+    "div",
+    { className: "form-field share-recipient-field" },
+    element("label", { for: search.id }, "Search existing people"),
+    element("div", { className: "share-recipient-picker" }, search, results),
+    help,
+    status,
+  );
+  let pending: AbortController | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let active = -1;
+  let matches: SharingRecipient[] = [];
+  let selected: SharingRecipient | undefined;
+  let composing = false;
+  results.hidden = true;
+
+  function close({ keepStatus = false } = {}) {
+    pending?.abort();
+    clearTimeout(timer);
+    pending = undefined;
+    matches = [];
+    active = -1;
+    results.replaceChildren();
+    results.hidden = true;
+    search.setAttribute("aria-expanded", "false");
+    search.removeAttribute("aria-activedescendant");
+    if (!keepStatus || status.textContent === "Searching for people…") {
+      status.textContent = selected
+        ? `Selected ${selected.name} (${selected.email ?? selected.principalId}).`
+        : "";
+    }
+  }
+
+  function choose(recipient: SharingRecipient) {
+    selected = recipient;
+    selectionChanged();
+    close();
+  }
+
+  function focusOption(index: number) {
+    active = (index + matches.length) % matches.length;
+    for (const [position, option] of Array.from(results.children).entries()) {
+      option.setAttribute("aria-selected", String(position === active));
+    }
+    const option = results.children[active];
+    if (option) {
+      search.setAttribute("aria-activedescendant", option.id);
+      option.scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  function usable() {
+    return (
+      context.isCurrent() &&
+      search.isConnected &&
+      !search.disabled &&
+      search.getAttribute("aria-disabled") !== "true" &&
+      document.activeElement === search
+    );
+  }
+
+  async function load(prefix: string, request: AbortController) {
+    try {
+      if (!usable() || request.signal.aborted) {
+        return;
+      }
+      const value = await context.request("/api/auth/sharing-recipients/search", {
+        method: "POST",
+        body: { prefix },
+        signal: request.signal,
+        readOnly: true,
+        rereadOnResume: true,
+      });
+      if (!usable() || request.signal.aborted) {
+        return;
+      }
+      if (!Array.isArray(value) || value.length > SHARING_RECIPIENT_SEARCH_LIMIT) {
+        throw new Error("Invalid sharing recipient results");
+      }
+      const ids = new Set<string>();
+      matches = value.map((entry: unknown) => {
+        const { principalId, name, email } = responseFields(entry);
+        if (
+          typeof principalId !== "string" ||
+          !principalIdPattern.test(principalId) ||
+          ids.has(principalId) ||
+          typeof name !== "string" ||
+          (email !== undefined && typeof email !== "string")
+        ) {
+          throw new Error("Invalid sharing recipient");
+        }
+        ids.add(principalId);
+        return { principalId, name, ...(email === undefined ? {} : { email }) };
+      });
+      for (const [index, recipient] of matches.entries()) {
+        const option = element(
+          "div",
+          {
+            id: `share-recipient-result-${index}`,
+            role: "option",
+            "aria-selected": "false",
+          },
+          recipient.name,
+          element("span", { className: "hint" }, recipient.email ?? recipient.principalId),
+        );
+        option.addEventListener("pointerdown", (event) => event.preventDefault());
+        option.addEventListener("click", () => {
+          if (usable() && !request.signal.aborted) {
+            choose(recipient);
+          }
+        });
+        results.append(option);
+      }
+      results.hidden = matches.length === 0;
+      search.setAttribute("aria-expanded", String(!results.hidden));
+      status.textContent = results.hidden
+        ? "No matching people. Try another prefix or enter a Principal ID."
+        : `${matches.length} matching ${matches.length === 1 ? "person" : "people"}.`;
+    } catch {
+      if (usable() && !request.signal.aborted) {
+        status.textContent =
+          "People search is unavailable. Try another search or enter a Principal ID.";
+      }
+    }
+  }
+
+  function schedule() {
+    close();
+    const prefix = search.value.trim();
+    if (!composing && [...prefix].length >= SHARING_RECIPIENT_SEARCH_MIN_LENGTH && usable()) {
+      const request = new AbortController();
+      pending = request;
+      status.textContent = "Searching for people…";
+      timer = setTimeout(() => void load(prefix, request), 220);
+    }
+  }
+
+  search.addEventListener("input", () => {
+    if (selected) {
+      selected = undefined;
+      selectionChanged();
+    }
+    schedule();
+  });
+  search.addEventListener("compositionstart", () => {
+    composing = true;
+    close();
+  });
+  search.addEventListener("compositionend", () => {
+    composing = false;
+    schedule();
+  });
+  search.addEventListener("focus", () => {
+    if (!selected) {
+      schedule();
+    }
+  });
+  search.addEventListener("blur", () => close({ keepStatus: true }));
+  search.addEventListener("keydown", (event) => {
+    if (event.isComposing || composing) {
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const recipient = matches[active];
+      if (recipient && usable()) {
+        choose(recipient);
+      }
+    } else if (event.key === "Escape" && pending) {
+      event.preventDefault();
+      close();
+    } else if (matches.length && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+      event.preventDefault();
+      const next = event.key === "ArrowDown" ? active + 1 : active < 0 ? -1 : active - 1;
+      focusOption(next);
+    }
+  });
+  return {
+    field,
+    search,
+    close,
+    selectedPrincipalId: () => selected?.principalId,
+    clear() {
+      search.value = "";
+      selected = undefined;
+      close();
+    },
+  };
+}
+
 function principalIdProblem(value: string) {
   if (principalIdPattern.test(value)) {
     return null;
   }
   return value.includes("@")
-    ? "Enter the person’s Principal ID (it starts with prn_), not an email address. Sharing does not look up accounts by email."
+    ? "Enter the person’s Principal ID (it starts with prn_), not an email address. Use Search existing people to look up an email."
     : "Enter a Principal ID that starts with prn_, exactly as returned when the person was provisioned.";
 }
 const agentPermissions = [
@@ -51,7 +275,7 @@ type PolicyRole = ReturnType<typeof policyRole>;
 // the policy again for a reader who returns to the tab. `rereadAccess` runs before Refresh sharing
 // reads the policy: the page rereads the caller's permission answers, which audit nothing.
 export function renderAgentAccess(
-  context: AgentAccessContext,
+  context: AgentAccessContext & Pick<ConsolePageContext, "request">,
   agent: Pick<Agent, "id">,
   {
     onDenied,
@@ -75,28 +299,56 @@ export function renderAgentAccess(
   const principal = element("input", {
     id: "share-principal-id",
     type: "text",
-    required: true,
     autocomplete: "off",
     "aria-describedby": "share-principal-help",
   });
   const acknowledge = element("input", { type: "checkbox", required: true });
+  const recipient = recipientSearch(context, () => {
+    acknowledge.checked = false;
+  });
+  const manualField = element(
+    "div",
+    { className: "form-field", id: "share-principal-field" },
+    element("label", { for: principal.id }, "Existing person’s Principal ID"),
+    principal,
+    element(
+      "p",
+      { id: "share-principal-help", className: "hint" },
+      "Use the Principal ID returned when the person was provisioned in this Installation. This does not create an account.",
+    ),
+  );
+  const manualLabel = "Enter a Principal ID instead";
+  manualField.hidden = true;
+  const mode = button(
+    manualLabel,
+    () => {
+      const manual = manualField.hidden === true;
+      recipient.clear();
+      principal.value = "";
+      principal.required = manual;
+      acknowledge.checked = false;
+      manualField.hidden = !manual;
+      recipient.field.hidden = manual;
+      mode.textContent = manual ? "Search existing people instead" : manualLabel;
+      mode.setAttribute("aria-expanded", String(manual));
+      (manual ? principal : recipient.search).focus();
+    },
+    {
+      tone: "link",
+      className: "share-recipient-mode",
+      "aria-controls": manualField.id,
+      "aria-expanded": "false",
+    },
+  );
   // The Agent page's one primary action is its next deployment step, not sharing.
   const share = element("button", { type: "submit" }, "Share Agent");
   const refresh = button("Refresh sharing", () => void load({ reread: true }), { size: "sm" });
   const form = element(
     "form",
     { className: "agent-access-form" },
-    element(
-      "div",
-      { className: "form-field" },
-      element("label", { for: "share-principal-id" }, "Existing person’s Principal ID"),
-      principal,
-    ),
-    element(
-      "p",
-      { id: "share-principal-help", className: "hint" },
-      "Use the Principal ID returned when the person was provisioned in this Installation. This does not create an account.",
-    ),
+    recipient.field,
+    manualField,
+    mode,
     element(
       "label",
       { className: "agent-access-consent" },
@@ -187,7 +439,10 @@ export function renderAgentAccess(
     // so: each control stays in the Tab order, described by it (class of finding 2899). Without
     // that refusal (pending or not loaded yet) they stay natively disabled, even with focus.
     const reason = state.needsRefresh ? refusal : null;
-    for (const control of [principal, acknowledge, share]) {
+    if (blocked) {
+      recipient.close();
+    }
+    for (const control of [recipient.search, principal, mode, acknowledge, share]) {
       setUnavailable(control, blocked && reason !== null, reason);
       if (blocked && reason === null) {
         control.disabled = true;
@@ -449,8 +704,15 @@ export function renderAgentAccess(
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    const subjectId = principal.value.trim();
-    if (!subjectId || !acknowledge.checked) {
+    if (!acknowledge.checked || state.pending || !state.loaded || state.needsRefresh) {
+      return;
+    }
+    const subjectId = manualField.hidden ? recipient.selectedPrincipalId() : principal.value.trim();
+    if (!subjectId) {
+      state.progress = [];
+      state.error = "Select an existing person or enter a Principal ID.";
+      render();
+      (manualField.hidden ? recipient.search : principal).focus();
       return;
     }
     const problem = principalIdProblem(subjectId);
@@ -497,5 +759,5 @@ export function renderAgentAccess(
 
   render();
   void load();
-  return { section, recheck };
+  return { section, recheck, closeRecipientSearch: recipient.close };
 }

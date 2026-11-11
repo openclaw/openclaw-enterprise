@@ -10,6 +10,7 @@ import {
   clientAddresses,
   consoleOrigin as origin,
   currentSession,
+  defaultInstallSettings,
   fakeOidc,
   oidcSignIn,
   oidcUpgradeSettings,
@@ -28,6 +29,8 @@ test(
     let app: Awaited<
       ReturnType<Awaited<ReturnType<typeof preparePostgresSignInInstallation>>["composeApp"]>
     >;
+    const password = "enrollment-user-password";
+    const searchPath = "/api/auth/sharing-recipients/search";
     const clientId = "enrollment-client";
     const clientSecret = "enrollment-client-secret";
     const { pool, state, onboard, composeApp } = await preparePostgresSignInInstallation(
@@ -35,7 +38,7 @@ test(
       () => [app],
       {
         email: "enrollment-recovery@example.test",
-        password: "enrollment-user-password",
+        password,
         secrets: {
           "occ-auth/secret": "oidc-enrollment-auth-secret-at-least-32-bytes",
           "occ-oidc-login/client-id": clientId,
@@ -47,12 +50,68 @@ test(
     const idp = fakeOidc(t, { clientId, clientSecret });
     const address = clientAddresses("198.19");
     const { admin, roles, accounts } = (await onboard({
-      accounts: { existing: { email: "existing-enrollment@example.test" } },
+      accounts: {
+        existing: { email: "existing-enrollment@example.test" },
+        secondAdmin: { email: "second-enrollment-admin@example.test", role: "admin" },
+      },
       remoteAddress: address(),
     })) as Awaited<ReturnType<typeof onboard>> & {
       admin: { id: string; email: string; password: string };
-      accounts: { existing: { id: string; email: string } };
+      accounts: Record<"existing" | "secondAdmin", { id: string; email: string }>;
     };
+    await t.test(
+      "password-only recipient search finds a provisioned Installation Principal",
+      async () => {
+        app = await composeApp(defaultInstallSettings);
+        try {
+          const headers = await signedInHeaders(app, origin, admin, address());
+          const { existing } = accounts;
+          const principal = (await state.loadNativeIAMState()).identities.find(
+            (identity) => identity.kind === "principal" && identity.subject === existing.id,
+          );
+          assert.ok(principal);
+          const sessionVersion = async () =>
+            (
+              await pool.query(
+                "SELECT id, xmin::text AS version FROM occ.session WHERE user_id = $1 ORDER BY id",
+                [admin.id],
+              )
+            ).rows;
+          const before = await sessionVersion();
+          assert.ok(before.length > 0);
+          const result = await app.inject({
+            method: "POST",
+            url: searchPath,
+            headers,
+            payload: { prefix: "existing-enrollment" },
+          });
+          assert.equal(result.statusCode, 200, result.body);
+          assert.equal(result.headers["cache-control"], "no-store");
+          assert.deepEqual(
+            await sessionVersion(),
+            before,
+            "search must leave the session row alone",
+          );
+          assert.deepEqual(result.json().data, [
+            {
+              principalId: principal.id,
+              name: existing.email,
+              email: existing.email,
+            },
+          ]);
+          const reader = await signedInHeaders(app, origin, { ...existing, password }, address());
+          const denied = await app.inject({
+            method: "POST",
+            url: searchPath,
+            headers: reader,
+            payload: { prefix: "existing-enrollment" },
+          });
+          assert.equal(denied.statusCode, 403, denied.body);
+        } finally {
+          await app.close();
+        }
+      },
+    );
     const settings = oidcUpgradeSettings(admin.id);
     app = await composeApp(settings);
     let adminHeaders = await signedInHeaders(app, origin, admin, address());
@@ -64,6 +123,122 @@ test(
     });
     assert.equal(namespace.statusCode, 201, namespace.body);
     const namespaceId = namespace.json().data.id;
+    await t.test(
+      "recipient search overlaps another administrator and a Namespace IAM write",
+      async (lookup) => {
+        const secondAdmin = accounts.secondAdmin;
+        const secondHeaders = await signedInHeaders(
+          app,
+          origin,
+          { ...secondAdmin, password },
+          address(),
+        );
+        const search = (headers: typeof adminHeaders, prefix: string) =>
+          app.inject({ method: "POST", url: searchPath, headers, payload: { prefix } });
+
+        const entered = Promise.withResolvers<void>();
+        const release = Promise.withResolvers<void>();
+        let beforeSnapshot: (() => Promise<void>) | undefined;
+        const query = pg.Client.prototype.query;
+        lookup.mock.method(
+          pg.Client.prototype,
+          "query",
+          function (this: pg.Client, sql: unknown, ...args: unknown[]) {
+            const result: unknown = Reflect.apply(query, this, [sql, ...args]);
+            if (beforeSnapshot && sql === "SET LOCAL statement_timeout = '2s'") {
+              const change = beforeSnapshot;
+              beforeSnapshot = undefined;
+              return Promise.resolve(result).then(async (response) => {
+                await change();
+                return response;
+              });
+            }
+            if (
+              typeof sql === "string" &&
+              sql.startsWith("SELECT p.id AS principal_id, u.name,") &&
+              Array.isArray(args[0]) &&
+              args[0][2] === "existing-enrollment"
+            ) {
+              return Promise.resolve(result).then(async (response) => {
+                entered.resolve();
+                await release.promise;
+                return response;
+              });
+            }
+            return result;
+          },
+        );
+
+        function within<T>(operation: PromiseLike<T>): Promise<T> {
+          const deadline = AbortSignal.timeout(5_000);
+          return Promise.race([
+            operation,
+            new Promise<never>((_, reject) => {
+              deadline.addEventListener("abort", () => reject(new Error("IAM overlap timed out")), {
+                once: true,
+              });
+            }),
+          ]);
+        }
+
+        const first = Promise.resolve(search(adminHeaders, "existing-enrollment"));
+        try {
+          await within(
+            Promise.race([
+              entered.promise,
+              first.then(({ statusCode }) => {
+                throw new Error(
+                  `First search returned ${statusCode} before reaching the candidate read`,
+                );
+              }),
+            ]),
+          );
+          const second = await within(search(secondHeaders, "second-enrollment"));
+          assert.equal(second.statusCode, 200, second.body);
+          assert.equal(second.json().data.length, 1);
+          const unrelated = await within(
+            app.inject({
+              method: "POST",
+              url: `/namespaces/${namespaceId}/iam/roles`,
+              headers: adminHeaders,
+              payload: { permissions: [{ action: "read", resourceKind: "namespace" }] },
+            }),
+          );
+          assert.equal(unrelated.statusCode, 201, unrelated.body);
+        } finally {
+          release.resolve();
+          const finished = await first;
+          assert.equal(finished.statusCode, 200, finished.body);
+        }
+
+        const secondPrincipal = await accountPrincipalId(pool, secondAdmin.id);
+        // Commit the fixture's Installation binding removal after admission, before the
+        // first snapshot SELECT. The regular Namespace write above uses the public API.
+        beforeSnapshot = async () => {
+          const removed = await pool.query(
+            `DELETE FROM occ.iam_access_bindings
+             WHERE identity_subject_id = $1 AND role_id = $2 AND resource_kind = 'installation'`,
+            [secondPrincipal, roles.admin.id],
+          );
+          assert.equal(removed.rowCount, 1);
+        };
+        const revokedDuringAdmission = await search(secondHeaders, "second-enrollment");
+        assert.equal(revokedDuringAdmission.statusCode, 403, revokedDuringAdmission.body);
+        assert.equal(beforeSnapshot, undefined);
+        assert.equal((await currentSession(app, secondHeaders.cookie)).user.id, secondAdmin.id);
+        const permissionRevoked = await search(secondHeaders, "second-enrollment");
+        assert.equal(permissionRevoked.statusCode, 403, permissionRevoked.body);
+
+        const signOut = await app.inject({
+          method: "POST",
+          url: "/api/auth/sign-out",
+          headers: secondHeaders,
+        });
+        assert.equal(signOut.statusCode, 200, signOut.body);
+        const sessionRevoked = await search(secondHeaders, "second-enrollment");
+        assert.equal(sessionRevoked.statusCode, 401, sessionRevoked.body);
+      },
+    );
     const groupId = "oidc-enrollment-members";
     await pool.query("INSERT INTO occ.iam_groups (id, name) VALUES ($1, $2)", [
       groupId,
@@ -299,7 +474,29 @@ test(
       adminHeaders = await signedInHeaders(app, origin, admin, address());
     });
     await t.test("disabled linked accounts remain disabled", async () => {
+      const search = (prefix: string) =>
+        app.inject({
+          method: "POST",
+          url: searchPath,
+          headers: adminHeaders,
+          payload: { prefix },
+        });
+      const enabled = await search("new member");
+      assert.equal(enabled.statusCode, 200, enabled.body);
+      assert.deepEqual(enabled.json().data, [
+        {
+          principalId,
+          name: "New member",
+          email: "new-enrollment@example.test",
+        },
+      ]);
       assert.equal((await changeAccount(app, adminHeaders, memberId, "disable")).statusCode, 200);
+      const disabled = await search("new-enrollment");
+      assert.equal(disabled.statusCode, 200, disabled.body);
+      assert.deepEqual(disabled.json().data, []);
+      const disabledByName = await search("new member");
+      assert.equal(disabledByName.statusCode, 200, disabledByName.body);
+      assert.deepEqual(disabledByName.json().data, []);
       const result = await login("new-member", {
         email: "replacement@example.test",
         email_verified: true,

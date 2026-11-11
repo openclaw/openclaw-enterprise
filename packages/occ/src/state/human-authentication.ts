@@ -8,7 +8,12 @@ import {
 } from "../errors.ts";
 import type { PlatformUnitOfWork } from "./platform-state.ts";
 import type { PersistedNativeIAMPrincipalSeed, PostgresPlatformState } from "./postgres-state.ts";
-import type { AuditEvent } from "@openclaw-enterprise/contracts";
+import type { PostgresQueryClient } from "./postgres-work-queue.ts";
+import {
+  SHARING_RECIPIENT_SEARCH_LIMIT,
+  type AuditEvent,
+  type SharingRecipient,
+} from "@openclaw-enterprise/contracts";
 import type { AccountEnrollmentRole } from "@openclaw-enterprise/iam";
 
 export interface HumanAuthenticationActor {
@@ -1208,8 +1213,17 @@ export class PostgresHumanAuthentication {
     for (const id of [...new Set([...userIds, actor.userId])].sort()) {
       await this.lockUser(unit, id, intent === "session-hold" ? "share" : "update");
     }
-    const [current] = await this.query(
-      unit,
+    await this.requireGuardedSession(
+      (statement, parameters) => this.state.queryInTransaction(unit, statement, parameters),
+      actor,
+    );
+  }
+
+  private async requireGuardedSession(
+    query: PostgresQueryClient["query"],
+    actor: SessionActor,
+  ): Promise<void> {
+    const { rowCount } = await query(
       `SELECT s.id FROM occ.session s
        JOIN occ.human_authentication_sessions b ON b.session_id = s.id AND b.user_id = s.user_id
        JOIN occ.human_authentication_accounts h ON h.user_id = s.user_id AND h.version = b.version
@@ -1228,7 +1242,7 @@ export class PostgresHumanAuthentication {
         this.externalProviderIds,
       ],
     );
-    if (current === undefined) {
+    if (rowCount !== 1) {
       throw new CallerStateDeniedError("The human administrator session is no longer current.");
     }
   }
@@ -1267,6 +1281,76 @@ export class PostgresHumanAuthentication {
       [],
       "session-hold",
     );
+  }
+
+  async searchSharingRecipients(
+    prefix: string,
+    actor: HumanAuthenticationActor,
+    profile: "password" | "guarded" | "recovery-only",
+  ): Promise<SharingRecipient[]> {
+    return this.state.readWithQuery(async (state, query) => {
+      await query("SET LOCAL statement_timeout = '2s'");
+      const installation = await state.installations.getInstallation();
+      if (installation?.id !== this.installationId) {
+        throw new CallerStateDeniedError("The sharing Installation is no longer current.");
+      }
+      if (profile === "password") {
+        const { rowCount } = await query(
+          `SELECT s.id FROM occ.session s
+           JOIN occ.iam_identities p ON p.subject = s.user_id AND p.issuer = $4 AND p.kind = 'principal'
+             AND p.namespace_id IS NULL AND p.agent_id IS NULL
+           LEFT JOIN occ.human_authentication_accounts h ON h.user_id = s.user_id
+           WHERE s.id = $1 AND s.user_id = $2 AND p.id = $3 AND s.expires_at > clock_timestamp()
+             AND (h.user_id IS NULL OR (h.installation_id = $5 AND h.principal_id = p.id AND NOT h.disabled))
+             AND EXISTS (
+               SELECT 1 FROM occ.account m WHERE m.user_id = s.user_id AND m.provider_id = 'credential'
+                 AND m.password IS NOT NULL AND m.password <> ''
+             )`,
+          [actor.sessionId, actor.userId, actor.principalId, this.issuer, this.installationId],
+        );
+        if (rowCount !== 1) {
+          throw new CallerStateDeniedError("The sharing session is no longer current.");
+        }
+      } else {
+        await this.requireGuardedSession(query, actor);
+      }
+      // Native IAM loads its policy on this same snapshot. Sharing mutations use their own fences.
+      await actor.authorize({});
+      const { rows } = await query(
+        `SELECT p.id AS principal_id, u.name, CASE WHEN u.email_verified THEN u.email END AS email
+         FROM occ."user" u
+         JOIN occ.iam_identities p ON p.subject = u.id AND p.issuer = $2 AND p.kind = 'principal'
+           AND p.namespace_id IS NULL AND p.agent_id IS NULL
+         LEFT JOIN occ.human_authentication_accounts h ON h.user_id = u.id
+         WHERE (starts_with(lower(u.name), lower($3))
+              OR (u.email_verified AND starts_with(lower(u.email), lower($3))))
+           AND (($4 = 'password' AND h.user_id IS NULL)
+              OR (h.installation_id = $1 AND h.principal_id = p.id AND NOT h.disabled))
+           AND EXISTS (
+             SELECT 1 FROM occ.account m WHERE m.user_id = u.id
+               AND ((m.provider_id = 'credential' AND m.password IS NOT NULL AND m.password <> ''
+                   AND ($4 <> 'recovery-only' OR EXISTS (
+                     SELECT 1 FROM occ.human_authentication_recovery r WHERE r.user_id = u.id
+                   )))
+                 OR ($4 <> 'password' AND m.identity_only AND m.provider_id = ANY($5::text[])))
+           )
+         ORDER BY lower(u.name) COLLATE "C", u.id COLLATE "C"
+         LIMIT $6`,
+        [
+          this.installationId,
+          this.issuer,
+          prefix,
+          profile,
+          this.externalProviderIds,
+          SHARING_RECIPIENT_SEARCH_LIMIT,
+        ],
+      );
+      return (rows as Row[]).map((row) => ({
+        principalId: row.principal_id as string,
+        name: row.name as string,
+        ...(typeof row.email === "string" ? { email: row.email } : {}),
+      }));
+    });
   }
 
   /** Present state under the same guards; this is not an operation-result receipt. */

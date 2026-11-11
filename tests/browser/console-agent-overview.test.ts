@@ -423,7 +423,7 @@ test("the Share Agent form shows disabled while the sharing policy loads", async
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "access"));
   await roles.requested;
   const sharing = page.getByRole("region", { name: "Share Agent", exact: true });
-  const principal = sharing.getByLabel("Existing person’s Principal ID");
+  const principal = sharing.getByRole("combobox", { name: "Search existing people" });
   await principal.waitFor();
   const share = sharing.getByRole("button", { name: "Share Agent" });
   assert.equal(await principal.isDisabled(), true);
@@ -3893,6 +3893,7 @@ test("A share in flight finishes across a tab switch", async (t) => {
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "access"));
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
   await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
+  await panel.getByRole("button", { name: "Enter a Principal ID instead" }).click();
   await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
   await panel.getByRole("checkbox").check();
   await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
@@ -3945,6 +3946,7 @@ test("A share in flight holds version and page changes until it finishes", async
   const versionOptions = { exact: true, includeHidden: true };
   const version = page.getByLabel("Viewing version", versionOptions);
   await waitForEnabled(version);
+  await panel.getByRole("button", { name: "Enter a Principal ID instead" }).click();
   await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
   await panel.getByRole("checkbox").check();
   assert.equal(await asksBeforeUnload(page), false);
@@ -4024,6 +4026,7 @@ test("A share in flight holds a Retry that would rebuild the page", async (t) =>
   await page.getByRole("tab", { name: "Access", exact: true }).click();
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
   await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
+  await panel.getByRole("button", { name: "Enter a Principal ID instead" }).click();
   await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
   await panel.getByRole("checkbox").check();
   await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
@@ -4070,6 +4073,7 @@ test("Delete during a share in flight keeps saying why the page stays open", asy
   await login(page, fixture, url);
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
   await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
+  await panel.getByRole("button", { name: "Enter a Principal ID instead" }).click();
   await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
   await panel.getByRole("checkbox").check();
   await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
@@ -4203,6 +4207,7 @@ test("A share in flight on a version preserves Back to the draft and Forward to 
   await page.waitForURL((current) => current.searchParams.get("tab") === "access");
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
   await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
+  await panel.getByRole("button", { name: "Enter a Principal ID instead" }).click();
   await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
   await panel.getByRole("checkbox").check();
   await panel.getByRole("button", { name: "Share Agent", exact: true }).click();

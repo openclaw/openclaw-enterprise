@@ -1,15 +1,18 @@
 # Share an Agent with an existing person
 
 Give an existing person native administration of one Agent from its detail page.
-You need Installation administration and the person's already provisioned
-**Principal ID**; the console does not create or search for accounts. See
+You need Installation administration. Search for an existing person by name or
+email, or enter their exact **Principal ID**. See
 [Agent sharing](../../reference/console/agent-sharing.md) for the exact grants,
 runtime prerequisites, and limits.
 
 ## Share the Agent
 
 1. Open **Agents**, select the Agent, and open its **Access** tab.
-2. Enter the existing person's **Principal ID**.
+2. Enter the first two or more characters of a person's name or email in
+   **Search existing people**. Select the person from the list, or use the arrow
+   keys and press **Enter**. Check the selected name and email. If you have the
+   exact ID, choose **Enter a Principal ID instead**.
 3. Review the full native administration warning and select the acknowledgment.
 4. Choose **Share Agent** and read each reported step.
 

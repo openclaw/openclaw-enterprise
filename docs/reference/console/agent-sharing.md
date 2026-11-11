@@ -5,6 +5,16 @@ account. Follow the [sharing procedure](../../guides/console/agent-sharing.md);
 this page defines the grants, limits, and uncertain outcomes. See the
 [console reference](../console.md) for the rest of Agent detail.
 
+## Find an existing person
+
+A signed-in human Installation administrator can search the current
+Installation by the start of a name or verified email address. Enter 2 to 120
+characters. Search ignores case and returns up to 10 enabled people in name
+order. Each match shows the stored display name and the email if the account
+marks it verified. Select a person and check their name and email. To use an exact ID, choose
+**Enter a Principal ID instead**. Switching entry modes clears the selection
+and acknowledgment.
+
 ## Grants
 
 Installation administrators share an Agent using an existing person's Principal ID.
@@ -14,7 +24,7 @@ Agent. Role reuse requires matching scope and permissions, regardless of name.
 Namespace read enables discovery without granting child access. The console
 accepts only a `prn_` Principal ID and rejects an email address before any
 request; the API validates subjects and targets, and an unknown Principal ID is
-reported as such. Sharing does not provision or search for accounts.
+reported as such. Sharing uses existing accounts.
 
 The acknowledgment covers full native administration of the shared Agent,
 including its conversations, settings, tools and accessible credentials. This is

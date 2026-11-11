@@ -488,6 +488,172 @@ test("Agent detail rereads native admin access once when a pending deployment ac
 
 registerSettingsRefocusAndTabsCases(detailApp);
 
+test(
+  "Share Agent searches existing people and grants only the keyboard-selected Principal",
+  { timeout: 45_000 },
+  async (t) => {
+    if (!nativeBrowserSupported(t)) {
+      return;
+    }
+    const searchPath = "/api/auth/sharing-recipients/search";
+    const held = Promise.withResolvers<number>();
+    const release = Promise.withResolvers<void>();
+    t.after(() => release.resolve());
+    const { fixture, browserOptions } = await createNativeConsoleFixture(t, {
+      provisionedPeople: [
+        "Teammate-Avery",
+        "Teammate-Averyson",
+        ...Array.from({ length: 8 }, (_, i) => `Teammate-Bob${i}`),
+      ],
+      nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
+      async onSend(
+        request: { method: string; url: string; body?: unknown },
+        reply: { statusCode: number },
+        payload: string,
+      ) {
+        if (
+          request.method === "POST" &&
+          request.url === searchPath &&
+          (request.body as { prefix?: string } | undefined)?.prefix === "Teammate"
+        ) {
+          held.resolve(reply.statusCode);
+          await release.promise;
+        }
+        return payload;
+      },
+    });
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Teammate search");
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Teammate Agent",
+      nativeValues("sharing"),
+    );
+    const selected = fixture.provisionedAccounts[1];
+    assert.ok(selected);
+
+    const { page, artifacts } = await newPage(t, fixture, browserOptions);
+    const requests = apiRequests(page, fixture.origin);
+    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "access"));
+    const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+    const search = panel.getByRole("combobox", { name: "Search existing people" });
+    const principal = panel.getByLabel("Existing person’s Principal ID");
+    const manual = panel.getByRole("button", { name: "Enter a Principal ID instead" });
+    const searchInstead = panel.getByRole("button", { name: "Search existing people instead" });
+    const acknowledge = panel.getByRole("checkbox");
+    const grantsPath = `/namespaces/${namespace.id}/iam/access-bindings`;
+    const before = (await fixture.request("GET", grantsPath)).data;
+
+    await search.fill("no teammate");
+    await panel.getByText("No matching people.", { exact: false }).waitFor();
+    // Hold a genuine match while leaving Access. Returning must start with a closed picker.
+    await search.fill("Teammate");
+    assert.equal(await held.promise, 200);
+    try {
+      await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+    } finally {
+      release.resolve();
+    }
+    await page.getByRole("tab", { name: "Access", exact: true }).click();
+    await search.waitFor();
+    assert.equal(await search.getAttribute("aria-expanded"), "false");
+    assert.equal(await principal.isVisible(), false);
+
+    // A transport failure leaves the exact-ID field and the search text available.
+    await page.route(`**${searchPath}`, (route) => route.abort("failed"), { times: 1 });
+    await search.fill("teammate-a");
+    await panel.getByText("People search is unavailable.", { exact: false }).waitFor();
+    assert.equal(await search.inputValue(), "teammate-a");
+    await manual.click();
+    assert.equal(await principal.isEnabled(), true);
+    await principal.fill(selected.principal.id);
+    await acknowledge.check();
+    await searchInstead.click();
+    assert.equal(await acknowledge.isChecked(), false);
+    assert.equal(await search.inputValue(), "");
+
+    const response = page.waitForResponse(
+      (entry) =>
+        new URL(entry.url()).pathname === searchPath &&
+        entry.request().method() === "POST" &&
+        entry.request().postDataJSON().prefix === "teammate",
+    );
+    await search.fill("teammate");
+    const matched = await response;
+    assert.equal(matched.status(), 200);
+    assert.equal(new URL(matched.url()).origin, fixture.origin);
+    const listbox = panel.getByRole("listbox");
+    const options = listbox.getByRole("option");
+    await options.nth(9).waitFor();
+    assert.equal(
+      await listbox.evaluate((element) => element.scrollHeight > element.clientHeight),
+      true,
+    );
+    assert.deepEqual(
+      await options.allTextContents(),
+      fixture.provisionedAccounts.map(
+        ({ credentials }) => credentials.name + credentials.email.toLowerCase(),
+      ),
+    );
+    await search.press("ArrowUp");
+    assert.equal(await options.nth(9).getAttribute("aria-selected"), "true");
+    assert.equal(await search.evaluate((element) => element === document.activeElement), true);
+    await search.press("Tab");
+    assert.equal(await manual.evaluate((element) => element === document.activeElement), true);
+    assert.equal(await listbox.isVisible(), false);
+
+    await search.focus();
+    await options.nth(9).waitFor();
+    await search.press("ArrowDown");
+    await search.press("ArrowDown");
+    assert.equal(await options.nth(1).getAttribute("aria-selected"), "true");
+    await panel.screenshot({ path: join(artifacts, "agent-sharing-recipient-results.png") });
+    await search.press("Enter");
+    const selectedStatus = panel.getByText(
+      `Selected ${selected.credentials.name} (${selected.credentials.email.toLowerCase()}).`,
+      { exact: true },
+    );
+    await selectedStatus.waitFor();
+    assert.equal(await search.getAttribute("aria-expanded"), "false");
+
+    await acknowledge.check();
+    await search.press("Enter");
+    assert.equal(pathRequests(requests, "POST", grantsPath).length, 0);
+    assert.deepEqual((await fixture.request("GET", grantsPath)).data, before);
+
+    // Changing modes clears the selected account and the earlier acknowledgment.
+    await manual.click();
+    assert.equal(await principal.inputValue(), "");
+    assert.equal(await acknowledge.isChecked(), false);
+    await searchInstead.click();
+    assert.equal(await selectedStatus.isVisible(), false);
+    await search.fill("teammate");
+    await options.nth(9).waitFor();
+    await search.press("ArrowDown");
+    await search.press("ArrowDown");
+    await search.press("Enter");
+    await selectedStatus.waitFor();
+    await acknowledge.check();
+    await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
+    await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
+    await panel.screenshot({ path: join(artifacts, "agent-sharing-recipient-confirmed.png") });
+    const bindings: unknown = (await fixture.request("GET", grantsPath)).data;
+    assert.ok(Check(IAMAccessBindingListResponse.properties.data, bindings));
+    assert.deepEqual(
+      bindings
+        .map((binding) => {
+          assert.ok("resourceKind" in binding);
+          return [binding.subjectId, binding.resourceKind, binding.resourceId];
+        })
+        .sort(),
+      [
+        [selected.principal.id, "agent", agent.id],
+        [selected.principal.id, "namespace", namespace.id],
+      ],
+    );
+  },
+);
+
 test("Agent sharing grants existing people exact discovery and native access, then removes only the selected binding", async (t) => {
   if (!nativeBrowserSupported(t)) {
     return;
@@ -556,6 +722,7 @@ test("Agent sharing grants existing people exact discovery and native access, th
   const detail = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "access");
   await login(page, fixture, detail);
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  await panel.getByRole("button", { name: "Enter a Principal ID instead" }).click();
   await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
   await panel.getByRole("checkbox").check();
   await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
