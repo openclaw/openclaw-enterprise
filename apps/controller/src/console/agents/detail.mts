@@ -28,6 +28,7 @@ import {
   secretProviderDefaultsProblem,
   trustedProxyIdentitiesProblem,
   unreadablePluginSecretInput,
+  workspaceNodeGatewayPasswordProblem,
 } from "../environment-references.mjs";
 import {
   button,
@@ -493,11 +494,12 @@ const CHECKING_COMPUTE_CONFIGURATION =
 const ENTRY_KEY_STEP = "Fix the plugin entry key";
 const CODEX_PLUGIN_STEP = "Let the codex plugin run";
 const TRUSTED_PROXY_STEP = "Fix the Gateway authentication";
+const GATEWAY_PASSWORD_STEP = "Fix the gateway password";
 // The Configuration step that names each OCC stored-row rule's refusal (configurationRefusal).
 const STORED_RULE_STEPS: Readonly<Record<StoredConfigurationRule, string>> = {
   include: "Remove the $include setting",
   secretProviderDefaults: "Fix the secret provider alias",
-  gatewayPassword: "Fix the gateway password",
+  gatewayPassword: GATEWAY_PASSWORD_STEP,
   workspaceBootstrap: "Fix the workspace bootstrap setting",
   retiredSetting: "Remove the retired setting",
   openClawSandbox: "Turn off OpenClaw's sandbox",
@@ -2699,6 +2701,11 @@ export async function renderAgentDetail(
             : `${NEUTRAL_DEPLOYMENT_NOTES.superseded}.`;
       } else if (!latestDeploymentStatus) {
         note = "Recorded deployment status could not be read.";
+      } else if (deploymentPending(latestDeploymentStatus)) {
+        const wait = latestDeploymentRecord?.progress?.lastAttempt?.message;
+        if (wait) {
+          note = latestDeploymentUnavailable ? `Update delayed. Last recorded: ${wait}` : wait;
+        }
       }
       setText(latestDeploymentNote, note);
     }
@@ -3610,7 +3617,9 @@ export async function renderAgentDetail(
     // also refuses a plugins setting on which a Dedicated Codex Gateway would not start (finding
     // 3096), so a Dedicated Codex draft with one asks the same way (finding 3105), and an invalid
     // gateway.auth.trustedProxy allowlist or deviceAutoApprove on any of its topologies (finding
-    // 3032), so a draft stored with one before that rule asks too (finding 3121).
+    // 3032), so a draft stored with one before that rule asks too (finding 3121). Where it applies
+    // the workspace node at runtime it refuses a Dedicated Codex draft without gateway.auth.password
+    // (finding 3132), so a draft stored without one asks too (finding 3138).
     async function checkComputeEntryKeys() {
       const checked = values;
       computeEntryKeyValues = checked;
@@ -3628,14 +3637,20 @@ export async function renderAgentDetail(
           );
         }
       }
-      const codex =
-        executionMode === "dedicated" && configuredHarnessId(checked) === "codex"
-          ? codexPluginPolicyProblem(plugins)
-          : undefined;
+      const dedicatedCodex =
+        executionMode === "dedicated" && configuredHarnessId(checked) === "codex";
+      const codex = dedicatedCodex ? codexPluginPolicyProblem(plugins) : undefined;
       if (codex !== undefined) {
         refusals.set(
           configurationSettingMessage(codex.setting, codex.requirement),
           CODEX_PLUGIN_STEP,
+        );
+      }
+      const password = dedicatedCodex ? workspaceNodeGatewayPasswordProblem(checked) : undefined;
+      if (password !== undefined) {
+        refusals.set(
+          configurationSettingMessage(password.setting, password.requirement),
+          GATEWAY_PASSWORD_STEP,
         );
       }
       const trustedProxy = responseFields(

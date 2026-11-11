@@ -18,6 +18,9 @@ import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
 import {
+  DELIBERATE_RESTART_EXIT_STATUS,
+  DELIBERATE_RESTART_MESSAGE,
+  UNEXPLAINED_EXITS_MESSAGE,
   gatewayManagedModeEnvironment,
   gatewayNodeOptionsEnvironment,
   openClawStateMigrationHelper,
@@ -2526,6 +2529,58 @@ const { spawn } = require("node:child_process");
 // OCE upgrades this runtime by rolling out a selected image.
 process.env.OPENCLAW_NO_AUTO_UPDATE = "1";
 
+// Kubernetes Compute fails a crash-looping Gateway on the consecutive unexplained exits of
+// its container (finding 3041), which the kubelet does not keep. The wrapper counts them in
+// /tmp, the Pod's runtime-temporary emptyDir, which outlives a container restart but not the
+// Pod, and states the count in the termination message the kubelet records at exit. Each
+// start counts its own exit in advance, so an exit the wrapper never sees (an out-of-memory
+// kill) counts too; readiness counts from 1 again, and a deliberate restart (exit 75) clears
+// the count and states its reason instead. Only Kubernetes creates the termination log.
+const TERMINATION_LOG_PATH = "/dev/termination-log";
+const UNEXPLAINED_EXITS_PATH = "/tmp/.oce-unexplained-exits";
+const countsUnexplainedExits = (() => {
+  try {
+    return require("node:fs").existsSync(TERMINATION_LOG_PATH);
+  } catch {
+    return false;
+  }
+})();
+// Set once readiness or a deliberate restart has set the count for this instance's exit.
+let unexplainedExitsSettled = false;
+
+function writeTerminationMessage(message) {
+  if (!countsUnexplainedExits) return;
+  try {
+    require("node:fs").writeFileSync(TERMINATION_LOG_PATH, message);
+  } catch {}
+}
+
+// A count that cannot be saved only lowers the next start's count. The count is replaced
+// whole, so an exit during the write leaves the previous count, not a torn one.
+function countUnexplainedExits(count) {
+  if (!countsUnexplainedExits) return;
+  const fs = require("node:fs");
+  const pending = UNEXPLAINED_EXITS_PATH + ".pending";
+  try {
+    fs.writeFileSync(pending, String(count));
+    fs.renameSync(pending, UNEXPLAINED_EXITS_PATH);
+  } catch {
+    try {
+      fs.rmSync(pending, { force: true });
+    } catch {}
+  }
+  writeTerminationMessage(${JSON.stringify(UNEXPLAINED_EXITS_MESSAGE)} + count);
+}
+
+if (countsUnexplainedExits) {
+  let previous = 0;
+  try {
+    const saved = String(require("node:fs").readFileSync(UNEXPLAINED_EXITS_PATH, "utf8")).trim();
+    if (/^[0-9]{1,6}$/.test(saved)) previous = Number(saved);
+  } catch {}
+  countUnexplainedExits(previous + 1);
+}
+
 ${PLUGIN_RUNTIME_HELPERS}
 ${MANAGED_INSTALL_HELPERS}
 ${GATEWAY_TOOL_POLICY_RUNTIME}
@@ -2576,7 +2631,13 @@ async function gatewayRuntimeReady() {
   }
   const answers = await Promise.all([nativeGatewayAnswers("/startupz"), nativeGatewayAnswers("/readyz")]);
   if (answers[1]) gatewayServed = true;
-  return answers.every((ready) => ready);
+  const ready = answers.every((answer) => answer);
+  if (ready && !unexplainedExitsSettled) {
+    // Earlier exits no longer make a crash loop; this instance's own exit would be the first.
+    unexplainedExitsSettled = true;
+    countUnexplainedExits(1);
+  }
+  return ready;
 }
 
 startPluginRuntimeStatusServer(gatewayRuntimeReady);
@@ -3185,6 +3246,7 @@ let respawning = false;
 let waitingForPeerDuringOutage = false;
 let verifyingServingReplacement = false;
 let stoppingContainer = false;
+const DELIBERATE_RESTART_EXIT_STATUS = ${DELIBERATE_RESTART_EXIT_STATUS};
 let gatewayGeneration = 0;
 
 // OpenClaw backs up a config file it can write. One OCC mounted read-only is
@@ -3248,30 +3310,42 @@ function startGatewayProcess() {
       if (spawned === child) childRunning = false;
       resolve();
       if (stoppingContainer) {
-        process.exit(1);
+        process.exit(DELIBERATE_RESTART_EXIT_STATUS);
         return;
       }
       if (gatewayTerminating || ((!respawning || waitingForPeerDuringOutage || verifyingServingReplacement) && spawned === child)) {
         if (!gatewayTerminating && !gatewayServed && code !== 0 && holdInvalidGatewayConfiguration(code, signal)) {
           return;
         }
-        process.exit(code ?? (signal === "SIGTERM" ? 0 : 1));
+        // A native exit never passes as a deliberate restart, which Compute does not count
+        // toward a crash loop.
+        process.exit(code === DELIBERATE_RESTART_EXIT_STATUS ? 1 : (code ?? (signal === "SIGTERM" ? 0 : 1)));
       }
     });
   });
   return Date.now();
 }
 
-// Fall back to a container restart, which the kubelet backs off.
-function stopContainer() {
+// Fall back to a container restart, which the kubelet backs off. The wrapper exits
+// DELIBERATE_RESTART_EXIT_STATUS, which Kubernetes Compute never counts toward a crash loop
+// (finding 3041), and names the reason in its log and in the container's termination message.
+function stopContainer(reason) {
   if (stoppingContainer) return;
   stoppingContainer = true;
+  logStartupPhase("container-restart", startupPhaseOrigin, "failed", reason);
+  unexplainedExitsSettled = true;
+  if (countsUnexplainedExits) {
+    try {
+      require("node:fs").rmSync(UNEXPLAINED_EXITS_PATH, { force: true });
+    } catch {}
+  }
+  writeTerminationMessage(${JSON.stringify(DELIBERATE_RESTART_MESSAGE)} + reason.toLowerCase().replaceAll("_", "-"));
   if (!childRunning) {
-    process.exit(1);
+    process.exit(DELIBERATE_RESTART_EXIT_STATUS);
     return;
   }
   stopNativeGateway(child, "SIGTERM");
-  setTimeout(() => process.exit(1), ${GATEWAY_STOP_TIMEOUT_MS}).unref();
+  setTimeout(() => process.exit(DELIBERATE_RESTART_EXIT_STATUS), ${GATEWAY_STOP_TIMEOUT_MS}).unref();
 }
 
 let pluginResult;
@@ -3350,7 +3424,7 @@ if (workspaceNodeBindingPath !== undefined) {
       stoppingForChangedWorkspaceNode = true;
       clearInterval(workspaceNodePoll);
       logStartupPhase("workspace-node-changed", startupPhaseOrigin);
-      stopContainer();
+      stopContainer("WORKSPACE_NODE_CHANGED");
       return;
     }
     firstSeenAt ??= Date.now();
@@ -3465,7 +3539,11 @@ if (followsPeerStatus) {
   // A changed Harness peer requires a new credential for the replacement and
   // may change the configured plugin result. Respawn only the native process:
   // the container, its volumes and runtime assets stay, and there is no kubelet
-  // crash-loop backoff.
+  // crash-loop backoff. A respawn that fails falls back to a deliberate container
+  // restart, named HARNESS_PEER_CHANGED when the peer kept changing or went away and
+  // HARNESS_PEER_RESPAWN_FAILED otherwise (a replacement that never served). A fresh
+  // container that cannot start then exits on its own, and that exit counts.
+  const peerChangeFailure = (message) => Object.assign(new Error(message), { peerChanged: true });
   const respawnForPeerStatus = async (current) => {
     respawning = true;
     // Mark plugin status unready before replacing the native Gateway.
@@ -3490,7 +3568,7 @@ if (followsPeerStatus) {
         recentRespawns.shift();
       }
       if (recentRespawns.length >= GATEWAY_RESPAWN_LIMIT) {
-        throw new Error("The Harness peer changed too often to respawn the Gateway in place.");
+        throw peerChangeFailure("The Harness peer changed too often to respawn the Gateway in place.");
       }
       recentRespawns.push(respawnStartedAt);
       await stopGatewayProcess();
@@ -3522,11 +3600,11 @@ if (followsPeerStatus) {
       }
       if (gatewayTerminating || !childRunning) return;
       if (verifiedPeer === undefined) {
-        throw new Error("The Harness peer became unavailable during Gateway startup.");
+        throw peerChangeFailure("The Harness peer became unavailable during Gateway startup.");
       }
       if (peerChanged(verifiedPeer)) {
         logStartupPhase("peer-verification-changed", respawnStartedAt, "failed");
-        throw new Error("The Harness peer changed during Gateway startup.");
+        throw peerChangeFailure("The Harness peer changed during Gateway startup.");
       }
       publishPluginRuntimeStatus({ phase: "ready", ...pluginResult });
       logStartupPhase("gateway-respawn", respawnStartedAt);
@@ -3535,7 +3613,7 @@ if (followsPeerStatus) {
       if (holdGatewayToolPolicyFailure(error)) {
         clearInterval(peerStatusPoll);
       } else {
-        stopContainer();
+        stopContainer(error?.peerChanged === true ? "HARNESS_PEER_CHANGED" : "HARNESS_PEER_RESPAWN_FAILED");
       }
     } finally {
       waitingForPeerDuringOutage = false;

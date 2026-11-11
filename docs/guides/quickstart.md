@@ -143,8 +143,9 @@ do not repeat the production installation or Namespace RoleBinding steps.
 
 ## Clean up and stop
 
-When you are finished, run the cleanup command printed by startup. With the
-profile exports above still set:
+When you are finished, run the cleanup command printed by startup. In a new
+shell without the profile exports, `occ dev down` still stops the Kubernetes
+stack recorded in the default state directory:
 
 ```bash
 ./bin/occ dev down
