@@ -87,6 +87,26 @@ const scenarios = [
     changed: ["scripts/console-storybook/flows.stories.ts"],
     builds: true,
   },
+  // Asset preparation imports the shared schema through the controller's workspace
+  // dependency graph, so its sources and dependency inputs affect both event types.
+  ...[
+    "packages/contracts/src/workspace-defaults.mjs",
+    "packages/contracts/src/workspace-defaults.ts",
+    "packages/contracts/src/sandbox-policy.ts",
+    "packages/contracts/src/configuration-definition.ts",
+    "packages/contracts/src/index.ts",
+    "packages/utils/src/objects.ts",
+    "apps/controller/package.json",
+    "packages/contracts/package.json",
+    "packages/utils/package.json",
+    "package.json",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+  ].map((path) => ({
+    name: `asset generation dependency: ${path}`,
+    changed: [path],
+    builds: true,
+  })),
   {
     name: "unrelated OCC source",
     changed: ["packages/occ/src/deployment-diagnostics.ts"],
@@ -232,8 +252,6 @@ test("shared preview inputs select the Storybook build only on pushes to main", 
   for (const path of [
     "apps/controller/src/console-theme.ts",
     "apps/controller/src/composition/console-theme.ts",
-    "packages/contracts/src/workspace-defaults.mjs",
-    "packages/contracts/src/workspace-defaults.ts",
     "packages/occ/src/environment-references.ts",
     "packages/occ/src/gateway-security-defaults.ts",
     "packages/occ/src/stored-configuration-rules.ts",
