@@ -38,6 +38,8 @@
     "integration/postgres-agent-provisioning-fixture.ts",
     "integration/postgres-agent-provisioning-transport-fixture.ts",
     "integration/sandbox-workspace-gateway-fixture.ts",
+    "integration/sandbox-driver-codex-harness-cases.ts",
+    "integration/sandbox-driver-harness-lifecycle-cases.ts",
     "integration/sandbox-driver-credential-contract-cases.ts",
     "integration/sandbox-driver-credential-fixture.ts",
     "integration/sandbox-driver-provider-profiles-cases.ts",
