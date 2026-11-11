@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { extractImageFile, removeImageFileContainer } from "../lib/image-file.mjs";
-import { lstat, readFile, rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 
 const digest = /^sha256:[a-f0-9]{64}$/;
 const hash = /^[a-f0-9]{64}$/;
@@ -90,13 +90,11 @@ export async function readImageCodexProvenance({
       platform,
       filename: "/opt/oce/runtime/provenance.json",
       destination,
+      maxBytes: 64 * 1024,
       resource,
       persist,
     });
-    const info = await lstat(destination);
-    if (info.isFile() && info.size <= 64 * 1024) {
-      metadata = codexProvenance(JSON.parse(await readFile(destination, "utf8")), platform);
-    }
+    metadata = codexProvenance(JSON.parse(await readFile(destination, "utf8")), platform);
   } catch {
     // Read failures are observational; resource cleanup below is mandatory.
   }

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-import { fork, spawn } from "node:child_process";
+import { execFile as execFileCallback, fork, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import { createServer, isIPv4 } from "node:net";
 import {
   appendFile,
@@ -2890,12 +2891,20 @@ async function retainRuntimeProvenance(statePath, state, cluster, image, role) {
     (other) => other.imageId === record.imageId && other.manifestDigest === record.manifestDigest,
   );
   state.runtimeProvenance[role] = matching ? { ...matching } : record;
-  const command = async (_docker, args, options = {}) =>
-    (
-      await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, {
-        timeoutMs: options.timeout ?? 30_000,
-      })
-    ).stdout;
+  const command = async (_docker, args, options = {}) => {
+    try {
+      return (
+        await promisify(execFileCallback)(process.env.OCC_DOCKER_BIN ?? "docker", args, {
+          timeout: 30_000,
+          maxBuffer: 1024 * 1024,
+          killSignal: "SIGKILL",
+          ...options,
+        })
+      ).stdout;
+    } catch {
+      throw new Error("Runtime provenance image command failed.");
+    }
+  };
   try {
     if (matching) {
       return;

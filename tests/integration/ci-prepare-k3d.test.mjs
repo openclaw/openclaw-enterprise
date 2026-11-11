@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { describe, test } from "node:test";
 import { nodeLogExcerpt } from "../../scripts/ci/k3d-diagnostics.mjs";
@@ -106,9 +106,12 @@ for (const scenario of [
   "manifest",
   "missing",
   "invalid",
+  "directory",
+  "oversized",
   "different-image",
   "cleanup-failed",
   "replaced-container",
+  "lost-reply-replaced",
 ]) {
   test(`runtime provenance retains only verified metadata: ${scenario}`, async (t) => {
     const commands = await fixtureImageCommands(t, "success", "k3d-model", {
@@ -134,9 +137,39 @@ for (const scenario of [
       },
       private: canary,
     };
+    const metadataPath = join(dirname(commands.statePath), "provenance.json");
+    if (scenario === "directory") {
+      await mkdir(metadataPath);
+      await writeFile(join(metadataPath, "unexpected"), canary);
+    } else {
+      await writeFile(
+        metadataPath,
+        scenario === "oversized"
+          ? "x".repeat(128 * 1024)
+          : JSON.stringify(
+              scenario === "invalid"
+                ? { ...metadata, codex: { ...metadata.codex, binarySha256: canary } }
+                : metadata,
+            ),
+      );
+    }
+    const archivePath = join(dirname(commands.statePath), "provenance.tar");
+    const archived = spawnSync("tar", [
+      "--format=ustar",
+      "-C",
+      dirname(commands.statePath),
+      "-cf",
+      archivePath,
+      "provenance.json",
+    ]);
+    assert.equal(archived.status, 0, archived.stderr.toString());
+    let hostCopy = false;
     let containerPresent = false;
-    const cleanupFailure = ["cleanup-failed", "replaced-container"].includes(scenario);
+    const cleanupFailure = ["cleanup-failed", "replaced-container", "lost-reply-replaced"].includes(
+      scenario,
+    );
     let allowRemoval = !cleanupFailure;
+    let ownershipToken;
     const manifest = JSON.stringify({ config: { digest: configId } });
     const manifestDigest = `sha256:${createHash("sha256").update(manifest).digest("hex")}`;
     let created = 0;
@@ -188,6 +221,13 @@ for (const scenario of [
           "copy from the immutable image, never its mutable build tag",
         );
         const state = await commands.readState();
+        ownershipToken = state.resources.find(
+          (resource) => resource.kind === "image-file",
+        )?.ownershipToken;
+        if (scenario === "lost-reply-replaced") {
+          assert.ok(ownershipToken, "persist the ownership token before creating a container");
+          assert.ok(args.includes(`org.openclaw.ci.image-file=${ownershipToken}`));
+        }
         assert.ok(
           state.resources.some(
             (resource) => resource.kind === "image-file" && resource.name === args[2],
@@ -196,22 +236,23 @@ for (const scenario of [
         );
         containerPresent = true;
         created += 1;
-        return `printf '%s' ${bashString(containerId)}; exit 0`;
+        return scenario === "lost-reply-replaced"
+          ? "exit 1"
+          : `printf '%s' ${bashString(containerId)}; exit 0`;
+      }
+      if (args[0] === "container" && args[1] === "inspect") {
+        return `printf '%s' ${bashString(allowRemoval ? ownershipToken : "unrelated-owner")}; exit 0`;
       }
       if (args[0] === "cp") {
         assert.equal(args[1], `${containerId}:/opt/oce/runtime/provenance.json`);
         if (scenario === "missing") {
           return "exit 1";
         }
-        await writeFile(
-          args[2],
-          JSON.stringify(
-            scenario === "invalid"
-              ? { ...metadata, codex: { ...metadata.codex, binarySha256: canary } }
-              : metadata,
-          ),
-        );
-        return "exit 0";
+        if (args[2] === "-") {
+          return `/bin/cat ${bashString(archivePath)}; exit 0`;
+        }
+        hostCopy = true;
+        return `/bin/cp -R ${bashString(metadataPath)} ${bashString(args[2])}; exit 0`;
       }
       if (args[0] === "ps" && args.includes("--filter") && args.at(-1).includes("-provenance-")) {
         const observedId =
@@ -221,7 +262,7 @@ for (const scenario of [
       if (args[0] === "rm" && args.at(-1) === containerId) {
         assert.ok(args.includes("--volumes"), "remove anonymous extraction volumes");
         if (!allowRemoval) {
-          return "printf 'retained extraction container' >&2; exit 1";
+          return `printf '%s' ${bashString(canary)} >&2; exit 1`;
         }
         containerPresent = false;
         return "exit 0";
@@ -258,6 +299,7 @@ for (const scenario of [
       expected,
     );
     assert.ok(!diagnostics.includes(canary));
+    assert.ok(!prepared.stderr.includes(canary));
     assert.equal(
       created,
       scenario === "different-image" ? 0 : 1,
@@ -267,6 +309,7 @@ for (const scenario of [
     if (!allowRemoval) {
       const failedCleanup = await commands.cleanup();
       assert.equal(failedCleanup.status, 1);
+      assert.ok(!failedCleanup.stderr.includes(canary));
       assert.ok(
         (await commands.readState()).resources.some((resource) => resource.kind === "image-file"),
       );
@@ -274,6 +317,7 @@ for (const scenario of [
     }
     await commands.cleanupSuccessfully();
     assert.equal(containerPresent, false);
+    assert.equal(hostCopy, false, "metadata must be bounded before any host filesystem copy");
   });
 }
 

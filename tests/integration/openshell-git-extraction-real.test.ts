@@ -8,9 +8,11 @@ import { extractOpenShellImageFile } from "../helpers/openshell-git-installation
 
 type CommandOptions = { signal?: AbortSignal; timeout?: number };
 
-for (const phase of ["create", "copy", "unsettled create"]) {
+for (const phase of ["create", "copy", "renamed copy", "unsettled create", "replaced create"]) {
   test(
-    `OpenShell image extraction removes its Docker container after ${phase} cancellation`,
+    phase === "replaced create"
+      ? "OpenShell image extraction preserves a replacement after losing the create reply"
+      : `OpenShell image extraction removes its Docker container after ${phase} cancellation`,
     { skip: process.env.OCC_TEST_DOCKER_COMPUTE_REAL !== "1", timeout: 90_000 },
     async (t) => {
       const image = process.env.OCC_DOCKER_RUNTIME_IMAGE;
@@ -39,7 +41,7 @@ for (const phase of ["create", "copy", "unsettled create"]) {
       t.after(async () => {
         try {
           if (container && (await remainingContainer())) {
-            await run("docker", ["rm", "--force", container], { env });
+            await run("docker", ["rm", "--force", "--volumes", container], { env });
           }
         } finally {
           await rm(directory, { recursive: true, force: true });
@@ -55,7 +57,11 @@ for (const phase of ["create", "copy", "unsettled create"]) {
           controller.abort();
           controller.signal.throwIfAborted();
         }
-        if (args[0] === "cp" && phase === "copy") {
+        if (args[0] === "cp" && (phase === "copy" || phase === "renamed copy")) {
+          if (phase === "renamed copy") {
+            assert.ok(container);
+            await run("docker", ["rename", container, `oce-renamed-${container}`], { env });
+          }
           // Cancel after real Docker creation, exactly when extraction is dispatched.
           // Only cancellation is injected; creation, removal, and inspection use Docker.
           controller.abort();
@@ -67,7 +73,15 @@ for (const phase of ["create", "copy", "unsettled create"]) {
         });
         if (args[0] === "create") {
           container = result.stdout.trim();
-          if (phase === "create") {
+          if (phase === "replaced create") {
+            // Lose the reply after an unrelated container has taken the name.
+            // Cleanup must authenticate the retained ownership label, not the name.
+            await run("docker", ["rm", "--volumes", container], { env });
+            container = (
+              await run("docker", ["create", "--name", args[2]!, image], { env })
+            ).stdout.trim();
+          }
+          if (phase === "create" || phase === "replaced create") {
             // Docker completed creation, but cancellation prevents the helper
             // from accepting its reply. The owned name must still be removed.
             controller.abort();
@@ -76,6 +90,12 @@ for (const phase of ["create", "copy", "unsettled create"]) {
         }
         return result.stdout;
       };
+      let expected: RegExp | { name: string } = { name: "AbortError" };
+      if (phase === "copy" || phase === "renamed copy") {
+        expected = /command cancelled/;
+      } else if (phase === "replaced create") {
+        expected = /Image extraction and container cleanup failed/;
+      }
       await assert.rejects(
         extractOpenShellImageFile({
           command,
@@ -84,8 +104,15 @@ for (const phase of ["create", "copy", "unsettled create"]) {
           filename: "/etc/os-release",
           destination: join(directory, "os-release"),
         }),
-        phase === "copy" ? /command cancelled/ : { name: "AbortError" },
+        expected,
       );
+      if (phase === "replaced create") {
+        assert.equal(await remainingContainer(), container, "replacement must remain untouched");
+        for (const operation of cleanup) {
+          await assert.rejects(operation(), /container ownership changed/);
+        }
+        return;
+      }
       if (pendingCreate) {
         // Complete the real Docker operation after the initial empty lookup.
         // This models delayed completion to prove retained cleanup ownership;

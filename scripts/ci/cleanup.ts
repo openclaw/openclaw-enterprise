@@ -723,12 +723,17 @@ async function cleanupResource(resource: CleanupResource, state: CleanupState, s
       }
       await removeImageFileContainer({
         resource,
-        command: async (_docker: string, args: string[], options: { timeout?: number } = {}) =>
-          (
-            await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, {
-              timeoutMs: options.timeout ?? 30_000,
-            })
-          ).stdout,
+        command: async (_docker: string, args: string[], options: { timeout?: number } = {}) => {
+          try {
+            return (
+              await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, {
+                timeoutMs: options.timeout ?? 30_000,
+              })
+            ).stdout;
+          } catch {
+            throw new Error("Runtime provenance image cleanup command failed.");
+          }
+        },
       });
       break;
     case "first-agent-image-registry":
