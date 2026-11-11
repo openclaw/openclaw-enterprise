@@ -213,7 +213,7 @@ async function createLiveNativeAgent(fixture, namespace, name, options = {}) {
   await fixture.updateConfiguration(
     namespace.id,
     agent.configurationId,
-    nativeAdminHarnessConfiguration(nativeOrigin),
+    (options.configure ?? nativeAdminHarnessConfiguration)(nativeOrigin),
   );
   const revision = await fixture.controller.deployAgent(
     adminPrincipal(fixture).id,
@@ -390,6 +390,8 @@ test("native browser status selects exact Agent authority and reports lifecycle 
   try {
     const unsupported = await nativeStatus(context, { session: operatorSession });
     assert.equal(unsupported.data.status, "unsupported");
+    // The Configuration is complete; the Compute Driver gives no chat endpoint (finding 3168).
+    assert.equal(unsupported.data.reason, "compute");
     assert.equal(unsupported.data.mode, "chat");
   } finally {
     driver.getGatewayChatEndpoint = chatEndpoint;
@@ -469,6 +471,26 @@ test("native browser status selects exact Agent authority and reports lifecycle 
   assert.equal(restored.status, 200);
   assert.equal(restored.data.status, "available");
   assert.equal(restored.data.activeRevisionId, pending.id);
+});
+
+// Finding 3168: an unsupported status names its cause, so the console can say what to change.
+// The browser UI never turned on is not-enabled; any other refused native setting is
+// configuration. Both Agents are deployed and running.
+test("native browser status names why a Configuration is unsupported", async (t) => {
+  const context = await createNativeAdminFixture(t);
+  for (const [name, configure, reason] of [
+    ["Browser chat off", () => createHarnessConfiguration("openclaw", "gpt-4.1"), "not-enabled"],
+    // Browser chat is on, but its allowed origin is the console, not this Agent.
+    ["Other origin", () => nativeAdminHarnessConfiguration(publicOrigin), "configuration"],
+  ]) {
+    const { agent } = await createLiveNativeAgent(context.fixture, context.namespace, name, {
+      configure,
+    });
+    const status = await nativeStatus({ ...context, agent });
+    assert.equal(status.status, 200, name);
+    assert.equal(status.data.status, "unsupported", name);
+    assert.equal(status.data.reason, reason, name);
+  }
 });
 
 test("native admin status is unavailable while a newer revision replaces the active workload", async (t) => {

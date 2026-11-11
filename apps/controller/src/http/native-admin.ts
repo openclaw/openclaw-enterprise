@@ -32,6 +32,7 @@ import {
 import {
   deriveNativeAdminHost,
   nativeAdminConfigurationSupported,
+  nativeAdminControlUiEnabled,
   nativeAdminGatewayHttpBase,
   nativeAdminTarget,
   normalizeNativeAdminDomain,
@@ -166,6 +167,7 @@ const nativeAdminStatusDataSchema = {
     url: { type: "string", format: "uri" },
     sessionMode: { type: "string", enum: ["shared-cookie", "host-only-exchange"] },
     mode: { type: "string", enum: ["admin", "chat"] },
+    reason: { type: "string", enum: ["not-enabled", "configuration", "compute"] },
   },
 };
 export const nativeAdminStatusSchema = {
@@ -832,7 +834,14 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
   };
   type NativeAdminAvailability =
     | { readonly status: "disabled" | "stopped" | "unavailable" }
-    | ({ readonly status: "stopped" | "unsupported" } & NativeAdminTargetStatus)
+    | ({ readonly status: "stopped" } & NativeAdminTargetStatus)
+    // not-enabled: the Configuration never turned on the browser UI (Create Agent's Enable
+    // browser chat sets it); configuration: another native setting refuses it; compute: the
+    // Compute Driver gives no usable gateway endpoint. The console names the cause (finding 3168).
+    | ({
+        readonly status: "unsupported";
+        readonly reason: "not-enabled" | "configuration" | "compute";
+      } & NativeAdminTargetStatus)
     | ({ readonly status: "available"; readonly gatewayBase: string } & NativeAdminTargetStatus);
 
   // An exclusive Compute Driver stops the active revision's workload before a newer
@@ -903,7 +912,8 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       return { status: "unavailable" };
     }
     if (!nativeAdminConfigurationSupported(revision, target.origin)) {
-      return { status: "unsupported", agent, revision, target, mode };
+      const reason = nativeAdminControlUiEnabled(revision) ? "configuration" : "not-enabled";
+      return { status: "unsupported", reason, agent, revision, target, mode };
     }
     let compute: ComputeDriver;
     try {
@@ -925,7 +935,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         : compute.getGatewayChatEndpoint?.(revision);
     const gatewayBase = nativeAdminGatewayHttpBase(endpoint ?? "");
     if (gatewayBase === undefined) {
-      return { status: "unsupported", agent, revision, target, mode };
+      return { status: "unsupported", reason: "compute", agent, revision, target, mode };
     }
     return { status: "available", agent, revision, target, gatewayBase, mode };
   }
@@ -955,6 +965,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       activeRevisionId: availability.revision.id,
       url: availability.target.url,
       ...(exchangeMode ? { sessionMode: "host-only-exchange" } : {}),
+      ...(availability.status === "unsupported" ? { reason: availability.reason } : {}),
     };
   }
 
