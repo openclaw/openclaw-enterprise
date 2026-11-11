@@ -182,7 +182,7 @@ both commits.
 `runFile` merges, per child: filtered inherited values
 with declared inputs restored, `lane.env`, preparation defaults, `file.env`, then
 generated values. Later values win.
-`scripts/ci/prepare.mjs:prepareFile` returns `state.defaults` and generated `state.env` separately. File literals affect neither preflight nor resource preparation. Keep differing prerequisites in separate files.
+`scripts/ci/prepare.mjs:prepareFile` separates re-resolved defaults from generated outputs. `file.env` affects neither preflight nor resource preparation. Keep differing prerequisites in separate files.
 
 The reporter records case names, locations and outcomes. Results and logs retain failure messages (600 characters) and top frames (240). Redaction removes repository paths, replaces nonpublic job/child environment values (8+ characters) with `[env:NAME]`, and masks token/key shapes, URL passwords and `password=` values as `[redacted]`; generated values require a matching shape.
 
