@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { execFile as execFileCallback } from "node:child_process";
+import { execFile as execFileCallback, spawnSync } from "node:child_process";
 import { chmod, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { createRequire } from "node:module";
 import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import {
   k3sImage,
@@ -16,7 +16,7 @@ import {
   validateOpenShellSelection,
 } from "../../scripts/ci/openshell.mjs";
 import { withEnvironment } from "../helpers/environment.ts";
-import { prependPath } from "../helpers/fake-commands.ts";
+import { commandCalls, prependPath, writeCommand } from "../helpers/fake-commands.ts";
 import {
   assertGatewayPolicyRunSucceeded,
   openShellStaleRelay,
@@ -210,10 +210,11 @@ test("the OpenShell installation wait surfaces terminal deployment refusals on t
   const waitOnce = (description, read) => waitFor(description, read, { timeoutMs: 0 });
   const refusalCode = "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE";
   const privateDetail = "private requirements detail";
-  const activate = (deployment, activeRevisionId = null) =>
+  const activate = (deployment, activeRevisionId = null, workerEvents = []) =>
     waitForOpenShellRevisionActivation(waitOnce, {
       agentPath,
       revisionId,
+      workerEvents,
       request: async (method, path) => {
         assert.equal(method, "GET");
         if (path === agentPath) {
@@ -235,6 +236,27 @@ test("the OpenShell installation wait surfaces terminal deployment refusals on t
     activate({ status: "failed", error: { code: privateDetail, message: privateDetail } }),
     { message: `OpenShell revision ${revisionId} deployment failed.` },
   );
+  const completed = {
+    event: "worker.completed",
+    revisionId,
+    code: refusalCode,
+    failure: "sandbox-mode-denied_reviewer-denied",
+  };
+  for (const [events, reason] of [
+    [[completed], completed.failure],
+    [[{ ...completed, revisionId: "different" }], undefined],
+    [[{ ...completed, code: "OTHER" }], undefined],
+    [[{ ...completed, event: "worker.error" }], undefined],
+    [[{ ...completed, failure: `named-profile-denied_${privateDetail}` }], undefined],
+  ]) {
+    await assert.rejects(
+      activate({ status: "failed", error: { code: refusalCode } }, null, events),
+      {
+        code: refusalCode,
+        message: `OpenShell revision ${revisionId} deployment failed (${refusalCode}${reason ? `: ${reason}` : ""}).`,
+      },
+    );
+  }
   const nextAttemptAt = "2026-11-10T11:00:00.000Z";
   for (const [status, lastAttempt] of [
     ["queued", null],
@@ -1426,6 +1448,93 @@ test("OpenShell candidate preflight uses verified chart bytes and removes its sn
   assert.equal(charts.workspace, "replicaCount: 1\n");
   assert.equal(selection, null, "preflight must not return paths it has removed");
   await assert.rejects(readdir(charts.directory), { code: "ENOENT" });
+});
+
+test("OpenShell candidate CLI reports verified JSON and rejects unselected or invalid candidates", async (t) => {
+  const { env } = await candidateCheckout(t);
+  const root = await fixture(t);
+  const temporary = join(root, "tmp");
+  await mkdir(temporary);
+  const log = join(root, "commands.log");
+  // Synthetic Docker metadata and a Helm stand-in; Git and chart filesystem
+  // checks are real. No image engine, cluster, or installed behavior is tested.
+  const docker = await writeCommand(
+    root,
+    "docker",
+    `
+[ "$#" = 5 ] && [ "$1" = image ] && [ "$2" = inspect ] || exit 1
+printf '%s\\n' "$OCC_TEST_OPENSHELL_SOURCE_REVISION"
+`,
+    { log },
+  );
+  const helm = await writeCommand(
+    root,
+    "helm",
+    `
+[ "$#" = 3 ] && [ "$1" = show ] && [ "$2" = chart ] || exit 1
+cat "$3/Chart.yaml"
+`,
+    { log },
+  );
+  const run = (selection) =>
+    spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL("../../scripts/ci/check-openshell-candidate.ts", import.meta.url))],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          ...Object.fromEntries(Object.keys(env).map((key) => [key, ""])),
+          ...selection,
+          OCC_DOCKER_BIN: docker,
+          OCC_HELM_BIN: helm,
+          TMPDIR: temporary,
+          TMP: temporary,
+          TEMP: temporary,
+        },
+      },
+    );
+  const success = run(env);
+  assert.equal(success.status, 0, success.stderr);
+  assert.equal(success.stderr, "");
+  const receipt = JSON.parse(success.stdout);
+  assert.deepEqual(receipt, {
+    outcome: "verified",
+    sourceRevision: env.OCC_TEST_OPENSHELL_SOURCE_REVISION,
+    elapsedMs: receipt.elapsedMs,
+  });
+  assert.ok(Number.isInteger(receipt.elapsedMs) && receipt.elapsedMs >= 0);
+  const calls = await commandCalls(log);
+  assert.equal(calls.length, 4);
+  for (const role of ["GATEWAY", "SANDBOX", "SUPERVISOR"]) {
+    assert.ok(calls.some((call) => call.endsWith(env[`OCC_TEST_OPENSHELL_${role}_IMAGE`])));
+  }
+  await writeFile(join(env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART, "values.yaml"), "changed\n");
+  for (const selection of [
+    {},
+    { OCC_TEST_OPENSHELL_SOURCE_REVISION: env.OCC_TEST_OPENSHELL_SOURCE_REVISION },
+    env,
+  ]) {
+    const rejected = run(selection);
+    assert.equal(rejected.status, 1);
+    assert.equal(rejected.stdout, "");
+    const failure = JSON.parse(rejected.stderr);
+    assert.equal(failure.outcome, "failed");
+    assert.ok(Number.isInteger(failure.elapsedMs) && failure.elapsedMs >= 0);
+    assert.equal(
+      failure.message,
+      Object.keys(selection).length === 0
+        ? "No OpenShell candidate selected. Set all six candidate inputs."
+        : "OpenShell candidate verification failed. Check all six inputs and local artifacts.",
+    );
+  }
+  assert.deepEqual(await commandCalls(log), calls, "rejections precede Docker and Helm");
+  assert.deepEqual(
+    (await readdir(temporary)).filter((name) => name.startsWith("openshell-candidate-check-")),
+    [],
+    "success and failures remove snapshots",
+  );
 });
 
 test("prepareOpenShell rejects a verified gateway chart without an application version", async (t) => {

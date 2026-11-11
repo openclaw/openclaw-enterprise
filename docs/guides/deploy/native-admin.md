@@ -279,6 +279,8 @@ For retained overlong domains, follow [domain recovery](native-admin-domain-reco
 
 ## Troubleshooting
 
+Match the refused request’s ID to `http.completed`. HTTP admission refusals carry `nativeAdmissionReason`; early guards and post-admission failures may omit it.
+
 | Symptom                                             | Check                                                                                                                                                                                                                     |
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Helm render fails                                   | Native access requires private gateway routing. All browser sessions require HTTPS and an Agent DNS suffix sharing a non-public suffix with the Console.                                                                  |
@@ -290,6 +292,7 @@ For retained overlong domains, follow [domain recovery](native-admin-domain-reco
 | Console panel is hidden                             | Feature enablement and exact Agent `operate` or `administer` permission.                                                                                                                                                  |
 | Panel or status API reports `stopped`               | A stopped Agent with no selected version returns only `data.status: "stopped"`, without an origin. Deploy the Agent if native admin access is intended.                                                                   |
 | Panel or status API reports `unavailable`           | No version is serving: there is no selected version yet, or a newer dedicated deployment stopped it and is starting or failed. Check Deployment activity, fix a failure, and redeploy.                                    |
+| Panel says browser chat is off                      | The selected version's Configuration does not turn on the browser UI. Add the settings in [Configure each Agent](#configure-each-agent), then deploy.                                                                     |
 | Panel reports unsupported                           | Check the selected version's [native configuration requirements](../../reference/agent-native-admin.md#requirements) and Compute support for `getGatewayChatEndpoint` in chat mode or `getGatewayEndpoint` in admin mode. |
 | Native tab cannot load                              | Browser wildcard DNS/TLS to API, the selected session mode, host-to-Agent resolution, native `controlUi.allowedOrigins`, and private gateway routing.                                                                     |
 | Browser reports service-worker registration failure | Expected for the pilot. OCC blocks native service-worker script requests and adds `worker-src 'none'` to proxied responses.                                                                                               |
@@ -311,6 +314,9 @@ may have expired, or your access may have changed. If OCE asks you to sign in,
 it checks your access again and returns you to that Agent’s detail page. Select
 **Open Agent UI** to continue. With an older runtime, open the Agent root
 or its console page to start the same recovery.
+
+If the Agent host returns `503 DEPENDENCY_UNAVAILABLE`, check the controller and
+session store and retry after they recover.
 
 If expiry coincides with controller restarts, check persistent session storage
 and whether the configured auth secret changed. In-memory sessions disappear

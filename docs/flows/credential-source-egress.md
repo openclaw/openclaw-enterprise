@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
-updated: 2026-11-10
-last_updated_session: authoring-run/098bcc8c-9e1b-4318-aff3-06c464edb33e
+updated: 2026-11-11
+last_updated_session: authoring-run/919c1d90-32b8-4d2c-8a66-238508a3c061
 ---
 
 # Protected credential request flow
@@ -259,18 +259,17 @@ exact attempt without retrying; returning bytes does not prove delivery.
 
 ### 5. Configure the regular Harness caller
 
-`apps/controller/src/drivers/compute/plugin-runtime.ts:codexToml` keeps local tools,
-disables provider tools, and selects HTTP Responses without WebSockets or retries.
-Its `--ignore-user-config` probe disables
-request/stream retries and never repeats a timed-out protected probe.
+`apps/controller/src/drivers/compute/plugin-runtime.ts:codexToml` enables local
+tools and selects HTTP Responses without provider tools, WebSockets or retries.
+The startup probe disables retries.
 
 `apps/controller/src/drivers/egress-proxy/openai-provider.ts:createOpenAiStaticProvider`
 checks [request forms](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
 through `openai-responses.ts:validResponsesRequest` before Secret resolution.
-Inline developer tools keep the local-tool restrictions. The same check admits
-optional Git workspace metadata and the passive no-MCP attribution as telemetry.
-Both use the selected model and destination from the admitted grant. Follow-up
-requests can replay assistant output text with empty `annotations` and `logprobs` arrays.
+Request effort and telemetry accept `max`. Only telemetry accepts `ultra`.
+Only `request_kind: "compaction"` permits nested compaction metadata.
+The grant selects model and destination. Assistant replays permit empty
+`annotations` and `logprobs` arrays.
 
 ### 6. Reduce the live credential policy
 
@@ -333,6 +332,11 @@ caller independently.
 None.
 
 ## Changelog
+
+- 2026-11-11 09:39: Validate compaction metadata. (authoring-run/919c1d90-32b8-4d2c-8a66-238508a3c061 - 6905a20332abd7ffcfe2fd431c5ae6888a17dff5)
+- 2026-11-11 08:40: Distinguish native telemetry effort from Responses request effort. (authoring-run/89ba83c7-7553-45e6-a3b5-a8e067da1d65 - 6b4e85174966c1a172f2ecd25a3ea1238fe6f0d7)
+
+- 2026-11-11 06:02: Admit native agent messages. (authoring-run/4a7d8e1a-0c95-4f57-8628-ea2d59fbe9b2 - 82078dad5edc334f21d3feaed447db6601fa5d31)
 
 - 2026-11-10 08:22: Accept empty metadata on replayed assistant output text. (authoring-run/098bcc8c-9e1b-4318-aff3-06c464edb33e - 33c820f6daf4ba6a1559680911ab2d509ee4a131)
 

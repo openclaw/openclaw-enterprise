@@ -77,6 +77,81 @@ async function reuseFixture() {
   return { rows, sha, run, jobs, artifacts, get };
 }
 
+test("scheduled and manual Full Integration discover immutable push CI results through the CLI", async (t) => {
+  const { get, sha, artifacts } = await reuseFixture();
+  const fixtureRoot = await temporaryDirectory(t, "full-ci-reuse-consumers-");
+  const routes = [
+    "/actions/workflows/ci.yml",
+    "/actions/workflows/456/runs?head_sha=" + sha + "&event=push&branch=main&per_page=20",
+    "/actions/runs/123/attempts/2/jobs?per_page=100",
+    "/actions/runs/123/artifacts?per_page=100",
+  ];
+  const responses = Object.fromEntries(
+    await Promise.all(routes.map(async (path) => [path, await get(path)])),
+  );
+  const preload = join(fixtureRoot, "fetch-fixture.mjs");
+  await writeFile(
+    preload,
+    [
+      "const responses = " + JSON.stringify(responses) + ";",
+      "const prefix = '/repos/openclaw/openclaw-enterprise';",
+      "globalThis.fetch = async (input) => {",
+      "  const url = new URL(input);",
+      "  const path = url.pathname.slice(prefix.length) + url.search;",
+      "  if (url.origin !== 'https://reuse-fixture.invalid' || !url.pathname.startsWith(prefix + '/') || !Object.hasOwn(responses, path)) {",
+      "    throw new Error('Unexpected reuse fixture request');",
+      "  }",
+      "  return Response.json(responses[path]);",
+      "};",
+    ].join("\n"),
+  );
+  for (const event of ["schedule", "workflow_dispatch", "push", "pull_request"]) {
+    const directory = join(fixtureRoot, event);
+    await mkdir(directory);
+    const output = join(directory, "step-output");
+    const result = spawnSync(
+      process.execPath,
+      ["--import", preload, "scripts/ci/full-integration-reuse.mjs", "discover"],
+      {
+        encoding: "utf8",
+        timeout: 5_000,
+        env: {
+          PATH: process.env.PATH,
+          RUNNER_TEMP: directory,
+          GITHUB_OUTPUT: output,
+          GITHUB_API_URL: "https://reuse-fixture.invalid",
+          GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",
+          GITHUB_REF: "refs/heads/main",
+          GITHUB_EVENT_NAME: event,
+          GITHUB_SHA: sha,
+          GH_TOKEN: "synthetic",
+        },
+      },
+    );
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stderr);
+    if (event === "pull_request") {
+      assert.equal(await readFile(output, "utf8"), "artifact_ids=\n");
+      await assert.rejects(readFile(join(directory, "ci-reuse", "producer.json")), {
+        code: "ENOENT",
+      });
+    } else {
+      assert.equal(
+        await readFile(output, "utf8"),
+        "run_id=123\nartifact_ids=" + artifacts.map(({ id }) => id).join(",") + "\n",
+        event,
+      );
+      const producer = JSON.parse(
+        await readFile(join(directory, "ci-reuse", "producer.json"), "utf8"),
+      );
+      assert.deepEqual(
+        { runId: producer.runId, attempt: producer.attempt, workflowId: producer.workflowId },
+        { runId: 123, attempt: 2, workflowId: 456 },
+      );
+    }
+  }
+});
+
 test("same-SHA reuse admits only successful canonical CI jobs and immutable current-attempt artifacts", async () => {
   const fixture = await reuseFixture();
   const { get, run, sha, rows, jobs, artifacts } = fixture;
@@ -643,49 +718,80 @@ test("same-SHA reuse runs the existing full-coverage validator and rejects damag
   const manifest = loadTestSuites(
     fileURLToPath(new URL("../../scripts/ci/test-suites.json", import.meta.url)),
   );
-  const lane = "postgres";
-  const summary = {
-    version: 1,
-    command: "run",
-    sourceSha: sha,
-    scope: "full",
-    cleanup: { status: "passed" },
-    lane,
-    status: "passed",
-    exitCode: 0,
-    files: manifest.lanes[lane].files.map((file) => ({
-      path: file.path,
-      status: "passed",
-      counts: { total: file.expectedTests.length },
-      tests: file.expectedTests.map((name) => ({ name, status: "passed" })),
+  for (const lane of ["postgres", "checks-baseline-2"]) {
+    const summary = {
+      version: 1,
+      command: "run",
+      sourceSha: sha,
+      scope: "full",
       cleanup: { status: "passed" },
-    })),
-  };
-  const path = join(directory, "download", `${lane}.json`);
-  await writeFile(path, JSON.stringify(summary));
-  assert.deepEqual(await validateResults({ directory, producer, sha, get }), [lane]);
-  assert.deepEqual(
-    JSON.parse(await readFile(join(directory, "accepted", `${lane}.json`))),
-    summary,
-  );
-  for (const patch of [
-    { scope: "focused" },
-    { scope: undefined },
-    { cleanup: undefined },
-    { cleanup: { status: "failed" } },
-    { cleanup: { status: "unknown" } },
-    { sourceSha: "0".repeat(40) },
-    { files: [] },
-    { exitCode: 1 },
-    { files: summary.files.map((file) => ({ ...file, cleanup: { status: "failed" } })) },
-    { files: summary.files.map((file) => ({ ...file, tests: [] })) },
-  ]) {
-    await writeFile(path, JSON.stringify({ ...summary, ...patch }));
+      lane,
+      status: "passed",
+      exitCode: 0,
+      issues: [],
+      files: manifest.lanes[lane].files.map((file) => {
+        // Files without named expectations still need an observed case. These
+        // receipts exercise validation, not the represented database/runtime.
+        const names = file.expectedTests?.length ? file.expectedTests : [file.path];
+        return {
+          path: file.path,
+          status: "passed",
+          exercised: true,
+          nodeExitCode: 0,
+          signal: null,
+          issues: [],
+          counts: { total: names.length, passed: names.length, failed: 0, skipped: 0, todo: 0 },
+          tests: names.map((name) => ({ name, status: "passed" })),
+          cleanup: { status: "passed" },
+        };
+      }),
+    };
+    const total = summary.files.reduce((count, file) => count + file.tests.length, 0);
+    summary.counts = { total, passed: total, failed: 0, skipped: 0, todo: 0 };
+    const path = join(directory, "download", `${lane}.json`);
+    await writeFile(path, JSON.stringify(summary));
+    assert.deepEqual(await validateResults({ directory, producer, sha, get }), [lane]);
+    assert.deepEqual(
+      JSON.parse(await readFile(join(directory, "accepted", `${lane}.json`))),
+      summary,
+    );
+    for (const patch of [
+      { scope: "focused" },
+      { scope: undefined },
+      { cleanup: undefined },
+      { cleanup: { status: "failed" } },
+      { cleanup: { status: "unknown" } },
+      { sourceSha: "0".repeat(40) },
+      { files: [] },
+      { exitCode: 1 },
+      { counts: undefined },
+      ...["exercised", "nodeExitCode", "signal"].map((key) => ({
+        files: summary.files.map((file) => ({ ...file, [key]: undefined })),
+      })),
+      { files: summary.files.map((file) => ({ ...file, cleanup: { status: "failed" } })) },
+      { files: summary.files.map((file) => ({ ...file, tests: [] })) },
+      ...manifest.lanes[lane].files
+        .filter((file) => !file.expectedTests?.length)
+        .slice(0, 1)
+        .map((unconstrained) => ({
+          files: summary.files.map((file) =>
+            file.path === unconstrained.path ? { ...file, tests: [] } : file,
+          ),
+        })),
+    ]) {
+      await writeFile(path, JSON.stringify({ ...summary, ...patch }));
+      const accepted = await validateResults({ directory, producer, sha, get });
+      assert.deepEqual(accepted, []);
+      assert.ok(
+        (await selectFreshLanes(accepted, "success")).matrix.some((row) => row.lane === lane),
+      );
+    }
+    await writeFile(path, JSON.stringify(summary));
+    run.run_attempt = 3;
     assert.deepEqual(await validateResults({ directory, producer, sha, get }), []);
+    run.run_attempt = 2;
+    await rm(path);
   }
-  await writeFile(path, JSON.stringify(summary));
-  run.run_attempt = 3;
-  assert.deepEqual(await validateResults({ directory, producer, sha, get }), []);
 });
 
 test("full integration workflow carries QA and installation outcomes into selected aggregation", async (t) => {
@@ -813,14 +919,112 @@ test("full integration plans fresh fallback and attributes only published reuse 
     new URL("../../.github/workflows/full-integration-execution.yml", import.meta.url),
     "utf8",
   );
-  const script = workflow
-    .split("- name: Write selected job state")[1]
-    .match(/node <<'NODE'\n([\s\S]*?)\n\s+NODE/)[1];
   const { loadYaml } = createRequire(
     new URL("../../apps/controller/package.json", import.meta.url),
   )("@kubernetes/client-node");
+  const execution = loadYaml(workflow);
+  const allRows = JSON.parse(await readFile("scripts/ci/full-integration-lanes.json", "utf8"));
+  const freshStep = execution.jobs.preflight.steps.find((step) => step.id === "fresh-plan");
+  assert.ok(freshStep, "preflight must publish fallback independently of reuse");
+  const freshOutput = join(directory, "fresh-output");
+  const fresh = spawnSync("bash", ["-e", "-c", freshStep.run], {
+    encoding: "utf8",
+    env: { ...process.env, GITHUB_OUTPUT: freshOutput },
+  });
+  assert.equal(fresh.status, 0, fresh.stderr);
+  const freshMatrix = (await readFile(freshOutput, "utf8")).trim().slice("matrix=".length);
+  assert.deepEqual(JSON.parse(freshMatrix), allRows);
+  assert.equal(
+    workflowCondition(execution.jobs.preflight.outputs.matrix, {
+      steps: { "fresh-plan": { outputs: { matrix: freshMatrix } } },
+    }),
+    freshMatrix,
+  );
+  assert.equal(execution.jobs["ci-reuse"]["continue-on-error"], true);
+  for (const outcome of ["failure", "cancelled", "skipped", "success"]) {
+    const published = workflowCondition(execution.jobs["ci-reuse"].outputs.matrix, {
+      steps: { plan: { outcome, outputs: { matrix: JSON.stringify(values.matrix) } } },
+    });
+    assert.equal(published, outcome === "success" ? JSON.stringify(values.matrix) : "");
+  }
+  const matrixJob = execution.jobs["pr-safe-same-sha"];
+  const retained = execution.jobs["full-aggregate"].steps.find(
+    (step) => step.name === "Download committed reused results",
+  );
+  assert.ok(retained, "retained evidence must have a separately gated download");
+  assert.ok(!retained.with.pattern.startsWith("full-results-"));
+  assert.equal(retained.uses, "./.github/actions/download-results");
+  const freshDownload = execution.jobs["full-aggregate"].steps.find(
+    (step) => step.name === "Download full integration results",
+  );
+  assert.notEqual(
+    retained.with.path,
+    freshDownload.with.path,
+    "retry cleanup must not remove fresh results",
+  );
+  const combine = execution.jobs["full-aggregate"].steps.find(
+    (step) => step.name === "Combine committed reused results",
+  );
+  for (const outcome of ["success", "failure", "skipped", "cancelled"]) {
+    assert.equal(
+      workflowCondition(combine.if, { steps: { "reused-results": { outcome } } }),
+      outcome === "success",
+    );
+  }
+
+  assert.equal(
+    execution.jobs["ci-reuse"].steps.find((step) => step.id === "upload").with.name,
+    retained.with.pattern,
+  );
+  // A failed optional job may expose partial outputs after uploading. Neither
+  // those outputs nor an orphaned artifact may displace fresh execution.
+  for (const reuse of [
+    {
+      result: "success",
+      outputs: { matrix: JSON.stringify(values.matrix), lanes: '["postgres"]' },
+    },
+    ...["failure", "skipped", "cancelled", "success"].map((result) => ({
+      result,
+      outputs: { matrix: "", lanes: "" },
+    })),
+    {
+      result: "failure",
+      outputs: { matrix: JSON.stringify(values.matrix), lanes: '["postgres"]' },
+    },
+  ]) {
+    const committed = reuse.result === "success" && reuse.outputs.matrix !== "";
+    const context = {
+      needs: {
+        "ci-reuse": reuse,
+        preflight: { result: "success", outputs: { matrix: freshMatrix, run_all: "true" } },
+      },
+      github: {
+        repository: "openclaw/openclaw-enterprise",
+        ref: "refs/heads/main",
+        ref_type: "branch",
+        run_attempt: "1",
+        event_name: "schedule",
+      },
+      fromJSON: JSON.parse,
+    };
+    assert.deepEqual(
+      workflowCondition(matrixJob.strategy.matrix.include, context),
+      committed ? values.matrix : allRows,
+    );
+    assert.equal(workflowCondition(retained.if, context), committed);
+    assert.equal(workflowCondition(matrixJob.if, context), true);
+    assert.equal(workflowCondition(matrixJob.if, { ...context, cancelled: () => true }), false);
+  }
+  const script = workflow
+    .split("- name: Write selected job state")[1]
+    .match(/node <<'NODE'\n([\s\S]*?)\n\s+NODE/)[1];
   const jobs = loadYaml(workflow).jobs["full-aggregate"].needs;
-  const execute = async (result, reused = ["postgres"], parent = "failure") => {
+  const execute = async (
+    result,
+    reused = ["postgres"],
+    parent = "failure",
+    matrix = JSON.stringify(values.matrix),
+  ) => {
     const aggregated = spawnSync(process.execPath, ["--input-type=commonjs"], {
       input: script,
       encoding: "utf8",
@@ -830,7 +1034,7 @@ test("full integration plans fresh fallback and attributes only published reuse 
         REUSED_LANES: JSON.stringify(reused),
         NEEDS_JSON: JSON.stringify({
           ...Object.fromEntries(jobs.map((name) => [name, { result: "success" }])),
-          "ci-reuse": { result },
+          "ci-reuse": { result, outputs: { matrix } },
           "pr-safe-same-sha": { result: parent },
         }),
       },
@@ -847,6 +1051,10 @@ test("full integration plans fresh fallback and attributes only published reuse 
     assert.equal(needs["postgres-auth"], undefined);
     assert.ok(needs["image-lanes-same-sha"].lanes.includes("images-packaging"));
   }
+  const withoutPlan = await execute("success", ["postgres"], "failure", "");
+  assert.equal(withoutPlan.postgres, undefined);
+  assert.ok(withoutPlan["pr-safe-same-sha"].lanes.includes("postgres"));
+  assert.equal(withoutPlan["pr-safe-same-sha"].result, "failure");
   // Even when every eligible lane is reused, the two fresh-only lanes retain
   // the real parent outcome. Reused lanes must not also belong to that parent.
   const { rows, sha } = await reuseFixture();
@@ -906,6 +1114,20 @@ test("full integration plans fresh fallback and attributes only published reuse 
     ]);
     assert.equal(result.status, 0, result.stderr);
   }
+  // The retry action owns a separate directory. Combine its completed download
+  // with a fresh runner receipt without deleting the fresh evidence.
+  await mkdir(join(directory, "reused-results"));
+  const retainedReceipt = await readFile(join(directory, "results/postgres.json"));
+  const freshReceipt = await readFile(join(directory, "results/postgres-auth.json"));
+  await writeFile(join(directory, "reused-results/postgres.json"), retainedReceipt);
+  await rm(join(directory, "results/postgres.json"));
+  const combined = spawnSync("bash", ["-e", "-c", combine.run], {
+    encoding: "utf8",
+    env: { ...process.env, RUNNER_TEMP: directory },
+  });
+  assert.equal(combined.status, 0, combined.stderr);
+  assert.deepEqual(await readFile(join(directory, "results/postgres.json")), retainedReceipt);
+  assert.deepEqual(await readFile(join(directory, "results/postgres-auth.json")), freshReceipt);
   const aggregate = () =>
     runner(["aggregate", "ci", "--results-dir", "results", "--needs", "needs.json"]);
   await execute("success");

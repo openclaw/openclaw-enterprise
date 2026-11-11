@@ -1,3 +1,5 @@
+import { preparationIdentity, readRuntimeProvenance } from "./runtime-provenance.mjs";
+import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import {
   closeSync,
@@ -1083,17 +1085,22 @@ function failureDetails(events, absolutePath, secrets, root) {
 }
 
 // Shares the diagnostics file with the k3d capture; keep it out of other setup.
-async function recordFailure(setup, statePath, lane, file, details) {
-  await setup(() => recordFailureDetails(statePath, lane, file, details)).catch(() => {
-    console.error(`[run:${lane}] failure details unavailable for ${file}`);
-  });
+async function recordFailure(setup, statePath, lane, file, details, preparationId) {
+  await setup(() => recordFailureDetails(statePath, lane, file, details, preparationId)).catch(
+    () => {
+      console.error(`[run:${lane}] failure details unavailable for ${file}`);
+    },
+  );
 }
 
-async function recordFailureDetails(statePath, lane, file, details) {
+async function recordFailureDetails(statePath, lane, file, details, preparationId) {
   const diagnosticsPath = `${statePath}.diagnostics.json`;
-  let report = { lane };
+  let report = { lane, preparationId };
   try {
-    report = JSON.parse(await readFile(diagnosticsPath, "utf8"));
+    const previous = JSON.parse(await readFile(diagnosticsPath, "utf8"));
+    if (previous.lane === lane && previous.preparationId === preparationId) {
+      report = previous;
+    }
   } catch {
     // The first failed file (or passing k3d file) starts the report.
   }
@@ -1359,7 +1366,7 @@ function readK3dCase2Phase(directory) {
   }
 }
 
-async function runFile(root, lane, file, statePath, prepareFile, setup = (step) => step()) {
+async function runFile(root, lane, file, statePath, prepareFile, setup, preparationId) {
   const issues = [];
   const relativePath = repoRelativePath(root, file.path);
   const absolutePath = resolveRepoPath(root, file.path, issues, relativePath);
@@ -1435,10 +1442,17 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
           error: sanitized,
         }),
       );
-      await recordFailure(setup, statePath, lane.name, relativePath, {
-        reason: "prepare",
-        error: { ...sanitized, ...(await preparationFailureText(error, lane, statePath, root)) },
-      });
+      await recordFailure(
+        setup,
+        statePath,
+        lane.name,
+        relativePath,
+        {
+          reason: "prepare",
+          error: { ...sanitized, ...(await preparationFailureText(error, lane, statePath, root)) },
+        },
+        preparationId,
+      );
       if (!prepared.cleanup) {
         return emptyFileResult(relativePath, issues);
       }
@@ -1489,6 +1503,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
         statePath,
         lane: lane.name,
         file: relativePath,
+        preparationId,
       }).catch(() => {
         console.error(
           `[run:${lane.name}] Agent namespace activity unavailable for ${relativePath}`,
@@ -1717,17 +1732,24 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   // A file the runner timeout stopped always gets a record, even with nothing captured.
   const timedOut = nodeResult?.error?.code === "ETIMEDOUT";
   if (status === "failed" && (details !== undefined || timedOut)) {
-    await recordFailure(setup, statePath, lane.name, relativePath, {
-      ...(timedOut
-        ? {
-            reason: "timeout",
-            timeoutMs: timeout.timeoutMs,
-            ...(timeout.laneDeadline ? { laneDeadline: true } : {}),
-            elapsedMs: nodeElapsedMs,
-          }
-        : { reason: "failed" }),
-      ...(details ?? { tests: [], omittedTests: 0, output: { lines: [], omittedLines: 0 } }),
-    });
+    await recordFailure(
+      setup,
+      statePath,
+      lane.name,
+      relativePath,
+      {
+        ...(timedOut
+          ? {
+              reason: "timeout",
+              timeoutMs: timeout.timeoutMs,
+              ...(timeout.laneDeadline ? { laneDeadline: true } : {}),
+              elapsedMs: nodeElapsedMs,
+            }
+          : { reason: "failed" }),
+        ...(details ?? { tests: [], omittedTests: 0, output: { lines: [], omittedLines: 0 } }),
+      },
+      preparationId,
+    );
   }
 
   const exercised =
@@ -1790,7 +1812,18 @@ async function runLane(root, manifest, laneName, statePath, resultsPath, selecte
   issues.push(...source.issues);
   const files = [];
   let preservedNodeExitCode = 0;
+  let preparationId = randomUUID();
+  try {
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    if (state.lane === laneName) {
+      preparationId = preparationIdentity(state.prefix) ?? preparationId;
+    }
+  } catch {
+    // Stateless runs still share one fresh identity across their files.
+  }
 
+  const identity = { lane: laneName, preparationId };
+  const initialRuntimeProvenance = await readRuntimeProvenance(statePath, identity);
   const prepareFile = await loadPrepare(root);
   const startedAt = new Date().toISOString();
   const laneStarted = performance.now();
@@ -1814,7 +1847,15 @@ async function runLane(root, manifest, laneName, statePath, resultsPath, selecte
     let annotateFailure = process.env.GITHUB_ACTIONS === "true";
     const runAt = async (index, mode) => {
       const fileStarted = performance.now();
-      const result = await runFile(root, lane, lane.files[index], statePath, prepareFile, setup);
+      const result = await runFile(
+        root,
+        lane,
+        lane.files[index],
+        statePath,
+        prepareFile,
+        setup,
+        preparationId,
+      );
       result.mode = mode;
       // Round both ends, so start + duration is the rounded end and never passes a
       // later file's start.
@@ -1871,6 +1912,8 @@ async function runLane(root, manifest, laneName, statePath, resultsPath, selecte
     version: 1,
     command: "run",
     sourceSha: source.sha,
+    runtimeProvenance:
+      (await readRuntimeProvenance(statePath, identity)) ?? initialRuntimeProvenance,
     lane: laneName,
     scope: selectedFile === undefined ? "full" : "focused",
     status,

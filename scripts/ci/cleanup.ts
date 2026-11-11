@@ -1,3 +1,4 @@
+import { removeImageFileContainer } from "../lib/image-file.mjs";
 import { cleanupLogging, ciOtelBackendResourceKind } from "./logging.ts";
 import { cleanupKeycloak, keycloakResourceKind } from "./keycloak.mjs";
 import { laneImagesResourceKind, restoreLaneImages } from "./lane-images.ts";
@@ -711,6 +712,33 @@ async function cleanupFirstAgentImages(resource: CleanupResource, state: Cleanup
 
 async function cleanupResource(resource: CleanupResource, state: CleanupState, statePath: string) {
   switch (resource.kind) {
+    case "image-file":
+      if (resource.owner !== state.prefix) {
+        throw new Error("Refusing to clean an image extraction container owned by another prefix.");
+      }
+      if (
+        typeof resource.name !== "string" ||
+        !resource.name.startsWith(`${state.prefix}-provenance-`) ||
+        !/^openclaw-ci-[a-z0-9-]+-provenance-[a-f0-9]{12}$/.test(resource.name)
+      ) {
+        throw new Error("Refusing to remove an unowned image extraction container.");
+      }
+      await removeImageFileContainer({
+        resource,
+        persist: () => writeState(statePath, state),
+        command: async (_docker: string, args: string[], options: { timeout?: number } = {}) => {
+          try {
+            return (
+              await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, {
+                timeoutMs: options.timeout ?? 30_000,
+              })
+            ).stdout;
+          } catch {
+            throw new Error("Runtime provenance image cleanup command failed.");
+          }
+        },
+      });
+      break;
     case "first-agent-image-registry":
       await cleanupFirstAgentImages(resource, state);
       break;
@@ -861,7 +889,11 @@ async function cleanupLockedResourceIds(
       );
       await writeState(path, state);
     } catch (error) {
-      failures.push(`${resource.kind}:${resource.name ?? resource.id}:${errorMessage(error)}`);
+      failures.push(
+        resource.kind === "image-file"
+          ? "image-file:Runtime provenance cleanup failed; private resource receipt retained."
+          : `${resource.kind}:${resource.name ?? resource.id}:${errorMessage(error)}`,
+      );
     }
   }
 

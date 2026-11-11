@@ -6483,6 +6483,7 @@ Resolve native admin UI launch availability for one Agent
 | `data.host` | `string` | No | — |
 | `data.mode` | `"admin" or "chat"` | No | — |
 | `data.origin` | `string (uri)` | No | — |
+| `data.reason` | `"not-enabled" or "configuration" or "compute"` | No | — |
 | `data.sessionMode` | `"shared-cookie" or "host-only-exchange"` | No | — |
 | `data.status` | `"available" or "disabled" or "stopped" or "unavailable" or "unsupported"` | Yes | — |
 | `data.url` | `string (uri)` | No | — |
