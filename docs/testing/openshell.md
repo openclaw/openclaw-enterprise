@@ -168,10 +168,6 @@ reply from a real Agent, using an OIDC protocol fixture. Compose uses a
 synthetic credential without calling a model. Both default to Docker. Set
 `OCC_TEST_DEV_UP_CONTAINER_ENGINE=podman` for Podman.
 
-The Kubernetes browser case accepts `OPENAI_API_KEY` or `OPENAI_API_KEY_FILE`.
-It rejects custom model endpoints and native provider overrides; it does not use
-the Codex PAT credential. Separate PAT cases retain their token requirements.
-
 Set `OCC_TEST_NATIVE_BROWSER_RECEIPT` to a new file in an existing directory to
 retain the successful check's source, image identities, and assertion results.
 The test refuses overwrites and prints a temporary receipt path by default.
