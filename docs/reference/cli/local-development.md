@@ -12,13 +12,13 @@ stops both commands with the exact path to fix. If `go.mod` contains CRLF line
 endings, convert the file to LF and retry. These errors do not fall through to
 an outer checkout that could own a different stack.
 
-| Command                                         | What it does                                                                                                                                                                   |
-| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `occ dev up`                                    | Starts the profile selected by `OCC_DEVELOPMENT_COMPUTE_DRIVER`: `docker` (default) or `kubernetes`. Docker is a control-plane preview and cannot deploy Agents.               |
-| `occ dev up --key-output PATH`                  | Writes the bootstrap service-key file to an absent absolute path in a private directory.                                                                                       |
-| `occ dev up --sandbox-network-policy-file FILE` | Adds binary and endpoint rules for Kubernetes Compute with OpenShell; see [startup network policy](../../guides/deploy/local-sandbox-network-policy.md).                       |
-| `occ dev down`                                  | Stops the selected profile. Docker keeps Compose volumes by default. Kubernetes removes its owned k3d cluster; the Compose control-plane profile also removes Compose volumes. |
-| `occ dev down --volumes`                        | Also removes Docker Compose volumes; Kubernetes cleanup already removes its volumes.                                                                                           |
+| Command                                         | What it does                                                                                                                                                                                                                      |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `occ dev up`                                    | Starts the profile selected by `OCC_DEVELOPMENT_COMPUTE_DRIVER`: `docker` (default) or `kubernetes`. Docker is a control-plane preview and cannot deploy Agents.                                                                  |
+| `occ dev up --key-output PATH`                  | Writes the bootstrap service-key file to an absent absolute path in a private directory.                                                                                                                                          |
+| `occ dev up --sandbox-network-policy-file FILE` | Adds binary and endpoint rules for Kubernetes Compute with OpenShell; see [startup network policy](../../guides/deploy/local-sandbox-network-policy.md).                                                                          |
+| `occ dev down`                                  | Stops the selected profile. Unselected, it follows the recorded state (below). Docker keeps Compose volumes by default. Kubernetes removes its owned k3d cluster; the Compose control-plane profile also removes Compose volumes. |
+| `occ dev down --volumes`                        | Also removes Docker Compose volumes; Kubernetes cleanup already removes its volumes.                                                                                                                                              |
 
 In the Go Kubernetes helpers, a failed exclusive write removes its newly created
 output, including a partial key file. Existing targets stay unchanged. If removal
@@ -26,6 +26,17 @@ also fails, the returned error includes both failures.
 
 Compose global options, when needed, must follow `--`. Keep the cleanup command
 printed by startup so it selects the same profile and state directory.
+Without a Compute Driver selection, `occ dev down` reads the state directory
+(`OCC_DEVELOPMENT_STATE_DIRECTORY`, or the default under the temporary
+directory) and stops the Kubernetes stack recorded there; the Kubernetes control
+plane or a Sandbox Driver selection also selects that path. Compose options
+after `--`, or an absent state directory, stop the Docker profile instead. A
+state directory that exists but is unreadable or invalid stops cleanup with an
+error naming it; down never falls back to Docker in that case. Every checkout
+shares the default state directory, so when the recorded stack belongs to
+another checkout, unselected cleanup stops nothing and names that checkout: run
+`occ dev down` there, or select `OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes`.
+The final line says which stack was stopped.
 The explicitly selected Kubernetes-only profile rejects Compose options. Use
 `scripts/dev-up` and `scripts/dev-down` as the common entry points for every
 profile; the Compute and Sandbox Driver settings select the implementation.

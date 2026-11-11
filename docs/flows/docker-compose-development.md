@@ -50,8 +50,12 @@ selected Kubernetes Compute Driver and the
 
 The Kubernetes profile additionally uses `compose.kubernetes.yaml`,
 `internal/occdev`, k3d, and kubectl. `./bin/occ dev down` owns profile cleanup;
-`scripts/dev-down` dispatches to it. The local Kubernetes development guide
-owns the operator procedure and destructive cleanup boundary.
+`scripts/dev-down` dispatches to it. Without a Compute Driver selection,
+`internal/occdev/profile.go:downComputeDriver` sends cleanup to the stack
+recorded in the state directory, and to Docker only when that directory is
+absent or Compose options follow `--`; it refuses another checkout's stack.
+The local Kubernetes development guide owns the operator procedure and
+destructive cleanup boundary.
 
 ## Flow
 

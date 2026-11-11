@@ -492,7 +492,9 @@
         "Kubernetes dev-up rolls back owned resources after node-dns-refused",
         "Kubernetes dev-down preserves recovery state after incomplete cleanup and can retry",
         "cancelling Kubernetes startup during readiness rolls back its owned resources",
-        "launcher case recovery follows real Go rollback after node-dns-refused"
+        "launcher case recovery follows real Go rollback after node-dns-refused",
+        "dev-down from a fresh shell stops the recorded Kubernetes stack",
+        "dev-down from a fresh shell in another checkout refuses the recorded Kubernetes stack"
       ]
     },
     {
@@ -507,7 +509,10 @@
         "dev-up fails closed when the worker exits before readiness",
         "dev-up preserves a copied key when the authenticated installation check is rejected",
         "dev-up rejects an authenticated installation response for a different Installation",
-        "development cleanup defaults to the Compose profile"
+        "development cleanup without selectors stops Docker when no state is recorded",
+        "development cleanup without selectors refuses an unusable state directory",
+        "development cleanup with Compose options keeps the Docker profile",
+        "development cleanup treats a Kubernetes control plane without a Compute selection as Kubernetes"
       ]
     },
     {
