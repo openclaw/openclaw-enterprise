@@ -61,7 +61,10 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
   );
   const runtimeBuild = dockerLogs.find((entry) => entry.args[0] === "build");
   // A missing runtime tag means a first build, which compiles Node.js with no build cache.
-  assert.match(result.stderr, /dev-up: Building the runtime image\. With no build cache, this compiles Node\.js/);
+  assert.match(
+    result.stderr,
+    /dev-up: Building the runtime image\. With no build cache, this compiles Node\.js/,
+  );
   assert.deepEqual(runtimeBuild?.args, [
     "build",
     "-f",

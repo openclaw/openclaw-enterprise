@@ -53,7 +53,10 @@ test("auto Node compile jobs follow the builder's CPUs and memory within fixed b
     const result = await selectJobs(t, "auto", builder);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, `${expected}\n`, JSON.stringify(builder));
-    assert.match(result.stderr, new RegExp(`NODE_BUILD_JOBS=auto selected ${expected} compiler jobs`));
+    assert.match(
+      result.stderr,
+      new RegExp(`NODE_BUILD_JOBS=auto selected ${expected} compiler jobs`),
+    );
   }
 });
 
@@ -82,6 +85,12 @@ test("the runtime Dockerfile defaults the Node compile to auto jobs", async () =
     dockerfile,
     /^FROM node-source AS node-compiled\nARG NODE_BUILD_JOBS=auto\nRUN --network=none sh \/node-repair\/build.sh$/m,
   );
-  const build = await readFile(new URL("../../deploy/runtime/node/build.sh", import.meta.url), "utf8");
-  assert.match(build, /sh \/node-repair\/jobs\.sh "\$\{NODE_BUILD_JOBS-auto\}" "\$\(nproc\)" \/proc\/meminfo \/sys\/fs\/cgroup/);
+  const build = await readFile(
+    new URL("../../deploy/runtime/node/build.sh", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    build,
+    /sh \/node-repair\/jobs\.sh "\$\{NODE_BUILD_JOBS-auto\}" "\$\(nproc\)" \/proc\/meminfo \/sys\/fs\/cgroup/,
+  );
 });
