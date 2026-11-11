@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-11
-last_updated_session: authoring-run/59e3fbae-c2ef-496b-ad18-c965758bee04
+last_updated_session: authoring-run/24db2a8e-6abc-40a2-9332-103ff02f4d4f
 ---
 
 # GitHub Actions testing flow
@@ -204,10 +204,9 @@ Required cases must pass; every skip or TODO fails the lane. There are no counte
 `scripts/ci/cleanup.ts:main` and `scripts/ci/run-tests.mjs:main`
 
 `.github/actions/run-ci-lane/action.yml` uploads one sanitized result artifact
-per lane and run. A retry replaces that lane's artifact, preventing aggregation
-of a stale result; other lanes retain theirs. Each attempt also uploads the same
-file as `attempt-<run attempt>-<artifact-prefix>-<lane>`, which no aggregate
-pattern matches, so a failed attempt's cases survive a `--failed` rerun.
+per lane/run; retries replace it. Each attempt also uploads the same result as
+`attempt-<run attempt>-<artifact-prefix>-<lane>` outside aggregate patterns,
+preserving failed cases across `--failed` reruns. Other lanes retain their artifacts.
 
 `scripts/ci/memory-sampler.sh` samples memory pressure, RSS, process IDs,
 containers and disk every 15 seconds, excluding arguments and environment.
@@ -280,6 +279,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 09:34: Allocate PostgreSQL ports through Docker and retain discovery cleanup ownership. (authoring-run/24db2a8e-6abc-40a2-9332-103ff02f4d4f - 89e4d8b565e511f0dc4688e6dcaed093659e447a)
 
 - 2026-11-11 07:55: Retain selected runtime Codex provenance in CI evidence. (authoring-run/59e3fbae-c2ef-496b-ad18-c965758bee04 - 7fa7a37738bb24b27d9a835e409ea20eafb43cee)
 

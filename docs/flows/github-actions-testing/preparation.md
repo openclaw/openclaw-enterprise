@@ -85,20 +85,22 @@ reads bounded metadata; results and diagnostics retain only their preparation's 
 Missing metadata records `unavailable`; image policy is unchanged.
 Extraction journals IDs before removal. Cleanup removes containers and anonymous volumes. Journal and cleanup errors fail preparation; unresolved resources retain receipts.
 
-Before creating the bootstrap directory beside the state file,
-`scripts/ci/prepare.mjs:ensurePostgresServer` records its absolute path. It refuses
-an existing directory and retires the planned record if directory creation fails.
-It confirms directory creation, then exclusively creates a private copy of
-`migrations/init-local.sql` and confirms its creation in state. It makes the public
-SQL readable by the container user and passes it to Compose as
-`OPENCLAW_CI_POSTGRES_INIT_SQL`. The checkout is unchanged.
+`scripts/ci/prepare.mjs:ensurePostgresServer` journals the bootstrap directory
+before creation and refuses existing paths. Failed creation retires its record.
+It separately confirms directory creation and exclusive SQL-copy creation in
+state, then makes the public `migrations/init-local.sql` copy container-readable
+and passes its path as `OPENCLAW_CI_POSTGRES_INIT_SQL` without changing the checkout.
 
-`scripts/ci/cleanup.ts:cleanupComposePostgres` checks the exact directory path
-against the opened state file. Without directory confirmation, it preserves any
-directory at that path and retains state. Without SQL confirmation, it removes
-only an empty confirmed directory. After Compose teardown, it removes the
-confirmed SQL file and its empty directory. Unexpected contents or failed
-teardown retain cleanup state.
+Docker allocates PostgreSQL's loopback port. Preparation inspects the owned
+container, rejects missing, non-loopback or developer-port `55432` bindings, and
+saves the verified port before connecting. Failed discovery retains pending port
+`0` for cleanup.
+
+`scripts/ci/cleanup.ts:cleanupComposePostgres` checks the directory against the
+state path. Unconfirmed ownership preserves contents and state; confirmed
+directory ownership alone permits only empty-directory removal. After Compose
+teardown it removes confirmed SQL and the empty directory. Unexpected contents
+or teardown failure retain state.
 
 If Docker exhausts its subnet pools during Compose startup, preparation preserves
 the error, adds the command to clean up the recorded project, and leaves the

@@ -625,9 +625,8 @@ async function commandAvailable(command, args = ["--version"], options) {
   }
 }
 
-// Ports this process has handed out. PostgreSQL and k3d now reserve theirs
-// concurrently and release the probe listener before binding, so the kernel could
-// return the same free port to both; never hand one out twice.
+// Never hand out the same probe port twice within this preparation process.
+// Docker allocates PostgreSQL's port directly; other callers still use probes.
 const reservedLoopbackPorts = new Set();
 
 async function reserveLoopbackPort() {
@@ -681,10 +680,6 @@ async function ensurePostgresServer(statePath, state) {
     "--format",
     "{{.Server.Version}}",
   ]);
-  const port = await reserveLoopbackPort();
-  if (port === 55432) {
-    throw new Error("Refusing to use the developer PostgreSQL port 55432.");
-  }
   const project = ownedName("openclaw-ci-pg", state.prefix, { maxLength: 63, separator: "_" });
   const directory = join(dirname(statePath), `${project}-bootstrap`);
   try {
@@ -701,7 +696,9 @@ async function ensurePostgresServer(statePath, state) {
     directoryCreated: false,
     initSqlCreated: false,
     composeFile: composePostgresFile,
-    port,
+    // Zero asks Docker to allocate in its own host namespace. Keep this pending
+    // value until discovery succeeds so partial startup can still be cleaned.
+    port: 0,
   });
   await writeState(statePath, state);
   try {
@@ -727,7 +724,7 @@ async function ensurePostgresServer(statePath, state) {
     await execFile(
       process.env.OCC_DOCKER_BIN ?? "docker",
       dockerArgsForPostgres(resource, "up", "-d", "--wait"),
-      { env: { OCC_POSTGRES_PORT: String(port), OPENCLAW_CI_POSTGRES_INIT_SQL: initSql } },
+      { env: { OCC_POSTGRES_PORT: "0", OPENCLAW_CI_POSTGRES_INIT_SQL: initSql } },
     );
   } catch (error) {
     if (
@@ -745,6 +742,42 @@ async function ensurePostgresServer(statePath, state) {
     }
     throw error;
   }
+  const docker = process.env.OCC_DOCKER_BIN ?? "docker";
+  const container = (
+    await execFile(docker, dockerArgsForPostgres(resource, "ps", "-q", "postgres"), {
+      env: { OCC_POSTGRES_PORT: "0", OPENCLAW_CI_POSTGRES_INIT_SQL: initSql },
+    })
+  ).stdout.trim();
+  if (!/^[a-f0-9]{64}$/.test(container)) {
+    throw new Error("Expected one owned PostgreSQL container for port discovery.");
+  }
+  const output = await execFile(docker, [
+    "inspect",
+    "--format",
+    "{{json .NetworkSettings.Ports}}",
+    container,
+  ]);
+  let ports;
+  try {
+    ports = JSON.parse(output.stdout);
+  } catch {
+    throw new Error("Invalid PostgreSQL port discovery response.");
+  }
+  const bindings = ports?.["5432/tcp"];
+  const port = Number(bindings?.[0]?.HostPort);
+  if (
+    !Array.isArray(bindings) ||
+    bindings.length !== 1 ||
+    bindings[0]?.HostIp !== "127.0.0.1" ||
+    typeof bindings[0]?.HostPort !== "string" ||
+    !/^[1-9][0-9]{0,4}$/.test(bindings[0].HostPort) ||
+    port > 65535 ||
+    port === 55432
+  ) {
+    throw new Error("Expected one loopback PostgreSQL port outside developer port 55432.");
+  }
+  resource.port = port;
+  await writeState(statePath, state);
   await postgresAdmin(resource, { statements: ciPostgresSettings, stage: "postgres-settings" });
   await markResourceReady(statePath, state, resource);
   return resource;

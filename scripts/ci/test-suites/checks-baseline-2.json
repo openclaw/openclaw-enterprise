@@ -256,7 +256,8 @@
       "path": "tests/integration/ci-cleanup.test.mjs"
     },
     {
-      "path": "tests/integration/ci-prepare-postgres.test.ts"
+      "path": "tests/integration/ci-prepare-postgres.test.ts",
+      "optionalEnv": ["OCC_TEST_CI_POSTGRES_REAL"]
     },
     {
       "path": "tests/integration/runtime-image-failure-output.test.mjs"
