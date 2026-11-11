@@ -1396,7 +1396,9 @@ async function buildRuntimeImages(
     }
   };
   const importDeadlineMs =
-    runtimeArtifact && state.lane === "docker-model" ? imageBuildDeadlineMs() : undefined;
+    runtimeArtifact && ["docker-model", "gateway-routing", "production-tui"].includes(state.lane)
+      ? imageBuildDeadlineMs()
+      : undefined;
   const importBudgetMs = importDeadlineMs === undefined ? undefined : importDeadlineMs - Date.now();
   if (importBudgetMs !== undefined && importBudgetMs < 1_000) {
     throw new Error("No time remains to import the runtime artifact before the test reserve.");
@@ -3005,7 +3007,7 @@ async function prepareK3dRuntimeImages(
   state,
   cluster,
   env,
-  { buildController = false, buildRuntime = false, reuseEngineImages = true } = {},
+  { buildController = false, buildRuntime = false, reuseEngineImages = true, runtimeArtifact } = {},
 ) {
   const needsController = buildController && !process.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE;
   const needsRuntime =
@@ -3023,15 +3025,23 @@ async function prepareK3dRuntimeImages(
     ]
       .filter(Boolean)
       .join(", ");
-    progress(
-      state.lane,
-      `Building the current ${images} image${needsController && needsRuntime ? "s" : ""}.`,
-    );
+    if (runtimeArtifact) {
+      progress(
+        state.lane,
+        `Loading the shared gateway and Codex runtime artifact${needsController ? " and preparing the current controller image" : ""}.`,
+      );
+    } else {
+      progress(
+        state.lane,
+        `Building the current ${images} image${needsController && needsRuntime ? "s" : ""}.`,
+      );
+    }
     const built = await buildRuntimeImages(statePath, state, {
       controller: needsController,
       runtime: needsRuntime,
       nodeBaseImage: effectiveLaneEnv(state.lane, env).NODE_BASE_IMAGE,
       reuseEngineImages,
+      runtimeArtifact,
     });
     Object.assign(env, built.env);
     if (needsRuntime) {
@@ -3183,7 +3193,7 @@ async function prepareProductionImages(
   state,
   cluster,
   env,
-  { localStore = false, sourceImages } = {},
+  { localStore = false, sourceImages, runtimeArtifact } = {},
 ) {
   if (sourceImages) {
     Object.assign(env, sourceImages);
@@ -3193,6 +3203,7 @@ async function prepareProductionImages(
       runtime: true,
       nodeBaseImage: effectiveLaneEnv(state.lane, env).NODE_BASE_IMAGE,
       localStore,
+      runtimeArtifact,
     });
     Object.assign(env, built.env);
   }
@@ -3285,6 +3296,8 @@ async function prepareLane({ lane, statePath, file }) {
     if (
       ![
         "docker-model",
+        "gateway-routing",
+        "production-tui",
         "images-packaging",
         "images-runtime-startup",
         "images-runtime-startup-2",
@@ -3292,7 +3305,21 @@ async function prepareLane({ lane, statePath, file }) {
       ].includes(name)
     ) {
       throw new Error(
-        "Runtime artifacts are supported only by Docker Model Runtime and the ordinary image lanes.",
+        "Runtime artifacts are supported only by Docker Model Runtime, Gateway Routing, Production TUI and the ordinary image lanes.",
+      );
+    }
+    const conflictingImages = [];
+    if (name === "gateway-routing") {
+      conflictingImages.push(
+        "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+        "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+      );
+    } else if (name === "production-tui") {
+      conflictingImages.push(...Object.keys(productionUpgradeImages));
+    }
+    if (conflictingImages.some((variable) => process.env[variable])) {
+      throw new Error(
+        "A runtime artifact cannot be combined with selected Gateway or TUI upgrade images.",
       );
     }
     if (process.env.OCC_K3D_OPENCLAW_SOURCE) {
@@ -3667,6 +3694,7 @@ async function prepareLane({ lane, statePath, file }) {
       const cluster = await prepareK3dModelLane(resolvedStatePath, state, env, {
         buildController: true,
         buildRuntime: true,
+        runtimeArtifact,
       });
       const routing = await prepareGatewayRouting({ cluster, execFile });
       Object.assign(env, routing.env);
@@ -3691,7 +3719,10 @@ async function prepareLane({ lane, statePath, file }) {
             OCC_TEST_KUBERNETES_RUNTIME_IMAGE: inputs.OCC_TEST_KUBERNETES_RUNTIME_IMAGE,
           }
         : undefined;
-      await prepareProductionImages(resolvedStatePath, state, cluster, env, { sourceImages });
+      await prepareProductionImages(resolvedStatePath, state, cluster, env, {
+        sourceImages,
+        runtimeArtifact,
+      });
       if (upgradeSelected) {
         for (const [variable, baseline] of Object.entries(productionUpgradeImages)) {
           const imported = await registerImageInK3d(

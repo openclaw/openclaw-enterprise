@@ -46,8 +46,8 @@ The PR advisory OpenShell job uses Ubuntu 24.04 for Landlock and selects package
 
 For lanes declaring both optional immutable image inputs,
 `scripts/ci/prepare.mjs:validateLaneInputsBeforeSideEffects` rejects partial
-Gateway/Agent pairs before creating state. `prepareK3dRuntimeImages` builds the
-runtime when both are absent; selected pairs retain their immutable references.
+Gateway/Agent pairs before creating state. `prepareK3dRuntimeImages` imports the
+selected artifact or builds source when both are absent; selected pairs retain their immutable references.
 Controller build selection is independent.
 
 `scripts/ci/prepare.mjs:imageBuildArgs` restores read-only caches, including
@@ -59,13 +59,18 @@ TUI, `k3d-otel` and OpenShell (`image-cache`; OpenShell: `first-agent-image-cach
 alternate sources. Step counts deduplicate IDs; imports count lines.
 Imports do not prove hits; loads may reuse probe work.
 
-The four ordinary image lanes, First Agent Smoke and Docker Model Runtime
-download artifacts by repository, producer run and artifact IDs, using the job
-token’s `actions: read` permission.
+Image lanes, First Agent Smoke, Docker Model Runtime, Gateway Routing and
+Production TUI download artifacts by repository, producer run and artifact IDs,
+using the job token’s `actions: read` permission.
 
 Docker Model Runtime requires an artifact ID on producer success. Failure or
 skip selects a standalone build. After download, local import cancellation
-starts three minutes before the lane deadline.
+starts three minutes before the lane deadline. Gateway Routing and default
+Production TUI share that deadline. Full and focused runs wait for the producer
+before controller preparation and runtime import. `integration-main` snapshots
+the Gateway/Agent pair; consumers reject incomplete mode, pair or artifact ID
+before setup. Focused explicit pairs skip the producer. Artifacts cannot accompany
+Gateway inputs or TUI upgrade candidates; conflicts fail before allocation.
 
 `loadRuntimeArtifact` verifies archive, source, run, attempt, platform, OCI index,
 manifest and config digests, and the loaded image. Docker's image ID may equal
@@ -77,7 +82,31 @@ First Agent Smoke checks compressed and uncompressed layer digests with
 `prepareRuntimeArtifactLayout`. Buildx uses the verified layout's platform
 manifest digest to build the trust layer.
 
-Before tagging or import, the CLI records image resources in private `RUNNER_TEMP` state for later steps, never artifact upload. Database tests use the limited application role with a fresh migrated database per file; each Agent revision worker test receives a migrated template copy (`prepareFile({ template })`). Failure and Kubernetes database names satisfy the existing test admission guards. Ordinary lanes select explicit loopback k3d contexts and digest-pinned Kubernetes 1.35 K3s images. Readiness rejects server versions outside Kubernetes 1.35. OpenShell retains its separately pinned K3s image. External images are pulled by their approved registry digest and exported for the selected platform; built and external images receive a run-owned reference at the imported platform manifest digest. Preparation records sources and pins cluster references against kubelet image garbage collection. Import requires OCI or Docker manifests. Every node must report its expected containerd digest and an exact CRI digest-list entry with boolean `pinned: true`. This retention excludes standalone manual or operator imports. The retired CLI-only installed repository lane is absent from the manifest: `assertLane` rejects it before state or resources are created. Its image and seccomp preparation below is unreachable. When either production TUI upgrade candidate is selected, preparation requires both candidate and baseline controller/runtime digests before allocating resources. It imports the four supplied sources, rejects a candidate resolving to the same local image as its baseline, and records their source and imported identities in private state. Per-file preparation checks the same selection against that state and passes the imported references to the test. Without candidate images, the lane builds the current source as before. Failures still require cleanup. Cleanup checks k3d inventory before and after deletion and matching Docker containers, networks and volumes; invalid inventory or possible survivors retain state.
+Before tagging or import, the CLI records image ownership in private
+`RUNNER_TEMP` state, excluded from uploads. Database tests use the limited
+application role and fresh migrated databases; Agent revision worker tests use
+migrated template copies (`prepareFile({ template })`). Failure and Kubernetes
+database names satisfy admission guards.
+
+Ordinary lanes select loopback k3d contexts and digest-pinned Kubernetes 1.35 K3s;
+readiness rejects other server versions. OpenShell keeps its separate K3s pin.
+External images use approved registry digests and the selected platform. All
+images receive run-owned references at their imported platform manifest digests.
+Preparation pins OCI or Docker manifests against kubelet garbage collection.
+Every node must report the expected containerd digest and an exact CRI
+digest-list entry with boolean `pinned: true`. Manual imports are excluded.
+
+TUI upgrades require both candidate and baseline controller/runtime digests
+before allocation. Preparation imports all four, rejects candidates resolving to
+their baselines, and records source and imported identities. File preparation
+checks that selection and passes imported references to tests. Otherwise,
+preparation builds the controller and imports the selected runtime artifact or
+builds source. Failures enter cleanup, which checks k3d inventory before and after
+deletion, then matching Docker containers, networks and volumes. Invalid inventory
+or possible survivors retain state.
+
+The retired CLI-only installed repository lane is absent from the manifest:
+`assertLane` rejects it before allocation; its preparation below is unreachable.
 
 `scripts/ci/prepare.mjs:retainRuntimeProvenance` compares platform-selected host
 and CRI config digests. `scripts/ci/runtime-provenance.mjs:readImageCodexProvenance`

@@ -2,7 +2,16 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { appendFile, chmod, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  chmod,
+  mkdir,
+  readdir,
+  readFile,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { createRequire } from "node:module";
 import { connect, createServer } from "node:net";
 import { availableParallelism } from "node:os";
@@ -3637,7 +3646,47 @@ if (args[0] === "pull") {
     }
   });
 
-  test("runtime artifact selection rejects unsupported lanes before preparation", async (t) => {
+  test("Kubernetes runtime consumers reject a foreign artifact without a source-build fallback", async (t) => {
+    for (const lane of ["gateway-routing", "production-tui"]) {
+      const commands = await fixtureImageCommands(t, "artifact-import", lane, {
+        NODE_BASE_IMAGE: packagingNodeBaseImage,
+        OPENAI_API_KEY: "synthetic-model-key",
+        OCC_TEST_OPENAI_MODEL: "synthetic-model",
+        OCC_TEST_PRODUCTION_POSTGRES_IMAGE: immutableImage,
+        OCC_TEST_PRODUCTION_NODE_IMAGE: nodeBaseImage,
+        OCC_CI_RUNTIME_ARTIFACT_DIRECTORY: "/missing-foreign-artifact",
+        OCC_CI_RUNTIME_ARTIFACT_SHA256: "a".repeat(64),
+        OCC_CI_RUNTIME_ARTIFACT_SOURCE_SHA: "a".repeat(40),
+        OCC_CI_RUNTIME_ARTIFACT_RUN_ID: "123456",
+        OCC_CI_RUNTIME_ARTIFACT_ATTEMPT: "1",
+      });
+      // Real Git identifies this checkout; Docker, PostgreSQL and k3d are command
+      // fixtures. This proves fail-closed orchestration, not image or model execution.
+      await symlink("/usr/bin/git", join(dirname(commands.statePath), "bin", "git"));
+      const prepared = await commands.prepare();
+      assert.equal(prepared.status, 1, lane);
+      assertStderrMatch(prepared.stderr, /Runtime artifact source differs from checkout/, lane);
+      const calls = await commands.commands();
+      assert.equal(
+        calls.some(
+          ({ args }) =>
+            (args[0] === "build" || (args[0] === "buildx" && args[1] === "build")) &&
+            args.includes(join(repositoryRoot, "deploy/runtime/Dockerfile")),
+        ),
+        false,
+      );
+      const state = await commands.readState();
+      assert.ok(
+        state.resources.some(
+          ({ kind, name }) => kind === "image-tag" && name.endsWith("/runtime:local"),
+        ),
+      );
+      await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
+      await commands.cleanupSuccessfully();
+    }
+  });
+
+  test("runtime artifact selection rejects unsupported lanes and conflicting images before preparation", async (t) => {
     const root = await fixture(t);
     const commandLog = join(root, "commands.log");
     const commandGuard = join(root, "must-not-run");
@@ -3646,11 +3695,26 @@ if (args[0] === "pull") {
       `#!${process.execPath}\nimport { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(commandLog)}, "called\\n");\nprocess.exit(97);\n`,
       { mode: 0o700 },
     );
-    // These lanes share build caches, but cannot consume a runtime artifact.
-    // A complete selection must be refused before state or source builds exist.
-    for (const [lane, file] of [
+    // Unsupported lanes and conflicting image selections must be refused
+    // before state or source builds exist.
+    for (const [lane, file, variable] of [
       ["dev-up-k3d", "tests/integration/dev-up-k3d-real.test.mjs"],
       ["qa-matrix", "tests/integration/qa-matrix-real.test.mjs"],
+      ...["OCC_TEST_KUBERNETES_GATEWAY_IMAGE", "OCC_TEST_KUBERNETES_AGENT_IMAGE"].map(
+        (variable) => [
+          "gateway-routing",
+          "tests/integration/harness-topology-k3d-routing-real.test.mjs",
+          variable,
+        ],
+      ),
+      ...[
+        "OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE",
+        "OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE",
+      ].map((variable) => [
+        "production-tui",
+        "tests/integration/production-tui-k3d-real.test.mjs",
+        variable,
+      ]),
     ]) {
       const statePath = join(root, `${lane}.json`);
       const result = await spawnResult(
@@ -3666,6 +3730,7 @@ if (args[0] === "pull") {
             OCC_DOCKER_BIN: commandGuard,
             OPENCLAW_CI_K3D_BIN: commandGuard,
             OCC_KUBECTL_BIN: commandGuard,
+            ...(variable ? { [variable]: immutableImage } : {}),
             OCC_CI_RUNTIME_ARTIFACT_DIRECTORY: join(root, "missing-artifact"),
             OCC_CI_RUNTIME_ARTIFACT_SHA256: "a".repeat(64),
             OCC_CI_RUNTIME_ARTIFACT_SOURCE_SHA: "a".repeat(40),
@@ -3677,7 +3742,9 @@ if (args[0] === "pull") {
       assert.equal(result.status, 1, lane);
       assertStderrMatch(
         result.stderr,
-        /Runtime artifacts are supported only by Docker Model Runtime and the ordinary image lanes/,
+        variable
+          ? /A runtime artifact cannot be combined with selected Gateway or TUI upgrade images/
+          : /Runtime artifacts are supported only by Docker Model Runtime, Gateway Routing, Production TUI and the ordinary image lanes/,
         lane,
       );
       await assert.rejects(() => stat(statePath), { code: "ENOENT" });
