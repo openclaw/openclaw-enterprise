@@ -130,6 +130,12 @@ instead of repeated replacement deployments. If recovery cannot succeed, retain
 the failure and pending work for inspection. Measure detection and recovery time
 in the installed environment.
 
+Keep the Gateway's Linux process namespace stable across container restarts
+inside one Pod. This lets native state ownership checks prove that a crashed
+process has exited. It does not permit a second Gateway or automatic removal of
+an unverifiable foreign lock after Pod replacement. Test process crashes and
+whole-Pod replacement separately; record the latter's fencing requirement.
+
 ## Acceptance Criteria
 
 - **AC-1 — Native chat:** On Kubernetes with an enforcing network policy and
