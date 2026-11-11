@@ -3327,6 +3327,14 @@ if (args[0] === "pull") {
       const engine = await launcherImageEngine(t);
       const root = engine.root;
       const envPath = join(root, "prepared.env");
+      if (name === "selected") {
+        // A later process must retain the prepared selection without re-exporting its inputs.
+        const lane = await runPrepare(
+          ["--lane", "dev-up-k3d", "--state", join(root, `${name}.json`)],
+          { ...engine.env, ...inputs },
+        );
+        assert.equal(lane.status, 0, lane.stderr);
+      }
       const result = await runPrepare(
         [
           "--lane",
@@ -3338,7 +3346,11 @@ if (args[0] === "pull") {
           "--github-env",
           envPath,
         ],
-        { ...engine.env, ...inputs },
+        {
+          ...engine.env,
+          OCC_TEST_BROWSER_EXECUTABLE: "",
+          OCC_TEST_DEV_UP_CONTAINER_ENGINE: "",
+        },
       );
       assert.equal(result.status, 0, result.stderr);
       assert.deepEqual(

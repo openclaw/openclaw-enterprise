@@ -3718,9 +3718,11 @@ async function prepareLane({ lane, statePath, file }) {
     await markResourceReady(resolvedStatePath, state, keycloak.resource);
   }
 
+  const defaults = laneDefaults(name, env);
+  state.defaults = defaults;
   await saveLaneEnv(resolvedStatePath, state, env);
   return {
-    env: { ...laneDefaults(name, env), ...env },
+    env: { ...defaults, ...env },
     cleanup: async () => cleanupResourceIds(resolvedStatePath),
   };
 }
@@ -3825,7 +3827,7 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
       execFile,
     });
     return {
-      defaults: laneDefaults(name, env),
+      defaults: laneDefaults(name, { ...state.defaults, ...env }),
       env: { ...env, ...prepared.env },
       cleanup: prepared.cleanup,
     };
@@ -3888,7 +3890,7 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     env.OCC_PRODUCTION_WIREUP_DATABASE_URL = production.appUrl;
   }
 
-  const defaults = laneDefaults(name, env);
+  const defaults = laneDefaults(name, { ...state?.defaults, ...env });
 
   if (name === "dev-up-k3d") {
     await prepareDevUpImage(

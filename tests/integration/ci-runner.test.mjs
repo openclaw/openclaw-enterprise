@@ -5527,6 +5527,51 @@ waitingTest(
   },
 );
 
+test("invalid prepared defaults keep bounded cleanup and its failure without starting a child", async (t) => {
+  const root = await fixture(t);
+  const files = ["clean", "failed-cleanup"].map((name) => `tests/integration/${name}.test.mjs`);
+  for (const file of files) {
+    await writeFile(join(root, file), 'throw new Error("child must not start");\n');
+  }
+  await writeSingleLaneManifest(
+    root,
+    "invalid-defaults",
+    files.map((path) => ({ path })),
+    { ci: ["invalid-defaults"] },
+  );
+  await writeFile(
+    join(root, "scripts/ci/prepare.mjs"),
+    `
+import { writeFile, rm } from "node:fs/promises";
+export async function prepareFile({ file }) {
+  const name = file.path.endsWith("failed-cleanup.test.mjs") ? "failed-cleanup" : "clean";
+  const owned = new URL("../../" + name, import.meta.url);
+  await writeFile(owned, "owned resource");
+  return { defaults: { FLAG: 1 }, cleanup: async () => {
+    await rm(owned);
+    if (name === "failed-cleanup") throw new Error("cleanup failure");
+  } };
+}
+`,
+  );
+  const result = run(
+    root,
+    laneArgs(root, "invalid-defaults", "state/lane.json", "results/defaults.json"),
+  );
+  assert.equal(result.status, 1);
+  const summary = JSON.parse(await readFile(join(root, "results/defaults.json"), "utf8"));
+  assert.deepEqual(
+    summary.files.map((file) => file.cleanup?.status),
+    ["passed", "failed"],
+  );
+  assert.equal(summary.issues.filter(({ code }) => code === "prepare-failed").length, 2);
+  assert.equal(summary.issues.filter(({ code }) => code === "cleanup-failed").length, 1);
+  assert.ok(summary.files.every((file) => file.nodeExitCode === null && file.tests.length === 0));
+  for (const name of ["clean", "failed-cleanup"]) {
+    await assert.rejects(readFile(join(root, name)), { code: "ENOENT" });
+  }
+});
+
 test("run records a preparation failure's redacted message in the diagnostics report", async (t) => {
   const root = await fixture(t);
   const resultsPath = join(root, "results/prepare.json");
@@ -5538,10 +5583,10 @@ test("run records a preparation failure's redacted message in the diagnostics re
       "export async function prepareFile({ file, statePath }) {",
       "  if (file.path.endsWith('broken.test.mjs')) {",
       "    // The lane state's env holds prepared values the job env never had.",
-      "    await writeFile(statePath, JSON.stringify({ env: { OCC_TEST_STATE_IMAGE: 'stateonlyopaque-image-ref' } }));",
+      "    await writeFile(statePath, JSON.stringify({ env: { OCC_TEST_STATE_IMAGE: 'stateonlyopaque-image-ref' }, defaults: { OCC_TEST_SELECTED_IMAGE: 'selectedopaque-image-ref' } }));",
       `    const pullUrl = ${JSON.stringify(syntheticCredentialUrl({ username: "user", password: "hunter2pass", host: "registry.example", pathname: "/x" }))};`,
       "    const error = new Error(",
-      "      `image import failed for ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL} stateonlyopaque-image-ref\\nAuthorization: Bearer abcdefghijklmnop0123\\npull ${pullUrl}`,",
+      "      `image import failed for ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL} stateonlyopaque-image-ref selectedopaque-image-ref\\nAuthorization: Bearer abcdefghijklmnop0123\\npull ${pullUrl}`,",
       "    );",
       "    error.stderr = 'child output secretauthvalue-stderr';",
       "    throw error;",
@@ -5572,7 +5617,10 @@ test("run records a preparation failure's redacted message in the diagnostics re
   const prepareIssue = summary.issues.find((entry) => entry.code === "prepare-failed");
   assert.deepEqual(prepareIssue.error, { name: "Error" });
   const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
-  assert.doesNotMatch(text, /secretauthvalue|abcdefghijklmnop0123|hunter2pass|stateonlyopaque/);
+  assert.doesNotMatch(
+    text,
+    /secretauthvalue|abcdefghijklmnop0123|hunter2pass|stateonlyopaque|selectedopaque/,
+  );
   const report = JSON.parse(text);
   assert.equal(report.failures.length, 1);
   const [record] = report.failures;
@@ -5581,7 +5629,7 @@ test("run records a preparation failure's redacted message in the diagnostics re
   assert.equal(record.error.name, "Error");
   assert.equal(
     record.error.message,
-    "image import failed for [env:CI_RUNNER_FIXTURE_CREDENTIAL] [env:OCC_TEST_STATE_IMAGE]\n[redacted credential-bearing line]\n[redacted credential-bearing line]",
+    "image import failed for [env:CI_RUNNER_FIXTURE_CREDENTIAL] [env:OCC_TEST_STATE_IMAGE] [env:OCC_TEST_SELECTED_IMAGE]\n[redacted credential-bearing line]\n[redacted credential-bearing line]",
   );
   assert.match(record.error.stack, /^at prepareFile \(.*scripts\/ci\/prepare\.mjs:7:\d+\)/);
 });

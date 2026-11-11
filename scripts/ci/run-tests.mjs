@@ -761,16 +761,21 @@ async function preparationFailureText(error, lane, statePath, root) {
     .filter((line) => /^\s+at\s/u.test(line))
     .map((line) => line.trim())
     .join("\n");
-  let stateEnv;
+  let state;
   try {
-    stateEnv = JSON.parse(await readFile(statePath, "utf8"))?.env;
+    state = JSON.parse(await readFile(statePath, "utf8"));
   } catch {
     // No lane state, or not JSON.
   }
   return (
     redactFailureDetail(
       { message: message.slice(0, failureInputLimit), stack: frames.slice(0, failureInputLimit) },
-      failureSecrets([process.env, lane.env, isObject(stateEnv) ? stateEnv : {}]),
+      failureSecrets([
+        process.env,
+        lane.env,
+        isObject(state?.defaults) ? state.defaults : {},
+        isObject(state?.env) ? state.env : {},
+      ]),
       root,
     ) ?? {}
   );
@@ -1401,12 +1406,14 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
             prepareLimitMs(),
           ),
         )) ?? {};
-      prepared.defaults = validatePreparedEnv(result.defaults);
-      prepared.env = validatePreparedEnv(result.env);
-      prepared.cleanup = result.cleanup ?? null;
-      if (prepared.cleanup !== null && typeof prepared.cleanup !== "function") {
+      const cleanup = result.cleanup ?? null;
+      if (cleanup !== null && typeof cleanup !== "function") {
         throw new Error("prepareFile cleanup must be a function");
       }
+      // A returned resource owner still needs cleanup when its output is invalid.
+      prepared.cleanup = cleanup;
+      prepared.defaults = validatePreparedEnv(result.defaults);
+      prepared.env = validatePreparedEnv(result.env);
     } catch (error) {
       if (error instanceof StepTimeoutError) {
         // Its turn in the setup queue came after the deadline, or it ran into the deadline.
@@ -1432,7 +1439,9 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
         reason: "prepare",
         error: { ...sanitized, ...(await preparationFailureText(error, lane, statePath, root)) },
       });
-      return emptyFileResult(relativePath, issues);
+      if (!prepared.cleanup) {
+        return emptyFileResult(relativePath, issues);
+      }
     }
   }
 

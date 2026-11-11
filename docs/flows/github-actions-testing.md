@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-11
-last_updated_session: authoring-run/3950ed4c-e0a8-42f9-8fc0-6b5fa60d7d3a
+last_updated_session: authoring-run/468c8b0e-17e2-4d4e-988e-f00f3434ccfa
 ---
 
 # GitHub Actions testing flow
@@ -124,9 +124,8 @@ PR dependency caches stay within GitHub's PR merge-ref scope; main caches stay m
 
 [CI resource preparation](github-actions-testing/preparation.md) covers tools, images, clusters, credentials and ownership.
 
-For `logging-collector`, `scripts/ci/prepare.mjs:prepareLane` pre-pulls Collector, Node,
-Prometheus and Grafana using the test's shared
-`scripts/ci/metrics-monitoring-images.mjs:metricsMonitoringImages` pins.
+For `logging-collector`, `scripts/ci/prepare.mjs:prepareLane` pre-pulls configured
+Collector and Node images and the shared Prometheus and Grafana pins.
 `ensureDockerSourceImage` reuses verified local digests or verifies downloads from
 `scripts/ci/image-pull.ts:pullImage` before publishing inputs. Registry 5xx/rate
 limits retry within the shared budget; missing manifests/authorization refusals
@@ -179,13 +178,11 @@ both commits.
 
 `scripts/ci/run-tests.mjs:main`, `scripts/ci/reporter.mjs:jsonLinesReporter` and `scripts/ci/failure-redaction.mjs:redactFailure`
 
-`scripts/ci/run-tests.mjs:normalizeFile` validates `file.env` maps.
+`scripts/ci/run-tests.mjs:normalizeFile` validates `file.env`.
 `runFile` merges, per child: filtered inherited values
 with declared inputs restored, `lane.env`, preparation defaults, `file.env`, then
-preparation-owned generated values. Later values win without changing siblings.
-`scripts/ci/prepare.mjs:prepareFile` returns defaults; persisted `state.env` holds
-generated values. File literals affect neither earlier preflight nor resource
-preparation. Keep differing prerequisites in separate files.
+generated values. Later values win.
+`scripts/ci/prepare.mjs:prepareFile` returns `state.defaults` and generated `state.env` separately. File literals affect neither preflight nor resource preparation. Keep differing prerequisites in separate files.
 
 The reporter records case names, locations and outcomes. Results and logs retain failure messages (600 characters) and top frames (240). Redaction removes repository paths, replaces nonpublic job/child environment values (8+ characters) with `[env:NAME]`, and masks token/key shapes, URL passwords and `password=` values as `[redacted]`; generated values require a matching shape.
 
@@ -284,6 +281,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 02:22: Persist defaults separately. (authoring-run/468c8b0e-17e2-4d4e-988e-f00f3434ccfa - 52faf13e94dab59c20c80b161169c1d32429da36)
 
 - 2026-11-11 02:08: Trace per-file environment precedence and preparation boundaries. (authoring-run/3950ed4c-e0a8-42f9-8fc0-6b5fa60d7d3a - 08c7419aea802667090483843a386071c13e9050)
 
