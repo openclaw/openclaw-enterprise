@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: 2026-11-10
-last_updated_session: authoring-run/37c71df8-7e9c-4224-bc36-e4091f387620
+updated: 2026-11-11
+last_updated_session: authoring-run/73aeafdb-519f-47fb-b027-583d0eb74522
 ---
 
 # Agent Native Admin UI Flow
@@ -85,16 +85,15 @@ graph TD
 `packages/occ/src/index.ts:provisionAgent`
 
 **Enable browser chat** sends `nativeAdmin: true`. The adapter derives the origin
-from Installation settings and refuses conflicting policy.
+from Installation settings and refuses conflicting policy. The 214-character suffix limit uses the normalized domain.
 
-Ordinary creation also sends `expectedConfigurationGeneration`. `createAgent`
-authorizes Agent creation and Configuration update, checks the generation and
-absence of Agent references, then prepares the new Agent's policy. It saves
-Configuration and Agent in one transaction. The caller deploys normally.
+`createAgent` authorizes Agent creation and Configuration update, checks
+`expectedConfigurationGeneration` and absence of Agent references, then prepares
+policy. Configuration and Agent save atomically; the caller deploys normally.
 
-Guided provisioning authorizes, reserves an Agent ID, and prepares policy before
-queueing. The request fingerprint includes this choice; retries reuse the saved
-plan and identity. The worker creates and deploys the Agent.
+Guided provisioning authorizes, reserves identity, and prepares policy before
+queueing. Its fingerprint includes this choice; retries reuse the plan and
+identity. The worker creates and deploys the Agent.
 
 ### 0a. Local first-Agent opts into native admin
 
@@ -307,6 +306,8 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 17:17: Normalize opt-in admission; accompanying changes. (authoring-run/73aeafdb-519f-47fb-b027-583d0eb74522 - a6d44b96ce4c4029e6e2e24be61b97d71da75df1)
 
 - 2026-11-10 08:30: Add named chat and stale-version browser recovery. (authoring-run/37c71df8-7e9c-4224-bc36-e4091f387620 - eef0b3f10d0e0f4ed09fd32086c84628c41f1b93)
 

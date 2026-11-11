@@ -5780,8 +5780,14 @@ test(
   "native admin opt-in provisions the exact origin in the first version and preserves retry identity",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
+    // Canonical DNS length, not presentation whitespace or a root dot, controls admission.
+    const domain = `${"a.".repeat(99)}a.oce.localhost`;
+    assert.equal(domain.length, 213);
+    const canonicalDomain = `a${domain}`;
+    assert.equal(canonicalDomain.length, 214);
     const fixture = await createFixture(context, {
       nativeAdmin: true,
+      nativeAdminDomain: `  ${canonicalDomain.toUpperCase()}.  `,
       stopAfterProvisioning: true,
     });
     const namespace = await fixture.bootstrapNamespace();
@@ -5842,7 +5848,8 @@ test(
     await fixture.stopWorker();
     assert.equal(status.agentId, queued.plan.reservedAgentId);
     const installation = await fixture.state.loadInstallation();
-    const origin = `https://${deriveNativeAdminHost(installation.id, { id: status.agentId, namespaceId: namespace.id }, "agents.oce.localhost")}:9443`;
+    const origin = `https://${deriveNativeAdminHost(installation.id, { id: status.agentId, namespaceId: namespace.id }, canonicalDomain)}:9443`;
+    assert.equal(new URL(origin).hostname.length, 253);
     const configuration = await fixture.request(
       "GET",
       `/namespaces/${namespace.id}/configurations/${status.configurationId}`,

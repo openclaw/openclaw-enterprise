@@ -24,6 +24,7 @@ import {
 } from "@openclaw-enterprise/occ";
 import type { FastifyRequest } from "fastify";
 import {
+  normalizeNativeAdminDomain,
   prepareNativeAdminConfiguration,
   type NativeAdminAccessConfig,
 } from "../gateway/native-admin.ts";
@@ -203,7 +204,7 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
         "Agent browser access is not enabled on this Installation.",
       );
     }
-    if (options.nativeAdmin.domain.length > 214) {
+    if ((normalizeNativeAdminDomain(options.nativeAdmin.domain)?.length ?? 0) > 214) {
       throw failure(
         400,
         "INVALID_REQUEST",
