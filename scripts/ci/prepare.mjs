@@ -2919,6 +2919,13 @@ async function selectNativeSourceImage(image, selection, envName) {
       throw new Error(`${envName} has an invalid local image inspection.`);
     }
     const inspected = values[0];
+    if (
+      inspected.Descriptor !== undefined &&
+      inspected.Descriptor !== null &&
+      (typeof inspected.Descriptor !== "object" || Array.isArray(inspected.Descriptor))
+    ) {
+      throw new Error(`${envName} has an invalid local image descriptor.`);
+    }
     const id = /^[a-f0-9]{64}$/.test(inspected.Id ?? "") ? `sha256:${inspected.Id}` : inspected.Id;
     assertDockerImageId(id, envName);
     return { ...inspected, Id: id };
@@ -2942,6 +2949,9 @@ async function selectNativeSourceImage(image, selection, envName) {
     const native = held.Descriptor ? await inspect(reference, selection.platform) : held;
     if (!native) {
       return undefined;
+    }
+    if (held.Descriptor && !native.Descriptor) {
+      throw new Error(`${envName} native image inspection lost its descriptor.`);
     }
     if (native.Descriptor) {
       if (

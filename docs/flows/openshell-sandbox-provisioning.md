@@ -112,13 +112,13 @@ Kubernetes-only: PostgreSQL in `oce-system`, in-cluster authentication,
 [per-Agent HTTPS](../guides/deploy/local-setup.md). Startup records engine/cluster,
 Namespace, checked ports and key path. Compose: PostgreSQL/OCC with k3d.
 
-`prepareOpenShell`/`scripts/ci/openshell.mjs:installAgentSandbox` use node-selected
-native identity: cached child/index or exact-child pull. Manifest/config/CRI checks
-precede apply (`Never`); custom manifests stay unchanged. Real checks bind Ready Pods.
+`prepareOpenShell`/`scripts/ci/openshell.mjs:installAgentSandbox` preserve native/descriptor
+identity through cached child/index or exact-child pull. Manifest/config/CRI checks
+precede apply (`Never`); CRI misses retry. Overrides stay unchanged.
 
 `internal/occdev/openshell_image.go` persists tag/engine-ID intent before creation.
-Return/rollback/`dev down` bound reconciliation independently of clusters or
-Compose providers; uncertain/replaced tags retain state.
+Return/rollback/`dev down` reconcile independently of clusters/Compose providers;
+incomplete inspection or uncertain/replaced tags retain state.
 
 `internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout`
 reports rollout failures once, preserving rollback errors: Deployment, UID-linked

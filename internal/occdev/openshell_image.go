@@ -7,8 +7,11 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -45,13 +48,53 @@ func (r *runner) imageCommand(ctx context.Context, args ...string) ([]byte, bool
 	stdout := &tailBuffer{limit: 4 << 20}
 	stderr := &tailBuffer{limit: 64 << 10}
 	cmd := r.command(ctx, r.engine, args...)
-	cmd.Stdout, cmd.Stderr = stdout, stderr
-	cmd.WaitDelay = 200 * time.Millisecond
+	// Own the pipes so a nonzero child exit cannot hide an incomplete drain.
+	// Cmd.WaitDelay otherwise preserves ExitError even when it closes pipes.
+	completed := make(chan error, 2)
+	var readers, writers []*os.File
+	defer func() {
+		for _, pipe := range append(readers, writers...) {
+			_ = pipe.Close()
+		}
+	}()
+	for _, output := range []*tailBuffer{stdout, stderr} {
+		reader, writer, err := os.Pipe()
+		if err != nil {
+			return nil, false, err
+		}
+		readers, writers = append(readers, reader), append(writers, writer)
+		go func() {
+			_, err := io.Copy(output, reader)
+			completed <- err
+		}()
+	}
+	cmd.Stdout, cmd.Stderr = writers[0], writers[1]
 	started := time.Now()
 	err := cmd.Run()
+	for _, writer := range writers {
+		_ = writer.Close()
+	}
+	drain := time.NewTimer(200 * time.Millisecond)
+	defer drain.Stop()
+	complete := true
+	for range 2 {
+		select {
+		case readErr := <-completed:
+			complete = complete && readErr == nil
+		case <-drain.C:
+			complete = false
+			for _, reader := range readers {
+				_ = reader.Close()
+			}
+			<-completed
+		}
+	}
 	r.commandTiming(r.engine, args, started, err)
 	if ctx.Err() != nil {
 		return nil, false, ctx.Err()
+	}
+	if !complete || len(stdout.Bytes()) >= 4<<20 || len(stderr.Bytes()) >= 64<<10 {
+		return nil, false, fmt.Errorf("image operation output was incomplete or exceeded its limit")
 	}
 	if err != nil {
 		var exited *exec.ExitError
@@ -64,18 +107,17 @@ func (r *runner) imageCommand(ctx context.Context, args ...string) ([]byte, bool
 		}
 		// Match the complete engine result for this exact object. In particular,
 		// a connection diagnostic quoting an absent object is not absence.
-		absent := errors.As(err, &exited) && exited.ExitCode() == 1 && len(stderr.Bytes()) < 64<<10 &&
+		absent := errors.As(err, &exited) && exited.ExitCode() == 1 &&
 			(output == "" || output == "[]") &&
 			(diagnostic == "Error response from daemon: No such image: "+reference ||
 				diagnostic == "Error response from daemon: No such image: "+query ||
 				diagnostic == "Error: "+reference+": image not known")
+		if exited != nil && output == "" {
+			exited.Stderr = append([]byte(nil), stderr.Bytes()...)
+		}
 		return nil, absent, fmt.Errorf("%s image operation failed: %w", r.engine, err)
 	}
-	data := stdout.Bytes()
-	if len(data) >= 4<<20 {
-		return nil, false, fmt.Errorf("image operation output exceeded its limit")
-	}
-	return data, false, nil
+	return stdout.Bytes(), false, nil
 }
 
 func (r *runner) inspectLocalImage(ctx context.Context, reference, platform string) (*localImage, error) {
@@ -135,6 +177,9 @@ func (r *runner) selectNativeImage(ctx context.Context, source string, selected 
 			native, err = r.inspectLocalImage(ctx, reference, selected.platform)
 			if err != nil || native == nil {
 				return "", false, err
+			}
+			if native.Descriptor == nil {
+				return "", false, fmt.Errorf("native image inspection lost its descriptor")
 			}
 		}
 		if native.OS == nil || native.Architecture == nil {
@@ -279,8 +324,8 @@ func (r *runner) verifyNativeImportedImage(ctx context.Context, server, referenc
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		data, absent, err := r.imageCommand(ctx, "exec", server, "crictl", "inspecti", reference)
-		if absent && time.Now().Before(deadline) {
+		data, _, err := r.imageCommand(ctx, "exec", server, "crictl", "inspecti", reference)
+		if missingCRIImage(err, reference) && time.Now().Before(deadline) {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -308,4 +353,25 @@ func (r *runner) finishOpenShellImage(ctx context.Context, state *developmentSta
 	if err := r.reconcileOpenShellImageTag(context.WithoutCancel(ctx), state); err != nil {
 		*result = errors.Join(*result, fmt.Errorf("remove OpenShell staging image: %w", err))
 	}
+}
+
+// CRI can lag behind a successful containerd import. This read-only retry must
+// never authorize host tag acquisition or release a persisted custody record.
+func missingCRIImage(err error, reference string) bool {
+	var exited *exec.ExitError
+	if !errors.As(err, &exited) || exited.ExitCode() != 1 {
+		return false
+	}
+	diagnostic := strings.TrimSpace(string(exited.Stderr))
+	if !strings.HasPrefix(diagnostic, `time="`) {
+		return false
+	}
+	timestamp, message, ok := strings.Cut(strings.TrimPrefix(diagnostic, `time="`), `" level=fatal msg=`)
+	if !ok || strings.ContainsAny(timestamp, "\"\r\n") {
+		return false
+	}
+	if _, err := time.Parse(time.RFC3339Nano, timestamp); err != nil {
+		return false
+	}
+	return message == strconv.Quote("no such image "+strconv.Quote(reference)+" present")
 }

@@ -2009,6 +2009,8 @@ test("Agent Sandbox preparation imports its native cache and verifies reuse", as
   for (const scenario of [
     "index-only",
     "config-id",
+    "lost-descriptor",
+    "falsy-descriptor",
     "inspect-error",
     "mixed-error",
     "reuse-config",
@@ -2052,6 +2054,14 @@ test("Agent Sandbox preparation imports its native cache and verifies reuse", as
       if (scenario === "config-id") {
         held.Id = config;
         delete held.Descriptor;
+      }
+      if (scenario === "lost-descriptor") {
+        selected.Id = config;
+        delete selected.Descriptor;
+      }
+      if (scenario === "falsy-descriptor") {
+        held.Id = config;
+        held.Descriptor = false;
       }
       await interceptFixtureDocker(t, commands, async (args) => {
         calls.push(args);
@@ -2185,6 +2195,14 @@ catch (error) { console.error(error); process.exitCode = 1; }
       );
       if (["inspect-error", "mixed-error"].includes(scenario)) {
         assertStderrMatch(result.stderr, /Cannot connect to the Docker daemon/, scenario);
+        assert.equal(imported.length, 0);
+        assert.equal(tag, undefined);
+      } else if (["lost-descriptor", "falsy-descriptor"].includes(scenario)) {
+        assertStderrMatch(
+          result.stderr,
+          /(?:lost its descriptor|invalid local image descriptor)/,
+          scenario,
+        );
         assert.equal(imported.length, 0);
         assert.equal(tag, undefined);
       } else {
