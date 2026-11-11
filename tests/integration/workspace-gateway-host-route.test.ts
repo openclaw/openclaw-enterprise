@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer, get } from "node:https";
-import test from "node:test";
-import { getCACertificates, setDefaultCACertificates } from "node:tls";
+import test, { type TestContext } from "node:test";
+import { getCACertificates, setDefaultCACertificates, TLSSocket } from "node:tls";
 import { selfSigned } from "../helpers/certificates.mjs";
 import { startWorkspaceGatewayHostRelay } from "../helpers/envoy-workspace-gateway.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const options = { skip: process.platform !== "linux", timeout: 15_000 };
 
-async function fixture(t, { failPatch = false, failStop = false } = {}) {
+async function fixture(t: TestContext, { failPatch = false, failStop = false } = {}) {
   const directory = await temporaryDirectory(t, "oce-host-route-");
   const material = await selfSigned(directory, {
     subjectAltName: "DNS:one.gateway.test,DNS:two.gateway.test",
@@ -19,25 +19,26 @@ async function fixture(t, { failPatch = false, failStop = false } = {}) {
   t.after(() => setDefaultCACertificates(originalCertificates));
   const cleanup = new AsyncDisposableStack();
   t.after(() => cleanup.disposeAsync());
-  const context = { after: (action) => cleanup.defer(action) };
+  const context = { after: (action: () => void | Promise<void>) => cleanup.defer(action) };
 
-  async function route(hostname) {
-    const patches = [];
+  async function route(hostname: string) {
+    const patches: string[][] = [];
     const server = createServer(material, (request, response) => {
+      assert.ok(request.socket instanceof TLSSocket);
       assert.equal(request.socket.servername, hostname);
       response.end(hostname);
     });
     const stop = async () => {
       if (server.listening) {
         server.closeAllConnections();
-        await new Promise((resolve, reject) =>
+        await new Promise<void>((resolve, reject) =>
           server.close((error) => (error ? reject(error) : resolve())),
         );
       }
     };
     // The fallback owns the fixture even when an assertion fails before helper cleanup.
     t.after(stop);
-    let boundPort;
+    let boundPort: number | undefined;
     const start = () =>
       startWorkspaceGatewayHostRelay(
         context,
@@ -62,23 +63,28 @@ async function fixture(t, { failPatch = false, failStop = false } = {}) {
             },
           ],
           // This adapter observes Kubernetes commands; it does not simulate cluster routing.
-          kubectl: async (...args) => {
-            if (args[0] === "patch") {
+          kubectl: async (...args: string[]) => {
+            const [command] = args;
+            assert.ok(command);
+            if (command === "patch") {
               patches.push(args);
               if (failPatch) {
                 throw new Error("Service patch refused");
               }
             } else {
-              assert.ok(["run", "wait"].includes(args[0]));
+              assert.ok(["run", "wait"].includes(command));
             }
           },
-          waitFor: async (label, observe) => assert.ok(await observe(), label),
-          startPortForwardTarget: async (_namespace, _target, port) => {
+          waitFor: async (label: string, observe: () => Promise<unknown>) =>
+            assert.ok(await observe(), label),
+          startPortForwardTarget: async (_namespace: string, _target: string, port: string) => {
             assert.equal(port, "0:8443");
             // A real bound TLS listener supplies the port-forward transport contract.
             server.listen(0, "127.0.0.1");
             await once(server, "listening");
-            boundPort = server.address().port;
+            const address = server.address();
+            assert.ok(address && typeof address !== "string");
+            boundPort = address.port;
             return {
               url: `http://127.0.0.1:${boundPort}`,
               stop: async () => {
@@ -96,8 +102,8 @@ async function fixture(t, { failPatch = false, failStop = false } = {}) {
   return { route, cleanup };
 }
 
-async function readRoute(hostname, port) {
-  return new Promise((resolve, reject) => {
+async function readRoute(hostname: string, port: number) {
+  return new Promise<string>((resolve, reject) => {
     const request = get({ hostname, port, agent: false }, (response) => {
       let body = "";
       response.setEncoding("utf8");
@@ -118,10 +124,14 @@ test(
     for (const hostname of ["one.gateway.test", "two.gateway.test"]) {
       const current = await route(hostname);
       const port = await current.start();
+      assert.ok(typeof port === "number");
       assert.equal(port, current.boundPort());
-      assert.equal(current.server.address().address, "127.0.0.1");
+      const address = current.server.address();
+      assert.ok(address && typeof address !== "string");
+      assert.equal(address.address, "127.0.0.1");
       assert.equal(current.patches.length, 1);
       const [patch] = current.patches;
+      assert.ok(patch);
       assert.deepEqual(patch.slice(0, -1), [
         "patch",
         "service",
@@ -131,7 +141,9 @@ test(
         "--type=json",
         "--patch",
       ]);
-      assert.deepEqual(JSON.parse(patch.at(-1)), [
+      const payload = patch.at(-1);
+      assert.ok(payload);
+      assert.deepEqual(JSON.parse(payload), [
         {
           op: "add",
           path: "/spec/ports/-",
@@ -146,7 +158,9 @@ test(
       routes.push({ ...current, hostname, port });
     }
     // Both listeners remain alive: a second route must not replace or steal the first.
-    assert.notEqual(routes[0].port, routes[1].port);
+    const [first, second] = routes;
+    assert.ok(first && second);
+    assert.notEqual(first.port, second.port);
     for (const current of routes) {
       assert.equal(await readRoute(current.hostname, current.port), current.hostname);
     }
