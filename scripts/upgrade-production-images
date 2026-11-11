@@ -516,6 +516,8 @@ if ((cleanup_only)); then
   for input in kubeconfig context namespace release evidence_dir; do
     [[ -n "${!input}" ]] || die "--${input//_/-} is required for cleanup." 2
   done
+  [[ -d "$evidence_dir" && ! -L "$evidence_dir" ]] ||
+    die "the evidence path must be a directory, not a symbolic link." 2
   for command in python3 jq kubectl node mktemp; do
     require_command "$command"
   done
@@ -768,7 +770,7 @@ fi
 upgrade_evidence_dir=$evidence_dir
 exec 8<"$evidence_dir"
 python3 scripts/upgrade-preflight-state.py lock "$evidence_dir" 8 ||
-  die "the evidence directory is in use by another helper or child."
+  die "the evidence directory is locked by another helper or child."
 mkdir "$upgrade_evidence_dir/.upgrade-lock" 2>/dev/null || die "the evidence directory is locked; check for a running upgrade before removing its stale .upgrade-lock directory."
 trap 'rmdir "$upgrade_evidence_dir/.upgrade-lock" 2>/dev/null || true' EXIT
 

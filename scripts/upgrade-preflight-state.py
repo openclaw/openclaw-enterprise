@@ -84,11 +84,12 @@ def read(path, acknowledgement=False):
         require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid()
                 and stat.S_IMODE(info.st_mode) == 0o600 and info.st_size <= 1048576,
                 "preflight evidence must be a bounded owner-only regular file")
-        if acknowledgement and info.st_nlink == 2:
+        if acknowledgement and os.path.lexists(path.with_name("." + path.name + ".tmp")):
             # Publication can stop between linking the final receipt and removing
             # its fixed staging name. Only that exact additional link is accepted.
             staging = path.with_name("." + path.name + ".tmp").lstat()
-            require(identity(staging) == identity(info), "unexpected acknowledgement hardlink")
+            require(info.st_nlink == 2 and identity(staging) == identity(info),
+                    "unexpected acknowledgement hardlink")
         else:
             require(info.st_nlink == 1, "unexpected evidence hardlink")
         with os.fdopen(os.dup(fd), "r", encoding="utf-8") as source:
@@ -221,14 +222,17 @@ def inspect(root, kubeconfig, context, namespace, release):
             for suffix in ("-started.json", "-identity.json"):
                 require(not os.path.lexists(path / ("preflight-" + slot + suffix)),
                         "evidence exists for a slot outside the registered plan")
+            require(not os.path.lexists(path / (".preflight-" + slot + "-identity.json.tmp")),
+                    "staged acknowledgement exists for a slot outside the registered plan")
         for slot, planned in plan["slots"].items():
             started_path = path / ("preflight-" + slot + "-started.json")
             ack_path = path / ("preflight-" + slot + "-identity.json")
             started = os.path.lexists(started_path)
             ack = os.path.lexists(ack_path)
-            require(planned is not None or not (started or ack), "unplanned preflight resource evidence")
+            staged = os.path.lexists(path / (".preflight-" + slot + "-identity.json.tmp"))
+            require(planned is not None or not (started or ack or staged), "unplanned preflight resource evidence")
             if not started:
-                require(not ack, "acknowledgement has no recorded create boundary")
+                require(not (ack or staged), "acknowledgement has no recorded create boundary")
                 continue
             require(read(started_path) == {"planSha256": entry["planSha256"], "slot": slot},
                     "invalid preflight create boundary")
@@ -247,8 +251,10 @@ def inspect(root, kubeconfig, context, namespace, release):
                                        + json.dumps(options, separators=(",", ":")))
         for slot in JOBS:
             child = path / ("preflight-" + slot + "-pod-identity.json")
-            if os.path.lexists(child):
+            if os.path.lexists(child) or os.path.lexists(child.with_name("." + child.name + ".tmp")):
                 require(slot in acknowledgements, "child acknowledgement has no acknowledged Job")
+                if not os.path.lexists(child):
+                    continue
                 record = read(child, acknowledgement=True)
                 require(isinstance(record, dict) and set(record) == {"kind", "name", "uid"}
                         and record["kind"] == "pod" and is_name(record["name"])

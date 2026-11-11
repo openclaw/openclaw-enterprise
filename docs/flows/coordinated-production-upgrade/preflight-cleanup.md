@@ -117,7 +117,7 @@ Readbacks retain resource identity rather than Secret or Job contents.
 
 ### 4. Report cleanup without resuming an upgrade
 
-`scripts/upgrade-production-images:551` writes a version `1`
+`scripts/upgrade-production-images:553` writes a version `1`
 `preflight-cleanup-result.json` containing `complete` and `unknown` in the new
 invocation directory. Any uncertain create or unconfirmed deletion makes
 `complete` false and exits `1`; confirmed cleanup exits `0`. Invalid evidence

@@ -196,3 +196,129 @@ for (const attempt of [".", "migration-preflight-resume.ABCD1234"]) {
     }
   });
 }
+
+test("a registered staged ACK requires its create boundary and never grants cleanup authority", (t) => {
+  const state = fixture(t);
+  state.success("register", [".", "abcd0123", "false"]);
+  writePrivate(join(state.root, ".preflight-api-identity.json.tmp"), {
+    kind: "job.batch",
+    name: "team-upgrade-preflight-api-abcd0123",
+    uid: "created-job",
+  });
+  const contradictory = state.inspect();
+  assert.notEqual(contradictory.status, 0);
+  assert.equal(contradictory.stdout, "");
+
+  // Stopping after create and during ACK publication is legitimate, but its UID is not authoritative.
+  state.success("started", [".", "api"]);
+  const unknown = state.inspect();
+  assert.equal(unknown.status, 0, unknown.stderr);
+  const result = JSON.parse(unknown.stdout);
+  assert.deepEqual(result.resources, []);
+  assert.deepEqual(result.unknown, [".:api"]);
+  assert.equal(result.consumerUnknown, true);
+});
+
+for (const attempt of [".", "migration-preflight-resume.ABCD1234"]) {
+  test(`staged ACKs for excluded slots are rejected in ${attempt}`, (t) => {
+    const state = fixture(t);
+    const path = attempt === "." ? state.root : join(state.root, attempt);
+    if (attempt !== ".") {
+      mkdirSync(path, { mode: 0o700 });
+    }
+    state.success("register", [attempt, "abcd0123", "false"]);
+    const slot = attempt === "." ? "networkpolicy" : "secret";
+    writePrivate(join(path, `.preflight-${slot}-identity.json.tmp`), { uid: "unexpected" });
+    const result = state.inspect();
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, "");
+  });
+}
+
+test("a staged child ACK requires an acknowledged parent and cannot substitute for a child receipt", (t) => {
+  const state = fixture(t);
+  state.success("register", [".", "abcd0123", "false"]);
+  state.success("started", [".", "api"]);
+  writePrivate(join(state.root, ".preflight-api-pod-identity.json.tmp"), {
+    kind: "pod",
+    name: "created-child",
+    uid: "created-child-uid",
+  });
+  const contradictory = state.inspect();
+  assert.notEqual(contradictory.status, 0);
+  assert.equal(contradictory.stdout, "");
+
+  // A known Job permits owner-based child discovery, but the staged child itself is not an ACK.
+  writePrivate(join(state.root, "preflight-api-identity.json"), {
+    kind: "job.batch",
+    name: "team-upgrade-preflight-api-abcd0123",
+    uid: "created-job",
+  });
+  const accepted = state.inspect();
+  assert.equal(accepted.status, 0, accepted.stderr);
+  const result = JSON.parse(accepted.stdout);
+  assert.equal(result.resources.length, 1);
+  assert.deepEqual(result.children, []);
+});
+
+test("a final ACK rejects a conflicting staging file rather than ignoring it", (t) => {
+  const state = fixture(t);
+  acknowledgedJob(state);
+  writePrivate(join(state.root, ".preflight-api-identity.json.tmp"), {
+    kind: "job.batch",
+    name: "team-upgrade-preflight-api-abcd0123",
+    uid: "another-job",
+  });
+  const result = state.inspect();
+  assert.notEqual(result.status, 0);
+  assert.equal(result.stdout, "");
+});
+
+for (const kind of ["fifo", "symlink-to-fifo"]) {
+  test(`cleanup rejects ${kind} evidence before opening it or requiring tools`, (t) => {
+    const parent = mkdtempSync(join(tmpdir(), "upgrade-preflight-fifo-"));
+    t.after(() => rmSync(parent, { recursive: true, force: true }));
+    const fifo = join(parent, "fifo");
+    const created = spawnSync(
+      "python3",
+      ["-c", "import os, sys; os.mkfifo(sys.argv[1], 0o600)", fifo],
+      { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL" },
+    );
+    assert.equal(created.status, 0, created.stderr);
+    const evidence = kind === "fifo" ? fifo : join(parent, "link");
+    if (kind === "symlink-to-fifo") {
+      symlinkSync(fifo, evidence);
+    }
+    // No writer opens the FIFO. Opening it before validation would block indefinitely.
+    // An empty tool path proves invalid evidence does not require cluster tooling.
+    const result = spawnSync(
+      "/bin/bash",
+      [
+        join(repository, "scripts/upgrade-production-images"),
+        "--cleanup-preflight",
+        "--kubeconfig",
+        join(parent, "unused-kubeconfig"),
+        "--context",
+        "fixture",
+        "--namespace",
+        "control",
+        "--release",
+        "team",
+        "--evidence-dir",
+        evidence,
+        "--previous-process-settled",
+        "--evidence-unrestored",
+      ],
+      {
+        cwd: repository,
+        env: { ...process.env, PATH: parent },
+        encoding: "utf8",
+        timeout: 2000,
+        killSignal: "SIGKILL",
+      },
+    );
+    assert.equal(result.error, undefined, "invalid evidence must be rejected without blocking");
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /evidence.*directory/i);
+  });
+}

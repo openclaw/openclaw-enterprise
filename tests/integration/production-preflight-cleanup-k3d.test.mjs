@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -46,7 +46,7 @@ test(
       const suffix = randomBytes(4).toString("hex");
       const namespace = `preflight-cleanup-${suffix}`;
       const release = `recovery-${suffix}`;
-      const directory = await mkdtemp(join(tmpdir(), "oce-preflight-cleanup-"));
+      const directory = await realpath(await mkdtemp(join(tmpdir(), "oce-preflight-cleanup-")));
       const scope = ["--namespace", namespace];
       const get = async (kind, name) => {
         const result = await kubectl(
