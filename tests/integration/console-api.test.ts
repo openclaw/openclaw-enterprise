@@ -1901,15 +1901,20 @@ test("console auth routes reject untrusted browser origins and issue production 
   assert.match(clearedSessions[0]!, /; Domain=console\.oce\.localhost(?:;|$)/i);
   assert.match(clearedSessions[0]!, /; Max-Age=0(?:;|$)/i);
   const freshSession = await fixture.signIn();
-  // A stale-cookie probe after a new sign-in must not clear the replacement cookie.
-  const signedOut = await fixture.rawRequest("GET", "/api/auth/session", {
-    headers: { cookie: requestCookie, "x-occ-session-key": sessionKey },
-  });
-  assert.equal(signedOut.response.status, 200, signedOut.text);
-  assert.equal(JSON.parse(signedOut.text).data, null);
-  assert.equal(signedOut.response.headers.has("set-cookie"), false);
-  assert.equal(signedOut.response.headers.get("cache-control"), "no-store");
-  assert.equal(signedOut.response.headers.get("pragma"), "no-cache");
+  // Stale probes with or without a binding must not clear the replacement cookie.
+  for (const binding of [undefined, sessionKey]) {
+    const signedOut = await fixture.rawRequest("GET", "/api/auth/session", {
+      headers: {
+        cookie: requestCookie,
+        ...(binding === undefined ? {} : { "x-occ-session-key": binding }),
+      },
+    });
+    assert.equal(signedOut.response.status, 200, signedOut.text);
+    assert.equal(JSON.parse(signedOut.text).data, null);
+    assert.equal(signedOut.response.headers.has("set-cookie"), false);
+    assert.equal(signedOut.response.headers.get("cache-control"), "no-store");
+    assert.equal(signedOut.response.headers.get("pragma"), "no-cache");
+  }
   const fresh = await fixture.rawRequest("GET", "/api/auth/session", {
     headers: authenticatedHeaders(freshSession),
   });
