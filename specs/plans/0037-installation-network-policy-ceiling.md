@@ -78,7 +78,8 @@ RFC implementation status from actual delivery evidence and link this plan.
 Run applicable formatting, lint, types, workspace, OpenAPI and docs checks plus
 PostgreSQL and regular Agent workflow integrations. Run Fedora/Podman/k3d/OpenShell
 qualification when the selected host and authorized credentials are available.
-Complete independent review and address findings before pushing the final PR head.
+Complete independent review and address findings before marking the PR ready.
+Publish only as a draft while required proof or review remains incomplete.
 
 ## Review Focus
 
@@ -90,15 +91,15 @@ Complete independent review and address findings before pushing the final PR hea
 
 ## Verification
 
-| Outcome                     | Required proof                                                                               | Result or remaining proof                                                                      |
-| --------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Durable ownership and audit | Real Fastify, Native IAM and PostgreSQL, including startup lease loss and session revocation | Owner suite 11/11 passed, no skips                                                             |
-| Agent workflow              | Real controller/worker queues and PostgreSQL admission/concurrency                           | Agent policy suite 37/37 passed, no skips                                                      |
-| Console behavior            | Real Console, Fastify and IAM with in-memory state                                           | Combined browser suite 15/15 passed; status correction 5/5 passed                              |
-| Visual behavior             | Rebuilt Storybook, desktop/phone controls, screenshots and paced video                       | Desktop/phone captures and a 21-second walkthrough inspected; native GitHub uploads pending    |
-| Runtime enforcement         | Selected Fedora VM, Podman, k3d and OpenShell                                                | VM started but waits for manual disk unlock; no runtime proof claimed                          |
-| Repository contracts        | Format, lint, types, workspace, OpenAPI and docs checks                                      | Lint, types, formatting, workspace, OpenAPI, docs checks/build and flow render passed          |
-| Independent review          | Task gates and full shared autoreview                                                        | Both task gates pass; authority and draft-status regressions fixed; full shared review pending |
+| Outcome                     | Required proof                                                                               | Result or remaining proof                                                                                         |
+| --------------------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Durable ownership and audit | Real Fastify, Native IAM and PostgreSQL, including startup lease loss and session revocation | Owner suite 11/11 passed, no skips                                                                                |
+| Agent workflow              | Real controller/worker queues and PostgreSQL admission/concurrency                           | Agent policy suite 37/37 passed, no skips                                                                         |
+| Console behavior            | Real Console, Fastify and IAM with in-memory state                                           | Combined browser suite 15/15 passed; status correction 5/5 passed                                                 |
+| Visual behavior             | Rebuilt Storybook, desktop/phone controls, screenshots and paced video                       | Desktop/phone captures and a 21-second walkthrough inspected; native GitHub uploads pending                       |
+| Runtime enforcement         | Selected Fedora VM, Podman, k3d and OpenShell                                                | VM started but waits for manual disk unlock; no runtime proof claimed                                             |
+| Repository contracts        | Format, lint, types, workspace, OpenAPI and docs checks                                      | Lint, types, formatting, workspace, OpenAPI, docs checks/build and flow render passed                             |
+| Independent review          | Task gates and full shared autoreview                                                        | Both task gates pass; authority and draft-status regressions fixed; full shared review awaits disclosure approval |
 
 ## Delivery record
 
@@ -136,6 +137,13 @@ passing result. Final handoff must retain these limits.
 Current owners are the [ceiling reference](../../docs/reference/sandbox-policies.md#installation-ceiling),
 [operator guide](../../docs/guides/topics/agent-sandbox-policy.md#manage-installation-network-limits),
 and [runtime flow](../../docs/flows/agent-sandbox-policy.md).
+Automatic approval review rejected the final shared autoreview launch because it
+would send private source and supporting context to the configured Codex review
+service without explicit approval for that destination. Approval is requested;
+no final shared report exists. Publish the implementation as a draft while this
+review and required proof remain pending. Current main at `5d76d94ce` merged
+without conflicts, preserving history; RFC-0037 and migration 0077 remain unique.
+
 No Driver contract or default runtime image changed. Real runtime qualification,
 reviewable native media attachments and final CI remain delivery requirements.
 
