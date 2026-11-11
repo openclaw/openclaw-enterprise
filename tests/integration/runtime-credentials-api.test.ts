@@ -609,7 +609,10 @@ test("Kubernetes diagnostics distinguish a starting Gateway from a denied Pod pr
   const resources = new Map<string, object>();
   const proxyReads: string[] = [];
   const failures = new Map<string, 403 | 503>();
-  const server = createServer({ key, cert }, (request, response) => {
+  const startupUnavailable = Promise.withResolvers<void>();
+  let unavailableStatusPath: string | undefined = undefined;
+  let diagnosticsRefusalsServed = 0;
+  const server = createServer({ key, cert }, async (request, response) => {
     if (request.method !== "GET" || request.headers.authorization !== `Bearer ${token}`) {
       response.writeHead(403).end();
       return;
@@ -621,6 +624,12 @@ test("Kubernetes diagnostics distinguish a starting Gateway from a denied Pod pr
     const headers = { "content-type": "application/json" };
     const diagnosticsStatus = failures.get(path);
     if (diagnosticsStatus !== undefined) {
+      if (diagnosticsStatus === 403) {
+        await startupUnavailable.promise;
+        response.once("finish", () => {
+          diagnosticsRefusalsServed += 1;
+        });
+      }
       response.writeHead(diagnosticsStatus, headers).end(
         JSON.stringify({
           apiVersion: "v1",
@@ -634,6 +643,9 @@ test("Kubernetes diagnostics distinguish a starting Gateway from a denied Pod pr
       return;
     }
     const resource = resources.get(new URL(path, "https://127.0.0.1").pathname);
+    if (path === unavailableStatusPath && resource === undefined) {
+      response.once("finish", startupUnavailable.resolve);
+    }
     response.writeHead(resource === undefined ? 404 : 200, headers).end(JSON.stringify(resource));
   });
   const port = await listen(t, server);
@@ -760,10 +772,16 @@ test("Kubernetes diagnostics distinguish a starting Gateway from a denied Pod pr
   ]);
   assert.deepEqual(dependencyLogs(starting.meta.requestId), []);
 
+  // Settle the supplementary startup response before diagnostics refuses, so no sibling
+  // read needs a later Pod check after the public failure permits fixture teardown.
+  unavailableStatusPath = statusPath;
+  resources.delete(statusPath);
   // An API-server refusal of the same proxy request has a fixed operator category.
   failures.set(diagnosticsPath, 403);
   proxyReads.length = 0;
   const denied = fixture.fixtureResponse(await diagnose(), 503, ErrorResponse, "denied Pod proxy");
+  // A request timeout can produce the same public category; require the intended refusal.
+  assert.equal(diagnosticsRefusalsServed, 1);
   assert.deepEqual(
     proxyReads.filter((path) => path === diagnosticsPath),
     [diagnosticsPath],
