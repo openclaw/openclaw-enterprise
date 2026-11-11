@@ -816,10 +816,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       pidFile = join(dirname(commands.statePath), "cancelled-build-pids");
       // Cancellation can arrive after the real helper registers the cluster but
       // before the external create is accepted. Hold that boundary deterministically.
-      let createStarted;
-      const createPending = new Promise((resolve) => {
-        createStarted = resolve;
-      });
+      let createStarted = false;
       const k3d = join(dirname(commands.statePath), "bin", "k3d.mjs");
       const originalK3d = `${k3d}.original`;
       await rename(k3d, originalK3d);
@@ -827,8 +824,8 @@ describe("CI k3d preparation", { concurrency: true }, () => {
         forwardedEnv: [],
         handle: ({ args, io }) => {
           if (args[0] === "cluster" && args[1] === "create") {
-            createStarted();
-            io.exitAfter(124, 15000);
+            createStarted = true;
+            io.exitAfter(124, 60000);
           } else {
             io.script(`exec ${bashString(originalK3d)} ${args.map(bashString).join(" ")}`);
           }
@@ -843,7 +840,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
           const fs = require("node:fs");
           fs.writeFileSync(${JSON.stringify(`${pidFile}.tmp`)}, JSON.stringify([process.ppid, process.pid]));
           fs.renameSync(${JSON.stringify(`${pidFile}.tmp`)}, ${JSON.stringify(pidFile)});
-          setTimeout(() => {}, 15000);
+          setTimeout(() => {}, 60000);
         `;
           const program = `
           require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}], { stdio: "inherit" });
@@ -861,16 +858,18 @@ describe("CI k3d preparation", { concurrency: true }, () => {
         },
       });
       const pids = await waitFor(
-        "build descendant signal handler",
+        "cluster create and build descendant signal handler",
         async () => {
+          if (!createStarted) {
+            return undefined;
+          }
           const text = await readFile(pidFile, "utf8").catch(() => undefined);
           return text === undefined ? undefined : JSON.parse(text);
         },
-        5000,
+        30000,
       );
       assert.equal(pids.length, 2);
       assert.ok(pids.every(processRunning));
-      await within(createPending, "planned cluster create boundary", 5000);
       cli.kill("SIGINT");
       const result = await within(preparation, "SIGINT preparation cancellation", 5000);
       assert.equal(result.error, undefined);
