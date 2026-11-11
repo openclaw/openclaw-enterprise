@@ -139,11 +139,17 @@ reader and catalog at `7e1ac6d88e3893c3d4e6444fb3b9b9776519a3fb`.
 Both releases must match its production-input projection. A change to those
 inputs requires a new review of the reader behavior and test expectations.
 This admits only releases with that exact projection, not every v3 controller.
-The publisher takes its source from the then-current `main` workflow commit:
-merge the reviewed profile before publishing the pair, and keep both sources
-within that projection. A controller change between publications requires a
-newly reviewed profile and compatible pair. Updating the reference creates no
-images or publication receipts.
+The publisher takes its source from the then-current `main` workflow commit.
+Publish two distinct, ordered main revisions with the same intended production-input
+projection, each using its own successful exact-source CI. Then review the immutable
+pair and bind the matching profile before installed qualification. The profile update
+may land after both publications; it creates no images or publication receipts.
+A controller change between publications requires a newly reviewed compatible pair.
+
+A later qualification workflow can use published ancestors even if its own controller
+inputs have changed. For the current Codex 0.164.0 profile, its runtime Dockerfile must
+still match the published recipe byte for byte, and its CI Node base pin must match
+that recipe. Its chart and test harness must also remain compatible with the pair.
 
 These artifacts establish **input preparation only**. Preparing a pair does not start
 the controllers, exercise a callback or rollback, measure availability, or
