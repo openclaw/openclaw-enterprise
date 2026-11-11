@@ -59,6 +59,31 @@ retain the state if cleanup fails. The `postgres`, `postgres-platform`, and
 `postgres-auth` lanes use the same prepare, run, and cleanup pattern; see
 [CI lanes](ci/full-integration.md#scenarios).
 
+## OpenShell stock-Git wire test
+
+From a prepared checkout with built workspace packages, Node.js and Docker Compose,
+run the existing PostgreSQL/OpenShell Git journey with an already-built wire binary:
+
+```sh
+OCC_TEST_OPENSHELL_PLACEHOLDER_WIRE_BINARY=/absolute/path/to/wire-binary \
+  node scripts/ci/openshell-grant-wire.ts
+```
+
+The command rejects a missing or non-executable binary before preparation. It uses
+the maintained CI prepare, run, and cleanup commands for one `postgres-platform`
+file. It creates an isolated disposable PostgreSQL server; it does not build the
+binary or create an OpenShell cluster. Success requires the case
+`OpenShell inspected Git fetch redeems the active grant and refuses withdrawal`
+to pass, as well as the file and cleanup.
+
+Each run owns a private temporary directory. Cleanup runs after preparation or
+test failure. Successful runs remove their directory; failed runs retain private
+logs and results, plus any state left by failed cleanup. Use the printed cleanup
+command to retry. After an interruption, run `node scripts/ci/cleanup.mjs --state`
+with `state.json` in the printed directory. Keep failure artifacts private: they
+can contain database credentials. Existing database URLs, CI selectors, and
+credential environment variables are not forwarded.
+
 ## Subnet pool exhaustion
 
 If Compose reports `all predefined address pools have been fully subnetted`,
