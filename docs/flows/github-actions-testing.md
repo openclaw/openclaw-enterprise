@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-11
-last_updated_session: authoring-run/468c8b0e-17e2-4d4e-988e-f00f3434ccfa
+last_updated_session: authoring-run/1b85588b-87c6-47d0-8c6e-8b78b0030aea
 ---
 
 # GitHub Actions testing flow
@@ -96,16 +96,17 @@ excluding empty groups. Focused jobs verify SHA and ordered PR parents. QA
 materializes only its selected credential; see
 [inputs and evidence](../testing/ci/qa-advisory.md#trigger).
 
-Full Integration checks out `github.sha`. [Scheduled admission](../testing/ci/full-integration.md#trigger)
-checks the current main commit, cadence and exact execution receipts before the
-automatic execution queue. The reusable workflow rechecks after acquiring the
-queue. Manual dispatch retains dispatcher, team and environment checks and a
-separate execution queue. Slack Live serializes channel/app access. Installation
-and installed Skipper Git serialize per branch. Retry through a new
-[approved dispatch](../testing/ci/configuration.md#environments).
+Full Integration pins `github.sha`. [Scheduled admission](../testing/ci/full-integration.md#trigger)
+checks main, cadence and execution receipts before and after locking.
+Manual dispatch checks dispatcher, team and environment in separate queues.
+Slack serializes channel/app access; installation and installed Skipper Git serialize
+per branch. Retries need [approved dispatch](../testing/ci/configuration.md#environments).
 
-`all` selects every suite. QA waits for Slack even after failure. Cancellation
-stops QA. Aggregation requires the selected results.
+For first-attempt `all`, `full-integration-reuse.mjs:main` discovers
+same-SHA push CI results. `validateResults` checks evidence; `selectFreshLanes`
+omits only published lanes; others run fresh.
+QA awaits Slack despite failure; cancellation stops QA. Aggregation requires
+selected results.
 
 PostgreSQL migration and application suites own separate servers; each Kubernetes fixture lane owns a separate cluster and PostgreSQL server. Before creating k3d nodes that share the runner kernel, the shared action enables bridge netfilter; missing filtering fails setup rather than leaving Pod network policies unenforced. The repository credential platform lane uses Blacksmith for full-image HTTP, PostgreSQL, Unix-control and credential-material proof; NetworkPolicy enforcement remains the fixture lanes' responsibility. State and cleanup stay on each runner; within a lane, `scripts/ci/run-tests.mjs:runLane` runs files sequentially except audited `parallelFiles`.
 
@@ -281,6 +282,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 03:28: Explain qualified CI reuse. (authoring-run/1b85588b-87c6-47d0-8c6e-8b78b0030aea - dfd55e679c9c9869ddc786b85f6f9b27a53fb833)
 
 - 2026-11-11 02:22: Persist defaults separately. (authoring-run/468c8b0e-17e2-4d4e-988e-f00f3434ccfa - 52faf13e94dab59c20c80b161169c1d32429da36)
 
