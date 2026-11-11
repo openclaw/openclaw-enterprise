@@ -28,7 +28,7 @@ type FixtureAppOptions = NonNullable<Parameters<FixtureAppFactory>[1]> & {
 };
 
 const refusal =
-  "The selected Driver has retired new uses of this protected static credential provider.";
+  "The selected Driver has retired new uses of this protected static credential provider. Ask an Installation administrator to configure a supported model access path.";
 
 test(
   "a fresh retired owner preserves admitted state but refuses re-admission and deploy",
