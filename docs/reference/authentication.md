@@ -113,6 +113,9 @@ foreign, malformed, or duplicated key returns `401`, and such a sign-out neither
 revokes nor clears the cookie. Without the header, requests are unchanged. Console
 pins each tab's key this way.
 
+Session inspection leaves browser cookies untouched, so a late response for an old
+session cannot clear a newer sign-in cookie.
+
 Password-only sign-out confirms session deletion before clearing its cookie. A
 storage failure returns `503 DEPENDENCY_UNAVAILABLE` without clearing the cookie;
 retry sign-out after storage recovers.
