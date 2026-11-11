@@ -312,6 +312,18 @@ test(
           assert.deepEqual(stored!.scope, scope.scope);
           const deployed = await request("POST", path + "/deploy");
           assert.equal(deployed.statusCode, 202, deployed.body);
+          const publicRevision = await request(
+            "GET",
+            path + "/revisions/" + deployed.json().data.id,
+          );
+          assert.equal(publicRevision.statusCode, 200, publicRevision.body);
+          for (const response of [deployed, publicRevision]) {
+            const snapshot = response.json().data.repositoryCredentials;
+            assert.equal(snapshot.authorityMode, "standing");
+            assert.equal(snapshot.standingApprovalId, undefined);
+            assert.equal(snapshot.standingApprovalGeneration, undefined);
+            assert.equal(snapshot.standingApprovalScopeFingerprint, undefined);
+          }
           const revision = await state.read((v) =>
             v.revisions.findRevision(namespaceId, agent.id, deployed.json().data.id),
           );
@@ -635,11 +647,14 @@ test(
           // Count only deployment admission; Agent save is checked separately above.
           const deployed = await request("POST", finitePath + "/deploy");
           assert.equal(deployed.statusCode, 202, deployed.body);
+          const publicSnapshot = deployed.json().data.repositoryCredentials;
+          assert.equal(publicSnapshot.authorityMode, "finite");
           const revision = await state.read((v) =>
             v.revisions.findRevision(namespaceId, finiteAgent.id, deployed.json().data.id),
           );
           const snapshot = revision?.repositoryCredentials;
           assert.ok(snapshot);
+          assert.equal(publicSnapshot.deadlineWallMs, snapshot.deadlineWallMs);
           assert.equal(calls, route === "bundled" || route === "built-in" ? 0 : 1);
           assert.equal(snapshot.standingApprovalId, undefined);
           if (route === "legacy") {

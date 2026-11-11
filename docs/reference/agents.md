@@ -70,6 +70,14 @@ This requires exact AgentRevision `read`, not Agent `operate`.
 Responses include `deploymentId`, `namespaceId`, `agentId`, `status`, nullable
 `error`, plugin `warnings`, nullable `progress`, and nullable `cleanup`.
 
+The deployment acknowledgment and revision detail include
+`repositoryCredentials.authorityMode` when repository authority was admitted.
+`finite` expires at the recorded `deadlineWallMs`. `standing` identifies a
+revision admitted under a standing approval. Its recorded deadline does not
+expire the approval. Agent administrators can read the approval identity,
+generation, and current state through the
+[repository approvals API](../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent).
+
 - `queued`: not claimed yet.
 - `running`: claimed, no result yet, also between attempts.
 - `succeeded`: original work activated the version or found it already selected.

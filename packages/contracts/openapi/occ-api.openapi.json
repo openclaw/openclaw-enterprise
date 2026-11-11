@@ -21994,6 +21994,13 @@
                         "repositoryCredentials": {
                           "additionalProperties": false,
                           "properties": {
+                            "authorityMode": {
+                              "anyOf": [
+                                { "const": "finite", "type": "string" },
+                                { "const": "standing", "type": "string" }
+                              ],
+                              "description": "Repository authority admitted for this Agent revision."
+                            },
                             "bindings": {
                               "items": {
                                 "additionalProperties": false,
@@ -22019,6 +22026,7 @@
                               "type": "array"
                             },
                             "deadlineWallMs": {
+                              "description": "Recorded admission deadline in Unix milliseconds. It expires finite authority. For standing authority, it does not expire the approval.",
                               "maximum": 9007199254740991,
                               "minimum": 1,
                               "type": "integer"
@@ -29249,6 +29257,13 @@
                             "repositoryCredentials": {
                               "additionalProperties": false,
                               "properties": {
+                                "authorityMode": {
+                                  "anyOf": [
+                                    { "const": "finite", "type": "string" },
+                                    { "const": "standing", "type": "string" }
+                                  ],
+                                  "description": "Repository authority admitted for this Agent revision."
+                                },
                                 "bindings": {
                                   "items": {
                                     "additionalProperties": false,
@@ -29274,6 +29289,7 @@
                                   "type": "array"
                                 },
                                 "deadlineWallMs": {
+                                  "description": "Recorded admission deadline in Unix milliseconds. It expires finite authority. For standing authority, it does not expire the approval.",
                                   "maximum": 9007199254740991,
                                   "minimum": 1,
                                   "type": "integer"

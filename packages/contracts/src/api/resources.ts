@@ -1373,7 +1373,17 @@ export const RepositoryRevisionStateSchema = Type.Object(
       },
       { additionalProperties: false },
     ),
-    deadlineWallMs: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+    authorityMode: Type.Optional(
+      Type.Union([Type.Literal("finite"), Type.Literal("standing")], {
+        description: "Repository authority admitted for this Agent revision.",
+      }),
+    ),
+    deadlineWallMs: Type.Integer({
+      minimum: 1,
+      maximum: Number.MAX_SAFE_INTEGER,
+      description:
+        "Recorded admission deadline in Unix milliseconds. It expires finite authority. For standing authority, it does not expire the approval.",
+    }),
     bindings: RepositoryBindingSelectionsSchema,
   },
   { additionalProperties: false },
