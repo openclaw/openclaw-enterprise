@@ -244,14 +244,32 @@ func (app *application) printAgentRevisionList(rows []any) error {
 // deployment can still have disabled a selected plugin (PLUGIN_AUTH_REQUIRED,
 // PLUGIN_INSTALL_FAILED). The ERROR cell reads "CODE: message" (D608).
 // Structured output keeps the full error and warnings.
-func (app *application) printDeploymentStatus(value any) error {
-	return app.printItems(value, false, []column{
+func (app *application) printDeploymentStatus(value any, agent map[string]any) error {
+	columns := []column{
 		{title: "ID", key: "deploymentId"},
 		{title: "AGENT", key: "agentId"},
 		{title: "STATUS", key: "status"},
 		{title: "ERROR", key: "error", format: deploymentErrorText},
 		{title: "WARNINGS", key: "warnings", format: deploymentWarningsText},
-	})
+	}
+	row, ok := value.(map[string]any)
+	if !ok {
+		return app.printItems(value, false, columns)
+	}
+	if desired, ok := agent["desiredRuntimeState"].(string); ok {
+		if app.output == "table" {
+			active, _ := agent["activeRevisionId"].(string)
+			row["desiredRuntimeState"] = desired
+			row["activeRevisionId"] = cmp.Or(active, "none")
+			columns = append(columns, column{title: "DESIRED STATE", key: "desiredRuntimeState"}, column{title: "ACTIVE REVISION", key: "activeRevisionId"})
+		} else {
+			row["currentAgent"] = map[string]any{"desiredRuntimeState": desired, "activeRevisionId": agent["activeRevisionId"]}
+		}
+	}
+	if row["repositoryAccess"] != nil {
+		columns = append(columns, column{title: "REPOSITORY ACCESS", key: "repositoryAccess", format: deploymentErrorText})
+	}
+	return app.printItems(row, false, columns)
 }
 
 // deploymentErrorText renders a deployment error as "CODE: message" on one

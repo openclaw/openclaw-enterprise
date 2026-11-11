@@ -10,8 +10,14 @@ import { once } from "node:events";
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
-import { skipperInstalledProof, skipperImageScope } from "./skipper-release.ts";
+import {
+  projectSkipperRunnerReceipt,
+  skipperFailureSummary,
+  skipperInstalledProof,
+  skipperImageScope,
+} from "./skipper-release.ts";
 import { imageConfigDigest } from "./image-config-digest.ts";
+import { recordSkipperCheckpoint } from "./skipper-failure-receipt.ts";
 import { createInterface } from "node:readline";
 import {
   kubectl,
@@ -27,6 +33,7 @@ const lane = "skipper-prepared-git-installed";
 const minute = 60_000;
 const read = async (path) => JSON.parse(await readFile(path));
 const output = async (command, args) => (await run(command, args)).stdout.trim();
+await recordSkipperCheckpoint("skipper_stage", "preflight");
 const sourceCommit = await output("git", ["rev-parse", "HEAD"]);
 assert.equal(sourceCommit, env.GITHUB_SHA);
 assert.equal(await output("git", ["status", "--porcelain"]), "");
@@ -154,11 +161,14 @@ async function checkImage(stack, selected, built) {
 
 let phase = "fresh cluster preflight";
 let failed = false;
-let summary;
+let runnerReceipt;
 let imageDigests;
+let clusterCleanupVerified = false;
+let cleanupFailed = false;
 try {
   await noCluster();
   phase = "install checkout images, prepared repository service and fresh application database";
+  await recordSkipperCheckpoint("skipper_stage", "install");
   progress(phase);
   const stack = await startLocalSetup(install, { privateInstall: true });
   const { state, context, kubeconfig } = stack;
@@ -181,10 +191,12 @@ try {
       server.close();
       await once(server, "close");
     }
+    clusterCleanupVerified = true;
     progress("owned cluster and network removed; installation ports released");
   });
 
   phase = "bind installed image identities and model fixture";
+  await recordSkipperCheckpoint("skipper_stage", "bind-images");
   const helm = await read(join(stack.directory, "helm-values.json"));
   const config = JSON.parse(
     await output("yq", ["-o=json", ".", join(stack.directory, "installation.yaml")]),
@@ -223,6 +235,7 @@ try {
   });
 
   phase = "bind application database, namespace and owned cluster UID";
+  await recordSkipperCheckpoint("skipper_stage", "bind-database");
   const system = state.platformNamespace;
   const apiOrigin = stack.origin;
   const serviceKey = (await read(stack.keyPath)).data.key;
@@ -256,6 +269,7 @@ try {
   // Its raw result and runner diagnostics stay in the private directory. Publish only a pass
   // with the exact selected case, all required journey stages and allowlisted runner fields.
   phase = "run selected installed native Git test";
+  await recordSkipperCheckpoint("skipper_stage", "selected-test");
   progress(phase);
   const runner = await run(
     process.execPath,
@@ -282,6 +296,24 @@ try {
     () => ({ status: 0 }),
     (error) => error.result ?? {},
   );
+  if (runner.status !== 0) {
+    // Report only a known phase, source location, or failure category. Both raw streams
+    // and the runner's private diagnostics can contain the synthetic credentials.
+    const resultText = await readFile(privateResult, "utf8").catch(() => "");
+    const text =
+      String(runner.stderr) +
+      String(runner.stdout) +
+      resultText +
+      (await readFile(join(directory, "runner-state.json.diagnostics.json"), "utf8").catch(
+        () => "",
+      ));
+    // Optional journey records may be incomplete when the test fails.
+    console.error(
+      "Installed test failed (%s, runner-exit=%s)",
+      skipperFailureSummary(resultText, process.cwd(), text),
+      runner.code ?? "unknown",
+    );
+  }
   const ledger = await readFile(join(directory, "compute-journey.jsonl"), "utf8").catch(() => "");
   const entries = ledger
     .trim()
@@ -294,15 +326,6 @@ try {
     progress(name);
   }
   if (runner.status !== 0) {
-    // Report only a known phase, source location, or failure category. Both raw streams
-    // and the runner's private diagnostics can contain the synthetic credentials.
-    const text =
-      String(runner.stderr) +
-      String(runner.stdout) +
-      (await readFile(privateResult, "utf8").catch(() => "")) +
-      (await readFile(join(directory, "runner-state.json.diagnostics.json"), "utf8").catch(
-        () => "",
-      ));
     const chat = entries.find((e) => e.phase === "gateway-chat-refused");
     if (chat) {
       const { httpStatus, category, modelTurns, modelAnswers, expectedNonceAnswered, tlsErrors } =
@@ -313,25 +336,27 @@ try {
       );
       assert.match(
         category,
-        /^(gateway-credential-unavailable|authentication|permission|workspace|agent-runtime|timeout|unavailable|unclassified)$/,
+        /^(gateway-credential-unavailable|authentication|permission|workspace|agent-runtime|timeout|unavailable|unclassified|transport|response-body|response-json)$/,
       );
       assert.ok(
-        [modelTurns, modelAnswers, tlsErrors].every((n) => Number.isSafeInteger(n) && n >= 0),
+        [modelTurns, modelAnswers, tlsErrors].every(
+          (n) => n === null || (Number.isSafeInteger(n) && n >= 0),
+        ),
       );
-      assert.equal(typeof expectedNonceAnswered, "boolean");
+      assert.ok(expectedNonceAnswered === null || typeof expectedNonceAnswered === "boolean");
       assert.match(
         chat.runtimeSignal,
         /^(thread-filesystem-sandbox-denied|thread-start|model-transport|no-known-signal|logs-unavailable)$/,
       );
       console.error(
-        "Gateway HTTP %d, %s, %s. During this request synthetic model turns=%d, answers=%d, expected nonce answered=%s, TLS errors=%d.",
+        "Gateway HTTP %d, %s, %s. During this request synthetic model turns=%s, answers=%s, expected nonce answered=%s, TLS errors=%s.",
         httpStatus,
         category,
         chat.runtimeSignal,
-        modelTurns,
-        modelAnswers,
-        expectedNonceAnswered,
-        tlsErrors,
+        modelTurns ?? "unknown",
+        modelAnswers ?? "unknown",
+        expectedNonceAnswered ?? "unknown",
+        tlsErrors ?? "unknown",
       );
     }
     if (records.includes("repository-binding-withdrawn-discovery-released")) {
@@ -355,6 +380,22 @@ try {
       } else {
         console.error("Synthetic model completion diagnostics unavailable.");
       }
+      const { nativePolls, nativeStatus, nativeExitCode, nativeSessionPresent } = completion;
+      if (
+        Number.isSafeInteger(nativePolls) &&
+        nativePolls >= 0 &&
+        ["running", "completed", "deadline", "unrecognized"].includes(nativeStatus) &&
+        (nativeExitCode === null || Number.isInteger(nativeExitCode)) &&
+        typeof nativeSessionPresent === "boolean"
+      ) {
+        console.error(
+          "Native command status=%s, exit=%s, session present=%s, polls=%d.",
+          nativeStatus,
+          nativeExitCode,
+          nativeSessionPresent,
+          nativePolls,
+        );
+      }
     }
     const known = [
       ...proof.slice(0, -1), // Retirement can follow a failure before the required proof.
@@ -368,30 +409,20 @@ try {
       "native-command-and-model-observed",
     ];
     const last = records.filter((p) => known.includes(p)).at(-1) ?? "before first test checkpoint";
-    const site = text.match(
-      /(?:skipper-prepared-compute|skipper-prepared-git-installed\.test)\.mjs:\d+:\d+/,
-    )?.[0];
-    const category = text.match(
-      /RTM_NEWADDR|bwrap|native command failed|missing-env|test-timeout|expected-test-not-passed|selected-zero|timed out:|ERR_ASSERTION/,
-    )?.[0];
-    console.error(
-      "Installed test failed after %s (%s, %s, exit=%s)",
-      last,
-      site ?? "location unavailable",
-      category ?? "unclassified",
-      runner.code ?? "unknown",
-    );
+    console.error("Last observed installed test checkpoint: %s", last);
     assert.fail("selected test runner failed");
   }
+  await recordSkipperCheckpoint("skipper_stage", "verify-proof");
   assert.deepEqual(observed, proof);
   assert.equal(records.at(-1), proof.at(-1));
-  summary = await read(privateResult);
+  const summary = await read(privateResult);
   assert.equal(summary.sourceSha, sourceCommit);
   assert.equal(summary.lane, lane);
   assert.equal(summary.status, "passed");
   assert.equal(summary.exitCode, 0);
   assert.deepEqual(summary.counts, { passed: 1, failed: 0, skipped: 0, todo: 0, total: 1 });
   assert.deepEqual(summary.issues, []);
+  runnerReceipt = projectSkipperRunnerReceipt(summary);
 } catch (error) {
   failed = true;
   // File and line are useful on a failed guard. Never print values, runner or subprocess output.
@@ -414,39 +445,35 @@ try {
       await release();
     } catch {
       failed = true;
+      cleanupFailed = true;
       console.error("Private Git acceptance: owned resource cleanup failed");
     }
   }
-  await rm(env.OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY, { recursive: true, force: true });
+  await rm(env.OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY, { recursive: true, force: true }).catch(
+    async (error) => {
+      await recordSkipperCheckpoint("skipper_installed_cleanup", "failed");
+      throw error;
+    },
+  );
+  await recordSkipperCheckpoint(
+    "skipper_installed_cleanup",
+    cleanupFailed ? "failed" : clusterCleanupVerified ? "passed" : "unknown",
+  );
 }
 
-if (failed) {
+if (failed || !runnerReceipt) {
   process.exitCode = 1;
 } else {
   // No raw ledger, test output, Git/model traffic, database URLs, kubeconfig or diagnostics.
   // Retain only actual, passing runner evidence accepted by Full Integration's aggregator.
+  await recordSkipperCheckpoint("skipper_stage", "write-success-receipt");
   const results = join(env.RUNNER_TEMP, "results");
-  const { version, command, sourceSha, status, counts, exitCode } = summary;
-  assert.equal(summary.files.length, 1);
-  const [{ path, cleanup: testCleanup, tests }] = summary.files;
-  assert.equal(path, `tests/integration/${lane}.test.mjs`);
-  assert.deepEqual(testCleanup, { status: "passed" });
-  assert.deepEqual(
-    tests.map((test) => test.status),
-    ["passed"],
-  );
-  const [{ name, durationMs }] = tests;
   const receipt = {
-    version,
-    command,
+    ...runnerReceipt,
+    cleanup: { status: "passed" },
     lane,
-    sourceSha,
-    status,
-    counts,
-    exitCode,
     imageDigests,
     imageScope: skipperImageScope,
-    files: [{ path, status, counts, cleanup: testCleanup, tests: [{ name, status, durationMs }] }],
     proof: [...proof, "owned-cluster-and-synthetic-model-removed"],
   };
   await mkdir(results, { recursive: true });
@@ -465,4 +492,5 @@ if (failed) {
   );
   await rm(directory, { recursive: true });
   progress("selected test 1 passed, 0 failed, 0 skipped; owned resources retired");
+  await recordSkipperCheckpoint("skipper_stage", "finish-fixture");
 }

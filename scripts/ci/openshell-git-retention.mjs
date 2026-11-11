@@ -161,7 +161,17 @@ export function projectOpenShellGitExpiryObservation(value) {
       if (value.outcome === "pending" || value.failure !== undefined) {
         fields.failure = [
           "failure",
-          choice("unconfirmed", "admission_limit", "gateway_unavailable", "timeout", "failed"),
+          choice(
+            "unconfirmed",
+            "admission_limit",
+            "gateway_unavailable",
+            "timeout",
+            "failed",
+            "launch_sandbox_missing",
+            "launch_workload_unconfirmed",
+            "launch_contract_mismatch",
+            "launch_fingerprint_mismatch",
+          ),
         ];
       }
       if (value.grpcStatus !== undefined) {
@@ -427,6 +437,9 @@ const events = {
   "finite-git-grant": {
     revisionIdHash: ["revisionId", identityHash],
     deadlineWallMs: ["deadlineWallMs", count],
+  },
+  "finite-git-initialization-failed": {
+    stage: ["stage", choice("deployment-observation", "runtime-identity-read", "runtime-receipt")],
   },
   "initial-runtime": runtime,
   "installed-supervisor": {

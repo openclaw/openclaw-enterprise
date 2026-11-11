@@ -1,7 +1,7 @@
 ---
 created: "2026-11-04"
-updated: "2026-11-05"
-last_updated_session: codex/01a1aad6-adec-7fa0-802a-50b5e0486319
+updated: "2026-11-06"
+last_updated_session: "authoring-run/12b5a135-b3b1-4d2e-bd32-259e373e9abe"
 ---
 
 # How OCC saves an OAuth connection template
@@ -53,6 +53,8 @@ OCC checks Installation administration before it accepts manual settings or star
 
 `packages/occ/src/index.ts:createOAuthClient` and `packages/occ/src/index.ts:cleanupOAuthClients`
 
+`createOAuthClient` and `rotateOAuthClientSecret` reject calls inside `OpenClawController.transact`, including an inherited transaction context, before private operations. Their independent commits preserve the cleanup reservation or, when the caller supplies an audit event, the requested-rotation audit if a later operation fails. The HTTP handlers call these methods directly and supply audit events. `deleteOAuthClient` only stages database work for worker cleanup and remains composable.
+
 A template can exist before its OAuth client. OCC takes the registration's availability and endpoints from the selected version. For a confidential client, it reserves a hidden row and asks the Installation's Secret Driver to store the secret under the registration ID. A public registration supplies a client ID and skips this private write. OCC rechecks the version, publishes the registration and records the audit. If the template lacked a client, that transaction also selects the new one.
 
 Rotation replaces the confidential client's secret at the same private reference. Code exchange and renewal read its current value. A template version that still references the client prevents deletion. On deletion or interrupted creation, the worker uses the hidden registration to retry private cleanup.
@@ -81,6 +83,8 @@ OCC registers the returned grant under the Namespace and credential source ID. T
 
 ## Debugging and Verification
 
+- If registration or rotation raises `ResourceConflictError` with `cannot run in a controller transaction`, call the lifecycle method outside that transaction. Preserve the independent reservation commit and any caller-supplied audit commit.
+
 - If the callback redirects with `unknown_session`, start consent again in the signed-in browser that opened it. An expired or consumed attempt cannot complete.
 - If it redirects with `issuer_required`, check whether another configured issuer has a registered client. Inspect the provider's callback configuration for issuer reporting.
 - If refresh reports `client_refused`, check the current OAuth client registration and its secret. If the provider refused the user's refresh grant, reconnect the account. The [connection template reference](../reference/connection-templates.md) describes the recovery actions.
@@ -96,5 +100,7 @@ OCC registers the returned grant under the Namespace and credential source ID. T
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 23:59: Document independent client mutations and structure the existing flow. (authoring-run/12b5a135-b3b1-4d2e-bd32-259e373e9abe - e9cce241a2776521b745c22cd336cdb112444afb)
 
 - 2026-11-05 21:47: Traced administrator setup, OCC browser consent and Token Service custody with the accompanying ownership change. (codex/01a1aad6-adec-7fa0-802a-50b5e0486319 - d32f76579)

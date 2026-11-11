@@ -62,7 +62,6 @@ import {
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
   NoActiveAgentRevisionError,
-  ResourceConflictError,
   ResourceStateConflictError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
@@ -111,6 +110,7 @@ import {
   type ControllerWorkspaceFilesAccess,
   type ControllerWorkspaceFileWriteResult,
 } from "./gateway/contracts.ts";
+import { normalizeNativeAdminDomain } from "./gateway/native-admin.ts";
 import type { NativeAdminAccessConfig } from "./gateway/native-admin.ts";
 import { createAgentHandlers } from "./http/agents.ts";
 import { callerDenialMessage, GENERIC_DENIAL, requestedValues } from "./http/caller-denial.ts";
@@ -136,6 +136,9 @@ import { MAX_JSON_BODY_DEPTH, tooDeepFailure, tooDeepJsonPath } from "./http/jso
 import {
   createNativeAdminAccess,
   nativeAdminStatusOperation,
+  nativeAdminLaunchOperation,
+  nativeAdminConfirmOperation,
+  nativeAdminLaunchSchema,
   nativeAdminStatusSchema,
   nativeAdminReturnOperation,
   nativeAdminReturnSchema,
@@ -1421,12 +1424,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           password: { type: "string", minLength: 12, maxLength: 128 },
           name: { type: "string", minLength: 1, maxLength: 200 },
           roleId: { type: "string", minLength: 1, maxLength: 200 },
-          github: {
-            type: "object",
-            additionalProperties: false,
-            required: ["subject"],
-            properties: { subject: { type: "string", pattern: "^[1-9][0-9]{0,19}$" } },
-          },
         },
       },
     },
@@ -2437,10 +2434,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (operation.operationId === "getNamespaceAgentCapabilities") {
       reply.send({
         data: {
-          capabilities: await controller.getNamespaceAgentCapabilities(
-            context.actorId,
-            namespaceId,
-          ),
+          capabilities: {
+            ...(await controller.getNamespaceAgentCapabilities(context.actorId, namespaceId)),
+            ...(options.nativeAdmin?.enabled ? { nativeAdmin: true } : {}),
+          },
         },
         meta: { requestId: request.id },
       });
@@ -3574,9 +3571,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           response: responses({
             type: "object",
             additionalProperties: false,
-            required: ["github", "google", "oidc", "password", "sessionBinding"],
+            required: ["google", "oidc", "password", "sessionBinding"],
             properties: {
-              github: { type: "boolean" },
               google: { type: "boolean" },
               oidc: { type: "boolean" },
               oidcSignIn: {
@@ -3602,20 +3598,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
       async (request, reply) => {
         reply.header("cache-control", "no-store");
-        const github = options.auth.githubEnabled === true;
         const google = options.auth.googleEnabled === true;
         const oidc = options.auth.oidcEnabled === true;
         const password = options.auth.passwordSignIn !== "recovery-only";
         return {
           data: {
-            github,
             google,
             oidc,
             ...(oidc && options.auth.oidcSignIn !== undefined
               ? { oidcSignIn: options.auth.oidcSignIn }
               : {}),
             password,
-            sessionBinding: github || google || oidc,
+            sessionBinding: google || oidc,
           },
           meta: { requestId: request.id },
         };
@@ -3623,7 +3617,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     );
     // Handlers resolve on each request, as before: options.auth is read lazily.
     const externalSignInProviders = [
-      { name: "github", label: "GitHub", article: "a", operation: "GitHub" },
       { name: "google", label: "Google", article: "a", operation: "Google" },
       { name: "oidc", label: "OIDC", article: "an", operation: "Oidc" },
     ] as const;
@@ -3727,7 +3720,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return failure(
         409,
         "RESOURCE_CONFLICT",
-        "Account controls require GitHub, Google or OIDC sign-in; the password-only profile does not support them.",
+        "Account controls require Google or OIDC sign-in; the password-only profile does not support them.",
       );
     }
     async function humanAccountActor(
@@ -3944,12 +3937,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     const accountOperations = [
       {
-        operationName: "github",
-        path: "/api/auth/accounts/:userId/providers/github",
-        operationId: "attachGitHubIdentity",
-        summary: "Attach an exact GitHub identity to an existing account",
-      },
-      {
         operationName: "google",
         path: "/api/auth/accounts/:userId/providers/google",
         operationId: "attachGoogleIdentity",
@@ -4026,16 +4013,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               type: "object",
               additionalProperties: false,
               required:
-                operationName === "github" || operationName === "google" || operationName === "oidc"
+                operationName === "google" || operationName === "oidc"
                   ? ["subject", "expectedVersion"]
                   : ["expectedVersion"],
               properties: {
                 expectedVersion: { type: "integer", minimum: 1, maximum: 2147483647 },
-                ...(operationName === "github"
-                  ? { subject: { type: "string", pattern: "^[1-9][0-9]{0,19}$" } }
-                  : operationName === "google" || operationName === "oidc"
-                    ? { subject: { type: "string", pattern: "^[\\x21-\\x7E]{1,255}$" } }
-                    : {}),
+                ...(operationName === "google" || operationName === "oidc"
+                  ? { subject: { type: "string", pattern: "^[\\x21-\\x7E]{1,255}$" } }
+                  : {}),
               },
             },
             response: {
@@ -4069,13 +4054,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             throw accountControlsUnsupported();
           }
           const { expectedVersion } = request.body as { expectedVersion: number };
-          if (operationName === "github") {
-            if (!options.auth.attachGitHub || !options.auth.githubEnabled) {
-              throw failure(409, "RESOURCE_CONFLICT", "GitHub sign-in is not configured.");
-            }
-            const { subject } = request.body as { subject: string };
-            await options.auth.attachGitHub(userId, subject, actor, expectedVersion);
-          } else if (operationName === "google") {
+          if (operationName === "google") {
             if (!options.auth.attachGoogle || !options.auth.googleEnabled) {
               throw failure(409, "RESOURCE_CONFLICT", "Google sign-in is not configured.");
             }
@@ -4448,15 +4427,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
       async (request, reply) => options.auth.session(request, reply),
     );
-    routes.post(
+    routes.post<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
       "/api/auth/accounts",
       {
+        config: { rateLimit: new RequestRateLimiter(10, 1 / 6) },
         schema: {
           ...createAuthAccountOperation.schema,
           operationId: createAuthAccountOperation.operationId,
           summary: createAuthAccountOperation.summary,
           description:
-            "Requires administer permission on the Installation. Creates a Better Auth account and an explicit IAM Principal in one transaction. Supplying roleId also creates a binding to that existing IAM Role; omitting roleId creates no grants. Public signup remains disabled. An optional github.subject attaches that GitHub identity in the same transaction; it conflicts when GitHub sign-in is not configured or the identity is already assigned.",
+            "Requires administer permission on the Installation. Creates a Better Auth account and an explicit IAM Principal in one transaction. Supplying roleId also creates a binding to that existing IAM Role; omitting roleId creates no grants. Public signup remains disabled.",
           tags: [...createAuthAccountOperation.tags],
           security: [{ sessionCookie: [] }],
           "x-openclaw-permissions": [
@@ -4467,9 +4447,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             400: { description: "Bad Request", ...error },
             403: { description: "Forbidden", ...error },
             409: { description: "Conflict", ...error },
+            429: {
+              description: "Too many account creation requests; wait for Retry-After",
+              ...error,
+            },
             ...bodyErrors,
           },
-        },
+        } as DocumentedFastifySchema,
         onRequest: async (request) => admit(request, createAuthAccountOperation),
         preValidation: async (request) => {
           // Passwords are hashed before persistence; their existing schema and hashing
@@ -4506,13 +4490,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         const password = body?.password;
         const name = body?.name;
         const roleId = body?.roleId;
-        const github = body?.github as { subject?: unknown } | undefined;
         if (
           !isNonEmptyString(email) ||
           !isNonEmptyString(password) ||
           (roleId !== undefined && !isNonEmptyString(roleId)) ||
-          (name !== undefined && !isNonEmptyString(name)) ||
-          (github !== undefined && !isNonEmptyString(github.subject))
+          (name !== undefined && !isNonEmptyString(name))
         ) {
           throw failure(
             400,
@@ -4527,16 +4509,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           context,
         );
 
-        const githubProviderId = options.auth.githubEnabled
-          ? options.auth.githubProviderId
-          : undefined;
-        if (github !== undefined && githubProviderId === undefined) {
-          throw failure(409, "RESOURCE_CONFLICT", "GitHub sign-in is not configured.");
+        // Charge the authorized Principal before hashing; new sessions and target
+        // email addresses must not reset an administrator's account-creation budget.
+        const retryAfter = request.routeOptions.config.rateLimit.consume(context.actorId);
+        if (retryAfter !== undefined) {
+          reply.header("retry-after", String(retryAfter));
+          throw failure(
+            429,
+            "RATE_LIMITED",
+            "Too many account creation requests. Wait before retrying.",
+          );
         }
-        const external =
-          github === undefined
-            ? undefined
-            : { providerId: githubProviderId!, subject: github.subject as string };
+
         const prepared = await options.auth.prepareAccount({
           email,
           password,
@@ -4570,7 +4554,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           },
         };
         try {
-          await options.provisionAuthAccount(seed, auditEvent, prepared, external);
+          await options.provisionAuthAccount(seed, auditEvent, prepared);
         } catch (error) {
           // The account, Principal and audit commit in one transaction, so nothing is
           // compensated here. Dependency errors keep their class: an unknown COMMIT
@@ -4579,20 +4563,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             ? error
             : error instanceof UserAlreadyExistsError
               ? failure(409, "RESOURCE_CONFLICT", "The requested platform resource already exists.")
-              : external !== undefined && error instanceof ResourceConflictError
-                ? failure(409, "RESOURCE_CONFLICT", "The external identity is already assigned.")
-                : error instanceof AuthAccountRoleNotFoundError ||
-                    error instanceof AuthAccountRoleInvalidError
-                  ? failure(
-                      400,
-                      "INVALID_REQUEST",
-                      "The request does not match the operation contract.",
-                    )
-                  : Object.assign(
-                      new DependencyUnavailableError("Auth account provisioning failed."),
-                      // The API log names the cause's class and code, never its message.
-                      { cause: error },
-                    );
+              : error instanceof AuthAccountRoleNotFoundError ||
+                  error instanceof AuthAccountRoleInvalidError
+                ? failure(
+                    400,
+                    "INVALID_REQUEST",
+                    "The request does not match the operation contract.",
+                  )
+                : Object.assign(
+                    new DependencyUnavailableError("Auth account provisioning failed."),
+                    // The API log names the cause's class and code, never its message.
+                    { cause: error },
+                  );
         }
         const account = prepared;
         reply.status(201).send({
@@ -4679,6 +4661,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       preHandler: async (request) => resolveIdentity(request, nativeAdminStatusOperation),
       handler: nativeAdmin.status,
     });
+    for (const [operation, handler, confirm] of [
+      [nativeAdminLaunchOperation, nativeAdmin.launch, false],
+      [nativeAdminConfirmOperation, nativeAdmin.confirm, true],
+    ] as const) {
+      routes.route({
+        method: "POST",
+        url: operation.path,
+        schema: nativeAdminLaunchSchema(confirm),
+        onRequest: async (request, reply) => {
+          reply.header("cache-control", "no-store");
+          reply.header("referrer-policy", "no-referrer");
+          await admit(request, operation);
+        },
+        preHandler: async (request) => resolveIdentity(request, operation),
+        handler,
+      });
+    }
     for (const operation of occApiRoutes) {
       const permissions = requiredPermissions(operation);
       const schema: DocumentedFastifySchema = {
@@ -4766,7 +4765,19 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (asset.contentType.startsWith("text/html") || pathname.startsWith("/console/theme/")) {
       reply.header("cache-control", "no-store");
     }
-    reply.header("content-security-policy", CONSOLE_CONTENT_SECURITY_POLICY);
+    const nativeFormOrigin =
+      options.nativeAdmin?.enabled &&
+      options.nativeAdmin.sessionMode === "host-only-exchange" &&
+      publicOrigin
+        ? ` https://*.${normalizeNativeAdminDomain(options.nativeAdmin.domain)}${new URL(publicOrigin).port ? `:${new URL(publicOrigin).port}` : ""}`
+        : "";
+    reply.header(
+      "content-security-policy",
+      CONSOLE_CONTENT_SECURITY_POLICY.replace(
+        "form-action 'self'",
+        `form-action 'self'${nativeFormOrigin}`,
+      ),
+    );
     reply.header("content-type", asset.contentType);
     reply.header("content-length", asset.body.length);
     if (asset.variesByEncoding) {

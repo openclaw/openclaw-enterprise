@@ -104,20 +104,6 @@ printf '%s\n' '{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"synthet
 	}
 }
 
-type handoffFailingWriter struct {
-	remaining int
-	err       error
-}
-
-func (w *handoffFailingWriter) Write(p []byte) (int, error) {
-	n := min(len(p), w.remaining)
-	w.remaining -= n
-	if n < len(p) {
-		return n, w.err
-	}
-	return n, nil
-}
-
 // The receipt branch adds a Helm outcome line before the Job report. An output
 // error on that first line must not be hidden by later successful writes.
 func TestInstallationReceiptOutput(t *testing.T) {
