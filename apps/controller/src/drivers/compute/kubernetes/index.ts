@@ -7309,7 +7309,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
           : undefined,
         nativeRuntime,
         undefined,
-        { ...codexLaunch, withNode: node !== undefined },
+        {
+          ...codexLaunch,
+          withNode: node !== undefined,
+          workspaceSetup: workspaceSetup !== undefined,
+        },
       );
       if (node !== undefined) {
         if (nativeRuntime === undefined) {
@@ -8160,7 +8164,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         sandboxDriver === undefined ? repositoryMaterial : undefined,
         nativeRuntime,
         undefined,
-        { ...codexLaunch, withNode },
+        { ...codexLaunch, withNode, workspaceSetup: workspaceSetup !== undefined },
       );
     let providerEndpoint: SandboxHarnessEndpoint | undefined;
     if (sandboxDriver?.provisionHarness === undefined) {
@@ -16541,7 +16545,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     repositoryMaterial?: ResolvedRepositoryMaterialSpec,
     nativeRuntime?: NativeRuntimeSnapshot,
     providerEndpoint?: SandboxHarnessEndpoint,
-    codexLaunch?: CodexLaunch & { readonly withNode: boolean },
+    codexLaunch?: CodexLaunch,
   ): ManagedKubernetesObject {
     const providerOwnsHarness = codexLaunch?.providerOwned === true;
     const harnessSetupWorkspace = providerOwnsHarness
@@ -17238,11 +17242,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       } else {
         runtimeEntrypoint =
           nativeRuntime === undefined
-            ? codexLaunchEntrypoint(
-                codexLaunch,
-                codexLaunch?.withNode === true,
-                workspaceSetup !== undefined,
-              )
+            ? codexLaunchEntrypoint(codexLaunch)
             : NATIVE_WORKER_ENTRYPOINT;
       }
     }

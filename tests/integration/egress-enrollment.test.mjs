@@ -149,7 +149,7 @@ test(
     );
     const legacy = { ...f.revision, compute: { ...f.revision.compute, admission: undefined } };
     const program = (revision) =>
-      codexLaunchEntrypoint(compute.codexLaunch(revision, f.sandboxDriver), false, false);
+      codexLaunchEntrypoint(compute.codexLaunch(revision, f.sandboxDriver));
     assert.equal(program(legacy), AGENT_RUNTIME_ENTRYPOINT);
     const ordinary = {
       ...legacy,

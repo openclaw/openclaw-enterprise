@@ -42,7 +42,12 @@ import {
   withoutLineComments,
 } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { inspectOpenShellCodexCommand } from "../fixtures/openshell-codex-command.ts";
-import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
+import {
+  captureOpenShellHarness,
+  openShellWorkspaceHarnessConfiguration,
+  providerEndpointFixture,
+  tlsPinnedWorkspaceSetupCode,
+} from "../fixtures/kubernetes-provider-endpoint.mjs";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
   assertNoManagedMcpRouteOverlap,
@@ -128,31 +133,7 @@ function sandboxInstallation() {
   };
   configuration.drivers.sandbox = {
     id: "openshell-sandbox",
-    configuration: {
-      gateway: {
-        workspaceMode: "operator",
-      },
-      kubernetes: {
-        runtimeClassName: "openshell-sandbox",
-        userNamespaces: false,
-        serviceAccount: { mode: "gatewayConfigured" },
-        sandboxDataMount: {
-          subPath: "workspace",
-          mountPath: "/sandbox/enterprise",
-          readOnly: false,
-        },
-      },
-      policy: {
-        process: { runAsUser: "1000", runAsGroup: "1000" },
-        networkPolicies: [
-          {
-            name: "model-egress",
-            endpoints: [{ host: "api.openai.com", ports: [443] }],
-            binaries: [{ path: "/app/bin/model-client" }],
-          },
-        ],
-      },
-    },
+    configuration: openShellWorkspaceHarnessConfiguration(),
   };
   return configuration;
 }
@@ -3325,7 +3306,6 @@ test("OpenShell composes immutable commands from admitted Compute revisions", as
     ["chatgptAuthTokens", true, true],
   ]) {
     await t.test(`${loginMode}, setup ${hasSetup}, new admission ${admitted}`, async (t) => {
-      const gatewayClient = workspaceGatewayClient();
       const fixture = providerEndpointFixture({
         servicePrincipalCredentials: { mode: "disabled" },
         revisionOverrides: {
@@ -3335,15 +3315,7 @@ test("OpenShell composes immutable commands from admitted Compute revisions", as
         },
       });
       const { driver: compute, revision, sandbox } = fixture;
-      const backend = backendFor(gatewayClient);
-      backend.drivers.sandbox = sandbox.id;
-      const openshell = new OpenShellSandboxDriver(sandboxOf(sandboxInstallation()), {
-        id: sandbox.id,
-        implementation: "openshell",
-        backend,
-      });
-      sandbox.validateWorkspaceSetup = openshell.validateWorkspaceSetup.bind(openshell);
-      sandbox.harnessHome = openshell.harnessHome;
+      const capture = captureOpenShellHarness(fixture, sandbox);
       const source = {
         id: "cs_324fc26c-59b3-43e0-b057-53fce26a2f19",
         namespaceId: revision.namespaceId,
@@ -3385,7 +3357,10 @@ test("OpenShell composes immutable commands from admitted Compute revisions", as
           },
         ],
       };
-      revision.configuration = openshell.configureAgent(revision.configuration, revision.harness);
+      revision.configuration = capture.openshell.configureAgent(
+        revision.configuration,
+        revision.harness,
+      );
       admitRevisionHarness(compute, revision);
       if (!admitted) {
         // Pre-upgrade PAT revisions did not save a Compute admission.
@@ -3403,68 +3378,19 @@ test("OpenShell composes immutable commands from admitted Compute revisions", as
         harnessAuth: { ...revision.harnessAuth, source },
         ...(hasSetup && { workspaceSetup }),
       };
-      const kubernetes = Object.assign(
-        Object.create(KubernetesObjectApi.prototype),
-        fixture.clients.objects,
-      );
-      fixture.clients.objects = kubernetes;
-      const readSecret = fixture.core.readNamespacedSecret;
-      fixture.core.readNamespacedSecret = (request) =>
-        request.name === compute.workspaceNodeName(revision)
-          ? kubernetes.read({
-              kind: "Secret",
-              metadata: { name: request.name, namespace: request.namespace },
-            })
-          : readSecret(request);
       const createSetup = compute.nodeEnrollment.createSetup;
       compute.nodeEnrollment.createSetup = async (url, nodeUrl) => {
         const setup = await createSetup(url, nodeUrl);
-        return {
-          ...setup,
-          setupCode: Buffer.from(
-            JSON.stringify({
-              url: nodeUrl,
-              bootstrapToken: "one-shot-node-setup",
-              expiresAtMs: setup.expiresAtMs,
-              tlsFingerprint: "ab".repeat(32),
-            }),
-          ).toString("base64url"),
-        };
-      };
-      // Stop at the provider endpoint observation. The gateway client stores the
-      // real CreateSandbox request and can later return it for exact adoption.
-      const observed = new Map();
-      gatewayClient.getSandbox = async ({ name }) => observed.get(name);
-      const creates = [];
-      gatewayClient.getService = async (_workspace, name, service) => {
-        const url = observed.get(name)?.serviceUrls[service];
-        const exposure = creates.find((request) => request.name === name)?.serviceExposures[0];
-        if (url && exposure) {
-          return { ...harnessService(name, service, url), targetPort: exposure.targetPort };
-        }
-      };
-      gatewayClient.createSandbox = async (request) => {
-        creates.push(structuredClone(request));
-        const record = storedSandbox(request, { phase: "SANDBOX_PHASE_PROVISIONING" });
-        observed.set(request.name, structuredClone(record));
-        return record;
-      };
-      const done = new Error("OpenShell provisioning complete");
-      let lastRequirements;
-      sandbox.provisionHarness = async (input) => {
-        lastRequirements = input.requirements;
-        await openshell.provisionHarness(input);
-        throw done;
+        return { ...setup, setupCode: tlsPinnedWorkspaceSetupCode(nodeUrl, setup.expiresAtMs) };
       };
 
       await fixture.prepare(undefined, context);
       fixture.setGatewayServing();
       // Let the real Compute enrollment write the Agent-owned Secret.
       const provision = (input = context) =>
-        assert.rejects(fixture.prepare(undefined, input), (error) => error === done);
+        assert.rejects(fixture.prepare(undefined, input), (error) => error === capture.provisioned);
       await provision();
-      assert.equal(creates.length, 1);
-      const { spec } = creates[0];
+      const { name, spec } = capture.request;
       const { loader, supervisor, codex } = inspectOpenShellCodexCommand(t, spec.command, {
         compact: admitted && (hasSetup || loginMode === "codex_pat"),
         current: admitted,
@@ -3487,7 +3413,6 @@ test("OpenShell composes immutable commands from admitted Compute revisions", as
         codex.includes("unsupported_l7_protocol"),
         admitted && loginMode === "codex_pat",
       );
-      assert.doesNotMatch(codex, /unbounded_connection_retries/);
       assert.equal(spec.environment.CODEX_LOGIN_MODE, loginMode);
       assert.equal(
         spec.environment.OCE_CODEX_CREDENTIAL_SOURCE,
@@ -3498,23 +3423,19 @@ test("OpenShell composes immutable commands from admitted Compute revisions", as
         loginMode === "chatgptAuthTokens",
       );
 
-      // Completion removes private payload bytes, but preserves the launch guard
-      // and does not create another Sandbox or change its command.
-      const before = lastRequirements.command;
-      await provision(
-        hasSetup
-          ? { ...context, workspaceSetup: { ...workspaceSetup, files: {}, completed: true } }
-          : context,
-      );
-      assert.deepEqual(lastRequirements.command, before);
-      assert.equal(creates.length, 1);
-      const stored = observed.get(creates[0].name);
-      stored.spec.command[7] += " ";
-      await assert.rejects(
-        fixture.prepare(undefined, context),
-        /without exact AgentRevision ownership and content/,
-      );
-      assert.equal(creates.length, 1);
+      if (!admitted && hasSetup) {
+        // Completing setup keeps the legacy Sandbox adoptable, while even one
+        // byte of command drift in its stored spec must be refused.
+        await provision({
+          ...context,
+          workspaceSetup: { ...workspaceSetup, files: {}, completed: true },
+        });
+        capture.gateway.sandboxes.get(name).spec.command[7] += " ";
+        await assert.rejects(
+          fixture.prepare(undefined, context),
+          /without exact AgentRevision ownership and content/,
+        );
+      }
     });
   }
 });

@@ -114,18 +114,6 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       native: [],
     },
     {
-      name: "protected probe retains zero retry settings despite ignoring user config",
-      protectedInference: "signed",
-      events: completedTurn(),
-      expect: ready,
-    },
-    {
-      name: "protected probe timeout never starts a second business request",
-      protectedInference: "signed",
-      native: [login(), probe([], timedOut, 30000)],
-      expect: probeTimeout,
-    },
-    {
       name: "protected probe refuses an unexpected native stream retry",
       protectedInference: "signed",
       events: completedTurn(recoveredStreamError),

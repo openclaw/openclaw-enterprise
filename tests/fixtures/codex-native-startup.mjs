@@ -372,16 +372,13 @@ export function createCodexStartup(
       return appServerStarts;
     },
     appServerSpawns,
-    start() {
-      const entrypoint = codexLaunchEntrypoint(
-        {
-          providerOwned: true,
-          protected: Boolean(protectedInference),
-          ...(providerPat && { openShellProgram: "pat" }),
-        },
-        false,
-        false,
-      );
+    start(
+      entrypoint = codexLaunchEntrypoint({
+        providerOwned: true,
+        protected: Boolean(protectedInference),
+        ...(providerPat && { openShellProgram: "pat" }),
+      }),
+    ) {
       vm.runInNewContext(entrypoint, sandbox);
     },
     async releaseProtectedExecution() {

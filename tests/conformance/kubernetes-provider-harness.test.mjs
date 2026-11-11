@@ -6,7 +6,6 @@ import { once } from "node:events";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer as createHttpsServer } from "node:https";
 import { promisify } from "node:util";
-import { inflateRawSync } from "node:zlib";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
@@ -14,26 +13,15 @@ import { waitFor } from "../helpers/qa-utils.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { COMPUTE_RELEASE_PUBLIC_KEY } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
-import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { openShellEgressConfiguration } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
-import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/workspace-defaults.mjs";
-import { workspaceGatewayClient } from "../integration/sandbox-workspace-gateway-fixture.ts";
 import { createOpenAiStaticProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
 import {
   HARNESS_EGRESS_ENROLLMENT_HELPER,
   HARNESS_EGRESS_ENROLLMENT_PATH,
 } from "../../apps/controller/src/drivers/compute/harness-egress-enrollment.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import {
-  AGENT_RUNTIME_ENTRYPOINT,
-  PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
-  RUNTIME_WRAPPER_COMMAND,
-} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import {
-  nodeProgramArguments,
-  withoutLineComments,
-} from "../../apps/controller/src/drivers/compute/node-program.ts";
+import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import test from "node:test";
 import {
   admitLoggingConfiguration,
@@ -45,7 +33,12 @@ import {
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
 import { inspectOpenShellCodexCommand } from "../fixtures/openshell-codex-command.ts";
-import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
+import { createCodexStartup, login, probe, timedOut } from "../fixtures/codex-native-startup.mjs";
+import {
+  captureOpenShellHarness,
+  providerEndpointFixture,
+  tlsPinnedWorkspaceSetupCode,
+} from "../fixtures/kubernetes-provider-endpoint.mjs";
 import { supervisorPeerLabels } from "../fixtures/kubernetes-provider-readiness.mjs";
 import {
   tenant,
@@ -1508,11 +1501,6 @@ test("provider Harness protected execution is released only on current signed in
           admission: admission.replace("openshell-codex-launch:v1:", ""),
         },
       };
-      // Controller-rendered programs reach `node -e` compressed behind a fixed loader.
-      const program = ([loader, ...pieces]) => {
-        assert.equal(loader, nodeProgramArguments("")[0]);
-        return inflateRawSync(Buffer.from(pieces.join(""), "base64")).toString("utf8");
-      };
       const pod = fixture.pod("protected-revision");
       pod.metadata.labels["openclaw.dev/revision"] = protectedRevision.id;
       pod.metadata.labels["app.kubernetes.io/name"] =
@@ -1531,62 +1519,34 @@ test("provider Harness protected execution is released only on current signed in
           [alreadyAdmitted, true],
           [protectedRevision, false],
         ]) {
-          const rendered = [];
-          sandbox.enrollHarness = async ({ requirements }) => {
-            rendered.push([requirements.command, true]);
+          const hashes = [];
+          const captureCommand = async ({ requirements }) => {
+            hashes.push(
+              createHash("sha256").update(JSON.stringify(requirements.command)).digest("hex"),
+            );
             throw released;
           };
-          sandbox.harnessEndpoint = async ({ requirements }) => {
-            rendered.push([requirements.command, false]);
-            throw released;
-          };
+          sandbox.enrollHarness = captureCommand;
+          sandbox.harnessEndpoint = captureCommand;
           for (const lifecycle of ["prepareRevision", "activateRevision"]) {
             await assert.rejects(
               driver[lifecycle](target, protectedContext),
               (error) => error === released,
             );
           }
-          assert.equal(rendered.length, 2);
-          for (const [command, node] of rendered) {
-            // SHA-256 of the serialized argv rendered at 61c73c99 with Node 24.22.1.
-            const baseCommand = node
-              ? disabled
-                ? "6eb7fbbf1b0aa2f2214771a9e362892266510bf8e82872e06b6005227d15f65d"
-                : "6942ea770ee801ef98c53015a64532abf094af8f295821268e178c09000631bf"
-              : disabled
-                ? "ed13402558c5c2a2c0df08d2f4f46d65438b5b0e01675101fac12a78ee21fa37"
-                : "a14ebffa8503ba2ca4f78872b2784d70576b308563ecb01cbb69d34999874402";
-            assert.equal(
-              createHash("sha256").update(JSON.stringify(command)).digest("hex"),
-              baseCommand,
-            );
-            const outer = program(command.slice(RUNTIME_WRAPPER_COMMAND.length));
-            const child = /\n\s+name: "Codex",\n\s+args: (.+),\n/.exec(outer);
-            assert.equal(child !== null, node);
-            const codex = node ? program(JSON.parse(child[1]).slice(1)) : outer;
-            // Standalone commands retain their full source. The nested child
-            // omits unused native helpers; both must preserve the admission below.
-            if (!node) {
-              assert.equal(
-                codex,
-                withoutLineComments(
-                  disabled ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT,
-                ),
-              );
-            }
-            // Only the two model-calling invocations: the authentication probe and app-server.
-            assert.equal(
-              codex.match(/unbounded_connection_retries/g)?.length ?? 0,
-              disabled ? 2 : 0,
-            );
-            if (disabled) {
-              assert.match(
-                codex,
-                /spawnSync\(codexExecutable\(\), \[\s+\.\.\.nativeTelemetryArguments,\s+"--disable", "unbounded_connection_retries",\s+\.\.\.disabled/,
-              );
-              assert.match(codex, /"--disable", "unbounded_connection_retries",\s+"app-server",/);
-            }
-          }
+          // SHA-256 of prepare and activate argv at 61c73c99 with Node 24.22.1.
+          assert.deepEqual(
+            hashes,
+            disabled
+              ? [
+                  "6eb7fbbf1b0aa2f2214771a9e362892266510bf8e82872e06b6005227d15f65d",
+                  "ed13402558c5c2a2c0df08d2f4f46d65438b5b0e01675101fac12a78ee21fa37",
+                ]
+              : [
+                  "6942ea770ee801ef98c53015a64532abf094af8f295821268e178c09000631bf",
+                  "a14ebffa8503ba2ca4f78872b2784d70576b308563ecb01cbb69d34999874402",
+                ],
+          );
         }
       } finally {
         core.listNamespacedPod = originalList;
@@ -1598,57 +1558,8 @@ test("provider Harness protected execution is released only on current signed in
   await t.test(
     "OpenShell provisions a protected API-key revision with workspace setup",
     async (t) => {
-      const gateway = workspaceGatewayClient();
-      let request;
-      gateway.createSandbox = async (input) => {
-        request = structuredClone(input);
-        return {
-          ...request,
-          phase: "SANDBOX_PHASE_PROVISIONING",
-          serviceUrls: { "": providerUrl.replace(/^ws:/, "http:") },
-        };
-      };
-      const backend = {
-        id: "fixture-openshell",
-        drivers: { sandbox: sandbox.id },
-        client: new OpenShellGateway(
-          { serviceName: "openshell-gateway" },
-          { gatewayClient: gateway },
-        ),
-      };
       const egress = { middlewareName: "fixture-authority", authorityScope: "execution" };
-      const openshell = new OpenShellSandboxDriver(
-        {
-          egress,
-          gateway: { workspaceMode: "operator" },
-          kubernetes: {
-            runtimeClassName: "openshell-sandbox",
-            serviceAccount: { mode: "gatewayConfigured" },
-            sandboxDataMount: {
-              subPath: "workspace",
-              mountPath: providerWorkspaceRoot,
-              readOnly: false,
-            },
-          },
-          policy: {
-            process: { runAsUser: "1000", runAsGroup: "1000" },
-            networkPolicies: [
-              {
-                name: "model",
-                endpoints: [{ host: "api.openai.com", ports: [443] }],
-                binaries: [{ path: "/usr/bin/model-client" }],
-              },
-            ],
-          },
-        },
-        { id: sandbox.id, implementation: "openshell", backend },
-      );
-      const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
-      const { KubernetesObjectApi } = require("@kubernetes/client-node");
-      fixture.clients.objects = Object.assign(
-        Object.create(KubernetesObjectApi.prototype),
-        fixture.clients.objects,
-      );
+      const capture = captureOpenShellHarness(fixture, sandbox, egress);
 
       // A real protected inference route selects API-key auth. The OAuth account
       // bootstrap belongs to the ordinary OpenShell case.
@@ -1662,7 +1573,7 @@ test("provider Harness protected execution is released only on current signed in
         ...protectedRevision,
         id,
         revision: protectedRevision.revision + 1,
-        configuration: openshell.configureAgent(
+        configuration: capture.openshell.configureAgent(
           protectedRevision.configuration,
           protectedRevision.harness,
         ),
@@ -1690,19 +1601,10 @@ test("provider Harness protected execution is released only on current signed in
       const name = driver.workspaceNodeName(target);
       const node = fixture.read("Secret", name);
       node.data.setupCode = Buffer.from(
-        Buffer.from(
-          JSON.stringify({
-            url:
-              "wss://agents.example.internal/namespaces/" +
-              target.namespaceId +
-              "/agents/" +
-              target.agentId +
-              "/node",
-            bootstrapToken: "one-shot-node-setup",
-            expiresAtMs: Date.now() + 600_000,
-            tlsFingerprint: "ab".repeat(32),
-          }),
-        ).toString("base64url"),
+        tlsPinnedWorkspaceSetupCode(
+          `wss://agents.example.internal/namespaces/${target.namespaceId}/agents/${target.agentId}/node`,
+          Date.now() + 600_000,
+        ),
       ).toString("base64");
       save(node);
 
@@ -1710,19 +1612,11 @@ test("provider Harness protected execution is released only on current signed in
         plan,
         configuration: openShellEgressConfiguration(plan, egress, revision),
       });
-      sandbox.validateWorkspaceSetup = openshell.validateWorkspaceSetup.bind(openshell);
-      sandbox.harnessHome = openshell.harnessHome;
-      const provisioned = new Error("captured protected CreateSandbox");
-      sandbox.provisionHarness = async (input) => {
-        await openshell.provisionHarness(input);
-        throw provisioned;
-      };
       await assert.rejects(
         driver.prepareRevision(target, { ...protectedContext, workspaceSetup }),
-        (error) => error === provisioned,
+        (error) => error === capture.provisioned,
       );
-      assert.ok(request);
-      const { command, environment } = request.spec;
+      const { command, environment } = capture.request.spec;
       assert.equal(environment.CODEX_LOGIN_MODE, "api_key");
       assert.equal(environment.OCE_CODEX_CREDENTIAL_SOURCE, undefined);
       assert.ok(environment[COMPUTE_RELEASE_PUBLIC_KEY]);
@@ -1731,8 +1625,28 @@ test("provider Harness protected execution is released only on current signed in
       });
       assert.match(loader, /\.oce-workspace-setup\.json/);
       assert.match(supervisor, new RegExp(workspaceSetup.id));
-      assert.equal(codex.match(/unbounded_connection_retries/g)?.length, 2);
-      assert.doesNotMatch(codex, /unsupported_l7_protocol/);
+      // Use the exact nested program delivered by CreateSandbox. The fixture
+      // verifies the signature gate and both native invocations' no-retry flags.
+      const answered = probe([
+        { type: "turn.started" },
+        { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+        { type: "turn.completed" },
+      ]);
+      for (const [result, failure] of [
+        [answered, undefined],
+        [probe([], timedOut, 30000), "MODEL_PROBE_TIMEOUT"],
+      ]) {
+        const runtime = createCodexStartup(t, {
+          protectedInference: "signed",
+          native: [login(), result],
+        });
+        runtime.start(codex);
+        await runtime.releaseProtectedExecution();
+        runtime.assertNativeScriptConsumed();
+        assert.equal(runtime.retryTimers.length, 0);
+        assert.equal(runtime.appServerStarts, failure === undefined ? 1 : 0);
+        assert.equal(runtime.status().runtimeFailure?.code, failure);
+      }
     },
   );
 });

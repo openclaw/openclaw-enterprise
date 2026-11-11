@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-11
-last_updated_session: authoring-run/d486197b-c9d9-437a-8a99-f54368ab9e69
+last_updated_session: authoring-run/1354aaee-dc47-423c-864d-41dfc9608912
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -189,15 +189,15 @@ current policy. OpenShell blocks nested bubblewrap; model readiness does not pro
 `KubernetesComputeDriver.admitRevision` saves the OpenShell Codex launch selection.
 `runtime-entrypoints.ts:codexLaunchEntrypoint` uses it with the revision's
 authentication, protection and workspace node to select the startup program.
-Existing revisions keep their command encoding. For new revisions, the renderer
-packs the nested Codex child for PAT or for workspace setup.
+Existing revisions keep their encoding. The renderer packs each new PAT or
+workspace setup child on first use and reuses it.
 
 `prepareHarnessAuth` selects native login for a [PAT source](../reference/drivers/openshell-credential-gateway.md#source-type-catalog).
 The startup program writes the placeholder to private `auth.json` and verifies
-native login. In the new unprotected PAT program, `openShellPatRecovery` checks
-the exact WebSocket upgrade denial, the subsequent HTTPS advisory and a nonempty
-answer in the same successful tool-free turn. A terminal HTTPS 401 or 403 leaves
-the Harness unready and reports `AUTHENTICATION_FAILED`.
+native login. `openShellPatRecovery` identifies exact upgrade refusals and a
+later HTTPS advisory in the same thread. The probe requires a nonempty answer
+after the advisory and a successful tool-free turn. A terminal HTTPS 401 or 403
+leaves the Harness unready and reports `AUTHENTICATION_FAILED`.
 `requireModelSourceDestination` checks immutable `config.authorized_base_url` before binding
 the [shared provider](../reference/drivers/kubernetes-compute/model-provider.md)
 URL plus `/**`, preserving `/api/v1` prefixes. `attachForRevision` translates native
@@ -430,6 +430,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 05:33: Record lazy packing and PAT evidence. (authoring-run/1354aaee-dc47-423c-864d-41dfc9608912 - f633bf27c890)
 
 - 2026-11-11 05:03: Explain revision-bound command selection and PAT startup refusal. (authoring-run/d486197b-c9d9-437a-8a99-f54368ab9e69 - a7d8e6a5d2b0)
 
