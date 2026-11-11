@@ -56,7 +56,8 @@ import {
 
 const retirementError = {
   code: "RESOURCE_CONFLICT",
-  message: "The selected Driver has retired new uses of this protected static credential provider.",
+  message:
+    "The selected Driver has retired new uses of this protected static credential provider. Ask an Installation administrator to configure a supported model access path.",
 };
 
 function assertRetired(response) {

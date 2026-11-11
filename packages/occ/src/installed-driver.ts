@@ -128,7 +128,7 @@ export class InstalledDriver {
       )
     ) {
       throw new ResourceStateConflictError(
-        "The selected Driver has retired new uses of this protected static credential provider.",
+        "The selected Driver has retired new uses of this protected static credential provider. Ask an Installation administrator to configure a supported model access path.",
       );
     }
   }
