@@ -357,8 +357,8 @@ selected and running within its credential deadline; outages never retire it. Ea
 claim reauthorizes its actor. Successor keys use strictly later time buckets despite clock skew.
 
 `worker.completed` reports the target, outcome, and code. On `namespace.ensure`
-and `namespace.delete`, it can also report a [Kubernetes access hint](../reference/drivers/kubernetes-compute.md#failure-conditions)
-from the current pass. The hint stays out of the Driver observation.
+and `namespace.delete`, it can report a [Kubernetes access hint](../reference/drivers/kubernetes-compute.md#failure-conditions)
+from the current pass, kept out of the Driver observation.
 A Namespace pass that observes the same pending state this worker last audited,
 such as a terminating namespace, writes no new lifecycle audit or `reconcile` row;
 a changed pending state or the terminal pass does.
@@ -423,6 +423,6 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 ## Changelog
 
-- 2026-11-10 17:10: Hint tenant access on Namespace delete. (fix-4929)
+- 2026-11-10 17:10: Hint tenant access on delete. (fix-4929)
 
 [Controller worker documentation history](controller-worker/history.md) preserves the older dated entries.
