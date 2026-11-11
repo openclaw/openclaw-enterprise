@@ -350,7 +350,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     revisionId: revision.id,
     seccomp,
   });
-  const chat = async (prompt) => {
+  const chat = async (prompt, gatewayChatPhase) => {
     // Readiness isn't a model turn. Record a bounded, content-free failure at the real receiver
     // before cleanup; never replay a turn whose effect might be unknown.
     const before = await modelEvents(AbortSignal.timeout(10_000)).catch(() => undefined);
@@ -371,6 +371,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
         openclawCiDiagnostic: skipperOperationDiagnostic({
           kind: "skipper-operation",
           operation: "gateway-chat",
+          gatewayChatPhase,
           gatewayCategory: category,
           httpStatus: status,
         }),
@@ -498,7 +499,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     });
     await checkpoint("native-command-started", { label });
     const reply = await runSkipperOperation("gateway-chat", () =>
-      chat("Perform the authorized disposable private Git task " + marker),
+      chat("Perform the authorized disposable private Git task " + marker, "native-git"),
     );
     const expected = "SKIPPER_COMPUTE_DONE_" + marker;
     if (reply !== expected) {
@@ -544,9 +545,9 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     await runSkipperOperation("command-cleanup", () => unlink(controlFile));
     return completed;
   };
-  async function ordinaryChat(label) {
+  async function ordinaryChat(label, gatewayChatPhase) {
     const nonce = "OCE_SMOKE_" + randomUUID();
-    assert.equal(await chat("Please reply with exactly " + nonce), nonce);
+    assert.equal(await chat("Please reply with exactly " + nonce, gatewayChatPhase), nonce);
     const matches = (await modelEvents()).filter(
       (e) => e.event === "turn-answered" && e.text === nonce && e.status === 200,
     );

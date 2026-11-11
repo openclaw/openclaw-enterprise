@@ -32,7 +32,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AUTH_SECRET` — Production requires a high-entropy session-signing secret; development has a local-only fallback.
 - `OCC_AUTH_BASE_URL` — Authentication, cookie, and exact development browser origin; required in production; default in development: `http://127.0.0.1:3000`.
 - `OCC_AUTH_RECOVERY_USER_ID` — Existing local password administrator protected for recovery when Google or OIDC sign-in is enabled.
-- `OCC_AUTH_OIDC_ENROLLMENT` — Optional JSON admission and account creation policy; see [OIDC enrollment](../authentication/team-enrollment.md).
+- `OCC_AUTH_OIDC_ENROLLMENT` — Optional JSON admission and account creation policy, including `createAccount.requireVerifiedEmail` (default `true`); see [OIDC enrollment](../authentication/team-enrollment.md).
 - `OCC_AUTH_PASSWORD_SIGN_IN` — `all` (default) or `recovery-only`, which lets only the recovery account sign in with a password; requires Google or OIDC sign-in. See [recovery-only password sign-in](../authentication/external-sign-in.md#recovery-only-password-sign-in).
 - `OCC_AUTH_GOOGLE_CLIENT_ID` — Optional Google OAuth web client ID; selects the provider instance. Requires the client secret and the recovery user ID; see [Google sign-in](../../guides/deploy/google-sign-in.md).
 - `OCC_AUTH_GOOGLE_CLIENT_SECRET` — Protected server-side client secret for the configured Google OAuth client.
@@ -108,9 +108,9 @@ These settings belong to the checkout's development stack. See
 [development settings](../settings/development.md#required-development-controller-environment)
 for supported engines, images, and security restrictions.
 
-- `OCC_DEVELOPMENT_COMPUTE_DRIVER` — `docker` (default) or `kubernetes`; the Docker preview cannot deploy Agents.
+- `OCC_DEVELOPMENT_COMPUTE_DRIVER` — `kubernetes` (default) or `docker`; the Docker preview cannot deploy Agents.
 - `OCC_DEVELOPMENT_SANDBOX_DRIVER` — `none` (default) or `openshell`; OpenShell requires Kubernetes Compute.
-- `OCC_DEVELOPMENT_CONTROL_PLANE` — `compose` (default) or `kubernetes`; Kubernetes control plane requires Kubernetes Compute. Compose mode keeps PostgreSQL and OCC in Compose while Kubernetes Compute runs in k3d.
+- `OCC_DEVELOPMENT_CONTROL_PLANE` — `kubernetes` or `compose`; the default follows the Compute Driver (`kubernetes` on Kubernetes Compute, `compose` on Docker Compute). Kubernetes control plane requires Kubernetes Compute. Compose mode keeps PostgreSQL and OCC in Compose while Kubernetes Compute runs in k3d.
 - `OCC_DEVELOPMENT_PROTECTED_EGRESS` — Unset, empty or `0` preserves ordinary startup; `1` is retired and rejected before effects, including with Kubernetes/OpenShell. Other values are invalid. See the [retirement notice](../../guides/deploy/local-openshell-images.md#select-the-protected-profile). Gateway authentication remains enabled independently.
 - `OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` — Retired; any presence, including an empty value, is rejected. Remove it from the environment; see [development settings](../settings/development.md).
 - `OCC_DEVELOPMENT_DATABASE_NAME` — Optional disposable `openclaw_k8s_` database for the Kubernetes control plane; see [development settings](../settings/development.md).

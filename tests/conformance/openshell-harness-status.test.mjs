@@ -1575,7 +1575,10 @@ function runNativeWorkerEntrypoint({ env = {}, upfrontStatus = 3, upfrontStdout,
               return { status: upfrontStatus, stdout: upfrontStdout };
             }
             assert.equal(command, "node");
-            assert.equal(args[0], "/app/openclaw.mjs");
+            // The CLI loads the CPU window preload from its own probe directory.
+            assert.equal(args[0], "--require");
+            assert.match(args[1], /\/openclaw-auth-probe-[^/]+\/cpu-window\.cjs$/);
+            assert.equal(args[2], "/app/openclaw.mjs");
             return {
               status: 0,
               stdout: JSON.stringify({

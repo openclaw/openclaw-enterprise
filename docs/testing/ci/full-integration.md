@@ -17,22 +17,24 @@ clusters, and provider services. The workflow collects the selected results in
 
 ## Trigger
 
-Verified documentation-only main pushes select no runtime lanes. Other pushes
-to `main` select `all`. Missing history or uncertain impact retains full execution. Manual dispatch selects one supported `lane` or
-`all` on `main` and requires the dispatcher's [team approval](configuration.md#environments).
-Manual reruns fail preflight; start a new approved dispatch instead.
-Source, environment and selection validation run before queue admission. Verified docs-only
-pushes never enter the execution queue, so they cannot replace pending full work.
-Eligible automatic runs still share one running and one pending slot; the next
-run to enter the group replaces the pending one. A scheduled advisory run does not run this workflow.
+Quarter-hour ticks can admit a full run on the current main commit. Automatic
+starts are at least 60 minutes apart and at least 15 minutes after the preceding
+full run finishes. Stale ticks and revisions with verified full execution select
+no lanes. The outer preflight screens ticks before the execution queue. The
+reusable workflow rechecks admission in the queue and confirms its admission
+receipt before starting the full suite. Missing admission metadata fails visibly.
+
+Manual dispatch selects one supported `lane` or `all` on `main` and requires the
+dispatcher's [team approval](configuration.md#environments). The ordinary PR
+and merge-group checks still provide targeted premerge feedback. QA Advisory
+has its own schedule.
 
 ## Scenarios
 
-For main pushes, `pr-safe-same-sha` can reuse successful [CI suite](required-checks.md#scenarios)
-results at the same commit. Manual dispatch runs fresh. Runtime Image Fixture,
-image lanes, Repository Credentials, and [Demo Observability Smoke](observability-demo.md)
-always run fresh. Dispatch Preflight checks policy; Full Integration Aggregate
-requires selected results. QA waits for Slack to finish, including after Slack failure.
+First-attempt scheduled and manual `all` runs can [reuse qualified CI results](#results-and-limits).
+Other selected lanes run fresh. Dispatch Preflight checks environment policy;
+Full Integration Aggregate requires selected results.
+QA waits for Slack to finish, including after Slack failure.
 Some lanes are also selected by [CI](required-checks.md) or
 [QA Advisory](qa-advisory.md); those pages own automatic selection rules.
 
@@ -95,7 +97,7 @@ gh workflow run full-integration.yml --ref main -f lane=dev-up-k3d
 Check `headSha` and `full-results-dev-up-k3d`; every case must pass without skips.
 The 180-minute job budget includes setup/cleanup. Manual runs require the same
 team approval as credentialed lanes. Start a new approved dispatch to retry a manual run.
-Jobs triggered by a main push can retry at the original commit.
+Retry a scheduled failure through a new approved manual dispatch.
 
 ## Results and limits
 
@@ -126,30 +128,61 @@ empty issue lists and each file's exercised status, exit code, and signal for
 coverage validation. Focused or incomplete results carry no full-coverage proof.
 Raw test output and diagnostics remain private. Failed native operations report a known operation label and, when available, a bounded exit code or allowlisted signal/error code. These log fields do not prove that the installed journey passed.
 
+If the installed proof fails and the job can continue, look for
+`attempt-<attempt>-full-failure-skipper-prepared-git-installed`, retained for seven
+days. Its single JSON file records the run, attempt, source SHA, failed outcome,
+last recorded stage and installed cleanup status. For `selected-test`, the
+receipt also records the allowlisted `testOperation` and `lastTestCheckpoint`,
+with `unknown` for missing or unrecognized values. For a selected structured
+Gateway chat refusal, the receipt includes `gatewayChatPhase` when it can identify
+ordinary chat before private Git (`before-private-git`), a native Git turn
+(`native-git`), or ordinary chat after Git withdrawal (`after-withdrawal`).
+After a failed runner, the writer uses complete valid ledger rows before the
+first malformed or non-object row. It ignores blank rows and selects the last
+recognized checkpoint for the selected mode, excluding retirement. A missing
+or unreadable ledger leaves the checkpoint `unknown` but preserves a verified
+operation. Optional failure evidence cannot replace the selected-test failure;
+passing proof still requires strict ledger parsing. A missed stage write can leave an earlier stage
+visible. Checkpoints do not establish successful cleanup.
+
+Cleanup `passed` covers registered teardown callbacks, verified cluster and
+network removal, released installation ports and model-directory removal. It
+excludes the private work directory and the outer Git fixture's teardown. This
+failure receipt is separate from success aggregation and cannot qualify images.
+Cancellation, runner loss or job timeout can prevent its publication. A passing
+proof does not exercise this failure upload.
+
 Checkout image-build failures identify each failed role (controller or runtime), exit code, known error code or signal, killed flag, elapsed time and configured budget. Process fields come only from Docker command failures; journal and pre-dispatch failures leave them `unknown`. Accessor-backed fields also stay `unknown`. A signal or elapsed time alone does not prove a timeout. The [build helper](../../../tests/helpers/dev-up-model-provider.mjs) preserves original errors for local inspection but excludes their command arguments and output from CI summaries.
 
-The `openshell` dispatch runs two OpenShell lanes on separate VMs. Each runs
-its assigned files serially, and the aggregate requires both results. QA Advisory uses
+The `openshell` dispatch runs two OpenShell lanes on separate VMs. Before either
+starts, the protected environment resolves their controller base image and the
+shared cache warmer exports both image caches from the selected commit. A failed
+export or cleanup blocks the lanes. Their source builds still run; another export,
+eviction, or import failure can cause a cache miss. Each lane runs its assigned
+files serially, and the aggregate requires both results. QA Advisory uses
 [parallel per-file runners](qa-advisory.md#openshell-file-coverage).
 Use the [shared cleanup procedure](run-lanes.md#results-and-cleanup) for local runs.
 
-The reuse job polls ordinary CI every 30 seconds for at most 12 minutes. Other
-Full Integration lanes continue without waiting for it. Reuse requires a successful
-canonical `main` push run, its current attempt's successful lane and static-check
-jobs, and immutable result artifacts with matching source commit and full coverage.
-Preparation profiles and Node versions must match. The existing result validator
-checks required cases and cleanup before results are published as `full-results-reused`.
-Missing, expired, incomplete, or unavailable evidence runs fresh instead. A failed
-artifact download or publication also runs fresh. The job log identifies the CI
-producer run and attempt; Full Integration Aggregate validates reused and fresh
-results together.
+First-attempt scheduled and manual `all` runs can reuse eligible ordinary CI
+lanes from a successful push CI run on official `main` at the exact source SHA.
+Discovery waits at most 12 minutes. Required producer jobs must pass, and
+current-attempt artifacts must contain complete case and cleanup evidence.
+Validated results must be published as `full-ci-reused-results` before their lanes
+are omitted from fresh execution. Ineligible lanes and unavailable, invalid or
+unpublished results fall back to fresh runs. Preflight supplies the full matrix
+if the optional reuse job fails or times out before completing its plan; that
+failure alone does not fail the workflow. Aggregation reads
+retained results only for a successful plan; abandoned uploads cannot replace
+fresh evidence. The aggregate applies the same
+case and cleanup rules to both sources; reuse is not independent execution.
+Hosted discovery, publication and final reuse accounting remain unverified.
 
 ## Files
 
 - [Full Integration workflow](../../../.github/workflows/full-integration.yml): events, approval, preflight, and execution queue admission.
 - [Execution workflow](../../../.github/workflows/full-integration-execution.yml): same-commit revalidation, selectable lanes, dependencies, and aggregate.
 - [Dispatch preflight](../../../scripts/ci/full-integration-preflight.mjs): lane and environment policy.
-- [CI result reuse](../../../scripts/ci/full-integration-reuse.mjs): producer admission, result validation, and fresh-lane fallback.
+- [CI lane planning](../../../scripts/ci/full-integration-reuse.mjs): ordinary CI lane selection and result validation.
 - [Suite index](../../../scripts/ci/test-suites.json): group membership; exact manifests are linked in Scenarios.
 - [Test runner](../../../scripts/ci/run-tests.mjs): expected-case and result checks.
 - [Lane action](../../../.github/actions/run-ci-lane/action.yml): preparation and cleanup.

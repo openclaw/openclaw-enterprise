@@ -302,6 +302,10 @@ export async function createInjectedControllerFixture(
       return platformState;
     },
     installAuthSeed,
+    async markNamespaceReady(namespaceId: string) {
+      assert(controller);
+      await controller.handleNamespaceLifecycle(principal.id, namespaceId, "ready");
+    },
     get controller() {
       return controller;
     },

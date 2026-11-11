@@ -539,6 +539,7 @@ test(
         runtime: {
           transportSecretPrefix: "transport",
           gatewayStorageClassName: "local-path",
+          gatewayStorageSizeGiB: 1024,
           // The provisioned Agent enables Slack, which needs the Installation's channel runtime.
           channels: { proxyUrl: "http://10.42.0.15:3128" },
           gatewayNodeSelector: {
@@ -928,7 +929,7 @@ test(
     const claimDirectory = await temporaryDirectory(context, "openclaw-legacy-rwx-");
     for (const [name, namespace, accessMode, storage] of [
       [workspaceName, placement, "ReadWriteMany", "40Gi"],
-      [gatewayStateName, gatewayPlacement, "ReadWriteOnce", "10Gi"],
+      [gatewayStateName, gatewayPlacement, "ReadWriteOnce", "1024Gi"],
     ]) {
       const claimPath = join(claimDirectory, `${name}.json`);
       await writeFile(
@@ -1022,6 +1023,55 @@ test(
       },
       "the provisioning worker must preserve human identities and grants in the rendered Gateway ConfigMap",
     );
+    const provisionedPath = `/namespaces/${namespaceOwner.id}/agents/${provisioned.agentId}`;
+    const provisionedClaimName = `gateway-state-${hash(provisioned.agentId)}`;
+    const originalClaim = await resource(
+      "persistentvolumeclaim",
+      provisionedClaimName,
+      gatewayPlacement,
+    );
+    // Verify the API server round-trip, not just the requested representation.
+    // The fixture exercises claim metadata without writing 1Ti of data.
+    assert.equal(originalClaim.spec.resources.requests.storage, "1Ti");
+    // A second API-admitted revision must reuse state even though these fixture images
+    // cannot complete native model enrollment. This is storage proof, not model proof.
+    await waitFor("original fixture deployment work to finish", async () => {
+      const work = await fixture.readWork(`agent_revision:${provisioned.revisionId}:reconcile`);
+      return work?.state === "failed_permanent" ? work : undefined;
+    });
+    // No other work for this unique Agent is queued during this observation.
+    const reconcile = driver.reconcile.bind(driver);
+    let replacementClaimReconciled = false;
+    const claimReconciliation = context.mock.method(driver, "reconcile", async (...args) => {
+      const result = await reconcile(...args);
+      if (
+        args[0].kind === "PersistentVolumeClaim" &&
+        args[0].metadata.name === provisionedClaimName &&
+        args[0].metadata.namespace === gatewayPlacement
+      ) {
+        replacementClaimReconciled = true;
+      }
+      return result;
+    });
+    const replacement = await fixture.request("POST", `${provisionedPath}/deploy`);
+    assert.equal(replacement.status, 202, JSON.stringify(replacement.body));
+    assert.notEqual(replacement.data.id, provisioned.revisionId);
+    await waitFor("replacement fixture deployment to finish", async () => {
+      const work = await fixture.readWork(`agent_revision:${replacement.data.id}:reconcile`);
+      return work?.state === "failed_permanent" ? work : undefined;
+    });
+    claimReconciliation.mock.restore();
+    // ConfigMap creation precedes PVC verification. Only a successful real
+    // reconciliation proves this replacement accepted the retained claim.
+    assert.equal(replacementClaimReconciled, true);
+    const retainedClaim = await resource(
+      "persistentvolumeclaim",
+      provisionedClaimName,
+      gatewayPlacement,
+    );
+    assert.equal(retainedClaim.metadata.uid, originalClaim.metadata.uid);
+    assert.deepEqual(retainedClaim.spec, originalClaim.spec);
+
     const initialDeployment = await fixture.request(
       "GET",
       `/namespaces/${namespaceOwner.id}/agents/${provisioned.agentId}/deployments/${provisioned.revisionId}`,
@@ -1088,6 +1138,161 @@ test(
     assert.equal(
       (await resource("secret", transportName, gatewayPlacement)).metadata.uid,
       transport.metadata.uid,
+    );
+    // An owned claim with another request size must fail preparation and final
+    // deletion without resizing or replacing data. Unlike the RWX case above,
+    // the workspace is valid, so refusal comes from Gateway storage itself.
+    await fixture.stopWorker();
+    const mismatched = await fixture.request("POST", `/namespaces/${namespaceOwner.id}/agents`, {
+      name: `mismatched-storage-${randomUUID()}`,
+      configurationId: legacyConfiguration.data.id,
+      executionMode: "dedicated",
+      harnessAuth: body.harnessAuth,
+    });
+    assert.equal(mismatched.status, 201, JSON.stringify(mismatched.body));
+    const mismatchedPath = `/namespaces/${namespaceOwner.id}/agents/${mismatched.data.id}`;
+    const grant = await fixture.request(
+      "POST",
+      `/namespaces/${namespaceOwner.id}/iam/access-bindings`,
+      {
+        subjectKind: "identity",
+        subjectId: mismatched.data.servicePrincipalId,
+        roleId: role.data.id,
+        resourceKind: "secret",
+        resourceId: modelSecret.data.id,
+      },
+    );
+    assert.equal(grant.status, 201, JSON.stringify(grant.body));
+    const sizeCredentials = await fixture.request(
+      "POST",
+      `${mismatchedPath}/runtime-credentials`,
+      {},
+    );
+    assert.equal(sizeCredentials.status, 200, JSON.stringify(sizeCredentials.body));
+    const mismatchedClaimName = `gateway-state-${hash(mismatched.data.id)}`;
+    const mismatchedClaimPath = join(claimDirectory, "mismatched-gateway.json");
+    await writeFile(
+      mismatchedClaimPath,
+      JSON.stringify({
+        apiVersion: "v1",
+        kind: "PersistentVolumeClaim",
+        metadata: {
+          name: mismatchedClaimName,
+          namespace: gatewayPlacement,
+          labels: {
+            "app.kubernetes.io/managed-by": "openclaw-enterprise",
+            "openclaw.dev/namespace": namespaceOwner.id,
+            "openclaw.dev/agent": mismatched.data.id,
+          },
+          annotations: {
+            "openclaw.dev/namespace-id": namespaceOwner.id,
+            "openclaw.dev/agent-id": mismatched.data.id,
+          },
+        },
+        spec: {
+          accessModes: ["ReadWriteOnce"],
+          volumeMode: "Filesystem",
+          storageClassName: "local-path",
+          resources: { requests: { storage: "10Gi" } },
+        },
+      }),
+      { mode: 0o600 },
+    );
+    await kubectl("apply", "--filename", mismatchedClaimPath);
+    const wrongSizeClaim = await resource(
+      "persistentvolumeclaim",
+      mismatchedClaimName,
+      gatewayPlacement,
+    );
+    const sizeFailures = [];
+    const sizePreparation = context.mock.method(driver, "prepareRevision", async (...args) => {
+      try {
+        return await prepareRevision(...args);
+      } catch (error) {
+        if (args[0].agentId === mismatched.data.id) {
+          sizeFailures.push(error.message);
+        }
+        throw error;
+      }
+    });
+    const sizeDeployment = await fixture.request("POST", `${mismatchedPath}/deploy`);
+    assert.equal(sizeDeployment.status, 202, JSON.stringify(sizeDeployment.body));
+    await fixture.startWorker();
+    await waitFor("mismatched Gateway request to fail deployment", async () => {
+      const work = await fixture.readWork(`agent_revision:${sizeDeployment.data.id}:reconcile`);
+      return work?.state === "failed_permanent" ? work : undefined;
+    });
+    sizePreparation.mock.restore();
+    assert.deepEqual(
+      new Set(sizeFailures),
+      new Set([`Refusing invalid PersistentVolumeClaim ${mismatchedClaimName}.`]),
+    );
+    const rejectedSizeClaim = await resource(
+      "persistentvolumeclaim",
+      mismatchedClaimName,
+      gatewayPlacement,
+    );
+    assert.equal(rejectedSizeClaim.metadata.uid, wrongSizeClaim.metadata.uid);
+    assert.deepEqual(rejectedSizeClaim.spec, wrongSizeClaim.spec);
+    assert.equal(rejectedSizeClaim.metadata.deletionTimestamp, undefined);
+    assert.equal(
+      await missing("deployment", gatewayName(mismatched.data.id), gatewayPlacement),
+      true,
+    );
+    // The public credential cleanup boundary sanitizes ownership errors. Observe
+    // the real claim deletion underneath it without changing its result or client.
+    const deleteGatewayClaim = driver.deleteGatewayPrivateStateClaim.bind(driver);
+    const deletionFailures = [];
+    const claimDeletion = context.mock.method(
+      driver,
+      "deleteGatewayPrivateStateClaim",
+      async (...args) => {
+        try {
+          return await deleteGatewayClaim(...args);
+        } catch (error) {
+          if (args[0].agentId === mismatched.data.id) {
+            deletionFailures.push(error.message);
+          }
+          throw error;
+        }
+      },
+    );
+    const sizeDeletion = await fixture.request("DELETE", mismatchedPath);
+    assert.equal(sizeDeletion.status, 202, JSON.stringify(sizeDeletion.body));
+    await waitFor("mismatched Gateway request to block final deletion", async () => {
+      const work = await fixture.readWork(`agent:${mismatched.data.id}:reconcile:deleted`);
+      return work?.state === "failed_permanent" ? work : undefined;
+    });
+    claimDeletion.mock.restore();
+    assert.deepEqual(
+      new Set(deletionFailures),
+      new Set([`Refusing invalid PersistentVolumeClaim ${mismatchedClaimName}.`]),
+    );
+    const untouchedClaim = await resource(
+      "persistentvolumeclaim",
+      mismatchedClaimName,
+      gatewayPlacement,
+    );
+    assert.equal(untouchedClaim.metadata.uid, wrongSizeClaim.metadata.uid);
+    assert.deepEqual(untouchedClaim.spec, wrongSizeClaim.spec);
+    assert.equal(untouchedClaim.metadata.deletionTimestamp, undefined);
+
+    // Compatible configured state still follows ordinary Agent deletion. The
+    // deliberately incompatible claim is left to this fixture's namespace cleanup.
+    const compatibleDeletion = await fixture.request("DELETE", provisionedPath);
+    assert.equal(compatibleDeletion.status, 202, JSON.stringify(compatibleDeletion.body));
+    await waitFor("configured Agent deletion to complete", async () => {
+      const work = await fixture.readWork(`agent:${provisioned.agentId}:reconcile:deleted`);
+      assert.notEqual(work?.state, "failed_permanent", JSON.stringify(work));
+      // Successful deletion removes the Agent and its Work rows atomically.
+      const agent = await fixture.request("GET", provisionedPath);
+      assert.ok([200, 404].includes(agent.status), JSON.stringify(agent.body));
+      return agent.status === 404 ? true : undefined;
+    });
+    await waitFor("configured Gateway state claim cleanup", async () =>
+      (await missing("persistentvolumeclaim", provisionedClaimName, gatewayPlacement))
+        ? true
+        : undefined,
     );
   },
 );

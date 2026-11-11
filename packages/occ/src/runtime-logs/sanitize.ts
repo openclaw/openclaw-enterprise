@@ -52,6 +52,10 @@ const WRAPPER_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freez
     "providerErrorType",
     // The error code alone when the probe directory could not be removed (finding 2610).
     "cleanupError",
+    // The CPU reading of OpenClaw's own timeout window (finding 2675).
+    "timeoutWindowMs",
+    "timeoutWindowCpuWaitMs",
+    "timeoutWindowIdleMs",
   ],
   // One failed native Codex login attempt (finding 2017); a reliability failure is retried.
   "codex.login": ["attempt", "elapsedMs", "exitCode"],

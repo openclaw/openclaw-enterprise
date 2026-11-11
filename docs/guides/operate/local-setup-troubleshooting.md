@@ -52,3 +52,58 @@ With all contenders stopped and abandonment confirmed, remove only the printed
 lock file. Preserve the adjacent `.json` resume record. Retry once with the same
 Agent name. Do not remove a lock based only on a PID check while another command
 can start.
+
+## Gateway connections return 403 after an Envoy Pod replacement
+
+Correlate the worker's failed attempt with the Envoy access log. A `403` with
+`via_upstream` means the upstream returned the refusal; it does not establish
+that the model credential failed. If the native Gateway reports
+`trusted_proxy_untrusted_source`, inspect the proxy trust configuration.
+Retain the failed Gateway logs privately and keep the existing Agent for
+redeployment. Delete the Agent only for intentional teardown; deletion also
+removes its workspace and version history.
+
+If the Installation trusts the previous Envoy Pod by its individual address,
+a replacement can fall outside the configured range while the Gateway,
+certificate and control plane still report ready. Startup preflight does not establish that
+the configured trust admits the current proxy.
+
+List the proxy Pods for the selected Gateway. Set these names from the installed
+Compute `gatewayRouting` configuration. In the [saved quickstart
+operator session](../deploy/quickstart-session.md), use its kubeconfig and context:
+
+```bash
+ENVOY_NAMESPACE='<envoyNamespace>'
+GATEWAY_NAMESPACE='<gatewayNamespace>'
+GATEWAY_NAME='<gatewayName>'
+kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" \
+  -n "$ENVOY_NAMESPACE" get pods \
+  -l "gateway.envoyproxy.io/owning-gateway-namespace=$GATEWAY_NAMESPACE,gateway.envoyproxy.io/owning-gateway-name=$GATEWAY_NAME" \
+  -o custom-columns='NAME:.metadata.name,UID:.metadata.uid,IP:.status.podIP'
+```
+
+Compare the current proxy's socket-source address with
+`drivers.compute.configuration.network.gatewayTrustedProxyCidrs` in the protected
+Installation YAML. Pod addresses are diagnostic clues: source address translation
+or a custom ingress can change the address the Gateway sees. Confirm the source
+before changing trust. Also verify that only the intended proxy can reach the
+listener from that source, retaining the [exact proxy NetworkPolicy
+peer](../../reference/drivers/kubernetes-compute/gateway-authentication.md#listener-and-proxy-trust).
+A shared translated address alone does not identify the proxy. If isolation
+cannot be established, leave trust unchanged. Do not automatically trust a whole
+Pod network.
+
+For a confirmed stale entry in the k3d quickstart, edit the saved
+`INSTALLATION_FILE` and follow [Update and recover the
+Installation](../deploy/quickstart-session.md#update-and-recover-the-installation)
+using `upgrade_installation`. For production Helm installations, follow
+[Apply other Installation changes](../deploy/production-installation-changes.md).
+Preserve current image references; Helm-managed API and worker Pods restart
+through the configuration checksum. No image rebuild is required. These Helm
+procedures do not apply to Compose-managed controllers.
+
+If the Agent Configuration explicitly sets `gateway.trustedProxies`, omit that
+override or make it match the updated Installation before redeploying; generated
+defaults need no edit. Deploy the same Agent again so its Gateway receives the
+corrected trust, preserving sessions and workspace storage. Verify node
+enrollment and a real chat reply; a controller rollout alone does not prove either.

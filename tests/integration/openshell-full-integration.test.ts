@@ -47,11 +47,21 @@ function command(script: string, args: string[], view = "default") {
 const runner = "scripts/ci/run-tests.mjs";
 const fullView = "full-integration";
 
-function assertIssue(result: ReturnType<typeof command>, code: string) {
+function assertIssue(
+  result: ReturnType<typeof command>,
+  code: string,
+  expected?: { lane: string; file: string },
+) {
   assert.equal(result.status, 1, result.stderr);
-  const summary: { issues: { code: string }[] } = JSON.parse(result.stdout);
+  const summary: { issues: { code: string; lane?: string; file?: string }[] } = JSON.parse(
+    result.stdout,
+  );
   assert.ok(
-    summary.issues.some((issue) => issue.code === code),
+    summary.issues.some(
+      (issue) =>
+        issue.code === code &&
+        (!expected || (issue.lane === expected.lane && issue.file === expected.file)),
+    ),
     JSON.stringify(summary.issues),
   );
 }
@@ -72,6 +82,18 @@ test("Full Integration partitions OpenShell without changing the default focused
   const shards = present(selected.groups.openshell);
   assert.deepEqual(shards, ["openshell-policy", "openshell-installers"]);
   assert.equal(selected.lanes.openshell, undefined);
+  assert.ok(
+    present(selected.lanes["openshell-installers"]).files.some(
+      ({ path }) => path === "tests/integration/openshell-git-finite-removal-real.test.ts",
+    ),
+    "tests/integration/openshell-git-finite-removal-real.test.ts must be in openshell-installers",
+  );
+  assert.ok(
+    !present(selected.lanes["openshell-policy"]).files.some(
+      ({ path }) => path === "tests/integration/openshell-git-finite-removal-real.test.ts",
+    ),
+    "tests/integration/openshell-git-finite-removal-real.test.ts must be absent from openshell-policy",
+  );
   const allFiles = shards.flatMap((name) => present(selected.lanes[name]).files);
   assert.equal(allFiles.length, canonical.files.length);
   assert.deepEqual(
@@ -251,6 +273,16 @@ test("both complete OpenShell receipts are required by targeted and full aggrega
     const cleanup = makeReceipt(installers);
     present(cleanup.files[0]).cleanup.status = "failed";
     reject(cleanup, "cleanup-failed");
+    // A successful lane receipt cannot omit the finite-removal file's complete evidence.
+    const missingFile = makeReceipt(installers);
+    missingFile.files = missingFile.files.filter(
+      ({ path }) => path !== "tests/integration/openshell-git-finite-removal-real.test.ts",
+    );
+    writeJson(receiptPath, missingFile);
+    assertIssue(aggregate(group), "missing-lane-evidence", {
+      lane: "openshell-installers",
+      file: "tests/integration/openshell-git-finite-removal-real.test.ts",
+    });
   }
 });
 

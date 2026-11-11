@@ -34,7 +34,6 @@ import {
   hasControlCharacter,
   isNonEmptyString,
   numericErrorStatus,
-  readCappedBody,
   publicCaBundle,
   sha256Hex,
   splitModelRef,
@@ -66,9 +65,7 @@ import type {
   DiscoveryV1Api,
   KubernetesObject,
   KubernetesObjectApi,
-  ConfigurationOptions,
   NetworkingV1Api,
-  ResponseContext,
   VersionApi,
   V1ConfigMap,
   V1EnvVar,
@@ -162,6 +159,7 @@ import {
   CredentialWithdrawalRefusedError,
   DEDICATED_OPENCLAW_SANDBOX_REQUIRED,
   DependencyUnavailableError,
+  RuntimeDiagnosticsTransportError,
   SandboxRepositoryRecipientUnverifiedError,
   imageReferenceProblem,
   keyedSettingPath,
@@ -184,7 +182,6 @@ import {
 import {
   createKubernetesClientConfiguration,
   KubernetesApiUnavailableError,
-  nonRedirectingHttpLibrary,
 } from "../../kubernetes/client.ts";
 import {
   HARNESS_WORKSPACE,
@@ -238,6 +235,11 @@ import {
   type ModelProviderConfiguration,
 } from "../model-provider.ts";
 import { discoverHarnessModels } from "../model-discovery.ts";
+import {
+  DELIBERATE_RESTART_EXIT_STATUS,
+  DELIBERATE_RESTART_MESSAGE,
+  UNEXPLAINED_EXITS_MESSAGE,
+} from "../runtime-startup.ts";
 import { failureAfterCleanup, mapPrimaryFailure } from "../cleanup-failure.ts";
 import {
   ComputeStopYieldedError,
@@ -328,8 +330,19 @@ import {
   repositoryNativeConfiguration,
 } from "./repository-native-configuration.ts";
 import { harnessWorkspacePreparationScript } from "./harness-workspace-preparation.ts";
+import {
+  PLUGIN_RUNTIME_STATUS_PATH,
+  PLUGIN_RUNTIME_STATUS_PORT,
+  RUNTIME_DIAGNOSTICS_PATH,
+  RUNTIME_IMAGE_PATH,
+  RUNTIME_STATUS_PATH,
+  readPrivateStatusProxy,
+  type PrivateStatusPath,
+} from "./private-status-proxy.ts";
+import { collectDeploymentChecks } from "./deployment-diagnostics.ts";
 
 export { harnessWorkspacePreparationScript } from "./harness-workspace-preparation.ts";
+export { PLUGIN_RUNTIME_STATUS_PORT } from "./private-status-proxy.ts";
 
 type KubernetesRecord = Record<string, unknown>;
 type ManagedResourceKind =
@@ -551,6 +564,7 @@ export interface KubernetesComputeDriverOptions {
   readonly runtime?: {
     readonly transportSecretPrefix: string;
     readonly gatewayStorageClassName: string;
+    readonly gatewayStorageSizeGiB?: number;
     readonly nativeOpenClawSessionCapacity?: number;
     readonly nodeSelector?: Readonly<Record<string, string>>;
     readonly gatewayNodeSelector?: Readonly<Record<string, string>>;
@@ -1175,10 +1189,6 @@ const HARNESS_TRUST_VOLUME = "harness-trust";
 const HARNESS_TRUST_DIRECTORY = "/etc/openclaw-harness-trust";
 const HARNESS_TRUST_FILE = "ca-bundle.pem";
 const PLUGIN_RUNTIME_VOLUME = "openclaw-plugin-runtime";
-export const PLUGIN_RUNTIME_STATUS_PORT = 18_791;
-const PLUGIN_RUNTIME_STATUS_PATH = "/openclaw/plugin-runtime/status";
-const RUNTIME_STATUS_PATH = "/openclaw/runtime/status";
-const RUNTIME_DIAGNOSTICS_PATH = "/openclaw/runtime/diagnostics";
 const COMPUTE_PRIVATE_STATUS_ENVIRONMENT = new Set([
   "OPENCLAW_AGENT_REVISION_ID",
   "OPENCLAW_RUNTIME_STATUS_CONTAINER",
@@ -1282,90 +1292,13 @@ const SERVICE_ACCOUNT_CREDENTIAL_ID_ANNOTATION = "openclaw.dev/provider-credenti
 const SERVICE_ACCOUNT_CREDENTIAL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const CODEX_ACCESS_TOKEN = "CODEX_ACCESS_TOKEN";
 const MAX_RUNTIME_CREDENTIAL_BYTES = 65_536;
-const MAX_RUNTIME_STATUS_RESPONSE_BYTES = 65_536;
-
-class RuntimeStatusOversized extends Error {}
-class RuntimeStatusRedirected extends Error {}
-
-/**
- * undici's refusal of an interim answer the request never asked for: a `100 Continue`
- * ("bad response") or a `101` without an upgrade request ("bad upgrade"). The peer chose that
- * answer, so unlike a dropped or reset connection, a retry gets the same one (finding 1355).
- * The texts are undici's (`lib/dispatcher/client-h1.js` `onHeadersComplete`, undici 8.11.2):
- * recheck them when undici changes, or these answers fall back to the generic retry.
- */
-function unsolicitedInterimResponse(error: unknown): boolean {
-  let current = error;
-  for (let depth = 0; depth < 4 && current instanceof Error; depth += 1) {
-    if (
-      (current as { readonly code?: unknown }).code === "UND_ERR_SOCKET" &&
-      (current.message === "bad response" || current.message === "bad upgrade")
-    ) {
-      return true;
-    }
-    current = current.cause;
-  }
-  return false;
-}
-
-/**
- * Reads a Pod proxy response up to the status limit instead of buffering all of it.
- * Error bodies are capped too: the client reads them unbounded for its exception.
- */
-async function limitRuntimeStatusBody(response: ResponseContext): Promise<ResponseContext> {
-  const stream = response.body.stream();
-  if (response.httpStatusCode >= 300 && response.httpStatusCode <= 399) {
-    // The status is already decisive; do not wait for an untrusted redirect body.
-    try {
-      if (stream !== null) {
-        void stream.cancel().catch(() => {});
-      }
-    } catch {
-      // A cancellation failure must not make this redirect retryable.
-    }
-    throw new RuntimeStatusRedirected();
-  }
-  if (stream !== null) {
-    let bytes = await readCappedBody(stream, MAX_RUNTIME_STATUS_RESPONSE_BYTES);
-    if (bytes === undefined) {
-      // An error answer is judged by its status code (404/503 read as not serving), not its body.
-      if (response.httpStatusCode < 200 || response.httpStatusCode > 299) {
-        bytes = Buffer.alloc(0);
-      } else {
-        throw new RuntimeStatusOversized();
-      }
-    }
-    response.body = {
-      text: async () => new TextDecoder().decode(bytes),
-      binary: async () => bytes,
-      stream: () => null,
-    };
-  }
-  return response;
-}
-
-let runtimeStatusRequestOptions: Promise<ConfigurationOptions> | undefined;
-
-function runtimeStatusOptions(): Promise<ConfigurationOptions> {
-  runtimeStatusRequestOptions ??= import("@kubernetes/client-node").then((sdk) => ({
-    // The shared clients already refuse redirects; the Pod-written read does not rely on that.
-    httpApi: nonRedirectingHttpLibrary(sdk),
-    middleware: [
-      {
-        pre: (request) => new sdk.Observable(Promise.resolve(request)),
-        post: (response) => new sdk.Observable(limitRuntimeStatusBody(response)),
-      },
-    ],
-    middlewareMergeStrategy: "append",
-  }));
-  return runtimeStatusRequestOptions;
-}
 const RUNTIME_STATUS_IDENTIFIER = /^[A-Za-z0-9._~:@-]{1,64}$/u;
 const RUNTIME_DIAGNOSTIC_TIMESTAMP =
   /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$/u;
 const RUNTIME_STATE_VOLUME_SIZE = "1Gi";
 const GATEWAY_PRIVATE_STATE_VOLUME = "openclaw-gateway-state";
-const GATEWAY_PRIVATE_STATE_SIZE = "10Gi";
+const DEFAULT_GATEWAY_STORAGE_SIZE_GIB = 10;
+const MAX_GATEWAY_STORAGE_SIZE_GIB = 65536;
 // Harness kinds that can own a workspace node. Naming refuses any other kind,
 // so Agent deletion removes every node Secret preparation can create.
 const WORKSPACE_NODE_HARNESS_IDS: readonly string[] = ["codex", "openclaw"];
@@ -2210,6 +2143,26 @@ const IMAGE_PULL_WAITING_REASONS: ReadonlySet<unknown> = new Set([
   "ErrImagePull",
   "ImagePullBackOff",
 ]);
+
+// A runtime container with this many consecutive unexplained exits, waiting in the kubelet's
+// crash-loop backoff, fails startup (finding 3041). A slow start, an image pull or one exit
+// cannot reach it. Without a count, the exits are the restart count plus one: in backoff the
+// kubelet has not yet counted the restart it waits for.
+const CRASH_LOOP_EXITS = 3;
+
+// The consecutive unexplained exits a Gateway wrapper states in its termination message: 0
+// for a deliberate restart, even one that then exits with another status (killed while it
+// stops), or undefined without a count (a Pod started before the wrapper kept one).
+function unexplainedExitCount(message: unknown): number | undefined {
+  if (typeof message === "string" && message.startsWith(DELIBERATE_RESTART_MESSAGE)) {
+    return 0;
+  }
+  if (typeof message !== "string" || !message.startsWith(UNEXPLAINED_EXITS_MESSAGE)) {
+    return undefined;
+  }
+  const count = message.slice(UNEXPLAINED_EXITS_MESSAGE.length);
+  return /^[0-9]{1,6}$/u.test(count) ? Number(count) : undefined;
+}
 
 // True when one of a Pod's containers or init containers waits on an image pull.
 function podWaitsOnImagePull(pod: unknown): boolean {
@@ -3539,6 +3492,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
         properties: {
           transportSecretPrefix: { type: "string" },
           gatewayStorageClassName: { type: "string", minLength: 1 },
+          gatewayStorageSizeGiB: {
+            type: "integer",
+            minimum: 1,
+            maximum: MAX_GATEWAY_STORAGE_SIZE_GIB,
+          },
           nativeOpenClawSessionCapacity: { type: "integer", minimum: 1, maximum: 1024 },
           nodeSelector: {
             type: "object",
@@ -3938,6 +3896,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 "SQLite-compatible gateway storage class must be a DNS-safe Kubernetes resource name.",
             },
           ]);
+        }
+        const gatewayStorageSizeGiB = options.runtime.gatewayStorageSizeGiB;
+        if (
+          gatewayStorageSizeGiB !== undefined &&
+          (!Number.isSafeInteger(gatewayStorageSizeGiB) ||
+            gatewayStorageSizeGiB < 1 ||
+            gatewayStorageSizeGiB > MAX_GATEWAY_STORAGE_SIZE_GIB)
+        ) {
+          throw configurationConstraintFailure(
+            `Gateway storage size must be an integer between 1 and ${MAX_GATEWAY_STORAGE_SIZE_GIB} GiB.`,
+            "/runtime/gatewayStorageSizeGiB",
+          );
         }
         const nativeOpenClawSessionCapacity = options.runtime.nativeOpenClawSessionCapacity;
         if (
@@ -5028,43 +4998,21 @@ export class KubernetesComputeDriver implements ComputeDriver {
           { namespaceId: revision.namespaceId },
           external,
         );
-        const reports = await Promise.all(
-          this.runtimeStatusContainers(revision).map(async (container) => {
-            const [checks, heldFailure] = await Promise.all([
-              this.runtimeDiagnosticChecks(revision, namespace, container),
-              this.heldRuntimeFailureCheck(revision, namespace, container),
-            ]);
-            return {
-              heldFailure,
-              checks: checks ?? [
-                {
-                  component: container,
-                  check: "runtime-status",
-                  state: "unknown",
-                  checkedAt: null,
-                  code: "UNAVAILABLE",
-                } satisfies RuntimeDiagnosticCheck,
-              ],
-            };
-          }),
-        );
-        // Held startup failures lead, so the check cap never drops them.
-        return {
-          revisionId: revision.id,
-          observedAt: new Date().toISOString(),
-          checks: [
-            ...reports.flatMap(({ heldFailure }) =>
-              heldFailure === undefined ? [] : [heldFailure],
-            ),
-            ...reports.flatMap(({ checks }) => checks),
-          ].slice(0, 32),
-        };
+        const checks = await collectDeploymentChecks({
+          containers: this.runtimeStatusContainers(revision),
+          deadline,
+          ownerSignal,
+          readChecks: (container) => this.runtimeDiagnosticChecks(revision, namespace, container),
+          readHeldFailure: (container) =>
+            this.heldRuntimeFailureCheck(revision, namespace, container),
+        });
+        return { revisionId: revision.id, observedAt: new Date().toISOString(), checks };
       });
     } catch (error) {
       if (ownerSignal?.aborted) {
         throw ownerSignal.reason;
       }
-      if (deadline.aborted) {
+      if (deadline.aborted && !(error instanceof RuntimeDiagnosticsTransportError)) {
         throw new DependencyUnavailableError("Runtime diagnostics timed out.");
       }
       throw error;
@@ -5570,32 +5518,41 @@ export class KubernetesComputeDriver implements ComputeDriver {
         { mutating: true },
       );
     } catch (error) {
-      await this.discardFailedServiceAccountCredential(name, namespace, ownership, accessToken);
+      if (
+        await this.reconcileFailedServiceAccountCredential(
+          name,
+          namespace,
+          ownership,
+          credentialId,
+          accessToken,
+        )
+      ) {
+        return { name, key: SERVICE_ACCOUNT_TOKEN_KEY };
+      }
       throw error;
     }
     return { name, key: SERVICE_ACCOUNT_TOKEN_KEY };
   }
 
   /**
-   * A credential Secret create that applied but answered with an error (the request
-   * deadline, a lost response) would leave an account-owned Secret OCC never records: the
-   * issuance fails, its provider credential is revoked, and every later issuance stops at
-   * "already exists" (finding 924). So a failed create reads its own deterministic name and
-   * deletes the object it finds, but only when it carries this account's exact ownership and
-   * this request's token, with uid and resourceVersion preconditions. An absent or foreign
-   * object means the create never applied and its own error stands. When that cannot be
-   * checked, the outcome is reported as unknown. A create still in flight that lands after
-   * this read is not covered.
+   * A failed create can have persisted its Secret before losing the reply. An exact
+   * readback can confirm that the requested owned state exists without repeating the
+   * mutation. It does not prove which request created the object. A missing or different
+   * object leaves the original failure in force; an unreadable or unidentified object
+   * remains an unknown outcome. The ServiceAccount Driver owns provider revocation and
+   * any later exact Secret cleanup, so this readback never destroys a recovery receipt.
+   * A create still in flight that lands after the read is not covered.
    */
-  private async discardFailedServiceAccountCredential(
+  private async reconcileFailedServiceAccountCredential(
     name: string,
     namespace: KubernetesNamespaceAddress,
     ownership: Ownership,
+    credentialId: string,
     accessToken: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const unknown = () =>
       new DependencyUnavailableError(
-        "The ServiceAccount credential Secret create outcome is unknown, and its cleanup could not finish.",
+        "The ServiceAccount credential Secret create outcome could not be confirmed.",
       );
     let existing: ManagedKubernetesObject<"Secret"> | undefined;
     try {
@@ -5604,39 +5561,24 @@ export class KubernetesComputeDriver implements ComputeDriver {
       throw unknown();
     }
     if (existing === undefined) {
-      return;
+      return false;
     }
     try {
       this.verifyOwnership(existing, ownership);
     } catch {
-      // Someone else's object under this name: nothing of this create's is stored.
-      return;
+      return false;
     }
-    if (!storesServiceAccountToken(existing, accessToken)) {
-      // The account's Secret, but not this request's token: not this create's either.
-      return;
+    if (
+      !storesServiceAccountToken(existing, accessToken) ||
+      existing.metadata.annotations?.[SERVICE_ACCOUNT_CREDENTIAL_ID_ANNOTATION] !== credentialId
+    ) {
+      return false;
     }
     const { uid, resourceVersion } = existing.metadata;
     if (!isNonEmptyString(uid) || !isNonEmptyString(resourceVersion)) {
       throw unknown();
     }
-    try {
-      const clients = await this.clients(namespace.plane);
-      await this.request(
-        () =>
-          clients.core.deleteNamespacedSecret({
-            name,
-            namespace: namespace.name,
-            body: { preconditions: { uid, resourceVersion } },
-          }),
-        { mutating: true },
-      );
-    } catch (error) {
-      if (numericErrorStatus(error) === 404) {
-        return;
-      }
-      throw unknown();
-    }
+    return true;
   }
 
   /**
@@ -5686,11 +5628,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
   /**
    * Removes the account's credential Secret. Account deletion passes neither a token nor a
    * credential ID and removes the Secret the account owns. A failed issuance's compensation
-   * passes its own token: it runs after the transaction's ROLLBACK released the account row
+   * passes its own token and credential ID: it runs after the transaction's ROLLBACK released the account row
    * lock, so another issuance may already have stored its Secret under this same
    * deterministic name (finding 944). An issuance reclaiming a leftover passes the provider
-   * credential ID it just revoked (finding 1397). Either way it deletes the Secret only while
-   * it holds that token or records that credential, with uid and resourceVersion
+   * credential ID it just revoked (finding 1397). It deletes the Secret only while
+   * every supplied selector matches, with uid and resourceVersion
    * preconditions, and leaves any other Secret alone.
    */
   async deleteServiceAccountCredential(input: {
@@ -5752,9 +5694,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return;
     }
     const matches =
-      accessToken !== undefined
-        ? storesServiceAccountToken(existing, accessToken)
-        : serviceAccountCredentialId(existing) === credentialId;
+      (accessToken === undefined || storesServiceAccountToken(existing, accessToken)) &&
+      (credentialId === undefined ||
+        (accessToken === undefined
+          ? serviceAccountCredentialId(existing)
+          : existing.metadata.annotations?.[SERVICE_ACCOUNT_CREDENTIAL_ID_ANNOTATION]) ===
+          credentialId);
     if (!matches) {
       // Another issuance's Secret: the one this request meant is already gone.
       return;
@@ -6199,7 +6144,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         pods.length === 0
           ? undefined
           : await withComputeAbortSignal(metadataSignal, () =>
-              this.privateStatusReadback(revision, namespace, role, "/openclaw/runtime/image"),
+              this.privateStatusReadback(revision, namespace, role, RUNTIME_IMAGE_PATH),
             ).catch(() => undefined);
       for (const pod of pods) {
         const metadata = asRecord(pod.metadata)!;
@@ -10932,62 +10877,49 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return this.validRuntimeDiagnosticChecks(readback.status, revision, container, readback.podUid);
   }
 
-  // A runtime holding a startup failure (for example an unusable Gateway peer
-  // configuration record) still answers diagnostics, but only with channel
-  // checks it could not run. The held failure is on the status path, so it is
-  // reported first as a failed check named after the startup step. A status
-  // read that fails or returns invalid data adds nothing; the diagnostics read
-  // alone decides the rest of the observation.
+  // The status endpoint carries startup failure evidence while the runtime holds startup.
   private async heldRuntimeFailureCheck(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
     container: "agent" | "gateway",
   ): Promise<RuntimeDiagnosticCheck | undefined> {
-    const ownerSignal = currentComputeAbortSignal();
-    try {
-      const readback = await this.privateStatusReadback(
-        revision,
-        namespace,
-        container,
-        RUNTIME_STATUS_PATH,
-      );
-      if (readback === undefined) {
-        return undefined;
-      }
-      const failure = this.cachedRuntimeFailureEvidence(
-        readback.status,
-        revision,
-        container,
-        readback.podUid,
-      );
-      if (failure === undefined) {
-        return undefined;
-      }
-      // OCC accepts only millisecond UTC timestamps; anything else adds nothing.
-      const checkedAt = new Date(failure.checkedAt).toISOString();
-      if (!RUNTIME_DIAGNOSTIC_TIMESTAMP.test(checkedAt)) {
-        return undefined;
-      }
-      return {
-        component: failure.component,
-        check: failure.check,
-        state: "failed",
-        checkedAt,
-        code: failure.code,
-      };
-    } catch {
-      if (ownerSignal?.aborted) {
-        throw ownerSignal.reason;
-      }
+    const readback = await this.privateStatusReadback(
+      revision,
+      namespace,
+      container,
+      RUNTIME_STATUS_PATH,
+    );
+    if (readback === undefined) {
       return undefined;
     }
+    const failure = this.cachedRuntimeFailureEvidence(
+      readback.status,
+      revision,
+      container,
+      readback.podUid,
+    );
+    if (failure === undefined) {
+      return undefined;
+    }
+    // OCC accepts only millisecond UTC timestamps; anything else adds nothing.
+    const checkedAt = new Date(failure.checkedAt).toISOString();
+    if (!RUNTIME_DIAGNOSTIC_TIMESTAMP.test(checkedAt)) {
+      return undefined;
+    }
+    return {
+      component: failure.component,
+      check: failure.check,
+      state: "failed",
+      checkedAt,
+      code: failure.code,
+    };
   }
 
   private async privateStatusReadback(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
     container: "agent" | "gateway",
-    path: string,
+    path: PrivateStatusPath,
   ): Promise<PrivateStatusReadback | undefined> {
     // A provider-fenced Harness admits only its Gateway's transport (the status proxy
     // policy selects ordinary Pods, and the provider's own fence denies the API server),
@@ -11025,60 +10957,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const containerId = this.podContainerId(pod, container);
     const clients = await this.clients(namespace.plane);
-    // 404/503 mean the status port is not serving yet: an answer, not an outage to retry.
-    const notServing = Symbol("not serving");
-    const oversized = Symbol("oversized");
-    const redirected = Symbol("redirected");
-    const interim = Symbol("interim");
-    const options = await runtimeStatusOptions();
-    const raw = await this.request(async () => {
-      try {
-        return await clients.core.connectGetNamespacedPodProxyWithPath(
-          {
-            name: `${podName}:${PLUGIN_RUNTIME_STATUS_PORT}`,
-            namespace: namespace.name,
-            path: path.slice(1),
-          },
-          options,
-        );
-      } catch (error) {
-        // An oversized 2xx is not retried: the next read would be just as large.
-        if (error instanceof RuntimeStatusOversized) {
-          return oversized;
-        }
-        if (error instanceof RuntimeStatusRedirected) {
-          return redirected;
-        }
-        if (unsolicitedInterimResponse(error)) {
-          return interim;
-        }
-        if (numericErrorStatus(error) === 404 || numericErrorStatus(error) === 503) {
-          return notServing;
-        }
-        // The client never follows a redirect (finding 1347). Any 3xx here was written by the
-        // Pod: the status is unreadable, and a retry would get the same answer.
-        const status = numericErrorStatus(error);
-        if (status !== undefined && status >= 300 && status <= 399) {
-          return redirected;
-        }
-        throw error;
-      }
-    });
-    if (raw === notServing) {
+    const response = await readPrivateStatusProxy(
+      clients.core,
+      (operation) => this.request(operation),
+      { namespace: namespace.name, podName, container, path },
+    );
+    if (response === undefined) {
       return undefined;
     }
-    if (raw === oversized) {
-      throw new DependencyUnavailableError("Runtime status returned oversized data.");
-    }
-    if (raw === redirected) {
-      throw new DependencyUnavailableError("Runtime status answered with a redirect.");
-    }
-    if (raw === interim) {
-      throw new DependencyUnavailableError(
-        "Runtime status answered with an unrequested 1xx status.",
-      );
-    }
-    const parsed = this.boundedRuntimeStatusResponse(raw);
     const latestPods = (await this.revisionPods(revision, namespace, container)).filter(
       (candidate) => asRecord(candidate.metadata)?.deletionTimestamp === undefined,
     );
@@ -11091,38 +10977,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
       latestMetadata?.name !== podName ||
       latestMetadata.uid !== podUid ||
       latestMetadata.deletionTimestamp !== undefined ||
-      ((containerId !== undefined || latestContainerId !== undefined) &&
-        latestContainerId !== containerId)
+      latestContainerId !== containerId
     ) {
       return undefined;
     }
-    return { status: parsed, podUid, containerId };
-  }
-
-  private boundedRuntimeStatusResponse(value: unknown): unknown {
-    if (typeof value === "string") {
-      if (Buffer.byteLength(value, "utf8") > MAX_RUNTIME_STATUS_RESPONSE_BYTES) {
-        throw new DependencyUnavailableError("Runtime status returned oversized data.");
-      }
-      try {
-        return JSON.parse(value);
-      } catch {
-        throw new DependencyUnavailableError("Runtime status returned invalid data.");
-      }
-    }
-    let serialized: string | undefined;
-    try {
-      serialized = JSON.stringify(value);
-    } catch {
-      throw new DependencyUnavailableError("Runtime status returned invalid data.");
-    }
-    if (
-      serialized === undefined ||
-      Buffer.byteLength(serialized, "utf8") > MAX_RUNTIME_STATUS_RESPONSE_BYTES
-    ) {
-      throw new DependencyUnavailableError("Runtime status returned oversized data.");
-    }
-    return value;
+    return { status: response.body, podUid, containerId };
   }
 
   private validRuntimeDiagnosticChecks(
@@ -11205,6 +11064,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return typeof value === "string" && RUNTIME_STATUS_IDENTIFIER.test(value);
   }
 
+  // When a terminated container instance finished, else now: the kubelet's time as served, or
+  // as the SDK decodes it into a Date.
+  private terminatedAt(terminated: Record<string, unknown>): string {
+    return typeof terminated.finishedAt === "string" &&
+      this.validIsoTimestamp(terminated.finishedAt)
+      ? terminated.finishedAt
+      : (validKubernetesTime(terminated.finishedAt) ?? new Date().toISOString());
+  }
+
   private validIsoTimestamp(value: unknown): value is string {
     if (typeof value !== "string") {
       return false;
@@ -11267,11 +11135,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
               ? undefined
               : asRecord(asRecord(initialized?.lastState)?.terminated));
           if (typeof terminated?.exitCode === "number" && terminated.exitCode !== 0) {
-            const checkedAt =
-              typeof terminated.finishedAt === "string" &&
-              this.validIsoTimestamp(terminated.finishedAt)
-                ? terminated.finishedAt
-                : (validKubernetesTime(terminated.finishedAt) ?? new Date().toISOString());
+            const checkedAt = this.terminatedAt(terminated);
             // The kubelet restarts a failed init container (these Pods restart Always), which
             // can pass after an I/O or native setup failure. A refusal fails every restart the
             // same way (finding 1677).
@@ -11299,6 +11163,61 @@ export class KubernetesComputeDriver implements ComputeDriver {
         );
         if (failure !== undefined) {
           return failure;
+        }
+      }
+    } catch {
+      if (ownerSignal?.aborted) {
+        throw ownerSignal.reason;
+      }
+    }
+    // A crash-looping container serves no status, so a failed status read cannot hide it.
+    return await this.safeCrashLoopObservation(revision, namespace);
+  }
+
+  // Evidence for a runtime container the kubelet keeps restarting after unexplained exits
+  // (finding 3041): on a live Pod of this revision, the role's own container (the Gateway, or
+  // a Harness that runs in a Deployment) waits in CrashLoopBackOff after CRASH_LOOP_EXITS
+  // consecutive unexplained exits. Init containers and sidecars never count. The Gateway
+  // wrapper exits DELIBERATE_RESTART_EXIT_STATUS when it stops its container on purpose,
+  // which keeps the wait and clears its count, and states the count in its termination
+  // message. Without one (a Pod from before the count), the restart count plus one stands
+  // in. No Harness wrapper restarts on purpose, so each of its restarts follows an
+  // unexplained exit. Like failure evidence, an unavailable observation reports nothing.
+  private async safeCrashLoopObservation(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+  ): Promise<RuntimeFailureEvidence | undefined> {
+    const ownerSignal = currentComputeAbortSignal();
+    try {
+      const roles = this.runtimeStatusContainers(revision).filter(
+        (role) =>
+          role === "gateway" ||
+          this.sandboxDriverForRevision(revision)?.provisionHarness === undefined,
+      );
+      for (const role of roles) {
+        const target = role === "gateway" ? this.gatewayNamespace(revision, namespace) : namespace;
+        for (const pod of await this.revisionPods(revision, target, role)) {
+          if (asRecord(pod.metadata)?.deletionTimestamp !== undefined) {
+            continue;
+          }
+          const statuses = asRecord(pod.status)?.containerStatuses;
+          const status = Array.isArray(statuses)
+            ? statuses.map(asRecord).find((item) => item?.name === role)
+            : undefined;
+          const terminated = asRecord(asRecord(status?.lastState)?.terminated);
+          const exits =
+            (role === "gateway" ? unexplainedExitCount(terminated?.message) : undefined) ??
+            (typeof status?.restartCount === "number" ? status.restartCount + 1 : undefined);
+          if (
+            asRecord(asRecord(status?.state)?.waiting)?.reason === "CrashLoopBackOff" &&
+            typeof exits === "number" &&
+            exits >= CRASH_LOOP_EXITS &&
+            typeof terminated?.exitCode === "number" &&
+            !(role === "gateway" && terminated.exitCode === DELIBERATE_RESTART_EXIT_STATUS)
+          ) {
+            const checkedAt = this.terminatedAt(terminated);
+            return { component: role, check: "crash-loop", code: "UNAVAILABLE", checkedAt };
+          }
         }
       }
       return undefined;
@@ -14981,7 +14900,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           this.options.runtime?.gatewayStorageClassName,
           "SQLite-compatible gateway storage class",
         ),
-        resources: { requests: { storage: GATEWAY_PRIVATE_STATE_SIZE } },
+        resources: {
+          requests: {
+            storage: `${this.options.runtime?.gatewayStorageSizeGiB ?? DEFAULT_GATEWAY_STORAGE_SIZE_GIB}Gi`,
+          },
+        },
       },
     };
   }
@@ -14998,7 +14921,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       claim.metadata.deletionTimestamp !== undefined ||
       accessModes.length !== expectedModes.length ||
       accessModes.some((mode, index) => mode !== expectedModes[index]) ||
-      requests?.storage !== expectedRequests?.storage ||
+      typeof requests?.storage !== "string" ||
+      typeof expectedRequests?.storage !== "string" ||
+      compareResourceQuantities(requests.storage, expectedRequests.storage) !== 0 ||
       (claim.spec?.volumeMode ?? "Filesystem") !== (desired.spec?.volumeMode ?? "Filesystem") ||
       (desired.spec?.storageClassName !== undefined &&
         claim.spec?.storageClassName !== desired.spec.storageClassName)

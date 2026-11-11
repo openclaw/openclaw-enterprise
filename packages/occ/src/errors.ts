@@ -160,7 +160,13 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
   readonly requestDiagnostic?: {
     readonly method: string;
     readonly grpcStatus: number;
-    readonly validationCategory: "POLICY_SAFETY" | "POLICY_MIDDLEWARE_VALIDATION" | "UNKNOWN";
+    readonly validationCategory:
+      | "POLICY_SAFETY"
+      | "POLICY_MIDDLEWARE_VALIDATION"
+      | "PVC_ADMISSION_LABELS"
+      | "CLASS_ADMISSION_LABELS"
+      | "RESOURCE_METADATA_FORBIDDEN"
+      | "UNKNOWN";
   };
 
   constructor(
@@ -172,6 +178,14 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
     if (requestDiagnostic !== undefined) {
       this.requestDiagnostic = Object.freeze({ ...requestDiagnostic });
     }
+  }
+}
+
+/** A failed private runtime diagnostics transport read, without supplier details. */
+export class RuntimeDiagnosticsTransportError extends DependencyUnavailableError {
+  constructor() {
+    super("The private Gateway diagnostics transport is unavailable.");
+    this.name = "RuntimeDiagnosticsTransportError";
   }
 }
 
@@ -1584,6 +1598,7 @@ const RETRY_LATER_MESSAGES = Object.freeze({
  * operator can fix (`proxyRegistration`) from its availability check.
  */
 export class RetryLaterError extends DependencyUnavailableError {
+  readonly retryAfterSeconds?: number;
   constructor(reason: "deviceLoginFailed", cause: unknown);
   constructor(reason: "registrationFence", seconds: number);
   constructor(reason: "proxyRegistration");
@@ -1594,6 +1609,9 @@ export class RetryLaterError extends DependencyUnavailableError {
       ),
     );
     this.name = "RetryLaterError";
+    if (reason === "registrationFence") {
+      this.retryAfterSeconds = Math.max(1, Math.ceil(Number(detail)));
+    }
     if (reason === "deviceLoginFailed") {
       this.cause = detail;
     }

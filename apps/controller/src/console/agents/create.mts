@@ -221,6 +221,7 @@ function onRefocus(recheck: () => void) {
 // Revisit catalog refresh and credential-aware discovery after the basic creation flow ships.
 const MODEL_CHOICES = {
   openai: [
+    "gpt-6.1-sol",
     "gpt-6-astra",
     "gpt-6-sol",
     "gpt-6-luna",

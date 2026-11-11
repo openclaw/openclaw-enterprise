@@ -266,7 +266,7 @@ runs:
       id: docs-check
       if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
       shell: bash
-      run: pnpm docs:install && pnpm openapi:lint && pnpm exec tsc --project scripts/docs-site/tsconfig.json --pretty false && pnpm docs:check && pnpm docs:build
+      run: pnpm docs:install && pnpm openapi:lint && pnpm exec tsc --project scripts/docs-site/tsconfig.json --pretty false && pnpm docs:check-length && node scripts/check-specs.mjs && pnpm docs:build
     - name: Install documentation browser dependencies
       id: install-docs-browser
       # Only browser part 1 runs docs-compute-matrix. Baseline part 1's docs-site
@@ -488,7 +488,7 @@ runs:
       id: image_reconciliation
       if: always() && inputs.lane == 'images-packaging'
       shell: bash
-      run: node scripts/ci/export-image-reconciliation.mjs "$RUNNER_TEMP/state/${{ inputs.lane }}.json" "$RUNNER_TEMP/image-reconciliation"
+      run: node scripts/ci/export-image-reconciliation.ts "$RUNNER_TEMP/state/${{ inputs.lane }}.json" "$RUNNER_TEMP/image-reconciliation"
     - name: Retain image cleanup reconciliation
       id: retain-image-reconciliation
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -674,6 +674,7 @@ runs:
           fi
         done <<< "$CI_LANE_CONCLUSIONS"
 
+        printf '::notice title=CI lane first failure::%s\n' "$first"
         {
           printf '\n### CI lane failure\n\n'
           printf -- '- First unsuccessful step: `%s`\n' "$first"

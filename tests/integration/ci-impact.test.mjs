@@ -1390,11 +1390,12 @@ test("documentation workflow selects documentation checks and omits product test
     "lint",
     "format:check",
     "openapi:check",
-    "docs:check",
+    "docs:check-length",
     "docs:build",
   ]) {
     assert.match(docs, new RegExp(`\\bpnpm ${command}\\b`));
   }
+  assert.match(docs, /node scripts\/check-specs\.mjs/);
   // Keep the documentation route free of product-test and lane invocations.
   assert.doesNotMatch(
     docs,
@@ -1429,7 +1430,7 @@ test("CI Required always reports and fails at once when a dependency was cancell
   }
 });
 
-test("full-integration lanes read NODE_BASE_IMAGE from a variable their environment has", () => {
+test("full-integration lanes receive NODE_BASE_IMAGE from an available protected input", () => {
   // The shared integration-main environment defines NODE_BASE_IMAGE. Jobs without it
   // must read the repository variable, or they can never start (finding 662).
   const path = ".github/workflows/full-integration-execution.yml";
@@ -1438,6 +1439,15 @@ test("full-integration lanes read NODE_BASE_IMAGE from a variable their environm
   const environment = "${{ vars.NODE_BASE_IMAGE }}";
   for (const [lane, job] of lanes) {
     const name = job.environment?.name ?? job.environment;
+    if (lane === "openshell") {
+      // The preflight suite verifies this producer resolves and validates the protected variable.
+      assert.equal(name, "integration-main");
+      assert.equal(
+        job.env.NODE_BASE_IMAGE,
+        "${{ needs.openshell-build-inputs.outputs.node-base-image }}",
+      );
+      continue;
+    }
     const allowed = name === "integration-main" ? [repository, environment] : [repository];
     assert.ok(allowed.includes(job.env.NODE_BASE_IMAGE), lane);
   }
@@ -1471,7 +1481,6 @@ test("full-integration preserves qualified runners for kernel, sandbox, and imag
       : runner;
   };
   const ciRunners = new Map(laneTable().map((row) => [row.lane, row.runner]));
-  assert.equal(job.strategy.matrix.include, "${{ fromJSON(needs.ci-reuse.outputs.matrix) }}");
   const lanes = JSON.parse(read("scripts/ci/full-integration-lanes.json")).map(
     (entry) => entry.lane,
   );
@@ -1517,7 +1526,7 @@ test("Suite Audit and Static Checks runs the audit and every check the lanes ski
       "pnpm lint",
       "pnpm format:check",
       "pnpm openapi:check",
-      "pnpm docs:install && pnpm openapi:lint && pnpm exec tsc --project scripts/docs-site/tsconfig.json --pretty false && pnpm docs:check && pnpm docs:build",
+      "pnpm docs:install && pnpm openapi:lint && pnpm exec tsc --project scripts/docs-site/tsconfig.json --pretty false && pnpm docs:check-length && node scripts/check-specs.mjs && pnpm docs:build",
     ],
   );
   // A check moved out of the lanes must still gate CI Required in every mode.
@@ -1656,6 +1665,7 @@ test("failed lane summary preserves the first unsuccessful step", (t) => {
       env: { PATH: process.env.PATH, GITHUB_STEP_SUMMARY: output, ...env },
     });
     assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, `::notice title=CI lane first failure::${first}\n`);
     const receipt = readFileSync(output, "utf8");
     assert.equal(
       receipt,
@@ -3110,6 +3120,8 @@ test("shared runtime consumers omit idle builders and preserve source builders",
     ["images-runtime-startup-2", "images", true, false],
     ["images-runtime-startup-3", "images", true, false],
     ["images-packaging", "full", true, true],
+    ["gateway-routing", "full", true, true],
+    ["production-tui", "full", true, true],
     ["runtime-image-fixture", "full", true, true],
     ["checks-browser", "baseline", false, false],
     ["k3d-fixture-state", "k3d", false, false],
@@ -3137,6 +3149,217 @@ test("shared runtime consumers omit idle builders and preserve source builders",
 
 test("full aggregate attributes lane coverage to its matrix and producer jobs", (t) => {
   const workflow = loadYaml(".github/workflows/full-integration-execution.yml");
+  const context = (
+    lane,
+    producer = "success",
+    snapshot = { "gateway-image": "", "agent-image": "", "use-runtime-artifact": "true" },
+  ) => ({
+    cancelled: () => false,
+    github: {
+      repository: "openclaw/openclaw-enterprise",
+      ref: "refs/heads/main",
+      ref_type: "branch",
+      event_name: "workflow_dispatch",
+      run_attempt: "1",
+    },
+    needs: {
+      preflight: {
+        result: "success",
+        outputs: { run_all: lane === "all" ? "true" : "false", selected_lane: lane },
+      },
+      "gateway-image-selection": { result: "success", outputs: snapshot },
+      "runtime-artifact": {
+        result: producer,
+        outputs: {
+          "artifact-id": "123",
+          "archive-sha256": "digest",
+          "source-sha": "source",
+          "run-id": "456",
+          "producer-attempt": "1",
+        },
+      },
+    },
+    env: {},
+  });
+  const evaluate = (expression, values) =>
+    runInNewContext(
+      expression
+        .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+        .replace(/\.([a-z][a-z0-9]*(?:-[a-z0-9]+)+)/g, '["$1"]'),
+      values,
+    );
+  const runGuard = (job, values) => {
+    const guard = job.steps.find((step) => step.env?.RUNTIME_ARTIFACT_ID !== undefined);
+    if (guard.if && !evaluate(guard.if, values)) {
+      // A skipped guard permits the following lane action.
+      return { status: 0 };
+    }
+    const imageEnv = Object.fromEntries(
+      ["OCC_TEST_KUBERNETES_GATEWAY_IMAGE", "OCC_TEST_KUBERNETES_AGENT_IMAGE"]
+        .filter((name) => job.env[name] !== undefined)
+        .map((name) => [name, evaluate(job.env[name], values) ?? ""]),
+    );
+    const guardEnv = Object.fromEntries(
+      Object.entries(guard.env).map(([name, expression]) => [
+        name,
+        evaluate(expression, values) ?? "",
+      ]),
+    );
+    return spawnSync("bash", ["-e", "-c", guard.run], {
+      env: { ...process.env, ...imageEnv, ...guardEnv },
+      encoding: "utf8",
+    });
+  };
+  // Focused consumers need the same producer as full runs; unrelated focused
+  // lanes must not pay for an unused native runtime build.
+  for (const lane of [
+    "all",
+    "gateway-routing",
+    "production-tui",
+    "k3d-otel",
+    "openshell",
+    "docker-model",
+  ]) {
+    assert.equal(
+      evaluate(workflow.jobs["runtime-artifact"].if, context(lane)),
+      ["all", "gateway-routing", "production-tui"].includes(lane),
+      lane,
+    );
+  }
+  for (const lane of ["gateway-routing", "production-tui"]) {
+    const job = workflow.jobs[lane];
+    assert.ok(job.needs.includes("runtime-artifact"));
+    for (const selection of ["all", lane, "openshell"]) {
+      for (const producer of ["success", "failure", "cancelled", "skipped"]) {
+        assert.equal(
+          evaluate(job.if, context(selection, producer)),
+          selection !== "openshell" && producer === "success",
+          `${lane}: ${selection}/${producer}`,
+        );
+      }
+    }
+    const inputs = Object.entries(
+      job.steps.find((step) => step.uses === "./.github/actions/run-ci-lane").with,
+    ).filter(([key]) => key.startsWith("runtime-artifact-"));
+    assert.equal(inputs.length, 5);
+    assert.deepEqual(
+      inputs.map(([, expression]) => evaluate(expression, context(lane))),
+      ["123", "digest", "source", "456", "1"],
+    );
+    for (const id of ["", "123"]) {
+      const values = context(lane);
+      values.needs["runtime-artifact"].outputs["artifact-id"] = id;
+      assert.equal(runGuard(job, values).status, id ? 0 : 1);
+    }
+  }
+  // Environment-level image settings are resolved once on their own runner.
+  // The same snapshot decides whether to build and what the consumer imports.
+  const selector = workflow.jobs["gateway-image-selection"];
+  assert.equal(selector.environment, "integration-main");
+  const selectionDirectory = temporaryDirectorySync(t, "gateway-image-selection-");
+  for (const [index, [gateway, agent]] of [
+    ["", ""],
+    ["gateway@sha256:abc", "agent@sha256:def"],
+    ["partial", ""],
+    ["", "partial"],
+    ["line\nbreak", ""],
+  ].entries()) {
+    const step = selector.steps[0];
+    const vars = {
+      OCC_TEST_KUBERNETES_GATEWAY_IMAGE: gateway,
+      OCC_TEST_KUBERNETES_AGENT_IMAGE: agent,
+    };
+    const output = join(selectionDirectory, `output-${index}`);
+    const result = spawnSync("bash", ["-e", "-c", step.run], {
+      env: {
+        ...process.env,
+        ...Object.fromEntries(
+          Object.entries(step.env).map(([name, value]) => [name, evaluate(value, { vars })]),
+        ),
+        GITHUB_OUTPUT: output,
+      },
+      encoding: "utf8",
+    });
+    if (gateway.includes("\n")) {
+      assert.notEqual(result.status, 0);
+      assert.equal(existsSync(output), false);
+      continue;
+    }
+    assert.equal(result.status, 0, result.stderr);
+    const snapshot = Object.fromEntries(
+      readFileSync(output, "utf8")
+        .trimEnd()
+        .split("\n")
+        .map((line) => {
+          const split = line.indexOf("=");
+          return [line.slice(0, split), line.slice(split + 1)];
+        }),
+    );
+    assert.equal(snapshot["use-runtime-artifact"], String(!gateway && !agent));
+    for (const selection of ["all", "gateway-routing"]) {
+      const values = context(selection, "failure", snapshot);
+      assert.equal(
+        evaluate(workflow.jobs["runtime-artifact"].if, values),
+        selection === "all" || (!gateway && !agent),
+      );
+      assert.equal(
+        evaluate(workflow.jobs["gateway-routing"].if, values),
+        Boolean(gateway || agent),
+      );
+      const job = workflow.jobs["gateway-routing"];
+      assert.equal(evaluate(job.env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE, values), gateway);
+      assert.equal(evaluate(job.env.OCC_TEST_KUBERNETES_AGENT_IMAGE, values), agent);
+      if (gateway && agent) {
+        assert.equal(runGuard(job, values).status, 0);
+      }
+      const inputs = job.steps.find((step) => step.uses === "./.github/actions/run-ci-lane").with;
+      assert.equal(evaluate(inputs["runtime-artifact-id"], values), gateway || agent ? "" : "123");
+    }
+  }
+  // Actions can suppress individual job outputs while reporting selector
+  // success. Exercise received snapshots through the shipped mappings and guard;
+  // neither missing mode nor missing refs may silently select a source build.
+  for (const [label, snapshot, producer, id, expected] of [
+    ["artifact", { "use-runtime-artifact": "true" }, "success", "123", 0],
+    [
+      "explicit",
+      { "use-runtime-artifact": "false", "gateway-image": "gateway", "agent-image": "agent" },
+      "skipped",
+      "",
+      0,
+    ],
+    ["missing mode", {}, "success", "123", 1],
+    ["unknown mode", { "use-runtime-artifact": "unknown" }, "success", "123", 1],
+    ["both refs omitted", { "use-runtime-artifact": "false" }, "skipped", "", 1],
+    [
+      "gateway omitted",
+      { "use-runtime-artifact": "false", "agent-image": "agent" },
+      "skipped",
+      "",
+      1,
+    ],
+    [
+      "agent omitted",
+      { "use-runtime-artifact": "false", "gateway-image": "gateway" },
+      "skipped",
+      "",
+      1,
+    ],
+    ["artifact omitted", { "use-runtime-artifact": "true" }, "success", "", 1],
+    [
+      "conflicting ref",
+      { "use-runtime-artifact": "true", "gateway-image": "gateway" },
+      "success",
+      "123",
+      1,
+    ],
+  ]) {
+    const values = context("all", producer, snapshot);
+    values.needs["runtime-artifact"].outputs["artifact-id"] = id;
+    const job = workflow.jobs["gateway-routing"];
+    assert.equal(evaluate(job.if, values), true, label);
+    assert.equal(runGuard(job, values).status, expected, label);
+  }
   // This workflow uses !cancelled(), which disables GitHub's implicit success()
   // guard. A failed producer must therefore be rejected explicitly.
   const condition = workflow.jobs["image-lanes-same-sha"].if
@@ -3151,7 +3374,8 @@ test("full aggregate attributes lane coverage to its matrix and producer jobs", 
             repository: "openclaw/openclaw-enterprise",
             ref: "refs/heads/main",
             ref_type: "branch",
-            event_name: "push",
+            event_name: "schedule",
+            run_attempt: "1",
           },
           needs: {
             preflight: { result: "success", outputs: { run_all: runAll } },
@@ -3218,6 +3442,21 @@ test("full aggregate attributes lane coverage to its matrix and producer jobs", 
     preflight: { result: "success" },
     "logging-collector": { result: "failure" },
   });
+  for (const lane of ["gateway-routing", "production-tui"]) {
+    const failed = execute(lane, {
+      "gateway-image-selection": { result: "success", outputs: { "use-runtime-artifact": "true" } },
+      "runtime-artifact": { result: "failure" },
+      [lane]: { result: "skipped" },
+    });
+    assert.equal(failed["runtime-artifact"].result, "failure");
+    assert.equal(failed[lane].result, "skipped");
+  }
+  const explicit = execute("gateway-routing", {
+    "gateway-image-selection": { result: "success", outputs: { "use-runtime-artifact": "false" } },
+    "runtime-artifact": { result: "skipped" },
+  });
+  assert.equal(explicit["runtime-artifact"], undefined);
+  assert.equal(explicit["gateway-routing"].result, "success");
   const targeted = execute("docker-model", {
     "runtime-artifact": { result: "skipped" },
     "image-lanes-same-sha": { result: "skipped" },

@@ -880,7 +880,7 @@ export const createAgentProvisioningScenarios = {
     description:
       "The first deployment waits for its runtime. Create Agent opens the Agent at handoff, where Deployment activity names that wait.",
     steps: [
-      "Click Create Agent. It opens the Agent's Deployment tab, whose last recorded result reads “Waiting for the runtime to become ready.”",
+      "Click Create Agent. In the Deployment tab, find the runtime wait under Latest visible deployment. Fold Deployment details and confirm the summary still shows the wait.",
     ],
   },
   createDeploymentPodQuotaFull: {
@@ -897,7 +897,7 @@ export const createAgentProvisioningScenarios = {
     description:
       "The first deployment waits on a full Namespace Pod quota. Create Agent opens the Agent at handoff, where Deployment activity explains the quota and what to do.",
     steps: [
-      "Click Create Agent. It opens the Agent's Deployment tab, whose last recorded result explains the full Pod quota.",
+      "Click Create Agent. Read the quota wait and remedy under Latest visible deployment. At phone width, check that they are visible on arrival without scrolling.",
     ],
   },
   createDeploymentImagePullFailed: {
@@ -915,7 +915,7 @@ export const createAgentProvisioningScenarios = {
     description:
       "The first deployment waits on a container image the cluster's nodes cannot pull. Create Agent opens the Agent at handoff, where Deployment activity shows that sentence.",
     steps: [
-      "Click Create Agent. It opens the Agent's Deployment tab, whose last recorded result asks an administrator to check the runtime image reference and registry access.",
+      "Click Create Agent. In Latest visible deployment, read the image-pull wait and the advice to check the runtime image reference and registry access.",
     ],
   },
   createDeploymentSuperseded: {
@@ -2571,7 +2571,8 @@ export const createAgentOutcomeScenarios = {
       'Before choosing a model, open Advanced settings and add "models": {"providers": {"codex": {"models": {}}}} to Configuration JSON. Close Advanced settings and choose gpt-6-sol. Confirm the list returns to Choose a model and Advanced settings opens with JSON focused and guidance to use an array of model objects with an id or remove the field. The raw JSON stays unchanged.',
       'Replace the inner models value with [{"id":"gpt-6-astra","cost":{"input":1}}], then choose gpt-6-astra. Set models.providers.codex.models to [null] and edit Model ID to gpt-6-sol, then press Tab. Confirm the same guidance appears and the raw JSON stays unchanged. Choose a model from the list must also keep manual entry visible.',
       'Restore models.providers.codex.models to [{"id":"gpt-6-astra","cost":{"input":1}}] and retry Model ID gpt-6-sol, then press Tab. Confirm the guidance clears, the primary becomes codex/gpt-6-sol, and cost.input remains 1. Return to the list and choose gpt-6-luna. Do not create an Agent; reset the story before checking credentials.',
-      "Choose a model before entering a dummy API key. Confirm the selection remains after entering or replacing the key.",
+      "Select gpt-6.1-sol before entering a dummy API key. Confirm gpt-6-sol is also listed and that gpt-6.1-sol stays selected after entering or replacing the key.",
+      "Switch the Harness to OpenClaw with OpenAI selected. Confirm gpt-6.1-sol stays selected.",
       "Change the provider to Anthropic and inspect its model list. The previous provider's model and credential are cleared.",
     ],
   },

@@ -99,6 +99,12 @@ are `incomplete`. These observations use synchronized host and container clocks.
 They do not prove that a particular workspace read was pending or retried, and
 ordinary refresh success alone is not evidence of read recovery.
 
+## Native permission refusals
+
+A refused Codex PAT revision collects a bounded diagnostic before preserving the
+original failure. See [native permission diagnostics](openshell-permission-diagnostics.md)
+for requirement/grant comparisons, fallback-source observations and proof limits.
+
 ## Agent network policy
 
 The policy scenario uses the production HTTP admission path, PostgreSQL worker,

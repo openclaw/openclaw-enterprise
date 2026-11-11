@@ -1,6 +1,12 @@
-import { repositoryRemovalWorkKey, repositoryRetirementWorkKey } from "../repository-withdrawal.ts";
+import {
+  REPOSITORY_CLEANUP_FORMATS,
+  REPOSITORY_CLEANUP_KEY_PREFIX,
+  REPOSITORY_CLEANUP_KEY_SEPARATOR,
+  repositoryCleanupWorkKey,
+  repositoryRemovalWorkKey,
+} from "../repository-withdrawal.ts";
 import { isNonEmptyString, isPositiveSafeInteger } from "@openclaw-enterprise/utils";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { ResourceConflictError, ScopeViolationError } from "../errors.ts";
 import {
   CREDENTIAL_WITHDRAWAL_TARGET,
@@ -184,20 +190,17 @@ export function isRepositoryExpiryCleanupWork(
   );
 }
 
-// Agent deletion retains this key after detaching its revision. Keep the cleanup key grammar
-// the database recognizes, with a separate digest domain for the immutable expiry obligation.
-const REPOSITORY_EXPIRY_KEY_DOMAIN = "expiry:";
-
-function repositoryCleanupWorkKey(
-  revisionId: string,
-  purpose: "sessions" | "terminal-runtime" | "expiry",
+// Only the trusted revision alias varies; key fragments come from the fixed formats.
+function repositoryWithdrawalKeySql(
+  revision: string,
+  purpose: "expiry" | "removal" | "terminal-runtime",
 ): string {
-  if (purpose === "terminal-runtime") {
-    return repositoryRetirementWorkKey(revisionId);
-  }
-  return `agent_revision:${revisionId}:repository_cleanup:${createHash("sha256")
-    .update(purpose === "expiry" ? REPOSITORY_EXPIRY_KEY_DOMAIN + revisionId : revisionId, "utf8")
-    .digest("hex")}`;
+  const id = `${revision}.revision_id`;
+  const format = REPOSITORY_CLEANUP_FORMATS[purpose];
+  const prefix = `'${REPOSITORY_CLEANUP_KEY_PREFIX}' || ${id} || '${REPOSITORY_CLEANUP_KEY_SEPARATOR}'`;
+  const suffix = format.suffix ? `'${format.suffix}' || ` : "";
+  const input = format.hashPrefix ? `'${format.hashPrefix}' || ${id}` : id;
+  return `${prefix} || ${suffix}encode(sha256(convert_to(${input}, 'UTF8')), 'hex')`;
 }
 
 /**
@@ -207,19 +210,21 @@ function repositoryCleanupWorkKey(
  */
 export function repositoryWithdrawalStateSql(revision: string): string {
   const id = `${revision}.revision_id`;
-  const prefix = `'agent_revision:' || ${id} || ':repository_cleanup:'`;
-  const digest = (input: string) => `encode(sha256(convert_to(${input}, 'UTF8')), 'hex')`;
-  return `(SELECT CASE WHEN cleanup.idempotency_key LIKE '%:retire:%' THEN 'retiring'
-      WHEN cleanup.idempotency_key = ${prefix} || ${digest(`'removal:' || ${id}`)} THEN 'removal'
+  const expiry = repositoryWithdrawalKeySql(revision, "expiry");
+  const removal = repositoryWithdrawalKeySql(revision, "removal");
+  const retirement = repositoryWithdrawalKeySql(revision, "terminal-runtime");
+  const retirementSuffix = REPOSITORY_CLEANUP_FORMATS["terminal-runtime"].suffix;
+  return `(SELECT CASE WHEN cleanup.idempotency_key LIKE '%:${retirementSuffix}%' THEN 'retiring'
+      WHEN cleanup.idempotency_key = ${removal} THEN 'removal'
       ELSE 'expiry' END AS withdrawal
     FROM occ.controller_work cleanup
     WHERE (cleanup.namespace_id, cleanup.agent_id, cleanup.revision_id) =
           (${revision}.namespace_id, ${revision}.agent_id, ${id})
       AND cleanup.agent_target IS NULL AND cleanup.namespace_target IS NULL
       AND cleanup.idempotency_key IN (
-        ${prefix} || ${digest(`'${REPOSITORY_EXPIRY_KEY_DOMAIN}' || ${id}`)},
-        ${prefix} || ${digest(`'removal:' || ${id}`)},
-        ${prefix} || 'retire:' || ${digest(id)})
+        ${expiry},
+        ${removal},
+        ${retirement})
     ORDER BY withdrawal DESC LIMIT 1)`;
 }
 
@@ -269,6 +274,15 @@ const CLEANUP_CONFLICT_SQL = `
       available_at = CASE WHEN controller_work.state = 'succeeded' THEN clock_timestamp()
         ELSE controller_work.available_at END,
       updated_at = clock_timestamp()`;
+
+const TERMINAL_REPOSITORY_CLEANUP_OWNERSHIP_SQL = `OR (source.agent_target = 'stopped' AND source.revision_id IS NULL
+          AND source.agent_id = revision.agent_id AND revision.admitted_at <= source.created_at)
+        OR (source.agent_target = 'deleted' AND source.revision_id IS NULL
+          AND source.agent_id = revision.agent_id AND agent.status = 'deleting'
+          AND agent.desired_runtime_state = 'stopped' AND revision.admitted_at <= source.created_at)
+        OR (source.namespace_target = 'deleted' AND source.agent_id IS NULL
+          AND source.revision_id IS NULL AND namespace.status = 'deleting'
+          AND revision.admitted_at <= source.created_at)`;
 
 function transferRepositoryCleanupSql(
   continuingRevision = "false",
@@ -335,14 +349,7 @@ function transferRepositoryCleanupSql(
       -- admitted_at and created_at are both on this database's clock (finding 1195).
       WHERE (source.revision_id = revision.id AND source.agent_id = revision.agent_id
           AND source.agent_target IS NULL)
-        OR (source.agent_target = 'stopped' AND source.revision_id IS NULL
-          AND source.agent_id = revision.agent_id AND revision.admitted_at <= source.created_at)
-        OR (source.agent_target = 'deleted' AND source.revision_id IS NULL
-          AND source.agent_id = revision.agent_id AND agent.status = 'deleting'
-          AND agent.desired_runtime_state = 'stopped' AND revision.admitted_at <= source.created_at)
-        OR (source.namespace_target = 'deleted' AND source.agent_id IS NULL
-          AND source.revision_id IS NULL AND namespace.status = 'deleting'
-          AND revision.admitted_at <= source.created_at)
+        ${TERMINAL_REPOSITORY_CLEANUP_OWNERSHIP_SQL}
     ), locked_attempts AS MATERIALIZED (
       SELECT attempt.admission_id
       FROM occ.repository_session_attempts AS attempt
@@ -379,11 +386,11 @@ function transferRepositoryCleanupSql(
       )
       SELECT DISTINCT ON (revision.namespace_id, revision.agent_id, revision.revision_id,
         revision.cleanup_purpose)
-        'agent_revision:' || revision.revision_id || ':repository_cleanup:' ||
-          CASE WHEN revision.cleanup_purpose = 'retire' THEN 'retire:' ELSE '' END ||
+        '${REPOSITORY_CLEANUP_KEY_PREFIX}' || revision.revision_id || '${REPOSITORY_CLEANUP_KEY_SEPARATOR}' ||
+          CASE WHEN revision.cleanup_purpose = 'retire' THEN '${REPOSITORY_CLEANUP_FORMATS["terminal-runtime"].suffix}' ELSE '' END ||
           encode(sha256(convert_to(
-            CASE WHEN revision.cleanup_purpose = 'expiry' THEN '${REPOSITORY_EXPIRY_KEY_DOMAIN}'
-              WHEN revision.cleanup_purpose = 'removal' THEN 'removal:' ELSE '' END ||
+            CASE WHEN revision.cleanup_purpose = 'expiry' THEN '${REPOSITORY_CLEANUP_FORMATS.expiry.hashPrefix}'
+              WHEN revision.cleanup_purpose = 'removal' THEN '${REPOSITORY_CLEANUP_FORMATS.removal.hashPrefix}' ELSE '' END ||
             revision.revision_id, 'UTF8')), 'hex'),
         revision.namespace_id, revision.agent_id, revision.revision_id, revision.actor_id,
         NULL, NULL, 'queued', statement_timestamp(), 0, statement_timestamp(), statement_timestamp()
@@ -1022,14 +1029,7 @@ export class PostgresWorkQueue {
                AND source.agent_target IS NULL
                AND revision.revision_number <= source_revision.revision_number)
              -- admitted_at and created_at are both on this database's clock (finding 1195).
-             OR (source.agent_target = 'stopped' AND source.revision_id IS NULL
-               AND source.agent_id = revision.agent_id AND revision.admitted_at <= source.created_at)
-             OR (source.agent_target = 'deleted' AND source.revision_id IS NULL
-               AND source.agent_id = revision.agent_id AND agent.status = 'deleting'
-               AND agent.desired_runtime_state = 'stopped' AND revision.admitted_at <= source.created_at)
-             OR (source.namespace_target = 'deleted' AND source.agent_id IS NULL
-               AND source.revision_id IS NULL AND namespace.status = 'deleting'
-               AND revision.admitted_at <= source.created_at)
+             ${TERMINAL_REPOSITORY_CLEANUP_OWNERSHIP_SQL}
            )
        ), registered AS (
          INSERT INTO occ.controller_work (

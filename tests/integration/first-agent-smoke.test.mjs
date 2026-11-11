@@ -8,6 +8,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
+import { postgresImage, runtimeNodeBaseImage } from "../../scripts/ci/fixture-support-images.mjs";
 import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
   STOP_PHASE_TIMEOUT_MS,
@@ -18,11 +19,9 @@ import {
   createApi,
   createStepRecorder,
   observeAgentStop,
-  postgresImage,
   providerImageDockerfile,
   providerImageTag,
   publishPostgresImage,
-  runtimeNodeBaseImage,
   smokeBakeDefinition,
   smokeImageEnvironment,
   smokeSlotNames,
@@ -32,7 +31,7 @@ import {
 } from "../../scripts/ci/first-agent-smoke.mjs";
 import { withEnvironment } from "../helpers/environment.ts";
 import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 
 const revision = "rev_00000000-0000-4000-8000-000000000001";
 const chatNonce = "OCE_SMOKE_00000000-0000-4000-8000-000000000001";
@@ -594,6 +593,60 @@ test("a failed setup stops the watcher at once with one final capture", async ()
   assert.ok(seconds < 5, `stop took ${seconds}s`);
   const { cluster } = smokeSlotNames(process.env.OCC_FIRST_AGENT_SMOKE_SLOT);
   assert.equal(calls, `kubeconfig get ${cluster}\n`);
+});
+
+test("a successful setup stops and reaps an in-flight watcher command", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "first-agent-smoke-capture-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const ready = join(directory, "capture-started");
+  const completed = join(directory, "capture-completed");
+  await writeFile(join(directory, "k3d"), "#!/bin/sh\nprintf 'fixture kubeconfig\\n'\n", {
+    mode: 0o755,
+  });
+  await writeFile(
+    join(directory, "kubectl"),
+    "#!" +
+      process.execPath +
+      "\n" +
+      'const fs = require("node:fs");\n' +
+      'if (process.argv.includes("wide")) {\n' +
+      "  fs.writeFileSync(" +
+      JSON.stringify(ready + ".tmp") +
+      ", String(process.pid));\n" +
+      "  fs.renameSync(" +
+      JSON.stringify(ready + ".tmp") +
+      ", " +
+      JSON.stringify(ready) +
+      ");\n" +
+      "  setTimeout(() => fs.writeFileSync(" +
+      JSON.stringify(completed) +
+      ', "done"), 3000);\n' +
+      "}\n",
+    { mode: 0o755 },
+  );
+  await withEnvironment({ PATH: commandPath(directory) }, async () => {
+    const stop = watchCluster({ directory, intervalMs: 1 });
+    try {
+      let pid;
+      const deadline = Date.now() + 5_000;
+      while (pid === undefined && Date.now() < deadline) {
+        try {
+          pid = Number(await readFile(ready, "utf8"));
+        } catch (error) {
+          if (error.code !== "ENOENT") {
+            throw error;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      }
+      assert.ok(Number.isSafeInteger(pid) && pid > 0, "capture command started");
+      await stop();
+      await assert.rejects(readFile(completed), { code: "ENOENT" });
+      assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+    } finally {
+      await stop();
+    }
+  });
 });
 
 test("smoke slots keep CI's names at slot 0 and give other slots distinct host resources", () => {

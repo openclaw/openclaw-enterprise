@@ -39,6 +39,7 @@ import {
 export {
   postgresPreparedGitHubProof,
   preparedGitHubLive,
+  preparedGitHubRejectedMaterialMatch,
   readPreparedGitHubMetadata,
 } from "./state/prepared-github-state.ts";
 export type { PreparedGitHubMetadataAdmission } from "./state/prepared-github-state.ts";
@@ -281,6 +282,7 @@ import {
   normalizePluginApprovers,
   normalizePresetTemplate,
   presetTemplateDefaultsWithPlaceholders,
+  presetValueHasVariables,
   PresetValidationError,
   normalizeSecretBindings,
   normalizeHarnessAuthBinding,
@@ -319,6 +321,7 @@ import {
   DedicatedOpenClawSandboxError,
   DeletionRetryOwnedError,
   DependencyUnavailableError,
+  RuntimeDiagnosticsTransportError,
   DeviceAuthorizationStartError,
   DriverSelectionError,
   ModelDiscoveryError,
@@ -489,6 +492,7 @@ export {
   DedicatedOpenClawSandboxError,
   DeletionRetryOwnedError,
   DependencyUnavailableError,
+  RuntimeDiagnosticsTransportError,
   PersistedStateInvalidError,
   DeviceAuthorizationStartError,
   DriverSelectionError,
@@ -666,6 +670,7 @@ export {
   unreadablePluginSecretInput,
   unsubstitutedReference,
   wholeEnvironmentReferenceName,
+  workspaceNodeGatewayPasswordProblem,
 } from "./environment-references.ts";
 export type { SecretInputReference } from "./environment-references.ts";
 export {
@@ -4393,8 +4398,11 @@ export class OpenClawController {
     let collected: AgentDeploymentDiagnostics;
     try {
       collected = await driver.diagnoseAgentDeployment!(binding);
-    } catch {
+    } catch (error) {
       observation.abort();
+      if (error instanceof RuntimeDiagnosticsTransportError) {
+        throw new RuntimeDiagnosticsTransportError();
+      }
       // Native Driver failures can contain private runtime or credential details.
       throw new DependencyUnavailableError("Runtime diagnostics are unavailable.");
     }
@@ -7262,7 +7270,7 @@ export class OpenClawController {
     const template = normalizePresetTemplate(input, namespaceId);
     const { settings, unresolved, unresolvedType } =
       presetTemplateDefaultsWithPlaceholders(template);
-    this.validatePresetLaunchFields(template.agent);
+    this.validatePresetLaunchFields(template);
     const values = settings.configuration?.values;
     if (values !== undefined) {
       const driver = this.configurationDriver();
@@ -7292,12 +7300,14 @@ export class OpenClawController {
    * differently. Plugin approvers are checked only while a Plugin Driver is selected, as
    * Agent create needs one for them.
    */
-  private validatePresetLaunchFields(agent: PresetTemplate["agent"]): void {
+  private validatePresetLaunchFields(template: PresetTemplate): void {
+    const agent = template.agent;
     if (agent === undefined) {
       return;
     }
     const literal = (field: string) =>
-      Object.hasOwn(agent, field) && !JSON.stringify(agent[field]).includes("{{");
+      Object.hasOwn(agent, field) &&
+      !presetValueHasVariables(agent[field], template.variables ?? {}, `agent.${field}`);
     const refuse = (field: string, requirement: string): never => {
       throw new PresetValidationError(`Preset agent.${field}: ${requirement}`);
     };
@@ -7638,6 +7648,19 @@ export class OpenClawController {
           }
           return registeredCredentialProvider(control.providers, route.binding.source.provider);
         },
+        classificationRefused: async (use, rule) => {
+          const execution = use.route.binding.execution;
+          if (
+            this.transactionContext.getStore() !== undefined ||
+            execution.installationId !== this.installation.id ||
+            !isDeepStrictEqual(execution, use.installation.plan.execution)
+          ) {
+            throw new DependencyUnavailableError("Classification audit scope is unavailable.");
+          }
+          await this.transact((state) =>
+            this.denyEgressUse(state, use, "unsupported_operation", undefined, undefined, rule),
+          );
+        },
         check: (use, material, stream, provider) =>
           this.checkEgressUse(use, material, stream, provider),
         read: async (source, lifetime, isProviderCurrent) => {
@@ -7882,10 +7905,11 @@ export class OpenClawController {
 
   private async denyEgressUse(
     state: PlatformUnitOfWork,
-    use: CapturedEgressUse,
+    use: Pick<CapturedEgressUse, "id" | "route">,
     code: Extract<EgressRefusal, { kind: "denied" }>["code"],
     material?: EgressSelectionEvidence,
     stream?: { readonly until: string },
+    classificationRule?: number,
   ): Promise<EgressRefusal> {
     const execution = use.route.binding.execution;
     await state.audit.append({
@@ -7912,6 +7936,7 @@ export class OpenClawController {
             : "before_send",
         requestId: use.id,
         revisionId: execution.revisionId,
+        ...(classificationRule === undefined ? {} : { classificationRule }),
       },
     });
     return { kind: "denied", code };

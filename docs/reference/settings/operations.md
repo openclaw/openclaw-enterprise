@@ -8,6 +8,9 @@ migration commands use the same connection pool factory.
 credentials. Its other mode is `azure-workload-identity`; unknown
 modes fail before opening a pool.
 
+Explicit pool options override URL query parameters. Unspecified values retain
+URL, environment, and client defaults.
+
 | Variable                     | Requirement in Azure workload-identity mode                          |
 | ---------------------------- | -------------------------------------------------------------------- |
 | `OCC_DATABASE_AUTH`          | Set to `azure-workload-identity` in each connecting process.         |
@@ -187,6 +190,7 @@ engine connection, environment, project, Compose files, and overrides. For
 example, after setting `DEV_COMPOSE_PROJECT` to your own recorded project:
 
 ```sh
+export OCC_DEVELOPMENT_COMPUTE_DRIVER=docker
 ./bin/occ dev down --volumes -- -p "$DEV_COMPOSE_PROJECT" -f compose.yaml
 ./bin/occ dev up --key-output /absolute/private/new-installation-key.json -- \
   -p "$DEV_COMPOSE_PROJECT" -f compose.yaml
