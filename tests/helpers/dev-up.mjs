@@ -151,6 +151,9 @@ async function runFake(io, logic) {
   }
 }
 
+const fixtureNamespaceId = "namespace_fixture";
+const fixtureNamespaceNetwork = "oce-namespace-fixture-0123456789ab";
+
 function engineCommand(fake, { args, env, cwd }, { stdout, exit }) {
   const { engine, options } = fake;
   const podmanJsonConfig = options.podmanJsonConfig ?? false;
@@ -184,7 +187,8 @@ function engineCommand(fake, { args, env, cwd }, { stdout, exit }) {
     );
   const composeCommandIndex = () =>
     args.findIndex(
-      (arg, index) => index > 0 && ["config", "build", "up", "ps", "cp", "exec"].includes(arg),
+      (arg, index) =>
+        index > 0 && ["config", "build", "up", "ps", "cp", "exec", "down"].includes(arg),
     );
   // The real Compose renders the configuration, as this command's own child did: the
   // command runs it with its own environment and these overrides.
@@ -297,6 +301,16 @@ function engineCommand(fake, { args, env, cwd }, { stdout, exit }) {
     writeServiceKey(args[args.length - 1], "key_3033697e-6397-4cc6-9b04-8ec17af78cf1");
     exit(0);
   }
+  // The Namespace network Docker Compute created for the fixture Installation's Namespace.
+  if (args[0] === "network" && args[1] === "ls") {
+    if (args.includes("label=org.openclaw.enterprise.namespace-id=" + fixtureNamespaceId)) {
+      stdout(fixtureNamespaceNetwork + "\n");
+    }
+    exit(0);
+  }
+  if (args[0] === "network" && args[1] === "rm") {
+    exit(0);
+  }
   if (args[0] !== "compose") {
     exit(99, "unexpected " + engine + " command: " + args.join(" "));
   }
@@ -317,7 +331,7 @@ function engineCommand(fake, { args, env, cwd }, { stdout, exit }) {
   if (command === "build") {
     exit(0);
   }
-  if (command === "up") {
+  if (command === "up" || command === "down") {
     exit(0);
   }
   if (command === "ps") {
@@ -380,6 +394,11 @@ function engineCommand(fake, { args, env, cwd }, { stdout, exit }) {
   }
   if (engine === "docker" && command === "cp") {
     writeServiceKey(args[args.length - 1], "key_3033697e-6397-4cc6-9b04-8ec17af78cf1");
+    exit(0);
+  }
+  if (command === "exec" && args.includes("psql")) {
+    // The fixture Installation's database records one Namespace.
+    stdout(fixtureNamespaceId + "\n");
     exit(0);
   }
   if (command === "exec") {
@@ -1147,6 +1166,7 @@ export {
   createFixture,
   customRuntimeOverride,
   defaultRuntimeImage,
+  fixtureNamespaceNetwork,
   matchingInstallationId,
   mismatchedInstallationId,
   perImageOverride,

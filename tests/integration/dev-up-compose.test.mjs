@@ -8,6 +8,7 @@ import {
   createFixture,
   customRuntimeOverride,
   defaultRuntimeImage,
+  fixtureNamespaceNetwork,
   matchingInstallationId,
   mismatchedInstallationId,
   perImageOverride,
@@ -265,6 +266,56 @@ test("dev-down removes the service key directory dev-up created and keeps a chos
   );
   assert.deepEqual(await ownedKeyDirectories(fixture), []);
   assert.match(await readFile(chosenKey, "utf8"), new RegExp(serviceKey));
+});
+
+test("dev-down --volumes removes the Installation's Docker Compute Namespace networks", async (t) => {
+  const fixture = await createFixture(t);
+  const options = composeOptions(fixture);
+  const started = await runDevUp(["--", ...options], fixture.env);
+  assert.equal(started.status, 0, started.stderr);
+  const down = (args) =>
+    runCommand(fixture.cli, ["dev", "down", ...args, "--", ...options], {
+      cwd: fixture.fixtureRepository,
+      env: fixture.env,
+    });
+  const networkCommands = async () =>
+    (await readJsonLines(fixture.dockerLog)).filter(
+      (entry) => entry.args[0] === "network" || entry.args.includes("psql"),
+    );
+
+  // A plain down keeps the database, and the next start reuses its Namespace networks.
+  const kept = await down([]);
+  assert.equal(kept.status, 0, kept.stderr);
+  assert.deepEqual(await networkCommands(), []);
+
+  // Deleting the volumes deletes the Installation: down reads its Namespaces from the
+  // database first, then removes only networks labelled for those Namespaces.
+  const removed = await down(["--volumes"]);
+  assert.equal(removed.status, 0, removed.stderr);
+  assert.ok(
+    removed.stdout.includes(`Removed Docker Compute Namespace network ${fixtureNamespaceNetwork}.`),
+    removed.stdout,
+  );
+  const commands = await networkCommands();
+  assert.ok(commands[0].args.includes("psql"));
+  assert.deepEqual(
+    commands.slice(1).map((entry) => entry.args),
+    [
+      [
+        "network",
+        "ls",
+        "--filter",
+        "label=org.openclaw.enterprise.managed=true",
+        "--filter",
+        "label=org.openclaw.enterprise.compute-driver=docker",
+        "--filter",
+        "label=org.openclaw.enterprise.namespace-id=namespace_fixture",
+        "--format",
+        "{{.Name}}",
+      ],
+      ["network", "rm", fixtureNamespaceNetwork],
+    ],
+  );
 });
 
 test("a failed dev-up removes the empty service key directory it created", async (t) => {

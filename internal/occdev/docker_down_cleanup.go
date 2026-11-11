@@ -3,12 +3,14 @@ package occdev
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -110,4 +112,65 @@ func removeDevelopmentKeyDirectory(directory string) (bool, error) {
 		}
 	}
 	return true, os.Remove(directory)
+}
+
+// Docker Compute labels each Namespace network it creates (see
+// apps/controller/src/drivers/compute/docker); the Namespace ID label ties a
+// network to the Installation whose database records that Namespace.
+const (
+	dockerComputeManagedLabel   = "org.openclaw.enterprise.managed=true"
+	dockerComputeDriverLabel    = "org.openclaw.enterprise.compute-driver=docker"
+	dockerComputeNamespaceLabel = "org.openclaw.enterprise.namespace-id="
+)
+
+var dockerNamespaceID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]*$`)
+
+// dockerNamespaceIDs reads the Namespace IDs of the Docker-compatible stack's
+// Installation from its running database. compose is the Compose command
+// and global options occ dev down uses for the stack.
+func (r *runner) dockerNamespaceIDs(ctx context.Context, compose []string) ([]string, error) {
+	args := append(append([]string(nil), compose...), "exec", "-T", "postgres", "psql", "-U", "postgres", "-d", "openclaw_enterprise", "-AtX", "-c", "SELECT id FROM occ.namespaces")
+	data, err := r.output(ctx, r.engine, args...)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, line := range strings.Split(string(data), "\n") {
+		id := strings.TrimSpace(line)
+		if id == "" {
+			continue
+		}
+		if !dockerNamespaceID.MatchString(id) {
+			return nil, fmt.Errorf("unexpected Namespace ID %q", id)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// removeDockerNamespaceNetworks removes the Docker Compute Namespace networks
+// of the given Namespaces after down deleted their Installation's volumes.
+// Only networks carrying the Docker Compute labels for one of those
+// Namespace IDs are removed, never another stack's. A network still in use
+// is kept and reported.
+func (r *runner) removeDockerNamespaceNetworks(ctx context.Context, ids []string, lookupErr error) {
+	if lookupErr != nil {
+		fmt.Fprintf(r.opts.Err, "Warning: could not read the Installation's Namespaces before deleting its database (%v); "+
+			"its Docker Compute Namespace networks (label %s) may remain\n", lookupErr, dockerComputeDriverLabel)
+		return
+	}
+	for _, id := range ids {
+		names, err := r.output(ctx, r.engine, "network", "ls", "--filter", "label="+dockerComputeManagedLabel, "--filter", "label="+dockerComputeDriverLabel, "--filter", "label="+dockerComputeNamespaceLabel+id, "--format", "{{.Name}}")
+		if err != nil {
+			fmt.Fprintf(r.opts.Err, "Warning: could not list the Docker Compute network of Namespace %s: %v\n", id, err)
+			continue
+		}
+		for _, name := range strings.Fields(string(names)) {
+			if _, err := r.output(ctx, r.engine, "network", "rm", name); err != nil {
+				fmt.Fprintf(r.opts.Err, "Warning: kept Docker Compute Namespace network %s, which may still have containers: %v\n", name, err)
+				continue
+			}
+			fmt.Fprintf(r.opts.Out, "Removed Docker Compute Namespace network %s.\n", name)
+		}
+	}
 }

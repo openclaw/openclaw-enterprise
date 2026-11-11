@@ -2,6 +2,8 @@ package occdev
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -96,5 +98,52 @@ func TestDockerDownRemovesOnlyRecordedOwnedKeyDirectories(t *testing.T) {
 	removeRecordedDevelopmentKeyDirectories(browser, &out, &warnings)
 	if warnings.Len() != 0 {
 		t.Fatalf("a missing record produced warnings: %s", warnings.String())
+	}
+}
+
+func TestDockerDownVolumesRemovesOnlyTheInstallationsNamespaceNetworks(t *testing.T) {
+	commands := fakeProfileCommands(t, map[string]string{
+		"docker": `
+"compose -p dev exec -T postgres psql -U postgres -d openclaw_enterprise -AtX -c SELECT id FROM occ.namespaces") printf 'ns-one\nns-two\n' ;;
+"network ls --filter label=org.openclaw.enterprise.managed=true --filter label=org.openclaw.enterprise.compute-driver=docker --filter label=org.openclaw.enterprise.namespace-id=ns-one --format {{.Name}}") echo oce-ns-one-0123456789ab ;;
+"network ls --filter label=org.openclaw.enterprise.managed=true --filter label=org.openclaw.enterprise.compute-driver=docker --filter label=org.openclaw.enterprise.namespace-id=ns-two --format {{.Name}}") echo oce-ns-two-0123456789ab ;;
+"network rm oce-ns-one-0123456789ab") ;;
+"network rm oce-ns-two-0123456789ab") echo 'Error response from daemon: error while removing network: network oce-ns-two-0123456789ab has active endpoints' >&2; exit 1 ;;
+`,
+	})
+	var out, warnings bytes.Buffer
+	r := &runner{engine: "docker", env: newRunner(Options{}).env, opts: Options{Out: &out, Err: &warnings}}
+	ids, err := r.dockerNamespaceIDs(context.Background(), []string{"compose", "-p", "dev"})
+	if err != nil || strings.Join(ids, ",") != "ns-one,ns-two" {
+		t.Fatalf("Namespace IDs = %q, %v", ids, err)
+	}
+	r.removeDockerNamespaceNetworks(context.Background(), ids, nil)
+	if !strings.Contains(out.String(), "Removed Docker Compute Namespace network oce-ns-one-0123456789ab.") {
+		t.Errorf("output does not report the removed network:\n%s", out.String())
+	}
+	// A network whose containers still run stays, and down says so.
+	if !strings.Contains(warnings.String(), "kept Docker Compute Namespace network oce-ns-two-0123456789ab") {
+		t.Errorf("warnings do not name the network in use:\n%s", warnings.String())
+	}
+	if got := len(commands()); got != 5 {
+		t.Errorf("ran %d commands, want 5: %q", got, commands())
+	}
+
+	// Without the database's Namespaces nothing is removed: no other stack's network can match.
+	out.Reset()
+	warnings.Reset()
+	r.removeDockerNamespaceNetworks(context.Background(), nil, errors.New("service postgres is not running"))
+	if out.Len() != 0 || !strings.Contains(warnings.String(), "may remain") {
+		t.Errorf("a failed lookup: output %q, warnings %q", out.String(), warnings.String())
+	}
+}
+
+func TestDockerNamespaceIDsRefusesUnexpectedValues(t *testing.T) {
+	fakeProfileCommands(t, map[string]string{
+		"docker": `"compose exec -T postgres psql "*) printf 'ns-one\nns-two,label=other\n' ;;`,
+	})
+	r := &runner{engine: "docker", env: newRunner(Options{}).env}
+	if _, err := r.dockerNamespaceIDs(context.Background(), []string{"compose"}); err == nil || !strings.Contains(err.Error(), "unexpected Namespace ID") {
+		t.Fatalf("an unexpected Namespace ID was accepted: %v", err)
 	}
 }
