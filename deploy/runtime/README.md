@@ -60,6 +60,8 @@ or renewal under the same binding. Fresh setup comes first; a typed bootstrap re
 allows one validated saved-token retry. See [node enrollment](../../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
 for Gateway/TLS-pin checks, local credential retirement when switching targets,
 and pairing recovery. Remove this bridge when the selected source provides that contract.
+`openclaw-chat-main-session-start.patch` carries [OpenClaw #197151](https://github.com/openclaw/openclaw/pull/197151),
+so a chat-only member can open an Agent's unused main conversation and send its first turn.
 Provenance `patches` maps every patch the Dockerfile applies, in order, to its
 SHA-256; `scripts/build-runtime-assets.mjs` holds that list, and a test checks it
 against the Dockerfile.

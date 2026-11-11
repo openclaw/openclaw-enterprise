@@ -231,6 +231,12 @@ COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-r
 RUN echo 'b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-setup-renewal.patch
 
+# Remove this bridge when the pinned OpenClaw includes openclaw#197151: a
+# session-scoped member may open and start its Agent's unused main conversation.
+COPY deploy/runtime/openclaw-chat-main-session-start.patch /tmp/openclaw-chat-main-session-start.patch
+RUN echo 'acbf1e334d0d09d5cdfa15ce3d5cbd0f326b8175076b279e49abf24480e040af  /tmp/openclaw-chat-main-session-start.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-chat-main-session-start.patch
+
 # Broad source verification is an explicit target, separate from image assembly.
 # Native container CI requires this target before exporting and smoking the image.
 FROM openclaw-patched-source AS openclaw-bridge-tests
@@ -282,6 +288,8 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     test/node-host-launcher.test.ts \
     src/plugins/computer-use-contract.test.ts \
     src/daemon/program-args.test.ts \
+    src/gateway/server-methods.session-main-start.test.ts \
+    src/gateway/server.chat-main-session-narrow.test.ts \
     && rm -rf .artifacts
 # These CUA lifecycle cases use the supported SDK adapter boundary. The two
 # native SDK import cases need desktop libraries absent from this build image.
@@ -307,7 +315,8 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
 RUN --network=none cd ui && node ../scripts/run-node-package-bin.mts vitest run --config vitest.config.ts \
     --project unit --project unit-node \
     src/api/gateway-reachability.node.test.ts src/app/gateway-store.observers.test.ts src/app/app-shell-view.test.ts \
-    src/app/gateway-page-activation.test.ts
+    src/app/gateway-page-activation.test.ts src/lib/session-method-access.test.ts \
+    src/pages/chat/chat-main-session-absent.test.ts
 
 FROM openclaw-patched-source AS openclaw-build
 # Follow the pinned upstream Docker assembly; plugin-local dependencies remain
