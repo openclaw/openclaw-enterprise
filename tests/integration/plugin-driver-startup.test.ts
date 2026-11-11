@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { loadInstallationFile } from "../helpers/installation-file.mjs";
 
-async function load(t, plugin) {
+async function load(t: TestContext, plugin?: unknown) {
   const configuration = createInstallationDriverConfiguration();
   if (plugin !== undefined) {
-    configuration.drivers.plugin = plugin;
+    Object.assign(configuration.drivers, { plugin });
   }
-  return loadInstallationFile(t, configuration);
+  const loaded = await loadInstallationFile(t, configuration);
+  assert.ok(loaded);
+  return loaded;
 }
 
 test("Installation startup selects one bundled Agent PluginDriver or leaves it absent", async (t) => {
@@ -17,12 +19,12 @@ test("Installation startup selects one bundled Agent PluginDriver or leaves it a
   assert.deepEqual(absent.pluginDrivers, []);
   for (const id of ["occ-plugin", "codex-plugin"]) {
     const loaded = await load(t, [{ id, configuration: {} }]);
-    assert.equal(loaded.pluginDrivers[0].id, id);
-    assert.equal(loaded.pluginDrivers[0].capability, "plugin");
-    assert.equal(loaded.installation.drivers.plugin[0].id, id);
+    assert.equal(loaded.pluginDrivers?.[0]?.id, id);
+    assert.equal(loaded.pluginDrivers?.[0]?.capability, "plugin");
+    assert.equal(loaded.installation.drivers.plugin?.[0]?.id, id);
     assert.equal(
-      loaded.installation.drivers.plugin[0].implementation,
-      loaded.pluginDrivers[0].implementation,
+      loaded.installation.drivers.plugin?.[0]?.implementation,
+      loaded.pluginDrivers?.[0]?.implementation,
     );
   }
 });
@@ -33,6 +35,7 @@ test("Installation startup registers each configured plugin catalog and rejects 
     { id: "occ-plugin", configuration: {} },
   ];
   const { pluginDrivers } = await load(t, selections);
+  assert.ok(pluginDrivers);
   assert.deepEqual(
     pluginDrivers.map(({ id, harnessId }) => [id, harnessId]),
     [
@@ -55,8 +58,8 @@ test("Installation startup accepts explicit native Codex catalog reader configur
       },
     },
   ]);
-  assert.equal(loaded.pluginDrivers[0].id, "codex-plugin");
-  assert.deepEqual(loaded.installation.drivers.plugin[0].configuration, {
+  assert.equal(loaded.pluginDrivers?.[0]?.id, "codex-plugin");
+  assert.deepEqual(loaded.installation.drivers.plugin?.[0]?.configuration, {
     codexExecutable: "/tmp/codex-plugin-catalog-bin/codex",
     codexHome: "/tmp/codex-plugin-catalog-home",
     requestTimeoutMs: 30_000,
@@ -70,13 +73,13 @@ test("Installation selects hosted discovery by default and can select the curate
     [{ catalogSource: "openai-curated" }, "none"],
   ]) {
     const loaded = await load(t, [{ id: "codex-plugin", configuration }]);
-    assert.equal(loaded.pluginDrivers[0].discoveryCredential, credential);
-    assert.deepEqual(loaded.installation.drivers.plugin[0].configuration, configuration);
+    assert.equal(loaded.pluginDrivers?.[0]?.discoveryCredential, credential);
+    assert.deepEqual(loaded.installation.drivers.plugin?.[0]?.configuration, configuration);
   }
 });
 
 test("Installation rejects untrusted PluginDriver packages, unknown selections and configuration", async (t) => {
-  const refusal = (path, code, message) => [{ path, code, message }];
+  const refusal = (path: string, code: string, message: string) => [{ path, code, message }];
   for (const [selection, expected] of [
     [
       { id: "unknown-plugin-driver", configuration: {} },

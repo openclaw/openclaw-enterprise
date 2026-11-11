@@ -877,17 +877,23 @@ test("explicit Kubernetes-only profile rejects Compose options before mutation",
   assert.equal((await readJsonLines(fixture.dockerLog)).length, 0);
 });
 
-test("development cleanup defaults to the Compose profile", async (t) => {
+test("development cleanup without selectors stops Docker when no state is recorded", async (t) => {
   const fixture = await createFixture(t);
   await prepareLifecycleCommands(fixture);
   delete fixture.env.OCC_DEVELOPMENT_COMPUTE_DRIVER;
   delete fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE;
   delete fixture.env.OCC_DEVELOPMENT_SANDBOX_DRIVER;
+  const directory = fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
 
-  // Cleanup without selectors must target Compose, not a Kubernetes state directory.
+  // Only an absent state directory sends an unselected cleanup to Compose.
   const result = await runDevDown(fixture.env);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Stopped Docker-compatible development stack/);
+  assert.ok(
+    result.stdout.includes(
+      `Stopped Docker-compatible development stack (no recorded Kubernetes development state in ${directory}).`,
+    ),
+    result.stdout,
+  );
   const commands = await readJsonLines(fixture.env.SAFETY_LOG);
   assert.ok(commands.some((entry) => entry.command === "docker" && entry.args.includes("down")));
   assert.equal(
@@ -896,18 +902,72 @@ test("development cleanup defaults to the Compose profile", async (t) => {
   );
 });
 
-test("development cleanup rejects a Kubernetes control plane without Kubernetes Compute", async (t) => {
+test("development cleanup without selectors refuses an unusable state directory", async (t) => {
+  const fixture = await createFixture(t);
+  await prepareLifecycleCommands(fixture);
+  delete fixture.env.OCC_DEVELOPMENT_COMPUTE_DRIVER;
+  delete fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE;
+  delete fixture.env.OCC_DEVELOPMENT_SANDBOX_DRIVER;
+  const directory = fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
+  await mkdir(directory, { mode: 0o700 });
+  await writeFile(join(directory, "state.json"), "{", { mode: 0o600 });
+
+  // A present but invalid record must not fall back to stopping a Compose stack.
+  const result = await runDevDown(fixture.env);
+  assert.notEqual(result.status, 0);
+  assert.ok(
+    result.stderr.includes(
+      `development state directory ${directory} exists but is not usable Kubernetes development state`,
+    ),
+    result.stderr,
+  );
+  assert.match(result.stderr, /occ dev down stopped nothing/);
+  assert.equal(await readFile(join(directory, "state.json"), "utf8"), "{");
+  const commands = await readJsonLines(fixture.env.SAFETY_LOG);
+  assert.equal(
+    commands.some((entry) => entry.args.includes("down") || entry.command === "k3d"),
+    false,
+  );
+});
+
+test("development cleanup with Compose options keeps the Docker profile", async (t) => {
+  const fixture = await createFixture(t);
+  await prepareLifecycleCommands(fixture);
+  delete fixture.env.OCC_DEVELOPMENT_COMPUTE_DRIVER;
+  delete fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE;
+  delete fixture.env.OCC_DEVELOPMENT_SANDBOX_DRIVER;
+  // Even a present state directory does not redirect explicit Compose options.
+  await mkdir(fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY, { mode: 0o700 });
+
+  const result = await runCommand(fixture.cli, ["dev", "down", "--", ...composeOptions(fixture)], {
+    cwd: fixture.fixtureRepository,
+    env: fixture.env,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^Stopped Docker-compatible development stack\.$/m);
+  const commands = await readJsonLines(fixture.env.SAFETY_LOG);
+  assert.ok(commands.some((entry) => entry.command === "docker" && entry.args.includes("down")));
+  assert.equal(
+    commands.some((entry) => entry.command === "k3d"),
+    false,
+  );
+});
+
+test("development cleanup treats a Kubernetes control plane without a Compute selection as Kubernetes", async (t) => {
   const fixture = await createFixture(t);
   await prepareLifecycleCommands(fixture);
   delete fixture.env.OCC_DEVELOPMENT_COMPUTE_DRIVER;
   fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "kubernetes";
 
-  // A mismatched selector must not stop an unrelated default Compose stack.
+  // The Kubernetes control plane only runs on Kubernetes Compute, so it must
+  // never stop an unrelated Compose stack; without recorded state it stops nothing.
   const result = await runDevDown(fixture.env);
   assert.notEqual(result.status, 0);
-  assert.match(
+  assert.ok(
+    result.stderr.includes(
+      `no recorded Kubernetes development state in ${fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY}`,
+    ),
     result.stderr,
-    /OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes requires Kubernetes Compute/,
   );
   const commands = await readJsonLines(fixture.env.SAFETY_LOG);
   assert.equal(

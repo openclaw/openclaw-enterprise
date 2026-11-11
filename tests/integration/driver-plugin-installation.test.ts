@@ -1,29 +1,120 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { resolveApprovedProductionHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import {
   installationDriverConfigurations,
   loadInstallationConfiguration,
+  type InstallationRuntimeDrivers,
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { withComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
+import {
+  ConfigurationValidationError,
+  type Configuration,
+  type Restriction,
+  type Role,
+} from "../../packages/contracts/src/index.ts";
+import type { NativeIAMState } from "../../packages/iam/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { cookieHeaderFromSetCookie, createTestAuthPrincipal } from "../helpers/auth-session.mjs";
 import {
   createCredentialProxyInstallationConfiguration as credentialProxyInstallation,
-  createInstallationDriverConfiguration as installation,
+  createInstallationDriverConfiguration,
 } from "../helpers/installation-driver-configuration.mjs";
-import { injectJson } from "../helpers/inject-json.mjs";
+import { injectJson as injectUntypedJson } from "../helpers/inject-json.mjs";
 import { AUTHORIZATION_HEADER_REFUSED, CREDENTIAL_REQUIRED } from "../helpers/refusal-text.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+
+type DriverSelection = {
+  id: string;
+  package?: string;
+  implementation?: string;
+  version?: string;
+  configuration: Record<string, unknown>;
+};
+type InstallationFixture = {
+  occ: { cluster: string };
+  drivers: {
+    configuration: DriverSelection;
+    iam: DriverSelection;
+    compute: DriverSelection;
+    secret: DriverSelection;
+    sandbox?: DriverSelection;
+  };
+};
+type PackageLayout = { root: string; entry?: string; files: Record<string, string> };
+type InjectedResponse = {
+  statusCode: number;
+  body: string;
+  headers: Record<string, unknown>;
+  json(): unknown;
+};
+
+function installation(): InstallationFixture {
+  return createInstallationDriverConfiguration();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOperationAbortSignal(
+  value: unknown,
+): value is { currentOperationAbortSignal(): unknown } {
+  return isRecord(value) && typeof value.currentOperationAbortSignal === "function";
+}
+
+function isInjectedResponse(value: unknown): value is InjectedResponse {
+  return (
+    isRecord(value) &&
+    typeof value.statusCode === "number" &&
+    typeof value.body === "string" &&
+    isRecord(value.headers) &&
+    typeof value.json === "function"
+  );
+}
+
+async function injectJson(
+  app: ReturnType<typeof createFastifyApp>,
+  method: string,
+  url: string,
+  options?: Parameters<typeof injectUntypedJson>[3],
+): Promise<InjectedResponse> {
+  const response: unknown = await injectUntypedJson(app, method, url, options);
+  assert.ok(isInjectedResponse(response));
+  return response;
+}
+
+function record(value: unknown): Record<string, unknown> {
+  assert.ok(isRecord(value));
+  return value;
+}
+
+function records(value: unknown): Record<string, unknown>[] {
+  assert.ok(Array.isArray(value));
+  return value.map((entry: unknown) => record(entry));
+}
+
+function string(value: unknown): string {
+  assert.ok(typeof value === "string");
+  return value;
+}
+
+function data(response: Record<string, unknown>): Record<string, unknown> {
+  return record(response.data);
+}
+
+function configurationDescriptors(response: Record<string, unknown>): Record<string, unknown>[] {
+  return records(data(response).configurations);
+}
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), "../fixtures/driver-packages");
 const computePackage = "@fixture/test-compute-driver";
@@ -47,7 +138,7 @@ function selectedIAM() {
 
 // Each run provisions into its own temporary directory: a fixed path collides across
 // concurrent runs, even from different checkouts.
-async function selectedCompute(t) {
+async function selectedCompute(t: TestContext) {
   const provisionPath = join(await temporaryDirectory(t, "occ-installed-compute-"), "provisioned");
   return {
     id: "compute-installed-fixture",
@@ -56,7 +147,7 @@ async function selectedCompute(t) {
   };
 }
 
-async function installedPackages(t) {
+async function installedPackages(t: TestContext) {
   const directory = await temporaryDirectory(t, "occ-installed-drivers-");
 
   const owner = join(directory, "owner");
@@ -80,12 +171,12 @@ async function installedPackages(t) {
       cwd: directory,
       encoding: "utf8",
     });
-    assert.equal(packed.status, 0, packed.stderr || packed.error?.message);
+    assert.equal(packed.status, 0, packed.stderr || packed.error?.message || "");
     archives.push(archive);
   }
 
   // Both package lifecycle and dependency state stay inside this isolated owner, never the checkout.
-  const packageManagerOptions = {
+  const packageManagerOptions: SpawnSyncOptionsWithStringEncoding = {
     cwd: owner,
     encoding: "utf8",
     env: {
@@ -112,7 +203,7 @@ async function installedPackages(t) {
   assert.equal(
     installed.status,
     0,
-    installed.stderr || installed.stdout || installed.error?.message,
+    installed.stderr || installed.stdout || installed.error?.message || "",
   );
 
   // Prove that the reviewed lockfile can independently recreate the production-only dependency tree.
@@ -129,23 +220,29 @@ async function installedPackages(t) {
     ],
     packageManagerOptions,
   );
-  assert.equal(frozen.status, 0, frozen.stderr || frozen.stdout || frozen.error?.message);
+  assert.equal(frozen.status, 0, frozen.stderr || frozen.stdout || frozen.error?.message || "");
 
   return owner;
 }
 
-async function load(owner, configuration, mode = "production") {
+async function load(
+  owner: string,
+  configuration: unknown,
+  mode: "development" | "production" = "production",
+) {
   const path = join(owner, `installation-${randomUUID()}.yaml`);
   // JSON is valid YAML and exercises the same parser and closed-schema validation as real startup.
   await writeFile(path, JSON.stringify(configuration), "utf8");
-  return loadInstallationConfiguration({
+  const drivers = await loadInstallationConfiguration({
     mode,
     environment: { OCC_CONFIG_PATH: path },
     packageRoot: owner,
   });
+  assert.ok(drivers);
+  return drivers;
 }
 
-async function authenticatedApplication(t, drivers) {
+async function authenticatedApplication(t: TestContext, drivers: InstallationRuntimeDrivers) {
   const installationId = `ins_${randomUUID()}`;
   const authOrigin = "https://console.oce.localhost";
   const authFixture = await createTestAuthPrincipal({
@@ -158,7 +255,7 @@ async function authenticatedApplication(t, drivers) {
     name: "Driver Plugin Administrator",
   });
   const principal = authFixture.seed.principal;
-  const role = {
+  const role: Role = {
     id: "role-production-plugin-operator",
     permissions: [
       { action: "administer", resourceKind: "installation" },
@@ -169,13 +266,13 @@ async function authenticatedApplication(t, drivers) {
       { action: "read", resourceKind: "configuration" },
     ],
   };
-  const deleteRestriction = {
+  const deleteRestriction: Restriction = {
     id: "restriction-production-plugin-namespace-delete",
     action: "delete",
     resourceKind: "namespace",
     effect: "deny",
   };
-  let policy = {
+  let policy: NativeIAMState = {
     identities: [principal],
     groups: [],
     memberships: [],
@@ -200,7 +297,7 @@ async function authenticatedApplication(t, drivers) {
   });
   assert.equal(iamDriver.id, drivers.installation.drivers.iam.id);
   assert.equal(iamDriver.implementation, drivers.installation.drivers.iam.implementation);
-  let controller;
+  let controller: OpenClawController | undefined;
 
   // Admission, IAM, Harness, and Fastify are production paths; persistence is explicitly in-memory.
   const app = createFastifyApp({
@@ -227,7 +324,9 @@ async function authenticatedApplication(t, drivers) {
     computeDriver: drivers.computeDriver,
     configurationDriver: drivers.configurationDriver,
     secretDriver: drivers.secretDriver,
-    sandboxDriver: drivers.protectedDriver === undefined ? drivers.sandboxDriver : undefined,
+    ...(drivers.protectedDriver === undefined && drivers.sandboxDriver !== undefined
+      ? { sandboxDriver: drivers.sandboxDriver }
+      : {}),
     resolveHarness: resolveApprovedProductionHarness,
     auditSink,
     development: {
@@ -245,7 +344,11 @@ async function authenticatedApplication(t, drivers) {
   assert.equal(signedIn.statusCode, 200, signedIn.body);
   const setCookie = signedIn.headers["set-cookie"];
   const cookie = cookieHeaderFromSetCookie(
-    Array.isArray(setCookie) ? setCookie : setCookie === undefined ? [] : [setCookie],
+    Array.isArray(setCookie)
+      ? setCookie.map((value: unknown) => string(value))
+      : setCookie === undefined
+        ? []
+        : [string(setCookie)],
   );
   assert.match(cookie, /(?:^|; )__Secure-openclaw_occ_shared\.session_token=/);
 
@@ -271,6 +374,7 @@ async function authenticatedApplication(t, drivers) {
       };
     },
     get controller() {
+      assert.ok(controller);
       return controller;
     },
     get iamLoadCount() {
@@ -279,14 +383,19 @@ async function authenticatedApplication(t, drivers) {
   };
 }
 
-async function request(fixture, method, url, body) {
+async function request(
+  fixture: Awaited<ReturnType<typeof authenticatedApplication>>,
+  method: string,
+  url: string,
+  body?: unknown,
+): Promise<Record<string, unknown> & { status: number }> {
   const { cookie, authOrigin } = fixture.config;
   const response = await injectJson(fixture.app, method, url, {
     session: { cookie, origin: authOrigin },
     host: new URL(authOrigin).host,
     body,
   });
-  return { status: response.statusCode, ...response.json() };
+  return { status: response.statusCode, ...record(response.json()) };
 }
 
 test("Installation inspection returns accepted Driver values, redacts opaque resources, and rechecks administration", async (t) => {
@@ -300,18 +409,22 @@ test("Installation inspection returns accepted Driver values, redacts opaque res
     audience: "configured-audience",
     expirationSeconds: 900,
   };
-  configuration.drivers.credential_gateway.configuration = {
+  const credentialGateway = record(record(configuration.drivers).credential_gateway);
+  const sandboxGateway = record(
+    record(record(record(configuration.drivers).sandbox).configuration).gateway,
+  );
+  credentialGateway.configuration = {
     binaries: ["/usr/bin/configured-model-client"],
     toolBinaries: ["/usr/bin/configured-tool-client"],
   };
-  configuration.drivers.sandbox.configuration.gateway.operatorWorkspaceResources = [
+  sandboxGateway.operatorWorkspaceResources = [
     {
       apiVersion: "v1",
       kind: "ServiceAccount",
       metadata: { name: "workspace", annotations: { private: privateAnnotation } },
     },
   ];
-  configuration.drivers.sandbox.configuration.gateway.networkPolicyResources = [
+  sandboxGateway.networkPolicyResources = [
     {
       apiVersion: "networking.k8s.io/v1",
       kind: "NetworkPolicy",
@@ -326,6 +439,7 @@ test("Installation inspection returns accepted Driver values, redacts opaque res
     mode: "development",
     environment: { OCC_CONFIG_PATH: path },
   });
+  assert.ok(drivers);
   const fixture = await authenticatedApplication(t, drivers);
   const bootstrap = await request(fixture, "POST", "/installation/bootstrap", {
     name: "Driver inspection integration",
@@ -333,14 +447,14 @@ test("Installation inspection returns accepted Driver values, redacts opaque res
   assert.equal(bootstrap.status, 201, JSON.stringify(bootstrap));
 
   // Editing the operator's file cannot replace values accepted by this running process.
-  configuration.drivers.credential_gateway.configuration.binaries = ["/usr/bin/next-startup"];
+  record(credentialGateway.configuration).binaries = ["/usr/bin/next-startup"];
   await writeFile(path, JSON.stringify(configuration));
   const inspected = await request(fixture, "GET", "/installation/driver-configurations");
   assert.equal(inspected.status, 200, JSON.stringify(inspected));
   const descriptors = new Map(
-    inspected.data.configurations.map((descriptor) => [descriptor.capability, descriptor]),
+    configurationDescriptors(inspected).map((descriptor) => [descriptor.capability, descriptor]),
   );
-  const credentials = descriptors.get("credential_gateway");
+  const credentials = record(descriptors.get("credential_gateway"));
   assert.equal(credentials.driverId, "openshell-credentials");
   assert.equal(credentials.implementation, "openshell");
   assert.equal(credentials.scope, "installation");
@@ -349,31 +463,38 @@ test("Installation inspection returns accepted Driver values, redacts opaque res
     binaries: ["/usr/bin/configured-model-client"],
     toolBinaries: ["/usr/bin/configured-tool-client"],
   });
-  assert.equal(credentials.configurationSchema.properties.binaries.type, "array");
-  assert.deepEqual(descriptors.get("configuration").startupConfiguration, {
+  assert.equal(
+    record(record(record(credentials.configurationSchema).properties).binaries).type,
+    "array",
+  );
+  assert.deepEqual(record(descriptors.get("configuration")).startupConfiguration, {
     authentication: { mode: "inCluster" },
   });
-  assert.deepEqual(descriptors.get("secret").startupConfiguration, {
+  assert.deepEqual(record(descriptors.get("secret")).startupConfiguration, {
     authentication: { mode: "inCluster" },
   });
-  assert.deepEqual(descriptors.get("iam").startupConfiguration, {});
-  const compute = descriptors.get("compute").startupConfiguration;
-  assert.equal(compute.network.gatewayPort, 18080);
-  assert.equal(compute.runtime.gatewayStorageClassName, "operator-storage");
+  assert.deepEqual(record(descriptors.get("iam")).startupConfiguration, {});
+  const compute = record(record(descriptors.get("compute")).startupConfiguration);
+  const computeNetwork = record(compute.network);
+  const computeRuntime = record(compute.runtime);
+  assert.equal(computeNetwork.gatewayPort, 18080);
+  assert.equal(computeRuntime.gatewayStorageClassName, "operator-storage");
   // Opt-out inspection retains accepted ordinary fields even when a mode does not use them.
   assert.deepEqual(compute.servicePrincipalCredentials, {
     mode: "disabled",
     audience: "configured-audience",
     expirationSeconds: 900,
   });
-  assert.equal(compute.network.dns.podLabels, "[redacted]");
-  assert.equal(compute.runtime.gatewayNodeSelector, "[redacted]");
-  const sandbox = descriptors.get("sandbox").startupConfiguration;
-  assert.equal(sandbox.gateway.workspaceMode, "operator");
-  assert.equal(sandbox.gateway.operatorWorkspaceResources, "[redacted]");
-  assert.equal(sandbox.gateway.networkPolicyResources, "[redacted]");
-  assert.deepEqual(sandbox.policy.networkPolicies[0].binaries, [{ path: "/usr/bin/model-client" }]);
-  assert.equal(sandbox.policy.networkPolicies[0].endpoints[0].host, "[redacted]");
+  assert.equal(record(computeNetwork.dns).podLabels, "[redacted]");
+  assert.equal(computeRuntime.gatewayNodeSelector, "[redacted]");
+  const sandbox = record(record(descriptors.get("sandbox")).startupConfiguration);
+  const gateway = record(sandbox.gateway);
+  const networkPolicy = record(records(record(sandbox.policy).networkPolicies)[0]);
+  assert.equal(gateway.workspaceMode, "operator");
+  assert.equal(gateway.operatorWorkspaceResources, "[redacted]");
+  assert.equal(gateway.networkPolicyResources, "[redacted]");
+  assert.deepEqual(networkPolicy.binaries, [{ path: "/usr/bin/model-client" }]);
+  assert.equal(record(records(networkPolicy.endpoints)[0]).host, "[redacted]");
   assert.equal(
     Object.hasOwn(sandbox, "logLevel"),
     false,
@@ -391,10 +512,13 @@ test("Installation inspection returns accepted Driver values, redacts opaque res
     (event) =>
       event.kind === "authorization_denial" &&
       event.resource.id === fixture.config.installationId &&
-      event.authorization.action === "administer",
+      event.authorization?.action === "administer",
   );
+  assert.ok(denial);
   assert.equal(denial.iamDriverId, "native-iam");
-  assert.ok(denial.details.iamEvidence.restrictionIds.includes("restriction-driver-inspection"));
+  const restrictionIds = record(denial.details?.iamEvidence).restrictionIds;
+  assert.ok(Array.isArray(restrictionIds));
+  assert.ok(restrictionIds.includes("restriction-driver-inspection"));
 });
 
 test("installed Driver inspection retains accepted values before a factory mutates its input", async (t) => {
@@ -447,9 +571,10 @@ test("installed Driver inspection retains accepted values before a factory mutat
   );
   const response = await request(fixture, "GET", "/installation/driver-configurations");
   assert.equal(response.status, 200, JSON.stringify(response));
-  const inspected = response.data.configurations.find(
+  const inspected = configurationDescriptors(response).find(
     (entry) => entry.capability === "configuration",
   );
+  assert.ok(inspected);
   assert.deepEqual(inspected.startupConfiguration, {
     endpoint: "memory:accepted",
     ordinary,
@@ -458,7 +583,7 @@ test("installed Driver inspection retains accepted values before a factory mutat
   assert.ok(!JSON.stringify(response).includes(privateKey));
   assert.ok(!JSON.stringify(response).includes(privateValue));
   assert.ok(!JSON.stringify(inspected.startupConfiguration).includes("factory-only"));
-  assert.equal(Object.hasOwn(inspected.startupConfiguration, "defaulted"), false);
+  assert.equal(Object.hasOwn(record(inspected.startupConfiguration), "defaulted"), false);
 });
 
 test("unsupported inspection schema reports unavailable without exposing accepted package values", async (t) => {
@@ -487,9 +612,10 @@ test("unsupported inspection schema reports unavailable without exposing accepte
   );
   const response = await request(fixture, "GET", "/installation/driver-configurations");
   assert.equal(response.status, 200, JSON.stringify(response));
-  const inspected = response.data.configurations.find(
+  const inspected = configurationDescriptors(response).find(
     (entry) => entry.capability === "configuration",
   );
+  assert.ok(inspected);
   assert.equal(Object.hasOwn(inspected, "startupConfiguration"), false);
   assert.ok(!JSON.stringify(response).includes("memory:driver-plugin-test"));
 });
@@ -503,13 +629,15 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
       const configuration = installation();
       configuration.drivers.configuration = selectedConfiguration();
       configuration.drivers.compute = await selectedCompute(scenario);
-      const { provisionPath } = configuration.drivers.compute.configuration;
+      const provisionPath = string(configuration.drivers.compute.configuration.provisionPath);
       configuration.drivers.iam = selectedIAM();
       const drivers = await load(owner, configuration, "production");
       const cancellation = new AbortController();
-      assert.equal(drivers.computeDriver.currentOperationAbortSignal(), undefined);
+      const computeDriver = drivers.computeDriver;
+      assert.ok(hasOperationAbortSignal(computeDriver));
+      assert.equal(computeDriver.currentOperationAbortSignal(), undefined);
       await withComputeAbortSignal(cancellation.signal, async () => {
-        assert.equal(drivers.computeDriver.currentOperationAbortSignal(), cancellation.signal);
+        assert.equal(computeDriver.currentOperationAbortSignal(), cancellation.signal);
       });
       const fixture = await authenticatedApplication(scenario, drivers);
 
@@ -518,14 +646,14 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
       for (const [headers, message] of [
         [{}, CREDENTIAL_REQUIRED],
         [{ authorization: "Bearer invalid-production-token" }, AUTHORIZATION_HEADER_REFUSED],
-      ]) {
+      ] satisfies [Record<string, string>, string][]) {
         const unauthenticated = await injectJson(fixture.app, "POST", "/installation/bootstrap", {
           host: new URL(fixture.config.authOrigin).host,
           headers,
           body: { name: "Unauthenticated Driver selection" },
         });
         assert.equal(unauthenticated.statusCode, 401);
-        assert.equal(unauthenticated.json().error.message, message);
+        assert.equal(record(record(unauthenticated.json()).error).message, message);
       }
       const publicSignup = await injectJson(fixture.app, "POST", "/api/auth/sign-up/email", {
         host: new URL(fixture.config.authOrigin).host,
@@ -542,9 +670,10 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
       assert.equal(bootstrap.status, 201, JSON.stringify(bootstrap));
       const inspection = await request(fixture, "GET", "/installation/driver-configurations");
       assert.equal(inspection.status, 200, JSON.stringify(inspection));
-      const installedConfiguration = inspection.data.configurations.find(
+      const installedConfiguration = configurationDescriptors(inspection).find(
         (descriptor) => descriptor.capability === "configuration",
       );
+      assert.ok(installedConfiguration);
       assert.equal(installedConfiguration.driverId, "configuration-installed-fixture");
       // Installed packages use their schema directly; no separate inspection callback is required.
       assert.deepEqual(installedConfiguration.startupConfiguration, {
@@ -554,18 +683,19 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
         name: `installed-compute-${randomUUID()}`,
       });
       assert.equal(namespace.status, 201, JSON.stringify(namespace));
-      assert.equal(namespace.data.status, "provisioning");
+      assert.equal(data(namespace).status, "provisioning");
 
       // Real OCC reconciliation, not a direct fixture call, selects the installed Compute Driver.
       const ready = await fixture.controller.handleNamespaceLifecycle(
         fixture.config.principalId,
-        namespace.data.id,
+        string(data(namespace).id),
         "ready",
       );
+      assert.ok(ready);
       assert.equal(ready.status, "ready");
-      const evidence = JSON.parse(await readFile(provisionPath, "utf8"));
+      const evidence: unknown = JSON.parse(await readFile(provisionPath, "utf8"));
       assert.deepEqual(evidence, {
-        namespaceId: namespace.data.id,
+        namespaceId: data(namespace).id,
         driverId: "compute-installed-fixture",
         implementation: `${computePackage}@1.0.0`,
       });
@@ -575,39 +705,40 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
       const created = await request(
         fixture,
         "POST",
-        `/namespaces/${namespace.data.id}/configurations`,
+        `/namespaces/${data(namespace).id}/configurations`,
         { kind: "agent", values: { model: "external-driver-proof" } },
       );
       assert.equal(created.status, 201, JSON.stringify(created));
       const observed = await request(
         fixture,
         "GET",
-        `/namespaces/${namespace.data.id}/configurations/${created.data.id}`,
+        `/namespaces/${data(namespace).id}/configurations/${data(created).id}`,
       );
       assert.equal(observed.status, 200, JSON.stringify(observed));
-      assert.deepEqual(observed.data.values, { model: "external-driver-proof" });
+      assert.deepEqual(data(observed).values, { model: "external-driver-proof" });
 
       const loadsBeforeRestriction = fixture.iamLoadCount;
       fixture.restrictNamespaceDelete();
       // A valid session cannot bypass a policy change made after the installed IAM Driver exists.
-      const forbidden = await request(fixture, "DELETE", `/namespaces/${namespace.data.id}`);
+      const forbidden = await request(fixture, "DELETE", `/namespaces/${data(namespace).id}`);
       assert.equal(forbidden.status, 403, JSON.stringify(forbidden));
       assert.ok(fixture.iamLoadCount > loadsBeforeRestriction);
       const denied = fixture.auditSink.events.find(
-        (event) => event.kind === "authorization_denial" && event.resource.id === namespace.data.id,
+        (event) =>
+          event.kind === "authorization_denial" && event.resource.id === data(namespace).id,
       );
+      assert.ok(denied);
+      const deniedEvidence = record(denied.details?.iamEvidence);
       assert.equal(denied.iamDriverId, "iam-installed-fixture");
-      assert.equal(denied.authorization.action, "delete");
-      assert.deepEqual(denied.details.iamEvidence.bindingIds, [
-        "binding-production-plugin-operator",
-      ]);
-      assert.deepEqual(denied.details.iamEvidence.restrictionIds, [
+      assert.equal(denied.authorization?.action, "delete");
+      assert.deepEqual(deniedEvidence.bindingIds, ["binding-production-plugin-operator"]);
+      assert.deepEqual(deniedEvidence.restrictionIds, [
         "restriction-production-plugin-namespace-delete",
       ]);
       const granted = fixture.auditSink.events.find(
         (event) => event.kind === "bootstrap" && event.iamDriverId === "iam-installed-fixture",
       );
-      assert.deepEqual(granted.details.iamEvidence.bindingIds, [
+      assert.deepEqual(record(granted?.details?.iamEvidence).bindingIds, [
         "binding-production-plugin-operator",
       ]);
 
@@ -642,8 +773,8 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
 
     try {
       for (const mutable of ["^1.0.0", "latest", "file:../not-a-tarball.js"]) {
-        const manifest = JSON.parse(originalManifest);
-        manifest.dependencies[configurationPackage] = mutable;
+        const manifest = record(JSON.parse(originalManifest));
+        record(manifest.dependencies)[configurationPackage] = mutable;
         await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`, "utf8");
 
         await assert.rejects(
@@ -660,7 +791,12 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
   await t.test(
     "unsupported selections and unavailable packages fail without fallback",
     async () => {
-      for (const [description, mutate, mode, pattern] of [
+      const cases: [
+        string,
+        (value: InstallationFixture) => void,
+        "development" | "production",
+        RegExp,
+      ][] = [
         [
           "missing dependency",
           (value) => {
@@ -706,7 +842,8 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
           "production",
           /iam|capability|package|version|configuration/i,
         ],
-      ]) {
+      ];
+      for (const [description, mutate, mode, pattern] of cases) {
         const configuration = installation();
         mutate(configuration);
         await assert.rejects(load(owner, configuration, mode), pattern, description);
@@ -743,7 +880,7 @@ test("compiled Driver metadata activates through production startup and Configur
       },
     ],
     ["condition order", { default: ["./compiled/index.js"], import: ["./compiled/index.cjs"] }],
-  ]) {
+  ] satisfies [string, unknown, boolean?][]) {
     await t.test(description, async (scenario) => {
       const owner = await onDiskConfigurationPackage(scenario, exports);
       if (bom) {
@@ -769,7 +906,7 @@ test("compiled Driver metadata activates through production startup and Configur
       const created = await request(
         fixture,
         "POST",
-        `/namespaces/${namespace.data.id}/configurations`,
+        `/namespaces/${data(namespace).id}/configurations`,
         {
           kind: "agent",
           values: { agents: { defaults: { model: "openai/example-model" } } },
@@ -779,10 +916,10 @@ test("compiled Driver metadata activates through production startup and Configur
       const read = await request(
         fixture,
         "GET",
-        `/namespaces/${namespace.data.id}/configurations/${created.data.id}`,
+        `/namespaces/${data(namespace).id}/configurations/${data(created).id}`,
       );
       assert.equal(read.status, 200, JSON.stringify(read));
-      assert.deepEqual(read.data, created.data);
+      assert.deepEqual(data(read), data(created));
     });
   }
   for (const [description, exports] of [
@@ -793,7 +930,7 @@ test("compiled Driver metadata activates through production startup and Configur
     ["selected malformed encoding", ["./compiled/%ZZ.js", "./compiled/index.js"]],
     ["selected CJS", ["./compiled/index.cjs", "./compiled/index.js"]],
     ["matched null condition", { import: null, default: ["./compiled/index.js"] }],
-  ]) {
+  ] satisfies [string, unknown][]) {
     await t.test(description, async (scenario) => {
       const owner = await onDiskConfigurationPackage(scenario, exports);
       const native = importConfigurationPackage(owner);
@@ -803,6 +940,7 @@ test("compiled Driver metadata activates through production startup and Configur
       const configuration = installation();
       configuration.drivers.configuration = selectedConfiguration();
       await assert.rejects(load(owner, configuration), (error) => {
+        assert.ok(error instanceof Error);
         assert.match(
           error.message,
           description === "selected CJS"
@@ -843,11 +981,14 @@ test("Driver entry format follows the nearest package.json scope Node's import u
     'exports.createDriver = () => { throw new Error("The CommonJS Driver must never be created."); };',
     "",
   ].join("\n");
-  async function scopedPackage(scenario, { root, entry = "./compiled/index.js", files }) {
+  async function scopedPackage(
+    scenario: TestContext,
+    { root, entry = "./compiled/index.js", files }: PackageLayout,
+  ) {
     const owner = await onDiskConfigurationPackage(scenario, entry);
     const installed = join(owner, "node_modules", configurationPackage);
     const manifestPath = join(installed, "package.json");
-    const { type: _type, ...manifest } = JSON.parse(await readFile(manifestPath, "utf8"));
+    const { type: _type, ...manifest } = record(JSON.parse(await readFile(manifestPath, "utf8")));
     await writeFile(manifestPath, `${JSON.stringify(manifest).slice(0, -1)}${root}}`);
     for (const [file, text] of Object.entries(files)) {
       await writeFile(join(installed, file), text);
@@ -863,7 +1004,7 @@ test("Driver entry format follows the nearest package.json scope Node's import u
       "nested module scope under a root without type",
       { root: "", files: { "compiled/package.json": '\ufeff{"type":"module"}' } },
     ],
-  ]) {
+  ] satisfies [string, PackageLayout][]) {
     await t.test(description, async (scenario) => {
       const owner = await scopedPackage(scenario, layout);
       const native = importConfigurationPackage(owner);
@@ -875,7 +1016,7 @@ test("Driver entry format follows the nearest package.json scope Node's import u
     });
   }
   // The refusal names the package.json whose scope decided the entry's format.
-  const refusedFormat = (manifest) =>
+  const refusedFormat = (manifest: string) =>
     new RegExp(
       `^drivers\\.configuration\\.package must export precompiled JavaScript ESM: entry ${escapeRegExp(`${configurationPackage}/compiled/driver.js`)} takes its format from ${escapeRegExp(`${configurationPackage}/${manifest}`)}, which does not set "type": "module"\\.$`,
     );
@@ -921,7 +1062,7 @@ test("Driver entry format follows the nearest package.json scope Node's import u
       },
       /^drivers\.configuration\.package has invalid package scope metadata\.$/,
     ],
-  ]) {
+  ] satisfies [string, PackageLayout, RegExp][]) {
     await t.test(description, async (scenario) => {
       const owner = await scopedPackage(scenario, layout);
       const native = importConfigurationPackage(owner);
@@ -935,6 +1076,7 @@ test("Driver entry format follows the nearest package.json scope Node's import u
       const configuration = installation();
       configuration.drivers.configuration = selectedConfiguration();
       await assert.rejects(load(owner, configuration), (error) => {
+        assert.ok(error instanceof Error);
         assert.match(error.message, message);
         return true;
       });
@@ -942,18 +1084,18 @@ test("Driver entry format follows the nearest package.json scope Node's import u
   }
 });
 
-function escapeRegExp(text) {
+function escapeRegExp(text: string) {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-async function onDiskConfigurationPackage(t, exports) {
+async function onDiskConfigurationPackage(t: TestContext, exports: unknown) {
   const owner = await temporaryDirectory(t, "occ-driver-export-array-");
   const installed = join(owner, "node_modules", configurationPackage);
   await mkdir(dirname(installed), { recursive: true });
   await cp(join(fixtures, "test-configuration-driver"), installed, { recursive: true });
   await cp(join(installed, "compiled", "index.js"), join(installed, "compiled", "driver entry.js"));
   const manifestPath = join(installed, "package.json");
-  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  const manifest = record(JSON.parse(await readFile(manifestPath, "utf8")));
   await writeFile(manifestPath, JSON.stringify({ ...manifest, exports }));
   await writeFile(
     join(owner, "package.json"),
@@ -1011,7 +1153,7 @@ test("Driver export URLs retain the selected query and fragment during construct
         configuration: { endpoint },
       };
       const drivers = await load(owner, configuration);
-      const value = {
+      const value: Configuration = {
         id: `cfg_${randomUUID()}`,
         namespaceId: `ns_${randomUUID()}`,
         kind: "agent",
@@ -1025,7 +1167,7 @@ test("Driver export URLs retain the selected query and fragment during construct
   }
 });
 
-function importConfigurationPackage(owner) {
+function importConfigurationPackage(owner: string) {
   return spawnSync(
     process.execPath,
     [
@@ -1058,7 +1200,7 @@ test("Driver export resolution selects the file Node's import selects", async (t
     ],
     ["percent-decoded target", "./compiled/driver%20entry.js"],
     ["query and fragment", ["./compiled/index.js?x=1#y"]],
-  ]) {
+  ] satisfies [string, unknown][]) {
     await t.test(description, async (scenario) => {
       const owner = await onDiskConfigurationPackage(scenario, exports);
       const native = importConfigurationPackage(owner);
@@ -1109,7 +1251,7 @@ test("Driver export resolution selects the file Node's import selects", async (t
       ["./compiled/%ZZ.js", "./compiled/index.js"],
       /^drivers\.configuration\.package export target has malformed percent encoding\.$/,
     ],
-  ]) {
+  ] satisfies [string, unknown, RegExp][]) {
     await t.test(description, async (scenario) => {
       const owner = await onDiskConfigurationPackage(scenario, exports);
       const native = importConfigurationPackage(owner);
@@ -1117,6 +1259,7 @@ test("Driver export resolution selects the file Node's import selects", async (t
       const configuration = installation();
       configuration.drivers.configuration = selectedConfiguration();
       await assert.rejects(load(owner, configuration), (error) => {
+        assert.ok(error instanceof Error);
         assert.match(error.message, message);
         return true;
       });
@@ -1159,12 +1302,18 @@ test("startup definitions collect safe structural errors and reject invalid vali
       },
     },
   };
-  for (const [name, submitted, validator, check] of [
+  const cases: [
+    string,
+    { endpoint: { ports: (number | string)[]; [key: string]: unknown } },
+    string,
+    (error: Error) => void,
+  ][] = [
     [
       "nested structural errors",
       { endpoint: { "a/b~c": 3, ports: [0, "wrong"] } },
       "throw new Error('validator must not run')",
       (error) => {
+        assert.ok(error instanceof ConfigurationValidationError);
         assert.deepEqual(
           error.error.details.map(({ path }) => path),
           ["/endpoint/a~1b~0c", "/endpoint/ports/0", "/endpoint/ports/1"],
@@ -1176,6 +1325,7 @@ test("startup definitions collect safe structural errors and reject invalid vali
       { endpoint: { "a/b~c": "ok", ports: [443], "private-input": 1 } },
       "throw new Error('validator must not run')",
       (error) => {
+        assert.ok(error instanceof ConfigurationValidationError);
         assert.equal(JSON.stringify(error.error).includes("private-input"), false);
         assert.equal(error.error.details[0].path, "/endpoint");
       },
@@ -1221,10 +1371,12 @@ test("startup definitions collect safe structural errors and reject invalid vali
       { endpoint: { "a/b~c": "ok", ports: [443] } },
       "return [{ path: '/endpoint/ports/0', code: 'INVALID_VALUE', message: 'This port is not supported.' }]",
       (error) => {
+        assert.ok(error instanceof ConfigurationValidationError);
         assert.equal(error.error.details[0].message, "This port is not supported.");
       },
     ],
-  ]) {
+  ];
+  for (const [name, submitted, validator, check] of cases) {
     await t.test(name, async (scenario) => {
       const owner = await onDiskConfigurationPackage(scenario, "./compiled/index.js");
       const marker = join(owner, "constructed");
@@ -1240,6 +1392,7 @@ test("startup definitions collect safe structural errors and reject invalid vali
       const configured = installation();
       configured.drivers.configuration = { ...selectedConfiguration(), configuration: submitted };
       await assert.rejects(load(owner, configured), (error) => {
+        assert.ok(error instanceof Error);
         check(error);
         return true;
       });
@@ -1266,7 +1419,7 @@ test("startup rejects unbound contributions, reserved keys, unknown scopes, and 
       "unknown scope",
       { scope: "namespace", key: "settings", configurationSchema: { type: "object" } },
     ],
-  ]) {
+  ] satisfies [string, unknown][]) {
     await t.test(label, async (scenario) => {
       const owner = await onDiskConfigurationPackage(scenario, "./compiled/index.js");
       const entry = join(owner, "node_modules", configurationPackage, "compiled/index.js");
@@ -1301,7 +1454,7 @@ test("Sandbox contribution registration rejects duplicates and invalid schemas b
         },
       ],
     ],
-  ]) {
+  ] satisfies [string, unknown][]) {
     await t.test(name, async (scenario) => {
       const owner = await onDiskConfigurationPackage(scenario, "./compiled/index.js");
       const entry = join(owner, "node_modules", configurationPackage, "compiled/index.js");
@@ -1341,11 +1494,14 @@ test("registered schemas preserve tuple/reference pointers and reject ignored fo
       },
     },
   };
-  for (const [name, schema, check] of [
+  const cases: [string, unknown, (error: Error) => void][] = [
     [
       "tuple and reference",
       tuples,
-      (error) => assert.equal(error.error.details[0].path, "/endpoint/0/a~1~0"),
+      (error) => {
+        assert.ok(error instanceof ConfigurationValidationError);
+        assert.equal(error.error.details[0].path, "/endpoint/0/a~1~0");
+      },
     ],
     [
       "unknown format",
@@ -1357,7 +1513,8 @@ test("registered schemas preserve tuple/reference pointers and reject ignored fo
       { ...tuples, properties: { endpoint: { $ref: "#/$defs/missing" } } },
       (error) => assert.match(error.message, /Unsupported Driver configuration schema/),
     ],
-  ]) {
+  ];
+  for (const [name, schema, check] of cases) {
     await t.test(name, async (scenario) => {
       const owner = await onDiskConfigurationPackage(scenario, "./compiled/index.js");
       const marker = join(owner, "constructed");
@@ -1376,6 +1533,7 @@ test("registered schemas preserve tuple/reference pointers and reject ignored fo
         configuration: { endpoint: [{ "a/~": 1 }] },
       };
       await assert.rejects(load(owner, configured), (error) => {
+        assert.ok(error instanceof Error);
         check(error);
         return true;
       });
