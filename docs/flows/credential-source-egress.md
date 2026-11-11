@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-11
-last_updated_session: authoring-run/64fa6d5d-af12-40d5-8bf3-b3d4af980236
+last_updated_session: authoring-run/bae8dfee-ecba-461e-ac6d-fe124241f6aa
 ---
 
 # Protected credential request flow
@@ -336,6 +336,8 @@ None.
 
 ## Changelog
 
+- 2026-11-11 11:51: Qualify audit-only diagnostics and model eligibility. (authoring-run/bae8dfee-ecba-461e-ac6d-fe124241f6aa - 6ffb2a4f4b5b4018af06247e6aba5c5061a7066a)
+
 - 2026-11-11 11:04: Admit null content on replayed reasoning input. (authoring-run/64fa6d5d-af12-40d5-8bf3-b3d4af980236 - 81803134a1cc408ef727528e47f00ea36563f092)
 - 2026-11-11 09:40: Record bounded provider rules with pinned request attribution. (authoring-run/2a39c130-861a-4051-b73e-56c1a20b8fee - d3482937ffe662b48e36afafe044c96b5a4474e3)
 - 2026-11-11 09:39: Validate compaction metadata. (authoring-run/919c1d90-32b8-4d2c-8a66-238508a3c061 - 6905a20332abd7ffcfe2fd431c5ae6888a17dff5)
@@ -356,7 +358,5 @@ None.
 - 2026-11-05 23:21: Trace request-time token resolution and the permission check before releasing a credential header. (codex/01a19e60-87d0-71d0-8c9a-e3e3b33b1676 - 614169814)
 
 - 2026-11-05 20:36: Trace one-shot Git enrollment probe failures to the worker log. (authoring-run/5e3df28f-4382-449e-a9db-e26d5347994e - b1da9eddd3a594982ce36639610d1e3480a9e1f7)
-
-- 2026-11-05 11:50: Retain historical cleanup without legacy live recovery. (authoring-run/8ffac278-3c9e-4308-aec7-96da3b06d9d4 - 8389365da2b59206fb8727901a64f6cf1311a3b7)
 
 [Protected credential request documentation history](credential-source-egress/history.md) preserves the older dated entries.
