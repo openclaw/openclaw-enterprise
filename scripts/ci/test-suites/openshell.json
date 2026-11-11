@@ -110,6 +110,7 @@
     },
     {
       "path": "tests/integration/dev-up-openshell-k3d-real.test.mjs",
+      "optionalEnv": ["OCC_TEST_OPENSHELL_MODEL_BASE_URL"],
       "expectedTests": [
         "dev-up installs the pinned OpenShell profile in its owned k3d cluster",
         "dev-up runs OCC in Compose with OpenShell and Kubernetes Compute in k3d"

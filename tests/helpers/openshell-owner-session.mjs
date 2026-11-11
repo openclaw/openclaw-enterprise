@@ -16,6 +16,18 @@ import { submitChatTurnWithAssistantProof, waitForStockUi } from "./native-ui-ch
 
 const execute = promisify(execFile);
 
+export function assertOpenShellOwnerModelSelection(environment) {
+  const endpoint = environment.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim();
+  assert.ok(
+    !endpoint || URL.parse(endpoint)?.href.replace(/\/$/u, "") === "https://api.openai.com/v1",
+    "The browser Agent requires the public OpenAI endpoint",
+  );
+  assert.ok(
+    !environment.OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE,
+    "The browser Agent does not accept native provider overrides",
+  );
+}
+
 export async function verifyOpenShellOwnerSession({
   t,
   cluster,
@@ -25,6 +37,7 @@ export async function verifyOpenShellOwnerSession({
   kubectl,
   environment,
 }) {
+  assertOpenShellOwnerModelSelection(environment);
   const consoleHost = `console.${cluster}.oce.localhost`;
   const consoleOrigin = `https://${consoleHost}:${browserPort}`;
   const agentDomain = `agents.${cluster}.oce.localhost`;
@@ -117,11 +130,13 @@ export async function verifyOpenShellOwnerSession({
     ...environment,
     OPENCLAW_FIRST_AGENT_MODEL: process.env.OCC_TEST_OPENAI_MODEL,
   };
-  delete modelEnvironment.OPENAI_API_KEY;
-  delete modelEnvironment.OPENAI_API_KEY_FILE;
+  // General browser proof uses the API-key path even when CI also supplies a PAT.
+  // Dedicated PAT cases retain their account-policy checks separately.
+  delete modelEnvironment.CODEX_ACCESS_TOKEN;
+  delete modelEnvironment.CODEX_ACCESS_TOKEN_FILE;
   assert.ok(
-    modelEnvironment.CODEX_ACCESS_TOKEN || modelEnvironment.CODEX_ACCESS_TOKEN_FILE,
-    "Set the existing Codex service-account token or its private file for the real browser Agent",
+    modelEnvironment.OPENAI_API_KEY || modelEnvironment.OPENAI_API_KEY_FILE,
+    "Set OPENAI_API_KEY or OPENAI_API_KEY_FILE for the real browser Agent",
   );
   assert.ok(
     modelEnvironment.OPENCLAW_FIRST_AGENT_MODEL,

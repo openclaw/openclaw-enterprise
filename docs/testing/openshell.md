@@ -152,8 +152,8 @@ Build the local CLI first with `pnpm cli:build`.
 ```sh
 # Kubernetes control plane, including a real first-Agent deployment and browser access checks.
 # Install certutil and sandboxed Chromium as in the Kubernetes testing prerequisites.
-# Select an existing authorized Codex service account and its model.
-CODEX_ACCESS_TOKEN_FILE=/secure/oce/codex-token OCC_TEST_OPENAI_MODEL="$MODEL" \
+# Select an authorized public OpenAI API key and model.
+OPENAI_API_KEY_FILE=/secure/oce/openai-api-key OCC_TEST_OPENAI_MODEL="$MODEL" \
 OCC_TEST_DEV_UP_OPENSHELL_REAL=1 \
   node --test tests/integration/dev-up-openshell-k3d-real.test.mjs
 

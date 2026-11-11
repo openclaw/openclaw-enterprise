@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
 updated: 2026-11-11
-last_updated_session: authoring-run/6c64aee6-cdeb-442f-b8bf-936f62eb5bc5
+last_updated_session: authoring-run/4eb36434-af9e-40b8-8958-e8a2f9f2b662
 ---
 
 # Agent Native Admin UI Flow
@@ -101,12 +101,11 @@ reuse its fingerprinted plan and identity. The worker creates and deploys.
 `scripts/first-agent.ts:nativeConfiguration`
 `scripts/first-agent.ts:ensureManagedConfiguration`
 
-With launcher-owned Compose/OpenShell browser state, the helper saves disabled
-Configuration generation 1, creates the Agent, then derives its origin. Before
-deployment, generation 2 enables `controlUi`, pins origins, and grants
-`occ-workspace-files` trusted-proxy `operator.admin` with device auto-approval.
-Identity grants supply admin independently of device scopes.
-An existing helper-owned name cannot change this selection.
+Using Local Setup browser state, the helper saves disabled Configuration generation 1,
+creates the Agent, and derives its origin. Generation 2 enables `controlUi`, pins
+origins, requires `x-openclaw-scopes`, and grants `occ-workspace-files` trusted-proxy
+`operator.admin` with device auto-approval before deployment. Identity grants supply
+admin independently of device scopes. Existing helper-owned names keep this selection.
 
 ### 1. Console renders native admin availability
 
@@ -307,6 +306,8 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 20:31: Persist the first-Agent native UI scope-header requirement. (authoring-run/4eb36434-af9e-40b8-8958-e8a2f9f2b662 - be754f513bcfdee8c898c33df1fe37bff4581261)
 
 - 2026-11-11 18:51: Integrate admission classification; retain canonical domain refusal. (authoring-run/6c64aee6-cdeb-442f-b8bf-936f62eb5bc5 - d7f1a5a6196545a406f46a616278c123ab970095)
 

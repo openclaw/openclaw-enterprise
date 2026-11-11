@@ -484,6 +484,10 @@ async function loadLocalInstallation(harness: Harness, controlUi: boolean) {
     },
     origin,
     kubectl,
+    checkProvisioning: () =>
+      run(join(root, "bin", "occ"), ["dev", "check"], {
+        env: { ...environment, OCC_DEVELOPMENT_STATE_DIRECTORY: directory },
+      }),
     database,
     sandboxDriver: state.sandboxDriver,
     nativeAdmin,
@@ -679,6 +683,7 @@ function nativeConfiguration(
                 mode: "trusted-proxy",
                 trustedProxy: {
                   userHeader: "x-occ-identity",
+                  requiredHeaders: ["x-openclaw-scopes"],
                   allowUsers: ["occ-workspace-files"],
                   deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
                 },
@@ -952,6 +957,15 @@ async function main(options: Options) {
     }
     throw error;
   }
+  let provisioningChecked = false;
+  async function checkProvisioning() {
+    if (local.sandboxDriver !== "openshell" || provisioningChecked) {
+      return;
+    }
+    progress("Checking the managed Agent Sandbox controller before deploying...");
+    await local.checkProvisioning();
+    provisioningChecked = true;
+  }
   const api = createFirstAgentApi(local);
   const installation = await objectResponse(api, "id", "GET", "/installation");
   if (installation.id !== local.key.meta.installationId) {
@@ -1023,6 +1037,10 @@ async function main(options: Options) {
       (process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY_FILE)
     ) {
       throw new Error("Select only one model authentication method.");
+    }
+    // A repeat turn on an existing revision does not need the provisioning controller.
+    if (!record.agentId || options.replaceKey) {
+      await checkProvisioning();
     }
     if (!existing) {
       await save(record);
@@ -1242,6 +1260,7 @@ async function main(options: Options) {
       `${agentPath}/runtime-credentials`,
     );
     if (!credentials.transportConfigured) {
+      await checkProvisioning();
       await api("POST", `${agentPath}/runtime-credentials`, {});
     }
 
@@ -1266,6 +1285,7 @@ async function main(options: Options) {
           `${base}/configurations/${record.configurationId}`,
         );
         assertManagedConfiguration(beforeDeploy, record, expectedConfiguration);
+        await checkProvisioning();
         progress("Deploying the Agent to local Kubernetes...");
         const revision = await objectResponse(api, "configuration", "POST", `${agentPath}/deploy`);
         assertManagedRevision(revision, record, expectedConfiguration);
