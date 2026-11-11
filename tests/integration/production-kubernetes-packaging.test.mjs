@@ -136,6 +136,20 @@ const sandboxValues = {
   "gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
     "public-ingress",
 };
+const gatewaySandboxValues = {
+  ...gatewayRoutingValues,
+  "gatewayRouting.sandbox.enabled": "true",
+  "gatewayRouting.sandbox.domain": "previews.example.test",
+  "gatewayRouting.sandbox.tlsSecretName": "preview-wildcard",
+  "gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+    "public-ingress",
+};
+const sandboxPeerValidationValues = {
+  ...gatewayRoutingValues,
+  "gatewayRouting.sandbox.enabled": "true",
+  "gatewayRouting.sandbox.domain": "sandbox.example.test",
+  "gatewayRouting.sandbox.tlsSecretName": "sandbox-tls",
+};
 const googleLoginValues = {
   "auth.google.enabled": "true",
   "auth.recoveryUserId": "Xk3u9pQ2rT7vW1yZ",
@@ -699,14 +713,6 @@ test(
   async (t) => {
     const directory = await temporaryDirectory(t, "oce-routing-ports-");
     const valuesFile = join(directory, "ports.yaml");
-    const routingValues = {
-      ...gatewayRoutingValues,
-      "gatewayRouting.sandbox.enabled": "true",
-      "gatewayRouting.sandbox.domain": "previews.example.test",
-      "gatewayRouting.sandbox.tlsSecretName": "preview-wildcard",
-      "gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
-        "public-ingress",
-    };
     // Values files preserve numeric scalars; --set passes a fractional value as a string.
     for (const [key, value] of [
       ["tenantGatewayPort", 8080.5],
@@ -718,7 +724,7 @@ test(
         : `  ${key}: ${value}\n`;
       await writeFile(valuesFile, `gatewayRouting:\n${field}`);
       await assert.rejects(
-        render(routingValues, { valuesFiles: [valuesFile] }),
+        render(gatewaySandboxValues, { valuesFiles: [valuesFile] }),
         ({ code, stderr }) => code !== 0 && stderr.includes(`gatewayRouting.${key}`),
         key,
       );
@@ -728,7 +734,7 @@ test(
       "gatewayRouting:\n  tenantGatewayPort: 8081\n  envoyHttpsTargetPort: 10444\n  sandbox:\n    listenerPort: 8444\n",
     );
     const rendered = await resources(
-      (await render(routingValues, { valuesFiles: [valuesFile] })).stdout,
+      (await render(gatewaySandboxValues, { valuesFiles: [valuesFile] })).stdout,
     );
     assert.equal(
       rendered
@@ -800,14 +806,6 @@ test(
   "the chart refuses tenant Gateway ports Compute refuses for the runtime status port",
   tooling,
   async () => {
-    const sandboxValues = {
-      ...gatewayRoutingValues,
-      "gatewayRouting.sandbox.enabled": "true",
-      "gatewayRouting.sandbox.domain": "previews.example.test",
-      "gatewayRouting.sandbox.tlsSecretName": "preview-wildcard",
-      "gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
-        "public-ingress",
-    };
     const compute = (gatewayPort, sandbox) => {
       const options = conformanceKubernetesOptions({
         gatewayTrustedProxyCidrs: ["10.0.0.0/8"],
@@ -853,7 +851,7 @@ test(
     ]) {
       const row = JSON.stringify({ gatewayPort, sandbox });
       const chartValues = {
-        ...(sandbox ? sandboxValues : gatewayRoutingValues),
+        ...(sandbox ? gatewaySandboxValues : gatewayRoutingValues),
         "gatewayRouting.tenantGatewayPort": String(gatewayPort),
       };
       if (refused) {
@@ -2378,7 +2376,7 @@ test(
           image: repositoryCredentialValues["repositoryCredentials.image"],
           serviceName: "broker",
           hostname: "broker.openclaw-system.svc",
-          backendId: "github-primary",
+          backendId: "github-$$(BACKEND)",
           registryConfigMapName: "repository-registry-v1",
           serviceConfigSecretName: "repository-config",
           appKeySecretName: "repository-app-key",
@@ -2412,7 +2410,7 @@ test(
       serviceName: "broker",
       namespace: "openclaw-system",
       release: "oce",
-      backendId: "github-primary",
+      backendId: "github-$$(BACKEND)",
     });
   },
 );
@@ -2557,7 +2555,7 @@ exit 93
       helm: `#!/usr/bin/env bash
 case "$1 $2" in
   'get values') cat "$TEST_LIVE_VALUES" ;;
-  'status oce') if [[ "$*" == *'--output json'* ]]; then printf '{"version":1,"info":{"status":"deployed"}}'; else printf 'deployed'; fi ;;
+  'status oce') if [[ "$*" == *'--output json'* ]]; then printf '{"name":"oce","namespace":"openclaw-system","version":1,"info":{"status":"deployed"}}'; else printf 'deployed'; fi ;;
   'template oce') exec "$TEST_REAL_HELM" "$@" ;;
   'upgrade --install') exit 47 ;;
   *) exit 91 ;;
@@ -2857,7 +2855,7 @@ test(
   },
 );
 
-test("the chart refuses repository backend IDs the controller refuses", tooling, async () => {
+test("the chart validates scalar and literal repository backend IDs", tooling, async () => {
   const message =
     /repositoryCredentials\.backendId must follow the Backend ID rule: 1 to 200 characters, with no leading or trailing whitespace and no control characters or line or paragraph separators/;
   for (const backendId of [
@@ -2883,12 +2881,27 @@ test("the chart refuses repository backend IDs the controller refuses", tooling,
     /repositoryCredentials\.backendId must fit in 200 UTF-16 code units for a GitHub Backend, because repository bindings store it under that bound/,
     "101 emoji",
   );
-  for (const backendId of ["github-primary", "😀".repeat(100)]) {
+  for (const [backendId, argument] of [
+    [123, "123"],
+    [true, "true"],
+    ["123", "123"],
+    ["true", "true"],
+    ["github-primary", "github-primary"],
+    ["😀".repeat(100), "😀".repeat(100)],
+    ["github-$", "github-$$"],
+    ["github-$$", "github-$$$$"],
+    ["github-$(BACKEND)", "github-$$(BACKEND)"],
+    ["github-$$(BACKEND)", "github-$$$$(BACKEND)"],
+  ]) {
+    // Scalars use normal --set typing; strings retain the explicit string override.
     const objects = await resources(
       (
-        await render(repositoryCredentialValues, {
-          strings: { "repositoryCredentials.backendId": backendId },
-        })
+        await render(
+          { ...repositoryCredentialValues, "repositoryCredentials.backendId": backendId },
+          typeof backendId === "string"
+            ? { strings: { "repositoryCredentials.backendId": backendId } }
+            : {},
+        )
       ).stdout,
     );
     const broker = objects
@@ -2897,7 +2910,11 @@ test("the chart refuses repository backend IDs the controller refuses", tooling,
           kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === "worker",
       )
       .spec.template.spec.containers.find(({ name }) => name === "repository-credentials");
-    assert.equal(broker.args[broker.args.indexOf("--backend-id") + 1], backendId, backendId);
+    assert.equal(
+      broker.args[broker.args.indexOf("--backend-id") + 1],
+      argument,
+      JSON.stringify(backendId),
+    );
   }
 });
 
@@ -3131,14 +3148,14 @@ test(
     assert.ok(!bindings.has(tenantApiRole.metadata.name));
     assert.ok(tenant.rules.some(({ resources }) => resources.includes("configmaps")));
     assert.deepEqual(tenantApiRole.rules, tenantApiRules());
-    // Only the unbound tenant-worker role can reconcile and remove an Agent-owned claim.
+    // Only the unbound tenant-worker role can list owned gateway claims and reconcile claims.
     assert.deepEqual(
       tenant.rules.filter(({ resources }) => resources.includes("persistentvolumeclaims")),
       [
         {
           apiGroups: [""],
           resources: ["persistentvolumeclaims"],
-          verbs: ["get", "create", "patch", "delete"],
+          verbs: ["get", "list", "create", "patch", "delete"],
         },
       ],
     );
@@ -3661,12 +3678,7 @@ test(
 // Kubernetes validates NetworkPolicy peers only when Helm applies them, after earlier objects
 // of the upgrade have changed, so the chart refuses a peer the API server would (finding 2336).
 test("NetworkPolicy peers from values are refused before install", tooling, async (t) => {
-  const sandbox = {
-    ...gatewayRoutingValues,
-    "gatewayRouting.sandbox.enabled": "true",
-    "gatewayRouting.sandbox.domain": "sandbox.example.test",
-    "gatewayRouting.sandbox.tlsSecretName": "sandbox-tls",
-  };
+  const sandbox = sandboxPeerValidationValues;
   const peer = "gatewayRouting.sandbox.ingressPeers[0]";
   const selectorPeer = {
     [`${peer}.namespaceSelector.matchLabels.team`]: "public",
@@ -4876,12 +4888,7 @@ test(
   tooling,
   async () => {
     // Finding 1048: the dedicated-Secret rule covers every Secret an enabled feature reads.
-    const sandbox = {
-      ...gatewayRoutingValues,
-      ...Object.fromEntries(
-        Object.entries(sandboxValues).filter(([key]) => key.startsWith("gatewayRouting.sandbox.")),
-      ),
-    };
+    const sandbox = gatewaySandboxValues;
     for (const [base, setting, secret, other] of [
       [
         { ...databaseCaValues, ...googleLoginValues },
@@ -6015,10 +6022,7 @@ test("production peer matchLabels keep the native Kubernetes map contract", tool
     "logging.collector.metrics.scraperPodLabels.app": "prometheus",
   };
   const sandbox = {
-    ...gatewayRoutingValues,
-    "gatewayRouting.sandbox.enabled": "true",
-    "gatewayRouting.sandbox.domain": "sandbox.example.test",
-    "gatewayRouting.sandbox.tlsSecretName": "sandbox-tls",
+    ...sandboxPeerValidationValues,
     "gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels.team": "public",
     "gatewayRouting.sandbox.ingressPeers[0].podSelector.matchLabels.app": "edge",
   };
@@ -6092,9 +6096,6 @@ test("production peer matchLabels keep the native Kubernetes map contract", tool
   await render({ "metrics.scraperNamespaceLabels": "false", "metrics.scraperPodLabels": "false" });
   const directory = await temporaryDirectory(t, "occ-peer-labels-");
   const path = join(directory, "values.json");
-  const sandboxOptions = Object.fromEntries(
-    Object.entries(sandbox).filter(([key]) => !key.includes("ingressPeers")),
-  );
   for (const shape of [null, {}]) {
     await writeFile(
       path,
@@ -6111,7 +6112,7 @@ test("production peer matchLabels keep the native Kubernetes map contract", tool
         },
       }),
     );
-    await render(sandboxOptions, { valuesFiles: [path] });
+    await render(sandboxPeerValidationValues, { valuesFiles: [path] });
   }
 });
 
@@ -6453,7 +6454,7 @@ test("Helm rejects obvious malformed quantity syntax", tooling, async () => {
 test(
   "the chart refuses control-plane node selectors the volume helper refuses",
   tooling,
-  async () => {
+  async (t) => {
     const valueMessage = /controlPlane\.nodeSelector values must be Kubernetes label values/;
     const keyMessage = /controlPlane\.nodeSelector keys must be Kubernetes label keys/;
     for (const [key, value, message] of [
@@ -6470,7 +6471,7 @@ test(
         `${key}=${value}`,
       );
     }
-    const directory = await mkdtemp(join(tmpdir(), "openclaw-node-selector-"));
+    const directory = await temporaryDirectory(t, "openclaw-node-selector-");
     const selectorValues = join(directory, "selector.yaml");
     await writeFile(
       selectorValues,
@@ -6480,7 +6481,6 @@ test(
       render({}, { valuesFiles: [selectorValues] }),
       ({ code, stderr }) => code !== 0 && keyMessage.test(stderr),
     );
-    await rm(directory, { recursive: true, force: true });
     const { stdout } = await render(
       {},
       {

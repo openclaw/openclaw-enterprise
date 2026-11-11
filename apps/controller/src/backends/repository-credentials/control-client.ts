@@ -1,17 +1,18 @@
 import { createStatusWirePrimitives } from "./status-wire.ts";
 import { request } from "node:http";
-import { isAbsolute, resolve } from "node:path";
 import type { RepositoryCredentialGrantIdentity } from "@openclaw-enterprise/contracts";
 import type { RepositoryCredentialClientConfiguration } from "../../drivers/repo/access/client-contracts.ts";
 import {
   hasControlCharacter,
+  isCanonicalUnixSocketPath,
   isValidGitClientConnection,
   normalizePushRefAllowlist,
 } from "../../drivers/repo/access/client-contracts.ts";
-import type {
-  RepositoryCredentialBoundSessionInput,
-  RepositoryCredentialSessionResult,
-  SessionStatus,
+import {
+  hasUnsettledCleanupCounts,
+  type RepositoryCredentialBoundSessionInput,
+  type RepositoryCredentialSessionResult,
+  type SessionStatus,
 } from "../../drivers/repo/access/service-contracts.ts";
 
 /** Private wire response; the selected Driver renders the portable runtime files. */
@@ -94,11 +95,7 @@ function status(value: unknown): SessionStatus {
   });
   if (
     result.state === "DISPOSED" &&
-    (result.activeUses !== 0 ||
-      result.cleanup.active !== 0 ||
-      result.cleanup.pending !== 0 ||
-      result.cleanup.uncertain !== 0 ||
-      result.cleanup.auxiliaryPending)
+    (hasUnsettledCleanupCounts(result) || result.cleanup.auxiliaryPending)
   ) {
     return unavailable();
   }
@@ -163,9 +160,7 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
 
   constructor(options: { readonly controlSocket: string }) {
     if (
-      !isAbsolute(options.controlSocket) ||
-      resolve(options.controlSocket) !== options.controlSocket ||
-      Buffer.byteLength(options.controlSocket) > 103 ||
+      !isCanonicalUnixSocketPath(options.controlSocket) ||
       hasControlCharacter(options.controlSocket)
     ) {
       throw new Error("The repository credential control socket must be an absolute Unix path.");

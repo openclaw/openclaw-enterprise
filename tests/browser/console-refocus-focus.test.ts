@@ -14,6 +14,7 @@ import {
   apiRequests,
   denyRevisionRead,
   detailUrl,
+  expireSessions,
   fileBrowser,
   grantMember,
   hasFocus,
@@ -31,6 +32,7 @@ import {
   waitForInputValue,
 } from "./console-agents-browser-helpers.ts";
 import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
+import { openAdvancedSettings } from "./console-agents-ui-test-support.ts";
 import { confirmAgentAction, responseTo } from "./console-action-helpers.ts";
 import {
   focusedLabel,
@@ -46,9 +48,9 @@ import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { within } from "../helpers/wait-for.mjs";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { deleteRefused, VERSION_READ_DENIED_HEADING } from "../helpers/refusal-text.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -958,6 +960,611 @@ test("mounted Agent refocus cannot infer revision omission from a malformed page
     false,
     "the malformed page never triggers a read of the restricted revision",
   );
+});
+
+async function openRefocusDraft(t: TestContext) {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Refocus recovery");
+  const agent = await fixture.createAgent(namespace.id, "Example Agent", nativeValues("v1"));
+  const { page, artifacts } = await newPage(t, fixture, { browser });
+  await trackSettledFetches(page);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  await login(page, fixture, url);
+  await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
+  await openAdvancedSettings(page);
+  const editor = page.getByLabel("Configuration JSON", { exact: true });
+  const draft = JSON.stringify({ ...JSON.parse(await editor.inputValue()), exampleDraft: true });
+  await editor.fill(draft);
+  await editor.evaluate((node) => (node as HTMLTextAreaElement).setSelectionRange(3, 7));
+  await waitForIdleFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  const readCount = (path: string) =>
+    requests.filter((request) => request.method === "GET" && request.path === path).length;
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  return {
+    fixture,
+    namespace,
+    agent,
+    page,
+    artifacts,
+    url,
+    editor,
+    draft,
+    requests,
+    readCount,
+    agentPath,
+    configurationPath,
+  };
+}
+
+test("a transient refocus failure recovers the same focused Agent draft automatically", async (t) => {
+  const {
+    fixture,
+    page,
+    artifacts,
+    url,
+    editor,
+    draft,
+    requests,
+    readCount,
+    agentPath,
+    configurationPath,
+  } = await openRefocusDraft(t);
+  await tagView(page);
+  if (process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR) {
+    await page.screenshot({ path: `${artifacts}/refocus-draft-before.png` });
+  }
+  const revisionsPath = `${agentPath}/revisions`;
+  const revisionsUrl = fixture.origin + revisionsPath;
+  const sessionPath = "/api/auth/session";
+  const failedRead = await holdRequests(t, page, revisionsUrl, {
+    once: true,
+    method: "GET",
+    fulfill: apiErrorResponse(500, "INTERNAL_ERROR", "The request could not be completed."),
+  });
+  const statuses: number[] = [];
+  page.on("response", (response) => {
+    if (response.url() === revisionsUrl && response.request().method() === "GET") {
+      statuses.push(response.status());
+    }
+  });
+
+  await page.evaluate(() => {
+    const view = document.querySelector(".content")!;
+    new MutationObserver(() => {
+      if (view.textContent?.includes("Could not check Agent details") || !view.isConnected) {
+        document.documentElement.dataset.refocusInterruption = "true";
+      }
+    }).observe(document.getElementById("app")!, { subtree: true, childList: true });
+    Object.defineProperty(document, "hidden", { value: true, configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    Object.defineProperty(document, "hidden", { value: false, configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new Event("focus"));
+  });
+  await failedRead.requested;
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event("focus"));
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  failedRead.release();
+  await waitForIdleFetches(page);
+  if (process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR) {
+    await page.screenshot({ path: `${artifacts}/refocus-draft-after.png` });
+  }
+  assert.deepEqual(
+    statuses,
+    [500, 200],
+    "refocus retries the failed read exactly once without a click",
+  );
+  assert.equal(readCount(sessionPath), 1, "duplicate focus and visibility events share admission");
+  assert.equal(readCount(revisionsPath), 2);
+  assert.equal(readCount(configurationPath), 2);
+  assert.equal(await viewTag(page), "kept", "the Agent view was never replaced");
+  assert.equal(
+    await page.locator("html").getAttribute("data-refocus-interruption"),
+    null,
+    "the original layout stayed mounted without a retry warning",
+  );
+  assert.equal(page.url(), url.href);
+  assert.equal(await editor.inputValue(), draft);
+  assert.equal(await hasFocus(editor), true);
+  assert.deepEqual(
+    await editor.evaluate((node) => {
+      const input = node as HTMLTextAreaElement;
+      return [input.selectionStart, input.selectionEnd];
+    }),
+    [3, 7],
+  );
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
+test("persistent refocus failure leaves a local warning and Retry checks fresh access", async (t) => {
+  const {
+    fixture,
+    agent,
+    namespace,
+    page,
+    artifacts,
+    url,
+    editor,
+    draft,
+    requests,
+    readCount,
+    agentPath,
+    configurationPath,
+  } = await openRefocusDraft(t);
+  const configurationUrl = fixture.origin + configurationPath;
+  const heading = page.getByRole("heading", { name: "Example Agent", exact: true });
+  const warning = page.getByRole("status").filter({ hasText: "Could not check Agent details" });
+  const retry = warning.getByRole("button", { name: "Retry", exact: true });
+  await heading.evaluate((node) => node.setAttribute("data-refocus-header", "original"));
+
+  await fixture.withIamOutage(
+    ({ action, resource }) =>
+      action === "read" &&
+      resource.kind === "configuration" &&
+      resource.id === agent.configurationId,
+    async () => {
+      const statuses: number[] = [];
+      page.on("response", (response) => {
+        if (response.url() === configurationUrl && response.request().method() === "GET") {
+          statuses.push(response.status());
+        }
+      });
+      await refocus(page);
+      await warning.waitFor();
+      await waitForIdleFetches(page);
+      assert.deepEqual(statuses, [503, 503], "a real Controller outage exhausts the one retry");
+      assert.equal(await heading.getAttribute("data-refocus-header"), "original");
+      assert.equal(
+        await editor.count(),
+        0,
+        "the private draft is detached while its access is unknown",
+      );
+      assert.equal(
+        await page.getByRole("button", { name: "Edit Configuration", exact: true }).count(),
+        0,
+      );
+      assert.equal(
+        await page.getByRole("combobox", { name: "Namespace", exact: true }).inputValue(),
+        namespace.id,
+      );
+      assert.equal(await hasFocus(retry), true);
+      await refocus(page);
+      await waitForIdleFetches(page);
+      assert.equal(
+        readCount(configurationPath),
+        2,
+        "warning does not retry on another focus event",
+      );
+      if (process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR) {
+        await page.screenshot({ path: `${artifacts}/persistent-refocus-warning.png` });
+      }
+    },
+  );
+
+  const recovered = responseTo(page, "GET", configurationUrl);
+  await retry.click();
+  assert.equal((await recovered).status(), 200);
+  await editor.waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await editor.inputValue(), draft);
+  assert.equal(page.url(), url.href);
+
+  restrict(fixture.policy, "read", "configuration", {
+    namespaceId: namespace.id,
+    resourceId: agent.configurationId,
+  });
+  const revisions = await holdRequests(t, page, `${fixture.origin}${agentPath}/revisions`, {
+    once: true,
+    method: "GET",
+  });
+  const beforeRefusal = readCount(configurationPath);
+  const refused = responseTo(page, "GET", configurationUrl);
+  await refocus(page);
+  try {
+    await revisions.requested;
+    assert.equal((await refused).status(), 403);
+    await page
+      .getByRole("heading", { name: "Access denied", exact: true })
+      .waitFor({ timeout: 5_000 });
+  } finally {
+    revisions.release();
+  }
+  await waitForIdleFetches(page);
+  assert.equal(await editor.count(), 0);
+  assert.equal(await retry.count(), 0);
+  assert.equal(readCount(configurationPath) - beforeRefusal, 1, "access refusal is never retried");
+
+  assert.equal(await heading.count(), 0);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
+for (const recover of [false, true]) {
+  test(`Agent refocus keeps Delete gated ${recover ? "after a recovered 5xx" : "after healthy reads"}`, async (t) => {
+    const { fixture, namespace, agent, page, editor, draft, requests, agentPath } =
+      await openRefocusDraft(t);
+    const remove = page.getByRole("button", { name: "Delete Agent", exact: true });
+    const save = page.getByRole("button", { name: "Save Configuration", exact: true });
+    const actionable = (control: Locator) =>
+      control.click({ trial: true, timeout: 600 }).then(
+        () => true,
+        () => false,
+      );
+    await remove.click({ trial: true });
+    await save.click({ trial: true });
+
+    const permissionsUrl = `${fixture.origin}${agentPath}/permissions`;
+    const revisionsUrl = `${fixture.origin}${agentPath}/revisions`;
+    const revisionStatuses: number[] = [];
+    page.on("response", (response) => {
+      if (response.url() === revisionsUrl && response.request().method() === "GET") {
+        revisionStatuses.push(response.status());
+      }
+    });
+    const transient = recover
+      ? await holdRequests(t, page, revisionsUrl, {
+          once: true,
+          method: "GET",
+          fulfill: apiErrorResponse(500, "INTERNAL_ERROR", "The request could not be completed."),
+        })
+      : null;
+    const allowed = await holdRequests(t, page, permissionsUrl, {
+      once: true,
+      method: "GET",
+      afterServer: true,
+    });
+    const allowedInBrowser = responseTo(page, "GET", permissionsUrl);
+    await refocus(page);
+    if (transient) {
+      await transient.requested;
+      transient.release();
+    }
+    const allowedByServer = await allowed.requested;
+    assert.ok(allowedByServer);
+    assert.equal(allowedByServer.status(), 200);
+    assert.equal((await allowedByServer.json()).data.delete, true);
+    const pendingActionable = {
+      delete: await actionable(remove),
+      save: await actionable(save),
+    };
+    allowed.release();
+    assert.equal((await allowedInBrowser).status(), 200);
+    await waitForIdleFetches(page);
+    assert.deepEqual(revisionStatuses, recover ? [500, 200] : [200]);
+    await remove.click({ trial: true });
+
+    const failure = await holdRequests(t, page, permissionsUrl, {
+      once: true,
+      method: "GET",
+      fulfill: proxyErrorResponse(503),
+    });
+    const failed = responseTo(page, "GET", permissionsUrl);
+    await refocus(page);
+    await failure.requested;
+    failure.release();
+    assert.equal((await failed).status(), 503);
+    await waitForIdleFetches(page);
+    const failedActionable = {
+      delete: await actionable(remove),
+      save: await actionable(save),
+    };
+    assert.equal(await editor.inputValue(), draft);
+    assert.equal(await hasFocus(editor), true);
+    assert.deepEqual(
+      await editor.evaluate((node: HTMLTextAreaElement) => [
+        node.selectionStart,
+        node.selectionEnd,
+      ]),
+      [3, 7],
+    );
+
+    const granted = responseTo(page, "GET", permissionsUrl);
+    await refocus(page);
+    assert.equal((await granted).status(), 200);
+    await remove.click({ trial: true });
+    restrict(fixture.policy, "delete", "agent", {
+      namespaceId: namespace.id,
+      resourceId: agent.id,
+    });
+    const denied = responseTo(page, "GET", permissionsUrl);
+    await refocus(page);
+    const revoked = await denied;
+    assert.equal(revoked.status(), 200);
+    assert.equal((await revoked.json()).data.delete, false);
+    await waitForIdleFetches(page);
+    const revokedActionable = {
+      delete: await actionable(remove),
+      save: await actionable(save),
+    };
+
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+    assert.deepEqual(
+      { pendingActionable, failedActionable, revokedActionable },
+      {
+        pendingActionable: { delete: false, save: false },
+        failedActionable: { delete: false, save: false },
+        revokedActionable: { delete: false, save: true },
+      },
+    );
+  });
+}
+
+test("a failed sharing refresh retains permissions confirmed on Agent refocus", async (t) => {
+  const { fixture, agent, page, editor, draft, requests, readCount, agentPath } =
+    await openRefocusDraft(t);
+  const save = page.getByRole("button", { name: "Save Configuration", exact: true });
+  const permissionsPath = `${agentPath}/permissions`;
+  const permissionsUrl = fixture.origin + permissionsPath;
+
+  await tagView(page);
+  const confirmed = responseTo(page, "GET", permissionsUrl);
+  await refocus(page);
+  const answer = await confirmed;
+  assert.equal(answer.status(), 200);
+  const { configurationUpdate, configurationSecretsOperate } = (await answer.json()).data;
+  assert.equal(configurationUpdate, true);
+  assert.equal(configurationSecretsOperate, true);
+  await page.locator(settledView).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await viewTag(page), "kept");
+  await save.click({ trial: true });
+
+  await page.getByRole("tab", { name: "Access", exact: true }).click();
+  const sharing = page.getByRole("region", { name: "Share Agent", exact: true });
+  const refresh = sharing.getByRole("button", { name: "Refresh sharing", exact: true });
+  await sharing.getByText("Current policy loaded.", { exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(readCount(permissionsPath), 1);
+
+  // Only the Agent permission summary probes Delete. The Controller reports that decision's
+  // outage while Refresh sharing runs as an ordinary reread after foreground admission.
+  await fixture.withIamOutage(
+    ({ action, resource }) =>
+      action === "delete" && resource.kind === "agent" && resource.id === agent.id,
+    async () => {
+      const reread = responseTo(page, "GET", permissionsUrl);
+      await refresh.click();
+      assert.equal((await reread).status(), 503);
+      await waitForEnabled(refresh);
+      await waitForIdleFetches(page);
+    },
+  );
+
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await waitForIdleFetches(page);
+  const actionable = await save.click({ trial: true, timeout: 600 }).then(
+    () => true,
+    () => false,
+  );
+  assert.equal(readCount(permissionsPath), 2);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.equal(actionable, true, "a failed ordinary reread must retain the confirmed Save grant");
+  assert.equal(await editor.inputValue(), draft);
+});
+
+test("Agent refocus keeps Save gated on a replacement view after a permission outage", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Replacement Agent refocus");
+  const agent = await fixture.createAgent(namespace.id, "Example Agent", nativeValues("v1"));
+  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
+  const { page, artifacts } = await newPage(t, fixture, { browser });
+  await trackSettledFetches(page);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+  const revisionsUrl = `${agentUrl}/revisions`;
+  const permissionsUrl = `${agentUrl}/permissions`;
+  const initialVersions = responseTo(page, "GET", revisionsUrl);
+  await login(page, fixture, url);
+  const initial = await initialVersions;
+  assert.equal(initial.status(), 200);
+  assert.deepEqual(
+    (await initial.json()).data.map(({ id }: { id: string }) => id),
+    [active.revision.id, first.revision.id],
+  );
+  await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
+  await openAdvancedSettings(page);
+  const editor = page.getByLabel("Configuration JSON", { exact: true });
+  const draft = JSON.stringify({ ...JSON.parse(await editor.inputValue()), exampleDraft: true });
+  await editor.fill(draft);
+  const save = page.getByRole("button", { name: "Save Configuration", exact: true });
+  await save.click({ trial: true });
+  await page.locator(settledView).waitFor();
+  await waitForIdleFetches(page);
+  await tagView(page);
+
+  // The Controller's real version list shrinks, so the shell must rebuild. Only its exact
+  // Agent permission summary probes Delete, whose IAM decision now fails.
+  denyRevisionRead(fixture, namespace, first.revision);
+  const blocked = restrict(fixture.policy, "update", "configuration", {
+    namespaceId: namespace.id,
+    resourceId: agent.configurationId,
+  });
+  const requests = apiRequests(page, fixture.origin);
+  const reads: { url: string; status: number }[] = [];
+  page.on("response", (response) => {
+    const url = response.url();
+    if (response.request().method() === "GET" && [revisionsUrl, permissionsUrl].includes(url)) {
+      reads.push({ url, status: response.status() });
+    }
+  });
+  await fixture.withIamOutage(
+    ({ action, resource }) =>
+      action === "delete" && resource.kind === "agent" && resource.id === agent.id,
+    async () => {
+      const narrowed = responseTo(page, "GET", revisionsUrl);
+      const failed = responseTo(page, "GET", permissionsUrl);
+      await refocus(page);
+      const versions = await narrowed;
+      assert.equal(versions.status(), 200);
+      assert.deepEqual(
+        (await versions.json()).data.map(({ id }: { id: string }) => id),
+        [active.revision.id],
+      );
+      assert.equal((await failed).status(), 503);
+      await editor.waitFor();
+      await page.locator(settledView).waitFor();
+      await waitForIdleFetches(page);
+    },
+  );
+  assert.equal(page.url(), url.href);
+  assert.equal(await viewTag(page), null);
+  assert.equal(await page.locator('[data-nav-tag="kept"]').count(), 0, "the old view was retired");
+  assert.deepEqual(reads[0], { url: revisionsUrl, status: 200 });
+  assert.deepEqual(
+    reads.filter(({ url }) => url === revisionsUrl).map(({ status }) => status),
+    [200, 200],
+  );
+  assert.deepEqual(
+    reads.filter(({ url }) => url === permissionsUrl).map(({ status }) => status),
+    [503],
+  );
+  assert.equal(await editor.inputValue(), draft);
+  await save.waitFor();
+  const actionableAfterFailure = await save.click({ trial: true, timeout: 600 }).then(
+    () => true,
+    () => false,
+  );
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+
+  if (process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR) {
+    await save.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${artifacts}/replacement-save-unavailable.png` });
+  }
+
+  liftRestriction(fixture.policy, blocked);
+  const granted = responseTo(page, "GET", permissionsUrl);
+  await refocus(page);
+  const answer = await granted;
+  assert.equal(answer.status(), 200);
+  const { configurationUpdate, configurationSecretsOperate } = (await answer.json()).data;
+  assert.equal(configurationUpdate, true);
+  assert.equal(configurationSecretsOperate, true);
+  await save.click({ trial: true });
+  assert.equal(await editor.inputValue(), draft);
+  assert.deepEqual(
+    reads.filter(({ url }) => url === permissionsUrl).map(({ status }) => status),
+    [503, 200],
+  );
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.equal(
+    actionableAfterFailure,
+    false,
+    "a failed replacement permission read must gate Save",
+  );
+});
+
+test("a rate-limited Agent refocus respects the longest delay and waits for explicit Retry", async (t) => {
+  const { fixture, page, editor, requests, readCount, agentPath, configurationPath } =
+    await openRefocusDraft(t);
+  const path = `${agentPath}/revisions`;
+  const url = fixture.origin + path;
+  const configurationUrl = fixture.origin + configurationPath;
+  await page.clock.install();
+  const unavailable = await holdRequests(t, page, url, {
+    once: true,
+    method: "GET",
+    fulfill: { ...proxyErrorResponse(503), headers: { "retry-after": "1" } },
+  });
+  const throttle = await holdRequests(t, page, configurationUrl, {
+    once: true,
+    method: "GET",
+    fulfill: { ...proxyErrorResponse(429), headers: { "retry-after": "60" } },
+  });
+  const unavailableResponse = responseTo(page, "GET", url);
+  const limited = responseTo(page, "GET", configurationUrl);
+  await refocus(page);
+  await Promise.all([unavailable.requested, throttle.requested]);
+  unavailable.release();
+  throttle.release();
+  assert.equal((await unavailableResponse).status(), 503);
+  assert.equal((await limited).status(), 429);
+  const warning = page.getByRole("status").filter({ hasText: "Could not check Agent details" });
+  const retry = warning.getByRole("button", { name: "Retry", exact: true });
+  await warning.waitFor();
+  assert.equal(await retry.isEnabled(), false);
+  assert.equal(await editor.count(), 0);
+  await page.clock.fastForward(2_000);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.equal(await retry.isEnabled(), false, "the longer Configuration delay still applies");
+  await page.clock.fastForward(57_000);
+  assert.equal(await retry.isEnabled(), false, "Retry stays disabled just before the deadline");
+  await page.clock.fastForward(1_000);
+  assert.equal(await retry.isEnabled(), true);
+  assert.equal(readCount(path), 1, "the server delay does not schedule another revision read");
+  assert.equal(
+    readCount(configurationPath),
+    1,
+    "the server delay does not schedule another Configuration read",
+  );
+  const admitted = responseTo(page, "GET", url);
+  await retry.click();
+  assert.equal((await admitted).status(), 200);
+  await editor.waitFor();
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
+test("session expiry during a refocus retry removes the private Agent", async (t) => {
+  const { fixture, page, editor, requests, readCount, agentPath, configurationPath } =
+    await openRefocusDraft(t);
+  const path = `${agentPath}/revisions`;
+  const url = fixture.origin + path;
+  const held = await holdRequests(t, page, url, {
+    once: true,
+    method: "GET",
+    fulfill: apiErrorResponse(500, "INTERNAL_ERROR", "The request could not be completed."),
+  });
+  const failed = responseTo(page, "GET", url);
+  const configuration = responseTo(page, "GET", fixture.origin + configurationPath);
+  await refocus(page);
+  await held.requested;
+  assert.equal((await configuration).status(), 200);
+  expireSessions(fixture);
+  const unauthorized = responseTo(page, "GET", fixture.origin + agentPath);
+  held.release();
+  assert.equal((await failed).status(), 500);
+  assert.equal((await unauthorized).status(), 401);
+  await page.getByText("Your session has expired.", { exact: true }).waitFor();
+  assert.equal(await editor.count(), 0);
+  assert.equal(await page.getByRole("heading", { name: "Example Agent", exact: true }).count(), 0);
+  assert.equal(readCount(path), 1, "the expired retry never reads revision history");
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
+test("switching Namespace during the refocus retry drops the stale Agent result", async (t) => {
+  const { fixture, page, editor, requests, readCount, agentPath } = await openRefocusDraft(t);
+  const other = await fixture.createNamespace("Other workspace", { ready: true });
+  await fixture.createAgent(other.id, "Other Agent", nativeValues("v1"));
+  const revisionsPath = `${agentPath}/revisions`;
+  const revisionsUrl = fixture.origin + revisionsPath;
+  // Install the later handler first. The first read is fulfilled by the one-shot 500.
+  const retryRead = await holdRequests(t, page, revisionsUrl, { once: true, method: "GET" });
+  const failure = await holdRequests(t, page, revisionsUrl, {
+    once: true,
+    method: "GET",
+    fulfill: apiErrorResponse(500, "INTERNAL_ERROR", "The request could not be completed."),
+  });
+  const first = responseTo(page, "GET", revisionsUrl);
+  await refocus(page);
+  await failure.requested;
+  failure.release();
+  assert.equal((await first).status(), 500);
+  await retryRead.requested;
+  assert.equal(
+    await editor.evaluate((node) => node.checkVisibility({ opacityProperty: true })),
+    false,
+    "a pending retry cannot paint the private draft",
+  );
+  await page.getByRole("combobox", { name: "Namespace", exact: true }).selectOption(other.id);
+  await page.waitForURL(`**/console/agents?namespace=${other.id}`);
+  await page.getByRole("link", { name: "Other Agent", exact: true }).waitFor();
+  retryRead.release();
+  await waitForIdleFetches(page);
+  assert.equal(readCount(revisionsPath), 2);
+  assert.equal(await editor.count(), 0);
+  assert.equal(await page.getByRole("heading", { name: "Example Agent", exact: true }).count(), 0);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 
 for (const revoked of ["configuration", "agent"] as const) {

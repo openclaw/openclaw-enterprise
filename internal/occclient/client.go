@@ -360,15 +360,18 @@ func (client *Client) ProvisionAgentRuntimeCredentials(namespaceID, agentID stri
 	)
 }
 
-// DeployAgent deploys an Agent and creates an immutable revision.
+// DeployAgent deploys an Agent and creates an immutable revision. Without
+// overrides it sends no body, which OCC treats as no overrides; servers that
+// predate Harness overrides refuse any body.
 func (client *Client) DeployAgent(namespaceID, agentID string, overrides map[string]any) (any, error) {
-	if overrides == nil {
-		overrides = map[string]any{}
+	var body any
+	if len(overrides) > 0 {
+		body = map[string]any{"harnessOverrides": overrides}
 	}
 	return client.send(
 		http.MethodPost,
 		[]string{"namespaces", namespaceID, "agents", agentID, "deploy"},
-		map[string]any{"harnessOverrides": overrides},
+		body,
 	)
 }
 

@@ -33,7 +33,7 @@ Git denial after withdrawal, with no issuance or workload traffic, while the sam
 still works directly at the controlled provider. Git and PostgreSQL are real;
 the installed external Driver, workload, placement and GitHub API are fixtures.
 
-The built-in policy case signs in a persisted account through Fastify,
+The default file-based GitHub policy case signs in a persisted account through Fastify,
 creates and deploys an Agent without a public Repo Driver, and refuses the same
 repository in an otherwise authorized foreign Namespace before issuance or Git
 traffic. It restarts the Worker and custody owner, fetches a new commit through
@@ -48,17 +48,25 @@ continuous. This is local
 protocol and persistence proof, not an installed OpenShell or live GitHub
 qualification.
 
-Run the separate conversation proof with `OCC_TEST_STANDING_GIT_CODEX` set to the
-absolute path of the shipped Codex executable and the same database prerequisites:
+Run the external Driver conversation rehearsal with the same prepared PostgreSQL
+test environment and `OCC_TEST_STANDING_GIT_CODEX` set to the absolute path of
+the Codex executable pinned by the [runtime Dockerfile](../../deploy/runtime/Dockerfile):
 
 ```sh
-pnpm test:standing-git-conversation
+env -u OCC_TEST_DATABASE_URL -u OPENCLAW_ENTERPRISE_CI_STATE \
+  -u OPENCLAW_ENTERPRISE_CI_PREFIX OCC_TEST_REQUIRE_EXTERNAL_GIT_CONVERSATION=1 \
+  node --env-file="$PG_RUN_DIR/test.env" --test \
+  --test-name-pattern="a capable external Driver reduces Git" \
+  tests/integration/postgres-external-protected-git.test.ts
 ```
 
-Require the same Agent conversation to answer before and after Git withdrawal.
-This uses shipped Codex with controlled inference, not a live model provider.
-Neither command needs live GitHub or model credentials. The generic policy
-reduction check does not establish stock OpenShell support for multiple bindings.
+Require the four check receipts `model-before`, `git-fetched`, `git-refused`,
+and `model-after`, a passing selected case, and successful fixture cleanup.
+This runs the shipped Codex process and real Git, with a controlled inference
+origin and the external Driver fixture. It uses synthetic credentials and
+requires no OpenShell installation.
+The OpenShell-specific conversation case still runs with
+`pnpm test:standing-git-conversation` and its corresponding prepared database.
 
 On the deployed build, use disposable repositories and an approved GitHub
 credential source. The Agent must never receive the token. In one Agent
@@ -69,6 +77,53 @@ provider traffic, and continue that conversation through its retained model
 access. Record build IDs, commit SHAs, PR number, withdrawal time and both turns;
 exclude credentials. Reconcile an uncertain write by reading its state, never by
 replaying it. The local proofs do not replace this installed qualification.
+
+### Reuse the rehearsal with another runtime
+
+Use [the scenario helper](../../tests/helpers/agent-grant-rehearsal.ts) from a
+Node test. Run all four observations inside the `runAgentGrantRehearsal` callback.
+The test fails if the callback returns before `modelAfter` succeeds.
+Register cleanup as each resource is acquired with `t.after`, including
+the Agent process, origin servers, and disposable repository. Keep the operator
+control endpoints and origin repository outside the workload's reach.
+
+1. Start one Agent and one conversation. Serve two distinct answers from a
+   controlled model origin. Require the first answer and its origin request,
+   then call `modelBefore` with the observed Agent, revision, runtime, session,
+   and turn IDs.
+2. Read the expected commit SHA at the bare origin. Use real Git in a
+   workload-owned repository and check that it lacks that commit before fetch.
+   Give `gitFetched` the observed `FETCH_HEAD` and the change in origin request
+   count. Use a separate origin-side control to publish commits.
+3. Remove the Git grant through its owning control plane while the Agent stays
+   up. Publish a different commit at the origin. Fetch the same ref through the
+   workload's original Git path. Require the adapter's specific policy refusal
+   and pass Git's exit status, the before and after object lookups, and origin
+   request delta to `gitRefused`.
+4. Ask a second question on the original conversation. Verify the controlled
+   model reply, read back the same runtime identity, and pass the new turn ID
+   to `modelAfter`. Stop and join the workload before closing the origins.
+
+For a Strands Agents SDK workload, start with the
+[Strands Box SDK example](https://github.com/strands-agents/box/tree/d9346bf0d281153ea7dc6338ad1f0b7e122be687/examples/strands-box/strands-sdk-agent)
+and the Git tool policy from its
+[Git workload test](https://github.com/strands-agents/box/tree/d9346bf0d281153ea7dc6338ad1f0b7e122be687/test-workload/workload-git).
+Replace the example's Bedrock provider with an SDK model pointed at the controlled
+origin and keep the SDK Agent alive for both turns. Give its Git tool access to
+one disposable checkout and one fixture HTTPS repository. Use a test CA and a
+synthetic origin credential if required. Keep both origin control channels
+outside the Box.
+
+Use the hosted Box library from the
+[reload integration test](https://github.com/strands-agents/box/blob/d9346bf0d281153ea7dc6338ad1f0b7e122be687/crates/box/tests/box_library.rs).
+Start one `strands_box::run` and have the host call `strands_box::reload` with
+the complete policy minus the Git destination permit. Keep Git tool execution
+and the model destination permitted so the refusal occurs at the Git egress
+boundary. Read the denial in the Box journal and measure Git origin traffic
+outside the Box. Use the Box execution identity as `runtimeId`. This path needs
+no OpenShell or workload identity service. To qualify an installed integration,
+withdraw through that integration's actual grant owner and verify the same
+observations through its selected sender.
 
 ## Qualify installed custody
 

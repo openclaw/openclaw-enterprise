@@ -96,7 +96,10 @@ Responses requests may declare local function and custom tools, including namesp
 in the top-level `tools` list or a developer `additional_tools` input item. Inline
 declarations use the same local-tool restrictions; they do not authorize hosted tools.
 Local function parameter schemas accept `encrypted: true` only on a string schema.
-This annotation does not itself encrypt data. The JSON string in
+This annotation does not itself encrypt data. Native `agent_message` input
+accepts bounded `/root` agent paths and one text part, optionally followed by one
+encrypted content part. Agent paths label the message. Credential authority
+still comes from the admitted execution. The JSON string in
 `client_metadata["x-codex-turn-metadata"]` may include `reasoning_effort` with the value
 `none`, `minimal`, `low`, `medium`, `high` or `xhigh`. It can also include
 `workspaces` with one absolute Git root. Each entry must include at least one
@@ -107,7 +110,8 @@ literal `git` transport user. Both forms use plain ASCII repository paths and
 omit queries and fragments. The separate optional
 `client_metadata["mcp_attribution"]` JSON string accepts exactly
 `{"status":"none"}`. These fields carry telemetry and grant no authority.
-The proxy refuses unknown request fields.
+Replayed assistant `output_text` parts can include `annotations` and `logprobs`.
+Each field must be an empty array if present. The proxy refuses unknown request fields.
 
 In streamed Responses envelopes, tool echoes may contain null descriptions,
 `strict`, `defer_loading`, or custom-tool `format`; their nonnull values retain

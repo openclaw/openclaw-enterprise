@@ -24,6 +24,7 @@ export const CreateSecretOperateDenied = {
   ...story("createSecretOperateDenied"),
   name: "Secret operate not permitted",
 };
+export const CreateRepositoryOnlyCredentialProxy = story("createRepositoryOnlyCredentialProxy");
 export const CreateRepositoryNotConfigured = {
   ...story("createRepositoryNotConfigured"),
   name: "Repository access not set up",

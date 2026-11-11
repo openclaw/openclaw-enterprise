@@ -60,7 +60,7 @@ transport, not a live IdP, PostgreSQL authentication, or an installed deployment
 
 ## Packaged-driver integration
 
-`tests/integration/driver-plugin-installation.test.mjs` installs precompiled
+`tests/integration/driver-plugin-installation.test.ts` installs precompiled
 Driver tarballs in an isolated dependency root and exercises production startup
 with in-memory state. It does not prove database persistence, Kubernetes, a real
 gateway, or a model turn.
@@ -201,10 +201,12 @@ It proves collection and dashboard provisioning, not live Agent behavior.
 
 ### Kubernetes observability acceptance
 
-With Node 24+, pinned pnpm and installed dependencies, Helm, kubectl, k3d,
-and Docker or an explicitly selected compatible Podman engine, run the
-credential-free lane on a disposable loopback cluster. NetworkPolicy must be
-enforced. Use a fresh private state directory for each run:
+Use Node matching `package.json`, pinned pnpm and installed dependencies, the Go
+toolchain in `go.mod`, Helm, kubectl, k3d, and the
+[production helper prerequisites](../guides/deploy/production-upgrade.md#prepare-the-release),
+including jq and yq. Run this credential-free lane with Docker or an explicitly
+selected compatible Podman engine on a disposable loopback cluster with enforced
+NetworkPolicy. Use a fresh private state directory for each run:
 
 ```sh
 OBS_LANE=k3d-observability

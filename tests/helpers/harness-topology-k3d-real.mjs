@@ -12,7 +12,6 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
-import { managedGatewayConfiguration } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
 import { normalizeOpenAiBaseUrl } from "../../apps/controller/src/drivers/openai-endpoint.ts";
 import {
   authenticatedHeaders,
@@ -21,7 +20,11 @@ import {
 } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { attachPostgresToK3d, attachKeycloakToK3d } from "./k3d-postgres-network.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { buildControllerTopologyManifests } from "./topology-controller-manifests.ts";
+import {
+  createNativeTopologyConfiguration,
+  createTopologyPresetTemplate,
+} from "./topology-launch-configuration.ts";
 import { sessionEvidenceScript } from "./normal-agent-tools.mjs";
 import {
   assertGatewayModelTurn,
@@ -517,309 +520,31 @@ async function startInClusterControllers(
   const authSecretName = `${name}-auth`;
   const probeConfigMap = `${name}-gateway-probe`;
   const probeSource = await readFile("tests/fixtures/gateway-routing/probe.mjs", "utf8");
-  const manifests = {
-    apiVersion: "v1",
-    kind: "List",
-    items: [
-      {
-        apiVersion: "v1",
-        kind: "ConfigMap",
-        metadata: { name: probeConfigMap, namespace: platformNamespace },
-        data: { "gateway-probe.mjs": probeSource },
-      },
-      {
-        apiVersion: "v1",
-        kind: "Secret",
-        metadata: { name: configurationSecret, namespace: platformNamespace },
-        stringData: { "installation.yaml": JSON.stringify(apiConfiguration) },
-      },
-      {
-        apiVersion: "v1",
-        kind: "Secret",
-        metadata: { name: databaseSecret, namespace: platformNamespace },
-        stringData: { url: inClusterDatabaseUrl.toString() },
-      },
-      {
-        apiVersion: "v1",
-        kind: "Secret",
-        metadata: { name: authSecretName, namespace: platformNamespace },
-        stringData: { secret: authSecret },
-      },
-      {
-        apiVersion: "v1",
-        kind: "Service",
-        metadata: { name: databaseServiceName, namespace: platformNamespace },
-        spec: { ports: [{ name: "postgres", port: 5432, targetPort: 5432 }] },
-      },
-      {
-        apiVersion: "v1",
-        kind: "Endpoints",
-        metadata: { name: databaseServiceName, namespace: platformNamespace },
-        subsets: [
-          { addresses: [{ ip: databaseAddress }], ports: [{ name: "postgres", port: 5432 }] },
-        ],
-      },
-      {
-        apiVersion: "v1",
-        kind: "Service",
-        metadata: { name, namespace: platformNamespace },
-        spec: { selector: labels, ports: [{ name: "http", port: 8080, targetPort: "http" }] },
-      },
-      {
-        apiVersion: "apps/v1",
-        kind: "Deployment",
-        metadata: { name, namespace: platformNamespace },
-        spec: {
-          replicas: 1,
-          selector: { matchLabels: labels },
-          template: {
-            metadata: { labels },
-            spec: {
-              serviceAccountName: controller.apiAccount,
-              automountServiceAccountToken: true,
-              securityContext: {
-                runAsNonRoot: true,
-                runAsUser: 1000,
-                runAsGroup: 1000,
-                fsGroup: 1000,
-                seccompProfile: { type: "RuntimeDefault" },
-              },
-              containers: [
-                {
-                  name: "api",
-                  image: controllerImage,
-                  imagePullPolicy: "IfNotPresent",
-                  args: ["apps/controller/src/server.mjs"],
-                  securityContext: {
-                    allowPrivilegeEscalation: false,
-                    capabilities: { drop: ["ALL"] },
-                    readOnlyRootFilesystem: true,
-                  },
-                  resources: {
-                    requests: { cpu: "100m", memory: "128Mi" },
-                    limits: { cpu: "1", memory: "1Gi" },
-                  },
-                  env: [
-                    { name: "NODE_ENV", value: "production" },
-                    {
-                      name: "OCC_CONFIG_PATH",
-                      value: "/etc/openclaw/installation/installation.yaml",
-                    },
-                    {
-                      name: "OCC_DATABASE_URL",
-                      valueFrom: { secretKeyRef: { name: databaseSecret, key: "url" } },
-                    },
-                    {
-                      name: "OCC_AUTH_SECRET",
-                      valueFrom: { secretKeyRef: { name: authSecretName, key: "secret" } },
-                    },
-                    { name: "OCC_AUTH_BASE_URL", value: authBaseURL },
-                    {
-                      name: "OCC_AGENT_NATIVE_ADMIN_ENABLED",
-                      value: nativeAdminEnabled ? "true" : "false",
-                    },
-                    { name: "OCC_AGENT_NATIVE_ADMIN_DOMAIN", value: nativeAdminDomain },
-                    {
-                      name: "OCC_HOST",
-                      valueFrom: { fieldRef: { fieldPath: "status.podIP" } },
-                    },
-                    { name: "OCC_PORT", value: "8080" },
-                    {
-                      name: "OCC_GATEWAY_API_KEY_PATH",
-                      value: "/etc/openclaw/gateway-api-key/key",
-                    },
-                    { name: "NODE_EXTRA_CA_CERTS", value: "/etc/openclaw/gateway-ca/ca.crt" },
-                  ],
-                  volumeMounts: [
-                    {
-                      name: "installation",
-                      mountPath: "/etc/openclaw/installation",
-                      readOnly: true,
-                    },
-                    {
-                      name: "gateway-api-key",
-                      mountPath: "/etc/openclaw/gateway-api-key",
-                      readOnly: true,
-                    },
-                    { name: "gateway-ca", mountPath: "/etc/openclaw/gateway-ca", readOnly: true },
-                    {
-                      name: "gateway-probe",
-                      mountPath: "/app/apps/controller/gateway-probe.mjs",
-                      subPath: "gateway-probe.mjs",
-                      readOnly: true,
-                    },
-                  ],
-                  ports: [{ name: "http", containerPort: 8080 }],
-                  readinessProbe: { httpGet: { path: "/readyz", port: "http" } },
-                  livenessProbe: { httpGet: { path: "/healthz", port: "http" } },
-                },
-                {
-                  name: "loopback-forwarder",
-                  image: controllerImage,
-                  imagePullPolicy: "IfNotPresent",
-                  command: ["node", "-e"],
-                  args: [
-                    "const net=require('node:net');const host=process.env.POD_IP;net.createServer(client=>{const upstream=net.connect(8080,host);client.on('error',()=>upstream.destroy());upstream.on('error',()=>client.destroy());client.pipe(upstream);upstream.pipe(client)}).listen(18080,'0.0.0.0')",
-                  ],
-                  env: [{ name: "POD_IP", valueFrom: { fieldRef: { fieldPath: "status.podIP" } } }],
-                  securityContext: {
-                    allowPrivilegeEscalation: false,
-                    capabilities: { drop: ["ALL"] },
-                    readOnlyRootFilesystem: true,
-                  },
-                  resources: {
-                    requests: { cpu: "10m", memory: "32Mi" },
-                    limits: { cpu: "100m", memory: "64Mi" },
-                  },
-                  ports: [{ name: "local-forward", containerPort: 18080 }],
-                },
-              ],
-              volumes: [
-                {
-                  name: "installation",
-                  secret: {
-                    secretName: configurationSecret,
-                    items: [{ key: "installation.yaml", path: "installation.yaml" }],
-                  },
-                },
-                {
-                  name: "gateway-api-key",
-                  secret: {
-                    secretName: workspaceGateway.apiKeySecretName,
-                    items: [{ key: "occ", path: "key" }],
-                  },
-                },
-                {
-                  name: "gateway-ca",
-                  secret: {
-                    secretName: workspaceGateway.caSecretName,
-                    items: [{ key: "tls.crt", path: "ca.crt" }],
-                  },
-                },
-                { name: "gateway-probe", configMap: { name: probeConfigMap } },
-              ],
-            },
-          },
-        },
-      },
-      {
-        apiVersion: "networking.k8s.io/v1",
-        kind: "NetworkPolicy",
-        metadata: { name: `${name}-isolation`, namespace: platformNamespace },
-        spec: {
-          podSelector: { matchLabels: labels },
-          policyTypes: ["Ingress", "Egress"],
-          ingress: [],
-          egress: [
-            {
-              to: [
-                {
-                  namespaceSelector: {
-                    matchLabels: { "kubernetes.io/metadata.name": "kube-system" },
-                  },
-                  podSelector: { matchLabels: { "k8s-app": "kube-dns" } },
-                },
-              ],
-              ports: [
-                { protocol: "UDP", port: 53 },
-                { protocol: "TCP", port: 53 },
-              ],
-            },
-            {
-              to: [{ ipBlock: { cidr: `${databaseAddress}/32` } }],
-              ports: [{ protocol: "TCP", port: 5432 }],
-            },
-            {
-              to: [{ ipBlock: { cidr: `${kubernetesAddress}/32` } }],
-              ports: [{ protocol: "TCP", port: kubernetesPort }],
-            },
-          ],
-        },
-      },
-    ],
-  };
-  // Use the production worker entrypoint inside the same network as its private
-  // Gateway route, with the worker's own identity and only its required mounts.
-  const apiPodSpec = manifests.items.find(({ kind }) => kind === "Deployment").spec.template.spec;
-  const apiContainer = apiPodSpec.containers[0];
-  const workerName = "openclaw-enterprise-worker";
-  const workerLabels = { ...labels, "app.kubernetes.io/component": "worker" };
-  const workerVolumes = ["installation", "gateway-api-key", "gateway-ca"];
-  manifests.items.push({
-    apiVersion: "apps/v1",
-    kind: "Deployment",
-    metadata: { name: workerName, namespace: platformNamespace },
-    spec: {
-      replicas: 1,
-      selector: { matchLabels: workerLabels },
-      template: {
-        metadata: { labels: workerLabels },
-        spec: {
-          serviceAccountName: controller.account,
-          automountServiceAccountToken: true,
-          securityContext: apiPodSpec.securityContext,
-          containers: [
-            {
-              name: "worker",
-              image: controllerImage,
-              imagePullPolicy: "IfNotPresent",
-              args: ["apps/controller/src/worker.mjs"],
-              securityContext: apiContainer.securityContext,
-              resources: apiContainer.resources,
-              env: [
-                ...apiContainer.env.filter(({ name }) =>
-                  [
-                    "NODE_ENV",
-                    "OCC_CONFIG_PATH",
-                    "OCC_DATABASE_URL",
-                    "OCC_GATEWAY_API_KEY_PATH",
-                    "NODE_EXTRA_CA_CERTS",
-                  ].includes(name),
-                ),
-                { name: "OCC_WORKER_READINESS_PATH", value: "/var/run/openclaw/ready" },
-                { name: "OCC_WORKER_LIVENESS_PATH", value: "/var/run/openclaw/alive" },
-                {
-                  name: "OCC_WORKER_POLL_INTERVAL_MS",
-                  value: String(workerOptions.pollIntervalMs),
-                },
-                {
-                  name: "OCC_WORKER_LEASE_DURATION_MS",
-                  value: String(workerOptions.leaseDurationMs),
-                },
-                { name: "OCC_WORKER_MAX_ATTEMPTS", value: String(workerOptions.maxAttempts) },
-                {
-                  name: "OCC_WORKER_CONVERGENCE_TIMEOUT_MS",
-                  value: String(workerOptions.convergenceTimeoutMs),
-                },
-              ],
-              volumeMounts: [
-                ...apiContainer.volumeMounts.filter(({ name }) => workerVolumes.includes(name)),
-                { name: "worker-readiness", mountPath: "/var/run/openclaw" },
-              ],
-              readinessProbe: {
-                exec: {
-                  command: ["node", "scripts/production-healthcheck.mjs", "worker", "ready"],
-                },
-              },
-              livenessProbe: {
-                exec: { command: ["node", "scripts/production-healthcheck.mjs", "worker"] },
-              },
-            },
-          ],
-          volumes: [
-            ...apiPodSpec.volumes.filter(({ name }) => workerVolumes.includes(name)),
-            { name: "worker-readiness", emptyDir: { medium: "Memory", sizeLimit: "1Mi" } },
-          ],
-        },
-      },
-    },
-  });
-  const workerIsolation = structuredClone(
-    manifests.items.find(({ kind }) => kind === "NetworkPolicy"),
-  );
-  workerIsolation.metadata.name = `${workerName}-isolation`;
-  workerIsolation.spec.podSelector.matchLabels = workerLabels;
-  manifests.items.push(workerIsolation);
+  const { manifests, apiPodSpec, apiContainer, workerName, workerLabels } =
+    buildControllerTopologyManifests({
+      apiConfiguration,
+      authBaseURL,
+      authSecret,
+      controller,
+      controllerImage,
+      databaseAddress,
+      databaseServiceName,
+      inClusterDatabaseUrl,
+      kubernetesAddress,
+      kubernetesPort,
+      labels,
+      name,
+      configurationSecret,
+      databaseSecret,
+      authSecretName,
+      probeConfigMap,
+      probeSource,
+      nativeAdminDomain,
+      nativeAdminEnabled,
+      platformNamespace,
+      workerOptions,
+      workspaceGateway,
+    });
   const channels = apiConfiguration.drivers.compute.configuration.runtime?.channels;
   if (channels !== undefined) {
     assert.ok(channels.managedProxy, "Slack topology requires the chart-managed proxy");
@@ -1062,99 +787,6 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
       managedProxy: slack.managedProxy,
     };
   }
-  return configuration;
-}
-
-function nativeConfiguration(harnessId, slack, options = {}) {
-  const configuration = createHarnessConfiguration(harnessId, providerModel);
-  const provider = harnessId === "codex" ? "codex" : "openai";
-  configuration.models.providers[provider].models[0].input = ["text", "image"];
-  if (options.controlUi !== undefined) {
-    configuration.gateway.controlUi = options.controlUi;
-  }
-  if (options.gatewayAuth !== undefined) {
-    configuration.gateway = {
-      ...configuration.gateway,
-      auth: options.gatewayAuth.auth,
-      ...(options.gatewayAuth.allowRealIpFallback === undefined
-        ? {}
-        : { allowRealIpFallback: options.gatewayAuth.allowRealIpFallback }),
-      trustedProxies: options.gatewayAuth.trustedProxies,
-    };
-  }
-  if (harnessId === "openclaw") {
-    const modelEnvName = options.modelEnvName ?? "OPENAI_API_KEY";
-    configuration.secrets = {
-      providers: {
-        model: {
-          source: "env",
-          allowlist: Array.from(new Set(["OPENAI_API_KEY", modelEnvName])),
-        },
-      },
-    };
-    configuration.models.providers.openai.apiKey = {
-      source: "env",
-      provider: "model",
-      id: modelEnvName,
-    };
-  }
-  if (harnessId === "codex" && slack === undefined) {
-    // Native Codex file tools require a writable app-server sandbox plus an omitted or wildcard
-    // OpenClaw dynamic-tool allowlist; this case explicitly edits AGENTS.md in the workspace.
-    const appServer = configuration.plugins.entries.codex.config.appServer;
-    appServer.approvalPolicy = "never";
-    appServer.sandbox = "workspace-write";
-    configuration.tools = {
-      allow: ["*"],
-      fs: { workspaceOnly: true },
-    };
-    // Admission and slot selection are separate. Select the intended recall tool owner
-    // explicitly; provider status/search alone does not prove agent-tool registration.
-    configuration.plugins.allow.push("memory-core");
-    configuration.plugins.entries["memory-core"] = { enabled: true };
-    configuration.plugins.slots = { ...configuration.plugins.slots, memory: "memory-core" };
-    // Dedicated Gateways apply a second, concrete tool gate after plugin admission. Preserve
-    // the normal baseline and opt into only the Memory search used by this scenario.
-    const gatewayPolicy = managedGatewayConfiguration(configuration, configuration, true).tools
-      .gatewayPolicy;
-    configuration.tools.gatewayPolicy = {
-      ...gatewayPolicy,
-      allow: [...gatewayPolicy.allow, "memory_search"],
-    };
-    // Exercise remote file indexing without projecting the Harness model key into Gateway.
-    configuration.memory = {
-      search: {
-        enabled: true,
-        provider: "none",
-        sources: ["memory"],
-        store: { vector: { enabled: false } },
-      },
-    };
-  }
-  if (slack === undefined) {
-    return configuration;
-  }
-
-  configuration.plugins.allow.push("slack");
-  configuration.plugins.entries.slack = { enabled: true };
-  configuration.channels = {
-    slack: {
-      enabled: true,
-      mode: "socket",
-      appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-      botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-      dmPolicy: "allowlist",
-      allowFrom: [slack.allowedUserId],
-      channels: {
-        [slack.channelId]: {
-          requireMention: true,
-          allowBots: "mentions",
-          users: [slack.allowedUserId],
-          replyToMode: "off",
-        },
-      },
-    },
-  };
   return configuration;
 }
 
@@ -1572,7 +1204,10 @@ async function storedSecret(pool, namespaceId, secretId) {
 async function createUndeployedAgent(request, namespaceId, mode, name, secretBindings) {
   const configuration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
     kind: "agent",
-    values: nativeConfiguration(mode === "dedicated" ? "codex" : "openclaw"),
+    values: createNativeTopologyConfiguration(
+      mode === "dedicated" ? "codex" : "openclaw",
+      providerModel,
+    ),
     ...(secretBindings === undefined ? {} : { secretBindings }),
   });
   assert.equal(configuration.status, 201, JSON.stringify(configuration.error));
@@ -2381,7 +2016,12 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
         };
   // Exercise Preset selection through the same creation APIs as the console. The
   // scoped caller still needs its own Secret grants; the template grants nothing.
-  const launchValues = nativeConfiguration(harnessId, slack, nativeOptions);
+  const launchValues = createNativeTopologyConfiguration(
+    harnessId,
+    providerModel,
+    slack,
+    nativeOptions,
+  );
   if (publicGithubRead !== undefined) {
     launchValues.plugins.entries.codex.config.appServer.networkProxy = {
       enabled: true,
@@ -2397,34 +2037,17 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       id: "OPENCLAW_GATEWAY_PASSWORD",
     });
   }
-  const templateValues = structuredClone(launchValues);
-  const modelReference = templateValues.agents.defaults.model;
-  templateValues.agents.defaults.model = "{{ vars.model }}";
-  templateValues.agents.defaults.models = {
-    "{{ vars.model }}": templateValues.agents.defaults.models[modelReference],
-  };
+  const template = createTopologyPresetTemplate(
+    launchValues,
+    mode,
+    secretApi.model.ref,
+    secretBindings,
+  );
+  const modelReference = template.variables.model.default;
   const presetsPath = `/namespaces/${namespaceId}/presets`;
   const preset = await adminRequest("POST", presetsPath, {
     name: `production-${mode}-${randomUUID()}`,
-    template: {
-      variables: {
-        name: { type: "string" },
-        model: { type: "string", default: modelReference },
-        secretId: { type: "string" },
-      },
-      agent: {
-        name: "{{ vars.name }}",
-        executionMode: mode,
-        harnessAuth: {
-          method: "api_key",
-          source: { ...secretApi.model.ref, id: "{{ vars.secretId }}" },
-        },
-      },
-      configuration: {
-        values: templateValues,
-        ...(Object.keys(secretBindings).length === 0 ? {} : { secretBindings }),
-      },
-    },
+    template,
   });
   assert.equal(preset.status, 201, JSON.stringify(preset.error));
   const presetPath = `${presetsPath}/${preset.data.id}`;
@@ -5257,7 +4880,7 @@ async function assertSameNamespaceSecretSharing(context, topology) {
     `/namespaces/${topology.agent.namespaceId}/configurations`,
     {
       kind: "agent",
-      values: nativeConfiguration("openclaw"),
+      values: createNativeTopologyConfiguration("openclaw", providerModel),
     },
   );
   assert.equal(configuration.status, 201, JSON.stringify(configuration.error));
@@ -5272,7 +4895,7 @@ async function assertSameNamespaceSecretSharing(context, topology) {
     "PATCH",
     `/namespaces/${topology.agent.namespaceId}/configurations/${configuration.data.id}`,
     {
-      values: nativeConfiguration("openclaw"),
+      values: createNativeTopologyConfiguration("openclaw", providerModel),
       secretBindings: peerBindings,
     },
   );
@@ -5750,7 +5373,7 @@ async function assertNativeReferenceNegativeControl(context, topology) {
     "PATCH",
     configurationPath,
     {
-      values: nativeConfiguration("openclaw", undefined, {
+      values: createNativeTopologyConfiguration("openclaw", providerModel, undefined, {
         modelEnvName: "SECRET_API_DISABLED_OPENAI_KEY",
       }),
       secretBindings: topology.secretApi.configuration.secretBindings,
@@ -5817,7 +5440,7 @@ async function assertDedicatedToEmbeddedCutover(context, topology) {
     `/namespaces/${topology.agent.namespaceId}/configurations/${topology.agent.configurationId}`,
   );
   assert.equal(currentConfiguration.status, 200);
-  const values = nativeConfiguration("openclaw");
+  const values = createNativeTopologyConfiguration("openclaw", providerModel);
   values.gateway = currentConfiguration.data.values.gateway;
   // The successor uses the existing authenticated Envoy route. It does not need
   // the dedicated Gateway's optional direct-loopback password or transport token.

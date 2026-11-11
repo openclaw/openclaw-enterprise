@@ -7,11 +7,11 @@ import { fileURLToPath } from "node:url";
 import { allowsPushRef, readPushedBranchRef } from "../../../access/client-contracts.ts";
 import { readClientConfiguration } from "./config.ts";
 import {
+  buildOperatorRepositoryManifest,
   inheritedRepositoryBinding,
   readManifestOrigins,
   readRuntimeRepositoryManifest,
   requireCurrentBinding,
-  type RuntimeRepositoryBinding,
   type RuntimeRepositoryManifest,
 } from "./manifest.ts";
 import { isUnrelatedPushDestination, selectGitPushDestination } from "./targets.ts";
@@ -72,16 +72,7 @@ async function checkPush(destination: string, input: Buffer): Promise<true | str
   try {
     if (directory) {
       const configuration = await readClientConfiguration(directory);
-      const binding: RuntimeRepositoryBinding = {
-        repositoryRef: "operator",
-        sessionId: configuration.sessionId,
-        deadlineWallMs: configuration.deadlineWallMs,
-        directory: resolve(directory),
-        materialDirectory: resolve(directory),
-        client: configuration.client,
-        configuration,
-      };
-      manifest = { generation: "", bindings: [binding] };
+      manifest = buildOperatorRepositoryManifest(directory, configuration);
     } else {
       const root = setting("manifestRoot");
       expectedGeneration = setting("generation");

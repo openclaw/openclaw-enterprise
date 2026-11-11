@@ -116,10 +116,11 @@ Configurations, workspace files, transcripts and Secret values.
 1. Export every Namespace from the old release:
 
    ```bash
-   node scripts/split-layout-tenants.mjs export --out /secure/occ/tenants.json
+   node scripts/split-layout-tenants.ts export --out /secure/occ/tenants.json
    ```
 
-   If a successful API response is malformed or lacks its data envelope, export
+   If a successful API response is malformed, lacks required restoration fields,
+   or reports unreadable saved Agent settings, export
    exits nonzero without writing a bundle. Restore the API response path and
    rerun export, then check its Namespace inventory before continuing.
 
@@ -149,13 +150,14 @@ Configurations, workspace files, transcripts and Secret values.
    `/secure/occ/tenant-secrets.json`, keyed by the old Namespace name, then
    Secret name: `{"team-a": {"model-key": "..."}}`. List the names with
    `jq '.namespaces[] | {name, secrets: [.secrets[].name]}' /secure/occ/tenants.json`.
-4. Delete the tenants on the old release. The command refuses if a Namespace
-   gained an Agent or Secret after the export, or if the export could not read an
+4. Delete the tenants on the old release. The command refuses ambiguous source
+   IDs that the import map cannot represent, preserving those resources for manual
+   restoration. It also refuses if a Namespace gained an Agent or Secret after the export, or if the export could not read an
    Agent's workspace files; once step 2 has the copy, add
    `--allow-unread-workspace-files`:
 
    ```bash
-   node scripts/split-layout-tenants.mjs discard --bundle /secure/occ/tenants.json \
+   node scripts/split-layout-tenants.ts discard --bundle /secure/occ/tenants.json \
      --yes --allow-unread-workspace-files
    kubectl get namespaces -l openclaw.dev/gateway-namespace
    ```
@@ -170,7 +172,7 @@ Configurations, workspace files, transcripts and Secret values.
    Namespace you no longer need, such as an unused `default`:
 
    ```bash
-   node scripts/split-layout-tenants.mjs import --bundle /secure/occ/tenants.json \
+   node scripts/split-layout-tenants.ts import --bundle /secure/occ/tenants.json \
      --secret-values /secure/occ/tenant-secrets.json --map /secure/occ/tenant-ids.json \
      --rename team-a=team-a-2 --skip default
    ```
@@ -181,12 +183,18 @@ Configurations, workspace files, transcripts and Secret values.
    or saves the map. A skipped source without a saved destination reserves
    nothing; a saved destination stays reserved even while its source is skipped.
    Choose separate targets or skip a source; review an old conflicting map and
-   any already imported resources before retrying.
+   any already imported resources before retrying. Malformed saved IDs and duplicate
+   source Namespace IDs, including skipped sources, are refused before any API request.
+   Import also refuses source IDs shared by different resource kinds or
+   Namespaces, including skipped sources: its flat map cannot keep their destinations separate. Preserve the
+   export and restore those colliding resources manually; do not alter IDs in the bundle.
 
-   It creates the Namespaces and exits `3` until they are `ready`.
+   It creates the Namespaces and exits `3` while they are `provisioning`.
    [Grant tenant RoleBindings](production-agents.md#grant-tenant-rolebindings)
    for each one, then run the same command again. The ID map records every old
-   and new ID, so a rerun after any failure resumes. Exit `4` lists what needs a
+   and new ID. If a write's response has an unexpected status, resource identity,
+   or success/error envelope, reconcile that write before resuming; it may already have committed. Redirects are refused: correct `OCC_URL` instead of replaying a write through a redirect. Failed or deleting Namespaces require
+   lifecycle recovery, not another RoleBinding wait. Exit `4` lists what needs a
    hand: Agents whose deploy failed, such as a service-account Agent without an
    issued credential, and access bindings it could not re-create. The ID map does
    not record those bindings, so each rerun lists them again and exits `4`, also

@@ -218,6 +218,10 @@ func dockerHubReference(reference string) (string, bool) {
 	}
 }
 
+// runtimeFirstBuildNote matches scripts/dev-up's note for the Docker profile.
+const runtimeFirstBuildNote = "Building the runtime image. With no build cache, this compiles Node.js from source first: " +
+	"15-60 minutes or longer, depending on CPUs and memory; later builds reuse the cache."
+
 func (r *runner) importRuntime(ctx context.Context, s *developmentState) (string, error) {
 	image := r.setting("OCC_KUBERNETES_RUNTIME_IMAGE", "openclaw-enterprise-runtime:kubernetes-quickstart")
 	if r.env["OCC_KUBERNETES_RUNTIME_IMAGE"] != "" {
@@ -255,6 +259,11 @@ func (r *runner) importRuntime(ctx context.Context, s *developmentState) (string
 			args = append(args, "--secret", "id=build-ca,src="+path)
 		}
 		args = append(args, "--tag", image, ".")
+		// Startup keeps this tag, so its absence marks a first build on this
+		// engine, which is likely to compile Node.js with no build cache.
+		if _, err := r.output(ctx, r.engine, "image", "inspect", "--format", "{{.Id}}", image); err != nil {
+			fmt.Fprintln(r.opts.Out, runtimeFirstBuildNote)
+		}
 		if err := r.run(ctx, r.engine, args...); err != nil {
 			return "", err
 		}

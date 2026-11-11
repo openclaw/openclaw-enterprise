@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { createServer } from "node:http";
+import { once } from "node:events";
+import { promisify } from "node:util";
+import { inGateway } from "../helpers/skipper-prepared-compute.mjs";
 
 const lane = "skipper-prepared-git-installed";
 const sourceSha = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
@@ -219,4 +223,208 @@ test("aggregate qualifies only the independently selected Skipper image set with
     "later-turn-reauthorized-and-advanced-same-draft",
   );
   assert.equal((await aggregate(team)).status, "passed");
+});
+
+test("installed Skipper receiver reports failures without exposing response content", async (t) => {
+  for (const [scenario, status, category] of [
+    ["transport", 0, "transport"],
+    ["body", 200, "response-body"],
+    ["json", 200, "response-json"],
+    ["http", 403, "permission"],
+    ["success", 200, undefined],
+  ] as const) {
+    await t.test(scenario, async (t) => {
+      const canary = "private-response-content";
+      // Real sockets exercise fetch rejection, interrupted body reads and JSON parsing.
+      const server = createServer((req, res) => {
+        assert.equal(req.method, "POST");
+        assert.equal(req.url, "/v1/chat/completions");
+        assert.equal(req.headers.authorization, "Bearer synthetic-receiver-key");
+        req.resume();
+        if (scenario === "transport") {
+          req.socket.destroy();
+        } else if (scenario === "body") {
+          res.writeHead(200, { "content-length": 1000 });
+          res.write(canary);
+          setTimeout(() => res.destroy(), 50);
+        } else if (scenario === "json") {
+          res.end(canary);
+        } else if (scenario === "http") {
+          res.writeHead(403);
+          res.end("permission denied " + canary);
+        } else {
+          res.end(JSON.stringify({ choices: [{ message: { content: "reply" } }] }));
+        }
+      });
+      t.after(() => {
+        server.closeAllConnections();
+        server.close();
+      });
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const address = server.address();
+      assert.ok(address && typeof address !== "string");
+      // Serialize the same receiver that kubectl executes, without a fake fetch implementation.
+      const result = await promisify(execFile)(
+        process.execPath,
+        ["-e", `(${inGateway.toString()})("prompt", "session")`],
+        {
+          timeout: 10_000,
+          env: {
+            PATH: process.env.PATH,
+            OPENCLAW_GATEWAY_PASSWORD: "synthetic-receiver-key",
+            OPENCLAW_GATEWAY_PORT: String(address.port),
+          },
+        },
+      );
+      assert.equal(result.stderr, "");
+      assert.deepEqual(
+        JSON.parse(result.stdout),
+        category ? { status, category } : { status, content: "reply" },
+      );
+      assert.ok(!result.stdout.includes(canary));
+    });
+  }
+});
+
+test("installed Skipper failure retention preserves known checkpoints and withholds unknown data", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "skipper-failure-receipt-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const stageOutput = join(directory, "step-output");
+  const scope = {
+    PATH: process.env.PATH,
+    GITHUB_ACTIONS: "true",
+    GITHUB_RUN_ID: "42942462012",
+    GITHUB_RUN_ATTEMPT: "1",
+    GITHUB_SHA: sourceSha,
+    GITHUB_OUTPUT: stageOutput,
+  };
+  const checkpoint = [
+    'import { recordSkipperCheckpoint } from "./scripts/ci/skipper-failure-receipt.ts";',
+    'await recordSkipperCheckpoint("skipper_stage", "selected-test");',
+  ].join("\n");
+  const child = (body: string, timeout = 10_000, output = stageOutput) =>
+    spawnSync(process.execPath, ["--input-type=module", "--eval", checkpoint + "\n" + body], {
+      encoding: "utf8",
+      env: { ...scope, GITHUB_OUTPUT: output },
+      timeout,
+    });
+  const outcome = (path: string, outcome: string, lastStage?: string, installedCleanup?: string) =>
+    spawnSync(process.execPath, ["scripts/ci/skipper-failure-receipt.ts", path], {
+      encoding: "utf8",
+      env: {
+        ...scope,
+        SKIPPER_PROOF_OUTCOME: outcome,
+        SKIPPER_STAGE: lastStage,
+        SKIPPER_INSTALLED_CLEANUP: installedCleanup,
+      },
+    });
+  const readOutputs = async () =>
+    Object.fromEntries(
+      (await readFile(stageOutput, "utf8"))
+        .trim()
+        .split("\n")
+        .map((row) => row.split("=")),
+    );
+
+  // The real owner rejects this source before creating its work directory or invoking Docker.
+  const ownerWork = join(directory, "owner-work");
+  const owner = spawnSync(process.execPath, ["scripts/ci/skipper-prepared-git-installed.mjs"], {
+    encoding: "utf8",
+    timeout: 30_000,
+    env: { ...scope, GITHUB_SHA: "0".repeat(40), OCC_FIRST_AGENT_SMOKE_DIRECTORY: ownerWork },
+  });
+  assert.equal(owner.error, undefined);
+  assert.equal(owner.status, 1);
+  assert.match(owner.stderr, /AssertionError/);
+  const ownerOutputs = await readOutputs();
+  await assert.rejects(readFile(ownerWork), { code: "ENOENT" });
+  const ownerFailure = join(directory, "owner-failure.json");
+  assert.equal(
+    outcome(
+      ownerFailure,
+      "failure",
+      ownerOutputs.skipper_stage,
+      ownerOutputs.skipper_installed_cleanup,
+    ).status,
+    0,
+  );
+  assert.deepEqual(ownerOutputs, { skipper_stage: "preflight" });
+  const ownerReceipt = JSON.parse(await readFile(ownerFailure, "utf8"));
+  assert.equal(ownerReceipt.lastStage, "preflight");
+  assert.equal(ownerReceipt.installedCleanup, "unknown");
+  await rm(stageOutput);
+
+  const failed = child(
+    'await recordSkipperCheckpoint("skipper_installed_cleanup", "failed"); process.exitCode = 37;',
+  );
+  assert.equal(failed.status, 37);
+  const observed = await readOutputs();
+  const failure = join(directory, "failed.json");
+  assert.equal(
+    outcome(failure, "failure", observed.skipper_stage, observed.skipper_installed_cleanup).status,
+    0,
+  );
+  assert.deepEqual(JSON.parse(await readFile(failure, "utf8")), {
+    version: 1,
+    runId: "42942462012",
+    attempt: "1",
+    sourceSha,
+    outcome: "failed",
+    lastStage: "selected-test",
+    installedCleanup: "failed",
+  });
+  assert.equal(outcome(failure, "failure", "install", "passed").status, 1);
+  assert.equal(JSON.parse(await readFile(failure, "utf8")).lastStage, "selected-test");
+
+  await rm(stageOutput);
+  const interrupted = spawn(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      checkpoint + '\nprocess.stdout.write("ready\\n"); setInterval(() => {}, 1_000);',
+    ],
+    { env: scope },
+  );
+  try {
+    // Interrupt only after the awaited checkpoint, independently of process startup time.
+    const [ready] = await once(interrupted.stdout, "data", { signal: AbortSignal.timeout(10_000) });
+    assert.equal(ready.toString(), "ready\n");
+    const exited = once(interrupted, "exit", { signal: AbortSignal.timeout(10_000) });
+    interrupted.kill("SIGTERM");
+    assert.deepEqual(await exited, [null, "SIGTERM"]);
+  } finally {
+    if (interrupted.exitCode === null && interrupted.signalCode === null) {
+      const exited = once(interrupted, "exit", { signal: AbortSignal.timeout(10_000) });
+      interrupted.kill("SIGKILL");
+      await exited;
+    }
+  }
+  const partial = await readOutputs();
+  const timed = join(directory, "timeout.json");
+  assert.equal(
+    outcome(timed, "failure", partial.skipper_stage, partial.skipper_installed_cleanup).status,
+    0,
+  );
+  assert.equal(JSON.parse(await readFile(timed, "utf8")).lastStage, "selected-test");
+  assert.equal(JSON.parse(await readFile(timed, "utf8")).installedCleanup, "unknown");
+
+  const missing = child("process.exitCode = 31;", 10_000, join(directory, "absent", "output"));
+  assert.equal(missing.status, 31);
+  const unknown = join(directory, "unknown.json");
+  assert.equal(
+    outcome(unknown, "failure", "stage\nsynthetic-canary", "synthetic-canary").status,
+    0,
+  );
+  const published = await readFile(unknown, "utf8");
+  assert.doesNotMatch(published, /synthetic-canary/);
+  assert.equal(JSON.parse(published).lastStage, "unknown");
+  assert.equal(JSON.parse(published).installedCleanup, "unknown");
+
+  const success = child('await recordSkipperCheckpoint("skipper_installed_cleanup", "passed");');
+  assert.equal(success.status, 0);
+  const withheld = join(directory, "success.json");
+  assert.equal(outcome(withheld, "success", "finish-fixture", "passed").status, 0);
+  await assert.rejects(readFile(withheld), { code: "ENOENT" });
 });

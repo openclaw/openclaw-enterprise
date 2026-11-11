@@ -695,10 +695,13 @@ test("bundled live Git refuses historical v5 installation scope before any effec
       appId: registry.appId,
       githubInstallationId: registry.githubInstallationId,
       maximumDurationSeconds: 86400,
+      allowStandingApprovals: true,
       repositories: registry.repositories,
       installationAccess: {
         repositoryRef: "installation",
-        namespaces: [{ namespaceId: "namespace-a", accessMode: "installation" }],
+        namespaces: [
+          { namespaceId: "namespace-a", accessMode: "installation", allowStandingApproval: true },
+        ],
       },
     },
     registry.backendId,
@@ -729,6 +732,35 @@ test("bundled live Git refuses historical v5 installation scope before any effec
     gateway++;
     return new Error("unadmitted v5 installation reached the Gateway");
   };
+  assert.equal(
+    await f.runtime.repositoryWorkerRestartDisposition(saved, t.signal),
+    "unknown",
+    "unsupported historical delivery cannot establish a safe worker replacement",
+  );
+  const standingCredentials = {
+    ...repositoryCredentials,
+    standingApprovalId: "historical-standing-approval",
+    standingApprovalGeneration: 1,
+    standingApprovalScopeFingerprint: "a".repeat(64),
+  };
+  let evidenceReads = 0;
+  f.runtime.connectRestartObservation(async () => {
+    evidenceReads++;
+    return true;
+  });
+  // Even available evidence cannot restore a delivery mode the live owner removed.
+  assert.equal(
+    await f.runtime.repositoryWorkerRestartDisposition(
+      {
+        ...saved,
+        repositoryCredentials: standingCredentials,
+        egressPlan: { ...saved.egressPlan, repositoryGit: standingCredentials },
+      },
+      t.signal,
+    ),
+    "unknown",
+  );
+  assert.equal(evidenceReads, 0, "unsupported delivery is rejected before owner evidence");
   await assert.rejects(
     f.runtime.prepare(
       saved,
@@ -749,6 +781,56 @@ test("bundled live Git refuses historical v5 installation scope before any effec
 
 // Preserve the admission checks on the supported selected-repository workflow.
 test("Git preparation refuses missing admission or plan identity before gateway calls", async (t) => {
+  const { f: assessor, store: assessorStore, revision: selected } = await selectedV5(t);
+  const beforeAssessment = structuredClone(assessor.calls);
+  const beforeStore = structuredClone(assessorStore.calls);
+  const { repositoryCredentials, egressPlan, ...withoutRepository } = selected;
+  assert.ok(repositoryCredentials);
+  assert.ok(egressPlan);
+  const { repositoryGit: _repositoryGit, ...authorizationOnly } = egressPlan;
+  // Assess the admitted mode without preparing a route or contacting its material owner.
+  assert.equal(
+    await assessor.runtime.repositoryWorkerRestartDisposition(selected, t.signal),
+    "original-worker-required",
+  );
+  assert.equal(
+    await assessor.runtime.repositoryWorkerRestartDisposition(withoutRepository, t.signal),
+    "not-applicable",
+  );
+  assert.equal(
+    await assessor.runtime.repositoryWorkerRestartDisposition(
+      { ...withoutRepository, egressPlan },
+      t.signal,
+    ),
+    "unknown",
+    "a route without its matching repository snapshot is inconsistent",
+  );
+  assert.equal(
+    await assessor.runtime.repositoryWorkerRestartDisposition(
+      { ...withoutRepository, egressPlan: authorizationOnly },
+      t.signal,
+    ),
+    "unknown",
+    "an authorization mode without its repository snapshot is inconsistent",
+  );
+  assert.equal(
+    await assessor.runtime.repositoryWorkerRestartDisposition(
+      { ...withoutRepository, repositoryCredentials },
+      t.signal,
+    ),
+    "unknown",
+    "a profile alone does not identify this owner's delivery mode",
+  );
+  assert.equal(
+    await assessor.runtime.repositoryWorkerRestartDisposition(
+      withoutRepository,
+      AbortSignal.abort(),
+    ),
+    "unknown",
+  );
+  assert.deepEqual(assessor.calls, beforeAssessment);
+  assert.deepEqual(assessorStore.calls, beforeStore);
+  assert.equal(assessorStore.rows.size, 0);
   for (const invalid of [
     "no-plan",
     "no-admission",
@@ -785,6 +867,11 @@ test("Git preparation refuses missing admission or plan identity before gateway 
     f.faults.gatewayCall = () => {
       gatewayCalls += 1;
     };
+    assert.equal(
+      await f.runtime.repositoryWorkerRestartDisposition(candidate, t.signal),
+      "unknown",
+      "incomplete admission cannot establish a prospective restart disposition",
+    );
     await assert.rejects(
       f.runtime.prepare(
         candidate,
@@ -1725,20 +1812,28 @@ test("finite v5 Git expiry refuses resolver substitution and never replays an un
       }
       return result;
     };
-    const negative: string[] = [];
-    assert.equal(
-      await subtractExpiredOpenShellGit(
-        expiry,
-        saved,
-        client,
-        { ...owner, workload: async () => "replacement-pods" },
-        t.signal,
-        async () => assert.fail("replacement launch must fail before profile validation"),
-        (outcome, check) => negative.push(outcome + ":" + check),
-      ),
-      "retire-runtime",
-    );
-    assert.deepEqual(negative, ["retire-runtime:original-launch-and-pods"]);
+    if (fault === "replacement Pod") {
+      const negative: unknown[] = [];
+      assert.equal(
+        await subtractExpiredOpenShellGit(
+          expiry,
+          saved,
+          client,
+          { ...owner, workload: async () => undefined },
+          t.signal,
+          async () => assert.fail("unconfirmed launch must fail before profile validation"),
+          (outcome, check, failure) => negative.push({ outcome, check, failure }),
+        ),
+        "retire-runtime",
+      );
+      assert.deepEqual(negative, [
+        {
+          outcome: "retire-runtime",
+          check: "original-launch-and-pods",
+          failure: "launch_workload_unconfirmed",
+        },
+      ]);
+    }
     assert.equal(intents, 0);
     assert.equal(sends, 0);
     const cleanup = (runtime = f.runtime, observer = owner) => {
@@ -1865,14 +1960,13 @@ test("finite v5 Git expiry refuses resolver substitution and never replays an un
       assert.equal(confirmations, [first, second, third].filter((v) => v === "withdrawn").length);
     } else {
       const event = events.at(-1)!;
-      assert.equal(
-        event.failure,
-        ["Sandbox moved before send", "string conflict code", "unimplemented detach"].includes(
-          fault,
-        )
-          ? "failed"
-          : "unconfirmed",
-      );
+      const terminalFailures: Record<string, string> = {
+        "replacement Pod": "launch_fingerprint_mismatch",
+        "Sandbox moved before send": "failed",
+        "string conflict code": "failed",
+        "unimplemented detach": "failed",
+      };
+      assert.equal(event.failure, terminalFailures[fault] ?? "unconfirmed");
       assert.equal(
         event.grpcStatus,
         ({ "Sandbox moved before send": 10, "unimplemented detach": 12 } as Record<string, number>)[
