@@ -6,7 +6,7 @@ import type {
   NamespaceEnsureResult,
 } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
-import { MAX_TIMER_DELAY_MS } from "@openclaw-enterprise/utils";
+import { MAX_TIMER_DELAY_MS, numericErrorStatus } from "@openclaw-enterprise/utils";
 
 /**
  * Which optional wait asks whether other Work is waiting: an ordinary stop's Gateway drain, or any
@@ -44,10 +44,25 @@ export async function captureNamespaceHint<
   return { observation, ...evidence };
 }
 
-export function recordNamespaceHint(hintCode: NamespaceHintCode): void {
+function recordNamespaceHint(hintCode: NamespaceHintCode): void {
   const evidence = namespaceHints.getStore();
   if (evidence !== undefined) {
     evidence.hintCode = hintCode;
+  }
+}
+
+/** Run tenant-resource work and log a hint if Kubernetes answers HTTP 403, a missing tenant grant. */
+export async function withTenantAccessHint<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (
+      numericErrorStatus(error) === 403 &&
+      error instanceof (await import("@kubernetes/client-node")).ApiException
+    ) {
+      recordNamespaceHint("KUBERNETES_TENANT_ACCESS_DENIED");
+    }
+    throw error;
   }
 }
 

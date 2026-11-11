@@ -5287,6 +5287,49 @@ test("a Namespace deletion refused with HTTP 403 reports the tenant access hint"
     observation: { namespaceId: tenant.id, namespaceDeleted: false, failure: "retryable" },
   });
 
+  // The Sandbox cleans its tenant resources before Compute deletes anything, so its denial needs the hint too.
+  const { sandboxNamespaceLifecycleBinding } =
+    await import("../../apps/controller/src/composition/namespace-lifecycle.ts");
+  const { reconcileNamespaceLifecycle } =
+    await import("../../packages/occ/src/namespace-lifecycle.ts");
+  const sandboxDeleteWith = (cleanupError) => {
+    const { driver, deleting, state } = adoptedNamespaceTeardownFixture();
+    const sandboxDriver = {
+      id: "sandbox-denied-cleanup",
+      implementation: "test/denied-cleanup",
+      capability: "sandbox",
+      supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+      facets: ["networking"],
+      async cleanup() {
+        throw cleanupError;
+      },
+    };
+    const { hooks } = sandboxNamespaceLifecycleBinding(driver, sandboxDriver);
+    return captureNamespaceHint(async () => {
+      const result = await reconcileNamespaceLifecycle(
+        driver,
+        [{ id: sandboxDriver.id, hooks }],
+        deleting,
+        "deleted",
+        new AbortController().signal,
+        () => {},
+      );
+      assert.ok(!state.calls.some((call) => call.startsWith("delete ")), "Compute never ran");
+      return result;
+    });
+  };
+  assert.deepEqual(
+    await sandboxDeleteWith(new ApiException(403, "Forbidden", JSON.stringify({ code: 403 }), {})),
+    {
+      observation: { namespaceId: tenant.id, namespaceDeleted: false, failure: "permanent" },
+      hintCode: "KUBERNETES_TENANT_ACCESS_DENIED",
+    },
+  );
+  assert.deepEqual(
+    await sandboxDeleteWith(Object.assign(new Error("unavailable"), { statusCode: 503 })),
+    { observation: { namespaceId: tenant.id, namespaceDeleted: false, failure: "retryable" } },
+  );
+
   // Tenant RoleBindings cannot authorize the control-plane Gateway namespace, so its denial stays unhinted.
   const twoCluster = new KubernetesComputeDriver(twoClusterOptions());
   const gatewayNamespace = twoCluster.gatewayNamespaceManifest({ namespaceId: tenant.id });
@@ -5756,10 +5799,10 @@ function adoptedNamespaceTeardownFixture(computeOptions = options()) {
     objects: {},
   });
   driver.executionApiClients = driver.apiClients;
-  const teardown = () =>
-    driver.deleteNamespace({ ...tenant, status: "deleting", existingNamespace: name });
+  const deleting = { ...tenant, status: "deleting", existingNamespace: name };
+  const teardown = () => driver.deleteNamespace(deleting);
   const remaining = () => [...objects.keys()].sort();
-  return { objects, state, kept, teardown, remaining };
+  return { driver, deleting, objects, state, kept, teardown, remaining };
 }
 
 // Finding 1400: an existing namespace outlives its OCC Namespace, so teardown removes the

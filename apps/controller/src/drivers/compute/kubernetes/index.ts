@@ -245,8 +245,8 @@ import {
   computeWorkWaiting,
   currentComputeAbortSignal,
   isYieldingComputeStop,
-  recordNamespaceHint,
   withComputeAbortSignal,
+  withTenantAccessHint,
 } from "../operation-context.ts";
 import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
 import {
@@ -1558,21 +1558,6 @@ function failure(error: unknown): "retryable" | "permanent" {
     [400, 401, 403, 422].includes(numericErrorStatus(error) ?? 0)
     ? "permanent"
     : "retryable";
-}
-
-/** Run tenant-resource work and log a hint if Kubernetes answers HTTP 403, a missing tenant grant. */
-async function withTenantAccessHint<T>(operation: () => Promise<T>): Promise<T> {
-  try {
-    return await operation();
-  } catch (error) {
-    if (
-      numericErrorStatus(error) === 403 &&
-      error instanceof (await import("@kubernetes/client-node")).ApiException
-    ) {
-      recordNamespaceHint("KUBERNETES_TENANT_ACCESS_DENIED");
-    }
-    throw error;
-  }
 }
 
 const MAX_NAMESPACE_FAILURE_REASON_LENGTH = 256;
