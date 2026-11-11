@@ -101,34 +101,81 @@ function run(root, args, env = {}, { timeout } = {}) {
 
 test(
   "grant wire CLI preserves failures and settles terminal interruptions before cleanup",
-  { skip: process.platform === "win32" && "uses POSIX terminal process groups" },
+  { skip: process.platform !== "linux" && "uses Linux process groups and /proc" },
   async (t) => {
-    const wireName = "OpenShell inspected Git fetch redeems the active grant and refuses withdrawal";
+    const wireName =
+      "OpenShell inspected Git fetch redeems the active grant and refuses withdrawal";
     const file = "tests/integration/postgres-openshell-online-git-journey.test.ts";
-    const source = await readFile(join(repositoryRoot, "scripts/ci/openshell-grant-wire.ts"), "utf8");
+    const source = await readFile(
+      join(repositoryRoot, "scripts/ci/openshell-grant-wire.ts"),
+      "utf8",
+    );
     for (const [scenario, code, failure, stages] of [
       ["success", 0, undefined, ["prepare", "test", "cleanup"]],
       ["prepare-no-state", 1, "prepare failed", ["prepare"]],
       ["prepare", 1, "prepare failed", ["prepare", "cleanup"]],
       ["prepare-and-cleanup", 1, "prepare failed", ["prepare", "cleanup"]],
       ["test", 1, "test failed", ["prepare", "test", "cleanup"]],
-      ["wire", 1, `wire proof missing or not passed: "${wireName}"`, ["prepare", "test", "cleanup"]],
+      [
+        "wire",
+        1,
+        `wire proof missing or not passed: "${wireName}"`,
+        ["prepare", "test", "cleanup"],
+      ],
       ["cleanup", 1, "cleanup failed", ["prepare", "test", "cleanup"]],
       ["cleanup-no-state", 1, "cleanup failed", ["prepare", "test", "cleanup"]],
       ["interrupt-prepare", 130, "SIGINT", ["prepare", "cleanup"]],
       ["interrupt-test", 143, "SIGTERM", ["prepare", "test", "cleanup"]],
       ["interrupt-cleanup", 130, "SIGINT", ["prepare", "test", "cleanup"]],
+      ["stuck-SIGINT", 130, "SIGINT", ["prepare", "cleanup"]],
+      ["stuck-SIGTERM", 143, "SIGTERM", ["prepare", "cleanup"]],
+      ["lost-supervisor", 130, "unresolved preparation operation", ["prepare"]],
     ]) {
       await t.test(scenario, async (t) => {
+        let blockerRecord;
+        // Stop our recorded fixture processes before temporaryDirectory removes its files.
+        t.after(async () => {
+          const pids = JSON.parse(await readFile(blockerRecord, "utf8").catch(() => "null"));
+          if (pids) {
+            for (const pid of [pids.preparation, pids.pid]) {
+              if (procStat(pid)?.pgid === pids.pgid) {
+                try {
+                  process.kill(pid, "SIGKILL");
+                } catch {
+                  // Already exited.
+                }
+              }
+            }
+            assert.ok(
+              await waitFor(
+                () =>
+                  [pids.preparation, pids.pid].every((pid) => {
+                    const state = procStat(pid)?.state;
+                    return state === undefined || state === "Z" || state === "X";
+                  }),
+                2_000,
+              ),
+            );
+          }
+        });
         const root = await fixture(t);
         const cli = join(root, "scripts/ci/openshell-grant-wire.ts");
         const events = join(root, "events");
         await writeFile(cli, source);
+        await writeFile(
+          join(root, "scripts/ci/cleanup-command.mjs"),
+          await readFile(join(repositoryRoot, "scripts/ci/cleanup-command.mjs")),
+        );
+        const stuck = scenario.startsWith("stuck-");
+        const lostSupervisor = scenario === "lost-supervisor";
+        blockerRecord = join(root, "blocker.json");
+        const afterTerm = join(root, "after-term");
         // Safe CI process substitutes exercise the unchanged normal entrypoint only.
-        // No PostgreSQL, wire binary, container, or actual CI helper is executed.
+        // Only the real process supervisor runs; prepare/test/cleanup are substitutes.
         const helper = String.raw`
           import assert from "node:assert/strict";
-          import { appendFileSync, existsSync, unlinkSync, writeFileSync } from "node:fs";
+          import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+          import { spawn } from "node:child_process";
           import { basename } from "node:path";
           const scenario = ${JSON.stringify(scenario)};
           const stage = basename(import.meta.filename, ".mjs").replace("run-tests", "test");
@@ -146,10 +193,49 @@ test(
           if (stage !== "prepare") {
             assert.ok(existsSync(state));
           }
+          const proc = (pid) => readFileSync("/proc/" + pid + "/stat", "utf8")
+            .replace(/^.*\) /su, "").split(" ");
+          if (stage === "cleanup" && scenario.startsWith("stuck-")) {
+            const pids = JSON.parse(readFileSync(${JSON.stringify(blockerRecord)}, "utf8"));
+            assert.throws(() => process.kill(-pids.pgid, 0), { code: "ESRCH" });
+          }
+          let operator = process.ppid;
+          if (readFileSync("/proc/" + operator + "/cmdline", "utf8").includes("cleanup-command.mjs")) {
+            operator = Number(proc(operator)[1]);
+          }
+          assert.ok(readFileSync("/proc/" + operator + "/cmdline", "utf8").includes("openshell-grant-wire.ts"));
           if (scenario === "interrupt-" + stage) {
             const signal = stage === "test" ? "SIGTERM" : "SIGINT";
-            process.kill(-process.ppid, signal);
-            setTimeout(() => process.kill(-process.ppid, signal), 10);
+            process.kill(-operator, signal);
+            setTimeout(() => process.kill(-operator, signal), 10);
+          }
+          if (stage === "prepare" && (scenario.startsWith("stuck-") || scenario === "lost-supervisor")) {
+            const blocker = spawn(process.execPath, ["-e", ${JSON.stringify(`
+              const fs = require("node:fs");
+              let stopped = false;
+              process.on("SIGTERM", () => { stopped = true; });
+              process.on("SIGINT", () => {});
+              setInterval(() => {
+                if (stopped) {
+                  fs.writeFileSync(${JSON.stringify(afterTerm)}, "continued after SIGTERM");
+                  stopped = false;
+                }
+              }, 25);
+              // Test-only watchdog: the old wrapper must fail the shorter bound.
+              setTimeout(() => process.exit(0), 8_000);
+              process.send("ready");
+            `)}], { stdio: ["ignore", "inherit", "inherit", "ipc"] });
+            blocker.once("message", () => {
+              writeFileSync(${JSON.stringify(blockerRecord)}, JSON.stringify({
+                preparation: process.pid, pid: blocker.pid, pgid: Number(proc(blocker.pid)[2]),
+              }));
+              process.kill(-operator, scenario === "lost-supervisor" ? "SIGINT" : scenario.slice("stuck-".length));
+              if (scenario === "lost-supervisor") {
+                assert.notEqual(operator, process.ppid, "the supervisor must own this group");
+                setTimeout(() => process.kill(process.ppid, "SIGKILL"), 50);
+              }
+            });
+            await new Promise((resolve) => blocker.once("close", resolve));
           }
           setTimeout(() => {
             if (stage === "test") {
@@ -172,6 +258,7 @@ test(
         for (const name of ["prepare", "run-tests", "cleanup"]) {
           await writeFile(join(root, "scripts/ci", `${name}.mjs`), helper);
         }
+        const began = performance.now();
         const result = spawnSync(process.execPath, [cli], {
           cwd: root,
           detached: true,
@@ -190,6 +277,35 @@ test(
         assert.equal(result.signal, null);
         assert.equal(result.status, code, result.stderr);
         const output = result.stdout + result.stderr;
+        const unresolved = output.includes("unresolved preparation operation");
+        const expectedStages = unresolved ? ["prepare"] : stages;
+        if (stuck || lostSupervisor) {
+          assert.ok(performance.now() - began < 6_500, "interrupted preparation must be bounded");
+          if (stuck) {
+            assert.equal(await readFile(afterTerm, "utf8"), "continued after SIGTERM");
+          }
+          const pids = JSON.parse(await readFile(blockerRecord, "utf8"));
+          const remaining = procStat(pids.pid);
+          if (lostSupervisor) {
+            assert.equal(unresolved, true);
+            assert.ok(
+              remaining && !["Z", "X"].includes(remaining.state),
+              "unresolved operation is still alive",
+            );
+          } else {
+            assert.ok(!remaining || ["Z", "X"].includes(remaining.state), "blocker must stop");
+          }
+          if (unresolved) {
+            assert.match(output, /Cleanup not started; preserve state/);
+          }
+          t.diagnostic(
+            unresolved
+              ? "unresolved group retained; no cleanup"
+              : "group stopped; cleanup completed",
+          );
+        } else {
+          assert.equal(unresolved, false, output);
+        }
         assert.doesNotMatch(output, /private-helper-output|private-env-canary/);
         if (failure) {
           assert.ok(result.stderr.includes(failure), result.stderr);
@@ -199,22 +315,30 @@ test(
         if (cleanupFailure) {
           assert.match(result.stderr, /cleanup failed/);
         }
-        const timing = output.match(/prepare_ms=(\d+) test_ms=(\d+) cleanup_ms=(\d+) elapsed_ms=(\d+)/);
+        const timing = output.match(
+          /prepare_ms=(\d+) test_ms=(\d+) cleanup_ms=(\d+) elapsed_ms=(\d+)/,
+        );
         assert.ok(timing, output);
         const [prepare, test, cleanup, elapsed] = timing.slice(1).map(Number);
         for (const [stage, duration] of Object.entries({ prepare, test, cleanup })) {
-          assert.equal(duration > 0, stages.includes(stage));
+          assert.equal(duration > 0, expectedStages.includes(stage));
         }
         assert.ok(elapsed >= prepare + test + cleanup - 3);
         assert.deepEqual(
           (await readFile(events, "utf8")).trim().split("\n"),
-          stages.flatMap((stage) => [`${stage}:start`, `${stage}:settled`]),
+          expectedStages.flatMap((stage) =>
+            (stuck || lostSupervisor) && stage === "prepare"
+              ? ["prepare:start"]
+              : [`${stage}:start`, `${stage}:settled`],
+          ),
         );
-        const directories = (await readdir(root)).filter((name) => name.startsWith("oce-grant-wire-"));
+        const directories = (await readdir(root)).filter((name) =>
+          name.startsWith("oce-grant-wire-"),
+        );
         assert.equal(directories.length, code === 0 ? 0 : 1);
         if (code !== 0) {
           const retained = await readdir(join(root, directories[0]));
-          assert.equal(retained.includes("state.json"), cleanupFailure);
+          assert.equal(retained.includes("state.json"), cleanupFailure || unresolved);
           assert.ok(retained.includes("prepare.log"));
         }
       });

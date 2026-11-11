@@ -77,12 +77,18 @@ binary or create an OpenShell cluster. Success requires the case
 to pass, as well as the file and cleanup.
 
 Each run owns a private temporary directory. Cleanup runs after preparation or
-test failure if state exists. SIGINT and SIGTERM let the current stage settle
-under its existing deadlines, skip tests that have not started, and run cleanup.
-The command then exits with code 130 or 143, respectively. Repeated signals do
-not interrupt teardown. After forced termination, let any remaining child finish
-before manual cleanup with `node scripts/ci/cleanup.mjs --state` and the retained
-`state.json` path.
+test failure if state exists. On Linux, SIGINT and SIGTERM give preparation one
+second to finish, then send SIGTERM to its owned subprocess group. After another
+second, the command sends SIGKILL if the supervisor is still running. It waits up
+to one more second for the supervisor to close and the group to disappear before
+cleanup. If settlement cannot be confirmed, it reports an unresolved operation
+and retains state without starting cleanup. Resolve that operation before manual
+cleanup with `node scripts/ci/cleanup.mjs --state` and the retained `state.json` path.
+
+Interruptions skip tests that have not started; running tests and cleanup retain
+their existing deadlines. The command exits with code 130 or 143 for the original
+SIGINT or SIGTERM. Repeated signals do not interrupt teardown. After forced
+termination, confirm remaining operations have stopped before manual cleanup.
 
 The command reports the failed stage, names missing wire proof, and prints
 prepare, test, cleanup, and overall elapsed milliseconds. Unstarted stages report

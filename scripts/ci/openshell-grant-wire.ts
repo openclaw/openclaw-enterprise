@@ -1,10 +1,12 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
+import { fork, spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { constants, existsSync } from "node:fs";
 import { access, mkdtemp, open, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const lane = "postgres-platform";
@@ -14,6 +16,7 @@ const binaryVariable = "OCC_TEST_OPENSHELL_PLACEHOLDER_WIRE_BINARY";
 const started = performance.now();
 const durations = { prepare: 0, test: 0, cleanup: 0 };
 let interruption: NodeJS.Signals | undefined;
+let interruptPreparation: (() => void) | undefined;
 
 // Only fixed messages from this wrapper may reach the terminal.
 class PublicFailure extends Error {}
@@ -21,7 +24,10 @@ class PublicFailure extends Error {}
 function interrupt(signal: NodeJS.Signals) {
   if (!interruption) {
     interruption = signal;
-    console.error(`openshell-grant-wire: ${signal}; waiting for the current stage, then cleanup.`);
+    console.error(
+      `openshell-grant-wire: ${signal}; stopping preparation or waiting for the current stage.`,
+    );
+    interruptPreparation?.();
   }
 }
 
@@ -29,6 +35,58 @@ function checkInterruption() {
   if (interruption) {
     throw new PublicFailure(`interrupted by ${interruption}.`);
   }
+}
+
+// The supervisor anchors the group ID until it exits. Never signal a reaped
+// leader's numeric ID; successful signal delivery alone does not prove exit.
+async function settlePreparation(child: ChildProcess, closed: Promise<boolean>) {
+  let closeObserved = false;
+  void closed.then(() => {
+    closeObserved = true;
+  });
+  async function grace() {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        closed,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, 1_000);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  function signalGroup(signal: NodeJS.Signals) {
+    if (child.pid && child.pid > 1 && child.exitCode === null && child.signalCode === null) {
+      try {
+        process.kill(-child.pid, signal);
+      } catch {
+        // The existence check below decides whether settlement can be confirmed.
+      }
+    }
+  }
+  await grace();
+  signalGroup("SIGTERM");
+  await grace();
+  signalGroup("SIGKILL");
+  const deadline = performance.now() + 1_000;
+  do {
+    if (child.pid === undefined && closeObserved) {
+      return true; // Failed spawn: no subprocess group exists.
+    }
+    try {
+      if (child.pid !== undefined) {
+        process.kill(-child.pid, 0);
+      }
+    } catch (error) {
+      if (closeObserved && (error as NodeJS.ErrnoException).code === "ESRCH") {
+        return true;
+      }
+    }
+    await delay(25);
+  } while (performance.now() < deadline);
+  return false;
 }
 
 async function main() {
@@ -68,30 +126,68 @@ async function main() {
   });
   console.log(`Run directory: ${JSON.stringify(directory)}`);
 
+  let unresolvedPreparation: { pgid: number | undefined } | undefined;
+
   async function run(stage: keyof typeof durations, script: string, args: string[]) {
     const stageStarted = performance.now();
     console.log(`openshell-grant-wire: ${stage}`);
     try {
       const log = await open(join(directory, `${stage}.log`), "wx", 0o600);
       try {
-        await new Promise<void>((accept, reject) => {
-          const child = spawn(process.execPath, [join(root, "scripts/ci", script), ...args], {
-            cwd: root,
-            env,
-            // Terminal signals stop admission here, not the child's in-flight work.
-            // Keep it referenced and await its existing deadlines before teardown.
-            detached: true,
-            stdio: ["ignore", log.fd, log.fd],
+        const command = [join(root, "scripts/ci", script), ...args];
+        const child =
+          stage === "prepare"
+            ? fork(new URL("./cleanup-command.mjs", import.meta.url), [], {
+                cwd: root,
+                env,
+                detached: true,
+                execArgv: [],
+                stdio: ["ignore", log.fd, log.fd, "ipc"],
+              })
+            : spawn(process.execPath, command, {
+                cwd: root,
+                env,
+                detached: true,
+                stdio: ["ignore", log.fd, log.fd],
+              });
+        let commandPassed = false;
+        let commandError = false;
+        const closed = new Promise<boolean>((resolve) => {
+          child.on("error", () => {
+            commandError = true;
           });
-          child.once("error", reject);
+          child.on("message", (result: { code?: number; error?: unknown }) => {
+            commandPassed = result.code === 0 && !result.error;
+          });
           child.once("close", (code) => {
-            if (code === 0) {
-              accept();
-            } else {
-              reject(new Error());
-            }
+            resolve(!commandError && (stage === "prepare" ? commandPassed : code === 0));
           });
         });
+        if (stage === "prepare") {
+          const interrupted = new Promise<void>((resolve) => {
+            interruptPreparation = resolve;
+          });
+          child.send?.({ command: process.execPath, args: command }, (error) => {
+            if (error) {
+              commandError = true;
+            }
+          });
+          if (interruption) {
+            interruptPreparation?.();
+          }
+          await Promise.race([closed, interrupted]);
+          if (!(await settlePreparation(child, closed))) {
+            unresolvedPreparation = { pgid: child.pid };
+            // Neither an unresponsive process nor its IPC channel may hold the CLI.
+            // Disconnection on exit still lets the supervisor stop its owned group.
+            child.unref();
+            child.channel?.unref();
+            throw new Error();
+          }
+        }
+        if (!(await closed)) {
+          throw new Error();
+        }
       } finally {
         await log.close();
       }
@@ -100,6 +196,9 @@ async function main() {
         `${stage} failed; inspect ${stage}.log in the private run directory.`,
       );
     } finally {
+      if (stage === "prepare") {
+        interruptPreparation = undefined;
+      }
       durations[stage] = Math.round(performance.now() - stageStarted);
     }
   }
@@ -130,7 +229,9 @@ async function main() {
     try {
       const summary = JSON.parse(await readFile(results, "utf8"));
       const selected = summary.files?.filter((entry: { path: string }) => entry.path === file);
-      const wire = selected?.[0]?.tests?.filter((entry: { name: string }) => entry.name === wireTest);
+      const wire = selected?.[0]?.tests?.filter(
+        (entry: { name: string }) => entry.name === wireTest,
+      );
       if (
         summary.lane !== lane ||
         summary.scope !== "focused" ||
@@ -153,7 +254,11 @@ async function main() {
       `openshell-grant-wire: ${error instanceof PublicFailure ? error.message : "run failed."}`,
     );
   } finally {
-    if (existsSync(state)) {
+    if (unresolvedPreparation) {
+      console.error(
+        `openshell-grant-wire: unresolved preparation operation; group ${unresolvedPreparation.pgid ?? "unknown"} settlement unconfirmed. Cleanup not started; preserve state and resolve the operation before manual cleanup.`,
+      );
+    } else if (existsSync(state)) {
       try {
         await run("cleanup", "cleanup.mjs", ["--state", state]);
       } catch {
