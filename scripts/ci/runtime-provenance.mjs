@@ -1,11 +1,16 @@
 import { join } from "node:path";
-import { extractImageFile, removeImageFileContainer } from "../lib/image-file.mjs";
+import {
+  extractImageFile,
+  ImageFileReadError,
+  removeImageFileContainer,
+} from "../lib/image-file.mjs";
 import { readFile, rm } from "node:fs/promises";
 
 const digest = /^sha256:[a-f0-9]{64}$/;
 const hash = /^[a-f0-9]{64}$/;
 const commit = /^[a-f0-9]{40}$/;
-const version = /^\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]{1,64})?$/;
+const version =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const roles = ["OCC_TEST_KUBERNETES_GATEWAY_IMAGE", "OCC_TEST_KUBERNETES_AGENT_IMAGE"];
 
 // Only image-owned build metadata crosses into uploaded evidence. In particular,
@@ -82,6 +87,7 @@ export async function readImageCodexProvenance({
 }) {
   const destination = join(directory, `${resource.id}.json`);
   let metadata;
+  const errors = [];
   try {
     await extractImageFile({
       command,
@@ -94,17 +100,25 @@ export async function readImageCodexProvenance({
       resource,
       persist,
     });
-    metadata = codexProvenance(JSON.parse(await readFile(destination, "utf8")), platform);
-  } catch {
-    // Read failures are observational; resource cleanup below is mandatory.
+  } catch (error) {
+    if (!(error instanceof ImageFileReadError)) {
+      errors.push(error);
+    }
+  }
+  if (errors.length === 0) {
+    try {
+      metadata = codexProvenance(JSON.parse(await readFile(destination, "utf8")), platform);
+    } catch {
+      // Only content read/parse failures are observational.
+    }
   }
   const outcomes = await Promise.allSettled([
     removeImageFileContainer({ command, resource }),
     rm(destination, { force: true }),
   ]);
-  const errors = outcomes
-    .filter((outcome) => outcome.status === "rejected")
-    .map((outcome) => outcome.reason);
+  errors.push(
+    ...outcomes.filter((outcome) => outcome.status === "rejected").map((outcome) => outcome.reason),
+  );
   if (errors.length) {
     throw new AggregateError(errors, "Runtime provenance cleanup failed");
   }

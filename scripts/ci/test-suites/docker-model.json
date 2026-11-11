@@ -23,7 +23,8 @@
         "OpenShell image extraction removes its Docker container after copy cancellation",
         "OpenShell image extraction removes its Docker container after renamed copy cancellation",
         "OpenShell image extraction removes its Docker container after unsettled create cancellation",
-        "OpenShell image extraction preserves a replacement after losing the create reply"
+        "OpenShell image extraction preserves a replacement after losing the create reply",
+        "OpenShell image extraction works without an image default command"
       ]
     },
     {

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { describe, test } from "node:test";
 import { nodeLogExcerpt } from "../../scripts/ci/k3d-diagnostics.mjs";
@@ -110,6 +110,8 @@ for (const scenario of [
   "oversized",
   "different-image",
   "cleanup-failed",
+  "cleanup-failed-once",
+  "receipt-write-failed",
   "replaced-container",
   "lost-reply-replaced",
 ]) {
@@ -131,7 +133,7 @@ for (const scenario of [
       commit: "e".repeat(40),
       codex: {
         architecture: "amd64",
-        version: "0.164.0",
+        version: scenario === "manifest" ? "0.164.0-alpha.1+build.2" : "0.164.0",
         binarySha256: "f".repeat(64),
         config: canary,
       },
@@ -165,10 +167,31 @@ for (const scenario of [
     assert.equal(archived.status, 0, archived.stderr.toString());
     let hostCopy = false;
     let containerPresent = false;
-    const cleanupFailure = ["cleanup-failed", "replaced-container", "lost-reply-replaced"].includes(
-      scenario,
-    );
-    let allowRemoval = !cleanupFailure;
+    const cleanupFailure = [
+      "cleanup-failed",
+      "cleanup-failed-once",
+      "receipt-write-failed",
+      "replaced-container",
+      "lost-reply-replaced",
+    ].includes(scenario);
+    const retainedContainer = [
+      "cleanup-failed",
+      "replaced-container",
+      "lost-reply-replaced",
+    ].includes(scenario);
+    let allowRemoval = !retainedContainer;
+    let removalAttempts = 0;
+    let brokenReceipt = false;
+    if (scenario === "available") {
+      await writeFile(
+        `${commands.statePath}.diagnostics.json`,
+        JSON.stringify({
+          lane: "previous-lane",
+          preparationId: "previous-attempt",
+          failure: canary,
+        }),
+      );
+    }
     let ownershipToken;
     const manifest = JSON.stringify({ config: { digest: configId } });
     const manifestDigest = `sha256:${createHash("sha256").update(manifest).digest("hex")}`;
@@ -215,12 +238,21 @@ for (const scenario of [
       }
       if (args[0] === "create") {
         assert.equal(args[args.indexOf("--platform") + 1], "linux/amd64");
-        assert.equal(
-          args.at(-1),
-          imageId,
+        assert.ok(
+          args.includes(imageId),
           "copy from the immutable image, never its mutable build tag",
         );
         const state = await commands.readState();
+        if (scenario === "manifest") {
+          await writeFile(
+            `${commands.statePath}.diagnostics.json`,
+            JSON.stringify({
+              lane: state.lane,
+              preparationId: state.prefix,
+              currentAttempt: "retain",
+            }),
+          );
+        }
         ownershipToken = state.resources.find(
           (resource) => resource.kind === "image-file",
         )?.ownershipToken;
@@ -236,6 +268,11 @@ for (const scenario of [
         );
         containerPresent = true;
         created += 1;
+        if (scenario === "receipt-write-failed") {
+          await rename(commands.statePath, `${commands.statePath}.backup`);
+          await mkdir(commands.statePath);
+          brokenReceipt = true;
+        }
         return scenario === "lost-reply-replaced"
           ? "exit 1"
           : `printf '%s' ${bashString(containerId)}; exit 0`;
@@ -255,13 +292,19 @@ for (const scenario of [
         return `/bin/cp -R ${bashString(metadataPath)} ${bashString(args[2])}; exit 0`;
       }
       if (args[0] === "ps" && args.includes("--filter") && args.at(-1).includes("-provenance-")) {
+        if (brokenReceipt) {
+          await rm(commands.statePath, { recursive: true });
+          await rename(`${commands.statePath}.backup`, commands.statePath);
+          brokenReceipt = false;
+        }
         const observedId =
           scenario === "replaced-container" && !allowRemoval ? "e".repeat(64) : containerId;
         return `printf '%s' ${bashString(containerPresent ? observedId : "")}; exit 0`;
       }
       if (args[0] === "rm" && args.at(-1) === containerId) {
+        removalAttempts += 1;
         assert.ok(args.includes("--volumes"), "remove anonymous extraction volumes");
-        if (!allowRemoval) {
+        if (!allowRemoval || (scenario === "cleanup-failed-once" && removalAttempts === 1)) {
           return `printf '%s' ${bashString(canary)} >&2; exit 1`;
         }
         containerPresent = false;
@@ -287,7 +330,7 @@ for (const scenario of [
         ? {
             platform: "linux/amd64",
             openclawCommit: metadata.commit,
-            codex: { version: "0.164.0", binarySha256: "f".repeat(64) },
+            codex: { version: metadata.codex.version, binarySha256: "f".repeat(64) },
           }
         : {}),
     };
@@ -298,6 +341,11 @@ for (const scenario of [
     assert.deepEqual(state.runtimeProvenance, expectedRoles);
     const diagnostics = await readFile(`${commands.statePath}.diagnostics.json`, "utf8");
     assert.deepEqual(JSON.parse(diagnostics).runtimeProvenance, expectedRoles);
+    assert.equal(JSON.parse(diagnostics).preparationId, state.prefix);
+    assert.equal(JSON.parse(diagnostics).lane, state.lane);
+    if (scenario === "manifest") {
+      assert.equal(JSON.parse(diagnostics).currentAttempt, "retain");
+    }
     assert.ok(!diagnostics.includes(canary));
     assert.ok(!prepared.stderr.includes(canary));
     assert.equal(
@@ -305,7 +353,7 @@ for (const scenario of [
       scenario === "different-image" ? 0 : 1,
       "reuse one extraction for the shared image",
     );
-    assert.equal(containerPresent, cleanupFailure);
+    assert.equal(containerPresent, retainedContainer);
     if (!allowRemoval) {
       const failedCleanup = await commands.cleanup();
       assert.equal(failedCleanup.status, 1);

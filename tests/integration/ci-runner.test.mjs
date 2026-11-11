@@ -54,21 +54,23 @@ test("runtime provenance excludes structured image identities and invalid native
     });
     assert.equal(await readRuntimeProvenance(statePath), undefined);
   }
-  await writeJson(statePath, {
-    runtimeProvenance: {
-      [role]: {
-        imageId,
-        manifestDigest,
-        status: "available",
-        platform: "linux/amd64",
-        openclawCommit: "c".repeat(40),
-        codex: { version: "0.164.0\nprivate-value", binarySha256: "d".repeat(64) },
+  for (const version of ["0.164.0\nprivate-value", "0.164.0-..", "0.164.0-01", "01.164.0"]) {
+    await writeJson(statePath, {
+      runtimeProvenance: {
+        [role]: {
+          imageId,
+          manifestDigest,
+          status: "available",
+          platform: "linux/amd64",
+          openclawCommit: "c".repeat(40),
+          codex: { version, binarySha256: "d".repeat(64) },
+        },
       },
-    },
-  });
-  assert.deepEqual(await readRuntimeProvenance(statePath), {
-    [role]: { imageId, manifestDigest, status: "unavailable" },
-  });
+    });
+    assert.deepEqual(await readRuntimeProvenance(statePath), {
+      [role]: { imageId, manifestDigest, status: "unavailable" },
+    });
+  }
 });
 
 test("installed Skipper publishes only verified coverage evidence from the runner", () => {

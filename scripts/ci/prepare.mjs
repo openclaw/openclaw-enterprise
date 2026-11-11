@@ -2901,8 +2901,12 @@ async function retainRuntimeProvenance(statePath, state, cluster, image, role) {
           ...options,
         })
       ).stdout;
-    } catch {
-      throw new Error("Runtime provenance image command failed.");
+    } catch (error) {
+      const failure = new Error("Runtime provenance image command failed.");
+      if (["ENOENT", "EACCES"].includes(error.code)) {
+        failure.code = error.code;
+      }
+      throw failure;
     }
   };
   try {
@@ -2958,9 +2962,12 @@ async function retainRuntimeProvenance(statePath, state, cluster, image, role) {
     // Publish before later preparation or test failures can remove the cluster.
     try {
       const path = `${statePath}.diagnostics.json`;
-      let report = { lane: state.lane };
+      let report = { lane: state.lane, preparationId: state.prefix };
       try {
-        report = JSON.parse(await readFile(path, "utf8"));
+        const previous = JSON.parse(await readFile(path, "utf8"));
+        if (previous.preparationId === state.prefix) {
+          report = previous;
+        }
       } catch {
         /* First diagnostic for this lane. */
       }

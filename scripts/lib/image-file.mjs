@@ -6,6 +6,8 @@ import { setTimeout as delay } from "node:timers/promises";
 
 const ownershipLabel = "org.openclaw.ci.image-file";
 
+export class ImageFileReadError extends Error {}
+
 // docker cp's stdout is a tar archive. Accept one ordinary file, never paths,
 // links, directories or extensions that can reinterpret the selected member.
 function singleFile(archive, filename, maxBytes) {
@@ -137,9 +139,11 @@ export async function extractImageFile({
   };
   cleanup.push(() => remove(true));
   const errors = [];
+  let dispatched = false;
   try {
     resource.ownershipToken ??= randomUUID();
     await persist();
+    dispatched = true;
     const container = (
       await command("docker", [
         "create",
@@ -149,25 +153,38 @@ export async function extractImageFile({
         `${ownershipLabel}=${resource.ownershipToken}`,
         ...(platform ? ["--platform", platform] : []),
         image,
+        "/bin/true",
       ])
     ).trim();
     resource.creationAcknowledged = true;
     assert.match(container, /^[a-f0-9]{64}$/);
     resource.containerId = container;
     await persist();
-    if (maxBytes === undefined) {
-      await command("docker", ["cp", `${container}:${filename}`, destination]);
-    } else {
-      const archive = await command("docker", ["cp", `${container}:${filename}`, "-"], {
-        encoding: "buffer",
-        maxBuffer: maxBytes + 16 * 1024,
-      });
-      await writeFile(destination, singleFile(archive, filename, maxBytes), {
-        flag: "wx",
-        mode: 0o600,
-      });
+    try {
+      if (maxBytes === undefined) {
+        await command("docker", ["cp", `${container}:${filename}`, destination]);
+      } else {
+        const archive = await command("docker", ["cp", `${container}:${filename}`, "-"], {
+          encoding: "buffer",
+          maxBuffer: maxBytes + 16 * 1024,
+        });
+        await writeFile(destination, singleFile(archive, filename, maxBytes), {
+          flag: "wx",
+          mode: 0o600,
+        });
+      }
+    } catch (error) {
+      throw new ImageFileReadError(error.message, { cause: error });
     }
   } catch (error) {
+    // These spawn errors prove Docker was never started. A generic nonzero
+    // exit or transport error cannot establish whether creation completed.
+    if (
+      !dispatched ||
+      (!resource.creationAcknowledged && ["ENOENT", "EACCES"].includes(error.code))
+    ) {
+      resource.removed = true;
+    }
     errors.push(error);
   }
   try {

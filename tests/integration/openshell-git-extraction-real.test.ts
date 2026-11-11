@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,11 +8,22 @@ import { extractOpenShellImageFile } from "../helpers/openshell-git-installation
 
 type CommandOptions = { signal?: AbortSignal; timeout?: number };
 
-for (const phase of ["create", "copy", "renamed copy", "unsettled create", "replaced create"]) {
+for (const phase of [
+  "create",
+  "copy",
+  "renamed copy",
+  "unsettled create",
+  "replaced create",
+  "no default command",
+]) {
+  let name = `OpenShell image extraction removes its Docker container after ${phase} cancellation`;
+  if (phase === "replaced create") {
+    name = "OpenShell image extraction preserves a replacement after losing the create reply";
+  } else if (phase === "no default command") {
+    name = "OpenShell image extraction works without an image default command";
+  }
   test(
-    phase === "replaced create"
-      ? "OpenShell image extraction preserves a replacement after losing the create reply"
-      : `OpenShell image extraction removes its Docker container after ${phase} cancellation`,
+    name,
     { skip: process.env.OCC_TEST_DOCKER_COMPUTE_REAL !== "1", timeout: 90_000 },
     async (t) => {
       const image = process.env.OCC_DOCKER_RUNTIME_IMAGE;
@@ -52,6 +63,12 @@ for (const phase of ["create", "copy", "renamed copy", "unsettled create", "repl
         args: string[],
         options: CommandOptions = {},
       ): Promise<string> => {
+        if (args[0] === "create" && phase === "no default command") {
+          // Docker's entrypoint override also clears the image's default CMD.
+          // Only the extractor's explicit command can make this create valid.
+          const imageIndex = args.indexOf(image);
+          args = [...args.slice(0, imageIndex), "--entrypoint", "", ...args.slice(imageIndex)];
+        }
         if (args[0] === "create" && phase === "unsettled create") {
           pendingCreate = args;
           controller.abort();
@@ -96,16 +113,21 @@ for (const phase of ["create", "copy", "renamed copy", "unsettled create", "repl
       } else if (phase === "replaced create") {
         expected = /Image extraction and container cleanup failed/;
       }
-      await assert.rejects(
-        extractOpenShellImageFile({
-          command,
-          cleanup,
-          image,
-          filename: "/etc/os-release",
-          destination: join(directory, "os-release"),
-        }),
-        expected,
-      );
+      const extraction = extractOpenShellImageFile({
+        command,
+        cleanup,
+        image,
+        filename: "/opt/oce/runtime/provenance.json",
+        destination: join(directory, "provenance.json"),
+      });
+      if (phase === "no default command") {
+        await extraction;
+        assert.ok(
+          JSON.parse(await readFile(join(directory, "provenance.json"), "utf8")).codex.version,
+        );
+      } else {
+        await assert.rejects(extraction, expected);
+      }
       if (phase === "replaced create") {
         assert.equal(await remainingContainer(), container, "replacement must remain untouched");
         for (const operation of cleanup) {

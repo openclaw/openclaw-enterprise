@@ -378,6 +378,7 @@ export async function captureK3dDiagnostics({
   const k3dCreateOutput = k3dOutputExcerpt(k3dOutput);
   const report = {
     capturedAt: new Date().toISOString(),
+    preparationId: cluster.owner,
     runtimeProvenance: await readRuntimeProvenance(statePath),
     lane,
     cluster: cluster.name,
