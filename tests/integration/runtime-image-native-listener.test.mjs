@@ -545,6 +545,31 @@ test(
             },
             { status: "operation-ok" },
           ],
+          // Finding 3190 (openclaw#197151): the chat route's paired browser opens the Agent's
+          // unused main conversation with empty history, so its first turn can create it.
+          // Any other absent key stays as hidden as another creator's draft.
+          [
+            {
+              kind: "ws",
+              paired: true,
+              identity: "occ-workspace-files",
+              scopes: "operator.sessions.write",
+              method: "sessions.messages.subscribe",
+              params: { key: "agent:main:main", initialHistory: {} },
+            },
+            { status: "operation-ok", absentMain: true },
+          ],
+          [
+            {
+              kind: "ws",
+              paired: true,
+              identity: "occ-workspace-files",
+              scopes: "operator.sessions.write",
+              method: "sessions.messages.subscribe",
+              params: { key: "agent:main:other" },
+            },
+            { status: "operation-denied", body: /not found/ },
+          ],
           [
             {
               kind: "ws",
@@ -656,6 +681,14 @@ test(
           assert.equal(body.ok, true, description);
           assert.ok(Array.isArray(body.result?.details?.sessions), description);
           assert.equal(body.result.details.count, body.result.details.sessions.length, description);
+        }
+        if (expected.absentMain) {
+          const subscribed = JSON.parse(outcome.body);
+          assert.equal(subscribed.subscribed, true, description);
+          assert.equal(subscribed.key, "agent:main:main", description);
+          assert.equal(subscribed.initialHistory?.ok, true, description);
+          assert.deepEqual(subscribed.initialHistory.payload.messages, [], description);
+          assert.equal(subscribed.initialHistory.payload.sessionId ?? null, null, description);
         }
         if (expected.scopes !== undefined) {
           assert.deepEqual(outcome.scopes, expected.scopes, description);
