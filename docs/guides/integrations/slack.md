@@ -177,6 +177,13 @@ represented in a comma-separated field may need an API edit.
 
 ## Enable channel messages without mentions (optional)
 
+Consider model token costs before disabling **Require a mention**. Messages
+without mentions can trigger model turns, which consume input tokens for the
+message and conversation context, plus output tokens for generated responses.
+This can increase costs substantially in busy channels. Keep **Require a mention**
+enabled to reduce unsolicited model turns. Receiving a Slack event alone does
+not consume model tokens; calling the model does.
+
 Disabling **Require a mention** changes the Agent's message filter. It does not
 change the Slack app's event subscriptions. The bot token's scopes and the app's
 bot event subscriptions must both permit channel messages:
