@@ -112,6 +112,9 @@ literal `git` transport user. Both forms use plain ASCII repository paths and
 omit queries and fragments. The separate optional
 `client_metadata["mcp_attribution"]` JSON string accepts exactly
 `{"status":"none"}`. These fields carry telemetry and grant no authority.
+For `request_kind: "compaction"`, turn metadata may include a `compaction` object
+with a native trigger, reason and phase, `implementation: "responses"` and
+`strategy: "memento"`. All five fields are required in that object.
 Replayed assistant `output_text` parts can include `annotations` and `logprobs`.
 Each field must be an empty array if present. The proxy refuses unknown request fields.
 

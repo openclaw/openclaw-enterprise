@@ -316,6 +316,44 @@ const gitWorkspaces: Validator = (value) => {
   );
 };
 // These are telemetry fields emitted by the selected client, never OCC identities or grants.
+const turnMetadata = optionalFields({
+  installation_id: metadataText,
+  session_id: metadataText,
+  thread_id: metadataText,
+  agent_name: metadataText,
+  turn_id: metadataText,
+  window_id: metadataText,
+  window_number: integer,
+  context_window_id: metadataText,
+  request_kind: oneOf("turn", "prewarm", "compaction", "memory"),
+  compaction: object({
+    trigger: oneOf("manual", "auto"),
+    reason: oneOf("user_requested", "context_limit", "model_downshift", "comp_hash_changed"),
+    implementation: oneOf("responses"),
+    phase: oneOf("standalone_turn", "pre_turn", "mid_turn", "post_turn"),
+    strategy: oneOf("memento"),
+  }),
+  history_initialization: metadataText,
+  root_turn_id: metadataText,
+  parent_turn_id: metadataText,
+  parent_thread_id: metadataText,
+  forked_from_thread_id: metadataText,
+  forked_from_ordinal_exclusive: integer,
+  thread_source: metadataText,
+  turn_trigger: metadataText,
+  subagent_kind: metadataText,
+  sandbox: metadataText,
+  sandbox_mode: metadataText,
+  auto_review_enabled: bool,
+  node_repl_auto_review_required: bool,
+  node_repl_disabled: bool,
+  turn_started_at_unix_ms: integer,
+  analytics_enabled: bool,
+  history_ingest_requested: bool,
+  model: metadataText,
+  reasoning_effort: nativeReasoningEffort,
+  workspaces: gitWorkspaces,
+});
 const clientMetadata = optionalFields({
   mcp_attribution: metadataJson(object({ status: oneOf("none") })),
   session_id: metadataText,
@@ -327,39 +365,14 @@ const clientMetadata = optionalFields({
   "x-codex-window-id": metadataText,
   "x-codex-parent-thread-id": metadataText,
   "x-openai-subagent": metadataText,
-  "x-codex-turn-metadata": metadataJson(
-    optionalFields({
-      installation_id: metadataText,
-      session_id: metadataText,
-      thread_id: metadataText,
-      agent_name: metadataText,
-      turn_id: metadataText,
-      window_id: metadataText,
-      window_number: integer,
-      context_window_id: metadataText,
-      request_kind: oneOf("turn", "prewarm", "compaction", "memory"),
-      history_initialization: metadataText,
-      root_turn_id: metadataText,
-      parent_turn_id: metadataText,
-      parent_thread_id: metadataText,
-      forked_from_thread_id: metadataText,
-      forked_from_ordinal_exclusive: integer,
-      thread_source: metadataText,
-      turn_trigger: metadataText,
-      subagent_kind: metadataText,
-      sandbox: metadataText,
-      sandbox_mode: metadataText,
-      auto_review_enabled: bool,
-      node_repl_auto_review_required: bool,
-      node_repl_disabled: bool,
-      turn_started_at_unix_ms: integer,
-      analytics_enabled: bool,
-      history_ingest_requested: bool,
-      model: metadataText,
-      reasoning_effort: nativeReasoningEffort,
-      workspaces: gitWorkspaces,
-    }),
-  ),
+  "x-codex-turn-metadata": metadataJson((value) => {
+    const record = asRecord(value);
+    return (
+      record !== undefined &&
+      turnMetadata(record) &&
+      (record.compaction === undefined || record.request_kind === "compaction")
+    );
+  }),
 });
 const jsonFormat = object(
   { type: oneOf("json_schema"), name, schema: jsonSchema },
