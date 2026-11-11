@@ -2825,10 +2825,9 @@ test("OpenShell browser runner retains the destination for refusal before Local 
       // Use the real test and its imports. An absent CLI stops accepted selections
       // before setup; no fixture replaces the destination guard or runner filtering.
       await writeFile(join(root, file.path), await readFile(join(repositoryRoot, file.path)));
-      await symlink(
-        join(repositoryRoot, "scripts/ci/failure-redaction.mjs"),
-        join(root, "scripts/ci/failure-redaction.mjs"),
-      );
+      for (const path of ["scripts/ci/failure-redaction.mjs", "scripts/ci/agent-sandbox.ts"]) {
+        await symlink(join(repositoryRoot, path), join(root, path));
+      }
       for (const path of ["apps", "node_modules", "tests/helpers"]) {
         await symlink(join(repositoryRoot, path), join(root, path), "dir");
       }
