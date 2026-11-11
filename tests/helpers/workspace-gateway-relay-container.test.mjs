@@ -146,9 +146,11 @@ test(
     registerQaSecret(secret);
     // The delayed exit deliberately outlasts the production 250ms sample. The
     // real-engine wrapper waits for exit before the helper receives run's result.
-    const program = `setTimeout(() => { require("node:fs").writeSync(2, ${JSON.stringify(`${"x".repeat(10000)}\n${secret}\nrelay startup diagnostic marker\n`)}); process.exit(23); }, 1500);`;
+    const program =
+      'setTimeout(() => { require("node:fs").writeSync(2, process.argv[1]); process.exit(23); }, 1500);';
+    const logOutput = `${"x".repeat(10000)}\n${secret}\nrelay startup diagnostic marker\n`;
     await assert.rejects(
-      relay(t, "node", ["-e", program], await engineWrapper("wait-for-exit")),
+      relay(t, "node", ["-e", program, logOutput], await engineWrapper("wait-for-exit")),
       (error) => {
         assert.match(error.message, /not observed running/);
         assert.match(error.message, /status=exited running=false exit=23/);
