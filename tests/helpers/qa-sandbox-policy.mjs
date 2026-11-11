@@ -45,7 +45,7 @@ export async function verifyQaSandboxPolicy(artifacts, scenario = "network-polic
       ? ["--test-name-pattern=^OpenShell installs selected Codex plugins"]
       : []),
     ...(scratch
-      ? ["tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.mjs"]
+      ? ["tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts"]
       : [
           scenario === "namespace-lifecycle"
             ? "tests/integration/namespace-driver-openshell-k3d-real.test.ts"

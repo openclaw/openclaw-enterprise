@@ -3458,14 +3458,14 @@ if (args[0] === "pull") {
         harness: "codex",
         endpoint: true,
         credentials,
-        file: "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.mjs",
+        file: "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts",
         selectedFile: true,
         ...(credentials.includes("OPENAI_API_KEY") ? {} : { missing: "OPENAI_API_KEY" }),
       });
     }
     // Each split owner must retain the credential admission gate before any resource is created.
     for (const file of [
-      "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.mjs",
+      "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts",
       "tests/integration/openshell-gateway-tool-policy-real.test.ts",
       "tests/integration/openshell-credentials-real.test.ts",
       "tests/integration/openshell-withdrawal-real.test.ts",
@@ -3484,7 +3484,7 @@ if (args[0] === "pull") {
         { harness: "codex", endpoint: true, credentials: ["OPENAI_API_KEY"], file },
       );
     }
-    const scratch = "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.mjs";
+    const scratch = "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts";
     for (const selectedFile of [false, true]) {
       cases.push({
         harness: "openclaw",
@@ -3608,7 +3608,7 @@ if (args[0] === "pull") {
     ]) {
       const selectedFile =
         name === "stock"
-          ? "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.mjs"
+          ? "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts"
           : file;
       const statePath = join(root, name + ".json");
       const env = { ...preparedInputs, ...version };

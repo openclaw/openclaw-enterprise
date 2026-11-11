@@ -152,7 +152,7 @@
       ]
     },
     {
-      "path": "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.mjs",
+      "path": "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts",
       "expectedTests": [
         "OpenShell mounts the admitted operator scratch PVC through the Agent workflow"
       ],

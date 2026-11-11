@@ -250,7 +250,7 @@ Missing prerequisites fail the lane. Always clean up:
 node scripts/ci/cleanup.mjs --state "$OCC_OPENSHELL_TEST_ROOT/state.json"
 ```
 
-For scratch, select `tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.mjs`
+For scratch, select `tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts`
 with preparation `--selected-file` and execution `--file`. Both require
 `OCC_TEST_OPENSHELL_HARNESS=codex`,
 `OCC_TEST_OPENSHELL_MODEL_BASE_URL=https://api.openai.com/v1`,

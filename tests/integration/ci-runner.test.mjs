@@ -1783,7 +1783,7 @@ test("OpenShell selected files retain API-key selection and require the selected
   const lane = JSON.parse(
     await readFile(join(repositoryRoot, "scripts/ci/test-suites/openshell.json"), "utf8"),
   );
-  const scratch = "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.mjs";
+  const scratch = "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts";
   const gatewayPolicy = "tests/integration/openshell-gateway-tool-policy-real.test.ts";
   const sibling = "tests/integration/local-first-agent-openshell-real.test.mjs";
   const inputs = {

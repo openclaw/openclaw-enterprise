@@ -1,7 +1,7 @@
 import { isOpenShellLane } from "./openshell-full-integration.ts";
 
 const codexOnlyFiles = new Set([
-  "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.mjs",
+  "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts",
   "tests/integration/openshell-refresh-real.test.ts",
   "tests/integration/openshell-upstream-real.test.ts",
   "tests/integration/openshell-credentials-real.test.ts",
