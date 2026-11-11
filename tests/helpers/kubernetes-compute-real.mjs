@@ -5,7 +5,6 @@ import { randomUUID } from "node:crypto";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import pg from "pg";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
@@ -26,6 +25,7 @@ import {
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.mjs";
 import { kubectlGetJson } from "../helpers/kubernetes-api-read.mjs";
+import { waitForResult } from "../helpers/wait-for.mjs";
 
 export const execute = promisify(execFile);
 export const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
@@ -94,69 +94,56 @@ export async function resources(kind, namespace) {
   return JSON.parse(await kubectlRead("get", kind, "--namespace", namespace, "-o", "json")).items;
 }
 
+function notFound(error) {
+  return /NotFound|not found/i.test(error.stderr ?? error.message);
+}
+
 export async function missing(kind, name, namespace) {
   try {
     await resource(kind, name, namespace);
     return false;
   } catch (error) {
-    if (/NotFound|not found/i.test(error.stderr ?? error.message)) {
+    if (notFound(error)) {
       return true;
     }
     throw error;
   }
 }
 
-export async function waitFor(description, operation, timeoutMs = 120_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const result = await operation();
-    if (result !== undefined && result !== false) {
-      return result;
+export function waitFor(description, operation, timeoutMs = 120_000) {
+  return waitForResult(description, operation, { timeoutMs, intervalMs: 500 });
+}
+
+// Asserts a PersistentVolumeClaim's delete was already issued, then waits for the claim to go.
+// A deleted claim stays Terminating until Kubernetes' PVC-protection controller has seen every
+// Pod using it removed, which can trail the Pods' own removal (finding 2409).
+export async function waitForDeletedClaim(name, namespace) {
+  await waitFor(`PersistentVolumeClaim ${name} to be removed`, async () => {
+    let claim;
+    try {
+      claim = await resource("persistentvolumeclaim", name, namespace);
+    } catch (error) {
+      if (notFound(error)) {
+        return true;
+      }
+      throw error;
     }
-    await delay(500);
-  }
-  assert.fail(`Timed out waiting for ${description}.`);
+    assert.notEqual(
+      claim.metadata?.deletionTimestamp,
+      undefined,
+      `PersistentVolumeClaim ${name} was not deleted`,
+    );
+    return undefined;
+  });
 }
 
 // Test cleanup deletes its randomly named namespaces without waiting: no later step reads
 // them, and each deletion waits out namespace-controller passes (5 s each, longer while Pods
-// terminate). local-path removes a deleted claim's host directory with a helper Pod, which
-// lane cleanup cannot do itself, so a file registers `after(waitForDeletedVolumes)` to wait
-// once, at its end, for those volumes to be deleted. It reads only volumes claimed from the
-// file's own namespaces, so a file sharing the cluster does not delay it.
-export function createNamespaceReaper() {
-  const deletedNamespaces = new Set();
-  return {
-    deleteNamespaces(...names) {
-      for (const name of names) {
-        deletedNamespaces.add(name);
-      }
-      return kubectl("delete", "namespace", ...names, "--ignore-not-found=true", "--wait=false");
-    },
-    async waitForDeletedVolumes() {
-      if (deletedNamespaces.size === 0) {
-        return;
-      }
-      let remaining = [];
-      try {
-        await waitFor(
-          "local-path volumes of deleted namespaces to be removed",
-          async () => {
-            const volumes = JSON.parse(await kubectlRead("get", "persistentvolumes", "-o", "json"));
-            remaining = volumes.items
-              .filter(({ spec }) => deletedNamespaces.has(spec.claimRef?.namespace))
-              .map(({ metadata, status }) => `${metadata.name} (${status?.phase ?? "unknown"})`);
-            return remaining.length === 0;
-          },
-          180_000,
-        );
-      } catch (error) {
-        // Bound means a namespace is stuck; Released or Failed means local-path's helper failed.
-        error.message = `${error.message} Remaining: ${remaining.join(", ")}`;
-        throw error;
-      }
-    },
-  };
+// terminate). local-path removes a deleted claim's volume directory with a helper Pod, maybe
+// after the file ends; lane cleanup removes whatever such volumes leave in the shared storage
+// (scripts/ci/cleanup.mjs), so no file waits for them.
+export function deleteNamespaces(...names) {
+  return kubectl("delete", "namespace", ...names, "--ignore-not-found=true", "--wait=false");
 }
 
 export function provisioningRequestBody({
@@ -261,7 +248,7 @@ export async function createProvisioningApiFixture(
   const state = new PostgresPlatformState(pool);
   const existingInstallation = await state.loadInstallation();
   const authSecret = "kubernetes-integration-auth-secret-32-bytes";
-  const authBaseURL = "http://127.0.0.1";
+  const authBaseURL = "https://console.oce.localhost";
   const credentials = {
     email: "admin-kubernetes-integration@example.test",
     password: "kubernetes-integration-admin-password",
@@ -274,6 +261,7 @@ export async function createProvisioningApiFixture(
       password: credentials.password,
       authSecret,
       authBaseURL,
+      agentDomain: "agents.oce.localhost",
       installationName: "OpenClaw Kubernetes integration",
       environment: { PATH: process.env.PATH },
     });
@@ -292,7 +280,7 @@ export async function createProvisioningApiFixture(
   let worker;
   const drivers = {
     ...runtimeDrivers({ computeDriver, configurationDriver, secretDriver }),
-    pluginDriver: new CodexPluginDriver(),
+    pluginDrivers: [new CodexPluginDriver()],
   };
   const app = await composePostgresDevelopment(
     {
@@ -301,6 +289,7 @@ export async function createProvisioningApiFixture(
       databaseUrl,
       authSecret,
       authBaseURL,
+      nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
     },
     drivers,
   );
@@ -322,8 +311,8 @@ export async function createProvisioningApiFixture(
       headers: {
         ...authenticatedHeaders(session),
         ...(body === undefined ? {} : { "content-type": "application/json" }),
-        ...(method === "GET" ? {} : { origin: "http://127.0.0.1" }),
-        host: "127.0.0.1",
+        ...(method === "GET" ? {} : { origin: authBaseURL }),
+        host: new URL(authBaseURL).host,
       },
       remoteAddress: "127.0.0.1",
       ...(body === undefined ? {} : { payload: JSON.stringify(body) }),
@@ -415,7 +404,7 @@ export function revision(driver, owner, agentId, number) {
     configurationIds.set(identity, configurationId);
   }
   const loggingLevel = number === 1 ? "info" : "debug";
-  return {
+  const candidate = {
     id: `rev_${randomUUID()}`,
     namespaceId: owner.id,
     agentId,
@@ -438,6 +427,14 @@ export function revision(driver, owner, agentId, number) {
     servicePrincipalId: `service-agent-${agentId}`,
     createdAt: new Date().toISOString(),
   };
+  candidate.harness.overrides = {};
+  candidate.harness.configuration = driver.resolveHarnessConfiguration(
+    candidate.harness,
+    candidate.harnessAuth,
+    candidate.configuration,
+  );
+  candidate.compute.admission = driver.admitRevision(candidate);
+  return candidate;
 }
 
 export function agentName(agentId) {
@@ -488,13 +485,25 @@ export async function assertReadyGateway(namespaceName, agentId, namespaceId, sn
           ...(snapshot.harness.id === "codex" && snapshot.harness.mode === "dedicated"
             ? {
                 // The paired Harness owns the real filesystem; the Gateway
-                // keeps a writable local key for native chat preparation.
+                // keeps a writable local key for native chat preparation. Compute
+                // also pins it on the main entry that carries the Agent name.
                 agents: {
                   ...snapshot.configuration.agents,
                   defaults: {
                     ...snapshot.configuration.agents?.defaults,
                     workspace: "/home/node/workspace",
                   },
+                  ...(snapshot.configuration.agents?.entries?.main === undefined
+                    ? {}
+                    : {
+                        entries: {
+                          ...snapshot.configuration.agents.entries,
+                          main: {
+                            ...snapshot.configuration.agents.entries.main,
+                            workspace: "/home/node/workspace",
+                          },
+                        },
+                      }),
                 },
               }
             : {}),
@@ -507,15 +516,75 @@ export async function assertReadyGateway(namespaceName, agentId, namespaceId, sn
             auth: {
               ...snapshot.configuration.gateway?.auth,
               mode: "trusted-proxy",
+              // Compute keeps explicit identities and grants; omission is machine-only.
+              // Admitting a human makes the Gateway require x-openclaw-scopes (finding 2183).
               trustedProxy: {
+                ...snapshot.configuration.gateway?.auth?.trustedProxy,
+                ...((snapshot.configuration.gateway?.auth?.trustedProxy?.allowUsers ?? []).some(
+                  (user) => user !== "occ-workspace-files",
+                )
+                  ? {
+                      requiredHeaders: [
+                        ...(snapshot.configuration.gateway?.auth?.trustedProxy?.requiredHeaders ??
+                          []),
+                        ...((
+                          snapshot.configuration.gateway?.auth?.trustedProxy?.requiredHeaders ?? []
+                        ).some((header) => header.toLowerCase() === "x-openclaw-scopes")
+                          ? []
+                          : ["x-openclaw-scopes"]),
+                      ],
+                    }
+                  : {}),
                 userHeader: "x-occ-identity",
-                allowUsers: ["occ-workspace-files"],
+                allowUsers: snapshot.configuration.gateway?.auth?.trustedProxy?.allowUsers ?? [
+                  "occ-workspace-files",
+                ],
               },
-              identityScopes: { "occ-workspace-files": ["operator.admin"] },
+              identityScopes: snapshot.configuration.gateway?.auth?.identityScopes ?? {
+                "occ-workspace-files": ["operator.admin"],
+              },
             },
           },
         };
   if (snapshot !== undefined) {
+    const provider = snapshot.harness.configuration.modelProvider;
+    if (snapshot.harness.id === "openclaw" && provider !== undefined) {
+      expectedNativeDocument.models = {
+        ...expectedNativeDocument.models,
+        providers: {
+          ...expectedNativeDocument.models?.providers,
+          openai: {
+            ...expectedNativeDocument.models?.providers?.openai,
+            api:
+              provider.protocol === "openai-responses" ? "openai-responses" : "openai-completions",
+            baseUrl: provider.baseUrl,
+          },
+        },
+      };
+    }
+    if (snapshot.harness.id === "codex" && provider !== undefined) {
+      // Saved API-key destinations select the explicit compatible provider in the Gateway;
+      // the paired Harness alone receives the credential and performs model requests.
+      const model = snapshot.configuration.agents.defaults.model;
+      assert.equal(typeof model, "string", "these cluster fixtures select one primary model");
+      assert.ok(model.startsWith("codex/"));
+      const id = model.slice("codex/".length);
+      const rendered = `codex/openai-compatible/${id}`;
+      expectedNativeDocument.agents.defaults.model = rendered;
+      const policies = expectedNativeDocument.agents.defaults.models;
+      if (policies !== undefined) {
+        expectedNativeDocument.agents.defaults.models = Object.fromEntries(
+          Object.entries(policies).map(([ref, policy]) => [ref === model ? rendered : ref, policy]),
+        );
+      }
+      expectedNativeDocument.models = {
+        ...expectedNativeDocument.models,
+        providers: {
+          ...expectedNativeDocument.models?.providers,
+          codex: { models: [{ id: `openai-compatible/${id}`, name: id }] },
+        },
+      };
+    }
     const document = JSON.stringify(snapshot.configuration);
     for (const metadata of [deployment.metadata, deployment.spec.template.metadata]) {
       assert.equal(metadata.annotations["openclaw.dev/configuration-id"], snapshot.configurationId);
@@ -562,16 +631,18 @@ export async function assertReadyGateway(namespaceName, agentId, namespaceId, sn
       optional: false,
     });
     const container = deployment.spec.template.spec.containers[0];
+    const unmanaged = snapshot.gatewayManagedMode === false;
     assert.deepEqual(
       container.volumeMounts.find(({ name }) => name === "openclaw-configuration"),
-      { name: "openclaw-configuration", mountPath: "/etc/openclaw", readOnly: true },
+      {
+        name: "openclaw-configuration",
+        mountPath: unmanaged ? "/etc/openclaw-managed" : "/etc/openclaw",
+        readOnly: true,
+      },
     );
     assert.equal(
-      container.env.some(
-        ({ name, value }) =>
-          name === "OPENCLAW_CONFIG_PATH" && value === "/etc/openclaw/openclaw.json",
-      ),
-      true,
+      container.env.find(({ name }) => name === "OPENCLAW_CONFIG_PATH")?.value,
+      unmanaged ? "/home/node/.openclaw/openclaw.json" : "/etc/openclaw/openclaw.json",
     );
     assert.equal(
       container.env.some(({ value }) => value === document),

@@ -6,8 +6,16 @@
   "files": [
     {
       "path": "tests/integration/postgres-migration-compatibility.test.mjs",
+      "optionalEnv": [
+        "OCC_TEST_RELEASED_CONTROLLER_IMAGE",
+        "OCC_TEST_RELEASED_CONTROLLER_REVISION",
+        "OCC_TEST_CANDIDATE_CONTROLLER_IMAGE",
+        "OCC_TEST_CANDIDATE_CONTROLLER_REVISION"
+      ],
       "expectedTests": [
+        "Separate database deployment verifies the exact candidate history without applying pending SQL",
         "Logical restore preserves reviewed canonical and Provider migration histories",
+        "An authenticated user can browse revisions retained across the Harness settings migration",
         "First installation requires empty migration history under the migration lock",
         "Canonical migration commands preserve main data and serialize fresh/repeat runners",
         "Canonical migration refuses unexplained histories before mutation",
@@ -20,6 +28,15 @@
         "Migration rejects legacy harness_account state without changing persisted rows",
         "Drizzle second migration preserves the applied journal and PostgreSQL schema"
       ]
+    },
+    {
+      "path": "tests/integration/postgres-migration-version.test.ts",
+      "expectedTests": [
+        "Migration refuses PostgreSQL 16 before first installation or upgrade without exposing credentials"
+      ]
     }
-  ]
+  ],
+  "env": {
+    "OCC_TEST_MIGRATION_SERVER": "1"
+  }
 }

@@ -10,8 +10,13 @@ import { once } from "node:events";
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
-import { teamReviewProof } from "../../tests/fixtures/skipper-team-review-journey.mjs";
-import { imageConfigDigest } from "./image-config-digest.mjs";
+import {
+  projectSkipperRunnerReceipt,
+  skipperFailureSummary,
+  skipperInstalledProof,
+  skipperImageScope,
+} from "./skipper-release.ts";
+import { imageConfigDigest } from "./image-config-digest.ts";
 import { createInterface } from "node:readline";
 import {
   kubectl,
@@ -63,20 +68,7 @@ const privateResult = join(directory, "selected-test-result.json");
 const registry = env.OCC_SKIPPER_IMAGE_REGISTRY_CONTAINER;
 assert.match(registry, /^[a-f0-9]{64}$/);
 const cleanup = [() => run("docker", ["rm", "--force", "--volumes", registry])];
-const proof = [
-  "deployed-revision-gateway-and-harness-ready",
-  "chat-before-private-git-verified",
-  "prepared-before-native-git",
-  ...(env.OCC_TEST_SKIPPER_TEAM_REVIEW === "1"
-    ? teamReviewProof
-    : ["native-commit-confirmed-by-independent-fetch"]),
-  "wrong-repository-hook-refusal-and-broker-denied-mixed-push",
-  "native-authenticated-post-after-withdrawal-refused",
-  "fresh-authenticated-fetch-after-effective-withdrawal-refused",
-  "same-compute-owned-skipper-chat-after-git-withdrawal-verified",
-  "same-compute-owned-skipper-chat-git-and-live-withdrawal-observed",
-  "owned-agent-retired-cluster-cleanup-still-required",
-];
+const proof = skipperInstalledProof(env.OCC_TEST_SKIPPER_TEAM_REVIEW === "1");
 const progress = (name) => console.log("Private Git acceptance: " + name);
 const noCluster = async () => {
   const names = await output("docker", ["ps", "-a", "--format", "{{.Names}}"]);
@@ -167,7 +159,7 @@ async function checkImage(stack, selected, built) {
 
 let phase = "fresh cluster preflight";
 let failed = false;
-let summary;
+let runnerReceipt;
 let imageDigests;
 try {
   await noCluster();
@@ -295,6 +287,24 @@ try {
     () => ({ status: 0 }),
     (error) => error.result ?? {},
   );
+  if (runner.status !== 0) {
+    // Report only a known phase, source location, or failure category. Both raw streams
+    // and the runner's private diagnostics can contain the synthetic credentials.
+    const resultText = await readFile(privateResult, "utf8").catch(() => "");
+    const text =
+      String(runner.stderr) +
+      String(runner.stdout) +
+      resultText +
+      (await readFile(join(directory, "runner-state.json.diagnostics.json"), "utf8").catch(
+        () => "",
+      ));
+    // Optional journey records may be incomplete when the test fails.
+    console.error(
+      "Installed test failed (%s, runner-exit=%s)",
+      skipperFailureSummary(resultText, process.cwd(), text),
+      runner.code ?? "unknown",
+    );
+  }
   const ledger = await readFile(join(directory, "compute-journey.jsonl"), "utf8").catch(() => "");
   const entries = ledger
     .trim()
@@ -307,15 +317,6 @@ try {
     progress(name);
   }
   if (runner.status !== 0) {
-    // Report only a known phase, source location, or failure category. Both raw streams
-    // and the runner's private diagnostics can contain the synthetic credentials.
-    const text =
-      String(runner.stderr) +
-      String(runner.stdout) +
-      (await readFile(privateResult, "utf8").catch(() => "")) +
-      (await readFile(join(directory, "runner-state.json.diagnostics.json"), "utf8").catch(
-        () => "",
-      ));
     const chat = entries.find((e) => e.phase === "gateway-chat-refused");
     if (chat) {
       const { httpStatus, category, modelTurns, modelAnswers, expectedNonceAnswered, tlsErrors } =
@@ -326,26 +327,66 @@ try {
       );
       assert.match(
         category,
-        /^(gateway-credential-unavailable|authentication|permission|workspace|agent-runtime|timeout|unavailable|unclassified)$/,
+        /^(gateway-credential-unavailable|authentication|permission|workspace|agent-runtime|timeout|unavailable|unclassified|transport|response-body|response-json)$/,
       );
       assert.ok(
-        [modelTurns, modelAnswers, tlsErrors].every((n) => Number.isSafeInteger(n) && n >= 0),
+        [modelTurns, modelAnswers, tlsErrors].every(
+          (n) => n === null || (Number.isSafeInteger(n) && n >= 0),
+        ),
       );
-      assert.equal(typeof expectedNonceAnswered, "boolean");
+      assert.ok(expectedNonceAnswered === null || typeof expectedNonceAnswered === "boolean");
       assert.match(
         chat.runtimeSignal,
         /^(thread-filesystem-sandbox-denied|thread-start|model-transport|no-known-signal|logs-unavailable)$/,
       );
       console.error(
-        "Gateway HTTP %d, %s, %s. During this request synthetic model turns=%d, answers=%d, expected nonce answered=%s, TLS errors=%d.",
+        "Gateway HTTP %d, %s, %s. During this request synthetic model turns=%s, answers=%s, expected nonce answered=%s, TLS errors=%s.",
         httpStatus,
         category,
         chat.runtimeSignal,
-        modelTurns,
-        modelAnswers,
-        expectedNonceAnswered,
-        tlsErrors,
+        modelTurns ?? "unknown",
+        modelAnswers ?? "unknown",
+        expectedNonceAnswered ?? "unknown",
+        tlsErrors ?? "unknown",
       );
+    }
+    if (records.includes("repository-binding-withdrawn-discovery-released")) {
+      console.error("Repository binding withdrawn and held discovery released.");
+    }
+    const completion = entries.find((e) => e.phase === "native-command-completion-mismatch");
+    if (completion) {
+      console.error("Native command chat completion did not match the expected marker.");
+      const { modelDiagnosticsAvailable, modelRequests, modelResults, markerSeen } = completion;
+      if (
+        modelDiagnosticsAvailable === true &&
+        [modelRequests, modelResults].every((n) => Number.isSafeInteger(n) && n >= 0) &&
+        typeof markerSeen === "boolean"
+      ) {
+        console.error(
+          "Synthetic model requests=%d, results=%d, completion marker seen in native result=%s.",
+          modelRequests,
+          modelResults,
+          markerSeen,
+        );
+      } else {
+        console.error("Synthetic model completion diagnostics unavailable.");
+      }
+      const { nativePolls, nativeStatus, nativeExitCode, nativeSessionPresent } = completion;
+      if (
+        Number.isSafeInteger(nativePolls) &&
+        nativePolls >= 0 &&
+        ["running", "completed", "deadline", "unrecognized"].includes(nativeStatus) &&
+        (nativeExitCode === null || Number.isInteger(nativeExitCode)) &&
+        typeof nativeSessionPresent === "boolean"
+      ) {
+        console.error(
+          "Native command status=%s, exit=%s, session present=%s, polls=%d.",
+          nativeStatus,
+          nativeExitCode,
+          nativeSessionPresent,
+          nativePolls,
+        );
+      }
     }
     const known = [
       ...proof.slice(0, -1), // Retirement can follow a failure before the required proof.
@@ -354,33 +395,24 @@ try {
       "observe-installed-agent-readonly-skill-directories",
       "gateway-chat-refused",
       "native-command-started",
+      "repository-binding-withdrawn-discovery-released",
+      "native-command-completion-mismatch",
       "native-command-and-model-observed",
     ];
     const last = records.filter((p) => known.includes(p)).at(-1) ?? "before first test checkpoint";
-    const site = text.match(
-      /(?:skipper-prepared-compute|skipper-prepared-git-installed\.test)\.mjs:\d+:\d+/,
-    )?.[0];
-    const category = text.match(
-      /RTM_NEWADDR|bwrap|native command failed|missing-env|test-timeout|expected-test-not-passed|selected-zero|timed out:|ERR_ASSERTION/,
-    )?.[0];
-    console.error(
-      "Installed test failed after %s (%s, %s, exit=%s)",
-      last,
-      site ?? "location unavailable",
-      category ?? "unclassified",
-      runner.code ?? "unknown",
-    );
+    console.error("Last observed installed test checkpoint: %s", last);
     assert.fail("selected test runner failed");
   }
   assert.deepEqual(observed, proof);
   assert.equal(records.at(-1), proof.at(-1));
-  summary = await read(privateResult);
+  const summary = await read(privateResult);
   assert.equal(summary.sourceSha, sourceCommit);
   assert.equal(summary.lane, lane);
   assert.equal(summary.status, "passed");
   assert.equal(summary.exitCode, 0);
   assert.deepEqual(summary.counts, { passed: 1, failed: 0, skipped: 0, todo: 0, total: 1 });
   assert.deepEqual(summary.issues, []);
+  runnerReceipt = projectSkipperRunnerReceipt(summary);
 } catch (error) {
   failed = true;
   // File and line are useful on a failed guard. Never print values, runner or subprocess output.
@@ -409,32 +441,18 @@ try {
   await rm(env.OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY, { recursive: true, force: true });
 }
 
-if (failed) {
+if (failed || !runnerReceipt) {
   process.exitCode = 1;
 } else {
   // No raw ledger, test output, Git/model traffic, database URLs, kubeconfig or diagnostics.
   // Retain only actual, passing runner evidence accepted by Full Integration's aggregator.
   const results = join(env.RUNNER_TEMP, "results");
-  const { version, command, sourceSha, status, counts, exitCode } = summary;
-  assert.equal(summary.files.length, 1);
-  const [{ path, cleanup: testCleanup, tests }] = summary.files;
-  assert.equal(path, `tests/integration/${lane}.test.mjs`);
-  assert.deepEqual(testCleanup, { status: "passed" });
-  assert.deepEqual(
-    tests.map((test) => test.status),
-    ["passed"],
-  );
-  const [{ name, durationMs }] = tests;
   const receipt = {
-    version,
-    command,
+    ...runnerReceipt,
+    cleanup: { status: "passed" },
     lane,
-    sourceSha,
-    status,
-    counts,
-    exitCode,
     imageDigests,
-    files: [{ path, status, counts, cleanup: testCleanup, tests: [{ name, status, durationMs }] }],
+    imageScope: skipperImageScope,
     proof: [...proof, "owned-cluster-and-synthetic-model-removed"],
   };
   await mkdir(results, { recursive: true });

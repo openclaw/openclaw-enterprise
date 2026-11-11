@@ -638,18 +638,38 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
       pemAfterTime = null;
     }
     const truncated = chunk.truncated || pageCut;
+    const last = [...delivered].reverse().find((line) => line.time !== null);
+    const leadingWindowGap = leading.some(
+      (record) => record.type === "gap" && record.reason === "window_exceeded",
+    );
+    // Closing a full checkpoint cannot establish that identical tail rolling
+    // retained every occurrence; preserve its gap on the final delivered page.
+    const checkpointGap =
+      !skipStalled &&
+      (retainCheckpoint || checkpoint !== undefined) &&
+      (completeLines.length >= query.tailLines || chunk.truncated) &&
+      !leadingWindowGap;
+    // Frontier lines withheld above because de-duplication could not prove them
+    // delivered can never be read once this page moves the frontier past their
+    // time: they may have been new. Date that possible loss at the old frontier.
+    // A continuation page whose cursor already moved past it reported it already.
+    const frontierDropped =
+      frontierAmbiguous &&
+      !skipStalled &&
+      !leadingWindowGap &&
+      !checkpointGap &&
+      last !== undefined &&
+      progressResume?.lastTime != null &&
+      compareRuntimeLogTime(progressResume.lastTime, dedupResume!.lastTime!) === 0 &&
+      compareRuntimeLogTime(last.time!, dedupResume!.lastTime!) > 0;
     const records = [
       // The skip's own gap replaces a window_exceeded gap dated at the same cut line.
       ...(skipStalled
         ? leading.filter((record) => record.type !== "gap" || record.reason !== "window_exceeded")
         : leading),
-      // Closing a full checkpoint cannot establish that identical tail rolling
-      // retained every occurrence; preserve its gap on the final delivered page.
-      ...(!skipStalled &&
-      (retainCheckpoint || checkpoint !== undefined) &&
-      (completeLines.length >= query.tailLines || chunk.truncated) &&
-      !leading.some((record) => record.type === "gap" && record.reason === "window_exceeded")
-        ? [runtimeLogGap("window_exceeded", observedStream, earliest)]
+      ...(checkpointGap ? [runtimeLogGap("window_exceeded", observedStream, earliest)] : []),
+      ...(frontierDropped
+        ? [runtimeLogGap("window_exceeded", observedStream, dedupResume!.lastTime)]
         : []),
       ...sanitized.records,
       ...(skipStalled
@@ -665,7 +685,6 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
             ]
           : []),
     ];
-    const last = [...delivered].reverse().find((line) => line.time !== null);
     const kept = progressResume !== undefined && !replacedDuringRead && !skipStalled;
     let lastTime = kept ? progressResume.lastTime : null;
     let lastHashes = kept ? [...progressResume.lastHashes] : [];

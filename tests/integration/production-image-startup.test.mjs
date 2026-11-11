@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import test from "node:test";
 import { promisify } from "node:util";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
+import { jsonEvent } from "../helpers/json-lines.mjs";
 
 const execute = promisify(execFile);
 const docker = process.env.OCC_DOCKER_BIN ?? "docker";
@@ -134,7 +135,7 @@ function productionInstallation(adminKeyPath) {
             networkPolicies: [
               {
                 name: "dns",
-                endpoints: [{ host: "1.1.1.1", ports: [53], protocol: "udp" }],
+                endpoints: [{ host: "1.1.1.1", ports: [53], protocol: "tcp" }],
                 binaries: [{ path: "/app/bin/dns-client" }],
               },
             ],
@@ -181,37 +182,13 @@ function assertNoPackagingFailure(output) {
 }
 
 function assertPersistenceBoundary(output, event) {
-  const diagnostic = output
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return undefined;
-      }
-    })
-    .find((line) => line?.event === event);
-  assert.ok(diagnostic, output);
+  const diagnostic = jsonEvent(output, event, { lenient: true });
   assert.equal(diagnostic.code, "PERSISTENCE_UNAVAILABLE");
   assert.doesNotMatch(output, /The platform persistence repository is unavailable/);
 }
 
 function assertStartupFailureCode(output, event, code) {
-  const diagnostic = output
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return undefined;
-      }
-    })
-    .find((line) => line?.event === event);
-  assert.ok(diagnostic, output);
+  const diagnostic = jsonEvent(output, event, { lenient: true });
   assert.equal(diagnostic.code, code);
   return diagnostic;
 }
@@ -257,6 +234,8 @@ test(
         "-e",
         "OCC_AUTH_BASE_URL=https://occ.example.invalid",
         "-e",
+        "OCC_AGENT_NATIVE_ADMIN_DOMAIN=agents.example.invalid",
+        "-e",
         "OCC_DATABASE_URL=postgresql://127.0.0.1:1/openclaw_enterprise",
         image,
       ],
@@ -295,6 +274,8 @@ test(
       "OCC_AUTH_SECRET=openclaw-production-image-smoke-secret",
       "-e",
       "OCC_AUTH_BASE_URL=https://occ.example.invalid",
+      "-e",
+      "OCC_AGENT_NATIVE_ADMIN_DOMAIN=agents.example.invalid",
       "-e",
       "OCC_DATABASE_URL=postgresql://127.0.0.1:1/openclaw_enterprise",
       image,

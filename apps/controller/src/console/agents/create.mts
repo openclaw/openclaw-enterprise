@@ -1,7 +1,6 @@
 import type {
   Agent,
   AgentCredentialSourceBinding,
-  AgentDeploymentStatusWire,
   Configuration,
   CredentialSourceMetadata,
   CredentialSourceReference,
@@ -25,33 +24,56 @@ import {
   element,
   field as formField,
   fieldError,
-  jsonObjectProblem,
+  jsonObjectDiagnostic,
+  setFieldError,
   setStatusTone,
   setText,
+  setUnavailable,
   statusBlock,
   validateFields,
+  requestIdText,
+  withRequestId,
 } from "../dom.mjs";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
 import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
-import { type DeviceLogin, createDeviceLogin } from "./device-login.mjs";
+import { type DeviceLogin, createDeviceLogin, deviceLoginOffered } from "./device-login.mjs";
+import { agentCreateDenied, CONFIGURATION_CREATE_REFUSED, notIncluded } from "./access-reasons.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
-import { ensureCredentialOperateBinding } from "./credential-access.mjs";
-import { createSecretReferenceField, secretMetadata } from "./secret-picker.mjs";
-import { createPresetFields } from "./presets.mjs";
+import { ensureCredentialOperateBinding, secretOperateAnswer } from "./credential-access.mjs";
+import {
+  createSecretReferenceField,
+  NEW_SECRET_OPERATE_DENIED,
+  NEW_SECRET_OPERATE_REMEDY,
+  secretMetadata,
+} from "./secret-picker.mjs";
+import { workspaceFileProblem } from "./workspace.mjs";
+import { namespaceNameProblem } from "../namespaces.mjs";
+import {
+  createPresetFields,
+  presetVariableLabels,
+  type PresetReturn,
+  refusedPresetVariables,
+} from "./presets.mjs";
 import { provisioningJob } from "./provisioning-job.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
 import { renderChannels } from "../channels.mjs";
 import {
+  administratorMessage,
   type AgentNavigation,
+  channelBindingRefusal,
+  describeFailure,
   GENERIC_CONFLICT,
   link,
   message,
   NAMESPACE_MISSING,
   NAMESPACE_RECHECK_MS,
   namespaceCreation,
+  namespaceListNeed,
   namespacePath,
+  neutralDeploymentOutcome,
   preAdmissionRefusal,
+  readFailure,
   rejectionMessage,
 } from "./list.mjs";
 
@@ -64,7 +86,10 @@ type CreateRequest = (
 ) => Promise<unknown>;
 type CredentialReference = SecretReference | CredentialSourceReference;
 type Repositories = ReturnType<typeof createRepositoryFields>;
-type CredentialRegistration = Pick<CredentialSourceMetadata, "name" | "secrets" | "type">;
+type CredentialRegistration = Pick<
+  CredentialSourceMetadata,
+  "name" | "secrets" | "type" | "config"
+>;
 type RegisteredCredential = Pick<CredentialSourceMetadata, "id" | "state">;
 type SavedAgent = Pick<Agent, "id" | "name" | "configurationId">;
 type SavedConfiguration = Pick<Configuration, "id" | "secretBindings">;
@@ -77,6 +102,8 @@ export interface CreateAgentContext extends AgentNavigation {
   namespaceMissing?: boolean;
   installationAdmin: boolean | null;
   permissions: Permissions | null | undefined;
+  // The Namespace permission answer's secrets.create, for inline Create Secret.
+  secretsCreateAllowed?: (() => Promise<boolean | undefined>) | undefined;
   drafts: Parameters<typeof createPresetFields>[0]["drafts"];
   request: CreateRequest;
   isCurrent(): boolean;
@@ -92,29 +119,58 @@ export interface CreateAgentContext extends AgentNavigation {
 
 // Only fields this editor changes. Preserve other native configuration and model metadata.
 type ModelSettings = Record<string, unknown>;
-type ModelSelection = string | { primary?: string | undefined; fallbacks?: unknown[] };
-type ProviderModel = Record<string, unknown> & { id: string; name?: string };
-type LaunchValues = Record<string, unknown> & {
-  agents?: {
-    defaults?: {
-      model?: ModelSelection | undefined;
-      models?: Record<string, ModelSettings>;
-    };
-    entries?: Record<string, { model?: ModelSelection }>;
-  };
-  models?: { providers?: Record<string, { models?: ProviderModel[] }> };
-  plugins?: { entries?: Record<string, unknown>; allow?: string[] };
-};
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isArray(value: unknown): value is unknown[] {
+  return Array.isArray(value);
+}
+
+function objectFields(value: unknown): Record<string, unknown> {
+  return isObject(value) ? value : {};
+}
+
+// Object spread keeps array indexes and string code units too. Draft reads must not decide
+// which enumerable user fields survive a merge; the API owns full schema validation.
+function spreadFields(value: unknown): Record<string, unknown> {
+  return { ...(value ?? {}) };
+}
+
+function modelPrimaryValue(selection: unknown): unknown {
+  return typeof selection === "string" ? selection : objectFields(selection).primary;
+}
+
+function modelPrimary(selection: unknown): string | undefined {
+  const primary = modelPrimaryValue(selection);
+  return typeof primary === "string" ? primary : undefined;
+}
+
+function configuredModelSelection(values: Record<string, unknown> | undefined): unknown {
+  const agents = objectFields(values?.agents);
+  const defaults = objectFields(agents.defaults).model;
+  // Keep the original candidate order, including non-text primaries, so initialization can
+  // explain a broken Preset instead of silently opening it with a different model.
+  if (modelPrimaryValue(defaults)) {
+    return defaults;
+  }
+  const entry = Object.values(objectFields(agents.entries)).find(
+    (entry) => isObject(entry) && modelPrimaryValue(entry.model),
+  );
+  return isObject(entry) ? entry.model : defaults;
+}
 
 export interface CreateAgentDraft {
   rendered: PresetLaunchSettings;
   presetOptions: PresetOptions;
   touched: boolean;
+  nativeAdmin: boolean;
   inputs: Record<string, string>;
   edited: boolean;
   manualModel: boolean;
   pendingModelSettings: ModelSettings | undefined;
-  pendingProviderModel: string | undefined;
+  pendingPrimaryModel: string | undefined;
+  pendingModelSelections: Record<string, unknown> | undefined;
   configurationSecretBindings: SecretBindings;
   pluginApprovers: PluginApprovers | undefined;
   oauthLogin: DeviceLogin | null | undefined;
@@ -131,6 +187,7 @@ interface ProvisioningAttempt {
   body: Record<string, unknown> & { requestId: string };
   acknowledged: boolean;
   statusUrl?: string | undefined;
+  revisionId?: string;
 }
 
 type ProvisioningContext = Pick<CreateAgentContext, "request" | "namespaceId" | "isCurrent"> & {
@@ -141,8 +198,7 @@ type ProvisioningJob = ReturnType<typeof provisioningJob>;
 // so only this one is shown as sent.
 const AGENT_NAME_CONFLICT =
   "An Agent with this name already exists in this Namespace. Choose a different name.";
-// The API's Agent name limit, in characters (code points).
-const AGENT_NAME_MAX_CHARACTERS = 200;
+const AGENT_NAME_TAKEN_FIELD = "Another Agent in this Namespace has this name.";
 // The open Create Agent form rechecks its Namespace when the window regains focus. The page's own
 // recheck skips any open form, because a reload would discard it (finding 2012).
 let recheckOpenForm: (() => void) | null = null;
@@ -249,6 +305,27 @@ function configurationTemplate(harnessId: string, nativeProvider: string, provid
   };
 }
 
+// How Kubernetes Compute's refusal of a Dedicated Agent it cannot place begins.
+const PLACEMENT_REFUSAL = "Dedicated Agents need ";
+
+// The first sentence of a Driver refusal that names a setting: the requirement, without the
+// advice that follows it.
+function settingRequirement(refusal: string): string {
+  return refusal.split(/(?<=\.)\s+/u)[0] ?? refusal;
+}
+
+// How Agent save refuses a Harness authentication method the Compute Driver does not deliver to
+// the Agent's topology. It ends with ": change harnessAuth or executionMode.", which a Preset's
+// operator-managed binding leaves this form unable to do.
+const HARNESS_AUTH_REFUSAL = "Agent setting harnessAuth.method must be ";
+
+// That refusal for an operator-managed Preset binding: the requirement, then what an operator
+// changes (finding 2427).
+function runtimeBindingRefusal(refusal: string): string {
+  const requirement = refusal.replace(/: change [^:]*$/u, ".");
+  return `This Preset's operator-managed credentials need a Compute Driver that supplies them. ${requirement} Ask an Installation administrator to change the Preset's harnessAuth or the Compute Driver, or start without a Preset.`;
+}
+
 function selectedHarnessAuth(
   method: string,
   source: CredentialReference | null | undefined,
@@ -277,12 +354,31 @@ function credentialRegistrationResult(
     return null;
   }
   const { id, state } = source;
+  const config = responseFields(source.config);
+  const configMatches =
+    source.config !== null &&
+    typeof source.config === "object" &&
+    !Array.isArray(source.config) &&
+    Object.keys(config).length === Object.keys(expected.config).length &&
+    Object.entries(expected.config).every(([name, value]) => {
+      const actual = config[name];
+      if (actual === value) {
+        return true;
+      }
+      // Drivers can canonicalize URLs during registration; compare their parsed destination.
+      return (
+        typeof actual === "string" &&
+        URL.canParse(value) &&
+        URL.canParse(actual) &&
+        new URL(value).href.replace(/\/$/, "") === new URL(actual).href.replace(/\/$/, "")
+      );
+    });
   if (
     typeof id !== "string" ||
     !id.trim() ||
     source.namespaceId !== namespaceId ||
     source.type !== expected.type ||
-    !sameValue(source.config, {}) ||
+    !configMatches ||
     !sameValue(source.secrets, expected.secrets) ||
     !sameValue(source.ref, { kind: "credential_source", namespaceId, id }) ||
     (state !== "ready" && state !== "registering" && state !== "deleting")
@@ -290,6 +386,26 @@ function credentialRegistrationResult(
     throw new Error("The response did not identify the requested credential registration.");
   }
   return { id, state };
+}
+
+// Why removing a failed credential registration failed and the next step (finding 2538): a
+// refusal names its grant (DELETE authorizes credential source delete on the source), and only
+// an unanswered request suggests the Credential Gateway was unavailable.
+function credentialRemovalFailure(cause: unknown) {
+  const { status } = requestFailure(cause);
+  if (status === 403) {
+    return notIncluded("removing this credential registration", "credential source delete on it");
+  }
+  if (status === 404) {
+    return "This credential registration is no longer available. Select Check credential registration.";
+  }
+  if (status === 400 || status === 409 || status === 429) {
+    return `The failed credential registration was not removed. ${describeFailure(cause, {
+      mutation: true,
+      next: "Select Check credential registration, then try again.",
+    })}`;
+  }
+  return "The failed credential registration could not be removed: the Credential Gateway did not confirm it. Retry removal when the Credential Gateway is available.";
 }
 
 function createClientRequestId() {
@@ -368,62 +484,47 @@ async function cancelledAgentState(request: CreateRequest, namespaceId: string, 
   }
 }
 
-// First-deployment waits that someone must act on: a full Pod quota (finding 1617) and an image
-// the nodes cannot pull (finding 1881). The deployment's own fixed sentence replaces the bare
-// provisioning line. The deployment read needs read access to the Agent. Clear the reason if the
-// deployment is no longer readable or names a different wait; keep it through a cancelled read
-// or temporary outage (finding 1637).
-const NAMED_DEPLOYMENT_WAITS = new Set([
-  "NAMESPACE_POD_QUOTA_EXCEEDED",
-  "REVISION_IMAGE_PULL_FAILED",
-]);
 // An outage, unlike the Installation's shape, needs no administrator change (finding 1624). Agent
 // save and deploy answer 503 for every harness until the selected Sandbox Driver returns.
 const SANDBOX_DRIVER_OUTAGE =
-  "Agents cannot be created right now: this installation's Sandbox Driver is unavailable. Reload this page to check again, or ask an administrator if it persists.";
-// The deployment read was refused (401, 403 or 404): the reader can't see its waits now.
-const DEPLOYMENT_UNREADABLE = Symbol("deployment unreadable");
-
-// The deployment's actionable wait (a sentence), none (null), DEPLOYMENT_UNREADABLE, or undefined
-// when the read was cut off or temporarily unavailable.
-async function namedDeploymentWait(
+  "Agents cannot be created right now: this installation's Sandbox Driver is unavailable. Reload this page to check again, or ask an Installation administrator if it persists.";
+// Without native worker support the Installation does not say why (finding 1612), unless it
+// lists Embedded: then it selects no Sandbox Driver, and the reason is exact (finding 2384).
+const NATIVE_WORKERS_UNAVAILABLE =
+  "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose the Codex harness, or Embedded execution if the installation selects no Sandbox Driver. Otherwise an Installation administrator must select a Sandbox Driver that can provision dedicated OpenClaw, or a runtime with native worker support.";
+const NO_SANDBOX_DRIVER_DEDICATED =
+  "Dedicated OpenClaw is unavailable: this installation selects no Sandbox Driver. Choose the Codex harness or Embedded execution, or ask an Installation administrator to select a Sandbox Driver that can provision dedicated OpenClaw.";
+// A refused read returns false. An unavailable read returns undefined so Create can try again.
+async function firstDeploymentReadable(
   request: CreateRequest,
   namespaceId: string,
-  job: ProvisioningJob,
+  job: { agentId: string; revisionId: string },
   signal: AbortSignal,
 ) {
-  if (
-    typeof job.agentId !== "string" ||
-    !job.agentId ||
-    typeof job.revisionId !== "string" ||
-    !job.revisionId
-  ) {
-    return null;
-  }
   try {
-    const deployment = await request(
+    await request(
       `${namespacePath(namespaceId)}/agents/${encodeURIComponent(job.agentId)}/deployments/${encodeURIComponent(job.revisionId)}`,
       { signal },
     );
-    const attempt = (deployment as AgentDeploymentStatusWire)?.progress?.lastAttempt;
-    return NAMED_DEPLOYMENT_WAITS.has(attempt?.code ?? "") &&
-      typeof attempt?.message === "string" &&
-      attempt.message
-      ? attempt.message
-      : null;
+    return true;
   } catch (error) {
-    return [401, 403, 404].includes(requestFailure(error).status ?? 0)
-      ? DEPLOYMENT_UNREADABLE
-      : undefined;
+    const { status } = requestFailure(error);
+    if (status === 401) {
+      throw error;
+    }
+    return status === 403 || status === 404 ? false : undefined;
   }
 }
 
-// The wait a job past handoff names for its first deployment (finding 1690), as the deployment's
-// status does: its fixed sentence after the provisioning line. A reader who can't read the
-// deployment gets the job's own PROVISIONING_DEPLOYMENT_PENDING, which says no more than the
-// provisioning line, so that line stays. A wait someone must act on stands alone, as above, and
-// so does a stop, which provisioning no longer continues.
-const STANDALONE_JOB_WAITS = new Set([...NAMED_DEPLOYMENT_WAITS, "AGENT_STOP_YIELDED"]);
+// The wait a job names for its first deployment (findings 1617, 1690, 1881): a full Pod quota or
+// an image the nodes cannot pull stands alone, since someone must act on it, and so does a stop,
+// which provisioning no longer continues. Other waits follow the provisioning line. The job's own
+// PROVISIONING_DEPLOYMENT_PENDING says no more than that line, so the line stays.
+const STANDALONE_JOB_WAITS = new Set([
+  "NAMESPACE_POD_QUOTA_EXCEEDED",
+  "REVISION_IMAGE_PULL_FAILED",
+  "AGENT_STOP_YIELDED",
+]);
 
 function jobDeploymentWait(job: ProvisioningJob) {
   const attempt = job.progress?.lastAttempt;
@@ -444,44 +545,53 @@ async function waitForProvisioning({
   status,
   first,
   namespaceId,
-  provisionPath,
+  observeJob,
   isCurrent,
-}: ProvisioningContext & { first: ProvisioningJob; provisionPath: string }) {
+}: ProvisioningContext & {
+  first: ProvisioningJob;
+  observeJob: (value: unknown) => ProvisioningJob;
+}) {
   let current = first;
   // A started job goes back to queued between retries. Keep one label once it has started,
   // and write it only when it changes, since this rereads every second (finding 1424).
   let started = false;
-  // The actionable wait the last fresh deployment read named. It fills in when a later read is
-  // cut off or unavailable and the job names no wait, so the line doesn't flip back to the bare
-  // text (finding 1637); a fresh answer or a refusal replaces it.
-  let named: string | null = null;
+  let deploymentRefused = false;
   while (current?.status === "queued" || current?.status === "running") {
-    started ||= current.status === "running";
-    // Spend the interval between polls on optional detail. At the next poll, stop that read
-    // even if only its headers arrived; the provisioning job remains the source of truth.
-    const detail = new AbortController();
-    const nextPoll = wait(1_000).then(() => detail.abort());
-    const read = await namedDeploymentWait(request, namespaceId, current, detail.signal);
-    let detailText;
-    if (read === DEPLOYMENT_UNREADABLE) {
-      // A refusal clears every detail, the job's too: the job was read before the refusal.
-      named = null;
-      detailText = null;
-    } else if (read !== undefined) {
-      // A fresh answer's actionable wait comes first; otherwise the job names the wait.
-      named = read;
-      detailText = read ?? jobDeploymentWait(current);
-    } else {
-      // Without a fresh answer, the job's wait is newer than the one kept from an earlier read.
-      detailText = jobDeploymentWait(current) ?? named;
+    // Give the optional deployment read one poll interval, including its response body.
+    const probe = new AbortController();
+    const nextPoll = wait(1_000).then(() => probe.abort());
+    const { agentId, revisionId } = current;
+    // After handoff, the Deployment tab owns progress and recovery. The job can still be
+    // readable when the deployment is refused.
+    if (agentId && revisionId && !deploymentRefused) {
+      const readable = await firstDeploymentReadable(
+        request,
+        namespaceId,
+        { agentId, revisionId },
+        probe.signal,
+      );
+      if (!isCurrent()) {
+        throw new DOMException("View closed", "AbortError");
+      }
+      if (readable) {
+        status.textContent = "Agent created. Opening its first deployment…";
+        return { agentId, revisionId, tab: "deployment" as const };
+      }
+      deploymentRefused = readable === false;
     }
-    setText(status, detailText ?? provisioningStatusText(started ? "running" : current.status));
+    started ||= current.status === "running";
+    // A refusal also clears detail from the earlier job read, which may predate an access change.
+    setText(
+      status,
+      (deploymentRefused ? null : jobDeploymentWait(current)) ??
+        provisioningStatusText(started ? "running" : current.status),
+    );
     await nextPoll;
     if (!isCurrent()) {
       throw new DOMException("View closed", "AbortError");
     }
     const next = await request(first.url);
-    current = provisioningJob(next, provisionPath, first.requestId, first.url);
+    current = observeJob(next);
   }
   // A Stop during the first deployment (REVISION_STOPPED) or before it (PROVISIONING_CANCELLED)
   // is the owner's choice, not a failure to repair.
@@ -489,12 +599,23 @@ async function waitForProvisioning({
     current?.status === "failed" && current.error?.code === "PROVISIONING_CANCELLED"
       ? await cancelledAgentState(request, namespaceId, current.agentId)
       : null;
-  const stopped =
-    current?.status === "failed" &&
-    (current.error?.code === "REVISION_STOPPED" || cancelledAgent === "kept");
-  status.textContent = stopped ? "Provisioning stopped." : provisioningStatusText(current?.status);
+  const neutralOutcome =
+    cancelledAgent === "kept"
+      ? "stopped"
+      : neutralDeploymentOutcome({
+          status: current.status,
+          error: current.error?.code === undefined ? null : { code: current.error.code },
+        });
+  // A failed job's reason leads the form's error line, so its status line would only repeat
+  // that it failed (finding 2423).
+  status.textContent =
+    neutralOutcome === "stopped"
+      ? "Provisioning stopped."
+      : current?.status === "failed"
+        ? ""
+        : provisioningStatusText(current?.status);
   if (current?.status !== "succeeded") {
-    throw new ProvisioningFailure(current, stopped, cancelledAgent === "unknown");
+    throw new ProvisioningFailure(current, neutralOutcome, cancelledAgent === "unknown");
   }
   if (typeof current.agentId !== "string" || !current.agentId) {
     throw new Error("Provisioning status did not include an Agent.");
@@ -502,23 +623,31 @@ async function waitForProvisioning({
   if (typeof current.revisionId !== "string" || !current.revisionId) {
     throw new Error("Provisioning status did not include an AgentRevision.");
   }
-  return { agentId: current.agentId, revisionId: current.revisionId };
+  return {
+    agentId: current.agentId,
+    revisionId: current.revisionId,
+    tab: "configuration" as const,
+  };
 }
 
 class ProvisioningFailure extends Error {
   readonly job: ProvisioningJob;
-  readonly stopped: boolean;
+  readonly neutralOutcome: ReturnType<typeof neutralDeploymentOutcome>;
   readonly agentUnknown: boolean;
   readonly failed: boolean;
   readonly canRetry: boolean;
 
-  constructor(job: ProvisioningJob, stopped: boolean, agentUnknown: boolean) {
+  constructor(
+    job: ProvisioningJob,
+    neutralOutcome: ReturnType<typeof neutralDeploymentOutcome>,
+    agentUnknown: boolean,
+  ) {
     super(job.error?.message ?? "Provisioning did not complete.");
     this.job = job;
-    this.stopped = stopped;
+    this.neutralOutcome = neutralOutcome;
     this.agentUnknown = agentUnknown;
     this.failed = job.status === "failed";
-    this.canRetry = this.failed && canRetryFailedProvisioning(job);
+    this.canRetry = !neutralOutcome && this.failed && canRetryFailedProvisioning(job);
   }
 }
 
@@ -527,37 +656,49 @@ async function finishProvisioningAttempt({
   status,
   namespaceId,
   attempt,
+  retryUrl,
   isCurrent,
-}: ProvisioningContext & { attempt: ProvisioningAttempt }) {
+}: ProvisioningContext & { attempt: ProvisioningAttempt; retryUrl?: string | undefined }) {
   status.textContent = "Submitting provisioning request…";
   const provisionPath = `${namespacePath(namespaceId)}/agents/provision`;
   const provisioned =
-    attempt.statusUrl === undefined
+    retryUrl === undefined
       ? await request(provisionPath, {
           method: "POST",
           body: attempt.body,
         })
-      : await request(`${attempt.statusUrl}/retry`, { method: "POST" });
+      : await request(`${retryUrl}/retry`, { method: "POST" });
   attempt.acknowledged = true;
-  const accepted = provisioningJob(
-    provisioned,
-    provisionPath,
-    attempt.body.requestId,
-    attempt.statusUrl,
-  );
-  attempt.statusUrl = accepted.url;
+  function observeJob(value: unknown) {
+    const job = provisioningJob(value, provisionPath, attempt.body.requestId, attempt.statusUrl);
+    // A job can acquire its first revision at handoff. Once observed, that revision belongs
+    // to this request across subsequent polls and explicit recovery attempts.
+    if (attempt.revisionId !== undefined && job.revisionId !== attempt.revisionId) {
+      throw new Error("The provisioning response did not identify the expected revision.");
+    }
+    attempt.statusUrl = job.url;
+    if (typeof job.revisionId === "string" && job.revisionId) {
+      attempt.revisionId = job.revisionId;
+    }
+    return job;
+  }
+  const accepted = observeJob(provisioned);
   status.textContent = "Provisioning request accepted.";
   return waitForProvisioning({
     request,
     status,
     first: accepted,
     namespaceId,
-    provisionPath,
+    observeJob,
     isCurrent,
   });
 }
 
-export function renderCreateAgent(context: CreateAgentContext, restored?: unknown) {
+export function renderCreateAgent(
+  context: CreateAgentContext,
+  restored?: unknown,
+  returning?: PresetReturn,
+) {
   // This scoped draft is written only by captureDraft below.
   const draft = restored as CreateAgentDraft | undefined;
   context.setTitle("Create Agent");
@@ -573,7 +714,7 @@ export function renderCreateAgent(context: CreateAgentContext, restored?: unknow
   const notReady = createNamespaceState(context);
   const unavailable =
     context.permissions?.agents?.create === false
-      ? "Your access does not include creating Agents in this Namespace. Ask an administrator for access, or choose another Namespace."
+      ? agentCreateDenied(context.permissions)
       : notReady?.blocked
         ? notReady.note
         : null;
@@ -596,17 +737,23 @@ export function renderCreateAgent(context: CreateAgentContext, restored?: unknow
   }
   // Starting the form replaces the launch view, and with it the control that started it. Give
   // focus to the page heading instead of dropping it to the document (finding 1446).
+  const operateAnswer = namespaceSecretOperateAnswer(context);
   const startForm = (
     rendered: PresetLaunchSettings,
     options: PresetOptions,
     draft?: Partial<CreateAgentDraft>,
   ) => {
-    renderAgentForm(context, rendered, options, draft);
+    renderAgentForm(context, rendered, options, draft, operateAnswer);
+    // The chooser could be scrolled; the form starts at its heading (finding 2098).
     if (document.activeElement === document.body && context.isCurrent()) {
-      context.view.closest(".content")?.querySelector("h1")?.focus({ preventScroll: true });
+      context.view.closest(".content")?.querySelector("h1")?.focus();
     }
   };
-  const presets = createPresetFields(context, startForm);
+  const presets = createPresetFields(
+    { ...context, secretsOperateDenied: operateAnswer.read },
+    startForm,
+    returning,
+  );
   context.view.replaceChildren(
     // A provisioning Namespace accepts drafts; its status shows before any start (finding 1895).
     // replaceChildren would print a null child as the text "null".
@@ -618,7 +765,9 @@ export function renderCreateAgent(context: CreateAgentContext, restored?: unknow
       element(
         "p",
         { className: "muted" },
-        "Choose a model, connect repositories, and give your Agent a place to work.",
+        // Repository access depends on the Installation; the form offers it where set up
+        // (finding 2404).
+        "Choose a model and give your Agent a place to work.",
       ),
       element(
         "div",
@@ -642,21 +791,33 @@ export function renderCreateAgent(context: CreateAgentContext, restored?: unknow
   );
 }
 
-// A member's Agent reaches its Secrets through an Installation administrator's grant (UX plan A2).
+// A member's deploy gives the Agent access to each Secret and credential source it uses that the
+// member may operate (RFC-0026), so the member finishes without an administrator.
 const MEMBER_CREDENTIAL_ACCESS =
-  "An Installation administrator then gives the new Agent access to its Secrets.";
+  "Deploying the new Agent gives it access to the Secrets and credential sources it uses.";
 const MEMBER_GRANT_REFUSED =
-  "The Agent was created as a draft. Giving it access to its saved model and channel Secrets needs Installation administration access: open the saved Agent and ask an Installation administrator to grant it.";
-const INSTALLATION_REFUSAL =
-  "Creating an Agent needs Installation access that your account does not have. Ask an Installation administrator to create this Agent.";
+  "The Agent was created as a draft. Deploy it from its page: deploying gives it access to its model and channel Secrets.";
 // The Installation read was refused and the Namespace's permission answer is unknown (its read
 // failed), so whether this account may create Agents here is not known (finding 2110).
 const PERMISSIONS_UNREAD =
   "Your permissions in this Namespace could not be checked, and Installation-wide capabilities are not readable with your access. Retry the permission check before creating an Agent.";
-// A refused Configuration create names the grants it needs, as a refused save does
-// (SAVE_REFUSALS): one fixed text for every 403 (finding 2111).
-const CONFIGURATION_CREATE_REFUSAL =
-  "You do not have permission to create this Agent's Configuration. Ask an administrator for Configuration create access in this Namespace, plus Secret operate on each Secret it binds.";
+// This form saves Secret bindings only from its Slack channel settings. A channel refusal that
+// asks for a binding gets where to add one, as on the Agent page (findings 2494, 2506).
+const CHANNEL_BINDING_FORM_REMEDY =
+  "On this form, the Slack channel settings bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN to the Secrets you select there; bind other names through the Configuration API after the Agent exists.";
+// A typed model key is saved as a new Secret, which Agent create then binds (finding 2492).
+const NEW_SECRET_REFUSAL = `${NEW_SECRET_OPERATE_DENIED} Select Start over and use an existing Secret. ${NEW_SECRET_OPERATE_REMEDY}`;
+
+// The readable Secrets this caller may not operate: each Create Agent Secret field, the Preset's
+// existing Secret included, lists them disabled and never stages one, since Agent create, or a
+// directory search, would answer 403 (finding 2469). Read when a field first needs it, and again
+// after a permission reread, a refused create or an inline Secret create. A failed read keeps the
+// last answer; before any answer it marks none.
+function namespaceSecretOperateAnswer(context: CreateAgentContext) {
+  return secretOperateAnswer(() =>
+    context.request(`${namespacePath(context.namespaceId)}/permissions/secrets`),
+  );
+}
 
 // What Create Agent knows of its Namespace: missing from a list the form read (kept for Start
 // over, which renders from the same context), otherwise its status.
@@ -686,15 +847,16 @@ function renderAgentForm(
   rendered: PresetLaunchSettings,
   presetOptions: PresetOptions = {},
   draft: Partial<CreateAgentDraft> = {},
+  operateAnswer = namespaceSecretOperateAnswer(context),
 ) {
   const { view, request, namespaceId } = context;
+  const secretsOperateDenied = operateAnswer.read;
+  const secretContext = { ...context, secretsOperateDenied };
   // A recheck replaces it once the Namespace becomes ready (finding 2012).
   let notReady = createNamespaceState(context);
   let notReadyNote = notReady ? namespaceNote(notReady) : null;
   const agent: NonNullable<PresetLaunchSettings["agent"]> & { harnessAuth?: unknown } =
     rendered.agent ?? {};
-  const isObject = (value: unknown): value is Record<string, unknown> =>
-    value !== null && typeof value === "object" && !Array.isArray(value);
   const workspaceFileNames = Object.keys(WORKSPACE_DEFAULTS);
   const initialWorkspaceFiles = isObject(agent.initialWorkspaceFiles)
     ? agent.initialWorkspaceFiles
@@ -705,6 +867,7 @@ function renderAgentForm(
       Object.keys(agent.initialWorkspaceFiles).every((filename) =>
         workspaceFileNames.includes(filename),
       ));
+  let presetPluginApprovers: PluginApprovers | undefined;
   // Name the first field the form cannot use, so a Preset editor knows what to fix.
   const invalidField = (() => {
     if (agent.name !== undefined && typeof agent.name !== "string") {
@@ -723,15 +886,18 @@ function renderAgentForm(
     if (agent.plugins !== undefined && !isObject(agent.plugins)) {
       return "agent.plugins must be an object";
     }
-    if (
-      agent.pluginApprovers !== undefined &&
-      (!Array.isArray(agent.pluginApprovers) ||
-        !agent.pluginApprovers.every(
-          (entry) =>
+    if (agent.pluginApprovers !== undefined) {
+      const approvers = agent.pluginApprovers;
+      if (
+        !Array.isArray(approvers) ||
+        !approvers.every(
+          (entry: unknown): entry is PluginApprovers[number] =>
             isObject(entry) && typeof entry.channel === "string" && typeof entry.id === "string",
-        ))
-    ) {
-      return "agent.pluginApprovers must list objects with text channel and id";
+        )
+      ) {
+        return "agent.pluginApprovers must list objects with text channel and id";
+      }
+      presetPluginApprovers = approvers;
     }
     if (!hasRenderableWorkspaceFiles) {
       return `agent.initialWorkspaceFiles must be an object with only ${workspaceFileNames.join(", ")}`;
@@ -752,7 +918,7 @@ function renderAgentForm(
   const auth = responseFields(agent.harnessAuth);
   const method = auth.method;
   const keyMethod = method === "api_key" || method === "codex_pat" ? method : undefined;
-  const passwordAuth = Object.hasOwn(auth, "secret");
+  let passwordAuth = Object.hasOwn(auth, "secret");
   const authDefault = keyMethod && Object.keys(auth).length === 1 ? keyMethod : undefined;
   let binding: HarnessAuthBinding | undefined;
   if (passwordAuth) {
@@ -800,7 +966,7 @@ function renderAgentForm(
 
   const formId = "create-agent-form";
   // No maxlength: it counts UTF-16 code units, so an emoji would count twice. The API
-  // counts characters (code points), and so does this check.
+  // counts characters (code points), and so does namespaceNameProblem.
   const name = element("input", {
     id: "agent-name",
     name: "name",
@@ -808,12 +974,20 @@ function renderAgentForm(
     "data-trim": "",
     autocomplete: "off",
   });
-  const checkNameLength = () =>
-    name.setCustomValidity(
-      Array.from(name.value.trim()).length > AGENT_NAME_MAX_CHARACTERS
-        ? `Use at most ${AGENT_NAME_MAX_CHARACTERS} characters.`
-        : "",
-    );
+  // The API's Name rule: length and control characters, checked before any write, so a
+  // refused name never leaves a saved Configuration behind (finding 2340).
+  const checkName = () => name.setCustomValidity(namespaceNameProblem(name.value));
+  // A name the API refused as taken is marked under the field, which takes focus once the form
+  // enables it again; editing the name clears the mark (finding 2420). The refusal line keeps
+  // the API's sentence and request ID. The API decides on every submit, so a marked name is not
+  // refused locally.
+  let nameTakenMarked = false;
+  let focusTakenName = false;
+  const markNameTaken = () => {
+    nameTakenMarked = true;
+    focusTakenName = true;
+    setFieldError(name, AGENT_NAME_TAKEN_FIELD);
+  };
   const dedicatedOption = element("option", { value: "dedicated" }, "Dedicated");
   const embeddedOption = element("option", { value: "embedded" }, "Embedded");
   const mode = element("select", { id: "execution-mode" }, dedicatedOption, embeddedOption);
@@ -836,13 +1010,9 @@ function renderAgentForm(
   // the runtime supports native workers and a Sandbox Driver can provision them (finding 1608).
   // Its absence does not say whether Embedded remains: any selected Sandbox Driver refuses
   // Embedded execution, so the copy names Codex and the condition (finding 1612).
-  const nativeWorkersUnavailable = statusBlock(
-    "danger",
-    null,
-    "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose the Codex harness, or Embedded execution if the installation selects no Sandbox Driver. Otherwise an administrator must select a Sandbox Driver that can provision dedicated OpenClaw, or a runtime with native worker support.",
-    [],
-    { hidden: true },
-  );
+  const nativeWorkersUnavailable = statusBlock("danger", null, NATIVE_WORKERS_UNAVAILABLE, [], {
+    hidden: true,
+  });
   // The Installation lists the OpenClaw execution modes admission accepts (#2670). When the
   // selected mode is not one of them, say so here and keep Create disabled, before any write.
   const openclawModeUnavailable = statusBlock("danger", null, null, [], { hidden: true });
@@ -859,9 +1029,14 @@ function renderAgentForm(
     "aria-describedby": "configuration-json-hint",
   });
   const configurationError = fieldError(configuration);
-  const primary = (rendered.configuration?.values as LaunchValues | undefined)?.agents?.defaults
-    ?.model;
-  const initialModel = typeof primary === "string" ? primary : primary?.primary;
+  let catalogErrorMessage: string | undefined;
+  const initialModel =
+    modelPrimaryValue(configuredModelSelection(rendered.configuration?.values)) ?? undefined;
+  if (initialModel !== undefined && typeof initialModel !== "string") {
+    throw new Error(
+      "This Preset's primary model must be text. Choose another Preset, or ask a Preset editor to fix the template.",
+    );
+  }
   const nativeProvider = element(
     "select",
     { id: "model-provider" },
@@ -912,10 +1087,36 @@ function renderAgentForm(
   const authMethodField = field("Authentication method", authMethod);
   const credentialLabel = element("label", { for: apiKey.id }, "API key");
   const credentialHelp = element("p", { className: "hint", id: "provider-credential-help" });
+  const sourceConfigurationFields = element("div", { className: "form-fields" });
+  const sourceConfigurationInputs = new Map<string, HTMLInputElement>();
+  let renderedSourceType: CredentialSourceType | null | undefined;
+
   apiKey.setAttribute("aria-describedby", credentialHelp.id);
   let manualModel = !useModelChoices;
   let pendingModelSettings = draft.pendingModelSettings;
-  let pendingProviderModel = draft.pendingProviderModel;
+  let pendingPrimaryModel = draft.pendingPrimaryModel;
+  let pendingModelSelections = draft.pendingModelSelections;
+  const modelSelections = (values: Record<string, unknown>) => {
+    const agents = objectFields(values.agents);
+    return {
+      defaults: isObject(agents.defaults) ? { model: agents.defaults.model } : agents.defaults,
+      entries: isObject(agents.entries)
+        ? Object.fromEntries(
+            Object.entries(agents.entries).map(([id, entry]): [string, unknown] => [
+              id,
+              isObject(entry) ? { model: entry.model } : entry,
+            ]),
+          )
+        : agents.entries,
+    };
+  };
+  function retainPendingModel(values: Record<string, unknown>) {
+    if (pendingModelSelections && !sameValue(pendingModelSelections, modelSelections(values))) {
+      pendingModelSettings = undefined;
+      pendingPrimaryModel = undefined;
+      pendingModelSelections = undefined;
+    }
+  }
   const modelChoice = element(
     "select",
     { id: "agent-model" },
@@ -923,15 +1124,25 @@ function renderAgentForm(
     ...modelChoices().map((id) => element("option", { value: id }, id)),
   );
   const toggleModel = button("Enter model ID manually", () => {
+    const values = readModelConfiguration();
     if (manualModel) {
-      resetModelChoices(false, model.value);
+      if (!resetModelChoices(false, model.value, values)) {
+        return;
+      }
     } else {
+      if (values === "invalid-allow" || !canMergeModelCatalog(values, model.value)) {
+        return;
+      }
       manualModel = true;
       modelChoice.value = "";
-      updateModelConfiguration();
+      updateModelConfiguration(false, values);
       updateControls();
     }
-    (manualModel ? model : modelChoice).focus();
+    if (values === "number-range") {
+      focusConfiguration();
+    } else {
+      (manualModel ? model : modelChoice).focus();
+    }
   });
   const modelField = field("Model ID", model, "Enter a model ID available to this credential.");
   const choiceField = field(
@@ -945,26 +1156,41 @@ function renderAgentForm(
     ...(useModelChoices ? [choiceField, toggleModel] : []),
     modelField,
   );
-  function resetModelChoices(resetTransport = false, selectedModel = "") {
+  function resetModelChoices(
+    resetTransport = false,
+    selectedModel = "",
+    values = readModelConfiguration(),
+  ) {
+    const nextModel = modelChoices().includes(selectedModel) ? selectedModel : "";
+    if (values === "invalid-allow" || !canMergeModelCatalog(values, nextModel, resetTransport)) {
+      return false;
+    }
     manualModel = !useModelChoices;
-    model.value = modelChoices().includes(selectedModel) ? selectedModel : "";
+    model.value = nextModel;
     modelChoice.replaceChildren(
       element("option", { value: "" }, "Choose a model"),
       ...modelChoices().map((id) => element("option", { value: id }, id)),
     );
     modelChoice.value = model.value;
-    updateModelConfiguration(resetTransport);
+    updateModelConfiguration(resetTransport, values);
     updateControls();
+    return true;
   }
   if (useModelChoices) {
     modelChoice.addEventListener("change", () => {
+      const values = readModelConfiguration();
+      if (values === "invalid-allow" || !canMergeModelCatalog(values, modelChoice.value)) {
+        // The native select has already changed; keep the last applied choice visible.
+        modelChoice.value = model.value;
+        return;
+      }
       manualModel = false;
       model.value = modelChoice.value;
-      updateModelConfiguration();
+      updateModelConfiguration(false, values);
     });
   }
   const modelCredentialPicker = createSecretReferenceField({
-    context,
+    context: secretContext,
     id: "provider-credential-secret",
     label: "Model credential Secret",
     getCurrentSource: () => modelCredentialSource,
@@ -987,6 +1213,68 @@ function renderAgentForm(
     disabled: Boolean(binding || passwordAuth),
   });
   const modelCredentialField = modelCredentialPicker.field;
+  let secretNameConflict: string | null = null;
+  const secretConflictMessage = element("p", { className: "status-body" });
+  const ownsSecretRecovery = () =>
+    passwordAuth && !binding && ["api_key", "codex_pat"].includes(authMethod.value) && !savedSecret;
+  function clearSecretConflictFeedback() {
+    secretNameConflict = null;
+    secretConflictMessage.textContent = "";
+    secretConflictRecovery.hidden = true;
+  }
+  function clearSecretRecovery() {
+    clearSecretConflictFeedback();
+    alternateSecretField.hidden = true;
+    alternateSecretName.value = "";
+    alternateSecretName.required = false;
+    alternateSecretName.setCustomValidity("");
+  }
+  const alternateSecretName = element("input", {
+    id: "alternate-model-secret-name",
+    autocomplete: "off",
+    "data-trim": "",
+  });
+  const alternateSecretField = field("New Secret name", alternateSecretName);
+  alternateSecretField.hidden = true;
+  const requestedModelSecretName = () =>
+    (alternateSecretField.hidden ? name.value : alternateSecretName.value).trim();
+  function clearSupersededSecretConflict() {
+    if (secretNameConflict !== null && secretNameConflict !== requestedModelSecretName()) {
+      clearSecretConflictFeedback();
+    }
+  }
+  const chooseExistingSecret = button("Choose existing Secret", () => {
+    if (pending || outcomeUnknown || !ownsSecretRecovery() || !secretNameConflict) {
+      return;
+    }
+    passwordAuth = false;
+    pluginDiscoveryTokenDetails.append(transientCredentialField);
+    credentialStorageHelp.textContent =
+      "If no Secret is selected, enter a service account token to preview plugins. Agent creation uses the selected Secret; its value stays on the server.";
+    operateAnswer.reset();
+    apiKey.value = "";
+    resetPluginDiscovery();
+    clearSecretRecovery();
+    feedback.textContent =
+      "Choose an existing model credential Secret, then select Create Agent. Your other draft fields are unchanged.";
+    updateControls();
+    modelCredentialField.querySelector("input")?.focus();
+  });
+  const chooseAlternateName = button("Use another Secret name", () => {
+    if (pending || outcomeUnknown || !ownsSecretRecovery() || !secretNameConflict) {
+      return;
+    }
+    alternateSecretField.hidden = false;
+    alternateSecretName.required = true;
+    alternateSecretName.focus();
+  });
+  const secretConflictRecovery = statusBlock(
+    "warning",
+    null,
+    secretConflictMessage,
+    [chooseExistingSecret, chooseAlternateName],
+    { id: "model-secret-conflict", hidden: true },
+  );
   const oauthLogin = createDeviceLogin({
     context,
     initial: draft.oauthLogin,
@@ -1000,19 +1288,20 @@ function renderAgentForm(
       }
     },
   });
+  const credentialStorageHelp = element(
+    "p",
+    { className: "hint" },
+    passwordAuth
+      ? "Stored as a Secret for this Agent. Credentials are never included in Configuration JSON."
+      : "If no Secret is selected, enter a service account token to preview plugins. Agent creation uses the selected Secret; its value stays on the server.",
+  );
   const transientCredentialField = element(
     "div",
     { className: "form-field" },
     credentialLabel,
     apiKey,
     credentialHelp,
-    element(
-      "p",
-      { className: "hint" },
-      passwordAuth
-        ? "Stored as a Secret for this Agent. Credentials are never included in Configuration JSON."
-        : "If no Secret is selected, enter a service account token to preview plugins. Agent creation uses the selected Secret; its value stays on the server.",
-    ),
+    credentialStorageHelp,
   );
   const pluginDiscoveryTokenDetails = element(
     "details",
@@ -1046,7 +1335,10 @@ function renderAgentForm(
       ? [
           modelCredentialField,
           oauthLogin.section,
-          passwordAuth ? transientCredentialField : pluginDiscoveryTokenDetails,
+          passwordAuth ? transientCredentialField : null,
+          pluginDiscoveryTokenDetails,
+          secretConflictRecovery,
+          alternateSecretField,
         ]
       : []),
     modelSection,
@@ -1085,26 +1377,81 @@ function renderAgentForm(
       return;
     }
     pendingModelSettings = undefined;
-    pendingProviderModel = undefined;
+    pendingPrimaryModel = undefined;
+    pendingModelSelections = undefined;
     configuration.value = currentTemplate();
     configurationError.clear();
     feedback.textContent = "";
     renderChannelEditor();
   });
-  function updateModelConfiguration(resetTransport = false) {
-    const values = parseObject(configuration);
+  function readModelConfiguration(
+    targetHarness = harness.value,
+  ): Record<string, unknown> | "invalid-json" | "number-range" | "invalid-allow" {
+    const diagnostic = jsonObjectDiagnostic(configuration.value);
+    const values = parseObject(configuration, diagnostic.kind === "number-range", diagnostic);
+    // Keep the existing control transitions for invalid JSON; only the merge is skipped.
     if (values === undefined) {
+      return diagnostic.kind === "number-range" ? "number-range" : "invalid-json";
+    }
+    // Only the Codex template merges this field. Do not validate unrelated draft settings.
+    if (targetHarness !== "codex" || !Object.hasOwn(objectFields(values.plugins), "allow")) {
+      return values;
+    }
+    const allow = objectFields(values.plugins).allow;
+    if (isArray(allow) && allow.every((id) => typeof id === "string")) {
+      return values;
+    }
+    configurationError.show(
+      'Set plugins.allow to an array of strings, such as ["codex"], or remove the field.',
+    );
+    focusConfiguration();
+    return "invalid-allow";
+  }
+  function canMergeModelCatalog(
+    values: ReturnType<typeof readModelConfiguration>,
+    selectedModel: string,
+    resetTransport = false,
+  ): boolean {
+    // Transport replacement and clearing a selection do not read the existing catalog.
+    if (typeof values === "string" || resetTransport || !selectedModel.trim()) {
+      return true;
+    }
+    const providerId = harness.value === "codex" ? "codex" : nativeProvider.value;
+    const catalog = objectFields(
+      objectFields(objectFields(values.models).providers)[providerId],
+    ).models;
+    if (
+      catalog === undefined ||
+      (isArray(catalog) &&
+        catalog.every((entry) => isObject(entry) && typeof entry.id === "string"))
+    ) {
+      return true;
+    }
+    catalogErrorMessage = `Set models.providers.${providerId}.models to an array of model objects with an id, or remove the field.`;
+    configurationError.show(catalogErrorMessage);
+    focusConfiguration();
+    return false;
+  }
+  function updateModelConfiguration(resetTransport = false, values = readModelConfiguration()) {
+    if (typeof values === "string" || !canMergeModelCatalog(values, model.value, resetTransport)) {
       return;
     }
+    retainPendingModel(values);
     const next = configurationTemplate(harness.value, nativeProvider.value, model.value.trim());
-    const previous = values.agents?.defaults?.model;
-    const previousModel = typeof previous === "string" ? previous : previous?.primary;
-    const modelSettings = { ...values.agents?.defaults?.models };
+    const agents = objectFields(values.agents);
+    const defaults = objectFields(agents.defaults);
+    const models = objectFields(values.models);
+    const plugins = objectFields(values.plugins);
+    const pluginEntries = objectFields(plugins.entries);
+    const previous = defaults.model;
+    const previousModel = modelPrimary(configuredModelSelection(values)) ?? pendingPrimaryModel;
+    const modelSettings = spreadFields(defaults.models);
     const selectedModel = next.agents?.defaults.model;
     const selectedSettings = {
-      ...((selectedModel && modelSettings[selectedModel]) ||
+      ...(((selectedModel && modelSettings[selectedModel]) ||
         (previousModel && modelSettings[previousModel]) ||
-        pendingModelSettings),
+        pendingModelSettings) ??
+        {}),
       ...(selectedModel ? next.agents?.defaults.models[selectedModel] : {}),
     };
     pendingModelSettings = selectedModel ? undefined : selectedSettings;
@@ -1112,12 +1459,73 @@ function renderAgentForm(
       typeof previous === "object" && previous !== null
         ? { ...previous, primary: selectedModel }
         : selectedModel;
+    // OCC requires one primary across the roster. Keep explicit selections in step with
+    // the edited primary, without materializing inherited selections or losing local policy.
+    const entries = agents.entries;
+    const defaultPrimary = modelPrimary(previous);
+    // Only a shared, qualified primary is a bulk-edit basis. Pending state comes from
+    // clearing this control; a JSON selection edit revokes it before reading new selections.
+    const sharedPrimary =
+      typeof previousModel === "string" &&
+      previousModel.includes("/") &&
+      !previousModel.startsWith("/") &&
+      !previousModel.endsWith("/") &&
+      (previous === undefined ||
+        defaultPrimary === previousModel ||
+        (defaultPrimary === undefined && pendingPrimaryModel === previousModel)) &&
+      (entries === undefined ||
+        (isObject(entries) &&
+          Object.values(entries).every(
+            (entry) =>
+              isObject(entry) &&
+              (entry.model === undefined
+                ? defaultPrimary === previousModel || pendingPrimaryModel === previousModel
+                : modelPrimary(entry.model) === previousModel),
+          )));
+    const nextEntries =
+      selectedModel && sharedPrimary && isObject(entries)
+        ? Object.fromEntries(
+            Object.entries(entries).map(([id, entry]): [string, unknown] => {
+              if (!isObject(entry)) {
+                return [id, entry];
+              }
+              const selection = entry.model;
+              const localPolicy = isObject(entry.models)
+                ? (entry.models[selectedModel] ??
+                  (previousModel ? entry.models[previousModel] : undefined))
+                : undefined;
+              return [
+                id,
+                {
+                  ...entry,
+                  ...(selection === undefined
+                    ? {}
+                    : {
+                        model:
+                          typeof selection === "string"
+                            ? selectedModel
+                            : { ...(selection ?? {}), primary: selectedModel },
+                      }),
+                  ...(isObject(localPolicy)
+                    ? {
+                        models: {
+                          ...(entry.models ?? {}),
+                          [selectedModel]: {
+                            ...localPolicy,
+                            ...next.agents?.defaults.models[selectedModel],
+                          },
+                        },
+                      }
+                    : {}),
+                },
+              ];
+            }),
+          )
+        : entries;
     const selections = [
       nextModel,
-      ...(values.agents?.entries &&
-      typeof values.agents.entries === "object" &&
-      !Array.isArray(values.agents.entries)
-        ? Object.values(values.agents.entries).map((entry) => entry?.model)
+      ...(isObject(nextEntries)
+        ? Object.values(nextEntries).map((entry) => objectFields(entry).model)
         : []),
     ];
     const referencedModels = new Set(
@@ -1125,18 +1533,26 @@ function renderAgentForm(
         typeof selection === "string"
           ? [selection]
           : [
-              selection?.primary,
-              ...(Array.isArray(selection?.fallbacks) ? selection.fallbacks : []),
+              modelPrimary(selection),
+              ...(isObject(selection) && isArray(selection.fallbacks) ? selection.fallbacks : []),
             ],
       ),
     );
     if (previousModel && !referencedModels.has(previousModel)) {
       delete modelSettings[previousModel];
+      if (nextEntries !== entries) {
+        for (const entry of Object.values(objectFields(nextEntries))) {
+          if (isObject(entry) && isObject(entry.models)) {
+            delete entry.models[previousModel];
+          }
+        }
+      }
     }
     values.agents = {
-      ...values.agents,
+      ...(values.agents ?? {}),
+      ...(nextEntries === undefined ? {} : { entries: nextEntries }),
       defaults: {
-        ...values.agents?.defaults,
+        ...(agents.defaults ?? {}),
         model: nextModel,
         models: {
           ...modelSettings,
@@ -1144,13 +1560,13 @@ function renderAgentForm(
         },
       },
     };
-    const providers = { ...values.models?.providers };
+    const providers = spreadFields(models.providers);
     const previousId =
       typeof previousModel === "string"
         ? previousModel.slice(previousModel.indexOf("/") + 1)
-        : pendingProviderModel;
+        : undefined;
     // Keep transport and model metadata while no model is selected.
-    pendingProviderModel = selectedModel || resetTransport ? undefined : previousId;
+    pendingPrimaryModel = !selectedModel && sharedPrimary ? previousModel : undefined;
     if (resetTransport) {
       delete providers.openai;
       delete providers.anthropic;
@@ -1159,14 +1575,17 @@ function renderAgentForm(
     } else if (selectedModel) {
       const providerId = harness.value === "codex" ? "codex" : nativeProvider.value;
       const templateProvider = next.models?.providers[providerId];
-      const existingProvider = providers[providerId] ?? templateProvider;
-      const existingModels: ProviderModel[] = existingProvider?.models ?? [];
+      const provider = providers[providerId] ?? templateProvider;
+      const existingProvider = objectFields(provider);
+      const existingModels = isArray(existingProvider.models) ? existingProvider.models : [];
       const selectedId = model.value.trim();
       const retainPrevious = referencedModels.has(`${providerId}/${previousId}`);
-      const namesModel = (entry: ProviderModel, id: string | undefined) =>
-        entry.id === id || entry.id === `${providerId}/${id}`;
+      const namesModel = (entry: unknown, id: string | undefined) =>
+        isObject(entry) && (entry.id === id || entry.id === `${providerId}/${id}`);
       if (!existingModels.some((entry) => namesModel(entry, selectedId))) {
-        const previousEntry = existingModels.find((entry) => namesModel(entry, previousId));
+        const previousEntry = existingModels
+          .filter(isObject)
+          .find((entry) => namesModel(entry, previousId));
         const selectedEntry = {
           ...(previousEntry ?? templateProvider?.models[0]),
           id: selectedId,
@@ -1176,7 +1595,7 @@ function renderAgentForm(
               : selectedId,
         };
         providers[providerId] = {
-          ...existingProvider,
+          ...(provider ?? {}),
           models:
             previousEntry && !retainPrevious
               ? existingModels.map((entry) => (entry === previousEntry ? selectedEntry : entry))
@@ -1184,7 +1603,7 @@ function renderAgentForm(
         };
       } else {
         providers[providerId] = {
-          ...existingProvider,
+          ...(provider ?? {}),
           models: existingModels.filter(
             (entry) =>
               !namesModel(entry, previousId) || namesModel(entry, selectedId) || retainPrevious,
@@ -1192,30 +1611,47 @@ function renderAgentForm(
         };
       }
     }
-    values.models = { ...values.models, providers };
+    values.models = { ...(values.models ?? {}), providers };
     if (next.plugins) {
       values.plugins = {
-        ...values.plugins,
-        allow: [...new Set([...(values.plugins?.allow ?? []), ...next.plugins.allow])],
+        ...(values.plugins ?? {}),
+        allow: [
+          ...new Set([...(isArray(plugins.allow) ? plugins.allow : []), ...next.plugins.allow]),
+        ],
         entries: {
-          ...values.plugins?.entries,
+          ...(plugins.entries ?? {}),
           codex: resetTransport
             ? next.plugins.entries.codex
-            : (values.plugins?.entries?.codex ?? next.plugins.entries.codex),
+            : (pluginEntries.codex ?? next.plugins.entries.codex),
         },
       };
-    } else if (values.plugins?.entries?.codex) {
-      delete values.plugins.entries.codex;
-      if (Array.isArray(values.plugins.allow)) {
-        values.plugins.allow = values.plugins.allow.filter((id) => id !== "codex");
+    } else if (pluginEntries.codex) {
+      delete pluginEntries.codex;
+      if (isArray(plugins.allow)) {
+        plugins.allow = plugins.allow.filter((id) => id !== "codex");
       }
     }
     configuration.value = JSON.stringify(values, null, 2);
+    // Read the written selections: omitted primaries and -0 must match subsequent draft reads.
+    // Unrelated JSON edits keep provenance; changed selections cannot borrow clear-state trust.
+    const writtenValues = !selectedModel && sharedPrimary ? parseObject(configuration) : undefined;
+    pendingModelSelections = writtenValues ? modelSelections(writtenValues) : undefined;
+    // Clear only our catalog remedy; other validation shares this field-error node.
+    // Clearing the model alone retains its catalog, including any reported invalid list.
+    if (
+      (resetTransport || selectedModel) &&
+      catalogErrorMessage !== undefined &&
+      configurationError.node.textContent === catalogErrorMessage
+    ) {
+      configurationError.clear();
+      catalogErrorMessage = undefined;
+    }
     configuration.setCustomValidity("");
     feedback.textContent = "";
     renderChannelEditor();
   }
   function clearModelCredential() {
+    clearSecretRecovery();
     apiKey.value = "";
     modelCredentialSource = null;
     modelCredentialSecret = undefined;
@@ -1223,24 +1659,41 @@ function renderAgentForm(
   }
   nativeProvider.addEventListener("change", () => {
     // Operator-managed Presets retain the embedded harness required by their fixed binding.
-    harness.value =
+    const targetHarness =
       nativeProvider.value === "anthropic" || binding?.method === "runtime" ? "openclaw" : "codex";
+    const values = readModelConfiguration(targetHarness);
+    if (values === "invalid-allow") {
+      // The native select changed before preflight; retain the last applied provider.
+      nativeProvider.value = appliedProvider;
+      return;
+    }
+    appliedProvider = nativeProvider.value;
+    harness.value = targetHarness;
     mode.value = harness.value === "codex" ? "dedicated" : "embedded";
     // A provider change must not send the previous provider's key to a different service.
     clearModelCredential();
     if (!binding) {
       authMethod.value = "api_key";
-      resetModelChoices(true);
+      resetModelChoices(true, "", values);
     } else {
-      updateModelConfiguration(true);
+      updateModelConfiguration(true, values);
     }
   });
   authMethod.addEventListener("change", () => {
     clearModelCredential();
-    resetModelChoices();
+    if (!resetModelChoices()) {
+      // The authentication choice still applies when the Configuration merge is blocked.
+      updateControls();
+    }
   });
   model.addEventListener("change", () => updateModelConfiguration());
   harness.addEventListener("change", () => {
+    const values = readModelConfiguration();
+    if (values === "invalid-allow") {
+      // Only Codex merges the allowlist; the other harness choice was OpenClaw.
+      harness.value = "openclaw";
+      return;
+    }
     // Embedded is OpenClaw's default because dedicated OpenClaw needs a provisioning
     // Sandbox Driver; operators opt into it through Execution mode. An Installation that
     // refuses Embedded preselects Dedicated when it accepts that (#2670).
@@ -1254,9 +1707,9 @@ function renderAgentForm(
     ) {
       authMethod.value = "api_key";
       clearModelCredential();
-      resetModelChoices(true);
+      resetModelChoices(true, "", values);
     } else {
-      updateModelConfiguration(true);
+      updateModelConfiguration(true, values);
     }
     updateControls();
   });
@@ -1280,8 +1733,13 @@ function renderAgentForm(
     configurationError.clear();
     feedback.textContent = "";
     const values = parseObject(configuration);
-    const selected = values?.agents?.defaults?.model;
-    const ref = typeof selected === "string" ? selected : selected?.primary;
+    if (values) {
+      retainPendingModel(values);
+    }
+    // A cleared Model ID stays cleared until the JSON changes a model selection: a roster entry
+    // still names the previous primary, but the defaults no longer select it (finding 2342).
+    const selected = pendingModelSelections ? undefined : configuredModelSelection(values);
+    const ref = modelPrimary(selected);
     const selectedHarness = values && configuredHarnessId(values);
     if (typeof ref === "string" && selectedHarness) {
       harness.value = selectedHarness;
@@ -1306,6 +1764,7 @@ function renderAgentForm(
           clearModelCredential();
         }
         nativeProvider.value = selectedProvider;
+        appliedProvider = selectedProvider;
         if (selectedProvider === "anthropic") {
           harness.value = "openclaw";
           mode.value = "embedded";
@@ -1326,11 +1785,15 @@ function renderAgentForm(
   const plugins = element("textarea", { id: "agent-plugins", rows: "4", spellcheck: "false" });
   plugins.value = JSON.stringify(agent.plugins ?? {}, null, 2);
   let pluginDiscoveryCredential: "none" | "required" | null = null;
+  let savedOpenClawCatalog = false;
+  let catalogUnavailable = false;
+  let pluginHarness = harness.value;
+  let installationCapabilities: InstallationCapabilities | undefined;
   // Codex serves curated plugins only to ChatGPT logins; API-key Agents get them disabled.
   const apiKeyCodex = () =>
     harness.value === "codex" && (binding?.method ?? authMethod.value) === "api_key";
   function discoveryCredential() {
-    if (apiKeyCodex()) {
+    if (catalogUnavailable || savedOpenClawCatalog || apiKeyCodex()) {
       return null;
     }
     if (harness.value === "codex" && pluginDiscoveryCredential === "none") {
@@ -1377,13 +1840,23 @@ function renderAgentForm(
       ["codex_pat", "credential_source"].includes(binding?.method ?? authMethod.value) &&
       Boolean(boundSource ?? modelCredentialSource ?? apiKey.value.trim()),
     isPending: () => pending,
-    requestBody: (body) => ({ ...discoveryCredential(), ...body }),
-    unavailableMessage: () =>
-      apiKeyCodex()
-        ? "Codex plugins need a ChatGPT login. With an OpenAI API key, each selected plugin is disabled when the Agent deploys (PLUGIN_AUTH_REQUIRED). Choose Service Accounts or ChatGPT OAuth to browse and use plugins."
-        : pluginDiscoveryCredential === "none"
-          ? "Choose the Codex harness to browse this Installation's curated plugin catalog."
-          : "For discovery, choose ChatGPT OAuth (Experimental) and sign in, or choose Service Accounts with the Codex harness and select a Secret or enter a preview token.",
+    requestBody: (body) => ({
+      ...discoveryCredential(),
+      harnessId: harness.value,
+      ...body,
+    }),
+    unavailableMessage: () => {
+      if (catalogUnavailable) {
+        return "This Installation has no plugin catalog for the selected Harness.";
+      }
+      return savedOpenClawCatalog
+        ? "To install Google Workspace, open Plugins on a saved dedicated OpenClaw Agent using Kubernetes Compute."
+        : apiKeyCodex()
+          ? "Codex plugins need a ChatGPT login. With an OpenAI API key, each selected plugin is disabled when the Agent deploys (PLUGIN_AUTH_REQUIRED). Choose Service Accounts or ChatGPT OAuth to browse and use plugins."
+          : pluginDiscoveryCredential === "none"
+            ? "Choose the Codex harness to browse this Installation's curated plugin catalog."
+            : "For discovery, choose ChatGPT OAuth (Experimental) and sign in, or choose Service Accounts with the Codex harness and select a Secret or enter a preview token.";
+    },
     availableMessage: () =>
       pluginDiscoveryCredential === "none"
         ? "Load the installation's curated plugin catalog. Access and tool availability are checked separately."
@@ -1396,17 +1869,42 @@ function renderAgentForm(
       }),
   });
   const pluginFields = pluginDiscovery.fields;
-  const updatePluginDiscovery = pluginDiscovery.update;
-  const resetPluginDiscovery = pluginDiscovery.reset;
+  function applyPluginCapabilities() {
+    const capabilities = installationCapabilities;
+    const catalog = capabilities?.pluginCatalogs?.find(
+      (candidate) => candidate.harnessId === harness.value,
+    );
+    const policies = catalog?.pluginPolicies;
+    const discovery = catalog?.pluginDiscovery;
+    savedOpenClawCatalog = policies?.driver.implementation === "occ/openclaw-plugin";
+    catalogUnavailable = capabilities !== undefined && discovery === undefined;
+    pluginDiscoveryCredential = discovery?.credential ?? (catalogUnavailable ? null : "required");
+    pluginFields.setCapabilities(policies ?? null);
+    defaultApprovers.hidden = policies?.approvers?.agent !== true;
+    if (!defaultApprovers.hidden) {
+      defaultApprovers.refreshNames();
+    } else if (capabilities && pluginApprovers !== undefined) {
+      pluginApprovers = undefined;
+      defaultApprovers.refreshValue();
+    }
+  }
+  function resetPluginDiscovery() {
+    if (pluginHarness !== harness.value) {
+      pluginHarness = harness.value;
+      plugins.value = "{}";
+      applyPluginCapabilities();
+    }
+    pluginDiscovery.reset();
+  }
   apiKey.addEventListener("input", resetPluginDiscovery);
   for (const control of [nativeProvider, authMethod, harness]) {
     control.addEventListener("change", resetPluginDiscovery);
   }
   let pluginApprovers = structuredClone(
-    Object.hasOwn(draft, "pluginApprovers") ? draft.pluginApprovers : agent.pluginApprovers,
+    Object.hasOwn(draft, "pluginApprovers") ? draft.pluginApprovers : presetPluginApprovers,
   );
   const directorySecret = createSecretReferenceField({
-    context,
+    context: secretContext,
     id: "approver-directory-secret",
     label: "Slack bot token Secret for people search",
     getCurrentSource: getDirectorySecretSource,
@@ -1468,11 +1966,18 @@ function renderAgentForm(
   let capabilityDiscoveryFailed = false;
   let capabilityDiscoveryDenied = false;
   // The Installation read is refused, but the Namespace's permission answer grants Agent create
-  // (UX plan A2, finding 1901). The form proceeds without the Installation's capabilities, so it
-  // refuses no option the API might accept: the preflight and Agent create still decide, before
-  // and when anything is saved. capabilityDiscoveryDone stays false, so no hint claims an outcome.
+  // (UX plan A2, finding 1901). The form then reads the Namespace's Agent capabilities (RFC-0026);
+  // when that read succeeds, capabilityDiscoveryDone is set as for an administrator. Otherwise the
+  // form refuses no option the API might accept: the preflight and Agent create still decide,
+  // before and when anything is saved, and no hint claims an outcome.
   let capabilitiesUnreadable = false;
   const capabilitiesSettled = () => capabilityDiscoveryDone || capabilitiesUnreadable;
+  // A refused create shows the API's 400 sentence. Its denial names nobody to ask once the
+  // Installation read succeeded, which only an Installation administrator can do (finding 2113).
+  const createRefusal = (cause: unknown, mutation: boolean) =>
+    requestFailure(cause).status === 403 && capabilityDiscoveryDone && !capabilitiesUnreadable
+      ? administratorMessage(cause)
+      : rejectionMessage(cause, mutation);
   // The Namespace's permission answer this form decides with. A retry rereads it when the
   // console's read failed (finding 2110); the API still decides every write.
   let namespacePermissions = context.permissions;
@@ -1489,6 +1994,9 @@ function renderAgentForm(
   // The Installation's selected Sandbox Driver is unavailable right now, so it lists no OpenClaw
   // mode and refuses every Agent save (finding 1624).
   let sandboxDriverUnavailable = false;
+  // Admission's refusal when the Sandbox Driver could provision Dedicated OpenClaw but its
+  // settings refuse it; it names the setting to change (finding 2373).
+  let dedicatedSettingRefusal: string | undefined;
   // Whether the form chose the execution mode, rather than the Preset, the draft or the user.
   let modeDefaulted =
     agent.executionMode === undefined && !Object.hasOwn(draft.inputs ?? {}, "mode");
@@ -1505,12 +2013,15 @@ function renderAgentForm(
   // A draft kept after a refused Create resumes the resources that attempt saved (finding 1934).
   let savedCredentialSource = draft.savedCredentialSource;
   let credentialRegistration: CredentialRegistration | null = null;
+  let credentialRegistrationRejected = false;
   let failedCredentialSource: RegisteredCredential | null = null;
   let provisioningRequestId = createClientRequestId();
   // The API admitted (or may have admitted) a job under provisioningRequestId. Create Agent
   // must then resend the same plan: the API answers an edited one with 409 "different plan".
   let requestAdmitted = false;
   let provisioningAttempt: ProvisioningAttempt | null = null;
+  // Create can resend an admitted plan after the retry endpoint refuses a finished job.
+  let admittedAttempt: ProvisioningAttempt | undefined;
   const capabilityStatus = element(
     "p",
     { id: "create-agent-capability-status", className: "hint", role: "status" },
@@ -1520,17 +2031,32 @@ function renderAgentForm(
   // Granting an Agent access to its Secrets is Installation administration, so the member learns
   // before Create that an administrator finishes that step.
   const namespaceName = context.namespace?.name ?? "this Namespace";
-  const accessStatus = statusBlock(
-    "info",
-    "Your access",
-    `${
-      typeof presetOptions.presetName === "string"
-        ? `You can create Agents in ${namespaceName}. Installation-wide capabilities are not readable with your access, so the options below come from this Namespace's Presets.`
-        : `You can create Agents in ${namespaceName}. Installation-wide capabilities are not readable with your access, so Create Agent checks the Configuration with the server before saving it.`
-    } ${MEMBER_CREDENTIAL_ACCESS}`,
-    [],
-    { id: "create-agent-access", hidden: true },
+  const memberAccess = `${
+    typeof presetOptions.presetName === "string"
+      ? `You can create Agents in ${namespaceName}. Installation-wide capabilities are not readable with your access, so the options below come from this Namespace's Presets.`
+      : `You can create Agents in ${namespaceName}. Installation-wide capabilities are not readable with your access, so Create Agent checks the Configuration with the server before saving it.`
+  } ${MEMBER_CREDENTIAL_ACCESS}`;
+  // A refused Installation read with no known Agent create grant is a refusal, not a hint: it
+  // takes the same slot, with the permission retry as its action (finding 2092).
+  const retryPermissionCheck = button("Retry permission check", () => void rereadPermissions(), {
+    tone: "secondary",
+  });
+  const accessBody = element("p", { className: "status-body" }, memberAccess);
+  const accessActions = element(
+    "div",
+    { className: "status-actions", hidden: true },
+    retryPermissionCheck,
   );
+  const accessStatus = statusBlock("info", "Your access", [accessBody, accessActions], [], {
+    id: "create-agent-access",
+    hidden: true,
+  });
+  function showAccess(tone: "info" | "warning" | "danger", body: string) {
+    setStatusTone(accessStatus, tone);
+    setText(accessBody, body);
+    accessActions.hidden = !permissionsUnknown;
+    accessStatus.hidden = false;
+  }
   // The Preset this form started from (flows.md C8).
   const presetBadge =
     typeof presetOptions.presetName === "string"
@@ -1569,11 +2095,54 @@ function renderAgentForm(
       renderCreateAgent(context);
     }
   });
+  // A refusal of a Configuration setting the Preset's variables filled names those variables, and
+  // this action reopens the Preset with its variables kept and those fields marked (finding 3122).
+  // It shows while Start over is enabled: nothing this form saved would be left behind.
+  let refusedVariables: Pick<PresetReturn, "variables" | "refusal"> | undefined;
+  const changePresetVariables = button(
+    "Change Preset variables",
+    () => {
+      const presetDraft = presetOptions.presetDraft;
+      if (!refusedVariables || !presetDraft || startOver.disabled) {
+        return;
+      }
+      if (
+        !(changedHere || edited) ||
+        window.confirm("Discard the changes on this form and go back to the Preset?")
+      ) {
+        context.drafts.forget("channels");
+        renderCreateAgent(context, undefined, { draft: presetDraft, ...refusedVariables });
+      }
+    },
+    { tone: "secondary" },
+  );
+  function offerPresetVariableChange(serverMessage: string | undefined) {
+    // The Configuration JSON as Create sent it, against the values the Preset rendered.
+    const variables = refusedPresetVariables(serverMessage, presetOptions.settingVariables, {
+      submitted: parseObject(configuration),
+      rendered: rendered.configuration?.values,
+    });
+    refusedVariables =
+      serverMessage && variables.length ? { variables, refusal: serverMessage } : undefined;
+    if (!refusedVariables) {
+      return;
+    }
+    const labels = presetVariableLabels(variables);
+    setText(changePresetVariables, `Change ${labels}`);
+    // The variable follows the refusal, before its request ID.
+    const text = feedback.textContent ?? "";
+    const requestId = text.lastIndexOf(" Request ID: ");
+    const at = requestId === -1 ? text.length : requestId;
+    feedback.textContent = `${text.slice(0, at)} The Preset ${variables.length > 1 ? "variables" : "variable"} ${labels} filled this setting.${text.slice(at)}`;
+    if (presetOptions.presetDraft) {
+      feedback.append(" ", changePresetVariables);
+    }
+  }
   const retryProvisioning = button("Retry provisioning request", () => {
     if (!provisioningAttempt || pending) {
       return;
     }
-    void submitProvisioningAttempt(provisioningAttempt);
+    void submitProvisioningAttempt(provisioningAttempt, provisioningAttempt.statusUrl);
   });
   const checkCredentialRegistration = button("Check credential registration", async () => {
     if (!credentialRegistration || pending) {
@@ -1598,8 +2167,15 @@ function renderAgentForm(
         // Reuse the frozen, unique Source name: an earlier request that commits
         // later conflicts before gateway effects, rather than registering a copy.
         outcomeUnknown = false;
-        feedback.textContent =
-          "No credential registration is visible. Select Create Agent to retry the same registration.";
+        if (credentialRegistrationRejected) {
+          credentialRegistration = null;
+          credentialRegistrationRejected = false;
+          feedback.textContent =
+            "No credential registration exists. Correct the source configuration and try again.";
+        } else {
+          feedback.textContent =
+            "No credential registration is visible. Select Create Agent to retry the same registration.";
+        }
       } else if (source.state === "ready") {
         failedCredentialSource = null;
         savedCredentialSource = source;
@@ -1613,7 +2189,12 @@ function renderAgentForm(
       }
     } catch (error) {
       if (context.isCurrent()) {
-        feedback.textContent = message(error);
+        // The list checks Namespace read, like the other Namespace lists (finding 2538).
+        feedback.textContent = readFailure(
+          "Credential registrations",
+          error,
+          namespaceListNeed("credential sources"),
+        );
       }
     } finally {
       if (context.isCurrent()) {
@@ -1645,7 +2226,7 @@ function renderAgentForm(
           "Failed credential registration removed. Select Create Agent to retry with the saved model Secret.";
       } catch (error) {
         if (context.isCurrent()) {
-          feedback.textContent = `${message(error)} Retry removal when the Credential Gateway is available; the model Secret remains saved.`;
+          feedback.textContent = `${credentialRemovalFailure(error)} The model Secret remains saved.`;
         }
       } finally {
         if (context.isCurrent()) {
@@ -1656,9 +2237,9 @@ function renderAgentForm(
     },
     { tone: "danger" },
   );
+  // A refused Installation read stays refused: its access block offers a permission reread instead.
   const retryCapabilityDiscovery = button("Retry capability check", () => {
-    // A refused Installation read stays refused: reread only the permission answer.
-    void (capabilityDiscoveryDenied ? rereadPermissions() : loadInstallationCapabilities());
+    void loadInstallationCapabilities();
   });
   const recoveryMessage = element("p", { className: "muted" });
   const requireRepositoryReload = () => {
@@ -1746,7 +2327,25 @@ function renderAgentForm(
     removeCredentialRegistration,
     submit,
   );
+  const nativeAdmin = element("input", {
+    type: "checkbox",
+    id: "native-admin",
+    "aria-describedby": "native-admin-help",
+  });
+  nativeAdmin.checked = draft.nativeAdmin ?? false;
+  let nativeAdminAvailable = false;
+  const nativeAdminHelp = element("p", { id: "native-admin-help", className: "hint" });
+  const nativeAdminField = element(
+    "div",
+    { className: "field" },
+    element("label", {}, nativeAdmin, " Enable browser chat"),
+    nativeAdminHelp,
+  );
   const channelEditor = element("div", { className: "create-channels" });
+  // The intro names repository access only where the Installation offers it (finding 2423).
+  const introText = (repositoryAccess: boolean) =>
+    `Choose a model${repositoryAccess ? " and repository access" : ""}. Add Slack when you want this Agent to work with your team.`;
+  const intro = element("p", { className: "muted" }, introText(true));
   // The collapsed Runtime details still name the selected execution mode.
   const runtimeModeSummary = element("span", { className: "muted" });
   let repositories: Repositories;
@@ -1756,6 +2355,7 @@ function renderAgentForm(
     ...(presetBadge ? [presetBadge] : []),
     field("Agent name", name, "Unique within this Namespace."),
     authSection,
+    nativeAdminField,
     capabilityStatus,
     retryCapabilityDiscovery,
     element(
@@ -1778,6 +2378,9 @@ function renderAgentForm(
         updateControls();
       },
       { ...agent, ...(draft.repositoryAccess ? { repositoryAccess: draft.repositoryAccess } : {}) },
+      // New-Agent repository choices authorize Agent create: read them once an answer allows it,
+      // never to learn the answer (finding 2909).
+      { held: namespacePermissions?.agents?.create !== true },
     )).section,
     pluginFields.section,
     element(
@@ -1809,8 +2412,15 @@ function renderAgentForm(
     ) {
       control.setCustomValidity("");
     }
+    if (event.target === name || event.target === alternateSecretName) {
+      clearSupersededSecretConflict();
+    }
     if (event.target === name) {
-      checkNameLength();
+      checkName();
+      if (nameTakenMarked) {
+        nameTakenMarked = false;
+        setFieldError(name, "");
+      }
     }
   });
   form.addEventListener("change", () => {
@@ -1842,12 +2452,16 @@ function renderAgentForm(
       input.value = value;
     }
   }
+  let appliedProvider = nativeProvider.value;
   manualModel = draft.manualModel ?? manualModel;
   // Whether the reader changed the form or its Preset variables: Cancel then asks first, and a
   // reload or tab close warns. Restoring a draft and the form's own updates fire no trusted event.
   let touched = Boolean(draft.touched);
+  // Whether the reader changed this form itself, not only the Preset variables before it.
+  let changedHere = false;
   const markTouched = (event: Event) => {
     touched ||= event.isTrusted;
+    changedHere ||= event.isTrusted;
   };
   for (const node of [form, channelEditor]) {
     node.addEventListener("input", markTouched);
@@ -1858,6 +2472,7 @@ function renderAgentForm(
   const isTouched = () => touched || edited;
   const captureDraft = (): CreateAgentDraft => ({
     touched: isTouched(),
+    nativeAdmin: nativeAdmin.checked,
     rendered,
     presetOptions,
     // Keep raw editor text, including invalid JSON. Password controls are deliberately excluded.
@@ -1868,7 +2483,8 @@ function renderAgentForm(
     pluginApprovers,
     edited,
     pendingModelSettings,
-    pendingProviderModel,
+    pendingPrimaryModel,
+    pendingModelSelections,
     configurationSecretBindings,
     stagedChannelSecrets,
     modelCredentialSource,
@@ -1910,16 +2526,16 @@ function renderAgentForm(
       context.setDraftCapture(captureDraft, unsavedDraft);
     }
   }
-  function parseObject<T extends Record<string, unknown> = LaunchValues>(
+  function parseObject(
     input: HTMLTextAreaElement,
     reportInvalid = false,
-  ): T | undefined {
-    const problem = jsonObjectProblem(input.value);
-    if (problem === undefined) {
-      return JSON.parse(input.value);
+    diagnostic = jsonObjectDiagnostic(input.value),
+  ): Record<string, unknown> | undefined {
+    if (diagnostic.kind === "valid") {
+      return diagnostic.value;
     }
     if (reportInvalid && input === configuration) {
-      configurationError.show(problem);
+      configurationError.show(diagnostic.message);
       focusConfiguration();
     } else if (reportInvalid) {
       const details = input.closest("details");
@@ -1939,7 +2555,7 @@ function renderAgentForm(
     }
     configuration.focus();
   }
-  function hasEnabledChannel(values: LaunchValues) {
+  function hasEnabledChannel(values: Record<string, unknown>) {
     const channels = values.channels;
     if (channels === null || typeof channels !== "object" || Array.isArray(channels)) {
       return false;
@@ -2019,6 +2635,8 @@ function renderAgentForm(
         secretBindings: configurationSecretBindings,
         isCurrent: context.isCurrent,
         onExpired: context.onExpired,
+        secretsCreateAllowed: context.secretsCreateAllowed,
+        secretsOperateDenied,
       },
       copy: {
         editableDescription:
@@ -2090,6 +2708,10 @@ function renderAgentForm(
   // Every step of a provisioning plan needs a ready Namespace, so the API would refuse it; a
   // draft plan still saves (finding 2007, #2867).
   const provisioningWaitsForNamespace = () => Boolean(notReady) && shouldProvision();
+  const deploymentNeedsRepository = () =>
+    installationCapabilities?.repositoryAccessRequired === true &&
+    !repositories.hasValidSelection();
+  const provisioningNeedsRepository = () => shouldProvision() && deploymentNeedsRepository();
   // A Namespace that takes no new Agent, draft or not: an adopted one still provisioning, which
   // becomes ready by waiting, or one that turned failed or deleting, or went missing, while the
   // form was open, which never does (finding 2022). A refocus still rechecks it.
@@ -2185,11 +2807,89 @@ function renderAgentForm(
       void recheckNamespace();
     });
   }
+  // A Preset's binding, or the service account token this form saved, fixes the harness.
+  const credentialLocksHarness = () =>
+    binding?.method === "runtime" ||
+    ((binding?.method ?? authMethod.value) === "codex_pat" && Boolean(binding || savedSecret));
+  // Kubernetes Compute refuses a Dedicated Agent it cannot place with "Dedicated Agents need
+  // <setting> …" and then advises Embedded OpenClaw (finding 2391). Where this form cannot select
+  // it (a Preset's binding, a saved service account token or a saved Configuration fixes the
+  // harness to Codex, or the installation's Sandbox Driver refuses Embedded execution), quote only
+  // the requirement, as for a Sandbox Driver's setting refusal (findings 2392, 2396). A Compute
+  // Driver's refusal of an operator-managed binding names what an operator changes instead.
+  const followableRefusal = (text: string) => {
+    if (binding?.method === "runtime" && text.startsWith(HARNESS_AUTH_REFUSAL)) {
+      return runtimeBindingRefusal(text);
+    }
+    return !text.startsWith(PLACEMENT_REFUSAL) ||
+      (!(capabilityDiscoveryDone && !openclawModeUsable("embedded")) &&
+        (harness.value === "openclaw" || !(savedConfiguration || credentialLocksHarness())))
+      ? text
+      : `${settingRequirement(text)} Ask an operator to configure it.`;
+  };
+  // The Installation's capabilities do not say whether its Compute Driver delivers an
+  // operator-managed Preset binding (Kubernetes Compute does not), so Agent save's own check
+  // answers that once the capabilities are read. A refusal there holds for every value this form
+  // can change, so the form refuses the Preset up front, as it does when a Sandbox Driver refuses
+  // Embedded execution (finding 2427). Create Agent's preflight stays the authority.
+  let runtimeBindingRefused: string | undefined;
+  let runtimeBindingChecked = false;
+  async function checkRuntimeBinding() {
+    const values = parseObject(configuration);
+    if (
+      runtimeBindingChecked ||
+      binding?.method !== "runtime" ||
+      savedConfiguration ||
+      savedAgent ||
+      sandboxDriverUnavailable ||
+      !openclawModeUsable(mode.value) ||
+      values === undefined
+    ) {
+      return;
+    }
+    runtimeBindingChecked = true;
+    const harnessAuth = plannedHarnessAuth(false);
+    try {
+      await request(`${namespacePath(namespaceId)}/agents/validate`, {
+        method: "POST",
+        expectedStatus: 204,
+        body: {
+          configuration: { kind: "agent", values },
+          executionMode: mode.value,
+          ...(harnessAuth ? { harnessAuth } : {}),
+        },
+      });
+    } catch (error) {
+      const refusal = requestFailure(error).serverMessage ?? "";
+      if (context.isCurrent() && refusal.startsWith(HARNESS_AUTH_REFUSAL)) {
+        runtimeBindingRefused = runtimeBindingRefusal(refusal);
+        updateControls();
+      }
+    }
+  }
+  // The Configuration JSON holds the refused channel reference, so the refusal shows once, under
+  // it, and the caller moves focus there once the form is editable again (finding 2506). Returns
+  // whether it did.
+  function showChannelBindingRefusal(cause: unknown) {
+    const refusal = channelBindingRefusal(cause);
+    if (refusal === undefined) {
+      return false;
+    }
+    configurationError.show(
+      refusal.includes(" in secretBindings")
+        ? `${refusal} ${CHANNEL_BINDING_FORM_REMEDY}`
+        : refusal,
+    );
+    return true;
+  }
+  // A member cannot provision, so its form registers the model source and saves a draft that the
+  // member deploys (RFC-0026); an administrator's form provisions.
   const credentialSourceRefused = () =>
     credentialSourceTypes !== undefined &&
     (binding?.method ?? authMethod.value) !== "credential_source" &&
-    (!shouldProvision() || !modelSourceType());
+    (!(shouldProvision() || capabilitiesUnreadable) || !modelSourceType());
   const updateControls = () => {
+    setText(intro, introText(!repositories.unavailable()));
     const saved = Boolean(savedConfiguration || savedAgent || provisioningAttempt);
     const planLocked =
       pending ||
@@ -2221,7 +2921,24 @@ function renderAgentForm(
     for (const node of actions.querySelectorAll("button")) {
       node.disabled = pending;
     }
-    updatePluginDiscovery();
+    nativeAdmin.disabled ||= Boolean(savedConfiguration) || !nativeAdminAvailable;
+    let nativeAdminHint =
+      "Open this Agent in the browser after deployment. Agent operate permission allows chat; Agent administer permission also allows native administration.";
+    if (!capabilityDiscoveryDone) {
+      nativeAdminHint = "Browser chat availability depends on installation capabilities.";
+    } else if (!nativeAdminAvailable) {
+      nativeAdminHint =
+        "Browser chat is not enabled on this installation. Ask an Installation administrator to enable it.";
+    }
+    setText(nativeAdminHelp, nativeAdminHint);
+    if (!planLocked && capabilityDiscoveryDone && !nativeAdminAvailable) {
+      nativeAdmin.checked = false;
+    }
+    if (pluginHarness !== harness.value) {
+      resetPluginDiscovery();
+    } else {
+      pluginDiscovery.update();
+    }
     pluginFields.setDisabled(planLocked);
     channelEditor.toggleAttribute("inert", planLocked || saved);
     channelEditor.setAttribute("aria-busy", pending ? "true" : "false");
@@ -2233,18 +2950,14 @@ function renderAgentForm(
     }
     oauthLogin.setActive(usesOAuth && !binding);
     oauthLogin.setDisabled(planLocked || saved);
-    mode.disabled ||=
-      harness.value === "codex" ||
-      nativeProvider.value === "anthropic" ||
-      binding?.method === "runtime";
+    // Anthropic and a runtime binding fix the mode too; with a pending or saved form they keep it
+    // natively disabled. The Codex harness lock is applied below, once its hint is set.
+    const modeNativelyDisabled =
+      mode.disabled || nativeProvider.value === "anthropic" || binding?.method === "runtime";
     // Why the harness choice is locked, without the request in flight: the hint must not change
     // while Create is pending, or it shifts the refusal the form just scrolled into view.
     const harnessChoiceLocked =
-      saved ||
-      outcomeUnknown ||
-      requestAdmitted ||
-      binding?.method === "runtime" ||
-      (usesPat && Boolean(binding || savedSecret));
+      saved || outcomeUnknown || requestAdmitted || credentialLocksHarness();
     harness.disabled ||= pending || harnessChoiceLocked;
     const dedicatedRefused = capabilityDiscoveryDone && !openclawModeUsable("dedicated");
     const nativeRefused = dedicatedRefused && harness.value === "openclaw";
@@ -2252,23 +2965,58 @@ function renderAgentForm(
     const openclawEmbeddedRefused = embeddedRefused && harness.value === "openclaw";
     const noOpenClawMode = nativeRefused && openclawEmbeddedRefused;
     const sandboxDriverOutage = capabilityDiscoveryDone && sandboxDriverUnavailable;
+    // A selected Sandbox Driver refuses Embedded execution, so an Installation that lists Embedded
+    // selects none, and that is exactly why Dedicated OpenClaw is refused (finding 2384).
+    const noSandboxDriver =
+      nativeRefused && !sandboxDriverOutage && openclawExecutionModes?.has("embedded") === true;
     dedicatedOption.disabled = nativeRefused;
     embeddedOption.disabled = embeddedRefused;
     nativeWorkersUnavailable.hidden =
       !nativeRefused || noOpenClawMode || mode.value !== "dedicated";
+    const nativeWorkersReason = noSandboxDriver
+      ? NO_SANDBOX_DRIVER_DEDICATED
+      : NATIVE_WORKERS_UNAVAILABLE;
+    if (nativeWorkersUnavailable.textContent !== nativeWorkersReason) {
+      nativeWorkersUnavailable.textContent = nativeWorkersReason;
+    }
+    // A setting refusal names the setting to change, not another Sandbox Driver (finding 2373).
+    // Its last sentence advises "Select Codex, or ask an operator to …"; quote only the
+    // requirement when this form cannot select Codex: a Preset's binding locks the harness, or
+    // Anthropic hides it (finding 2392). A saved or bound model credential also locks the
+    // provider, so switching to OpenAI is not offered then either.
+    const codexSelectable = !harnessChoiceLocked && nativeProvider.value !== "anthropic";
+    const providerLocked =
+      Boolean(savedSecret || savedCredentialSource || credentialRegistration) ||
+      hasBoundModelCredential;
+    const dedicatedRefusalReason = dedicatedSettingRefusal
+      ? `its settings refuse Dedicated OpenClaw. ${codexSelectable ? dedicatedSettingRefusal : settingRequirement(dedicatedSettingRefusal)}`
+      : "it cannot run Dedicated OpenClaw.";
+    // What a reader without an operator-managed Preset can do when no OpenClaw mode is usable.
+    let noOpenClawAdvice = "";
+    if (!dedicatedSettingRefusal) {
+      noOpenClawAdvice =
+        " Choose OpenAI with the Codex harness, or ask an Installation administrator to select a Sandbox Driver that can provision dedicated OpenClaw, with a runtime that has native worker support.";
+    } else if (!codexSelectable) {
+      // Anthropic hides Codex: name the provider switch the Driver's advice leaves out, when the
+      // form still allows it.
+      noOpenClawAdvice =
+        harnessChoiceLocked || providerLocked
+          ? " Ask an operator to change that setting."
+          : " Choose OpenAI with the Codex harness, or ask an operator to change that setting.";
+    }
     const modeRefusal = sandboxDriverOutage
       ? SANDBOX_DRIVER_OUTAGE
       : noOpenClawMode
         ? binding?.method === "runtime"
-          ? "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. This Preset's operator-managed credentials require OpenClaw. Ask an administrator, or start without a Preset."
-          : "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. Choose OpenAI with the Codex harness, or ask an administrator to select a Sandbox Driver that can provision dedicated OpenClaw, with a runtime that has native worker support."
+          ? `OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and ${dedicatedRefusalReason} This Preset's operator-managed credentials require OpenClaw. Ask an Installation administrator, or start without a Preset.`
+          : `OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and ${dedicatedRefusalReason}${noOpenClawAdvice}`
         : openclawEmbeddedRefused && mode.value === "embedded"
           ? binding?.method === "runtime"
-            ? "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an administrator, or start without a Preset."
+            ? "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an Installation administrator, or start without a Preset."
             : nativeProvider.value === "anthropic"
               ? "Anthropic uses Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Choose OpenAI to use Dedicated execution."
               : "Embedded OpenClaw is unavailable: this installation selects a Sandbox Driver, which requires Dedicated execution. Select Dedicated under Runtime details."
-          : "";
+          : (runtimeBindingRefused ?? "");
     if (openclawModeUnavailable.textContent !== modeRefusal) {
       openclawModeUnavailable.textContent = modeRefusal;
     }
@@ -2277,17 +3025,25 @@ function renderAgentForm(
     runtimeModeSummary.textContent = modeUnavailable
       ? " · Execution mode unavailable"
       : ` · ${mode.value === "dedicated" ? "Dedicated" : "Embedded"}`;
-    const modeHint = form.querySelector("#execution-mode-hint");
+    const modeHint = form.querySelector<HTMLElement>("#execution-mode-hint");
     if (modeHint) {
       modeHint.textContent = sandboxDriverOutage
         ? "Codex and OpenClaw are unavailable while this installation's Sandbox Driver is unavailable."
         : embeddedRefused && dedicatedRefused
           ? "Codex uses Dedicated execution. OpenClaw is unavailable on this installation. Slack requires Codex."
-          : nativeRefused
-            ? "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Embedded OpenClaw works only when the installation selects no Sandbox Driver. Slack requires Codex."
-            : embeddedRefused
-              ? "Codex uses Dedicated execution. This installation selects a Sandbox Driver, so OpenClaw uses Dedicated execution too. Slack requires Dedicated execution."
-              : "Codex uses Dedicated execution. OpenClaw uses Dedicated execution with a Sandbox Driver that provisions it, and Embedded execution without a Sandbox Driver. Slack requires Dedicated execution.";
+          : noSandboxDriver
+            ? "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation selects no Sandbox Driver. Slack requires Codex."
+            : nativeRefused
+              ? "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Embedded OpenClaw works only when the installation selects no Sandbox Driver. Slack requires Codex."
+              : embeddedRefused
+                ? "Codex uses Dedicated execution. This installation selects a Sandbox Driver, so OpenClaw uses Dedicated execution too. Slack requires Dedicated execution."
+                : "Codex uses Dedicated execution. OpenClaw uses Dedicated execution with a Sandbox Driver that provisions it, and Embedded execution without a Sandbox Driver. Slack requires Dedicated execution.";
+    }
+    // Codex fixes Dedicated execution, and the hint says so: the select stays in the Tab order,
+    // described by it, so a keyboard reader reaches why (finding 2945).
+    setUnavailable(mode, !modeNativelyDisabled && harness.value === "codex", modeHint);
+    if (modeNativelyDisabled) {
+      mode.disabled = true;
     }
     if (capabilitiesSettled()) {
       let nextStatus = "";
@@ -2297,6 +3053,9 @@ function renderAgentForm(
           : namespaceEnded()
             ? "This Namespace cannot hold new Agents, so Create Agent is unavailable."
             : "Create Agent is unavailable until this Namespace is ready.";
+      } else if (!modeUnavailable && deploymentNeedsRepository()) {
+        nextStatus =
+          "This installation’s Credential Proxy requires repository access to deploy an Agent. Select approved repository access if this Agent needs Git, or use an installation that supports deployment without repositories.";
       } else if (!modeUnavailable) {
         nextStatus = shouldProvision()
           ? notReady
@@ -2329,7 +3088,9 @@ function renderAgentForm(
         return "OpenClaw is available for both providers. With OpenAI its execution mode depends on the installation's Sandbox Driver; Anthropic uses Embedded OpenClaw.";
       }
       if (noOpenClawMode) {
-        return "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw.";
+        return dedicatedSettingRefusal
+          ? "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and its settings refuse Dedicated OpenClaw."
+          : "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw.";
       }
       const runtime = `${mode.value === "dedicated" ? "Dedicated" : "Embedded"} execution`;
       if (anthropic && mode.value !== "embedded") {
@@ -2338,7 +3099,8 @@ function renderAgentForm(
       if (modeUnavailable) {
         return `This Agent cannot run OpenClaw with ${runtime} on this installation.`;
       }
-      // Name Codex only when the reader can still choose it.
+      // Name Codex only when the reader can still choose it. Why Dedicated OpenClaw is refused
+      // stays under Runtime details, so it is said once (finding 2404).
       const reason = anthropic
         ? " Anthropic requires Embedded OpenClaw."
         : nativeRefused && !harnessChoiceLocked
@@ -2360,9 +3122,7 @@ function renderAgentForm(
       harnessHint.textContent =
         "This Preset's operator-managed credentials require the OpenClaw harness.";
     }
-    nativeProvider.disabled ||=
-      Boolean(savedSecret || savedCredentialSource || credentialRegistration) ||
-      hasBoundModelCredential;
+    nativeProvider.disabled ||= providerLocked;
     authMethod.disabled ||= Boolean(savedSecret || savedCredentialSource || credentialRegistration);
     apiKeyOption.textContent =
       nativeProvider.value === "anthropic" ? "Anthropic API key" : "OpenAI API key";
@@ -2376,7 +3136,15 @@ function renderAgentForm(
         : "API key"
       : "Token for plugin discovery";
     modelCredentialField.hidden = Boolean(binding || passwordAuth || usesOAuth);
-    transientCredentialField.hidden = usesOAuth;
+    transientCredentialField.hidden =
+      usesOAuth || (!passwordAuth && transientCredentialField.parentElement === authSection);
+    if (!ownsSecretRecovery()) {
+      clearSecretConflictFeedback();
+      alternateSecretField.hidden = true;
+      alternateSecretName.required = false;
+    }
+    clearSupersededSecretConflict();
+    secretConflictRecovery.hidden = secretNameConflict === null || outcomeUnknown;
     pluginDiscoveryTokenDetails.hidden = Boolean(
       binding || passwordAuth || !usesPat || pluginDiscoveryCredential === "none",
     );
@@ -2439,6 +3207,37 @@ function renderAgentForm(
         authSection.append(credentialHelp);
       }
     }
+    const sourceType = credentialSourceTypes !== undefined && !usesOAuth ? modelSourceType() : null;
+    if (sourceType !== renderedSourceType) {
+      renderedSourceType = sourceType;
+      sourceConfigurationFields.replaceChildren();
+      sourceConfigurationInputs.clear();
+      for (const setting of sourceType?.config ?? []) {
+        const input = element("input", { id: `model-source-${setting.name}`, type: "text" });
+        input.required = setting.required;
+        sourceConfigurationInputs.set(setting.name, input);
+        const label = setting.name.replaceAll("_", " ").replace(/\burl\b/gi, "URL");
+        const wrapper = field(label.charAt(0).toUpperCase() + label.slice(1), input);
+        if (setting.description) {
+          const help = element(
+            "p",
+            { className: "hint", id: `${input.id}-help` },
+            setting.description,
+          );
+          input.setAttribute("aria-describedby", help.id);
+          wrapper.append(help);
+        }
+        sourceConfigurationFields.append(wrapper);
+      }
+    }
+    sourceConfigurationFields.hidden = sourceConfigurationInputs.size === 0;
+    for (const input of sourceConfigurationInputs.values()) {
+      input.disabled =
+        pending || outcomeUnknown || Boolean(savedCredentialSource || credentialRegistration);
+    }
+    if (sourceConfigurationFields.parentElement !== authSection) {
+      authSection.append(sourceConfigurationFields);
+    }
     apiKey.required = Boolean(passwordAuth && !usesOAuth);
     apiKey.disabled ||= Boolean(savedSecret || binding || usesOAuth || (!passwordAuth && !usesPat));
     startOver.disabled =
@@ -2446,6 +3245,8 @@ function renderAgentForm(
       outcomeUnknown ||
       saved ||
       Boolean(savedSecret || savedCredentialSource || credentialRegistration);
+    // Shown only while it can act, so no unavailable action sits in the refusal.
+    changePresetVariables.hidden = startOver.disabled;
     if (useModelChoices) {
       choiceField.hidden = manualModel;
       modelField.hidden = !manualModel;
@@ -2459,7 +3260,7 @@ function renderAgentForm(
     reloadRepositories.disabled = pending || outcomeUnknown;
     startNewDraft.disabled = pending || outcomeUnknown;
     repositories.setDisabled(planLocked || repositoryRetryLocked());
-    submit.disabled =
+    const submitUnavailable =
       (!savedAgent &&
         (repositoryRetryLocked() ||
           (requiresRepositories() && !repositories.hasValidSelection()) ||
@@ -2472,17 +3273,35 @@ function renderAgentForm(
       credentialGrantRefused ||
       selectedModeUnavailable() ||
       credentialSourceRefused() ||
-      (!savedAgent && (provisioningWaitsForNamespace() || namespaceRefusesAgents())) ||
+      (!savedAgent &&
+        (provisioningNeedsRepository() ||
+          provisioningWaitsForNamespace() ||
+          namespaceRefusesAgents())) ||
       Boolean(provisioningAttempt);
     // Create Agent names why it waits: the status line above says so (finding 2007).
+    let submitReason: HTMLElement | null = null;
     if (
       !savedAgent &&
       capabilitiesSettled() &&
-      (namespaceRefusesAgents() || (!selectedModeUnavailable() && provisioningWaitsForNamespace()))
+      (namespaceRefusesAgents() ||
+        (!selectedModeUnavailable() &&
+          (provisioningNeedsRepository() || provisioningWaitsForNamespace())))
     ) {
+      submitReason = capabilityStatus;
       submit.setAttribute("aria-describedby", capabilityStatus.id);
+    } else if (capabilityDiscoveryDenied && !capabilitiesUnreadable && !accessStatus.hidden) {
+      // The refused Installation read's block above the form says why Create waits (finding 2092).
+      submitReason = accessStatus;
+      submit.setAttribute("aria-describedby", accessStatus.id);
     } else {
       submit.removeAttribute("aria-describedby");
+    }
+    // While that reason shows, an unavailable Create Agent stays in the Tab order (class of
+    // finding 2899). Without one (a pending create, say) it stays natively disabled, even with
+    // focus, as before.
+    setUnavailable(submit, submitUnavailable && submitReason !== null, submitReason);
+    if (submitUnavailable && submitReason === null) {
+      submit.disabled = true;
     }
     checkCredentialRegistration.hidden = !credentialRegistration;
     checkCredentialRegistration.disabled = pending;
@@ -2490,16 +3309,17 @@ function renderAgentForm(
     removeCredentialRegistration.disabled = pending;
     retryProvisioning.hidden = !provisioningAttempt;
     retryProvisioning.disabled = pending || !provisioningAttempt;
-    retryCapabilityDiscovery.hidden =
-      !capabilityDiscoveryFailed || (capabilityDiscoveryDenied && !permissionsUnknown);
-    retryCapabilityDiscovery.disabled = pending || permissionsReading;
-    retryCapabilityDiscovery.textContent = capabilityDiscoveryDenied
-      ? "Retry permission check"
-      : "Retry capability check";
+    retryCapabilityDiscovery.hidden = !capabilityDiscoveryFailed || capabilityDiscoveryDenied;
+    retryCapabilityDiscovery.disabled = pending;
+    retryPermissionCheck.disabled = pending || permissionsReading;
     submit.hidden = credentialGrantRefused;
     submit.textContent = savedAgent ? "Retry credential access" : "Create Agent";
     submit.setAttribute("aria-busy", createPending ? "true" : "false");
     waitForNamespace();
+    if (focusTakenName && !name.disabled) {
+      focusTakenName = false;
+      name.focus();
+    }
   };
   // Every way Create's request ends clears its busy state, a navigation away included: the view
   // it leaves may still show as an inert preview.
@@ -2564,39 +3384,16 @@ function renderAgentForm(
       if (!context.isCurrent()) {
         return;
       }
-      pluginDiscoveryCredential =
-        installation.capabilities?.pluginDiscovery?.credential ?? "required";
-      pluginFields.setCapabilities(installation.capabilities?.pluginPolicies ?? null);
-      defaultApprovers.hidden =
-        installation.capabilities?.pluginPolicies?.approvers?.agent !== true;
-      if (!defaultApprovers.hidden) {
-        defaultApprovers.refreshNames();
+      applyCapabilities(installation.capabilities);
+      // A readable Installation is an administrator's: without a permission answer, the form
+      // goes on as allowed, and so do its repository choices. A known refusal (a kept draft a
+      // Restriction now refuses) reads none and says why: nothing else on the form does.
+      if (namespacePermissions?.agents?.create === false) {
+        repositories.refuse(agentCreateDenied(namespacePermissions));
+      } else {
+        repositories.start();
       }
-      nativeWorkersAvailable = installation.capabilities?.nativeWorkers !== undefined;
-      const openclawModes = installation.capabilities?.openclaw?.executionModes;
-      openclawExecutionModes = Array.isArray(openclawModes) ? new Set(openclawModes) : undefined;
-      sandboxDriverUnavailable =
-        installation.capabilities?.openclaw?.sandboxDriverUnavailable === true;
-      credentialSourceTypes = installation.capabilities?.credentialSources?.types;
-      provisionableExecutionModes.clear();
-      for (const executionMode of installation.capabilities?.agentProvisioning?.executionModes ??
-        []) {
-        provisionableExecutionModes.add(executionMode);
-      }
-      capabilityDiscoveryDone = true;
-      // A mode the form chose but the Installation refuses becomes the usable one, if any.
-      if (
-        openclawExecutionModes !== undefined &&
-        modeDefaulted &&
-        harness.value === "openclaw" &&
-        !embeddedRequired() &&
-        !savedConfiguration &&
-        !openclawModeUsable(mode.value) &&
-        openclawModeUsable(defaultOpenClawMode())
-      ) {
-        mode.value = defaultOpenClawMode();
-        renderChannelEditor();
-      }
+      afterCapabilities();
     } catch (error) {
       if (!context.isCurrent()) {
         return;
@@ -2610,7 +3407,7 @@ function renderAgentForm(
       // A denial is permanent for this account, so retrying the read cannot help.
       capabilityDiscoveryDenied = status === 403;
       if (capabilityDiscoveryDenied) {
-        settleRefusedCapabilities();
+        await settleRefusedCapabilities();
         return;
       }
       capabilityStatus.textContent = `Installation capabilities unavailable. ${message(error)} Retry before creating an Agent.`;
@@ -2620,23 +3417,97 @@ function renderAgentForm(
       }
     }
   }
+  function applyCapabilities(capabilities: InstallationCapabilities | undefined) {
+    installationCapabilities = capabilities;
+    repositories.setDeploymentRequiresRepository(capabilities?.repositoryAccessRequired === true);
+    applyPluginCapabilities();
+    nativeAdminAvailable = capabilities?.nativeAdmin === true;
+    nativeWorkersAvailable = capabilities?.nativeWorkers !== undefined;
+    const openclawModes = capabilities?.openclaw?.executionModes;
+    openclawExecutionModes = Array.isArray(openclawModes) ? new Set(openclawModes) : undefined;
+    sandboxDriverUnavailable = capabilities?.openclaw?.sandboxDriverUnavailable === true;
+    const settingRefusal = capabilities?.openclaw?.settingRefusals?.dedicated;
+    dedicatedSettingRefusal =
+      typeof settingRefusal === "string" && settingRefusal ? settingRefusal : undefined;
+    credentialSourceTypes = capabilities?.credentialSources?.types;
+    // Drivers that offer no device login refuse every start (finding 2991).
+    oauthLogin.setOffered(deviceLoginOffered(capabilities));
+    provisionableExecutionModes.clear();
+    for (const executionMode of capabilities?.agentProvisioning?.executionModes ?? []) {
+      provisionableExecutionModes.add(executionMode);
+    }
+    capabilityDiscoveryDone = true;
+  }
+  function afterCapabilities() {
+    // A mode the form chose but the Installation refuses becomes the usable one, if any.
+    if (
+      openclawExecutionModes !== undefined &&
+      modeDefaulted &&
+      harness.value === "openclaw" &&
+      !embeddedRequired() &&
+      !savedConfiguration &&
+      !openclawModeUsable(mode.value) &&
+      openclawModeUsable(defaultOpenClawMode())
+    ) {
+      mode.value = defaultOpenClawMode();
+      renderChannelEditor();
+    }
+    void checkRuntimeBinding();
+  }
   // After a refused Installation read, the permission answer decides. A member the Namespace lets
   // create Agents goes on without the Installation's capabilities (UX plan A2); only an explicit
-  // grant does. A known denial keeps the refusal; an unknown answer says the check failed and
-  // offers a retry of it (finding 2110).
-  function settleRefusedCapabilities() {
+  // grant does. An unknown answer says the check failed and offers a retry of it (finding 2110).
+  // A known denial shows what a fresh load with that answer shows: the refusal instead of the form
+  // (finding 2908). A form that already saved resources keeps them in view, under the same refusal.
+  async function settleRefusedCapabilities() {
     const create = namespacePermissions?.agents?.create;
     permissionsUnknown = typeof create !== "boolean";
+    capabilityStatus.textContent = "";
     if (create === true) {
       capabilitiesUnreadable = true;
-      accessStatus.hidden = false;
+      showAccess("info", memberAccess);
+      repositories.start();
+      await loadNamespaceCapabilities();
       return;
     }
-    capabilityStatus.textContent = permissionsUnknown ? PERMISSIONS_UNREAD : INSTALLATION_REFUSAL;
+    if (permissionsUnknown) {
+      showAccess("warning", PERMISSIONS_UNREAD);
+    } else if (!savedSecret && !savedCredentialSource && !savedConfiguration && !savedAgent) {
+      context.permissions = namespacePermissions;
+      renderCreateAgent(context);
+    } else {
+      showAccess("danger", agentCreateDenied(namespacePermissions));
+      // The block above gives the reason; the held repository line no longer waits for anything.
+      repositories.refuse();
+    }
+  }
+  // A member cannot read the Installation, so the Namespace answers the capabilities Agent create
+  // needs, such as the Credential Gateway's source types (RFC-0026). A failed read leaves the form
+  // as it was without them: the preflight and Agent create still decide.
+  async function loadNamespaceCapabilities() {
+    try {
+      const answer = (await request(`${namespacePath(namespaceId)}/agent-capabilities`)) as {
+        capabilities?: InstallationCapabilities;
+      };
+      if (!context.isCurrent()) {
+        return;
+      }
+      applyCapabilities(answer.capabilities);
+      afterCapabilities();
+    } catch (error) {
+      if (context.isCurrent() && requestFailure(error).status === 401) {
+        context.onExpired();
+      }
+    } finally {
+      if (context.isCurrent()) {
+        updateControls();
+      }
+    }
   }
   async function rereadPermissions() {
+    operateAnswer.reset();
     permissionsReading = true;
-    capabilityStatus.textContent = "Checking your permissions in this Namespace…";
+    showAccess("info", "Checking your permissions in this Namespace…");
     updateControls();
     try {
       namespacePermissions = (await request(
@@ -2655,26 +3526,40 @@ function renderAgentForm(
     if (!context.isCurrent()) {
       return;
     }
-    settleRefusedCapabilities();
-    updateControls();
-    // The retry hides once answered: its outcome takes focus rather than the page.
+    // The pressed retry was disabled while the check ran: it takes focus back when the check
+    // failed again; once answered it hides and the answer takes focus rather than the page.
     const active = document.activeElement;
-    if (
-      retryCapabilityDiscovery.hidden &&
-      (!active || active === document.body || active === retryCapabilityDiscovery)
-    ) {
-      const outcome = accessStatus.hidden ? capabilityStatus : accessStatus;
-      outcome.tabIndex = -1;
+    const focusOutcome = !active || active === document.body || active === retryPermissionCheck;
+    await settleRefusedCapabilities();
+    if (!context.isCurrent()) {
+      return;
+    }
+    if (!form.isConnected) {
+      // The refusal replaced the form: it is the answer.
+      const refusal = context.view.querySelector<HTMLElement>(".state-panel");
+      if (focusOutcome && refusal) {
+        refusal.tabIndex = -1;
+        refusal.focus({ preventScroll: true });
+        refusal.scrollIntoView({ block: "nearest" });
+      }
+      return;
+    }
+    updateControls();
+    if (focusOutcome) {
+      const outcome = accessActions.hidden ? accessStatus : retryPermissionCheck;
+      if (outcome === accessStatus) {
+        accessStatus.tabIndex = -1;
+      }
       outcome.focus({ preventScroll: true });
       outcome.scrollIntoView({ block: "nearest" });
     }
   }
   void loadInstallationCapabilities();
-  async function submitProvisioningAttempt(attempt: ProvisioningAttempt) {
+  async function submitProvisioningAttempt(attempt: ProvisioningAttempt, retryUrl?: string) {
     // A retry of a job known to have failed. Read before the request: an admitted first
     // attempt also gains a retry URL, and after an unknown outcome the job may have
     // succeeded (recovering), so a refusal there must keep the request ID to recover it.
-    const viaRetry = attempt.statusUrl !== undefined;
+    const viaRetry = retryUrl !== undefined;
     const retrying = viaRetry && !outcomeUnknown;
     const recovering = viaRetry && outcomeUnknown;
     pending = true;
@@ -2682,6 +3567,7 @@ function renderAgentForm(
     updateControls();
     feedback.textContent = "";
     let mutationStarted = false;
+    let refusedInConfiguration = false;
     try {
       mutationStarted = true;
       const finishing = finishProvisioningAttempt({
@@ -2689,22 +3575,27 @@ function renderAgentForm(
         status: savedStatus,
         namespaceId,
         attempt,
+        retryUrl,
         isCurrent: context.isCurrent,
       });
       focusFeedbackLine(savedStatus);
-      const { agentId, revisionId } = await finishing;
+      const { agentId, revisionId, tab } = await finishing;
       if (!context.isCurrent()) {
         return;
       }
       provisioningAttempt = null;
       repositories.recordSuccessfulSave();
-      context.navigate(`agents/${agentId}?revision=${revisionId}&tab=configuration`);
+      context.navigate(`agents/${agentId}?revision=${revisionId}&tab=${tab}`);
     } catch (cause) {
       const error = {
         ...requestFailure(cause),
         message: cause instanceof Error ? cause.message : "",
       };
       const terminal = cause instanceof ProvisioningFailure ? cause : undefined;
+      if (error.status === 403) {
+        // As after a refused Agent create below: the Secret fields read the answer again.
+        operateAnswer.reset();
+      }
       if (!context.isCurrent()) {
         return;
       }
@@ -2735,14 +3626,18 @@ function renderAgentForm(
         detail = `${reason ?? "Outcome unknown."} Retry resubmits the same request ID and saved references.`;
       } else if (terminal?.canRetry) {
         detail = `${error.message} Retry uses the accepted provisioning job.`;
-      } else if (terminal?.stopped) {
+      } else if (terminal?.neutralOutcome === "superseded") {
+        detail = "A newer deployment took over before this one was ready.";
+      } else if (terminal?.neutralOutcome === "stopped") {
         // A stopped Agent keeps its name and needs a deployment, not a repair or a new Agent.
         detail = `${error.message} Open this Agent and deploy ${terminal.job.revisionId ? "a new version" : "a version"} when you want it running.`;
       } else if (terminal?.agentUnknown) {
         // A Stop keeps the name, so do not only point at a new Agent.
         detail = `${error.message} If the Agent still exists, open it and deploy a version; otherwise select Create Agent to submit a new request.`;
       } else if (terminal?.job.revisionId) {
-        detail = `${error.message} Open this Agent, correct the cause and deploy a new version.`;
+        // The deployment's message names its own next step, which is not always a new version
+        // (finding 2537); the Agent page shows it with the failed version's recovery actions.
+        detail = `${error.message} Open this Agent to see the failed version and its recovery actions.`;
       } else if (terminal?.failed) {
         detail = `${error.message} Select Create Agent to submit a new request.`;
       } else if (retryRefused) {
@@ -2753,13 +3648,13 @@ function renderAgentForm(
         detail =
           "The provisioning job can no longer be retried; it may have finished. Select Create Agent to resend the same request ID and open its result.";
       } else if (reason !== undefined && error.code !== "NAMESPACE_NOT_READY") {
-        detail = reason;
+        detail = followableRefusal(reason);
       } else {
-        detail = rejectionMessage(cause, mutationStarted);
+        detail = followableRefusal(createRefusal(cause, mutationStarted));
       }
-      const feedbackText = detail + (error.requestId ? ` Request ID: ${error.requestId}` : "");
-      // A job that ended keeps its final status; any other progress line spoke for the request
-      // that just ended (finding 1490).
+      const feedbackText = withRequestId(detail, error.requestId);
+      // A job that ended keeps its final status (none once it failed: the error line says so);
+      // any other progress line spoke for the request that just ended (finding 1490).
       if (!terminal) {
         if (savedSecret || savedConfiguration || savedAgent) {
           showSavedStatus();
@@ -2767,15 +3662,24 @@ function renderAgentForm(
           savedStatus.textContent = "";
         }
       }
-      if (terminal?.stopped) {
+      // Admission's channel reference refusal names the Configuration JSON's setting.
+      refusedInConfiguration = !terminal && !outcomeUnknown && showChannelBindingRefusal(cause);
+      if (terminal?.neutralOutcome) {
         // Not an error: keep the guidance out of the error colour. Later messages replace the span.
         feedback.replaceChildren(
-          element("span", { className: "provisioning-stopped" }, feedbackText),
+          element("span", { className: "provisioning-neutral" }, feedbackText),
         );
       } else {
-        feedback.textContent = feedbackText;
+        feedback.textContent = refusedInConfiguration ? "" : feedbackText;
+        if (!refusedInConfiguration && !terminal && !outcomeUnknown) {
+          offerPresetVariableChange(error.serverMessage);
+        }
       }
-      if (terminal?.job.revisionId && terminal.job.agentId) {
+      if (
+        terminal?.job.revisionId &&
+        terminal.job.agentId &&
+        terminal.neutralOutcome !== "superseded"
+      ) {
         feedback.append(
           link(
             " Open Agent and deployment details",
@@ -2783,14 +3687,28 @@ function renderAgentForm(
             context,
           ),
         );
-      } else if ((terminal?.stopped || terminal?.agentUnknown) && terminal.job.agentId) {
+      } else if (
+        (terminal?.neutralOutcome === "stopped" || terminal?.agentUnknown) &&
+        terminal.job.agentId
+      ) {
         feedback.append(link(" Open Agent", `agents/${terminal.job.agentId}`, context));
       }
       focusFeedbackLine(feedback);
-      // A 400 to an unacknowledged request means the API never admitted it: a resend of
-      // an admitted request returns that job before validation.
+      // Admission refuses a taken name; a job admitted alongside another with it fails with it.
+      const admissionNameTaken =
+        error.status === 409 && error.serverMessage === AGENT_NAME_CONFLICT;
+      if (
+        admissionNameTaken ||
+        (terminal?.failed && !terminal.job.agentId && error.message === AGENT_NAME_CONFLICT)
+      ) {
+        markNameTaken();
+      }
+      // A 400 or a taken-name 409 to an unacknowledged request means the API never admitted it:
+      // a resend of an admitted request returns that job before validation and the name check.
       requestAdmitted =
-        attempt.acknowledged || outcomeUnknown || (requestAdmitted && error.status !== 400);
+        attempt.acknowledged ||
+        outcomeUnknown ||
+        (requestAdmitted && error.status !== 400 && !admissionNameTaken);
       if (!outcomeUnknown && !terminal?.canRetry) {
         provisioningAttempt = null;
         if (terminal?.failed || retryRefused) {
@@ -2798,6 +3716,7 @@ function renderAgentForm(
           provisioningRequestId = createClientRequestId();
           requestAdmitted = false;
         }
+        admittedAttempt = requestAdmitted && attempt.statusUrl ? attempt : undefined;
       }
       // A job that names its Agent created one, which a kept draft must not create again.
       if (!terminal?.job.agentId) {
@@ -2807,13 +3726,55 @@ function renderAgentForm(
       if (context.isCurrent()) {
         pending = false;
         updateControls();
+        if (refusedInConfiguration) {
+          focusConfiguration();
+        }
       }
     }
   }
+  // The Harness authentication Agent create will name, as far as it is known before anything is
+  // saved, so the preflight also runs Agent save's check of it against the execution mode and the
+  // Compute settings (finding 2391). A Secret this form saves next is sent as its method alone.
+  // ChatGPT sign-in is not sent: save cannot check a credential source. On an Installation with a
+  // Credential Gateway this form registers the model Secret as a credential source and binds that,
+  // so it sends the source type's login mode, the method it selected, alone (finding 2406).
+  function plannedHarnessAuth(
+    usesOAuth: boolean,
+  ): HarnessAuthBinding | { method: "api_key" | "codex_pat" } | undefined {
+    if (usesOAuth) {
+      return undefined;
+    }
+    // The operator-managed runtime binding names no Secret, so it is sent as it is everywhere.
+    if (binding?.method === "runtime") {
+      return binding;
+    }
+    if (credentialSourceTypes !== undefined) {
+      const method = binding?.method ?? authMethod.value;
+      return method === "api_key" || method === "codex_pat" ? { method } : undefined;
+    }
+    if (binding) {
+      return binding;
+    }
+    const source = passwordAuth ? savedSecret?.ref : modelCredentialSource;
+    if (source?.kind === "secret") {
+      return selectedHarnessAuth(authMethod.value, source);
+    }
+    return passwordAuth && (authMethod.value === "api_key" || authMethod.value === "codex_pat")
+      ? { method: authMethod.value }
+      : undefined;
+  }
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    // A restored draft sets the name without an input event.
-    checkNameLength();
+    // A restored draft sets the name and files without an input event.
+    checkName();
+    if (ownsSecretRecovery() && !alternateSecretField.hidden) {
+      alternateSecretName.setCustomValidity(namespaceNameProblem(alternateSecretName.value.trim()));
+    }
+    // The Workspace tab's check, naming the file; validateFields opens Advanced settings to it
+    // (finding 2341).
+    for (const [filename, input] of workspaceInputs) {
+      input.setCustomValidity(workspaceFileProblem(filename, input.value));
+    }
     if (
       pending ||
       outcomeUnknown ||
@@ -2823,7 +3784,10 @@ function renderAgentForm(
       !capabilitiesSettled() ||
       selectedModeUnavailable() ||
       credentialSourceRefused() ||
-      (!savedAgent && (provisioningWaitsForNamespace() || namespaceRefusesAgents())) ||
+      (!savedAgent &&
+        (provisioningNeedsRepository() ||
+          provisioningWaitsForNamespace() ||
+          namespaceRefusesAgents())) ||
       // The console's own errors under each field, not the browser's bubble (UX plan C3).
       !validateFields([...form.elements])
     ) {
@@ -2834,7 +3798,7 @@ function renderAgentForm(
     if (values === undefined) {
       return;
     }
-    const desiredPlugins = parseObject<Record<string, unknown>>(plugins, true);
+    const desiredPlugins = parseObject(plugins, true);
     const bindings = configurationSecretBindings;
     if (values === undefined || desiredPlugins === undefined) {
       return;
@@ -2847,8 +3811,8 @@ function renderAgentForm(
         "Choose an available model or enter a model ID before creating the Agent.";
       return;
     }
-    const selected = values.agents?.defaults?.model;
-    const primaryModel = typeof selected === "string" ? selected : selected?.primary;
+    const selected = configuredModelSelection(values);
+    const primaryModel = modelPrimary(selected);
     const fallbackPrefixes =
       harness.value === "codex" ? ["openai/", "codex/"] : [`${nativeProvider.value}/`];
     // Bound Codex Presets may use either supported provider prefix; OpenClaw keeps its provider.
@@ -2866,8 +3830,8 @@ function renderAgentForm(
     }
     if (
       (!binding || hasBoundModelCredential) &&
-      typeof selected === "object" &&
-      Array.isArray(selected.fallbacks) &&
+      isObject(selected) &&
+      isArray(selected.fallbacks) &&
       selected.fallbacks.some(
         (ref) =>
           typeof ref !== "string" ||
@@ -2923,24 +3887,61 @@ function renderAgentForm(
     }
     pending = true;
     createPending = true;
+    clearSecretConflictFeedback();
     updateControls();
     feedback.textContent = "";
+    // A typed key becomes a new Secret that the next requests bind. It gets no Secret operate
+    // grant of its own, so where operate is denied on a readable Secret (granted per Secret)
+    // they would refuse it after the Secret and Configuration were saved: refuse it first, as
+    // the Preset's Create new Secret choice does (finding 2492). The answer is read fresh, so a
+    // retry after an administrator's grant goes on.
+    if (
+      passwordAuth &&
+      !usesOAuth &&
+      !savedSecret &&
+      (await secretsOperateDenied({ fresh: true }))?.size
+    ) {
+      endCreate();
+      if (context.isCurrent()) {
+        feedback.textContent = NEW_SECRET_REFUSAL;
+        focusFeedbackLine(feedback);
+      }
+      pending = false;
+      updateControls();
+      return;
+    }
     // Before anything is saved, ask the API whether Agent create would refuse these plugin
     // selections or initial workspace files with this Configuration. A refusal then leaves the
     // whole form editable, the Configuration included, instead of a saved Configuration this
     // form can no longer change (finding 1863). Provisioning admits its plan in one request
-    // before it saves a Configuration, with its own rules, so it needs no preflight.
-    if (!shouldProvision() && !savedConfiguration && !savedAgent) {
+    // before it saves a Configuration, with its own rules, so it needs no preflight, except
+    // before this form saves the model Secret or registers the Credential Source the plan names:
+    // then the preflight checks that binding, so an Installation that cannot place a Dedicated
+    // Agent refuses it before either exists (findings 2395, 2406).
+    const plannedAuth = plannedHarnessAuth(usesOAuth);
+    const savesFirst =
+      !usesOAuth &&
+      ((passwordAuth && !savedSecret) ||
+        (credentialSourceTypes !== undefined && !savedCredentialSource));
+    if (
+      !savedConfiguration &&
+      !savedAgent &&
+      (!shouldProvision() || (savesFirst && plannedAuth !== undefined))
+    ) {
       try {
         await request(`${namespacePath(namespaceId)}/agents/validate`, {
           method: "POST",
           expectedStatus: 204,
           body: {
-            configuration: { kind: "agent", values },
+            name: body.name,
+            // The bindings it saves with the values, so a channel token reference without one
+            // is refused before anything is saved (finding 2319).
+            configuration: { kind: "agent", values, secretBindings: bindings },
             executionMode: body.executionMode,
             initialWorkspaceFiles: body.initialWorkspaceFiles,
             ...(body.plugins ? { plugins: body.plugins } : {}),
             ...(body.pluginApprovers ? { pluginApprovers: body.pluginApprovers } : {}),
+            ...(plannedAuth ? { harnessAuth: plannedAuth } : {}),
           },
         });
       } catch (error) {
@@ -2949,17 +3950,35 @@ function renderAgentForm(
           return;
         }
         const failure = requestFailure(error);
+        let refusedInConfiguration = false;
         if (failure.status === 401) {
           context.onExpired();
         } else {
-          feedback.textContent =
-            rejectionMessage(error) +
-            (failure.requestId ? ` Request ID: ${failure.requestId}` : "");
+          const nameTaken = failure.status === 409 && failure.serverMessage === AGENT_NAME_CONFLICT;
+          const detail =
+            error instanceof Error && error.name === "TimeoutError"
+              ? "The configuration check timed out. Your entries are still here. Try Create Agent again."
+              : nameTaken
+                ? AGENT_NAME_CONFLICT
+                : followableRefusal(rejectionMessage(error));
+          refusedInConfiguration = showChannelBindingRefusal(error);
+          feedback.textContent = refusedInConfiguration
+            ? ""
+            : withRequestId(detail, failure.requestId);
+          if (!refusedInConfiguration && !nameTaken) {
+            offerPresetVariableChange(failure.serverMessage);
+          }
           // While the pressed control is still disabled, as after a save.
           focusFeedbackLine(feedback);
+          if (nameTaken) {
+            markNameTaken();
+          }
         }
         pending = false;
         updateControls();
+        if (refusedInConfiguration) {
+          focusConfiguration();
+        }
         return;
       }
       if (!context.isCurrent()) {
@@ -2970,6 +3989,8 @@ function renderAgentForm(
     context.setDraftCapture(null);
     let mutationStarted = false;
     let creatingSecret = false;
+    const requestedSecretName = requestedModelSecretName();
+    let refusedInConfiguration = false;
     try {
       if (passwordAuth && !usesOAuth && !savedSecret) {
         mutationStarted = true;
@@ -2977,10 +3998,10 @@ function renderAgentForm(
         const result = await request(`${namespacePath(namespaceId)}/secrets`, {
           method: "POST",
           expectedStatus: 201,
-          body: { name: body.name, value: apiKey.value },
+          body: { name: requestedSecretName, value: apiKey.value },
         });
         apiKey.value = "";
-        const secret = secretMetadata(result, namespaceId, body.name);
+        const secret = secretMetadata(result, namespaceId, requestedSecretName);
         if (!secret) {
           throw new Error("The create response did not identify the requested Secret.");
         }
@@ -3008,9 +4029,15 @@ function renderAgentForm(
           credentialRegistration ??= {
             name: `${body.name.slice(0, 150)} model ${provisioningRequestId}`,
             type: type.type,
+            config: Object.fromEntries(
+              [...sourceConfigurationInputs]
+                .filter(([, input]) => input.value.trim() !== "")
+                .map(([name, input]) => [name, input.value]),
+            ),
             secrets: { [field]: secret },
           };
           mutationStarted = true;
+          credentialRegistrationRejected = false;
           const result = await request(`${namespacePath(namespaceId)}/credential-sources`, {
             method: "POST",
             expectedStatus: 201,
@@ -3033,19 +4060,22 @@ function renderAgentForm(
         harnessAuth = { method: "credential_source", sourceId: savedCredentialSource.id };
       }
       if (shouldProvision()) {
-        provisioningAttempt = {
-          acknowledged: false,
-          body: {
-            requestId: provisioningRequestId,
-            ...body,
-            harnessAuth,
-            configuration: {
-              kind: "agent",
-              values,
-              ...(Object.keys(bindings).length ? { secretBindings: bindings } : {}),
-            },
+        const plan = {
+          requestId: provisioningRequestId,
+          ...(nativeAdmin.checked && nativeAdminAvailable ? { nativeAdmin: true } : {}),
+          ...body,
+          harnessAuth,
+          configuration: {
+            kind: "agent",
+            values,
+            ...(Object.keys(bindings).length ? { secretBindings: bindings } : {}),
           },
         };
+        provisioningAttempt =
+          admittedAttempt && sameValue(admittedAttempt.body, plan)
+            ? admittedAttempt
+            : { body: plan, acknowledged: false };
+        admittedAttempt = undefined;
         await submitProvisioningAttempt(provisioningAttempt);
         return;
       }
@@ -3071,7 +4101,9 @@ function renderAgentForm(
           },
         }).catch((error: unknown) => {
           if (requestFailure(error).status === 403) {
-            responseFields(error).refusal = CONFIGURATION_CREATE_REFUSAL;
+            // A refused Configuration create names the grants it needs: one fixed text for
+            // every 403, since only an Installation administrator can create one (finding 2111).
+            responseFields(error).refusal = CONFIGURATION_CREATE_REFUSED;
           }
           throw error;
         });
@@ -3113,6 +4145,9 @@ function renderAgentForm(
               harnessAuth,
               credentialSources,
               configurationId: savedConfiguration.id,
+              ...(nativeAdmin.checked && nativeAdminAvailable
+                ? { nativeAdmin: true, expectedConfigurationGeneration: 1 }
+                : {}),
             },
           }),
         );
@@ -3157,13 +4192,8 @@ function renderAgentForm(
         Object.values(savedConfiguration.secretBindings ?? {}).some(
           (binding) => binding?.source?.kind === "secret",
         );
-      if (needsCredentialAccess) {
-        if (context.installationAdmin === false) {
-          credentialGrantRefused = true;
-          feedback.textContent = MEMBER_GRANT_REFUSED;
-          focusFeedbackLine(feedback);
-          return;
-        }
+      // A member's deploy writes these grants (RFC-0026), so only an administrator grants here.
+      if (needsCredentialAccess && context.installationAdmin !== false) {
         // IAM binds a credential to a principal, not to an Agent ID. Confirm the principal on
         // the saved Agent before granting access. An explicit retry reads that same Agent again;
         // it never reuses a principal from a create response we could not confirm.
@@ -3200,6 +4230,16 @@ function renderAgentForm(
       }
     } catch (cause) {
       const error = requestFailure(cause);
+      if (error.status === 403) {
+        // A refused create may follow a revoked grant: the Secret fields read the answer again
+        // when they next open (finding 2469), as the Agent page does after a refused save.
+        operateAnswer.reset();
+      }
+      if (credentialRegistration && error.status === 400) {
+        // Keep uncertain writes frozen. A definitive validation refusal can be edited only
+        // after the source list confirms that no registration survived cleanup.
+        credentialRegistrationRejected = true;
+      }
       const knownRejection = [400, 403, 404, 409, 429].includes(error.status ?? 0);
       outcomeUnknown = mutationStarted && !knownRejection && error.status !== 401;
       if (creatingSecret && (outcomeUnknown || !context.isCurrent() || error.status === 401)) {
@@ -3212,18 +4252,40 @@ function renderAgentForm(
         context.onExpired();
         return;
       }
-      const registrationProblem = error.status && error.status >= 400 ? ` ${message(cause)}` : "";
+      const confirmedSecretConflict =
+        creatingSecret &&
+        error.status === 409 &&
+        error.code === "RESOURCE_CONFLICT" &&
+        error.serverMessage ===
+          "A Secret with this name already exists in this Namespace. Choose a different name.";
+      if (confirmedSecretConflict) {
+        secretNameConflict = requestedSecretName;
+        secretConflictMessage.textContent = withRequestId(
+          `A Secret named "${requestedSecretName}" already exists in this Namespace. Choose an existing Secret or use another Secret name. Other draft fields stay unchanged.`,
+          error.requestId,
+        );
+        secretConflictRecovery.hidden = false;
+      }
+      const registrationProblem =
+        error.status && error.status >= 400 ? ` ${describeFailure(cause, { mutation: true })}` : "";
+      // A refused grant on a saved Agent shows this text only to an Installation administrator (a
+      // member sees MEMBER_GRANT_REFUSED below), so its denial names nobody to ask (finding 2113).
       const detail = credentialRegistration
         ? `Credential Source registration could not be confirmed.${registrationProblem} Check credential registration before retrying; the selected Secret remains saved.`
         : savedAgent
-          ? `The Agent was created, but credential access is not confirmed. ${message(cause)} Retry credential access, or open the saved Agent and ask an administrator to check access to its saved model and channel Secrets.`
-          : error.status === 409 && creatingSecret && error.code !== "NAMESPACE_NOT_READY"
-            ? `A Secret named "${body.name}" already exists in this Namespace, possibly from an earlier Agent with this name. Choose another Agent name, delete that Secret, or select Start over, choose the Preset again, and set its Secret source to Use existing Secret.`
+          ? `The Agent was created, but credential access is not confirmed. ${administratorMessage(cause)} Retry credential access, or open the saved Agent and check its access to its saved model and channel Secrets.`
+          : confirmedSecretConflict
+            ? ""
             : error.status === 409 && savedConfiguration && error.code !== "NAMESPACE_NOT_READY"
               ? error.serverMessage === AGENT_NAME_CONFLICT
                 ? AGENT_NAME_CONFLICT
-                : "Agent creation conflicts with the saved state. Check the Agent name and selections, then try again."
-              : rejectionMessage(cause, mutationStarted);
+                : // A typed conflict names the setting or state that refused the create.
+                  describeFailure(cause, {
+                    mutation: mutationStarted,
+                    conflict: "Agent creation conflicts with the saved state.",
+                    next: "Check the Agent name and selections, then try again.",
+                  })
+              : followableRefusal(createRefusal(cause, mutationStarted));
       if (!savedAgent && savedConfiguration && knownRejection) {
         if (repositoryBindings.length) {
           requireRepositoryReload();
@@ -3260,11 +4322,21 @@ function renderAgentForm(
         capabilitiesUnreadable &&
         error.status === 403;
       credentialGrantRefused ||= memberGrantRefused;
+      refusedInConfiguration = !savedConfiguration && showChannelBindingRefusal(cause);
       feedback.textContent =
-        (memberGrantRefused ? MEMBER_GRANT_REFUSED : detail) +
-        guidance +
-        (error.requestId ? ` Request ID: ${error.requestId}` : "");
-      focusFeedbackLine(feedback);
+        refusedInConfiguration || confirmedSecretConflict
+          ? ""
+          : (memberGrantRefused ? MEMBER_GRANT_REFUSED : detail) +
+            guidance +
+            (error.requestId ? ` ${requestIdText(error.requestId)}` : "");
+      if (!refusedInConfiguration && !confirmedSecretConflict && !savedAgent) {
+        offerPresetVariableChange(error.serverMessage);
+      }
+      focusFeedbackLine(confirmedSecretConflict ? secretConflictRecovery : feedback);
+      // A create that raced another Agent to the name (the preflight checked it).
+      if (!savedAgent && error.status === 409 && error.serverMessage === AGENT_NAME_CONFLICT) {
+        markNameTaken();
+      }
       keepDraftAfterRefusal();
     } finally {
       endCreate();
@@ -3275,16 +4347,15 @@ function renderAgentForm(
           renderChannelEditor();
         }
         updateControls();
+        if (refusedInConfiguration) {
+          focusConfiguration();
+        }
       }
     }
   });
   view.replaceChildren(
     ...(notReadyNote ? [notReadyNote] : []),
-    element(
-      "p",
-      { className: "muted" },
-      "Choose a model and repository access. Add Slack when you want this Agent to work with your team.",
-    ),
+    intro,
     accessStatus,
     form,
     channelEditor,

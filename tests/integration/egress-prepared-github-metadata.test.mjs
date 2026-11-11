@@ -1,9 +1,15 @@
+import { prepareProviderScope } from "../../apps/controller/src/drivers/repo/github/access/provider-transport/request-options.ts";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { validateInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/credentials/driver/acquisition-response.ts";
+import { validateInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/access/installation-token-response.ts";
 import { githubMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
 import { captureMetadata, dispatchMetadata } from "../helpers/github-metadata-exchange.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
+import {
+  CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES,
+  credentialSourceFieldRequired,
+} from "../helpers/refusal-text.mjs";
 import { createPreparedStore } from "../fixtures/repository-credentials/github/prepared-store.mjs";
 import {
   startGitHubFixture,
@@ -12,13 +18,11 @@ import {
   fixtureInstallationId,
   fixtureAppId,
 } from "../fixtures/repository-credentials/github.mjs";
-import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
-import {
-  createGitHubPreparationOwner,
-  preparationIssuerAuthority,
-  createGitHubWarmReader,
-  createGitHubKeyOwner,
-} from "../../apps/controller/src/drivers/repo/github/credentials/index.ts";
+import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
+import { createGitHubPreparationOwner } from "../../apps/controller/src/drivers/repo/github/access/prepared-owner.ts";
+import { preparationIssuerAuthority } from "../../apps/controller/src/drivers/repo/github/access/origin.ts";
+import { createWarmTokenReader } from "../../apps/controller/src/backends/token-service/warm-reader.ts";
+import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/access/material.ts";
 
 // Real source/Agent/binding/deployment APIs, IAM, protected forwarder, preparation owner,
 // scoped GitHub issuance, HTTPS GET and actual last trailer. The test plays the enrolled supervisor and the store is in-memory;
@@ -67,7 +71,7 @@ test("consented protected repository read uses only exact, already prepared meta
           grant: { ...grant, id },
         };
         store = createPreparedStore(admission).connect();
-        reader = createGitHubWarmReader(store, clock.wallNow);
+        reader = createWarmTokenReader(store, clock.wallNow);
         owner = createGitHubPreparationOwner({
           admission,
           store,
@@ -79,11 +83,11 @@ test("consented protected repository read uses only exact, already prepared meta
           minimumValidityMs: 10000,
         });
       },
-      async readWarm(source, { signal, deadlineAt }) {
+      async resolve(reference, { signal, deadlineAt }) {
         signal.throwIfAborted();
         assert.ok(Date.parse(deadlineAt) > clock.wallNow());
         reads++;
-        assert.equal(source.origin, gh.origin);
+        assert.equal(reference.source.id, admission.familyId);
         const result = await reader.readWarm(admission);
         if (result.kind !== "warm") {
           return undefined;
@@ -92,12 +96,12 @@ test("consented protected repository read uses only exact, already prepared meta
           result.material;
         try {
           return {
-            value: Buffer.from(bytes).toString(),
+            accessToken: Buffer.from(bytes).toString(),
             materialVersion,
-            providerExpiresAt: new Date(providerExpiresAt).toISOString(),
+            expiresAt: new Date(providerExpiresAt).toISOString(),
             usableUntil: new Date(usableUntil).toISOString(),
             materialId: admission.familyId,
-            family: source.key.source,
+            family: reference.source,
             preparationAttemptId: attemptId,
             ownerEpoch: 1,
             inputVersion: admission.inputVersion,
@@ -125,10 +129,26 @@ test("consented protected repository read uses only exact, already prepared meta
         secrets: { private_key: secret.ref },
       };
       const missingConsent = await app.request("POST", path, { body: input });
-      // OCC intentionally hides out-of-scope catalog fields. No lifecycle was configured; the only added field is consent.
-      assert.equal(missingConsent.status, 404);
+      // No lifecycle was configured; the catalog requires consent, and the refusal names it.
+      assert.equal(missingConsent.status, 400);
+      assert.equal(
+        missingConsent.body.error.message,
+        credentialSourceFieldRequired("github-app-metadata", "config.authority"),
+      );
       assert.equal(owner, undefined);
       input.config.authority = "execution";
+      // An issuer Secret reference to another Namespace is the request's own error, refused as
+      // the Credential Gateway path refuses it (finding 2536), before any issuer work.
+      const crossed = await app.request("POST", path, {
+        body: {
+          ...input,
+          secrets: { private_key: { ...secret.ref, namespaceId: `ns_${randomUUID()}` } },
+        },
+      });
+      assert.equal(crossed.status, 400, JSON.stringify(crossed.body));
+      assert.equal(crossed.body.error.code, "INVALID_REQUEST");
+      assert.equal(crossed.body.error.message, CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES);
+      assert.equal(owner, undefined);
       const created = await app.request("POST", path, { body: input });
       assert.equal(created.status, 201, JSON.stringify(created.body));
       const source = created.data;
@@ -177,6 +197,32 @@ test("consented protected repository read uses only exact, already prepared meta
   );
   assert.equal(gh.issuesOfTokens.length, 1);
 
+  // A replacement grant callback must not participate in an already resolved exchange,
+  // even when it would return the same authorized grant.
+  const providers = f.egress.sourceControl.providers;
+  const providerIndex = providers.findIndex(
+    (provider) => provider.ref.id === githubMetadataProvider.ref.id,
+  );
+  const registered = providers[providerIndex];
+  const selected = { ...registered };
+  providers[providerIndex] = selected;
+  try {
+    const captured = captureMetadata(f);
+    const { ready } = await f.resolve(captured);
+    assert.ok(ready);
+    let replacementCalls = 0;
+    selected.normalizeGrant = function (...args) {
+      replacementCalls += 1;
+      return Reflect.apply(registered.normalizeGrant, this, args);
+    };
+    const result = await f.authorize(f.permitRequest(captured, ready));
+    assert.ok(result.refused);
+    assert.equal(result.allowed, undefined);
+    assert.equal(replacementCalls, 0);
+  } finally {
+    providers[providerIndex] = registered;
+  }
+
   // The registry lowercases the repository; GitHub answers with its own spelling, and the
   // response releases the admitted name (finding 2239). Another name is never released.
   for (const [block, spelled, released = true] of [
@@ -209,6 +255,7 @@ test("consented protected repository read uses only exact, already prepared meta
   spelling = undefined;
   const captured = captureMetadata(f);
   const { ready } = await f.resolve(captured);
+  const checksBeforeWithdrawal = sendChecks;
   await store.transact(admission.familyId, (row) => {
     row.enabled = false;
   });
@@ -216,19 +263,23 @@ test("consented protected repository read uses only exact, already prepared meta
     (await f.authorize(f.permitRequest(captured, ready))).refused.code,
     f.refusalCode("DENIED"),
   );
-  assert.equal(sendChecks, 9);
-  assert.equal(gh.issuesOfTokens.length, 1, "no request may renew or issue");
+  assert.ok(sendChecks > checksBeforeWithdrawal, "dispatch rechecks the withdrawn grant");
+  assert.equal(gh.issuesOfTokens.length, 1, "the fixture issuer only prepared the one grant");
 });
 
 // Conformance only: synthetic strings exercise the shared wire envelope, not provider authentication.
 test("prepared GitHub metadata preserves the acquisition wire credential envelope", () => {
   const observedWallMs = Date.parse("2026-10-15T12:00:00Z");
   const policy = {
+    id: "metadata-grant",
+    isolationId: "namespace",
+    appId: fixtureAppId,
+    installationId: fixtureInstallationId,
+    profile: "metadata-read",
     repositoryId: fixtureRepositoryId,
     repository: fixtureRepository,
-    permissions: { metadata: "read" },
-    minimumValidityMs: 10000,
   };
+  const scope = prepareProviderScope("https://api.github.com", policy);
   const cases = [
     ...[1, 7, 8, 8192, 8193, 16384].map((length) => ({
       label: `length ${length}`,
@@ -253,12 +304,13 @@ test("prepared GitHub metadata preserves the acquisition wire credential envelop
       {
         token: value,
         expires_at: "2026-10-15T13:00:00Z",
-        permissions: policy.permissions,
+        permissions: { metadata: "read" },
         repositories: [{ id: Number(fixtureRepositoryId), full_name: fixtureRepository }],
       },
       "synthetic-custody-reference",
       observedWallMs,
-      policy,
+      scope,
+      10000,
     );
     assert.equal(decision.kind, accepted ? "validated" : "uncertain", label);
     if (accepted) {

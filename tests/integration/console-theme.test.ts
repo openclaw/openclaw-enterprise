@@ -24,7 +24,13 @@ test("mounted console themes serve public branding without changing API failures
     displayName,
     logo: "logo.png",
     favicon: "icon.png",
-    colors: { accent: "#2457C5", surface2: "#EEEEEE", accentSubtle: "#2457C514" },
+    colors: {
+      bg: "#DDEEFF66",
+      accent: "#2457C5",
+      surface2: "#EEEEEE",
+      accentSubtle: "#2457C514",
+      overlay: "#24386066",
+    },
   });
   const image = await readFile(
     new URL("../../apps/controller/src/console/favicon-32.png", import.meta.url),
@@ -48,13 +54,18 @@ test("mounted console themes serve public branding without changing API failures
   assert.doesNotMatch(policy, /unsafe-inline/);
   const css = await fixture.rawRequest("GET", "/console/theme/colors.css");
   assert.equal(css.response.status, 200);
+  assert.match(css.text, /--color-bg: #DDEEFF66/);
+  assert.match(css.text, /--color-canvas: color-mix\(in srgb, #DDEEFF 40%, Canvas\)/);
   assert.match(css.text, /--color-accent: #2457C5/);
   assert.match(css.text, /--color-surface-2: #EEEEEE/);
   assert.match(css.text, /--color-accent-subtle: #2457C514/);
-  const logo = await fetch(`${fixture.origin}/console/theme/logo.png`);
+  assert.match(css.text, /--color-overlay-mix: #243860 40%/);
+  const logo = await fixture.fetch(new Request(`${fixture.origin}/console/theme/logo.png`));
   assert.equal(logo.headers.get("content-type"), "image/png");
   assert.deepEqual(Buffer.from(await logo.arrayBuffer()), image);
-  const head = await fetch(`${fixture.origin}/console/theme/logo.png`, { method: "HEAD" });
+  const head = await fixture.fetch(
+    new Request(`${fixture.origin}/console/theme/logo.png`, { method: "HEAD" }),
+  );
   assert.equal(head.status, 200);
   assert.equal(head.headers.get("content-length"), String(image.length));
   for (const path of [
@@ -93,9 +104,11 @@ test("theme snapshots stay fixed until startup reload and remain isolated betwee
   ] as const) {
     const html = await fixture.rawRequest("GET", "/console/");
     assert.match(html.text, new RegExp(`<title>${name}</title>`));
-    const response = await fetch(`${fixture.origin}/console/theme/colors.css`, {
-      headers: { "accept-encoding": "gzip" },
-    });
+    const response = await fixture.fetch(
+      new Request(`${fixture.origin}/console/theme/colors.css`, {
+        headers: { "accept-encoding": "gzip" },
+      }),
+    );
     assert.equal(response.headers.get("cache-control"), "no-store");
     assert.match(await response.text(), new RegExp(accent));
   }
@@ -148,6 +161,8 @@ test("API startup refuses an invalid mounted theme before listening", async (t) 
       NODE_ENV: "development",
       OCC_HOST: "127.0.0.1",
       OCC_PORT: "3000",
+      OCC_AUTH_BASE_URL: "https://console.oce.localhost",
+      OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.localhost",
       OCC_CONSOLE_THEME_DIR: directory,
     }),
     (error: unknown) =>

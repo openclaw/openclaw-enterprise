@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { appRoot } from "../fixtures/repository-credentials/runtime.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
 import { createLoopbackServiceConfiguration } from "../fixtures/repository-credentials/service.mjs";
+import { stopProcess } from "../helpers/stop-process.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 
 // The child uses the real process composition and common settlement owner. An
@@ -24,7 +25,7 @@ test(
     const chunks = []; for await (const chunk of process.stdin) chunks.push(chunk);
     const input = JSON.parse(Buffer.concat(chunks).toString());
     const { appModule: load } = await import(input.runtime);
-    const [{runService}, {createSystemClock}, {createAlternateDriverFactory}] = await Promise.all([load('composition/repository-credentials/service'), load('drivers/repo/credentials/clock'), import(input.adapter)]);
+    const [{runService}, {createSystemClock}, {createAlternateDriverFactory}] = await Promise.all([load('composition/repository-credentials/service'), load('drivers/repo/access/clock'), import(input.adapter)]);
     const clock = createSystemClock();
     const factory = createAlternateDriverFactory({origin:'https://upstream.example.test',gatewayOrigin:input.config.gateway.publicOrigin,clock,controls:{lateCapture:new Promise(() => {})}});
     const tls = {key:await readFile(input.key),cert:await readFile(input.cert)};
@@ -49,11 +50,7 @@ test(
       env: { PATH: process.env.PATH, REPOSITORY_CREDENTIALS_APP_ROOT: appRoot },
       stdio: ["pipe", "pipe", "pipe"],
     });
-    t.after(() => {
-      if (child.exitCode === null && child.signalCode === null) {
-        child.kill("SIGKILL");
-      }
-    });
+    t.after(() => stopProcess(child, { signal: "SIGKILL" }));
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => (stdout += chunk));

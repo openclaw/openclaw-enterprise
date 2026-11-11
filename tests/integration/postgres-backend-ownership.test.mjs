@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -7,6 +8,11 @@ import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import {
+  createConsoleFixtureTransport,
+  fetchLoopback,
+} from "../helpers/console-fixture-transport.ts";
+import { jsonRequestInit } from "../helpers/inject-json.mjs";
 import {
   alternateWorkspaceId,
   createAccessTokenServiceAccount,
@@ -24,15 +30,20 @@ import {
 import { reservePort } from "../helpers/available-port.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { assertSameAnswer, refusedAnswer } from "../helpers/refusal-answers.mjs";
+import { claimIsolatedWork } from "../helpers/postgres-work-claim.mjs";
+import {
+  EMBEDDED_API_KEY_REQUIRED,
+  SERVICE_ACCOUNT_BACKEND_MISMATCH,
+  SERVICE_ACCOUNT_NO_BACKEND_BINDING,
+} from "../helpers/refusal-text.mjs";
 
 async function request(origin, session, method, path, body) {
-  const response = await fetch(`${origin}${path}`, {
-    method,
-    headers: {
+  const response = await fetchLoopback(`${origin}${path}`, {
+    ...jsonRequestInit(method, body, {
+      host: new URL(session.origin).host,
       ...authenticatedHeaders(session),
-      ...(body === undefined ? {} : { "content-type": "application/json" }),
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }),
     signal: AbortSignal.timeout(5_000),
   });
   return { response, payload: await response.json() };
@@ -84,23 +95,31 @@ async function assertNoAgentNamed(pool, namespaceId, name, label) {
   assert.equal(result.rows[0].count, 0, label);
 }
 
-async function expectBackendConflict(operation, pattern, name = "ResourceConflictError") {
-  await assert.rejects(
-    operation,
-    (error) => error?.name === name && (pattern === undefined || pattern.test(error.message)),
-  );
+// `expected` is the exact message, or a pattern for messages this file does not own.
+async function expectBackendConflict(operation, expected, name = "ResourceConflictError") {
+  await assert.rejects(operation, (error) => {
+    assert.equal(error?.name, name, error?.message);
+    if (typeof expected === "string") {
+      assert.equal(error.message, expected);
+    } else if (expected !== undefined) {
+      assert.match(error.message, expected);
+    }
+    return true;
+  });
 }
 
 test(
   "development API starts with stale Backend references and permits repair through Agent update",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
-    // The port is part of the auth base URL. Hold it until the child binds it, and again
+    // Hold the private transport port until the child binds it, and again
     // across the restart, so no other socket takes it in between.
     let reservation = await reservePort();
     context.after(() => reservation.release());
     const { port } = reservation;
     const origin = `http://127.0.0.1:${port}`;
+    const authBaseURL = "https://console.oce.localhost";
+    const transport = createConsoleFixtureTransport(authBaseURL, origin);
     const email = "postgres-admin@openclaw.local";
     const password = "postgres-development-password";
     const authSecret = "openclaw-backend-repair-auth-secret-minimum-32-bytes";
@@ -108,16 +127,21 @@ test(
       email,
       password,
       authSecret,
-      origin,
+      authBaseURL,
       installationName: "PostgreSQL Backend repair integration",
     });
     let server = await startBackendlessDevelopmentServer(context, {
       reservation,
-      origin,
+      authBaseURL,
       authSecret,
       configurationRoot: fixture.configurationRoot,
     });
-    let session = await signInWithEmailPassword({ fetch, origin, email, password });
+    let session = await signInWithEmailPassword({
+      fetch: transport.fetchThroughLoopback,
+      origin: authBaseURL,
+      email,
+      password,
+    });
 
     const namespace = await request(origin, session, "POST", "/namespaces", {
       name: `backend-repair-${randomUUID()}`,
@@ -160,11 +184,16 @@ test(
 
     server = await startBackendlessDevelopmentServer(context, {
       reservation,
-      origin,
+      authBaseURL,
       authSecret,
       configurationRoot: fixture.configurationRoot,
     });
-    session = await signInWithEmailPassword({ fetch, origin, email, password });
+    session = await signInWithEmailPassword({
+      fetch: transport.fetchThroughLoopback,
+      origin: authBaseURL,
+      email,
+      password,
+    });
     const visible = await request(
       origin,
       session,
@@ -342,7 +371,7 @@ test(
           { namespaceId: exactNamespace.id, agentId: embedded.id },
           resolveApprovedHarness,
         ),
-      /^Agent setting harnessAuth\.method must be api_key for embedded OpenClaw on Kubernetes Compute/,
+      EMBEDDED_API_KEY_REQUIRED,
       "ConfigurationHarnessError",
     );
     await assertNoRevision(
@@ -436,6 +465,7 @@ test(
       id: "sandbox-native-pat-admission",
       implementation: "test/native-worker",
       capability: "sandbox",
+      supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
       facets: ["networking", "filesystem", "process"],
       async provisionHarness() {
         assert.fail("Refused admission must not provision a Sandbox.");
@@ -505,31 +535,31 @@ test(
         label: "backendless",
         agentBackendId: null,
         binding: {},
-        message: /no Backend binding/,
+        message: SERVICE_ACCOUNT_NO_BACKEND_BINDING,
       },
       {
         label: "backend-mismatch",
         agentBackendId: backendId,
         binding: { backendId: "other-backend" },
-        message: /does not match its Backend/,
+        message: SERVICE_ACCOUNT_BACKEND_MISMATCH,
       },
       {
         label: "driver-mismatch",
         agentBackendId: backendId,
         binding: { driverId: "other-service-account-driver" },
-        message: /does not match its Backend/,
+        message: SERVICE_ACCOUNT_BACKEND_MISMATCH,
       },
       {
         label: "workspace-mismatch",
         agentBackendId: backendId,
         binding: { workspaceId: alternateWorkspaceId },
-        message: /does not match its Backend/,
+        message: SERVICE_ACCOUNT_BACKEND_MISMATCH,
       },
       {
         label: "credential-not-issued",
         agentBackendId: backendId,
         binding: { credentialIssued: false },
-        message: /does not match its Backend/,
+        message: SERVICE_ACCOUNT_BACKEND_MISMATCH,
       },
     ]) {
       const namespace = await createReadyNamespace(fixture, scenario.label);
@@ -563,6 +593,7 @@ test(
             resolveApprovedHarness,
           ),
         scenario.message,
+        "ServiceAccountBackendBindingError",
       );
       await assertNoRevision(
         fixture.pool,
@@ -624,28 +655,35 @@ test(
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
     const fixture = await createBackendFixture(context);
-    const controller = createBackendController(fixture, { nativeWorkerSupport: "custom-image" });
     // These stubs only pass the provisioning capability gates; Harness authentication admission
-    // (the code under test) stays real. No worker runs, so no runtime or Configuration effect may.
-    Object.assign(controller.selectedDriver("compute"), {
-      agentProvisioning: { executionModes: ["dedicated"] },
-      requiresAgentRuntimeCredentials: true,
-      validateAgentProvisioning() {},
-      async provisionAgentRuntimeCredentials() {
-        assert.fail("Provisioning admission must not provision runtime credentials.");
-      },
-      async getAgentRuntimeCredentialStatus() {
-        return { transportConfigured: false };
-      },
-    });
-    Object.assign(controller.selectedDriver("configuration"), {
-      async createExact() {
-        assert.fail("Provisioning admission must not create a Configuration.");
-      },
-      async inspectExact() {
-        assert.fail("Provisioning admission must not inspect a Configuration.");
-      },
-    });
+    // (the code under test) stays real. No runtime or Configuration effect may run.
+    const stubbedController = (options = {}) => {
+      const controller = createBackendController(fixture, {
+        nativeWorkerSupport: "custom-image",
+        ...options,
+      });
+      Object.assign(controller.selectedDriver("compute"), {
+        agentProvisioning: { executionModes: ["dedicated"] },
+        requiresAgentRuntimeCredentials: true,
+        validateAgentProvisioning() {},
+        async provisionAgentRuntimeCredentials() {
+          assert.fail("Provisioning admission must not provision runtime credentials.");
+        },
+        async getAgentRuntimeCredentialStatus() {
+          return { transportConfigured: false };
+        },
+      });
+      Object.assign(controller.selectedDriver("configuration"), {
+        async createExact() {
+          assert.fail("Provisioning admission must not create a Configuration.");
+        },
+        async inspectExact() {
+          assert.fail("Provisioning admission must not inspect a Configuration.");
+        },
+      });
+      return controller;
+    };
+    const controller = stubbedController();
     const provision = (namespace, account, label) =>
       controller.provisionAgent(fixture.actor.id, {
         namespaceId: namespace.id,
@@ -678,6 +716,23 @@ test(
     const accepted = await provision(exactNamespace, account, "provisioning-exact");
     assert.equal(accepted.provisioning.status, "queued", JSON.stringify(accepted));
     assert.equal(await pendingWork(exactNamespace), 1);
+    // The job checks the binding again: after the Installation's ChatGPT Backend moves to another
+    // workspace, it fails with the same named text in its status, not the generic one.
+    const moved = stubbedController({
+      backends: [backendDefinition({ workspaceId: alternateWorkspaceId })],
+    });
+    const { workId } = accepted.provisioning;
+    const claim = await claimIsolatedWork(fixture.pool, { workId });
+    assert.equal(claim?.idempotencyKey, workId);
+    const outcome = await moved.processAgentProvisioning(claim, resolveApprovedHarness);
+    assert.equal(outcome.outcome, "permanent", JSON.stringify(outcome));
+    const job = await fixture.pool.query(
+      "SELECT progress->'error' AS error FROM occ.agent_provisioning_work WHERE work_id = $1",
+      [workId],
+    );
+    assert.deepEqual(job.rows, [
+      { error: { code: "PROVISIONING_REJECTED", message: SERVICE_ACCOUNT_BACKEND_MISMATCH } },
+    ]);
     await fixture.cleanup(exactNamespace);
 
     for (const scenario of [
@@ -691,12 +746,12 @@ test(
       {
         label: "workspace-mismatch",
         binding: { workspaceId: alternateWorkspaceId },
-        message: /does not match its Backend/,
+        message: SERVICE_ACCOUNT_BACKEND_MISMATCH,
       },
       {
         label: "credential-not-issued",
         binding: { credentialIssued: false },
-        message: /does not match its Backend/,
+        message: SERVICE_ACCOUNT_BACKEND_MISMATCH,
       },
     ]) {
       const namespace = await createReadyNamespace(fixture, scenario.label);
@@ -718,7 +773,7 @@ test(
       await expectBackendConflict(
         () => provision(namespace, brokenAccount, scenario.label),
         scenario.message,
-        scenario.expectedErrorName,
+        scenario.expectedErrorName ?? "ServiceAccountBackendBindingError",
       );
       assert.equal(
         await pendingWork(namespace),
@@ -727,5 +782,32 @@ test(
       );
       await fixture.cleanup(namespace);
     }
+
+    // A Restriction denies ServiceAccount read in this Namespace. The read check runs before the
+    // account and its Backend binding are looked up, so the caller gets one denial for a
+    // mismatched account and for an ID that names none, never the 409 (finding 2624). OCC has no
+    // API that writes Restrictions, so insert it directly.
+    const restricted = await createReadyNamespace(fixture, "provisioning-restricted");
+    const hidden = await createAccessTokenServiceAccount(
+      fixture.state,
+      restricted.id,
+      "provisioning-restricted",
+    );
+    await seedBackendBinding(fixture.pool, hidden, { workspaceId: alternateWorkspaceId });
+    await fixture.pool.query(
+      `INSERT INTO occ.iam_restrictions (id, namespace_id, action, resource_kind, resource_id)
+       VALUES ($1, $2, 'read', 'service_account', NULL)`,
+      [`restriction_${randomUUID()}`, restricted.id],
+    );
+    await assertSameAnswer(
+      (id) =>
+        refusedAnswer(
+          () => provision(restricted, { namespaceId: restricted.id, id }, "restricted"),
+          { requested: (value) => value === id, actorId: fixture.actor.id },
+        ),
+      [hidden.id, `sa_${randomUUID()}`],
+    );
+    assert.equal(await pendingWork(restricted), 0);
+    await fixture.cleanup(restricted);
   },
 );

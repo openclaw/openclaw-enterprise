@@ -6,6 +6,7 @@ import { connect as connectTcp, createServer as createTcpServer } from "node:net
 import test from "node:test";
 import { createPublicGithubReadServer } from "../../apps/controller/src/drivers/repo/github/public-read/server.ts";
 import { selfSigned } from "../helpers/certificates.mjs";
+import { listen } from "../helpers/listen.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // Request headers a client never finishes, so the reader holds the connection open.
@@ -54,15 +55,10 @@ const githubHeaders = "accept accept-encoding connection host user-agent x-githu
 // Starts a reader on loopback for one test. `connect` pairs a raw client with the reader's
 // side of its connection; `hold` opens connections that never finish their request headers.
 async function startReader(t) {
-  const server = createPublicGithubReadServer().listen(0, "127.0.0.1");
-  await once(server, "listening");
+  const server = createPublicGithubReadServer();
   const clients = [];
-  t.after(() => {
-    clients.forEach((client) => client.destroy());
-    server.closeAllConnections();
-    server.close();
-  });
-  const port = server.address().port;
+  t.after(() => clients.forEach((client) => client.destroy()));
+  const port = await listen(t, server);
   const connect = async (options = {}) => {
     const accepted = once(server, "connection");
     const client = connectTcp({ port, host: "127.0.0.1", ...options });
@@ -93,21 +89,15 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
   });
   let reply;
   let requests = 0;
-  const provider = https
-    .createServer({ cert, key }, (req, res) => {
-      requests++;
-      assert.equal(req.method, "GET");
-      assert.equal(req.headers.host, name);
-      assert.equal(req.socket.servername, name);
-      assert.equal(Object.keys(req.headers).sort().join(" "), githubHeaders);
-      reply(req, res);
-    })
-    .listen(0, "127.0.0.1");
-  await once(provider, "listening");
-  t.after(() => {
-    provider.closeAllConnections();
-    provider.close();
+  const provider = https.createServer({ cert, key }, (req, res) => {
+    requests++;
+    assert.equal(req.method, "GET");
+    assert.equal(req.headers.host, name);
+    assert.equal(req.socket.servername, name);
+    assert.equal(Object.keys(req.headers).sort().join(" "), githubHeaders);
+    reply(req, res);
   });
+  await listen(t, provider);
 
   // Route only the provider's DNS, port and test CA to loopback. The reader
   // constructs the actual HTTPS request and uses normal hostname verification.

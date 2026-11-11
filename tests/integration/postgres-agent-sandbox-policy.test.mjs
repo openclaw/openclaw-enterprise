@@ -1,3 +1,5 @@
+import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-protocol.mjs";
+import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -16,6 +18,8 @@ import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbo
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { expireWorkLease } from "../helpers/postgres-worker-revision-support.mjs";
+import { callerDenied, GRANT_EXCEEDS_CEILING } from "../helpers/refusal-text.mjs";
 
 async function createPolicyApp(t, recordOperations = false, { laxDriver = false } = {}) {
   const grant = {
@@ -60,7 +64,10 @@ async function createPolicyApp(t, recordOperations = false, { laxDriver = false 
     backend: {
       id: "openshell",
       drivers: { sandbox: "policy-openshell", credential_gateway: "policy-credentials" },
-      client: new OpenShellGateway({ serviceName: "openshell-gateway" }),
+      client: new OpenShellGateway(
+        { serviceName: "openshell-gateway" },
+        { gatewayClient: openShellWorkspaceProtocol() },
+      ),
     },
   });
   let definition = OpenShellSandboxDriver;
@@ -174,6 +181,9 @@ test(
         // Deploy with the authentic Driver before introducing the faulty admission response.
         const { namespace, agent } = await deployAgent(`Integrity ${scenario.name}`);
         const restarted = new OpenClawController(controller.installation, {
+          namespaceLifecycleBindings: [
+            sandboxNamespaceLifecycleBinding(controller.selectedDriver("compute"), sandboxDriver),
+          ],
           state,
           recordOperations: true,
           sandboxNetworkPolicyCeiling: scenario.ceiling,
@@ -209,7 +219,13 @@ test(
                 implementation: "openshell",
                 configuration: { sandbox: sandboxConfiguration, proxy: proxyConfiguration },
               },
-              { capabilities: { sandbox: sandboxDriver, credential_proxy: proxy } },
+              {
+                capabilities: { sandbox: sandboxDriver, credential_proxy: proxy },
+                namespaceLifecycleHooks: sandboxNamespaceLifecycleBinding(
+                  controller.selectedDriver("compute"),
+                  sandboxDriver,
+                ).hooks,
+              },
             ),
             ["sandbox", "credential_proxy"],
           );
@@ -422,6 +438,9 @@ test(
             }
           : state;
         const restarted = new OpenClawController(controller.installation, {
+          namespaceLifecycleBindings: [
+            sandboxNamespaceLifecycleBinding(controller.selectedDriver("compute"), sandboxDriver),
+          ],
           state: observedState,
           recordOperations: true,
           sandboxNetworkPolicyCeiling: [],
@@ -824,12 +843,29 @@ test(
       revisionId: revision.id,
     });
     assert.equal(admitted.statusCode, 202, admitted.body);
+    // The pending application applies its snapshot of version 2: neither a save nor a second
+    // application may replace that policy until it finishes.
+    for (const [method, url, body, message] of [
+      [
+        "PUT",
+        path,
+        { expectedVersion: 2, additions: [] },
+        "The policy changed or an application is still pending. Reload before editing.",
+      ],
+      [
+        "POST",
+        `${path}/apply`,
+        { expectedVersion: 2, revisionId: revision.id },
+        "A policy application is already pending.",
+      ],
+    ]) {
+      const refused = await inject(method, url, body);
+      assert.equal(refused.statusCode, 409, refused.body);
+      assert.equal(refused.json().error.message, message);
+    }
     const claim = await queue.claim();
     assert.equal(claim.agentTarget, "sandbox_policy");
-    await pool.query(
-      "UPDATE occ.controller_work SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE idempotency_key=$1",
-      [claim.idempotencyKey],
-    );
+    await expireWorkLease(pool, claim.idempotencyKey);
 
     const blocker = await pool.connect();
     await blocker.query("BEGIN");
@@ -967,6 +1003,9 @@ test(
     // Startup is the owner of the ceiling. A new controller uses the same database and real IAM,
     // with a smaller operator delegation; no mutable test hook changes the running controller.
     const restarted = new OpenClawController(controller.installation, {
+      namespaceLifecycleBindings: [
+        sandboxNamespaceLifecycleBinding(controller.selectedDriver("compute"), sandboxDriver),
+      ],
       state,
       recordOperations: false,
       sandboxNetworkPolicyCeiling: [],
@@ -1003,7 +1042,7 @@ test(
         {
           path: "/additions/0",
           code: "OUTSIDE_CEILING",
-          message: "The grant exceeds the Installation delegation ceiling.",
+          message: GRANT_EXCEEDS_CEILING,
         },
       ]);
     }
@@ -1012,6 +1051,68 @@ test(
       revisions,
     );
     assert.deepEqual((await inject("GET", path)).json().data.policy, previous);
+    assert.deepEqual(
+      (
+        await pool.query(
+          "SELECT count(*) AS count FROM occ.controller_work WHERE namespace_id=$1",
+          [namespace.id],
+        )
+      ).rows,
+      jobs.rows,
+    );
+    // Finding 2151: a deployer without SandboxPolicy read gets the read refusal. The ceiling's
+    // named 409 would tell them that saved additions exist.
+    await pool.query(
+      "INSERT INTO occ.iam_restrictions (id,namespace_id,action,resource_kind,resource_id,effect) VALUES ($1,$2,'read','sandbox_policy',$3,'deny')",
+      [`restriction-${randomUUID()}`, namespace.id, previous.id],
+    );
+    const unreadable = await inject(
+      "POST",
+      `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+      undefined,
+      app,
+    );
+    assert.equal(unreadable.statusCode, 403, unreadable.body);
+    assert.equal(Object.hasOwn(unreadable.json().error, "details"), false, unreadable.body);
+    assert.deepEqual(
+      await state.read((view) => view.revisions.listRevisions(namespace.id, agent.id)),
+      revisions,
+    );
+    // Finding 2874: live application with update but not read gets the read refusal, not the
+    // ceiling's 409 naming the saved additions, and requests nothing.
+    const unreadableApply = await inject(
+      "POST",
+      `${path}/apply`,
+      { expectedVersion: 2, revisionId: revision.id },
+      app,
+    );
+    assert.equal(unreadableApply.statusCode, 403, unreadableApply.body);
+    assert.equal(Object.hasOwn(unreadableApply.json().error, "details"), false);
+    // The refusal names the grant the API contract and the CLI list for apply.
+    assert.equal(
+      unreadableApply.json().error.message,
+      callerDenied("SandboxPolicy read", `SandboxPolicy ${previous.id}`),
+    );
+    // Update alone still saves. Apply returns the saved policy, so read is required even when
+    // the saved version has no additions to admit.
+    const emptied = await inject("PUT", path, { expectedVersion: 2, additions: [] }, app);
+    assert.equal(emptied.statusCode, 200, emptied.body);
+    const emptyApply = await inject(
+      "POST",
+      `${path}/apply`,
+      { expectedVersion: 3, revisionId: revision.id },
+      app,
+    );
+    assert.equal(emptyApply.statusCode, 403, emptyApply.body);
+    assert.deepEqual(
+      (
+        await pool.query(
+          "SELECT document->'application' AS application FROM occ.sandbox_policies WHERE id=$1",
+          [previous.id],
+        )
+      ).rows,
+      [{ application: null }],
+    );
     assert.deepEqual(
       (
         await pool.query(

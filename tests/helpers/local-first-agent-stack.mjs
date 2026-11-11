@@ -15,6 +15,74 @@ const phases = [
   ["OpenClaw Enterprise development stack is ready.", "ready"],
 ];
 
+const setupPoints = [
+  ["Starting the Compose database, migration, and bootstrap services", "database-start"],
+  ["Creating k3d cluster", "cluster-start"],
+  ["Creating Kubernetes-only k3d cluster", "cluster-start"],
+  ["Importing the controller and PostgreSQL images", "controller-images-start"],
+  ["Installing pinned private routing", "routing-start"],
+  ["Verifying Kubernetes network isolation", "network-check-start"],
+  ["Preparing pinned OpenShell development assets", "openshell-assets-start"],
+  ["Installing the deployment OpenShell gateway", "openshell-gateway-start"],
+  ["Installing OpenShell Gateway and OCE in Namespace", "platform-start"],
+  ["Starting the Compose controller and Kubernetes worker", "controller-start"],
+  ["Verifying the initial gateway Namespace network isolation", "namespace-check-start"],
+  ["OpenClaw Enterprise development stack is ready.", "ready"],
+];
+
+// CI verifies the manifest/config digest and current checkout label before this
+// selection. Compose must remove inherited builds, not merely add an image name.
+export function firstAgentComposeImages(image) {
+  if (
+    !/^127\.0\.0\.1:[1-9][0-9]{0,4}\/openclaw-ci-first-images-[a-z0-9-]+\/controller@sha256:[a-f0-9]{64}$/.test(
+      image,
+    )
+  ) {
+    throw new Error("Prepared Compose controller requires an owned immutable image.");
+  }
+  return (
+    "services:\n" +
+    ["migrate", "bootstrap", "controller", "worker-kubernetes", "browser-proxy"]
+      .map(
+        (service) => `  ${service}:\n    build: !reset null\n    image: ${JSON.stringify(image)}\n`,
+      )
+      .join("")
+  );
+}
+
+// Register before Local Setup's teardown. A cancelled Node subtest can settle
+// before its async body, so retain the actual operations until their work stops.
+export function ownFirstAgentWork(context) {
+  const operations = [];
+  context.after(async () => {
+    await Promise.allSettled(operations);
+  });
+  return (operation) => {
+    operations.push(operation);
+    return operation;
+  };
+}
+
+// The reporter retains only fixed stage names, outcome and elapsed time.
+export async function measureFirstAgentStage(context, stage, operation) {
+  const started = performance.now();
+  let outcome = "failed";
+  try {
+    const result = await operation();
+    outcome = "passed";
+    return result;
+  } finally {
+    context.diagnostic(
+      `openclaw-ci-measurement ${JSON.stringify({
+        kind: "local-first-agent",
+        stage,
+        outcome,
+        elapsedMs: Math.round(performance.now() - started),
+      })}`,
+    );
+  }
+}
+
 function withoutModelCredentials(environment) {
   const result = { ...environment };
   delete result.OPENAI_API_KEY;
@@ -36,7 +104,90 @@ function killGroup(child, signal) {
   child.kill(signal);
 }
 
-function run(command, args, environment, label, timeout, collect = false) {
+// The CLI emits one final stdout record on failed startup. This is diagnostic
+// evidence from a shared stream, not authentication of its writer.
+export function startupFailureObservation() {
+  let partial = "";
+  let candidates = 0;
+  let final;
+  let invalid = false;
+  let size = 0;
+  return {
+    write(chunk) {
+      size += Buffer.byteLength(chunk);
+      if (size > 16 * 1024 * 1024) {
+        invalid = true;
+        return;
+      }
+      const lines = (partial + chunk).split("\n");
+      partial = lines.pop();
+      if (partial.length > 4096) {
+        invalid = true;
+        partial = "";
+      }
+      for (const line of lines) {
+        if (line.length > 4096) {
+          invalid = true;
+        }
+        if (!line.trim()) {
+          continue;
+        }
+        final = undefined;
+        if (!line.startsWith("[occ-dev-startup")) {
+          continue;
+        }
+        candidates++;
+        const match =
+          /^\[occ-dev-startup\] primary_stage=(unknown|canceled|deadline|controller-image-import|routing|network-verification|network-cleanup|registry-detach|platform-namespace|openshell-preparation|rollback) cleanup_failed=(true|false) parent_context_done=(true|false)(?: routing_operation=(manifest-download|gateway-api-readiness|manifest-filter|manifest-write|manifest-apply|controller-crd-readiness|controller-rollout|gateway-class-apply|gateway-class-readiness|node-pod-cidr)(?: routing_controller=(cert-manager|envoy-gateway))?)?$/.exec(
+            line,
+          );
+        if (
+          match &&
+          (!match[4] || match[1] === "routing") &&
+          !(match[4] === "node-pod-cidr" && match[5])
+        ) {
+          final = {
+            kind: "local-first-agent-startup-failure",
+            primaryStage: match[1],
+            cleanupFailed: match[2] === "true",
+            parentContextDone: match[3] === "true",
+            ...(match[4] ? { routingOperation: match[4] } : {}),
+            ...(match[5] ? { routingController: match[5] } : {}),
+          };
+        }
+      }
+    },
+    finish(code, signal, interrupted = false) {
+      return !invalid &&
+        !interrupted &&
+        !signal &&
+        Number.isSafeInteger(code) &&
+        code > 0 &&
+        candidates === 1 &&
+        partial === ""
+        ? final
+        : undefined;
+    },
+  };
+}
+
+function run(
+  command,
+  args,
+  environment,
+  label,
+  timeout,
+  collect = false,
+  context,
+  timingPhase = "setup",
+) {
+  const started = performance.now();
+  const startup =
+    command === cli && args[0] === "dev" && args[1] === "up"
+      ? startupFailureObservation()
+      : undefined;
+  const observed = new Set();
+  const commands = new Map();
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: root,
@@ -58,8 +209,13 @@ function run(command, args, environment, label, timeout, collect = false) {
     }, timeout);
     for (const [index, stream] of [child.stdout, child.stderr].entries()) {
       let partial = "";
+      let partialClipped = false;
+      let previousFailedStage;
       stream.setEncoding("utf8");
       stream.on("data", (chunk) => {
+        if (index === 0) {
+          startup?.write(chunk);
+        }
         if (collect && index === 0) {
           outputSize += Buffer.byteLength(chunk);
           if (outputSize <= 4 * 1024 * 1024) {
@@ -68,11 +224,80 @@ function run(command, args, environment, label, timeout, collect = false) {
         }
         partial += chunk;
         const lines = partial.split("\n");
-        partial = lines.pop().slice(-4_096);
+        const tail = lines.pop();
+        let lineClipped = partialClipped;
+        partialClipped = tail.length > 4_096 || (lines.length === 0 && partialClipped);
+        partial = tail.slice(-4_096);
         for (const line of lines) {
+          // Pair only adjacent, complete lines on the same child stream.
+          if (previousFailedStage === "runtime-build" && !lineClipped) {
+            const outcome =
+              /^\[occ-dev-outcome\] stage=runtime-build outcome=(nonzero-exit|signaled)$/.exec(
+                line,
+              );
+            if (outcome) {
+              const total = commands.get("runtime-build");
+              const key = outcome[1] === "nonzero-exit" ? "nonzeroExitCount" : "signaledCount";
+              total[key] = (total[key] ?? 0) + 1;
+            }
+          }
+          if (
+            startup &&
+            previousFailedStage === "openshell-agent-sandbox-manifest" &&
+            !lineClipped
+          ) {
+            const outcome =
+              /^\[occ-dev-outcome\] stage=openshell-agent-sandbox-manifest outcome=(selected-input|http-status|transport|deadline|canceled|integrity|local-io)$/.exec(
+                line,
+              );
+            if (outcome) {
+              context.diagnostic(
+                "openclaw-ci-measurement " +
+                  JSON.stringify({
+                    kind: "local-first-agent-manifest-failure",
+                    reason: outcome[1],
+                  }),
+              );
+            }
+          }
+          const timing =
+            context &&
+            /^\[occ-dev-timing\] stage=([a-z0-9-]+) elapsed_ms=([0-9]+) failed=(true|false)$/.exec(
+              line,
+            );
+          previousFailedStage = undefined;
+          if (timing) {
+            const elapsedMs = Number(timing[2]);
+            const total = commands.get(timing[1]) ?? { count: 0, elapsedMs: 0, failed: 0 };
+            total.count++;
+            total.elapsedMs += elapsedMs;
+            total.failed += Number(timing[3] === "true");
+            commands.set(timing[1], total);
+            if (
+              !lineClipped &&
+              timing[3] === "true" &&
+              Number.isSafeInteger(elapsedMs) &&
+              String(elapsedMs) === timing[2]
+            ) {
+              previousFailedStage = timing[1];
+            }
+          }
+          lineClipped = false;
           const known = phases.find(([prefix]) => line.startsWith(prefix));
           if (known) {
             phase = known[1];
+          }
+          const point = context && setupPoints.find(([prefix]) => line.startsWith(prefix));
+          if (point && !observed.has(point[1])) {
+            observed.add(point[1]);
+            context.diagnostic(
+              "openclaw-ci-measurement " +
+                JSON.stringify({
+                  kind: "local-first-agent-setup-point",
+                  stage: point[1],
+                  elapsedMs: Math.round(performance.now() - started),
+                }),
+            );
           }
         }
       });
@@ -85,6 +310,21 @@ function run(command, args, environment, label, timeout, collect = false) {
       }
     });
     child.once("close", (code, signal) => {
+      const observation = startup?.finish(code, signal, timedOut || !!spawnCode);
+      if (context && observation) {
+        context.diagnostic("openclaw-ci-measurement " + JSON.stringify(observation));
+      }
+      for (const [stage, total] of commands) {
+        context.diagnostic(
+          "openclaw-ci-measurement " +
+            JSON.stringify({
+              kind: "local-first-agent-command",
+              phase: timingPhase,
+              stage,
+              ...total,
+            }),
+        );
+      }
       clearTimeout(timer);
       if (!timedOut && killTimer) {
         clearTimeout(killTimer);
@@ -253,7 +493,10 @@ async function availablePorts() {
   }
 }
 
-export async function localFirstAgentStack(context) {
+export async function localFirstAgentStack(context, { modelCredential } = {}) {
+  if (modelCredential !== undefined && modelCredential !== "openai") {
+    throw new Error("Unsupported local first-Agent model credential selection.");
+  }
   if (process.env.OCC_TEST_LOCAL_FIRST_AGENT_REAL !== "1") {
     throw new Error("The protected local first-Agent test must be explicitly enabled.");
   }
@@ -282,7 +525,9 @@ export async function localFirstAgentStack(context) {
     );
   }
   const credentialVariable =
-    sandboxDriver === "openshell" ? "CODEX_ACCESS_TOKEN" : "OPENAI_API_KEY";
+    sandboxDriver === "openshell" && modelCredential !== "openai"
+      ? "CODEX_ACCESS_TOKEN"
+      : "OPENAI_API_KEY";
   if (!process.env[credentialVariable]?.trim()) {
     throw new Error(
       `${credentialVariable} is required to provision the protected local first-Agent test.`,
@@ -344,13 +589,37 @@ export async function localFirstAgentStack(context) {
     context.after(() => rm(policyFile, { force: true }));
     startupArguments.push("--sandbox-network-policy-file", policyFile);
   }
+  const controllerImage = environment.OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE;
+  if (controllerImage !== undefined) {
+    if (controlPlane !== "compose") {
+      throw new Error("Prepared controller images require the Compose control plane.");
+    }
+    const imageFile = `${directory}-images.yaml`;
+    await writeFile(imageFile, firstAgentComposeImages(controllerImage), {
+      mode: 0o600,
+      flag: "wx",
+    });
+    context.after(() => rm(imageFile, { force: true }));
+    startupArguments.push("--", "-f", imageFile);
+  }
   let initializationAttempted = false;
   context.after(async () => {
     if (!initializationAttempted) {
       return;
     }
     try {
-      await run(cli, ["dev", "down"], subprocessEnvironment, "Stop Local Setup", 4 * minute);
+      await measureFirstAgentStage(context, "cleanup", () =>
+        run(
+          cli,
+          ["dev", "down"],
+          subprocessEnvironment,
+          "Stop Local Setup",
+          4 * minute,
+          false,
+          context,
+          "cleanup",
+        ),
+      );
     } catch (error) {
       try {
         await lstat(directory);
@@ -363,6 +632,16 @@ export async function localFirstAgentStack(context) {
     }
   });
   initializationAttempted = true;
-  await run(cli, startupArguments, subprocessEnvironment, "Start Local Setup", 18 * minute);
+  await measureFirstAgentStage(context, "setup", () =>
+    run(
+      cli,
+      startupArguments,
+      subprocessEnvironment,
+      "Start Local Setup",
+      18 * minute,
+      false,
+      context,
+    ),
+  );
   return { directory, environment };
 }

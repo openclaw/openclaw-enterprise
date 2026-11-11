@@ -1,4 +1,5 @@
 import {
+  CRASH_LOOP_CHECK,
   PROCESS_EXIT_ERROR_CODES,
   PROCESS_EXIT_MAX_STATUS,
   PROCESS_EXIT_SIGNALS,
@@ -27,7 +28,7 @@ const RUNTIME_FAILURE_CAUSE_DETAILS: Readonly<
   PROCESS_EXIT:
     /^(?:exit-[1-9][0-9]{0,2}|signal-SIG[A-Z0-9]{1,10}|error-E[A-Z0-9]{1,15}|UNRECOGNIZED)$/u,
   PROBE_STATUS:
-    /^(?:format|rate_limit|billing|unknown|no_model|other|turn-failed|error-event|tool-event|unexpected-event|no-reply)$/u,
+    /^(?:format|rate_limit|billing|unknown|model_not_found|no_model|other|turn-failed|error-event|tool-event|unexpected-event|no-reply)$/u,
   INVALID_OUTPUT: /^(?:json|shape)$/u,
   WRAPPER_ERROR: undefined,
 });
@@ -81,10 +82,12 @@ export function runtimeFailureCause(value: unknown): RuntimeFailureCause | undef
 
 const RUNTIME_COMPONENT_SET: ReadonlySet<string> = new Set(RUNTIME_COMPONENTS);
 // Runtime entrypoints hold a failure under these checks and codes, and Kubernetes Compute
-// builds the workspace-setup record itself from Pod status (findings 1675, 1677).
+// builds the workspace-setup and crash-loop records itself from Pod status (findings 1675,
+// 1677, 3041).
 const RUNTIME_FAILURE_CHECK_SET: ReadonlySet<string> = new Set([
   ...RUNTIME_FAILURE_CHECKS,
   WORKSPACE_SETUP_CHECK,
+  CRASH_LOOP_CHECK,
 ]);
 const RUNTIME_FAILURE_CODE_SET: ReadonlySet<string> = new Set([
   ...RUNTIME_DIAGNOSTIC_CODES,

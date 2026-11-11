@@ -140,6 +140,7 @@ export default defineConfig(
     files: [
       "apps/controller/src/console/**/*.{mjs,mts}",
       "scripts/docs-site/site.mjs",
+      "scripts/docs-site/api-explorer.mjs",
       "scripts/console-storybook/story.ts",
       "scripts/console-storybook/public/*.mjs",
       "scripts/docs-site/compute-matrix-browser.mjs",

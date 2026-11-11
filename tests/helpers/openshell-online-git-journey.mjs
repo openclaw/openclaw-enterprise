@@ -68,6 +68,12 @@ export async function gitExpiryGateway(
     trackGitExpiry = false,
     onGitInstall = (_value) => {},
     modelSourceId = "",
+    gatewayVersion = "",
+    supervisor = /** @type {Record<string, any> | undefined} */ (undefined),
+    configure = (_methods, _world) => {},
+    gatewayTls = /** @type {{ key: string, cert: string, rootCertificatePath: string, tokenPath: string } | undefined} */ (
+      undefined
+    ),
   },
 ) {
   const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
@@ -114,14 +120,9 @@ export async function gitExpiryGateway(
       credentials: [{ name: "model_key", env_vars: ["MODEL_KEY"] }],
     },
   };
-  // An operator provider may select a platform profile even when its Workspace has a namesake.
-  const serviceProfile = {
-    id: "service",
-    endpoints: [{ host: "service.example.test", port: 443 }],
-    credentials: [{ name: "service_key", env_vars: ["SERVICE_KEY"] }],
-  };
-  const platformService = structuredClone(serviceProfile);
-  const retainedProfile = platformProfile ? platformService : profiles.inference;
+  // The operator's model provider can select a platform profile with a Workspace namesake.
+  const platformInference = structuredClone(profiles.inference);
+  const retainedProfile = platformProfile ? platformInference : profiles.inference;
   world.profileReads = [];
   world.addRetainedEndpoint = (host) => {
     assert.equal(world.detaches.length, 1, "change only the retained profile, after Git detached");
@@ -131,7 +132,7 @@ export async function gitExpiryGateway(
   const providers = {
     [model]: {
       type: modelSourceId ? model : "inference",
-      profile_workspace: workspace,
+      ...(platformProfile ? {} : { profile_workspace: workspace }),
       metadata: {
         workspace,
         name: model,
@@ -146,35 +147,70 @@ export async function gitExpiryGateway(
       },
     },
   };
-  if (platformProfile) {
-    profiles.service = serviceProfile;
-    providers["operator-service"] = {
-      // On the stock wire an omitted profile_workspace is the empty string (platform).
-      type: "service",
-      metadata: { workspace, name: "operator-service", id: "service-id", resource_version: "4" },
+  if (supervisor) {
+    // Stock attaches an endpointless runtime-files profile as well as the model.
+    // Keep it observable after Git detach; an absent provider must fail retention.
+    profiles["oce-codex-runtime"] = {
+      id: "oce-codex-runtime",
+      endpoints: [],
+      credentials: [],
+      files: [{ path: "runtime.json", content: "{{config.runtime_json}}" }],
+    };
+    providers[supervisor.runtimeProvider] = {
+      type: "oce-codex-runtime",
+      profile_workspace: workspace,
+      metadata: {
+        workspace,
+        name: supervisor.runtimeProvider,
+        id: "runtime-files-id",
+        resource_version: "1",
+      },
     };
   }
   world.retainedProviders = Object.keys(providers);
   let gitName;
+  const receiptEnvironments = new Map();
   const observe = (req) => {
     const name = req.provider;
     const git = name === gitName;
     const removed = world.detaches.length !== 0;
-    const expired = git && !removed && Date.now() >= world.gitExpiresAt;
+    // Readiness describes the whole provider environment, including on a model query.
+    const expired = !!gitName && !removed && Date.now() >= world.gitExpiresAt;
     const absent = git && removed;
     const profileChanged = retainedProfile.resource_version === "2";
     const snapshot = {
       attachment_epoch: removed ? "reduced" : repositoryGitRecipient.attachmentEpoch,
       config_revision: "3",
-      provider_env_revision: profileChanged ? "9" : removed ? "8" : "6",
+      provider_env_revision: supervisor
+        ? supervisor.providerEnvRevision || String(6 + world.writes)
+        : profileChanged
+          ? "9"
+          : removed
+            ? "8"
+            : "6",
       policy_hash: profileChanged
         ? "reduced-updated-provider-policy"
         : removed
           ? "reduced-policy"
           : "original-policy",
     };
+    const receiptId =
+      req.receipt_id ||
+      (supervisor ? `observe-${name}-${snapshot.provider_env_revision}` : "observe-" + name);
+    const desiredEnvironment = receiptEnvironments.get(receiptId) ?? snapshot.provider_env_revision;
+    receiptEnvironments.set(receiptId, desiredEnvironment);
     const metadata = providers[name].metadata;
-    const state = absent ? "REVOKED" : expired || (!git && world.modelFailed) ? "FAILED" : "READY";
+    let state = "READY";
+    if (supervisor && desiredEnvironment !== snapshot.provider_env_revision) {
+      state = "SUPERSEDED";
+    } else if (absent) {
+      state = "REVOKED";
+    } else if (expired) {
+      // Stock 0.1.6 withholds an expired credential without declaring installation failure.
+      state = "WITHHELD";
+    } else if (!git && world.modelFailed) {
+      state = "FAILED";
+    }
     // Only the Sandbox resourceVersion changes between the expiry owner's first two reads.
     if (expired && world.version === 13) {
       world.version = 14;
@@ -183,19 +219,40 @@ export async function gitExpiryGateway(
       world.reports.push([name, state, req.receipt_id ?? "OBSERVE"]);
     }
     const now = { seconds: Math.floor(Date.now() / 1000) };
+    let reason;
+    if (state === "SUPERSEDED") {
+      reason = "PROVIDER_READINESS_REASON_DESIRED_STATE_CHANGED";
+    } else if (expired) {
+      reason = "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED";
+    }
     return {
       status: {
         state: "PROVIDER_READINESS_STATE_" + state,
-        ...(expired && { reason: "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED" }),
+        ...(supervisor && {
+          operation: {
+            operation_id: receiptId,
+            sandbox_id: world.id,
+            state: 2,
+            outcome: 1,
+            completed_time: supervisor.started,
+          },
+        }),
+        ...(reason && { reason }),
         receipt: {
           workspace,
           provider: name,
-          receipt_id: "observe-" + name,
-          kind: "PROVIDER_MUTATION_KIND_OBSERVE",
+          receipt_id: receiptId,
+          ...(supervisor &&
+            req.receipt_id?.startsWith("update-") && { mutation_id: "update-" + world.writes }),
+          kind:
+            supervisor && req.receipt_id?.startsWith("update-")
+              ? "PROVIDER_MUTATION_KIND_UPDATE"
+              : "PROVIDER_MUTATION_KIND_OBSERVE",
           desired: {
             ...snapshot,
+            ...(supervisor && { provider_env_revision: desiredEnvironment }),
             sandbox_id: world.id,
-            sandbox,
+            sandbox: supervisor?.sandbox ?? sandbox,
             provider_id: absent ? "" : metadata.id,
             provider_resource_version: absent ? "0" : metadata.resource_version,
           },
@@ -206,6 +263,7 @@ export async function gitExpiryGateway(
           session_id: "same-supervisor",
           process_instance_id: repositoryGitRecipient.processInstanceId,
           credentials_installed: !expired,
+          ...(expired && { reason: "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED" }),
           launch_environment_installed: !expired,
           policy_active: true,
         },
@@ -218,6 +276,7 @@ export async function gitExpiryGateway(
   const methods = {
     GetWorkspace: () => ({ workspace: { metadata: { name: workspace, id: "workspace-id" } } }),
     GetGatewayInfo: () => ({
+      gateway_version: gatewayVersion,
       extensions: [
         {
           configured_name: "oce-prepared-git",
@@ -231,12 +290,19 @@ export async function gitExpiryGateway(
         sandbox: {
           metadata: {
             id: world.id,
-            name: sandbox,
+            name: supervisor?.sandbox ?? sandbox,
             workspace,
             resource_version: String(world.version),
-            annotations: { "openclaw.dev/revision-id": revisionId },
+            annotations: supervisor
+              ? {
+                  "openclaw.dev/revision-id": supervisor.revisionId,
+                  "openclaw.dev/namespace-id": supervisor.namespaceId,
+                  "openclaw.dev/agent-id": supervisor.agentId,
+                }
+              : { "openclaw.dev/revision-id": revisionId },
           },
           spec: {
+            ...(supervisor && { policy: supervisor.policy }),
             restart_policy: "SANDBOX_RESTART_POLICY_NEVER",
             providers: world.detaches.length
               ? world.retainedProviders
@@ -245,12 +311,27 @@ export async function gitExpiryGateway(
               ? "reduced"
               : repositoryGitRecipient.attachmentEpoch,
           },
-          status: { phase: "SANDBOX_PHASE_READY" },
+          status: {
+            phase: "SANDBOX_PHASE_READY",
+            main_process_instance_id: repositoryGitRecipient.networkInstanceId,
+            configuration_activated: true,
+            configuration_admission: {
+              state: 2,
+              instance_id: "configuration",
+              policy_version: 1,
+              config_revision: "3",
+              provider_env_revision: supervisor
+                ? supervisor.providerEnvRevision || String(6 + world.writes)
+                : "6",
+              policy_hash: "original-policy",
+            },
+            ...(supervisor && { main_process_started_time: supervisor.started }),
+          },
         },
       },
     GetProvider: ({ name }) => providers[name] && { provider: providers[name] },
     GetProviderProfile: ({ id, workspace_scope }) => {
-      if (id === "service" && world.detaches.length) {
+      if (platformProfile && id === platformInference.id && world.detaches.length) {
         world.profileReads.push(
           workspace_scope === undefined ? "platform" : workspace_scope.workspace,
         );
@@ -261,7 +342,7 @@ export async function gitExpiryGateway(
             code: grpc.status.PERMISSION_DENIED,
           });
         }
-        return id === "service" && { profile: platformService };
+        return platformProfile && id === platformInference.id && { profile: platformInference };
       }
       assert.equal(workspace_scope.workspace, workspace);
       return profiles[id] && { profile: profiles[id] };
@@ -300,22 +381,72 @@ export async function gitExpiryGateway(
       }
       onGitInstall?.(credentials.GITHUB_TOKEN);
       world.writes++;
-      return { provider };
+      return {
+        provider,
+        ...(supervisor && {
+          mutation_id: "update-" + world.writes,
+          target_receipts: [
+            observe({ provider: gitName, receipt_id: "update-receipt-" + world.writes }).status
+              .receipt,
+          ],
+        }),
+      };
     },
     GetSandboxProviderStatus: observe,
     DetachSandboxProvider: (req) => {
-      assert.equal(req.sandbox, sandbox);
+      assert.equal(req.sandbox, supervisor?.sandbox ?? sandbox);
       assert.equal(req.provider, gitName);
       assert.equal(req.workspace_scope.workspace, workspace);
       assert.deepEqual(world.detaches, []);
-      assert.equal(req.expected_resource_version, "14", "only send against a fresh observation");
+      assert.equal(
+        req.expected_resource_version,
+        String(world.version),
+        "only send against the current Sandbox version",
+      );
       world.detaches.push(req.request_id);
-      world.version = 15;
+      world.version++;
       // Stock committed the conditional removal; its reply was lost. No DETACH receipt
       // is available, only OBSERVE of the reduced installation on a subsequent read.
       throw Object.assign(Error("reply lost"), { code: grpc.status.UNAVAILABLE });
     },
   };
+  if (supervisor) {
+    Object.assign(methods, {
+      GetSandboxPolicyStatus: () => ({
+        active_version: 1,
+        revision: { version: 1, status: 2, policy: supervisor.policy },
+      }),
+      GetSandboxConfig: () => ({
+        policy: {
+          ...supervisor.policy,
+          network_policies: {
+            ...supervisor.policy.network_policies,
+            [supervisor.gitRule.name]: supervisor.gitRule,
+            ["_provider_" + model.replaceAll("-", "_")]: {
+              name: "_provider_" + model.replaceAll("-", "_"),
+              endpoints: [{ host: "api.openai.com", port: 443 }],
+            },
+            ["_provider_" + supervisor.runtimeProvider.replaceAll("-", "_")]: {
+              name: "_provider_" + supervisor.runtimeProvider.replaceAll("-", "_"),
+            },
+          },
+        },
+        version: 1,
+        workspace,
+        configuration_instance_id: "configuration",
+        policy_source: 1,
+        configuration_admitted: true,
+        policy_validation_failure_mode: "fail_closed",
+        extension_authentication_enabled: true,
+        provider_attachment_epoch: "original",
+        config_revision: "3",
+        provider_env_revision: supervisor.providerEnvRevision || String(6 + world.writes),
+        policy_hash: "original-policy",
+        supervisor_middleware_services: supervisor.middleware,
+      }),
+    });
+  }
+  configure(methods, world);
   const server = new grpc.Server();
   server.addService(
     OpenShell.service,
@@ -324,6 +455,12 @@ export async function gitExpiryGateway(
         name,
         (call, done) => {
           try {
+            if (
+              gatewayTls &&
+              call.metadata.get("authorization")[0] !== "Bearer controlled-gateway"
+            ) {
+              throw Object.assign(Error("unauthenticated"), { code: grpc.status.UNAUTHENTICATED });
+            }
             const response = handle(call.request);
             done(response ? null : { code: grpc.status.NOT_FOUND }, response);
           } catch (error) {
@@ -334,11 +471,30 @@ export async function gitExpiryGateway(
     ),
   );
   const port = await new Promise((resolve, reject) =>
-    server.bindAsync("127.0.0.1:0", grpc.ServerCredentials.createInsecure(), (e, p) =>
-      e ? reject(e) : resolve(p),
+    server.bindAsync(
+      "127.0.0.1:0",
+      gatewayTls
+        ? grpc.ServerCredentials.createSsl(
+            null,
+            [
+              {
+                private_key: Buffer.from(gatewayTls.key),
+                cert_chain: Buffer.from(gatewayTls.cert),
+              },
+            ],
+            false,
+          )
+        : grpc.ServerCredentials.createInsecure(),
+      (e, p) => (e ? reject(e) : resolve(p)),
     ),
   );
-  const client = new GrpcOpenShellGatewayClient({ endpoint: "127.0.0.1:" + port });
+  const client = new GrpcOpenShellGatewayClient({
+    endpoint: (gatewayTls ? "https://localhost:" : "127.0.0.1:") + port,
+    ...(gatewayTls && {
+      rootCertificatePath: gatewayTls.rootCertificatePath,
+      auth: { mode: "bearerTokenFile", path: gatewayTls.tokenPath },
+    }),
+  });
   t.after(() => {
     client.close();
     server.forceShutdown();

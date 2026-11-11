@@ -1,5 +1,5 @@
 import { asRecord } from "@openclaw-enterprise/utils";
-import { parseUnambiguousJson } from "../repo/credentials/json-members.ts";
+import { parseUnambiguousJson } from "../repo/access/json-members.ts";
 
 // Closed provider-owned schemas. Local tool schemas describe data for the Harness;
 // provider-executed tools and remote references require a different admitted grant.
@@ -62,11 +62,11 @@ function jsonValue(value: unknown, depth = 0): boolean {
   );
 }
 
-function jsonSchema(value: unknown, depth = 0): boolean {
+function jsonSchema(value: unknown, depth = 0, localTool = false): boolean {
   if (depth > 16) {
     return false;
   }
-  const nested = (item: unknown) => jsonSchema(item, depth + 1);
+  const nested = (item: unknown) => jsonSchema(item, depth + 1, localTool);
   const definitions: Validator = (item) => {
     const record = asRecord(item);
     return (
@@ -97,6 +97,10 @@ function jsonSchema(value: unknown, depth = 0): boolean {
     multipleOf: (item) => number(item) && Number(item) > 0,
     minLength: integer,
     maxLength: integer,
+    // A local string-parameter annotation, not a grant or an encryption operation.
+    ...(localTool
+      ? { encrypted: (item: unknown) => item === true && asRecord(value)?.type === "string" }
+      : {}),
     minItems: integer,
     maxItems: integer,
     minProperties: integer,
@@ -114,7 +118,7 @@ function jsonSchema(value: unknown, depth = 0): boolean {
 }
 
 const functionTool = object(
-  { type: oneOf("function"), name, parameters: jsonSchema },
+  { type: oneOf("function"), name, parameters: (value) => jsonSchema(value, 0, true) },
   { description: text, strict: bool, defer_loading: bool },
 );
 const plainTextFormat = object({ type: oneOf("text") });
@@ -137,17 +141,51 @@ const namespaceTool = object(
   { description: text },
 );
 const tools = array((value) => localTool(value) || namespaceTool(value), 128);
+// Response echoes may contain documented null defaults for local-tool metadata.
+// Keep these separate from request admission and retain the same bounded schemas.
+const responseFunctionTool = object(
+  { type: oneOf("function"), name, parameters: (value) => jsonSchema(value, 0, true) },
+  { description: nullable(text), strict: nullable(bool), defer_loading: nullable(bool) },
+);
+const responseCustomTool = object(
+  { type: oneOf("custom"), name },
+  {
+    description: nullable(text),
+    defer_loading: nullable(bool),
+    format: nullable((value) => plainTextFormat(value) || grammarFormat(value)),
+  },
+);
+const responseLocalTool: Validator = (value) =>
+  responseFunctionTool(value) || responseCustomTool(value);
+const responseNamespaceTool = object(
+  { type: oneOf("namespace"), name, tools: array(responseLocalTool, 128) },
+  { description: text },
+);
+const responseTools = array(
+  (value) => responseLocalTool(value) || responseNamespaceTool(value),
+  128,
+);
+
 const toolChoice = oneOf("auto", "none", "required");
 
+const empty = array(() => false, 0);
+const outputText = object(
+  { type: oneOf("output_text"), text },
+  { annotations: empty, logprobs: empty },
+);
 const textPart = object({ type: oneOf("input_text", "output_text"), text });
 const contentParts = array(textPart);
 const content: Validator = (value) => text(value) || contentParts(value);
 const phase = oneOf("commentary", "partial_answer", "final_answer");
 const status = oneOf("in_progress", "completed", "incomplete");
 const summary = object({ type: oneOf("summary_text"), text });
-const inputMessage = object(
-  { role: oneOf("system", "developer", "user", "assistant"), content },
-  { type: oneOf("message"), id: text, phase, status },
+const inputMessage = (role: Validator, content: Validator) =>
+  object({ role, content }, { type: oneOf("message"), id: text, phase, status });
+const plainInputMessage = inputMessage(oneOf("system", "developer", "user"), content);
+const assistantContentParts = array((value) => textPart(value) || outputText(value));
+const assistantInputMessage = inputMessage(
+  oneOf("assistant"),
+  (value) => text(value) || assistantContentParts(value),
 );
 const reasoningItem = object(
   { type: oneOf("reasoning"), summary: array(summary) },
@@ -177,19 +215,84 @@ const toolCall: Validator = (value) => {
     { id: text, namespace: name, status },
   )(value);
 };
+// Codex can declare the same local tools in developer input instead of the top-level list.
+const additionalLocalTools = object(
+  { type: oneOf("additional_tools"), role: oneOf("developer"), tools },
+  { id: text },
+);
 const inputItems = array(
-  (item) => inputMessage(item) || reasoningItem(item) || toolCall(item) || toolOutput(item),
+  (item) =>
+    plainInputMessage(item) ||
+    assistantInputMessage(item) ||
+    reasoningItem(item) ||
+    toolCall(item) ||
+    toolOutput(item) ||
+    additionalLocalTools(item),
 );
 
+const reasoningEffort = oneOf("none", "minimal", "low", "medium", "high", "xhigh");
 const reasoning = optionalFields({
-  effort: oneOf("none", "minimal", "low", "medium", "high", "xhigh"),
+  effort: reasoningEffort,
   summary: oneOf("auto", "concise", "detailed"),
   context: oneOf("auto", "current_turn", "all_turns"),
 });
 
-const metadataText: Validator = (value) => typeof value === "string" && value.length <= 8192;
+const metadataText = (value: unknown): value is string =>
+  typeof value === "string" && value.length <= 8192;
+function metadataJson(schema: Validator): Validator {
+  return (value) => {
+    if (!metadataText(value)) {
+      return false;
+    }
+    try {
+      return schema(parseUnambiguousJson(value));
+    } catch {
+      return false;
+    }
+  };
+}
+
+const gitRemoteUrls: Validator = (value) => {
+  const remotes = Object.entries(asRecord(value) ?? {});
+  return (
+    remotes.length >= 1 &&
+    remotes.length <= 16 &&
+    remotes.every(
+      ([remote, url]) =>
+        /^[A-Za-z0-9_.-]{1,256}$/u.test(remote) &&
+        typeof url === "string" &&
+        url.length <= 2048 &&
+        ((/^[Hh][Tt][Tt][Pp][Ss]:\/\/[A-Za-z0-9.-]+(?::[0-9]{1,5})?\/[A-Za-z0-9._~/-]+$/u.test(
+          url,
+        ) &&
+          URL.canParse(url)) ||
+          /^git@[a-zA-Z0-9.-]+:[a-zA-Z0-9._~/-]+$/u.test(url)),
+    )
+  );
+};
+const gitWorkspace = optionalFields({
+  latest_git_commit_hash: (value) =>
+    typeof value === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(value),
+  has_changes: bool,
+  associated_remote_urls: gitRemoteUrls,
+});
+const gitWorkspaces: Validator = (value) => {
+  const roots = Object.entries(asRecord(value) ?? {});
+  return (
+    roots.length === 1 &&
+    roots.every(
+      ([root, metadata]) =>
+        root.startsWith("/") &&
+        root.length <= 4096 &&
+        !/[\p{Cc}]/u.test(root) &&
+        Object.keys(asRecord(metadata) ?? {}).length > 0 &&
+        gitWorkspace(metadata),
+    )
+  );
+};
 // These are telemetry fields emitted by the selected client, never OCC identities or grants.
 const clientMetadata = optionalFields({
+  mcp_attribution: metadataJson(object({ status: oneOf("none") })),
   session_id: metadataText,
   thread_id: metadataText,
   turn_id: metadataText,
@@ -199,44 +302,39 @@ const clientMetadata = optionalFields({
   "x-codex-window-id": metadataText,
   "x-codex-parent-thread-id": metadataText,
   "x-openai-subagent": metadataText,
-  "x-codex-turn-metadata": (value) => {
-    if (!metadataText(value)) {
-      return false;
-    }
-    try {
-      return optionalFields({
-        installation_id: metadataText,
-        session_id: metadataText,
-        thread_id: metadataText,
-        agent_name: metadataText,
-        turn_id: metadataText,
-        window_id: metadataText,
-        window_number: integer,
-        context_window_id: metadataText,
-        request_kind: oneOf("turn", "prewarm", "compaction", "memory"),
-        history_initialization: metadataText,
-        root_turn_id: metadataText,
-        parent_turn_id: metadataText,
-        parent_thread_id: metadataText,
-        forked_from_thread_id: metadataText,
-        forked_from_ordinal_exclusive: integer,
-        thread_source: metadataText,
-        turn_trigger: metadataText,
-        subagent_kind: metadataText,
-        sandbox: metadataText,
-        sandbox_mode: metadataText,
-        auto_review_enabled: bool,
-        node_repl_auto_review_required: bool,
-        node_repl_disabled: bool,
-        turn_started_at_unix_ms: integer,
-        analytics_enabled: bool,
-        history_ingest_requested: bool,
-        model: metadataText,
-      })(parseUnambiguousJson(String(value)));
-    } catch {
-      return false;
-    }
-  },
+  "x-codex-turn-metadata": metadataJson(
+    optionalFields({
+      installation_id: metadataText,
+      session_id: metadataText,
+      thread_id: metadataText,
+      agent_name: metadataText,
+      turn_id: metadataText,
+      window_id: metadataText,
+      window_number: integer,
+      context_window_id: metadataText,
+      request_kind: oneOf("turn", "prewarm", "compaction", "memory"),
+      history_initialization: metadataText,
+      root_turn_id: metadataText,
+      parent_turn_id: metadataText,
+      parent_thread_id: metadataText,
+      forked_from_thread_id: metadataText,
+      forked_from_ordinal_exclusive: integer,
+      thread_source: metadataText,
+      turn_trigger: metadataText,
+      subagent_kind: metadataText,
+      sandbox: metadataText,
+      sandbox_mode: metadataText,
+      auto_review_enabled: bool,
+      node_repl_auto_review_required: bool,
+      node_repl_disabled: bool,
+      turn_started_at_unix_ms: integer,
+      analytics_enabled: bool,
+      history_ingest_requested: bool,
+      model: metadataText,
+      reasoning_effort: reasoningEffort,
+      workspaces: gitWorkspaces,
+    }),
+  ),
 });
 const jsonFormat = object(
   { type: oneOf("json_schema"), name, schema: jsonSchema },
@@ -296,11 +394,6 @@ export const validChatRequest = object(
   },
 );
 
-const empty = array(() => false, 0);
-const outputText = object(
-  { type: oneOf("output_text"), text },
-  { annotations: empty, logprobs: empty },
-);
 // A provider safety refusal arrives as a documented `refusal` part of the assistant message
 // (openai-python ResponseOutputRefusal). Its text is assistant-visible, so the stream scans
 // it like output_text.
@@ -364,6 +457,9 @@ const cacheDiagnostics: Validator = (value) =>
 // moderation, background execution) must echo their empty value. `billing` is not in that
 // model but is returned by the provider alongside the documented fields; it is declared
 // here with its observed shape rather than left to refuse every live response.
+// The image policy follows the Responses API response schema (2026-11-04):
+// https://developers.openai.com/api/reference/resources/responses/methods/create
+// Its effective policy excludes the request-only "auto" value.
 const response = object(
   {
     id: text,
@@ -383,7 +479,7 @@ const response = object(
       }),
     ),
     instructions: nullable(text),
-    tools,
+    tools: responseTools,
     tool_choice: toolChoice,
     parallel_tool_calls: bool,
     reasoning: nullable(
@@ -408,6 +504,7 @@ const response = object(
     conversation: oneOf(null),
     prompt: oneOf(null),
     moderation: oneOf(null),
+    image: object({ context_compression: oneOf("enabled", "disabled") }),
     prompt_cache_key: nullable(text),
     prompt_cache_retention: nullable(text),
     prompt_cache_options: nullable(

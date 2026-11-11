@@ -4,7 +4,11 @@ import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { occLogLine } from "../helpers/occ-log-line.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
-import { completedPasses } from "../helpers/postgres-worker-revision-support.mjs";
+import {
+  completedPasses,
+  deferWork,
+  makeWorkDue,
+} from "../helpers/postgres-worker-revision-support.mjs";
 import {
   SandboxGatewayUnauthorizedError,
   SandboxRevisionUnsupportedError,
@@ -60,10 +64,7 @@ revisionTest(
        WHERE idempotency_key = $1`,
       [failed.idempotencyKey],
     );
-    await fixture.observerPool.query(
-      "UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 hour' WHERE idempotency_key = $1",
-      [pending.idempotencyKey],
-    );
+    await deferWork(fixture.observerPool, pending.idempotencyKey);
     for (const [owner, revision] of [
       [served, active],
       [codexOwner, codex],
@@ -240,10 +241,7 @@ revisionTest(
     });
     // Nothing is deployed while the listing fails: the candidate fails only once the listing
     // has given up, so its hand-over is the sweep's only source.
-    await fixture.observerPool.query(
-      "UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 hour' WHERE idempotency_key = $1",
-      [native.idempotencyKey],
-    );
+    await deferWork(fixture.observerPool, native.idempotencyKey);
     let listings = 0;
     const withdrawals = [];
     const events = [];
@@ -277,10 +275,7 @@ revisionTest(
         attempt,
       })),
     );
-    await fixture.observerPool.query(
-      "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1",
-      [native.idempotencyKey],
-    );
+    await makeWorkDue(fixture.observerPool, native.idempotencyKey);
     await fixture.work(native, "failed_permanent");
     await waitFor("the handed-over candidate's exposure to be withdrawn", async () =>
       named("worker.harness-exposure-withdrawn").length > 0 ? true : undefined,
@@ -324,10 +319,11 @@ revisionTest(
     });
     // Nothing runs: the start listing finds no active revision and no failed deployment, and
     // the hand-over is asked directly, so the only sweep entries are the ones it creates.
-    await fixture.observerPool.query(
-      "UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 hour' WHERE idempotency_key = ANY($1::text[])",
-      [[active.idempotencyKey, failed.idempotencyKey, codex.idempotencyKey]],
-    );
+    await deferWork(fixture.observerPool, [
+      active.idempotencyKey,
+      failed.idempotencyKey,
+      codex.idempotencyKey,
+    ]);
     const events = [];
     const withdrawals = [];
     await fixture.start(

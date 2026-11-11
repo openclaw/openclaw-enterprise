@@ -1,6 +1,17 @@
 # Merge with a bundled Kubernetes/OpenShell Installation using dedicated Codex.
-# Release remains blocked until the protected sender and TLS path are qualified.
+# Use matching OpenShell 0.1.6 Gateway, supervisor, client and charts.
+# The registry contains explicit Namespace-approved repository selections.
+backend:
+  - id: repository-backend
+    type: github
+    configuration:
+      registryPath: /etc/openclaw/repository-registry/registry.json
+    drivers:
+      repo: repository-credentials
 repository:
+  id: repository-credentials
+  configuration:
+    sessionDurationSeconds: 86400
   openShell:
     registrationName: oce-prepared-git
     authority:
@@ -15,3 +26,9 @@ repository:
   preparedGitHub:
     custodyKeyPath: /etc/openclaw/prepared-repository/custody.key
     privateKeyPath: /etc/openclaw/prepared-repository/private-key.pem
+# Match this ID and the OpenShell Backend's credential_proxy member to the
+# existing Sandbox selection. Retain the Gateway selection for model access.
+drivers:
+  credential_proxy:
+    id: openshell-sandbox
+    configuration: {}

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { imageConfigDigest } from "../../scripts/ci/image-config-digest.mjs";
+import { imageConfigDigest } from "../../scripts/ci/image-config-digest.ts";
 
 const sha = (value) => "sha256:" + createHash("sha256").update(value).digest("hex");
 const config = sha("image config");

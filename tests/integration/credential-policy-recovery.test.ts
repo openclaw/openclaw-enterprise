@@ -152,6 +152,25 @@ test("Git reduction recovery observes its original operation despite discovery f
   });
   const context = { namespace: seeded.namespace as Namespace, revision, plan, signal: t.signal };
   const reduce = () => reduceCredentialPolicy(state, owner, context, undefined);
+  // Closed attempts alone do not authorize a stopped execution's policy change.
+  await state.transact((unit) =>
+    unit.agents.transitionAgentDesiredRuntimeState(
+      seeded.namespace.id,
+      seeded.agent.id,
+      "running",
+      "stopped",
+    ),
+  );
+  await assert.rejects(reduce(), /no exact admitted owner or withdrawal/);
+  assert.equal(applies, 0);
+  await state.transact((unit) =>
+    unit.agents.transitionAgentDesiredRuntimeState(
+      seeded.namespace.id,
+      seeded.agent.id,
+      "stopped",
+      "running",
+    ),
+  );
   await assert.rejects(reduce(), /discovery unavailable/);
   assert.equal(
     (

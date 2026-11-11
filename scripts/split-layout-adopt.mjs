@@ -4,7 +4,7 @@
 // Configurations, service-account credentials and dedicated Gateway state stay where they are;
 // the old Harness namespace's claims move by PersistentVolume rebind and its Agent Secrets are
 // copied byte for byte. OCC's database is not written.
-// See docs/guides/deploy/breaking-changes-before-2026-10-10.md.
+// See docs/guides/deploy/split-layout-upgrade.md.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -273,7 +273,7 @@ export function planTenant(
   plan.tenant = tenant.metadata.name;
   plan.tenantUid = tenant.metadata.uid;
   if (tenant.metadata.annotations?.[LIFECYCLE_ANNOTATION] === "external") {
-    refuse(`${plan.tenant} is an existing namespace; use scripts/split-layout-tenants.mjs`);
+    refuse(`${plan.tenant} is an existing namespace; use scripts/split-layout-tenants.ts`);
   } else if (
     tenant.metadata.annotations?.[ID_ANNOTATION] !== id ||
     labelsOf(tenant)[MANAGED_BY] !== MANAGER

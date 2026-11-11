@@ -1,9 +1,11 @@
 import {
   ADMISSION_LIMIT_DETAILS,
+  POD_LABELS_NOT_PERMITTED_DETAILS,
   OpenShellAdmissionLimitError,
   OpenShellDeletionUnconfirmedError,
   OpenShellGatewayFailure,
   OpenShellGatewayUnavailableError,
+  GRPC_DEADLINE_EXCEEDED,
   GRPC_UNAVAILABLE,
   OpenShellProviderAlreadyExistsError,
   OpenShellRequestReplayRefusedError,
@@ -14,7 +16,11 @@ import {
   statusCode,
 } from "./openshell-gateway-errors.ts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
-import { DependencyUnavailableError, gatewayEndpointRewritesIpv4 } from "@openclaw-enterprise/occ";
+import {
+  DependencyUnavailableError,
+  SandboxRevisionUnsupportedError,
+  gatewayEndpointRewritesIpv4,
+} from "@openclaw-enterprise/occ";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -27,6 +33,8 @@ import {
   getServiceDocument,
   postServiceDocument,
   serviceWebSocketHandshake,
+  serviceCodexReadinessStatus,
+  type OpenShellCodexReadiness,
   type OpenShellServiceDocument,
 } from "./openshell-service-transport.ts";
 import type {
@@ -147,8 +155,9 @@ export interface OpenShellProviderProfileEndpoint {
   readonly protocol: string;
   readonly path?: string;
   readonly access?: "NETWORK_ACCESS_PRESET_FULL" | "NETWORK_ACCESS_PRESET_READ_WRITE";
+  readonly mcp?: { readonly strict_tool_names: boolean; readonly versions: readonly string[] };
   readonly rules?: readonly {
-    readonly allow: { readonly method: string; readonly path: string };
+    readonly allow: { readonly method: string; readonly path?: string };
   }[];
 }
 
@@ -287,6 +296,8 @@ export interface OpenShellProviderReadinessObservation {
 export interface OpenShellSandboxProviderStatus {
   /** An already terminal receipt can be queried without creating or completing an operation. */
   readonly completedOperationId?: string;
+  /** Terminal auxiliary OBSERVE history, never proof of installation or UPDATE completion. */
+  readonly supersededObservationId?: string;
   readonly state: string;
   readonly reason?: string;
   readonly receipt?: {
@@ -485,6 +496,13 @@ export interface OpenShellGatewayClient
     bearer: string,
     signal: AbortSignal,
   ): Promise<boolean>;
+  /** Reads the dedicated Codex process’s permission policy and, if needed, PAT status. */
+  serviceCodexReadinessStatus(
+    serviceUrl: string,
+    bearer: string,
+    requirePat: boolean,
+    signal: AbortSignal,
+  ): Promise<OpenShellCodexReadiness>;
   /** Read a profile in its Workspace, or pass null to request the platform profile. */
   getProviderProfile(
     workspace: string | null,
@@ -706,32 +724,61 @@ function createSandboxValidationCategory(
   return "UNKNOWN";
 }
 
-// gRPC UNAVAILABLE says two different things. grpc-js synthesises it, with these fixed details,
+// gRPC UNAVAILABLE says two different things. grpc-js makes it up, with these fixed details,
 // when it never reached the gateway or lost the connection under a call: the gateway did not
 // answer. The gateway also sends UNAVAILABLE itself, with its own reason, for failures that do
 // not clear by themselves (at the pinned OpenShell, resource admission's Kubernetes 401/403/TLS
-// errors, credential driver errors, finding 2042). Only the first is an outage. The list is an
+// errors, credential driver errors, finding 2042), and a gateway interceptor sends any reason it
+// chooses with the status it chooses (finding 2048). Only the first is an outage. The list is an
 // allowlist on purpose: anything else, including a TLS failure (an untrusted gateway certificate,
-// a refused client certificate, a connection closed during the handshake) and an HTTP status from
-// a proxy in front of the gateway, is an ordinary failed request on the attempt budget.
-const UNANSWERED_REQUEST_DETAILS: readonly RegExp[] = [
+// a refused client certificate, a connection closed during the handshake), a connection closed
+// before HTTP/2 starts ("Failed to connect": a plaintext client at a TLS port reads the same as
+// a stale port-forward, finding 2049) and an HTTP status or gRPC reply from a proxy in front of
+// the gateway, is an ordinary failed request on the attempt budget.
+const UNANSWERED_REQUESTS: readonly (readonly [code: number, details: RegExp])[] = [
   // The connection closed or was reset under an in-flight call (the gateway process is gone).
-  /^Connection dropped$/u,
-  /^(?:read|write) (?:ECONNRESET|ETIMEDOUT)$/u,
+  [GRPC_UNAVAILABLE, /^Connection dropped$/u],
+  [GRPC_UNAVAILABLE, /^(?:read|write) (?:ECONNRESET|ETIMEDOUT)$/u],
   // The gateway refused the stream before handling it (shutting down, or at its stream limit).
-  /^Stream refused by server$/u,
-  // No address for the gateway, or no connection to any of them: nothing listens there.
-  /^Name resolution failed for target /u,
-  /^No connection established\. Last error: (?:No addresses resolved|(?:Error: )?(?:connect (?:ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT)|(?:read|write) (?:ECONNRESET|ETIMEDOUT|EPIPE)))\b/u,
+  [GRPC_UNAVAILABLE, /^Stream refused by server$/u],
+  // No address for the gateway, or no connection to it: nothing listens there. grpc-js's DNS
+  // lookup rejects a name without addresses, so "No addresses resolved" never occurs here.
+  [GRPC_UNAVAILABLE, /^Name resolution failed for target /u],
+  [
+    GRPC_UNAVAILABLE,
+    /^No connection established\. Last error: (?:Error: )?(?:connect (?:ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT)|(?:read|write) (?:ECONNRESET|ETIMEDOUT|EPIPE))\b/u,
+  ],
+  // The deadline passed while grpc-js still had no connection to send the request on: a connect
+  // nobody answers (a lost node, a stale Service address) or a listener that never starts HTTP/2.
+  [
+    GRPC_DEADLINE_EXCEEDED,
+    /^Deadline exceeded after \d+\.\d{3}s(?:,[a-z ]+: \d+\.\d{3}s)*,Waiting for LB pick$/u,
+  ],
 ];
 
-/** True only for grpc-js's own UNAVAILABLE for a gateway that did not answer (finding 2042). */
+/**
+ * grpc-js gives a status it makes up itself empty metadata. A status the gateway sends before
+ * any response message is the whole response in one HEADERS frame (tonic answers interceptor
+ * refusals and handler errors that way), whose other headers stay as metadata (content-type,
+ * date). Only a status in trailers after response headers, such as an error in the middle of
+ * an ExecSandbox stream, can carry none; there the details alone decide.
+ */
+function noServerMetadata(error: unknown): boolean {
+  const metadata = asRecord(asRecord(error)?.metadata);
+  const getMap = metadata?.getMap;
+  return (
+    typeof getMap === "function" && Object.keys(asRecord(getMap.call(metadata)) ?? {}).length === 0
+  );
+}
+
+/** True only for grpc-js's own status for a gateway that did not answer (findings 2042, 2048). */
 function gatewayDidNotAnswer(error: unknown): boolean {
+  const code = rawStatusCode(error);
   const details = asRecord(error)?.details;
   return (
-    rawStatusCode(error) === GRPC_UNAVAILABLE &&
     typeof details === "string" &&
-    UNANSWERED_REQUEST_DETAILS.some((pattern) => pattern.test(details))
+    noServerMetadata(error) &&
+    UNANSWERED_REQUESTS.some(([status, pattern]) => status === code && pattern.test(details))
   );
 }
 
@@ -740,8 +787,9 @@ function gatewayRequestFailure(
   error: unknown,
   unanswered: boolean = gatewayDidNotAnswer(error),
 ): OpenShellGatewayRequestFailure | OpenShellGatewayUnavailableError {
-  return unanswered
-    ? new OpenShellGatewayUnavailableError(gatewayRequestFailureMessage(method, error))
+  const grpcStatus = rawStatusCode(error);
+  return unanswered && grpcStatus !== undefined
+    ? new OpenShellGatewayUnavailableError(gatewayRequestFailureMessage(method, error), grpcStatus)
     : new OpenShellGatewayRequestFailure(method, error);
 }
 const CLIENT_MODULE = "@grpc/grpc-js";
@@ -1333,6 +1381,21 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     return serviceWebSocketHandshake(this.serviceTransportOptions(), serviceUrl, bearer, signal);
   }
 
+  async serviceCodexReadinessStatus(
+    serviceUrl: string,
+    bearer: string,
+    requirePat: boolean,
+    signal: AbortSignal,
+  ): Promise<OpenShellCodexReadiness> {
+    return serviceCodexReadinessStatus(
+      this.serviceTransportOptions(),
+      serviceUrl,
+      bearer,
+      requirePat,
+      signal,
+    );
+  }
+
   private serviceRootCertificate: Buffer | undefined;
 
   private serviceTransportOptions() {
@@ -1791,6 +1854,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
         signal,
       );
     } catch (error) {
+      signal.throwIfAborted();
       const { grpc } = await this.ensureClient();
       if (statusCode(error) === grpc.status.NOT_FOUND) {
         return undefined;
@@ -1984,7 +2048,8 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     if (typeof profile?.id !== "string" || profile.id !== id) {
       throw new OpenShellGatewayFailure("OpenShell GetProviderProfile returned another profile.");
     }
-    return storedProviderProfile(profile, profile.id);
+    // Protobuf omits empty repeated fields. Preserve every field that was returned.
+    return storedProviderProfile({ endpoints: [], credentials: [], ...profile }, profile.id);
   }
 
   async listProviderProfiles(
@@ -2396,6 +2461,14 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       operation.operation_id === receipt?.receipt_id
         ? { completedOperationId: operation.operation_id }
         : {}),
+      ...(operation?.state === 5 &&
+      operation.outcome === 3 &&
+      timestampText(operation.completed_time) !== null &&
+      receipt?.kind === "PROVIDER_MUTATION_KIND_OBSERVE" &&
+      typeof operation.operation_id === "string" &&
+      operation.operation_id === receipt.receipt_id
+        ? { supersededObservationId: operation.operation_id }
+        : {}),
       ...(typeof status.reason === "string" ? { reason: status.reason } : {}),
       ...(receipt
         ? {
@@ -2621,6 +2694,20 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
                 details.startsWith(ADMISSION_LIMIT_DETAILS)
               ) {
                 reject(new OpenShellAdmissionLimitError(method, error));
+              } else if (
+                method === "CreateSandbox" &&
+                code === grpc.status.INVALID_ARGUMENT &&
+                typeof details === "string" &&
+                details.startsWith(POD_LABELS_NOT_PERMITTED_DETAILS)
+              ) {
+                // The gateway's configuration refuses these label keys on every create, so
+                // retrying cannot help; the operator must extend allowed_pod_labels.
+                reject(
+                  new SandboxRevisionUnsupportedError(
+                    "SANDBOX_POD_LABELS_NOT_PERMITTED",
+                    `OpenShell refused the Harness Pod labels ${details.slice(POD_LABELS_NOT_PERMITTED_DETAILS.length)}; add them to the gateway's Kubernetes driver allowed_pod_labels.`,
+                  ),
+                );
               } else if (
                 [
                   grpc.status.NOT_FOUND,

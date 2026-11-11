@@ -17,7 +17,7 @@ Backdrop clicks or Escape close the topmost channel, Secret, or plugin editor:
 discard channel edits, clear Secret inputs, retain plugin selections.
 Pending channel saves and Secret creation block dismissal.
 
-**Create new version** edits Configuration JSON and channels; **Plugins** and
+**Open draft** edits Configuration JSON and channels; **Plugins** and
 **Credentials** edit Agent selections and authentication. Plugin browsing
 requires exact Agent `read`/`update` and a catalog-capable Driver. The curated
 catalog needs no Secret. Hosted browsing reads bound `codex_pat` server-side and
@@ -33,13 +33,25 @@ saving and deployment until you can [reload the saved settings](../../guides/con
 
 **Operator-managed credentials** saves `{ "method": "runtime" }` for SSH embedded
 OpenClaw; OCC neither validates host credentials nor generates metadata for that
-binding, but API permissions and topology checks still apply. **Selected version** shows `activeRevisionId`, a selected pointer, not serving health.
-**Deployment details** follows the newest readable deployment. Routine completion
+binding, but API permissions and topology checks still apply. **Selected for service** shows `activeRevisionId`, a selected pointer, not serving health.
+**Viewing version** chooses the draft or a saved version without deploying it.
+**Load older versions** adds the next page and keeps the viewed version.
+**Deployment** contains the newest readable deployment activity, the viewed
+version's record, and diagnostics. These panels keep polling across tabs.
+Pending work, startup warnings, and incomplete cleanup also show an attention
+message with a link above the tabs. **Deployment details** follows the newest readable deployment. Routine completion
 starts folded; pending work, warnings, and cleanup are expanded. When the page shows
 before the first record arrives (a read slower than about 2 s), that record fills the
 folded row instead, and the summary above shows its outcome; cleanup and warnings still
-expand it, as does every later change.
-The viewed version retains its own result. Unreadable outcomes remain unknown.
+expand it. Later routine polls preserve your expanded or folded choice through
+queued/running updates and transient read failures, including recovery. A final
+refusal reveals its error; an explicit refresh of a failed read also reveals the
+error, even if unchanged. Refreshing unchanged healthy evidence keeps your choice.
+The viewed version retains its own result. A failed shared read clears that
+version's older result and shows the error outside the fold, with one visible
+alert for the same failure. An older in-flight success cannot restore that result.
+Unreadable outcomes remain unknown. Pending reads keep space for visible diagnostics
+so routine updates do not move the focused control.
 Bootstrap failures retain safe evidence; cleanup refreshes separately.
 
 A failure's card leads the page and folds the details. Its **Open vN Logs** opens
@@ -58,20 +70,23 @@ history, repeat the startup model probe, or prove message delivery.
 `secret:operate` access for the Agent principal on an API-key or Service Accounts
 Secret. Grant changes require Installation `administer`; issued ChatGPT accounts
 and operator-managed authentication skip the grant. A member's save sends no
-grant, reports that access was not verified, and names the Installation
-administrator. Opening Credentials as an administrator reads Namespace IAM and blocks
+grant: the form stays editable and says that deploying checks the Agent's access
+and that an Installation administrator gives it. Opening Credentials as an administrator reads Namespace IAM and blocks
 deployment while that grant is missing. A refused or failed grant request offers **Retry credential access**
 without repeating the Agent update. Partial saves survive navigation. Grants do not prove runtime or
 provider readiness.
 
 Configuration and Slack summaries show bound Secret names and IDs for the viewed
-draft or version. Names require exact same-Namespace Secret `read`; denied,
-missing, or failed reads show the ID with **Metadata unavailable**. **No Secret
+draft or version. Names require exact same-Namespace Secret `read`; a denied
+read says a Secret is bound and its name is hidden, with the ID in the tooltip, and
+missing or failed reads show the ID with **Metadata unavailable**. For a caller
+who is not an Installation administrator, a Secret that the readable Secret list
+leaves out is not read: it shows as unavailable, because the caller cannot read
+it or it was deleted, with the ID in the tooltip. **No Secret
 bound** means no binding. Values are never read, and metadata does not prove
 credential validity.
 
-AgentRevision snapshots cannot be edited, rolled back, or redeployed. **Create
-new version** and **Edit current Configuration** open the saved draft without
+AgentRevision snapshots cannot be edited, rolled back, or redeployed. **Open draft** and **Edit current Configuration** open the saved draft without
 changing the viewed snapshot; **Deploy new version** admits it as another
 immutable version. Admission, recorded activation, and `activeRevisionId` are
 separate facts, and startup evidence does not establish live gateway health; see the
@@ -104,7 +119,8 @@ Channel edits preserve group policies. Change DM access with
 
 Model, Harness, and Slack credentials share one searchable Secret picker; the
 [Slack editor](../../guides/console/channels-and-credentials.md#slack-editor) lists
-its controls. Escape restores the binding, and **Create new Secret...** stays
+its controls. On the Agent page and in Create Agent, it lists a readable Secret the caller may
+not `operate` disabled with the reason, because a save that binds it is refused. Escape restores the binding, and **Create new Secret...** stays
 available without matches, with **Name** defaulting to the Agent name and
 purpose. A name conflict keeps both inputs and overwrites no Secret. Namespace
 readiness errors require refresh.
@@ -127,4 +143,11 @@ The simple editor may reject native channel documents it cannot round-trip,
 including non-Socket Slack settings, non-standard credential references, mixed
 per-channel mention settings or sender lists, `*` channel maps, or unsupported
 plugin shapes. Inspect those settings in the native Configuration view; edit them
-through the API or operator workflow.
+through the API or operator workflow. Slack's standard token references are the
+env SecretRefs and the whole `${SLACK_APP_TOKEN}` and `${SLACK_BOT_TOKEN}`
+strings; the editor saves each in its existing form. For any other token, the
+card uses Configuration save's term and never shows the value. A string is a
+reference only in a form the runtime reads as one, or with a `${` it keeps as
+written. An object without a `source` is an object the Slack Channel Driver
+cannot read. Any other value that is not a SecretRef is an inline credential
+value.

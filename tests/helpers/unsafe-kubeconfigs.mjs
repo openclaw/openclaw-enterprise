@@ -1,7 +1,7 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { temporaryDirectory } from "./temporary-directory.mjs";
 
 // Kubeconfigs that the official Kubernetes client parses but whose identity or transport a
 // Driver must refuse before contacting the API server: each differs from a safe kubeconfig
@@ -74,10 +74,8 @@ async function writeKubeconfig(directory, scenario) {
   return { name: scenario.name, kubeconfigPath, context: scenario.context ?? context };
 }
 
-async function privateDirectory(t) {
-  const directory = await mkdtemp(join(tmpdir(), "openclaw-unsafe-kubeconfig-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  return directory;
+function privateDirectory(t) {
+  return temporaryDirectory(t, "openclaw-unsafe-kubeconfig-");
 }
 
 /**

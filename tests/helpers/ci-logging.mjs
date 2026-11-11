@@ -6,7 +6,7 @@ import {
   ciOtelBackendResourceKind,
   cleanupLogging,
   prepareLogging,
-} from "../../scripts/ci/logging.mjs";
+} from "../../scripts/ci/logging.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
 const digest = "a".repeat(64);

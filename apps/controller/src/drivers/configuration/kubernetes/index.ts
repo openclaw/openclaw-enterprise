@@ -512,6 +512,10 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
           new ConfigurationBackendUnavailableError(
             `The Kubernetes ConfigMap ${action} outcome is unknown after timeout.`,
           ),
+        deadlineElapsed: () =>
+          new ConfigurationBackendUnavailableError(
+            `The Kubernetes ConfigMap ${action} was not sent: the request ran out of time.`,
+          ),
         failed: (error) => error,
       },
       options,

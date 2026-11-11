@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import pg from "pg";
 import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import { testPool } from "../helpers/postgres-database.mjs";
 
 function installation() {
   const value = createInstallationDriverConfiguration();
@@ -38,8 +38,7 @@ test("SSH startup selects occ/ssh in production without Kubernetes Compute field
   assert.equal(drivers.installation.drivers.compute.implementation, "occ/ssh");
   assert.equal(drivers.installation.drivers.compute.configuration.images, undefined);
   // Construction proves production structural acceptance; it does not connect to PostgreSQL or SSH.
-  const pool = new pg.Pool({ connectionString: "postgresql://127.0.0.1:1/occ" });
-  t.after(() => pool.end());
+  const pool = testPool(t, { connectionString: "postgresql://127.0.0.1:1/occ" });
   assert.doesNotThrow(() =>
     createControllerWorker({ pool, mode: "production", drivers, emit: () => {} }),
   );

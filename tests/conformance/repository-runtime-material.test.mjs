@@ -1,3 +1,5 @@
+import { admitRevisionHarness } from "../helpers/kubernetes-routed-scenarios.mjs";
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { isDeepStrictEqual } from "node:util";
@@ -10,10 +12,15 @@ import { protectedRepositoryGitRelease } from "../helpers/protected-repository-g
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { SETUP_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { pluginRuntimeSpecForRevision } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
-import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
+import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/access/client/config.ts";
 import { openShellRepositoryAccess } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
+import {
+  BROKER_PROXY_DISABLED,
+  BROKER_HOST_DENIED,
+  BROKER_PROXY_DOMAINS,
+} from "../helpers/refusal-text.mjs";
 
 const deadlineWallMs = Date.now() + 86400000;
 function repositoryClient(gatewayOrigin = "https://git.credentials.svc.cluster.local") {
@@ -163,6 +170,7 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
     configurationId: "configuration-repository-material",
     configurationKind: "agent",
     configurationGeneration: 1,
+    gatewayManagedMode: true,
     configuration: {
       gateway: {
         // Kubernetes renders lan for an omitted bind; this admitted document already is.
@@ -226,6 +234,7 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
       },
     };
   }
+  admitRevisionHarness(driver, revision);
   const objects = new Map();
   const calls = [];
   let pods = [];
@@ -654,6 +663,15 @@ test("Dedicated repository custody and networking belong only to Codex", async (
   delete gatewayConfiguration.plugins.entries.codex.config.appServer.nativeHookRelay;
   const expectedGatewayConfiguration = JSON.parse(original);
   expectedGatewayConfiguration.agents.defaults.workspace = "/home/node/workspace";
+  // Compute requires explicit proxy scopes independently of repository material.
+  expectedGatewayConfiguration.gateway.auth.trustedProxy.requiredHeaders = ["x-openclaw-scopes"];
+  // Compute translates the saved API-key destination into Codex's provider-qualified model.
+  expectedGatewayConfiguration.agents.defaults.model = "codex/openai-compatible/gpt-5";
+  expectedGatewayConfiguration.agents.defaults.models = {
+    "codex/openai-compatible/gpt-5":
+      expectedGatewayConfiguration.agents.defaults.models["codex/gpt-5"],
+  };
+  expectedGatewayConfiguration.models.providers.codex.models[0].id = "openai-compatible/gpt-5";
   assert.deepEqual(
     gatewayConfiguration,
     expectedGatewayConfiguration,
@@ -863,7 +881,7 @@ test("Dedicated credential refresh preserves its enrolled workspace node", async
       };
     },
     async observeSetup() {
-      return { deviceId: "workspace-node", connected: true };
+      return { deviceId: "workspace-node", connected: true, delivery: "confirmed" };
     },
     async isConnected() {
       return true;
@@ -994,7 +1012,7 @@ for (const mode of ["embedded", "dedicated"]) {
               };
             },
             async observeSetup() {
-              return { deviceId: "plugin-node", connected: true };
+              return { deviceId: "plugin-node", connected: true, delivery: "confirmed" };
             },
             async isConnected() {
               return true;
@@ -1403,10 +1421,9 @@ test("Dedicated Codex repository policy preserves compatible domain decisions", 
 test("Dedicated Codex repository policy preserves an explicitly disabled network proxy", async () => {
   const f = await fixture("dedicated");
   f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = { enabled: false };
-  await assert.rejects(
-    f.driver.prepareRevision(f.revision, f.context([runtimeBinding()])),
-    /explicitly disabled Codex network proxy/,
-  );
+  await assert.rejects(f.driver.prepareRevision(f.revision, f.context([runtimeBinding()])), {
+    message: BROKER_PROXY_DISABLED,
+  });
   assert.deepEqual(
     runtimeWrites(f.calls),
     [],
@@ -1416,14 +1433,29 @@ test("Dedicated Codex repository policy preserves an explicitly disabled network
 
 test("Dedicated Codex repository policy preserves explicit broker host denies", async () => {
   const f = await fixture("dedicated");
+  // The Helm default broker host is git.<Namespace>.svc.<cluster domain>; a 63-character
+  // Namespace name, the Kubernetes maximum, gives the longest realistic host.
+  const host = `git.${"n".repeat(63)}.svc.cluster.local`;
   f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy ??= {};
   f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy.domains = {
-    " Git.Credentials.SVC.Cluster.Local ": "deny",
-    "git.credentials.svc.cluster.local": "allow",
+    [` ${host.toUpperCase()} `]: "deny",
+    [host]: "allow",
   };
   await assert.rejects(
-    f.driver.prepareRevision(f.revision, f.context([runtimeBinding()])),
-    /broker host is explicitly denied/,
+    f.driver.prepareRevision(
+      f.revision,
+      f.context([runtimeBinding(undefined, undefined, `https://${host}`)]),
+    ),
+    (error) => {
+      assert.equal(error.message, BROKER_HOST_DENIED);
+      // Only preparation catches this deny, and the worker drops the whole
+      // worker.compute-prepare-failed line when the message is over 256 characters
+      // (apps/controller/src/worker.ts MAX_COMPUTE_FAILURE_MESSAGE_LENGTH): the text must fit.
+      const diagnostic = f.driver.describePrepareRevisionFailure(error);
+      assert.equal(diagnostic.message, BROKER_HOST_DENIED);
+      assert.ok(diagnostic.message.length <= 256, `${diagnostic.message.length} characters`);
+      return true;
+    },
   );
   assert.deepEqual(
     runtimeWrites(f.calls),
@@ -1454,12 +1486,12 @@ test("Dedicated Codex repository policy rejects malformed domain policy containe
     [
       "domains array",
       { enabled: true, mode: "limited", domains: ["github.com"] },
-      /network policy domains must be an object/,
+      { message: BROKER_PROXY_DOMAINS },
     ],
     [
       "domains scalar",
       { enabled: true, mode: "limited", domains: "github.com" },
-      /network policy domains must be an object/,
+      { message: BROKER_PROXY_DOMAINS },
     ],
   ]) {
     await t.test(name, async () => {
@@ -1544,7 +1576,7 @@ async function publicReaderAdmission() {
     domains: { [publicReader.address]: "allow" },
   };
   const admission = driver.admitRevision(revision);
-  assert.match(admission, /^public-github-read:v1:[a-f0-9]{64}$/);
+  assert.match(admission, /^model-provider:v1:[a-f0-9]{64}:public-github-read:v1:[a-f0-9]{64}$/);
   return { f, revision, driver, admission };
 }
 
@@ -1558,7 +1590,7 @@ test("protected execution cannot acquire the anonymous reader or use it as a fal
     executionAdmission: { version: 3, mode: "protected" },
     egressPlan: { driver: owner.ref, routes: [] },
   };
-  assert.equal(f.driver.admitRevision(protectedRevision), undefined);
+  assert.match(f.driver.admitRevision(protectedRevision), /^model-provider:v1:[a-f0-9]{64}:$/);
   assert.throws(
     () => pluginRuntimeSpecForRevision(protectedRevision, undefined, undefined, publicReader),
     /public GitHub reader cannot be selected for protected execution/,
@@ -1810,7 +1842,7 @@ test("withdrawing a selected reader narrows access and stops only its revision",
     const selected = f.consumer();
     const successor = { ...structuredClone(f.revision), id: "unselected-successor", revision: 2 };
     successor.configuration.plugins.entries.codex.config.appServer.networkProxy.domains = {};
-    delete successor.compute.admission;
+    successor.compute.admission = f.driver.admitRevision(successor);
     f.enroll(successor);
     await f.driver.prepareRevision(successor, context);
     const successorDeployment = f
@@ -2018,6 +2050,7 @@ test("a repository-access Sandbox revision stops, retires and is deleted without
       id: "openshell-sandbox",
       implementation: "openshell",
       capability: "sandbox",
+      supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
       facets: ["networking", "filesystem", "process"],
       repositoryAccess: openShellRepositoryAccess(
         {
@@ -2321,27 +2354,17 @@ test("Embedded OpenClaw plugin runtime does not receive Codex broker policy", as
   assert.equal(manifest.repositoryBrokerNetworkPolicy, undefined);
 });
 
-test("Embedded Codex plugin runtime receives broker network policy centrally", async () => {
-  const address = "10.43.0.19";
-  const f = await fixture("embedded", undefined, {
-    publicGithubRead: { namespace: "control", podLabels: { app: "read-public-github" }, address },
-  });
+test("An embedded OpenClaw revision pinned to Codex cannot mount the repository broker bridge", async () => {
+  const f = await fixture("embedded");
   f.revision.plugins = codexPluginState();
-  const networkProxy = { enabled: true, domains: { [address]: "allow" } };
-  f.revision.configuration.plugins = {
-    entries: { codex: { config: { appServer: { networkProxy } } } },
-  };
-  await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
-  const manifest = preparedCodexManifest(f);
-  assert.equal(
-    manifest.publicGithubRead,
-    undefined,
-    "the public reader is scoped to ordinary dedicated Codex",
+  await assert.rejects(
+    f.driver.prepareRevision(f.revision, f.context([runtimeBinding()])),
+    /dedicated Codex Harness/,
   );
-  assert.deepEqual(manifest.repositoryBrokerNetworkPolicy, {
-    host: "git.credentials.svc.cluster.local",
-    domains: { [address]: "allow" },
-  });
+  assert.equal(
+    [...f.objects.values()].some((resource) => resource.kind === "Deployment"),
+    false,
+  );
 });
 
 // Both consumer shapes must trust the projected CA without disabling TLS verification.
@@ -2400,6 +2423,9 @@ test("Kubernetes projects the repository client into native exec paths without c
   // construction; setting only the Kubernetes container PATH is insufficient.
   await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
   const expected = structuredClone(original);
+  expected.models = {
+    providers: { openai: { api: "openai-responses", baseUrl: "https://api.openai.com/v1" } },
+  };
   expected.tools.exec.pathPrepend = [shim, "/operator/bin", "/shared/bin"];
   expected.agents.entries.custom.tools.exec.pathPrepend = [shim, "/agent/bin"];
   expected.agents.entries["own-exec"].tools.exec.pathPrepend = [
@@ -2424,6 +2450,9 @@ test("Kubernetes supplies a native repository exec prefix when no tools configur
       await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
       assert.deepEqual(JSON.parse(preparedNativeDocument(f)), {
         ...original,
+        models: {
+          providers: { openai: { api: "openai-responses", baseUrl: "https://api.openai.com/v1" } },
+        },
         tools: { exec: { pathPrepend: ["/opt/oce/repository-credentials/bin"] } },
       });
       assert.deepEqual(f.revision.configuration, original);
@@ -2431,7 +2460,7 @@ test("Kubernetes supplies a native repository exec prefix when no tools configur
   }
 });
 
-test("Kubernetes preserves native configuration bytes without repository bindings", async (t) => {
+test("Kubernetes preserves native exec settings without repository bindings", async (t) => {
   for (const runtimeBindings of [undefined, []]) {
     await t.test(runtimeBindings === undefined ? "missing" : "empty", async () => {
       const f = await fixture();
@@ -2443,7 +2472,12 @@ test("Kubernetes preserves native configuration bytes without repository binding
       const document = JSON.stringify(f.revision.configuration);
       deepFreeze(f.revision.configuration);
       await f.driver.prepareRevision(f.revision, f.context(runtimeBindings));
-      assert.equal(preparedNativeDocument(f), document);
+      assert.deepEqual(JSON.parse(preparedNativeDocument(f)), {
+        ...JSON.parse(document),
+        models: {
+          providers: { openai: { api: "openai-responses", baseUrl: "https://api.openai.com/v1" } },
+        },
+      });
       assert.equal(JSON.stringify(f.revision.configuration), document);
     });
   }

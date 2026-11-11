@@ -9,13 +9,13 @@ export const expectedFullLanes = [
   "postgres-auth",
   "postgres-platform",
   "images-packaging",
-  "images-model-probes",
   "images-runtime-startup",
   "images-runtime-startup-2",
   "images-runtime-startup-3",
   "runtime-image-fixture",
   "k3d-fixture-configuration",
   "k3d-fixture-state",
+  "k3d-fixture-network",
   "k3d-fixture-plugins",
   "k3d-observability",
   "logging-collector",
@@ -26,8 +26,9 @@ export const expectedFullLanes = [
 export function passingGateNeeds(mode) {
   return {
     impact: { result: "success", outputs: { mode } },
-    audit: { result: "success", outputs: {} },
     "static-checks": { result: "success", outputs: {} },
+    "image-lanes": { result: mode === "docs" ? "skipped" : "success", outputs: {} },
+    "runtime-artifact": { result: mode === "docs" ? "skipped" : "success", outputs: {} },
     "pr-safe": { result: mode === "docs" ? "skipped" : "success", outputs: {} },
     "runtime-image-fixture": { result: mode === "docs" ? "skipped" : "success", outputs: {} },
   };

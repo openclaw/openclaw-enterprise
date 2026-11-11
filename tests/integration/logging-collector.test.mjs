@@ -31,7 +31,8 @@ async function docker(args) {
 // had stopped.
 async function waitFor(outcome, check, fixture) {
   const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
+  // The deadline is checked after each check, so the last check happens at or past it.
+  for (;;) {
     let done;
     try {
       done = await check();
@@ -44,6 +45,9 @@ async function waitFor(outcome, check, fixture) {
     if (done) {
       return;
     }
+    if (Date.now() >= deadline) {
+      break;
+    }
     await delay(100);
   }
   const state = fixture ? ` ${await fixture.describe()}` : "";
@@ -52,7 +56,7 @@ async function waitFor(outcome, check, fixture) {
 
 function attributes(entries = []) {
   return Object.fromEntries(
-    entries.map(({ key, value }) => [key, value.stringValue ?? value.intValue]),
+    entries.map(({ key, value }) => [key, value.stringValue ?? value.intValue ?? value.boolValue]),
   );
 }
 
@@ -74,12 +78,28 @@ async function collectorFixture(t, prefix) {
     join(directory, "backend.yaml"),
     `receivers:\n  otlp:\n    protocols:\n      http:\n        endpoint: 0.0.0.0:4318\nexporters:\n  file:\n    path: /out/logs.jsonl\nservice:\n  telemetry:\n    logs:\n      level: error\n  pipelines:\n    logs:\n      receivers: [otlp]\n      exporters: [file]\n`,
   );
+  let networkCreated = false;
+  // node:test runs after hooks in registration order, so this hook runs before any hook a
+  // test adds for a container it attaches to the network later. Remove every container on
+  // the network (backend, Collector and those test fixtures) before the network itself:
+  // Docker refuses to remove a network with attached containers, and each leaked network
+  // keeps an address pool until Compose networks on the host find none left. A failed
+  // removal fails the test instead of leaking silently.
   t.after(async () => {
-    await docker(["rm", "--force", collector, backend]).catch(() => {});
-    await docker(["network", "rm", network]).catch(() => {});
-    await rm(directory, { recursive: true, force: true });
+    try {
+      if (networkCreated) {
+        const attached = await docker(["ps", "--all", "--quiet", "--filter", `network=${network}`]);
+        if (attached.length > 0) {
+          await docker(["rm", "--force", ...attached.split("\n")]);
+        }
+        await docker(["network", "rm", network]);
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
   await docker(["network", "create", network]);
+  networkCreated = true;
   await docker([
     "run",
     "--detach",
@@ -273,6 +293,32 @@ async function exportedOccEventPattern() {
   return new RegExp(pattern.replaceAll("$$", "$"));
 }
 
+test("the Collector exports bounded native-admin audit diagnostics", async () => {
+  const event = "native_admin.pending_work_unresolved";
+  const pattern = await exportedOccEventPattern();
+  // A computed event field hid both denial names from the documented-event inventory.
+  const source = await readFile(join(root, "apps/controller/src/http/native-admin.ts"), "utf8");
+  const emitted = new Set(
+    [...source.matchAll(/\bevent: "([a-z_]+[.][a-z_.-]+)"/g)].map(([, name]) => name),
+  );
+  const flow = await readFile(join(root, "docs/flows/common-logging.md"), "utf8");
+  for (const denial of [
+    "native_admin.http_denial_audit_failed",
+    "native_admin.websocket_denial_audit_failed",
+  ]) {
+    assert.ok(emitted.has(denial), `${denial} is visible to the event inventory`);
+    assert.ok(flow.includes(`\`${denial}\``), `${denial} is documented`);
+    assert.ok(pattern.test(denial), `${denial} reaches the backend`);
+    for (const name of [`${denial}.detail`, `${denial}-unreviewed`]) {
+      assert.equal(pattern.test(name), false, "nearby unreviewed diagnostics stay local");
+    }
+  }
+  assert.ok(pattern.test(event), "the documented shutdown diagnostic reaches the backend");
+  for (const name of [`${event}.detail`, `${event}-unreviewed`, "native_admin.other_event"]) {
+    assert.equal(pattern.test(name), false, "nearby unreviewed diagnostics stay local");
+  }
+});
+
 async function sourceFiles(directory, extensions) {
   return (await readdir(join(root, directory), { recursive: true }))
     .filter((path) => extensions.some((extension) => path.endsWith(extension)))
@@ -293,7 +339,10 @@ test("the Collector exports every OCC API and worker event the docs name", async
   ]) {
     // The Kubernetes Compute Driver renders this file's events into Gateway and Codex
     // Pods; the Collector classifies those runtime wrapper diagnostics separately.
-    if (path.endsWith("drivers/compute/kubernetes/runtime-entrypoints.ts")) {
+    if (
+      path.endsWith("drivers/compute/kubernetes/runtime-entrypoints.ts") ||
+      path.endsWith("drivers/compute/harness-egress-enrollment.ts")
+    ) {
       continue;
     }
     const text = await readFile(join(root, path), "utf8");
@@ -360,6 +409,7 @@ test(
       (kind) => `CANARY_${kind}_${fixture.suffix}`,
     );
     const payload = Object.fromEntries(canaries.map((value) => [value, value]));
+    let senderStdoutMatches = null;
 
     // The sender is deliberately synthetic: this exercises the real Engine ->
     // Fluent Forward -> Collector -> OTLP boundary, not gateway/Codex emission.
@@ -375,7 +425,7 @@ test(
       ];
       const script = `for(const line of ${JSON.stringify(stdout)})process.stdout.write(line+'\\n');for(const line of ${JSON.stringify(stderr)})process.stderr.write(line+'\\n');`;
       try {
-        await docker([
+        const output = await docker([
           "run",
           "--name",
           name,
@@ -395,6 +445,7 @@ test(
           "-e",
           script,
         ]);
+        senderStdoutMatches = output === stdout.join("\n").trim();
       } finally {
         await docker(["rm", "--force", name]).catch(() => {});
       }
@@ -411,10 +462,31 @@ test(
         "service.name": "forged-service",
         "openclaw.agent.id": "forged-agent",
       });
-    const filtered = async () =>
-      /otelcol_processor_filter_logs_filtered[^\n]* [1-9]/.test(
-        await fetch(`http://${metricsAddress}/metrics`).then((response) => response.text()),
-      );
+    let lastMetrics;
+    const filtered = async () => {
+      const response = await fetch(`http://${metricsAddress}/metrics`);
+      lastMetrics = { httpStatus: response.status };
+      const metrics = await response.text();
+      // Keep counts only: labels and response bodies are not failure diagnostics.
+      for (const [field, name] of [
+        ["connectionsOpened", "otelcol_fluent_opened_connections"],
+        ["connectionsClosed", "otelcol_fluent_closed_connections"],
+        ["eventsParsed", "otelcol_fluent_events_parsed"],
+        ["parseFailures", "otelcol_fluent_parse_failures"],
+        ["recordsGenerated", "otelcol_fluent_records_generated"],
+        ["accepted", "otelcol_receiver_accepted_log_records"],
+        ["refused", "otelcol_receiver_refused_log_records"],
+        ["filtered", "otelcol_processor_filter_logs_filtered"],
+      ]) {
+        const values = [
+          ...metrics.matchAll(new RegExp(`^${name}(?:_total)?(?:\\{[^\\n]*\\})? ([^\\s]+)$`, "gm")),
+        ]
+          .map(([, value]) => Number(value))
+          .filter(Number.isFinite);
+        lastMetrics[field] = values.length ? values.reduce((sum, value) => sum + value, 0) : null;
+      }
+      return /otelcol_processor_filter_logs_filtered[^\n]* [1-9]/.test(metrics);
+    };
 
     // No other records have entered this fresh Collector, so a filter count
     // proves the near-match was processed and rejected before capture assertions.
@@ -425,7 +497,17 @@ test(
       [],
       ["com.docker.compose.service=worker"],
     );
-    await waitFor("the Collector to count the filtered near-match", filtered, fixture);
+    try {
+      await waitFor("the Collector to count the filtered near-match", filtered, fixture);
+    } catch (error) {
+      t.diagnostic(
+        `Last Collector forwarding state (null means absent): ${JSON.stringify({
+          senderStdoutMatches,
+          metrics: lastMetrics,
+        })}`,
+      );
+      throw error;
+    }
 
     await send("gateway", [
       JSON.stringify({
@@ -493,6 +575,20 @@ test(
           status: 403,
           ...payload,
         }),
+        // Verified-email lookup failures must keep their stage after the body is
+        // replaced. An unreviewed stage must still be discarded by the Collector.
+        ...["email", canaries[4]].map((step) =>
+          JSON.stringify({
+            event: "authentication.provider-unavailable-warning",
+            severity: "WARN",
+            provider: "github",
+            providerId: `github:providerkey${fixture.suffix}`,
+            step,
+            cause: "http_status",
+            status: 503,
+            ...payload,
+          }),
+        ),
         JSON.stringify({
           event: "presets.default-refresh-skipped",
           severity: "WARN",
@@ -562,12 +658,12 @@ test(
       JSON.stringify({ level: "info", subsystem: "gateway", message: "x".repeat(33_000) }),
     ]);
     await waitFor(
-      "at least 13 exported records",
-      async () => (await records()).length >= 13,
+      "at least 15 exported records",
+      async () => (await records()).length >= 15,
       fixture,
     );
     const initial = await records();
-    assert.equal(initial.length, 13, "only reviewed JSON classes and Codex stderr pass");
+    assert.equal(initial.length, 15, "only reviewed JSON classes and Codex stderr pass");
     const warningEvents = [
       "compute.preflight-warning",
       "authentication.sign-in-limited",
@@ -594,6 +690,8 @@ test(
     }
     assert.deepEqual(initial.map(({ resource }) => resource["service.name"]).sort(), [
       "codex-app-server",
+      "occ-api",
+      "occ-api",
       "occ-api",
       "occ-api",
       "occ-api",
@@ -683,6 +781,21 @@ test(
         "occ.sign_in.step": "membership",
         "occ.sign_in.cause": "http_status",
         "occ.sign_in.status": "403",
+      },
+      {
+        "event.name": "authentication.provider-unavailable-warning",
+        "log.iostream": "stdout",
+        "occ.sign_in.provider": "github",
+        "occ.sign_in.step": "email",
+        "occ.sign_in.cause": "http_status",
+        "occ.sign_in.status": "503",
+      },
+      {
+        "event.name": "authentication.provider-unavailable-warning",
+        "log.iostream": "stdout",
+        "occ.sign_in.provider": "github",
+        "occ.sign_in.cause": "http_status",
+        "occ.sign_in.status": "503",
       },
       {
         "event.name": "authentication.provider-unavailable-warning",
@@ -1218,6 +1331,9 @@ test(
               }),
               line(phase("agent", "codex-login", "ok")),
               line(phase("agent", "codex-login", "ok"), "stdout"),
+              line({ event: "runtime.protected_startup", startupHash: "b".repeat(64) }),
+              line({ event: "runtime.protected_startup", startupHash: canary }),
+              line({ event: "runtime.protected_startup", startupHash: "b".repeat(64) }, "stdout"),
               // A failed phase keeps a bounded cause code; an unbounded one is dropped.
               line({
                 ...phase("agent", "plugin-install", "failed"),
@@ -1275,6 +1391,11 @@ test(
         gateway("WARN", phaseEvent),
         codex("WARN", { "event.name": "codex.model_probe", "occ.code": "AUTHENTICATION_FAILED" }),
         codex("INFO", { ...phaseEvent, "occ.startup.phase": "codex-login" }),
+        codex("INFO", {
+          "event.name": "runtime.protected_startup",
+          "occ.startup.hash": "b".repeat(64),
+        }),
+        codex("INFO", { "event.name": "runtime.protected_startup" }),
         codex("WARN", {
           ...phaseEvent,
           "occ.startup.phase": "plugin-install",
@@ -1398,7 +1519,59 @@ test(
                 agentId,
                 revisionId,
               }),
-              line({ severity: "WARN", event: "native_admin.websocket_denial_audit_failed" }),
+              // Both denial paths export the fixed event, never supplied caller or error fields.
+              ...[
+                "native_admin.http_denial_audit_failed",
+                "native_admin.websocket_denial_audit_failed",
+              ].map((event) =>
+                line({
+                  severity: "WARN",
+                  event,
+                  requestId,
+                  namespaceId,
+                  agentId,
+                  revisionId,
+                  code: "UNREVIEWED_EXTRA",
+                  pending: 7,
+                  userId: canary,
+                  headers: { authorization: canary },
+                  error: { message: canary, stack: canary },
+                  payload: { private: canary },
+                }),
+              ),
+              line({ severity: "WARN", event: "native_admin.http_denial_audit_failed.detail" }),
+              line({
+                severity: "WARN",
+                event: "native_admin.websocket_denial_audit_failed-unreviewed",
+              }),
+              // Shutdown exports only its bounded pending count; payloads and identities stay local.
+              ...[
+                0,
+                7,
+                9007199254740991,
+                -1,
+                1.5,
+                "7",
+                9007199254740992,
+                true,
+                null,
+                { private: canary },
+              ].map((pending) =>
+                line({
+                  severity: "WARN",
+                  event: "native_admin.pending_work_unresolved",
+                  pending,
+                  message: canary,
+                  userId: canary,
+                  requestId,
+                  namespaceId,
+                  agentId,
+                  revisionId,
+                  code: "UNREVIEWED_EXTRA",
+                  payload: { private: canary },
+                }),
+              ),
+              line({ severity: "WARN", event: "native_admin.pending_work_unresolved.detail" }),
               // A Compute-owner mismatch keeps the Agent's IDs; the Driver names stay local.
               line({
                 severity: "WARN",
@@ -1435,7 +1608,7 @@ test(
               line({
                 severity: "WARN",
                 event: "authentication.recovery-seed-warning",
-                message: `OCC_AUTH_GITHUB_RECOVERY_USER_ID differs ${canary}`,
+                message: `OCC_AUTH_RECOVERY_USER_ID differs ${canary}`,
               }),
               // A near-match of a reviewed name is still dropped.
               line({ severity: "WARN", event: "shutdown.failed-unreviewed" }),
@@ -1535,7 +1708,17 @@ test(
           "occ.agent.id": agentId,
           "occ.revision.id": revisionId,
         }),
+        api("WARN", { "event.name": "native_admin.http_denial_audit_failed" }),
         api("WARN", { "event.name": "native_admin.websocket_denial_audit_failed" }),
+        ...["0", "7", "9007199254740991"].map((pending) =>
+          api("WARN", {
+            "event.name": "native_admin.pending_work_unresolved",
+            "occ.native_admin.pending": pending,
+          }),
+        ),
+        ...Array.from({ length: 7 }, () =>
+          api("WARN", { "event.name": "native_admin.pending_work_unresolved" }),
+        ),
         api("WARN", {
           "event.name": "native_admin.compute_owner_mismatch",
           "occ.namespace.id": namespaceId,
@@ -1579,6 +1762,39 @@ function codeFieldCases({ canary, identity, exportedIdentity }) {
   const longest = `a${"b".repeat(63)}`;
   // `sandboxDriverId`, `status` and `reason` stay in local logs.
   const kept = [
+    {
+      record: {
+        event: "worker.openshell-git-continuity-refused",
+        check: "held-startup-recorded",
+        keyHash: "a".repeat(64),
+      },
+      exported: { "occ.check": "held-startup-recorded", "occ.continuity.key_hash": "a".repeat(64) },
+    },
+    {
+      record: {
+        event: "worker.openshell-git-continuity-refused",
+        check: "sandbox-restart-count",
+        result: 7,
+      },
+      exported: { "occ.check": "sandbox-restart-count", "occ.continuity.result": "7" },
+    },
+    {
+      record: { event: "worker.openshell-git-continuity-refused", result: false, keyHash: canary },
+      exported: { "occ.continuity.result": false },
+    },
+    {
+      record: {
+        event: "worker.openshell-git-continuity-refused",
+        result: canary,
+        keyHash: "A".repeat(64),
+      },
+      exported: {},
+    },
+    { record: { event: "worker.openshell-git-continuity-refused", result: 7.5 }, exported: {} },
+    {
+      record: { event: "worker.openshell-git-continuity-refused", result: 2147483648 },
+      exported: {},
+    },
     {
       record: {
         event: "worker.openshell-git-expiry",
@@ -1751,10 +1967,48 @@ test(
       "occ.agent.id": agentId,
       "occ.revision.id": revisionId,
     };
-    const cases = codeFieldCases({ canary, identity, exportedIdentity }).map((entry) => ({
-      ...entry,
-      requestId: `req_${randomUUID()}`,
+    // Probe diagnostics survive Pod cleanup through this real Collector pipeline.
+    // Only the two fixed reasons and a process-failure curl exit code may escape.
+    const probeCases = [
+      ...[1, 56, 99].map((code) => ({
+        reason: "probe_process_failed",
+        code,
+        exported: {
+          "occ.git_probe.reason": "probe_process_failed",
+          "occ.git_probe.exit_code": String(code),
+        },
+      })),
+      ...[undefined, -1, 0, 100, 1.5, "56", "E_FAILURE", true, { code: 56 }].map((code) => ({
+        reason: "probe_process_failed",
+        code,
+        exported: { "occ.git_probe.reason": "probe_process_failed" },
+      })),
+      {
+        reason: "probe_response_invalid",
+        code: 56,
+        exported: { "occ.git_probe.reason": "probe_response_invalid" },
+      },
+      ...[canary, "probe_process_failed_extra", 56, null].map((reason) => ({
+        reason,
+        code: 56,
+        exported: {},
+      })),
+    ].map(({ reason, code, exported }) => ({
+      record: {
+        event: "worker.openshell-git-probe-failed",
+        ...identity,
+        reason,
+        code,
+        stdout: canary,
+        stderr: canary,
+        proof: canary,
+        url: canary,
+      },
+      exported: { ...exportedIdentity, ...exported },
     }));
+    const cases = [...codeFieldCases({ canary, identity, exportedIdentity }), ...probeCases].map(
+      (entry) => ({ ...entry, requestId: `req_${randomUUID()}` }),
+    );
     const line = (record) => ({
       timeUnixNano: String(BigInt(Date.now()) * 1000000n),
       body: {
@@ -1785,6 +2039,7 @@ test(
               ...cases.map(({ record, requestId }) => line({ ...record, requestId })),
               // Near-matches of the reviewed names are still dropped.
               line({ event: "worker.openshell-git-expiry-unreviewed", check: "model-provider" }),
+              line({ event: "worker.openshell-git-probe-failed-unreviewed" }),
               line({ event: "worker.repository-delivery-pending-unreviewed" }),
             ],
           },
@@ -1806,7 +2061,7 @@ test(
         record.attributes.map(({ key, value }) => [
           key,
           // OTLP JSON carries an int64 as a string; a JSON number may arrive as either.
-          value.stringValue ?? String(value.intValue ?? value.doubleValue),
+          value.stringValue ?? value.boolValue ?? String(value.intValue ?? value.doubleValue),
         ]),
       ),
     }));
@@ -1821,6 +2076,10 @@ test(
         // A fence is exported as an integer, never a double or string.
         const fence = actual.record.attributes.find(({ key }) => key === "occ.fence");
         assert.equal(String(fence.value.intValue), fields["occ.fence"]);
+      }
+      if (fields["occ.git_probe.exit_code"] !== undefined) {
+        const code = actual.record.attributes.find(({ key }) => key === "occ.git_probe.exit_code");
+        assert.equal(String(code.value.intValue), fields["occ.git_probe.exit_code"]);
       }
       assert.deepEqual(
         actual.fields,
@@ -2155,8 +2414,8 @@ test(
   },
   async (t) => {
     const fixture = await collectorFixture(t, "sync");
+    // The fixture's cleanup removes this container with the rest of its network.
     const api = `oce-otel-sync-api-${fixture.suffix}`;
-    t.after(() => docker(["rm", "--force", api]).catch(() => {}));
     const namespace = `system-${fixture.suffix}`;
     const podName = `openclaw-enterprise-worker-${fixture.suffix}`;
     const podUid = randomUUID();

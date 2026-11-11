@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { defaultK3sImage, lanesWithoutK3sAddons } from "../../scripts/ci/prepare.mjs";
+import { startFakePostgres } from "./fake-postgres-server.mjs";
 import {
   commandShim as fixtureCommandShim,
   startCommandServer,
@@ -13,9 +14,17 @@ import {
 // cleanup.mjs still start every command as a real process and own its timeouts, signals
 // and pipes; only the scenario logic below runs in the test process. A command sends
 // the environment variables below. The fixture directory the scenarios write to is the
-// server's, never the client's.
+// server's, never the client's. `compose up` starts a fake PostgreSQL server
+// (fake-postgres-server.mjs) for the port preparation publishes, where its administrative
+// SQL arrives (scripts/ci/postgres-admin.mjs); each query is logged as a "postgres"
+// command whose args are the database and the query. `compose down` stops it. The fake
+// listens on that port's Unix socket in OPENCLAW_CI_POSTGRES_SOCKET_DIR: the TCP port
+// preparation reserved and released can meanwhile be held by any process's connection
+// (its TIME_WAIT blocks a listener), which made 6 of 20 parallel runs fail.
 export const forwardedEnv = [
   "CI_FIXTURE_SCENARIO",
+  "OCC_POSTGRES_PORT",
+  "OPENCLAW_CI_POSTGRES_SOCKET_DIR",
   "CI_FIXTURE_LANE",
   "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
   "OCC_MIGRATION_DATABASE_URL",
@@ -30,7 +39,17 @@ function createStateStore() {
   return { json: "{}" };
 }
 
-async function fakeCommand({ command, args, env, cwd, root, store, hungCommandExitMs, io }) {
+async function fakeCommand({
+  command,
+  args,
+  env,
+  cwd,
+  root,
+  store,
+  postgresServers,
+  hungCommandExitMs,
+  io,
+}) {
   const { stdout, stderr, exit, exitAfter, closeStdout, lateStderr, readInput, holdPipes } = io;
   const scenario = env.CI_FIXTURE_SCENARIO;
   const initialState = store.json;
@@ -222,14 +241,49 @@ async function fakeCommand({ command, args, env, cwd, root, store, hungCommandEx
     if (args[0] === "compose" && args[1] === "-f" && args[3] === "-p") {
       assert.match(args[4], /^openclaw_ci_pg_/);
       if (equals(args.slice(5), ["up", "-d", "--wait"])) {
+        const port = Number(env.OCC_POSTGRES_PORT);
+        assert.ok(Number.isSafeInteger(port) && port > 0 && port !== 55432);
+        assert.ok(env.OPENCLAW_CI_POSTGRES_SOCKET_DIR, "the fixture sets the socket directory");
+        postgresServers.set(
+          args[4],
+          await startFakePostgres({
+            port,
+            socketPath: join(env.OPENCLAW_CI_POSTGRES_SOCKET_DIR, `.s.PGSQL.${port}`),
+            onQuery: (query, { database }) => {
+              appendFileSync(
+                join(root, "commands.jsonl"),
+                JSON.stringify({ command: "postgres", args: [database, query], at: Date.now() }) +
+                  "\n",
+              );
+            },
+          }),
+        );
         return finish();
       }
       if (equals(args.slice(5), ["down", "--volumes", "--remove-orphans"])) {
+        await postgresServers.get(args[4])?.close();
+        postgresServers.delete(args[4]);
         return finish();
       }
-      if (args[5] === "exec" && args[8] === "psql") {
-        return finish();
-      }
+    }
+    if (scenario === "cache-progress" && equals(args.slice(0, 2), ["buildx", "build"])) {
+      // Repeated RUN headers model BuildKit switching between active vertices.
+      // Probe and load deliberately differ: a load can reuse work from the probe.
+      // Include private-looking text to prove the summary never forwards raw output.
+      const probe = args.includes("--metadata-file");
+      stderr(
+        (probe
+          ? "#1 importing cache manifest from https://cache.example.test/private-step\n"
+          : "") +
+          "#2 [openclaw-build 1/2] RUN synthetic-cache-credential\n" +
+          "#2 [openclaw-build 1/2] RUN synthetic-cache-credential\n" +
+          "#2 CACHED\n#2 CACHED\n" +
+          "#3 [openclaw-build 2/2] RUN synthetic-build-command\n" +
+          "#3 [openclaw-build 2/2] RUN synthetic-build-command\n" +
+          (probe ? "#3 DONE 1.0s\n" : "#3 CACHED\n") +
+          "#4 [openclaw-bridge-tests 1/1] RUN synthetic-sibling-command\n#4 CACHED\n" +
+          "synthetic-build-output\n",
+      );
     }
     // The cache-only probe reports each image's config digest. In the engine-*
     // scenarios the cache resolves to images the engine may hold: engine-holds-images
@@ -246,6 +300,7 @@ async function fakeCommand({ command, args, env, cwd, root, store, hungCommandEx
       assert.equal(args.includes("--load") || args.includes("--cache-to"), false);
       // A cache miss builds every step in the probe; this one outlasts the lane's time.
       if (scenario === "image-probe-hung") {
+        stderr("#12 [openclaw-build 5/9] RUN pnpm build\n");
         return hang();
       }
       const role = args.includes("--target") ? "controller" : "runtime";
@@ -309,6 +364,25 @@ async function fakeCommand({ command, args, env, cwd, root, store, hungCommandEx
       state[role] = args[2];
       return finish();
     }
+    // The warm job builds the runtime image's OpenClaw build stage alone first.
+    if (
+      equals(args.slice(0, 6), [
+        "buildx",
+        "build",
+        "--output",
+        "type=cacheonly",
+        "--target",
+        "openclaw-build",
+      ])
+    ) {
+      assert.equal(
+        args.includes("--load") || args.includes("-t") || args.includes("--cache-to"),
+        false,
+      );
+      assert.ok(args[args.indexOf("-f") + 1].endsWith("/deploy/runtime/Dockerfile"));
+      assert.equal(state.runtime, undefined, "the stage builds before the runtime image");
+      return finish();
+    }
     // The warm job's cache export, after that image's build and load.
     if (equals(args.slice(0, 4), ["buildx", "build", "--output", "type=cacheonly"])) {
       assert.equal(args.includes("--load") || args.includes("-t"), false);
@@ -342,9 +416,15 @@ async function fakeCommand({ command, args, env, cwd, root, store, hungCommandEx
     ) {
       assert.ok(args[args.indexOf("-f") + 1].endsWith("/deploy/runtime/Dockerfile"));
       if (scenario === "image-build-hung") {
+        stderr("#14 exporting to image\n");
         return hang();
       }
       state.runtime = args[args.indexOf("-t") + 1];
+      return finish();
+    }
+    if (args[0] === "build" && args.includes("OPENCLAW_DOCKER_BUILD_SKIP_DTS=1")) {
+      state.runtime = args[args.indexOf("-t") + 1];
+      stderr("#1 [native-build 1/1] RUN synthetic-native-command\n#1 CACHED\n");
       return finish();
     }
     // The main image cache warm job keeps its runtime image under a tag naming its ID.
@@ -364,6 +444,11 @@ async function fakeCommand({ command, args, env, cwd, root, store, hungCommandEx
       assert.match(args[3], /^localhost\/openclaw-ci-image-[a-z0-9-]+\/fixture:local$/);
       state.tag = args[3];
       return finish();
+    }
+    if (state.runtime && equals(args, ["image", "inspect", state.runtime])) {
+      // A source-built runtime can enter the same export path as the fixture image.
+      state.tag = state.runtime;
+      return finish("[]\n");
     }
     if (equals(args, ["image", "inspect", state.tag])) {
       if (scenario === "hung-host-owned") {
@@ -445,6 +530,8 @@ async function fakeCommand({ command, args, env, cwd, root, store, hungCommandEx
         "images",
         "import",
         "--all-platforms",
+        "--label",
+        "io.cri-containerd.pinned=pinned",
         "-",
       ]);
       // The worker's containerd stops answering during its first import (finding 1006). The
@@ -550,13 +637,22 @@ async function fakeCommand({ command, args, env, cwd, root, store, hungCommandEx
         return finish(
           "REF TYPE DIGEST SIZE PLATFORMS LABELS\n" +
             references
-              .map(
-                (ref) =>
-                  ref +
-                  " application/vnd.oci.image.manifest.v1+json " +
-                  manifestDigest +
-                  " 1 linux/amd64 -\n",
-              )
+              .map((ref) => {
+                const mediaType =
+                  {
+                    "oci-index": "application/vnd.oci.image.index.v1+json",
+                    "docker-manifest-list":
+                      "application/vnd.docker.distribution.manifest.list.v2+json",
+                    "docker-manifest": "application/vnd.docker.distribution.manifest.v2+json",
+                  }[scenario] ?? "application/vnd.oci.image.manifest.v1+json";
+                const digest =
+                  scenario === "wrong-worker-containerd-digest" &&
+                  node === "agent-0" &&
+                  ref === alias
+                    ? "sha256:" + "d".repeat(64)
+                    : manifestDigest;
+                return `${ref} ${mediaType} ${digest} 1 linux/amd64 -\n`;
+              })
               .join(""),
         );
       }
@@ -568,6 +664,18 @@ async function fakeCommand({ command, args, env, cwd, root, store, hungCommandEx
           state.aliases ??= {};
           state.aliases[node] = args[8];
         }
+        return finish();
+      }
+      if (scenario === "missing-alias" && equals(args.slice(2, 7), [...ctr, "label"])) {
+        stderr("ctr: canonical image not found\n");
+        return exit(1);
+      }
+      if (
+        equals(args.slice(2), [...ctr, "label", alias, "io.cri-containerd.pinned=pinned"]) &&
+        alias
+      ) {
+        state.pinned ??= {};
+        state.pinned[node] = true;
         return finish();
       }
       if (
@@ -607,7 +715,39 @@ async function fakeCommand({ command, args, env, cwd, root, store, hungCommandEx
           );
           return exit(1);
         }
-        return finish(JSON.stringify({ status: { id: configId, repoDigests: [alias] } }));
+        const status = {
+          id: configId,
+          repoDigests: [alias],
+          pinned:
+            state.pinned?.[node] === true &&
+            !(
+              node === "agent-0" &&
+              (scenario === "unpinned-worker-cri" ||
+                (scenario === "lagging-worker-pin" && state.criLookups[node] <= 2))
+            ),
+        };
+        if (node === "agent-0") {
+          switch (scenario) {
+            case "wrong-worker-cri-digest":
+              status.repoDigests = [alias.replace(manifestDigest, "sha256:" + "d".repeat(64))];
+              break;
+            case "string-worker-cri-digests":
+              status.repoDigests = `${alias}0`;
+              break;
+            case "mixed-worker-cri-digests":
+              status.repoDigests = [alias, 42];
+              break;
+            case "malformed-worker-cri-pin":
+              status.pinned = "true";
+              break;
+            case "lagging-worker-missing-pin":
+              if (state.criLookups[node] <= 2) {
+                delete status.pinned;
+              }
+              break;
+          }
+        }
+        return finish(JSON.stringify({ status }));
       }
     }
   }
@@ -991,13 +1131,21 @@ export function commandShim(options) {
 }
 
 // One server per fixture, writing to the fixture directory root.
-export function startFixtureCommandServer({ root, hungCommandExitMs }) {
+export async function startFixtureCommandServer({ root, hungCommandExitMs }) {
   assert.ok(Number.isSafeInteger(hungCommandExitMs));
   assert.ok(typeof root === "string" && root.length > 0);
   const store = createStateStore();
-  return startCommandServer({
+  const postgresServers = new Map();
+  const server = await startCommandServer({
     forwardedEnv,
     handle: ({ command, args, env, cwd, io }) =>
-      fakeCommand({ command, args, env, cwd, root, store, hungCommandExitMs, io }),
+      fakeCommand({ command, args, env, cwd, root, store, postgresServers, hungCommandExitMs, io }),
   });
+  return {
+    ...server,
+    close: async () => {
+      await Promise.all([...postgresServers.values()].map((postgres) => postgres.close()));
+      await server.close();
+    },
+  };
 }

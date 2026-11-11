@@ -1,3 +1,4 @@
+import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-protocol.mjs";
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import type { SandboxNetworkGrant } from "../../packages/contracts/src/sandbox-policy.ts";
@@ -6,7 +7,11 @@ import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.t
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
-export async function createPolicyConsole(t: TestContext, ceiling: SandboxNetworkGrant[] = []) {
+export async function createPolicyConsole(
+  t: TestContext,
+  ceiling: SandboxNetworkGrant[] = [],
+  defaultBinary = "/usr/bin/python3.11",
+) {
   const sandboxDriver = new OpenShellSandboxDriver(
     {
       gateway: { workspaceMode: "operator" },
@@ -24,7 +29,7 @@ export async function createPolicyConsole(t: TestContext, ceiling: SandboxNetwor
         networkPolicies: [
           {
             name: "python-default",
-            binaries: [{ path: "/usr/bin/python3.11" }],
+            binaries: [{ path: defaultBinary }],
             endpoints: [{ host: "example.com", ports: [443], tls: "skip" }],
           },
         ],
@@ -36,7 +41,10 @@ export async function createPolicyConsole(t: TestContext, ceiling: SandboxNetwor
       backend: {
         id: "openshell",
         drivers: { sandbox: "policy-openshell", credential_gateway: "policy-credentials" },
-        client: new OpenShellGateway({ serviceName: "openshell-gateway" }),
+        client: new OpenShellGateway(
+          { serviceName: "openshell-gateway" },
+          { gatewayClient: openShellWorkspaceProtocol() },
+        ),
       },
     },
   );

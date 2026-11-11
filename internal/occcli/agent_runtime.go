@@ -17,10 +17,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const (
-	runtimeLogFollowInterval = 2 * time.Second
-	runtimeLogFollowTail     = "1000"
-)
+const runtimeLogFollowInterval = 2 * time.Second
 
 // sleepContext waits for d or until ctx is done. Tests replace it.
 var sleepContext = func(ctx context.Context, d time.Duration) error {
@@ -36,9 +33,10 @@ var sleepContext = func(ctx context.Context, d time.Duration) error {
 
 // agentRevision returns the requested revision, or the Agent's active revision.
 // Without an active revision (for example, after a failed first deploy) it uses
-// the latest revision and says so on notices, because that is the version whose
-// Pods and output explain the failure. When it had to read the chosen revision's
-// runtime description to decide, it returns that description too (else nil).
+// the latest revision the caller can read and says so on notices, because that
+// is the version whose Pods and output explain the failure. When it had to read
+// the chosen revision's runtime description to decide, it returns that
+// description too (else nil).
 // revisionAdvice tells a caller who can list no revision how to name one
 // anyway, or is "" when the command itself needs revision read.
 func (app *application) agentRevision(
@@ -70,7 +68,9 @@ func (app *application) agentRevision(
 		if err != nil {
 			return "", nil, err
 		}
-		noticef(notices, "notice: agent %s has no active revision; using latest revision %s", agentID, latest)
+		if err := noticef(notices, "notice: agent %s has no active revision; using %s, the latest revision you can read", agentID, latest); err != nil {
+			return "", nil, err
+		}
 		return latest, nil, nil
 	}
 	// A newer revision than the active one is being deployed or has failed; while
@@ -120,7 +120,7 @@ func (app *application) agentRevision(
 		// command that itself needs revision read is refused with a hint instead.
 		noticef(
 			notices,
-			"notice: reading the active revision %s; you can read none of agent %s's revisions, so a newer or failed revision was not checked (listing revisions needs revision read)",
+			"notice: reading the active revision %s; you can read none of agent %s's revisions, so a newer or failed revision was not checked (listing revisions needs AgentRevision read)",
 			active, agentID,
 		)
 	default:
@@ -233,8 +233,23 @@ func (app *application) agentRuntimeCommand() *cobra.Command {
 			return app.printRuntime(description, namespace, args[0], revisionID)
 		},
 	}
-	command.Flags().StringVar(&revision, "revision", "", "Revision ID (default: a newer not-yet-active revision with Pods or concrete Harness status, else the active revision, else the latest revision)")
+	command.Flags().StringVar(&revision, "revision", "", "Revision ID (default: a newer not-yet-active revision with Pods or concrete Harness status, else the active revision, else the latest revision you can read)")
 	return command
+}
+
+// sinceValue is a --since duration whose parse error names the accepted
+// units instead of Go's duration parser text (finding D745): "3d" is common.
+type sinceValue time.Duration
+
+func (value *sinceValue) String() string { return time.Duration(*value).String() }
+func (value *sinceValue) Type() string   { return "duration" }
+func (value *sinceValue) Set(text string) error {
+	parsed, err := time.ParseDuration(text)
+	if err != nil {
+		return errors.New("use h, m or s, for example 12h or 90m; at most 24h")
+	}
+	*value = sinceValue(parsed)
+	return nil
 }
 
 type runtimeLogOptions struct {
@@ -267,11 +282,11 @@ func (app *application) agentLogsCommand() *cobra.Command {
 	}
 	flags := command.Flags()
 	flags.StringVar(&options.source, "source", "", "Log source: gateway, agent or sandbox")
-	flags.StringVar(&options.revision, "revision", "", "Revision ID (default: a newer not-yet-active revision with Pods or concrete Harness status, else the active revision, else the latest revision)")
+	flags.StringVar(&options.revision, "revision", "", "Revision ID (default: a newer not-yet-active revision with Pods or concrete Harness status, else the active revision, else the latest revision you can read)")
 	flags.StringVar(&options.pod, "pod", "", "Pod name (default: the source's first Pod)")
 	flags.BoolVar(&options.previous, "previous", false, "Read the previous container instance")
 	flags.IntVar(&options.tail, "tail", 200, "Lines from the end of the stream, 1 to 1000")
-	flags.DurationVar(&options.since, "since", 0, "Only lines newer than this duration, at least 1s, up to 24h")
+	flags.Var((*sinceValue)(&options.since), "since", "Only lines newer than this duration, at least 1s, up to 24h")
 	flags.BoolVar(&options.follow, "follow", false, "Poll for new lines every 2 seconds")
 	flags.StringVar(&options.level, "level", "", "Minimum level: error, warn, info or debug (default: every level; lines of unknown level are always shown)")
 	_ = command.MarkFlagRequired("source")
@@ -348,13 +363,17 @@ func (app *application) runAgentLogs(command *cobra.Command, agentID string, opt
 	}
 	cursor := ""
 	noPod := false
+	// read records a page already read, so a later refusal means access changed.
+	read := false
 	for {
 		pageQuery := query
 		if cursor != "" {
-			// A cursor continues the view; the server derives the window from it.
+			// A cursor continues the same view. OCC binds that view to the tail
+			// accepted on the first page and derives the time window from the
+			// cursor, so a poll must repeat tailLines instead of widening it.
 			pageQuery = url.Values{
 				"source":    query["source"],
-				"tailLines": {runtimeLogFollowTail},
+				"tailLines": query["tailLines"],
 				"cursor":    {cursor},
 			}
 			if pod := query.Get("pod"); pod != "" {
@@ -380,6 +399,12 @@ func (app *application) runAgentLogs(command *cobra.Command, agentID string, opt
 				fmt.Fprintf(notices, "notice: rate limited; retrying in %s\n", wait)
 			case apiErr.Status == http.StatusGatewayTimeout:
 				fmt.Fprintf(notices, "notice: the read timed out; retrying in %s\n", wait)
+			case apiErr.Status == http.StatusForbidden && read:
+				// The caller read this Agent's logs a moment ago (finding D746).
+				return fmt.Errorf(
+					"your access to Agent %s changed while following its logs; log text now needs Agent read_logs (or Agent administer). Ask an Installation administrator if you still need it.",
+					agentID,
+				)
 			case apiErr.Status == http.StatusBadRequest && apiErr.Code == "RUNTIME_LOGS_CURSOR_INVALID" && cursor != "":
 				fmt.Fprintln(notices, "notice: the cursor was rejected; starting a new view")
 				cursor = ""
@@ -392,9 +417,13 @@ func (app *application) runAgentLogs(command *cobra.Command, agentID string, opt
 			// A present stream ends the absence, even when it has no new records.
 			missingPod := string(page.Stream) == "null" || len(page.Stream) == 0
 			if missingPod && !noPod {
-				noticef(notices, "notice: revision %s has no running Pod for source %s", page.RevisionID, page.Source)
+				err := noticef(notices, "notice: revision %s has no running Pod for source %s", page.RevisionID, page.Source)
+				if err != nil && app.output != "json" {
+					return err
+				}
 			}
 			noPod = missingPod
+			read = true
 			if err := app.printRuntimeLogPage(page, notices); err != nil {
 				return err
 			}

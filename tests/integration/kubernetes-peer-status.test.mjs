@@ -9,6 +9,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 import { listen } from "../helpers/listen.mjs";
+import { stopProcess } from "../helpers/stop-process.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -44,7 +45,7 @@ test("real peer-status HTTPS transport authenticates its revision and verifies s
     execArgv: [...process.execArgv, ...reservedPortArgs(reservation)],
     stdio: ["ignore", "ignore", "pipe", "ipc"],
   });
-  t.after(() => child.kill("SIGTERM"));
+  t.after(() => stopProcess(child));
   await once(child, "message");
   // "ready" follows listen() before the bind completes. A 401 can only come from the status
   // server (the reservation resets connections), so it is bound and the hold can end.

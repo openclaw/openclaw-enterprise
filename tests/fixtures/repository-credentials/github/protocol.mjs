@@ -15,6 +15,8 @@ export function createGitHubProtocol({
   clock,
   repository = fixtureRepository,
   repositoryId = fixtureRepositoryId,
+  expectedRepositoryIds = [repositoryId],
+  additionalRepositories = [],
   description = null,
   keyPair = sharedRsaKeyPair("github-app"),
   tokenLifetimeMs = 3600000,
@@ -43,10 +45,15 @@ export function createGitHubProtocol({
     publicKey,
     lifetimeMs: tokenLifetimeMs,
     repositoryId,
+    expectedRepositoryIds,
     additionalPermissions,
     installationAccess,
   });
   const resources = createRepositoryResources({ repository, repositoryId, description });
+  const repositoryResources = [
+    resources,
+    ...additionalRepositories.map((entry) => createRepositoryResources(entry)),
+  ];
   const trace = [];
   const errors = [];
   let disconnectMutation;
@@ -121,7 +128,9 @@ export function createGitHubProtocol({
             expires_at: new Date(expires).toISOString(),
             permissions,
             repository_selection: "selected",
-            repositories: [resources.repo],
+            repositories: repositoryResources
+              .filter((entry) => expectedRepositoryIds.map(String).includes(String(entry.repo.id)))
+              .map((entry) => entry.repo),
           }),
         });
         if (!disconnect(request, response, url)) {
@@ -157,7 +166,25 @@ export function createGitHubProtocol({
           : "query";
       }
       // Commit provider mutations before injecting a lost response, including DELETE.
-      const result = resources.dispatch({
+      const selectedResources =
+        repositoryResources.find(
+          (entry) =>
+            url.pathname === `/repos/${entry.repo.full_name}` ||
+            url.pathname.startsWith(`/repos/${entry.repo.full_name}/`),
+        ) ??
+        (url.pathname === "/graphql" && body.variables?.owner && body.variables?.name
+          ? repositoryResources.find(
+              (entry) => entry.repo.full_name === `${body.variables.owner}/${body.variables.name}`,
+            )
+          : resources);
+      if (
+        !selectedResources ||
+        !authority.permitsRepository(request.headers.authorization, selectedResources.repo.id)
+      ) {
+        json(404, { message: "Not Found" });
+        return;
+      }
+      const result = selectedResources.dispatch({
         method: request.method,
         url,
         body,
@@ -213,6 +240,7 @@ export function createGitHubProtocol({
     comments: resources.comments,
     errors,
     authorize: authority.authorize,
+    authorizeRepository: authority.authorizeRepository,
     acceptStatic: authority.acceptStatic,
     tokenState: authority.tokenState,
     setRevokeStatus(status) {

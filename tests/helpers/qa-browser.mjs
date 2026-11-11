@@ -4,9 +4,9 @@ import { mkdir, readFile, stat } from "node:fs/promises";
 import { connect } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import test from "node:test";
 import { createServer } from "node:tls";
 import { chromium } from "playwright";
-import { availablePort } from "./available-port.mjs";
 import { prepareQaConsoleTheme } from "./qa-installation.mjs";
 import { waitFor } from "./qa-utils.mjs";
 import { submitChatTurnWithAssistantProof, waitForStockUi } from "./native-ui-chat.mjs";
@@ -16,14 +16,16 @@ export async function createQaBrowser(f, { themed }) {
     await prepareQaConsoleTheme(f);
   }
   const nativeHost = `native.${f.cluster}.oce.localhost`;
-  const port = await availablePort();
-  const nativeOrigin = `https://${nativeHost}:${port}`;
+  let nativeOrigin;
   const ca = f.browserCA ?? join(f.directory, "browser-ca.crt");
+  const caFiles = [ca];
   let relay;
   let upstream;
   const sockets = new Set();
   if (f.controlPlane === "compose") {
     const key = join(f.directory, "browser-tls.key");
+    // The native relay has its own identity; preserve the launcher's Console CA.
+    const relayCa = join(f.directory, "native-browser-ca.crt");
     await f.run("openssl", [
       "req",
       "-x509",
@@ -33,7 +35,7 @@ export async function createQaBrowser(f, { themed }) {
       "-keyout",
       key,
       "-out",
-      ca,
+      relayCa,
       "-days",
       "2",
       "-subj",
@@ -43,8 +45,9 @@ export async function createQaBrowser(f, { themed }) {
       "-addext",
       "basicConstraints=critical,CA:TRUE",
     ]);
+    caFiles.push(relayCa);
     relay = createServer(
-      { key: await readFile(key), cert: await readFile(ca), minVersion: "TLSv1.2" },
+      { key: await readFile(key), cert: await readFile(relayCa), minVersion: "TLSv1.2" },
       (socket) => {
         if (!upstream) {
           socket.destroy();
@@ -63,8 +66,10 @@ export async function createQaBrowser(f, { themed }) {
     );
     await new Promise((accept, reject) => {
       relay.once("error", reject);
-      relay.listen(port, "127.0.0.1", accept);
+      // Port 0: the relay's port is read once bound, so nothing else can take it first.
+      relay.listen(0, "127.0.0.1", accept);
     });
+    nativeOrigin = `https://${nativeHost}:${relay.address().port}`;
     f.resources.after(async () => {
       for (const socket of sockets) {
         socket.destroy();
@@ -84,11 +89,24 @@ export async function createQaBrowser(f, { themed }) {
     }
     await f.run("certutil", ["-N", "--empty-password", "-d", `sql:${database}`]);
   }
-  const nickname = `oce-qa-${f.suffix}`;
-  await f.run("certutil", ["-A", "-d", `sql:${database}`, "-n", nickname, "-t", "C,,", "-i", ca]);
-  f.resources.after(() => f.run("certutil", ["-D", "-d", `sql:${database}`, "-n", nickname]));
+  for (const [index, file] of caFiles.entries()) {
+    const nickname = `oce-qa-${f.suffix}-${index}`;
+    await f.run("certutil", [
+      "-A",
+      "-d",
+      `sql:${database}`,
+      "-n",
+      nickname,
+      "-t",
+      "C,,",
+      "-i",
+      file,
+    ]);
+    f.resources.after(() => f.run("certutil", ["-D", "-d", `sql:${database}`, "-n", nickname]));
+  }
   const browser = await chromium.launchPersistentContext(join(f.directory, "browser-profile"), {
     headless: true,
+    chromiumSandbox: true,
     ...(process.env.OCC_TEST_BROWSER_EXECUTABLE
       ? { executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE }
       : {}),
@@ -116,7 +134,7 @@ export async function createQaBrowser(f, { themed }) {
   await f.record("console", {
     authenticated: true,
     origin: f.consoleUrl,
-    tls: f.controlPlane === "kubernetes",
+    tls: new URL(f.consoleUrl).protocol === "https:",
   });
   return {
     nativeOrigin: f.controlPlane === "compose" ? nativeOrigin : undefined,
@@ -229,67 +247,121 @@ export async function createQaBrowser(f, { themed }) {
         }
       }
     },
-    async verify(agent) {
-      assert.equal(await page.locator(".sidebar .brand-name").textContent(), "Example Agents");
-      assert.equal(
-        await page.locator(".sidebar .brand img").getAttribute("src"),
-        "/console/theme/logo.png",
-      );
-      const gateway = await f.gatewayUrl(agent);
-      let origin = nativeOrigin;
-      if (f.controlPlane === "compose") {
-        upstream = new URL(gateway.url);
-      } else {
-        const path = `/namespaces/${agent.namespaceId}/agents/${agent.id}/native-admin`;
-        const status = await page.evaluate(async (path) => {
-          const response = await fetch(path);
-          return { status: response.status, body: await response.json() };
-        }, path);
-        assert.equal(status.status, 200);
-        assert.equal(status.body.data.status, "available");
-        assert.equal(status.body.data.activeRevisionId, agent.revision.id);
-        origin = status.body.data.origin;
-      }
-      const native = await browser.newPage();
-      const frames = [];
-      native.on("websocket", (socket) => {
-        assert.equal(new URL(socket.url()).origin, origin.replace(/^http/, "ws"));
-        socket.on("framereceived", (frame) => frames.push(frame));
-      });
+    async verifyNamespaceDeletionBlockers(agent) {
+      const namespacesPage = await browser.newPage();
       try {
-        const response = await native.goto(origin);
-        assert.ok(response?.ok(), "native UI must load through its trusted endpoint");
-        const authenticate =
-          f.controlPlane === "compose"
-            ? async () => {
-                const credential = native.locator("#login-gate-credential");
-                await credential.waitFor({ state: "attached", timeout: 60_000 });
-                // The stock login failure view nests credentials in a collapsed
-                // connection disclosure. Wait for that view before opening it.
-                if (!(await credential.isVisible())) {
-                  await native.locator("details.login-gate__connection > summary").click();
-                }
-                await credential.fill(gateway.gatewayPassword);
-                await native.getByRole("button", { name: "Connect", exact: true }).click();
-              }
-            : undefined;
-        await waitForStockUi(native);
-        const nonce = `QA_NATIVE_${randomUUID()}`;
-        await submitChatTurnWithAssistantProof(native, nonce, frames, waitFor, authenticate);
-        const current = await f.pod(agent, "gateway");
-        assert.equal(current.metadata.uid, gateway.pod.metadata.uid);
-        await f.record(`${agent.preset}-native-ui`, {
+        const namespace = await f.api("GET", `/namespaces/${agent.namespaceId}`);
+        await namespacesPage.goto(`${f.consoleUrl}/console/namespaces?namespace=${namespace.id}`);
+        await namespacesPage
+          .getByRole("button", { name: `Delete ${namespace.name}`, exact: true })
+          .click();
+        const refused = namespacesPage.waitForResponse(
+          (response) =>
+            new URL(response.url()).pathname === `/namespaces/${namespace.id}` &&
+            response.request().method() === "DELETE",
+        );
+        await namespacesPage.getByRole("button", { name: "Delete Namespace", exact: true }).click();
+        assert.equal((await refused).status(), 409);
+        // A deployed Agent in this run's Namespace must block real teardown and appear in the dialog.
+        const blockers = namespacesPage.getByRole("dialog", {
+          name: "Namespace still contains resources",
+          exact: true,
+        });
+        await blockers.getByText(agent.id, { exact: true }).waitFor();
+        await blockers.getByText(agent.configurationId, { exact: true }).waitFor();
+        assert.equal((await f.api("GET", `/namespaces/${namespace.id}`)).status, "ready");
+        await blockers.getByRole("button", { name: "View Agents", exact: true }).click();
+        assert.equal(new URL(namespacesPage.url()).searchParams.get("namespace"), namespace.id);
+        await namespacesPage.getByRole("link", { name: agent.name, exact: true }).waitFor();
+        await f.record(`${agent.preset}-console-namespace-deletion`, {
+          namespaceId: namespace.id,
           agentId: agent.id,
-          revisionId: agent.revision.id,
-          podUid: current.metadata.uid,
-          origin,
-          trustedTls: true,
-          assistantNonce: nonce,
-          receivedFrames: frames.length,
+          configurationId: agent.configurationId,
+          nonemptyDeletionRefused: true,
+          cleanupNavigationScoped: true,
         });
       } finally {
-        await native.close();
-        await gateway.close();
+        await namespacesPage.close();
+      }
+    },
+    async verify(agent) {
+      let operation = "native UI Console branding";
+      try {
+        assert.equal(await page.locator(".sidebar .brand-name").textContent(), "Example Agents");
+        assert.equal(
+          await page.locator(".sidebar .brand img").getAttribute("src"),
+          "/console/theme/logo.png",
+        );
+        operation = "native UI Gateway discovery";
+        const gateway = await f.gatewayUrl(agent);
+        operation = "native UI origin discovery";
+        let origin = nativeOrigin;
+        if (f.controlPlane === "compose") {
+          upstream = new URL(gateway.url);
+        } else {
+          const path = `/namespaces/${agent.namespaceId}/agents/${agent.id}/native-admin`;
+          const status = await page.evaluate(async (path) => {
+            const response = await fetch(path);
+            return { status: response.status, body: await response.json() };
+          }, path);
+          assert.equal(status.status, 200);
+          assert.equal(status.body.data.status, "available");
+          assert.equal(status.body.data.activeRevisionId, agent.revision.id);
+          origin = status.body.data.origin;
+        }
+        operation = "native UI trusted navigation";
+        const native = await browser.newPage();
+        const frames = [];
+        native.on("websocket", (socket) => {
+          assert.equal(new URL(socket.url()).origin, origin.replace(/^http/, "ws"));
+          socket.on("framereceived", (frame) => frames.push(frame));
+        });
+        try {
+          const response = await native.goto(origin);
+          assert.ok(response?.ok(), "native UI must load through its trusted endpoint");
+          operation = "native UI WebSocket turn";
+          const authenticate =
+            f.controlPlane === "compose"
+              ? async () => {
+                  const credential = native.locator("#login-gate-credential");
+                  await credential.waitFor({ state: "attached", timeout: 60_000 });
+                  // The stock login failure view nests credentials in a collapsed
+                  // connection disclosure. Wait for that view before opening it.
+                  if (!(await credential.isVisible())) {
+                    await native.locator("details.login-gate__connection > summary").click();
+                  }
+                  await credential.fill(gateway.gatewayPassword);
+                  await native.getByRole("button", { name: "Connect", exact: true }).click();
+                }
+              : undefined;
+          await waitForStockUi(native);
+          const nonce = `QA_NATIVE_${randomUUID()}`;
+          await submitChatTurnWithAssistantProof(native, nonce, frames, waitFor, authenticate);
+          operation = "native UI Gateway identity and proof";
+          const current = await f.pod(agent, "gateway");
+          assert.equal(current.metadata.uid, gateway.pod.metadata.uid);
+          await f.record(`${agent.preset}-native-ui`, {
+            agentId: agent.id,
+            revisionId: agent.revision.id,
+            podUid: current.metadata.uid,
+            origin,
+            trustedTls: true,
+            assistantNonce: nonce,
+            receivedFrames: frames.length,
+          });
+        } finally {
+          const verificationOperation = operation;
+          operation = "native UI cleanup";
+          await native.close();
+          await gateway.close();
+          operation = verificationOperation;
+        }
+      } catch (error) {
+        // The enclosing QA stage redacts and classifies the original failure.
+        await test(operation, () => {
+          throw new Error("Native UI check failed");
+        });
+        throw error;
       }
     },
   };

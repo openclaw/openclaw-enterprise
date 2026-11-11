@@ -28,6 +28,10 @@ Check `state.json` for `computeDriver: kubernetes`, `sandboxDriver: none`, and t
 
 Inspect the owned node and `controller`, `worker-kubernetes`, and `postgres` containers with `docker inspect`. Record their IPv4 addresses on `<project>_development`. The node is `k3d-<cluster>-server-0`; all four must share this private network. Do not publish the routing NodePort on the host. Use the **worker-kubernetes** service when refreshing Kubernetes settings; the `worker` service belongs to the alternative Compose profile.
 
+The chart enables routing by default. It does not install the dependencies below
+or connect Compose services to the private route. Complete these steps before
+rendering and applying the routing resources.
+
 ## Install routing prerequisites
 
 Install cert-manager and Envoy Gateway as described in [private routing prerequisites](workspace-routing.md#requirements). The local launcher pins cert-manager 1.18.4 and Envoy Gateway 1.6.7 in `internal/occdev/gateway_k3d.go`; use those versions for the matching local workflow. Verify their download checksums against that source. Wait for their controller Deployments to become available.
@@ -148,6 +152,6 @@ The development console remains at its loopback HTTP URL. This profile does not 
 
 Clone repositories under the Agent's persistent workspace, not `/tmp`: the runtime's temporary volume has a 64 MiB size limit and exceeding it evicts the Pod. A shallow clone avoids downloading unnecessary history.
 
-If a model/tool workload is `OOMKilled`, raise the Installation's Gateway or Harness memory limit (`resources.gateway` or `resources.agent`) and deploy a new version; the 3 GiB and 6 GiB defaults are not a guarantee for repository workloads. Preserve the failed version and actual error. If a persisted owner lease prevents restart after eviction, verify the previous owner has stopped and allow its lease to expire before retrying. The pinned runtime uses a five-minute lease; kubelet restart backoff can add delay. Do not delete lease records to force a pass.
+If a model/tool workload is `OOMKilled`, raise the Installation's Gateway or Harness memory limit (`resources.gateway` or `resources.agent`) and deploy a new version; the 4 GiB and 6 GiB defaults are not a guarantee for repository workloads. Preserve the failed version and actual error. If a persisted owner lease prevents restart after eviction, verify the previous owner has stopped and allow its lease to expire before retrying. The pinned runtime uses a five-minute lease; kubelet restart backoff can add delay. Do not delete lease records to force a pass.
 
 Before cleanup, stop repository-bound Agents and confirm their broker sessions are disposed. Keep the broker and state if any credential cleanup is pending or uncertain. See [local repository cleanup](local-repository-credentials.md). Then use the original profile's `dev down`; remove only additional services and public CA trust entries created for this installation.

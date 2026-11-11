@@ -21,6 +21,7 @@ import {
   parseProductionChart,
   renderProductionChart,
 } from "../helpers/production-chart.mjs";
+import { caAndLeaf } from "../helpers/certificates.mjs";
 import { listen } from "../helpers/listen.mjs";
 
 const execute = promisify(execFile);
@@ -233,68 +234,21 @@ test("OIDC CA may share a public trust bundle Secret with the Gateway CA", tooli
 });
 
 async function certificates(directory, name, hostname) {
-  const file = (suffix) => join(directory, `${name}-${suffix}`);
-  const run = (args) => execute("openssl", args, { timeout: 10000 });
-  await run([
-    "req",
-    "-x509",
-    "-newkey",
-    "rsa:2048",
-    "-nodes",
-    "-days",
-    "2",
-    "-subj",
-    `/CN=${name}`,
-    "-addext",
-    "basicConstraints=critical,CA:TRUE",
-    "-addext",
-    "keyUsage=critical,keyCertSign",
-    "-keyout",
-    file("ca.key"),
-    "-out",
-    file("ca.pem"),
-  ]);
-  await run([
-    "req",
-    "-newkey",
-    "rsa:2048",
-    "-nodes",
-    "-subj",
-    `/O=Example Corp/CN=${hostname}`,
-    "-keyout",
-    file("leaf.key"),
-    "-out",
-    file("leaf.csr"),
-  ]);
-  await writeFile(
-    file("ext"),
-    `subjectAltName=DNS:${hostname}\nbasicConstraints=critical,CA:FALSE\nextendedKeyUsage=serverAuth\n`,
-  );
-  await run([
-    "x509",
-    "-req",
-    "-in",
-    file("leaf.csr"),
-    "-CA",
-    file("ca.pem"),
-    "-CAkey",
-    file("ca.key"),
-    "-CAcreateserial",
-    "-days",
-    "2",
-    "-extfile",
-    file("ext"),
-    "-out",
-    file("leaf.pem"),
-  ]);
-  return Object.fromEntries(
-    await Promise.all(
-      ["ca.pem", "ca.key", "leaf.pem", "leaf.key"].map(async (suffix) => [
-        suffix,
-        await readFile(file(suffix), "utf8"),
-      ]),
-    ),
-  );
+  const pki = join(directory, `${name}-pki`);
+  await mkdir(pki);
+  const paths = await caAndLeaf(pki, {
+    caName: name,
+    subject: `/O=Example Corp/CN=${hostname}`,
+    subjectAltName: `DNS:${hostname}`,
+    run: (command, args) => execute(command, args, { timeout: 10000 }),
+  });
+  const read = (path) => readFile(path, "utf8");
+  return {
+    "ca.pem": await read(paths.caPath),
+    "ca.key": await read(paths.caKeyPath),
+    "leaf.pem": await read(paths.certPath),
+    "leaf.key": await read(paths.keyPath),
+  };
 }
 
 // Materialize the rendered Secret items and emptyDir, and translate absolute mount

@@ -8,6 +8,26 @@ This record preserves the dated changes to the common operational logging flow. 
 
 ## Changelog
 
+- 2026-10-09 23:11: Document renamed Loki exporter addresses and Collector refresh after demo upgrades. (authoring-run/8adc169e-fc08-40ad-823f-a80486252608 - 6668e2fc8477ca780b15e25a7320589a7612284f)
+
+- 2026-10-09 21:42: Bound demo Service names and keep Grafana datasource URLs aligned. (authoring-run/8adc169e-fc08-40ad-823f-a80486252608 - 49d1562335120b125d3f149a5a6a64a5c51577a9)
+
+- 2026-10-09 14:00: Export `http.dependency_unavailable`, the API warning that names the cause of a `503 DEPENDENCY_UNAVAILABLE` by request ID; the cause stays local. (fix-529-938)
+
+- 2026-10-08 10:17: Document Collector quantity syntax checks in the accompanying chart change. (authoring-run/95ed7983-818c-4af2-8875-1330333f5e41 - 1fce0eef361dd584212cc3f2ac4d75ab92eb8ff7)
+
+- 2026-10-06 13:30: Export `agent_provisioning.compute_refused`, the API warning that names a Compute provisioning refusal by request ID.
+
+- 2026-10-06 06:30: Export the API shutdown, idle database connection, device login, cluster credential denial, native admin audit failure and authentication startup warnings that other pages tell operators to look for.
+
+- 2026-10-05 05:30: Note that the Preset startup warnings come only from the API.
+
+- 2026-10-05 03:30: Export `presets.bundled-default-shadowed` as WARN with only its event name.
+
+- 2026-10-05 02:30: Export `presets.default-create-skipped` as WARN with only the Namespace ID.
+
+- 2026-10-04 23:10: Export `presets.default-refresh-skipped` as WARN with only the Namespace and Preset IDs. (bh13-fu2-collector - e54a08048)
+
 - 2026-10-01 16:37: Added the sanitized Compute preparation diagnostic boundary. (authoring-run/dda71266-f9f6-404c-aaba-b0c03f010ae2 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)
 
 - 2026-10-01 14:45: Export sign-in provider outage warnings with allowed provider, step, cause and status attributes. (collector-auth-warning - 769c8cd88)

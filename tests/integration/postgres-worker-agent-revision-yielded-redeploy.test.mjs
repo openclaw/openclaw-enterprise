@@ -17,9 +17,11 @@ import {
 } from "../helpers/postgres-worker-refused-candidate.mjs";
 
 // Exclusive redeploys whose predecessor stop yields during its Gateway drain: the replacement
-// waits for the drain, newer and refused deployments supersede it, an Agent stop overtakes it, and
-// lease recovery grants its last attempt one more. Other exclusive replacement and refused
-// candidate cases are in the -replacement sibling; the lane runs the revision files at once.
+// waits for the drain, newer, refused and held embedded deployments supersede it, an Agent stop
+// overtakes it, and lease recovery grants its last attempt one more. A superseded version's own
+// stop yields during its drain the same way. Other exclusive replacement
+// and refused candidate cases are in the -replacement sibling; the lane runs the revision files at
+// once.
 // These files name the -replacement and -yielded-redeploy siblings only by suffix: CI Impact sends
 // a test-only change to full CI when another file names that test.
 
@@ -35,9 +37,22 @@ after(cleanup);
 // still has a Harness: the RWO workspace and Gateway SQLite volumes would be mounted twice.
 // `busy` revisions never become ready, so their deployments keep Work due. With `holdMs`, each of
 // their passes first holds an optional wait (like the D221 binding ack) for up to `holdMs`, ending
-// it once other Work is due; `holds` records how long each one took. A stop for which `failStop`
-// resolves true throws before it does anything.
-function drainingExclusiveCompute(fixture, { drainMs, holdMs, failStop = async () => false }) {
+// it once other Work is due; `holds` records how long each one took. A revision is also busy when
+// its Agent's ID is in `busy`. `stoppedAt` records when each stop first ran and when it stopped
+// the Harness. A stop for which `failStop`
+// resolves true throws before it does anything. `exclusive` decides which revisions declare
+// exclusive replacement (all by default), and a revision for which `heldFailure` returns true
+// reports a held model-probe failure.
+function drainingExclusiveCompute(
+  fixture,
+  {
+    drainMs,
+    holdMs,
+    failStop = async () => false,
+    exclusive = () => true,
+    heldFailure = () => false,
+  },
+) {
   const running = new Map();
   const busy = new Set();
   const prepared = [];
@@ -46,11 +61,13 @@ function drainingExclusiveCompute(fixture, { drainMs, holdMs, failStop = async (
   const drains = new Map();
   const pointers = new Set();
   const stopCalls = new Map();
+  const stoppedAt = new Map();
   const holds = [];
+  const isBusy = (revision) => busy.has(revision.id) || busy.has(revision.agentId);
   let yields = 0;
   const compute = {
     ...fixture.compute,
-    requiresStoppedPredecessors: () => true,
+    requiresStoppedPredecessors: exclusive,
     async prepareRevision(revision) {
       for (const [id, agentId] of running) {
         if (id !== revision.id && agentId === revision.agentId) {
@@ -59,7 +76,7 @@ function drainingExclusiveCompute(fixture, { drainMs, holdMs, failStop = async (
       }
       running.set(revision.id, revision.agentId);
       prepared.push(revision.id);
-      if (holdMs !== undefined && busy.has(revision.id)) {
+      if (holdMs !== undefined && isBusy(revision)) {
         const started = Date.now();
         while (Date.now() - started < holdMs && !(await computeWorkWaiting())) {
           await delay(100);
@@ -67,7 +84,20 @@ function drainingExclusiveCompute(fixture, { drainMs, holdMs, failStop = async (
         holds.push(Date.now() - started);
       }
       const observation = await fixture.compute.prepareRevision(revision);
-      return busy.has(revision.id) ? { ...observation, ready: false } : observation;
+      if (heldFailure(revision)) {
+        return {
+          ...observation,
+          ready: false,
+          runtimeFailure: {
+            component: "gateway",
+            check: "model-probe",
+            checkedAt: "2026-10-31T20:09:54.000Z",
+            code: "MODEL_PROBE_FAILED",
+            cause: { kind: "PROBE_STATUS", detail: "rate_limit" },
+          },
+        };
+      }
+      return isBusy(revision) ? { ...observation, ready: false } : observation;
     },
     async stopRevision(revision) {
       stopCalls.set(revision.id, (stopCalls.get(revision.id) ?? 0) + 1);
@@ -79,6 +109,7 @@ function drainingExclusiveCompute(fixture, { drainMs, holdMs, failStop = async (
       }
       if (!drains.has(revision.id)) {
         drains.set(revision.id, Date.now() + drainMs);
+        stoppedAt.set(revision.id, { started: Date.now() });
       }
       while (Date.now() < drains.get(revision.id)) {
         const agent = await fixture.currentAgent({ id: revision.agentId });
@@ -93,6 +124,7 @@ function drainingExclusiveCompute(fixture, { drainMs, holdMs, failStop = async (
       }
       running.delete(revision.id);
       harnessStops.push(revision.id);
+      stoppedAt.set(revision.id, { ...stoppedAt.get(revision.id), harness: Date.now() });
     },
     async retireRevision(revision) {
       running.delete(revision.id);
@@ -107,6 +139,7 @@ function drainingExclusiveCompute(fixture, { drainMs, holdMs, failStop = async (
     harnessStops,
     pointers,
     holds,
+    stoppedAt: (revision) => stoppedAt.get(revision.id),
     stopCalls: (revision) => stopCalls.get(revision.id) ?? 0,
     yields: () => yields,
   };
@@ -125,11 +158,22 @@ function workPasses(events, work) {
 /**
  * An exclusive Agent whose first revision serves, another Agent's deployment that keeps Work due,
  * and a redeploy whose first pass yields its predecessor stop. `drainMs` is the first revision's
- * Gateway drain; `holdMs`, `failStop` and `start` (worker options) are optional.
+ * Gateway drain; `holdMs`, `failStop`, `exclusive`, `heldFailure` and `start` (worker options)
+ * are optional.
  */
-async function yieldedRedeploy(fixture, label, { drainMs, holdMs, failStop, start = {} }) {
+async function yieldedRedeploy(
+  fixture,
+  label,
+  { drainMs, holdMs, failStop, exclusive, heldFailure, start = {} },
+) {
   const owner = await fixture.agent(label, { executionMode: "dedicated" });
-  const driver = drainingExclusiveCompute(fixture, { drainMs, holdMs, failStop });
+  const driver = drainingExclusiveCompute(fixture, {
+    drainMs,
+    holdMs,
+    failStop,
+    exclusive,
+    heldFailure,
+  });
   const events = [];
   await fixture.start(driver.compute, {
     ...start,
@@ -261,6 +305,47 @@ revisionTest(
     assert.ok(!driver.prepared.includes(replacement.id));
     assert.deepEqual(driver.overlaps, []);
     // Nothing serves until a new revision activates; the pointer still names the predecessor.
+    assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, first.id);
+  },
+);
+
+// Finding 3068: the Agent switches to embedded execution while a dedicated redeploy's predecessor
+// stop is yielded. The embedded version has no exclusive replacement, so it stops nothing; it
+// fails its startup model check and keeps its runtime for diagnosis, so the redeploy could never
+// become ready. The redeploy ends superseded, but first finishes the predecessor stop it started
+// (finding 1090), then stops its own runtime, which the embedded version never would.
+revisionTest(
+  "a yielded redeploy overtaken by an embedded version with a held failure finishes its predecessor stop, then ends superseded",
+  async (fixture) => {
+    const { owner, driver, first, replacement } = await yieldedRedeploy(
+      fixture,
+      "drain-predecessor-held",
+      {
+        drainMs: 8_000,
+        exclusive: (revision) => revision.harness.mode === "dedicated",
+        heldFailure: (revision) => revision.revision === 3,
+      },
+    );
+    // With the embedded version holding the Agent's Gateway, the redeploy never becomes ready.
+    driver.busy.add(replacement.id);
+    const embedded = await fixture.revision(owner, 3, {
+      harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+    });
+    await assertWorkEnds(fixture, embedded, "failed_permanent", "RUNTIME_MODEL_PROBE_FAILED");
+    const replacementStopsAtFailure = driver.stopCalls(replacement);
+    await assertWorkEnds(fixture, replacement, "succeeded", "REVISION_SUPERSEDED");
+    // The predecessor's Harness stopped after its drain, so it was not left without its
+    // Gateway; the redeploy was never prepared, and it stopped its own runtime once.
+    assert.deepEqual(driver.harnessStops, [first.id]);
+    assert.ok(!driver.prepared.includes(replacement.id), driver.prepared.join(","));
+    assert.equal(replacementStopsAtFailure, 0);
+    assert.equal(driver.stopCalls(replacement), 1);
+    assert.deepEqual(runningFor(driver, owner), [embedded.id]);
+    // Only the embedded version, which never sweeps, started beside a draining Harness.
+    assert.ok(
+      driver.overlaps.every(([id]) => id === embedded.id),
+      JSON.stringify(driver.overlaps),
+    );
     assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, first.id);
   },
 );
@@ -440,3 +525,150 @@ for (const refused of [false, true]) {
     },
   );
 }
+
+/**
+ * A dedicated first deployment that runs (it holds the Agent's Gateway) but never becomes ready,
+ * so OCC never selects it, beside another Agent's deployment that keeps Work due. `start` holds
+ * worker options.
+ */
+async function unselectedVersion(fixture, label, { drainMs, start = {} }) {
+  const owner = await fixture.agent(label, { executionMode: "dedicated" });
+  const driver = drainingExclusiveCompute(fixture, { drainMs });
+  const events = [];
+  await fixture.start(driver.compute, {
+    ...start,
+    emit: (event) => events.push({ ...event, at: Date.now() }),
+  });
+  const busyOwner = await fixture.agent(`${label}-busy`);
+  driver.busy.add(busyOwner.id);
+  const busy = await fixture.revision(busyOwner, 1);
+  driver.busy.add(owner.id);
+  return { owner, driver, events, busy };
+}
+
+function pendingPass(events, work) {
+  return workPasses(events, work).find(({ outcome }) => outcome === "pending");
+}
+
+// Finding 3080: a superseded, inactive dedicated version stops its own runtime (finding 3075).
+// When it holds the Gateway with a turn in flight, that stop waits for the Gateway's drain. It
+// now yields to due Work like the newer version's sweep, instead of holding the serial worker
+// (every Agent's work) for the whole drain. Here the newer version's sweep starts the drain and
+// yields under load (or the older version's own pass starts it first); the older version's own
+// pass then yields as SUPERSEDED_STOP_YIELDED. That is not PREDECESSOR_STOP_YIELDED, whose later
+// pass would stop every earlier version, which this stop never swept. A later pass finishes the
+// stop once the drain is over, and the older version ends superseded.
+revisionTest(
+  "a superseded inactive version's own stop yields during its Gateway drain, then finishes before it ends superseded",
+  async (fixture) => {
+    const { owner, driver, events, busy } = await unselectedVersion(fixture, "drain-superseded", {
+      drainMs: 8_000,
+    });
+    const older = await fixture.revision(owner, 1);
+    await waitFor("the older version's unready pass", async () => pendingPass(events, older));
+    driver.busy.delete(owner.id);
+    driver.busy.add(older.id);
+    const newer = await fixture.revision(owner, 2);
+    const yielded = await waitFor("the older version's pass after the newer admission", async () =>
+      workPasses(events, older).find(({ code }) =>
+        ["SUPERSEDED_STOP_YIELDED", "REVISION_SUPERSEDED", "PREDECESSOR_STOP_YIELDED"].includes(
+          code,
+        ),
+      ),
+    );
+    assert.equal(yielded.code, "SUPERSEDED_STOP_YIELDED");
+    assert.equal(yielded.outcome, "pending");
+    // Deployment status says what the older version waits for.
+    const waiting = await fixture.deploymentStatus(owner, older);
+    assert.equal(waiting.progress.lastAttempt.code, "SUPERSEDED_STOP_YIELDED");
+    // The other Agent's deployment runs while the older version's drain is still pending.
+    await waitFor(
+      "another Agent's pass after the older version's yield",
+      async () =>
+        workPasses(events, busy).find(({ at }) => at > yielded.at) ??
+        (driver.stoppedAt(older)?.harness === undefined ? undefined : null),
+    );
+    await assertWorkEnds(fixture, older, "succeeded", "REVISION_SUPERSEDED");
+    await fixture.work(newer, "succeeded", 30_000);
+    const { harness } = driver.stoppedAt(older);
+    assert.ok(
+      workPasses(events, busy).some(({ at }) => at > yielded.at && at < harness),
+      "another Agent's work ran during the older version's drain",
+    );
+    // Hard invariants: the older version's Harness stopped once, after the drain, and the newer
+    // version was prepared only after it; the older version was never selected.
+    assert.deepEqual(driver.overlaps, []);
+    assert.deepEqual(driver.harnessStops, [older.id]);
+    assert.deepEqual(runningFor(driver, owner), [newer.id]);
+    assert.deepEqual([...driver.pointers], [null]);
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, newer.id);
+    // The yields are throttled like a stopped Agent's, refund their attempt, and the completion
+    // carries their count.
+    const passes = (await completedPasses(events, older)).filter(({ at }) => at >= yielded.at);
+    assert.ok(passes.every(({ code }) => code !== "DEPENDENCY_UNAVAILABLE"));
+    assert.deepEqual(passes[0].stopYields, 1);
+    assert.equal(passes.at(-1).code, "REVISION_SUPERSEDED");
+    assert.ok(passes.at(-1).stopYields >= 1, JSON.stringify(passes.at(-1)));
+    assert.deepEqual(
+      [...new Set(passes.slice(0, -1).map(({ code }) => code))],
+      ["SUPERSEDED_STOP_YIELDED"],
+    );
+  },
+);
+
+// Work past the convergence deadline keeps the full bounded wait, as a stopped Agent's stop does
+// (finding 1088): a drain that never ends could otherwise defer it forever. The older version's
+// work is older than the restarted worker's deadline; the newer version is refused before its
+// sweep, so only the older version's own pass stops it. That pass waits out the drain: no other
+// Agent's work runs meanwhile, and the stop runs once.
+revisionTest(
+  "a superseded inactive version past the convergence deadline waits out its Gateway drain",
+  async (fixture) => {
+    const { owner, driver, events, busy } = await unselectedVersion(
+      fixture,
+      "drain-superseded-late",
+      {
+        drainMs: 3_000,
+        start: { convergenceTimeoutMs: 3_600_000 },
+      },
+    );
+    const older = await fixture.revision(owner, 1, { workAge: "600 seconds" });
+    await waitFor("the older version's unready pass", async () => pendingPass(events, older));
+    // The worker restarts. A pass it was running when it stopped keeps its claim until the lease
+    // ends; expire those claims, as after a crash, so both Agents' work is due again at once.
+    await fixture.stop();
+    await fixture.observerPool.query(
+      `UPDATE occ.controller_work SET lease_expires_at = clock_timestamp() - interval '1 second'
+       WHERE namespace_id = $1 AND state = 'claimed'`,
+      [fixture.namespace.id],
+    );
+    const refused = await fixture.revision(owner, 2, {
+      harness: { ...fixture.productionHarness, mode: "dedicated", version: "0.0.0-unapproved" },
+    });
+    const restartedAt = Date.now();
+    await fixture.start(driver.compute, {
+      convergenceTimeoutMs: 300_000,
+      emit: (event) => events.push({ ...event, at: Date.now() }),
+    });
+    await assertWorkEnds(fixture, refused, "failed_permanent", "HARNESS_DESCRIPTOR_MISMATCH");
+    await assertWorkEnds(fixture, older, "succeeded", "REVISION_SUPERSEDED");
+    const { started, harness } = driver.stoppedAt(older);
+    assert.ok(started > restartedAt);
+    assert.equal(driver.stopCalls(older), 1);
+    assert.deepEqual(driver.harnessStops, [older.id]);
+    assert.deepEqual(runningFor(driver, owner), []);
+    const codes = workPasses(events, older)
+      .filter(({ at }) => at > restartedAt)
+      .map(({ code }) => code);
+    assert.deepEqual(codes, ["REVISION_SUPERSEDED"]);
+    // The other Agent's young deployment stayed due, yet none of its passes ended during the
+    // drain: the serial worker waited for it.
+    await waitFor("another Agent's pass after the drain", async () =>
+      workPasses(events, busy).find(({ at }) => at > harness),
+    );
+    assert.ok(
+      !workPasses(events, busy).some(({ at }) => at > started && at < harness),
+      "no other work ran during the drain",
+    );
+  },
+);

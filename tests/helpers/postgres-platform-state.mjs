@@ -7,10 +7,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import { admittedConfiguration } from "./admitted-configuration.mjs";
 import { verifyPlatformStateStoreContract } from "../conformance/platform-state-store.contract.mjs";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
+import { jsonRequestInit } from "./inject-json.mjs";
+import { createConsoleFixtureTransport, fetchLoopback } from "./console-fixture-transport.ts";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
 import {
   createKubernetesInstallationConfiguration,
@@ -19,6 +21,7 @@ import {
 } from "../helpers/kubernetes-real.mjs";
 import { reservePort, reservedPortArgs } from "./available-port.mjs";
 import { stopProcess } from "./stop-process.mjs";
+import { temporaryDirectory } from "./temporary-directory.mjs";
 import { jsonLines as parseJsonLines } from "./json-lines.mjs";
 import { waitFor } from "./wait-for.mjs";
 
@@ -35,6 +38,7 @@ const fixtureImage = process.env.OCC_TEST_KUBERNETES_IMAGE;
 const adminEmail = "postgres-admin@openclaw.local";
 const adminPassword = "postgres-development-password";
 const authSecret = "openclaw-postgres-development-auth-secret-minimum-32-bytes";
+const browserOrigin = "https://console.oce.localhost";
 const requiresPostgres = {
   skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL to run real PostgreSQL integration tests.",
 };
@@ -47,6 +51,7 @@ const requiresPostgresAndKubernetesConfiguration = {
 };
 const useKubernetesDrivers = process.env.OCC_TEST_KUBERNETES_CONFIGURATION === "1";
 const kubernetesStartupEnvironments = new WeakMap();
+const caseDatabases = new WeakMap();
 const kubernetesWorkloadResources = Object.freeze({
   requests: Object.freeze({ cpu: "25m", memory: "48Mi" }),
   limits: Object.freeze({ cpu: "250m", memory: "192Mi" }),
@@ -70,6 +75,41 @@ async function kubectl(...args) {
     { maxBuffer: 4 * 1024 * 1024 },
   );
   return stdout;
+}
+
+// Under the CI runner (prepared ownership in OPENCLAW_ENTERPRISE_CI_STATE) a case can own a
+// database: prepareFile's fresh copy of the lane's migrated template, the same empty database
+// the runner prepared for the file (OCC_TEST_DATABASE_URL), which such a file leaves unused.
+// Nothing connects to the lane template (PostgreSQL copies only a database without sessions),
+// so a step that still used OCC_TEST_DATABASE_URL could not break another case's copy. The OCC
+// processes started below with the same context use the copy. It is dropped after the case's
+// other after hooks, which stop those processes and end its pools: node:test runs a hook added
+// while the after hooks run after the ones already registered. A failing after hook makes
+// node:test skip the later ones, the drop included; lane cleanup drops that copy. Without
+// prepared ownership the cases share OCC_TEST_DATABASE_URL, so they must run one at a time.
+const caseDatabasesAvailable = Boolean(process.env.OPENCLAW_ENTERPRISE_CI_STATE);
+// The worker revision fixture's limit for the drop's wait for the CI state lock.
+const caseDatabaseDropLockTimeoutMs = 120_000;
+
+async function prepareCaseDatabase(context, { lane, testFile }) {
+  if (!caseDatabasesAvailable) {
+    return databaseUrl;
+  }
+  const { prepareFile } = await import("../../scripts/ci/prepare.mjs");
+  const prepared = await prepareFile({
+    lane,
+    file: fileURLToPath(testFile),
+    statePath: process.env.OPENCLAW_ENTERPRISE_CI_STATE,
+  });
+  context.after(() =>
+    context.after(() => prepared.cleanup({ lockTimeoutMs: caseDatabaseDropLockTimeoutMs })),
+  );
+  caseDatabases.set(context, prepared.env.OCC_TEST_DATABASE_URL);
+  return prepared.env.OCC_TEST_DATABASE_URL;
+}
+
+function contextDatabaseUrl(context) {
+  return caseDatabases.get(context) ?? databaseUrl;
 }
 
 async function configuredDriverEnvironment(context, kubernetesDrivers) {
@@ -365,6 +405,8 @@ async function createKubernetesHarnessAuth(api, namespaceId) {
 async function createKubernetesConfiguredAgent(pool, api, namespaceId, name, values, body = {}) {
   const harnessAuth = await createKubernetesHarnessAuth(api, namespaceId);
   const created = await createConfiguredAgent(api, namespaceId, name, values, {
+    // The fixture image does not contain an OC Gateway runtime.
+    gatewayManagedMode: false,
     ...body,
     harnessAuth,
   });
@@ -373,25 +415,26 @@ async function createKubernetesConfiguredAgent(pool, api, namespaceId, name, val
 }
 
 function admitted(values) {
-  return admitLoggingConfiguration(values, "info");
+  return admittedConfiguration(values);
 }
 
-async function startController(context, { kubernetesDrivers = false } = {}) {
-  // The port is part of the auth base URL. Hold it until the child binds it.
+async function startController(
+  context,
+  { kubernetesDrivers = false, databaseUrl: occDatabaseUrl = contextDatabaseUrl(context) } = {},
+) {
+  // Hold the private loopback transport port until the child binds it.
   const reservation = await reservePort();
   context.after(reservation.release);
   const { port } = reservation;
   const driverEnvironment = await configuredDriverEnvironment(context, kubernetesDrivers);
-  const configurationRoot = await mkdtemp(join(tmpdir(), "openclaw-postgres-configurations-"));
-  context.after(async () => {
-    await rm(configurationRoot, { recursive: true, force: true });
-  });
+  const configurationRoot = await temporaryDirectory(context, "openclaw-postgres-configurations-");
   await ensureDevelopmentBootstrap(context, {
-    databaseUrl,
+    databaseUrl: occDatabaseUrl,
     email: adminEmail,
     password: adminPassword,
     authSecret,
-    authBaseURL: `http://127.0.0.1:${port}`,
+    authBaseURL: browserOrigin,
+    agentDomain: "agents.oce.localhost",
     installationName: "PostgreSQL platform state integration",
     // The Job's code in this process; the API below is the real server.mjs process.
     inProcess: true,
@@ -403,8 +446,9 @@ async function startController(context, { kubernetesDrivers = false } = {}) {
       NODE_ENV: "development",
       OCC_HOST: "127.0.0.1",
       OCC_PORT: String(port),
-      OCC_DATABASE_URL: databaseUrl,
-      OCC_AUTH_BASE_URL: `http://127.0.0.1:${port}`,
+      OCC_DATABASE_URL: occDatabaseUrl,
+      OCC_AUTH_BASE_URL: browserOrigin,
+      OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.localhost",
       OCC_AUTH_SECRET: authSecret,
       OCC_DEVELOPMENT_CONFIGURATION_ROOT: configurationRoot,
       OCC_DOCKER_RUNTIME_IMAGE: "openclaw-enterprise-runtime:not-used-by-postgres-platform-state",
@@ -421,14 +465,15 @@ async function startController(context, { kubernetesDrivers = false } = {}) {
   child.stderr.on("data", (chunk) => (output += chunk));
 
   const origin = `http://127.0.0.1:${port}`;
+  const transport = createConsoleFixtureTransport(browserOrigin, origin);
   const session = await waitFor(
     () => `the durable OCC subprocess to become ready:\n${output}`,
     async () => {
       assert.equal(child.exitCode, null, `The durable OCC subprocess exited early:\n${output}`);
       try {
         return await signInWithEmailPassword({
-          fetch,
-          origin,
+          fetch: transport.fetchThroughLoopback,
+          origin: browserOrigin,
           email: adminEmail,
           password: adminPassword,
         });
@@ -446,17 +491,19 @@ async function startController(context, { kubernetesDrivers = false } = {}) {
 
 async function spawnWorker(context, { kubernetesDrivers = false } = {}) {
   const driverEnvironment = await configuredDriverEnvironment(context, kubernetesDrivers);
+  const occDatabaseUrl = contextDatabaseUrl(context);
   const child = spawn(process.execPath, [workerEntrypoint], {
     cwd: repository,
     env: {
       ...process.env,
       NODE_ENV: "development",
-      DATABASE_URL: databaseUrl,
-      OCC_DATABASE_URL: databaseUrl,
-      OCC_TEST_DATABASE_URL: databaseUrl,
+      DATABASE_URL: occDatabaseUrl,
+      OCC_DATABASE_URL: occDatabaseUrl,
+      OCC_TEST_DATABASE_URL: occDatabaseUrl,
       OCC_WORKER_POLL_INTERVAL_MS: "20",
       OCC_WORKER_LEASE_DURATION_MS: "5000",
-      OCC_AUTH_BASE_URL: "http://127.0.0.1",
+      OCC_AUTH_BASE_URL: browserOrigin,
+      OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.localhost",
       OCC_AUTH_SECRET: authSecret,
       ...driverEnvironment,
     },
@@ -515,15 +562,13 @@ async function pollUntil(description, operation, { worker, timeoutMs = 15_000 } 
 }
 
 async function request(controller, method, path, body, options = {}) {
-  const response = await fetch(`${controller.origin}${path}`, {
-    method,
-    headers: {
+  const response = await fetchLoopback(`${controller.origin}${path}`, {
+    ...jsonRequestInit(method, body, {
+      host: new URL(browserOrigin).host,
       ...(options.authenticated === false
         ? {}
         : authenticatedHeaders(options.session ?? controller.session)),
-      ...(body === undefined ? {} : { "content-type": "application/json" }),
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }),
     signal: AbortSignal.timeout(5_000),
   });
   const payload = await response.json();
@@ -535,7 +580,7 @@ async function createDurableController(pool) {
     { NativeIAMDriver },
     { OpenClawController },
     { PostgresPlatformState },
-    { createDevelopmentComputeDriver },
+    { createDevelopmentComputeDriver, registerAndSelectDrivers },
     { DEVELOPMENT_HARNESS_DESCRIPTOR, resolveApprovedHarness: resolveApprovedDevelopmentHarness },
   ] = await Promise.all([
     import("../../packages/iam/src/index.ts"),
@@ -554,10 +599,7 @@ async function createDurableController(pool) {
   });
   const compute = createDevelopmentComputeDriver();
   const controller = new OpenClawController(installation, { state, recordOperations: true });
-  for (const driver of [iam, compute]) {
-    controller.registerDriver(driver);
-    controller.selectDriver(driver.capability, driver.id);
-  }
+  registerAndSelectDrivers(controller, [iam, compute]);
 
   return {
     controller,
@@ -571,6 +613,7 @@ export {
   adminEmail,
   adminPassword,
   admitted,
+  caseDatabasesAvailable,
   cleanupKubernetesNamespaces,
   createConfiguration,
   createConfiguredAgent,
@@ -582,6 +625,7 @@ export {
   grantTenantAccess,
   parseJsonLines,
   pollUntil,
+  prepareCaseDatabase,
   request,
   requiresPostgres,
   requiresPostgresAndKubernetesConfiguration,

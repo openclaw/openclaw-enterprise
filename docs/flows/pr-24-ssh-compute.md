@@ -1,7 +1,7 @@
 ---
 created: 2026-09-07
-updated: 2026-10-14
-last_updated_session: authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582
+updated: 2026-11-07
+last_updated_session: authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1
 ---
 
 <a id="pr-24-ssh-compute-flow"></a>
@@ -68,8 +68,8 @@ Compute IDs select Kubernetes. Schema and semantic validation reject invalid
 host settings and Sandbox composition. Preflight checks the two local SSH
 files and probes each host's required executables and account-management tools.
 
-Namespace preparation creates or verifies its ownership marker before running
-`afterNamespacePrepared` hooks. After Agent revision authorization and provider
+Namespace preparation creates or verifies its ownership marker. OCC then runs
+selected [Namespace setup hooks](../reference/drivers/namespace-lifecycle.md). After Agent revision authorization and provider
 validation, the worker calls `bindAgent`; the driver copies the authoritative
 Namespace, Agent, and ServicePrincipal binding into its in-memory maps. Agent revision
 operations require matching bindings and the selected Compute identity.
@@ -117,6 +117,14 @@ Namespace still holds it while retrying cleanup of remaining owned accounts.
 Before host work, `sshGatewayConfigurationDocument` admits only the supported
 authentication fields and modes. Omitted auth mode renders explicit password mode with a
 managed environment SecretRef; explicit trusted proxy retains its configured trust.
+`sshGatewayAuthentication` reads an authored password with the shared reader
+(`gatewayPasswordRequirement`). An unset password, `${OPENCLAW_GATEWAY_PASSWORD}`
+and a `default`-provider SecretRef render as the managed reference, as before. Any
+other readable environment SecretRef to that variable renders as written. When the
+managed reference is unreadable under the Configuration's `secrets`, admission
+refuses it. The refusal offers the reference on the default env alias only if the
+reader accepts that reference. Verify, stop and retire check only the password's
+shape and render it the same way, so the snapshot hash still matches.
 
 The helper creates or verifies a deterministic per-Agent system user and
 private group, then creates the Agent directory and reserves the lowest free
@@ -176,7 +184,7 @@ Relinking permits cleanup after `disable` removed a custom directory's load-path
 
 `ssh/index.ts:deleteNamespace`, `ssh/remote-helper.cjs:removeNamespace`
 
-Deletion runs `beforeNamespaceDelete` hooks, then validates every Agent, Agent revision,
+Deletion validates every Agent, Agent revision,
 and unit in the deletion set before stopping gateways. The helper stops and
 disables owned units through `stopOwnedUnit`, removes their unit files, reloads systemd, and removes the
 Namespace tree, including persistent state, and its owned runtime accounts. The driver clears its in-memory
@@ -218,6 +226,10 @@ retire, which frees its gateway port.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-07 01:04: Move Namespace setup orchestration to OCC and retain SSH host cleanup boundaries. (authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1 - 91b1a51eb)
+
+- 2026-10-31: Trace authored password rendering, the alias-aware refusal offer and shape-only teardown checks. (fix-3064, findings 3064, 3065)
 
 - 2026-10-14 12:23: Document stdout retention and local-client settlement on overflow. (authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582 - 4727e9b109a2127150e03e39e859d45e0668f82f)
 

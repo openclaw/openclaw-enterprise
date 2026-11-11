@@ -26,21 +26,10 @@ import {
   syntheticResponsesEvents,
 } from "../fixtures/synthetic-egress-provider.mjs";
 
+import { safeConnectedFailure } from "../helpers/egress-connected-failure.mjs";
+
 const inputsPath = process.env.OCC_TEST_EGRESS_CONNECTED_INPUTS;
 const selected = process.env.OCC_TEST_EGRESS_CONNECTED === "1" || inputsPath !== undefined;
-
-function safeConnectedFailure(error, stage) {
-  // Assertions and subprocess errors may embed response bytes. Keep a source
-  // location and the durable phase, never raw error payloads or an unsafe cause.
-  const location =
-    String(error.stack).match(
-      /(?:agent-openshell-static-egress-k3d-real\.test|egress-[\w.-]+|openshell-kubernetes-real)\.mjs:\d+:\d+/,
-    )?.[0] ?? "external-operation";
-  const kind = error.code === "ERR_ASSERTION" ? "assertion" : "operation";
-  return new Error(
-    `Connected egress ${kind} failed at ${stage} (${location}); inspect the per-run ledger`,
-  );
-}
 
 /**
  * @typedef {Awaited<ReturnType<typeof arrangeRealPrerequisites>>} Prerequisites
@@ -60,6 +49,7 @@ test(
   },
   async (t) => {
     const progress = { stage: "input-preflight" };
+    let recordFailure;
     try {
       const setup = await arrangeRealPrerequisites(t, progress, inputsPath, {
         wholeExecution: true,
@@ -70,6 +60,7 @@ test(
         "run this qualification from the selected candidate checkout",
       );
       const evidence = await createRunEvidence(t, setup, progress);
+      recordFailure = evidence.recordFailure;
       const stack = await observePreparedStack(t, setup, evidence, progress);
       const owned = await registerCleanupAndStartProvider(t, setup, stack, evidence);
       const deployment = await deployProtectedAgent(setup, stack, evidence, owned);
@@ -89,7 +80,7 @@ test(
         "one startup probe, seventeen measured Codex sends and one managed sibling send; no retries",
       );
     } catch (error) {
-      throw safeConnectedFailure(error, progress.stage);
+      throw await safeConnectedFailure(error, progress.stage, recordFailure);
     }
   },
 );
@@ -114,6 +105,11 @@ async function deployProtectedAgent(setup, stack, evidence, owned) {
     "credential-sources",
     protectedSourceBody(`egress-${runId}`, secret.ref, controller.providerOrigin),
   );
+  const ownerCapability = created.ownerCapability;
+  assert.ok(
+    ownerCapability === "credential_gateway" || ownerCapability === "credential_proxy",
+    "the created source must identify a public owner capability",
+  );
   // This is a fresh, unbound source. Record the maintainer's explicit consent
   // before binding it. Legacy and narrower approvals require this same PATCH.
   const source = await api("PATCH", `${namespacePath}/credential-sources/${created.id}`, {
@@ -121,6 +117,10 @@ async function deployProtectedAgent(setup, stack, evidence, owned) {
     authorityScope: "execution",
   });
   assert.equal(source.id, created.id);
+  assert.ok(
+    source.ownerCapability === ownerCapability,
+    "adoption must preserve the source owner capability",
+  );
   assert.deepEqual(
     source.egress,
     { adoption: "live", retention: "none" },
@@ -159,7 +159,17 @@ async function deployProtectedAgent(setup, stack, evidence, owned) {
   assert.equal(transport.transportConfigured, true);
   await checkpoint("deploy-request", { agentId: agent.id });
   const revision = await api("POST", `${namespacePath}/agents/${agent.id}/deploy`, undefined, 202);
-  await checkpoint("deployed", { agentId: agent.id, revisionId: revision.id });
+  assert.ok(
+    revision.harnessAuth?.method === "credential_source" &&
+      revision.harnessAuth.sourceId === source.id,
+    "the admitted Harness must select the adopted source",
+  );
+  await checkpoint("deployed", {
+    agentId: agent.id,
+    revisionId: revision.id,
+    sourceId: source.id,
+    ownerCapability,
+  });
   const deploymentPath = `${namespacePath}/agents/${agent.id}/deployments/${revision.id}`;
   await waitFor(
     "protected Agent activation with genuine installed evidence",
@@ -380,7 +390,7 @@ async function verifyManagedClientsAndDirectBypass(setup, evidence, owned, insta
   assert.equal(installation.enforcement.authorityScope, "execution");
   for (const { binding } of installation.plan.routes) {
     assert.equal(binding.source.source.generation, 2, "install the explicitly adopted generation");
-    assert.deepEqual(binding.source.provider, { id: "openai-static-https", generation: 2 });
+    assert.deepEqual(binding.source.provider, { id: "openai-static-https", generation: 3 });
     assert.deepEqual(binding.grant, {
       kind: "inference",
       models: [controller.model],

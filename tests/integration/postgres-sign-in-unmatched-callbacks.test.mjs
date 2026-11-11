@@ -6,26 +6,24 @@ import {
   bootstrapProductionInstallation,
   composeProductionSignIn,
   consoleOrigin as origin,
-  githubUpgradeSettings,
   googleUpgradeSettings,
   oidcUpgradeSettings,
   postgresSignInState,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { injectLocalhost } from "../helpers/inject-json.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 const adminEmail = "unmatched-recovery@example.test";
 const authSecret = "unmatched-callback-auth-test-secret-at-least-32-bytes";
 const secrets = {
   "occ-auth/secret": authSecret,
-  "occ-github-login/client-id": "unmatched-github-client-id",
-  "occ-github-login/client-secret": "unmatched-github-client-secret",
   "occ-google-login/client-id": "unmatched.apps.googleusercontent.com",
   "occ-google-login/client-secret": "unmatched-google-client-secret",
   "occ-oidc-login/client-id": "unmatched-oidc-client",
   "occ-oidc-login/client-secret": "unmatched-oidc-client-secret",
 };
-const providers = ["github", "google", "oidc"];
+const providers = ["google", "oidc"];
 // Values with the shape of a real attempt state and browser cookie, as a client can mint them.
 const minted = () => randomBytes(32).toString("base64url");
 
@@ -47,7 +45,6 @@ test(
     app = await composeProductionSignIn(t, {
       databaseUrl,
       settings: {
-        ...githubUpgradeSettings(adminId),
         ...googleUpgradeSettings(adminId),
         ...oidcUpgradeSettings(adminId),
       },
@@ -63,10 +60,9 @@ test(
       return match === null ? undefined : Number(match[1]);
     };
     const callback = (provider, query, cookie) =>
-      app.inject({
-        url: `/api/auth/providers/${provider}/callback?${query}`,
+      injectLocalhost(app, "GET", `/api/auth/providers/${provider}/callback?${query}`, {
         remoteAddress: "192.0.2.80",
-        ...(cookie === undefined ? {} : { headers: { cookie } }),
+        headers: cookie === undefined ? {} : { cookie },
       });
     const assertRefused = (response, provider, consoleReason) => {
       assert.equal(response.statusCode, 302, response.body);
@@ -78,9 +74,7 @@ test(
       );
     };
     const start = async (provider) => {
-      const started = await app.inject({
-        method: "POST",
-        url: `/api/auth/providers/${provider}/start`,
+      const started = await injectLocalhost(app, "POST", `/api/auth/providers/${provider}/start`, {
         remoteAddress: "192.0.2.80",
         headers: { origin },
       });

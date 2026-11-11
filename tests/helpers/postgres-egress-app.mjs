@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { createPostgresAgentApp } from "./postgres-agent-app.mjs";
 
-export async function postgresApp(t, options, transportDatabaseUrl) {
+export async function postgresApp(t, options, transportDatabaseUrl = undefined) {
   const p = await createPostgresAgentApp(t, {
     label: "static-egress",
     transportDatabaseUrl,
     poolOptions: options.poolOptions,
     controllerOptions: {
       preparedTokens: options.preparedTokens,
+      namespaceLifecycleBindings: options.namespaceLifecycleBindings,
       driverConfigurations: options.driverConfigurations,
       ...(options.now && { now: options.now }),
       ...(options.recordOperations && { recordOperations: true }),
@@ -29,10 +30,12 @@ export async function postgresApp(t, options, transportDatabaseUrl) {
     ...p,
     request,
     async bootstrap() {}, // createPostgresAgentApp bootstraps through the real development command.
-    async createNamespace(name) {
+    async createNamespace(name, { ready = false } = {}) {
       const result = await request("POST", "/namespaces", { body: { name } });
       assert.equal(result.status, 201, JSON.stringify(result.body));
-      await p.controller.handleNamespaceLifecycle(p.principal.id, result.data.id, "ready");
+      if (ready) {
+        await p.controller.handleNamespaceLifecycle(p.principal.id, result.data.id, "ready");
+      }
       return (await request("GET", `/namespaces/${result.data.id}`)).data;
     },
     async createConfiguration(namespaceId, values) {

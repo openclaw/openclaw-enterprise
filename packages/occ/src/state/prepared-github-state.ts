@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import type {
+  GitHubMetadataGrant,
   PreparedTokenCurrentProof,
   PreparedTokenSource,
 } from "@openclaw-enterprise/contracts";
@@ -19,14 +20,18 @@ export const preparedGitHubLive = (states: "'ready'" | "'registering','ready'") 
  AND k.id=f.issuer->>'id' AND k.driver_id=f.issuer->>'driverId'
  AND k.backend_uid=f.issuer #>> '{backendRef,uid}' AND s.namespace_id=f.source #>> '{key,namespaceId}')`;
 
+/** Admission persisted by the GitHub metadata family owner. */
+export interface PreparedGitHubMetadataAdmission {
+  readonly familyId: string;
+  readonly issuerAuthority: string;
+  readonly generation: number;
+  readonly ownerEpoch: number;
+  readonly inputVersion: string;
+  readonly grant: GitHubMetadataGrant & Readonly<{ id: string }>;
+}
+
 interface Metadata {
-  admission: {
-    familyId: string;
-    generation: number;
-    ownerEpoch: number;
-    inputVersion: string;
-    grant: { id: string; isolationId: string };
-  };
+  admission: PreparedGitHubMetadataAdmission;
   id: string;
   material_version: string;
   provider_expires_at: Date;

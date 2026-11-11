@@ -1,20 +1,29 @@
 import assert from "node:assert/strict";
-import { once } from "node:events";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { execFile as execFileCallback } from "node:child_process";
+import { chmod, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
-import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import {
   k3sImage,
   kubectlVersion,
   prepareOpenShell,
   prepareOpenShellClusterBootstrap,
   selectKubectlAsset,
+  validateOpenShellSelection,
 } from "../../scripts/ci/openshell.mjs";
-import { observeSandboxProbe } from "../helpers/k3d-failure-diagnostics.mjs";
+import { withEnvironment } from "../helpers/environment.ts";
+import { prependPath } from "../helpers/fake-commands.ts";
+import {
+  assertGatewayPolicyRunSucceeded,
+  openShellStaleRelay,
+  openShellSettingsChange,
+  observeSandboxProbe,
+} from "../helpers/k3d-failure-diagnostics.mjs";
+import { listen } from "../helpers/listen.mjs";
 import {
   createOpenShellInstallationConfiguration,
   createOpenShellKubernetesFixture,
@@ -22,12 +31,14 @@ import {
   openShellChartImageValues,
   openShellGatewayNetworkPolicies,
   outageAttemptRead,
+  waitForOpenShellRevisionActivation,
 } from "../helpers/openshell-kubernetes-real.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { waitFor } from "../helpers/wait-for.mjs";
 
 async function fixture(t, prefix = "ci-openshell-test") {
-  const root = await mkdtemp(join(tmpdir(), `${prefix}-`));
+  const root = await temporaryDirectory(t, `${prefix}-`);
   await chmod(root, 0o700);
-  t.after(() => rm(root, { recursive: true, force: true }));
   return root;
 }
 
@@ -40,12 +51,126 @@ function ownedCluster(root, name = "openclaw-k8s-openshell-test") {
   };
 }
 
+test("OpenShell turnover accepts established relay failures, not connection admission denials", () => {
+  const domain = "gateway.fixture.svc.cluster.local";
+  const stale = "policy generation is stale [captured_generation:7 current_generation:8]";
+  // Serialized shapes follow the pinned supervisor NetworkActivity producer. This proves
+  // parsing and projection only, not that a live supervisor emitted the event.
+  const event = {
+    time: 1_799_999_999_000,
+    class_uid: 4001,
+    activity_id: 4,
+    status_id: 2,
+    dst_endpoint: { domain, port: 443 },
+    message: `TLS relay error: ${stale}`,
+    privateDetail: "private payload",
+  };
+  const line = (value) => `2026-11-07T00:00:00Z OCSF-JSON ${JSON.stringify(value)}`;
+  for (const protocol of ["TLS", "L7", "HTTP"]) {
+    assert.deepEqual(
+      openShellStaleRelay(line({ ...event, message: `${protocol} relay error: ${stale}` }), domain),
+      { atMs: 1_799_999_999_000, capturedGeneration: 7, currentGeneration: 8 },
+    );
+  }
+  for (const rejected of [
+    { ...event, activity_id: 1, action_id: 2 },
+    { ...event, time: undefined },
+    { ...event, time: "1799999999000" },
+    { ...event, time: Number.MAX_SAFE_INTEGER + 1 },
+    { ...event, message: stale },
+    { ...event, class_uid: 6003 },
+    { ...event, status_id: 1 },
+    { ...event, dst_endpoint: { domain: "other.fixture.svc.cluster.local", port: 443 } },
+    { ...event, dst_endpoint: { domain, port: 80 } },
+  ]) {
+    assert.equal(openShellStaleRelay(line(rejected), domain), null);
+  }
+  assert.equal(
+    openShellStaleRelay(`2026-11-07T00:00:00Z NET: ${domain}:443 DENIED ${stale}`, domain),
+    null,
+  );
+  assert.equal(openShellStaleRelay('2026-11-07T00:00:00Z OCSF-JSON {"message":', domain), null);
+  // Delivery time above is intentionally different; occurrence and u64 revision
+  // text must survive without JavaScript numeric rounding.
+  const revision = "18446744073709551615";
+  const settings = {
+    time: event.time,
+    class_uid: 5019,
+    activity_id: 1,
+    status_id: 1,
+    message: `Settings poll: config change detected [old_revision:${revision} new_revision:${revision} policy_changed:false provider_env_changed:true]`,
+  };
+  assert.deepEqual(openShellSettingsChange(line(settings)), {
+    atMs: event.time,
+    oldRevision: revision,
+    newRevision: revision,
+    policyChanged: false,
+    providerEnvChanged: true,
+  });
+  assert.equal(openShellSettingsChange(line({ ...settings, time: null })), null);
+});
+
+test("a failed protected update reports its stored job state without disclosing Gateway text", async (t) => {
+  const attempt = "cross-agent-session-target";
+  const before = { id: "job-1", sessionTarget: "isolated", payload: { message: "private job" } };
+  const runId = "7f397a07-2e4a-49b1-bb45-d2db87fc4032";
+  const failed = { runId, status: "error", endedAt: 42, error: "private provider detail" };
+  for (const [jobState, current, terminal, metadata] of [
+    ["unchanged", structuredClone(before), failed, "errorText=present"],
+    [
+      "changed",
+      { ...before, sessionTarget: "private target" },
+      { ...failed, stopReason: "private stop reason", terminalReply: { text: "private reply" } },
+      "errorText=present, stopReason=other",
+    ],
+    [
+      "unavailable",
+      undefined,
+      {
+        runId,
+        status: "timeout",
+        stopReason: "timeout",
+        timeoutPhase: "provider",
+        providerStarted: true,
+      },
+      "stopReason=timeout, timeoutPhase=provider, providerStarted=true",
+    ],
+  ]) {
+    const requests = [];
+    const client = {
+      async request(...args) {
+        requests.push(args);
+        if (!current) {
+          throw new Error("private read failure");
+        }
+        return current;
+      },
+    };
+    await assert.rejects(
+      assertGatewayPolicyRunSucceeded(client, terminal, { attempt, before }),
+      (error) => {
+        assert.equal(error.actual, terminal.status);
+        assert.equal(
+          error.message.split("\n")[0],
+          `Gateway policy run ${runId} must succeed (attempt=${attempt}, job=${jobState}, ${metadata})`,
+        );
+        assert.doesNotMatch(error.message, /private/);
+        return true;
+      },
+    );
+    assert.deepEqual(requests, [["cron.get", { id: before.id }, { timeoutMs: 3_000 }]]);
+  }
+  const request = t.mock.fn();
+  await assertGatewayPolicyRunSucceeded({ request }, { runId, status: "ok" }, { attempt, before });
+  assert.equal(request.mock.callCount(), 0);
+});
+
 test("kubectl asset selection supports the pinned OpenShell CI host platforms", () => {
   assert.equal(selectKubectlAsset("darwin", "arm64").name, "kubectl-darwin-arm64");
   assert.throws(() => selectKubectlAsset("darwin", "x64"), /no pinned kubectl/);
 });
 
-test("OpenShell Helm chart image values use the v0.1.5 registry and digest contract", () => {
+test("OpenShell Helm chart image values use the v0.1.6 registry and digest contract", () => {
   const digest = "@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
   assert.deepEqual(
@@ -78,16 +203,70 @@ test("OpenShell Helm chart image values use the v0.1.5 registry and digest contr
   );
 });
 
-// Finding 1846: the worker claimed the work again between the queued read and the deployment read,
-// so the proof saw `running` while nothing had activated. Each poll replays one interleaving.
-test("OpenShell outage proof rereads a deployment the worker claimed again between reads", async () => {
+test("the OpenShell installation wait surfaces terminal deployment refusals on the first poll", async () => {
+  const agentPath =
+    "/namespaces/ns_10000000-0000-4000-8000-000000000001/agents/agt_10000000-0000-4000-8000-000000000002";
+  const revisionId = "rev_10000000-0000-4000-8000-000000000003";
+  const waitOnce = (description, read) => waitFor(description, read, { timeoutMs: 0 });
+  const refusalCode = "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE";
+  const privateDetail = "private requirements detail";
+  const activate = (deployment, activeRevisionId = null) =>
+    waitForOpenShellRevisionActivation(waitOnce, {
+      agentPath,
+      revisionId,
+      request: async (method, path) => {
+        assert.equal(method, "GET");
+        if (path === agentPath) {
+          return { status: 200, data: { activeRevisionId } };
+        }
+        assert.equal(path, `${agentPath}/deployments/${revisionId}`);
+        return { status: 200, data: deployment };
+      },
+    });
+
+  await assert.rejects(
+    activate({ status: "failed", error: { code: refusalCode, message: privateDetail } }),
+    {
+      code: refusalCode,
+      message: `OpenShell revision ${revisionId} deployment failed (${refusalCode}).`,
+    },
+  );
+  await assert.rejects(
+    activate({ status: "failed", error: { code: privateDetail, message: privateDetail } }),
+    { message: `OpenShell revision ${revisionId} deployment failed.` },
+  );
+  const nextAttemptAt = "2026-11-10T11:00:00.000Z";
+  for (const [status, lastAttempt] of [
+    ["queued", null],
+    [
+      "running",
+      {
+        at: "2026-11-10T10:59:59.000Z",
+        code: "REFUSED_CANDIDATE_STOP_PENDING",
+        message: `Deployment refused (${refusalCode}); stopping the refused version before recording the failure. The controller will retry.`,
+      },
+    ],
+  ]) {
+    await assert.rejects(
+      activate({ status, error: null, progress: { lastAttempt, nextAttemptAt } }),
+      { message: `Timed out waiting for OpenShell revision ${revisionId} activation.` },
+    );
+  }
+  assert.deepEqual(await activate({ status: "succeeded", error: null }, revisionId), {
+    activeRevisionId: revisionId,
+  });
+});
+
+// Finding 1846: the worker can claim the work again between reads. The status is read only once
+// the work is queued after an attempt, and a started deployment reads as `running` then (finding
+// 2456), so that read ends the wait with the work it followed.
+test("OpenShell outage proof reads the status only for work queued after an attempt", async () => {
   const queued = (attempt) => ({ state: "queued", reason_code: null, attempt_count: attempt });
   const claimed = (attempt) => ({ state: "claimed", reason_code: null, attempt_count: attempt });
   const polls = [
     [queued(0), undefined],
-    [queued(3), "running"],
-    [claimed(4), undefined],
-    [queued(4), "queued"],
+    [claimed(1), undefined],
+    [queued(1), "running"],
   ];
   let reads = 0;
   const poll = outageAttemptRead({
@@ -105,12 +284,7 @@ test("OpenShell outage proof rereads a deployment the worker claimed again betwe
   for (; reads < polls.length; reads += 1) {
     results.push(await poll());
   }
-  assert.deepEqual(results, [
-    undefined,
-    undefined,
-    undefined,
-    { work: queued(4), status: "queued" },
-  ]);
+  assert.deepEqual(results, [undefined, undefined, { work: queued(1), status: "running" }]);
   // A revision that failed or activated during the outage ends the wait, so the proof fails on it.
   for (const status of ["failed", "succeeded", null]) {
     const ended = await outageAttemptRead({
@@ -136,14 +310,14 @@ test("OpenShell outage proof counts a pass that waited on the gateway without an
       readWork: async () => work,
       readStatus: async () => {
         statusReads += 1;
-        return "queued";
+        return "running";
       },
     })();
   // Not claimed yet, or a pass that waited on something else: no proof, and no status read.
   assert.equal(await read({ ...waited, last_attempt_code: null }), undefined);
   assert.equal(await read({ ...waited, last_attempt_code: "REVISION_INCOMPLETE" }), undefined);
   assert.equal(statusReads, 0);
-  assert.deepEqual(await read(waited), { work: waited, status: "queued" });
+  assert.deepEqual(await read(waited), { work: waited, status: "running" });
   assert.equal(statusReads, 1);
 });
 
@@ -156,9 +330,7 @@ test("OpenShell host probes retain the exposed hostname while connecting to loop
     observedHost = incoming.headers.host;
     response.end("routed");
   });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  await listen(t, server);
 
   const address = server.address();
   assert.ok(address && typeof address === "object");
@@ -191,9 +363,7 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
   server.on("upgrade", (request, stream, head) => {
     peer.handleUpgrade(request, stream, head, (socket) => peer.emit("connection", socket, stream));
   });
-  server.listen(0, "127.0.0.1");
-  t.after(() => server.close());
-  await once(server, "listening");
+  await listen(t, server);
 
   const directory = await fixture(t);
   await writeFile(
@@ -212,7 +382,8 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
   t.after(() => {
     process.env.PATH = path;
   });
-  const { requestCodexTurnFromGatewayPod } = createOpenShellKubernetesFixture({});
+  const { requestCodexTurnFromGatewayPod, readCodexThreadFromGatewayPod } =
+    createOpenShellKubernetesFixture({});
 
   for (const event of [
     "late result",
@@ -360,6 +531,52 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
     }
     assert.deepEqual(attempts, [1], event);
   }
+
+  await t.test("thread reads ignore unrelated notifications without starting work", async () => {
+    const thread = { id: "requested-thread", turns: [] };
+    const methods = [];
+    peer.once("connection", (socket) => {
+      socket.on("message", (data) => {
+        const { method, id, params } = JSON.parse(data);
+        methods.push(method);
+        const send = (message) => socket.send(JSON.stringify(message));
+        if (method === "initialize") {
+          return send({ id, result: {} });
+        }
+        if (method === "initialized") {
+          return;
+        }
+        assert.equal(method, "thread/read");
+        assert.deepEqual(params, { threadId: thread.id, includeTurns: true });
+        // Other clients can execute work while this client only reads a saved thread.
+        send({
+          method: "item/started",
+          params: {
+            threadId: "other-thread",
+            turnId: "other-turn",
+            item: {
+              id: "other-command",
+              type: "commandExecution",
+              command: "echo unrelated",
+              status: "inProgress",
+            },
+          },
+        });
+        send({
+          method: "turn/completed",
+          params: { threadId: "other-thread", turn: { id: "other-turn", status: "completed" } },
+        });
+        send({ id, result: { thread } });
+      });
+    });
+    const actual = await readCodexThreadFromGatewayPod({
+      namespace: "fixture",
+      gatewayPod: "fixture",
+      threadId: thread.id,
+    });
+    assert.deepEqual(actual, thread);
+    assert.deepEqual(methods, ["initialize", "initialized", "thread/read"]);
+  });
 });
 
 test("OpenShell probe waits for a command that outlives its turn up to the fixture's bound", async (t) => {
@@ -370,9 +587,7 @@ test("OpenShell probe waits for a command that outlives its turn up to the fixtu
   const { WebSocketServer } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
   const server = createServer();
   const peer = new WebSocketServer({ server });
-  server.listen(0, "127.0.0.1");
-  t.after(() => server.close());
-  await once(server, "listening");
+  await listen(t, server);
   const directory = await fixture(t);
   // Finding 1665: wakes the client's first command-deadline timer after 1 ms instead of its
   // delay, as an early libuv wake would, and records that it did.
@@ -407,11 +622,7 @@ test("OpenShell probe waits for a command that outlives its turn up to the fixtu
     ].join("\n"),
     { mode: 0o755 },
   );
-  const path = process.env.PATH;
-  process.env.PATH = directory + delimiter + path;
-  t.after(() => {
-    process.env.PATH = path;
-  });
+  prependPath(t, directory);
   const threadId = "probe-thread";
   const turnId = "probe-turn";
   const nonce = "probe-command";
@@ -499,12 +710,14 @@ test("OpenShell probe waits for a command that outlives its turn up to the fixtu
   // client re-arms for the remainder. A one-shot timer would report an unknown outcome here.
   const probeWithEarlyWake = async (codexCommandGraceMs) => {
     await rm(earlyWakeMarker, { force: true });
-    process.env.EARLY_WAKE_GRACE_MS = String(codexCommandGraceMs);
-    const outcome = await probe(codexCommandGraceMs).then(
-      (result) => ({ result }),
-      (error) => ({ error }),
+    const outcome = await withEnvironment(
+      { EARLY_WAKE_GRACE_MS: String(codexCommandGraceMs) },
+      () =>
+        probe(codexCommandGraceMs).then(
+          (result) => ({ result }),
+          (error) => ({ error }),
+        ),
     );
-    delete process.env.EARLY_WAKE_GRACE_MS;
     // The deadline was armed for the grace less the moment since the turn ended.
     const woke = Number(await readFile(earlyWakeMarker, "utf8").catch(() => NaN));
     assert.ok(
@@ -546,9 +759,7 @@ test("a turn the model answered at capacity runs again only for its own final er
   const { WebSocketServer } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
   const server = createServer();
   const peer = new WebSocketServer({ server });
-  server.listen(0, "127.0.0.1");
-  t.after(() => server.close());
-  await once(server, "listening");
+  await listen(t, server);
   const directory = await fixture(t);
   // A transport that can drop the last two bytes of the client's stdout or stderr ("mode").
   const mode = join(directory, "mode");
@@ -578,11 +789,7 @@ test("a turn the model answered at capacity runs again only for its own final er
     ].join("\n"),
     { mode: 0o755 },
   );
-  const path = process.env.PATH;
-  process.env.PATH = directory + delimiter + path;
-  t.after(() => {
-    process.env.PATH = path;
-  });
+  prependPath(t, directory);
   const retryReceipt = "occ-codex-turn: retry-safe: model at capacity before any action";
   // The app server's final error for a turn names that turn (ErrorNotification: error,
   // threadId, turnId, willRetry).
@@ -598,11 +805,16 @@ test("a turn the model answered at capacity runs again only for its own final er
   // Each turn/start answers with the next script's events; "close" closes the socket.
   let scripts = [];
   let threadStarts = 0;
+  let connections = 0;
   peer.on("connection", (socket) => {
+    connections += 1;
     socket.on("message", (data) => {
       const { method, id } = JSON.parse(data);
       const send = (message) => socket.send(JSON.stringify(message));
       if (method === undefined || method === "initialized") {
+        return;
+      }
+      if (scripts[0] === `stall ${method}`) {
         return;
       }
       if (method === "initialize") {
@@ -633,6 +845,9 @@ test("a turn the model answered at capacity runs again only for its own final er
         return send({ id, result: { turn } });
       }
       send({ id, result: { turn } });
+      if (script === "stall turn") {
+        return;
+      }
       const at = { threadId, turnId: turn.id };
       const command = { id: "command", type: "commandExecution", command: "true" };
       const started = {
@@ -727,11 +942,15 @@ test("a turn the model answered at capacity runs again only for its own final er
     codexCommandGraceMs: graceMs,
     modelAtCapacityRetry: { sleep: async (ms) => sleeps.push(ms), log: () => {} },
   });
-  const turn = async (turnScripts) => {
+  const turn = async (turnScripts, timeoutMs = 300_000) => {
     scripts = [...turnScripts];
     threadStarts = 0;
     sleeps.length = 0;
-    return requestCodexTurnFromGatewayPod({ namespace: "fixture", gatewayPod: "fixture" });
+    return requestCodexTurnFromGatewayPod({
+      namespace: "fixture",
+      gatewayPod: "fixture",
+      timeoutMs,
+    });
   };
   const failure = (promise) =>
     promise.then(
@@ -790,6 +1009,8 @@ test("a turn the model answered at capacity runs again only for its own final er
   assert.doesNotMatch(ended.stderr, /Codex command outcome is unknown/);
   const endedSummary = summaryOf(ended);
   assert.equal(endedSummary.failedCommands, 1);
+  assert.equal(endedSummary.completedCommands, 1);
+  assert.equal(endedSummary.actionSeen, true);
   assert.deepEqual(endedSummary.pendingCommands, []);
 
   // A command whose terminal never arrives, or whose socket closes: the outcome is unknown.
@@ -835,6 +1056,22 @@ test("a turn the model answered at capacity runs again only for its own final er
   assert.equal(cutReceipt.message.split("\n")[0], notRetried);
   assert.equal(cutReceipt.code, 75);
   await writeFile(mode, "");
+
+  // A silent peer can stop at any RPC or after accepting a turn. The same deadline must
+  // fail once, without retrying an unknown outcome, and identify that stage without payloads.
+  for (const phase of ["initialize", "thread/start", "turn/start", "turn"]) {
+    const before = connections;
+    const error = await failure(turn([`stall ${phase}`, "reply"], 1_000));
+    assert.match(error.stderr, /Codex harness turn timed out/, phase);
+    assert.equal(connections, before + 1, phase);
+    assert.deepEqual(sleeps, [], phase);
+    const summary = summaryOf(error);
+    assert.equal(summary.phase, phase);
+    assert.deepEqual(summary.pendingRequests, phase === "turn" ? [] : [phase]);
+    assert.equal(summary.completedCommands, 0, phase);
+    assert.equal(summary.actionSeen, false, phase);
+    assert.equal(summary.retrySafe, false, phase);
+  }
 });
 
 test("OpenShell fixture networking admits the supervisor callback without granting tenant Pods", () => {
@@ -860,7 +1097,7 @@ test("OpenShell fixture networking admits the supervisor callback without granti
   const matches = (selector, labels) =>
     selector.matchLabels !== undefined &&
     Object.entries(selector.matchLabels).every(([key, value]) => labels[key] === value);
-  // OpenShell v0.1.5 supervisor Pod labels (sandbox_runtime.rs; internal/occdev/kubernetes.go).
+  // OpenShell v0.1.6 supervisor Pod labels (sandbox_runtime.rs; internal/occdev/kubernetes.go).
   const supervisor = {
     "openshell.ai/managed-by": "openshell",
     "openshell.ai/boundary-role": "supervisor",
@@ -1036,6 +1273,244 @@ test("prepareOpenShell rejects mutable OpenShell image overrides before kubectl 
 
   assert.deepEqual(calls, []);
   assert.equal(registerCalls, 0);
+});
+
+const execFileAsync = promisify(execFileCallback);
+
+async function candidateCheckout(t, { gatewayAppVersion = "0.0.0" } = {}) {
+  const root = await fixture(t, "openshell-candidate");
+  const gatewayChart = join(root, "deploy", "helm", "openshell");
+  const workspaceChart = join(root, "deploy", "helm", "openshell-workspace");
+  for (const [directory, name] of [
+    [gatewayChart, "openshell"],
+    [workspaceChart, "openshell-workspace"],
+  ]) {
+    await mkdir(directory, { recursive: true });
+    await writeFile(
+      join(directory, "Chart.yaml"),
+      `apiVersion: v2\nname: ${name}\nversion: 0.1.6\n${directory === gatewayChart && gatewayAppVersion ? `appVersion: "${gatewayAppVersion}"\n` : ""}`,
+    );
+    await writeFile(join(directory, "values.yaml"), "replicaCount: 1\n");
+  }
+  await writeFile(join(root, ".gitignore"), "ignored.yaml\n");
+  await execFileAsync("git", ["init", "--quiet", "--initial-branch=main", root]);
+  await execFileAsync("git", ["-C", root, "add", "."]);
+  await execFileAsync("git", [
+    "-C",
+    root,
+    "-c",
+    "user.name=OpenShell fixture",
+    "-c",
+    "user.email=fixture@example.invalid",
+    "commit",
+    "--quiet",
+    "-m",
+    "Candidate chart fixture",
+  ]);
+  const { stdout } = await execFileAsync("git", ["-C", root, "rev-parse", "HEAD"]);
+  return {
+    root,
+    env: {
+      OCC_TEST_OPENSHELL_SOURCE_REVISION: stdout.trim(),
+      OCC_TEST_OPENSHELL_HELM_CHART: gatewayChart,
+      OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART: workspaceChart,
+      OCC_TEST_OPENSHELL_GATEWAY_IMAGE: `localhost/candidate/gateway@sha256:${"a".repeat(64)}`,
+      OCC_TEST_OPENSHELL_SANDBOX_IMAGE: `localhost/candidate/sandbox@sha256:${"b".repeat(64)}`,
+      OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: `localhost/candidate/supervisor@sha256:${"c".repeat(64)}`,
+    },
+  };
+}
+
+test("OpenShell stock selection accepts empty selectors and mirrors of released digests", async (t) => {
+  const execFile = t.mock.fn(() => assert.fail("stock selection must not inspect a candidate"));
+  for (const env of [
+    {},
+    {
+      OCC_TEST_OPENSHELL_SOURCE_REVISION: "",
+      OCC_TEST_OPENSHELL_HELM_CHART: "",
+      OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART: "",
+      OCC_TEST_OPENSHELL_GATEWAY_IMAGE: "",
+      OCC_TEST_OPENSHELL_SANDBOX_IMAGE: "",
+      OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: "",
+    },
+    {
+      OCC_TEST_OPENSHELL_GATEWAY_IMAGE:
+        "localhost/mirror/gateway@sha256:f0b36dba21d282c52e498c25289658cfd6cd4f343b0069fde5609e25b002cdea",
+      OCC_TEST_OPENSHELL_SANDBOX_IMAGE:
+        "localhost/mirror/sandbox@sha256:1038eb5c1f191fa3c34684fd7041b891c78ec570979d487f36e06e08f91bfb63",
+      OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE:
+        "localhost/mirror/supervisor@sha256:ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b",
+    },
+  ]) {
+    assert.equal(await validateOpenShellSelection(env, execFile), null);
+  }
+  assert.equal(execFile.mock.callCount(), 0);
+});
+
+test("prepareOpenShell rejects incomplete candidate tuples before commands or image registration", async (t) => {
+  const { env } = await candidateCheckout(t);
+  const root = await fixture(t, "openclaw-k8s-openshell-test");
+  const execFile = t.mock.fn(() => assert.fail("incomplete candidates must not run commands"));
+  const registerImage = t.mock.fn(() =>
+    assert.fail("incomplete candidates must not register images"),
+  );
+  // Any explicit candidate input commits this run to one complete tuple, never a
+  // mixture of candidate images and released charts (or the reverse).
+  for (const missing of Object.keys(env)) {
+    await assert.rejects(
+      prepareOpenShell({
+        cluster: ownedCluster(root),
+        execFile,
+        registerImage,
+        env: { ...env, [missing]: "" },
+      }),
+      /requires a source revision, all three images, and both Helm charts/,
+      missing,
+    );
+  }
+  await assert.rejects(
+    prepareOpenShell({
+      cluster: ownedCluster(root),
+      execFile,
+      registerImage,
+      env: { ...env, OCC_TEST_OPENSHELL_SOURCE_REVISION: "A".repeat(40) },
+    }),
+    /full lowercase Git commit/,
+  );
+  assert.equal(execFile.mock.callCount(), 0);
+  assert.equal(registerImage.mock.callCount(), 0);
+});
+
+test("OpenShell candidate preflight uses verified chart bytes and removes its snapshot", async (t) => {
+  const { env } = await candidateCheckout(t);
+  const inspected = [];
+  let charts;
+  const selection = await validateOpenShellSelection(env, async (command, args) => {
+    if (command === "git") {
+      return execFileAsync(command, args);
+    }
+    if (command === "helm") {
+      assert.deepEqual(args.slice(0, 2), ["show", "chart"]);
+      const gateway = await readFile(join(args[2], "Chart.yaml"), "utf8");
+      const directory = dirname(args[2]);
+      const workspace = await readFile(
+        join(directory, "openshell-workspace", "values.yaml"),
+        "utf8",
+      );
+      charts = { gateway, directory, workspace };
+      return { stdout: gateway };
+    }
+    // Docker reports fixture metadata. Git tree and on-disk chart comparisons run for real.
+    assert.equal(command, "docker");
+    assert.deepEqual(args.slice(0, 2), ["image", "inspect"]);
+    if (inspected.length === 0) {
+      // The checkout can change after chart validation and before Helm consumes it.
+      await writeFile(join(env.OCC_TEST_OPENSHELL_HELM_CHART, "Chart.yaml"), "appVersion: 9.9.9\n");
+      await writeFile(
+        join(env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART, "values.yaml"),
+        "replicaCount: 99\n",
+      );
+    }
+    inspected.push(args.at(-1));
+    return { stdout: `${env.OCC_TEST_OPENSHELL_SOURCE_REVISION}\n` };
+  });
+  assert.deepEqual(
+    new Set(inspected),
+    new Set([
+      env.OCC_TEST_OPENSHELL_GATEWAY_IMAGE,
+      env.OCC_TEST_OPENSHELL_SANDBOX_IMAGE,
+      env.OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE,
+    ]),
+  );
+  assert.match(charts.gateway, /appVersion: "0\.0\.0"/);
+  assert.equal(charts.workspace, "replicaCount: 1\n");
+  assert.equal(selection, null, "preflight must not return paths it has removed");
+  await assert.rejects(readdir(charts.directory), { code: "ENOENT" });
+});
+
+test("prepareOpenShell rejects a verified gateway chart without an application version", async (t) => {
+  const { env } = await candidateCheckout(t, { gatewayAppVersion: "" });
+  const root = await fixture(t, "openclaw-k8s-openshell-test");
+  await assert.rejects(
+    prepareOpenShell({
+      cluster: ownedCluster(root),
+      async execFile(command, args) {
+        if (command === "git") {
+          return execFileAsync(command, args);
+        }
+        if (command === "docker") {
+          assert.deepEqual(args.slice(0, 2), ["image", "inspect"]);
+          return { stdout: `${env.OCC_TEST_OPENSHELL_SOURCE_REVISION}\n` };
+        }
+        assert.equal(command, "helm");
+        assert.deepEqual(args.slice(0, 2), ["show", "chart"]);
+        assert.equal(dirname(dirname(args[2])), root);
+        return { stdout: await readFile(join(args[2], "Chart.yaml"), "utf8") };
+      },
+      registerImage: async () => assert.fail("invalid candidate must not register images"),
+      env,
+    }),
+    /must set a label-safe appVersion/,
+  );
+  assert.deepEqual(await readdir(root), [], "a failed candidate must leave no partial snapshot");
+});
+
+test("prepareOpenShell rejects source, chart, and image mismatches before cluster commands", async (t) => {
+  const { root: checkout, env } = await candidateCheckout(t);
+  const root = await fixture(t, "openclaw-k8s-openshell-test");
+  const registerImage = t.mock.fn(() =>
+    assert.fail("mismatched candidates must not register images"),
+  );
+  let imageRevision = env.OCC_TEST_OPENSHELL_SOURCE_REVISION;
+  const execFile = async (command, args) => {
+    if (command === "git") {
+      return execFileAsync(command, args);
+    }
+    assert.equal(command, "docker", "candidate mismatch must fail before cluster commands");
+    assert.deepEqual(args.slice(0, 2), ["image", "inspect"]);
+    return { stdout: `${imageRevision}\n` };
+  };
+  const prepare = (selected = env) =>
+    prepareOpenShell({
+      cluster: ownedCluster(root),
+      execFile,
+      registerImage,
+      env: selected,
+    });
+  await assert.rejects(
+    prepare({ ...env, OCC_TEST_OPENSHELL_SOURCE_REVISION: "0".repeat(40) }),
+    /chart checkout does not match the selected source revision/,
+  );
+
+  // Git status can hide modified tracked files and ignored additions; Helm still
+  // reads them. Prove validation compares physical chart contents to the commit.
+  const values = join(env.OCC_TEST_OPENSHELL_HELM_CHART, "values.yaml");
+  await execFileAsync("git", ["-C", checkout, "update-index", "--assume-unchanged", values]);
+  await writeFile(values, "replicaCount: 99\n");
+  await assert.rejects(prepare(), /chart contents do not match the selected source revision/);
+  await writeFile(values, "replicaCount: 1\n");
+  // A committed file must remain a regular file with its recorded mode, even
+  // when a link points at a file with identical bytes.
+  await chmod(values, 0o755);
+  await assert.rejects(prepare(), /chart contents do not match the selected source revision/);
+  await rm(values);
+  await symlink(join(env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART, "values.yaml"), values);
+  await assert.rejects(prepare(), /chart contents do not match the selected source revision/);
+  await rm(values);
+  await writeFile(values, "replicaCount: 1\n");
+  for (const name of ["extra.yaml", "ignored.yaml"]) {
+    const extra = join(env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART, name);
+    await writeFile(extra, "replicaCount: 99\n");
+    await assert.rejects(prepare(), /chart contents do not match the selected source revision/);
+    await rm(extra);
+  }
+
+  // Git tracks the owner execute bit. An execute bit for others alone must
+  // leave this chart file non-executable in Git and reach the image check.
+  await chmod(values, 0o645);
+  imageRevision = "0".repeat(40);
+  await assert.rejects(prepare(), /image revision does not match the selected source revision/);
+  assert.equal(registerImage.mock.callCount(), 0);
 });
 
 test("prepareOpenShell fails before downloads when the RuntimeClass smoke Pod fails", async (t) => {

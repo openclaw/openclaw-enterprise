@@ -22,10 +22,10 @@
 {{- end -}}
 {{/* Null clears the chart default. quote skips nil and renders YAML null, which leaves emptyDir unlimited. */}}
 {{- if not (kindIs "invalid" $collector.state.sizeLimit) -}}
-{{- include "openclaw.quantity" (dict "name" "logging.collector.state.sizeLimit" "value" $collector.state.sizeLimit) -}}
+{{- include "openclaw.nonNegativeQuantity" (dict "name" "logging.collector.state.sizeLimit" "value" $collector.state.sizeLimit) -}}
 {{- end -}}
 {{- if not (kindIs "invalid" $collector.tmp.sizeLimit) -}}
-{{- include "openclaw.quantity" (dict "name" "logging.collector.tmp.sizeLimit" "value" $collector.tmp.sizeLimit) -}}
+{{- include "openclaw.nonNegativeQuantity" (dict "name" "logging.collector.tmp.sizeLimit" "value" $collector.tmp.sizeLimit) -}}
 {{- end -}}
 {{- include "openclaw.resourceRequirements" (dict "name" "logging.collector.resources" "requirements" $collector.resources) -}}
 {{- if not (kindIs "bool" $collector.metrics.enabled) -}}
