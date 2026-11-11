@@ -94,9 +94,11 @@ OCC_TEST_STAGED_SIGNIN_CLEANUP_REAL=1 node --test --test-concurrency=1 tests/int
 
 The `k3d-fixture-configuration` PR lane runs this file serially before its
 shared fixture tests, without preparing a separate database for it. All three
-cases must pass without skips. Set `OCC_TEST_STAGED_SIGNIN_CLEANUP_ARTIFACT_DIR` to a fresh directory to
+cases must pass without skips. For the direct Node invocation, set
+`OCC_TEST_STAGED_SIGNIN_CLEANUP_ARTIFACT_DIR` to a fresh directory to
 retain source identity, observed resource identities, refusal output, assertion
-outcomes and final cleanup status.
+outcomes and final cleanup status. The normal PR lane does not forward this
+optional directory; use its ordinary result and cleanup reports.
 
 Prepare the digest-pinned K3s image selected by `scripts/ci/prepare.mjs` and
 k3d's support images before execution. Allow capacity for one disposable

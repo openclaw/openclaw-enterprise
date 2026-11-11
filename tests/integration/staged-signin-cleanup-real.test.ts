@@ -10,6 +10,7 @@ import { promisify } from "node:util";
 import { deleteOwnedK3dCluster } from "../../scripts/ci/cleanup.mjs";
 import {
   assertLocalRehearsalDaemon,
+  FixtureCommandError,
   bindLocalRehearsalCluster,
   runFixtureCommand,
   type FixtureRun,
@@ -103,16 +104,13 @@ async function fixture(
   };
   let uncertain = false;
   const command: FixtureRun = async (name, args, options = {}) => {
+    const timeout = Math.min(options.timeout ?? 120_000, remaining());
     try {
-      return await run(name, args, {
-        ...options,
-        timeout: Math.min(options.timeout ?? 120_000, remaining()),
-      });
+      return await run(name, args, { ...options, timeout });
     } catch (error) {
-      // The command owner joins its process before rejection, but a timed-out
-      // Docker request may still have changed daemon state. Retain its journal.
-      uncertain ||=
-        error instanceof Error && /timed out|could not terminate|interrupted/.test(error.message);
+      // A normal nonzero child exit is observable; a signal/timeout or unknown
+      // transport failure is not affirmative settlement of daemon work.
+      uncertain ||= !(error instanceof FixtureCommandError) || !error.settled;
       throw error;
     }
   };
@@ -158,14 +156,13 @@ async function fixture(
   let extraContainer: string | undefined;
   let extraVolumes: string[] = [];
   let assertionsPassed = false;
+  let requiresReconciliation = false;
+  let cleanupAuthority: Owned | undefined;
+  let cleanupStateHash: string | undefined;
   // Register ownership before creation. This cleanup is independent of the CLI
   // assertions, so it cannot turn a refused or partial deletion into a pass.
   registerCleanup(async () => {
     previousCaseFailed ||= !assertionsPassed;
-    if (uncertain) {
-      process.env = originalEnv;
-      throw new Error(`uncertain command outcome; reconciliation required at ${directory}`);
-    }
     const errors: unknown[] = [];
     const cleanupDeadline = Date.now() + 3 * 60_000;
     const cleanupRemaining = () => {
@@ -178,33 +175,77 @@ async function fixture(
         ...options,
         timeout: Math.min(options.timeout ?? 30_000, cleanupRemaining()),
       });
-    if (extraContainer) {
-      await cleanupRun("docker", ["rm", "-f", "-v", extraContainer]).catch((error) =>
-        errors.push(error),
+    try {
+      assert.ok(
+        !uncertain && !requiresReconciliation,
+        `unconfirmed resource ownership; retain ${directory}`,
       );
-    }
-    await Promise.resolve()
-      .then(() =>
-        execute(process.execPath, ["scripts/ci/cleanup.mjs", "--state", statePath], {
-          cwd: root,
-          env: process.env,
-          timeout: Math.min(120_000, cleanupRemaining()),
-          killSignal: "SIGTERM",
-          maxBuffer: 1024 * 1024,
-        }),
-      )
-      .catch((error) => errors.push(error));
-    for (const owned of captures) {
-      await assertRemoved(owned, cleanupRun).catch((error) => errors.push(error));
-    }
-    if (extraVolumes.length) {
-      await cleanupRun("docker", ["volume", "ls", "-q"])
-        .then((output) => {
-          for (const volume of extraVolumes) {
-            assert.ok(!lines(output).includes(volume), "helper anonymous volume remains");
-          }
-        })
-        .catch((error) => errors.push(error));
+      if (extraContainer) {
+        // Stop here on any removal or absence failure. A still-shared volume
+        // never grants fallback authority to delete the cluster underneath it.
+        await cleanupRun("docker", ["rm", "-f", "-v", extraContainer]);
+        assert.ok(
+          !lines(await cleanupRun("docker", ["ps", "-aq", "--no-trunc"])).includes(extraContainer),
+        );
+        const volumes = lines(await cleanupRun("docker", ["volume", "ls", "-q"]));
+        assert.ok(
+          extraVolumes.every((volume) => !volumes.includes(volume)),
+          "helper anonymous volume remains",
+        );
+      }
+      const state = await readFile(statePath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") {
+          return undefined;
+        }
+        throw error;
+      });
+      if (state) {
+        assert.ok(
+          cleanupAuthority && cleanupStateHash,
+          "no acknowledged cluster cleanup authority",
+        );
+        assert.equal(hash(state), cleanupStateHash, "fixture state changed before final cleanup");
+        const current = await capture(
+          cleanupAuthority.cluster,
+          join(work, "final-kubeconfig"),
+          cleanupRun,
+        );
+        assert.deepEqual(
+          current.owned,
+          cleanupAuthority,
+          "fixture cluster changed before final cleanup",
+        );
+        await execute(
+          process.execPath,
+          [
+            "--input-type=module",
+            "-e",
+            'import {cleanupState} from "./scripts/ci/cleanup.mjs"; await cleanupState(process.argv[1], JSON.parse(process.argv[2]));',
+            statePath,
+            JSON.stringify({
+              expectedStateSha256: cleanupStateHash,
+              k3dIdentity: {
+                cluster: cleanupAuthority.cluster,
+                serverID: cleanupAuthority.serverID,
+                ...cleanupAuthority.membership,
+              },
+            }),
+          ],
+          {
+            cwd: root,
+            env: process.env,
+            timeout: Math.min(120_000, cleanupRemaining()),
+            killSignal: "SIGTERM",
+            maxBuffer: 1024 * 1024,
+          },
+        );
+      }
+      for (const owned of captures) {
+        await assertRemoved(owned, cleanupRun);
+      }
+    } catch (error) {
+      // Any failure ends mutation. Keep state and report incomplete cleanup.
+      errors.push(error);
     }
     process.env = originalEnv;
     if (evidenceRoot) {
@@ -228,6 +269,7 @@ async function fixture(
   // Run the unchanged producer in its own bounded process. This test budget
   // may truncate a slow retry; that is uncertain failure, never cleanup proof.
   assert.ok(remaining() >= 4 * 60_000, "insufficient proof budget for another cluster");
+  requiresReconciliation = true;
   const prepared = await command(
     process.execPath,
     [
@@ -246,6 +288,9 @@ async function fixture(
   const current = await capture(resource.name, join(work, "original-kubeconfig"), command);
   captures.push(current.owned);
   assert.ok(current.owned.membership.volumes.every((v) => !beforeVolumes.has(v.name)));
+  cleanupAuthority = current.owned;
+  cleanupStateHash = hash(await readFile(statePath));
+  requiresReconciliation = false;
   const image = {
     reference: "fixture.invalid/controller@sha256:" + "1".repeat(64),
     rootDigest: "sha256:" + "1".repeat(64),
@@ -312,9 +357,26 @@ async function fixture(
     work,
     directory,
     captures,
-    setExtraContainer(id: string, volumes: string[] = []) {
+    beginCreation() {
+      requiresReconciliation = true;
+    },
+    acknowledgeReplacement(owned: Owned) {
+      assert.equal(owned.cluster, resource.name);
+      assert.ok(
+        owned.membership.volumes.every((v) => !beforeVolumes.has(v.name)),
+        "replacement mounted a pre-existing volume",
+      );
+      captures.push(owned);
+      cleanupAuthority = owned;
+      requiresReconciliation = false;
+    },
+    setExtraContainer(id: string, volumes?: string[]) {
+      assert.match(id, /^[a-f0-9]{64}$/);
       extraContainer = id;
-      extraVolumes = volumes;
+      if (volumes !== undefined) {
+        extraVolumes = volumes;
+        requiresReconciliation = false;
+      }
     },
     passed() {
       assertionsPassed = true;
@@ -410,10 +472,12 @@ test("staged sign-in refuses a replacement cluster", options, (t) =>
   runCase(t, async (f) => {
     await deleteOwnedK3dCluster(f.resource, {
       execFile: async (name, args) => ({ stdout: await f.run(name, args) }),
+      identity: { cluster: f.owned.cluster, serverID: f.owned.serverID, ...f.owned.membership },
     });
     await assertRemoved(f.owned, f.run);
     // Recreate only our own name, leaving the original receipt and state intact.
     const port = await availablePort();
+    f.beginCreation();
     await f.run(
       "k3d",
       [
@@ -439,9 +503,9 @@ test("staged sign-in refuses a replacement cluster", options, (t) =>
       join(f.work, "replacement-kubeconfig"),
       f.run,
     );
-    f.captures.push(replacement.owned);
     assert.notEqual(replacement.owned.clusterUID, f.owned.clusterUID);
     assert.notEqual(replacement.owned.serverID, f.owned.serverID);
+    f.acknowledgeReplacement(replacement.owned);
     const result = await f.cleanup();
     // These exact compared values distinguish the identity refusal from setup failure.
     assert.ok(result.stderr.includes(f.owned.clusterUID));
@@ -462,7 +526,7 @@ test("staged sign-in refuses a newly shared volume", options, (t) =>
     // cluster labels and network membership remain valid.
     const helperName = `${f.resource.name}-consumer`;
     assert.equal(await f.run("docker", ["ps", "-aq", "--filter", `name=^/${helperName}$`]), "");
-    f.setExtraContainer(helperName);
+    f.beginCreation();
     const helper = (
       await f.run("docker", [
         "create",

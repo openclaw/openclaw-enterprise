@@ -1579,3 +1579,23 @@ test(
     assert.ok(Number(await readFile(heartbeat, "utf8")) > before);
   },
 );
+
+test("fixture command reports independently signalled child as unsettled", async () => {
+  await assert.rejects(
+    runFixtureCommand(process.execPath, ["-e", 'process.kill(process.pid, "SIGTERM")']),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      const failure = error as Error & { settled?: boolean; outcome?: unknown };
+      assert.equal(failure.settled, false);
+      assert.deepEqual(failure.outcome, {
+        exitCode: null,
+        signal: "SIGTERM",
+        timedOut: false,
+        interrupted: false,
+        spawned: true,
+        terminationFailed: false,
+      });
+      return true;
+    },
+  );
+});

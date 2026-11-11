@@ -19,6 +19,34 @@ export type FixtureRun = (
   options?: CommandOptions,
 ) => Promise<string>;
 
+type FixtureCommandOutcome = {
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  timedOut: boolean;
+  interrupted: boolean;
+  spawned: boolean;
+  terminationFailed: boolean;
+};
+
+export class FixtureCommandError extends Error {
+  readonly outcome: FixtureCommandOutcome;
+
+  constructor(message: string, outcome: FixtureCommandOutcome) {
+    super(message);
+    this.name = "FixtureCommandError";
+    this.outcome = outcome;
+  }
+
+  get settled() {
+    return (
+      !this.outcome.timedOut &&
+      !this.outcome.interrupted &&
+      !this.outcome.terminationFailed &&
+      (!this.outcome.spawned || (this.outcome.exitCode !== null && this.outcome.signal === null))
+    );
+  }
+}
+
 const activeCommands = new Set<(signal: NodeJS.Signals) => void>();
 let interruptionTimer: ReturnType<typeof setTimeout> | undefined;
 let pendingDefaultSignal: "SIGINT" | "SIGTERM" | undefined;
@@ -104,7 +132,16 @@ export function runFixtureCommand(
 ): Promise<string> {
   assert.ok(!protectedInput || !allowFailure);
   if (interruptionTimer) {
-    return Promise.reject(new Error("cannot start a fixture command during interruption"));
+    return Promise.reject(
+      new FixtureCommandError("cannot start a fixture command during interruption", {
+        exitCode: null,
+        signal: null,
+        timedOut: false,
+        interrupted: true,
+        spawned: false,
+        terminationFailed: false,
+      }),
+    );
   }
   return new Promise((resolve, reject) => {
     const childEnv = env ? { ...process.env, ...env } : undefined;
@@ -130,12 +167,23 @@ export function runFixtureCommand(
     let closed = false;
     let killed = false;
     let cleanupFailed = false;
+    let exitCode: number | null = null;
+    let exitSignal: NodeJS.Signals | null = null;
+    const outcome = (): FixtureCommandOutcome => ({
+      exitCode,
+      signal: exitSignal,
+      timedOut,
+      interrupted,
+      spawned: child.pid !== undefined,
+      terminationFailed: cleanupFailed,
+    });
     let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
     const timeoutError = () =>
-      new Error(
+      new FixtureCommandError(
         cleanupFailed
           ? `${command} could not terminate a timed-out fixture operation`
           : `${command} timed out${protectedInput ? " during a protected fixture operation" : ""}`,
+        outcome(),
       );
     const signal = (name: NodeJS.Signals) => {
       try {
@@ -156,10 +204,11 @@ export function runFixtureCommand(
       child.stderr.destroy();
     };
     const interruptedError = () =>
-      new Error(
+      new FixtureCommandError(
         cleanupFailed
           ? `${command} could not terminate an interrupted fixture operation`
           : `${command} interrupted${protectedInput ? " during a protected fixture operation" : ""}`,
+        outcome(),
       );
     const finishInterrupted = () => {
       clearTimeout(cleanupTimer);
@@ -221,11 +270,18 @@ export function runFixtureCommand(
       }
       clearTimeout(timer);
       releaseCommand();
-      reject(
-        protectedInput ? new Error(`${command} could not start a protected operation`) : error,
+      const failure = new FixtureCommandError(
+        protectedInput ? `${command} could not start a protected operation` : error.message,
+        outcome(),
       );
+      if (!protectedInput && "code" in error) {
+        Object.assign(failure, { code: error.code });
+      }
+      reject(failure);
     });
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
+      exitCode = code;
+      exitSignal = signal;
       closed = true;
       clearTimeout(timer);
       if (interrupted) {
@@ -249,7 +305,12 @@ export function runFixtureCommand(
         const output = protectedInput
           ? " during a protected fixture operation"
           : redact(`: ${stderr}\n${stdout}`);
-        reject(new Error(`${command} failed (${code})${bounded ? output.slice(-4000) : output}`));
+        reject(
+          new FixtureCommandError(
+            `${command} failed (${code})${bounded ? output.slice(-4000) : output}`,
+            outcome(),
+          ),
+        );
       }
     });
     child.stdin.on("error", () => {});
