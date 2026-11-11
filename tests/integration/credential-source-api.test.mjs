@@ -1362,3 +1362,73 @@ test("offered OpenShell source values return field-specific HTTP 400 before effe
   assert.equal(unavailable.status, 409, JSON.stringify(unavailable.body));
   await f.assertNothingSaved();
 });
+
+test("registering an existing source replaces the provider's stored credentials", async (t) => {
+  const f = await fixture(t);
+  const { stored, name } = await f.seedStoredRecord("openai", {});
+  const workspace = openShellWorkspaceName(f.namespace);
+  const provider = f.providers.get(workspace + "/" + name);
+  assert.deepEqual(provider.credentials, {});
+  f.mutations.length = 0;
+  const status = await f.driver.registerSource(
+    {
+      namespace: { ...f.namespace, name: workspace },
+      source: stored,
+      signal: AbortSignal.timeout(5000),
+    },
+    {
+      type: "openai",
+      config: stored.config,
+      secrets: { api_key: "synthetic-fresh-key" },
+    },
+  );
+  assert.equal(status.state, "ready");
+  // A replay must push the current value instead of keeping the one OpenShell already has.
+  assert.deepEqual(provider.credentials, { OPENAI_API_KEY: "synthetic-fresh-key" });
+  assert.ok(f.mutations.includes("updateProvider"));
+  assert.ok(!f.mutations.includes("createProvider"));
+});
+
+test("registration replay replaces credentials after an already-exists response", async (t) => {
+  const f = await fixture(t);
+  const workspace = openShellWorkspaceName(f.namespace);
+  const source = {
+    id: "cs_" + randomUUID(),
+    namespaceId: f.namespace.id,
+    name: "replay",
+    type: "openai",
+    config: {},
+  };
+  const name = openShellProviderName(source.id);
+  const getProvider = f.client.getProvider.bind(f.client);
+  let reads = 0;
+  f.client.getProvider = (...args) => {
+    reads += 1;
+    // Hide the provider from the first read so registration takes the create path.
+    return reads === 1 ? undefined : getProvider(...args);
+  };
+  const createProvider = f.client.createProvider.bind(f.client);
+  f.client.createProvider = async (input) => {
+    await createProvider(input);
+    throw new OpenShellProviderAlreadyExistsError();
+  };
+  const status = await f.driver.registerSource(
+    {
+      namespace: { ...f.namespace, name: workspace },
+      source,
+      signal: AbortSignal.timeout(5000),
+    },
+    {
+      type: "openai",
+      config: {},
+      secrets: { api_key: "synthetic-replay-key" },
+    },
+  );
+  assert.equal(status.state, "ready");
+  // The replay adopts the provider that won the race, then replaces its stored value.
+  assert.deepEqual(f.providers.get(workspace + "/" + name).credentials, {
+    OPENAI_API_KEY: "synthetic-replay-key",
+  });
+  assert.ok(f.mutations.includes("createProvider"));
+  assert.ok(f.mutations.includes("updateProvider"));
+});

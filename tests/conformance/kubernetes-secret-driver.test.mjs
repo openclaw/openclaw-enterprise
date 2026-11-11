@@ -122,6 +122,12 @@ for (const layout of ["shared", "adopted", "split"]) {
         SecretBackendUnavailableError,
       );
     }
+    // A value stored before this rule existed fails closed with a message that names the fix.
+    updated.data.value = Buffer.from("rotated-value\n").toString("base64");
+    await assert.rejects(
+      driver.withValue(secret, async () => assert.fail("invalid value must not be used")),
+      /contain CR or LF/,
+    );
     updated.data.value = Buffer.from("rotated-value").toString("base64");
 
     const deleted = { ...secret, backendRef: { ...backendRef, uid: updated.metadata.uid } };
@@ -231,6 +237,10 @@ test("kubernetes-secret-driver fails closed on missing placement, invalid values
     ["Secret ID prefix", { ...identity, id: `secret_${randomUUID()}` }, "safe-value"],
     ["Namespace ID prefix", { ...identity, namespaceId: unprefixed }, "safe-value"],
     ["empty name", { ...identity, name: "" }, "safe-value"],
+    // A key file read with its trailing newline must fail loudly, not reach the data plane.
+    ["carriage return", identity, "line\rrest"],
+    ["line feed", identity, "line\nrest"],
+    ["trailing line feed", identity, "value\n"],
     // 65,537 UTF-8 bytes in 32,769 UTF-16 code units.
     ["one byte over the limit", identity, `${"é".repeat(32_768)}x`],
   ]) {

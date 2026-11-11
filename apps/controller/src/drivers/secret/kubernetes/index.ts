@@ -106,6 +106,9 @@ function validateValue(value: string): void {
   if (value.includes("\0")) {
     throw new SecretValidationError("Secret value cannot contain NUL.");
   }
+  if (value.includes("\r") || value.includes("\n")) {
+    throw new SecretValidationError("Secret value cannot contain CR or LF.");
+  }
   if (!value.isWellFormed()) {
     throw new SecretValidationError("Secret value must be well-formed UTF-16 for UTF-8 storage.");
   }
@@ -145,7 +148,14 @@ function decodedValue(observed: V1Secret): string {
     const value = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
     validateValue(value);
     return value;
-  } catch {
+  } catch (error) {
+    // Validation messages describe the value's shape, never its content, so a stored
+    // value that violates a rule tells the operator what to fix instead of looking corrupt.
+    if (error instanceof SecretValidationError) {
+      throw new SecretBackendUnavailableError(
+        `The Kubernetes Secret value is invalid: ${error.message}`,
+      );
+    }
     throw new SecretBackendUnavailableError("The Kubernetes Secret value is invalid.");
   }
 }
