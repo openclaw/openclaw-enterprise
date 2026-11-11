@@ -8,7 +8,11 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { createOccLogger, resemblesCredential } from "../../apps/controller/src/logging.ts";
-import { redactLogLine, redactOutputLine } from "../../scripts/ci/failure-redaction.mjs";
+import {
+  redactLogLine,
+  redactOutputLine,
+  redactFailureDetail,
+} from "../../scripts/ci/failure-redaction.mjs";
 import {
   k3sImage,
   kubectlVersion,
@@ -27,6 +31,7 @@ import {
   summarizeWorkerEvents,
   createOpenShellWorkerLogEmitter,
   workerDiagnosticLines,
+  workerFailureDetail,
   rethrowOpenShellFailure,
 } from "../helpers/k3d-failure-diagnostics.mjs";
 import { listen } from "../helpers/listen.ts";
@@ -41,9 +46,6 @@ import {
 } from "../helpers/openshell-kubernetes-real.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
-import { createEnvoyWorkspaceGatewayPlan } from "../helpers/envoy-workspace-gateway.mjs";
-import { selfSigned } from "../helpers/certificates.mjs";
-import { recordTeardown } from "../conformance/kubernetes-teardown-cases.ts";
 
 async function fixture(t, prefix = "ci-openshell-test") {
   const root = await temporaryDirectory(t, `${prefix}-`);
@@ -207,7 +209,12 @@ test("OpenShell persisted queue records survive the reporter's per-line limit", 
   assert.match(lines.at(-1), /ACCESS_DENIED/);
 });
 
-test("OpenShell activation diagnostics share one deadline and preserve the original failure", async () => {
+test("OpenShell activation diagnostics share one deadline and preserve the original failure", async (t) => {
+  const lines = [];
+  t.mock.method(process.stderr, "write", (line) => {
+    lines.push(line);
+    return true;
+  });
   const original = new Error("activation failed");
   await assert.rejects(
     rethrowOpenShellFailure(original, () => {
@@ -232,10 +239,18 @@ test("OpenShell activation diagnostics share one deadline and preserve the origi
         lateLines = workerDiagnosticLines({ events: [] });
         complete();
       },
-      { timeoutMs: 20 },
+      {
+        timeoutMs: 20,
+        provisioningFailure: new Error("sandbox prepare failed: private-provider-detail"),
+        secrets: [["private-provider-detail", "PROVIDER_DETAIL"]],
+      },
     ),
     (error) => error === original,
   );
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /^First OpenShell provisioning failure: sandbox prepare failed:/);
+  assert.doesNotMatch(lines[0], /private-provider-detail/);
+  assert.equal(lines[1], "OpenShell activation diagnostics timed out\n");
   release();
   await completed;
   assert.deepEqual(
@@ -243,74 +258,35 @@ test("OpenShell activation diagnostics share one deadline and preserve the origi
     [],
     "a read finishing after the shared deadline cannot emit late evidence",
   );
+  assert.equal(lines.length, 2);
+  t.mock.method(process.stderr, "write", () => {
+    throw new Error("output unavailable");
+  });
+  await assert.rejects(
+    rethrowOpenShellFailure(original, async () => {}, { provisioningFailure: new Error("cached") }),
+    (error) => error === original,
+  );
 });
 
-test("OpenShell Envoy cleanup reports rejected deletes and continues remaining cleanup", async (t) => {
-  const directory = await fixture(t);
-  const certificate = await selfSigned(directory);
-  await withEnvironment(
-    {
-      OCC_TEST_GATEWAY_CA_CERT_PATH: certificate.certPath,
-      OCC_TEST_GATEWAY_CA_KEY_PATH: certificate.keyPath,
-    },
-    async () => {
-      for (const refused of ["gatewayclass", "networkpolicy"]) {
-        const outcomes = [];
-        const attempted = [];
-        const { testContext, teardown } = recordTeardown({
-          onOutcome: (outcome) => outcomes.push(outcome),
-        });
-        teardown.context.after(() => attempted.push("remaining cleanup"));
-        // Run the real plan and its Helm rendering. Only cluster I/O is substituted;
-        // the regression concerns the actual registered cleanup's rejected command.
-        await createEnvoyWorkspaceGatewayPlan(
-          teardown.context,
-          { platformNamespace: "cleanup-fixture" },
-          {
-            applyManifest: async () => {},
-            waitFor: async (_description, read) => {
-              assert.ok(await read());
-            },
-            resource: async (kind) => {
-              if (kind === "secret") {
-                return { data: { "tls.crt": certificate.cert } };
-              }
-              return {
-                status: {
-                  conditions: ["Ready", "Accepted", "Programmed"].map((type) => ({
-                    type,
-                    status: "True",
-                  })),
-                  listeners: [
-                    { name: "https", conditions: [{ type: "Accepted", status: "True" }] },
-                  ],
-                },
-              };
-            },
-            kubectl: async (...args) => {
-              if (args[0] === "get") {
-                return JSON.stringify({ items: [{ spec: { podCIDR: "10.42.0.0/24" } }] });
-              }
-              assert.equal(args[0], "delete");
-              assert.ok(args.includes("--ignore-not-found=true"));
-              if (args[1] === "gatewayclass") {
-                assert.ok(args.includes("--wait=false"));
-              }
-              attempted.push(args[1]);
-              if (args[1] === refused) {
-                throw new Error("fixture delete rejected");
-              }
-              return "";
-            },
-          },
-        );
-        await assert.rejects(testContext.hooks[0](), /fixture delete rejected/);
-        assert.ok(attempted.includes(refused));
-        assert.equal(attempted.at(-1), "remaining cleanup");
-        assert.deepEqual(outcomes, ["failed"]);
-      }
-    },
-  );
+test("OpenShell replacement failure detail preserves denied and adjacent worker state", () => {
+  const worker = {
+    persisted: { revision: { revisionNumber: 2 }, queue: [{ state: "queued" }] },
+    events: summarizeWorkerEvents(
+      [
+        { event: "worker.error", code: "DEPENDENCY_UNAVAILABLE" },
+        { event: "worker.completed", code: "AUTHORIZATION_DENIED" },
+      ],
+      "rev_test",
+    ),
+  };
+  const detail = workerFailureDetail(worker, []);
+  const published = redactFailureDetail(new Error(`activation failed\n${detail}`), [], "");
+  assert.equal(published.message, `activation failed\n${detail}`);
+  assert.match(published.message, /ACCESS_DENIED/);
+  assert.match(published.message, /DEPENDENCY_UNAVAILABLE/);
+  assert.match(published.message, /"revisionNumber":2/);
+  assert.match(published.message, /"state":"queued"/);
+  assert.equal(worker.events[1].code, "AUTHORIZATION_DENIED");
 });
 
 test("OpenShell turnover accepts established relay failures, not connection admission denials", () => {

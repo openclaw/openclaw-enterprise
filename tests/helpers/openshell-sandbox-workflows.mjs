@@ -80,6 +80,7 @@ import {
   summarizeWorkerEvents,
   createOpenShellWorkerLogEmitter,
   workerDiagnosticLines,
+  workerFailureDetail,
   rethrowOpenShellFailure,
 } from "../helpers/k3d-failure-diagnostics.mjs";
 import {
@@ -2622,82 +2623,83 @@ async function prepareProductionInstallation(
       workerEvents: events,
     });
   } catch (error) {
-    await rethrowOpenShellFailure(error, async () => {
-      await writeWorkerCompletionDiagnostics({
-        pool: observerPool,
-        events,
-        namespaceId,
-        agentId: agent.data.id,
-        revisionId: deployed.data.id,
-      });
-      // These refusals already identify the failing readiness check. No Pod log read is needed.
-      if (
-        error instanceof OpenShellDeploymentFailedError &&
-        (error.code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE" ||
-          error.code === "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE")
-      ) {
-        return;
-      }
-      // Preserve the provider's startup error before the fixture deletes its Pods. A revision
-      // timeout alone hides failures in Landlock, credential delivery, and the model probe.
-      const secrets = failureSecrets([
-        process.env,
-        {
-          APP_SERVER_TOKEN: transport.appServerToken,
-          GATEWAY_API_KEY: workspaceGateway.apiKey,
-        },
-      ]);
-      const startupDiagnostic = async () => {
-        for (const namespace of new Set([placement, gatewayPlacement])) {
-          try {
-            for (const pod of await diagnosticResources("pods", namespace)) {
-              for (const container of pod.spec.containers) {
-                if (!["agent", "gateway", "supervisor"].includes(container.name)) {
-                  continue;
-                }
-                const logs = await diagnosticKubectl(
-                  "logs",
-                  pod.metadata.name,
-                  "--namespace",
-                  namespace,
-                  "--container",
-                  container.name,
-                  "--tail=80",
-                ).catch(() => "Pod logs unavailable");
-                const lines = maskPrivateKeyLines(logs.split("\n"))
-                  .filter((line) => /error|fail|denied|refus|startup|NET:/iu.test(line))
-                  .slice(-12);
-                for (const line of lines) {
-                  if (diagnosticDeadlinePassed()) {
-                    return false;
+    const readinessRefused =
+      error instanceof OpenShellDeploymentFailedError &&
+      (error.code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE" ||
+        error.code === "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE");
+    const secrets = failureSecrets([
+      process.env,
+      {
+        APP_SERVER_TOKEN: transport.appServerToken,
+        GATEWAY_API_KEY: workspaceGateway.apiKey,
+      },
+    ]);
+    await rethrowOpenShellFailure(
+      error,
+      async () => {
+        await writeWorkerCompletionDiagnostics({
+          pool: observerPool,
+          events,
+          namespaceId,
+          agentId: agent.data.id,
+          revisionId: deployed.data.id,
+        });
+        // These refusals already identify the failing readiness check. No Pod log read is needed.
+        if (readinessRefused) {
+          return;
+        }
+        // Preserve the provider's startup error before the fixture deletes its Pods. A revision
+        // timeout alone hides failures in Landlock, credential delivery, and the model probe.
+        const startupDiagnostic = async () => {
+          for (const namespace of new Set([placement, gatewayPlacement])) {
+            try {
+              for (const pod of await diagnosticResources("pods", namespace)) {
+                for (const container of pod.spec.containers) {
+                  if (!["agent", "gateway", "supervisor"].includes(container.name)) {
+                    continue;
                   }
-                  process.stderr.write(
-                    `OpenShell startup ${pod.metadata.name}/${container.name}: ${redactLogLine(line, secrets, 800)}\n`,
-                  );
+                  const logs = await diagnosticKubectl(
+                    "logs",
+                    pod.metadata.name,
+                    "--namespace",
+                    namespace,
+                    "--container",
+                    container.name,
+                    "--tail=80",
+                  ).catch(() => "Pod logs unavailable");
+                  const lines = maskPrivateKeyLines(logs.split("\n"))
+                    .filter((line) => /error|fail|denied|refus|startup|NET:/iu.test(line))
+                    .slice(-12);
+                  for (const line of lines) {
+                    if (diagnosticDeadlinePassed()) {
+                      return false;
+                    }
+                    process.stderr.write(
+                      `OpenShell startup ${pod.metadata.name}/${container.name}: ${redactLogLine(line, secrets, 800)}\n`,
+                    );
+                  }
                 }
               }
+            } catch {
+              if (diagnosticDeadlinePassed()) {
+                return false;
+              }
+              process.stderr.write("OpenShell startup Pod diagnostics unavailable\n");
             }
-          } catch {
-            if (diagnosticDeadlinePassed()) {
-              return false;
-            }
-            process.stderr.write("OpenShell startup Pod diagnostics unavailable\n");
           }
-        }
-        return false;
-      };
-      await startupDiagnostic();
-      if (diagnosticDeadlinePassed()) {
-        return;
-      }
-      const provisioningFailure = createSandboxDriver.provisioningFailures.get(deployed.data.id);
-      if (provisioningFailure !== undefined) {
-        process.stderr.write(
-          `First OpenShell provisioning failure: ${redactLogLine(provisioningFailure.message, secrets, 800)}\n`,
-        );
-      }
-    });
+          return false;
+        };
+        await startupDiagnostic();
+      },
+      {
+        secrets,
+        provisioningFailure: readinessRefused
+          ? undefined
+          : createSandboxDriver.provisioningFailures.get(deployed.data.id),
+      },
+    );
   }
+
   await assertWorkerCompleted({
     description: `worker completion for ${deployed.data.id}`,
     events,
@@ -6901,19 +6903,12 @@ async function untrustedUpstreamFailureDetail(
 // worker events, which Harness and Gateway Pods the replacement has, and the turn diagnostic's
 // Gateway, Harness and supervisor sections for them. Budgets keep it under 16 KiB. The clip
 // keeps the start, so the events there run newest first.
-const replacementWorkerChars = 2_500;
 const replacementPodsChars = 600;
 
 async function replacementActivationDiagnostic(topology, revision, worker) {
   const gatewayPassword = await diagnosticGatewayPassword(topology);
   const secrets = turnFailureSecrets(topology, gatewayPassword);
-  const sections = [
-    `Worker: ${redactLogLine(
-      JSON.stringify({ ...worker, events: [...(worker?.events ?? [])].reverse() }),
-      secrets,
-      replacementWorkerChars,
-    )}`,
-  ];
+  const sections = [workerFailureDetail(worker, secrets)];
   // Prefer the newest Pod that is not terminating; a rolling Gateway may have only that one.
   const newest = (pods) => {
     const byAge = [...pods].sort((a, b) =>

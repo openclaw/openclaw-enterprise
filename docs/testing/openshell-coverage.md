@@ -56,6 +56,7 @@ preparation summaries retain the step, error class, status, and cleanup cause;
 they exclude provider responses and chat text. Its bounded teardown attempts every
 registered cleanup and emits an `openshell-fixture-teardown` outcome, so a failed
 deployment and an incomplete cleanup remain distinguishable.
+Cached provisioning failures print before diagnostic reads; a fixed notice reports budget expiry.
 Both failure paths use one 60-second diagnostic budget and preserve the original
 error if evidence collection fails. Printed `ACCESS_DENIED` means the worker's
 fixed `AUTHORIZATION_DENIED` code; this spelling survives the log exporter's

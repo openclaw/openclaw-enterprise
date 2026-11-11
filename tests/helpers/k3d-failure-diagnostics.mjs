@@ -83,11 +83,47 @@ export function workerDiagnosticLines({ operation, revisionId, persisted, events
   ];
 }
 
+// Replacement failure messages use the same safe spelling as standalone event output.
+export function workerFailureDetail(worker, secrets) {
+  return `Worker: ${redactLogLine(
+    JSON.stringify({
+      ...worker,
+      events: [...(worker?.events ?? [])].reverse().map(workerEventForOutput),
+    }),
+    secrets,
+    2_500,
+  )}`;
+}
+
+function writeFailureEvidence(line) {
+  try {
+    process.stderr.write(`${line}\n`);
+  } catch {
+    // An unavailable output sink must not replace the activation error.
+  }
+}
+
 // Both activation catches share one budget and always preserve the original failure,
 // including when collecting, formatting, or writing diagnostics itself fails.
-export async function rethrowOpenShellFailure(error, diagnose, options) {
+export async function rethrowOpenShellFailure(
+  error,
+  diagnose,
+  { provisioningFailure, secrets = [], ...options } = {},
+) {
+  const timedOut = Symbol("diagnostic timeout");
   try {
-    await withinDiagnosticDeadline(diagnose, options);
+    if (provisioningFailure !== undefined) {
+      writeFailureEvidence(
+        `First OpenShell provisioning failure: ${redactLogLine(provisioningFailure.message, secrets, 800)}`,
+      );
+    }
+  } catch {
+    // Even malformed cached evidence must leave the diagnostic and original error intact.
+  }
+  try {
+    if ((await withinDiagnosticDeadline(diagnose, { ...options, timedOut })) === timedOut) {
+      writeFailureEvidence("OpenShell activation diagnostics timed out");
+    }
   } catch {
     // Evidence is best effort; it must not replace the failure being diagnosed.
   }

@@ -6,6 +6,7 @@ import dns from "node:dns";
 import { connect } from "node:net";
 import { basename } from "node:path";
 import { connect as connectTls } from "node:tls";
+import { withBoundedTeardown } from "./bounded-teardown.ts";
 import { availablePort } from "./available-port.mjs";
 import { startWorkspaceGatewayRelayContainer } from "./workspace-gateway-relay-container.mjs";
 import { request as requestHttps } from "node:https";
@@ -207,10 +208,11 @@ async function waitForWorkspaceGatewayTls(hostname, port, waitFor) {
 }
 
 export async function startWorkspaceGatewayHostRelay(
-  context,
+  testContext,
   workspaceGateway,
   { kubectl, resources, waitFor, startPortForwardTarget, gatewayImage },
 ) {
+  const context = withBoundedTeardown(testContext, { label: "Workspace Gateway cleanup" });
   const containerEngine = process.env.OCC_DOCKER_BIN ?? "docker";
   // Docker Desktop and Podman Machine host networking stays in their Linux VM.
   // Publish to macOS loopback and use the engine's host alias for the port-forward.
@@ -364,10 +366,11 @@ export async function startWorkspaceGatewayHostRelay(
 }
 
 export async function createEnvoyWorkspaceGatewayPlan(
-  context,
+  testContext,
   { platformNamespace, sandboxPreview = false },
   helpers,
 ) {
+  const context = withBoundedTeardown(testContext, { label: "Workspace Gateway cleanup" });
   let apiKey = randomBytes(32).toString("base64url");
   const apiKeySecretName = `oce-gateway-api-key-${hash(platformNamespace)}`;
 
