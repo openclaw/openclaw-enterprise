@@ -9702,8 +9702,12 @@ export function registerProviderLifecycleTest(workflow) {
         assert.ok(topology.sandbox.metadata.name);
         if (workflow === "scratch") {
           await assertScratchToolAccess(topology);
-          await assertScratchSiblingIsolation(topology);
-          await assertScratchQueuedActorRevocation(topology);
+          await runOpenShellStage(testContext, "scratch-sibling-isolation", () =>
+            assertScratchSiblingIsolation(topology),
+          );
+          await runOpenShellStage(testContext, "scratch-queued-actor-revocation", () =>
+            assertScratchQueuedActorRevocation(topology),
+          );
           await assertScratchClaimRefusals(topology);
           return;
         }

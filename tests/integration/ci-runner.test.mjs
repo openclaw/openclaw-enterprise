@@ -8775,7 +8775,10 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     join(root, "tests/integration/measurements.test.mjs"),
     [
       'import test from "node:test";',
-      'test("measures", (t) => {',
+      `import { runOpenShellStage } from ${JSON.stringify(new URL("../helpers/openshell-stage.mjs", import.meta.url).href)};`,
+      'test("measures", async (t) => {',
+      '  await runOpenShellStage(t, "scratch-sibling-isolation", async () => {});',
+      '  await runOpenShellStage(t, "scratch-queued-actor-revocation", async () => {});',
       ...[
         measurement({
           kind: "openshell-stage",
@@ -9038,8 +9041,17 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   const artifact = await readFile(resultsPath, "utf8");
   const summary = JSON.parse(artifact);
   assert.equal(result.status, 0, result.stderr);
+  const [sibling, revocation, ...otherMeasurements] = summary.files[0].measurements;
+  for (const [receipt, stage] of [
+    [sibling, "scratch-sibling-isolation"],
+    [revocation, "scratch-queued-actor-revocation"],
+  ]) {
+    const { elapsedMs, ...outcome } = receipt;
+    assert.deepEqual(outcome, { kind: "openshell-stage", stage, outcome: "passed" });
+    assert.ok(Number.isSafeInteger(elapsedMs) && elapsedMs >= 0);
+  }
   assert.deepEqual(
-    summary.files[0].measurements.filter(({ kind }) => kind !== retentionKind),
+    otherMeasurements.filter(({ kind }) => kind !== retentionKind),
     [
       { kind: "openshell-stage", stage: "oauth-refresh", outcome: "passed", elapsedMs: 123 },
       {
