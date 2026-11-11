@@ -124,6 +124,9 @@ test(
         );
         await observeControllerUpgrade(setup, stack, evidence, owned, deployment, retained);
         await turns.successfulTurn("retained-after-controller-upgrade", "initial");
+        // Isolate the IAM phase after a fresh authenticated session without
+        // changing the retained process, key, configuration or denial assertions.
+        await requireSupervisorReconnect(setup, stack, evidence, deployment, installed);
       }
       await revokeExactGrantAndObserveDenial(stack, evidence, owned, deployment, turns);
       await regrantAndObserveRecovery(owned, deployment, turns);
