@@ -36,6 +36,7 @@ const diagnosticPhases = new Set([
 ]);
 const startupPhases = new Set([
   "codex-login",
+  "container-restart",
   "egress-enrollment",
   "gateway-respawn",
   "model-probe",
@@ -359,11 +360,15 @@ describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
         `The Gateway container did not exit.\n${error.message}\n${failureTail(commandOutput(logs))}`,
       );
     });
-    assert.equal(exited.stdout.trim(), "1");
+    // A crashed OpenClaw ends the container with 1. Rejecting a changed peer is a deliberate
+    // restart: 75 (EX_TEMPFAIL), which Kubernetes Compute never counts toward a crash loop
+    // (finding 3041).
+    const exitCode = scenario === "stale-replacement" ? 75 : 1;
+    assert.equal(exited.stdout.trim(), String(exitCode));
     const inspect = await runDocker(["inspect", containerName, "--format", "{{json .State}}"]);
     const state = JSON.parse(inspect.stdout);
     assert.equal(state.Status, "exited");
-    assert.equal(state.ExitCode, 1);
+    assert.equal(state.ExitCode, exitCode);
     if (scenario === "stale-replacement") {
       const logs = await runDocker(["logs", containerName]);
       const entries = jsonLogEntries(`${logs.stdout}\n${logs.stderr}`);
@@ -375,6 +380,15 @@ describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
             entry.outcome === "failed",
         ),
         "the Gateway must reject the changed peer, not merely fail its status request",
+      );
+      assert.ok(
+        entries.some(
+          (entry) =>
+            entry.event === "runtime.startup_phase" &&
+            entry.phase === "container-restart" &&
+            entry.code === "HARNESS_PEER_CHANGED",
+        ),
+        "the Gateway must name its deliberate restart",
       );
     }
   }

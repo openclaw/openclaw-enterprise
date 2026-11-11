@@ -50,6 +50,7 @@ func TestSandboxNetworkPolicyRejectsInvalidInputBeforeProvisioning(t *testing.T)
 			}
 			state := filepath.Join(root, "state")
 			t.Setenv("OCC_DEVELOPMENT_SANDBOX_DRIVER", "openshell")
+			t.Setenv("OCC_DEVELOPMENT_CONTROL_PLANE", "compose")
 			t.Setenv("OCC_DEVELOPMENT_STATE_DIRECTORY", state)
 			// Invalid policy must fail before startup creates its owned directory
 			// or contacts a container engine. Validation uses the real Driver.

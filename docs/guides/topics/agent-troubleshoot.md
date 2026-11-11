@@ -1,14 +1,27 @@
 # Troubleshoot Agents
 
-Start with the symptom you can observe. When asking an operator for help, give
-them the Namespace, Agent ID, version ID, approximate time, and any request ID
-the console shows. Never include API keys, tokens, or Secret values.
+Give operators the Namespace, Agent/version IDs, time and request ID. Never include
+API keys, tokens, or Secret values.
 
 ## Codex refuses the required permission profile
 
-If a dedicated Codex Agent on OpenShell reports `Codex did not grant the requested :danger-full-access profile`, ask the account administrator to check its managed permission requirements. A policy limited to `ReadOnly` or `WorkspaceWrite` cannot meet the [OpenShell permission-profile requirement](../../reference/drivers/openshell-sandbox.md#codex-permission-profile).
+For `RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE`, find the revision's
+`worker.completed` event. Its `failure` field (`occ.failure` in the Collector) lists
+`sandbox-mode-denied`, `named-profile-denied`, or `reviewer-denied`, separated by
+underscores. Ask the policy owner to check
+[OpenShell's requirements](../../reference/drivers/openshell-sandbox.md#codex-permission-profile).
+For `RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE`, ask the policy owner to reduce the reply
+to at most 1 MiB, then redeploy.
 
-Successful login, a ready credential source, or a model reply under another permission profile does not prove compatibility. Use an approved compatible credential or an administrator-approved policy change. For copied API-key or PAT credentials, [update the source](../../reference/credential-sources.md#update-a-source) and redeploy the Agent. Device-login sources reject updates: sign in again, replace the Agent binding and redeploy, following the same reference. Then [verify a model response from the actual Agent](../operate/model-verification.md). Keep managed policy, the Gateway permission check and OpenShell isolation intact.
+If a dedicated Codex Agent on OpenShell reports `Codex did not grant the requested :danger-full-access profile`, inspect the error's `comparison` category:
+
+- `sandbox-readOnly` or `sandbox-workspaceWrite`: Codex returned a restricted sandbox. Ask the account administrator to check its managed permission requirements against the [OpenShell permission-profile requirement](../../reference/drivers/openshell-sandbox.md#codex-permission-profile).
+- `sandbox-externalSandbox`: Codex returned a different sandbox mode. Ask the operator to check the selected native profile and runtime compatibility.
+- `nonobject-result`, `field-absent`, `field-null`, `field-not-object`, `type-not-string`, or `type-unrecognized`: the response did not provide a recognized sandbox. Check the packaged runtime version and response contract before attributing the failure to account policy.
+
+Without this category, the error cannot distinguish a restricted grant from an incompatible response.
+
+Login, source readiness, and a model reply under another profile cannot prove compatibility. Use an approved compatible credential or policy change. [Update copied API-key or PAT sources](../../reference/credential-sources.md#update-a-source). For device login, sign in again and replace the Agent binding. Redeploy, then [verify a model response from the Agent](../operate/model-verification.md). Keep the Gateway permission check and OpenShell isolation in place.
 
 ## Deploy requires a Sandbox Driver that supports protected Codex artifact admission
 
@@ -111,17 +124,23 @@ workspace intact. See [writable runtime state](../../reference/drivers/openshell
 
 ## Verify runtime health after deployment
 
-The console's **Deployment** tab shows persisted status; it has no live
-gateway-health or chat view. **Current version** means the control plane selected
-that version. It can be a version whose deployment failed, for example when an
-embedded replacement's model check rejected its key after it replaced the
-previous version; see
-[the selected version after a failed deployment](../../reference/agents/deployment.md#the-active-revision-after-a-failed-deployment).
-That selection cannot tell you whether the model still accepts
-the credential or can answer. [Verify the Agent’s model response](../operate/model-verification.md)
-or ask an operator to [verify the workload](../deploy/production-agents.md#verify-production-workloads).
-Check for an actual answer from the configured model, not just a selected
-version or successful file read.
+The console's **Deployment** tab shows persisted status, with no live gateway-health
+or chat view. **Current version** identifies the control plane's selection, even
+[after a failed deployment](../../reference/agents/deployment.md#the-active-revision-after-a-failed-deployment):
+an embedded replacement can reject its key during the model check after replacing
+its predecessor. Selection does not establish credential validity or model responses.
+[Verify the Agent's model response](../operate/model-verification.md) or ask an
+operator to [verify the workload](../deploy/production-agents.md#verify-production-workloads).
+Require an answer from the configured model; a successful file read is insufficient.
+
+## Check workload capacity
+
+For Kubernetes, compare configured requests/limits, admitted Agent Pod limits
+and enclosing cgroup constraints with the infrastructure owner. Sandbox-visible host totals
+do not establish usable CPU/memory; an unlimited visible cgroup does not rule
+out hidden limits. Unreadable outer limits remain unknown until verified through
+authorized infrastructure tooling. OCE runtime descriptions and diagnostics do
+not measure effective capacity.
 
 ## An embedded Gateway reports an unverifiable state owner
 

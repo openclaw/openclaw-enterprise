@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: 2026-11-09
-last_updated_session: authoring-run/f85f38a2-a1c4-4ec9-a042-3ab412309b8e
+updated: 2026-11-10
+last_updated_session: authoring-run/d19f4b0f-f17b-4488-8388-c3004c8e747d
 ---
 
 # Credential source refresh Flow
@@ -232,7 +232,7 @@ the record `deleting` for retry.
 
 `apps/controller/src/drivers/repo/github/access/prepared-owner.ts:createGitHubPreparationOwner`
 
-The Token Service records `issuing`, signs a five-minute App JWT and rechecks ownership before posting to the configured installation token endpoint.
+The Token Service records `issuing`, signs a five-minute App JWT and rechecks ownership before issuance.
 
 Issuer diagnostics record the first failure stage. `requestEndCalled` indicates a possible send.
 
@@ -254,7 +254,7 @@ graph TD
 
 OCC registers `github_app_installation` with the scoped grant and signing-key reference. PostgreSQL encrypts tokens with a persistent 32-byte key. Authorized metadata requests reuse valid tokens or join issuance until their deadline. Native Git uses its [private broker](../reference/repository-credentials.md#native-git-from-the-agent-to-github).
 
-For `acme/widgets`, the Token Service requests ID `12345` and `metadata: read`. It verifies the ID, name, permissions and expiry. The approved `github-installation` profile sends `{}` for installation scope. Committing a replacement retires the old version. OCC rechecks the grant and version [before sending](credential-source-egress.md#3-resolve-versioned-material-and-authorize-its-sole-send).
+`provider-transport/request-options.ts:prepareProviderScope` freezes repository IDs, names and permissions for issuance and response validation. Capturing the token before scope and expiry checks retains refused candidates for retirement. The `github-installation` profile inherits scope with `{}`. Replacement retires the old token; OCC [rechecks the grant and version](credential-source-egress.md#3-resolve-versioned-material-and-authorize-its-sole-send) before sending.
 
 | Limit                                | Effect                                                                                                                                                                                                              |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -325,6 +325,8 @@ detached reads. Clearing bytes cannot revoke a token.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 00:50: Trace the shared GitHub issuance and response-validation scope. (authoring-run/d19f4b0f-f17b-4488-8388-c3004c8e747d - 006fca93dbcd899734c830146edcf17df1aeb084)
 
 - 2026-11-09 14:26: Trace the refusal of prepared issuers that cannot rotate on demand. (authoring-run/f85f38a2-a1c4-4ec9-a042-3ab412309b8e - c713b94f8ce09d8bde669b02e7d9aca46e5fc7a6)
 

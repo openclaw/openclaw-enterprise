@@ -112,7 +112,7 @@ and plugin selection without rewriting existing saved presets. Custom templates
 remain optional `presets.files` entries.
 
 Source: [seeding](../../../packages/occ/src/index.ts),
-[existing preservation coverage](../../../tests/integration/presets-controller.test.mjs).
+[existing preservation coverage](../../../tests/integration/presets-controller.test.ts).
 
 ## Repository access
 
@@ -236,7 +236,7 @@ fresh disposable local Kubernetes and separately authorized EKS/general Kubernet
 | Operations         | Worker/Agent restart, storage retention, image upgrade/rollback boundaries, metrics scrape and collector delivery if enabled                                             |
 
 Relevant existing suites were inspected, not executed:
-[driver startup](../../../tests/integration/plugin-driver-startup.test.mjs),
+[driver startup](../../../tests/integration/plugin-driver-startup.test.ts),
 [discovery API](../../../tests/integration/plugin-discovery-api.test.mjs),
 [real status transport](../../../tests/integration/kubernetes-plugin-status-real.test.mjs),
 [native plugins](../../../tests/integration/plugin-driver-real.test.mjs),

@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
-updated: 2026-11-06
-last_updated_session: authoring-run/96255fab-cb34-45d9-b940-d3055029e29f
+updated: 2026-11-10
+last_updated_session: authoring-run/098bcc8c-9e1b-4318-aff3-06c464edb33e
 ---
 
 # Protected credential request flow
@@ -272,7 +272,10 @@ request/stream retries and never repeats a timed-out protected probe.
 `apps/controller/src/drivers/egress-proxy/openai-provider.ts:createOpenAiStaticProvider`
 checks [request forms](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
 through `openai-responses.ts:validResponsesRequest` before Secret resolution.
-Inline developer tools keep the local-tool restrictions.
+Inline developer tools keep the local-tool restrictions. The same check admits
+optional Git workspace metadata and the passive no-MCP attribution as telemetry.
+Both use the selected model and destination from the admitted grant. Follow-up
+requests can replay assistant output text with empty `annotations` and `logprobs` arrays.
 
 ### 6. Reduce the live credential policy
 
@@ -337,15 +340,14 @@ None.
 ## Changelog
 
 - 2026-11-10 02:40: Withhold selected material split across one reasoning part.
+- 2026-11-10 08:22: Accept empty metadata on replayed assistant output text. (authoring-run/098bcc8c-9e1b-4318-aff3-06c464edb33e - 33c820f6daf4ba6a1559680911ab2d509ee4a131)
+
+- 2026-11-10 07:15: Admit bounded Codex Git workspace metadata and passive MCP attribution on Responses requests. (authoring-run/13d2e44f-b996-453e-8cbc-db80b8f8e3e2 - f06bf60299ad29444685d70fb2708f3f0558a5ad)
 
 - 2026-11-06 02:38: Refuse historical Git issuance and session renewal while preserving original detach recovery. (authoring-run/96255fab-cb34-45d9-b940-d3055029e29f - 37b81d16bbbb3f0c864fc652060075c06eb4dc52)
 
 - 2026-11-06 02:36: Preserve request-time token resolution and held-probe diagnostics when merging the current flow. (authoring-run/c13df234-5a0d-4e3c-b254-cc806ee046e7 - 585e7ac2c6673611ec29a3c76ca507e61308fa6f)
 
 - 2026-11-06 01:25: Pin credential destinations. (authoring-run/7315b76f-e581-43e4-a73a-06f924640ea0 - 37144f62101a9e99b066f1abbbf75ede787d26dd)
-
-- 2026-11-05 23:21: Trace request-time token resolution and the permission check before releasing a credential header. (codex/01a19e60-87d0-71d0-8c9a-e3e3b33b1676 - 614169814)
-
-- 2026-11-05 20:36: Trace one-shot Git enrollment probe failures to the worker log. (authoring-run/5e3df28f-4382-449e-a9db-e26d5347994e - b1da9eddd3a594982ce36639610d1e3480a9e1f7)
 
 [Protected credential request documentation history](credential-source-egress/history.md) preserves the older dated entries.

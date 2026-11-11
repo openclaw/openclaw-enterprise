@@ -87,7 +87,7 @@ Stories reach error states through real controls after loading fixture data.
 
 | Group                                                                              | Coverage                                                                                                                                                                                                                                                                                                                                                                                                          |
 | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Sign in                                                                            | Password and GitHub sign-in, discovery failure, GitHub errors, disabled account, rejected login, expired session, delayed session status, failure and retry, unconfirmed logout.                                                                                                                                                                                                                                  |
+| Sign in                                                                            | Password, Google and OIDC sign-in, discovery failure, provider errors, disabled account, rejected login, expired session, delayed session status, failure and retry, unconfirmed logout.                                                                                                                                                                                                                          |
 | Agents                                                                             | Populated, empty, no matches, loading, inaccessible Namespaces, denied or failed reads; row Stop and Delete restrictions, refusals, uncertain outcomes.                                                                                                                                                                                                                                                           |
 | Backends                                                                           | Configured, empty, discovery failure, and access denied.                                                                                                                                                                                                                                                                                                                                                          |
 | [Namespaces](../../scripts/console-storybook/namespace-create-workflow.md)         | Creation, status cards, empty, denied, recovery.                                                                                                                                                                                                                                                                                                                                                                  |
@@ -107,6 +107,11 @@ Stories reach error states through real controls after loading fixture data.
 
 Pending-read stories use the real client's 15-second timeout; reset them to replay
 loading.
+
+In **Pages → Create Agent → Repository-only Credential Proxy**, check that the
+model-only Dedicated OpenClaw form explains the deployment requirement beside
+**Create Agent**. Choose Codex, select the repository, and turn off issue
+management under **Customize access** to use its approved access level.
 
 ## Return navigation
 

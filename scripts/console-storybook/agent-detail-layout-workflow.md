@@ -3,6 +3,17 @@
 Use the desktop Console first, then a 390-pixel phone frame. These stories use
 simulated API state; they do not prove persistence or live runtime behavior.
 
+For retained Harness settings, open **Pages / Agent detail / Retained Harness
+history** (`retainedHarnessHistory`). Load older versions, select v1 and read the
+saved-settings warning,
+then return to v2 and confirm its Configuration remains readable. In **Retained
+Harness without overrides** (`retainedHarnessWithoutOverrides`), choose **Open
+draft**, then **Harness destination**. Only **Use Installation default** and
+**Override model provider** are available: absent settings cannot be retained.
+Switch to the override and back without deploying. Capture the warning, readable
+current version, and chooser interaction as simulated UI evidence; the PostgreSQL
+migration-history regression separately verifies the real read responses.
+
 At desktop and 390-pixel widths, open **Pages / Agent detail / Gateway password
 save in progress** (`gatewayPasswordSaving`). Confirm editing and deployment stay
 unavailable while the save is pending. Storybook simulates the pending save and
@@ -52,6 +63,13 @@ switch, **gateway listening** appears. Reload to repeat.
 covers staying on the same source. Both stories use simulated responses. The
 controller-backed browser regression in `tests/browser/console-agent-logs.test.ts`
 checks the source switch through the Console API.
+
+Open **Pages / Agent detail / Deployment regains Secret operate on refocus**
+in its own preview tab. Select **Deploy new version**. Check that the unavailable
+button's accessible description names the Secret in the refusal. Switch to
+another tab and return. The simulated grant clears the refusal and enables
+Deploy on the same draft. Returning to the tab sends no Deploy request.
+Use **Deployment needs Secret operate** to check access that stays denied.
 
 1. Separately, open **Pages / Agent detail / New version activated**
    (`deploymentSucceeded`, Storybook ID `pages-agent-detail--deployment-succeeded`).

@@ -187,7 +187,7 @@ Refresh, rotation, and automated reconciliation remain deferred.
 
 ## Debugging and Verification
 
-- Run `node --test tests/conformance/service-account-driver.test.mjs` for
+- Run `node --test tests/conformance/service-account-driver.test.ts` for
   controller lifecycle coverage and native HTTPS response-release regressions.
   The latter call the actual Backend with built-in fetch, a single-connection
   pool and a loopback TLS server. They prove recovery after rejected 429, 503 and

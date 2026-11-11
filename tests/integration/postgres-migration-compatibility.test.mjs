@@ -14,6 +14,7 @@ import {
   assertInjectedMigrationRollback,
   retainGatewaySourcesAcrossProxyAdmission,
 } from "../helpers/credential-source-owner-upgrade.ts";
+import { request, startController } from "../helpers/postgres-platform-state.mjs";
 import { assertPopulatedUpgradeReturn } from "../helpers/populated-upgrade-return.ts";
 import { repositoryCredentials } from "../fixtures/repository-credentials/session-state.mjs";
 import {
@@ -1123,7 +1124,14 @@ async function historyDatabase(context, fixture, label, { schemas = true, prefix
   clients.push(migrator, app);
   await migrator.connect();
   await app.connect();
-  const db = { ...fixture, name, migrationUrl: migration.toString(), migrator, app };
+  const db = {
+    ...fixture,
+    name,
+    migrationUrl: migration.toString(),
+    applicationUrl: application.toString(),
+    migrator,
+    app,
+  };
   assert.deepEqual((await migrator.query("SELECT current_user,session_user")).rows, [
     { current_user: "occ_migrator", session_user: "occ_migrator" },
   ]);
@@ -1426,25 +1434,15 @@ function receiptsMatchEntries(receipts, entries) {
   );
 }
 
-async function seedCanonicalData(
+async function seedCanonicalAgent(
   db,
-  {
-    preset = false,
-    computeAdmission = false,
-    executionAdmission = false,
-    harnessSettings = false,
-  } = {},
+  namespace,
+  { computeAdmission, executionAdmission, harnessSettings },
 ) {
-  const installation = `ins_${randomUUID()}`;
-  const namespace = `ns_${randomUUID()}`;
   const configuration = `cfg_${randomUUID()}`;
   const agent = `agt_${randomUUID()}`;
   const revision = `rev_${randomUUID()}`;
   const servicePrincipal = `service-agent-${agent}`;
-  await db.app.query(
-    "INSERT INTO occ.installation(id,name,created_at) VALUES($1,'Migration fixture',now())",
-    [installation],
-  );
   await db.app.query(
     "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,$2,'ready',now())",
     [namespace, `migration-${randomUUID()}`],
@@ -1499,6 +1497,29 @@ async function seedCanonicalData(
     await db.app.query("ROLLBACK");
     throw error;
   }
+  return { agent, revision };
+}
+
+async function seedCanonicalData(
+  db,
+  {
+    preset = false,
+    computeAdmission = false,
+    executionAdmission = false,
+    harnessSettings = false,
+  } = {},
+) {
+  const installation = `ins_${randomUUID()}`;
+  const namespace = `ns_${randomUUID()}`;
+  await db.app.query(
+    "INSERT INTO occ.installation(id,name,created_at) VALUES($1,'Migration fixture',now())",
+    [installation],
+  );
+  await seedCanonicalAgent(db, namespace, {
+    computeAdmission,
+    executionAdmission,
+    harnessSettings,
+  });
   await db.app.query(
     `INSERT INTO occ.controller_work(idempotency_key,namespace_id,namespace_target,actor_id,state,available_at,completed_at,reason_code,created_at,updated_at)
     VALUES($1,$2,'ready','migration-fixture','succeeded',now(),now(),'NAMESPACE_READY',now(),now())`,
@@ -1979,6 +2000,62 @@ async function canonicalData(db) {
   }
   return result;
 }
+
+test(
+  "An authenticated user can browse revisions retained across the Harness settings migration",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "harness_history", { prefix: 71 });
+    const namespace = `ns_${randomUUID()}`;
+    // Seed the old shape under its original constraint, then upgrade in place.
+    const { agent, revision } = await seedCanonicalAgent(db, namespace, {
+      computeAdmission: true,
+      executionAdmission: true,
+      harnessSettings: false,
+    });
+    assert.deepEqual(await runHistoryMigration(db), { ok: true, history: "preHarnessOverrides" });
+
+    const current = `rev_${randomUUID()}`;
+    const settings = {
+      overrides: { preset: "small" },
+      configuration: { preset: "small", instances: 1 },
+    };
+    await db.app.query(
+      `INSERT INTO occ.agent_revisions(id,namespace_id,agent_id,revision_number,admitted_spec,backend_id,admitted_at)
+     SELECT $1,namespace_id,agent_id,2,jsonb_set(admitted_spec,'{harness}',(admitted_spec->'harness') || $2::jsonb),backend_id,now()
+     FROM occ.agent_revisions WHERE id=$3`,
+      [current, settings, revision],
+    );
+
+    // The controller must stop before its parent context drops the database.
+    await context.test("Signed-in revision reads", async (httpContext) => {
+      const controller = await startController(httpContext, { databaseUrl: db.applicationUrl });
+      const path = `/namespaces/${namespace}/agents/${agent}/revisions`;
+      const list = await request(controller, "GET", path);
+      const oldDetail = await request(controller, "GET", `${path}/${revision}`);
+      const newDetail = await request(controller, "GET", `${path}/${current}`);
+      assert.deepEqual([list.status, oldDetail.status, newDetail.status], [200, 200, 200]);
+      const historicalHarness = { id: "codex", version: "1.0.0", mode: "dedicated" };
+      assert.deepEqual(
+        list.data.map(({ id, harness }) => [id, harness]),
+        [
+          [current, { ...historicalHarness, ...settings }],
+          [revision, historicalHarness],
+        ],
+      );
+      assert.equal(oldDetail.data.id, revision);
+      assert.deepEqual(oldDetail.data.configurationReadError, {
+        code: "SAVED_CONFIGURATION_UNREADABLE",
+        field: "configuration",
+      });
+      assert.equal("configuration" in oldDetail.data, false);
+      assert.equal("harness" in oldDetail.data, false);
+      assert.equal(newDetail.data.id, current);
+      assert.deepEqual(newDetail.data.harness, { ...historicalHarness, ...settings });
+    });
+  },
+);
 
 test(
   "Separate database deployment verifies the exact candidate history without applying pending SQL",

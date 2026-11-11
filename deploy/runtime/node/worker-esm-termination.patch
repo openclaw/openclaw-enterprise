@@ -1,0 +1,67 @@
+diff --git a/src/module_wrap.cc b/src/module_wrap.cc
+index bc1ce3ad..3b8812e4 100644
+--- a/src/module_wrap.cc
++++ b/src/module_wrap.cc
+@@ -1374,9 +1374,14 @@ void ModuleWrap::CreateRequiredModuleFacade(
+   CHECK(env->temporary_required_module_facade_original.IsEmpty());
+   env->temporary_required_module_facade_original.Reset(
+       isolate, original->module_.Get(isolate));
+-  CHECK(facade->InstantiateModule(context, LinkRequireFacadeWithOriginal)
+-            .IsJust());
++  Maybe<bool> instantiated =
++      facade->InstantiateModule(context, LinkRequireFacadeWithOriginal);
+   env->temporary_required_module_facade_original.Reset();
++  if (instantiated.IsNothing()) {
++    // Worker termination can interrupt instantiation after compilation succeeds.
++    CHECK(isolate->IsExecutionTerminating());
++    return;
++  }
+ 
+   // The evaluation of the facade is synchronous.
+   Local<Value> evaluated;
+diff --git a/test/es-module/test-require-module-worker-termination.js b/test/es-module/test-require-module-worker-termination.js
+new file mode 100644
+index 00000000..008a28be
+--- /dev/null
++++ b/test/es-module/test-require-module-worker-termination.js
+@@ -0,0 +1,32 @@
++// Flags: --experimental-require-module
++'use strict';
++const common = require('../common');
++const assert = require('assert');
++const { once } = require('events');
++const { setTimeout } = require('timers/promises');
++const { Worker, parentPort, workerData } = require('worker_threads');
++
++if (workerData === 'require-loop') {
++  const filename = require.resolve('../fixtures/es-modules/worker-require-default.mjs');
++  common.expectRequiredModule(require(filename), { default: 42, value: 1 });
++  parentPort.postMessage('ready');
++  // Evict only the CJS entry so each require creates a new ESM facade.
++  for (;;) {
++    delete require.cache[filename];
++    require(filename);
++  }
++} else {
++  async function test() {
++    // Exercise interruption during facade creation without requiring a precise
++    // scheduling point. Terminating a Worker must never abort its parent.
++    for (let i = 0; i < 100; i++) {
++      const worker = new Worker(__filename, { workerData: 'require-loop' });
++      worker.on('error', common.mustNotCall());
++      const [message] = await once(worker, 'message');
++      assert.strictEqual(message, 'ready');
++      await setTimeout(1 + i % 5);
++      assert.strictEqual(await worker.terminate(), 1);
++    }
++  }
++  test().then(common.mustCall());
++}
+diff --git a/test/fixtures/es-modules/worker-require-default.mjs b/test/fixtures/es-modules/worker-require-default.mjs
+new file mode 100644
+index 00000000..e63cfb66
+--- /dev/null
++++ b/test/fixtures/es-modules/worker-require-default.mjs
+@@ -0,0 +1,2 @@
++export default 42;
++export const value = 1;

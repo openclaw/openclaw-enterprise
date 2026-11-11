@@ -117,6 +117,7 @@ test(
       eligibility: boolean | "absent" | "registry" = "registry",
       setup: {
         bundled?: boolean;
+        builtIn?: boolean;
         adaptPolicy?: ((policy: GitHubRepositoryPolicy) => RepositoryPolicyDriver) | undefined;
         runtimeCredentials?: Pick<
           ComputeDriver,
@@ -152,9 +153,14 @@ test(
         now: () => new Date(controllerTime ?? Date.now()),
         backends: [backend],
       };
-      const controller = setup.bundled
-        ? OpenClawController.forInstallation(installation!, options, composed.repositoryAdmission)
-        : new OpenClawController(installation!, options);
+      const repositoryAdmission = {
+        ...composed.repositoryAdmission,
+        ...(setup.builtIn ? { policyMode: "built-in" as const } : {}),
+      };
+      const controller =
+        setup.bundled || setup.builtIn
+          ? OpenClawController.forInstallation(installation!, options, repositoryAdmission)
+          : new OpenClawController(installation!, options);
       const driver = setup.adaptPolicy?.(composed.repositoryPolicy) ?? composed.repositoryPolicy;
       selectedPolicy = driver;
       // Keep scope resolution unchanged while varying the independent policy permission.
@@ -174,7 +180,13 @@ test(
         capability: "configuration",
       };
       const secretDriver: SecretDriver = { ...secrets, capability: "secret" };
-      for (const d of [iam, computeDriver, configurationDriver, secretDriver, driver]) {
+      for (const d of [
+        iam,
+        computeDriver,
+        configurationDriver,
+        secretDriver,
+        ...(setup.builtIn ? [] : [driver]),
+      ]) {
         controller.registerDriver(d);
         controller.selectDriver(d.capability, d.id);
       }
@@ -189,7 +201,7 @@ test(
         auth,
         development: { enabled: false },
       });
-      return { controller, options, repositoryAdmission: composed.repositoryAdmission };
+      return { controller, options, repositoryAdmission };
     }
     await selectRepo(registry);
     t.after(() => app.close());
@@ -540,7 +552,7 @@ test(
       async (t) => {
         controllerTime = Date.now();
         let baseline: RepositoryRevisionState | undefined;
-        for (const route of ["legacy", "bundled", "custom"] as const) {
+        for (const route of ["legacy", "bundled", "built-in", "custom"] as const) {
           let calls = 0;
           let refuse = false;
           const { controller, options, repositoryAdmission } = await selectRepo(
@@ -548,6 +560,7 @@ test(
             "registry",
             {
               bundled: route === "bundled",
+              builtIn: route === "built-in",
               adaptPolicy:
                 route === "custom"
                   ? (policy) => ({
@@ -574,7 +587,7 @@ test(
                   : undefined,
             },
           );
-          if (route === "bundled") {
+          if (route === "bundled" || route === "built-in") {
             assert.throws(
               () => OpenClawController.forInstallation(installation!, options, undefined),
               /explicit repository admission owner/,
@@ -614,7 +627,8 @@ test(
                   return original(input);
                 });
           const boundResolver =
-            route === "bundled" && policy instanceof GitHubRepositoryPolicy
+            (route === "bundled" || route === "built-in") &&
+            policy instanceof GitHubRepositoryPolicy
               ? t.mock.method(policy, "resolveBindings")
               : undefined;
           calls = 0;
@@ -626,12 +640,101 @@ test(
           );
           const snapshot = revision?.repositoryCredentials;
           assert.ok(snapshot);
-          assert.equal(calls, route === "bundled" ? 0 : 1);
+          assert.equal(calls, route === "bundled" || route === "built-in" ? 0 : 1);
           assert.equal(snapshot.standingApprovalId, undefined);
           if (route === "legacy") {
             baseline = snapshot;
             assert.equal(snapshot.deadlineWallMs, controllerTime + 3600_000);
             assert.deepEqual(snapshot.driver, { id: policy.id, implementation: "github" });
+          } else if (route === "built-in") {
+            assert.deepEqual(
+              snapshot,
+              baseline,
+              "built-in admission preserves the finite grant and deadline",
+            );
+            await controller.validateBackendConfiguration();
+            assert.throws(() => controller.selectedDriver("repo"), /unavailable/);
+            // Even a same-ID public policy must not silently introduce or lose a veto.
+            const externalPolicy: RepositoryPolicyDriver = {
+              id: policy.id,
+              implementation: "custom-policy",
+              capability: "repo",
+              listOptions: (input) => policy.listOptions(input),
+              resolve: (input) => policy.resolve(input),
+            };
+            assert.throws(() => controller.registerDriver(externalPolicy), {
+              name: "DriverSelectionError",
+              message: /cannot be combined/,
+            });
+            assert.throws(() => controller.selectDriver("repo", policy.id), {
+              name: "DriverSelectionError",
+              message: /No registered Driver/,
+            });
+            const listed = await request(
+              "GET",
+              `/namespaces/${namespaceId}/agents/repository-options`,
+            );
+            assert.equal(listed.statusCode, 200, listed.body);
+            assert.ok(
+              listed
+                .json()
+                .data.some((entry: { repositoryRef: string }) => entry.repositoryRef === "project"),
+            );
+            assert.ok(policy instanceof GitHubRepositoryPolicy);
+            assert.ok(boundResolver);
+            const identity = Object.getOwnPropertyDescriptor(policy, "implementation");
+            assert.ok(identity);
+            const listCatalog = policy.listCatalog.bind(policy);
+            const catalog = t.mock.method(
+              policy,
+              "listCatalog",
+              async (input: Parameters<typeof listCatalog>[0]) => {
+                const options = await listCatalog(input);
+                Object.defineProperty(policy, "implementation", { value: "changed-policy" });
+                return options;
+              },
+            );
+            const pickerPath = `/namespaces/${namespaceId}/agents/repository-options`;
+            const resolutions = boundResolver.mock.callCount();
+            try {
+              const stale = await request("GET", pickerPath);
+              assert.equal(stale.statusCode, 503, stale.body);
+              assert.equal(stale.json().error.code, "DEPENDENCY_UNAVAILABLE");
+              assert.equal(stale.json().data, undefined);
+              const unavailable = await request("GET", pickerPath);
+              assert.equal(unavailable.statusCode, 503, unavailable.body);
+              assert.equal(unavailable.json().data, undefined);
+              const refused = await request("POST", finitePath + "/deploy");
+              assert.equal(refused.statusCode, 503, refused.body);
+              assert.equal(refused.json().error.code, "DEPENDENCY_UNAVAILABLE");
+              await assert.rejects(controller.validateBackendConfiguration(), {
+                name: "DriverSelectionError",
+                message: "The bound repository policy is unavailable.",
+              });
+              assert.equal(catalog.mock.callCount(), 1);
+              assert.equal(boundResolver.mock.callCount(), resolutions);
+              assert.equal(calls, 0, "identity failure cannot invoke the legacy resolver");
+              assert.equal(
+                (await state.read((v) => v.revisions.listRevisions(namespaceId, finiteAgent.id)))
+                  .length,
+                1,
+              );
+            } finally {
+              Object.defineProperty(policy, "implementation", identity);
+              catalog.mock.restore();
+            }
+            const before = (await request("GET", finitePath)).json().data;
+            const denied = await request("PATCH", finitePath, {
+              configurationId,
+              repositoryBindings: [{ repositoryRef: "project", profile: "git-read" }],
+            });
+            assert.equal(denied.statusCode, 400, denied.body);
+            assert.deepEqual((await request("GET", finitePath)).json().data, before);
+            assert.equal(
+              (await state.read((v) => v.revisions.listRevisions(namespaceId, finiteAgent.id)))
+                .length,
+              1,
+            );
           } else if (route === "bundled") {
             assert.deepEqual(snapshot, baseline, "same exact owner, finite grant and deadline");
             assert.ok(boundResolver);
