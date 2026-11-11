@@ -18,7 +18,10 @@ import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test, { describe } from "node:test";
 import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.mjs";
-import { projectOpenShellGitRetention } from "../../scripts/ci/openshell-git-retention.mjs";
+import {
+  emitOpenShellGitRetention,
+  projectOpenShellGitRetention,
+} from "../../scripts/ci/openshell-git-retention.mjs";
 import { skipperFailureSummary } from "../../scripts/ci/skipper-release.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -1117,7 +1120,7 @@ test("mixed-grant output closes deployment codes and projects before diagnostics
     matched: 7,
     consumed: 5,
     replayClaimed: 2,
-    requestIdHashes: requestIdHashes.slice(0, 8),
+    requestIdHashes: requestIdHashes.slice(0, 4),
   };
   const unavailableOrigin = { state: "unavailable", truncated: false, events: [] };
   const unavailableApprovals = {
@@ -1162,6 +1165,22 @@ test("mixed-grant output closes deployment codes and projects before diagnostics
       })),
     ],
   };
+  const auditCounts = {
+    unsupported_authority: 1,
+    stale_configuration: 2,
+    withdrawn: 3,
+    unsupported_operation: 4,
+    unauthorized: 5,
+    other: 6,
+  };
+  const modelAuditDenials = { state: "observed", truncated: false, counts: auditCounts };
+  const modelAuditDenialsInput = {
+    ...modelAuditDenials,
+    requestId: "PRIVATE_AUDIT_REQUEST_CANARY",
+    reason: "PRIVATE_AUDIT_REASON_CANARY",
+    counts: { ...auditCounts, PRIVATE_AUDIT_CODE_CANARY: "PRIVATE_AUDIT_VALUE_CANARY" },
+  };
+  const unavailableAuditDenials = { state: "unavailable", truncated: false, counts: {} };
   const unavailableDenials = { state: "unavailable", truncated: false, events: [] };
   const truncatedUnavailableDenials = { state: "unavailable", truncated: true, events: [] };
   // Malformed projection inputs cannot invent either a model attribution or
@@ -1227,7 +1246,7 @@ test("mixed-grant output closes deployment codes and projects before diagnostics
     modelOrigin: {
       state: "observed",
       truncated: false,
-      events: Array.from({ length: 32 }, () => ({
+      events: Array.from({ length: 8 }, () => ({
         kind: "unmarked",
         status: 401,
         count: maximum,
@@ -1241,12 +1260,17 @@ test("mixed-grant output closes deployment codes and projects before diagnostics
       matched: maximum,
       consumed: maximum,
       replayClaimed: maximum,
-      requestIdHashes,
+      requestIdHashes: requestIdHashes.slice(0, 4),
+    },
+    modelAuditDenials: {
+      state: "observed",
+      truncated: false,
+      counts: Object.fromEntries(Object.keys(auditCounts).map((key) => [key, maximum])),
     },
     modelDenials: {
       state: "observed",
       truncated: false,
-      events: Array.from({ length: 32 }, () => ({
+      events: Array.from({ length: 8 }, () => ({
         scope: "sandbox",
         category: "credential-placement-mismatch",
         count: 2000,
@@ -1256,11 +1280,14 @@ test("mixed-grant output closes deployment codes and projects before diagnostics
   assert.ok(bounded);
   assert.equal(bounded.workerEvents.length, 32);
   assert.equal(bounded.modelOrigin.events.length, 8);
-  assert.equal(bounded.modelApprovals.requestIdHashes.length, 8);
+  assert.equal(bounded.modelApprovals.requestIdHashes.length, 4);
   assert.equal(bounded.modelDenials.events.length, 8);
+  const emitted = [];
+  emitOpenShellGitRetention({ diagnostic: (line) => emitted.push(line) }, bounded);
+  assert.equal(emitted.length, 1);
   assert.ok(
-    Buffer.byteLength(JSON.stringify(bounded)) <= 16_384,
-    "combined diagnostic must fit the existing qualification checkpoint limit",
+    Buffer.byteLength(emitted[0]) <= 16_384,
+    "combined emitted diagnostic must fit the existing qualification checkpoint limit",
   );
   for (const [code, registrationStage, invalidatedFullRing = false] of [
     ["PRIVATE_UPPERCASE_CANARY", "before"],
@@ -1294,6 +1321,8 @@ test("mixed-grant output closes deployment codes and projects before diagnostics
             modelOrigin: registrationStage === "before" ? modelOrigin : unavailableOrigin,
             modelApprovals: registrationStage === "after" ? modelApprovals : unavailableApprovals,
             modelDenials: registrationStage === "before" ? modelDenials : unavailableModelDenials,
+            modelAuditDenials:
+              registrationStage === "before" ? modelAuditDenials : unavailableAuditDenials,
           },
         ];
     // Control only external observations. The normal test catch invokes the
@@ -1316,6 +1345,10 @@ export function createOpenShellGitInstallation(t) {
   let originReads = 0;
   let approvalReads = 0;
   let denialReads = 0;
+  let auditReads = 0;
+  let originObservedAt;
+  let denialEndedAt;
+  let auditEndedAt;
   let tornDown = false;
   t.after(() => {
     tornDown = true;
@@ -1324,19 +1357,34 @@ export function createOpenShellGitInstallation(t) {
     assert.equal(originReads, ${gatewayFailure ? 0 : 1}, "capture snapshots the origin once");
     assert.equal(approvalReads, ${gatewayFailure ? 0 : 1}, "capture reads approvals once");
     assert.equal(denialReads, ${gatewayFailure ? 0 : 1}, "capture reads denials once");
+    assert.equal(auditReads, ${gatewayFailure ? 0 : 1}, "capture reads audit denials once");
+    if (${!gatewayFailure}) {
+      assert.ok(Number.isSafeInteger(denialEndedAt));
+      assert.equal(auditEndedAt, denialEndedAt, "both diagnostic readers share one end bound");
+      assert.ok(denialEndedAt <= originObservedAt, "the bound is fixed before the first snapshot");
+    }
   });
   return {
     deployMixedGrantAgent: async () => { throw original; },
     mixedGrantFailureObservation: {
         target,
         collectModelOrigin: () => {
+          originObservedAt = Date.now();
           assert.equal(tornDown, false);
           assert.equal(reads, 0, "snapshot origin before asynchronous Worker collection");
           originReads++;
           if (${JSON.stringify(registrationStage)} === "after") throw new Error("PRIVATE_ORIGIN_READ_CANARY");
           return ${JSON.stringify(modelOriginInput)};
         },
-        collectModelDenials: async () => {
+        collectModelAuditDenials: async (endedAt) => {
+          auditEndedAt = endedAt;
+          assert.equal(tornDown, false);
+          auditReads++;
+          if (${JSON.stringify(registrationStage)} === "after") throw new Error("PRIVATE_AUDIT_READ_CANARY");
+          return ${JSON.stringify(modelAuditDenialsInput)};
+        },
+        collectModelDenials: async (endedAt) => {
+          denialEndedAt = endedAt;
           assert.equal(tornDown, false);
           denialReads++;
           if (${invalidatedFullRing}) {

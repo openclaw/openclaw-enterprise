@@ -23,6 +23,7 @@ import type {
 } from "../fixtures/openshell-model-origin.ts";
 import {
   projectInstalledModelApprovals,
+  projectInstalledModelAuditDenials,
   projectInstalledModelDenials,
   projectInstalledModelOrigin,
 } from "../../scripts/ci/failure-redaction.mjs";
@@ -36,7 +37,8 @@ interface MixedGrantFailureCapture {
   collect: () => Promise<unknown>;
   collectModelOrigin?: () => unknown;
   collectModelApprovals?: () => Promise<unknown>;
-  collectModelDenials?: () => Promise<unknown>;
+  collectModelDenials?: (endedAt: number) => Promise<unknown>;
+  collectModelAuditDenials?: (endedAt: number) => Promise<unknown>;
   checkpoint: (event: string, data: Record<string, unknown>) => Promise<void>;
 }
 
@@ -60,6 +62,7 @@ export async function captureMixedGrantFailure(
   // Worker outcomes may still say retry; the selected deployment's terminal
   // failure is the trigger, and observation must not replace that failure.
   try {
+    const endedAt = Date.now();
     // Snapshot the in-process origin before asynchronous readers can delay it.
     // Each source remains useful when another source cannot be observed.
     let modelOrigin;
@@ -68,10 +71,11 @@ export async function captureMixedGrantFailure(
     } catch {
       modelOrigin = projectInstalledModelOrigin(undefined);
     }
-    const [worker, approvals, denials] = await Promise.allSettled([
+    const [worker, approvals, denials, auditDenials] = await Promise.allSettled([
       Promise.resolve().then(collect),
       Promise.resolve().then(() => observation.collectModelApprovals?.()),
-      Promise.resolve().then(() => observation.collectModelDenials?.()),
+      Promise.resolve().then(() => observation.collectModelDenials?.(endedAt)),
+      Promise.resolve().then(() => observation.collectModelAuditDenials?.(endedAt)),
     ]);
     const workerEvents = worker.status === "fulfilled" ? worker.value : "unavailable";
     const modelApprovals = projectInstalledModelApprovals(
@@ -79,6 +83,9 @@ export async function captureMixedGrantFailure(
     );
     const modelDenials = projectInstalledModelDenials(
       denials.status === "fulfilled" ? denials.value : undefined,
+    );
+    const modelAuditDenials = projectInstalledModelAuditDenials(
+      auditDenials.status === "fulfilled" ? auditDenials.value : undefined,
     );
     const hashIdentity = (value: string) => createHash("sha256").update(value).digest("hex");
     await checkpoint("mixed-grant-deployment-failed", {
@@ -91,6 +98,7 @@ export async function captureMixedGrantFailure(
       modelOrigin,
       modelApprovals,
       modelDenials,
+      modelAuditDenials,
     });
   } catch {
     // Best-effort evidence cannot hide the original deployment failure.

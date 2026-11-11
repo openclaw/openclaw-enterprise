@@ -5,9 +5,10 @@ import { createOpenAiStaticProvider } from "../../apps/controller/src/drivers/eg
 import assert from "node:assert/strict";
 import pg from "pg";
 import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import { createServer, request as httpRequest } from "node:http";
 import test, { type TestContext } from "node:test";
-import { isDeepStrictEqual } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import type {
   RequestCredentialInput,
   ProxyPlan,
@@ -40,6 +41,7 @@ import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs"
 import { requestId, staticEgressFixture } from "../helpers/static-egress.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { CREDENTIAL_PROXY_ONE_SOURCE } from "../helpers/refusal-text.mjs";
+import { readModelAuditDenials } from "../helpers/openshell-git-installation.mjs";
 
 test(
   "policy reduction preserves another binding then observes deny-all (PostgreSQL)",
@@ -1310,6 +1312,103 @@ test(
     );
     assert.ok(audit.rows.some(({ details }) => details.code === "unauthorized"));
     assert.ok(audit.rows.some(({ details }) => details.code === "stale_material"));
+  },
+);
+
+test(
+  "model denial diagnostics count only selected before-access audit events (PostgreSQL)",
+  { ...requiresPostgres, timeout: 30_000 },
+  async (t) => {
+    assert.ok(databaseUrl);
+    const { f, exchange, request, grant, revision } = await requestCredentialFixture(t);
+    const startedAt = new Date(Date.now() - 1).toISOString();
+
+    // The real OCC authorization path creates these audit events. The fixture supplies
+    // external recipient observation, not the authorization decision or audit rows.
+    const approved = request();
+    assert.equal(await exchange.authorizeRequestCredential(approved, t.signal), "credential");
+    const unsupported = request();
+    assert.equal(
+      await exchange.authorizeRequestCredential(
+        {
+          ...unsupported,
+          http: { ...unsupported.http, target: { ...unsupported.http.target, method: "GET" } },
+        },
+        t.signal,
+      ),
+      undefined,
+    );
+    assert.equal(
+      (await f.request("DELETE", `/namespaces/${f.namespace.id}/iam/access-bindings/${f.grant.id}`))
+        .status,
+      204,
+    );
+    assert.equal(await exchange.resolveRequestCredential(grant(approved), t.signal), undefined);
+    assert.equal(await exchange.authorizeRequestCredential(request(), t.signal), undefined);
+    const endedAt = new Date().toISOString();
+    const releaseAudit = await f.pool.query(
+      "SELECT details->>'phase' AS phase FROM occ.audit_events WHERE details->>'requestId' = $1",
+      [approved.requestId],
+    );
+    assert.deepEqual(releaseAudit.rows, [{ phase: "before_release" }]);
+
+    const identity = [f.namespace.id, f.source.id, revision.id, f.agent.servicePrincipalId];
+    const summarize = async (args: string[]) => {
+      // Execute the exact API-container program with the less-privileged application
+      // connection. No query or aggregate implementation is recreated in this test.
+      const { stdout } = await promisify(execFile)(
+        process.execPath,
+        ["--input-type=module", "-e", readModelAuditDenials, ...args],
+        {
+          cwd: new URL("../../", import.meta.url),
+          env: { ...process.env, OCC_DATABASE_URL: databaseUrl },
+          timeout: 15_000,
+          maxBuffer: 64 * 1024,
+          signal: t.signal,
+        },
+      );
+      return JSON.parse(stdout);
+    };
+    const empty = {
+      state: "observed",
+      truncated: false,
+      counts: {
+        unsupported_authority: 0,
+        stale_configuration: 0,
+        withdrawn: 0,
+        unsupported_operation: 0,
+        unauthorized: 0,
+        other: 0,
+      },
+    };
+    assert.deepEqual(await summarize([...identity, startedAt, endedAt]), {
+      ...empty,
+      counts: { ...empty.counts, unsupported_operation: 1, unauthorized: 1 },
+    });
+
+    // Each selector must exclude the existing matching rows independently. A
+    // before-release denial above must not inflate the before-access count.
+    for (let index = 0; index < identity.length; index += 1) {
+      const other = [...identity];
+      other[index] = randomUUID();
+      assert.deepEqual(await summarize([...other, startedAt, endedAt]), empty);
+    }
+    for (const [start, end] of [
+      [
+        new Date(Date.parse(startedAt) - 60_000).toISOString(),
+        new Date(Date.parse(startedAt) - 1).toISOString(),
+      ],
+      [
+        new Date(Date.parse(endedAt) + 1).toISOString(),
+        new Date(Date.parse(endedAt) + 60_000).toISOString(),
+      ],
+    ] as const) {
+      assert.deepEqual(await summarize([...identity, start, end]), empty);
+    }
+    await assert.rejects(
+      summarize([...identity, endedAt, new Date(Date.parse(startedAt) - 1).toISOString()]),
+      { code: 1 },
+    );
   },
 );
 

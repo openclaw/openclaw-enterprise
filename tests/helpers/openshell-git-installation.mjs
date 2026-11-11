@@ -80,7 +80,7 @@ try {
     SELECT count(*) AS matched,
       count(*) FILTER (WHERE consumed) AS consumed,
       count(*) FILTER (WHERE replay_claimed) AS "replayClaimed",
-      ARRAY(SELECT request_id FROM selected ORDER BY request_id LIMIT 8) AS "requestIds"
+      ARRAY(SELECT request_id FROM selected ORDER BY request_id LIMIT 4) AS "requestIds"
     FROM selected\`,
     process.argv.slice(1),
   );
@@ -91,15 +91,64 @@ try {
   const replayClaimed = Number(row.replayClaimed);
   assert.ok([matched, consumed, replayClaimed].every((value) =>
     Number.isSafeInteger(value) && value >= 0));
-  assert.ok(Array.isArray(row.requestIds) && row.requestIds.length <= 8);
+  assert.ok(Array.isArray(row.requestIds) && row.requestIds.length <= 4);
   const requestIdHashes = row.requestIds.map((id) => {
     assert.equal(typeof id, 'string');
     return createHash('sha256').update(id).digest('hex');
   });
   process.stdout.write(JSON.stringify({
-    state: 'observed', truncated: matched > 8, matched, consumed, replayClaimed,
+    state: 'observed', truncated: matched > 4, matched, consumed, replayClaimed,
     requestIdHashes,
   }));
+} finally {
+  await pool.end();
+}
+`;
+
+// Read durable denials for this deployment only. Aggregate inside the API
+// container so audit identities, request IDs and arbitrary details never leave it.
+export const readModelAuditDenials = `
+import assert from 'node:assert/strict';
+import { createPostgresPool } from './packages/occ/src/index.ts';
+const args = process.argv.slice(1);
+assert.equal(args.length, 6);
+assert.ok(args.slice(0, 4).every((value) => value.length > 0));
+const [startedAt, endedAt] = args.slice(4).map(Date.parse);
+assert.ok(Number.isFinite(startedAt) && Number.isFinite(endedAt) && startedAt <= endedAt);
+const pool = await createPostgresPool(process.env.OCC_DATABASE_URL, {
+  max: 1, connectionTimeoutMillis: 5000, query_timeout: 10000,
+});
+try {
+  const { rows } = await pool.query(
+    \`WITH selected AS (
+      SELECT CASE WHEN details->>'code' IN (
+        'unsupported_authority', 'stale_configuration', 'withdrawn',
+        'unsupported_operation', 'unauthorized'
+      ) THEN details->>'code' ELSE 'other' END AS code
+      FROM occ.audit_events
+      WHERE namespace_id = $1 AND resource_id = $2
+        AND details->>'revisionId' = $3 AND actor_id = $4
+        AND kind = 'authorization_denial' AND action = 'openclaw.egress.authorize'
+        AND resource_kind = 'credential_source' AND outcome = 'denied'
+        AND details->>'phase' = 'before_access'
+        AND occurred_at >= $5::timestamptz AND occurred_at <= $6::timestamptz
+    )
+    SELECT count(*) FILTER (WHERE code = 'unsupported_authority') AS unsupported_authority,
+      count(*) FILTER (WHERE code = 'stale_configuration') AS stale_configuration,
+      count(*) FILTER (WHERE code = 'withdrawn') AS withdrawn,
+      count(*) FILTER (WHERE code = 'unsupported_operation') AS unsupported_operation,
+      count(*) FILTER (WHERE code = 'unauthorized') AS unauthorized,
+      count(*) FILTER (WHERE code = 'other') AS other
+    FROM selected\`,
+    args,
+  );
+  assert.equal(rows.length, 1);
+  const counts = Object.fromEntries(Object.entries(rows[0]).map(([code, value]) => {
+    const count = Number(value);
+    assert.ok(Number.isSafeInteger(count) && count >= 0);
+    return [code, count];
+  }));
+  process.stdout.write(JSON.stringify({ state: 'observed', truncated: false, counts }));
 } finally {
   await pool.end();
 }
@@ -1920,6 +1969,7 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
         const controllerPods = await readControllerPods("--request-timeout=8s").catch(() => []);
         let target;
         let modelAdmission;
+        let modelActorId;
         let selectedProviders;
         setupCheckpoint("agent-admission", "deployment");
         fixture.mixedGrantFailureObservation = {
@@ -1950,7 +2000,7 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
               })),
             };
           },
-          collectModelDenials: async () => {
+          collectModelDenials: async (endedAt) => {
             if (!target || !modelAdmission || !selectedProviders) {
               return undefined;
             }
@@ -1965,10 +2015,45 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
               sandboxId,
               modelEndpoint: new URL(route.path, route.origin).href,
               startedAt: Date.parse(since),
-              endedAt: Date.now(),
+              endedAt,
               readSupervisor: (signal) => verifySupervisorImage({ sandboxName, sandboxId }, signal),
               signal: t.signal,
             });
+          },
+          collectModelAuditDenials: async (endedAt) => {
+            if (!target || !modelAdmission || !modelActorId) {
+              return undefined;
+            }
+            // Use the admitted source and API-created Agent principal, never
+            // an identity inferred from the audit rows being investigated.
+            assert.equal(modelAdmission.namespaceId, target.namespaceId);
+            assert.equal(modelAdmission.agentId, target.agentId);
+            assert.equal(modelAdmission.revisionId, target.id);
+            assert.equal(modelAdmission.route.sourceId, modelSource.id);
+            assert.equal(modelAdmission.route.grantKind, "inference");
+            assert.equal(typeof modelActorId, "string");
+            return JSON.parse(
+              await kube(
+                [
+                  "exec",
+                  "-n",
+                  platform,
+                  "deployment/openclaw-enterprise-api",
+                  "--",
+                  "node",
+                  "--input-type=module",
+                  "-e",
+                  readModelAuditDenials,
+                  target.namespaceId,
+                  modelSource.id,
+                  target.id,
+                  modelActorId,
+                  since,
+                  new Date(endedAt).toISOString(),
+                ],
+                { timeout: 20_000 },
+              ),
+            );
           },
           collectModelApprovals: async () => {
             if (!target || !modelAdmission || !selectedProviders) {
@@ -2049,6 +2134,7 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
           after: (operation) => cleanup.push(operation),
           registerProviders: async (revision, agent) => {
             target = { id: revision.id, agentId: agent.id, namespaceId: namespace.id };
+            modelActorId = agent.servicePrincipalId;
             setupCheckpoint("provider-registration", "deployment");
             selectedProviders = await registerMixedGrantProviders({
               request,

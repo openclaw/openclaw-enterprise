@@ -10,6 +10,7 @@ import {
 import { openShellSetupProgress, openShellVerificationOperations } from "./openshell-progress.mjs";
 import {
   projectInstalledModelApprovals,
+  projectInstalledModelAuditDenials,
   projectInstalledModelDenials,
   projectInstalledModelOrigin,
   projectInstalledWorkerEvent,
@@ -370,6 +371,7 @@ const events = {
     modelOrigin: ["modelOrigin", projectInstalledModelOrigin],
     modelApprovals: ["modelApprovals", projectInstalledModelApprovals],
     modelDenials: ["modelDenials", projectInstalledModelDenials],
+    modelAuditDenials: ["modelAuditDenials", projectInstalledModelAuditDenials],
     workerEvents: [
       "workerEvents",
       (value) => {

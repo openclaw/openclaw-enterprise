@@ -858,11 +858,21 @@ test("mixed-grant terminal capture rejects malformed observations without invent
     replayClaimed: 0,
     requestIdHashes: [],
   };
+  const auditCounts = {
+    unsupported_authority: 0,
+    stale_configuration: 0,
+    withdrawn: 0,
+    unsupported_operation: 0,
+    unauthorized: 0,
+    other: 0,
+  };
+  const unavailableAuditDenials = { state: "unavailable", truncated: false, counts: {} };
   // Missing optional readers and malformed envelopes cannot claim an empty observed result.
   for (const readers of [
     {},
     {
       collectModelOrigin: () => ({ state: "PRIVATE_STATE_CANARY", events: [] }),
+      collectModelAuditDenials: async () => ({ state: "observed", counts: {} }),
       collectModelApprovals: async () => ({
         state: "observed",
         requestIdHashes: "PRIVATE_IDS_CANARY",
@@ -875,6 +885,7 @@ test("mixed-grant terminal capture rejects malformed observations without invent
     assert.equal(receipt.workerEvents, "unavailable");
     assert.deepEqual(receipt.modelOrigin, unavailableOrigin);
     assert.deepEqual(receipt.modelApprovals, unavailableApprovals);
+    assert.deepEqual(receipt.modelAuditDenials, unavailableAuditDenials);
   }
   // Snapshots cross a trust boundary: invalid numbers and hash-like strings must
   // not become evidence, while an explicit retention limit remains visible.
@@ -944,14 +955,59 @@ test("mixed-grant terminal capture rejects malformed observations without invent
     ...observation,
     collectModelOrigin: () => ({ state: "observed", truncated: false, events: [] }),
     collectModelApprovals: async () => ({ ...unavailableApprovals, state: "observed" }),
+    collectModelAuditDenials: async () => ({
+      state: "observed",
+      truncated: false,
+      counts: auditCounts,
+    }),
   });
   assert.deepEqual(receipts.at(-1).modelOrigin, { ...unavailableOrigin, state: "observed" });
   assert.deepEqual(receipts.at(-1).modelApprovals, { ...unavailableApprovals, state: "observed" });
+  assert.deepEqual(receipts.at(-1).modelAuditDenials, {
+    state: "observed",
+    truncated: false,
+    counts: auditCounts,
+  });
+  // Every audit bucket is required. Missing or malformed counts cannot be
+  // reported as a successful zero result; known truncation remains visible.
+  const invalidAuditCounts = [
+    ...Object.keys(auditCounts).map((key) => ({ ...auditCounts, [key]: undefined })),
+    ...[-1, 1.5, Number.MAX_SAFE_INTEGER + 1, "1"].map((other) => ({ ...auditCounts, other })),
+  ];
+  for (const counts of invalidAuditCounts) {
+    await captureMixedGrantFailure(error, {
+      ...observation,
+      collectModelAuditDenials: async () => ({ state: "observed", truncated: true, counts }),
+    });
+    assert.deepEqual(receipts.at(-1).modelAuditDenials, {
+      state: "unavailable",
+      truncated: true,
+      counts: {},
+    });
+  }
+  // Unavailable audit observations never publish counts, even valid-looking ones.
+  for (const truncated of [true, false, "true", 1]) {
+    await captureMixedGrantFailure(error, {
+      ...observation,
+      collectModelAuditDenials: async () => ({
+        state: "unavailable",
+        truncated,
+        counts: auditCounts,
+        requestId: "PRIVATE_AUDIT_ID_CANARY",
+      }),
+    });
+    assert.deepEqual(receipts.at(-1).modelAuditDenials, {
+      state: "unavailable",
+      truncated: truncated === true,
+      counts: {},
+    });
+  }
   assert.doesNotMatch(JSON.stringify(receipts), /PRIVATE_[A-Z_]+_CANARY/);
+  const captured = receipts.length;
   // The existing terminal/selected-target gate still owns whether capture runs.
   await captureMixedGrantFailure(new Error("unrelated"), observation);
   await captureMixedGrantFailure(error, { ...observation, target: undefined });
-  assert.equal(receipts.length, 5);
+  assert.equal(receipts.length, captured);
 });
 
 test("model denial diagnostics preserve endpoint scope and refuse incomplete identity evidence", async (t) => {

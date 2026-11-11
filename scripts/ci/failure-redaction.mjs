@@ -548,12 +548,12 @@ export function projectInstalledModelApprovals(value) {
     state: "observed",
     truncated:
       value.truncated === true ||
-      value.requestIdHashes.length > 8 ||
+      value.requestIdHashes.length > 4 ||
       requestIdHashes.length !== value.requestIdHashes.length,
     matched: value.matched,
     consumed: value.consumed,
     replayClaimed: value.replayClaimed,
-    requestIdHashes: requestIdHashes.slice(0, 8),
+    requestIdHashes: requestIdHashes.slice(0, 4),
   };
 }
 
@@ -600,5 +600,31 @@ export function projectInstalledModelDenials(value) {
     state: "observed",
     truncated: truncated || value.events.length > 8 || events.length !== value.events.length,
     events: events.slice(0, 8),
+  };
+}
+
+/** Retain only aggregate before-access denial counts, not arbitrary audit details. */
+export function projectInstalledModelAuditDenials(value) {
+  const truncated = observationRecord(value) && value.truncated === true;
+  const codes = [
+    "unsupported_authority",
+    "stale_configuration",
+    "withdrawn",
+    "unsupported_operation",
+    "unauthorized",
+    "other",
+  ];
+  if (
+    !observationRecord(value) ||
+    value.state !== "observed" ||
+    !observationRecord(value.counts) ||
+    !codes.every((code) => observationCount(value.counts[code]))
+  ) {
+    return { state: "unavailable", truncated, counts: {} };
+  }
+  return {
+    state: "observed",
+    truncated,
+    counts: Object.fromEntries(codes.map((code) => [code, value.counts[code]])),
   };
 }

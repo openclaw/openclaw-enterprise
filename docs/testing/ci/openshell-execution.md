@@ -153,7 +153,7 @@ status, count, and an authentication class:
 - `accepted`: the credential matches a configured digest.
 
 An unrecognized authentication class becomes `unknown`. `modelApprovals` retains
-`matched`, `consumed`, and `replayClaimed` counts and up to 8 request-ID hashes
+`matched`, `consumed`, and `replayClaimed` counts and up to 4 request-ID hashes
 for approval records that match the selected identity. For both fields, read
 `state` and `truncated` before interpreting the records. An `observed` result
 with no records differs from `unavailable`; a truncated result is incomplete.
@@ -172,6 +172,21 @@ ring's capacity. A full ring or incomplete result sets `truncated`. An empty
 no denial occurred. An `unavailable` result is not a zero count. These aggregates
 do not correlate a denial to a request or establish the cause of deployment
 failure. The receipt excludes raw log text, endpoint URLs, and runtime identities.
+
+`modelAuditDenials` counts durable `before_access` authorization denials from
+OCC's audit store. The read selects the deployment time window, Namespace,
+model credential source, revision and the Agent's service principal, plus the
+exact denial action, resource kind and outcome. It retains only counts for
+`unsupported_authority`, `stale_configuration`, `withdrawn`,
+`unsupported_operation`, `unauthorized`, and `other`. It includes no audit
+identities, request IDs or arbitrary details. Read failure or missing admission
+scope produces `unavailable`; observed zero counts mean no matching audit rows.
+Early refusals before the audited authorization path can leave no row, so an
+empty summary does not prove that OCC received or authorized a request. Counts
+do not identify which denial caused the deployment failure.
+
+The combined failure receipt remains limited to 16,384 bytes. Approval totals
+are unchanged; the smaller request hash sample leaves room for the audit counts.
 
 These fields exclude raw credentials and headers. They help diagnose a failed
 deployment; they do not prove that the Supervisor injected a credential or that
