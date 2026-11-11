@@ -276,7 +276,8 @@ describes when an operator must confirm termination.
 Gateway state survives replacements.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.gatewayPrivateStateClaim`
 uses `runtime.gatewayStorageSizeGiB`, default 10. `verifyPersistentVolumeClaim`
-rejects mismatched requests during reuse and deletion without resizing. Claims
+compares storage quantities exactly, accepting equivalent units while rejecting
+different capacities during reuse and deletion without resizing. Claims
 precede Pods for `WaitForFirstConsumer`; the
 [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
 owns sizing, recovery and mounts.

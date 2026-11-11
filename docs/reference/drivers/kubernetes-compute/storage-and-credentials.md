@@ -37,7 +37,7 @@ block StorageClass by DNS-subdomain name.
 Select `runtime.gatewayStorageSizeGiB` before creating claims: integer 1–65536 GiB,
 default 10, subject to provider support. Keep this Installation-wide setting
 fixed until normal Agent deletion removes all claims under their original setting. Reuse and final deletion reject
-mismatched requests without resizing, replacing or adopting claims. Preparation
+different capacities without resizing, replacing or adopting claims. Preparation
 may detect the mismatch after stopping the predecessor. Restore the original setting before creating different-sized claims;
 no single setting supports a mixed population.
 

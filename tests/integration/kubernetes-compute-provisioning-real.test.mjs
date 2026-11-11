@@ -539,7 +539,7 @@ test(
         runtime: {
           transportSecretPrefix: "transport",
           gatewayStorageClassName: "local-path",
-          gatewayStorageSizeGiB: 12,
+          gatewayStorageSizeGiB: 1024,
           // The provisioned Agent enables Slack, which needs the Installation's channel runtime.
           channels: { proxyUrl: "http://10.42.0.15:3128" },
           gatewayNodeSelector: {
@@ -929,7 +929,7 @@ test(
     const claimDirectory = await temporaryDirectory(context, "openclaw-legacy-rwx-");
     for (const [name, namespace, accessMode, storage] of [
       [workspaceName, placement, "ReadWriteMany", "40Gi"],
-      [gatewayStateName, gatewayPlacement, "ReadWriteOnce", "12Gi"],
+      [gatewayStateName, gatewayPlacement, "ReadWriteOnce", "1024Gi"],
     ]) {
       const claimPath = join(claimDirectory, `${name}.json`);
       await writeFile(
@@ -1030,9 +1030,29 @@ test(
       provisionedClaimName,
       gatewayPlacement,
     );
-    assert.equal(originalClaim.spec.resources.requests.storage, "12Gi");
+    // Verify the API server round-trip, not just the requested representation.
+    // The fixture exercises claim metadata without writing 1Ti of data.
+    assert.equal(originalClaim.spec.resources.requests.storage, "1Ti");
     // A second API-admitted revision must reuse state even though these fixture images
     // cannot complete native model enrollment. This is storage proof, not model proof.
+    await waitFor("original fixture deployment work to finish", async () => {
+      const work = await fixture.readWork(`agent_revision:${provisioned.revisionId}:reconcile`);
+      return work?.state === "failed_permanent" ? work : undefined;
+    });
+    // No other work for this unique Agent is queued during this observation.
+    const reconcile = driver.reconcile.bind(driver);
+    let replacementClaimReconciled = false;
+    const claimReconciliation = context.mock.method(driver, "reconcile", async (...args) => {
+      const result = await reconcile(...args);
+      if (
+        args[0].kind === "PersistentVolumeClaim" &&
+        args[0].metadata.name === provisionedClaimName &&
+        args[0].metadata.namespace === gatewayPlacement
+      ) {
+        replacementClaimReconciled = true;
+      }
+      return result;
+    });
     const replacement = await fixture.request("POST", `${provisionedPath}/deploy`);
     assert.equal(replacement.status, 202, JSON.stringify(replacement.body));
     assert.notEqual(replacement.data.id, provisioned.revisionId);
@@ -1040,11 +1060,10 @@ test(
       const work = await fixture.readWork(`agent_revision:${replacement.data.id}:reconcile`);
       return work?.state === "failed_permanent" ? work : undefined;
     });
-    await resource(
-      "configmap",
-      `${gatewayName(provisioned.agentId)}-rev-${hash(replacement.data.id)}`,
-      gatewayPlacement,
-    );
+    claimReconciliation.mock.restore();
+    // ConfigMap creation precedes PVC verification. Only a successful real
+    // reconciliation proves this replacement accepted the retained claim.
+    assert.equal(replacementClaimReconciled, true);
     const retainedClaim = await resource(
       "persistentvolumeclaim",
       provisionedClaimName,

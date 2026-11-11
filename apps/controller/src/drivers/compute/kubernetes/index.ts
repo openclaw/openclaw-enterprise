@@ -14924,7 +14924,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       claim.metadata.deletionTimestamp !== undefined ||
       accessModes.length !== expectedModes.length ||
       accessModes.some((mode, index) => mode !== expectedModes[index]) ||
-      requests?.storage !== expectedRequests?.storage ||
+      typeof requests?.storage !== "string" ||
+      typeof expectedRequests?.storage !== "string" ||
+      compareResourceQuantities(requests.storage, expectedRequests.storage) !== 0 ||
       (claim.spec?.volumeMode ?? "Filesystem") !== (desired.spec?.volumeMode ?? "Filesystem") ||
       (desired.spec?.storageClassName !== undefined &&
         claim.spec?.storageClassName !== desired.spec.storageClassName)

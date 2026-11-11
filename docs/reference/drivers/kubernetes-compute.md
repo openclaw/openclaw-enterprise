@@ -298,8 +298,8 @@ before replacing the controller images.
   restart count and last exit code; `occ agent logs --previous` shows the
   crashed container's output.
 - **Gateway storage is pending or rejected:** Check the configured
-  `runtime.gatewayStorageClassName`, the configured Gateway capacity, filesystem
-  support, worker PVC permissions, and the PVC's exact ownership. Preserve
+  `runtime.gatewayStorageClassName`, available space for the configured Gateway
+  capacity, filesystem support, worker PVC permissions, and the PVC's exact ownership. Preserve
   data when resolving an incompatible or foreign claim; the driver does not
   adopt or convert it.
 - **Dedicated Harness cannot start:** Verify the default StorageClass supports

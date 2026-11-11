@@ -17877,7 +17877,7 @@ test("private gateway claim reuse and deletion verify exact ownership and storag
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
-        gatewayStorageSizeGiB: 100,
+        gatewayStorageSizeGiB: 1024,
       },
     }),
   );
@@ -17888,11 +17888,13 @@ test("private gateway claim reuse and deletion verify exact ownership and storag
     name: namespace,
     plane: "execution",
   });
-  assert.equal(desired.spec.resources.requests.storage, "100Gi");
+  assert.equal(desired.spec.resources.requests.storage, "1024Gi");
   let observed = {
     ...structuredClone(desired),
     metadata: { ...desired.metadata, uid: "claim-uid" },
   };
+  // Kubernetes serializes 1024Gi as 1Ti; reuse and deletion must compare capacity.
+  observed.spec.resources.requests.storage = "1Ti";
   const mutations = [];
   driver.apiClients = Promise.resolve({
     core: {
@@ -17931,7 +17933,19 @@ test("private gateway claim reuse and deletion verify exact ownership and storag
       claim.spec.storageClassName = "network-filesystem";
     },
     (claim) => {
-      claim.spec.resources.requests.storage = "40Gi";
+      claim.spec.resources.requests.storage = "1099511627775";
+    },
+    (claim) => {
+      claim.spec.resources.requests.storage = "1099511627777";
+    },
+    (claim) => {
+      claim.spec.resources.requests.storage = "invalid";
+    },
+    (claim) => {
+      delete claim.spec.resources.requests.storage;
+    },
+    (claim) => {
+      claim.spec.resources.requests.storage = 1099511627776;
     },
   ]) {
     observed = structuredClone(valid);
