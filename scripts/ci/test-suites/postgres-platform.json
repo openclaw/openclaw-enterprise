@@ -67,7 +67,8 @@
     "tests/integration/postgres-egress-policy-transaction.test.ts",
     "tests/integration/postgres-credential-source-revision-owner.test.ts",
     "tests/integration/postgres-worker-process-shutdown.test.ts",
-    "tests/integration/postgres-harness-overrides.test.ts"
+    "tests/integration/postgres-harness-overrides.test.ts",
+    "tests/integration/postgres-preset-template-validation.test.ts"
   ],
   "files": [
     {
@@ -653,6 +654,15 @@
       "path": "tests/integration/postgres-harness-overrides.test.ts",
       "expectedTests": [
         "PostgreSQL preserves Harness destinations across restart and default replacement"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-preset-template-validation.test.ts",
+      "expectedTests": [
+        "shipped Preset API distinguishes literal launch text from variable tokens through PostgreSQL",
+        "shipped Preset API preserves gateway password reference placeholders through PostgreSQL",
+        "filesystem Configuration Driver validates gateway password reference placeholders",
+        "Kubernetes Configuration Driver validates gateway password reference placeholders"
       ]
     }
   ]

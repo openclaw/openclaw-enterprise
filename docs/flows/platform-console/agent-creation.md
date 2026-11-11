@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-11-05
-last_updated_session: claude/session_01HzmRt1DGB79VEnEWHt7PRy
+updated: 2026-11-10
+last_updated_session: authoring-run/f0decdaf-c71f-47f9-b2e5-c5bd6b1dfee1
 ---
 
 # Console Agent creation
@@ -27,6 +27,7 @@ user-visible behavior.
 ```mermaid
 graph TD
   A["Create Agent form"] --> B["Plugins, model, and repository choices"]
+  B -->|repository access required and missing| H["Explain the requirement before provisioning"]
   B -->|supported Dedicated| C["Queue provisioning with inline Configuration"]
   C --> D["Worker creates resources, grants and first deployment"]
   B -->|ordinary draft| E["Validate, then POST Configuration and Agent"]
@@ -124,6 +125,14 @@ discovery; retries recheck current policy. Only `503 REPOSITORY_OPTIONS_UNAVAILA
 or `meta.notConfigured` (no `repository` settings) permits creation without bindings, and only without retained selections; other
 failures block submission.
 
+After authorizing the capability read, `packages/occ/src/index.ts:capabilities`
+checks the selected Credential Proxy's profile without repository access. A
+confirmed repository-only refusal adds `repositoryAccessRequired` to both
+capability responses. An unavailable registration leaves it absent.
+`create.mts:renderAgentForm` explains this requirement until the repository
+selection has approved access and pauses immediate provisioning. It still allows ordinary drafts.
+Deployment admission checks the selected profile and repository grants again.
+
 ### 4. Submit provisioning or an ordinary draft
 
 `apps/controller/src/console/agents/create.mts:renderAgentForm`
@@ -213,6 +222,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-11-10 13:36: Show a confirmed repository-only Credential Proxy requirement before provisioning. (authoring-run/f0decdaf-c71f-47f9-b2e5-c5bd6b1dfee1 - 07c2a00c82e8a10635533eb1a27b110b52b90f14)
 - 2026-11-08 09:34: Preserve authored plugin permissions and the disabled Codex entry while merging Namespace capability discovery. (authoring-run/f474f795-758c-4b42-8835-1bdcf14162fa - 7db5638975981ec1400f1a4ba52da77d5fd33dce)
 
 - 2026-11-05: A member reads the Namespace's Agent capabilities after a refused Installation read, registers a model Secret with a Credential Gateway, and opens the draft without an IAM request. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)

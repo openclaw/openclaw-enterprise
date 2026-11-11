@@ -64,6 +64,7 @@ type CreateAgentScenario = {
     "at"
   >;
   provisionedDeploymentError?: AgentDeploymentStatusWire["error"];
+  repositoryAccessRequired?: true;
   repositoryOptions?: readonly RepositoryOption[];
   secretOperateDenied?: readonly string[];
   denySecretCreate?: true;
@@ -855,15 +856,15 @@ export const createAgentProvisioningScenarios = {
   },
   createDeploymentPending: {
     group: "Pages/Create Agent",
-    name: "Initial deployment pending",
+    name: "Initial deployment opens its Agent",
     path: create,
     actions: readyForm,
     provisionedDeploymentStatus: "running",
     description:
-      "Creation stays on the original provisioning request while its first deployment is running.",
+      "Once provisioning creates the Agent and hands off its first deployment, Create Agent opens that version's Deployment tab instead of waiting for the deployment to finish.",
     steps: [
-      "Click Create Agent and confirm provisioning remains in progress.",
-      "Confirm Create Agent stays disabled and the same provisioning handle is polled.",
+      "Click Create Agent. The form shows “Provisioning Agent…”, then opens the new Agent on its Deployment tab.",
+      "Confirm Deployment activity shows the first deployment still in progress, and the provisioning job is no longer polled.",
     ],
   },
   createPending: {
@@ -889,9 +890,9 @@ export const createAgentProvisioningScenarios = {
     },
     provisioningNamesDeploymentWait: true,
     description:
-      "After handoff the provisioning job names its first deployment's wait. Create Agent adds that sentence, the one Deployment activity shows, to the provisioning line.",
+      "The first deployment waits for its runtime. Create Agent opens the Agent at handoff, where Deployment activity names that wait.",
     steps: [
-      "Click Create Agent. The line moves from “Provisioning Agent…” to “Provisioning Agent… Waiting for the runtime to become ready.” and Create Agent stays disabled.",
+      "Click Create Agent. In the Deployment tab, find the runtime wait under Latest visible deployment. Fold Deployment details and confirm the summary still shows the wait.",
     ],
   },
   createDeploymentPodQuotaFull: {
@@ -899,19 +900,6 @@ export const createAgentProvisioningScenarios = {
     name: "Initial deployment waits on a full Pod quota",
     path: create,
     actions: readyForm,
-    // Each rule skips the first read so the quota message appears before the interruption.
-    rules: [
-      { pathIncludes: "/deployments/", skip: 1, hold: true, once: true },
-      {
-        pathIncludes: "/deployments/",
-        skip: 1,
-        status: 503,
-        code: "DEPENDENCY_UNAVAILABLE",
-        message: "A required platform dependency is unavailable.",
-        once: true,
-      },
-      { pathIncludes: "/deployments/", skip: 1, status: 404, code: "NOT_FOUND" },
-    ],
     provisionedDeploymentStatus: "running",
     provisionedDeploymentAttempt: {
       code: "NAMESPACE_POD_QUOTA_EXCEEDED",
@@ -919,10 +907,9 @@ export const createAgentProvisioningScenarios = {
         "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an Installation administrator to raise the quota.",
     },
     description:
-      "The first deployment read explains the full Pod quota. A stalled read and a temporary outage preserve that detail; a later not-found response clears it while provisioning continues.",
+      "The first deployment waits on a full Namespace Pod quota. Create Agent opens the Agent at handoff, where Deployment activity explains the quota and what to do.",
     steps: [
-      "Click Create Agent. Watch the Pod quota message stay in place while the next read stalls and another gets a 503.",
-      "After the deployment read returns 404, the line changes to “Provisioning Agent…”. This does not say the quota cleared or the job stopped.",
+      "Click Create Agent. Read the quota wait and remedy under Latest visible deployment. At phone width, check that they are visible on arrival without scrolling.",
     ],
   },
   createDeploymentImagePullFailed: {
@@ -938,9 +925,9 @@ export const createAgentProvisioningScenarios = {
     },
     provisioningNamesDeploymentWait: true,
     description:
-      "The first deployment waits on a container image the cluster's nodes cannot pull. Create Agent shows that sentence alone in place of the provisioning line, as it does for a full Pod quota.",
+      "The first deployment waits on a container image the cluster's nodes cannot pull. Create Agent opens the Agent at handoff, where Deployment activity shows that sentence.",
     steps: [
-      "Click Create Agent. The line changes from “Provisioning Agent…” to the image pull sentence, which asks an administrator to check the runtime image reference and registry access.",
+      "Click Create Agent. In Latest visible deployment, read the image-pull wait and the advice to check the runtime image reference and registry access.",
     ],
   },
   createDeploymentSuperseded: {
@@ -1507,6 +1494,28 @@ export const createAgentProvisioningScenarios = {
     description:
       "The simulated Installation declares custom-image native worker support. Dedicated OpenClaw displays its experimental status and runtime-build compatibility requirement before deployment.",
     gap: "This simulated form does not verify that a selected OpenClaw runtime image includes native worker-inference support.",
+  },
+  createRepositoryOnlyCredentialProxy: {
+    group: "Pages/Create Agent",
+    name: "Repository-only Credential Proxy",
+    path: create,
+    actions: dedicatedOpenclawForm,
+    openclawExecutionModes: ["dedicated"],
+    repositoryAccessRequired: true,
+    repositoryOptions: [
+      {
+        repositoryRef: "application",
+        displayName: "example/application",
+        allowedProfiles: ["git-write"],
+      },
+    ],
+    description:
+      "The installation supports Dedicated OpenClaw but requires repository access to deploy. Create explains the restriction before it submits a provisioning request.",
+    steps: [
+      "Check the reason beside Create Agent on the model-only form.",
+      "Choose Codex and select example/application under Repository access.",
+      "In Customize access, turn off Create and manage issues to use the repository's approved access level. The requirement clears.",
+    ],
   },
   createRepositoriesSelected: {
     group: "Pages/Create Agent",
@@ -2666,7 +2675,8 @@ export const createAgentOutcomeScenarios = {
       'Before choosing a model, open Advanced settings and add "models": {"providers": {"codex": {"models": {}}}} to Configuration JSON. Close Advanced settings and choose gpt-6-sol. Confirm the list returns to Choose a model and Advanced settings opens with JSON focused and guidance to use an array of model objects with an id or remove the field. The raw JSON stays unchanged.',
       'Replace the inner models value with [{"id":"gpt-6-astra","cost":{"input":1}}], then choose gpt-6-astra. Set models.providers.codex.models to [null] and edit Model ID to gpt-6-sol, then press Tab. Confirm the same guidance appears and the raw JSON stays unchanged. Choose a model from the list must also keep manual entry visible.',
       'Restore models.providers.codex.models to [{"id":"gpt-6-astra","cost":{"input":1}}] and retry Model ID gpt-6-sol, then press Tab. Confirm the guidance clears, the primary becomes codex/gpt-6-sol, and cost.input remains 1. Return to the list and choose gpt-6-luna. Do not create an Agent; reset the story before checking credentials.',
-      "Choose a model before entering a dummy API key. Confirm the selection remains after entering or replacing the key.",
+      "Select gpt-6.1-sol before entering a dummy API key. Confirm gpt-6-sol is also listed and that gpt-6.1-sol stays selected after entering or replacing the key.",
+      "Switch the Harness to OpenClaw with OpenAI selected. Confirm gpt-6.1-sol stays selected.",
       "Change the provider to Anthropic and inspect its model list. The previous provider's model and credential are cleared.",
     ],
   },

@@ -1,5 +1,6 @@
 import type { AuthorityIdentity, ResolvedGrant } from "../../access/backend-contracts.ts";
 import { createHash } from "node:crypto";
+import { createGitHubClientEndpoint } from "./client-endpoint.ts";
 import {
   permissionsForProfile,
   staticTokenCapabilityPolicy,
@@ -42,24 +43,24 @@ export function createGrantResolver({ config, gatewayOrigin }: GrantDependencies
           .digest("hex")}`,
       }),
       client: Object.freeze({
-        gatewayOrigin,
-        gitRemote: `${gatewayOrigin}/${config.repository}.git`,
-        gitUsername: "gateway-session",
-        canonicalApiHost: "github.com",
-        apiHost: new URL(gatewayOrigin).hostname,
+        ...createGitHubClientEndpoint(gatewayOrigin, config.repository),
         repository: config.repository,
         pushRefAllowlist,
       }),
     });
   }
   function forAuthority(authority: AuthorityIdentity) {
-    const profile = (["git-read", "git-write", "git-full"] as const).find((value) =>
-      sameAuthority({ ...resolve(value).binding, sessionId: authority.sessionId }, authority),
-    );
-    if (!profile || !authority.sessionId) {
-      throw new Error("invalid-binding");
+    for (const profile of ["git-read", "git-write", "git-full"] as const) {
+      const grant = resolve(profile);
+      if (!sameAuthority({ ...grant.binding, sessionId: authority.sessionId }, authority)) {
+        continue;
+      }
+      if (authority.sessionId) {
+        return { profile, grant };
+      }
+      break;
     }
-    return { profile, grant: resolve(profile) };
+    throw new Error("invalid-binding");
   }
   return { resolve, forAuthority };
 }

@@ -88,6 +88,7 @@ type LocalScenario = Parameters<typeof createAgentLifecycle>[0] &
     nativeAdminUrl?: string;
     nativeAdminSessionMode?: "host-only-exchange";
     nativeAdminMode?: "admin" | "chat";
+    nativeAdminReason?: "not-enabled" | "configuration" | "compute";
     observabilityUrl?: string;
     observabilityDenied?: boolean;
     readOnlyPermissionSummary?: boolean;
@@ -1353,7 +1354,47 @@ const authoredScenarios = {
     path: revision,
     deployed: true,
     nativeAdmin: "unsupported",
+    nativeAdminReason: "compute",
     description: "The selected runtime does not expose a supported native admin endpoint.",
+  } satisfies LocalScenario,
+  nativeBrowserChatOff: {
+    group: "Components/Native admin",
+    name: "Browser chat off",
+    path: revision,
+    deployed: true,
+    nativeAdmin: "unsupported",
+    nativeAdminReason: "not-enabled",
+    description:
+      "The Agent was created with Enable browser chat unchecked. The panel says browser chat is off and links an editor to the draft Configuration and the browser chat settings (finding 3168). API responses are simulated.",
+    steps: [
+      "Read the panel: it names browser chat, not a version or Compute problem, and does not tell you to ask someone else.",
+      "Confirm Open draft opens the draft Configuration and Browser chat settings opens the setup guide in a new tab.",
+    ],
+    gap: "The fixture does not save or deploy the browser chat settings.",
+  } satisfies LocalScenario,
+  nativeBrowserChatOffReader: {
+    group: "Components/Native admin",
+    name: "Browser chat off, read-only caller",
+    path: revision,
+    deployed: true,
+    nativeAdmin: "unsupported",
+    nativeAdminReason: "not-enabled",
+    agentPermissionSummary: {
+      update: false,
+      deploy: false,
+      operate: true,
+      delete: false,
+      administer: false,
+      configurationRead: true,
+      configurationUpdate: false,
+      configurationSecretsOperate: false,
+      configurationSecretsOperateDeniedBindings: [],
+      agentSourcesOperate: false,
+      sandboxPolicyRead: false,
+      readLogs: false,
+    },
+    description:
+      "An operator who cannot edit the Configuration is told that browser chat is off and to ask someone who can edit the Configuration. No settings link is shown. API responses are simulated.",
   } satisfies LocalScenario,
   nativeDenied: {
     group: "Components/Native admin",

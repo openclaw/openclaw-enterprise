@@ -180,7 +180,7 @@ async function startBroker(
 // Finding 2411: each refused authenticated request logs exactly one record with the code
 // the Agent received (an error envelope's code, or a receipt's error), where it was refused,
 // the operation once known, and the session.
-function refusedOnceBy(b, response, reason, operation) {
+function refusedOnceBy(b, response, reason, operation, upstreamConnect) {
   assert.ok(response.status >= 400, response.text);
   const { error } = JSON.parse(response.text);
   assert.deepEqual(b.logs.splice(0), [
@@ -190,6 +190,7 @@ function refusedOnceBy(b, response, reason, operation) {
       reasonCode: typeof error === "string" ? error : error.code,
       reason,
       ...(operation === undefined ? {} : { operation }),
+      ...(upstreamConnect === undefined ? {} : { upstreamConnect }),
       ...b.identity,
     },
   ]);
@@ -486,16 +487,29 @@ for (const mode of [
     if (mode === "connection failed before any write") {
       // Finding 2429: the GitHub connection fails before TLS, so the broker settles the create
       // as not sent. The Agent gets a recorded 409 and the operator one not_dispatched line;
-      // a same-operation replay returns that receipt and is logged the same way.
+      // a same-operation replay returns that receipt and is logged the same way. Only the
+      // attempt that connected names the failed provider connect (finding 3183), and the
+      // receipt the Agent reads never carries it.
       b.logs.splice(0);
       f.gh.refuseNextConnection();
+      const api = new URL(f.gh.origin);
       for (let i = 0; i < 2; i++) {
         const response = await send();
         assert.equal(response.status, 409);
         const value = JSON.parse(response.text);
         assert.equal(value.operationId, operationId);
         assert.equal(value.error, "not-submitted");
-        refusedOnceBy(b, response, "not_dispatched", "api");
+        assert.equal(value.upstreamConnect, undefined);
+        const connect =
+          i === 0
+            ? {
+                host: api.hostname,
+                addresses: [api.hostname],
+                port: Number(api.port),
+                error: "ECONNRESET",
+              }
+            : undefined;
+        refusedOnceBy(b, response, "not_dispatched", "api", connect);
       }
       assert.equal(observed().length, 0);
       assert.equal(f.gh.pulls.size, 0);

@@ -1,7 +1,5 @@
 #!/usr/bin/env node
 
-import { classify } from "./impact.mjs";
-
 export const fullIntegrationLanes = Object.freeze([
   "qa-matrix",
   "docker-model",
@@ -38,6 +36,9 @@ export function selectLane({ eventName, inputLane, ref, impactMode = "full" }) {
   if (eventName === "push" && ref === "refs/heads/main") {
     return impactMode === "docs" ? "docs" : "all";
   }
+  if (eventName === "schedule" && ref === "refs/heads/main") {
+    return "all";
+  }
   if (eventName === "workflow_dispatch") {
     return inputLane;
   }
@@ -57,6 +58,9 @@ function assertRunContext(env) {
   }
   if (env.GITHUB_EVENT_NAME === "workflow_dispatch" && env.GITHUB_RUN_ATTEMPT !== "1") {
     throw new Error("Manual integration reruns are refused; start a new approved dispatch.");
+  }
+  if (env.GITHUB_EVENT_NAME === "schedule" && env.GITHUB_RUN_ATTEMPT !== "1") {
+    throw new Error("Scheduled integration reruns are refused; start a new approved dispatch.");
   }
 }
 
@@ -189,6 +193,22 @@ export async function validateFullIntegrationPreflight({
     ref: env.GITHUB_REF,
     impactMode,
   });
+  const read = (path) =>
+    github({ repository: env.GITHUB_REPOSITORY, token: env.GITHUB_TOKEN, path });
+  const scheduled = env.GITHUB_EVENT_NAME === "schedule";
+  if (scheduled) {
+    const { decideAdmission } = await import("./full-integration-admission.ts");
+    const { readScheduleHistory } = await import("./full-integration-schedule-history.ts");
+    const now = Date.now();
+    const history = await readScheduleHistory(read, env.GITHUB_SHA, Number(env.GITHUB_RUN_ID), now);
+    const decision = decideAdmission({ ...history, now, eventSha: env.GITHUB_SHA });
+    if (decision.result === "hold") {
+      throw new Error("Full Integration schedule could not verify admission metadata.");
+    }
+    if (decision.result === "skip") {
+      return { selectedLane: "skip", runAll: false, reason: decision.reason };
+    }
+  }
   // Validate selection before any authorization or protected-environment reads.
   const required = requiredEnvironmentsForLane(selected === "docs" ? "all" : selected);
   if (env.GITHUB_EVENT_NAME === "workflow_dispatch") {
@@ -207,18 +227,37 @@ export async function validateFullIntegrationPreflight({
     });
     validateEnvironmentPolicy(environmentName, environment, policies);
   }
+  if (scheduled) {
+    const current = await read("/git/ref/heads/main");
+    if (
+      current?.ref !== "refs/heads/main" ||
+      current.object?.type !== "commit" ||
+      !/^[0-9a-f]{40}$/.test(current.object.sha ?? "")
+    ) {
+      throw new Error("Full Integration schedule could not verify the current main revision.");
+    }
+    if (current.object.sha !== env.GITHUB_SHA) {
+      return { selectedLane: "skip", runAll: false, reason: "stale-event" };
+    }
+  }
   return { selectedLane: selected, runAll: selected === "all" };
 }
 
 async function main() {
-  const result = await validateFullIntegrationPreflight({ impactMode: classify().mode });
-  console.log(
-    process.env.GITHUB_EVENT_NAME === "workflow_dispatch"
-      ? "Full Integration authorized by the dispatcher's required team approval."
-      : "Full Integration authorized by a main push.",
-  );
-  if (result.selectedLane === "docs") {
-    console.log("Verified documentation-only main push: Full Integration lanes are not selected.");
+  const result = await validateFullIntegrationPreflight();
+  if (result.selectedLane === "skip") {
+    const message = `Full Integration schedule skipped: ${result.reason}.`;
+    console.log(
+      process.env.GITHUB_ACTIONS === "true"
+        ? `::notice title=Full Integration schedule::${message}`
+        : message,
+    );
+  } else {
+    console.log(
+      process.env.GITHUB_EVENT_NAME === "workflow_dispatch"
+        ? "Full Integration authorized by the dispatcher's required team approval."
+        : "Full Integration authorized by scheduled admission.",
+    );
   }
   if (process.env.GITHUB_OUTPUT) {
     const { appendFileSync } = await import("node:fs");

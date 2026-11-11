@@ -288,6 +288,7 @@ Full runtime proof still requires a real browser test that loads native assets t
 | Console panel is hidden                             | Feature enablement and exact Agent `operate` or `administer` permission.                                                                                                                                                  |
 | Panel or status API reports `stopped`               | A stopped Agent with no selected version returns only `data.status: "stopped"`, without an origin. Deploy the Agent if native admin access is intended.                                                                   |
 | Panel or status API reports `unavailable`           | No version is serving: there is no selected version yet, or a newer dedicated deployment stopped it and is starting or failed. Check Deployment activity, fix a failure, and redeploy.                                    |
+| Panel says browser chat is off                      | The selected version's Configuration does not turn on the browser UI. Add the settings in [Configure each Agent](#configure-each-agent), then deploy.                                                                     |
 | Panel reports unsupported                           | Check the selected version's [native configuration requirements](../../reference/agent-native-admin.md#requirements) and Compute support for `getGatewayChatEndpoint` in chat mode or `getGatewayEndpoint` in admin mode. |
 | Native tab cannot load                              | Browser wildcard DNS/TLS to API, the selected session mode, host-to-Agent resolution, native `controlUi.allowedOrigins`, and private gateway routing.                                                                     |
 | Browser reports service-worker registration failure | Expected for the pilot. OCC blocks native service-worker script requests and adds `worker-src 'none'` to proxied responses.                                                                                               |
@@ -300,6 +301,9 @@ before changing configuration: password-only sessions last seven days; sessions
 with external sign-in enabled last eight hours. Native Agent activity does not
 refresh them. An Agent revision change closes native WebSockets without expiring
 the OCE login.
+
+If a refreshed tab says **Agent version changed**, choose **Return to console**,
+then open the Agent again. The old session cannot cross a deployment.
 
 If an open Gateway tab offers **Reconnect in browser**, select it. Your sign-in
 may have expired, or your access may have changed. If OCE asks you to sign in,

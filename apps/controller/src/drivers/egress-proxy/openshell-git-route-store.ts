@@ -2,6 +2,7 @@ import {
   openShellGitDeliveryTransport,
   protectedRepositoryGitInstallationSql,
 } from "./openshell-repository-git-evidence.ts";
+import { openShellGitExecutionIdentity } from "./openshell-git-installation.ts";
 import type { AgentRevision } from "@openclaw-enterprise/contracts";
 import {
   repositoryWithdrawalStateSql,
@@ -98,6 +99,8 @@ export interface OpenShellGitRouteStore {
       }
     | undefined
   >;
+  /** Prospective read: additionally require protected installation evidence for preview routes. */
+  restartEvidence?(revision: Readonly<AgentRevision>, signal: AbortSignal): Promise<boolean>;
   /** Reserve a provider write and return its new fence; undefined refuses the write. */
   writing(
     revisionId: string,
@@ -224,14 +227,25 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
     this.pool = pool;
   }
 
-  private async query<T>(work: (c: PostgresClient) => Promise<T>): Promise<T> {
+  private async query<T>(
+    work: (c: PostgresClient) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    signal?.throwIfAborted();
     const c = await this.pool.connect();
     let discard = false;
+    let begun = false;
     try {
+      signal?.throwIfAborted();
+      begun = true;
       await c.query("BEGIN");
+      signal?.throwIfAborted();
       await c.query("SET LOCAL statement_timeout = '4000ms'");
+      signal?.throwIfAborted();
       await c.query("SET LOCAL lock_timeout = '1000ms'");
+      signal?.throwIfAborted();
       const result = await work(c);
+      signal?.throwIfAborted();
       try {
         await c.query("COMMIT");
       } catch (e) {
@@ -240,7 +254,7 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
       }
       return result;
     } catch (error) {
-      if (!discard) {
+      if (!discard && begun) {
         try {
           await c.query("ROLLBACK");
         } catch {
@@ -350,12 +364,33 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
   }
 
   async standing(revision: Readonly<AgentRevision>) {
+    return this.readStanding(revision, false);
+  }
+
+  async restartEvidence(revision: Readonly<AgentRevision>, signal: AbortSignal): Promise<boolean> {
+    const saved = await this.readStanding(revision, true, signal);
+    signal.throwIfAborted();
+    const observed = saved?.route.observed;
+    return (
+      observed !== undefined &&
+      observed.executionId === revision.id &&
+      openShellGitExecutionIdentity(observed).fingerprint === saved?.executionFingerprint
+    );
+  }
+
+  private async readStanding(
+    revision: Readonly<AgentRevision>,
+    requireInstallation: boolean,
+    signal?: AbortSignal,
+  ) {
     const credentials = revision.repositoryCredentials;
     if (!credentials?.standingApprovalId) {
       return;
     }
     return this.query(async (c) => {
+      signal?.throwIfAborted();
       const key = await this.key(c, revision.id, false);
+      signal?.throwIfAborted();
       if (!key) {
         return;
       }
@@ -369,7 +404,7 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
          WHERE (r.revision_id, r.namespace_id, r.agent_id) = ($1, $2, $3)
            AND r.binding_id=$5
            AND v.admitted_spec->'repository_credentials' = $4::jsonb
-           AND (v.admitted_spec #>> '{execution_admission,version}' NOT IN ('4','5') OR EXISTS (
+           AND ((NOT $6::boolean AND v.admitted_spec #>> '{execution_admission,version}' NOT IN ('4','5')) OR EXISTS (
                 SELECT FROM occ.egress_installations p WHERE ${protectedRepositoryGitInstallationSql}
                 AND p.installation->'plan'=v.admitted_spec->'egress_plan'
                 AND p.installation#>'{plan,repositoryGit}'=$4::jsonb))
@@ -387,6 +422,7 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
           revision.agentId,
           JSON.stringify(credentials),
           key.bindingId,
+          requireInstallation,
         ],
       );
       const row = rows[0] as
@@ -404,7 +440,7 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
           workerInstance: row.worker_instance,
         }
       );
-    });
+    }, signal);
   }
 
   private async held(

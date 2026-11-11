@@ -209,3 +209,180 @@ func TestDownKubernetesComposeModePrefersDockerCompose(t *testing.T) {
 		t.Fatalf("unrelated fixture changed: %q, %v", data, err)
 	}
 }
+
+// Without a Compute Driver selection, down follows the recorded state
+// directory: a fresh shell must stop the Kubernetes stack it recorded.
+func TestDownFollowsRecordedStateWithoutComputeSelection(t *testing.T) {
+	for _, mode := range []string{"k3d", ""} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			directory, log, sentinel := downVolumeFixture(t, "docker", mode, "success", false)
+			t.Setenv("DOWN_VOLUME", "")
+			for _, key := range []string{"OCC_DEVELOPMENT_COMPUTE_DRIVER", "OCC_DEVELOPMENT_CONTROL_PLANE", "OCC_DEVELOPMENT_SANDBOX_DRIVER"} {
+				t.Setenv(key, "")
+			}
+			var output bytes.Buffer
+			if err := Down(context.Background(), Options{Repository: filepath.Dir(directory), Out: &output}); err != nil {
+				t.Fatalf("Down: %v", err)
+			}
+			if output.String() != "Stopped Kubernetes development stack occ-dev-recorded.\n" {
+				t.Errorf("unexpected output: %q", output.String())
+			}
+			if _, err := os.Stat(directory); !os.IsNotExist(err) {
+				t.Errorf("state remains: %v", err)
+			}
+			calls, err := os.ReadFile(log)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(calls), "cluster delete occ-dev-recorded") {
+				t.Errorf("recorded cluster not deleted: %s", calls)
+			}
+			if data, err := os.ReadFile(sentinel); err != nil || string(data) != "keep" {
+				t.Fatalf("unrelated fixture changed: %q, %v", data, err)
+			}
+		})
+	}
+}
+
+// Every checkout shares the default state directory, so an unselected down
+// in another checkout must not stop the stack this state records.
+func TestDownRefusesRecordedStateOfAnotherCheckout(t *testing.T) {
+	directory, log, sentinel := downVolumeFixture(t, "docker", "k3d", "success", false)
+	for _, key := range []string{"OCC_DEVELOPMENT_COMPUTE_DRIVER", "OCC_DEVELOPMENT_CONTROL_PLANE", "OCC_DEVELOPMENT_SANDBOX_DRIVER"} {
+		t.Setenv(key, "")
+	}
+	recorded := filepath.Dir(directory)
+	other := t.TempDir()
+	var output bytes.Buffer
+	err := Down(context.Background(), Options{Repository: other, Out: &output})
+	if err == nil {
+		t.Fatal("Down stopped another checkout's stack")
+	}
+	for _, want := range []string{
+		"development state directory " + directory + " records the Kubernetes development stack occ-dev-recorded of checkout " + recorded,
+		"not this checkout " + other,
+		"occ dev down stopped nothing",
+		"run occ dev down from " + recorded,
+		"select OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+	if output.Len() != 0 {
+		t.Errorf("unexpected output: %q", output.String())
+	}
+	if _, err := readState(directory); err != nil {
+		t.Errorf("recorded state changed: %v", err)
+	}
+	if calls, err := os.ReadFile(log); err == nil && len(calls) != 0 {
+		t.Errorf("down ran commands: %s", calls)
+	}
+	if data, err := os.ReadFile(sentinel); err != nil || string(data) != "keep" {
+		t.Fatalf("unrelated fixture changed: %q, %v", data, err)
+	}
+
+	// A symlinked path to the recorded checkout is the same checkout.
+	link := filepath.Join(other, "link")
+	if err := os.Symlink(recorded, link); err != nil {
+		t.Fatal(err)
+	}
+	output.Reset()
+	if err := Down(context.Background(), Options{Repository: link, Out: &output}); err != nil {
+		t.Fatalf("Down through a symlinked checkout: %v", err)
+	}
+	if output.String() != "Stopped Kubernetes development stack occ-dev-recorded.\n" {
+		t.Errorf("unexpected output: %q", output.String())
+	}
+}
+
+// An explicit Kubernetes selection keeps stopping the recorded stack from any
+// checkout.
+func TestDownExplicitKubernetesStopsAnotherCheckoutsStack(t *testing.T) {
+	directory, log, _ := downVolumeFixture(t, "docker", "k3d", "success", false)
+	t.Setenv("OCC_DEVELOPMENT_COMPUTE_DRIVER", "kubernetes")
+	t.Setenv("OCC_DEVELOPMENT_CONTROL_PLANE", "")
+	t.Setenv("OCC_DEVELOPMENT_SANDBOX_DRIVER", "")
+	var output bytes.Buffer
+	if err := Down(context.Background(), Options{Repository: t.TempDir(), Out: &output}); err != nil {
+		t.Fatalf("Down: %v", err)
+	}
+	if output.String() != "Stopped Kubernetes development stack occ-dev-recorded.\n" {
+		t.Errorf("unexpected output: %q", output.String())
+	}
+	if _, err := os.Stat(directory); !os.IsNotExist(err) {
+		t.Errorf("state remains: %v", err)
+	}
+	if calls, err := os.ReadFile(log); err != nil || !strings.Contains(string(calls), "cluster delete occ-dev-recorded") {
+		t.Errorf("recorded cluster not deleted: %s, %v", calls, err)
+	}
+}
+
+// A state directory that exists but cannot be read as development state must
+// stop down with an error naming it, not fall back to the Docker stack.
+func TestDownRefusesUnusableRecordedState(t *testing.T) {
+	for name, damage := range map[string]func(t *testing.T, directory string){
+		"invalid state": func(t *testing.T, directory string) {
+			if err := os.WriteFile(filepath.Join(directory, "state.json"), []byte("{"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"missing marker": func(t *testing.T, directory string) {
+			if err := os.Remove(filepath.Join(directory, ".openclaw-development")); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"shared directory": func(t *testing.T, directory string) {
+			if err := os.Chmod(directory, 0755); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			directory, log, _ := downVolumeFixture(t, "docker", "k3d", "success", false)
+			for _, key := range []string{"OCC_DEVELOPMENT_COMPUTE_DRIVER", "OCC_DEVELOPMENT_CONTROL_PLANE", "OCC_DEVELOPMENT_SANDBOX_DRIVER"} {
+				t.Setenv(key, "")
+			}
+			damage(t, directory)
+			var output bytes.Buffer
+			err := Down(context.Background(), Options{Repository: filepath.Dir(directory), Out: &output})
+			if err == nil || !strings.Contains(err.Error(), "development state directory "+directory+" exists but is not usable") || !strings.Contains(err.Error(), "occ dev down stopped nothing") {
+				t.Fatalf("want an error naming %s, got %v", directory, err)
+			}
+			if output.Len() != 0 {
+				t.Errorf("unexpected output: %q", output.String())
+			}
+			if _, err := os.Stat(directory); err != nil {
+				t.Errorf("state directory changed: %v", err)
+			}
+			if calls, err := os.ReadFile(log); err == nil && len(calls) != 0 {
+				t.Errorf("down ran commands: %s", calls)
+			}
+		})
+	}
+}
+
+func TestRecordedStateDirectory(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	absent := filepath.Join(root, "absent")
+	if path, present, err := recordedStateDirectory(absent); err != nil || present || path != absent {
+		t.Fatalf("absent directory = %q, %v, %v", path, present, err)
+	}
+	if path, present, err := recordedStateDirectory(root + "/"); err != nil || !present || path != root {
+		t.Fatalf("present directory = %q, %v, %v", path, present, err)
+	}
+	if _, _, err := recordedStateDirectory("relative"); err == nil || !strings.Contains(err.Error(), "state directory must be absolute") {
+		t.Fatalf("relative directory error = %v", err)
+	}
+	file := filepath.Join(root, "file")
+	if err := os.WriteFile(file, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	// A path that cannot be inspected is not an absence.
+	if _, present, err := recordedStateDirectory(filepath.Join(file, "state")); err == nil || present || !strings.Contains(err.Error(), filepath.Join(file, "state")) {
+		t.Fatalf("uninspectable directory = %v, %v", present, err)
+	}
+}
