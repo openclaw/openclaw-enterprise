@@ -2808,6 +2808,162 @@ test("run clears inherited selectors and keep flags while preserving explicit la
   assert.equal(result.status, 0, result.stderr);
 });
 
+test("OpenShell selected files retain API-key selection and require the selected credential", async (t) => {
+  const root = await fixture(t);
+  const lane = JSON.parse(
+    await readFile(join(repositoryRoot, "scripts/ci/test-suites/openshell.json"), "utf8"),
+  );
+  const scratch = "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts";
+  const gatewayPolicy = "tests/integration/openshell-gateway-tool-policy-real.test.ts";
+  const sibling = "tests/integration/local-first-agent-openshell-real.test.mjs";
+  const inputs = {
+    ...Object.fromEntries(
+      lane.files
+        .find(({ path }) => path === scratch)
+        .requiredEnv.map((name) => [name, "fixture-input"]),
+    ),
+    OPENAI_API_KEY: "synthetic-model-key",
+    CODEX_ACCESS_TOKEN: "",
+    OCC_TEST_OPENAI_MODEL: "fixture-model",
+    OCC_TEST_OPENSHELL_HARNESS: "codex",
+    OCC_TEST_OPENSHELL_MODEL_BASE_URL: "https://api.openai.com/v1",
+  };
+  // Use the shipped manifest and real runner, replacing only the expensive model/cluster
+  // test body with an input consumer. This proves transport and admission, not inference.
+  await writeFile(
+    join(root, scratch),
+    `import assert from "node:assert/strict";
+import test from "node:test";
+test("receives selected model inputs", () => {
+  assert.equal(process.env.OCC_TEST_OPENAI_MODEL, "fixture-model");
+  assert.equal(process.env.OCC_TEST_OPENSHELL_HARNESS, "codex");
+  if (process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL) {
+    assert.equal(process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL, "https://api.openai.com/v1");
+    assert.equal(process.env.OPENAI_API_KEY, "synthetic-model-key");
+  } else {
+    assert.equal(process.env.CODEX_ACCESS_TOKEN, "synthetic-model-token");
+  }
+});
+`,
+  );
+  await writeFile(
+    join(root, gatewayPolicy),
+    `import assert from "node:assert/strict";
+import test from "node:test";
+test("receives selected model inputs", () => {
+  assert.equal(process.env.OCC_TEST_OPENSHELL_HARNESS, "openclaw");
+  assert.equal(process.env.OPENAI_API_KEY, "synthetic-model-key");
+});
+`,
+  );
+  await writeFile(join(root, sibling), 'throw new Error("unselected sibling ran");\n');
+  for (const [index, value] of [
+    { lane: "openshell" },
+    { lane: "openshell-policy" },
+    {
+      file: gatewayPolicy,
+      env: { OCC_TEST_OPENSHELL_HARNESS: "openclaw", OCC_TEST_OPENSHELL_MODEL_BASE_URL: "" },
+    },
+    { env: { OCC_TEST_OPENSHELL_HARNESS: "openclaw" }, unsupportedHarness: true },
+    { env: { OCC_TEST_OPENSHELL_MODEL_BASE_URL: "", CODEX_ACCESS_TOKEN: "synthetic-model-token" } },
+    { env: { OPENAI_API_KEY: "" }, missing: "OPENAI_API_KEY" },
+    { env: { OCC_TEST_OPENSHELL_MODEL_BASE_URL: "" }, missing: "CODEX_ACCESS_TOKEN" },
+    { env: { OCC_TEST_OPENAI_MODEL: "" }, missing: "OCC_TEST_OPENAI_MODEL" },
+    { env: { OCC_TEST_KUBERNETES_CONTEXT: "" }, missing: "OCC_TEST_KUBERNETES_CONTEXT" },
+    { file: sibling, missing: "CODEX_ACCESS_TOKEN" },
+    { lane: "other", missing: "CODEX_ACCESS_TOKEN" },
+  ].entries()) {
+    const name = value.lane ?? "openshell";
+    await writeJson(join(root, "manifest.json"), {
+      version: 1,
+      lanes: {
+        [name]: {
+          ...lane,
+          files: lane.files
+            .filter(({ path }) => [scratch, sibling, gatewayPolicy].includes(path))
+            .map((file) => ({
+              ...file,
+              expectedTests: ["receives selected model inputs"],
+            })),
+        },
+      },
+      groups: { ci: [name] },
+    });
+    const resultsPath = join(root, `results/selection-${index}.json`);
+    const result = run(
+      root,
+      [
+        ...laneArgs(root, name, `state/selection-${index}.json`, resultsPath),
+        "--file",
+        value.file ?? scratch,
+      ],
+      { ...inputs, ...value.env },
+    );
+    const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+    if (value.unsupportedHarness) {
+      assert.equal(result.status, 1);
+      assert.match(summary.issues[0]?.message ?? "", /requires OCC_TEST_OPENSHELL_HARNESS=codex/);
+      assert.deepEqual(summary.files, []);
+      continue;
+    }
+    assert.equal(result.status, value.missing ? 1 : 0, result.stderr);
+    assert.deepEqual(
+      summary.issues.map(({ code, env }) => ({ code, env })),
+      value.missing ? [{ code: "missing-env", env: value.missing }] : [],
+    );
+    assert.equal(summary.counts.passed, value.missing ? 0 : 1);
+  }
+});
+
+test("full OpenShell lanes ignore inherited focused model selectors and retain explicit harness settings", async (t) => {
+  const root = await fixture(t);
+  const lane = JSON.parse(
+    await readFile(join(repositoryRoot, "scripts/ci/test-suites/openshell.json"), "utf8"),
+  );
+  const path = "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs";
+  const file = lane.files.find((entry) => entry.path === path);
+  const resultsPath = join(root, "results/full.json");
+  // These are the same exports left by a focused API-key run. A later full run
+  // must retain its PAT policy coverage, even if the manifest contains one file.
+  const env = {
+    ...Object.fromEntries(
+      [...lane.requiredEnv, ...file.requiredEnv].map((name) => [name, "fixture-input"]),
+    ),
+    OCC_TEST_OPENSHELL_HARNESS: "openclaw",
+    OCC_TEST_OPENSHELL_MODEL_BASE_URL: "https://api.openai.com/v1",
+  };
+  for (const explicit of [false, true]) {
+    await writeFile(
+      join(root, path),
+      `import assert from "node:assert/strict";
+import test from "node:test";
+test("full lane model inputs", () => {
+  assert.equal(process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL, undefined);
+  assert.equal(process.env.OCC_TEST_OPENSHELL_HARNESS, ${explicit ? '"codex"' : "undefined"});
+  assert.equal(process.env.CODEX_ACCESS_TOKEN, "fixture-input");
+});
+`,
+    );
+    await writeJson(join(root, "manifest.json"), {
+      version: 1,
+      lanes: {
+        openshell: {
+          ...lane,
+          env: { ...lane.env, ...(explicit ? { OCC_TEST_OPENSHELL_HARNESS: "codex" } : {}) },
+          files: [{ ...file, expectedTests: ["full lane model inputs"] }],
+        },
+      },
+      groups: { ci: ["openshell"] },
+    });
+    const result = run(root, laneArgs(root, "openshell", "state/full.json", resultsPath), env);
+    assert.equal(result.status, 0, result.stderr);
+    const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+    assert.equal(summary.scope, "full");
+    assert.equal(summary.counts.passed, 1);
+    assert.deepEqual(summary.issues, []);
+  }
+});
+
 test("QA lane forwards selected models and observer input and retains outcomes at the requested path", async (t) => {
   const root = await fixture(t);
   const lane = JSON.parse(
