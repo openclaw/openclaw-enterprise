@@ -16154,6 +16154,99 @@ test("provider Harness public trust rejects invalid material and composes with e
     assert.deepEqual(roots, [
       { name: "NODE_EXTRA_CA_CERTS", value: "/etc/openclaw-harness-trust/ca-bundle.pem" },
     ]);
+    const selector = "OPENCLAW_CODEX_REMOTE_WORKSPACE_BINDING";
+    assert.equal(
+      pod.containers.some(({ env }) => env?.some(({ name }) => name === selector)),
+      false,
+    );
+    for (const env of [
+      { [selector]: "/tmp/foreign" },
+      { vars: { [selector]: "/etc/openclaw-box-owner" } },
+    ]) {
+      assert.throws(() => driver.validateConfiguration({ env }), /must be set only by Compute/);
+    }
+    const workspaceRoot = "/home/node/workspace";
+    const generationSha256 = "a".repeat(64);
+    const owner = { ...endpoint, workspaceRoot, externalWorkspaceOwner: { generationSha256 } };
+    assert.equal(
+      pod.containers[0].volumeMounts.some(({ mountPath }) =>
+        mountPath.startsWith("/etc/openclaw-box-owner/"),
+      ),
+      false,
+    );
+    await assert.rejects(driver.reconcileHarnessTrust(revision, owner, target), /verifier-only/);
+    const sandbox = { id: "external", harnessTransportCredential: "verifier" };
+    driver.sandboxDriver = sandbox;
+    const ownerRevision = { ...revision, sandboxDriverId: sandbox.id };
+    await driver.reconcileHarnessTrust(ownerRevision, owner, target);
+    assert.equal(writes[1].immutable, true);
+    assert.equal(writes[1].data["ca.pem"], provider.caBundle);
+    assert.deepEqual(JSON.parse(writes[1].data["binding.json"]), {
+      url: endpoint.url,
+      workspaceRoot,
+      generationSha256,
+    });
+    const ownerPod = render(owner).spec.template.spec;
+    assert.deepEqual(
+      ownerPod.containers.flatMap(({ env }) => (env ?? []).filter(({ name }) => name === selector)),
+      [{ name: selector, value: "/etc/openclaw-box-owner" }],
+    );
+    assert.equal(
+      ownerPod.initContainers?.some(({ env }) => env?.some(({ name }) => name === selector)) ??
+        false,
+      false,
+    );
+    assert.deepEqual(
+      ownerPod.containers[0].volumeMounts.filter(({ mountPath }) =>
+        mountPath.startsWith("/etc/openclaw-box-owner/"),
+      ),
+      ["binding.json", "ca.pem"].map((name) => ({
+        name: "harness-trust",
+        mountPath: `/etc/openclaw-box-owner/${name}`,
+        subPath: name,
+        readOnly: true,
+      })),
+    );
+    for (const invalid of [
+      { ...owner, tls: undefined },
+      { ...owner, workspaceRoot: "/home/node/other" },
+      { ...owner, externalWorkspaceOwner: { generationSha256: "wrong-generation" } },
+      { ...owner, codexPermissionProfile: ":danger-full-access" },
+    ]) {
+      const before = writes.length;
+      await assert.rejects(
+        driver.reconcileHarnessTrust(ownerRevision, invalid, target),
+        /requires an ordinary dedicated Codex revision/,
+      );
+      assert.equal(writes.length, before);
+    }
+    // Retain the original revision's actual ConfigMap and exercise Compute's readback,
+    // including loss of the entire TLS projection (which previously skipped reconcile).
+    const pinned = writes[1];
+    driver.apiClients = Promise.resolve({
+      core: {
+        async readNamespacedConfigMap() {
+          return structuredClone(pinned);
+        },
+        async patchNamespacedConfigMap() {
+          assert.fail("a pinned workspace binding must never be replaced");
+        },
+      },
+    });
+    await driver.reconcileHarnessTrust(ownerRevision, owner, target);
+    for (const changed of [
+      { ...owner, externalWorkspaceOwner: { generationSha256: "b".repeat(64) } },
+      { ...owner, url: "wss://other.example.test:8443/" },
+      { ...owner, tls: { caBundle: execution.caBundle } },
+      endpoint,
+      { url: endpoint.url },
+      undefined,
+    ]) {
+      await assert.rejects(
+        driver.reconcileHarnessTrust(ownerRevision, changed, target),
+        /invalid immutable Kubernetes ConfigMap|lost its pinned TLS binding/,
+      );
+    }
     const system = render({ url: endpoint.url }).spec.template.spec;
     assert.equal(
       system.volumes.some(({ name }) => name === "harness-trust"),

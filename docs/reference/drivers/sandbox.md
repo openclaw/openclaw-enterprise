@@ -91,38 +91,40 @@ permit live Agent policy apply. See
 
 ### Sandbox-provided Harness transport
 
-When a provider supplies `harnessEndpoint`, Compute routes the Agent Gateway to
-the provider-owned Harness. For Codex, Compute derives the native hook credential
-directory from `harnessHome`. The Sandbox creates that owner-only directory
-outside the Harness workspace and file-transfer roots. Compute validates the path
-and owns the relay URL and authentication.
+Compute routes the Gateway to `harnessEndpoint`. For Codex, the Sandbox creates
+an owner-only native hook credential directory under `harnessHome`, outside all
+workspace and transfer roots. Compute validates it and owns relay authentication
+and the relay URL.
 
-Compute calls `harnessStatus(context)` with the Agent transport token. The
-Driver returns `serving` only after an authenticated handshake. It returns
-`starting` while startup is pending, or `failed` with evidence of a startup
-failure. Compute validates that evidence before it fails the revision. If the
-provider does not answer, Compute reports a transient dependency failure.
+Compute passes the transport token to `harnessStatus`. Return `starting`,
+`serving` after an authenticated handshake, or `failed` with startup evidence.
+Compute validates failures and treats silence as transient. For Codex it checks
+status during node pairing and requires `serving` before activation. Dedicated
+OpenClaw checks status before enrollment. Afterward, `withdrawHarnessExposure`
+removes that endpoint and confirms removal under Controller identity, including
+for serving or permanently failed revisions.
 
-For Codex, when the Driver supplies a provider endpoint and `harnessStatus`,
-Compute checks status while the workspace node is pending and waits for
-`serving` before it activates the revision.
-For a dedicated OpenClaw worker, Compute checks status only before its node
-enrolls. After enrollment, `withdrawHarnessExposure(context)` removes the
-temporary status endpoint. The method resolves only after a read under the
-controller's identity confirms removal. A missing response does not confirm removal.
-Compute can also call this method for a serving or permanently failed revision.
+When the provider enforces confinement, `codexPermissionProfile` can select
+`:danger-full-access`; otherwise Codex retains its configured policy. For WSS,
+`tls.caBundle` accepts only public PEM CA certificates. Without it the Gateway
+uses system trust. Compute mounts combined `NODE_EXTRA_CA_CERTS` read-only from
+the revision's immutable ConfigMap before rollout and removes it after workload
+termination. Hostname and certificate checks remain enabled.
 
-The endpoint can select `codexPermissionProfile: ":danger-full-access"` when the
-provider supplies the sandbox boundary. Kubernetes Compute projects the selection
-to the Gateway. Without it, the Codex bridge keeps its configured sandbox behavior.
+A provider owning dedicated Harness provisioning and transport can select
+`harnessTransportCredential: "verifier"` for SHA-256 workload authentication.
+For ordinary dedicated Codex, `externalWorkspaceOwner: { generationSha256 }`
+pins the generation, canonical WSS origin, provider CA and `/home/node/workspace`
+in that ConfigMap. Changes require a new revision. This mode excludes protected
+egress, repository credentials and explicit Codex permission profiles. Use it
+only with a Gateway that verifies the provider CA and generation before sending
+native frames on every connection, including reconnects.
 
-The endpoint can supply `tls.caBundle` with public PEM CA certificates for a WSS
-origin. It accepts no private keys, client credentials, or source paths. Without a bundle, the Gateway uses system trust. Kubernetes Compute mounts one combined `NODE_EXTRA_CA_CERTS`
-bundle read-only into the dedicated Agent Gateway. Certificate and hostname
-verification remain enabled. Compute creates the revision's ConfigMap with
-`immutable: true` before Gateway rollout and removes it after the revision
-workloads terminate.
-Changing its certificates requires a new revision.
+Compute sets `OPENCLAW_CODEX_REMOTE_WORKSPACE_BINDING=/etc/openclaw-box-owner`
+on the Gateway and mounts `binding.json` (URL, workspace root, generation) and
+`ca.pem` there read-only. The provider's authenticated WebSocket upgrade must
+return exactly one `x-openclaw-codex-workspace-generation` header matching
+`generationSha256`. Enable this contract only after the pinned Gateway supports it.
 
 `enrollHarness(context, installation, release)` receives a callback from Compute.
 Compute commits and rechecks the verified installation before it signs the startup

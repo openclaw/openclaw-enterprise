@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-11-06
-last_updated_session: authoring-run/7315b76f-e581-43e4-a73a-06f924640ea0
+updated: 2026-11-07
+last_updated_session: authoring-run/f3f07c2c-36eb-416a-8b1d-8f9a961c2459
 ---
 
 # Harness Execution Topology Flow
@@ -125,21 +125,16 @@ only beside its storage label.
 The [upgrade requirements](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations)
 own the operator boundary.
 
-`ensureNamespace` prepares one single-cluster tenant namespace, including adopted
-targets; its storage-role label enables discovery. Two-cluster Gateways retain
-their control-cluster target. Dedicated Gateway and Harness Pods, identities,
-and PVCs remain separate. `deliverGatewaySecrets` validates canonical sources;
-`deliverHarnessAuth` creates selected model/transport projections.
-Transport and Gateway passwords use separate sources across modes. Compute
-retains legacy combined sources for older Pods and copies their password before
-new templates reference the separate source. Concurrent creation adopts only an
-exact-owned, identical password; foreign or conflicting sources fail.
-[Namespaces and isolation](../reference/drivers/kubernetes-compute/networking-and-isolation.md#namespaces-and-isolation)
-owns qualified DNS and exact NetworkPolicy/Service selectors. Harness selectors
-include version and network profile; Gateway selectors omit version for stability.
-`deploy/helm/openclaw-execution/templates/routing.yaml` validates DNS and Envoy peer maps
-before rendering NetworkPolicies. Values must be strings or native null; type
-errors identify the setting.
+On single clusters, `ensureNamespace` prepares the tenant namespace and labels
+adopted storage for discovery. Split-cluster Gateways stay on the control cluster.
+Dedicated Gateways and Harnesses have separate Pods, identities and PVCs.
+`deliverGatewaySecrets` validates canonical sources; `deliverHarnessAuth` projects
+model and transport credentials. Compute copies the legacy password before changing
+templates and retains combined sources for older Pods. Concurrent creators must
+agree on ownership and password. [Network policy selectors](../reference/drivers/kubernetes-compute/networking-and-isolation.md#namespaces-and-isolation)
+include Harness version and network profile but omit Gateway version.
+`deploy/helm/openclaw-execution/templates/routing.yaml` validates DNS and Envoy
+peer maps and names invalid string-or-null settings.
 `runtime.gatewayNodeSelector` places Gateways and private-state initializers.
 `runtime-entrypoints.ts:agentRuntimeReady` and the Docker healthcheck require
 Codex initialization for Compute-owned launches; provider commands remain
@@ -153,6 +148,8 @@ ServiceAccounts. The Harness retains identity, workspace and model credentials.
 OpenShell delivers version-owned setup and Gateway CA files; startup combines
 trust, writes a private one-use target and reconnects with the saved device token.
 Renewal and cleanup preserve exact ownership.
+
+Provider-owned Codex [generation and origin authentication](../reference/drivers/sandbox.md#harness-transport) before native frames awaits the Gateway consumer. Enablement and merge require that consumer, authenticated provider responses, a reviewed image and installed verification.
 
 `internal/occdev/kubernetes.go:writeInstallation` permits Node and pinned Codex model egress. Native workers connect outbound without an app-server endpoint. Compute binds `dedicated-native` with `inference: "worker"`; a missing or disconnected Harness fails without Gateway inference. Exact callbacks and session admission scope transport to the Agent.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:nativeRuntimeConfiguration`
@@ -356,6 +353,8 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-07 03:36: Mark consumer pending. (authoring-run/f3f07c2c-36eb-416a-8b1d-8f9a961c2459 - 84106ae99484dec818f15c896c65fb1b24247071)
 
 - 2026-11-06 01:25: Persist Harness settings. (authoring-run/7315b76f-e581-43e4-a73a-06f924640ea0 - 37144f62101a9e99b066f1abbbf75ede787d26dd)
 

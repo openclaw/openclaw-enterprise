@@ -77,6 +77,22 @@ for the intended protected input directory and prepare or select the YAML as dir
 In the same Bash shell, run the complete [shared checks](production-installation-preparation.md#shared-bootstrap-pvc-and-configuration-checks),
 keep their validated exports, and continue to workspace access.
 
+### Optional Strands Box Worker control socket
+
+For same-cluster execution, set `worker.strandsBoxControlClaimName` to an
+existing filesystem PVC in the release namespace. Set
+`controlPlane.nodeSelector["kubernetes.io/hostname"]` to the original Box
+node. This selector applies across the control plane. The claim mounts only
+in the Worker at `/run/strands-box`. Leave the claim name empty to omit it.
+
+Keep the Worker at zero while the storage operator verifies the bound PVC
+and PV, the PV's node affinity, and exclusive use of the dedicated directory
+by the trusted host service. The read-only mount prevents filesystem writes;
+a process that connects to the Unix socket can still request operations from
+its listener. Keep the directory and socket owner-only. Before admitting work,
+verify the actual Worker mount, socket identity and listening process. Repeat
+those checks after replacement and retire consumers before reusing the volume.
+
 ## Prepare workspace access
 
 Before [workspace access](production-installation-preparation.md#prepare-workspace-access),

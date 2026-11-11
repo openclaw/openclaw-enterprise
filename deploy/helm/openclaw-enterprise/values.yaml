@@ -328,6 +328,9 @@ resources:
 worker:
   # Set to 0 to install the API and run initialization before starting the worker.
   replicaCount: 1
+  # Experimental same-node Strands Box pilot. Name an existing dedicated control directory PVC.
+  # Empty leaves the mount absent. Set controlPlane.nodeSelector[kubernetes.io/hostname].
+  strandsBoxControlClaimName: ""
   # pollIntervalMs and leaseDurationMs are timer delays: at most 2147483647 ms.
   pollIntervalMs: 250
   leaseDurationMs: 5000
