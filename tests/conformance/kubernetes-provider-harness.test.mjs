@@ -22,6 +22,7 @@ import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compu
 import {
   AGENT_RUNTIME_ENTRYPOINT,
   AGENT_WITH_NODE_ENTRYPOINT,
+  AGENT_WITH_NODE_AND_WORKSPACE_SETUP_ENTRYPOINT,
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
@@ -30,6 +31,7 @@ import {
   nodeProgramArguments,
   withoutLineComments,
 } from "../../apps/controller/src/drivers/compute/node-program.ts";
+import { workspaceSetupVerifier } from "../../apps/controller/src/drivers/compute/workspace-setup-runtime.ts";
 import test from "node:test";
 import {
   admitLoggingConfiguration,
@@ -335,6 +337,15 @@ test("provider Harness endpoint writes transport and runtime requirements", asyn
     secretKeyRef: { name: driver.workspaceSetupSecretName(revision.agentId), key: "setup.json" },
   };
   assert.deepEqual(requirements.workspaceSetup, privateSetup);
+  // The real Compute render must carry both the workspace identity check and
+  // the smaller nested child before OpenShell adds its own setup prelude.
+  assert.deepEqual(requirements.command, [
+    ...RUNTIME_WRAPPER_COMMAND,
+    ...nodeProgramArguments(
+      workspaceSetupVerifier(context.workspaceSetup, { environment: "OPENCLAW_WORKSPACE_DIR" }) +
+        AGENT_WITH_NODE_AND_WORKSPACE_SETUP_ENTRYPOINT,
+    ),
+  ]);
   assert.deepEqual(fixture.endpoints.at(-1).requirements.workspaceSetup, privateSetup);
   assert.equal(
     JSON.stringify(fixture.endpoints).includes(context.workspaceSetup.files["USER.md"]),

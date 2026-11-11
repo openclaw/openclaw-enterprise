@@ -33,8 +33,9 @@ import {
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
-  AGENT_WITH_NODE_ENTRYPOINT,
+  AGENT_WITH_NODE_AND_WORKSPACE_SETUP_ENTRYPOINT,
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+  PROTECTED_CODEX_WITH_NODE_AND_WORKSPACE_SETUP_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -42,6 +43,7 @@ import {
   nodeProgramArguments,
   withoutLineComments,
 } from "../../apps/controller/src/drivers/compute/node-program.ts";
+import { workspaceSetupVerifier } from "../../apps/controller/src/drivers/compute/workspace-setup-runtime.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
   assertNoManagedMcpRouteOverlap,
@@ -3326,7 +3328,6 @@ for (const { harnessId, loginMode } of [
       harnessId,
     });
     if (providerPat) {
-      requirements.command = harnessRuntimeCommand(AGENT_WITH_NODE_ENTRYPOINT);
       requirements.loginMode = loginMode;
       revision.harnessAuth = {
         method: "credential_source",
@@ -3340,7 +3341,6 @@ for (const { harnessId, loginMode } of [
         { name: "OCE_CODEX_CREDENTIAL_SOURCE", value: "1" },
       );
     } else if (harnessId === "codex") {
-      requirements.command = harnessRuntimeCommand(PROTECTED_CODEX_WITH_NODE_ENTRYPOINT);
       requirements.loginMode = loginMode;
       requirements.credentialAttachments[0].externalChatgptAuth = {
         accessTokenPlaceholder: `openshell:resolve:env:s${"1".repeat(64)}_CODEX_ACCESS_TOKEN`,
@@ -3349,7 +3349,9 @@ for (const { harnessId, loginMode } of [
       };
     }
     const setup = {
-      id: "initial-workspace",
+      id: providerPat
+        ? "workspace-setup-1f8d6823-aa87-4cba-ae3e-62352e892d12"
+        : "initial-workspace",
       namespaceId: revision.namespaceId,
       agentId: revision.agentId,
       defaultsId: WORKSPACE_DEFAULTS_ID,
@@ -3361,6 +3363,15 @@ for (const { harnessId, loginMode } of [
       defaultsId: setup.defaultsId,
       secretKeyRef: { name: "workspace-setup", key: "setup.json" },
     };
+    if (harnessId === "codex") {
+      // Compute prepends this identity check before the Sandbox adds its wait prelude.
+      const entrypoint = providerPat
+        ? AGENT_WITH_NODE_AND_WORKSPACE_SETUP_ENTRYPOINT
+        : PROTECTED_CODEX_WITH_NODE_AND_WORKSPACE_SETUP_ENTRYPOINT;
+      requirements.command = harnessRuntimeCommand(
+        workspaceSetupVerifier(setup, { environment: "OPENCLAW_WORKSPACE_DIR" }) + entrypoint,
+      );
+    }
     const readNodeSecret = context.kubernetes.read;
     let foreign = false;
     context.kubernetes.read = async (request) =>

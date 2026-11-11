@@ -15,7 +15,7 @@ import { CODEX_PLUGIN_STDIO_HELPER } from "./codex-plugin-stdio.ts";
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
 import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
-import { nodeProgramArguments } from "../node-program.ts";
+import { nodeProgramArguments, type NodeProgramCompression } from "../node-program.ts";
 import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
 import {
   DELIBERATE_RESTART_EXIT_STATUS,
@@ -4842,7 +4842,10 @@ function completeSetupCode(payload) {
 // deadline governs a setup that never arrives. SandboxDriver Harnesses still
 // receive OPENCLAW_NODE_SETUP_CODE in the environment.
 
-function agentWithNodeEntrypoint(entrypoint: string): string {
+function agentWithNodeEntrypoint(
+  entrypoint: string,
+  childCompression: NodeProgramCompression = "deflate",
+): string {
   return String.raw`
 const { chmodSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, rmSync } = require("node:fs");
 const { join } = require("node:path");
@@ -5157,7 +5160,7 @@ const processes = [
   { name: "workspace node", args: nodeArguments, env: nodeEnv },
   {
     name: "Codex",
-    args: ${JSON.stringify(["-e", ...nodeProgramArguments(entrypoint)])},
+    args: ${JSON.stringify(["-e", ...nodeProgramArguments(entrypoint, childCompression)])},
     env: codexEnv,
     prepare: prepareHookDirectory,
   },
@@ -5290,11 +5293,22 @@ for (const slot of [...processes].reverse()) start(slot);
 `;
 }
 
-export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  agentRuntimeEntrypoint(false, false, false),
-);
+const providerCodexChild = agentRuntimeEntrypoint(false, false, false);
+const protectedProviderCodexChild = agentRuntimeEntrypoint(true, false, false);
+export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(providerCodexChild);
 export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  agentRuntimeEntrypoint(true, false, false),
+  protectedProviderCodexChild,
+);
+
+// Encode these static children once for Sandboxes that also carry the workspace
+// verification program. Other Sandbox commands retain their existing encoding.
+export const AGENT_WITH_NODE_AND_WORKSPACE_SETUP_ENTRYPOINT = agentWithNodeEntrypoint(
+  providerCodexChild,
+  "brotli",
+);
+export const PROTECTED_CODEX_WITH_NODE_AND_WORKSPACE_SETUP_ENTRYPOINT = agentWithNodeEntrypoint(
+  protectedProviderCodexChild,
+  "brotli",
 );
 
 export const COMPUTE_AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(

@@ -290,8 +290,10 @@ import {
   COMPUTE_AGENT_WITH_NODE_ENTRYPOINT,
   COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   AGENT_WITH_NODE_ENTRYPOINT,
+  AGENT_WITH_NODE_AND_WORKSPACE_SETUP_ENTRYPOINT,
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+  PROTECTED_CODEX_WITH_NODE_AND_WORKSPACE_SETUP_ENTRYPOINT,
   GATEWAY_STOP_TIMEOUT_MS,
   MANAGED_PLUGIN_ENVIRONMENT,
   MANAGED_CONFIGURATION_DIRECTORY,
@@ -6897,6 +6899,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         repositoryConsumer,
         repositoryMaterial,
       ),
+      workspaceSetup,
     );
     if (repositoryMaterial !== undefined) {
       await this.prepareRevisionStage("repository_material", () =>
@@ -8012,6 +8015,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           repositoryConsumer,
           repositoryMaterial,
         ),
+        workspaceSetup,
       );
       if (
         currentRevisionId !== revision.id ||
@@ -8117,6 +8121,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         repositoryConsumer,
         repositoryMaterial,
       ),
+      workspaceSetup,
     );
     if (repositoryMaterial !== undefined) {
       await this.reconcileRepositoryIngress(
@@ -12532,9 +12537,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: AgentRevision,
     setupFile: boolean,
     workspaceSetup: WorkspaceSetup | undefined,
-    workspaceEntrypoint = this.sandboxDriverForRevision(revision)?.provisionHarness === undefined
-      ? COMPUTE_AGENT_WITH_NODE_ENTRYPOINT
-      : AGENT_WITH_NODE_ENTRYPOINT,
+    workspaceEntrypoint?: string,
   ): void {
     const { container, variables } = this.addNodeEnrollmentState(deployment, name, ca, setupFile);
     const defaults = asRecord(asRecord(revision.configuration.agents)?.defaults);
@@ -12557,6 +12560,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // Independent restarts can orphan descendants of a failed wrapper. Tini
     // reaps them, including when a Sandbox provider runs this below PID 1.
     container.command = [...RUNTIME_WRAPPER_COMMAND];
+    const providerOwned = this.sandboxDriverForRevision(revision)?.provisionHarness !== undefined;
+    const defaultEntrypoint = !providerOwned
+      ? COMPUTE_AGENT_WITH_NODE_ENTRYPOINT
+      : workspaceSetup === undefined
+        ? AGENT_WITH_NODE_ENTRYPOINT
+        : AGENT_WITH_NODE_AND_WORKSPACE_SETUP_ENTRYPOINT;
     // Keep the workspace setup completion guard the plain Harness program runs:
     // container restarts do not rerun the initializing initContainer.
     container.args = nodeProgramArguments(
@@ -12567,7 +12576,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             this.sandboxDriverForRevision(revision)?.provisionHarness === undefined
               ? "/home/node/workspace"
               : { environment: "OPENCLAW_WORKSPACE_DIR" },
-          )) + workspaceEntrypoint,
+          )) + (workspaceEntrypoint ?? defaultEntrypoint),
     );
   }
 
@@ -14921,6 +14930,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   private pluginRuntimeSnapshot(
     revision: AgentRevision,
     repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
+    workspaceSetup?: WorkspaceSetup,
   ): PluginRuntimeSnapshot | undefined {
     const provider = savedModelProvider(revision.harness.configuration);
     let openaiBaseUrl: string | undefined;
@@ -14982,8 +14992,14 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       ? {
           agent: AGENT_RUNTIME_ENTRYPOINT,
           protected: PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
-          workspace: AGENT_WITH_NODE_ENTRYPOINT,
-          protectedWorkspace: PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+          workspace:
+            workspaceSetup === undefined
+              ? AGENT_WITH_NODE_ENTRYPOINT
+              : AGENT_WITH_NODE_AND_WORKSPACE_SETUP_ENTRYPOINT,
+          protectedWorkspace:
+            workspaceSetup === undefined
+              ? PROTECTED_CODEX_WITH_NODE_ENTRYPOINT
+              : PROTECTED_CODEX_WITH_NODE_AND_WORKSPACE_SETUP_ENTRYPOINT,
         }
       : {
           agent: COMPUTE_AGENT_RUNTIME_ENTRYPOINT,
