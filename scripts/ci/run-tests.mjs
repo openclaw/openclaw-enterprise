@@ -53,6 +53,7 @@ function usage() {
     "  node scripts/ci/run-tests.mjs check-selection <lane> --file <manifest-path> [--manifest <file>] [--root <dir>]",
     "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--file <manifest-path> [--test-name <literal>]] [--manifest <file>] [--root <dir>]",
     "  node scripts/ci/run-tests.mjs run <lane> --lifecycle complete --attempt <fresh-directory> [--file <manifest-path> [--test-name <literal>]] [--manifest scripts/ci/test-suites.json] [--root <dir>]",
+    "    Use --test-name=<literal> for names beginning with --.",
     "    Complete mode requires the canonical manifest under --root; normalized relative or absolute paths are accepted, symlink aliases are not.",
     "  node scripts/ci/run-tests.mjs aggregate <group> --results-dir <dir> [--needs <json-file>] [--lanes <json-array>] [--release-selection <file>] [--manifest <file>] [--root <dir>]",
   ].join("\n");
@@ -74,6 +75,10 @@ function parseArgs(argv) {
       throw new Error(
         "--test-name-pattern is unsupported; use --test-name with one literal case name.",
       );
+    }
+    if (token.startsWith("--test-name=")) {
+      options["test-name"] = token.slice("--test-name=".length);
+      continue;
     }
     const key = token.slice(2);
     const value = rest[index + 1];

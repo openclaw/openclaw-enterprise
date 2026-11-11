@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-11
-last_updated_session: authoring-run/50635a3d-c178-492d-877c-8688e35b2615
+last_updated_session: authoring-run/1a3acd94-9a0a-4d58-96dd-d1b9d950ad2f
 ---
 
 # GitHub Actions testing flow
@@ -61,20 +61,20 @@ graph TD
 `scripts/ci/full-integration-preflight.mjs:validateFullIntegrationPreflight`, and
 `scripts/ci/test-suites.mjs:loadTestSuites`
 
-`loadTestSuites` reads `scripts/ci/test-suites.json` and its ordered lane references.
+`loadTestSuites` reads ordered lanes from `scripts/ci/test-suites.json`.
 
 For [complete attempts](../testing/ci/run-lanes.md#run-a-complete-local-attempt),
-`run-tests.mjs:main` rejects noncanonical manifest paths before `runCompleteLifecycle`.
+`run-tests.mjs:main` rejects noncanonical manifests before `runCompleteLifecycle`.
 
-`run-tests.mjs:selectLane` validates focused files and required literal names. `runFile` sends an escaped, anchored pattern to the Node child
-and requires one exact, passing standalone case. Environment and cleanup remain.
-Results retain focus and name on preparation failure;
-`validateLaneEvidence` rejects them for full-lane aggregation.
+`run-tests.mjs:parseArgs` accepts `--test-name=<literal>` for leading `--`; the last selector wins.
+`selectLane` validates focused files and required names. `runFile` sends an escaped, anchored pattern only to the Node child,
+requiring one exact passing standalone case. Environment and cleanup remain.
+Results retain focus and name on preparation failure; `validateLaneEvidence` rejects full-lane aggregation.
 See [named-case limits](../testing/ci/run-lanes.md#run-a-complete-local-attempt).
 
-`CI Impact` selects coverage; `Suite Audit and Static Checks` verifies checkout identity.
+`CI Impact` selects coverage; static checks verify checkout identity.
 [Ordinary CI](../testing/ci/required-checks.md#scenarios) uses the event checkout without external service credentials.
-Workflows select runners. Kubernetes requires NetworkPolicy enforcement in the kernel.
+Workflows select runners. Kubernetes requires kernel NetworkPolicy enforcement.
 
 Pull requests compare the verified merge to its first parent using that parent’s policy.
 The second parent must match the event head. Main pushes use `before` policy for the
@@ -287,6 +287,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 14:56: Document selectors. (authoring-run/1a3acd94-9a0a-4d58-96dd-d1b9d950ad2f - eabd39734b504fd15a5732055aab25833daa4d14)
 
 - 2026-11-11 14:40: Trace literal case selection. (authoring-run/50635a3d-c178-492d-877c-8688e35b2615 - ee419a1969d414d4aa934c59b39b868e8777b127)
 

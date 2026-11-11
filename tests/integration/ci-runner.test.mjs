@@ -1331,6 +1331,8 @@ test(
       "legacy state/result alias",
       "name without file",
       "missing name value",
+      "name followed by option",
+      "empty equals name",
       "unregistered name",
       "empty name",
       "overlong name",
@@ -1357,6 +1359,10 @@ test(
           args = [...args, "--results", fixture.results];
         } else if (scenario === "missing name value") {
           args = [...args, "--file", "tests/integration/lifecycle.test.mjs", "--test-name"];
+        } else if (scenario === "name followed by option") {
+          args = [...args, "--test-name", "--file", "tests/integration/lifecycle.test.mjs"];
+        } else if (scenario === "empty equals name") {
+          args = [...args, "--file", "tests/integration/lifecycle.test.mjs", "--test-name="];
         } else if (scenario === "unregistered name") {
           args = [
             ...args,
@@ -1951,7 +1957,7 @@ test("focused runs retain case enforcement and cleanup but cannot complete a ful
 
   // Regex metacharacters are literal. A 256-byte UTF-8 name is accepted, and
   // the manifest and reported name must both match exactly.
-  for (const name of ["literal [case].* /i", "é".repeat(128)]) {
+  for (const name of ["--dry-run preserves state", "literal [case].* /i", "é".repeat(128)]) {
     await writeSingleLaneManifest(
       root,
       "single",
@@ -1964,13 +1970,27 @@ test("focused runs retain case enforcement and cleanup but cannot complete a ful
       test(${JSON.stringify(name)}, () => {});
       test("unselected required case", () => { throw new Error("unselected case executed"); });\n`,
     );
-    const result = run(root, [...args("single"), "--test-name", name]);
-    assert.equal(result.status, 0, result.stderr);
-    const evidence = JSON.parse(await readFile(join(root, "results/single.json"), "utf8"));
-    assert.deepEqual(
-      evidence.files[0].tests.map(({ name }) => name),
-      [name],
-    );
+    // Both spellings share the CLI's last-value-wins rule. A leading switch-like
+    // name needs the equals form; the throwing sibling proves it stays a literal.
+    const selectors = name.startsWith("--")
+      ? [
+          [`--test-name=${name}`],
+          ["--test-name", "unselected required case", `--test-name=${name}`],
+        ]
+      : [["--test-name=unselected required case", "--test-name", name]];
+    for (const selector of selectors) {
+      const result = run(root, [...args("single"), ...selector]);
+      assert.equal(result.status, 0, result.stderr);
+      const evidence = JSON.parse(await readFile(join(root, "results/single.json"), "utf8"));
+      assert.equal(evidence.scope, "focused");
+      assert.equal(evidence.testName, name);
+      assert.deepEqual(evidence.counts, { passed: 1, failed: 0, skipped: 0, todo: 0, total: 1 });
+      assert.deepEqual(
+        evidence.files[0].tests.map(({ name }) => name),
+        [name],
+      );
+      assert.equal(evidence.files[0].cleanup.status, "passed");
+    }
   }
 
   // Restore the file-only lanes for their unchanged missing-case contract.

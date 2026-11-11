@@ -219,7 +219,10 @@ node scripts/ci/run-tests.mjs run postgres-platform --lifecycle complete \
 
 The value is a nonempty literal name of at most 256 UTF-8 bytes. Missing `--file`,
 names outside that range, `<root>`, and the selected file's absolute path fail
-before preparation. The runner rejects `--test-name-pattern`.
+before preparation. For names beginning with `--`, use
+`--test-name='--dry-run preserves state'`. Both forms select literal names;
+repeated selectors use the last value. A bare `--test-name` still needs a value.
+The runner rejects `--test-name-pattern`.
 
 The name must exactly match one required case in the selected file’s manifest.
 Exactly one standalone top-level case with that name must pass. Missing, extra
