@@ -132,12 +132,14 @@ export async function runTransition(f) {
     };
     await f.assertResultRow(login, versions[target] === 3 ? "present" : "absent");
     sessions.push(login);
-    await f.record(stage, {
-      event: "issued",
-      ordinal: sessions.length,
-      target,
-      remainingMs: login.deadline - (await f.readerUpperMs()),
-    });
+    const remainingMs = login.deadline - (await f.readerUpperMs());
+    const evidence = { event: "issued", ordinal: sessions.length, target, remainingMs };
+    // An already-expired control cannot prove a later live-to-expired transition.
+    if (!Number.isFinite(remainingMs) || remainingMs <= 0) {
+      await f.record(stage, { ...evidence, disposition: "INCONCLUSIVE" });
+      throw new Error("issuance-window-missed");
+    }
+    await f.record(stage, evidence);
     return login;
   }
   async function collect(login, expected, timing) {

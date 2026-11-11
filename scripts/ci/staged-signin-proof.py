@@ -107,6 +107,8 @@ def read_proof(path, previous_version, candidate_version, expected_cluster):
                 raise ValueError('invalid receipt observation')
             observe_remaining(row['ordinal'], remaining)
             if event == 'issued':
+                if remaining <= 0:
+                    raise ValueError('receipt was not live at issuance')
                 issued_count += 1
                 observation = ('issued', row['ordinal'], row.get('target'))
             else:

@@ -172,6 +172,8 @@ one issuer across replacements.
 For two compatible v3 releases, the case checks forward and return replacement
 with live, one-use collection and replay refusal. The job refuses unreviewed
 production inputs, a different migration catalog, and inconclusive expiry windows.
+Every receipt must be observed with positive remaining lifetime at issuance;
+an already-expired control cannot establish a later expiry rejection.
 Historical v2-to-v3 qualification remains unavailable: the old reader references
 are incompatible with the current runtime profile. This v3-to-v3 rehearsal does
 not establish that historical transition.

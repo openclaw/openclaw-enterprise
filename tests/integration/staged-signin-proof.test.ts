@@ -4,7 +4,9 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
+import { runTransition } from "../helpers/signin/transition.mjs";
 
 type Observation = {
   row: string;
@@ -123,6 +125,9 @@ test("sign-in proof reader refuses incomplete or misbound observations without r
     const issue = original.findIndex((row) => row.event === "issued");
     const live = original.findIndex((row) => row.event === "result" && row.timing === "live");
     const expired = original.findIndex((row) => row.event === "result" && row.timing === "expired");
+    const expiryIssue = original.findIndex(
+      (row) => row.event === "issued" && row.ordinal === original[expired]!.ordinal,
+    );
     const handoff = original.findIndex((row) => row.event === "handoff");
     const admission = original.findIndex((row) => row.event === "admission-refusal");
     const fence = original.findIndex((row) => row.decision === "legacy-fence-complete");
@@ -147,6 +152,9 @@ test("sign-in proof reader refuses incomplete or misbound observations without r
       [live, { remainingMs: Infinity }],
       [live, { disposition: "INCONCLUSIVE" }],
       [expired, { remainingMs: 1 }],
+      // A later 401 cannot establish expiry if the control was already dead at issuance.
+      [expiryIssue, { remainingMs: 0 }],
+      [expiryIssue, { remainingMs: -1 }],
     ];
     if (fence !== -1) {
       changes.push(
@@ -216,5 +224,119 @@ test("sign-in proof reader binds a regular file and enforces its own size limit"
     assert.equal(result.status, 1, file);
     assert.equal(result.stdout, "", file);
     assert.equal(result.stderr, "Sign-in proof refused\n", file);
+  }
+});
+
+test("sign-in coordinator refuses a missed issuance window before using the control", async () => {
+  // Script only the external protocol boundary. The real coordinator owns the
+  // clock observation, disposition and stop decision; this is not authentication proof.
+  const directory = mkdtempSync(join(tmpdir(), "signin-issuance-"));
+  const config = JSON.stringify({ subject: "fixture-subject" });
+  writeFileSync(join(directory, "config.json"), config);
+  try {
+    for (const remainingMs of [0, -1, 1]) {
+      const attemptId = "a".repeat(43);
+      const origin = "https://console.signin-rehearsal.test";
+      const authorizationUrl = "https://idp.signin-rehearsal.test/authorize";
+      const deadline = 2_000_000_000_000;
+      const encoded = Buffer.from(
+        JSON.stringify({ a: attemptId, s: "session", p: "provider", v: 3, e: deadline }),
+      ).toString("base64url");
+      const routes: [string, string, Response][] = [
+        ["POST", "/api/auth/sign-in/email", new Response(null, { status: 200 })],
+        ["GET", "/api/auth/accounts/user", Response.json({ data: { version: 1 } })],
+        ["POST", "/api/auth/accounts/user/providers/oidc", new Response(null, { status: 200 })],
+        [
+          "POST",
+          "/api/auth/providers/oidc/start",
+          Response.json({
+            data: { url: authorizationUrl + "?state=" + attemptId, attemptId },
+          }),
+        ],
+        [
+          "GET",
+          "/api/auth/providers/oidc/callback",
+          new Response(null, {
+            status: 302,
+            headers: { "set-cookie": "__Host-occ_login_receipt=" + encoded + ".signature; Secure" },
+          }),
+        ],
+        [
+          "GET",
+          "/api/auth/session",
+          Response.json({
+            data: { authenticated: true, user: { id: "user" }, sessionKey: "fixture-session-key" },
+          }),
+        ],
+      ];
+      const rows: Observation[] = [];
+      let cleaned = false;
+      const settled = async () => {};
+      await assert.rejects(
+        runTransition({
+          origin,
+          authorizationUrl,
+          userId: "user",
+          passwordLogin: {},
+          images: { P: { configDigest: "previous" }, A: { configDigest: "candidate" } },
+          signinPlan: { previous: { version: 3 }, candidate: { version: 3 } },
+          providerDirectory: pathToFileURL(directory + "/"),
+          providerHashes: { "config.json": createHash("sha256").update(config).digest("hex") },
+          canAdmit: (target: string, _images: unknown, skew: unknown) =>
+            ["P", "A"].includes(target) && skew !== null,
+          assertExclusiveDisposable: settled,
+          assertRunningProvider: settled,
+          closeAndProbeRoutes: settled,
+          verifiedSkewMs: async () => 0,
+          assertInitialVirginIssuance: settled,
+          assertOnlyTarget: settled,
+          assertCatalog: settled,
+          openTarget: settled,
+          checkpointState: settled,
+          assertResultRow: settled,
+          readerUpperMs: async () => deadline - remainingMs,
+          consoleFetch: async (url: URL, options: RequestInit) => {
+            const next = routes.shift();
+            assert.ok(next, "control must not be used after the issuance observation");
+            assert.deepEqual([options.method, url.pathname], next.slice(0, 2));
+            return next[2];
+          },
+          providerFetch: async () =>
+            new Response(null, {
+              status: 302,
+              headers: {
+                location:
+                  origin + "/api/auth/providers/oidc/callback?code=fixture&state=" + attemptId,
+              },
+            }),
+          record: async (_stage: string, row: Observation) => {
+            rows.push(row);
+            // Stop the positive boundary case after the accepted observation;
+            // subsequent replacement/collection behavior belongs to the installed test.
+            if (remainingMs > 0 && row.event === "issued") {
+              throw new Error("observation-complete");
+            }
+          },
+          closeAndCleanupOwned: async () => {
+            cleaned = true;
+          },
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof Error && error.cause instanceof Error);
+          assert.equal(
+            error.cause.message,
+            remainingMs > 0 ? "observation-complete" : "issuance-window-missed",
+          );
+          return true;
+        },
+      );
+      assert.equal(cleaned, true);
+      const issued = rows.find((row) => row.event === "issued");
+      assert.equal(issued?.remainingMs, remainingMs);
+      assert.equal(issued?.disposition, remainingMs > 0 ? undefined : "INCONCLUSIVE");
+      assert.equal(routes.length, 0);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });
