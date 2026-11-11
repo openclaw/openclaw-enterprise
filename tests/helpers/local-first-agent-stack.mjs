@@ -9,6 +9,7 @@ import {
   failureInputLimit,
   failureSecrets,
   redactFailureDetail,
+  redactLogLine,
 } from "../../scripts/ci/failure-redaction.mjs";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
@@ -358,12 +359,25 @@ function run(
                   ? signal
                   : "an unknown signal");
       const progress = phase ? "; last stage: " + phase : "";
-      // Bootstrap stdout stays private. Redact the complete bounded stderr before
-      // clipping it for display, so split writes and multiline secrets stay covered.
-      const detail = redactFailureDetail({ message: startupStderr }, startupSecrets, root)?.message;
+      // Keep only complete lines before either redactor changes any text. Dropping
+      // that line and its suffix also withholds orphaned multiline secret values.
+      let safeEnd = startupStderr.length;
+      for (const redacted of [
+        redactLogLine(startupStderr, startupSecrets, failureInputLimit),
+        redactFailureDetail({ message: startupStderr }, startupSecrets, root)?.message ?? "",
+      ]) {
+        let index = 0;
+        while (index < safeEnd && startupStderr[index] === redacted[index]) {
+          index += 1;
+        }
+        if (index < safeEnd) {
+          safeEnd = startupStderr.lastIndexOf("\n", index - 1) + 1;
+        }
+      }
+      const detail = startupStderr.slice(0, safeEnd);
       const diagnostic = detail
         ? "\nStartup stderr (redacted): " +
-          detail.slice(0, 2_000) +
+          detail.slice(0, 2_000).replace(/[\uD800-\uDBFF]$/u, "") +
           (stderrTruncated || detail.length > 2_000 ? " [stderr truncated]" : "")
         : "";
       reject(new Error(label + " " + status + progress + "; raw output withheld." + diagnostic));

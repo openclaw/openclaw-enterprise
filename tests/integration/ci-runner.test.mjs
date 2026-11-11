@@ -7844,7 +7844,30 @@ test("a failed local setup reports only paired outcomes", async (t) => {
 });
 
 test("first-Agent startup preserves bounded redacted stderr and the original failure", async (t) => {
-  for (const scenario of ["short", "large", "success"]) {
+  const actionable =
+    "failed to create network: Pool overlaps with other one on this address space\n";
+  const sensitive =
+    "AUTHORIZATION: Bearer private-header-value\n" +
+    "environment value: invented-fixture-input\n" +
+    "password: {\n  value: 'private-nested-value'\n}\n" +
+    "-----BEGIN PRIVATE KEY-----\nprivate-key-body\n-----END PRIVATE KEY-----\n";
+  const cases = [
+    ["short", actionable + "unterminated actionable detail\n" + sensitive],
+    ["large", actionable + "x".repeat(40_000) + "private-cut-tail"],
+    ["success", actionable + sensitive],
+    ["object", actionable + 'authorization: {\n  value: "opaque-object-canary"\n}\n'],
+    ["yaml", actionable + "password: |\n  opaque-block-canary\n"],
+    [
+      "display boundary",
+      actionable.padEnd(1_950, "x") + '\nauthorization: {\n value: "opaque-object-canary"\n}\n',
+    ],
+    [
+      "capture boundary",
+      actionable.padEnd(16_340, "x") + '\nauthorization: {\n value: "opaque-object-canary"\n}\n',
+    ],
+    ["unicode", actionable.padEnd(1_999, "x") + "😀" + "tail"],
+  ];
+  for (const [scenario, stderr] of cases) {
     await t.test(scenario, async (t) => {
       const root = await fixture(t);
       const resultsPath = join(root, "results/startup-stderr.json");
@@ -7855,14 +7878,10 @@ import { writeSync, writeFileSync } from "node:fs";
 if (process.argv[3] === "down") writeFileSync(new URL("../cleanup.txt", import.meta.url), "done");
 if (process.argv[3] === "up") {
   process.stdout.write("stdout-must-stay-private");
-  writeSync(2, "failed to create network: Pool overlaps with other one on this address space\\n");
-  writeSync(2, "AUTHORIZATION: Bear");
-  writeSync(2, "er private-header-value\\n");
-  writeSync(2, "environment value: invented-fixture-input\\n");
-  writeSync(2, "password: {\\n  value: 'private-nested-value'\\n}\\n");
-  writeSync(2, "-----BEGIN PRIVATE KEY-----\\nprivate-key-body\\n-----END PRIVATE KEY-----\\n");
-  if (${JSON.stringify(scenario)} === "large") writeSync(2, "x".repeat(40_000) + "private-cut-tail");
-  else writeSync(2, "unterminated actionable detail");
+  const stderr = ${JSON.stringify(stderr)};
+  // Independent writes may be coalesced by the pipe; both must be consumed.
+  writeSync(2, stderr.slice(0, 90));
+  writeSync(2, stderr.slice(90));
   process.exitCode = ${scenario === "success" ? 0 : 23};
 }
 `,
@@ -7872,6 +7891,7 @@ if (process.argv[3] === "up") {
         "measure",
         "tests/integration/startup-stderr.test.mjs",
         `
+import { writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import net from "node:net";
 import test from "node:test";
@@ -7886,44 +7906,63 @@ test("startup", async (t) => {
   process.env.OPENAI_API_KEY = "invented-fixture-input";
   delete process.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
   delete process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE;
-  await localFirstAgentStack(t);
+  try {
+    await localFirstAgentStack(t);
+  } catch (error) {
+    // Observe the actual helper rejection before any reporter can redact it.
+    writeFileSync(new URL("../../helper-error.json", import.meta.url), JSON.stringify(error.message));
+    throw error;
+  }
 });
 `,
       );
+      if (scenario === "success") {
+        // TAP keeps passing-test chatter, unlike the canonical runner's summary.
+        const direct = spawnSync(
+          process.execPath,
+          [
+            "--test",
+            "--test-reporter=tap",
+            join(root, "tests/integration/startup-stderr.test.mjs"),
+          ],
+          { encoding: "utf8", env: runnerEnv() },
+        );
+        assert.equal(direct.status, 0, direct.stderr);
+        assert.doesNotMatch(
+          direct.stdout + direct.stderr,
+          /Pool overlaps|private|invented-fixture-input/,
+        );
+      }
       const result = run(
         root,
         laneArgs(root, "measure", "state/startup-stderr.jsonl", resultsPath),
       );
       assert.equal(result.status, scenario === "success" ? 0 : 1, result.stderr);
-      const artifact = JSON.parse(await readFile(resultsPath, "utf8"));
       assert.equal(await readFile(join(root, "cleanup.txt"), "utf8"), "done");
-      assert.doesNotMatch(
-        result.stdout + result.stderr + JSON.stringify(artifact),
-        /stdout-must-stay-private|private-header-value|invented-fixture-input|private-nested-value|private-key-body|private-cut-tail/,
-      );
       if (scenario === "success") {
-        assert.doesNotMatch(JSON.stringify(artifact), /Pool overlaps|unterminated actionable/);
         return;
       }
-      const diagnostics = await readFile(
-        join(root, "state/startup-stderr.jsonl.diagnostics.json"),
-        "utf8",
+      const diagnostics = JSON.parse(
+        await readFile(join(root, "state/startup-stderr.jsonl.diagnostics.json"), "utf8"),
       );
-      assert.match(diagnostics, /Start Local Setup exited with status 23/);
-      assert.match(diagnostics, /Pool overlaps with other one on this address space/);
-      assert.doesNotMatch(
-        diagnostics,
-        /stdout-must-stay-private|private-header-value|invented-fixture-input|private-nested-value|private-key-body|private-cut-tail/,
-      );
-      if (scenario === "short") {
-        assert.match(diagnostics, /unterminated actionable detail/);
-      } else {
-        assert.match(diagnostics, /stderr truncated/);
+      const message = diagnostics.failures[0].tests.find(({ name }) => name === "startup").message;
+      const helperMessage = JSON.parse(await readFile(join(root, "helper-error.json"), "utf8"));
+      for (const text of [message, helperMessage]) {
+        assert.match(text, /Start Local Setup exited with status 23/);
+        assert.match(text, /Pool overlaps with other one on this address space/);
+        assert.doesNotMatch(
+          text,
+          /stdout-must-stay-private|private-header-value|invented-fixture-input|private-nested-value|private-key-body|private-cut-tail|opaque-object-canary|opaque-block-canary/,
+        );
+        assert.ok(text.isWellFormed(), "diagnostic cutoff must preserve Unicode characters");
+        assert.ok(text.length < 2_500, "the individual error must be bounded");
       }
-      assert.ok(
-        diagnostics.length < 10_000,
-        "stderr must not inflate retained diagnostics without bound",
-      );
+      if (scenario === "short") {
+        assert.match(helperMessage, /unterminated actionable detail/);
+      }
+      if (["large", "capture boundary", "unicode"].includes(scenario)) {
+        assert.match(helperMessage, /stderr truncated/);
+      }
     });
   }
 });
