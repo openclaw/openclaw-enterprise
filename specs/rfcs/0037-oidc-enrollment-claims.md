@@ -91,7 +91,11 @@ the existing `oidc-agent-chat` QA scenario, but local qualification lacks a
 prepared Kubernetes/model environment. The host Keycloak port is occupied by
 an unrelated service; the real-IdP matrix used an isolated container network.
 Neither that matrix nor the recording establishes Agent deployment or a model
-response. The PR tracks hosted qualification and attachment links.
+response. The [hosted qualification](https://github.com/openclaw/openclaw-enterprise/actions/runs/43078127870/job/130723402490)
+stopped before the scenario because its Codex sandbox prerequisite failed with
+`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`.
+The [native GitHub recording](https://github.com/openclaw/openclaw-enterprise/pull/5523#issuecomment-6804107540)
+covers real enrollment and returning SSO only.
 
 ## Rationale and alternatives
 
