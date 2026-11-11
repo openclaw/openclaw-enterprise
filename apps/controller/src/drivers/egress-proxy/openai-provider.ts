@@ -143,12 +143,18 @@ function protectedResponse(
   }
 }
 
+/** Exact identity shared with bundled composition's new-use admission policy. */
+export const openAiStaticProviderRef = Object.freeze({
+  id: "openai-static-https",
+  generation: 3,
+});
+
 /** Bounded inference with Harness-local tools and complete finite Responses SSE custody. */
 export function createOpenAiStaticProvider(): CredentialProviderDefinition {
   return Object.freeze<CredentialProviderDefinition>({
     // Generation 3 separates destination authorization from routing. Existing
     // grants must not be reinterpreted under the shared provider contract.
-    ref: { id: "openai-static-https", generation: 3 },
+    ref: openAiStaticProviderRef,
     schemaVersion: 1,
     sourceType: {
       type: "openai",

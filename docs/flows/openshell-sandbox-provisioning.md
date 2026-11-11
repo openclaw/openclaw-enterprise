@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-11
-last_updated_session: authoring-run/04448580-0c4a-4965-8c27-7f586386c885
+last_updated_session: authoring-run/8dc2b49c-caf2-4594-9d69-06d1826b336e
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -98,11 +98,9 @@ graph TD
 `internal/occdev/openshell.go:prepareOpenShell`,
 `internal/occdev/kubernetes.go:writeInstallation`
 
-Both `openshell` launchers require Landlock, support Node and x64/ARM64 Codex
-independently of launcher architecture, verify 0.1.6 charts and pin
-Gateway/supervisor/sandbox images. Importing OCE images first prevents k3s garbage
-collection. `writeInstallation` selects curated Codex plugins; the selected
-Credential Gateway supplies credentials.
+Launchers require Landlock, support Node and x64/ARM64 Codex, verify 0.1.6 charts
+and pin Gateway/supervisor/sandbox images. Importing OCE images first
+prevents garbage collection. `writeInstallation` selects curated Codex plugins.
 
 `internal/occdev/openshell_assets.go:downloadVerified` streams archives;
 `internal/occdev/routing_manifest.go` and CI's
@@ -114,8 +112,11 @@ are terminal. Archive retries remove failed `0600` files, preserving existing fi
 `dev-up` validates Kubernetes/OpenShell before `occ dev up`.
 `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only: in-cluster
 authentication, `oce-system`, imported PostgreSQL and [per-Agent HTTPS](../guides/deploy/local-setup.md).
-The launcher checks port collisions, recording engine, cluster, Namespace, ports
-and key path. Compose runs PostgreSQL/OCC with a k3d worker.
+The launcher records engine, cluster, Namespace, ports and key path.
+
+Before provisioning, `scripts/first-agent.ts:main` and the operator hook
+call `internal/occdev/check.go:Check`. An unavailable controller refuses deployment
+with the same diagnostics.
 
 On rollout failure, `prepareOpenShell` calls
 `internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout`
@@ -433,6 +434,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 16:37: Check the managed controller before local Agent deployment. (authoring-run/8dc2b49c-caf2-4594-9d69-06d1826b336e - 98da01c910)
 
 - 2026-11-11 06:13: Trace attachment refusals. (authoring-run/04448580-0c4a-4965-8c27-7f586386c885 - fef779767c622b30bab45c7a0a94f16fc04f70ab)
 

@@ -40,6 +40,7 @@
     "tests/integration/postgres-transaction-commit.test.mjs",
     "tests/integration/postgres-agent-sandbox-policy.test.mjs",
     "tests/integration/postgres-static-egress.test.mjs",
+    "tests/integration/postgres-static-retired-admission.test.ts",
     "tests/integration/postgres-prepared-token-service.test.ts",
     "tests/integration/postgres-prepared-github-lifecycle.test.mjs",
     "tests/integration/postgres-prepared-repository-git-broker.test.mjs",
@@ -520,6 +521,17 @@
     },
     {
       "path": "tests/integration/postgres-static-egress.test.mjs"
+    },
+    {
+      "path": "tests/integration/postgres-static-retired-admission.test.ts",
+      "expectedTests": [
+        "a fresh retired owner preserves admitted state but refuses re-admission and deploy",
+        "the retired owner recovers the original active revision",
+        "unbound protected source re-admission PATCH",
+        "stored-provider Secret-only PATCH without adoption consent",
+        "deploy with the retained protected source",
+        "missing middleware cannot hide permanent deployment retirement"
+      ]
     },
     {
       "path": "tests/integration/postgres-egress-send-receipts.test.mjs",

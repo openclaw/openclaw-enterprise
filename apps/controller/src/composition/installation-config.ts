@@ -10,6 +10,7 @@ import {
 import { githubRepositoryConfiguration } from "../drivers/repo/github/installation.ts";
 import type { GitHubRepositoryRegistry } from "../drivers/repo/github/access/registry.ts";
 import { createOpenShellCapabilities } from "../drivers/egress-proxy/openshell-registration.ts";
+import { openAiStaticProviderRef } from "../drivers/egress-proxy/openai-provider.ts";
 import type { RepositoryTransportBinding } from "./repository-credentials/contracts.ts";
 import type { OpenShellSandboxDriverSelection } from "../drivers/sandbox/openshell.ts";
 import type { OpenShellSandboxDriverOptions } from "../drivers/sandbox/openshell.ts";
@@ -1499,6 +1500,7 @@ export async function loadInstallationConfiguration(options: {
     const owner = new InstalledDriver(
       {
         ...sandbox,
+        retiredStaticProviderRefs: [openAiStaticProviderRef],
         configuration: {
           sandbox: sandbox.configuration,
           backend: openShellBackend,

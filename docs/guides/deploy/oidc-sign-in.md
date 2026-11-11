@@ -248,8 +248,12 @@ kubectl -n openclaw-system rollout restart deployment/openclaw-enterprise-api
 kubectl -n openclaw-system rollout status deployment/openclaw-enterprise-api --timeout=5m
 ```
 
-Replacing the single API replica interrupts service until it is ready. Ordinary leaf
-renewal under the same CA needs no restart.
+Replacing the single API replica interrupts Console requests and closes open Agent
+connections. After the API is ready, reload the named Agent page. With the same
+authentication settings, a live Console session and an unexpired host-only handle
+can reopen the same Agent revision. If the handle expired or the revision changed,
+open the Agent again from the Console. Ordinary leaf renewal under the same CA
+needs no restart.
 
 ## Find a person's subject
 

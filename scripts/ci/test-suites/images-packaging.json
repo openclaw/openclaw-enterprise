@@ -83,6 +83,7 @@
     {
       "path": "tests/integration/production-kubernetes-packaging.test.mjs",
       "expectedTests": [
+        "OpenShell Envoy cleanup reports rejected deletes and continues remaining cleanup",
         "database CA mounts stay distinct from active production volume mounts",
         "two-cluster packaging separates remote API identities without optional services",
         "production native examples satisfy the current Helm, Installation, and PVC schemas",

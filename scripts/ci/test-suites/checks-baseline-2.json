@@ -38,6 +38,7 @@
     "tests/integration/model-provider.test.ts",
     "tests/integration/repository-credentials-service-loss.test.ts",
     "tests/integration/ci-runner.test.mjs",
+    "tests/integration/ci-runner-redaction.test.ts",
     "tests/integration/k3d-quickstart-diagnostics.test.ts",
     "tests/integration/local-first-agent-session-identity.test.ts",
     "tests/integration/k3d-launcher.test.mjs",
@@ -133,7 +134,8 @@
     "tests/integration/signin-network-probe.test.ts",
     "tests/integration/port-forward-cleanup.test.ts",
     "tests/integration/staged-signin-proof.test.ts",
-    "tests/integration/shared-session-cookie.test.ts"
+    "tests/integration/shared-session-cookie.test.ts",
+    "tests/integration/workspace-gateway-host-route.test.ts"
   ],
   "serialFiles": {
     "tests/conformance/postgres-auth-binding.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read",
@@ -244,6 +246,9 @@
         "complete lifecycle losing an attempt claim cannot run phases or clean its winner",
         "complete lifecycle owns detached test groups after deadline or coordinator loss"
       ]
+    },
+    {
+      "path": "tests/integration/ci-runner-redaction.test.ts"
     },
     {
       "path": "tests/integration/k3d-quickstart-diagnostics.test.ts"
@@ -660,15 +665,21 @@
     {
       "path": "tests/integration/egress-connected-preflight.test.mjs",
       "expectedTests": [
+        "installed checkout evidence requires clean related product and harness commits in every mode",
         "connected response evidence survives cleanup without retaining untrusted fields",
         "connected response evidence preserves uncertainty after decoding and transport failures",
         "connected response headers cannot retain known credentials as request IDs",
         "connected database selection rejects missing, remote and redirected observers before effects",
         "connected receipt observation preserves proto3 zero and uint64 precision",
         "connected failed-turn observation rejects partial text without a completed message",
+        "synthetic provider separates TLS handshakes from partial HTTP bytes",
         "connected adversarial wire carries split and nested-JSON material without raw reflection",
         "connected request bytes pass the real Fastify parser and preserve missing-capability refusals",
-        "failed custody deployment preserves worker event order across a reused attempt budget"
+        "failed custody deployment preserves worker event order across a reused attempt budget",
+        "reconnect checkpoints keep correlation in the private ledger on success and failure",
+        "unexpected retirement creates require new, read-back run ownership before cleanup",
+        "upgrade and retirement quiet windows reject TCP arrivals without HTTP",
+        "controller upgrade checkpoints keep process identity in the private ledger"
       ]
     },
     {
@@ -722,6 +733,13 @@
     },
     {
       "path": "tests/integration/shared-session-cookie.test.ts"
+    },
+    {
+      "path": "tests/integration/workspace-gateway-host-route.test.ts",
+      "expectedTests": [
+        "Linux Gateway routes reuse distinct bound ports and preserve the HTTPS Service target",
+        "Gateway Service mapping failure retains forwarder cleanup and reports shutdown failure"
+      ]
     }
   ]
 }

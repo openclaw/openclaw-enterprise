@@ -35,6 +35,12 @@ import {
 import { googleUpgradeValues, oidcUpgradeValues } from "../helpers/production-sign-in.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
+import { createEnvoyWorkspaceGatewayPlan } from "../helpers/envoy-workspace-gateway.mjs";
+import { selfSigned } from "../helpers/certificates.mjs";
+import { RecordingContext } from "../conformance/kubernetes-teardown-cases.ts";
+import { withBoundedTeardown } from "../helpers/bounded-teardown.ts";
+import { withEnvironment } from "../helpers/environment.ts";
+
 const execute = promisify(execFile);
 
 test("console themes mount only on the API and restart it when the checksum changes", async () => {
@@ -6755,3 +6761,78 @@ test(
     }
   },
 );
+
+test("OpenShell Envoy cleanup reports rejected deletes and continues remaining cleanup", async (t) => {
+  const directory = await temporaryDirectory(t, "envoy-cleanup-");
+  const certificate = await selfSigned(directory);
+  await withEnvironment(
+    {
+      OCC_TEST_GATEWAY_CA_CERT_PATH: certificate.certPath,
+      OCC_TEST_GATEWAY_CA_KEY_PATH: certificate.keyPath,
+    },
+    async () => {
+      for (const refused of ["gatewayclass", "networkpolicy"]) {
+        const attempted = [];
+        const testContext = new RecordingContext();
+        // The plugin fixture registers its aggregate first on the raw context.
+        testContext.after(async () => {
+          attempted.push("fixture aggregate");
+        });
+        // Run the real plan and its Helm rendering. Only cluster I/O is substituted;
+        // the regression concerns the actual registered cleanup's rejected command.
+        await createEnvoyWorkspaceGatewayPlan(
+          testContext,
+          { platformNamespace: "cleanup-fixture" },
+          {
+            applyManifest: async () => {},
+            waitFor: async (_description, read) => {
+              assert.ok(await read());
+            },
+            resource: async (kind) => {
+              if (kind === "secret") {
+                return { data: { "tls.crt": certificate.cert } };
+              }
+              return {
+                status: {
+                  conditions: ["Ready", "Accepted", "Programmed"].map((type) => ({
+                    type,
+                    status: "True",
+                  })),
+                  listeners: [
+                    { name: "https", conditions: [{ type: "Accepted", status: "True" }] },
+                  ],
+                },
+              };
+            },
+            kubectl: async (...args) => {
+              if (args[0] === "get") {
+                return JSON.stringify({ items: [{ spec: { podCIDR: "10.42.0.0/24" } }] });
+              }
+              assert.equal(args[0], "delete");
+              assert.ok(args.includes("--ignore-not-found=true"));
+              if (args[1] === "gatewayclass") {
+                assert.ok(args.includes("--wait=false"));
+              }
+              attempted.push(args[1]);
+              if (args[1] === refused) {
+                throw new Error("fixture delete rejected");
+              }
+              return "";
+            },
+          },
+        );
+        // Another helper receiving this raw context shares the Envoy cleanup group.
+        withBoundedTeardown(testContext).after(() => attempted.push("relay cleanup"));
+        await assert.rejects(async () => {
+          for (const hook of testContext.hooks) {
+            await hook();
+          }
+        }, /fixture delete rejected/);
+        assert.equal(attempted[0], "fixture aggregate");
+        assert.equal(attempted[1], "relay cleanup");
+        assert.ok(attempted.includes("gatewayclass"));
+        assert.ok(attempted.includes("networkpolicy"));
+      }
+    },
+  );
+});
