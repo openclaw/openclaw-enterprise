@@ -6,6 +6,10 @@ import { join } from "node:path";
 import test from "node:test";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 
+import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
+import { routedRevision, tenant } from "../helpers/kubernetes-routed-scenarios.mjs";
+
 const claimVolume = "openclaw-workspace";
 const nodeName = "workspace-node-111111111111-222222222222";
 const nodePath = "/home/node/.openclaw-node";
@@ -18,7 +22,7 @@ const setup = {
   completed: false,
 };
 
-function render(loginMode, node, initialSetup, environment = {}) {
+function render(loginMode, node, initialSetup, environment = {}, scratch) {
   const driver = createTestKubernetesComputeDriver("harness-workspace", { channelRuntime: true });
   const deployment = driver.deployment(
     "test-agent",
@@ -38,6 +42,11 @@ function render(loginMode, node, initialSetup, environment = {}) {
     undefined,
     [],
     initialSetup ? setup : undefined,
+    undefined,
+    undefined,
+    undefined,
+    scratch !== undefined,
+    scratch,
   );
   const revision = { agentId: owner.agentId, configuration: { agents: { defaults: {} } } };
   if (node === "setup-file") {
@@ -229,4 +238,188 @@ test("requirements require node state only when node wiring was selected", async
     );
     assert(!requirements.workspaceMounts.some(({ mountPath }) => mountPath === nodePath));
   });
+});
+
+// The production Compute renderer supplies this exact tuple to the Sandbox Driver.
+// These assertions cover projection; the credentialed k3d workflow proves the mount.
+test("scratch projection keeps the durable workspace and requires its exact admitted writable claim", () => {
+  const scratch = {
+    namespaceId: owner.namespaceId,
+    agentId: owner.agentId,
+    namespace: "test",
+    claimName: "operator-scratch",
+    claimUid: "scratch-uid",
+  };
+  const { driver, deployment, pod } = render("api_key", "native", false, {}, scratch);
+  const mounts = pod.containers[0].volumeMounts;
+  const projected = driver.harnessRequirementsFromDeployment(
+    deployment,
+    "api_key",
+    true,
+    [],
+    [],
+    undefined,
+    scratch,
+  ).workspaceMounts;
+  assert.deepEqual(
+    projected.find(({ mountPath }) => mountPath === "/sandbox/scratch"),
+    {
+      claimName: scratch.claimName,
+      subPath: "scratch",
+      mountPath: "/sandbox/scratch",
+      readOnly: false,
+    },
+  );
+  assert.equal(projected.filter(({ claimName }) => claimName === scratch.claimName).length, 1);
+  assert(
+    projected.some(
+      ({ mountPath, claimName }) =>
+        mountPath === "/home/node/workspace" && claimName !== scratch.claimName,
+    ),
+  );
+  const project = (volumes, candidate, admitted = scratch) =>
+    driver.sandboxWorkspaceMounts(volumes, candidate, true, admitted);
+  const scratchMount = mounts.find(({ mountPath }) => mountPath === "/sandbox/scratch");
+  const scratchVolume = pod.volumes.find(({ name }) => name === scratchMount.name);
+  const refusal = /scratch.*(?:admitted|binding)/i;
+  assert.throws(() => driver.sandboxWorkspaceMounts(pod.volumes, mounts, true), refusal);
+  for (const candidate of [
+    mounts.filter((mount) => mount !== scratchMount),
+    [...mounts, scratchMount],
+    mounts.map((mount) => (mount === scratchMount ? { ...mount, readOnly: true } : mount)),
+    mounts.map((mount) => (mount === scratchMount ? { ...mount, subPath: "workspace" } : mount)),
+    mounts.map((mount) =>
+      mount === scratchMount ? { ...mount, mountPath: "/sandbox/other" } : mount,
+    ),
+  ]) {
+    assert.throws(() => project(pod.volumes, candidate), refusal);
+  }
+  assert.throws(
+    () =>
+      project(
+        pod.volumes.map((volume) =>
+          volume === scratchVolume
+            ? { ...volume, persistentVolumeClaim: { claimName: "foreign" } }
+            : volume,
+        ),
+        mounts,
+      ),
+    refusal,
+  );
+  assert.throws(
+    () =>
+      project(
+        pod.volumes.filter((volume) => volume !== scratchVolume),
+        mounts,
+      ),
+    refusal,
+  );
+});
+
+function scratchCompute(bindings) {
+  const sandbox = new OpenShellSandboxDriver(
+    {
+      gateway: { workspaceMode: "operator" },
+      kubernetes: {
+        runtimeClassName: "openshell-sandbox",
+        userNamespaces: false,
+        serviceAccount: { mode: "gatewayConfigured" },
+        sandboxDataMount: {
+          subPath: "workspace",
+          mountPath: "/sandbox/enterprise",
+          readOnly: false,
+        },
+      },
+      policy: {
+        process: { runAsUser: "1000", runAsGroup: "1000" },
+        networkPolicies: [
+          {
+            name: "model-egress",
+            endpoints: [{ host: "api.openai.com", ports: [443] }],
+            binaries: [{ path: "/usr/local/bin/node" }],
+          },
+        ],
+      },
+    },
+    {
+      id: "scratch-openshell",
+      backend: {
+        id: "openshell",
+        drivers: { sandbox: "scratch-openshell", credential_gateway: "openshell-credentials" },
+        client: new OpenShellGateway({ serviceName: "openshell-gateway" }, {}),
+      },
+    },
+  );
+  return createTestKubernetesComputeDriver("scratch-compute", {
+    gatewayRuntime: true,
+    sandboxDriver: sandbox,
+    scratchVolumes: bindings,
+  });
+}
+
+const operatorBinding = {
+  namespaceId: tenant.id,
+  agentId: "agent-routed",
+  namespace: "tenant-execution",
+  claimName: "operator-scratch",
+  claimUid: "operator-claim-uid",
+};
+
+function scratchRevision(driver) {
+  return routedRevision(driver, { sandboxDriverId: "scratch-openshell" });
+}
+
+test("scratch admission pins exact scope and never inherits a later operator selection", () => {
+  const original = scratchCompute([operatorBinding]);
+  const admitted = scratchRevision(original);
+  const replacement = scratchCompute([
+    { ...operatorBinding, claimName: "replacement", claimUid: "new-uid" },
+  ]);
+  const withoutScratch = scratchRevision(scratchCompute());
+  assert.deepEqual(replacement.scratchAdmission(admitted).binding, operatorBinding);
+  assert.equal(original.scratchAdmission(withoutScratch).binding, undefined);
+  assert.equal(
+    scratchCompute().scratchAdmission(admitted).runtime,
+    original.scratchAdmission(admitted).runtime,
+  );
+  const sibling = routedRevision(original, {
+    agentId: "sibling",
+    sandboxDriverId: "scratch-openshell",
+  });
+  assert.equal(original.scratchAdmission(sibling).binding, undefined);
+  assert.throws(
+    () => original.scratchAdmission({ ...admitted, namespaceId: "foreign" }),
+    /scratch volume admission is invalid/,
+  );
+  assert.throws(
+    () => original.scratchAdmission({ ...admitted, agentId: "foreign" }),
+    /scratch volume admission is invalid/,
+  );
+});
+
+test("scratch configuration rejects shared allocation and malformed identity before admission", () => {
+  for (const bindings of [
+    [operatorBinding, { ...operatorBinding, claimName: "another", claimUid: "another-uid" }],
+    [operatorBinding, { ...operatorBinding, agentId: "another" }],
+    [{ ...operatorBinding, namespace: "wrong/namespace" }],
+    [{ ...operatorBinding, claimUid: "" }],
+    [{ ...operatorBinding, claimName: "workspace-aaaaaaaaaaaa" }],
+  ]) {
+    assert.throws(
+      () => scratchCompute(bindings),
+      (error) => {
+        assert.equal(error.name, "ConfigurationValidationError");
+        assert.ok(
+          error.error.details.some(({ path }) => path.startsWith("/runtime/scratchVolumes")),
+          JSON.stringify(error.error.details),
+        );
+        return true;
+      },
+    );
+  }
+  const driver = createTestKubernetesComputeDriver("scratch-compute", {
+    gatewayRuntime: true,
+    scratchVolumes: [operatorBinding],
+  });
+  assert.throws(() => routedRevision(driver), /dedicated OpenShell Harness/);
 });
