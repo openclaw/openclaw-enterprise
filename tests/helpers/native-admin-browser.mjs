@@ -1548,19 +1548,23 @@ export async function runOidcAgentChatScenario(context) {
     );
   // Real OIDC first login creates both accounts and applies the configured
   // Default user Group. No account creation or attachment API seeds these identities.
+  const readAccount = async (userId) => {
+    const response = await topology.adminRequest("GET", `/api/auth/accounts/${userId}`);
+    assert.equal(response.status, 200, JSON.stringify(response.error));
+    assert.equal(response.data.userId, userId);
+    return response.data;
+  };
   const ownerPage = await signIn("alice");
   const ownerRequest = requestFor(ownerPage);
   const aliceSession = (await ownerRequest("GET", "/api/auth/session")).data;
-  const alice = (await topology.adminRequest("GET", `/api/auth/accounts/${aliceSession.user.id}`))
-    .data;
+  const alice = await readAccount(aliceSession.user.id);
   const firstOperatorPage = await signIn("carol");
   const carolSession = (await requestFor(firstOperatorPage)("GET", "/api/auth/session")).data;
-  const carol = (await topology.adminRequest("GET", `/api/auth/accounts/${carolSession.user.id}`))
-    .data;
+  const carol = await readAccount(carolSession.user.id);
   const returningOwnerPage = await signIn("alice");
   assert.equal(
     (await requestFor(returningOwnerPage)("GET", "/api/auth/session")).data.user.id,
-    alice.id,
+    alice.userId,
   );
   const secretRole = await role("Use selected model", [
     { action: "operate", resourceKind: "secret" },
@@ -1611,7 +1615,7 @@ export async function runOidcAgentChatScenario(context) {
   await bind(carol, operatorRole, "agent", created.data.id);
   const operatorPage = await signIn("carol");
   const operatorRequest = requestFor(operatorPage);
-  assert.equal((await operatorRequest("GET", "/api/auth/session")).data.user.id, carol.id);
+  assert.equal((await operatorRequest("GET", "/api/auth/session")).data.user.id, carol.userId);
   assert.equal(
     (await operatorRequest("GET", `${namespacePath}/agents/${topology.agent.id}`)).status,
     403,
