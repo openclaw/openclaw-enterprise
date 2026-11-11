@@ -84,19 +84,13 @@ runtime authority fails closed instead of granting administration.
 
 The response reports:
 
-| Status        | Meaning                                                                                                         |
-| ------------- | --------------------------------------------------------------------------------------------------------------- |
-| `disabled`    | The Installation has not enabled native admin UI access.                                                        |
-| `stopped`     | The Agent is not in desired running state.                                                                      |
-| `unsupported` | The selected Compute Driver, selected version, or native configuration does not support native admin UI access. |
-| `unavailable` | No version is serving yet: the Agent has no selected version, or a newer version is replacing it.               |
-| `available`   | The caller may open the returned `url` for the selected version.                                                |
-
-An `unsupported` result also carries `reason`: `not-enabled` when the selected
-version's Configuration does not set `gateway.controlUi.enabled` (browser chat was
-not turned on), `configuration` when another native setting refuses access, and
-`compute` when the Compute Driver gives no usable gateway endpoint. The console
-uses `not-enabled` to name the browser chat setting.
+| Status        | Meaning                                                                                                                           |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `disabled`    | The Installation has not enabled native admin UI access.                                                                          |
+| `stopped`     | The Agent is not in desired running state.                                                                                        |
+| `unsupported` | Native admin UI access is unsupported. `reason` is `not-enabled` (no `gateway.controlUi.enabled`), `configuration`, or `compute`. |
+| `unavailable` | No version is serving yet: the Agent has no selected version, or a newer version is replacing it.                                 |
+| `available`   | The caller may open the returned `url` for the selected version.                                                                  |
 
 A stopped Agent without a selected version returns only `status: "stopped"`, including before first deployment and after completed stop reconciliation. Otherwise, stopped results include target fields. A desired-running Agent without a selected version returns `unavailable` in the success envelope. Dependency outages, including IAM, return `503 DEPENDENCY_UNAVAILABLE`. Malformed requests, IAM denials and missing sessions use the protected-route error envelope.
 

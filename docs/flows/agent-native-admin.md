@@ -122,7 +122,7 @@ clears `window.opener`; errors close the pending window. An audited `403` in tab
 until logout, sign-in, or a new tab. `activeRevisionId` or `desiredRuntimeState`
 changes refresh access; concurrent requests coalesce into one follow-up.
 Browsing a historical version does not change the selected destination.
-Stopped/unsupported states offer **Open draft**. For `not-enabled`, the panel says that browser chat is off; a caller who can edit the Configuration also gets a link to the browser chat settings, and only a caller who cannot is told to ask an editor. Unavailable states offer
+Stopped/unsupported states offer **Open draft**. Unavailable states offer
 **View deployment** for readable versions, otherwise **Refresh access**.
 
 OCE owns durable configuration. Runtime notices come from
@@ -151,9 +151,9 @@ admission remains in `apps/controller/src/index.ts`.
 
 `ResourceConflictError` becomes only `status: "stopped"` for an authorized stopped Agent without a selected version, or for an operator whose Agent is stopping. `NoActiveAgentRevisionError` for a running Agent awaiting activation returns `unavailable`. Other dependencies, including IAM/State outages, remain `503` before gateway routing.
 
-With a selected version, OCC derives its native target. An administrator viewing a non-running Agent with a selected version receives `stopped` with host/origin; a newer exclusive replacement returns `unavailable`. Unsupported trusted-proxy auth, machine admin grants/device auto-approval, `controlUi.enabled`, exact `allowedOrigins`, or host-header/device-auth settings return `unsupported` with the target and `reason: "configuration"`, or `reason: "not-enabled"` when `controlUi.enabled` is not `true`.
+With a selected version, OCC derives its native target. An administrator viewing a non-running Agent with a selected version receives `stopped` with host/origin; a newer exclusive replacement returns `unavailable`. Unsupported trusted-proxy auth, machine admin grants/device auto-approval, `controlUi.enabled`, exact `allowedOrigins`, or host-header/device-auth settings return `unsupported` with the target and `reason`.
 
-Compute `id` and `implementation` must match `revision.compute`; changing selection does not migrate versions. A mismatch raises `503 DEPENDENCY_UNAVAILABLE` before endpoint/key/transport. Chat selects `getGatewayChatEndpoint`, administration selects `getGatewayEndpoint`. Missing or unclean private `wss:` endpoints return `unsupported` with `reason: "compute"`; chat never falls back to administration. Only `available` carries `gatewayBase`, omitted from browser responses by `nativeAdminAvailabilityData`.
+Compute `id` and `implementation` must match `revision.compute`; changing selection does not migrate versions. A mismatch raises `503 DEPENDENCY_UNAVAILABLE` before endpoint/key/transport. Chat selects `getGatewayChatEndpoint`, administration selects `getGatewayEndpoint`. Missing or unclean private `wss:` endpoints return `unsupported`; chat never falls back to administration. Only `available` carries `gatewayBase`, omitted from browser responses by `nativeAdminAvailabilityData`.
 
 ### 4. OCC derives the isolated Agent host
 
