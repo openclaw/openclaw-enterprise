@@ -773,6 +773,28 @@ async function ensurePostgresServer(statePath, state) {
   if (!/^[a-f0-9]{64}$/.test(container)) {
     throw new Error("Expected one owned PostgreSQL container for port discovery.");
   }
+  const cluster = state.resources.find(
+    (entry) => entry.kind === "k3d-cluster" && entry.status === "ready",
+  );
+  if (cluster) {
+    // Linux Docker can reassign an automatic host port when a network attaches.
+    // Finish this topology before publishing the port or opening test pools.
+    const networks = JSON.parse(
+      (
+        await execFile(docker, [
+          "inspect",
+          "--format",
+          "{{json .NetworkSettings.Networks}}",
+          `k3d-${cluster.name}-server-0`,
+        ])
+      ).stdout,
+    );
+    const network = Object.keys(networks).find((name) => name.startsWith(`k3d-${cluster.name}`));
+    if (!network) {
+      throw new Error("The owned k3d network is unavailable for PostgreSQL.");
+    }
+    await execFile(docker, ["network", "connect", network, container]);
+  }
   const output = await execFile(docker, [
     "inspect",
     "--format",
@@ -3766,7 +3788,6 @@ async function prepareLane({ lane, statePath, file, cleanupOwner }) {
     case "k3d-otel":
     case "gateway-routing": {
       await commandAvailable(process.env.OCC_HELM_BIN ?? "helm", ["version", "--short"]);
-      await ensurePostgresServer(resolvedStatePath, state);
       const cluster = await prepareK3dModelLane(resolvedStatePath, state, env, {
         buildController: true,
         buildRuntime: true,
@@ -3972,6 +3993,9 @@ async function prepareLane({ lane, statePath, file, cleanupOwner }) {
 
 async function prepareK3dModelLane(statePath, state, env, options) {
   const cluster = await ensureK3dCluster(statePath, state);
+  // Register PostgreSQL after the cluster so cleanup removes its attached
+  // container before k3d removes the network. Test files preserve this attachment.
+  await ensurePostgresServer(statePath, state);
   env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
   env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
   if (cluster.pluginStatusProxyCidrs !== undefined) {

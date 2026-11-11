@@ -1,14 +1,14 @@
 ---
 created: 2026-09-04
-updated: "2026-11-11"
-last_updated_session: "authoring-run/fac6c060-7d04-496a-9194-8dfc3ba080e5"
+updated: "2026-11-11 10:47"
+last_updated_session: "01a1cbd6-deb9-71a1-bebc-ec5228d76c16"
 ---
 
 # GitHub Actions testing flow
 
 ## Overview
 
-[Ordinary CI lanes](../testing/ci/required-checks.md) reject missing or skipped coverage. Docs-only runs execute Suite Audit and Static Checks. Neither proves credentialed integrations.
+[Ordinary CI lanes](../testing/ci/required-checks.md) reject missing or skipped coverage. Docs-only static checks do not prove credentialed integrations.
 
 ## Entry Points
 
@@ -285,6 +285,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 10:47: Fix PostgreSQL topology ordering. (01a1cbd6-deb9-71a1-bebc-ec5228d76c16 - 225ef5203)
 
 - 2026-11-11 16:52: Publish journals atomically. (authoring-run/fac6c060-7d04-496a-9194-8dfc3ba080e5 - 9209a107a78a5850f7f11b68e1763956d65cde3a)
 

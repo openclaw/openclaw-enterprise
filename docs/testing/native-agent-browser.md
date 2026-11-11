@@ -31,6 +31,9 @@ Run cleanup after a preparation or test failure too. Preserve the private state
 file until cleanup completes. Do not run another Keycloak lane on the same host.
 
 The focused wrapper runs the same `oidc-agent-chat` scenario as the QA matrix.
+Lane preparation attaches PostgreSQL to the disposable cluster before it
+discovers and publishes the host port. Test files preserve that attachment;
+lane cleanup removes PostgreSQL before the cluster network.
 Its preparation omits the dedicated Codex sandbox probe because this journey
 deploys only embedded OpenClaw Agents with `RuntimeDefault` seccomp. Preparing
 the full `gateway-routing` lane still requires the Codex probe for its dedicated

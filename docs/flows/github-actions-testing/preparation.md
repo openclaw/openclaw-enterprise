@@ -117,15 +117,16 @@ Missing metadata records `unavailable`; image policy is unchanged.
 Extraction journals IDs before removal. Cleanup removes containers and anonymous volumes. Journal and cleanup errors fail preparation; unresolved resources retain receipts.
 
 `scripts/ci/prepare.mjs:ensurePostgresServer` journals exclusive bootstrap-directory
-and SQL-copy ownership, refusing existing paths and retiring failed directory creation
-records. Its public `migrations/init-local.sql` copy is container-readable, selected by
-`OPENCLAW_CI_POSTGRES_INIT_SQL`; checkout permissions stay unchanged.
+and SQL-copy ownership. It refuses existing paths and retires failed directory
+records. Its container-readable `migrations/init-local.sql` copy is selected by
+`OPENCLAW_CI_POSTGRES_INIT_SQL`.
 
-Docker assigns PostgreSQL's loopback port. Preparation inspects its owned container,
-rejects missing, non-loopback and developer-port `55432` mappings, then saves the port
-before connecting. Failed discovery retains pending `0`; file preparation refuses
-unready servers before journaling databases. Mixed fixture lanes publish PostgreSQL
-before k3d probes its API port; image builds still overlap.
+Docker assigns the loopback port. Preparation rejects missing, non-loopback and
+`55432` mappings before connecting. Failed discovery retains pending `0` and
+prevents database preparation. Mixed fixture lanes start PostgreSQL before k3d.
+Model lanes start k3d first and attach PostgreSQL before port discovery: Docker
+can reassign automatic ports on attachment. Tests retain that attachment;
+reverse-order cleanup removes PostgreSQL first.
 
 `scripts/ci/cleanup.ts:cleanupComposePostgres` validates the directory against state.
 Unconfirmed ownership preserves contents/state. Directory confirmation alone permits
