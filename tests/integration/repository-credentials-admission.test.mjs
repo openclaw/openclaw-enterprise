@@ -962,7 +962,13 @@ test("Deploy freezes public repository selection without exposing provider grant
   const deployed = await f.request("POST", `${path}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed));
   const snapshot = deployed.data.repositoryCredentials;
-  assert.deepEqual(Object.keys(snapshot).sort(), ["bindings", "deadlineWallMs", "driver"]);
+  assert.deepEqual(Object.keys(snapshot).sort(), [
+    "authorityMode",
+    "bindings",
+    "deadlineWallMs",
+    "driver",
+  ]);
+  assert.equal(snapshot.authorityMode, "finite");
   assert.deepEqual(snapshot.bindings, selection);
   assert.equal(snapshot.driver.id, driverId);
   assert.equal(typeof snapshot.driver.implementation, "string");

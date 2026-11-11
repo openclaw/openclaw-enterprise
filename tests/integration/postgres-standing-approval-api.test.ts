@@ -1557,6 +1557,7 @@ test(
         readerRole,
         JSON.stringify([
           { action: "read", resourceKind: "agent" },
+          { action: "read", resourceKind: "agent_revision" },
           { action: "read", resourceKind: "namespace" },
         ]),
       ],
@@ -1575,6 +1576,22 @@ test(
     );
     const readerSession = await signInToControllerApp(app, credentials);
     assert.equal((await request("GET", path, undefined, readerSession)).statusCode, 200);
+    const readerRevision = await request(
+      "GET",
+      path + "/revisions/" + oldRevision.id,
+      undefined,
+      readerSession,
+    );
+    assert.equal(readerRevision.statusCode, 200, readerRevision.body);
+    // Read access exposes the authority admitted for this revision, even after reapproval.
+    const readerSnapshot = readerRevision.json().data.repositoryCredentials;
+    assert.equal(readerSnapshot.authorityMode, "standing");
+    assert.deepEqual(Object.keys(readerSnapshot).sort(), [
+      "authorityMode",
+      "bindings",
+      "deadlineWallMs",
+      "driver",
+    ]);
     for (const suffix of ["/repository-approvals", "/repository-approval-scopes"]) {
       assert.equal(
         (await request("GET", path + suffix, undefined, readerSession)).statusCode,
