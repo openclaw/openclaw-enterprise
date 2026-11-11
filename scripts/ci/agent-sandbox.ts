@@ -35,19 +35,29 @@ export function agentSandboxControllerForNodes(nodes: NodeList) {
   }
   const platform = [...platforms][0];
   const selected = controllerPlatforms[platform as keyof typeof controllerPlatforms];
-  if (!selected) {
+  if (!platform || !selected) {
     throw new Error(`Unsupported Agent Sandbox node platform ${platform}.`);
   }
   return {
     source: `registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2@sha256:${selected.manifest}`,
     config: `sha256:${selected.config}`,
+    nativeSelection: {
+      platform,
+      configDigest: `sha256:${selected.config}`,
+      cacheIndex:
+        "registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2@sha256:dbbad861e6c2cc0df1f7ec37dd0e2827b3d2bc051eb45855e01f94e697440403",
+    },
   };
 }
 
 export async function preloadAgentSandboxController(
   manifestPath: string,
   nodes: NodeList,
-  registerImage: (image: string, description: string) => Promise<string>,
+  registerImage: (
+    image: string,
+    description: string,
+    nativeSelection: { platform: string; configDigest: string; cacheIndex: string },
+  ) => Promise<string>,
 ): Promise<string> {
   // The caller verified this release's checksum; preserve every other manifest byte.
   const manifest = await readFile(manifestPath, "utf8");
@@ -57,9 +67,11 @@ export async function preloadAgentSandboxController(
       "Pinned Agent Sandbox manifest must contain exactly one expected controller image.",
     );
   }
+  const selected = agentSandboxControllerForNodes(nodes);
   const image = await registerImage(
-    agentSandboxControllerForNodes(nodes).source,
+    selected.source,
     "Agent Sandbox controller",
+    selected.nativeSelection,
   );
   const localManifest = join(dirname(manifestPath), "agent-sandbox-local.yaml");
   await writeFile(

@@ -1808,14 +1808,26 @@ test("Agent Sandbox preparation uses the imported image and preserves unrelated 
   ].join("\n");
   await writeFile(manifest, source);
   const imported = `localhost/owned/controller@sha256:${"a".repeat(64)}`;
-  const output = await preloadAgentSandboxController(manifest, controllerNodes(), async (image) => {
-    assert.equal(
-      image,
-      "registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2@sha256:c28ca6f2366160f2470013c4588821cf7ebd21538d62c1016b6afc93583830d6",
-    );
-    await assert.rejects(readFile(join(directory, "agent-sandbox-local.yaml")), { code: "ENOENT" });
-    return imported;
-  });
+  const output = await preloadAgentSandboxController(
+    manifest,
+    controllerNodes(),
+    async (image, _description, nativeSelection) => {
+      assert.equal(
+        image,
+        "registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2@sha256:c28ca6f2366160f2470013c4588821cf7ebd21538d62c1016b6afc93583830d6",
+      );
+      assert.deepEqual(nativeSelection, {
+        platform: "linux/amd64",
+        configDigest: "sha256:5b6c81129dc7491b3d260940e34ff68323fb6f7f21450d42129be5169e52ab17",
+        cacheIndex:
+          "registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2@sha256:dbbad861e6c2cc0df1f7ec37dd0e2827b3d2bc051eb45855e01f94e697440403",
+      });
+      await assert.rejects(readFile(join(directory, "agent-sandbox-local.yaml")), {
+        code: "ENOENT",
+      });
+      return imported;
+    },
+  );
   const prepared = await readFile(output, "utf8");
   const replacement = `        image: ${imported}\n        imagePullPolicy: Never\n`;
   assert.equal(prepared.split(replacement).length, 2);

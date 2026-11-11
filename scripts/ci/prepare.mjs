@@ -2867,7 +2867,131 @@ async function streamImageIntoK3dNodes(cluster, saveArgs) {
   }
 }
 
-async function registerImageInK3d(statePath, state, cluster, image, envName) {
+// Native selection belongs to the importer: the required child may be present
+// only beneath its pinned index in the engine's local content store.
+async function selectNativeSourceImage(image, selection, envName) {
+  const repository = (reference) => {
+    const name = reference.split("@")[0];
+    return name.lastIndexOf(":") > name.lastIndexOf("/")
+      ? name.slice(0, name.lastIndexOf(":"))
+      : name;
+  };
+  assertImmutableImageReference(image, envName);
+  assertImmutableImageReference(selection.cacheIndex, envName);
+  assertDockerImageId(selection.configDigest, envName);
+  if (
+    repository(image) !== repository(selection.cacheIndex) ||
+    !selection.platform.startsWith("linux/")
+  ) {
+    throw new Error(`${envName} has an invalid native image selection.`);
+  }
+  const docker = process.env.OCC_DOCKER_BIN ?? "docker";
+  const inspect = async (reference, platform) => {
+    let result;
+    try {
+      result = await boundedImageCommand([
+        "image",
+        "inspect",
+        ...(platform && basename(docker) !== "podman" ? ["--platform", platform] : []),
+        reference,
+      ]);
+    } catch (error) {
+      if (/No such (?:image|object)|image not known/i.test(error.stderr ?? "")) {
+        return undefined;
+      }
+      throw error;
+    }
+    const values = JSON.parse(result.stdout);
+    if (!Array.isArray(values) || values.length !== 1) {
+      throw new Error(`${envName} has an invalid local image inspection.`);
+    }
+    const inspected = values[0];
+    const id = /^[a-f0-9]{64}$/.test(inspected.Id ?? "") ? `sha256:${inspected.Id}` : inspected.Id;
+    assertDockerImageId(id, envName);
+    return { ...inspected, Id: id };
+  };
+  const usable = async (reference) => {
+    const held = await inspect(reference);
+    if (!held) {
+      return undefined;
+    }
+    const expected = `${repository(reference)}@sha256:${immutableDigest(reference)}`;
+    if (!Array.isArray(held.RepoDigests) || !held.RepoDigests.includes(expected)) {
+      throw new Error(`${envName} does not match its exact repository digest.`);
+    }
+    if (
+      held.Descriptor &&
+      (held.Descriptor.digest !== `sha256:${immutableDigest(reference)}` ||
+        held.Id !== held.Descriptor.digest)
+    ) {
+      throw new Error(`${envName} local descriptor contradicts its acquisition identity.`);
+    }
+    const native = await inspect(reference, selection.platform);
+    if (!native) {
+      return undefined;
+    }
+    if (native.Descriptor) {
+      if (
+        ![
+          "application/vnd.oci.image.manifest.v1+json",
+          "application/vnd.docker.distribution.manifest.v2+json",
+        ].includes(native.Descriptor.mediaType) ||
+        native.Descriptor.digest !== `sha256:${immutableDigest(image)}`
+      ) {
+        throw new Error(`${envName} does not match the selected native manifest.`);
+      }
+      if (basename(docker) !== "podman" && native.Os === "" && native.Architecture === "") {
+        return undefined;
+      }
+    } else if (native.Id !== selection.configDigest) {
+      throw new Error(`${envName} does not match the selected native config.`);
+    }
+    if (`${native.Os}/${native.Architecture}` !== selection.platform) {
+      throw new Error(`${envName} does not match the selected node platform.`);
+    }
+    return { acquisitionReference: reference, hostImageId: held.Id };
+  };
+  for (const reference of [image, selection.cacheIndex]) {
+    const held = await usable(reference);
+    if (held) {
+      return held;
+    }
+  }
+  await pullImage(image, { execFile, docker });
+  const pulled = await usable(image);
+  if (!pulled) {
+    throw new Error(`${envName} pull did not materialize the selected native image.`);
+  }
+  return pulled;
+}
+
+async function assertK3dNativeImage(cluster, reference, selection, envName) {
+  const digest = `sha256:${immutableDigest(reference)}`;
+  for (const node of cluster.nodes) {
+    const { stdout } = await k3dNodeImageCheck(
+      node,
+      ["ctr", "-n", "k8s.io", "content", "get", digest],
+      "containerd",
+    );
+    if (
+      `sha256:${createHash("sha256").update(stdout).digest("hex")}` !== digest ||
+      JSON.parse(stdout).config?.digest !== selection.configDigest
+    ) {
+      throw new Error(
+        `${envName} imported manifest does not match the selected native config on ${node}.`,
+      );
+    }
+    const result = await k3dNodeImageCheck(node, ["crictl", "inspecti", reference], "CRI");
+    const { status } = JSON.parse(result.stdout);
+    if (status?.id !== selection.configDigest || !status?.repoDigests?.includes(reference)) {
+      throw new Error(
+        `${envName} imported CRI image does not match the selected native config on ${node}.`,
+      );
+    }
+  }
+}
+
+async function registerImageInK3d(statePath, state, cluster, image, envName, nativeSelection) {
   const existing = state.resources.find(
     (resource) =>
       resource.kind === "k3d-image" &&
@@ -2876,41 +3000,52 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
       (resource.sourceImage === image || resource.name === image || resource.reference === image),
   );
   if (existing) {
-    if (!existing.hostImageId && existing.sourceImage) {
+    if (!nativeSelection && !existing.hostImageId && existing.sourceImage) {
       existing.hostImageId = await ensureDockerSourceImage(state, existing.sourceImage, envName);
       await writeState(statePath, state);
     }
     assertDockerImageId(existing.hostImageId, envName);
     await assertK3dImageReference(state.lane, cluster, existing.reference, envName);
+    if (nativeSelection) {
+      await assertK3dNativeImage(cluster, existing.reference, nativeSelection, envName);
+    }
     return existing;
   }
 
-  const hostImageId = await ensureDockerSourceImage(state, image, envName);
+  const { acquisitionReference, hostImageId } = nativeSelection
+    ? await selectNativeSourceImage(image, nativeSelection, envName)
+    : {
+        acquisitionReference: image,
+        hostImageId: await ensureDockerSourceImage(state, image, envName),
+      };
   let importReference = image;
   if (!stateOwnsImageTag(state, image)) {
     importReference = localImportTag(cluster, envName);
     const tagResource = addResource(state, "image-tag", { name: importReference });
     await writeState(statePath, state);
-    await boundedImageCommand(["tag", image, importReference]);
+    await boundedImageCommand(["tag", acquisitionReference, importReference]);
     await markResourceReady(statePath, state, tagResource);
   }
 
   const resource = addResource(state, "k3d-image", {
     name: importReference,
     sourceImage: image,
+    ...(nativeSelection ? { acquisitionReference, nativeSelection } : {}),
     hostImageId,
     cluster: cluster.name,
     envName,
   });
   await writeState(statePath, state);
-  const inspected = await boundedImageCommand([
-    "image",
-    "inspect",
-    "--format",
-    "{{.Os}}/{{.Architecture}}",
-    importReference,
-  ]);
-  const platform = inspected.stdout.trim();
+  const inspected = nativeSelection
+    ? undefined
+    : await boundedImageCommand([
+        "image",
+        "inspect",
+        "--format",
+        "{{.Os}}/{{.Architecture}}",
+        importReference,
+      ]);
+  const platform = nativeSelection?.platform ?? inspected.stdout.trim();
   if (!platform.startsWith("linux/")) {
     throw new Error(`${envName} must contain a Linux image.`);
   }
@@ -2978,6 +3113,9 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
     );
   }
   await assertK3dImageReference(state.lane, cluster, runtimeReference, envName);
+  if (nativeSelection) {
+    await assertK3dNativeImage(cluster, runtimeReference, nativeSelection, envName);
+  }
   resource.reference = runtimeReference;
   await markResourceReady(statePath, state, resource);
   return resource;
@@ -3871,10 +4009,15 @@ async function prepareLane({ lane, statePath, file, cleanupOwner }) {
           cluster,
           execFile,
           env: { ...process.env, ...env },
-          registerImage: (image, name) =>
-            registerImageInK3d(resolvedStatePath, state, cluster, image, name).then(
-              (registered) => registered.reference,
-            ),
+          registerImage: (image, name, nativeSelection) =>
+            registerImageInK3d(
+              resolvedStatePath,
+              state,
+              cluster,
+              image,
+              name,
+              nativeSelection,
+            ).then((registered) => registered.reference),
         }),
       );
       const agentSandbox = state.resources.find(

@@ -117,15 +117,14 @@ command exits before starting again.
 
 ## Local Agent Sandbox controller image pull fails
 
-Default startup imports the pinned controller before applying its manifest.
-Check registry access and the import error; changing Pod pull
-policy cannot fix preload failures.
+Default startup preloads the pinned controller. Check registry access and the
+import error; Pod pull policy cannot fix this. Keep state after incomplete cleanup
+and retry `occ dev down`; uncertain/replaced tags retain recovery state.
 
-For explicit manifests, inspect Pod events using the
-[startup kubeconfig](#local-startup-stalls-on-cert-manager).
-`ImagePullBackOff` with `cdn.registry.k8s.io` resets indicates failed node delivery.
-Restore connectivity or use a [verified cache](../deploy/local-openshell-images.md#preload-the-agent-sandbox-controller-from-a-verified-cache).
-Keep image versions, TLS verification and network policies.
+For custom manifests, inspect [Pod events](#local-startup-stalls-on-cert-manager).
+`ImagePullBackOff` with `cdn.registry.k8s.io` resets means node delivery failed.
+Restore connectivity or [preload a verified cache](../deploy/local-openshell-images.md#preload-the-agent-sandbox-controller-from-a-verified-cache).
+Preserve version pins, TLS verification and network policies.
 
 ## Local Codex sandbox check fails
 

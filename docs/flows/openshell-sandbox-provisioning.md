@@ -105,18 +105,20 @@ OCE images first prevents k3s collection.
 `internal/occdev/routing_manifest.go` and
 `scripts/ci/routing.mjs:downloadPinnedArtifact` fetch manifests (maximum 32 MiB).
 Cancelable downloads retry network/HTTP 408/429/5xx errors: eight 60-second
-attempts starting within 120 seconds. Other errors fail. Archive retries remove
-failed `0600` files, preserving existing files.
+attempts starting within 120 seconds. Others fail. Archive retries remove failed
+`0600` files, preserving existing files.
 
-Kubernetes-only uses PostgreSQL in `oce-system`, in-cluster authentication and
-[per-Agent HTTPS](../guides/deploy/local-setup.md). Startup records engine, cluster,
-Namespace, checked ports and key path. Compose runs PostgreSQL/OCC with k3d.
+Kubernetes-only: PostgreSQL in `oce-system`, in-cluster authentication,
+[per-Agent HTTPS](../guides/deploy/local-setup.md). Startup records engine/cluster,
+Namespace, checked ports and key path. Compose: PostgreSQL/OCC with k3d.
 
-`prepareOpenShell`/`scripts/ci/openshell.mjs:installAgentSandbox` import Agent
-Sandbox's pinned child for the node, then apply its digest with
-`imagePullPolicy: Never`. Failure stops startup; explicit manifests remain unchanged.
+`prepareOpenShell`/`scripts/ci/openshell.mjs:installAgentSandbox` use node-selected
+native identity: cached child/index or exact-child pull. Manifest/config/CRI checks
+precede apply (`Never`); custom manifests stay unchanged. Real checks bind Ready Pods.
 
-Real dev-up and CI checks bind Ready Pods to imported references and release configs.
+`internal/occdev/openshell_image.go` persists tag/engine-ID intent before creation.
+Return/rollback/`dev down` reconcile without requiring a cluster, retaining
+uncertain/replaced-tag state.
 
 `internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout`
 reports rollout failures once, preserving rollback errors: Deployment, UID-linked

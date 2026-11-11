@@ -180,10 +180,13 @@ func sameCheckout(recorded, current string) bool {
 
 func (r *runner) cleanup(ctx context.Context, s *developmentState, clusterAttempted bool) error {
 	var failures []error
+	if err := r.reconcileOpenShellImageTag(ctx, s); err != nil {
+		failures = append(failures, err)
+	}
 	// A recorded import attachment must not keep either profile's owned network alive.
 	if clusterAttempted {
 		if err := r.detachRecordedDevelopmentImageRegistry(ctx, s); err != nil {
-			return err
+			return errors.Join(append(failures, err)...)
 		}
 	}
 	if s.DeploymentMode == "k3d" {

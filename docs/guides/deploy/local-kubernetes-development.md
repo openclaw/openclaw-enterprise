@@ -138,8 +138,8 @@ Tenant Workspaces, Sandboxes, and Agent Pods use OCC-owned `oce-*` Namespaces.
 Startup exposes loopback, waits for Namespace/Workspace readiness,
 and privately writes kubeconfig and an administrator key.
 
-Agent Sandbox imports the node's native image from the host cache, pulling there
-if needed, without node pulls. Custom manifests retain image and pull policy.
+Agent Sandbox reuses verified native content from cached children or indexes; cache
+misses pull on the host. Custom manifests retain image/pull policy.
 
 Preload failures report the host import error before controller creation. Rollout
 failures capture controller status, image IDs and Warning reasons when available,
