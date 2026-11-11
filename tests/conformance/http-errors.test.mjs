@@ -5,6 +5,7 @@ import {
   cappedPath,
   RequestFailure,
   requestFailure,
+  unstorableTextFailure,
 } from "../../apps/controller/src/http/errors.ts";
 import {
   ConfigurationOwnershipError,
@@ -1532,6 +1533,32 @@ test("a contract message shows fewer problems rather than cut a path below 32 ch
   assert.equal(failure.details.length, 4);
 });
 
+test("unstorable text keeps document order, key precedence, and capped pointers", () => {
+  const cases = [
+    [{ first: [{ "a/~": "\ud800" }], later: "\u0000" }, "/first/0/a~1~0", "INVALID_VALUE"],
+    [{ "a/\u0000~": "\ud800" }, "/a~1?~0", "INVALID_FORMAT"],
+    [{ "a/\ud800~": "\u0000" }, "/a~1?~0", "INVALID_VALUE"],
+    [{ ["a".repeat(600)]: "\u0000" }, "/" + "a".repeat(511), "INVALID_FORMAT"],
+  ];
+  for (const [value, path, code] of cases) {
+    const refused = unstorableTextFailure("body", value);
+    assert.equal(refused.status, 400);
+    assert.equal(refused.code, "INVALID_REQUEST");
+    assert.deepEqual(refused.details, [{ path, code }]);
+    assert.ok(refused.message.length <= 256);
+  }
+  assert.equal(unstorableTextFailure("body", { valid: "paired \ud83d\ude00" }), undefined);
+
+  // The helper also owns path-parameter text and remains iterative for already-parsed input.
+  let nested = "\u0000";
+  for (let depth = 0; depth < 10000; depth += 1) {
+    nested = [nested];
+  }
+  assert.deepEqual(unstorableTextFailure("params", nested).details, [
+    { path: "/0".repeat(256), code: "INVALID_FORMAT" },
+  ]);
+});
+
 // Finding 2534: for every grant a platform operation checks, the caller's own denial names it with
 // one prefix, fits the wire cap, names an ID only when the request carried it, and reads the same
 // for a Restriction as for a missing grant.
@@ -1763,6 +1790,63 @@ test("only path parameters and reference fields count as IDs a request sent", ()
     requestedValues({ params: { configurationId: `cfg_${agentUuid}` } })(`sbp_${agentUuid}`),
     false,
   );
+});
+
+test("denial ID discovery charges primitive and reference-list entries to its budget", () => {
+  // Plain JSON primitives must spend the walk budget just as nested records do. A late
+  // reference must stay unnamed even when it is the resource an authorization denial checked.
+  const bodies = [
+    { padding: Array(4097).fill(0), configurationId: "cfg_late" },
+    {
+      ...Object.fromEntries(Array.from({ length: 4097 }, (_, index) => [String(index), 0])),
+      configurationId: "cfg_late",
+    },
+    {
+      ...Object.fromEntries(
+        Array.from({ length: 17 }, (_, index) => [`group${index}Ids`, Array(256).fill("sec_list")]),
+      ),
+      configurationId: "cfg_late",
+    },
+  ];
+  for (const body of bodies) {
+    const sent = requestedValues({
+      params: { namespaceId: "ns_path", agentId: "agt_path" },
+      query: { configurationId: "cfg_early", q: "cfg_free" },
+      body: JSON.parse(JSON.stringify(body)),
+    });
+    for (const id of ["ns_path", "agt_path", "sbp_path", "cfg_early"]) {
+      assert.equal(sent(id), true, id);
+    }
+    assert.equal(sent("cfg_free"), false, "free text is not a reference");
+    assert.equal(
+      sent("cfg_late"),
+      false,
+      "a reference after the entry budget must not be nameable",
+    );
+    const denied = requestFailure(
+      new AuthorizationDeniedError(
+        "",
+        undefined,
+        {
+          action: "read",
+          resource: { kind: "configuration", id: "cfg_late", namespaceId: "ns_path" },
+        },
+        "prn_caller",
+      ),
+      { requested: sent, actorId: "prn_caller" },
+    );
+    assert.equal(
+      denied.message,
+      callerDenied("Configuration read", "a Configuration this request uses"),
+    );
+  }
+
+  // The list's ordinary first 256 string references still count; later direct strings do not.
+  const listed = requestedValues({
+    body: { secretIds: [...Array(256).fill("sec_list"), "sec_after_list_cap"] },
+  });
+  assert.equal(listed("sec_list"), true);
+  assert.equal(listed("sec_after_list_cap"), false);
 });
 
 // The console shows the API's named denial where the view has no grant or refusal of its own,
