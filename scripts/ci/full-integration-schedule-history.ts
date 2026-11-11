@@ -42,9 +42,35 @@ type History = {
   lastExercisedSha: string | null;
 };
 
+type HistoryOperation =
+  | "main-ref"
+  | "event-context"
+  | "admission-markers"
+  | "push-history"
+  | "manual-history"
+  | "coverage-markers";
+
+type FailureKind = "request-failed" | "invalid-metadata";
+
+class HistoryError extends Error {
+  readonly kind: FailureKind;
+
+  constructor(kind: FailureKind) {
+    super(kind);
+    this.kind = kind;
+  }
+}
+
+type UnknownHistory = {
+  previousFull: { status: "unknown" };
+  mainSha: null;
+  lastExercisedSha: null;
+  failure?: { operation: HistoryOperation; kind: FailureKind };
+};
+
 function requireValid(value: unknown): asserts value {
   if (!value) {
-    throw new Error("Uncertain Full Integration metadata");
+    throw new HistoryError("invalid-metadata");
   }
 }
 
@@ -426,39 +452,48 @@ export async function readScheduleHistory(
   eventSha: string,
   currentRunId: number,
   now: number,
-): Promise<
-  History | { previousFull: { status: "unknown" }; mainSha: null; lastExercisedSha: null }
-> {
+): Promise<History | UnknownHistory> {
+  let operation: HistoryOperation = "main-ref";
+  async function request(path: string) {
+    try {
+      return await read(path);
+    } catch {
+      throw new HistoryError("request-failed");
+    }
+  }
   async function readMain() {
-    const ref = record(await read("/git/ref/heads/main"));
+    const ref = record(await request("/git/ref/heads/main"));
     requireValid(ref.ref === main && record(ref.object).type === "commit");
     return sha(record(ref.object).sha);
   }
   const attemptReads = new Map<string, Promise<unknown>>();
   const readHistory: ReadGithub = (path) => {
     if (!path.startsWith("/actions/runs/")) {
-      return read(path);
+      return request(path);
     }
     const existing = attemptReads.get(path);
     if (existing) {
       return existing;
     }
-    const pending = read(path);
+    const pending = request(path);
     attemptReads.set(path, pending);
     return pending;
   };
   try {
     const firstMain = await readMain();
+    operation = "event-context";
     requireValid(
       sha(eventSha) === eventSha && id(currentRunId) === currentRunId && Number.isSafeInteger(now),
     );
     if (firstMain !== eventSha) {
       return { previousFull: { status: "none" }, mainSha: firstMain, lastExercisedSha: null };
     }
+    operation = "admission-markers";
     const markedManualRuns = new Set<number>();
     const marked = await readPrevious(readHistory, currentRunId, markedManualRuns);
     // Receipt-only deployment was best effort. An older marker cannot hide a
     // more recent legacy push that executed with no admission marker.
+    operation = "push-history";
     const legacy =
       marked.status === "active"
         ? ({ status: "none" } as const)
@@ -466,18 +501,29 @@ export async function readScheduleHistory(
     const observed = combineClocks(marked, legacy);
     // Approved manual full runs keep their existing approval path. Their
     // best-effort marker can be absent even when the full-only jobs ran.
+    operation = "manual-history";
     const manual =
       observed.status === "active"
         ? ({ status: "none" } as const)
         : await readUnmarkedClock(readHistory, "workflow_dispatch", now, markedManualRuns);
     const previousFull = combineClocks(observed, manual);
+    operation = "coverage-markers";
     const lastExercisedSha =
       previousFull.status === "active"
         ? null
         : await readCovered(readHistory, firstMain, currentRunId);
+    operation = "main-ref";
     const mainSha = await readMain();
     return { previousFull, mainSha, lastExercisedSha };
-  } catch {
-    return { previousFull: { status: "unknown" }, mainSha: null, lastExercisedSha: null };
+  } catch (error) {
+    const unknown: UnknownHistory = {
+      previousFull: { status: "unknown" },
+      mainSha: null,
+      lastExercisedSha: null,
+    };
+    if (error instanceof HistoryError) {
+      unknown.failure = { operation, kind: error.kind };
+    }
+    return unknown;
   }
 }

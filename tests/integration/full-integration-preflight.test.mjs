@@ -1593,7 +1593,8 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
     INPUT_LANE: "docker-model",
   };
   const main = (head = sha) => ({ ref: "refs/heads/main", object: { type: "commit", sha: head } });
-  const fixtures = (mainReads, { fail = false } = {}) => {
+  const sentinel = "synthetic-history-response";
+  const fixtures = (mainReads, artifactResponse) => {
     const calls = [];
     const authorized = approvalApi();
     const github = async (request) => {
@@ -1602,10 +1603,7 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
         return main(mainReads.shift());
       }
       if (request.path.startsWith("/actions/artifacts?")) {
-        if (fail) {
-          throw new Error("metadata unavailable");
-        }
-        return { artifacts: [], total_count: 0 };
+        return artifactResponse ? artifactResponse() : { artifacts: [], total_count: 0 };
       }
       if (request.path.startsWith("/actions/workflows/351990468/runs?")) {
         return { workflow_runs: [], total_count: 0 };
@@ -2046,12 +2044,26 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
     runAll: false,
     reason: "stale-event",
   });
-  const unavailable = fixtures([sha], { fail: true });
-  await assert.rejects(
-    validateFullIntegrationPreflight({ env, github: unavailable.github }),
-    /could not verify admission metadata/,
-  );
-  assert.ok(!unavailable.calls.some((path) => path.startsWith("/environments")));
+  // The same marker lookup can reject or return unusable metadata. Neither
+  // outcome may select a lane, read policy, or put supplied text in the error.
+  for (const [kind, response] of [
+    [
+      "request-failed",
+      () => {
+        throw new Error(sentinel);
+      },
+    ],
+    ["invalid-metadata", () => ({ artifacts: sentinel, total_count: 1 })],
+  ]) {
+    const unavailable = fixtures([sha], response);
+    await assert.rejects(validateFullIntegrationPreflight({ env, github: unavailable.github }), {
+      message: `Full Integration schedule could not verify admission metadata (admission-markers: ${kind}).`,
+    });
+    assert.deepEqual(unavailable.calls, [
+      "/git/ref/heads/main",
+      "/actions/artifacts?name=full-integration-admitted-v1&per_page=100",
+    ]);
+  }
   await assert.rejects(
     validateFullIntegrationPreflight({
       env: { ...env, GITHUB_RUN_ATTEMPT: "2" },
