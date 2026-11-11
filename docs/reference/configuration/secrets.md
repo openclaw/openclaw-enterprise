@@ -244,20 +244,25 @@ The editor preserves `enterpriseOrgInstall` and `dm.enabled`; a native
 
 #### Direct-message sessions
 
-Where `session.dmScope` is unset, deployment sets it to
-`"per-account-channel-peer"`. Each direct-message sender then gets a separate
-session for each channel and channel account, including named
-`channels.slack.accounts` entries. OpenClaw's own default, `"main"`, puts every
-sender in the main session that browser chat opens and turns on recall across
-conversations, so a sender could get the Agent to repeat members' chat content.
-With the OCE default, that recall stays off unless
-`memory.search.rememberAcrossConversations` turns it on. An explicit value,
-including `"main"`, is kept.
+When the Configuration enables a channel and leaves `session.dmScope` unset,
+deployment sets it to `"per-account-channel-peer"`. An enabled channel is any
+`channels` entry except `defaults` and `modelByChannel` whose `enabled` is not
+`false`. Each direct-message sender then gets a separate session for each
+channel and channel account, including named `channels.slack.accounts` entries.
+OpenClaw's own default, `"main"`, puts every sender in the main session that
+browser chat opens and turns on recall across conversations, so a sender could
+get the Agent to repeat members' chat content. With the OCE default, that
+recall stays off unless `memory.search.rememberAcrossConversations` turns it on.
+An explicit value, including `"main"`, is kept.
 
-After the next deployment of an Agent that used `"main"` by default, each
-direct-message sender starts a new session without the earlier shared context.
-The main session keeps its history. Members can still read channel
-conversations, as the [native admin pilot exception](../../design.md#native-admin-pilot-exception)
+An Agent without an enabled channel gets no `session.dmScope`, so OpenClaw's
+`"main"` and its recall across conversations stay. When you enable a channel
+later, the next deployment sets the default.
+
+After the next deployment of an Agent with a channel that used `"main"` by
+default, each direct-message sender starts a new session without the earlier
+shared context. The main session keeps its history. Members can still read
+channel conversations, as the [native admin pilot exception](../../design.md#native-admin-pilot-exception)
 describes.
 
 Microsoft Teams uses the native `msteams` provider identifier. Its application

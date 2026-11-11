@@ -242,9 +242,9 @@ its metadata names the source generation. Where unset, OCC sets
 `tools.exec.applyPatch.workspaceOnly: true` and `agents.defaults.sandbox.mode: "off"`.
 OCE isolates the Agent and has no Gateway approval screen. Unless `tools.exec`
 sets `security` or `ask`, OCC defaults `tools.exec.mode` to `"full"` and, in that
-mode, `tools.exec.strictInlineEval` to `false`. Where unset, OCC also sets
-[`session.dmScope`](configuration/secrets.md#direct-message-sessions) to
-`"per-account-channel-peer"`.
+mode, `tools.exec.strictInlineEval` to `false`. With a channel enabled, OCC
+also sets an unset [`session.dmScope`](configuration/secrets.md#direct-message-sessions)
+to `"per-account-channel-peer"`.
 Later Configuration updates change no running gateway or existing version
 until the next deployment. Deleting a Configuration still referenced by an Agent
 returns `409`.

@@ -1252,8 +1252,7 @@ test("deployment admission keeps apply_patch in the workspace, the sandbox off, 
       tools: { exec: { strictInlineEval: true } },
     },
     // Explicit values reach the Gateway as written; inline programs need no approval in an
-    // explicit mode "full" either. An explicit dmScope "main" keeps every channel sender in the
-    // main conversation, as that Configuration asks (finding 3191).
+    // explicit mode "full" either. An explicit dmScope is kept.
     "explicit looser values": {
       messages: { queue: { allowCollaborativeSteering: true } },
       session: { dmScope: "main" },
@@ -1300,6 +1299,35 @@ test("deployment admission keeps apply_patch in the workspace, the sandbox off, 
   );
   assert.equal(revision.configuration.tools.exec.strictInlineEval, false);
   assert.deepEqual(revision.configuration.agents.entries.main.tools.exec, entryExec);
+
+  // With a channel enabled, each direct-message sender gets a session per account, channel and
+  // sender, so external senders never share the main conversation browser chat opens (finding
+  // 3191). Without one, admission adds no session settings, so OpenClaw keeps recall across the
+  // Agent's conversations.
+  const slack = { enabled: true, allowBots: false };
+  for (const [name, settings, dmScope] of [
+    ["no channel", {}, undefined],
+    ["a disabled channel", { channels: { slack: { ...slack, enabled: false } } }, undefined],
+    ["a Slack channel", { channels: { slack } }, "per-account-channel-peer"],
+    [
+      "named Slack accounts",
+      { channels: { slack: { enabled: true, accounts: { work: { allowBots: false } } } } },
+      "per-account-channel-peer",
+    ],
+    ["an explicit main with a channel", { channels: { slack }, session: { dmScope: "main" } }, "main"],
+  ]) {
+    const values = { ...codexValues, ...settings };
+    const channelRevision = await deploy(values, "dedicated");
+    assert.equal(channelRevision.configuration.session?.dmScope, dmScope, name);
+    if (dmScope === undefined) {
+      assert.equal(channelRevision.configuration.session, undefined, name);
+    }
+    assert.deepEqual(
+      channelRevision.configuration,
+      admittedConfiguration(servedAs(values, agent.name), "info"),
+      name,
+    );
+  }
 
   // Admission fills only unset settings. A value of the wrong type, or a
   // non-object on the path, stays for the Gateway's own validation, which refuses it at startup,
