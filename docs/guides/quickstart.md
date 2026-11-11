@@ -48,7 +48,9 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
 ```
 
 The first start builds and imports both images unless you selected published
-images. This can take several minutes. Wait for `OpenClaw Enterprise development stack is ready.` The
+images. With no build cache, the runtime build first compiles Node.js from
+source, which takes 15-60 minutes or longer depending on CPUs and memory; later
+starts reuse the cache. Wait for `OpenClaw Enterprise development stack is ready.` The
 command prints the browser console URL and CA certificate, then the API URL,
 Installation ID, service-key file, administrator password file, kubeconfig,
 Kubernetes context, and cleanup command. Keep this output. The service-key and
