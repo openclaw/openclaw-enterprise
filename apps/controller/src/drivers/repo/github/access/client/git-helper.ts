@@ -8,7 +8,7 @@ import {
   requireCurrentBinding,
   type RuntimeRepositoryBinding,
 } from "./manifest.ts";
-import { readPrivateFile } from "./private-files.ts";
+import { clientSessionFileMaxBytes, readPrivateFile } from "./private-files.ts";
 import { selectGitCredential } from "./targets.ts";
 
 async function readCredentialRequest(): Promise<ReadonlyMap<string, string>> {
@@ -104,7 +104,10 @@ async function run(): Promise<void> {
     );
   }
   requireCurrentBinding(binding);
-  const bytes = await readPrivateFile(join(binding.directory, "bearer"), 256);
+  const bytes = await readPrivateFile(
+    join(binding.directory, "bearer"),
+    clientSessionFileMaxBytes.bearer,
+  );
   try {
     requireCurrentBinding(binding);
     const bearer = bytes.toString("utf8");

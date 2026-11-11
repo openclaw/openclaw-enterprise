@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RepositoryCredentialBoundSessionInput } from "../../../access/service-contracts.ts";
-import { readPrivateFile } from "./private-files.ts";
+import { clientSessionFileMaxBytes, readPrivateFile } from "./private-files.ts";
 import { hasControlCharacter } from "../../../access/client-contracts.ts";
 import type {
   ControlErrorCode,
@@ -245,7 +245,7 @@ async function main(): Promise<void> {
     }
     const caPath = options.get("--ca");
     const ca = caPath ? await readFile(caPath) : undefined;
-    if (ca && ca.length > 64 * 1024) {
+    if (ca && ca.length > clientSessionFileMaxBytes["ca.pem"]) {
       throw new Error("invalid-ca");
     }
     const admissionId = options.get("--admission-id") ?? `${Date.now()}-${randomUUID()}`;
