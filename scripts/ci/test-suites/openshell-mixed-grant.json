@@ -1,0 +1,24 @@
+{
+  "env": {
+    "OCC_TEST_OPENSHELL_MIXED_GRANT_REAL": "1",
+    "OCC_TEST_OPENSHELL_K3D_REAL": "1",
+    "OCC_TEST_LOCAL_FIRST_AGENT_REAL": "1"
+  },
+  "requiredEnv": [
+    "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+    "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+    "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+    "OCC_TEST_OPENSHELL_SOURCE_REVISION",
+    "OCC_TEST_OPENSHELL_HELM_CHART",
+    "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART"
+  ],
+  "prepare": {},
+  "files": [
+    {
+      "path": "tests/integration/openshell-mixed-grant-real.test.ts",
+      "expectedTests": [
+        "OpenShell grants model and Git on demand and preserves the conversation after Git withdrawal"
+      ]
+    }
+  ]
+}

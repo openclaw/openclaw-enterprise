@@ -108,6 +108,35 @@ candidate selection, preparation uses the pinned release charts and images.
 A mirror reference with the same released image digest keeps this release path.
 An image with a different digest requires the complete candidate selection.
 
+### Run the mixed-grant candidate case
+
+The separate `openshell-mixed-grant` lane runs
+[`openshell-mixed-grant-real.test.ts`](../../../tests/integration/openshell-mixed-grant-real.test.ts)
+against the six candidate inputs above. Export them before running these commands
+from the repository root. The fixture verifies the selection and owns its
+installation. It uses controlled model and Git origins, with no live model account.
+The released `openshell` lane retains its existing cases and credential requirements.
+Select the candidate lane explicitly; stock and full-integration groups exclude it.
+
+```sh
+export OCC_OPENSHELL_TEST_ROOT="$(mktemp -d)"
+node scripts/ci/prepare.mjs --lane openshell-mixed-grant \
+  --state "$OCC_OPENSHELL_TEST_ROOT/state.json"
+node scripts/ci/run-tests.mjs run openshell-mixed-grant \
+  --state "$OCC_OPENSHELL_TEST_ROOT/state.json" \
+  --results "$OCC_OPENSHELL_TEST_ROOT/results.json"
+```
+
+Always run cleanup, including after preparation or test failure:
+
+```sh
+node scripts/ci/cleanup.mjs --state "$OCC_OPENSHELL_TEST_ROOT/state.json"
+```
+
+The case requires [on-demand grants, Git withdrawal and retained conversation](../repository-credentials.md#mixed-model-and-git-grants).
+Source checks alone do not qualify an installed candidate; retain its complete
+result and cleanup receipts.
+
 ## Interpret timing and proof
 
 OpenShell lifecycle tests print live stage progress with their lane and file:

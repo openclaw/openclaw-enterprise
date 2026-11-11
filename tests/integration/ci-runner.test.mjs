@@ -971,6 +971,85 @@ test("run records a sanitized file failure after all reported cases pass", async
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
 });
 
+test("mixed-grant candidate lane requires and forwards all original supplier inputs", async (t) => {
+  const root = await fixture(t);
+  const lane = JSON.parse(
+    await readFile(
+      join(repositoryRoot, "scripts/ci/test-suites/openshell-mixed-grant.json"),
+      "utf8",
+    ),
+  );
+  const inputs = {
+    OCC_TEST_OPENSHELL_GATEWAY_IMAGE: `registry.example/gateway@sha256:${"1".repeat(64)}`,
+    OCC_TEST_OPENSHELL_SANDBOX_IMAGE: `registry.example/sandbox@sha256:${"2".repeat(64)}`,
+    OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: `registry.example/supervisor@sha256:${"3".repeat(64)}`,
+    OCC_TEST_OPENSHELL_SOURCE_REVISION: "a".repeat(40),
+    OCC_TEST_OPENSHELL_HELM_CHART: join(root, "original-gateway-chart"),
+    OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART: join(root, "original-workspace-chart"),
+  };
+  const marker = join(root, "child-started");
+  const path = "tests/integration/openshell-mixed-grant-real.test.ts";
+  const name =
+    "OpenShell grants model and Git on demand and preserves the conversation after Git withdrawal";
+
+  // Use the checked-in lane with the real runner, but a local child that only
+  // checks input forwarding. This proves prerequisite handling, not installation.
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { "openshell-mixed-grant": lane },
+    groups: {},
+  });
+  await writeFile(
+    join(root, path),
+    [
+      'import assert from "node:assert/strict";',
+      'import { writeFileSync } from "node:fs";',
+      'import test from "node:test";',
+      `writeFileSync(${JSON.stringify(marker)}, "started");`,
+      `test(${JSON.stringify(name)}, () => {`,
+      `  for (const [name, value] of Object.entries(${JSON.stringify(inputs)})) {`,
+      "    assert.equal(process.env[name], value, name);",
+      "  }",
+      '  assert.equal(process.env.OCC_TEST_OPENSHELL_MIXED_GRANT_REAL, "1");',
+      '  assert.equal(process.env.OCC_TEST_OPENSHELL_K3D_REAL, "1");',
+      '  assert.equal(process.env.OCC_TEST_LOCAL_FIRST_AGENT_REAL, "1");',
+      "});",
+    ].join("\n"),
+  );
+
+  for (const missing of Object.keys(inputs)) {
+    const resultsPath = join(root, `results/${missing}.json`);
+    const result = run(
+      root,
+      laneArgs(root, "openshell-mixed-grant", "state/candidate.json", resultsPath),
+      { ...inputs, [missing]: "" },
+      { timeout: 20_000 },
+    );
+    assert.equal(result.status, 1, result.stderr);
+    const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+    assert.deepEqual(
+      summary.issues.map((entry) => [entry.code, entry.env]),
+      [["missing-env", missing]],
+    );
+    await assert.rejects(readFile(marker), { code: "ENOENT" });
+  }
+
+  const resultsPath = join(root, "results/complete.json");
+  const result = run(
+    root,
+    laneArgs(root, "openshell-mixed-grant", "state/candidate.json", resultsPath),
+    inputs,
+    { timeout: 20_000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  assert.deepEqual(summary.issues, []);
+  assert.equal(summary.counts.passed, 1);
+  assert.equal(summary.counts.failed, 0);
+  assert.equal(summary.counts.skipped, 0);
+  assert.equal(await readFile(marker, "utf8"), "started");
+});
+
 test("run fails missing expected tests, skipped expected tests, skips, todos, and missing required env", async (t) => {
   const root = await fixture(t);
   const resultsPath = join(root, "results/lane.json");
@@ -6875,7 +6954,66 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       agentPodsAbsent: true,
     },
   ];
+  const mixedGrantPolicy = {
+    event: "mixed-grant-withdrawal-denied",
+    boundary: "supervisor-policy",
+    reason: "transparent_tcp_policy_denied",
+    policyReason: "endpoint-not-admitted",
+    marker: "policy-dns-ineligible",
+    host: "github.com",
+    port: 443,
+    executable: "/usr/lib/git-core/git-remote-http",
+    count: 1,
+    startedAt: 1_800_000_000_000,
+    endedAt: 1_800_000_001_000,
+  };
+  const mixedGrant = [
+    ...[0, 128].map((exitCode) => ({
+      event: "mixed-grant-agent-git-tool",
+      revisionId: opaque,
+      turnId: opaque,
+      sha: "b".repeat(40),
+      exitCode,
+      commandCount: 1,
+    })),
+    {
+      event: "mixed-grant-model-before-git",
+      revisionId: opaque,
+      turnId: opaque,
+      gitIssued: 0,
+    },
+    {
+      event: "mixed-grant-git-fetched",
+      revisionId: opaque,
+      sha: "b".repeat(40),
+      gitIssued: 1,
+      gitRequests: 2,
+    },
+    {
+      event: "mixed-grant-withdrawal-denied",
+      boundary: "signed-access-withdrawn",
+      requestId: opaque,
+      workerUid: uuid,
+    },
+    mixedGrantPolicy,
+    {
+      event: "mixed-grant-git-withdrawn",
+      revisionId: opaque,
+      sha: "b".repeat(40),
+      gitIssued: 1,
+      gitRequests: 2,
+      exitCode: 128,
+    },
+    {
+      event: "mixed-grant-conversation-continued",
+      revisionId: opaque,
+      turnId: opaque,
+      priorTurnObserved: true,
+      gitIssued: 1,
+    },
+  ];
   const retentionReceipts = [
+    ...mixedGrant.map((receipt) => ({ ...receipt, credential: forbidden, output: forbidden })),
     ...finiteRemoval.map((receipt) => ({ ...receipt, credential: forbidden, output: forbidden })),
     ...withdrawalWitnesses.map((receipt) => ({ ...receipt, error: forbidden, token: forbidden })),
     { ...withdrawalRetirement, token: forbidden },
@@ -6986,6 +7124,34 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     { event: "cleanup", outcome: "passed" },
   ].map((value) => ({ kind: retentionKind, ...value, unexpected: forbidden }));
   const invalidRetention = [
+    // Each boundary must have a complete receipt. A success-shaped prefix is
+    // not evidence of a model turn, Git request, or withdrawal denial.
+    ...mixedGrant.flatMap((receipt) =>
+      Object.keys(receipt)
+        .filter((field) => field !== "event")
+        .map((field) => ({ ...receipt, [field]: undefined })),
+    ),
+    { ...mixedGrant[0], commandCount: 0 },
+    { ...mixedGrant[0], commandCount: 2 },
+    { ...mixedGrant[0], exitCode: 1 },
+    { ...mixedGrant[0], sha: forbidden },
+    { ...mixedGrant[0], turnId: { credential: forbidden } },
+    { ...mixedGrant[2], gitIssued: 1 },
+    { ...mixedGrant[3], gitIssued: 0 },
+    { ...mixedGrant[3], gitRequests: -1 },
+    { ...mixedGrant[3], gitRequests: 0.5 },
+    { ...mixedGrant[3], gitRequests: forbidden },
+    { ...mixedGrant[4], boundary: forbidden },
+    { ...mixedGrant[4], workerUid: forbidden },
+    { ...mixedGrant[4], requestId: null },
+    ...["reason", "policyReason", "marker", "host", "port", "executable", "count"].map((field) => ({
+      ...mixedGrantPolicy,
+      [field]: forbidden,
+    })),
+    { ...mixedGrantPolicy, startedAt: mixedGrantPolicy.endedAt + 1 },
+    { ...mixedGrant[6], exitCode: 0 },
+    { ...mixedGrant[7], priorTurnObserved: false },
+    { ...mixedGrant[7], gitIssued: 0 },
     ...[
       "controllerImageDigest",
       "controllerConfigDigest",
@@ -7560,6 +7726,60 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   );
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
   const receipts = summary.files[0].measurements.filter(({ kind }) => kind === retentionKind);
+  assert.deepEqual(
+    receipts.filter(({ event }) => event.startsWith("mixed-grant-")),
+    [
+      ...[0, 128].map((exitCode) => ({
+        kind: retentionKind,
+        event: "mixed-grant-agent-git-tool",
+        revisionIdHash: opaqueHash,
+        turnIdHash: opaqueHash,
+        sha: "b".repeat(40),
+        exitCode,
+        commandCount: 1,
+      })),
+      {
+        kind: retentionKind,
+        event: "mixed-grant-model-before-git",
+        revisionIdHash: opaqueHash,
+        turnIdHash: opaqueHash,
+        gitIssued: 0,
+      },
+      {
+        kind: retentionKind,
+        event: "mixed-grant-git-fetched",
+        revisionIdHash: opaqueHash,
+        sha: "b".repeat(40),
+        gitIssued: 1,
+        gitRequests: 2,
+      },
+      {
+        kind: retentionKind,
+        event: "mixed-grant-withdrawal-denied",
+        boundary: "signed-access-withdrawn",
+        requestIdHash: opaqueHash,
+        workerUid: uuid,
+      },
+      { kind: retentionKind, ...mixedGrantPolicy },
+      {
+        kind: retentionKind,
+        event: "mixed-grant-git-withdrawn",
+        revisionIdHash: opaqueHash,
+        sha: "b".repeat(40),
+        gitIssued: 1,
+        gitRequests: 2,
+        exitCode: 128,
+      },
+      {
+        kind: retentionKind,
+        event: "mixed-grant-conversation-continued",
+        revisionIdHash: opaqueHash,
+        turnIdHash: opaqueHash,
+        priorTurnObserved: true,
+        gitIssued: 1,
+      },
+    ],
+  );
   assert.deepEqual(
     receipts.filter(({ event }) => event.startsWith("finite-removal-")),
     [

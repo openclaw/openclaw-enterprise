@@ -21,6 +21,13 @@ import { availablePort } from "./available-port.mjs";
 import { localFirstAgentStack, ownFirstAgentWork } from "./local-first-agent-stack.mjs";
 import { localOpenShellGatewayOptions } from "./local-openshell-gateway.mjs";
 import { stopProcess } from "./stop-process.mjs";
+import { deployMixedGrantAgent } from "./openshell-mixed-grant-agent.ts";
+import {
+  mixedGrantSupplier,
+  mixedGrantOrigins,
+  gatewayGrantBundle,
+  registerMixedGrantProviders,
+} from "./openshell-mixed-grant-setup.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const { loadYaml } = await import(require.resolve("@kubernetes/client-node"));
@@ -121,7 +128,14 @@ async function waitUntil(description, operation, timeout, signal) {
 
 // Keys remain in this private directory or worker-only Secrets. The image build
 // context below receives only public certificates, never either signing key.
-async function certificates(command, directory, originHost, authorityHost) {
+async function certificates(
+  command,
+  directory,
+  originHost,
+  authorityHost,
+  modelHost,
+  modelAuthorityHost,
+) {
   const caKey = join(directory, "ca.key");
   const caFile = join(directory, "ca.crt");
   await command("openssl", [
@@ -189,7 +203,11 @@ async function certificates(command, directory, originHost, authorityHost) {
   return {
     ca: await readFile(caFile, "utf8"),
     origin: await issue("origin", ["github.com", "api.github.com", originHost]),
-    authority: await issue("authority", [authorityHost]),
+    authority: await issue("authority", [
+      authorityHost,
+      ...(modelAuthorityHost ? [modelAuthorityHost] : []),
+    ]),
+    ...(modelHost && { model: await issue("model", [modelHost]) }),
   };
 }
 
@@ -270,14 +288,25 @@ export async function extractOpenShellImageFile({
   }
 }
 
-async function trustedSupervisor({ command, cleanup, directory, cluster, ca, checkpoint }) {
-  // Read the same stock pin used by Local Setup rather than maintaining another
-  // independent image version. Candidate supplier builds are rejected at entry.
+async function trustedSupervisor({
+  command,
+  cleanup,
+  directory,
+  cluster,
+  ca,
+  checkpoint,
+  supplier,
+}) {
+  // The finite case uses Local Setup's stock pin. The mixed case passes its
+  // explicitly verified supplier; both preserve the binary while adding trust.
   const source = await readFile(join(root, "internal/occdev/openshell.go"), "utf8");
-  const parent = source.match(/openShellSupervisorImage\s*=\s*"([^"]+)"/)?.[1];
+  const parent =
+    supplier?.images.supervisor ?? source.match(/openShellSupervisorImage\s*=\s*"([^"]+)"/)?.[1];
   assert.match(
     parent ?? "",
-    /^ghcr\.io\/nvidia\/openshell\/supervisor:0\.1\.6@sha256:[a-f0-9]{64}$/,
+    supplier
+      ? /^[^\s@]+@sha256:[a-f0-9]{64}$/
+      : /^ghcr\.io\/nvidia\/openshell\/supervisor:0\.1\.6@sha256:[a-f0-9]{64}$/,
   );
   const context = join(directory, "supervisor-trust");
   await mkdir(context, { mode: 0o700 });
@@ -340,20 +369,26 @@ async function trustedSupervisor({ command, cleanup, directory, cluster, ca, che
 }
 
 /** Installs the supported model + selected-repository path in its own k3d cluster. */
-export function createOpenShellGitInstallation(t, { witnessIssuedGit = false } = {}) {
-  return ownFirstAgentWork(t)(installOpenShellGit(t, witnessIssuedGit));
+export function createOpenShellGitInstallation(
+  t,
+  { witnessIssuedGit = false, mode = "prepared" } = {},
+) {
+  assert.ok(["prepared", "mixed-grant"].includes(mode), "Unknown installed Git fixture mode");
+  return ownFirstAgentWork(t)(installOpenShellGit(t, witnessIssuedGit, mode === "mixed-grant"));
 }
 
-async function installOpenShellGit(t, witnessIssuedGit) {
+async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
   const eventually = (description, operation, timeout = 120_000) =>
     waitUntil(description, operation, timeout, t.signal);
   let tearingDown = false;
   assert.equal(process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER, "openshell");
   assert.equal(process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE, "kubernetes");
-  assert.ok(
-    process.env.OPENAI_API_KEY?.trim(),
-    "OPENAI_API_KEY is required for genuine native startup",
-  );
+  if (!mixedGrant) {
+    assert.ok(
+      process.env.OPENAI_API_KEY?.trim(),
+      "OPENAI_API_KEY is required for genuine native startup",
+    );
+  }
   assert.equal(
     process.env.OCC_DEVELOPMENT_STATE_DIRECTORY,
     undefined,
@@ -370,7 +405,7 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     assert.equal(
       process.env[`OCC_DEVELOPMENT_OPENSHELL_${name}`],
       undefined,
-      "this fixture qualifies stock OpenShell",
+      "this fixture owns its OpenShell selection; ambient overrides are unsupported",
     );
   }
   const cleanup = [];
@@ -399,12 +434,15 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     }
     measurement("cleanup", { outcome: "passed" });
   });
+  const directory = await mkdtemp(join(tmpdir(), "oce-installed-git-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const supplier = mixedGrant ? await mixedGrantSupplier(directory, t.signal) : undefined;
   const stack = await localFirstAgentStack(
     {
       diagnostic: (message) => t.diagnostic(message),
       after: (operation) => stackCleanup.push(operation),
     },
-    { modelCredential: "openai" },
+    { modelCredential: mixedGrant ? "controlled" : "openai", supplier },
   );
   const state = JSON.parse(await readFile(join(stack.directory, "state.json"), "utf8"));
   assert.equal(state.deploymentMode, "k3d");
@@ -412,8 +450,6 @@ async function installOpenShellGit(t, witnessIssuedGit) {
   assert.equal(state.containerEngine, "docker");
   assert.match(state.cluster, /^occ-dev-first-agent-[a-f0-9]{12}$/);
   assert.match(state.dockerHost, /^unix:\/\//);
-  const directory = await mkdtemp(join(tmpdir(), "oce-installed-git-"));
-  cleanup.push(() => rm(directory, { recursive: true, force: true }));
   // The CI reporter retains only the closed identity/digest/counter projection
   // after this private file is removed, including on passing runs.
   const checkpoint = async (event, data) => {
@@ -480,26 +516,33 @@ async function installOpenShellGit(t, witnessIssuedGit) {
   assert.equal(namespaceList.items.length, 1);
   const sandboxNamespace = namespaceList.items[0].metadata.name;
   assert.equal(namespaceList.items[0].metadata.labels["openshell.ai/openclaw-workspace"], "true");
-  const secret = await request("POST", `/namespaces/${namespace.id}/secrets`, {
-    name: "installed-git-model",
-    value: process.env.OPENAI_API_KEY,
-  });
-  const registeredModel = await request("POST", `/namespaces/${namespace.id}/credential-sources`, {
-    name: "installed-git-model",
-    type: "openai",
-    config: { authorized_base_url: "https://api.openai.com/v1" },
-    secrets: { api_key: secret.ref },
-  });
-  const modelSource = await eventually("Gateway-owned model source", async () => {
-    const current = await request(
-      "GET",
-      `/namespaces/${namespace.id}/credential-sources/${registeredModel.id}`,
+  let modelSource;
+  if (!mixedGrant) {
+    const secret = await request("POST", `/namespaces/${namespace.id}/secrets`, {
+      name: "installed-git-model",
+      value: process.env.OPENAI_API_KEY,
+    });
+    const registeredModel = await request(
+      "POST",
+      `/namespaces/${namespace.id}/credential-sources`,
+      {
+        name: "installed-git-model",
+        type: "openai",
+        config: { authorized_base_url: "https://api.openai.com/v1" },
+        secrets: { api_key: secret.ref },
+      },
     );
-    assert.equal(current.ownerCapability, "credential_gateway");
-    assert.equal(current.egress, undefined);
-    assert.notEqual(current.status?.state, "failed", "model source registration failed");
-    return current.state === "ready" && current.status?.state === "ready" ? current : undefined;
-  });
+    modelSource = await eventually("Gateway-owned model source", async () => {
+      const current = await request(
+        "GET",
+        `/namespaces/${namespace.id}/credential-sources/${registeredModel.id}`,
+      );
+      assert.equal(current.ownerCapability, "credential_gateway");
+      assert.equal(current.egress, undefined);
+      assert.notEqual(current.status?.state, "failed", "model source registration failed");
+      return current.state === "ready" && current.status?.state === "ready" ? current : undefined;
+    });
+  }
 
   const network = JSON.parse(
     await command("docker", ["network", "inspect", `k3d-${state.cluster}`]),
@@ -508,14 +551,29 @@ async function installOpenShellGit(t, witnessIssuedGit) {
   assert.match(bridge, /^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)[\d.]+$/);
   const originHost = `git-fixture.${platform}.svc.cluster.local`;
   const authorityHost = `openclaw-enterprise-openshell-git.${platform}.svc.cluster.local`;
-  const tls = await certificates(command, directory, originHost, authorityHost);
-  const origin = await startSkipperPrivateGitOrigin({
-    host: bridge,
-    advertisedHost: originHost,
-    witnessIssuedGit,
-    tls: { ...tls.origin, ca: tls.ca },
-  });
-  cleanup.push(() => origin.close());
+  const modelHost = `model-fixture.${platform}.svc.cluster.local`;
+  const modelAuthorityHost = `openclaw-enterprise-egress-authority.${platform}.svc.cluster.local`;
+  const tls = await certificates(
+    command,
+    directory,
+    originHost,
+    authorityHost,
+    mixedGrant ? modelHost : undefined,
+    mixedGrant ? modelAuthorityHost : undefined,
+  );
+  const mixed = mixedGrant ? await mixedGrantOrigins({ host: bridge, tls, cleanup }) : undefined;
+  const origin =
+    mixed?.origin ??
+    (await startSkipperPrivateGitOrigin({
+      host: bridge,
+      advertisedHost: originHost,
+      witnessIssuedGit,
+      tls: { ...tls.origin, ca: tls.ca },
+    }));
+  if (!mixed) {
+    cleanup.push(() => origin.close());
+  }
+  const modelPort = mixed ? Number(new URL(mixed.modelOrigin.origin).port) : undefined;
   const originPort = Number(new URL(origin.origin).port);
   const metadata = (name) => ({ name, namespace: platform });
   await apply([
@@ -537,14 +595,35 @@ async function installOpenShellGit(t, witnessIssuedGit) {
       ],
     },
   ]);
+  if (mixed) {
+    await apply([
+      {
+        apiVersion: "v1",
+        kind: "Service",
+        metadata: metadata("model-fixture"),
+        spec: { ports: [{ name: "https", port: 443, targetPort: modelPort }] },
+      },
+      {
+        apiVersion: "v1",
+        kind: "Endpoints",
+        metadata: metadata("model-fixture"),
+        subsets: [
+          {
+            addresses: [{ ip: bridge }],
+            ports: [{ name: "https", port: modelPort, protocol: "TCP" }],
+          },
+        ],
+      },
+    ]);
+  }
   const service = JSON.parse(
     await kube(["get", "service", "git-fixture", "-n", platform, "-o", "json"]),
   );
   const dns = JSON.parse(
     await kube(["get", "configmap", "coredns", "-n", "kube-system", "-o", "json"]),
   );
-  // Only GitHub's two exact names are redirected. Real model traffic continues
-  // through the ordinary authenticated provider and public DNS.
+  // Redirect only GitHub's exact names. The finite case keeps public model DNS;
+  // the mixed case addresses its separately owned model Service directly.
   dns.data.Corefile += `\ngithub.com:53 api.github.com:53 {\n  errors\n  hosts {\n    ${service.spec.clusterIP} github.com api.github.com\n    fallthrough\n  }\n}\n`;
   await apply([dns]);
   await kube(["rollout", "restart", "deployment/coredns", "-n", "kube-system"]);
@@ -597,7 +676,7 @@ async function installOpenShellGit(t, witnessIssuedGit) {
           {
             namespaceId: namespace.id,
             profiles: ["github-repository"],
-            permissions: { metadata: "read", contents: "write" },
+            permissions: mixed?.gitScope.permissions ?? { metadata: "read", contents: "write" },
           },
         ],
       },
@@ -622,7 +701,10 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     configMap("git-fixture-ca", { "ca.crt": tls.ca }),
     configMap("git-gateway-public-key", { "gateway-public.pem": publicKey }),
     privateSecret("git-fixture-app", {
-      "private-key.pem": origin.privateKey.export({ type: "pkcs8", format: "pem" }),
+      "private-key.pem": (mixed?.privateKey ?? origin.privateKey).export({
+        type: "pkcs8",
+        format: "pem",
+      }),
     }),
     {
       apiVersion: "v1",
@@ -636,6 +718,11 @@ async function installOpenShellGit(t, witnessIssuedGit) {
       "tls.key": tls.authority.key,
     }),
   ]);
+  if (mixed) {
+    await apply([
+      configMap("git-gateway-jwks", { "bundle.json": gatewayGrantBundle(publicKey, keyId) }),
+    ]);
+  }
   const gatewayLabels = {
     "app.kubernetes.io/name": "openshell",
     "app.kubernetes.io/instance": "openshell-gateway",
@@ -652,7 +739,23 @@ async function installOpenShellGit(t, witnessIssuedGit) {
   });
   const supervisorPolicy = policy("allow-installed-git-fixture", supervisorLabels, [
     authorityRule,
-    { to: [{ ipBlock: { cidr: `${bridge}/32` } }], ports: [{ protocol: "TCP", port: originPort }] },
+    ...(mixed
+      ? [
+          {
+            to: [
+              peer(platform, {
+                "app.kubernetes.io/name": "openclaw-enterprise",
+                "app.kubernetes.io/instance": "openclaw-enterprise",
+              }),
+            ],
+            ports: [9444, 9445, 9446].map((port) => ({ protocol: "TCP", port })),
+          },
+        ]
+      : []),
+    {
+      to: [{ ipBlock: { cidr: `${bridge}/32` } }],
+      ports: [originPort, ...(mixed ? [modelPort] : [])].map((port) => ({ protocol: "TCP", port })),
+    },
   ]);
   await apply([
     {
@@ -711,6 +814,38 @@ async function installOpenShellGit(t, witnessIssuedGit) {
       issuerCaPath: "/etc/openclaw/prepared-repository-ca/ca.crt",
     },
   };
+  const issuer = installation.repository.openShell.authority.issuer;
+  const modelEndpoint = `https://${modelAuthorityHost}:9445/token`;
+  const gitEndpoint = `https://${authorityHost}:9446/token`;
+  if (mixed) {
+    installation.drivers.credential_proxy.configuration = {
+      middlewareName: "oce-model-grant",
+      authority: {
+        host: "0.0.0.0",
+        port: 9444,
+        certificatePath: "/etc/openclaw/egress/tls/tls.crt",
+        privateKeyPath: "/etc/openclaw/egress/tls/tls.key",
+        issuerPublicKeyPath: "/etc/openclaw/egress/issuer/issuer.pub",
+        issuer,
+        audience: "oce-model-grant",
+        keyId,
+      },
+      tokenGrant: {
+        endpoint: modelEndpoint,
+        port: 9445,
+        bundlePath: "/etc/openclaw/egress/token-grant/bundle.json",
+        assertionSource: "openshell_gateway",
+        issuer,
+      },
+    };
+    installation.repository.openShell.grantRedemption = {
+      endpoint: gitEndpoint,
+      port: 9446,
+      bundlePath: "/etc/openclaw/openshell-git/token-grant/bundle.json",
+      assertionSource: "openshell_gateway",
+      issuer,
+    };
+  }
   const installationJSON = JSON.stringify(installation);
   await apply([
     privateSecret("occ-installation-startup", { "installation.yaml": installationJSON }),
@@ -739,6 +874,23 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     issuerPublicKeyConfigMapName: "git-gateway-public-key",
     clients: [peer(platform, gatewayLabels), peer(sandboxNamespace, supervisorLabels)],
   };
+  if (mixed) {
+    values.worker = { ...values.worker, replicaCount: 1 };
+    values.egressAuthority = {
+      enabled: true,
+      port: 9444,
+      tlsSecretName: "git-authority-tls",
+      issuerSecretName: jwtSecret,
+      clients: [peer(platform, gatewayLabels), peer(sandboxNamespace, supervisorLabels)],
+      tokenGrant: { enabled: true, port: 9445, bundleConfigMapName: "git-gateway-jwks" },
+    };
+    values.openshellGit.tokenGrant = {
+      enabled: true,
+      port: 9446,
+      bundleConfigMapName: "git-gateway-jwks",
+      clients: [peer(sandboxNamespace, supervisorLabels)],
+    };
+  }
   const valuesFile = join(directory, "oce-values.json");
   await writeFile(valuesFile, JSON.stringify(values), { mode: 0o600 });
   await command(
@@ -764,6 +916,7 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     cluster: state.cluster,
     ca: tls.ca,
     checkpoint,
+    supplier,
   });
   gatewayValues.supervisor.image = supervisor.image;
   gatewayValues.gatewayConfig["openshell.supervisor.middleware"] = [
@@ -778,6 +931,18 @@ async function installOpenShellGit(t, witnessIssuedGit) {
       timeout: "5s",
     },
   ];
+  if (mixed) {
+    gatewayValues.gatewayConfig["openshell.supervisor.middleware"].push({
+      name: "oce-model-grant",
+      grpc_endpoint: `https://${modelAuthorityHost}:9444`,
+      tls_ca_cert_path: "/etc/openshell-git-ca/ca.crt",
+      audience: "oce-model-grant",
+      binding_policy: "allowlist",
+      bindings: ["http_request_pre_credentials"],
+      max_payload_bytes: 4194304,
+      timeout: "5s",
+    });
+  }
   gatewayValues.server.extraVolumes = [
     ...(gatewayValues.server.extraVolumes ?? []),
     { name: "git-authority-ca", configMap: { name: "git-fixture-ca" } },
@@ -788,16 +953,22 @@ async function installOpenShellGit(t, witnessIssuedGit) {
   ];
   const gatewayFile = join(directory, "gateway-values.json");
   await writeFile(gatewayFile, JSON.stringify(gatewayValues), { mode: 0o600 });
-  const charts = (await readdir(join(stack.directory, "openshell/chart"))).filter((name) =>
-    /^helm-chart-0\.1\.6\.tgz$/.test(name),
-  );
-  assert.equal(charts.length, 1);
+  const charts = supplier
+    ? []
+    : (await readdir(join(stack.directory, "openshell/chart"))).filter((name) =>
+        /^helm-chart-0\.1\.6\.tgz$/.test(name),
+      );
+  if (!supplier) {
+    assert.equal(charts.length, 1);
+  }
+  const gatewayChart =
+    supplier?.gatewayChart ?? join(stack.directory, "openshell/chart", charts[0]);
   await command(
     "helm",
     [
       "upgrade",
       "openshell-gateway",
-      join(stack.directory, "openshell/chart", charts[0]),
+      gatewayChart,
       ...helmContext,
       "-f",
       gatewayFile,
@@ -808,6 +979,28 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     { timeout: 190_000 },
   );
 
+  if (mixed) {
+    const secret = await request("POST", `/namespaces/${namespace.id}/secrets`, {
+      name: "mixed-grant-model",
+      value: mixed.modelBearer,
+    });
+    const registered = await request("POST", `/namespaces/${namespace.id}/credential-sources`, {
+      name: "mixed-grant-model",
+      type: "openai",
+      authorization: "online-request",
+      config: { authorized_base_url: `https://${modelHost}/v1` },
+      secrets: { api_key: secret.ref },
+    });
+    modelSource = await eventually("request-authorized model source", async () => {
+      const current = await request(
+        "GET",
+        `/namespaces/${namespace.id}/credential-sources/${registered.id}`,
+      );
+      assert.notEqual(current.status?.state, "failed", "model source registration failed");
+      assert.equal(current.egress?.adoption, "live");
+      return current.state === "ready" && current.status?.state === "ready" ? current : undefined;
+    });
+  }
   const port = await availablePort();
   const forward = spawn(
     "kubectl",
@@ -1355,7 +1548,7 @@ async function installOpenShellGit(t, witnessIssuedGit) {
       throw error;
     }
   };
-  return {
+  const fixture = {
     request,
     namespace,
     modelSource,
@@ -1372,4 +1565,60 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     restartWorker,
     checkpoint,
   };
+  if (mixed) {
+    const upgradeGateway = async (next) => {
+      await writeFile(gatewayFile, JSON.stringify(next), { mode: 0o600 });
+      await command(
+        "helm",
+        [
+          "upgrade",
+          "openshell-gateway",
+          gatewayChart,
+          ...helmContext,
+          "-f",
+          gatewayFile,
+          "--wait",
+          "--timeout",
+          "180s",
+        ],
+        { timeout: 190_000 },
+      );
+      const observed = JSON.parse(
+        await command("helm", ["get", "values", "openshell-gateway", ...helmContext, "-o", "json"]),
+      );
+      assert.deepEqual(
+        observed.gatewayConfig["openshell.gateway.provider_assertions"],
+        next.gatewayConfig["openshell.gateway.provider_assertions"],
+      );
+    };
+    return Object.assign(fixture, {
+      gitScope: mixed.gitScope,
+      modelOrigin: mixed.modelOrigin,
+      deployMixedGrantAgent: () =>
+        deployMixedGrantAgent(t, {
+          ...fixture,
+          model: mixed.model,
+          modelTurns: mixed.modelTurns,
+          modelOrigin: mixed.modelOrigin,
+          stateDirectory: stack.directory,
+          after: (operation) => cleanup.push(operation),
+          registerProviders: (revision, agent) =>
+            registerMixedGrantProviders({
+              request,
+              namespace,
+              agent,
+              revision,
+              workspace: sandboxNamespace,
+              gatewayClient,
+              kube,
+              gatewayValues,
+              modelEndpoint,
+              gitEndpoint,
+              upgradeGateway,
+              signal: t.signal,
+            }),
+        }),
+    });
+  }
+  return fixture;
 }

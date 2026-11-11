@@ -36,6 +36,7 @@
     "tests/integration/workspace-setup-api.test.mjs",
     "tests/integration/agent-create-validate-api.test.mjs",
     "tests/integration/model-provider.test.ts",
+    "tests/integration/openshell-model-origin.test.ts",
     "tests/integration/repository-credentials-service-loss.test.mjs",
     "tests/integration/ci-runner.test.mjs",
     "tests/integration/local-first-agent-session-identity.test.ts",
@@ -399,6 +400,13 @@
     },
     {
       "path": "tests/integration/model-provider.test.ts"
+    },
+    {
+      "path": "tests/integration/openshell-model-origin.test.ts",
+      "expectedTests": [
+        "OpenShell model origin requires assistant history for a continued turn",
+        "OpenShell model origin waits for native tool completion and verifies its output"
+      ]
     },
     {
       "path": "tests/conformance/repository-credentials-source-boundary.test.mjs"

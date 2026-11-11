@@ -223,7 +223,7 @@ offline checks through the actual aggregate CLI. They do not execute an installe
 
 ## Verify OpenShell Git expiry and restart
 
-The [installed retention case](../../tests/integration/openshell-git-retention-real.test.ts)
+The expiry case in the [retention suite](../../tests/integration/openshell-git-retention-real.test.ts)
 uses the ordinary authenticated OpenShell installation, a dedicated Codex Agent,
 and an `openai` CredentialSource. Its native startup probe uses the authorized
 `OPENAI_API_KEY` and `OCC_TEST_OPENAI_MODEL`; model responses are not simulated.
@@ -289,6 +289,32 @@ a maintainer selects [QA Matrix Advisory](ci/qa-advisory.md#trigger) with `full-
 The existing environment supplies credentials inside the job. The narrower
 `qa-openshell-compose` label does not run this case. A complete, non-skipped pass
 and successful cleanup are required; registration alone is not qualification.
+
+### Mixed model and Git grants
+
+The [mixed-grant case](../../tests/integration/openshell-mixed-grant-real.test.ts)
+uses a deterministic Responses origin, with no live model account. Finite cases
+retain their credential requirements. Use the separate
+[candidate lane](ci/openshell-execution.md#run-the-mixed-grant-candidate-case);
+default pins stay unchanged.
+
+The case requires four outcomes:
+
+- The first model turn uses Gateway-signed authorization while Git credential
+  issuance and Git request counts remain zero.
+- Codex `exec_command` fetches a previously absent, independently published commit
+  and exact content through stock Git, with one credential for the selected
+  repository and permissions.
+- Repository-binding removal makes a second fresh commit fetch fail with an
+  explicit withdrawal or policy denial. Its object remains absent, with no new
+  Git issuance or Git requests.
+- The original Agent revision, Sandbox and session continue the conversation.
+  The model origin requires the prior assistant answer in forwarded history;
+  the next prompt supplies only a new marker.
+
+Tool polling joins the same command without replaying Git. Source checks do not
+establish installed execution. Qualification requires the complete installed case
+and successful cleanup on the selected images.
 
 ## Controller and broker image compatibility probe
 

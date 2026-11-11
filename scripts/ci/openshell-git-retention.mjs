@@ -329,7 +329,63 @@ for (const name of [
 ]) {
   withdrawalDiagnostics[name] = [name, count];
 }
+const policyDenial = {
+  reason: ["reason", choice("transparent_tcp_policy_denied")],
+  policyReason: ["policyReason", choice("endpoint-not-admitted")],
+  marker: ["marker", choice("policy-dns-ineligible")],
+  host: ["host", choice("github.com")],
+  port: ["port", choice(443)],
+  executable: [
+    "executable",
+    choice(
+      "/usr/lib/git-core/git-remote-https",
+      "/usr/lib/git-core/git-remote-http",
+      "/usr/libexec/git-core/git-remote-https",
+      "/usr/libexec/git-core/git-remote-http",
+    ),
+  ],
+  count: [
+    "count",
+    (value) => (Number.isSafeInteger(value) && value > 0 && value <= 2000 ? value : undefined),
+  ],
+  startedAt: ["startedAt", count],
+  endedAt: ["endedAt", count],
+};
 const events = {
+  "mixed-grant-agent-git-tool": {
+    revisionIdHash: ["revisionId", identityHash],
+    turnIdHash: ["turnId", identityHash],
+    sha: ["sha", text(/^[a-f0-9]{40}$/)],
+    exitCode: ["exitCode", choice(0, 128)],
+    commandCount: ["commandCount", choice(1)],
+  },
+  "mixed-grant-model-before-git": {
+    revisionIdHash: ["revisionId", identityHash],
+    turnIdHash: ["turnId", identityHash],
+    gitIssued: ["gitIssued", choice(0)],
+  },
+  "mixed-grant-git-fetched": {
+    revisionIdHash: ["revisionId", identityHash],
+    sha: ["sha", text(/^[a-f0-9]{40}$/)],
+    gitIssued: ["gitIssued", choice(1)],
+    gitRequests: ["gitRequests", count],
+  },
+  "mixed-grant-withdrawal-denied": {
+    boundary: ["boundary", choice("signed-access-withdrawn", "supervisor-policy")],
+  },
+  "mixed-grant-git-withdrawn": {
+    revisionIdHash: ["revisionId", identityHash],
+    sha: ["sha", text(/^[a-f0-9]{40}$/)],
+    gitIssued: ["gitIssued", choice(1)],
+    gitRequests: ["gitRequests", count],
+    exitCode: ["exitCode", choice(128)],
+  },
+  "mixed-grant-conversation-continued": {
+    revisionIdHash: ["revisionId", identityHash],
+    turnIdHash: ["turnId", identityHash],
+    priorTurnObserved: ["priorTurnObserved", choice(true)],
+    gitIssued: ["gitIssued", choice(1)],
+  },
   "withdrawal-decision-unconfirmed": withdrawalDiagnostics,
   "finite-removal-live-denial": {
     boundary: ["boundary", choice("signed-access-withdrawn", "supervisor-policy")],
@@ -388,26 +444,7 @@ const events = {
   },
   "git-policy-denied": {
     stage: ["stage", choice("after-expiry", "after-worker-restart", "after-removal")],
-    reason: ["reason", choice("transparent_tcp_policy_denied")],
-    policyReason: ["policyReason", choice("endpoint-not-admitted")],
-    marker: ["marker", choice("policy-dns-ineligible")],
-    host: ["host", choice("github.com")],
-    port: ["port", choice(443)],
-    executable: [
-      "executable",
-      choice(
-        "/usr/lib/git-core/git-remote-https",
-        "/usr/lib/git-core/git-remote-http",
-        "/usr/libexec/git-core/git-remote-https",
-        "/usr/libexec/git-core/git-remote-http",
-      ),
-    ],
-    count: [
-      "count",
-      (value) => (Number.isSafeInteger(value) && value > 0 && value <= 2000 ? value : undefined),
-    ],
-    startedAt: ["startedAt", count],
-    endedAt: ["endedAt", count],
+    ...policyDenial,
   },
   "retained-execution-failed": {
     stage: ["stage", choice("after-expiry", "after-worker-restart")],
@@ -539,7 +576,26 @@ export function projectOpenShellGitRetention(value) {
   ) {
     return undefined;
   }
-  const selected = project(value, events[value.event]);
+  let fields = events[value.event];
+  if (value.event === "mixed-grant-withdrawal-denied") {
+    // Each denial boundary requires its own evidence; neither raw worker logs
+    // nor a policy proof can stand in for the signed request's identity.
+    fields = {
+      ...fields,
+      ...(value.boundary === "signed-access-withdrawn"
+        ? { requestIdHash: ["requestId", identityHash], workerUid: ["workerUid", uuid] }
+        : policyDenial),
+    };
+  }
+  const selected = project(value, fields);
+  if (
+    selected !== undefined &&
+    value.event === "mixed-grant-withdrawal-denied" &&
+    selected.boundary === "supervisor-policy" &&
+    selected.endedAt < selected.startedAt
+  ) {
+    return undefined;
+  }
   if (
     selected !== undefined &&
     value.event === "withdrawal-origin-witness" &&
