@@ -17,6 +17,7 @@ import { basename, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test, { describe } from "node:test";
+import { projectOpenShellGitRetention } from "../../scripts/ci/openshell-git-retention.mjs";
 import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.mjs";
 import { skipperFailureSummary } from "../../scripts/ci/skipper-release.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
@@ -7192,6 +7193,29 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     httpStatus: null,
     ...diagnostic,
   }));
+  // Old producers reported HTTP failures without either RPC diagnostic key.
+  const legacyMixedGrantFailure = {
+    event: "mixed-grant-failure",
+    phase: "deployment",
+    category: "http",
+    httpStatus: 503,
+  };
+  mixedGrantFailures.push(legacyMixedGrantFailure);
+  // JSON drops undefined keys, so exercise explicit invalid values before serialization.
+  for (const diagnostic of [
+    { method: undefined },
+    { grpcStatus: undefined },
+    { method: undefined, grpcStatus: undefined },
+  ]) {
+    assert.equal(
+      projectOpenShellGitRetention({
+        kind: retentionKind,
+        ...legacyMixedGrantFailure,
+        ...diagnostic,
+      }),
+      undefined,
+    );
+  }
   const retentionReceipts = [
     ...mixedGrantFailures.map((receipt) => ({
       ...receipt,
@@ -7311,11 +7335,18 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   ].map((value) => ({ kind: retentionKind, ...value, unexpected: forbidden }));
   const invalidRetention = [
     // Diagnostic metadata must stay closed even when the supplier reports an error.
+    { ...legacyMixedGrantFailure, method: null },
+    { ...legacyMixedGrantFailure, grpcStatus: null },
     ...[undefined, forbidden, 14].map((method) => ({ ...mixedGrantFailures[0], method })),
     ...[undefined, 0, 17, 1.5, "14"].map((grpcStatus) => ({
       ...mixedGrantFailures[0],
       grpcStatus,
     })),
+    ...[undefined, null, 99, 600, 503.5, "503"].map((httpStatus) => ({
+      ...legacyMixedGrantFailure,
+      httpStatus,
+    })),
+    { ...mixedGrantFailures[0], httpStatus: 503 },
     // Each boundary must have a complete receipt. A success-shaped prefix is
     // not evidence of a model turn, Git request, or withdrawal denial.
     ...mixedGrant.flatMap((receipt) =>
@@ -7927,7 +7958,12 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   assert.deepEqual(
     receipts.filter(({ event }) => event.startsWith("mixed-grant-")),
     [
-      ...mixedGrantFailures.map((receipt) => ({ kind: retentionKind, ...receipt })),
+      ...mixedGrantFailures.map((receipt) => ({
+        kind: retentionKind,
+        method: null,
+        grpcStatus: null,
+        ...receipt,
+      })),
       ...[0, 128].map((exitCode) => ({
         kind: retentionKind,
         event: "mixed-grant-agent-git-tool",
