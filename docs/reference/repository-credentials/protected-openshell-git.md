@@ -234,7 +234,7 @@ See [Credential Proxy uncertainty](../drivers/credential-proxy.md#cancellation-r
 
 ## Diagnose a refused request
 
-GitHub App metadata and `permissions` flags do not prove write access.
+GitHub App `permissions` flags alone prove neither write access nor denial.
 [Verify the authorized operation and remote result](../../guides/credential-proxy.md#verify-use-loss-and-withdrawal);
 Git push success does not prove pull-request API access.
 
