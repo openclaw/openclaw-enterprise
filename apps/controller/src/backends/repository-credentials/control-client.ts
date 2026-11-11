@@ -8,6 +8,7 @@ import {
   isCanonicalUnixSocketPath,
   isValidGitClientConnection,
   normalizePushRefAllowlist,
+  repositorySessionBearerSource,
 } from "../../drivers/repo/access/client-contracts.ts";
 import {
   hasUnsettledCleanupCounts,
@@ -15,6 +16,8 @@ import {
   type RepositoryCredentialSessionResult,
   type SessionStatus,
 } from "../../drivers/repo/access/service-contracts.ts";
+
+const repositorySessionBearerPattern = new RegExp(`^${repositorySessionBearerSource}$`);
 
 /** Private wire response; the selected Driver renders the portable runtime files. */
 export type RepositoryCredentialControlOpenResult =
@@ -137,7 +140,7 @@ function client(value: unknown): RepositoryCredentialClientConfiguration {
 
 function opened(value: unknown): RepositoryCredentialSessionResult {
   const parsed = object(value, ["session", "bearer", "client"]);
-  if (typeof parsed.bearer !== "string" || !/^[A-Za-z0-9_-]{43,256}$/.test(parsed.bearer)) {
+  if (typeof parsed.bearer !== "string" || !repositorySessionBearerPattern.test(parsed.bearer)) {
     return unavailable();
   }
   const session = status(parsed.session);

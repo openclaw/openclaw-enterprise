@@ -3,6 +3,13 @@ import type {
   Denied,
   RequestHead,
 } from "../../access/backend-contracts.ts";
+import { repositorySessionBearerSource } from "../../access/client-contracts.ts";
+
+const repositorySessionBearerPattern = new RegExp(`^${repositorySessionBearerSource}$`);
+const apiSessionBearerPattern = new RegExp(
+  `^(?:token|Bearer) (${repositorySessionBearerSource})$`,
+  "i",
+);
 
 type GatewayAuthenticationDependencies = Readonly<{
   isGitRoute: (head: RequestHead) => boolean;
@@ -13,7 +20,7 @@ function parseSessionBearer(authorization: string, git: boolean): string | undef
     return;
   }
   if (!git) {
-    return /^(?:token|Bearer) ([A-Za-z0-9_-]{43,256})$/i.exec(authorization)?.[1];
+    return apiSessionBearerPattern.exec(authorization)?.[1];
   }
   const match = /^Basic ([A-Za-z0-9+/]+={0,2})$/i.exec(authorization);
   if (!match) {
@@ -30,7 +37,7 @@ function parseSessionBearer(authorization: string, git: boolean): string | undef
       return;
     }
     const token = text.slice(prefix.length);
-    return /^[A-Za-z0-9_-]{43,256}$/.test(token) ? token : undefined;
+    return repositorySessionBearerPattern.test(token) ? token : undefined;
   } finally {
     bytes.fill(0);
   }

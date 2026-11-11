@@ -200,12 +200,12 @@ export class OpenShellDeploymentFailedError extends Error {
 
 export function waitForOpenShellRevisionActivation(
   waitFor,
-  { request, agentPath, revisionId, workerEvents = [] },
+  { request, agentPath, revisionId, workerEvents = [], checkDeploymentBeforeActivation = false },
 ) {
   return waitFor(`OpenShell revision ${revisionId} activation`, async () => {
     const observed = await request("GET", agentPath);
     assert.equal(observed.status, 200, "OpenShell Agent status read failed.");
-    if (observed.data.activeRevisionId === revisionId) {
+    if (observed.data.activeRevisionId === revisionId && !checkDeploymentBeforeActivation) {
       return observed.data;
     }
     const deployment = await request("GET", `${agentPath}/deployments/${revisionId}`);
@@ -217,7 +217,7 @@ export function waitForOpenShellRevisionActivation(
         workerEvents,
       );
     }
-    return undefined;
+    return observed.data.activeRevisionId === revisionId ? observed.data : undefined;
   });
 }
 
@@ -368,17 +368,30 @@ export function assertOpenShellHarnessBinding(
   sandbox,
   pod,
   profile = "perAgent",
+  configuredServiceAccountName,
 ) {
   assert.equal(sandbox.metadata.namespace, namespace);
   assert.equal(pod.metadata.namespace, namespace);
   assert.ok(sandbox.metadata.name, "Sandbox must have a stable resource name.");
-  assert.ok(["perAgent", "maintainedLauncher"].includes(profile), "unknown identity profile");
+  assert.ok(
+    ["perAgent", "maintainedLauncher", "namespaceShared"].includes(profile),
+    "unknown identity profile",
+  );
   // internal/occdev/openshell.go selects this literal for the maintained launcher.
   // Keep the per-Agent oracle as the default for callers qualifying that contract.
-  assert.equal(
-    pod.spec.serviceAccountName,
-    profile === "maintainedLauncher" ? "openshell-sandbox" : openShellAgentName(revision.agentId),
-  );
+  let expectedServiceAccountName = openShellAgentName(revision.agentId);
+  if (profile === "maintainedLauncher") {
+    expectedServiceAccountName = "openshell-sandbox";
+  } else if (profile === "namespaceShared") {
+    // Read the configured namespace Gateway account independently of this Pod.
+    assert.ok(
+      typeof configuredServiceAccountName === "string" &&
+        configuredServiceAccountName.trim().length > 0,
+      "the namespace-shared profile requires its configured ServiceAccount",
+    );
+    expectedServiceAccountName = configuredServiceAccountName;
+  }
+  assert.equal(pod.spec.serviceAccountName, expectedServiceAccountName);
   assert.equal(pod.metadata.labels?.["openclaw.dev/namespace"], revision.namespaceId);
   assert.equal(pod.metadata.labels?.["openclaw.dev/agent"], revision.agentId);
   assert.equal(pod.metadata.labels?.["openclaw.dev/revision"], revision.id);
@@ -400,9 +413,8 @@ export function assertOpenShellHarnessBinding(
     true,
     "the Agent Sandbox controller, not Compute, must own the Harness Pod.",
   );
-  if (profile === "maintainedLauncher") {
-    // The supervisor runs in a separate Pod. The maintained launcher's workload
-    // must bootstrap from its Secret without receiving a ServiceAccount token.
+  if (profile === "maintainedLauncher" || profile === "namespaceShared") {
+    // Shared accounts must not give workloads a Kubernetes ServiceAccount token.
     assert.equal(pod.spec.automountServiceAccountToken, false);
     assert.equal(
       (pod.spec.volumes ?? []).some(({ projected }) =>
@@ -411,6 +423,8 @@ export function assertOpenShellHarnessBinding(
       false,
       "the workload Pod must not project a ServiceAccount token, even for init containers.",
     );
+  }
+  if (profile === "maintainedLauncher") {
     const sandboxId = sandbox.metadata.labels?.["openshell.ai/sandbox-id"];
     assert.ok(typeof sandboxId === "string" && sandboxId.length > 0);
     assert.equal(pod.metadata.annotations?.["openshell.ai/sandbox-id"], sandboxId);
@@ -1423,8 +1437,16 @@ export function createOpenShellKubernetesFixture({
     sandbox,
     pod,
     profile = "perAgent",
+    configuredServiceAccountName,
   ) {
-    assertOpenShellHarnessBinding(namespace, revision, sandbox, pod, profile);
+    assertOpenShellHarnessBinding(
+      namespace,
+      revision,
+      sandbox,
+      pod,
+      profile,
+      configuredServiceAccountName,
+    );
     assert.equal(
       await maybeResource("deployment", openShellRevisionName(revision), namespace),
       undefined,

@@ -178,10 +178,9 @@ separately requires screenshots and video. This check records no video.
 
 ## OpenShell Sandbox
 
-The real Sandbox suite checks a dedicated Codex Agent's authenticated Gateway
-access, model and tool turns, credential delivery, filesystem and network
-restrictions, replacement, and cleanup. Local fixtures alone do not prove these
-outcomes; see [OpenShell coverage](openshell-coverage.md).
+The real Sandbox suite checks Codex Gateway access, model/tool turns, credentials,
+filesystem/network restrictions, replacement and cleanup. Local fixtures alone
+are insufficient; see [OpenShell coverage](openshell-coverage.md).
 
 If the credential-route check's allowed endpoint fails, the suite captures one
 bounded tail from the Harness's exact supervisor before cleanup: source type,
@@ -245,13 +244,18 @@ The Codex account must permit `:danger-full-access`; OpenShell supplies the oute
 sandbox. The live probe checks the effective profile before starting inference
 and fails immediately if managed policy selects a restricted sandbox.
 
-The lane runs both setup tests, the Sandbox test, and first-Agent tests for both
-control planes. Missing selected prerequisites fail the lane. Clean up even
-after preparation or test failures:
+Missing prerequisites fail the lane. Always clean up:
 
 ```sh
 node scripts/ci/cleanup.mjs --state "$OCC_OPENSHELL_TEST_ROOT/state.json"
 ```
+
+For scratch, select `tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts`
+with preparation `--selected-file` and execution `--file`. Both require
+`OCC_TEST_OPENSHELL_HARNESS=codex`,
+`OCC_TEST_OPENSHELL_MODEL_BASE_URL=https://api.openai.com/v1`,
+`OPENAI_API_KEY`, and `OCC_TEST_OPENAI_MODEL`.
+The case checks writes, frozen selection, and claim refusals. NVMe and node loss are separate.
 
 The [Git retention case](repository-credentials.md#verify-openshell-git-expiry-and-restart)
 checks finite-grant expiry and worker restart after installation.
