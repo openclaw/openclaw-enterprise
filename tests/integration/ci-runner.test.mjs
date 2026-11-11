@@ -6210,8 +6210,7 @@ export async function prepareFile({ file }) {
 
 test("run records a preparation failure's redacted message in the diagnostics report", async (t) => {
   const root = await fixture(t);
-  const resultsPath = join(root, "results/prepare.json");
-  const statePath = join(root, "state/prepare.json");
+  const { statePath, resultsPath } = runnerArtifactPaths(root, "prepare");
   await writeFile(
     join(root, "scripts/ci/prepare.mjs"),
     [
@@ -7489,36 +7488,28 @@ test("a failed local setup reports only paired outcomes", async (t) => {
     measurements.filter(({ kind }) => kind === "local-first-agent-manifest-failure"),
     reasons.map((reason) => ({ kind: "local-first-agent-manifest-failure", reason })),
   );
+  const expectedRoutingFailure = {
+    kind: "local-first-agent-startup-failure",
+    primaryStage: "routing",
+    cleanupFailed: true,
+    parentContextDone: false,
+  };
   assert.deepEqual(
     measurements.filter(({ kind }) => kind === "local-first-agent-startup-failure"),
     [
       {
-        kind: "local-first-agent-startup-failure",
-        primaryStage: "routing",
-        cleanupFailed: true,
-        parentContextDone: false,
+        ...expectedRoutingFailure,
         routingOperation: "manifest-download",
         routingController: "cert-manager",
       },
+      expectedRoutingFailure,
       {
-        kind: "local-first-agent-startup-failure",
-        primaryStage: "routing",
-        cleanupFailed: true,
-        parentContextDone: false,
-      },
-      {
-        kind: "local-first-agent-startup-failure",
-        primaryStage: "routing",
-        cleanupFailed: true,
-        parentContextDone: false,
+        ...expectedRoutingFailure,
         routingOperation: "controller-rollout",
         routingController: "envoy-gateway",
       },
       {
-        kind: "local-first-agent-startup-failure",
-        primaryStage: "routing",
-        cleanupFailed: true,
-        parentContextDone: false,
+        ...expectedRoutingFailure,
         routingOperation: "node-pod-cidr",
       },
     ],
@@ -9136,14 +9127,10 @@ for (const scenario of [
 ]) {
   test(`run retains safe preparation ${scenario.name} diagnostics without starting tests`, async (t) => {
     const root = await fixture(t);
-    await writeSingleLaneManifest(
+    await writeSingleFileRunnerLane(
       root,
       "preparation",
-      [{ path: "tests/integration/unstarted.test.mjs" }],
-      { ci: ["preparation"] },
-    );
-    await writeFile(
-      join(root, "tests/integration/unstarted.test.mjs"),
+      "tests/integration/unstarted.test.mjs",
       'import { writeFileSync } from "node:fs"; writeFileSync(new URL("../../started", import.meta.url), "started");\n',
     );
     const payload = {
