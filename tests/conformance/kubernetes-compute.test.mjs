@@ -12784,23 +12784,36 @@ test("native channel providers require Secret bindings and project them only to 
   ]);
 });
 
-test("Kubernetes runtime diagnostics read exact private Pod status without native sends", async (context) => {
-  const driver = createKubernetesComputeDriver(
+function privateRuntimeReadbackDriver() {
+  return createKubernetesComputeDriver(
     options({
-      runtime: {
-        transportSecretPrefix: "transport",
-        gatewayStorageClassName: "local-path",
-      },
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
     }),
   );
-  const resolveNamespace = driver.resolveNamespace.bind(driver);
-  driver.resolveNamespace = async (...args) => {
-    assert.ok(
-      currentComputeAbortSignal(),
-      "the overall diagnostic deadline covers namespace reads",
-    );
-    return resolveNamespace(...args);
+}
+
+function privateRuntimePod(revision, role, { status, ...metadata }) {
+  return {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: {
+      ...metadata,
+      labels: {
+        "openclaw.dev/agent": revision.agentId,
+        "openclaw.dev/revision": revision.id,
+        "openclaw.dev/workload-role": role,
+      },
+    },
+    status,
   };
+}
+
+function privateRuntimePodList(items) {
+  return { apiVersion: "v1", kind: "PodList", items };
+}
+
+test("Kubernetes runtime diagnostics read exact private Pod status without native sends", async (context) => {
+  const driver = privateRuntimeReadbackDriver();
   const namespaceName = kubernetesNamespaceName(tenant.id);
   const gatewayNamespaceName = kubernetesNamespaceName(tenant.id);
   const agent = {
@@ -12819,25 +12832,17 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
     configurationId: agent.configurationId,
     servicePrincipalId: agent.servicePrincipalId,
   });
-  const pod = (role) => ({
-    apiVersion: "v1",
-    kind: "Pod",
-    metadata: {
+  const pod = (role) =>
+    privateRuntimePod(revision, role, {
       name: `${role}-runtime-diagnostics-pod`,
       namespace: role === "gateway" ? gatewayNamespaceName : namespaceName,
       uid: `${role}-runtime-diagnostics-uid`,
-      labels: {
-        "openclaw.dev/agent": revision.agentId,
-        "openclaw.dev/revision": revision.id,
-        "openclaw.dev/workload-role": role,
+      status: {
+        phase: "Running",
+        podIP: "10.42.0.10",
+        containerStatuses: [{ name: role, containerID: `${role}-container-1` }],
       },
-    },
-    status: {
-      phase: "Running",
-      podIP: "10.42.0.10",
-      containerStatuses: [{ name: role, containerID: `${role}-container-1` }],
-    },
-  });
+    });
   const pods = { agent: pod("agent"), gateway: pod("gateway") };
   const proxyReads = [];
   const podListReads = [];
@@ -12850,6 +12855,8 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
   let diagnosticsServing = true;
   let gatewayTransportFailure = false;
   let privateProxyRead;
+  let namespaceDiscoveryDeadline;
+  let discoverySignal;
   // Unrun channel checks the Gateway adds to its one socket check (a status report may carry at
   // most 32 checks).
   let extraGatewayChecks = 0;
@@ -12857,6 +12864,13 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
     core: {
       async listNamespace({ labelSelector }) {
         assert.equal(labelSelector, `openclaw.dev/namespace=${tenant.id}`);
+        if (namespaceDiscoveryDeadline !== undefined) {
+          discoverySignal = currentComputeAbortSignal();
+          namespaceDiscoveryDeadline.abort(
+            new DOMException("private discovery detail", "TimeoutError"),
+          );
+          discoverySignal?.throwIfAborted();
+        }
         return {
           apiVersion: "v1",
           kind: "NamespaceList",
@@ -12881,7 +12895,7 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
           : "gateway";
         assert.equal(namespace, role === "gateway" ? gatewayNamespaceName : namespaceName);
         podListReads.push(role);
-        return { apiVersion: "v1", kind: "PodList", items: [structuredClone(pods[role])] };
+        return privateRuntimePodList([structuredClone(pods[role])]);
       },
       async connectGetNamespacedPodProxyWithPath({ name, namespace, path }) {
         proxyReads.push({ name, namespace, path });
@@ -12932,7 +12946,6 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
   });
 
   assert.equal(diagnostics.revisionId, revision.id);
-  assert.equal(diagnostics.checks.length, 2);
   assert.deepEqual(
     diagnostics.checks.map(({ component, check, state }) => ({ component, check, state })),
     [
@@ -13051,8 +13064,11 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
   // All four private reads expire at the shared deadline. The Agent reads and
   // supplementary Gateway read reject first; the Gateway diagnostics failure
   // still determines the safe transport category.
-  const collectionDeadline = new AbortController();
-  const timeout = context.mock.method(AbortSignal, "timeout", () => collectionDeadline.signal);
+  let collectionDeadline = new AbortController();
+  const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+  const timeout = context.mock.method(AbortSignal, "timeout", realTimeout);
+  // Only the collection owns this signal. Each Kubernetes request keeps its own deadline.
+  timeout.mock.mockImplementationOnce(() => collectionDeadline.signal);
   const pendingProxyReads = new Map();
   const gatewayDiagnostics = "gateway:openclaw/runtime/diagnostics";
   privateProxyRead = (role, path) =>
@@ -13072,9 +13088,24 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
     });
   try {
     await assert.rejects(driver.diagnoseAgentDeployment(binding), RuntimeDiagnosticsTransportError);
+
+    // The same shared deadline during Namespace discovery has no Gateway proxy to classify.
+    privateProxyRead = undefined;
+    collectionDeadline = new AbortController();
+    namespaceDiscoveryDeadline = collectionDeadline;
+    timeout.mock.mockImplementationOnce(() => collectionDeadline.signal);
+    const previousProxyReads = proxyReads.length;
+    await assert.rejects(driver.diagnoseAgentDeployment(binding), {
+      name: "DependencyUnavailableError",
+      message: "Runtime diagnostics timed out.",
+    });
+    assert.ok(discoverySignal?.aborted);
+    assert.equal(discoverySignal.reason, collectionDeadline.signal.reason);
+    assert.equal(proxyReads.length, previousProxyReads);
   } finally {
     timeout.mock.restore();
     privateProxyRead = undefined;
+    namespaceDiscoveryDeadline = undefined;
   }
 
   // A status read that is refused or returns another Pod's report adds nothing;
@@ -13109,8 +13140,8 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
   const owner = new AbortController();
   const cancelled = new Error("diagnostics caller went away");
   runtimeStatus = async () => {
-    // The diagnostics reads have finished by now, so only the failed status read sees it.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Let the in-memory diagnostics reads finish before cancelling the pending status read.
+    await new Promise((resolve) => setImmediate(resolve));
     owner.abort(cancelled);
     throw Object.assign(new Error("pods/proxy denied"), { code: 403, headers: {} });
   };
@@ -13121,14 +13152,7 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
 });
 
 test("Kubernetes runtime diagnostics reject missing timestamps and raced Pod readbacks", async () => {
-  const driver = createKubernetesComputeDriver(
-    options({
-      runtime: {
-        transportSecretPrefix: "transport",
-        gatewayStorageClassName: "local-path",
-      },
-    }),
-  );
+  const driver = privateRuntimeReadbackDriver();
   assert.throws(
     () =>
       driver.validRuntimeDiagnosticCheck({ component: "agent", check: "auth", state: "failed" }),
@@ -13142,48 +13166,35 @@ test("Kubernetes runtime diagnostics reject missing timestamps and raced Pod rea
     configurationId: "cfg_runtime_readback_race",
     servicePrincipalId: "service-principal-runtime-readback-race",
   });
-  const pod = {
-    apiVersion: "v1",
-    kind: "Pod",
-    metadata: {
-      name: "agent-runtime-readback-race-pod",
-      namespace: namespaceName,
-      uid: "agent-runtime-readback-race-uid",
-      labels: {
-        "openclaw.dev/agent": revision.agentId,
-        "openclaw.dev/revision": revision.id,
-        "openclaw.dev/workload-role": "agent",
-      },
-    },
+  const pod = privateRuntimePod(revision, "agent", {
+    name: "agent-runtime-readback-race-pod",
+    namespace: namespaceName,
+    uid: "agent-runtime-readback-race-uid",
     status: {
       phase: "Running",
       podIP: "10.42.0.11",
       containerStatuses: [{ name: "agent", containerID: "agent-container-1" }],
     },
-  };
+  });
   let podLists = 0;
   driver.apiClients = Promise.resolve({
     core: {
       async listNamespacedPod() {
         podLists += 1;
-        return {
-          apiVersion: "v1",
-          kind: "PodList",
-          items:
-            podLists === 1
-              ? [structuredClone(pod)]
-              : [
-                  structuredClone(pod),
-                  {
-                    ...structuredClone(pod),
-                    metadata: {
-                      ...pod.metadata,
-                      name: "agent-runtime-readback-race-pod-2",
-                      uid: "agent-runtime-readback-race-uid-2",
-                    },
-                  },
-                ],
-        };
+        if (podLists === 1) {
+          return privateRuntimePodList([structuredClone(pod)]);
+        }
+        return privateRuntimePodList([
+          structuredClone(pod),
+          {
+            ...structuredClone(pod),
+            metadata: {
+              ...pod.metadata,
+              name: "agent-runtime-readback-race-pod-2",
+              uid: "agent-runtime-readback-race-uid-2",
+            },
+          },
+        ]);
       },
       async connectGetNamespacedPodProxyWithPath() {
         return {
@@ -13244,11 +13255,7 @@ test("Kubernetes runtime diagnostics reject missing timestamps and raced Pod rea
 // Deployment still counts the old one ready. The apiserver refuses to proxy to
 // it (400 "address not allowed"), so the readback must not try.
 test("Kubernetes status readback skips a replacement Pod that is not Running with an IP", async () => {
-  const driver = createKubernetesComputeDriver(
-    options({
-      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
-    }),
-  );
+  const driver = privateRuntimeReadbackDriver();
   const namespace = { name: kubernetesNamespaceName(tenant.id), plane: "execution" };
   const revision = routedRevision(driver, {
     id: "revision-runtime-readback-replacement",
@@ -13256,22 +13263,14 @@ test("Kubernetes status readback skips a replacement Pod that is not Running wit
     configurationId: "cfg_runtime_readback_replacement",
     servicePrincipalId: "service-principal-runtime-readback-replacement",
   });
-  const pod = (name, status, deletionTimestamp) => ({
-    apiVersion: "v1",
-    kind: "Pod",
-    metadata: {
+  const pod = (name, status, deletionTimestamp) =>
+    privateRuntimePod(revision, "agent", {
       name,
       namespace: namespace.name,
       uid: `${name}-uid`,
       ...(deletionTimestamp === undefined ? {} : { deletionTimestamp }),
-      labels: {
-        "openclaw.dev/agent": revision.agentId,
-        "openclaw.dev/revision": revision.id,
-        "openclaw.dev/workload-role": "agent",
-      },
-    },
-    status: { ...status, containerStatuses: [{ name: "agent", containerID: `${name}-c` }] },
-  });
+      status: { ...status, containerStatuses: [{ name: "agent", containerID: `${name}-c` }] },
+    });
   const terminating = pod(
     "agent-terminating",
     { phase: "Running", podIP: "10.42.0.40" },
@@ -13282,7 +13281,7 @@ test("Kubernetes status readback skips a replacement Pod that is not Running wit
   driver.apiClients = Promise.resolve({
     core: {
       async listNamespacedPod() {
-        return { apiVersion: "v1", kind: "PodList", items: structuredClone(items) };
+        return privateRuntimePodList(structuredClone(items));
       },
       async connectGetNamespacedPodProxyWithPath({ name }) {
         proxied.push(name);

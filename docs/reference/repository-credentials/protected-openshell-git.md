@@ -234,14 +234,17 @@ See [Credential Proxy uncertainty](../drivers/credential-proxy.md#cancellation-r
 
 ## Diagnose a refused request
 
+GitHub App `permissions` flags alone prove neither write access nor denial.
+[Verify the authorized operation and remote result](../../guides/credential-proxy.md#verify-use-loss-and-withdrawal);
+Git push success does not prove pull-request API access.
+
 Git hides JSON error bodies. A refused clone, fetch, `ls-remote` or initial push
 reports HTTP 403 (exit 128). Refused push uploads, usually for another branch or
 tag (`request_not_allowed`), report `error: RPC failed; HTTP 403` and
 `fatal: the remote end hung up unexpectedly`. Even with `Everything up-to-date`
 (exit 1), GitHub received nothing.
 
-After a known pre-send refusal, trace a fresh read for the reason. Git redacts
-the authorization header.
+After a known pre-send refusal, trace a fresh read. Git redacts authorization:
 
 ```bash
 GIT_TRACE_CURL=1 git ls-remote origin 2>&1 | sed -n 's/.*<= Recv data: //p' \
@@ -263,10 +266,9 @@ The draft helper reports
 | `route_not_ready`             | The route is starting, verifying or briefly unavailable                                                                      | Retry in a minute                                                                  |
 | `online_authorization_denied` | The worker did not answer in time, matched no route, or had too many decisions in flight for the Sandbox or in total         | Retry once, then ask an operator                                                   |
 
-Retry advice above applies only to a known pre-send refusal, never an uncertain send.
+Retry advice applies only to known pre-send refusals, never uncertain sends.
 
-A deploying version has no credential, so requests answer
-`route_not_ready` until it is active.
+Deploying versions lack credentials; requests answer `route_not_ready` until activation.
 
 ### Worker log
 
