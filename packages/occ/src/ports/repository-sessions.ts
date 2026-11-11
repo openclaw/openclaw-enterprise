@@ -98,6 +98,9 @@ export interface RepositorySessionRepository extends RepositorySessionReadReposi
     approval: Pick<RepositoryStandingApproval, "namespaceId" | "agentId" | "id" | "generation">,
     at: string,
   ): Promise<void>;
+  /** The caller holds the Agent lock and has removed a member of its active finite admission.
+   * Close that admission and retain its revision-owned withdrawal obligation atomically. */
+  withdrawFinite(owner: RepositoryRevisionOwner, at: string): Promise<void>;
   /** Serialize receipt changes with the exact attempt and its owner. */
   lockAttempt(admissionId: string): Promise<Readonly<RepositorySessionAttempt> | undefined>;
   createBrokerReceipt(input: {

@@ -16,12 +16,9 @@ after the production installation sequence is complete.
 
 `./scripts/k3d` has **no upgrade command**. Its interactive demo is a disposable
 test harness, not a persistent Helm installation: it uses loopback HTTP and
-creates its own topology. The production upgrade script cannot directly upgrade
-that demo. Its normal Ctrl-C shutdown removes demo resources and port-forwards;
-restarting creates fresh demo resources while reusing prepared infrastructure and
-images. `reset` deletes its test Namespaces and replaces its database; `down`
-removes its cluster and PostgreSQL resources. Do not use these commands to
-upgrade or preserve a demo. See the [demo lifecycle](../../testing/kubernetes.md#develop-with-local-containers-and-k3d).
+creates its own topology. The production upgrade script cannot upgrade
+that demo. Ctrl-C, `reset` and `down` remove or replace its resources; never use
+them to upgrade or preserve one. See the [demo lifecycle](../../testing/kubernetes.md#develop-with-local-containers-and-k3d).
 
 ## Prepare the existing installation
 
@@ -59,7 +56,8 @@ upgrade or preserve a demo. See the [demo lifecycle](../../testing/kubernetes.md
 - If the bundled Collector is enabled, including the [observability demo](../observability/demo.md)'s
   `occ-demo-collector-config`, [refresh the Secret named by `logging.collector.configSecretName`](../observability.md#refresh-the-collector-configuration-on-upgrade)
   from the `RELEASE_SOURCE_SHA` checkout and restart the Collector. Helm does not
-  update it, and the script stops while it differs from that checkout.
+  update it. Differences in `collector.yaml` or `kubernetes.yaml` stop preparation.
+  Use `--collector-config-reviewed` only for intentional, reviewed differences.
 
 From a secure operator shell, replace placeholders with the existing paths and
 names. The evidence parent must exist; the final directory must be new.
@@ -150,8 +148,8 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
 ```
 
 The first command returns `ok`, Helm reports the release, and OCC authenticates.
-For a runtime upgrade, also save `occ --output json installation deployment-inventory`
-before and after the change; that operation requires the runtime upgrade permissions.
+For every upgrade, save `occ --output json installation deployment-inventory`
+before and after the change using the [required inventory permissions](production-upgrade.md#prepare-the-release).
 Keep inventories private. Check data and backups with the database and storage
 owners; object names alone do not prove retention.
 
@@ -281,16 +279,27 @@ registry index digests can differ.
 
 ## Run the upgrade
 
-Use a separate clean checkout at `RELEASE_SOURCE_SHA`, with its chart and upgrade
-script, and a compatible installed `occ` CLI. From that checkout confirm
-`git rev-parse HEAD` equals `RELEASE_SOURCE_SHA`. If that source does not
-contain the upgrade script, stop; this procedure cannot be run from it. Do not
-overwrite a working checkout. Install `helm`, `kubectl`, `jq`, `yq` v4, and
-Python 3. Use a fresh
+Use a separate clean checkout at `RELEASE_SOURCE_SHA`, with its chart, upgrade
+script, and a compatible installed `occ` CLI. Confirm
+`git rev-parse HEAD` equals `RELEASE_SOURCE_SHA`. Stop if the upgrade script is missing. Do not
+overwrite a working checkout. Install Node.js, `helm`, `kubectl`, `jq`, `yq` v4,
+and Python 3. Follow `engines.node` in this checkout's `package.json` even without
+repository credentials. Use a fresh
 `UPGRADE_EVIDENCE` directory for each new release; retain it when resuming an
 interrupted release. The script changes the protected
 input files as well as the cluster; it saves their previous contents in that
 private evidence directory before cluster mutation.
+
+Older `dev-up` installations set `agentNativeAdmin.sharedCookieDomain`,
+which the chart refuses; pass a copy without it:
+
+```bash
+CANDIDATE_ARGS=()
+if [[ "$(yq '.agentNativeAdmin | has("sharedCookieDomain")' "$VALUES")" == true ]]; then
+  (umask 077; yq 'del(.agentNativeAdmin.sharedCookieDomain)' "$VALUES" > /secure/occ/candidate-values.yaml)
+  CANDIDATE_ARGS=(--candidate-values /secure/occ/candidate-values.yaml)
+fi
+```
 
 Choose exactly one invocation below. Both options together perform a combined
 release; omitting one leaves that image selection unchanged.
@@ -302,7 +311,7 @@ scripts/upgrade-production-images \
   --namespace "$NAMESPACE" --release "$RELEASE" \
   --values "$VALUES" --installation "$INSTALLATION" \
   --source-revision "$RELEASE_SOURCE_SHA" --evidence-dir "$UPGRADE_EVIDENCE" \
-  --controller-image "$CONTROLLER_IMAGE" "${BROKER_ARGS[@]}"
+  --controller-image "$CONTROLLER_IMAGE" "${BROKER_ARGS[@]}" "${CANDIDATE_ARGS[@]}"
 
 # Runtime only: use a fresh UPGRADE_EVIDENCE for a new release.
 scripts/upgrade-production-images \
@@ -310,7 +319,7 @@ scripts/upgrade-production-images \
   --namespace "$NAMESPACE" --release "$RELEASE" \
   --values "$VALUES" --installation "$INSTALLATION" \
   --source-revision "$RELEASE_SOURCE_SHA" --evidence-dir "$UPGRADE_EVIDENCE" \
-  --runtime-image "$RUNTIME_IMAGE" "${RUNTIME_REPOSITORY_ARGS[@]}"
+  --runtime-image "$RUNTIME_IMAGE" "${RUNTIME_REPOSITORY_ARGS[@]}" "${CANDIDATE_ARGS[@]}"
 
 # Combined: use a fresh UPGRADE_EVIDENCE for a new release.
 scripts/upgrade-production-images \
@@ -319,7 +328,7 @@ scripts/upgrade-production-images \
   --values "$VALUES" --installation "$INSTALLATION" \
   --source-revision "$RELEASE_SOURCE_SHA" --evidence-dir "$UPGRADE_EVIDENCE" \
   --controller-image "$CONTROLLER_IMAGE" --runtime-image "$RUNTIME_IMAGE" \
-  "${BROKER_ARGS[@]}"
+  "${BROKER_ARGS[@]}" "${CANDIDATE_ARGS[@]}"
 ```
 
 The helper stops the API and worker and waits for their Pods to terminate. Helm

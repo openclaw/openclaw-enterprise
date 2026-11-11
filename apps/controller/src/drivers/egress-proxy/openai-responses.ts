@@ -1,5 +1,5 @@
 import { asRecord } from "@openclaw-enterprise/utils";
-import { parseUnambiguousJson } from "../repo/credentials/json-members.ts";
+import { parseUnambiguousJson } from "../json-members.ts";
 
 // Closed provider-owned schemas. Local tool schemas describe data for the Harness;
 // provider-executed tools and remote references require a different admitted grant.
@@ -168,25 +168,56 @@ const responseTools = array(
 
 const toolChoice = oneOf("auto", "none", "required");
 
+const empty = array(() => false, 0);
+const outputText = object(
+  { type: oneOf("output_text"), text },
+  { annotations: empty, logprobs: empty },
+);
 const textPart = object({ type: oneOf("input_text", "output_text"), text });
 const contentParts = array(textPart);
 const content: Validator = (value) => text(value) || contentParts(value);
 const phase = oneOf("commentary", "partial_answer", "final_answer");
 const status = oneOf("in_progress", "completed", "incomplete");
 const summary = object({ type: oneOf("summary_text"), text });
-const inputMessage = object(
-  { role: oneOf("system", "developer", "user", "assistant"), content },
-  { type: oneOf("message"), id: text, phase, status },
+const inputMessage = (role: Validator, content: Validator) =>
+  object({ role, content }, { type: oneOf("message"), id: text, phase, status });
+const plainInputMessage = inputMessage(oneOf("system", "developer", "user"), content);
+const assistantContentParts = array((value) => textPart(value) || outputText(value));
+const assistantInputMessage = inputMessage(
+  oneOf("assistant"),
+  (value) => text(value) || assistantContentParts(value),
 );
-const reasoningItem = object(
-  { type: oneOf("reasoning"), summary: array(summary) },
+const agentPath: Validator = (value) =>
+  typeof value === "string" &&
+  value.length <= 4096 &&
+  /^\/root(?:\/(?!root(?:\/|$))[a-z0-9_]+)*$/u.test(value);
+const agentMessageText = object({ type: oneOf("input_text"), text });
+const agentMessageEncryptedContent = object({
+  type: oneOf("encrypted_content"),
+  encrypted_content: text,
+});
+// Native agent paths label inference input. They confer no proxy authority.
+const agentInputMessage = object(
   {
-    id: text,
-    content: array(object({ type: oneOf("reasoning_text"), text })),
-    encrypted_content: nullable(text),
-    status,
+    type: oneOf("agent_message"),
+    author: agentPath,
+    recipient: agentPath,
+    content: (value) =>
+      Array.isArray(value) &&
+      agentMessageText(value[0]) &&
+      (value.length === 1 || (value.length === 2 && agentMessageEncryptedContent(value[1]))),
   },
+  { id: name },
 );
+const reasoningContent = array(object({ type: oneOf("reasoning_text"), text }));
+const reasoningItem = (content: Validator) =>
+  object(
+    { type: oneOf("reasoning"), summary: array(summary) },
+    { id: text, content, encrypted_content: nullable(text), status },
+  );
+// Codex replays an omitted provider reasoning content field as explicit null.
+const inputReasoningItem = reasoningItem(nullable(reasoningContent));
+const outputReasoningItem = reasoningItem(reasoningContent);
 const toolOutput = object(
   {
     type: oneOf("function_call_output", "custom_tool_call_output"),
@@ -213,23 +244,118 @@ const additionalLocalTools = object(
 );
 const inputItems = array(
   (item) =>
-    inputMessage(item) ||
-    reasoningItem(item) ||
+    plainInputMessage(item) ||
+    assistantInputMessage(item) ||
+    agentInputMessage(item) ||
+    inputReasoningItem(item) ||
     toolCall(item) ||
     toolOutput(item) ||
     additionalLocalTools(item),
 );
 
-const reasoningEffort = oneOf("none", "minimal", "low", "medium", "high", "xhigh");
+const reasoningEffort = oneOf("none", "minimal", "low", "medium", "high", "xhigh", "max");
+// Native telemetry accepts ultra independently of the request effort.
+const nativeReasoningEffort: Validator = (value) => reasoningEffort(value) || value === "ultra";
 const reasoning = optionalFields({
   effort: reasoningEffort,
   summary: oneOf("auto", "concise", "detailed"),
   context: oneOf("auto", "current_turn", "all_turns"),
 });
 
-const metadataText: Validator = (value) => typeof value === "string" && value.length <= 8192;
+const metadataText = (value: unknown): value is string =>
+  typeof value === "string" && value.length <= 8192;
+function metadataJson(schema: Validator): Validator {
+  return (value) => {
+    if (!metadataText(value)) {
+      return false;
+    }
+    try {
+      return schema(parseUnambiguousJson(value));
+    } catch {
+      return false;
+    }
+  };
+}
+
+const gitRemoteUrls: Validator = (value) => {
+  const remotes = Object.entries(asRecord(value) ?? {});
+  return (
+    remotes.length >= 1 &&
+    remotes.length <= 16 &&
+    remotes.every(
+      ([remote, url]) =>
+        /^[A-Za-z0-9_.-]{1,256}$/u.test(remote) &&
+        typeof url === "string" &&
+        url.length <= 2048 &&
+        ((/^[Hh][Tt][Tt][Pp][Ss]:\/\/[A-Za-z0-9.-]+(?::[0-9]{1,5})?\/[A-Za-z0-9._~/-]+$/u.test(
+          url,
+        ) &&
+          URL.canParse(url)) ||
+          /^git@[a-zA-Z0-9.-]+:[a-zA-Z0-9._~/-]+$/u.test(url)),
+    )
+  );
+};
+const gitWorkspace = optionalFields({
+  latest_git_commit_hash: (value) =>
+    typeof value === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(value),
+  has_changes: bool,
+  associated_remote_urls: gitRemoteUrls,
+});
+const gitWorkspaces: Validator = (value) => {
+  const roots = Object.entries(asRecord(value) ?? {});
+  return (
+    roots.length === 1 &&
+    roots.every(
+      ([root, metadata]) =>
+        root.startsWith("/") &&
+        root.length <= 4096 &&
+        !/[\p{Cc}]/u.test(root) &&
+        Object.keys(asRecord(metadata) ?? {}).length > 0 &&
+        gitWorkspace(metadata),
+    )
+  );
+};
 // These are telemetry fields emitted by the selected client, never OCC identities or grants.
+const turnMetadata = optionalFields({
+  installation_id: metadataText,
+  session_id: metadataText,
+  thread_id: metadataText,
+  agent_name: metadataText,
+  turn_id: metadataText,
+  window_id: metadataText,
+  window_number: integer,
+  context_window_id: metadataText,
+  request_kind: oneOf("turn", "prewarm", "compaction", "memory"),
+  compaction: object({
+    trigger: oneOf("manual", "auto"),
+    reason: oneOf("user_requested", "context_limit", "model_downshift", "comp_hash_changed"),
+    implementation: oneOf("responses"),
+    phase: oneOf("standalone_turn", "pre_turn", "mid_turn", "post_turn"),
+    strategy: oneOf("memento"),
+  }),
+  history_initialization: metadataText,
+  root_turn_id: metadataText,
+  parent_turn_id: metadataText,
+  parent_thread_id: metadataText,
+  forked_from_thread_id: metadataText,
+  forked_from_ordinal_exclusive: integer,
+  thread_source: metadataText,
+  turn_trigger: metadataText,
+  subagent_kind: metadataText,
+  sandbox: metadataText,
+  sandbox_mode: metadataText,
+  auto_review_enabled: bool,
+  node_repl_auto_review_required: bool,
+  node_repl_disabled: bool,
+  turn_started_at_unix_ms: integer,
+  analytics_enabled: bool,
+  history_ingest_requested: bool,
+  model: metadataText,
+  reasoning_effort: nativeReasoningEffort,
+  workspaces: gitWorkspaces,
+});
 const clientMetadata = optionalFields({
+  mcp_attribution: metadataJson(object({ status: oneOf("none") })),
   session_id: metadataText,
   thread_id: metadataText,
   turn_id: metadataText,
@@ -239,45 +365,14 @@ const clientMetadata = optionalFields({
   "x-codex-window-id": metadataText,
   "x-codex-parent-thread-id": metadataText,
   "x-openai-subagent": metadataText,
-  "x-codex-turn-metadata": (value) => {
-    if (!metadataText(value)) {
-      return false;
-    }
-    try {
-      return optionalFields({
-        installation_id: metadataText,
-        session_id: metadataText,
-        thread_id: metadataText,
-        agent_name: metadataText,
-        turn_id: metadataText,
-        window_id: metadataText,
-        window_number: integer,
-        context_window_id: metadataText,
-        request_kind: oneOf("turn", "prewarm", "compaction", "memory"),
-        history_initialization: metadataText,
-        root_turn_id: metadataText,
-        parent_turn_id: metadataText,
-        parent_thread_id: metadataText,
-        forked_from_thread_id: metadataText,
-        forked_from_ordinal_exclusive: integer,
-        thread_source: metadataText,
-        turn_trigger: metadataText,
-        subagent_kind: metadataText,
-        sandbox: metadataText,
-        sandbox_mode: metadataText,
-        auto_review_enabled: bool,
-        node_repl_auto_review_required: bool,
-        node_repl_disabled: bool,
-        turn_started_at_unix_ms: integer,
-        analytics_enabled: bool,
-        history_ingest_requested: bool,
-        model: metadataText,
-        reasoning_effort: reasoningEffort,
-      })(parseUnambiguousJson(String(value)));
-    } catch {
-      return false;
-    }
-  },
+  "x-codex-turn-metadata": metadataJson((value) => {
+    const record = asRecord(value);
+    return (
+      record !== undefined &&
+      turnMetadata(record) &&
+      (record.compaction === undefined || record.request_kind === "compaction")
+    );
+  }),
 });
 const jsonFormat = object(
   { type: oneOf("json_schema"), name, schema: jsonSchema },
@@ -337,11 +432,6 @@ export const validChatRequest = object(
   },
 );
 
-const empty = array(() => false, 0);
-const outputText = object(
-  { type: oneOf("output_text"), text },
-  { annotations: empty, logprobs: empty },
-);
 // A provider safety refusal arrives as a documented `refusal` part of the assistant message
 // (openai-python ResponseOutputRefusal). Its text is assistant-visible, so the stream scans
 // it like output_text.
@@ -352,7 +442,7 @@ const outputMessage = object(
   { status, phase },
 );
 const outputItem: Validator = (value) =>
-  outputMessage(value) || reasoningItem(value) || toolCall(value);
+  outputMessage(value) || outputReasoningItem(value) || toolCall(value);
 const usage = object(
   { input_tokens: integer, output_tokens: integer, total_tokens: integer },
   {

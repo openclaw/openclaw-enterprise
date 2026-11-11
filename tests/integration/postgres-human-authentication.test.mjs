@@ -10,7 +10,7 @@ import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
-import { waitForLockHolder } from "../helpers/postgres-lock-waits.mjs";
+import { waitForLockHolder, waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { waitUntil, within } from "../helpers/wait-for.mjs";
 
 function sessionRecord(userId) {
@@ -58,7 +58,7 @@ test(
       password,
       authSecret: secret,
       installationName: "Human authentication persistence",
-      authBaseURL: "http://127.0.0.1",
+      authBaseURL: "https://console.oce.localhost",
     });
     const installation = await state.loadInstallation();
     assert.ok(installation);
@@ -66,7 +66,8 @@ test(
     const auth = await createPostgresControllerAuth({
       mode: "development",
       installationId: installation.id,
-      baseURL: "http://127.0.0.1",
+      baseURL: "https://console.oce.localhost",
+      agentDomain: "agents.oce.localhost",
       secret,
       pool,
     });
@@ -630,7 +631,9 @@ test(
         assert.equal(external.proof.principalId, seed.principal.id);
         assert.equal(external.user.email, person.email);
         assert.equal(external.proof.passwordHash, undefined);
-        assert.equal(await persistence.snapshotExternal(providerId, "missing"), undefined);
+        assert.deepEqual(await persistence.snapshotExternal(providerId, "missing"), {
+          missing: true,
+        });
       },
     );
 
@@ -774,6 +777,167 @@ test(
         await pool.query("DELETE FROM occ.human_authentication_attempts WHERE installation_id=$1", [
           installation.id,
         ]);
+      },
+    );
+
+    await context.test(
+      "result issuance rolls back with its session and acknowledged consumption is final",
+      async () => {
+        const { proof } = await persistence.snapshotExternal(providerId, subject);
+        const attemptId = randomBytes(32).toString("base64url");
+        const issued = await persistence.issueSession(
+          proof,
+          sessionRecord(person.id),
+          undefined,
+          attemptId,
+        );
+        const receipt = {
+          attemptId,
+          providerId,
+          sessionId: issued.id,
+          expiresAt: issued.resultExpiresAt,
+        };
+        const duplicate = sessionRecord(person.id);
+        await assert.rejects(peer.issueSession(proof, duplicate, undefined, attemptId), {
+          name: "ResourceConflictError",
+        });
+        assert.equal(await persistence.currentSession(duplicate.token), undefined);
+        assert.equal(
+          await peer.consumeLoginResult(issued.token, {
+            ...receipt,
+            expiresAt: receipt.expiresAt + 1,
+          }),
+          false,
+        );
+
+        // PostgreSQL commits the delete, but the client loses the acknowledgement.
+        // A different connection must observe the spent result and the original session.
+        const lost = new PostgresHumanAuthentication(
+          new PostgresPlatformState(
+            transportPool(pool, async (client, sql, args) => {
+              const answer = await client.query(sql, args);
+              if (sql === "COMMIT") {
+                throw new Error("lost commit acknowledgement");
+              }
+              return answer;
+            }),
+          ),
+          installation.id,
+          issuer,
+          configured,
+        );
+        await assert.rejects(lost.consumeLoginResult(issued.token, receipt), {
+          name: "PostgresCommitOutcomeUnknownError",
+        });
+        assert.equal(await peer.consumeLoginResult(issued.token, receipt), false);
+        assert.deepEqual((await peer.currentSession(issued.token)).expiresAt, issued.expiresAt);
+      },
+    );
+
+    async function issueResult() {
+      const { proof } = await persistence.snapshotExternal(providerId, subject);
+      const attemptId = randomBytes(32).toString("base64url");
+      const issued = await persistence.issueSession(
+        proof,
+        sessionRecord(person.id),
+        undefined,
+        attemptId,
+      );
+      return {
+        token: issued.token,
+        receipt: { attemptId, providerId, sessionId: issued.id, expiresAt: issued.resultExpiresAt },
+      };
+    }
+
+    // occ_app can DELETE results but cannot UPDATE or SELECT FOR UPDATE. An uncommitted
+    // delete holds the row until rollback, then the original result is available again.
+    async function holdResult(client, receipt) {
+      await client.query("BEGIN");
+      const lock = await client.query(
+        `DELETE FROM occ.human_authentication_results WHERE installation_id=$1 AND attempt_id=$2
+         RETURNING pg_backend_pid() AS pid`,
+        [installation.id, receipt.attemptId],
+      );
+      assert.equal(lock.rowCount, 1);
+      return lock.rows[0].pid;
+    }
+
+    for (const first of ["revocation", "collection"]) {
+      await context.test(
+        `result collection serializes with session revocation: ${first} first`,
+        async () => {
+          const { token, receipt } = await issueResult();
+          const holder = await pool.connect();
+          const collect = () => peer.consumeLoginResult(token, receipt);
+          const revoke = () => persistence.revokeSession(token);
+          let leading;
+          let trailing;
+          try {
+            const pid = await holdResult(holder, receipt);
+            // Both operations lock the user before deleting the result (via cascade for revoke).
+            // Hold that delete, then prove that the second transaction waits on the first.
+            leading = first === "revocation" ? revoke() : collect();
+            leading.catch(() => {});
+            const leadingPid = await waitForLockWaiter(
+              pool,
+              pid,
+              "first transaction waits on result",
+            );
+            trailing = first === "revocation" ? collect() : revoke();
+            trailing.catch(() => {});
+            await waitForLockWaiter(pool, leadingPid, "second transaction waits on first");
+          } finally {
+            await holder.query("ROLLBACK");
+            holder.release();
+            await Promise.allSettled([leading, trailing]);
+          }
+          const [firstOutcome, secondOutcome] = await Promise.all([leading, trailing]);
+          assert.equal(
+            first === "revocation" ? secondOutcome : firstOutcome,
+            first === "collection",
+          );
+          assert.equal(await peer.currentSession(token), undefined);
+        },
+      );
+    }
+
+    await context.test(
+      "a matching result expires while collection waits to delete it",
+      async () => {
+        const { token, receipt } = await issueResult();
+        // Shorten only this fixture's deadline. Keep the receipt and committed row identical
+        // to the millisecond so neither a mismatch nor session expiry can cause the refusal.
+        const deadline = await pool.query(
+          `WITH original AS (
+           DELETE FROM occ.human_authentication_results WHERE installation_id=$1 AND attempt_id=$2 RETURNING *
+         ) INSERT INTO occ.human_authentication_results (installation_id,attempt_id,session_id,provider_id,expires_at)
+         SELECT installation_id,attempt_id,session_id,provider_id,
+                date_trunc('milliseconds', clock_timestamp()) + interval '2 seconds' FROM original
+         RETURNING expires_at`,
+          [installation.id, receipt.attemptId],
+        );
+        receipt.expiresAt = deadline.rows[0].expires_at.getTime();
+        const holder = await pool.connect();
+        let collection;
+        try {
+          const pid = await holdResult(holder, receipt);
+          collection = peer.consumeLoginResult(token, receipt);
+          collection.catch(() => {});
+          await waitForLockWaiter(pool, pid, "collector waits to delete the live result");
+          await waitUntil("database reaches the matching result deadline", async () => {
+            const clock = await holder.query(
+              "SELECT clock_timestamp() >= $1::timestamptz AS expired",
+              [deadline.rows[0].expires_at],
+            );
+            return clock.rows[0].expired;
+          });
+        } finally {
+          await holder.query("ROLLBACK");
+          holder.release();
+          await Promise.allSettled([collection]);
+        }
+        assert.equal(await collection, false);
+        assert.equal((await peer.currentSession(token)).id, receipt.sessionId);
       },
     );
 
@@ -1025,10 +1189,9 @@ test(
           disabled: true,
           userId: person.id,
         });
-        assert.equal(
-          await persistence.snapshotExternal(providerId, "unattached-subject"),
-          undefined,
-        );
+        assert.deepEqual(await persistence.snapshotExternal(providerId, "unattached-subject"), {
+          missing: true,
+        });
         await assert.rejects(
           persistence.issueSession(proof, sessionRecord(person.id)),
           /no longer current/,
@@ -1384,7 +1547,9 @@ test(
           ).rows[0].count,
           0,
         );
-        assert.equal(await persistence.snapshotExternal(providerId, subject), undefined);
+        assert.deepEqual(await persistence.snapshotExternal(providerId, subject), {
+          missing: true,
+        });
         await assert.rejects(
           persistence.issueSession(external.proof, sessionRecord(person.id)),
           /no longer current/,

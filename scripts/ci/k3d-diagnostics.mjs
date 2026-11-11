@@ -1,3 +1,4 @@
+import { preparationIdentity, readRuntimeProvenance } from "./runtime-provenance.mjs";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -377,6 +378,11 @@ export async function captureK3dDiagnostics({
   const k3dCreateOutput = k3dOutputExcerpt(k3dOutput);
   const report = {
     capturedAt: new Date().toISOString(),
+    preparationId: preparationIdentity(cluster.owner),
+    runtimeProvenance: await readRuntimeProvenance(statePath, {
+      lane,
+      preparationId: preparationIdentity(cluster.owner),
+    }),
     lane,
     cluster: cluster.name,
     ...(failure ? { failure } : {}),
@@ -696,10 +702,13 @@ async function stopWatch(child) {
  * projection to the report's `containerLogs`. Pass the child's environment as
  * `finish({ env })` so its prepared secrets are redacted too.
  */
-export async function startAgentNamespaceCapture({ statePath, lane, file }) {
+export async function startAgentNamespaceCapture({ statePath, lane, file, preparationId }) {
   let clusters;
   try {
     const state = JSON.parse(await readFile(statePath, "utf8"));
+    if (state.lane !== lane || preparationIdentity(state.prefix) !== preparationId) {
+      return undefined;
+    }
     clusters = (state.resources ?? []).filter(
       (resource) =>
         resource.kind === "k3d-cluster" &&
@@ -804,12 +813,18 @@ export async function startAgentNamespaceCapture({ statePath, lane, file }) {
           return;
         }
         const diagnosticsPath = `${statePath}.diagnostics.json`;
-        let report = { lane };
+        let report = { lane, preparationId };
         try {
-          report = JSON.parse(await readFile(diagnosticsPath, "utf8"));
+          const previous = JSON.parse(await readFile(diagnosticsPath, "utf8"));
+          if (previous.lane === lane && previous.preparationId === preparationId) {
+            report = previous;
+          }
         } catch {
           // The first passing file starts the report.
         }
+        report.runtimeProvenance =
+          (await readRuntimeProvenance(statePath, { lane, preparationId })) ??
+          report.runtimeProvenance;
         if (captured.length > 0) {
           report.agentNamespaces = [...(report.agentNamespaces ?? []), ...captured].slice(
             -MAX_ACTIVITY_FILES,

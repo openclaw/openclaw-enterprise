@@ -81,14 +81,21 @@ function formatSummary(report) {
         `| ${cell.cell} | ${cell.scenarios.join(", ") || "none"} | ${cell.unselected.join(", ") || "none"} |`,
       );
     }
-    lines.push("", "| Cell | Scenario | Stage | Outcome |", "| --- | --- | --- | --- |");
-    for (const row of report.outcomes) {
-      lines.push(`| ${row.cell} | ${row.scenario ?? "setup"} | ${row.stage} | ${row.outcome} |`);
+    if (report.outcomes.length === 0) {
+      lines.push(
+        "",
+        "No stage outcomes were recorded for the selected scenarios. Job status includes test and cleanup failures.",
+      );
+    } else {
+      lines.push("", "| Cell | Scenario | Stage | Outcome |", "| --- | --- | --- | --- |");
+      for (const row of report.outcomes) {
+        lines.push(`| ${row.cell} | ${row.scenario ?? "setup"} | ${row.stage} | ${row.outcome} |`);
+      }
+      lines.push(
+        "",
+        "Stages absent from this table have no recorded completion. Job status includes test and cleanup failures.",
+      );
     }
-    lines.push(
-      "",
-      "Stages absent from this table have no recorded completion. Job status includes test and cleanup failures.",
-    );
   }
   return lines.join("\n") + "\n";
 }

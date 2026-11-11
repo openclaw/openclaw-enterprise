@@ -3,6 +3,8 @@ package occcli
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -149,5 +151,111 @@ func TestInstallationFrozenChartDoesNotFollowChangedSources(t *testing.T) {
 	}
 	if _, _, err = snapshotInstallationChart(source, t.TempDir()); err == nil {
 		t.Fatal("accepted mutable linked chart input")
+	}
+}
+
+type installationNoticeWriter func([]byte) (int, error)
+
+func (write installationNoticeWriter) Write(data []byte) (int, error) {
+	return write(data)
+}
+
+func TestInstallReceiptOutputBeforeDispatch(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("requires /bin/sh for local command stubs")
+	}
+	for _, output := range []string{"unwritable", "writable"} {
+		t.Run(output, func(t *testing.T) {
+			dir := t.TempDir()
+			receipt := filepath.Join(dir, "receipt")
+			helmCalls := filepath.Join(dir, "helm-calls")
+			dispatch := filepath.Join(receipt, "dispatch.json")
+			t.Setenv("PATH", dir)
+			t.Setenv("HELM_DRIVER", "secret")
+			t.Setenv("TEST_INSTALL_HELM_CALLS", helmCalls)
+			t.Setenv("TEST_INSTALL_DISPATCH", dispatch)
+
+			write := func(name, data string, mode os.FileMode) string {
+				t.Helper()
+				path := filepath.Join(dir, name)
+				if err := os.WriteFile(path, []byte(data), mode); err != nil {
+					t.Fatal(err)
+				}
+				return path
+			}
+			write("kubectl", `#!/bin/sh
+case "$3:$4" in
+  config:view) printf '%s\n' '{"clusters":[{"cluster":{"server":"https://cluster.invalid"}}]}' ;;
+  *) exit 1 ;;
+esac
+`, 0700)
+			// Log even a premature install, then require its dispatch record.
+			write("helm", `#!/bin/sh
+printf '%s\n' "$1" >> "$TEST_INSTALL_HELM_CALLS" || exit 1
+case "$1" in
+  list) printf '%s\n' '[]' ;;
+  install) test -f "$TEST_INSTALL_DISPATCH" ;;
+  *) exit 1 ;;
+esac
+`, 0700)
+			config := installationDoctorKubeconfig(t, "https://cluster.invalid")
+			chart := write("chart.tgz", "local chart fixture", 0600)
+			values := write("values.yaml", "{}\n", 0600)
+
+			var stdout strings.Builder
+			var notice string
+			writer := installationNoticeWriter(func(data []byte) (int, error) {
+				if notice == "" {
+					notice = string(data)
+					if _, _, err := loadInstallationReceipt(receipt, "operations", "demo"); err != nil {
+						t.Errorf("receipt notice preceded a valid intent: %v", err)
+					}
+					if _, err := os.Stat(dispatch); !errors.Is(err, os.ErrNotExist) {
+						t.Errorf("receipt notice followed the dispatch record: stat error = %v", err)
+					}
+				}
+				if output == "unwritable" {
+					return 0, io.ErrClosedPipe
+				}
+				return stdout.Write(data)
+			})
+
+			cmd := New(writer, io.Discard)
+			cmd.SetArgs([]string{"installation", "install", "--kubeconfig", config, "--context", "read",
+				"--release", "demo", "--kube-namespace", "operations", "--receipt", receipt,
+				"--chart", chart, "--values", values, "--timeout-seconds", "5"})
+			runErr := cmd.Execute()
+			wantNotice := "Installation intent persisted in " + receipt + ". An interrupted dispatch remains unknown; do not repeat install.\n"
+			if notice != wantNotice {
+				t.Errorf("attempted receipt output = %q, want %q", notice, wantNotice)
+			}
+			calls, err := os.ReadFile(helmCalls)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if output == "unwritable" {
+				if _, _, err := loadInstallationReceipt(receipt, "operations", "demo"); err != nil {
+					t.Errorf("intent was not retained after the write failure: %v", err)
+				}
+				if !errors.Is(runErr, io.ErrClosedPipe) || !strings.Contains(runErr.Error(), "no installation dispatched") {
+					t.Errorf("install error = %v, want the output failure and confirmation of no dispatch", runErr)
+				}
+				if _, err := os.Stat(dispatch); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("expected no dispatch record after the write failure, stat error = %v", err)
+				}
+				if string(calls) != "list\n" {
+					t.Errorf("Helm calls after the write failure = %q, want only list", calls)
+				}
+				return
+			}
+			if runErr != nil || string(calls) != "list\ninstall\n" ||
+				!strings.HasPrefix(stdout.String(), wantNotice+"Helm outcome: succeeded.\n") {
+				t.Fatalf("writable output: error = %v, Helm calls = %q, stdout = %q", runErr, calls, stdout.String())
+			}
+			var record map[string]string
+			if err := readInstallationRecord(receipt, "dispatch.json", &record); err != nil || record["outcome"] != "unknown" {
+				t.Errorf("dispatch record = %v, error = %v", record, err)
+			}
+		})
 	}
 }

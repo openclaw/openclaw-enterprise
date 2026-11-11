@@ -21,7 +21,7 @@ dispatch; recovery reuses retained archives after an interrupted publication.
 
 - `.github/workflows/container-bootstrap.yml:jobs.bootstrap`: manual dispatch on
   `main` with the successful exact-source main-push CI run ID.
-- `scripts/ci/container-bootstrap.mjs:main`: main-only job with `actions: read`,
+- `scripts/ci/container-bootstrap.ts:main`: main-only job with `actions: read`,
   `contents: read`, and `packages: write`; explicit destination variables select
   two different GHCR packages in the `openclaw` organization.
 - `.github/workflows/container-resume.yml:jobs.publish`: manual
@@ -61,7 +61,7 @@ hosted bootstrap or subsequent release has succeeded.
 
 ### 1. Validate the approved source and destinations
 
-`scripts/ci/container-bootstrap.mjs:main` reuses
+`scripts/ci/container-bootstrap.ts:main` reuses
 `scripts/ci/container-release.mjs:verifyMainSource`, `verifyCi`, and
 `verifyEnvironment`. Source equals the trusted main workflow source commit and
 checkout. The repository is public, exact-source main-push CI succeeds, and the
@@ -78,7 +78,7 @@ only the non-sensitive marker attempt. Authorization and other API errors fail.
 
 ### 2. Build and transfer only marker bytes
 
-`scripts/ci/container-bootstrap.mjs:main` creates a temporary context with a
+`scripts/ci/container-bootstrap.ts:main` creates a temporary context with a
 scratch Dockerfile and fixed text marker. Repository source and source commit labels
 link the image to Enterprise. Docker exports `linux/amd64` OCI bytes without
 copying the checkout, fetching a base image, or receiving registry credentials.
@@ -97,7 +97,7 @@ inspection; it changes no grants or visibility and performs no automatic deletio
 
 ### 3. Hand verified packages to release operators
 
-`scripts/ci/container-bootstrap.mjs:main` records each existing or bootstrapped
+`scripts/ci/container-bootstrap.ts:main` records each existing or bootstrapped
 package in the job summary and removes the temporary context, archive, and auth
 file in `finally`. Bootstrap and publication share the same workflow concurrency
 lock, which does not constrain external package administrators. Partial success
@@ -114,7 +114,7 @@ approval history. Package linkage is configured during
 
 `.github/workflows/container-resume.yml` runs validation without registry write
 permission, then uses the same main-only environment and concurrency lock as
-publication. `scripts/ci/container-resume.mjs:verifyPreparation` checks the
+publication. `scripts/ci/container-resume.ts:verifyPreparation` checks the
 current recovery workflow's main-push CI separately from the original image
 source. The original producer must be the trusted publication workflow on main,
 completed at the unchanged selected attempt, with successful validation, all four
@@ -123,7 +123,7 @@ complete older run that prepared each image in one job is still accepted. Exactl
 named, nonexpired artifacts must belong to that run
 and source; the workflow downloads their validated IDs with digest checks.
 
-`scripts/ci/container-resume.mjs:resume` preserves the producer identity in each
+`scripts/ci/container-resume.ts:resume` preserves the producer identity in each
 seal and rechecks original source CI. It calls
 `scripts/ci/container-release.mjs:publishPrepared`, which verifies both archive
 hashes and OCI digests before registry writes. Before each image, source, CI,
@@ -145,7 +145,7 @@ without deleting the original archives or rerunning their producer.
 
 ## Debugging and Verification
 
-- `node --test tests/integration/container-resume.test.mjs` exercises the recovery
+- `node --test tests/integration/container-resume.test.ts` exercises the recovery
   CLI with HTTP/transport fixtures; a hosted run must prove actual GHCR transfer.
 
 - `node --test tests/integration/container-release.test.mjs` checks shared gate

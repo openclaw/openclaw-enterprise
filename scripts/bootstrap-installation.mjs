@@ -104,9 +104,9 @@ async function createAuth(pool, config, installationId) {
     mode: config.mode,
     installationId,
     baseURL: config.auth.baseURL,
+    agentDomain: config.auth.agentDomain,
     secret: config.auth.secret,
     pool,
-    secureCookies: config.mode === "production" && !config.auth.baseURL.startsWith("http://"),
   });
 }
 

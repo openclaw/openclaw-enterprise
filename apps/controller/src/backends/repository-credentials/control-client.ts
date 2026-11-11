@@ -1,17 +1,19 @@
 import { createStatusWirePrimitives } from "./status-wire.ts";
 import { request } from "node:http";
-import { isAbsolute, resolve } from "node:path";
 import type { RepositoryCredentialGrantIdentity } from "@openclaw-enterprise/contracts";
-import type { RepositoryCredentialClientConfiguration } from "../../drivers/repo/credentials/client-contracts.ts";
+import type { RepositoryCredentialClientConfiguration } from "../../drivers/repo/access/client-contracts.ts";
 import {
   hasControlCharacter,
+  isCanonicalUnixSocketPath,
+  isValidGitClientConnection,
   normalizePushRefAllowlist,
-} from "../../drivers/repo/credentials/client-contracts.ts";
-import type {
-  RepositoryCredentialBoundSessionInput,
-  RepositoryCredentialSessionResult,
-  SessionStatus,
-} from "../../drivers/repo/credentials/service-contracts.ts";
+} from "../../drivers/repo/access/client-contracts.ts";
+import {
+  hasUnsettledCleanupCounts,
+  type RepositoryCredentialBoundSessionInput,
+  type RepositoryCredentialSessionResult,
+  type SessionStatus,
+} from "../../drivers/repo/access/service-contracts.ts";
 
 /** Private wire response; the selected Driver renders the portable runtime files. */
 export type RepositoryCredentialControlOpenResult =
@@ -93,11 +95,7 @@ function status(value: unknown): SessionStatus {
   });
   if (
     result.state === "DISPOSED" &&
-    (result.activeUses !== 0 ||
-      result.cleanup.active !== 0 ||
-      result.cleanup.pending !== 0 ||
-      result.cleanup.uncertain !== 0 ||
-      result.cleanup.auxiliaryPending)
+    (hasUnsettledCleanupCounts(result) || result.cleanup.auxiliaryPending)
   ) {
     return unavailable();
   }
@@ -128,15 +126,7 @@ function client(value: unknown): RepositoryCredentialClientConfiguration {
   const origin = new URL(fields.gatewayOrigin);
   const remote = new URL(fields.gitRemote);
   if (
-    origin.protocol !== "https:" ||
-    origin.origin !== fields.gatewayOrigin ||
-    origin.username ||
-    origin.password ||
-    remote.origin !== origin.origin ||
-    remote.username ||
-    remote.password ||
-    remote.search ||
-    remote.hash ||
+    !isValidGitClientConnection(origin, remote, fields) ||
     fields.apiHost !== origin.hostname ||
     !/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(fields.canonicalApiHost) ||
     !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(fields.repository) ||
@@ -170,9 +160,7 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
 
   constructor(options: { readonly controlSocket: string }) {
     if (
-      !isAbsolute(options.controlSocket) ||
-      resolve(options.controlSocket) !== options.controlSocket ||
-      Buffer.byteLength(options.controlSocket) > 103 ||
+      !isCanonicalUnixSocketPath(options.controlSocket) ||
       hasControlCharacter(options.controlSocket)
     ) {
       throw new Error("The repository credential control socket must be an absolute Unix path.");

@@ -5,6 +5,7 @@ import {
   encodeSyntheticEvents,
   outputWithIndependentCitation,
 } from "../fixtures/synthetic-egress-provider.mjs";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { readFileSync } from "node:fs";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
@@ -1174,6 +1175,164 @@ test("Responses incremental text snapshots cannot reveal selected material", asy
   await check.events(laterProgress, false, "later in_progress snapshot");
 });
 
+test("Responses follow-up replays assistant text with empty provider metadata", async (t) => {
+  const f = await staticEgressFixture(t);
+  const check = responseChecks(f);
+  const events = responseEvents();
+  const assistant = events.at(-1).response.output[0];
+  assistant.content[0].logprobs = [];
+  const tool = {
+    type: "custom_tool_call",
+    id: "ct_local",
+    call_id: "call_local",
+    name: "fixture_custom_0",
+    input: "fixture input",
+  };
+  events.splice(
+    -1,
+    0,
+    { type: "response.output_item.added", output_index: 1, item: { ...tool, input: "" } },
+    { type: "response.output_item.done", output_index: 1, item: tool },
+  );
+  events.at(-1).response.output.push(tool);
+  const initial = {
+    ...wire.request,
+    tools: [...wire.request.tools, { type: "custom", name: tool.name }],
+  };
+  // The local tool call and assistant message must pass the response policy before replay.
+  await check.events(events, false, "the first exchange releases a local call", true, initial);
+
+  const output = {
+    type: "custom_tool_call_output",
+    call_id: tool.call_id,
+    output: [{ type: "input_text", text: "fixture result" }],
+  };
+  const followup = {
+    ...initial,
+    input: [...initial.input, assistant, tool, output],
+  };
+  await check.events(responseEvents(), false, "the follow-up admits the replay", true, followup);
+  assert.deepEqual(f.providerRequests.at(-1).body, followup);
+
+  const [part] = assistant.content;
+  const withPart = (content) => ({ ...assistant, content: [content] });
+  // Keep the metadata confined to replayed assistant output text.
+  const deniedInputs = [
+    ...["system", "developer", "user"].map((role) => [{ ...assistant, role }, tool, output]),
+    [assistant, tool, { ...output, output: [part] }],
+    [withPart({ ...part, type: "input_text" }), tool, output],
+    [withPart({ ...part, annotations: [{}] }), tool, output],
+    [withPart({ ...part, logprobs: [{}] }), tool, output],
+    [withPart({ ...part, annotations: null }), tool, output],
+    [withPart({ ...part, logprobs: null }), tool, output],
+    [withPart({ ...part, unknown: [] }), tool, output],
+  ];
+  const reads = f.secretReads;
+  const sends = f.providerRequests.length;
+  for (const input of deniedInputs) {
+    const request = { ...followup, input: [...initial.input, ...input] };
+    assert.ok((await f.resolve(f.capture(request))).refused);
+  }
+  assert.equal(f.secretReads, reads, "unsupported metadata cannot read credentials");
+  assert.equal(f.providerRequests.length, sends, "unsupported metadata cannot send");
+});
+
+test("Responses admits bounded native agent messages", async (t) => {
+  const f = await staticEgressFixture(t);
+  const check = responseChecks(f);
+  const message = {
+    type: "agent_message",
+    id: "amsg_fixture",
+    author: "/root",
+    recipient: "/root/worker",
+    content: [{ type: "input_text", text: "Synthetic task" }],
+  };
+  const encrypted = { type: "encrypted_content", encrypted_content: "synthetic-ciphertext" };
+  const requestWith = (item) => ({ ...wire.request, input: [...wire.request.input, item] });
+
+  for (const content of [message.content, [...message.content, encrypted]]) {
+    const request = requestWith({ ...message, content });
+    await check.events(responseEvents(), false, "native agent input completes", true, request);
+    assert.deepEqual(f.providerRequests.at(-1).body, request);
+  }
+
+  const reads = f.secretReads;
+  const sends = f.providerRequests.length;
+  for (const item of [
+    { ...message, author: "https://example.invalid/agent" },
+    { ...message, recipient: "/other/worker" },
+    { ...message, recipient: "/root/../other" },
+    { ...message, tools: [{ type: "web_search" }] },
+    { ...message, content: [] },
+    { ...message, content: [encrypted] },
+    { ...message, content: [...message.content, encrypted, encrypted] },
+    { ...message, content: [{ type: "input_image", image_url: "https://example.invalid/image" }] },
+    { ...message, content: [...message.content, { ...encrypted, encrypted_content: {} }] },
+  ]) {
+    assert.ok((await f.resolve(f.capture(requestWith(item)))).refused);
+  }
+  assert.equal(f.secretReads, reads, "unsupported agent messages cannot read credentials");
+  assert.equal(f.providerRequests.length, sends, "unsupported agent messages cannot send");
+});
+
+test("Codex manual compaction forwards its closed metadata through protected inference", async (t) => {
+  const f = await staticEgressFixture(t);
+  const key = "x-codex-turn-metadata";
+  const metadata = JSON.parse(wire.request.client_metadata[key]);
+  const compaction = {
+    trigger: "manual",
+    reason: "user_requested",
+    implementation: "responses",
+    phase: "standalone_turn",
+    strategy: "memento",
+  };
+  function request(record, kind = "compaction") {
+    return {
+      ...wire.request,
+      client_metadata: {
+        ...wire.request.client_metadata,
+        [key]: JSON.stringify({ ...metadata, request_kind: kind, compaction: record }),
+      },
+    };
+  }
+  const manual = request(compaction);
+  const check = responseChecks(f);
+  await check.events(responseEvents(), false, "manual compaction", true, manual);
+  assert.deepEqual(f.providerRequests.at(-1).body, manual);
+
+  // Codex serializes reasoning content as null when a prior provider item omitted it.
+  const reasoning = {
+    type: "reasoning",
+    id: "rs_fixture",
+    summary: [{ type: "summary_text", text: "Earlier reasoning" }],
+    content: null,
+    encrypted_content: "opaque reasoning fixture",
+  };
+  const replay = { ...manual, input: [...manual.input, reasoning] };
+  await check.events(responseEvents(), false, "manual compaction replays reasoning", true, replay);
+  assert.deepEqual(f.providerRequests.at(-1).body, replay);
+
+  const reads = f.secretReads;
+  const sends = f.providerRequests.length;
+  for (const invalid of [
+    request({ ...compaction, strategy: "unknown" }),
+    request({ ...compaction, phase: undefined }),
+    request({ ...compaction, authority: "owner" }),
+    request(compaction, "turn"),
+    { ...manual, tools: [{ type: "web_search" }] },
+    { ...manual, model: "outside-the-grant" },
+    ...[{}, "text", [{ type: "input_text", text: "unexpected" }]].map((content) => ({
+      ...replay,
+      input: [...manual.input, { ...reasoning, content }],
+    })),
+    { ...replay, input: [...manual.input, { ...reasoning, unknown: null }] },
+  ]) {
+    assert.ok((await f.resolve(f.capture(invalid))).refused);
+  }
+  assert.equal(f.secretReads, reads);
+  assert.equal(f.providerRequests.length, sends);
+});
+
 test("selected Codex Responses wire admits local tools and finite SSE while rejecting remote tools and unprotected events", async (t) => {
   const f = await staticEgressFixture(t);
   // Sanitized packaged 0.163.0-alpha.2 request and synthetic response consumed by that
@@ -1190,24 +1349,66 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
   const inline = JSON.parse(
     readFileSync(new URL("../fixtures/static-egress/codex-inline-tools.json", import.meta.url)),
   );
-  const captured = f.capture(inline.request);
-  captured.request.headers.push(
-    ...Object.entries(inline.headers).map(([name, value]) => ({ name, value })),
-  );
-  const { ready } = await f.resolve(captured);
-  assert.ok(ready, "packaged inline local tools resolve through the installed provider");
-  assert.ok((await f.authorize(f.permitRequest(captured, ready))).allowed);
-  f.setResponse({ status: 200, contentType: "text/event-stream", rawBody: body });
-  const protectedReply = await f.protect(captured, await f.send(captured, ready));
-  assert.equal(protectedReply.response_complete, true);
-  assert.equal(protectedReply.body.toString(), body);
-  assert.deepEqual(f.providerRequests.at(-1).body, inline.request);
+  inline.request.client_metadata.mcp_attribution = JSON.stringify({ status: "none" });
+  const metadataKey = "x-codex-turn-metadata";
+  const turnMetadata = JSON.parse(inline.request.client_metadata[metadataKey]);
+  const repositoryRoot = "/workspace/repository";
+  const origin = "https://example.invalid/owner/repository.git";
+  // Extend the sanitized request with the metadata Codex sends from a Git checkout.
+  const workspace = {
+    latest_git_commit_hash: "a".repeat(40),
+    has_changes: false,
+    associated_remote_urls: {
+      origin,
+      mirror: "git@example.invalid:owner/repository.git",
+    },
+  };
+  const captureInline = (request) => {
+    const captured = f.capture(request);
+    captured.request.headers.push(
+      ...Object.entries(inline.headers).map(([name, value]) => ({ name, value })),
+    );
+    return captured;
+  };
+  // Captured native requests paired telemetry "ultra" with wire "xhigh". Preserve each field's
+  // supported spelling through authorization and the actual TLS provider request.
+  for (const [effort, metadata] of [
+    [inline.request.reasoning.effort, turnMetadata],
+    [
+      inline.request.reasoning.effort,
+      { ...turnMetadata, workspaces: { [repositoryRoot]: workspace } },
+    ],
+    ["high", { ...turnMetadata, reasoning_effort: "high" }],
+    ["xhigh", { ...turnMetadata, reasoning_effort: "ultra" }],
+    ["max", { ...turnMetadata, reasoning_effort: "max" }],
+  ]) {
+    inline.request.reasoning.effort = effort;
+    inline.request.client_metadata[metadataKey] = JSON.stringify(metadata);
+    const captured = captureInline(inline.request);
+    const { ready } = await f.resolve(captured);
+    assert.ok(ready, "native metadata and inline tools resolve through the installed provider");
+    assert.ok((await f.authorize(f.permitRequest(captured, ready))).allowed);
+    f.setResponse({ status: 200, contentType: "text/event-stream", rawBody: body });
+    const protectedReply = await f.protect(captured, await f.send(captured, ready));
+    assert.equal(protectedReply.response_complete, true);
+    assert.equal(protectedReply.body.toString(), body);
+    assert.deepEqual(f.providerRequests.at(-1).body, inline.request);
+  }
 
   // Inline declarations cannot expand the admitted local-tool grant or let
   // client metadata select authority. Refuse before another Secret read/send.
   const inlineReads = f.secretReads;
   const inlineSends = f.providerRequests.length;
   const mutations = [
+    ...[
+      { status: "none" },
+      " ".repeat(8192) + '{"status":"none"}',
+      '{"status":"none","status":"none"}',
+      '{"status":"active"}',
+      '{"status":"none","server":"https://remote.example.test"}',
+    ].map((attribution) => (request) => {
+      request.client_metadata.mcp_attribution = attribution;
+    }),
     ...["system", "user", "assistant"].map((role) => (request) => {
       request.input[0].role = role;
     }),
@@ -1227,12 +1428,57 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
       request.input[0].tools[1].tools[0].parameters.properties.message.type = "number";
     },
     (request) => {
-      const metadata = JSON.parse(request.client_metadata["x-codex-turn-metadata"]);
+      const metadata = JSON.parse(request.client_metadata[metadataKey]);
       metadata.reasoning_effort = "unrecognized";
-      request.client_metadata["x-codex-turn-metadata"] = JSON.stringify(metadata);
+      request.client_metadata[metadataKey] = JSON.stringify(metadata);
+    },
+    ...["ultra", "unrecognized"].map((effort) => (request) => {
+      request.reasoning.effort = effort;
+    }),
+    ...[
+      { relative: workspace },
+      { ["/".repeat(4097)]: workspace },
+      { ["/workspace/line\nbreak"]: workspace },
+      { [repositoryRoot]: workspace, "/workspace/another-repository": workspace },
+      { [repositoryRoot]: {} },
+      { [repositoryRoot]: { namespace_id: f.namespace.id } },
+      { [repositoryRoot]: { latest_git_commit_hash: "1234" } },
+      { [repositoryRoot]: { has_changes: "false" } },
+      ...[
+        {},
+        { "up\u017ftream": origin },
+        { origin: "https://\u212A.example.invalid/owner/repository.git" },
+        { origin: "https://example.invalid/owner/repo\u017fitory.git" },
+        {
+          origin: syntheticCredentialUrl({
+            username: "fixture-user",
+            password: "fixture-password",
+            host: "example.invalid",
+            pathname: "/owner/repository.git",
+          }),
+        },
+        { origin: origin + "?query=value" },
+        { origin: origin + "#fragment" },
+        { origin: "ssh://git@example.invalid/owner/repository.git" },
+        { origin: "fixture-user@example.invalid:owner/repository.git" },
+        { origin: "helper::git@example.invalid:owner/repository.git" },
+        { origin: "https://example.invalid/" + "a".repeat(2048) },
+        Object.fromEntries(Array.from({ length: 17 }, (_, index) => [index, origin])),
+      ].map((associated_remote_urls) => ({
+        [repositoryRoot]: { associated_remote_urls },
+      })),
+    ].map((workspaces) => (request) => {
+      request.client_metadata[metadataKey] = JSON.stringify({ ...turnMetadata, workspaces });
+    }),
+    (request) => {
+      request.client_metadata[metadataKey] =
+        '{"workspaces":{"/workspace/repository":{"has_changes":false,"has_changes":true}}}';
     },
     (request) => {
       request.client_metadata.namespace_id = f.namespace.id;
+    },
+    (request) => {
+      request.model = "model-outside-the-inference-grant";
     },
     (request) => {
       request.text.format = {
@@ -1248,7 +1494,7 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
   for (const mutate of mutations) {
     const request = structuredClone(inline.request);
     mutate(request);
-    assert.ok((await f.resolve(f.capture(request))).refused);
+    assert.ok((await f.resolve(captureInline(request))).refused);
   }
   assert.equal(f.secretReads, inlineReads, "unsupported inline requests cannot read credentials");
   assert.equal(f.providerRequests.length, inlineSends, "unsupported inline requests cannot send");

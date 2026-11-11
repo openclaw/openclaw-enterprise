@@ -49,15 +49,13 @@ func developmentCommand() *cobra.Command {
 				if err := occdev.CheckDevelopmentProfile(); err != nil {
 					return err
 				}
-				switch os.Getenv("OCC_DEVELOPMENT_COMPUTE_DRIVER") {
+				profile := occdev.ResolveProfile(os.Getenv)
+				switch profile.ComputeDriver {
 				case "kubernetes":
 					return occdev.Up(cmd.Context(), options)
-				case "", "docker":
+				case "docker":
 					if sandboxNetworkPolicyFile != "" || sandboxNetworkPolicyCeilingFile != "" {
 						return fmt.Errorf("Sandbox policy input requires Kubernetes Compute and a Sandbox Driver")
-					}
-					if err := occdev.CheckDevelopmentSignIn(os.Getenv); err != nil {
-						return err
 					}
 					// Reuse the established Docker startup flow. Its Kubernetes
 					// dispatch cannot recur because this branch selects Docker.
@@ -69,6 +67,9 @@ func developmentCommand() *cobra.Command {
 					arguments = append(arguments, args...)
 					process := exec.CommandContext(cmd.Context(), "bash", arguments...)
 					process.Dir, process.Stdin = repository, cmd.InOrStdin()
+					// Name the selection the script would otherwise default, so a
+					// change to either default cannot send it back here.
+					process.Env = append(os.Environ(), "OCC_DEVELOPMENT_COMPUTE_DRIVER=docker")
 					process.Stdout, process.Stderr = cmd.OutOrStdout(), cmd.ErrOrStderr()
 					// On interrupt, terminate rather than kill the script so its EXIT
 					// trap removes the temporary directory with the rendered Compose
@@ -85,7 +86,7 @@ func developmentCommand() *cobra.Command {
 					}
 					return err
 				default:
-					return fmt.Errorf("OCC_DEVELOPMENT_COMPUTE_DRIVER must be docker or kubernetes")
+					return profile.CheckComputeDriver()
 				}
 			},
 		}
@@ -104,6 +105,27 @@ func developmentCommand() *cobra.Command {
 		Args:   cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			return occdev.CheckDevelopmentProfile()
+		},
+	})
+	command.AddCommand(&cobra.Command{
+		Use:    "prepare-browser",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			repository, err := developmentRepository()
+			if err != nil {
+				return err
+			}
+			environment, err := occdev.DockerBrowserEnvironment(repository, true)
+			if err != nil {
+				return err
+			}
+			for _, key := range []string{"OCC_DEVELOPMENT_BROWSER_ORIGIN", "OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN", "OCC_DEVELOPMENT_BROWSER_PORT", "OCC_DEVELOPMENT_BROWSER_TLS_CERT", "OCC_DEVELOPMENT_BROWSER_TLS_KEY"} {
+				if _, err := fmt.Fprintln(cmd.OutOrStdout(), environment[key]); err != nil {
+					return err
+				}
+			}
+			return nil
 		},
 	})
 	var profile string
@@ -147,7 +169,21 @@ func developmentRepository() (string, error) {
 		content := string(module)
 		line, _, hasNewline := strings.Cut(content, "\n")
 		if err == nil && hasNewline && strings.TrimSuffix(line, "\r") == declaration {
-			if _, err := os.Stat(filepath.Join(directory, "compose.yaml")); err == nil {
+			composePath := filepath.Join(directory, "compose.yaml")
+			info, err := os.Lstat(composePath)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return "", fmt.Errorf("inspect %q: %w", composePath, err)
+			}
+			if err == nil {
+				if info.Mode()&os.ModeSymlink != 0 {
+					info, err = os.Stat(composePath)
+					if err != nil {
+						return "", fmt.Errorf("inspect %q: %w", composePath, err)
+					}
+				}
+				if !info.Mode().IsRegular() {
+					return "", fmt.Errorf("%q must be a regular file", composePath)
+				}
 				if !strings.Contains(content, "\r\n") {
 					return directory, nil
 				}
