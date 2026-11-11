@@ -5,6 +5,7 @@ const installerFiles = new Set([
   "tests/integration/local-first-agent-openshell-real.test.mjs",
   "tests/integration/dev-up-openshell-k3d-real.test.mjs",
   "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
+  "tests/integration/openshell-git-finite-removal-real.test.ts",
 ]);
 
 export function isOpenShellLane(lane: string) {
