@@ -9,7 +9,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { createRealKubernetesFixture, kubectlArguments } from "../helpers/kubernetes-real.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import {
   installObservabilityControlPlane,
   observabilitySelection,

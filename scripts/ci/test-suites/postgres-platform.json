@@ -30,9 +30,11 @@
     "tests/integration/postgres-secret-state.test.mjs",
     "tests/integration/postgres-service-account-deletion.test.mjs",
     "tests/integration/postgres-service-account-issuance-recovery.test.mjs",
+    "tests/integration/postgres-service-account-compensation.test.ts",
     "tests/integration/postgres-presets.test.mjs",
     "tests/integration/postgres-workspace-setup.test.mjs",
     "tests/integration/postgres-connection-auth.test.mjs",
+    "tests/integration/postgres-pool-options.test.ts",
     "tests/integration/postgres-repository-transactions.test.mjs",
     "tests/integration/postgres-controller-work-targets.test.mjs",
     "tests/integration/postgres-transaction-commit.test.mjs",
@@ -68,7 +70,8 @@
     "tests/integration/postgres-credential-source-revision-owner.test.ts",
     "tests/integration/postgres-worker-process-shutdown.test.ts",
     "tests/integration/postgres-harness-overrides.test.ts",
-    "tests/integration/postgres-preset-template-validation.test.ts"
+    "tests/integration/postgres-preset-template-validation.test.ts",
+    "tests/integration/postgres-readiness-capacity.test.ts"
   ],
   "files": [
     {
@@ -82,6 +85,15 @@
         "the pool survives PostgreSQL terminating an idle backend",
         "verify-full checks the server certificate against an IP database host",
         "the IP host identity check leaves other connection configurations unchanged"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-pool-options.test.ts",
+      "expectedTests": [
+        "worker metrics pool rejects writes despite conflicting URL options",
+        "explicit PostgreSQL statement deadline overrides the database URL",
+        "explicit PostgreSQL query deadline overrides the database URL",
+        "worker metrics collection preserves caller limits and unspecified URL settings"
       ]
     },
     {
@@ -207,6 +219,28 @@
         "an issuance that never committed is reclaimed by the next issuance under the account lock",
         "deleting an account after an issuance that never committed revokes its credential and removes its Secret",
         "a reclaim whose PostgreSQL session ends during the Secret read leaves a later issuance intact"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-service-account-compensation.test.ts",
+      "expectedTests": [
+        "known audit rollback retains the exact recovery receipt when provider revocation fails",
+        "HTTP retry is blocked until the retained provider credential is confirmed revoked",
+        "applied but unacknowledged Kubernetes create retains a recoverable credential ID",
+        "confirmed revocation cleans only its matching Secret after either failed issuance entrance",
+        "recognized already-absent provider replies complete recovery",
+        "unconfirmed provider failures keep the receipt and block replacement",
+        "a Kubernetes create that never applied leaves foreign or unrelated objects untouched",
+        "delayed compensation cannot delete another issuance's Secret",
+        "exact cleanup respects ownership, credential ID, UID and resourceVersion",
+        "an owned leftover without a safe credential ID blocks issuance",
+        "two concurrent HTTP issuances serialize on the exact PostgreSQL account lock",
+        "lost PostgreSQL session during leftover lookup cannot reclaim a later committed issuance",
+        "lost PostgreSQL COMMIT acknowledgment preserves a committed issuance without replay",
+        "withheld PostgreSQL COMMIT is reconciled before an explicit recovery request",
+        "parser and exact-account IAM refusals precede provider and Secret effects",
+        "revoked exact-account authority cannot recover a retained credential",
+        "force deletion keeps configured-provider and no-provider behavior separate"
       ]
     },
     {
@@ -664,6 +698,10 @@
         "filesystem Configuration Driver validates gateway password reference placeholders",
         "Kubernetes Configuration Driver validates gateway password reference placeholders"
       ]
+    },
+    {
+      "path": "tests/integration/postgres-readiness-capacity.test.ts",
+      "expectedTests": ["PostgreSQL readiness shares only in-flight application-pool work"]
     }
   ]
 }

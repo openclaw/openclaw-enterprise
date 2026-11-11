@@ -237,6 +237,7 @@ const {
   waitFor,
   validateOpenShellPrerequisites,
   readAgentTransportCredentials,
+  readPermissionHarnessLogs,
   waitForOpenShellGateway,
   installOpenShellGateway,
   startOpenShellGatewayPortForward,
@@ -1813,6 +1814,8 @@ function createIntegrationSandboxDriverFactory(
             serviceUrl: () => harnessServiceUrls.get(context.revision.id),
             bearer: context.transportToken,
             signal: context.signal,
+            readHarnessLogs: (since, signal) =>
+              readPermissionHarnessLogs(context.namespace.name, context.revision, since, signal),
             requirePat:
               context.revision.harnessAuth?.method === "credential_source" &&
               context.revision.harnessAuth.loginMode === "codex_pat",

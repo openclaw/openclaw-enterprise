@@ -42,8 +42,7 @@ API callers set `nativeAdmin: true` on `POST /namespaces/:namespaceId/agents`
 and supply `expectedConfigurationGeneration`. In addition to ordinary Agent
 creation permissions, this requires `update` on the selected Configuration,
 which must not be referenced by any Agent. OCC checks the generation, prepares
-the Configuration, and creates the Agent in one transaction. Deploy the Agent
-through the normal workflow after creation.
+the Configuration, and creates the Agent atomically. Deploy normally afterward.
 
 Supported guided provisioning accepts `nativeAdmin: true` on
 `POST /namespaces/:namespaceId/agents/provision` and prepares the initial
@@ -57,6 +56,8 @@ and unrelated settings. Conflicting authentication modes, unsupported auth field
 disabled device authentication, and host-header origin fallback are refused.
 Guided-provisioning retries retain the Agent identity and prepared Configuration.
 Browser preparation does not change the creator's Agent permissions.
+
+[Native domain recovery](../guides/deploy/native-admin-domain-recovery.md).
 
 ## Requirements
 
@@ -84,13 +85,13 @@ runtime authority fails closed instead of granting administration.
 
 The response reports:
 
-| Status        | Meaning                                                                                                                                                                                                    |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `disabled`    | The Installation has not enabled native admin UI access.                                                                                                                                                   |
-| `stopped`     | The Agent is not in desired running state.                                                                                                                                                                 |
-| `unsupported` | Native admin UI access is unsupported. `reason`: `not-enabled` (`gateway.controlUi.enabled` is not `true`), `configuration` (another native setting refuses it) or `compute` (no usable gateway endpoint). |
-| `unavailable` | No version is serving yet: the Agent has no selected version, or a newer version is replacing it.                                                                                                          |
-| `available`   | The caller may open the returned `url` for the selected version.                                                                                                                                           |
+| Status        | Meaning                                                                                                                                                                                                                                                             |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `disabled`    | The Installation has not enabled native admin UI access.                                                                                                                                                                                                            |
+| `stopped`     | The Agent is not in desired running state.                                                                                                                                                                                                                          |
+| `unsupported` | Native admin UI access is unsupported. `reason`: `not-enabled` (no browser chat opt-in: `controlUi` is off, or has neither the Agent origin nor trusted-proxy auth), `configuration` (another native setting refuses it) or `compute` (no usable gateway endpoint). |
+| `unavailable` | No version is serving yet: the Agent has no selected version, or a newer version is replacing it.                                                                                                                                                                   |
+| `available`   | The caller may open the returned `url` for the selected version.                                                                                                                                                                                                    |
 
 A stopped Agent without a selected version returns only `status: "stopped"`, including before first deployment and after completed stop reconciliation. Otherwise, stopped results include target fields. A desired-running Agent without a selected version returns `unavailable` in the success envelope. Dependency outages, including IAM, return `503 DEPENDENCY_UNAVAILABLE`. Malformed requests, IAM denials and missing sessions use the protected-route error envelope.
 
@@ -101,8 +102,8 @@ and implementation with the selected version's recorded owner. A mismatch return
 private gateway-key lookup or transport. Agent-host HTTP retains its existing
 `403` refusal. WebSocket admission destroys the client socket without an HTTP
 response, before gateway-key lookup or connection; a mismatch during a WebSocket
-lease closes the connection through the existing failed-lease path. Matching ownership retains
-normal access. Earlier stopped, replacing and unsupported-configuration outcomes
+lease closes the connection through the existing failed-lease path.
+Earlier stopped, replacing and unsupported-configuration outcomes
 keep their precedence.
 
 The mismatch is not transient, so refreshing does not clear it. Each API process
@@ -114,11 +115,15 @@ Without a valid session, `/` or `/chat/main[/<session>]` navigations can return 
 
 Only a user-activated (`Sec-Fetch-User: ?1`) top-level HTML navigation is redirected. The same page load without that header, including every Safari navigation, stays HTTP `403` with one **Sign in** link to that console URL. Link previews, API requests, and WebSocket upgrades send no navigation Fetch Metadata and keep their ordinary refusal.
 
-The console offers sign-in if needed. Its authenticated `GET /native-admin/return/<key>` operation checks exact Agent `operate` or `administer` access and returns the Namespace and Agent IDs even if the Agent is stopped. Unknown and unauthorized keys receive the same `404`. Recovery ends at Agent detail; opening native chat is a separate action.
+Native HTTP admission returns `503 DEPENDENCY_UNAVAILABLE` on session-store failure,
+timeout or failed denial audit. Unavailable Agents return `403`; refused WebSocket
+upgrades close. Retry after recovery.
+
+The Console’s authenticated `GET /native-admin/return/<key>` operation checks exact Agent `operate` or `administer` access and returns the Namespace and Agent IDs even if the Agent is stopped. Unknown and unauthorized keys receive the same `404`. Recovery ends at Agent detail; opening native chat is a separate action.
 
 A signed-in person who has neither chat nor administration access to the Agent is never redirected. Their top-level HTML navigation stays HTTP 403 on a page that does not name the Agent; its only link, **Go to your Agents**, points at `/console/agents`. JSON requests still receive the JSON `403`; WebSocket upgrades still close.
 
-In an already-open Gateway tab, the Control UI offers **Reconnect in browser** if a reconnect fails and its same-origin health request receives `401` or `403`. Following the link opens `/` on the current Agent host. The UI does not navigate automatically or carry forward the chat path or query. The response is a reason to check access, not proof that a session expired. OCC decides whether that navigation reaches sign-in or is refused.
+After a failed reconnect and same-origin health response of `401` or `403`, the Control UI offers **Reconnect in browser**. The link opens `/` on the current Agent host, without automatic navigation or carrying the chat path or query. This prompts an access check, not proof of expiry; OCC decides whether to offer sign-in or refuse.
 
 ## Agent host identity
 

@@ -108,6 +108,7 @@
     "tests/conformance/console-json-errors.test.ts",
     "tests/integration/bootstrap-output.test.mjs",
     "tests/conformance/slack-configuration.test.mjs",
+    "tests/integration/slack-destination.test.ts",
     "tests/conformance/console-gateway-safety.test.ts",
     "tests/conformance/grafana-overview-dashboard.test.ts",
     "tests/conformance/split-layout-tenants.test.ts",
@@ -308,6 +309,9 @@
     },
     {
       "path": "tests/conformance/slack-configuration.test.mjs"
+    },
+    {
+      "path": "tests/integration/slack-destination.test.ts"
     },
     {
       "path": "tests/conformance/console-gateway-safety.test.ts"
@@ -684,6 +688,7 @@
       "expectedTests": [
         "a confirmed diagnostic grant preserves the actual Driver refusal and redacts the complete receipt",
         "non-PAT refusals and serving PAT Drivers do not trigger diagnostics",
+        "a native fallback mismatch retains only closed provenance from the Harness log window",
         "diagnostic wrong-profile retains the classified failure",
         "diagnostic wrong-reviewer retains the classified failure",
         "diagnostic wrong-approval retains the classified failure",

@@ -216,6 +216,88 @@ test(
         assert.deepEqual(await authRowCounts(pool), before);
       }
     });
+    await t.test("returning accounts survive a stricter email policy", async () => {
+      await app.close();
+      app = await composeApp({
+        ...settings,
+        OCC_AUTH_OIDC_ENROLLMENT: JSON.stringify({
+          ...policy,
+          createAccount: { ...policy.createAccount, requireVerifiedEmail: false },
+        }),
+      });
+      const accounts = [];
+      for (const verification of [false, undefined]) {
+        const subject = `unverified-${verification}`;
+        const email = `${subject}@example.test`;
+        const result = await login(subject, { email, email_verified: verification });
+        const { rows } = await pool.query(
+          'SELECT id, email_verified FROM occ."user" WHERE email = $1',
+          [email],
+        );
+        assert.equal(rows.length, 1);
+        assert.equal(rows[0].email_verified, false);
+        await assertConsoleSignIn(app, result.callback, rows[0].id);
+        accounts.push({ subject, id: rows[0].id });
+      }
+      // Tightening creation policy must not reject existing identities or update
+      // their stored verification, profile, or initial grants on returning login.
+      await app.close();
+      app = await composeApp({ ...settings, OCC_AUTH_OIDC_ENROLLMENT: JSON.stringify(policy) });
+      for (const account of accounts) {
+        const before = await authRowCounts(pool);
+        const priorGrants = await grants(await accountPrincipalId(pool, account.id));
+        for (const claims of [{}, { email_verified: "malformed" }]) {
+          await assertConsoleSignIn(
+            app,
+            (await login(account.subject, claims)).callback,
+            account.id,
+          );
+        }
+        const after = await authRowCounts(pool);
+        assert.equal(after.users, before.users);
+        assert.equal(after.methods, before.methods);
+        assert.deepEqual(await grants(await accountPrincipalId(pool, account.id)), priorGrants);
+        assert.equal(
+          (await pool.query('SELECT email_verified FROM occ."user" WHERE id = $1', [account.id]))
+            .rows[0].email_verified,
+          false,
+        );
+      }
+      adminHeaders = await signedInHeaders(app, origin, admin, address());
+    });
+    await t.test("email policy changes invalidate pending login attempts", async () => {
+      const start = await app.inject({
+        method: "POST",
+        url: "/api/auth/providers/oidc/start",
+        headers: { origin },
+        remoteAddress: address(),
+      });
+      assert.equal(start.statusCode, 200);
+      const url = start.json().data.url;
+      const code = idp.authorize(url, {
+        subject: "email-policy-stale",
+        claims: { groups: "members", email: "stale-policy@example.test", email_verified: true },
+      });
+      const before = await authRowCounts(pool);
+      await app.close();
+      app = await composeApp({
+        ...settings,
+        OCC_AUTH_OIDC_ENROLLMENT: JSON.stringify({
+          ...policy,
+          createAccount: { ...policy.createAccount, requireVerifiedEmail: false },
+        }),
+      });
+      const callback = await app.inject({
+        url: `/api/auth/providers/oidc/callback?state=${new URL(url).searchParams.get("state")}&code=${code}`,
+        headers: { cookie: cookieHeaderFromSetCookie(start.headers["set-cookie"]) },
+        remoteAddress: address(),
+      });
+      assert.match(callback.headers.location ?? "", /authError=oidc/);
+      assert.deepEqual(await authRowCounts(pool), before);
+      await app.close();
+      app = await composeApp({ ...settings, OCC_AUTH_OIDC_ENROLLMENT: JSON.stringify(policy) });
+      adminHeaders = await signedInHeaders(app, origin, admin, address());
+    });
     await t.test("disabled linked accounts remain disabled", async () => {
       assert.equal((await changeAccount(app, adminHeaders, memberId, "disable")).statusCode, 200);
       const result = await login("new-member", {
@@ -354,7 +436,7 @@ test(
           OCC_AUTH_OIDC_ENROLLMENT: JSON.stringify({ admission: policy.admission, groupIds: [] }),
         });
         const before = await authRowCounts(pool);
-        for (const groups of [undefined, "members", ["members", 1], ["Members"], []]) {
+        for (const groups of [undefined, 1, ["members", 1], ["Members"], []]) {
           assert.match(
             (await login("existing-member", { groups })).callback.headers.location,
             /authError=oidc/,

@@ -59,6 +59,30 @@ retain the state if cleanup fails. The `postgres`, `postgres-platform`, and
 `postgres-auth` lanes use the same prepare, run, and cleanup pattern; see
 [CI lanes](ci/full-integration.md#scenarios).
 
+Docker assigns each prepared server a loopback host port. Preparation records the
+verified mapping before connecting; it does not use the shared development port
+`55432`. The caller must be able to reach the Docker host's loopback interface.
+A sandbox with a separate network namespace can still receive `ECONNREFUSED`
+after successful container startup. Run preparation and its test client in a
+supported host environment; changing port allocation does not bridge namespaces.
+
+To verify allocation, migration, application-role access and cleanup with two
+owned real Docker projects, run:
+
+```sh
+OCC_TEST_CI_POSTGRES_REAL=1 node --test tests/integration/ci-prepare-postgres-real.test.ts
+```
+
+The `postgres` CI lane selects this check and requires it to pass with no skips.
+Default local suites leave it unselected. It needs Docker Compose,
+PostgreSQL image access and installed workspace dependencies. It removes only its own projects and volumes;
+cleanup failures print the retained parent journal in CI or private directory locally.
+CI registers exactly two child journals before startup. File and lane cleanup can
+recover their projects after worker death. Keep the parent journal until cleanup passes.
+Cleanup verifies each regular journal's fresh owner identity, path and lane;
+preexisting, replaced or symlinked journals are refused. Direct local runs use
+fresh private paths and an after-hook with the same Docker prerequisites.
+
 ## Subnet pool exhaustion
 
 If Compose reports `all predefined address pools have been fully subnetted`,

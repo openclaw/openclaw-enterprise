@@ -58,6 +58,85 @@ persistence and external sign-in; memory-backed success does not prove them.
 `OCC_HELM_BIN` can select Helm. It exercises loopback TLS trust and callback
 transport, not a live IdP, PostgreSQL authentication, or an installed deployment.
 
+### Synthetic OIDC issuer
+
+With Node.js 24 and OpenSSL available, run the portable issuer checks:
+
+```sh
+node --test tests/integration/oidc-provider.test.ts
+```
+
+The HTTPS fixture and the `fakeOidc` fetch adapter share the
+[OIDC protocol handler](../../tests/helpers/oidc-provider.mjs). The fixture grants
+one synthetic subject without a login screen; keep it on a disposable test network.
+These checks exercise the fixture, not a real identity provider or installed OCE
+sign-in.
+
+[Create run-owned material](../../tests/helpers/oidc-provider-material.mjs) once
+per rehearsal and retain it across controller replacements. It generates the
+client, subject, and TLS material in a private subdirectory and removes partial
+output if setup fails. Stop provider users before calling its returned `dispose`.
+
+The [server entrypoint](../../tests/helpers/oidc-provider-server.mjs) takes that
+material directory as its argument. `OIDC_LISTEN_HOST` and `OIDC_LISTEN_PORT`
+default to loopback and an ephemeral port; select the disposable network's bind
+address and port explicitly for a packaged fixture. The caller owns stopping the
+server and removing its material.
+
+## Staged sign-in cleanup
+
+On an isolated Linux Docker host with Node.js 24, k3d, kubectl, Python 3 and the
+repository's installed dependencies, select the real cleanup fixture:
+
+```sh
+OCC_TEST_STAGED_SIGNIN_CLEANUP_REAL=1 node --test --test-concurrency=1 tests/integration/staged-signin-cleanup-real.test.ts
+```
+
+The `k3d-fixture-configuration` PR lane runs this file serially before its
+shared fixture tests, without preparing a separate database for it. All three
+cases must pass without skips. For the direct Node invocation, set
+`OCC_TEST_STAGED_SIGNIN_CLEANUP_ARTIFACT_DIR` to a fresh directory to
+retain source identity, observed resource identities, refusal output, assertion
+outcomes and final cleanup status. The normal PR lane does not forward this
+optional directory; use its ordinary result and cleanup reports.
+
+Prepare the digest-pinned K3s image selected by `scripts/ci/prepare.mjs` and
+k3d's support images before execution. Allow capacity for one disposable
+single-server cluster and one small volume consumer at a time. The host must
+expose its local Docker socket and the server's PID/cgroup identity. The fixture
+uses private kubeconfigs and loopback API ports; it preserves the default
+kubeconfig and unrelated resources. No controller/runtime build, model
+credential or published release pair is needed.
+
+The cases share a fifteen-minute admission deadline and stop creating resources
+after a failure. The preparer runs in a child with a four-minute test budget.
+Staged creation disables rollback and retains unacknowledged resources after a
+timeout instead of deleting by name or retrying. After hooks stop further stages
+and await the body before cleanup. Final cleanup has a
+separate three-minute budget. A hard-killed runner can prevent those hooks;
+retained private state is diagnostic, and the outer lane does not automatically
+recover it. This suite does not prove recovery from arbitrary runner termination.
+No timeout or uncertain command outcome counts as successful cleanup.
+
+The cleanup CLI must remove the owned resources after a settled
+failed case, and refuse both a replaced cluster and a newly shared volume.
+Assertions inspect those effects before the fixture's separate final cleanup.
+The runner, release and settlement inputs are synthetic; this proves real
+Docker/k3d cleanup effects, not GitHub admission, image publication, child
+settlement or installed sign-in. A failed settled case never qualifies a release.
+
+Staged cleanup passes the prepared state digest and captured Docker custody into
+the cleanup owner. It checks the state under its lock, removes the exact server
+and network IDs, and rechecks volume generation and consumers before non-forced
+removal. A consumer attached after server removal preserves the volume and fails
+cleanup. Docker has no atomic generation condition for named-volume deletion;
+these checks do not protect against a privileged actor recreating an unused
+same-name volume between inspection and removal. Run this proof on an isolated
+host without competing Docker writers. The CLI records mutation intent before
+deletion. Without its completed cleanup receipt, the fixture retains state and
+never retries deletion. Fallback requires a verified pre-mutation refusal.
+Partial or uncertain cleanup never qualifies a release.
+
 ## Packaged-driver integration
 
 `tests/integration/driver-plugin-installation.test.ts` installs precompiled

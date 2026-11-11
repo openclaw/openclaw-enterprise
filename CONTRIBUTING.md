@@ -202,28 +202,46 @@ trailer where needed. Credit material review, documentation, and other non-code
 help in the PR description. Credit follows the work; running the merge does not
 make someone its author. Recognition does not grant repository permissions.
 
-The [contributor workflow](.github/workflows/contributors.yml) refreshes the README
-wall once when a PR merges into the default branch, including fork PRs. It does
-not run on each push or on unmerged closures. You can also run it manually from
-the Actions page. It checks out only the default branch and opens or updates one
-PR on `automation/contributors` when the generated README differs. This branch
-is reserved for generated updates; do not add manual commits to it.
+The [contributor workflow](.github/workflows/contributors.yml) is scheduled for
+Wednesday at 14:17 UTC. To run it before a release or to correct an omission,
+select the default branch on the Actions page. The workflow uses read-only
+repository permissions and stops if the default branch advances during or before
+collection. If the contributor wall is current, the run summary reports no
+changes. If the wall changes, the run uploads a README patch for review.
 
-To enable PR creation, a repository administrator must enable **Allow GitHub
-Actions to create and approve pull requests** under **Settings > Actions >
-General**. The workflow does not approve or merge PRs. PRs created with
-`GITHUB_TOKEN` do not start ordinary PR checks automatically; close and reopen
-the generated PR as a maintainer to start those checks before review and merge.
-No personal token or GitHub App secret is required.
+Download the patch from the run summary within three days. Check the run and
+attempt. In a clean checkout, compare both the upstream default-branch SHA and
+local HEAD with the base SHA in the summary. Start a fresh run if the upstream
+branch has advanced. Compare the patch SHA-256 with the summary.
 
-Before a release, or when correcting an omission, you can refresh the wall from
-the repository root with Node.js 24.22.1 or newer (26.x requires 26.12.1 or newer) and an authenticated GitHub CLI:
+```sh
+git ls-remote --symref https://github.com/openclaw/openclaw-enterprise.git HEAD
+git status --porcelain
+git rev-parse HEAD
+shasum -a 256 /path/to/contributors.patch
+```
+
+Confirm that status is empty and that the patch changes only the README
+contributor block. Check that the patch applies, then apply it.
+
+```sh
+git apply --check --index /path/to/contributors.patch
+git apply --index /path/to/contributors.patch
+```
+
+Submit the change through a normal README-only PR with the usual checks and
+human review. Keep the historical `automation/contributors` branch reserved for
+generated updates.
+
+You can also refresh the wall locally. Run this command from the repository root
+with Node.js 24.22.1 or newer (26.x requires 26.12.1 or newer) and an authenticated
+GitHub CLI:
 
 ```sh
 pnpm contributors:update
 ```
 
-You can also run `node scripts/update-contributors.ts` directly; the generator
+You can also run `node scripts/update-contributors.ts` directly. The generator
 uses only Node built-ins and does not require installing npm packages.
 
 The command needs only read access to repository metadata, contributors, pull

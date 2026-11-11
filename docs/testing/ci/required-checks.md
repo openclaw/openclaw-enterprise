@@ -68,6 +68,11 @@ use the linked suite guide and exact manifest in the table; prerequisites differ
 between browser, PostgreSQL, container, and Kubernetes lanes. Follow the shared
 [prepare, run, and cleanup procedure](run-lanes.md#results-and-cleanup).
 
+`checks-baseline-2` requires full Git history for its sign-in qualification profile
+tests. CI and Full Integration fetch that history during checkout for this lane;
+other matrix lanes keep a shallow checkout. Local runs need the reviewed profile
+commit available before starting; the tests do not fetch missing history.
+
 Runtime-image bridge tests and typechecks write temporary compiler artifacts to
 disk so memory pressure can reclaim their page cache. Each verification step
 starts with an empty artifact directory and removes it before committing the

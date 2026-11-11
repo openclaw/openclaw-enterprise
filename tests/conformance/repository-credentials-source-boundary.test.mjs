@@ -9,6 +9,7 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const sourceRoot = fileURLToPath(new URL("../../apps/controller/src/", import.meta.url));
 const sharedFields = "composition/installation-fields.ts";
+const sharedJsonMembers = "drivers/json-members.ts";
 const installation = "drivers/repo/github/installation.ts";
 const preparedConfiguration = "drivers/repo/github/access/prepared-configuration.ts";
 const preparedGit = "drivers/repo/github/access/prepared-repository-git.ts";
@@ -19,6 +20,7 @@ const entrypoints = [
   "repository-credentials.ts",
   "repository-credentials.mjs",
   sharedFields,
+  sharedJsonMembers,
   openShellEvidence,
 ];
 
@@ -212,6 +214,12 @@ test("credential source boundary rejects new raw capabilities in the real source
   }
 
   const cases = [
+    [
+      "the shared JSON parser cannot read files",
+      'import { readFile } from "node:fs/promises";',
+      /unreviewed runtime import from node:fs\/promises \(readFile\)/,
+      sharedJsonMembers,
+    ],
     // These mutations must be rejected at the evidence file itself: merely
     // exempting the selector's import or ignoring this file cannot pass.
     ...[

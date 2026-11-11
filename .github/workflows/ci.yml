@@ -363,6 +363,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          # Sign-in profile tests compare real historical controller/catalog inputs.
+          fetch-depth: ${{ matrix.lane == 'checks-baseline-2' && '0' || '1' }}
           persist-credentials: false
       - uses: ./.github/actions/run-ci-lane
         with:

@@ -101,24 +101,9 @@ ordinary refresh success alone is not evidence of read recovery.
 
 ## Native permission refusals
 
-After the real Driver classifies a Codex PAT permission refusal, the fixture
-collects one diagnostic per revision before rethrowing that failure. One
-connection through the same OpenShell exposure reads requirements and PAT status,
-then requests an ephemeral `:danger-full-access` thread with user review.
-
-The receipt compares approval/profile requirements and the returned profile,
-reviewer, approval policy, ephemeral flag, and legacy sandbox representation.
-`accepted` requires matching permission settings and an ephemeral thread; unknown provenance is
-`unconfirmed`, and different settings are `mismatch`. RPC errors do not establish
-a policy denial. Receipts include the fixture revision ID and fixed phase,
-outcome and cleanup classifications. Peer fields contain known enums and boolean
-or null comparisons; credentials, account details, instructions and peer text are excluded.
-
-No diagnostic model turn or approval response is sent; ordinary runtime startup
-still performs its authentication probe. The exchange has ten seconds, socket
-cleanup two seconds, and output one second. Cancellation preserves an already
-classified Driver failure without changing worker claim-loss handling. Normal
-candidate teardown owns thread cleanup; socket closure does not prove removal.
+A refused Codex PAT revision collects a bounded diagnostic before preserving the
+original failure. See [native permission diagnostics](openshell-permission-diagnostics.md)
+for requirement/grant comparisons, fallback-source observations and proof limits.
 
 ## Agent network policy
 

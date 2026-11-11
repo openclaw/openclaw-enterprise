@@ -1275,6 +1275,64 @@ test("Responses admits bounded native agent messages", async (t) => {
   assert.equal(f.providerRequests.length, sends, "unsupported agent messages cannot send");
 });
 
+test("Codex manual compaction forwards its closed metadata through protected inference", async (t) => {
+  const f = await staticEgressFixture(t);
+  const key = "x-codex-turn-metadata";
+  const metadata = JSON.parse(wire.request.client_metadata[key]);
+  const compaction = {
+    trigger: "manual",
+    reason: "user_requested",
+    implementation: "responses",
+    phase: "standalone_turn",
+    strategy: "memento",
+  };
+  function request(record, kind = "compaction") {
+    return {
+      ...wire.request,
+      client_metadata: {
+        ...wire.request.client_metadata,
+        [key]: JSON.stringify({ ...metadata, request_kind: kind, compaction: record }),
+      },
+    };
+  }
+  const manual = request(compaction);
+  const check = responseChecks(f);
+  await check.events(responseEvents(), false, "manual compaction", true, manual);
+  assert.deepEqual(f.providerRequests.at(-1).body, manual);
+
+  // Codex serializes reasoning content as null when a prior provider item omitted it.
+  const reasoning = {
+    type: "reasoning",
+    id: "rs_fixture",
+    summary: [{ type: "summary_text", text: "Earlier reasoning" }],
+    content: null,
+    encrypted_content: "opaque reasoning fixture",
+  };
+  const replay = { ...manual, input: [...manual.input, reasoning] };
+  await check.events(responseEvents(), false, "manual compaction replays reasoning", true, replay);
+  assert.deepEqual(f.providerRequests.at(-1).body, replay);
+
+  const reads = f.secretReads;
+  const sends = f.providerRequests.length;
+  for (const invalid of [
+    request({ ...compaction, strategy: "unknown" }),
+    request({ ...compaction, phase: undefined }),
+    request({ ...compaction, authority: "owner" }),
+    request(compaction, "turn"),
+    { ...manual, tools: [{ type: "web_search" }] },
+    { ...manual, model: "outside-the-grant" },
+    ...[{}, "text", [{ type: "input_text", text: "unexpected" }]].map((content) => ({
+      ...replay,
+      input: [...manual.input, { ...reasoning, content }],
+    })),
+    { ...replay, input: [...manual.input, { ...reasoning, unknown: null }] },
+  ]) {
+    assert.ok((await f.resolve(f.capture(invalid))).refused);
+  }
+  assert.equal(f.secretReads, reads);
+  assert.equal(f.providerRequests.length, sends);
+});
+
 test("selected Codex Responses wire admits local tools and finite SSE while rejecting remote tools and unprotected events", async (t) => {
   const f = await staticEgressFixture(t);
   // Sanitized packaged 0.163.0-alpha.2 request and synthetic response consumed by that
@@ -1312,10 +1370,19 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
     );
     return captured;
   };
-  for (const metadata of [
-    turnMetadata,
-    { ...turnMetadata, workspaces: { [repositoryRoot]: workspace } },
+  // Captured native requests paired telemetry "ultra" with wire "xhigh". Preserve each field's
+  // supported spelling through authorization and the actual TLS provider request.
+  for (const [effort, metadata] of [
+    [inline.request.reasoning.effort, turnMetadata],
+    [
+      inline.request.reasoning.effort,
+      { ...turnMetadata, workspaces: { [repositoryRoot]: workspace } },
+    ],
+    ["high", { ...turnMetadata, reasoning_effort: "high" }],
+    ["xhigh", { ...turnMetadata, reasoning_effort: "ultra" }],
+    ["max", { ...turnMetadata, reasoning_effort: "max" }],
   ]) {
+    inline.request.reasoning.effort = effort;
     inline.request.client_metadata[metadataKey] = JSON.stringify(metadata);
     const captured = captureInline(inline.request);
     const { ready } = await f.resolve(captured);
@@ -1365,6 +1432,9 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
       metadata.reasoning_effort = "unrecognized";
       request.client_metadata[metadataKey] = JSON.stringify(metadata);
     },
+    ...["ultra", "unrecognized"].map((effort) => (request) => {
+      request.reasoning.effort = effort;
+    }),
     ...[
       { relative: workspace },
       { ["/".repeat(4097)]: workspace },
