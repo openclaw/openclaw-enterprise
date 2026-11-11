@@ -106,6 +106,6 @@ export async function verifyQaSandboxPolicy(artifacts, scenario = "network-polic
     outcome:
       scenario === "plugin-install"
         ? "real Agent plugin installation, native restart discovery, and selection removal"
-        : "real Agent defaults, preview, save, apply, revoke and isolation",
+        : "saved Installation ceiling, pending rechecks, Agent defaults, preview, save, apply, revoke and isolation",
   };
 }

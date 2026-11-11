@@ -12,6 +12,7 @@ import {
   PostgresWorkQueue,
   ResourceStateConflictError,
 } from "../../packages/occ/src/index.ts";
+import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
@@ -111,6 +112,15 @@ async function createPolicyApp(t, recordOperations = false, { laxDriver = false 
       ],
     },
   });
+  // Set the saved Installation owner through its real HTTP contract. Constructor seeds
+  // are one-time initialization inputs and cannot reset an existing database.
+  const ceiling = await fixture.inject("GET", "/installation/sandbox-network-policy-ceiling");
+  assert.equal(ceiling.statusCode, 200, ceiling.body);
+  const savedCeiling = await fixture.inject("PUT", "/installation/sandbox-network-policy-ceiling", {
+    expectedVersion: ceiling.json().data.version,
+    rules: [grant, providerRefusalGrant],
+  });
+  assert.equal(savedCeiling.statusCode, 200, savedCeiling.body);
   return { ...fixture, grant, providerRefusalGrant, sandboxDriver, sandboxConfiguration };
 }
 
@@ -180,13 +190,20 @@ test(
       await t.test(scenario.name, async () => {
         // Deploy with the authentic Driver before introducing the faulty admission response.
         const { namespace, agent } = await deployAgent(`Integrity ${scenario.name}`);
+        const currentCeiling = await controller.getInstallationSandboxNetworkPolicyCeiling(
+          fixture.principal.id,
+        );
+        await controller.updateInstallationSandboxNetworkPolicyCeiling(
+          fixture.principal.id,
+          currentCeiling.version,
+          scenario.ceiling,
+        );
         const restarted = new OpenClawController(controller.installation, {
           namespaceLifecycleBindings: [
             sandboxNamespaceLifecycleBinding(controller.selectedDriver("compute"), sandboxDriver),
           ],
           state,
           recordOperations: true,
-          sandboxNetworkPolicyCeiling: scenario.ceiling,
           driverConfigurations: [
             {
               capability: "sandbox",
@@ -437,13 +454,20 @@ test(
               transact: (work) => state.transact((unit) => work(withMissingRowRead(unit))),
             }
           : state;
+        const currentCeiling = await controller.getInstallationSandboxNetworkPolicyCeiling(
+          fixture.principal.id,
+        );
+        await controller.updateInstallationSandboxNetworkPolicyCeiling(
+          fixture.principal.id,
+          currentCeiling.version,
+          [],
+        );
         const restarted = new OpenClawController(controller.installation, {
           namespaceLifecycleBindings: [
             sandboxNamespaceLifecycleBinding(controller.selectedDriver("compute"), sandboxDriver),
           ],
           state: observedState,
           recordOperations: true,
-          sandboxNetworkPolicyCeiling: [],
           driverConfigurations: [
             {
               capability: "sandbox",
@@ -1000,15 +1024,24 @@ test(
       "SELECT count(*) AS count FROM occ.controller_work WHERE namespace_id=$1",
       [namespace.id],
     );
-    // Startup is the owner of the ceiling. A new controller uses the same database and real IAM,
-    // with a smaller operator delegation; no mutable test hook changes the running controller.
+    // The administrator tightens the saved Installation ceiling through its owner route.
+    // The restarted controller and worker must read this value instead of a startup seed.
+    const ceiling = await inject("GET", "/installation/sandbox-network-policy-ceiling");
+    assert.equal(
+      (
+        await inject("PUT", "/installation/sandbox-network-policy-ceiling", {
+          expectedVersion: ceiling.json().data.version,
+          rules: [],
+        })
+      ).statusCode,
+      200,
+    );
     const restarted = new OpenClawController(controller.installation, {
       namespaceLifecycleBindings: [
         sandboxNamespaceLifecycleBinding(controller.selectedDriver("compute"), sandboxDriver),
       ],
       state,
       recordOperations: false,
-      sandboxNetworkPolicyCeiling: [],
       driverConfigurations: [
         {
           capability: "sandbox",
@@ -1122,5 +1155,208 @@ test(
       ).rows,
       jobs.rows,
     );
+  },
+);
+
+// These scenarios use the real worker queue and controller admission. They stop before
+// provider effects; the registered OpenShell QA workflow proves loaded policy and traffic.
+test(
+  "worker rechecks saved ceiling after admission and fails closed on lost state",
+  requiresPostgres,
+  async (t) => {
+    const fixture = await createPolicyApp(t, true);
+    const { pool, state, inject, deployAgent, grant, sandboxDriver } = fixture;
+    const migrator = new pg.Pool({
+      connectionString: process.env.OCC_MIGRATION_DATABASE_URL,
+      max: 1,
+    });
+    t.after(() => migrator.end());
+    const saveCeiling = async (rules) => {
+      const current = await inject("GET", "/installation/sandbox-network-policy-ceiling");
+      const saved = await inject("PUT", "/installation/sandbox-network-policy-ceiling", {
+        expectedVersion: current.json().data.version,
+        rules,
+      });
+      assert.equal(saved.statusCode, 200, saved.body);
+    };
+    await t.test("admission ordered after a ceiling update uses its committed rules", async () => {
+      const { namespace, agent } = await deployAgent("Concurrent ceiling admission");
+      const path = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
+      assert.equal((await inject("PATCH", `${path}/editing`, { enabled: true })).statusCode, 200);
+      assert.equal(
+        (
+          await inject("POST", `${path}/validate`, { expectedVersion: 1, additions: [grant] })
+        ).json().data.success,
+        true,
+      );
+      const locked = Promise.withResolvers();
+      const replace = Promise.withResolvers();
+      const update = fixture.controller.transact(async (unit) => {
+        await unit.installations.holdSandboxNetworkPolicyCeiling("exclusive");
+        locked.resolve();
+        await replace.promise;
+        const previous = await unit.installations.getSandboxNetworkPolicyCeiling();
+        await fixture.controller.updateInstallationSandboxNetworkPolicyCeiling(
+          fixture.principal.id,
+          previous.version,
+          [],
+        );
+      });
+      await locked.promise;
+      let admission;
+      try {
+        admission = inject("PUT", path, { expectedVersion: 1, additions: [grant] });
+        // Observe PostgreSQL waiting on the shared admission lock, before any Namespace/Agent lock.
+        await waitFor("Agent admission waits for the ceiling owner transaction", async () => {
+          const waiting = await pool.query(
+            "SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%pg_advisory_xact_lock_shared%' LIMIT 1",
+          );
+          return waiting.rowCount === 1 ? true : undefined;
+        });
+      } finally {
+        replace.resolve();
+        await update;
+      }
+      const response = await admission;
+      assert.equal(response.statusCode, 409, response.body);
+      assert.ok(response.json().error.details.some(({ code }) => code === "OUTSIDE_CEILING"));
+      const saved = (await inject("GET", path)).json().data.policy;
+      assert.equal(saved.version, 1);
+      assert.deepEqual(
+        saved.additions,
+        [],
+        "a successful earlier preview cannot authorize this save",
+      );
+    });
+    for (const scenario of ["tightened", "missing after worker start"]) {
+      await t.test(scenario, async () => {
+        await saveCeiling([grant]);
+        const { namespace, agent, revision } = await deployAgent(`Worker ceiling ${scenario}`);
+        await state.transact(async (unit) => {
+          await unit.namespaces.lockNamespace(namespace.id);
+          await unit.agents.compareAndSetActiveRevision(
+            namespace.id,
+            agent.id,
+            undefined,
+            revision.id,
+          );
+        });
+        const queue = new PostgresWorkQueue(pool);
+        // Finish fixture lifecycle work; only the policy application remains for the worker.
+        for (let claim = await queue.claim(); claim !== undefined; claim = await queue.claim()) {
+          await queue.complete(claim);
+        }
+        const path = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
+        assert.equal((await inject("PATCH", `${path}/editing`, { enabled: true })).statusCode, 200);
+        assert.equal(
+          (await inject("PUT", path, { expectedVersion: 1, additions: [grant] })).statusCode,
+          200,
+        );
+        const applied = await inject("POST", `${path}/apply`, {
+          expectedVersion: 2,
+          revisionId: revision.id,
+        });
+        assert.equal(applied.statusCode, 202, applied.body);
+        const expected =
+          scenario === "tightened"
+            ? "SANDBOX_POLICY_CEILING_CHANGED"
+            : "SANDBOX_POLICY_CEILING_UNAVAILABLE";
+        let blocker;
+        let removed;
+        let worker;
+        try {
+          if (scenario === "tightened") {
+            await saveCeiling([]);
+          } else {
+            // Keep the worker alive but hold the admission lock until persisted state is removed.
+            blocker = await pool.connect();
+            await blocker.query("BEGIN");
+            await blocker.query(
+              "SELECT pg_advisory_xact_lock(hashtextextended('occ.installation.sandbox-network-policy-ceiling', 0))",
+            );
+          }
+          const computeDriver = fixture.computeDriver;
+          worker = createControllerWorker({
+            pool: new pg.Pool({ connectionString: databaseUrl }),
+            drivers: {
+              installation: {
+                drivers: {
+                  iam: { id: "native-iam" },
+                  compute: { id: computeDriver.id },
+                  sandbox: {
+                    id: sandboxDriver.id,
+                    implementation: sandboxDriver.implementation,
+                    definition: OpenShellSandboxDriver,
+                  },
+                },
+              },
+              computeDriver,
+              sandboxDriver,
+              namespaceLifecycleBindings: [
+                sandboxNamespaceLifecycleBinding(computeDriver, sandboxDriver),
+              ],
+              createIAMDriver: (workerState) =>
+                new NativeIAMDriver(workerState, { id: "native-iam" }),
+            },
+            pollIntervalMs: 10,
+            emit() {},
+          });
+          await worker.start();
+          if (blocker !== undefined) {
+            removed = (
+              await migrator.query(
+                "DELETE FROM occ.installation_network_policy_ceiling WHERE installation_id = $1 RETURNING *",
+                [fixture.controller.installation.id],
+              )
+            ).rows[0];
+            await blocker.query("COMMIT");
+            blocker.release();
+            blocker = undefined;
+          }
+          await waitFor("policy ceiling recheck to reject queued application", async () => {
+            const result = await pool.query(
+              "SELECT document FROM occ.sandbox_policies WHERE agent_id = $1",
+              [agent.id],
+            );
+            const application = result.rows[0]?.document.application;
+            return application?.state === "failed" ? application : undefined;
+          }).then((application) => assert.equal(application.reason, expected));
+          const current = await state.read((view) => view.agents.findAgent(namespace.id, agent.id));
+          assert.equal(
+            current.activeRevisionId,
+            revision.id,
+            "ceiling changes preserve the running revision",
+          );
+          assert.deepEqual(
+            (
+              await state.read((view) =>
+                view.revisions.findRevision(namespace.id, agent.id, revision.id),
+              )
+            ).sandboxPolicy,
+            revision.sandboxPolicy,
+          );
+        } finally {
+          if (blocker !== undefined) {
+            await blocker.query("ROLLBACK");
+            blocker.release();
+          }
+          await worker?.stop();
+          if (removed !== undefined) {
+            await migrator.query(
+              "INSERT INTO occ.installation_network_policy_ceiling (installation_id, version, rules, management_mode, updated_at, updated_by, startup_configuration) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+              [
+                removed.installation_id,
+                removed.version,
+                JSON.stringify(removed.rules),
+                removed.management_mode,
+                removed.updated_at,
+                removed.updated_by,
+                removed.startup_configuration,
+              ],
+            );
+          }
+        }
+      });
+    }
   },
 );

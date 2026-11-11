@@ -36,7 +36,6 @@
     "tests/integration/postgres-repository-transactions.test.mjs",
     "tests/integration/postgres-controller-work-targets.test.mjs",
     "tests/integration/postgres-transaction-commit.test.mjs",
-    "tests/integration/postgres-agent-sandbox-policy.test.mjs",
     "tests/integration/postgres-static-egress.test.mjs",
     "tests/integration/postgres-prepared-token-service.test.ts",
     "tests/integration/postgres-prepared-github-lifecycle.test.mjs",
@@ -71,6 +70,12 @@
     "tests/integration/postgres-preset-template-validation.test.ts"
   ],
   "files": [
+    {
+      "path": "tests/integration/installation-network-policy-ceiling.test.ts",
+      "expectedTests": [
+        "Installation ceiling owner API preserves empty state and rejects stale saves"
+      ]
+    },
     {
       "path": "tests/integration/postgres-connection-auth.test.mjs",
       "expectedTests": [
@@ -508,7 +513,8 @@
         "policy admission cannot acquire grants from a Driver snapshot",
         "deployment cannot acquire grants from an empty Driver request",
         "Agent policy HTTP admission persists bounded grants without changing an admitted revision",
-        "interrupted terminal policy recovery rolls back queue failure and a restarted worker finalizes it"
+        "interrupted terminal policy recovery rolls back queue failure and a restarted worker finalizes it",
+        "worker rechecks saved ceiling after admission and fails closed on lost state"
       ]
     },
     {

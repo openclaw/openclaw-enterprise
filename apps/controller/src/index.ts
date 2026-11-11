@@ -1397,6 +1397,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   });
 
   let controller = options.controller;
+  app.addHook("onReady", async () => {
+    if (controller !== undefined) {
+      const result = await controller.initializeSandboxNetworkPolicyCeiling();
+      if (result.seedIgnored) {
+        app.log.warn(
+          "The startup network policy ceiling is seed-only. Use Installation Settings to change the saved ceiling.",
+        );
+      }
+    }
+  });
   let bootstrapping = false;
   const installationId =
     development.installationId ?? controller?.installation.id ?? `ins_${randomUUID()}`;
@@ -2267,6 +2277,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           created.selectDriver("sandbox", options.sandboxDriver.id);
         }
         await created.transact(async (unit) => {
+          await created.initializeSandboxNetworkPolicyCeiling(context.actorId);
           await createBootstrapResources(created, context.actorId);
           await unit.audit.append(
             event(operation, request, target, "bootstrap", context, decision.evidence),
@@ -2347,6 +2358,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       } else {
         await run();
       }
+      return;
+    }
+
+    if (
+      operation.operationId === "getInstallationSandboxNetworkPolicyCeiling" ||
+      operation.operationId === "updateInstallationSandboxNetworkPolicyCeiling"
+    ) {
+      const ceiling =
+        operation.operationId === "getInstallationSandboxNetworkPolicyCeiling"
+          ? await controller.getInstallationSandboxNetworkPolicyCeiling(context.actorId)
+          : await controller.updateInstallationSandboxNetworkPolicyCeiling(
+              context.actorId,
+              body!.expectedVersion as number,
+              body!
+                .rules as readonly import("@openclaw-enterprise/contracts").SandboxNetworkGrant[],
+            );
+      reply.send({ data: ceiling, meta: { requestId: request.id } });
       return;
     }
 

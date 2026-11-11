@@ -5661,6 +5661,28 @@ async function assertAgentNetworkPolicyLifecycle(topology, enterCheck, diagnosti
     host: topology.tokenEcho.host,
     ports: [{ from: topology.tokenEcho.policyPort, to: topology.tokenEcho.policyPort }],
   };
+  const ceilingPath = "/installation/sandbox-network-policy-ceiling";
+  const readCeiling = await topology.request("GET", ceilingPath);
+  assert.equal(readCeiling.status, 200, JSON.stringify(readCeiling.error));
+  assert.equal(readCeiling.data.managementMode, "console");
+  let ceilingVersion = readCeiling.data.version;
+  const saveCeiling = async (rules) => {
+    const saved = await topology.request("PUT", ceilingPath, {
+      expectedVersion: ceilingVersion,
+      rules,
+    });
+    assert.equal(saved.status, 200, JSON.stringify(saved.error));
+    ceilingVersion = saved.data.version;
+    return saved.data;
+  };
+  // Administrator changes use the persisted owner API. Widening alone cannot alter an Agent.
+  await saveCeiling([]);
+  await saveCeiling([grant]);
+  const staleCeiling = await topology.request("PUT", ceilingPath, {
+    expectedVersion: ceilingVersion - 1,
+    rules: [],
+  });
+  assert.equal(staleCeiling.status, 409, JSON.stringify(staleCeiling.error));
   const python = async (agentId = topology.agent.id, port = topology.tokenEcho.policyPort) => {
     const pods = await resources("pods", topology.gatewayPlacement);
     const gateway = pods.find(
@@ -5779,6 +5801,56 @@ PYTHON`;
         { workspace: topology.placement, sandbox: topology.sandbox.metadata.name },
         AbortSignal.timeout(10_000),
       );
+  enterCheck("saved-ceiling-pending-recheck");
+  const pendingSaved = await topology.request("PUT", policyPath, {
+    expectedVersion: version,
+    additions: [grant],
+  });
+  assert.equal(pendingSaved.status, 200, JSON.stringify(pendingSaved.error));
+  version = pendingSaved.data.version;
+  const writesBeforeTightening = topology.policyWrites.length;
+  await topology.pauseWorker();
+  try {
+    const pending = await topology.request("POST", `${policyPath}/apply`, {
+      expectedVersion: version,
+      revisionId: topology.revision.id,
+    });
+    assert.equal(pending.status, 202, JSON.stringify(pending.error));
+    await saveCeiling([]);
+  } finally {
+    await topology.resumeWorker();
+  }
+  const ceilingFailed = await waitFor(
+    "pending policy refused after saved ceiling tightens",
+    async () => {
+      const view = await topology.request("GET", policyPath);
+      return view.data.policy.application?.state === "failed"
+        ? view.data.policy.application
+        : undefined;
+    },
+    30_000,
+  );
+  assert.equal(ceilingFailed.reason, "SANDBOX_POLICY_CEILING_CHANGED");
+  assert.equal(
+    topology.policyWrites.length,
+    writesBeforeTightening,
+    "ceiling refusal must precede provider effects",
+  );
+  await saveCeiling([grant]);
+  assert.notEqual((await python()).exitCode, 0, "widening the ceiling grants no running access");
+  const excessive = [{ ...grant, host: "outside-ceiling.example.org" }];
+  const excessivePreview = await topology.request("POST", `${policyPath}/validate`, {
+    expectedVersion: version,
+    additions: excessive,
+  });
+  assert.equal(excessivePreview.status, 200, JSON.stringify(excessivePreview.error));
+  assert.equal(excessivePreview.data.success, false);
+  assert.ok(excessivePreview.data.error.details.some(({ code }) => code === "OUTSIDE_CEILING"));
+  assert.equal(
+    (await topology.request("PUT", policyPath, { expectedVersion: version, additions: excessive }))
+      .status,
+    409,
+  );
   enterCheck("apply-authorization");
   for (const [action, kind, id] of [
     ["manage_policy", "agent", topology.agent.id],
@@ -5961,6 +6033,27 @@ PYTHON`;
   };
   enterCheck("grant-application");
   await change([grant], true);
+  enterCheck("running-access-after-ceiling-tightening");
+  const policyBeforeTightening = (await topology.request("GET", policyPath)).data.policy;
+  const providerBeforeTightening = await providerPolicy();
+  await saveCeiling([]);
+  assert.equal(
+    (await python()).exitCode,
+    0,
+    "tightening admission limits preserves running access",
+  );
+  assert.deepEqual((await topology.request("GET", policyPath)).data.policy, policyBeforeTightening);
+  assert.deepEqual(await providerPolicy(), providerBeforeTightening);
+  assert.equal(
+    (
+      await topology.request("POST", `${policyPath}/apply`, {
+        expectedVersion: version,
+        revisionId: topology.revision.id,
+      })
+    ).status,
+    409,
+  );
+  await saveCeiling([grant]);
   enterCheck("granted-agent-request");
   const allowed = await python();
   assert.equal(allowed.exitCode, 0, "a confirmed grant must permit the same real Python request");

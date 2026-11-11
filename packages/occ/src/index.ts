@@ -858,6 +858,8 @@ export interface ControllerOptions {
   readonly preparedTokens?: TokenService | undefined;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
+  readonly sandboxNetworkPolicyCeilingOverwriteOnStartup?: boolean;
+  readonly assertSandboxNetworkPolicyCeilingStartupAuthority?: () => Promise<void>;
   /** Installation configuration `iam`; `applyIAMConfiguration` writes it to IAM policy. */
   readonly iamConfiguration?: InstallationIAMConfiguration;
   readonly authorize?: (
@@ -2294,7 +2296,11 @@ export class OpenClawController {
   readonly installation: Readonly<Installation>;
   private readonly configurations = new DriverConfigurationRegistry();
 
-  private readonly sandboxNetworkPolicyCeiling: readonly SandboxNetworkGrant[];
+  private readonly sandboxNetworkPolicyCeilingSeed: readonly SandboxNetworkGrant[];
+  private readonly sandboxNetworkPolicyCeilingSeedSupplied: boolean;
+  private readonly sandboxNetworkPolicyCeilingOverwriteOnStartup: boolean;
+  private readonly assertSandboxNetworkPolicyCeilingStartupAuthority:
+    (() => Promise<void>) | undefined;
   private readonly iamConfiguration?: InstallationIAMConfiguration;
   private readonly authorization?: ControllerOptions["authorize"];
   private readonly clock: () => Date;
@@ -2346,7 +2352,21 @@ export class OpenClawController {
       options.sandboxNetworkPolicyCeiling ?? [],
       "/sandboxNetworkPolicyCeiling",
     );
-    this.sandboxNetworkPolicyCeiling = immutableCopy(options.sandboxNetworkPolicyCeiling ?? []);
+    if (
+      options.sandboxNetworkPolicyCeilingOverwriteOnStartup === true &&
+      options.sandboxNetworkPolicyCeiling === undefined
+    ) {
+      throw new Error(
+        "Startup ceiling overwrite requires explicit sandboxNetworkPolicyCeiling rules.",
+      );
+    }
+    this.assertSandboxNetworkPolicyCeilingStartupAuthority =
+      options.assertSandboxNetworkPolicyCeilingStartupAuthority;
+    this.sandboxNetworkPolicyCeilingSeedSupplied =
+      options.sandboxNetworkPolicyCeiling !== undefined;
+    this.sandboxNetworkPolicyCeilingSeed = immutableCopy(options.sandboxNetworkPolicyCeiling ?? []);
+    this.sandboxNetworkPolicyCeilingOverwriteOnStartup =
+      options.sandboxNetworkPolicyCeilingOverwriteOnStartup === true;
     if (options.iamConfiguration !== undefined) {
       this.iamConfiguration = options.iamConfiguration;
     }
@@ -11388,6 +11408,155 @@ export class OpenClawController {
     };
   }
 
+  private async requireInstallationCeiling(state: PlatformReadView) {
+    try {
+      await this.assertSandboxNetworkPolicyCeilingStartupAuthority?.();
+    } catch {
+      throw new DependencyUnavailableError(
+        "Installation ceiling startup ownership is unavailable. Restart this API instance.",
+      );
+    }
+    const ceiling = await state.installations.getSandboxNetworkPolicyCeiling();
+    if (ceiling === undefined || ceiling.installationId !== this.installation.id) {
+      throw new DependencyUnavailableError(
+        "The Installation network policy ceiling has not been initialized.",
+      );
+    }
+    return ceiling;
+  }
+
+  /** Trusted API startup only. Workers never initialize or replace this setting. */
+  async initializeSandboxNetworkPolicyCeiling(actorId?: string): Promise<{ seedIgnored: boolean }> {
+    return this.mutate(async (state) => {
+      await state.installations.holdSandboxNetworkPolicyCeiling("exclusive");
+      const previous = await state.installations.getSandboxNetworkPolicyCeiling();
+      const managementMode = this.sandboxNetworkPolicyCeilingOverwriteOnStartup
+        ? ("startup" as const)
+        : ("console" as const);
+      const rules =
+        previous === undefined || managementMode === "startup"
+          ? this.sandboxNetworkPolicyCeilingSeed
+          : previous.rules;
+      const seedIgnored =
+        this.sandboxNetworkPolicyCeilingSeedSupplied &&
+        previous !== undefined &&
+        managementMode === "console" &&
+        !isDeepStrictEqual(previous.rules, this.sandboxNetworkPolicyCeilingSeed);
+      if (
+        previous !== undefined &&
+        previous.managementMode === managementMode &&
+        isDeepStrictEqual(previous.rules, rules)
+      ) {
+        return { seedIgnored };
+      }
+      const bootstrapActor = actorId ?? (await state.installations.getBootstrapActor());
+      if (bootstrapActor === undefined) {
+        throw new DependencyUnavailableError(
+          "Ceiling initialization requires the Installation bootstrap identity.",
+        );
+      }
+      const saved = await state.installations.saveSandboxNetworkPolicyCeiling(
+        {
+          installationId: this.installation.id,
+          version: (previous?.version ?? 0) + 1,
+          rules,
+          managementMode,
+          updatedAt: this.timestamp(),
+          updatedBy: bootstrapActor,
+        },
+        previous?.version ?? 0,
+      );
+      if (saved === undefined) {
+        throw new ResourceStateConflictError("The Installation ceiling changed during startup.");
+      }
+      await this.appendCeilingAudit(
+        state,
+        bootstrapActor,
+        saved,
+        previous === undefined ? "initialize" : "startup",
+      );
+      return { seedIgnored };
+    });
+  }
+
+  async getInstallationSandboxNetworkPolicyCeiling(principalId: string) {
+    await this.authorize(principalId, "administer", {
+      kind: "installation",
+      id: this.installation.id,
+    });
+    return this.read((state) => this.requireInstallationCeiling(state));
+  }
+
+  async updateInstallationSandboxNetworkPolicyCeiling(
+    principalId: string,
+    expectedVersion: number,
+    rules: readonly SandboxNetworkGrant[],
+  ) {
+    await this.authorize(principalId, "administer", {
+      kind: "installation",
+      id: this.installation.id,
+    });
+    validateSandboxNetworkGrants(rules, "/rules");
+    return this.mutate(async (state) => {
+      await state.installations.holdSandboxNetworkPolicyCeiling("exclusive");
+      const previous = await this.requireInstallationCeiling(state);
+      if (previous.managementMode === "startup") {
+        throw new ResourceStateConflictError(
+          "The Installation ceiling is managed by startup configuration.",
+        );
+      }
+      if (previous.version !== expectedVersion) {
+        throw new ResourceStateConflictError(
+          "The Installation ceiling changed. Reload before saving.",
+        );
+      }
+      if (isDeepStrictEqual(previous.rules, rules)) {
+        return previous;
+      }
+      const saved = await state.installations.saveSandboxNetworkPolicyCeiling(
+        {
+          ...previous,
+          rules: immutableCopy(rules),
+          version: expectedVersion + 1,
+          updatedAt: this.timestamp(),
+          updatedBy: principalId,
+        },
+        expectedVersion,
+      );
+      if (saved === undefined) {
+        throw new ResourceStateConflictError(
+          "The Installation ceiling changed. Reload before saving.",
+        );
+      }
+      await this.appendCeilingAudit(state, principalId, saved, "update");
+      return saved;
+    });
+  }
+
+  private async appendCeilingAudit(
+    state: PlatformUnitOfWork,
+    actorId: string,
+    ceiling: import("@openclaw-enterprise/contracts").InstallationSandboxNetworkPolicyCeiling,
+    operation: string,
+  ) {
+    await state.audit.append({
+      id: `aud_${crypto.randomUUID()}`,
+      installationId: this.installation.id,
+      occurredAt: this.timestamp(),
+      kind: "mutation",
+      source: "occ",
+      actorId,
+      action: `openclaw.installation.sandbox_network_policy_ceiling.${operation}`,
+      resource: { kind: "installation", id: this.installation.id },
+      outcome: "success",
+      details: {
+        version: ceiling.version,
+        rules: ceiling.rules,
+        managementMode: ceiling.managementMode,
+      },
+    });
+  }
+
   async validateAgentSandboxPolicy(
     principalId: string,
     namespaceId: string,
@@ -11405,7 +11574,8 @@ export class OpenClawController {
     });
     // The cause comes before the editing setting and version checks it would otherwise hide (D774).
     this.requireNetworkPolicyAvailable();
-    return this.read(async (state) => {
+    return this.mutate(async (state) => {
+      await state.installations.holdSandboxNetworkPolicyCeiling("shared");
       await this.exactNamespace(state, namespaceId);
       const agent = await state.agents.findAgent(namespaceId, agentId);
       const previous = await state.sandboxPolicies.find(namespaceId, agentId);
@@ -11422,9 +11592,15 @@ export class OpenClawController {
         );
       }
       try {
-        const snapshot = this.admitAgentNetworkPolicy(additions, expectedVersion + 1, undefined, {
-          repositoryCredentials: (agent.repositoryBindings?.length ?? 0) > 0,
-        });
+        const snapshot = this.admitAgentNetworkPolicy(
+          (await this.requireInstallationCeiling(state)).rules,
+          additions,
+          expectedVersion + 1,
+          undefined,
+          {
+            repositoryCredentials: (agent.repositoryBindings?.length ?? 0) > 0,
+          },
+        );
         if (snapshot.additions.length > 0) {
           const active =
             this.selections.has("credential_proxy") || agent.activeRevisionId === undefined
@@ -11514,7 +11690,7 @@ export class OpenClawController {
         protectedExecution: this.protectedExecutionApplies(revision),
         capability: this.sandboxDriver()?.networkPolicy ?? null,
         ...(unavailableReason === undefined ? {} : { unavailableReason }),
-        ceiling: this.sandboxNetworkPolicyCeiling,
+        ceiling: (await this.requireInstallationCeiling(state)).rules,
         defaults,
         // A fresh deploy carries the saved version into its Sandbox; no application is
         // requested for it (D773).
@@ -11562,6 +11738,7 @@ export class OpenClawController {
   }
 
   private admitAgentNetworkPolicy(
+    ceiling: readonly SandboxNetworkGrant[],
     input: unknown,
     version: number,
     defaults?: SandboxPolicySnapshot["defaults"],
@@ -11588,7 +11765,7 @@ export class OpenClawController {
       requireConfiguration(contribution, { additions });
       const details: ErrorDetail[] = [];
       additions.forEach((grant, index) => {
-        if (!sandboxNetworkGrantsWithinCeiling([grant], this.sandboxNetworkPolicyCeiling)) {
+        if (!sandboxNetworkGrantsWithinCeiling([grant], ceiling)) {
           details.push({
             path: `/additions/${index}`,
             code: "OUTSIDE_CEILING",
@@ -11805,9 +11982,15 @@ export class OpenClawController {
           throw new ProtectedExecutionNetworkPolicyError("save");
         }
       }
-      const admitted = this.admitAgentNetworkPolicy(additions, expectedVersion + 1, undefined, {
-        repositoryCredentials: (agent.repositoryBindings?.length ?? 0) > 0,
-      });
+      const admitted = this.admitAgentNetworkPolicy(
+        (await this.requireInstallationCeiling(state)).rules,
+        additions,
+        expectedVersion + 1,
+        undefined,
+        {
+          repositoryCredentials: (agent.repositoryBindings?.length ?? 0) > 0,
+        },
+      );
       const updated = await state.sandboxPolicies.save(
         {
           id: previous.id,
@@ -11886,6 +12069,7 @@ export class OpenClawController {
         );
       }
       const snapshot = this.admitAgentNetworkPolicy(
+        (await this.requireInstallationCeiling(state)).rules,
         policy.additions,
         policy.version,
         revision.sandboxPolicy.defaults,
@@ -13622,6 +13806,7 @@ export class OpenClawController {
           "The selected Compute cannot admit this execution mode; protected release and old-reader fencing are unavailable.",
         );
       }
+      await this.requireInstallationCeiling(state);
       const policy = await state.sandboxPolicies.find(namespace.id, lockedAgent.id);
       const policyScope = { repositoryCredentials: repositoryCredentials !== undefined };
       // Finding 2053: protected execution refuses Agent additions, never drops them. Only an
@@ -13651,6 +13836,7 @@ export class OpenClawController {
         }
       } else if ((policy?.additions.length ?? 0) > 0) {
         sandboxPolicy = this.admitAgentNetworkPolicy(
+          (await this.requireInstallationCeiling(state)).rules,
           policy!.additions,
           policy!.version,
           undefined,
@@ -14298,6 +14484,7 @@ export class OpenClawController {
         id: agentId,
         namespaceId,
       });
+      await state.installations.holdSandboxNetworkPolicyCeiling("shared");
       const namespace = await state.namespaces.lockNamespace(namespaceId);
       if (!namespace) {
         throw new ScopeViolationError(
@@ -14965,6 +15152,7 @@ export class OpenClawController {
     namespaceId: string,
   ): Promise<Readonly<Namespace>> {
     this.namespaceIdentity(namespaceId);
+    await state.installations.holdSandboxNetworkPolicyCeiling("shared");
     const namespace = await state.namespaces.lockNamespace(namespaceId);
     if (!namespace) {
       throw new ScopeViolationError(

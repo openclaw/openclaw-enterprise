@@ -78,6 +78,7 @@ export function authorizedPrincipal(iam, required = [["deploy", "agent"]]) {
 export async function ensureInstallation(state, label) {
   const existing = await state.loadInstallation();
   if (existing !== undefined) {
+    await initializeFixtureCeiling(state, existing);
     return existing;
   }
 
@@ -99,7 +100,24 @@ export async function ensureInstallation(state, label) {
     ),
   );
   await state.transact((unit) => unit.installations.createInstallation(installation));
+  await initializeFixtureCeiling(state, installation);
   return installation;
+}
+// Fixtures that bootstrap directly perform the trusted API initialization before starting
+// a worker. Workers cannot create the setting, even when the fixture has no policy grants.
+async function initializeFixtureCeiling(state, installation) {
+  if (
+    (await state.read((view) => view.installations.getSandboxNetworkPolicyCeiling())) !== undefined
+  ) {
+    return;
+  }
+  const actor = authorizedPrincipal(await state.loadNativeIAMState(), [
+    ["administer", "installation"],
+  ]);
+  assert.ok(actor, "trusted fixture initialization requires an Installation administrator");
+  await new OpenClawController(installation, { state }).initializeSandboxNetworkPolicyCeiling(
+    actor.id,
+  );
 }
 async function inTransaction(pool, operation) {
   const client = await pool.connect();

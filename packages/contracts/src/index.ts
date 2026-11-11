@@ -133,6 +133,7 @@ export {
   requireConfiguration,
   serializeStartupConfiguration,
 } from "./configuration-definition.ts";
+export type { InstallationSandboxNetworkPolicyCeiling } from "./sandbox-policy.ts";
 export type { SandboxPolicyDecision } from "./sandbox-policy.ts";
 export type { SandboxPolicyViewWire } from "./api/sandbox-policy.ts";
 export { SandboxPolicyDecisionSchema, validSandboxPolicyDecision } from "./sandbox-policy.ts";

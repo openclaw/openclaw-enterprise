@@ -19,6 +19,8 @@ export function createPlatformReadView(
     installations: bindRepository(repositories.installations, lifetime, [
       "findInstallation",
       "getInstallation",
+      "getBootstrapActor",
+      "getSandboxNetworkPolicyCeiling",
     ]),
     namespaces: bindRepository(repositories.namespaces, lifetime, [
       "findNamespace",

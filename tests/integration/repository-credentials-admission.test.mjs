@@ -303,6 +303,7 @@ async function fixture(
       backends,
       ...controllerOptions,
     });
+    await controller.initializeSandboxNetworkPolicyCeiling(auth.seed.principal.id);
     for (const driver of [iam, compute, configurationDriver, secretDriver]) {
       controller.registerDriver(driver);
       controller.selectDriver(driver.capability, driver.id);

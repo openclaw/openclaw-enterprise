@@ -3,6 +3,20 @@
 const uuid = "123e4567-e89b-42d3-a456-426614174000";
 const id = (prefix: string) => `${prefix}_${uuid}`;
 const time = "2026-10-01T12:00:00.000Z";
+const ceilingGrant = {
+  id: "approved-service",
+  binary: "/usr/bin/python3.11",
+  host: "service.example.com",
+  ports: [{ from: 443, to: 443 }],
+};
+const installationCeiling = {
+  installationId: id("ins"),
+  version: 1,
+  rules: [],
+  managementMode: "console",
+  updatedAt: time,
+  updatedBy: "principal-administrator",
+};
 const namespaceId = id("ns");
 const agentId = id("agt");
 const configurationId = id("cfg");
@@ -388,6 +402,7 @@ export const requestExamples = {
   pollAgentDeviceAuthorization: {},
   pollSavedAgentDeviceAuthorization: {},
   provisionAgentRuntimeCredentials: {},
+  updateInstallationSandboxNetworkPolicyCeiling: { expectedVersion: 1, rules: [ceilingGrant] },
   updateAgentSandboxPolicy: { expectedVersion: 1, additions: [] },
   validateAgentSandboxPolicy: { expectedVersion: 1, additions: [] },
   applyAgentSandboxPolicy: { expectedVersion: 1, revisionId },
@@ -437,6 +452,12 @@ export const responseExamples = {
   listOAuthClients: [oauthClient],
   createOAuthClient: oauthClient,
   rotateOAuthClientSecret: oauthClient,
+  getInstallationSandboxNetworkPolicyCeiling: installationCeiling,
+  updateInstallationSandboxNetworkPolicyCeiling: {
+    ...installationCeiling,
+    version: 2,
+    rules: [ceilingGrant],
+  },
   getInstallation: { id: id("ins"), name: "Engineering", createdAt: time },
   bootstrapInstallation: { id: id("ins"), name: "Engineering", createdAt: time },
   getInstallationDeploymentInventory: {

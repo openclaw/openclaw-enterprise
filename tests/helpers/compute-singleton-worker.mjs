@@ -15,7 +15,7 @@ async function setup(context) {
     { createDevelopmentComputeDriver },
     { createAuthPrincipalSeed, NativeIAMDriver },
     { PRODUCTION_HARNESS_DESCRIPTOR },
-    { PostgresPlatformState },
+    { PostgresPlatformState, OpenClawController },
     { createTestConfigurationDriver },
     { createInstallationDriverConfiguration },
     { createTestSecretDriver },
@@ -26,7 +26,7 @@ async function setup(context) {
     import("../helpers/development.mjs"),
     import("../../packages/iam/src/index.ts"),
     import("../../apps/controller/src/composition/production-harness.ts"),
-    import("../../packages/occ/src/state/postgres-state.ts"),
+    import("../../packages/occ/src/index.ts"),
     import("../helpers/configuration-driver.ts"),
     import("../helpers/installation-driver-configuration.mjs"),
     import("../helpers/secret-driver.mjs"),
@@ -98,6 +98,14 @@ async function setup(context) {
       ),
   );
   assert.ok(actor, "persisted IAM must contain an unrestricted Agent-deploy Principal");
+  // This fixture performs trusted initialization before a worker, which never seeds itself.
+  if (
+    (await state.read((view) => view.installations.getSandboxNetworkPolicyCeiling())) === undefined
+  ) {
+    await new OpenClawController(installation, { state }).initializeSandboxNetworkPolicyCeiling(
+      actor.id,
+    );
+  }
 
   const namespace = {
     id: `ns_${randomUUID()}`,

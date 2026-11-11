@@ -19,6 +19,10 @@ export function bindPlatformUnitOfWork(
     installations: bindRepository(repositories.installations, lifetime, [
       "findInstallation",
       "getInstallation",
+      "getBootstrapActor",
+      "getSandboxNetworkPolicyCeiling",
+      "holdSandboxNetworkPolicyCeiling",
+      "saveSandboxNetworkPolicyCeiling",
       "createInstallation",
       "holdPrincipalAccount",
       "holdAuthenticationSession",

@@ -318,6 +318,7 @@ async function fixture(options = {}) {
     state,
     now: () => new Date(now),
   });
+  await controller.initializeSandboxNetworkPolicyCeiling(administrator);
   // Deletion is final only once no timed-out registration could still create a gateway copy.
   function passRegistrationFence() {
     now += 71_000;
