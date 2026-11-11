@@ -260,7 +260,7 @@ index 78b2f715a..8a50e53b3 100644
          const includeApprovals = Boolean(connId) && params.includeApprovals === true;
 diff --git a/src/gateway/server.chat-main-session-narrow.test.ts b/src/gateway/server.chat-main-session-narrow.test.ts
 new file mode 100644
-index 000000000..fc4699562
+index 000000000..4dfed5f25
 --- /dev/null
 +++ b/src/gateway/server.chat-main-session-narrow.test.ts
 @@ -0,0 +1,188 @@
@@ -442,10 +442,10 @@ index 000000000..fc4699562
 +      setUserProfileRole(memberId, "none");
 +      expect(await waitForWsClose(member.ws, 200)).toBe(false);
 +      expect(await ownerTurn()).toEqual([]);
-+      // Losing the connection's scopes closes it.
++      // Losing the connection's scopes stops delivery. This source keeps the socket open;
++      // upstream closes it since openclaw#192722, which is newer than this source.
 +      setUserProfileRole(memberId, "denied");
-+      expect(await waitForWsClose(member.ws, 5_000)).toBe(true);
-+      expect(await ownerTurn(false)).toEqual([]);
++      expect(await ownerTurn()).toEqual([]);
 +    } finally {
 +      member.ws.close();
 +      owner.ws.close();

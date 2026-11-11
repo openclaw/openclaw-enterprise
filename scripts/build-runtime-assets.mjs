@@ -52,7 +52,7 @@ const appliedPatches = [
   },
   {
     file: "openclaw-chat-main-session-start.patch",
-    sha256: "acbf1e334d0d09d5cdfa15ce3d5cbd0f326b8175076b279e49abf24480e040af",
+    sha256: "a380c3144a69355454c660ac31e59979a46e6264489ef36242dfaafdd51abebd",
   },
 ];
 const [command, sourceRoot, output, manifestPath] = process.argv.slice(2);
