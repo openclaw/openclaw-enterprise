@@ -10,9 +10,13 @@ credentials. To build or change a page, start with
 From the repository root, with Node.js 24.22.1+ and the pinned pnpm version:
 
 ```sh
+pnpm install --frozen-lockfile --ignore-scripts
 npm run storybook:install
 npm run storybook
 ```
+
+The workspace install supplies the production asset reader's shared contracts.
+Storybook keeps its own dependencies in `scripts/console-storybook/`.
 
 Open `http://127.0.0.1:6006`. **Reset story** discards the isolated fixture changes.
 

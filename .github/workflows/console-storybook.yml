@@ -7,7 +7,12 @@ on:
       - "apps/controller/src/console-assets.ts"
       - "deploy/examples/console-theme/**"
       - "deploy/presets/*.json"
-      - "packages/contracts/src/preset-variables.mts"
+      - "apps/controller/package.json"
+      - "packages/contracts/**"
+      - "packages/utils/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
       - "scripts/console-storybook/**"
       - "!scripts/console-storybook/evidence/**/*.png"
       - "!scripts/console-storybook/evidence/**/*.mp4"
@@ -22,9 +27,12 @@ on:
       - "apps/controller/src/composition/console-theme.ts"
       - "deploy/examples/console-theme/**"
       - "deploy/presets/*.json"
-      - "packages/contracts/src/preset-variables.mts"
-      - "packages/contracts/src/workspace-defaults.mjs"
-      - "packages/contracts/src/workspace-defaults.ts"
+      - "apps/controller/package.json"
+      - "packages/contracts/**"
+      - "packages/utils/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
       - "packages/occ/src/environment-references.ts"
       - "packages/occ/src/gateway-security-defaults.ts"
       - "packages/occ/src/stored-configuration-rules.ts"
@@ -59,6 +67,8 @@ jobs:
           node-version: "24.22.1"
       - name: Install pinned pnpm
         run: npm install --global pnpm@11.15.1
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Install Storybook dependencies
         run: npm run storybook:install
       - name: Build Storybook

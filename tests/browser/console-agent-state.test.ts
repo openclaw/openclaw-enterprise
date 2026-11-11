@@ -1460,7 +1460,7 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
 });
 
 // Settle all the Installation reads on Settings before revoking the administrator. A pending
-// template, OAuth client, or Driver configuration read would exercise a different race.
+// template, OAuth client, ceiling, or Driver configuration read would exercise a different race.
 async function waitForDriverConfigurations(page: Page) {
   await page.getByText(/^Inspect startup values accepted by the selected Drivers\./).waitFor();
   await waitForIdleFetches(page);
@@ -1468,7 +1468,7 @@ async function waitForDriverConfigurations(page: Page) {
 
 // Finding D760. An administrator revoked while signed in keeps the tab's settled answer, so the
 // first page she opens afterwards sends reads only Installation administration may make: sharing
-// policy, a bound Secret by ID, the Installation's Driver configuration. The API audits each refusal.
+// policy, a bound Secret by ID, the Installation ceiling and Driver configuration. The API audits each refusal.
 // The first one is read and audited once and settles "not an administrator" for the tab; the
 // reads still waiting are refused unsent. The page takes the member path: the Access tab gives way
 // to Configuration and says why, the bound Secret's name is unavailable, Settings leaves out the
@@ -1521,6 +1521,7 @@ test("Installation-administration reads after a revoke are refused and audited o
       await page.getByRole("heading", { name: "Signed-in account" }).waitFor();
       await waitForIdleFetches(page);
       assert.equal(await driverSchemas.count(), 0);
+      assert.equal(await page.locator(".network-policy-ceiling").count(), 0);
       assert.equal(await page.getByRole("alert").count(), 0);
     },
     templates: async () => {
@@ -1555,10 +1556,22 @@ test("Installation-administration reads after a revoke are refused and audited o
     await pages[first]();
     assert.equal(await observability.count(), 0, first);
     assert.equal(adminDenials().length, round + 1, first);
+    if (first === "settings") {
+      assert.equal(
+        adminDenials().at(-1)?.action,
+        "openclaw.installation.sandbox_network_policy_ceiling.get",
+      );
+    }
+    const ceilingReads = reads("/installation/sandbox-network-policy-ceiling");
     for (const other of ["access", "agent", "settings", "backends", "templates"] as const) {
       await pages[other]();
     }
     assert.equal(adminDenials().length, round + 1, first);
+    assert.equal(
+      reads("/installation/sandbox-network-policy-ceiling"),
+      ceilingReads,
+      "known nonadministrators send no more ceiling reads",
+    );
   }
 
   // One who may read the bound Secret herself reads it as before: her own grant allows it, so it

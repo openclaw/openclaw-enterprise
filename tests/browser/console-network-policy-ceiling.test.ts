@@ -6,6 +6,7 @@ import {
   apiRequests,
   detailUrl,
   expectNoHorizontalScroll,
+  holdRequests,
   login,
   newPage,
 } from "./console-agents-browser-helpers.ts";
@@ -66,7 +67,20 @@ test("Settings reviews shared field errors and saves only the reviewed ceiling",
     "review grants no access and saves nothing",
   );
   const response = responseTo(page, "PUT", `${fixture.origin}${path}`);
+  const saving = await holdRequests(t, page, `${fixture.origin}${path}`, {
+    method: "PUT",
+    once: true,
+    afterServer: true,
+  });
   await click(section, "Save ceiling");
+  await saving.requested;
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  assert.equal(
+    new URL(page.url()).pathname,
+    "/console/settings",
+    "an unconfirmed PUT keeps the Settings editor mounted",
+  );
+  saving.release();
   assert.equal((await response).status(), 200);
   await section.getByText("Network policy ceiling saved", { exact: true }).waitFor();
   const saved = (await fixture.request("GET", path)).data;

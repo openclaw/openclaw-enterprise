@@ -591,10 +591,19 @@ test("console browser flow keeps Namespace URL state across global pages and log
   await page.getByRole("menuitem", { name: "Settings" }).click();
   await page.getByRole("heading", { name: "Settings" }).waitFor();
   assert.match(page.url(), new RegExp(`/console/settings\\?namespace=${beta.id}$`));
+  // A slow ceiling read must not turn Back into a refused in-flight write.
+  const ceilingRead = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/installation/sandbox-network-policy-ceiling`,
+    { method: "GET", once: true },
+  );
   await page.reload();
+  await ceilingRead.requested;
   await page.locator("#main").getByText(fixture.credentials.email.toLowerCase()).waitFor();
   await page.goBack();
   await page.getByRole("heading", { name: "Backends" }).waitFor();
+  ceilingRead.release();
   assert.match(page.url(), new RegExp(`/console/backends\\?namespace=${beta.id}$`));
 
   await page.getByRole("link", { name: "Agents" }).click();
@@ -989,6 +998,12 @@ test("an unchanged retained view without a Namespace selection selects the defau
   assert.equal(new URL(page.url()).searchParams.get("namespace"), null);
   // A settled view is retained reusable, so returning to it takes the unchanged fast path.
   await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+  const ceilingRead = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/installation/sandbox-network-policy-ceiling`,
+    { method: "GET", once: true },
+  );
 
   await openShellMenu(page);
   await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
@@ -996,6 +1011,7 @@ test("an unchanged retained view without a Namespace selection selects the defau
     .locator("#main")
     .getByText(fixture.credentials.email.toLowerCase(), { exact: true })
     .waitFor();
+  await ceilingRead.requested;
   fixture.policy.restrictions.splice(fixture.policy.restrictions.indexOf(denyAll), 1);
   // The retained Backends view revalidates unchanged, but its shell was built without a selection.
   await page.goBack();
@@ -1013,6 +1029,7 @@ test("an unchanged retained view without a Namespace selection selects the defau
         return selector.disabled === false;
       })(),
   );
+  ceilingRead.release();
   await page.getByText("openai-primary", { exact: true }).waitFor();
   const selection = new URL(page.url()).searchParams.get("namespace");
   assert.notEqual(selection, null);

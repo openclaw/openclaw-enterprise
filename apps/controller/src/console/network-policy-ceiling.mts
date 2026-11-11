@@ -6,6 +6,7 @@ import type {
 import type { ConsolePageContext } from "./page-context.mjs";
 import {
   INSTALLATION_ADMINISTRATION,
+  refusedAsNonAdministrator,
   requestErrorDetails,
   requestFailure,
   responseFields,
@@ -62,6 +63,7 @@ export function renderNetworkPolicyCeiling(context: Context) {
   let draft: unknown[] = [];
   let authorized = true;
   let busy = false;
+  let writing = false;
   let reviewed = false;
   let editorIndex: number | undefined;
   let details: Details = [];
@@ -86,9 +88,13 @@ export function renderNetworkPolicyCeiling(context: Context) {
   function notice(tone: "info" | "success" | "warning" | "danger", title: string, text: string) {
     feedback.replaceChildren(statusBlock(tone, title, text));
   }
-  function loseAccess() {
+  function loseAccess(ended = false) {
     authorized = false;
     reviewed = false;
+    if (ended && !dirty()) {
+      section.remove();
+      return;
+    }
     notice(
       "warning",
       "Installation administration required",
@@ -98,7 +104,7 @@ export function renderNetworkPolicyCeiling(context: Context) {
   }
   context.onAdministrationEnded?.(() => {
     if (current()) {
-      loseAccess();
+      loseAccess(true);
     }
   });
 
@@ -149,7 +155,7 @@ export function renderNetworkPolicyCeiling(context: Context) {
       }
       const { status } = requestFailure(cause);
       if (status === 403) {
-        loseAccess();
+        loseAccess(refusedAsNonAdministrator(cause));
       } else if (status === 409) {
         conflict = true;
         notice(
@@ -237,7 +243,7 @@ export function renderNetworkPolicyCeiling(context: Context) {
         return;
       }
       if (requestFailure(cause).status === 403) {
-        loseAccess();
+        loseAccess(refusedAsNonAdministrator(cause));
       } else {
         notice(
           "danger",
@@ -267,6 +273,7 @@ export function renderNetworkPolicyCeiling(context: Context) {
       rules: structuredClone(draft) as SandboxNetworkGrant[],
     };
     busy = true;
+    writing = true;
     render();
     try {
       const next = savedCeiling(
@@ -303,7 +310,7 @@ export function renderNetworkPolicyCeiling(context: Context) {
       const { status } = requestFailure(cause);
       reviewed = false;
       if (status === 403) {
-        loseAccess();
+        loseAccess(refusedAsNonAdministrator(cause));
       } else if (status === 409) {
         conflict = true;
         notice(
@@ -329,6 +336,7 @@ export function renderNetworkPolicyCeiling(context: Context) {
         );
       }
     } finally {
+      writing = false;
       if (current()) {
         busy = false;
         render();
@@ -596,5 +604,5 @@ export function renderNetworkPolicyCeiling(context: Context) {
     content.append(controls);
   }
   void load();
-  return { section, dirty, writing: () => busy };
+  return { section, dirty, writing: () => writing };
 }
