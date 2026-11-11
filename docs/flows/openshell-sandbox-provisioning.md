@@ -211,10 +211,9 @@ selects a named provider and HTTPS Responses transport.
 `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:admitRevision` freezes scratch.
-Preparation/activation call `verifyScratchVolume` after predecessor shutdown;
-`sandboxWorkspaceMounts` checks its exact tuple. OpenShell's `workspaceVolumeMounts`
-preserves `/sandbox/scratch`; `filesystemPolicy` permits writes. Native permissions
-stay unchanged. Cleanup retains operator-owned scratch; see [contract](../reference/drivers/kubernetes-compute/configuration.md#scratch-volumes).
+After shutdown, `verifyScratchVolume` checks the claim. `workspaceVolumeMounts`
+preserves writable `/sandbox/scratch`. [Scratch PVCs](../reference/drivers/kubernetes-compute/configuration.md#scratch-volumes)
+survive Agent cleanup.
 
 `sandboxDataMount` rejects scratch selection or overlapping data paths. `OpenShellGitRuntime.prepare` supplies
 process-scoped, mount-specific `safe.directory` and `push.negotiate=true`.

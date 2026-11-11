@@ -244,20 +244,18 @@ The Codex account must permit `:danger-full-access`; OpenShell supplies the oute
 sandbox. The live probe checks the effective profile before starting inference
 and fails immediately if managed policy selects a restricted sandbox.
 
-Missing selected prerequisites fail the lane. Always clean up, including after
-preparation or test failures:
+Missing prerequisites fail the lane. Always clean up:
 
 ```sh
 node scripts/ci/cleanup.mjs --state "$OCC_OPENSHELL_TEST_ROOT/state.json"
 ```
 
-Select `tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.mjs` with
-`--selected-file` during preparation and `--file` during execution. For both, export
-`OCC_TEST_OPENSHELL_HARNESS=codex` and
-`OCC_TEST_OPENSHELL_MODEL_BASE_URL=https://api.openai.com/v1`; privately supply
-`OPENAI_API_KEY` and `OCC_TEST_OPENAI_MODEL`. Keep full scenario and cleanup.
-Checks include tool writes, frozen storage selection and worker refusal of
-missing/wrong-UID claims, not NVMe backing or node-loss recovery.
+For scratch, select `tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.mjs`
+with preparation `--selected-file` and execution `--file`. Both require
+`OCC_TEST_OPENSHELL_HARNESS=codex`,
+`OCC_TEST_OPENSHELL_MODEL_BASE_URL=https://api.openai.com/v1`,
+`OPENAI_API_KEY`, and `OCC_TEST_OPENAI_MODEL`.
+The case checks writes, frozen selection, and claim refusals. NVMe and node loss are separate.
 
 The [Git retention case](repository-credentials.md#verify-openshell-git-expiry-and-restart)
 checks finite-grant expiry and worker restart after installation.
