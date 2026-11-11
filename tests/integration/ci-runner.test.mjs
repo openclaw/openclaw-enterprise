@@ -1,5 +1,5 @@
 import { prepareGatewayRouting } from "../../scripts/ci/routing.mjs";
-import { readRuntimeProvenance } from "../../scripts/ci/runtime-provenance.mjs";
+import { readRuntimeProvenance } from "../../scripts/ci/runtime-provenance.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -5547,18 +5547,19 @@ const warning = (message = signature, time = interval.start + 500) => JSON.strin
 });
 const failureLine = line(warning());
 const observations = [
+  { name: "empty Gateway logs", observation: "no_matching_warning", logs: "" },
+  { name: "unrecognized Gateway failure", observation: "unrecognized_warning", logs: line(warning("chat completion failed: private-command-data")) },
   { name: "unique Gateway failure", observation: "workspace_skill_discovery_failure_observed", logs: failureLine },
-  { name: "quoted subsystem prefix", observation: "unclassified", logs: line("[workspace] [openai-compat] " + signature) },
+  { name: "quoted subsystem prefix", observation: "no_matching_warning", logs: line("[workspace] [openai-compat] " + signature) },
   { name: "missing producer time", observation: "observation_unavailable", logs: failureLine + line(JSON.stringify({level: "warn", subsystem: "openai-compat", message: signature})) },
   { name: "invalid producer time", observation: "observation_unavailable", logs: line(JSON.stringify({time: "private-command-invalid-time", level: "warn", subsystem: "openai-compat", message: signature})) },
   { name: "delayed capture", observation: "workspace_skill_discovery_failure_observed", logs: line(warning(), interval.end + 1) },
   { name: "early capture", observation: "workspace_skill_discovery_failure_observed", logs: line(warning(), interval.start - 1) },
   { name: "delayed competing warning", observation: "ambiguous", logs: failureLine + line(warning("chat completion failed: private-command-data"), interval.end + 1) },
-  { name: "old producer time", observation: "unclassified", logs: line(warning(signature, interval.start - 1)) },
-  { name: "later producer time", observation: "unclassified", logs: line(warning(signature, interval.end + 1)) },
+  { name: "old producer time", observation: "no_matching_warning", logs: line(warning(signature, interval.start - 1)) },
+  { name: "later producer time", observation: "no_matching_warning", logs: line(warning(signature, interval.end + 1)) },
   { name: "ambiguous Gateway failure", observation: "ambiguous", logs: failureLine + line(warning("chat completion failed: private-command-data")) },
-  { name: "unclassified Gateway failure", observation: "unclassified", logs: line(warning("chat completion failed: private-command-data")) },
-  { name: "background disconnect", observation: "unclassified", logs: line("[workspace] " + signature) },
+  { name: "background disconnect", observation: "no_matching_warning", logs: line("[workspace] " + signature) },
   { name: "truncated Gateway logs", observation: "observation_unavailable", logs: failureLine + "x".repeat(65536) },
   { name: "incomplete Gateway record", observation: "observation_unavailable", logs: failureLine.trimEnd() },
   { name: "log read failure", observation: "observation_unavailable" },
@@ -5566,7 +5567,14 @@ const observations = [
   { name: "Gateway restarted during read", observation: "observation_unavailable", drift: 3, logs: failureLine },
   { name: "invalid request interval", observation: "observation_unavailable", interval: { start: "private-command-data", end: interval.end }, logs: failureLine },
 ];
+const [emptyLogs, unknownWarning, ...remainingObservations] = observations.map(item => ({
+  ...item, stage: "model turn", detail: "model turn; probe=upstream; HTTP=500; gateway=" + item.observation,
+  output: JSON.stringify({ error: "upstream", status: 500, requestInterval: item.interval ?? interval }),
+}));
+// Retain the two new observations without displacing private readback controls.
 const cases = [
+  emptyLogs,
+  unknownWarning,
   ...["execution identity", "target discovery", "gateway identity", "model turn"].map(stage => ({
     name: stage, stage, detail: stage === "model turn" ? "model turn; probe=execution" : stage,
   })),
@@ -5581,10 +5589,7 @@ const cases = [
     ["unmarked before", "integrity"], ["unmarked after", "integrity"],
     ["prior error", "integrity"], ["later answer", "integrity"], ["stale sequence", "sequence"],
   ].map(([read, outcome]) => ({name: read, read, stage: "persisted reply", detail: "persisted reply; read=" + outcome, outcome})),
-  ...observations.map(item => ({
-    ...item, stage: "model turn", detail: "model turn; probe=upstream; HTTP=500; gateway=" + item.observation,
-    output: JSON.stringify({ error: "upstream", status: 500, requestInterval: item.interval ?? interval }),
-  })),
+  ...remainingObservations,
   { name: "unauthenticated HTTP 500", stage: "model turn", detail: "model turn; probe=unauthenticated; HTTP=500", output: JSON.stringify({ error: "unauthenticated", status: 500 }) },
   { name: "upstream status", stage: "model turn", detail: "model turn; probe=upstream; HTTP=503", output: JSON.stringify({ error: "upstream", status: 503, extra: "private-command-data" }) },
   { name: "unknown probe", stage: "model turn", detail: "model turn; probe=unexpected", output: JSON.stringify({ error: "private-command-data", status: 503 }) },
@@ -5701,8 +5706,20 @@ for (const { name, stage, detail, output, logs, drift, observation, read, outcom
   const detail = JSON.parse(detailText).failures[0];
   const details = detail.tests;
   assert.equal(details.length, 20);
-  assert.equal(detail.omittedTests, 27);
-  assert.equal(summary.files[0].tests.length, 49);
+  // Keep both new observations and private readback failures inside the detail cap.
+  for (const name of [
+    "empty Gateway logs",
+    "unrecognized Gateway failure",
+    "read command",
+    "read transcript",
+  ]) {
+    assert.ok(
+      details.some((entry) => entry.name === name),
+      `Missing retained detail: ${name}`,
+    );
+  }
+  assert.equal(detail.omittedTests, 28);
+  assert.equal(summary.files[0].tests.length, 50);
   const expected = {
     ...Object.fromEntries(
       ["foreign answer", "foreign prompt", "missing run", "nonterminal"].map((name) => [
@@ -5734,18 +5751,19 @@ for (const { name, stage, detail, output, logs, drift, observation, read, outcom
     "invalid status": "model turn; probe=unexpected",
   };
   const observations = {
+    "empty Gateway logs": "no_matching_warning",
     "unique Gateway failure": "workspace_skill_discovery_failure_observed",
-    "quoted subsystem prefix": "unclassified",
+    "quoted subsystem prefix": "no_matching_warning",
     "missing producer time": "observation_unavailable",
     "invalid producer time": "observation_unavailable",
     "delayed capture": "workspace_skill_discovery_failure_observed",
     "early capture": "workspace_skill_discovery_failure_observed",
     "delayed competing warning": "ambiguous",
-    "old producer time": "unclassified",
-    "later producer time": "unclassified",
+    "old producer time": "no_matching_warning",
+    "later producer time": "no_matching_warning",
     "ambiguous Gateway failure": "ambiguous",
-    "unclassified Gateway failure": "unclassified",
-    "background disconnect": "unclassified",
+    "unrecognized Gateway failure": "unrecognized_warning",
+    "background disconnect": "no_matching_warning",
     "truncated Gateway logs": "observation_unavailable",
     "incomplete Gateway record": "observation_unavailable",
     "log read failure": "observation_unavailable",
@@ -5943,16 +5961,25 @@ test("each job attempt uploads its own diagnostics report", async () => {
   );
 });
 
+const passingLaneFixture = 'import test from "node:test";\ntest("runs", () => {});\n';
+
+async function writeFixtureLane(root, lane, names, source) {
+  const files = names.map((name) => ({ path: `tests/integration/${name}.test.mjs` }));
+  for (const { path } of files) {
+    await writeFile(join(root, path), source);
+  }
+  await writeSingleLaneManifest(root, lane, files, { ci: [lane] });
+}
+
 waitingTest("run records a timeout that came before any test started", async (t) => {
   const root = await fixture(t);
   const { statePath, resultsPath } = runnerArtifactPaths(root, "stuck");
-  await writeFile(
-    join(root, "tests/integration/stuck.test.mjs"),
+  await writeFixtureLane(
+    root,
+    "stuck",
+    ["stuck"],
     'import test from "node:test";\nawait new Promise((resolve) => setTimeout(resolve, 30_000));\ntest("never registered", () => {});\n',
   );
-  await writeSingleLaneManifest(root, "stuck", [{ path: "tests/integration/stuck.test.mjs" }], {
-    ci: ["stuck"],
-  });
 
   const result = await runAsync(root, laneArgs(root, "stuck", statePath, resultsPath), {
     CI_RUNNER_TEST_TIMEOUT_MS: "2000",
@@ -6085,8 +6112,10 @@ waitingTest("run starts no file with under a second left before the lane deadlin
       "",
     ].join("\n"),
   );
-  await writeFile(
-    join(root, "tests/integration/late.test.mjs"),
+  await writeFixtureLane(
+    root,
+    "near",
+    ["late"],
     [
       'import { writeFileSync } from "node:fs";',
       'import test from "node:test";',
@@ -6095,9 +6124,6 @@ waitingTest("run starts no file with under a second left before the lane deadlin
       "",
     ].join("\n"),
   );
-  await writeSingleLaneManifest(root, "near", [{ path: "tests/integration/late.test.mjs" }], {
-    ci: ["near"],
-  });
 
   const result = await runAsync(
     root,
@@ -6126,8 +6152,10 @@ waitingTest("a runner timeout while no test was running says so", async (t) => {
   const root = await fixture(t);
   const { statePath, resultsPath } = runnerArtifactPaths(root, "hook");
   const inHook = join(root, "state/in-hook");
-  await writeFile(
-    join(root, "tests/integration/hook.test.mjs"),
+  await writeFixtureLane(
+    root,
+    "hook",
+    ["hook"],
     [
       'import { writeFileSync } from "node:fs";',
       'import test, { after } from "node:test";',
@@ -6140,9 +6168,6 @@ waitingTest("a runner timeout while no test was running says so", async (t) => {
       "",
     ].join("\n"),
   );
-  await writeSingleLaneManifest(root, "hook", [{ path: "tests/integration/hook.test.mjs" }], {
-    ci: ["hook"],
-  });
 
   // The runner's clock stands still from the start until "passes" is done and the hook has
   // started, so the timeout comes three seconds after that however long the host takes to get
@@ -6170,6 +6195,8 @@ waitingTest("a runner timeout while no test was running says so", async (t) => {
 // These fixtures hang forever, and their intervals keep the runner alive unless it gives up.
 const hangForever = "new Promise(() => setInterval(() => {}, 1_000))";
 
+const hungAndLaterFiles = ["hung", "later"];
+
 waitingTest(
   "run gives up on a preparation still running at the lane deadline and names it",
   async (t) => {
@@ -6190,18 +6217,7 @@ waitingTest(
         "",
       ].join("\n"),
     );
-    for (const name of ["hung", "later"]) {
-      await writeFile(
-        join(root, `tests/integration/${name}.test.mjs`),
-        'import test from "node:test";\ntest("runs", () => {});\n',
-      );
-    }
-    await writeSingleLaneManifest(
-      root,
-      "prepare",
-      [{ path: "tests/integration/hung.test.mjs" }, { path: "tests/integration/later.test.mjs" }],
-      { ci: ["prepare"] },
-    );
+    await writeFixtureLane(root, "prepare", hungAndLaterFiles, passingLaneFixture);
 
     // The runner's clock stands still from the start until the preparation has started, so the
     // deadline comes three seconds after that however long the host takes to get there.
@@ -6326,18 +6342,7 @@ waitingTest(
         "",
       ].join("\n"),
     );
-    for (const name of ["hung", "later"]) {
-      await writeFile(
-        join(root, `tests/integration/${name}.test.mjs`),
-        'import test from "node:test";\ntest("runs", () => {});\n',
-      );
-    }
-    await writeSingleLaneManifest(
-      root,
-      "cleanup",
-      [{ path: "tests/integration/hung.test.mjs" }, { path: "tests/integration/later.test.mjs" }],
-      { ci: ["cleanup"] },
-    );
+    await writeFixtureLane(root, "cleanup", hungAndLaterFiles, passingLaneFixture);
 
     // The runner's clock stands still from the start until the command and its descendant are on
     // record, so the cleanup's allowance ends two seconds after that however long the host takes
@@ -9223,41 +9228,25 @@ test("run reports a cleanup that fails once a cancelled job's shell is gone as c
   // cleanup step makes it.
   await writeFile(
     join(root, "scripts/ci/prepare.mjs"),
-    [
-      "export async function prepareFile({ file }) {",
-      "  if (file.path.endsWith('plain.test.mjs')) {",
-      "    return { cleanup: async () => { throw new Error('secretauthvalue cleanup'); } };",
-      "  }",
-      "  return {",
-      "    cleanup: async () => {",
-      "      const shell = process.ppid;",
-      "      process.kill(shell, 'SIGKILL');",
-      "      const deadline = Date.now() + 10_000;",
-      "      while (process.ppid === shell && Date.now() < deadline) {",
-      "        await new Promise((resolve) => setTimeout(resolve, 10));",
-      "      }",
-      "      throw Object.assign(new Error('secretauthvalue cluster already removed'), { code: 'ENOENT' });",
-      "    },",
-      "  };",
-      "}",
-      "",
-    ].join("\n"),
-  );
-  for (const name of ["plain", "cancelled"]) {
-    await writeFile(
-      join(root, `tests/integration/${name}.test.mjs`),
-      'import test from "node:test";\ntest("runs", () => {});\n',
-    );
+    `export async function prepareFile({ file }) {
+  if (file.path.endsWith('plain.test.mjs')) {
+    return { cleanup: async () => { throw new Error('secretauthvalue cleanup'); } };
   }
-  await writeSingleLaneManifest(
-    root,
-    "cancel",
-    [
-      { path: "tests/integration/plain.test.mjs" },
-      { path: "tests/integration/cancelled.test.mjs" },
-    ],
-    { ci: ["cancel"] },
+  return {
+    cleanup: async () => {
+      const shell = process.ppid;
+      process.kill(shell, 'SIGKILL');
+      const deadline = Date.now() + 10_000;
+      while (process.ppid === shell && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw Object.assign(new Error('secretauthvalue cluster already removed'), { code: 'ENOENT' });
+    },
+  };
+}
+`,
   );
+  await writeFixtureLane(root, "cancel", ["plain", "cancelled"], passingLaneFixture);
 
   // A parent process stands in for the step's shell: it waits for the runner until the second
   // file's cleanup kills it. No shell parses any of these arguments. The timeout only stops a

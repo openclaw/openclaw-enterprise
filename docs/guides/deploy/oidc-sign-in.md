@@ -38,6 +38,16 @@ example `https://occ.example.com/api/auth/providers/oidc/callback`. The controll
 sends PKCE and a nonce. It requests `openid`, adding `email`, `profile` and
 configured additional scopes when enrollment is enabled. Save the client ID and secret to protected files.
 
+For first-login account creation, configure the IdP to include a standard `email`
+and the admission group claim in its signed ID token. A single group may be a
+string; multiple groups use an array of strings. Set
+`auth.oidc.enrollment.createAccount.requireVerifiedEmail: false` only when your
+policy permits creating accounts with unverified email. The default is `true`.
+The same field works in `controlPlane.oidc.enrollment` for installation profiles
+and in the `OCC_AUTH_OIDC_ENROLLMENT` JSON object. See the
+[enrollment policy](../../reference/authentication/team-enrollment.md) for claim
+validation, initial access and collision handling.
+
 Copy four values from the IdP's discovery document
 (`<issuer>/.well-known/openid-configuration`): `issuer`, `authorization_endpoint`,
 `token_endpoint` and `jwks_uri`. The controller never fetches the discovery document, so

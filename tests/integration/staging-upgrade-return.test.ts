@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { createServer } from "node:https";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { createProductionTuiRequest } from "../helpers/production-tui-request.ts";
 import { delimiter, join } from "node:path";
 import test, { type TestContext } from "node:test";

@@ -19,13 +19,13 @@ import {
   validatePreparedImage,
   verifyGhcr,
 } from "../../scripts/ci/container-release.mjs";
-import { pushChart, writeBootstrapChart } from "../../scripts/ci/chart-package.mjs";
+import { pushChart, writeBootstrapChart } from "../../scripts/ci/chart-package.ts";
 import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 import {
   chartArchiveContent,
   stageReleaseChart,
   validateImageReceipt,
-} from "../../scripts/ci/chart-release.mjs";
+} from "../../scripts/ci/chart-release.ts";
 import { setEnvironment } from "../helpers/environment.ts";
 import { writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -1072,8 +1072,8 @@ test("the runtime release smoke runs every Image Runtime Startup file", () => {
     "tests/integration/runtime-image-failure-output.test.mjs": null,
     // Model probe files: the release smoke has never run them. The contention case runs
     // in Image Runtime Startup 3 and the outcomes in Image Runtime Startup 2.
-    "tests/integration/runtime-image-model-probe.test.mjs": "images-runtime-startup-3",
-    "tests/integration/runtime-image-model-probe-outcomes.test.mjs": "images-runtime-startup-2",
+    "tests/integration/runtime-image-model-probe.test.ts": "images-runtime-startup-3",
+    "tests/integration/runtime-image-model-probe-outcomes.test.ts": "images-runtime-startup-2",
   };
   for (const [path, lane] of Object.entries(notInSmoke)) {
     const holders = Object.keys(lanes).filter((name) =>
@@ -1093,7 +1093,7 @@ test("the runtime release smoke runs every Image Runtime Startup file", () => {
     "tests/integration/sandbox-driver-installation-configuration.test.ts",
     "tests/integration/sandbox-driver-ipv6-endpoints.test.ts",
     "tests/integration/sandbox-driver-codex-app-server.test.ts",
-    "tests/integration/workspace-files-native.test.mjs",
+    "tests/integration/workspace-files-native.test.ts",
   ];
   assert.deepEqual(
     [...runtimeImageSmokeTests].sort(),

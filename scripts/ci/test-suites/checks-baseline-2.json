@@ -19,7 +19,7 @@
     "tests/conformance/module-policy.test.mjs",
     "tests/integration/native-admin-access.test.mjs",
     "tests/integration/repository-credentials-transport-bounds.test.ts",
-    "tests/integration/cli-release.test.mjs",
+    "tests/integration/cli-release.test.ts",
     "tests/integration/container-resume.test.ts",
     "tests/integration/metrics-monitoring-readiness.test.mjs",
     "tests/integration/repository-credentials-control.test.ts",
@@ -322,7 +322,7 @@
       "path": "tests/integration/container-release.test.mjs"
     },
     {
-      "path": "tests/integration/cli-release.test.mjs",
+      "path": "tests/integration/cli-release.test.ts",
       "expectedTests": [
         "CLI release builds four installable platform binaries and rejects changed assets"
       ]

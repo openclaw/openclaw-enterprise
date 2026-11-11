@@ -34,7 +34,7 @@ import {
   bindOpenShellEgressAuthority,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-authority.ts";
 import { selfSigned } from "./certificates.mjs";
-import { listen } from "./listen.mjs";
+import { listen } from "./listen.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));

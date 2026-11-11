@@ -6663,31 +6663,39 @@ test("a forced ServiceAccount delete without a ChatGPT Backend removes an accoun
   assert.equal(Object.hasOwn(nativeEvent.details, "revocation"), false);
 });
 
+function serviceAccountHarnessAuth(sourceNamespaceId, accountId) {
+  return {
+    method: "codex_pat",
+    source: { kind: "service_account", namespaceId: sourceNamespaceId, id: accountId },
+  };
+}
+
 test("native ServiceAccounts keep private credential references and cannot admit Harness authentication", async () => {
   const controller = await configuredController({ recordOperations: true });
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "service-account-lifecycle");
+  const namespacePath = `/namespaces/${namespace.id}`;
+  const accountsPath = `${namespacePath}/service-accounts`;
+  const agentsPath = `${namespacePath}/agents`;
   const account = await createServiceAccount(controller, namespace.id, "model-provider");
-  const accountPath = `/namespaces/${namespace.id}/service-accounts/${account.id}`;
+  const accountPath = `${accountsPath}/${account.id}`;
+  const credentialPath = `${accountPath}/credential`;
 
   const detail = await controller.request("GET", accountPath);
   assert.deepEqual(detail.data, account);
 
   const configuration = await createConfiguration(controller, namespace.id);
-  const agentResult = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+  const agentResult = await controller.request("POST", agentsPath, {
     body: {
       name: "service-account-agent",
       configurationId: configuration.id,
-      harnessAuth: {
-        method: "codex_pat",
-        source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
-      },
+      harnessAuth: serviceAccountHarnessAuth(account.namespaceId, account.id),
     },
   });
   assert.equal(agentResult.status, 201);
   assert.equal(agentResult.data.harnessAuth.source.id, account.id);
-  const agent = agentResult.data;
-  const deploymentPath = `/namespaces/${namespace.id}/agents/${agent.id}/deploy`;
+  const agentPath = `${agentsPath}/${agentResult.data.id}`;
+  const deploymentPath = `${agentPath}/deploy`;
 
   // A ready Namespace is insufficient: associated accounts without credentials cannot admit revisions.
   await controller.fixture.controller.handleNamespaceLifecycle(
@@ -6705,7 +6713,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
   );
   const unknownIssuance = await controller.request(
     "POST",
-    `/namespaces/${namespace.id}/service-accounts/sa_00000000-0000-4000-8000-000000000000/credentials`,
+    `${accountsPath}/sa_00000000-0000-4000-8000-000000000000/credentials`,
     { body: {} },
   );
   assert.equal(unknownIssuance.status, 404, JSON.stringify(unknownIssuance.body));
@@ -6729,7 +6737,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
     kind: "api_key",
     secretRef: { name: "namespace-provider-source", key: "provider-api-key" },
   };
-  const assigned = await controller.request("PATCH", `${accountPath}/credential`, {
+  const assigned = await controller.request("PATCH", credentialPath, {
     body: initialCredential,
   });
   assert.equal(assigned.status, 200);
@@ -6755,7 +6763,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
     kind: "oauth_access_token",
     secretRef: { name: "namespace-oauth-source", key: "access-token" },
   };
-  const oauthUpdate = await controller.request("PATCH", `${accountPath}/credential`, {
+  const oauthUpdate = await controller.request("PATCH", credentialPath, {
     body: oauthCredential,
   });
   assert.equal(oauthUpdate.status, 200);
@@ -6767,7 +6775,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
     kind: "api_key",
     secretRef: { name: "namespace-provider-rotated", key: "rotated-api-key" },
   };
-  const replaced = await controller.request("PATCH", `${accountPath}/credential`, {
+  const replaced = await controller.request("PATCH", credentialPath, {
     body: replacementCredential,
   });
   assert.equal(replaced.status, 200);
@@ -6782,11 +6790,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
     ).credential,
     replacementCredential,
   );
-  assert.deepEqual(
-    (await controller.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}/revisions`))
-      .data,
-    [],
-  );
+  assert.deepEqual((await controller.request("GET", `${agentPath}/revisions`)).data, []);
 
   // The caller holds delete on the account, so the conflict names what still depends on it.
   const boundDeletion = await controller.request("DELETE", accountPath);
@@ -6801,13 +6805,9 @@ test("native ServiceAccounts keep private credential references and cannot admit
   const forbidden = await controller.request("DELETE", accountPath, { session: outsider.session });
   assertApiError(forbidden, 403, "FORBIDDEN");
 
-  const detached = await controller.request(
-    "PATCH",
-    `/namespaces/${namespace.id}/agents/${agent.id}`,
-    {
-      body: { configurationId: configuration.id, harnessAuth: null },
-    },
-  );
+  const detached = await controller.request("PATCH", agentPath, {
+    body: { configurationId: configuration.id, harnessAuth: null },
+  });
   assert.equal(detached.status, 200);
   assert.equal(detached.data.harnessAuth, null);
 
@@ -6821,7 +6821,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
   assert.equal(deletedDetached.status, 204);
 
   const unusedAccount = await createServiceAccount(controller, namespace.id, "unused-provider");
-  const unusedAccountPath = `/namespaces/${namespace.id}/service-accounts/${unusedAccount.id}`;
+  const unusedAccountPath = `${accountsPath}/${unusedAccount.id}`;
   // Successful DELETE is intentionally bodyless, unlike canonical JSON resource responses.
   const deleted = await controller.fixture.app.fetch(
     new Request(`https://console.oce.localhost${unusedAccountPath}`, {
@@ -6863,30 +6863,29 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
   const namespaceB = await createNamespace(controller, "service-account-namespace-b");
   const accountA = await createServiceAccount(controller, namespaceA.id, "account-a");
   const accountB = await createServiceAccount(controller, namespaceA.id, "account-b");
-  const exactAccountPath = `/namespaces/${namespaceA.id}/service-accounts/${accountA.id}`;
+  const namespaceAPath = `/namespaces/${namespaceA.id}`;
+  const namespaceBPath = `/namespaces/${namespaceB.id}`;
+  const accountsPath = `${namespaceAPath}/service-accounts`;
+  const agentsPath = `${namespaceAPath}/agents`;
+  const exactAccountPath = `${accountsPath}/${accountA.id}`;
+  const credentialPath = `${exactAccountPath}/credential`;
 
-  const duplicate = await controller.request(
-    "POST",
-    `/namespaces/${namespaceA.id}/service-accounts`,
-    { body: { name: "account-a" } },
-  );
+  const duplicate = await controller.request("POST", accountsPath, {
+    body: { name: "account-a" },
+  });
   assertApiError(duplicate, 409, "RESOURCE_CONFLICT");
   // The caller chose only the name, so the conflict says the name is taken here.
   assert.equal(duplicate.body.error.message, SERVICE_ACCOUNT_NAME_CONFLICT);
 
   // Account ownership participates in Namespace emptiness even before any Agent is created.
-  const occupiedNamespace = await controller.request("DELETE", `/namespaces/${namespaceA.id}`);
+  const occupiedNamespace = await controller.request("DELETE", namespaceAPath);
   assertApiError(occupiedNamespace, 409, "NAMESPACE_NOT_EMPTY");
 
   for (const invalid of [
     { name: "unrecognized-field", implementation: "native" },
     { name: "cross-namespace", namespaceId: namespaceB.id },
   ]) {
-    const rejected = await controller.request(
-      "POST",
-      `/namespaces/${namespaceA.id}/service-accounts`,
-      { body: invalid },
-    );
+    const rejected = await controller.request("POST", accountsPath, { body: invalid });
     assert.equal(rejected.status, 400);
   }
 
@@ -6895,14 +6894,14 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
     { kind: "api_key", secretRef: { name: "valid-source", key: "credential", namespace: "other" } },
     { kind: "provider_token", secretRef: { name: "valid-source", key: "credential" } },
   ]) {
-    const rejected = await controller.request("PATCH", `${exactAccountPath}/credential`, {
+    const rejected = await controller.request("PATCH", credentialPath, {
       body: invalid,
     });
     assertApiError(rejected, 400, "INVALID_REQUEST");
   }
 
   const credential = { kind: "api_key", secretRef: { name: "account-a-source", key: "api-key" } };
-  const assigned = await controller.request("PATCH", `${exactAccountPath}/credential`, {
+  const assigned = await controller.request("PATCH", credentialPath, {
     body: credential,
   });
   assert.equal(assigned.status, 200);
@@ -6915,7 +6914,7 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
   ]) {
     const crossNamespace = await controller.request(
       method,
-      `/namespaces/${namespaceB.id}/service-accounts/${accountA.id}${suffix}`,
+      `${namespaceBPath}/service-accounts/${accountA.id}${suffix}`,
       options,
     );
     assert.equal(crossNamespace.status, 404);
@@ -6923,56 +6922,36 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
 
   const configurationB = await createConfiguration(controller, namespaceB.id);
   const configurationA = await createConfiguration(controller, namespaceA.id);
-  const crossNamespaceAssociation = await controller.request(
-    "POST",
-    `/namespaces/${namespaceB.id}/agents`,
-    {
-      body: {
-        name: "cross-namespace-agent",
-        configurationId: configurationB.id,
-        harnessAuth: {
-          method: "codex_pat",
-          source: { kind: "service_account", namespaceId: namespaceB.id, id: accountA.id },
-        },
-      },
+  const crossNamespaceAssociation = await controller.request("POST", `${namespaceBPath}/agents`, {
+    body: {
+      name: "cross-namespace-agent",
+      configurationId: configurationB.id,
+      harnessAuth: serviceAccountHarnessAuth(namespaceB.id, accountA.id),
     },
-  );
+  });
   assert.equal(crossNamespaceAssociation.status, 404);
   // A source naming another Namespace is refused as such, even when the route Namespace holds
   // an account with that id: the reference itself must not cross Namespaces.
-  const foreignSourceAssociation = await controller.request(
-    "POST",
-    `/namespaces/${namespaceA.id}/agents`,
-    {
-      body: {
-        name: "foreign-source-agent",
-        configurationId: configurationA.id,
-        harnessAuth: {
-          method: "codex_pat",
-          source: { kind: "service_account", namespaceId: namespaceB.id, id: accountA.id },
-        },
-      },
+  const foreignSourceAssociation = await controller.request("POST", agentsPath, {
+    body: {
+      name: "foreign-source-agent",
+      configurationId: configurationA.id,
+      harnessAuth: serviceAccountHarnessAuth(namespaceB.id, accountA.id),
     },
-  );
+  });
   // The rule reads only the request, before any account lookup, so the API names it as a request
   // error instead of a 404 (finding 2536): the text is the same whether the account exists.
   assert.equal(foreignSourceAssociation.status, 400, JSON.stringify(foreignSourceAssociation.body));
   assert.equal(foreignSourceAssociation.body.error.code, "INVALID_REQUEST");
   assert.equal(foreignSourceAssociation.body.error.message, SERVICE_ACCOUNT_CROSS_NAMESPACE);
-  const missingForeignSource = await controller.request(
-    "POST",
-    `/namespaces/${namespaceA.id}/agents`,
-    {
-      body: {
-        name: "foreign-source-agent",
-        configurationId: configurationA.id,
-        harnessAuth: {
-          method: "codex_pat",
-          source: { kind: "service_account", namespaceId: namespaceB.id, id: `sa_${randomUUID()}` },
-        },
-      },
+  const missingForeignSource = await controller.request("POST", agentsPath, {
+    body: {
+      name: "foreign-source-agent",
+      configurationId: configurationA.id,
+      harnessAuth: serviceAccountHarnessAuth(namespaceB.id, `sa_${randomUUID()}`),
     },
-  );
+  });
+  assert.equal(missingForeignSource.status, 400);
   assert.deepEqual(missingForeignSource.body.error, foreignSourceAssociation.body.error);
 
   // Namespace-wide Agent authority never substitutes for an exact ServiceAccount binding.
@@ -7021,21 +7000,13 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
   const authorizedAccount = await injectedRequest(readerApp, "GET", exactAccountPath);
   assert.equal(authorizedAccount.status, 200);
 
-  const accountList = await injectedRequest(
-    readerApp,
-    "GET",
-    `/namespaces/${namespaceA.id}/service-accounts`,
-  );
+  const accountList = await injectedRequest(readerApp, "GET", accountsPath);
   assert.equal(accountList.status, 200);
   assert.deepEqual(accountList.data, [assigned.data]);
   assert.equal(JSON.stringify(accountList.data).includes(accountB.id), false);
   assert.equal(Object.hasOwn(accountList.data[0], "backendId"), false);
 
-  const denied = await injectedRequest(
-    readerApp,
-    "GET",
-    `/namespaces/${namespaceA.id}/service-accounts/${accountB.id}`,
-  );
+  const denied = await injectedRequest(readerApp, "GET", `${accountsPath}/${accountB.id}`);
   assertApiError(denied, 403, "FORBIDDEN");
   const denial = controller.fixture.auditSink.events.at(-1);
   assert.deepEqual(denial.resource, {
@@ -7046,21 +7017,13 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
   assert.equal(denial.action, "openclaw.service_accounts.read");
 
   // Agent creation still needs read permission on its exact associated account, not a sibling.
-  const deniedAssociation = await injectedRequest(
-    readerApp,
-    "POST",
-    `/namespaces/${namespaceA.id}/agents`,
-    {
-      body: {
-        name: "denied-account-association",
-        configurationId: configurationA.id,
-        harnessAuth: {
-          method: "codex_pat",
-          source: { kind: "service_account", namespaceId: accountB.namespaceId, id: accountB.id },
-        },
-      },
+  const deniedAssociation = await injectedRequest(readerApp, "POST", agentsPath, {
+    body: {
+      name: "denied-account-association",
+      configurationId: configurationA.id,
+      harnessAuth: serviceAccountHarnessAuth(accountB.namespaceId, accountB.id),
     },
-  );
+  });
   assert.equal(deniedAssociation.status, 403);
   const deniedAssociationAudit = controller.fixture.auditSink.events.at(-1);
   assert.equal(deniedAssociationAudit.action, "openclaw.agents.create");
@@ -7070,33 +7033,22 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
     resource: { kind: "service_account", id: accountB.id, namespaceId: namespaceA.id },
   });
 
-  const allowedAssociation = await injectedRequest(
-    readerApp,
-    "POST",
-    `/namespaces/${namespaceA.id}/agents`,
-    {
-      body: {
-        name: "allowed-account-association",
-        configurationId: configurationA.id,
-        harnessAuth: {
-          method: "codex_pat",
-          source: { kind: "service_account", namespaceId: accountA.namespaceId, id: accountA.id },
-        },
-      },
+  const allowedAssociation = await injectedRequest(readerApp, "POST", agentsPath, {
+    body: {
+      name: "allowed-account-association",
+      configurationId: configurationA.id,
+      harnessAuth: serviceAccountHarnessAuth(accountA.namespaceId, accountA.id),
     },
-  );
+  });
   assert.equal(allowedAssociation.status, 201);
   assert.equal(allowedAssociation.data.harnessAuth.source.id, accountA.id);
-  const associatedAgentPath = `/namespaces/${namespaceA.id}/agents/${allowedAssociation.data.id}`;
+  const associatedAgentPath = `${agentsPath}/${allowedAssociation.data.id}`;
 
   // Replacing A with B requires exact read on the new account, not merely authority over A.
   const deniedNewAccount = await injectedRequest(readerApp, "PATCH", associatedAgentPath, {
     body: {
       configurationId: configurationA.id,
-      harnessAuth: {
-        method: "codex_pat",
-        source: { kind: "service_account", namespaceId: accountB.namespaceId, id: accountB.id },
-      },
+      harnessAuth: serviceAccountHarnessAuth(accountB.namespaceId, accountB.id),
     },
   });
   assert.equal(deniedNewAccount.status, 403);
@@ -7107,12 +7059,9 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
   );
   assert.equal(unchangedAfterNewAccountDenial.data.harnessAuth.source.id, accountA.id);
 
-  const deniedCreation = await injectedRequest(
-    readerApp,
-    "POST",
-    `/namespaces/${namespaceA.id}/service-accounts`,
-    { body: { name: "unauthorized-account" } },
-  );
+  const deniedCreation = await injectedRequest(readerApp, "POST", accountsPath, {
+    body: { name: "unauthorized-account" },
+  });
   assert.equal(deniedCreation.status, 403);
   assert.deepEqual(controller.fixture.auditSink.events.at(-1).resource, {
     kind: "service_account",
@@ -7126,7 +7075,7 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
     accountB.id,
   );
 
-  for (const serviceAccountId of [null, accountB.id]) {
+  for (const harnessAuth of [null, serviceAccountHarnessAuth(namespaceA.id, accountB.id)]) {
     const deniedOldAccount = await injectedRequest(
       replacementOnlyApp,
       "PATCH",
@@ -7134,17 +7083,7 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
       {
         body: {
           configurationId: configurationA.id,
-          harnessAuth:
-            serviceAccountId === null
-              ? null
-              : {
-                  method: "codex_pat",
-                  source: {
-                    kind: "service_account",
-                    namespaceId: namespaceA.id,
-                    id: serviceAccountId,
-                  },
-                },
+          harnessAuth,
         },
       },
     );

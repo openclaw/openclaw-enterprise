@@ -46,6 +46,9 @@ import {
   reviewedCodexSeccompSecurityOptions,
   assertGatewayLogEntry,
 } from "../helpers/runtime-image-startup.mjs";
+import { verifyRuntimeSeccompRecord } from "./runtime-image-seccomp-case.ts";
+import { verifyRuntimeCodexAuthMount } from "./runtime-image-codex-auth-mount-case.ts";
+import { verifyRuntimeGatewayProbeCleanup } from "./runtime-image-gateway-probe-cleanup-case.ts";
 import { relaySockets } from "../helpers/socket-relay.ts";
 import { pluginRuntimeEnvironment } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 
@@ -88,94 +91,8 @@ const kubernetesGatewayEntrypoint =
 
 const syntheticCodexApiKey = "sk-openclaw-runtime-image-smoke-synthetic";
 
-test("runtime image seccomp option requires the CI-prepared profile record", async (t) => {
-  const directory = await temporaryDirectory(t, "oce-runtime-seccomp-profile-");
-  const contents = Buffer.from(`${JSON.stringify({ defaultAction: "SCMP_ACT_ERRNO" })}\n`);
-  const digest = createHash("sha256").update(contents).digest("hex");
-  const profile = join(directory, `codex-${stagingCodexVersion}-${digest}.json`);
-  const statePath = join(directory, "state.json");
-  await writeFile(profile, contents);
-  await writeFile(
-    statePath,
-    JSON.stringify({
-      resources: [
-        {
-          kind: "k3d-cluster",
-          codexDockerSeccompProfile: { path: profile, sha256: digest },
-        },
-      ],
-    }),
-  );
-
-  const options = { profile, ciStatePath: statePath, codexVersion: stagingCodexVersion };
-  assert.deepEqual(await reviewedCodexSeccompSecurityOptions(options), [
-    "--security-opt",
-    "no-new-privileges",
-    "--security-opt",
-    `seccomp=${profile}`,
-  ]);
-  await assert.rejects(
-    reviewedCodexSeccompSecurityOptions({
-      ...options,
-      codexVersion: historicalCodex ? "0.164.0" : "0.163.0-alpha.2",
-    }),
-    /must point to codex-/,
-  );
-
-  await assert.rejects(
-    reviewedCodexSeccompSecurityOptions({ ...options, ciStatePath: "" }),
-    /must be prepared by image CI state/,
-  );
-
-  // Without a profile, only a local run (no CI, no CI state) may fall back to
-  // Docker's default seccomp; CI fails instead of running the case unconfined.
-  assert.deepEqual(
-    await reviewedCodexSeccompSecurityOptions({ profile: "", ciStatePath: "", ci: "" }),
-    ["--security-opt", "no-new-privileges"],
-  );
-  for (const environment of [
-    { ciStatePath: "", ci: "true" },
-    { ciStatePath: "", ci: "1" },
-    { ciStatePath: statePath, ci: "" },
-  ]) {
-    await assert.rejects(
-      reviewedCodexSeccompSecurityOptions({ profile: "", ...environment }),
-      /OCC_TEST_CODEX_SECCOMP_PROFILE is required in CI/,
-    );
-  }
-
-  await writeFile(
-    statePath,
-    JSON.stringify({
-      resources: [
-        {
-          kind: "k3d-cluster",
-          codexDockerSeccompProfile: { path: join(directory, "other.json"), sha256: digest },
-        },
-      ],
-    }),
-  );
-  await assert.rejects(
-    reviewedCodexSeccompSecurityOptions(options),
-    /must match the CI-prepared Codex seccomp profile path/,
-  );
-
-  await writeFile(
-    statePath,
-    JSON.stringify({
-      resources: [
-        {
-          kind: "k3d-cluster",
-          codexDockerSeccompProfile: { path: profile, sha256: "0".repeat(64) },
-        },
-      ],
-    }),
-  );
-  await assert.rejects(
-    reviewedCodexSeccompSecurityOptions(options),
-    /must match the CI-prepared Codex seccomp profile digest/,
-  );
-});
+test("runtime image seccomp option requires the CI-prepared profile record", (t) =>
+  verifyRuntimeSeccompRecord(t, { stagingCodexVersion, historicalCodex }));
 
 const runtimeImageStockBrokerDiagnosticStages = new Set([
   "material-init",
@@ -755,101 +672,7 @@ test(
 test(
   "runtime image keeps Codex auth writable with a nested generated images mount",
   imageTestOptions,
-  async (t) => {
-    const containerName = `oce-runtime-image-codex-auth-${randomBytes(6).toString("hex")}`;
-    t.after(() => runDocker(["rm", "-f", containerName]).catch(() => {}));
-
-    const probe = String.raw`
-set -eu
-printf "%s\n" "$SYNTHETIC_CODEX_API_KEY" | timeout ${20 * imageSmokeTimeoutMultiplier}s codex login --with-api-key >/tmp/codex-login.stdout 2>/tmp/codex-login.stderr || {
-  status=$?
-  # 124: timeout stopped codex login. Its output may be empty, so name the status.
-  echo "codex login exited $status" >&2
-  sed -E "s/sk-[A-Za-z0-9_-]+/[REDACTED_SYNTHETIC_KEY]/g" /tmp/codex-login.stdout /tmp/codex-login.stderr >&2
-  exit 1
-}
-node - <<'NODE'
-const { accessSync, constants, statSync } = require("node:fs");
-function entry(path) {
-  const stat = statSync(path);
-  return {
-    uid: stat.uid,
-    gid: stat.gid,
-    mode: (stat.mode & 0o777).toString(8),
-    directory: stat.isDirectory(),
-    file: stat.isFile(),
-  };
-}
-accessSync("/home/node/.codex", constants.W_OK);
-accessSync("/home/node/.codex/generated_images", constants.W_OK);
-process.stdout.write(JSON.stringify({
-  uid: process.getuid(),
-  gid: process.getgid(),
-  codexHome: entry("/home/node/.codex"),
-  generatedImages: entry("/home/node/.codex/generated_images"),
-  authJson: entry("/home/node/.codex/auth.json"),
-}));
-NODE
-`;
-
-    const { stdout } = await runDocker(
-      [
-        "run",
-        "--rm",
-        "--name",
-        containerName,
-        "--user",
-        "1000:1000",
-        "--cap-drop",
-        "ALL",
-        "--security-opt",
-        "no-new-privileges",
-        "--tmpfs",
-        "/home/node/.codex/generated_images:size=64m,uid=1000,gid=1000,mode=700",
-        "--tmpfs",
-        "/tmp:size=64m,uid=1000,gid=1000,mode=1777",
-        "--network",
-        "none",
-        "-e",
-        "HOME=/home/node",
-        "-e",
-        "CODEX_HOME=/home/node/.codex",
-        "-e",
-        `SYNTHETIC_CODEX_API_KEY=${syntheticCodexApiKey}`,
-        "--entrypoint",
-        "sh",
-        image,
-        "-c",
-        probe,
-      ],
-      { timeout: 30_000 * imageSmokeTimeoutMultiplier, redact: [syntheticCodexApiKey] },
-    );
-
-    const result = JSON.parse(stdout);
-    assert.equal(result.uid, 1000);
-    assert.equal(result.gid, 1000);
-    assert.deepEqual(result.codexHome, {
-      uid: 1000,
-      gid: 1000,
-      mode: "700",
-      directory: true,
-      file: false,
-    });
-    assert.deepEqual(result.generatedImages, {
-      uid: 1000,
-      gid: 1000,
-      mode: "700",
-      directory: true,
-      file: false,
-    });
-    assert.deepEqual(result.authJson, {
-      uid: 1000,
-      gid: 1000,
-      mode: "600",
-      directory: false,
-      file: true,
-    });
-  },
+  (t) => verifyRuntimeCodexAuthMount(t, syntheticCodexApiKey),
 );
 
 test(
@@ -1319,30 +1142,7 @@ process.stdout.write(JSON.stringify(results));
 test(
   "runtime image Gateway probes time out and recover without CLI descendants",
   imageTestOptions,
-  async (t) => {
-    const containerName = `oce-runtime-gateway-probe-${randomBytes(6).toString("hex")}`;
-    t.after(() => runDocker(["rm", "-f", containerName]).catch(() => {}));
-    const source = await readFile(
-      new URL("../fixtures/runtime-gateway-probe.cjs", import.meta.url),
-      "utf8",
-    );
-    const { stdout } = await runDocker([
-      "run",
-      "--rm",
-      "--name",
-      containerName,
-      "--network",
-      "none",
-      "--entrypoint",
-      "node",
-      image,
-      "-e",
-      source,
-      "fixture",
-      PLUGIN_RUNTIME_HELPERS,
-    ]);
-    assert.match(stdout, /GATEWAY_PROBE_RECOVERY_PASSED/);
-  },
+  (t) => verifyRuntimeGatewayProbeCleanup(t, PLUGIN_RUNTIME_HELPERS),
 );
 
 test(

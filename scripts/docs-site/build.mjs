@@ -51,6 +51,52 @@ const route = (source) =>
     .replace(/\/$/, "") +
   (source === "README.md" ? "" : "/");
 
+// GitHub's heading slug is the canonical heading ID, so permalinks, the table of
+// contents, and source links agree. The renderer's own ID stays as an alias.
+function githubHeadingIds(parsed, ids) {
+  const github = new GithubSlugger();
+  const headingIds = new Map();
+  for (let i = 0; i < parsed.tokens.length; i++) {
+    const token = parsed.tokens[i];
+    if (token.type !== "heading_open") {
+      continue;
+    }
+    const id = token.attrGet("id");
+    const mint = token.meta?.anchorAlias;
+    const slug = github.slug(githubHeadingVisibleText(parsed.tokens[i + 1]));
+    // Existing IDs keep their owner: a heading takes its slug only if nobody else has it,
+    // and an empty slug keeps the renderer's ID.
+    const canonical = slug && (slug === id || slug === mint || !ids.has(slug)) ? slug : id;
+    ids.add(canonical);
+    headingIds.set(id, {
+      id: canonical,
+      alias: canonical === id ? undefined : id,
+      // The renderer's alias span would repeat an ID that now names the heading.
+      droppedMint: canonical === mint ? mint : undefined,
+    });
+  }
+  return headingIds;
+}
+
+function useGithubHeadingIds(html, headingIds) {
+  const span = (id, attributes = "") =>
+    '<span id="' + escape(id) + '" class="anchor-alias"' + attributes + "></span>";
+  return html.replace(/<h[1-6]\b[^>]*\bid="[^"]*"[^>]*>[\s\S]*?<\/h[1-6]>/g, (heading) => {
+    const previous = md.utils.unescapeAll(heading.match(/\bid="([^"]*)"/)[1]);
+    const target = headingIds.get(previous);
+    if (!target) {
+      return heading;
+    }
+    let result = heading;
+    if (target.droppedMint) {
+      result = result.replace(span(target.droppedMint, ' aria-hidden="true"'), "");
+    }
+    return result
+      .replace(/^(<h[1-6]\b[^>]*\bid=")[^"]*"/, (_, open) => open + escape(target.id) + '"')
+      .replace(/^<h[1-6]\b[^>]*>/, (open) => open + (target.alias ? span(target.alias) : ""));
+  });
+}
+
 function walk(directory, acceptsFile = (entry) => entry.name.endsWith(".md")) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const file = path.join(directory, entry.name);
@@ -110,20 +156,8 @@ for (const file of walk(docs)) {
   }
   const text = publicMarkdown(authored, md);
   const parsed = parseDocsDocument(text, md, { sourceFile: file, root: docs });
-  const githubAliases = new Map();
-  const github = new GithubSlugger();
   const ids = new Set(parsed.ids);
-  for (let i = 0; i < parsed.tokens.length; i++) {
-    const token = parsed.tokens[i];
-    if (token.type !== "heading_open") {
-      continue;
-    }
-    const alias = github.slug(githubHeadingVisibleText(parsed.tokens[i + 1]));
-    if (!ids.has(alias)) {
-      githubAliases.set(token.attrGet("id"), alias);
-      ids.add(alias);
-    }
-  }
+  const headingIds = githubHeadingIds(parsed, ids);
   const firstHeading = parsed.tokens.findIndex(
     (token) => token.type === "heading_open" && token.tag === "h1",
   );
@@ -138,7 +172,7 @@ for (const file of walk(docs)) {
     humanVerified,
     lastVerified,
     ids,
-    githubAliases,
+    headingIds,
     parsed,
   });
 }
@@ -343,14 +377,19 @@ for (const page of pages.values()) {
     linkCount++;
   }
   const text = renderComputeMatrixBlocks(page.text, { sourceFile: page.file, root: docs });
-  page.html = renderMdxish(text, md, { sourceFile: page.file, root: docs }).replace(
-    /<(?:a|img|source|span)\b[^>]*>/g,
-    (tag) =>
-      tag.replace(/\b(href|src|data-href)=(['"])(.*?)\2/g, (_, name, quote, href) => {
-        const sourceHref = md.utils.unescapeAll(href);
-        const resolved = resolvedLinks.get(sourceHref) ?? resolveLink(page, sourceHref);
-        return name + "=" + quote + escape(resolved) + quote;
-      }),
+  page.html = useGithubHeadingIds(
+    renderMdxish(text, md, {
+      sourceFile: page.file,
+      root: docs,
+      headingIds: page.headingIds,
+    }),
+    page.headingIds,
+  ).replace(/<(?:a|img|source|span)\b[^>]*>/g, (tag) =>
+    tag.replace(/\b(href|src|data-href)=(['"])(.*?)\2/g, (_, name, quote, href) => {
+      const sourceHref = md.utils.unescapeAll(href);
+      const resolved = resolvedLinks.get(sourceHref) ?? resolveLink(page, sourceHref);
+      return name + "=" + quote + escape(resolved) + quote;
+    }),
   );
 }
 const deploymentExamples = path.join(root, "deploy/examples");
@@ -370,11 +409,6 @@ if (fs.existsSync(deploymentExamples)) {
   }
 }
 for (const page of pages.values()) {
-  page.html = page.html.replace(/<h[1-6]\b[^>]*>/g, (tag) => {
-    const id = tag.match(/\bid="([^"]*)"/)?.[1];
-    const alias = page.githubAliases.get(md.utils.unescapeAll(id ?? ""));
-    return tag + (alias ? '<span class="anchor-alias" id="' + escape(alias) + '"></span>' : "");
-  });
   if (page.humanVerified) {
     page.html = page.html.replace(
       /<\/h1>/,
@@ -548,7 +582,7 @@ for (const page of pages.values()) {
       token.type === "heading_open" && token.tag === "h2"
         ? [
             '<a href="#' +
-              escape(token.attrGet("id")) +
+              escape(page.headingIds.get(token.attrGet("id"))?.id ?? token.attrGet("id")) +
               '">' +
               escape(tokens[index + 1].content) +
               "</a>",

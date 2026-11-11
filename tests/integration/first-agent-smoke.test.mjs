@@ -31,7 +31,7 @@ import {
 } from "../../scripts/ci/first-agent-smoke.mjs";
 import { withEnvironment } from "../helpers/environment.ts";
 import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 
 const revision = "rev_00000000-0000-4000-8000-000000000001";
 const chatNonce = "OCE_SMOKE_00000000-0000-4000-8000-000000000001";

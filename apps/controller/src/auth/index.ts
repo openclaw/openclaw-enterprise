@@ -1184,6 +1184,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     }
     return Object.freeze({
       id: preparedId(context, "user"),
+      emailVerified: true,
       email,
       name: accountName({ ...input, email }),
       passwordHash: await context.password.hash(password),
@@ -1205,7 +1206,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         id: prepared.id,
         email: prepared.email,
         name: prepared.name,
-        emailVerified: true,
+        emailVerified: prepared.emailVerified,
         createdAt: new Date(),
         updatedAt: new Date(),
       },
@@ -1236,7 +1237,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     const prepared = await prepareAccount(input);
     const context = await auth.$context;
     const created = await context.internalAdapter.createUser(
-      { email: prepared.email, name: prepared.name, emailVerified: true },
+      { email: prepared.email, name: prepared.name, emailVerified: prepared.emailVerified },
       { method: "admin" },
     );
     try {

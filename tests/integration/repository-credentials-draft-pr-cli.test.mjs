@@ -7,7 +7,7 @@ import { createNativeClientMaterial } from "../fixtures/repository-credentials/c
 import { refusingPort } from "../helpers/available-port.mjs";
 import { signedLeaf } from "../helpers/certificates.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 
 // `oce-github pr-create` in OpenShell mode: each failure class prints its own line, so an
 // Agent or operator can tell a usage error, a local refusal, a route denial, a GitHub
