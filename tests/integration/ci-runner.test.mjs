@@ -5548,6 +5548,7 @@ const warning = (message = signature, time = interval.start + 500) => JSON.strin
 const failureLine = line(warning());
 const observations = [
   { name: "empty Gateway logs", observation: "no_matching_warning", logs: "" },
+  { name: "unrecognized Gateway failure", observation: "unrecognized_warning", logs: line(warning("chat completion failed: private-command-data")) },
   { name: "unique Gateway failure", observation: "workspace_skill_discovery_failure_observed", logs: failureLine },
   { name: "quoted subsystem prefix", observation: "no_matching_warning", logs: line("[workspace] [openai-compat] " + signature) },
   { name: "missing producer time", observation: "observation_unavailable", logs: failureLine + line(JSON.stringify({level: "warn", subsystem: "openai-compat", message: signature})) },
@@ -5558,7 +5559,6 @@ const observations = [
   { name: "old producer time", observation: "no_matching_warning", logs: line(warning(signature, interval.start - 1)) },
   { name: "later producer time", observation: "no_matching_warning", logs: line(warning(signature, interval.end + 1)) },
   { name: "ambiguous Gateway failure", observation: "ambiguous", logs: failureLine + line(warning("chat completion failed: private-command-data")) },
-  { name: "unrecognized Gateway failure", observation: "unrecognized_warning", logs: line(warning("chat completion failed: private-command-data")) },
   { name: "background disconnect", observation: "no_matching_warning", logs: line("[workspace] " + signature) },
   { name: "truncated Gateway logs", observation: "observation_unavailable", logs: failureLine + "x".repeat(65536) },
   { name: "incomplete Gateway record", observation: "observation_unavailable", logs: failureLine.trimEnd() },
@@ -5567,12 +5567,14 @@ const observations = [
   { name: "Gateway restarted during read", observation: "observation_unavailable", drift: 3, logs: failureLine },
   { name: "invalid request interval", observation: "observation_unavailable", interval: { start: "private-command-data", end: interval.end }, logs: failureLine },
 ];
-// Keep Gateway observations within the retained diagnostic cap, not only the summary.
+const [emptyLogs, unknownWarning, ...remainingObservations] = observations.map(item => ({
+  ...item, stage: "model turn", detail: "model turn; probe=upstream; HTTP=500; gateway=" + item.observation,
+  output: JSON.stringify({ error: "upstream", status: 500, requestInterval: item.interval ?? interval }),
+}));
+// Retain the two new observations without displacing private readback controls.
 const cases = [
-  ...observations.map(item => ({
-    ...item, stage: "model turn", detail: "model turn; probe=upstream; HTTP=500; gateway=" + item.observation,
-    output: JSON.stringify({ error: "upstream", status: 500, requestInterval: item.interval ?? interval }),
-  })),
+  emptyLogs,
+  unknownWarning,
   ...["execution identity", "target discovery", "gateway identity", "model turn"].map(stage => ({
     name: stage, stage, detail: stage === "model turn" ? "model turn; probe=execution" : stage,
   })),
@@ -5587,6 +5589,7 @@ const cases = [
     ["unmarked before", "integrity"], ["unmarked after", "integrity"],
     ["prior error", "integrity"], ["later answer", "integrity"], ["stale sequence", "sequence"],
   ].map(([read, outcome]) => ({name: read, read, stage: "persisted reply", detail: "persisted reply; read=" + outcome, outcome})),
+  ...remainingObservations,
   { name: "unauthenticated HTTP 500", stage: "model turn", detail: "model turn; probe=unauthenticated; HTTP=500", output: JSON.stringify({ error: "unauthenticated", status: 500 }) },
   { name: "upstream status", stage: "model turn", detail: "model turn; probe=upstream; HTTP=503", output: JSON.stringify({ error: "upstream", status: 503, extra: "private-command-data" }) },
   { name: "unknown probe", stage: "model turn", detail: "model turn; probe=unexpected", output: JSON.stringify({ error: "private-command-data", status: 503 }) },
@@ -5703,6 +5706,18 @@ for (const { name, stage, detail, output, logs, drift, observation, read, outcom
   const detail = JSON.parse(detailText).failures[0];
   const details = detail.tests;
   assert.equal(details.length, 20);
+  // Keep both new observations and private readback failures inside the detail cap.
+  for (const name of [
+    "empty Gateway logs",
+    "unrecognized Gateway failure",
+    "read command",
+    "read transcript",
+  ]) {
+    assert.ok(
+      details.some((entry) => entry.name === name),
+      `Missing retained detail: ${name}`,
+    );
+  }
   assert.equal(detail.omittedTests, 28);
   assert.equal(summary.files[0].tests.length, 50);
   const expected = {
