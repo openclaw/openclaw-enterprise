@@ -21,6 +21,7 @@ import type {
   ModelOriginObservation,
   ModelOriginTurn,
 } from "../fixtures/openshell-model-origin.ts";
+import { mixedGrantDeploymentCode } from "./openshell-mixed-grant-setup.ts";
 import { availablePort } from "./available-port.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { stopProcess } from "./stop-process.mjs";
@@ -347,11 +348,7 @@ export async function deployMixedGrantAgent(t: TestContext, fixture: MixedGrantF
       // A failed attempt may still retry. Only the selected deployment's terminal
       // status ends this wait; supplier messages are excluded from diagnostics.
       if (deployment.status === "failed") {
-        const code =
-          typeof deployment.error?.code === "string" &&
-          /^[A-Z][A-Z0-9_]{0,95}$/u.test(deployment.error.code)
-            ? deployment.error.code
-            : "UNKNOWN_DEPLOYMENT_FAILURE";
+        const code = mixedGrantDeploymentCode(deployment.error?.code);
         throw new Error(
           `MIXED_GRANT_DEPLOYMENT_FAILED: ${code}; selected revision failed after provider registration`,
         );

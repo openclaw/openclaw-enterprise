@@ -5,8 +5,9 @@ import { fileURLToPath } from "node:url";
 
 import {
   openShellGitRetentionKind,
-  projectOpenShellGitRetention,
+  emitOpenShellGitRetention,
 } from "../../scripts/ci/openshell-git-retention.mjs";
+import { mixedGrantDeploymentCode } from "../helpers/openshell-mixed-grant-setup.ts";
 import { FixtureCommandTimeoutError } from "../fixtures/repository-credentials/process.mjs";
 
 import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.mjs";
@@ -337,8 +338,8 @@ test(
         gitIssued: 1,
       });
     } catch (error) {
-      // Preserve only the registration helper's fixed category and bounded API
-      // code. Raw upstream and workload errors may contain credentials.
+      // Raw upstream and workload errors may contain credentials. Recognize the
+      // failure shape, then select its code from the platform vocabulary.
       const terminalFailure =
         error instanceof Error
           ? /^MIXED_GRANT_DEPLOYMENT_FAILED: ([A-Z][A-Z0-9_]{0,95}); selected revision failed (?:before|after) provider registration$/u.exec(
@@ -375,15 +376,11 @@ test(
         category,
         httpStatus,
       };
-      assert.ok(
-        projectOpenShellGitRetention(failure),
-        "failure diagnostic must have a safe CI projection",
-      );
-      t.diagnostic(`openclaw-ci-measurement ${JSON.stringify(failure)}`);
+      emitOpenShellGitRetention(t, failure);
       if (terminalFailure) {
         // eslint-disable-next-line preserve-caught-error -- The raw cause may contain credentials; retain only the fixed diagnostic.
         throw new Error(
-          `MIXED_GRANT_DEPLOYMENT_FAILED: ${terminalFailure[1]}; verification phase ${phase}.`,
+          `MIXED_GRANT_DEPLOYMENT_FAILED: ${mixedGrantDeploymentCode(terminalFailure[1])}; verification phase ${phase}.`,
         );
       }
       const locations: string[] = [];

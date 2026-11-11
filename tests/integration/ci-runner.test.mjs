@@ -1052,6 +1052,112 @@ test("run records a sanitized file failure after all reported cases pass", async
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
 });
 
+test("mixed-grant output closes deployment codes and projects before diagnostics", async (t) => {
+  const name =
+    "OpenShell grants model and Git on demand and preserves the conversation after Git withdrawal";
+  const path = "tests/integration/openshell-mixed-grant-real.test.ts";
+  const retentionUrl = new URL("../../scripts/ci/openshell-git-retention.mjs", import.meta.url)
+    .href;
+  const installationUrl = new URL("../helpers/openshell-git-installation.mjs", import.meta.url)
+    .href;
+  const realTestUrl = new URL("./openshell-mixed-grant-real.test.ts", import.meta.url).href;
+  for (const code of ["PRIVATE_UPPERCASE_CANARY", "SANDBOX_GATEWAY_UNAUTHORIZED"]) {
+    const root = await fixture(t);
+    // Inject only the upstream failure. The real test catch, diagnostic emitter,
+    // reporter and retained-result collector all execute unchanged.
+    await writeFile(
+      join(root, path),
+      `
+import test from "node:test";
+import { registerHooks } from "node:module";
+import { emitOpenShellGitRetention } from ${JSON.stringify(retentionUrl)};
+registerHooks({ load(url, context, nextLoad) {
+  if (url === ${JSON.stringify(installationUrl)}) return {
+    format: "module", shortCircuit: true,
+    source: 'export function createOpenShellGitInstallation() { throw new Error("MIXED_GRANT_DEPLOYMENT_FAILED: ${code}; selected revision failed before provider registration"); }'
+  };
+  return nextLoad(url, context);
+}});
+test("closed diagnostic projection", (t) => {
+  const common = { kind: "openshell-git-retention", phase: "installation", extra: "PRIVATE_FIELD_CANARY" };
+  emitOpenShellGitRetention(t, { ...common, event: "mixed-grant-setup", operation: "input-validation" });
+  emitOpenShellGitRetention(t, { ...common, event: "mixed-grant-failure", category: "operation", httpStatus: null });
+  // Existing events still supply the original identity for collector-side hashing.
+  emitOpenShellGitRetention(t, { kind: common.kind, event: "mixed-grant-git-fetched", revisionId: "revision-identity", sha: "a".repeat(40), gitIssued: 1, gitRequests: 2 });
+});
+process.env.OCC_TEST_OPENSHELL_MIXED_GRANT_REAL = "1";
+await import(${JSON.stringify(realTestUrl)});
+`,
+    );
+    await writeSingleLaneManifest(
+      root,
+      "closed-output",
+      [
+        {
+          path,
+          expectedTests: ["closed diagnostic projection", name],
+        },
+      ],
+      {},
+    );
+    const directEnv = runnerEnv();
+    delete directEnv.NODE_TEST_CONTEXT;
+    const direct = spawnSync(process.execPath, ["--test", join(root, path)], {
+      encoding: "utf8",
+      env: directEnv,
+    });
+    assert.equal(direct.status, 1, direct.stderr);
+    const expectedCode = code === "PRIVATE_UPPERCASE_CANARY" ? "UNKNOWN_DEPLOYMENT_FAILURE" : code;
+    assert.ok(
+      (direct.stdout + direct.stderr).includes(
+        `MIXED_GRANT_DEPLOYMENT_FAILED: ${expectedCode}; verification phase installation.`,
+      ),
+    );
+    const result = run(
+      root,
+      laneArgs(root, "closed-output", "state/closed.json", "results/closed.json"),
+    );
+    assert.equal(result.status, 1, result.stderr);
+    const raw = await readFile(join(root, "results/closed.json"), "utf8");
+    assert.doesNotMatch(
+      direct.stdout + direct.stderr + result.stdout + result.stderr + raw,
+      /PRIVATE_(UPPERCASE|FIELD)_CANARY/,
+    );
+    const receipts = JSON.parse(raw).files[0].measurements;
+    assert.deepEqual(receipts, [
+      {
+        kind: "openshell-git-retention",
+        event: "mixed-grant-setup",
+        phase: "installation",
+        operation: "input-validation",
+      },
+      {
+        kind: "openshell-git-retention",
+        event: "mixed-grant-failure",
+        phase: "installation",
+        category: "operation",
+        httpStatus: null,
+      },
+      {
+        kind: "openshell-git-retention",
+        event: "mixed-grant-git-fetched",
+        revisionIdHash: createHash("sha256").update("revision-identity").digest("hex"),
+        sha: "a".repeat(40),
+        gitIssued: 1,
+        gitRequests: 2,
+      },
+      {
+        kind: "openshell-git-retention",
+        event: "mixed-grant-failure",
+        phase: "installation",
+        category: "deployment",
+        httpStatus: null,
+      },
+    ]);
+    assert.ok(raw.includes(expectedCode));
+  }
+});
+
 test("mixed-grant candidate lane requires and forwards all original supplier inputs", async (t) => {
   const root = await fixture(t);
   const lane = JSON.parse(

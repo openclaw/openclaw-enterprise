@@ -12,7 +12,7 @@ import {
   openShellGitRetentionKind,
   projectOpenShellGitExpiryObservation,
   projectOpenShellGitMaintenanceCompletion,
-  projectOpenShellGitRetention,
+  emitOpenShellGitRetention,
   selectOpenShellGitWithdrawalDenials,
 } from "../../scripts/ci/openshell-git-retention.mjs";
 import { emitOpenShellSetupProgress } from "../../scripts/ci/openshell-progress.mjs";
@@ -446,11 +446,7 @@ export function createOpenShellGitInstallation(
 async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
   const measurement = (event, data) => {
     const value = { kind: openShellGitRetentionKind, event, ...data };
-    assert.ok(
-      projectOpenShellGitRetention(value),
-      "qualification receipt must have a safe CI projection",
-    );
-    t.diagnostic(`openclaw-ci-measurement ${JSON.stringify(value)}`);
+    emitOpenShellGitRetention(t, value);
   };
   const setupCheckpoint = (operation, phase = "installation") => {
     if (mixedGrant) {

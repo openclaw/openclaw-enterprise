@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
   RUNTIME_DIAGNOSTIC_CODES,
@@ -698,4 +699,15 @@ export function projectOpenShellGitRetention(value) {
   return selected === undefined
     ? undefined
     : { kind: openShellGitRetentionKind, event: value.event, ...selected };
+}
+
+/** Project content-free events at their first output; older receipts retain hash inputs. */
+export function emitOpenShellGitRetention(t, value) {
+  const projected = projectOpenShellGitRetention(value);
+  assert.ok(projected, "qualification receipt must have a safe CI projection");
+  const output =
+    value.event === "mixed-grant-setup" || value.event === "mixed-grant-failure"
+      ? projected
+      : value;
+  t.diagnostic(`openclaw-ci-measurement ${JSON.stringify(output)}`);
 }

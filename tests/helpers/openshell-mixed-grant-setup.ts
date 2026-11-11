@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { createHash, createPublicKey, generateKeyPairSync, randomBytes } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { DEPLOYMENT_FAILURE_STEPS } from "../../packages/occ/src/deployment-failure-steps.ts";
 import type { AgentDeploymentStatusWire } from "../../packages/contracts/src/api/resources.ts";
 import type {
   OpenShellGatewayClient,
@@ -22,6 +23,13 @@ import {
   type ModelOriginTurn,
 } from "../fixtures/openshell-model-origin.ts";
 import { startInstalledGrantGitHubOrigin } from "./installed-grant-github-origin.ts";
+
+/** Use the platform's deployment vocabulary; never echo an unknown supplier code. */
+export function mixedGrantDeploymentCode(value: unknown): string {
+  return typeof value === "string" && Object.hasOwn(DEPLOYMENT_FAILURE_STEPS, value)
+    ? value
+    : "UNKNOWN_DEPLOYMENT_FAILURE";
+}
 
 const sha256 = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 
@@ -226,9 +234,7 @@ export async function registerMixedGrantProviders({
     if (deployment.status === "failed") {
       // API error messages and supplier logs can contain private data. The status
       // is sufficient here; retries remain running and continue this observation.
-      const code = /^[A-Z][A-Z0-9_]{0,95}$/.test(deployment.error?.code ?? "")
-        ? deployment.error!.code
-        : "UNKNOWN_DEPLOYMENT_FAILURE";
+      const code = mixedGrantDeploymentCode(deployment.error?.code);
       throw new Error(
         `MIXED_GRANT_DEPLOYMENT_FAILED: ${code}; selected revision failed before provider registration`,
       );
