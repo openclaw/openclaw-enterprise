@@ -220,6 +220,14 @@ function createProvisioningConfigurationDriver(options) {
   return driver;
 }
 
+function refuseProvisioningWithoutGatewayRouting(computeDriver) {
+  const unrouted = createTestKubernetesComputeDriver("compute-provisioning-unrouted", {
+    repositoryCredentials: true,
+    routed: false,
+  });
+  computeDriver.validateAgentProvisioning = (input) => unrouted.validateAgentProvisioning(input);
+}
+
 // Stands in for the controller's 90 s Configuration settle window passing: the pending create's
 // database-clock start moves 91 s back, and its deferred work becomes claimable now. The
 // effect's owner and target stay exactly as the worker recorded them.
@@ -3610,12 +3618,7 @@ test(
       if (created.length === 1) {
         // The write lands but its receipt is lost, and before the next attempt the
         // Installation's Compute Driver starts refusing the stored plan (no gateway routing).
-        const unrouted = createTestKubernetesComputeDriver("compute-provisioning-unrouted", {
-          repositoryCredentials: true,
-          routed: false,
-        });
-        computeDriver.validateAgentProvisioning = (input) =>
-          unrouted.validateAgentProvisioning(input);
+        refuseProvisioningWithoutGatewayRouting(computeDriver);
         throw new Error("synthetic Configuration receipt loss");
       }
       return stored;
@@ -3697,12 +3700,7 @@ test(
       if (created.length === 1) {
         // The first write lands, then the Compute Driver starts refusing the stored plan, so
         // the fence of the transaction that would record the Configuration rejects the work.
-        const unrouted = createTestKubernetesComputeDriver("compute-provisioning-unrouted", {
-          repositoryCredentials: true,
-          routed: false,
-        });
-        computeDriver.validateAgentProvisioning = (input) =>
-          unrouted.validateAgentProvisioning(input);
+        refuseProvisioningWithoutGatewayRouting(computeDriver);
       }
       return stored;
     };
@@ -3822,12 +3820,7 @@ test(
       created.push(configuration.id);
       // The write lands, then the Compute Driver refuses the stored plan for good, so this
       // attempt's fence and every later one reject the work, and `/retry` would refuse too.
-      const unrouted = createTestKubernetesComputeDriver("compute-provisioning-unrouted", {
-        repositoryCredentials: true,
-        routed: false,
-      });
-      computeDriver.validateAgentProvisioning = (input) =>
-        unrouted.validateAgentProvisioning(input);
+      refuseProvisioningWithoutGatewayRouting(computeDriver);
       return stored;
     };
     let fixture;
@@ -4017,11 +4010,7 @@ test(
     // The Installation now enables dedicated runtime storage without gateway routing, so the
     // Kubernetes Compute Driver refuses the stored plan with its own error class. Every attempt
     // would refuse it the same way, so the worker fails it on the first one and says why.
-    const unrouted = createTestKubernetesComputeDriver("compute-provisioning-unrouted", {
-      repositoryCredentials: true,
-      routed: false,
-    });
-    computeDriver.validateAgentProvisioning = (input) => unrouted.validateAgentProvisioning(input);
+    refuseProvisioningWithoutGatewayRouting(computeDriver);
     await fixture.startWorker();
     const failed = await waitFor("the worker to refuse the provisioning work", async () => {
       const row = await provisioningRow(fixture.pool, namespace.id, body.requestId);

@@ -1,4 +1,6 @@
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { ControlRequest } from "../../apps/controller/src/drivers/repo/access/control-contracts.ts";
+import type { callControl as CallControl } from "../../apps/controller/src/drivers/repo/github/access/client/operator.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { chmod, lstat, readFile, writeFile } from "node:fs/promises";
@@ -8,14 +10,19 @@ import { createTlsMaterial } from "../fixtures/repository-credentials/process.mj
 import { createLoopbackServiceConfiguration } from "../fixtures/repository-credentials/service.mjs";
 import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 
-async function configuration(t) {
+async function configuration(t: TestContext) {
   const resources = createTestResourceScope(t);
   const tls = await createTlsMaterial(resources);
-  const config = await createLoopbackServiceConfiguration(resources);
-  return { resources, config, tls };
+  const config: unknown = await createLoopbackServiceConfiguration(resources);
+  assert.ok(config && typeof config === "object" && "gateway" in config);
+  assert.ok(
+    config.gateway && typeof config.gateway === "object" && "controlSocket" in config.gateway,
+  );
+  assert.ok(typeof config.gateway.controlSocket === "string");
+  return { resources, config: config as { gateway: { controlSocket: string } }, tls };
 }
 
-function startProcess({ resources, config, tls }) {
+function startProcess({ resources, config, tls }: Awaited<ReturnType<typeof configuration>>) {
   // Only the provider is a fixture. Listener startup, control routes, sessions,
   // signal handling and socket cleanup all belong to the real process composition.
   const program = `
@@ -39,8 +46,9 @@ function startProcess({ resources, config, tls }) {
     },
     stdio: ["pipe", "ignore", "pipe", "ipc"],
   });
+  assert.ok(child.stderr && child.stdin);
   let stderr = "";
-  child.stderr.on("data", (chunk) => {
+  child.stderr.on("data", (chunk: Buffer) => {
     stderr = (stderr + chunk).slice(-4096);
   });
   child.stdin.on("error", () => {});
@@ -48,7 +56,7 @@ function startProcess({ resources, config, tls }) {
     child.once("error", reject);
     child.once("close", (code, signal) => resolve({ code, signal }));
   });
-  const ready = new Promise((resolve, reject) => {
+  const ready = new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("service readiness timed out")), 5000);
     child.once("message", (message) => {
       clearTimeout(timer);
@@ -78,7 +86,14 @@ function startProcess({ resources, config, tls }) {
   return { child, ready, closed };
 }
 
-const openRequest = {
+async function operatorClient() {
+  const module: unknown = await credentialDriverModule("client/operator");
+  assert.ok(module && typeof module === "object" && "callControl" in module);
+  assert.equal(typeof module.callControl, "function");
+  return module.callControl as typeof CallControl;
+}
+
+const openRequest: ControlRequest = {
   method: "POST",
   path: "/v1/sessions",
   body: { durationSeconds: 3600, profile: "git-write" },
@@ -89,11 +104,12 @@ test(
   { timeout: 15000 },
   async (t) => {
     const fixture = await configuration(t);
-    const { callControl } = await credentialDriverModule("client/operator");
+    const callControl = await operatorClient();
     const socketPath = fixture.config.gateway.controlSocket;
     const first = startProcess(fixture);
     await first.ready;
     const original = await callControl(socketPath, openRequest);
+    assert.ok("session" in original);
     assert.equal(original.session.state, "OPEN");
     first.child.kill("SIGKILL");
     assert.deepEqual(await first.closed, { code: null, signal: "SIGKILL" });
@@ -103,8 +119,9 @@ test(
     const abandoned = await lstat(socketPath);
     assert.ok(abandoned.isSocket());
     assert.equal(abandoned.mode & 0o7777, 0o600);
+    assert.ok(process.getuid);
     assert.equal(abandoned.uid, process.getuid());
-    const refusal = await new Promise((resolve, reject) => {
+    const refusal = await new Promise<NodeJS.ErrnoException>((resolve, reject) => {
       const socket = connect(socketPath);
       socket.once("connect", () => {
         socket.destroy();
@@ -124,6 +141,7 @@ test(
       { error: "not-found" },
     );
     const replacement = await callControl(socketPath, openRequest);
+    assert.ok("session" in replacement);
     assert.equal(replacement.session.state, "OPEN");
     assert.notEqual(replacement.session.sessionId, original.session.sessionId);
     assert.notEqual(replacement.bearer, original.bearer);
@@ -139,11 +157,12 @@ test(
   { timeout: 10000 },
   async (t) => {
     const fixture = await configuration(t);
-    const { callControl } = await credentialDriverModule("client/operator");
+    const callControl = await operatorClient();
     const socketPath = fixture.config.gateway.controlSocket;
     const first = startProcess(fixture);
     await first.ready;
     const opened = await callControl(socketPath, openRequest);
+    assert.ok("session" in opened);
     const before = await lstat(socketPath);
     const contender = startProcess(fixture);
     await assert.rejects(contender.ready, /startup-failed/);
@@ -151,15 +170,12 @@ test(
     const after = await lstat(socketPath);
     assert.equal(after.ino, before.ino);
     assert.equal(after.dev, before.dev);
-    assert.equal(
-      (
-        await callControl(socketPath, {
-          method: "GET",
-          path: `/v1/sessions/${opened.session.sessionId}`,
-        })
-      ).state,
-      "OPEN",
-    );
+    const status = await callControl(socketPath, {
+      method: "GET",
+      path: `/v1/sessions/${opened.session.sessionId}`,
+    });
+    assert.ok("state" in status);
+    assert.equal(status.state, "OPEN");
   },
 );
 

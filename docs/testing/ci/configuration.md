@@ -24,13 +24,14 @@ permissions are set in the [workflow files](../../../.github/workflows);
 
 ## Environments
 
-Full Integration runs automatically after pushes to `main`. Manual dispatches
-also require `main` and approval by the dispatcher through
-`integration-main-approval`, which has no secrets or variables. Configure its
-sole required reviewer as `@openclaw/maintainers-oce`; allow self-review and
-disable administrator bypass. Both environments must have exactly one custom
-deployment rule: branch `main`. `integration-main` must have no required
-reviewers, so automatic pushes do not wait for approval.
+Full Integration runs on `main` when a scheduled tick passes
+[admission](full-integration.md#trigger), or when the dispatcher approves a
+manual run through `integration-main-approval`. The approval environment has
+no secrets or variables. Set its sole required reviewer to
+`@openclaw/maintainers-oce`, allow self-review, and disable administrator
+bypass. Both environments must have exactly one custom deployment rule for
+branch `main`. Keep `integration-main` free of required reviewers so admitted
+scheduled runs do not wait for approval.
 
 After a manual approval, preflight reads the environment policy and the run's
 review history with the workflow token. The approved review must name the exact
@@ -39,11 +40,10 @@ Missing, rejected, conflicting, or unverifiable reviews fail before
 `integration-main` jobs start. Repository write access alone does not authorize
 a manual dispatch.
 
-Main push jobs can retry at the original commit. A manual run requires a new
-approved dispatch for each attempt. Each credentialed job checks the event and
-attempt before it reads credentials. Preflight
-rejects extra branches, tags, incomplete policy metadata, and a missing or
-enabled bypass flag.
+To retry a scheduled or manual run, start a new approved manual dispatch on
+`main`. Each credentialed job checks the event and attempt before reading
+credentials. Preflight rejects extra branches, tags, incomplete policy metadata,
+and a missing or enabled bypass flag.
 
 The separate `integration-qa-pr` environment permits `main` and
 `refs/pull/*/merge`. Its `full-qa` and `qa-openshell-compose` labels select

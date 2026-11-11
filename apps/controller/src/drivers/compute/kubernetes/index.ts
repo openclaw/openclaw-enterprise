@@ -238,6 +238,11 @@ import {
   type ModelProviderConfiguration,
 } from "../model-provider.ts";
 import { discoverHarnessModels } from "../model-discovery.ts";
+import {
+  DELIBERATE_RESTART_EXIT_STATUS,
+  DELIBERATE_RESTART_MESSAGE,
+  UNEXPLAINED_EXITS_MESSAGE,
+} from "../runtime-startup.ts";
 import { failureAfterCleanup, mapPrimaryFailure } from "../cleanup-failure.ts";
 import {
   ComputeStopYieldedError,
@@ -2244,6 +2249,26 @@ const IMAGE_PULL_WAITING_REASONS: ReadonlySet<unknown> = new Set([
   "ErrImagePull",
   "ImagePullBackOff",
 ]);
+
+// A runtime container with this many consecutive unexplained exits, waiting in the kubelet's
+// crash-loop backoff, fails startup (finding 3041). A slow start, an image pull or one exit
+// cannot reach it. Without a count, the exits are the restart count plus one: in backoff the
+// kubelet has not yet counted the restart it waits for.
+const CRASH_LOOP_EXITS = 3;
+
+// The consecutive unexplained exits a Gateway wrapper states in its termination message: 0
+// for a deliberate restart, even one that then exits with another status (killed while it
+// stops), or undefined without a count (a Pod started before the wrapper kept one).
+function unexplainedExitCount(message: unknown): number | undefined {
+  if (typeof message === "string" && message.startsWith(DELIBERATE_RESTART_MESSAGE)) {
+    return 0;
+  }
+  if (typeof message !== "string" || !message.startsWith(UNEXPLAINED_EXITS_MESSAGE)) {
+    return undefined;
+  }
+  const count = message.slice(UNEXPLAINED_EXITS_MESSAGE.length);
+  return /^[0-9]{1,6}$/u.test(count) ? Number(count) : undefined;
+}
 
 // True when one of a Pod's containers or init containers waits on an image pull.
 function podWaitsOnImagePull(pod: unknown): boolean {
@@ -11295,6 +11320,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return typeof value === "string" && RUNTIME_STATUS_IDENTIFIER.test(value);
   }
 
+  // When a terminated container instance finished, else now: the kubelet's time as served, or
+  // as the SDK decodes it into a Date.
+  private terminatedAt(terminated: Record<string, unknown>): string {
+    return typeof terminated.finishedAt === "string" &&
+      this.validIsoTimestamp(terminated.finishedAt)
+      ? terminated.finishedAt
+      : (validKubernetesTime(terminated.finishedAt) ?? new Date().toISOString());
+  }
+
   private validIsoTimestamp(value: unknown): value is string {
     if (typeof value !== "string") {
       return false;
@@ -11357,11 +11391,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
               ? undefined
               : asRecord(asRecord(initialized?.lastState)?.terminated));
           if (typeof terminated?.exitCode === "number" && terminated.exitCode !== 0) {
-            const checkedAt =
-              typeof terminated.finishedAt === "string" &&
-              this.validIsoTimestamp(terminated.finishedAt)
-                ? terminated.finishedAt
-                : (validKubernetesTime(terminated.finishedAt) ?? new Date().toISOString());
+            const checkedAt = this.terminatedAt(terminated);
             // The kubelet restarts a failed init container (these Pods restart Always), which
             // can pass after an I/O or native setup failure. A refusal fails every restart the
             // same way (finding 1677).
@@ -11389,6 +11419,61 @@ export class KubernetesComputeDriver implements ComputeDriver {
         );
         if (failure !== undefined) {
           return failure;
+        }
+      }
+    } catch {
+      if (ownerSignal?.aborted) {
+        throw ownerSignal.reason;
+      }
+    }
+    // A crash-looping container serves no status, so a failed status read cannot hide it.
+    return await this.safeCrashLoopObservation(revision, namespace);
+  }
+
+  // Evidence for a runtime container the kubelet keeps restarting after unexplained exits
+  // (finding 3041): on a live Pod of this revision, the role's own container (the Gateway, or
+  // a Harness that runs in a Deployment) waits in CrashLoopBackOff after CRASH_LOOP_EXITS
+  // consecutive unexplained exits. Init containers and sidecars never count. The Gateway
+  // wrapper exits DELIBERATE_RESTART_EXIT_STATUS when it stops its container on purpose,
+  // which keeps the wait and clears its count, and states the count in its termination
+  // message. Without one (a Pod from before the count), the restart count plus one stands
+  // in. No Harness wrapper restarts on purpose, so each of its restarts follows an
+  // unexplained exit. Like failure evidence, an unavailable observation reports nothing.
+  private async safeCrashLoopObservation(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+  ): Promise<RuntimeFailureEvidence | undefined> {
+    const ownerSignal = currentComputeAbortSignal();
+    try {
+      const roles = this.runtimeStatusContainers(revision).filter(
+        (role) =>
+          role === "gateway" ||
+          this.sandboxDriverForRevision(revision)?.provisionHarness === undefined,
+      );
+      for (const role of roles) {
+        const target = role === "gateway" ? this.gatewayNamespace(revision, namespace) : namespace;
+        for (const pod of await this.revisionPods(revision, target, role)) {
+          if (asRecord(pod.metadata)?.deletionTimestamp !== undefined) {
+            continue;
+          }
+          const statuses = asRecord(pod.status)?.containerStatuses;
+          const status = Array.isArray(statuses)
+            ? statuses.map(asRecord).find((item) => item?.name === role)
+            : undefined;
+          const terminated = asRecord(asRecord(status?.lastState)?.terminated);
+          const exits =
+            (role === "gateway" ? unexplainedExitCount(terminated?.message) : undefined) ??
+            (typeof status?.restartCount === "number" ? status.restartCount + 1 : undefined);
+          if (
+            asRecord(asRecord(status?.state)?.waiting)?.reason === "CrashLoopBackOff" &&
+            typeof exits === "number" &&
+            exits >= CRASH_LOOP_EXITS &&
+            typeof terminated?.exitCode === "number" &&
+            !(role === "gateway" && terminated.exitCode === DELIBERATE_RESTART_EXIT_STATUS)
+          ) {
+            const checkedAt = this.terminatedAt(terminated);
+            return { component: role, check: "crash-loop", code: "UNAVAILABLE", checkedAt };
+          }
         }
       }
       return undefined;

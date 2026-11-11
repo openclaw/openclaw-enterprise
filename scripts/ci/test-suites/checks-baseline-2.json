@@ -18,11 +18,11 @@
     "tests/integration/repository-credentials-router.test.mjs",
     "tests/conformance/module-policy.test.mjs",
     "tests/integration/native-admin-access.test.mjs",
-    "tests/integration/repository-credentials-transport-bounds.test.mjs",
+    "tests/integration/repository-credentials-transport-bounds.test.ts",
     "tests/integration/cli-release.test.mjs",
     "tests/integration/container-resume.test.ts",
     "tests/integration/metrics-monitoring-readiness.test.mjs",
-    "tests/integration/repository-credentials-control.test.mjs",
+    "tests/integration/repository-credentials-control.test.ts",
     "tests/integration/repository-credential-operator-recovery.test.ts",
     "tests/integration/repository-receipt-observation.test.ts",
     "tests/integration/codex-plugin-startup-reads.test.mjs",
@@ -36,7 +36,7 @@
     "tests/integration/workspace-setup-api.test.mjs",
     "tests/integration/agent-create-validate-api.test.mjs",
     "tests/integration/model-provider.test.ts",
-    "tests/integration/repository-credentials-service-loss.test.mjs",
+    "tests/integration/repository-credentials-service-loss.test.ts",
     "tests/integration/ci-runner.test.mjs",
     "tests/integration/k3d-quickstart-diagnostics.test.ts",
     "tests/integration/local-first-agent-session-identity.test.ts",
@@ -52,13 +52,13 @@
     "tests/conformance/postgres-controller-auth-binding.test.mjs",
     "tests/integration/repository-credentials-package.test.ts",
     "tests/integration/package-prepack.test.ts",
-    "tests/integration/repository-credentials-restart.test.mjs",
+    "tests/integration/repository-credentials-restart.test.ts",
     "tests/conformance/plugin-driver.test.mjs",
     "tests/integration/ci-image-reconciliation.test.ts",
     "tests/conformance/repository-runtime-material.test.mjs",
-    "tests/integration/repository-credentials-server-timeout.test.mjs",
+    "tests/integration/repository-credentials-server-timeout.test.ts",
     "tests/integration/protected-repository-metadata-read.test.mjs",
-    "tests/integration/repository-credentials-http.test.mjs",
+    "tests/integration/repository-credentials-http.test.ts",
     "tests/integration/repository-original-lease.test.ts",
     "tests/integration/public-github-read-http.test.mjs",
     "tests/conformance/repository-credentials-fixture-ownership.test.mjs",
@@ -71,14 +71,14 @@
     "tests/integration/qa-fixture-inputs.test.mjs",
     "tests/integration/qa-repository-installation.test.ts",
     "tests/integration/repository-runtime-materialization.test.mjs",
-    "tests/conformance/repository-credentials-contracts.test.mjs",
-    "tests/integration/plugin-driver-startup.test.mjs",
+    "tests/conformance/repository-credentials-contracts.test.ts",
+    "tests/integration/plugin-driver-startup.test.ts",
     "tests/integration/repository-credentials-config.test.mjs",
     "tests/integration/kubernetes-peer-status.test.mjs",
-    "tests/conformance/repository-credentials-lifecycle.test.mjs",
+    "tests/conformance/repository-credentials-lifecycle.test.ts",
     "tests/integration/ssh-compute-startup.test.mjs",
     "tests/integration/oidc-login-transport.test.mjs",
-    "tests/conformance/repository-credentials-ownership-boundaries.test.mjs",
+    "tests/conformance/repository-credentials-ownership-boundaries.test.ts",
     "tests/integration/ci-cleanup.test.mjs",
     "tests/integration/ci-prepare-postgres.test.ts",
     "tests/integration/runtime-image-failure-output.test.mjs",
@@ -100,7 +100,7 @@
     "tests/conformance/repository-credentials-github-token.test.mjs",
     "tests/conformance/repository-credentials-registry.test.mjs",
     "tests/integration/ci-openshell.test.mjs",
-    "tests/conformance/repository-credentials-sessions.test.mjs",
+    "tests/conformance/repository-credentials-sessions.test.ts",
     "tests/conformance/repository-credentials-admission.test.ts",
     "tests/integration/dev-codex-seccomp-failure.test.mjs",
     "tests/conformance/runtime-probe-cpu-counter.test.ts",
@@ -366,7 +366,7 @@
       "path": "tests/conformance/plugin-runtime-templates.test.ts"
     },
     {
-      "path": "tests/integration/plugin-driver-startup.test.mjs"
+      "path": "tests/integration/plugin-driver-startup.test.ts"
     },
     {
       "path": "tests/integration/plugin-driver-real-preflight.test.mjs"
@@ -415,7 +415,7 @@
       "path": "tests/conformance/startup-environment-boundary.test.ts"
     },
     {
-      "path": "tests/conformance/repository-credentials-contracts.test.mjs"
+      "path": "tests/conformance/repository-credentials-contracts.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-github.test.mjs"
@@ -427,7 +427,7 @@
       "path": "tests/conformance/repository-credentials-receive-pack.test.mjs"
     },
     {
-      "path": "tests/conformance/repository-credentials-sessions.test.mjs"
+      "path": "tests/conformance/repository-credentials-sessions.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-admission.test.ts"
@@ -436,10 +436,10 @@
       "path": "tests/conformance/repository-credentials-custody.test.ts"
     },
     {
-      "path": "tests/conformance/repository-credentials-lifecycle.test.mjs"
+      "path": "tests/conformance/repository-credentials-lifecycle.test.ts"
     },
     {
-      "path": "tests/conformance/repository-credentials-ownership-boundaries.test.mjs"
+      "path": "tests/conformance/repository-credentials-ownership-boundaries.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-tool-evidence.test.mjs"
@@ -462,7 +462,7 @@
       "path": "tests/integration/protected-repository-metadata-read.test.mjs"
     },
     {
-      "path": "tests/integration/repository-credentials-http.test.mjs"
+      "path": "tests/integration/repository-credentials-http.test.ts"
     },
     {
       "path": "tests/integration/repository-original-lease.test.ts",
@@ -478,13 +478,13 @@
       "path": "tests/integration/public-github-read-http.test.mjs"
     },
     {
-      "path": "tests/integration/repository-credentials-transport-bounds.test.mjs"
+      "path": "tests/integration/repository-credentials-transport-bounds.test.ts"
     },
     {
-      "path": "tests/integration/repository-credentials-server-timeout.test.mjs"
+      "path": "tests/integration/repository-credentials-server-timeout.test.ts"
     },
     {
-      "path": "tests/integration/repository-credentials-control.test.mjs"
+      "path": "tests/integration/repository-credentials-control.test.ts"
     },
     {
       "path": "tests/integration/repository-credential-operator-recovery.test.ts"
@@ -505,7 +505,7 @@
       "path": "tests/integration/package-prepack.test.ts"
     },
     {
-      "path": "tests/integration/repository-credentials-service-loss.test.mjs",
+      "path": "tests/integration/repository-credentials-service-loss.test.ts",
       "expectedTests": ["a broker restart cannot accept bound admissions without durable fencing"]
     },
     {
@@ -549,7 +549,7 @@
       "path": "tests/integration/repository-credentials-projected-inputs.test.mjs"
     },
     {
-      "path": "tests/integration/repository-credentials-restart.test.mjs"
+      "path": "tests/integration/repository-credentials-restart.test.ts"
     },
     {
       "path": "tests/integration/repository-runtime-materialization.test.mjs"

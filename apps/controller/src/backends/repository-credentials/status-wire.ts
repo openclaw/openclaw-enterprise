@@ -1,4 +1,4 @@
-import { hasControlCharacter } from "../../drivers/repo/access/client-contracts.ts";
+import { isRepositoryCredentialIdentity } from "../../drivers/repo/access/grant-identity.ts";
 
 /** Identical private JSON primitives; each boundary owns its failure diagnostic. */
 export function createStatusWirePrimitives(invalid: () => never) {
@@ -16,12 +16,7 @@ export function createStatusWirePrimitives(invalid: () => never) {
   }
 
   function identity(value: unknown): string {
-    if (
-      typeof value !== "string" ||
-      value.length === 0 ||
-      Buffer.byteLength(value) > 512 ||
-      hasControlCharacter(value)
-    ) {
+    if (!isRepositoryCredentialIdentity(value)) {
       return invalid();
     }
     return value;

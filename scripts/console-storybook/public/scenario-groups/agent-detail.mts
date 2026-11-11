@@ -972,6 +972,29 @@ export function createAgentDetailScenarios({
         ],
         gap: "The stored setting and the preflight refusal are simulated; tests/browser/console-agent-detail.test.mjs covers the page with the real Kubernetes Compute rules.",
       },
+      codexGatewayPasswordMissingRefused: {
+        group: "Pages/Agent detail",
+        name: "Dedicated Codex without the gateway password",
+        path: draft,
+        deployed: true,
+        rules: [
+          {
+            suffix: "/agents/validate",
+            method: "POST",
+            status: 400,
+            code: "INVALID_REQUEST",
+            message:
+              'Configuration setting gateway.auth.password must be the environment reference {source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD"} on a Dedicated Codex Agent: its Gateway uses it to apply the workspace node.',
+          },
+        ],
+        description:
+          "An older release saved a Dedicated Codex Configuration without gateway.auth.password. Kubernetes Compute refuses it where it applies the workspace node at runtime, so the page asks Create Agent's preflight, which runs the Installation's Compute rules. Here it refuses, so the page shows that refusal and holds Deploy.",
+        steps: [
+          "In Prepare this version, the first step reads Fix the gateway password.",
+          "Deploy new version is disabled with the gateway.auth.password refusal deploy gives.",
+        ],
+        gap: "The stored setting and the preflight refusal are simulated; tests/browser/console-agent-detail-deployment.ts covers the page with the real Kubernetes Compute rules.",
+      },
       kubernetesEntryKeyVariantChecking: {
         group: "Pages/Agent detail",
         name: "Plugin entry key, Compute check in flight",
@@ -3062,6 +3085,44 @@ export function createAgentDetailScenarios({
           "For Save recovery, follow Channel binding read denied and the binding preflight workflow: Save, inspect the scrubbed refusal, Refresh, then explicitly save again.",
         ],
         gap: "Simulated permission responses through the production Console; Native IAM browser regressions cover real authorization. See unreadable-configuration-workflow.md for reload, refocus, and Save recovery instructions.",
+      },
+      configurationReadInterruptedOnRefocus: {
+        group: "Pages/Agent detail",
+        name: "Recover a Configuration read on tab return",
+        path: draft,
+        rules: [
+          {
+            method: "GET",
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+            status: 503,
+            skip: 1,
+            once: true,
+          },
+        ],
+        description: "The Console retries one temporary Configuration read failure on tab return.",
+        steps: [
+          "Open the preview in its own tab and choose Edit Configuration. Make an unsaved edit.",
+          "Switch to another browser tab and return. The draft and focus return without selecting Retry.",
+        ],
+      },
+      configurationReadUnavailableOnRefocus: {
+        group: "Pages/Agent detail",
+        name: "Retry an unavailable Configuration on tab return",
+        path: draft,
+        rules: Array.from({ length: 2 }, () => ({
+          method: "GET",
+          path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+          status: 503,
+          skip: 1,
+          once: true,
+        })),
+        description:
+          "Both Configuration reads fail. The Agent page shows a warning and hides the draft.",
+        steps: [
+          "Open the preview in its own tab and choose Edit Configuration. Make an unsaved edit.",
+          "Switch to another browser tab and return. The Agent name remains above the warning. The draft and its controls are hidden.",
+          "Select Retry. The Configuration returns with the unsaved edit.",
+        ],
       },
       unreadableAgentConfiguration: {
         group: "Pages/Agent detail",

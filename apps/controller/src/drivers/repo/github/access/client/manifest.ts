@@ -26,6 +26,27 @@ export interface RuntimeRepositoryManifest {
   readonly bindings: readonly RuntimeRepositoryBinding[];
 }
 
+export function buildOperatorRepositoryManifest(
+  directory: string,
+  configuration: ClientFiles,
+): RuntimeRepositoryManifest {
+  const resolvedDirectory = resolve(directory);
+  return {
+    generation: "",
+    bindings: [
+      {
+        repositoryRef: "operator",
+        sessionId: configuration.sessionId,
+        deadlineWallMs: configuration.deadlineWallMs,
+        directory: resolvedDirectory,
+        materialDirectory: resolvedDirectory,
+        client: configuration.client,
+        configuration,
+      },
+    ],
+  };
+}
+
 function record(value: unknown, keys: readonly string[]): Record<string, unknown> {
   if (
     value === null ||

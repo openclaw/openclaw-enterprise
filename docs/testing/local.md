@@ -60,7 +60,7 @@ transport, not a live IdP, PostgreSQL authentication, or an installed deployment
 
 ## Packaged-driver integration
 
-`tests/integration/driver-plugin-installation.test.mjs` installs precompiled
+`tests/integration/driver-plugin-installation.test.ts` installs precompiled
 Driver tarballs in an isolated dependency root and exercises production startup
 with in-memory state. It does not prove database persistence, Kubernetes, a real
 gateway, or a model turn.
