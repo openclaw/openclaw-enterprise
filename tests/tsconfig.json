@@ -65,6 +65,7 @@
     "helpers/deployed-repository-capability.ts",
     "helpers/production-upgrade-continuity-fixture.ts",
     "helpers/production-upgrade-dispatch-restore.ts",
+    "helpers/production-upgrade-retained-fleet-preflight.ts",
     "helpers/compute-credential-catalog.ts",
     "helpers/provisioning-repository-status.ts",
     "helpers/provisioning-source-status.ts",
