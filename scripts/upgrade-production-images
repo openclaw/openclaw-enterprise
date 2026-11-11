@@ -36,7 +36,8 @@ only to keep a reviewed custom configuration.
 For a controller/broker upgrade, --verify-agent with --verify-agent-namespace
 requires the same active revision and Ready workload Pods before completion.
 It needs exact Agent read/operate and active AgentRevision read permissions.
---timeout-seconds bounds each wait (default 900, at most 86400).
+--timeout-seconds bounds each wait (default 900; Agent replacement 3600; at most 86400).
+The replacement default includes up to 30 minutes for admitted work to complete.
 --doctor-heap-mib sets OpenClaw Doctor's heap cap (default 384); raise it only
 after Doctor ran out of heap. It can change on --resume.
 EOF
@@ -392,6 +393,7 @@ occ=occ
 verify_agent=
 verify_agent_namespace=
 timeout_seconds=900
+replacement_timeout_seconds=3600
 doctor_heap_mib=384
 resume=0
 preflight_only=0
@@ -428,7 +430,7 @@ while (($#)); do
         --occ) occ=$2 ;;
         --verify-agent) verify_agent=$2 ;;
         --verify-agent-namespace) verify_agent_namespace=$2 ;;
-        --timeout-seconds) timeout_seconds=$2 ;;
+        --timeout-seconds) timeout_seconds=$2; replacement_timeout_seconds=$2 ;;
         --doctor-heap-mib) doctor_heap_mib=$2 ;;
       esac
       shift 2
@@ -2373,6 +2375,9 @@ else
   : >"$deployments"
 fi
 
+# Agent replacement has its own observation budget after dispatch. Preserve the
+# shorter bounds for controller recovery, Doctor and other release phases.
+deadline=$((SECONDS + replacement_timeout_seconds))
 pending=$target_count
 while ((pending > 0)); do
   ((SECONDS < deadline)) || die "$pending Agent deployments remained incomplete at the upgrade timeout."

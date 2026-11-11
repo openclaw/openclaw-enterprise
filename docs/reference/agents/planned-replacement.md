@@ -37,3 +37,16 @@ no separate completion worker or queue is introduced. An unconfirmed handoff
 continues normal bounded stopping without claiming task completion. Expiry,
 unsupported runtimes and a changed Gateway process also continue normal stopping.
 Stop, deletion and authorization withdrawal do not wait for task completion.
+
+## Release observation window
+
+For [eligible planned image replacements](../drivers/kubernetes-compute.md#planned-image-replacement),
+the original task and result delivery may finish for up to 30 minutes before the
+Gateway and Harness stop. Independent new requests are rejected during this wait;
+V1 does not buffer them. Users can retry after the upgrade. Unsupported revisions
+and first adoption retain the previous replacement behavior.
+
+The helper defaults to a 60-minute Agent replacement observation window after
+dispatch, covering completion waiting and subsequent replacement. Other phases,
+including Doctor, retain their 15-minute default. `--timeout-seconds` overrides
+both defaults; a shorter operator window can end before a busy Agent finishes.

@@ -14,11 +14,10 @@ lack the required chart-owned initializer.
 4. [Verify the release](#verify-the-release) with a real workload.
 5. [Recover from a partial failure](#recover-from-a-partial-failure) before retrying.
 
-Use `--controller-image` for the API and worker; add `--broker-image` when repository credentials are enabled. A broker restart can
-interrupt existing Agent versions. `--runtime-image` updates the gateway and
-runtime image and redeploys every running Agent concurrently. Upgrades stop the
-API and worker during migration and rollout. Allow capacity for old
-and replacement versions to overlap.
+`--controller-image` updates API/worker; `--broker-image` updates the repository-credential
+broker and can interrupt existing Agents. `--runtime-image` updates Gateway/runtime
+and concurrently redeploys running Agents. Migration/rollout stops API/worker. Allow
+old/new capacity overlap. See [completion waiting and timeouts](../../reference/agents/planned-replacement.md#release-observation-window).
 
 Keep the checkout unchanged and exclusive; evidence/baselines stay outside the chart.
 Chart files are verified before cluster access.
