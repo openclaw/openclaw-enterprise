@@ -9,18 +9,9 @@ const NODE_PROGRAM_PIECE_BYTES = 32 * 1024;
 
 // Runs as `node -e`, which already defines require, module and Buffer as globals.
 // Removing the pieces leaves process.argv as a plain `node -e <program>` sees it.
-function nodeProgramLoader(decompressor: "inflateRawSync" | "brotliDecompressSync"): string {
-  return (
-    'require("node:vm").runInThisContext(require("node:zlib").' +
-    decompressor +
-    "(" +
-    'Buffer.from(process.argv.splice(1).join(""), "base64")).toString("utf8"), { filename: "[eval]" });'
-  );
-}
-const NODE_PROGRAM_LOADER = nodeProgramLoader("inflateRawSync");
-const BROTLI_NODE_PROGRAM_LOADER = nodeProgramLoader("brotliDecompressSync");
-
-export type NodeProgramCompression = "deflate" | "brotli";
+const NODE_PROGRAM_LOADER =
+  'require("node:vm").runInThisContext(require("node:zlib").inflateRawSync(' +
+  'Buffer.from(process.argv.splice(1).join(""), "base64")).toString("utf8"), { filename: "[eval]" });';
 
 /**
  * The program without its whole-line `//` comments, which are about a fifth of a
@@ -40,22 +31,36 @@ export function withoutLineComments(program: string): string {
  * program travels compressed in bounded pieces after a fixed loader, so no exec
  * argument outgrows a piece and a Sandbox command carries only the compressed size.
  */
-export function nodeProgramArguments(
-  program: string,
-  compression: NodeProgramCompression = "deflate",
-): string[] {
-  // Keep nested runtime programs within the Sandbox command budget.
-  const source = withoutLineComments(program);
-  const brotli = compression === "brotli";
-  const compressed = brotli
-    ? brotliCompressSync(source, { params: { [constants.BROTLI_PARAM_QUALITY]: 11 } })
-    : deflateRawSync(source, { level: 9, memLevel: 7 });
-  const encoded = compressed.toString("base64");
+export function nodeProgramArguments(program: string): string[] {
+  return [
+    NODE_PROGRAM_LOADER,
+    ...programPieces(
+      deflateRawSync(withoutLineComments(program), {
+        level: 9,
+        memLevel: 7,
+      }),
+    ),
+  ];
+}
+
+/** Pack only the static Codex child inside a workspace node supervisor. */
+export function compactNodeChildArguments(program: string): string[] {
+  const packed = brotliCompressSync(withoutLineComments(program), {
+    params: { [constants.BROTLI_PARAM_QUALITY]: 11 },
+  });
+  return [
+    NODE_PROGRAM_LOADER.replace("inflateRawSync", "brotliDecompressSync"),
+    ...programPieces(packed),
+  ];
+}
+
+function programPieces(program: Buffer): string[] {
+  const encoded = program.toString("base64");
   const pieces: string[] = [];
   for (let offset = 0; offset < encoded.length; offset += NODE_PROGRAM_PIECE_BYTES) {
     pieces.push(encoded.slice(offset, offset + NODE_PROGRAM_PIECE_BYTES));
   }
-  return [brotli ? BROTLI_NODE_PROGRAM_LOADER : NODE_PROGRAM_LOADER, ...pieces];
+  return pieces;
 }
 
 /** Re-encode a provider prelude with the canonical, already-rendered Node program. */

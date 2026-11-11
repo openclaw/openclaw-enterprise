@@ -267,25 +267,27 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       events,
       expect: forbiddenUpgradeFailure,
     })),
-    {
-      name: "OpenShell provider PAT remains unready after an unsuccessful probe process",
+    ...[
+      ["a nonzero exit", { status: 1 }],
+      ["a signal", { status: null, signal: "SIGTERM" }],
+      ["a timeout", timedOut],
+    ].map(([label, result]) => ({
+      name: "OpenShell provider PAT remains unready after " + label,
       providerPat: true,
       events: completedFallbackTurn(reconnectUpgrade(), httpsFallback),
-      result: { status: 1 },
+      result,
       expect: forbiddenUpgradeFailure,
-    },
-    {
-      name: "OpenShell provider PAT rejects a terminal HTTPS authorization failure",
+    })),
+    ...[
+      failedTurn("unexpected status 403 Forbidden: credential rejected"),
+      errorEvent("unexpected status 401 Unauthorized: credential rejected"),
+    ].map((refusal) => ({
+      name:
+        "OpenShell provider PAT rejects a terminal HTTPS authorization failure in " + refusal.type,
       providerPat: true,
-      events: [
-        threadStarted,
-        started,
-        reconnectUpgrade(),
-        httpsFallback,
-        failedTurn("unexpected status 403 Forbidden: credential rejected"),
-      ],
+      events: [threadStarted, started, reconnectUpgrade(), httpsFallback, refusal],
       expect: probeAuthenticationFailure,
-    },
+    })),
     {
       name: "OpenShell provider PAT rejects a tool event after fallback",
       providerPat: true,

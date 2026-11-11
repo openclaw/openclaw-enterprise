@@ -41,14 +41,7 @@ function render(loginMode, node, initialSetup, environment = {}) {
   );
   const revision = { agentId: owner.agentId, configuration: { agents: { defaults: {} } } };
   if (node === "setup-file") {
-    driver.addWorkspaceNode(
-      deployment,
-      nodeName,
-      undefined,
-      revision,
-      true,
-      initialSetup ? setup : undefined,
-    );
+    driver.addWorkspaceNode(deployment, nodeName, undefined, revision, true);
   }
   if (node === "native") {
     driver.addNativeWorker(deployment, nodeName, undefined);

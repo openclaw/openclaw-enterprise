@@ -33,6 +33,7 @@ import {
   gatewayRuntimeEntrypoint,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
+  compactNodeChildArguments,
   nodeProgramArguments,
   withoutLineComments,
 } from "../../apps/controller/src/drivers/compute/node-program.ts";
@@ -20613,16 +20614,16 @@ process.exitCode = 3;`;
     const direct = spawnSync(process.execPath, ["-e", program.slice(padding.length)], {
       encoding: "utf8",
     });
-    for (const compression of ["deflate", "brotli"]) {
-      const [loader, ...pieces] = nodeProgramArguments(program, compression);
-      assert.ok(pieces.length > 1, compression);
+    for (const pack of [nodeProgramArguments, compactNodeChildArguments]) {
+      const [loader, ...pieces] = pack(program);
+      assert.ok(pieces.length > 1, pack.name);
       assert.ok(
         pieces.every((piece) => Buffer.byteLength(piece) <= 32 * 1024),
-        compression,
+        pack.name,
       );
       const loaded = spawnSync(process.execPath, ["-e", loader, ...pieces], { encoding: "utf8" });
-      assert.equal(loaded.stderr, "", compression);
-      assert.deepEqual([loaded.status, loaded.stdout], [direct.status, direct.stdout], compression);
+      assert.equal(loaded.stderr, "", pack.name);
+      assert.deepEqual([loaded.status, loaded.stdout], [direct.status, direct.stdout], pack.name);
       assert.deepEqual(JSON.parse(loaded.stdout), {
         argv: [],
         file: "[eval]",

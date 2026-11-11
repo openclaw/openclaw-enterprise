@@ -121,16 +121,17 @@ The MCP rule enforces neither read-only access nor app/tool filtering. Unlisted 
 including sharing, suggestions and uninstall, remain denied. Package downloads
 use separate credential-free egress.
 
-The Harness stores an opaque `personal_access_token`. Readiness requires native
-login and model execution. Unprotected probes can complete after Codex falls
-back to HTTPS on the [PAT Responses route](../../flows/openshell-sandbox-provisioning.md#2-derive-the-provider-owned-harness-request).
+The Harness stores an opaque `personal_access_token`. New unprotected revisions
+can complete the native model probe after Codex falls back to HTTPS on the
+[PAT Responses route](../../flows/openshell-sandbox-provisioning.md#2-derive-the-provider-owned-harness-request).
+HTTPS 401 or 403 refusal leaves the Harness unready.
 
 `openai` sources authorize the default OpenAI endpoint unless `authorized_base_url`
 explicitly authorizes another endpoint. The [revision model provider](kubernetes-compute/model-provider.md)
 selects the route; attachment checks it against that authorization. The source
 supplies `api_key`. Authorization is immutable; replace the source when changing it.
-Unknown fields and malformed URLs fail registration before Secret reads. Destination
-mismatches fail deployment and attachment before credential delivery. Existing `base_url` records fail for inference
+Unknown fields and malformed URLs fail before Secret reads. Destination
+mismatches block credential delivery. Existing `base_url` records fail for inference
 but remain readable and deletable under the existing permission and reference checks.
 Gateway destinations retain the exact-DNS, HTTPS, nonzero-port, and `/v1` path rules.
 

@@ -15,6 +15,7 @@ export function providerEndpointFixture({
   }),
   providerNetwork,
   revisionOverrides,
+  servicePrincipalCredentials,
 } = {}) {
   const hooks = [];
   const provisions = [];
@@ -25,6 +26,7 @@ export function providerEndpointFixture({
   const fixture = providerReadinessFixture({
     providerNetwork,
     revisionOverrides,
+    servicePrincipalCredentials,
     // The Sandbox, and so its relay Pod's labels, exists only once provisioned.
     async workspaceNodePeerLabels({ revision: target }) {
       peerLookups.push(target.id);
@@ -185,8 +187,20 @@ export function providerEndpointFixture({
     return readRequired("Secret", name, target);
   };
   core.createNamespacedSecret = core.replaceNamespacedSecret = async ({ body }) => {
+    const { stringData, ...secret } = body;
     const value = {
-      ...body,
+      ...secret,
+      ...(stringData && {
+        data: {
+          ...secret.data,
+          ...Object.fromEntries(
+            Object.entries(stringData).map(([name, value]) => [
+              name,
+              Buffer.from(value).toString("base64"),
+            ]),
+          ),
+        },
+      }),
       metadata: { ...body.metadata, uid: `${body.metadata.name}-uid`, resourceVersion: "1" },
     };
     writes.push(structuredClone(value));

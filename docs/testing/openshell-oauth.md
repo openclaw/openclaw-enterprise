@@ -41,14 +41,6 @@ versions. Earlier `dev.8` and `dev.47` evidence remains bound to its tested pins
 neither qualifies `v0.1.8`. The release update does not establish a fix for the
 known provider-environment disconnect or a successful restart/withdrawal proof.
 
-The previous selection was `v0.1.6`, source commit
-`ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47`.
-
-Upgrade the gateway first, then upgrade the supervisor and static sandbox
-launcher together. Re-import any provider profiles that need explicit credential
-placement for custom headers, query parameters, or path slots. New 0.1.6
-sandboxes reverse the control-connection direction; mixed runtime binaries are
-unsupported. Preserve the configured gateway JWT, OIDC or mTLS authentication.
 The opt-in observed-hook repository credential preview admits 0.1.5 and 0.1.6.
 Use patched 0.1.6 with the existing dedicated workspace, held-launcher challenge
 and live policy/recipient checks. This remains startup observation, not mandatory

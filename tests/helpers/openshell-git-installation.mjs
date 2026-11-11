@@ -788,16 +788,18 @@ async function installOpenShellGit(t, witnessIssuedGit) {
   ];
   const gatewayFile = join(directory, "gateway-values.json");
   await writeFile(gatewayFile, JSON.stringify(gatewayValues), { mode: 0o600 });
-  const charts = (await readdir(join(stack.directory, "openshell/chart"))).filter((name) =>
-    /^helm-chart-0\.1\.8\.tgz$/.test(name),
+  const chartDirectory = join(stack.directory, "openshell/chart");
+  const charts = (await readdir(chartDirectory)).filter((name) =>
+    /^helm-chart-.*\.tgz$/.test(name),
   );
-  assert.equal(charts.length, 1);
+  assert.equal(charts.length, 1, "expected the Gateway chart packaged by occ dev");
+  const chart = join(chartDirectory, charts[0]);
   await command(
     "helm",
     [
       "upgrade",
       "openshell-gateway",
-      join(stack.directory, "openshell/chart", charts[0]),
+      chart,
       ...helmContext,
       "-f",
       gatewayFile,

@@ -13,6 +13,12 @@ import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 import { waitFor } from "../helpers/qa-utils.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { listen } from "../helpers/listen.mjs";
+import { COMPUTE_RELEASE_PUBLIC_KEY } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
+import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
+import { openShellEgressConfiguration } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/workspace-defaults.mjs";
+import { workspaceGatewayClient } from "../integration/sandbox-workspace-gateway-fixture.ts";
 import { createOpenAiStaticProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
 import {
   HARNESS_EGRESS_ENROLLMENT_HELPER,
@@ -21,17 +27,13 @@ import {
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
-  AGENT_WITH_NODE_ENTRYPOINT,
-  AGENT_WITH_NODE_AND_WORKSPACE_SETUP_ENTRYPOINT,
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
-  PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
   nodeProgramArguments,
   withoutLineComments,
 } from "../../apps/controller/src/drivers/compute/node-program.ts";
-import { workspaceSetupVerifier } from "../../apps/controller/src/drivers/compute/workspace-setup-runtime.ts";
 import test from "node:test";
 import {
   admitLoggingConfiguration,
@@ -42,6 +44,7 @@ import {
   InstalledDriver,
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
+import { inspectOpenShellCodexCommand } from "../fixtures/openshell-codex-command.ts";
 import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
 import { supervisorPeerLabels } from "../fixtures/kubernetes-provider-readiness.mjs";
 import {
@@ -337,15 +340,6 @@ test("provider Harness endpoint writes transport and runtime requirements", asyn
     secretKeyRef: { name: driver.workspaceSetupSecretName(revision.agentId), key: "setup.json" },
   };
   assert.deepEqual(requirements.workspaceSetup, privateSetup);
-  // The real Compute render must carry both the workspace identity check and
-  // the smaller nested child before OpenShell adds its own setup prelude.
-  assert.deepEqual(requirements.command, [
-    ...RUNTIME_WRAPPER_COMMAND,
-    ...nodeProgramArguments(
-      workspaceSetupVerifier(context.workspaceSetup, { environment: "OPENCLAW_WORKSPACE_DIR" }) +
-        AGENT_WITH_NODE_AND_WORKSPACE_SETUP_ENTRYPOINT,
-    ),
-  ]);
   assert.deepEqual(fixture.endpoints.at(-1).requirements.workspaceSetup, privateSetup);
   assert.equal(
     JSON.stringify(fixture.endpoints).includes(context.workspaceSetup.files["USER.md"]),
@@ -892,7 +886,16 @@ test("provider Harness verified endpoint trust is projected before rollout and i
 });
 
 test("provider Harness protected execution is released only on current signed installation and warmth", async (t) => {
-  const fixture = await preparedEndpoint();
+  const fixture = await preparedEndpoint(
+    providerEndpointFixture({
+      servicePrincipalCredentials: { mode: "disabled" },
+      revisionOverrides: {
+        id: "rev_2c9250cd-6aa2-4493-a73e-2422ec6c1537",
+        agentId: "agt_9bee809d-62ec-4d41-b68d-25ead74b3a4d",
+        servicePrincipalId: "spn_02aa5adc-0b5c-417d-b8d4-1a1de5157809",
+      },
+    }),
+  );
   const { revision, provisions, objects, save, core } = fixture;
   let harnessAnswer = { state: "serving" };
   // A separately admitted protected revision waits for the installation commit.
@@ -1484,7 +1487,7 @@ test("provider Harness protected execution is released only on current signed in
     },
   );
   await t.test(
-    "an admitted protected Codex launch renders its no-connection-retry command; a stored revision keeps its bytes",
+    "protected admission selects no connection retries and preserves pre-upgrade command bytes",
     async () => {
       // Pin the commands the Driver renders, not only the exported entrypoints (#3310,
       // finding 2256): the Sandbox launch carries the workspace node; activation renders
@@ -1492,11 +1495,18 @@ test("provider Harness protected execution is released only on current signed in
       const admission = driver.admitRevision(protectedRevision);
       assert.match(
         admission,
-        /^model-provider:v1:[a-f0-9]{64}:protected-codex-no-connection-retry:v1$/,
+        /^model-provider:v1:[a-f0-9]{64}:openshell-codex-launch:v1:protected-codex-no-connection-retry:v1$/,
       );
       const admitted = {
         ...protectedRevision,
         compute: { ...protectedRevision.compute, admission },
+      };
+      const alreadyAdmitted = {
+        ...admitted,
+        compute: {
+          ...admitted.compute,
+          admission: admission.replace("openshell-codex-launch:v1:", ""),
+        },
       };
       // Controller-rendered programs reach `node -e` compressed behind a fixed loader.
       const program = ([loader, ...pieces]) => {
@@ -1516,7 +1526,11 @@ test("provider Harness protected execution is released only on current signed in
       observation = installed;
       current = true;
       try {
-        for (const target of [admitted, protectedRevision]) {
+        for (const [target, disabled] of [
+          [admitted, true],
+          [alreadyAdmitted, true],
+          [protectedRevision, false],
+        ]) {
           const rendered = [];
           sandbox.enrollHarness = async ({ requirements }) => {
             rendered.push([requirements.command, true]);
@@ -1533,17 +1547,19 @@ test("provider Harness protected execution is released only on current signed in
             );
           }
           assert.equal(rendered.length, 2);
-          const disabled = target === admitted;
           for (const [command, node] of rendered) {
-            const legacy = node ? AGENT_WITH_NODE_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT;
-            const updated = node
-              ? PROTECTED_CODEX_WITH_NODE_ENTRYPOINT
-              : PROTECTED_CODEX_RUNTIME_ENTRYPOINT;
-            // A stored revision without the marker keeps its exact immutable command.
-            assert.deepEqual(command, [
-              ...RUNTIME_WRAPPER_COMMAND,
-              ...nodeProgramArguments(disabled ? updated : legacy),
-            ]);
+            // SHA-256 of the serialized argv rendered at 61c73c99 with Node 24.22.1.
+            const baseCommand = node
+              ? disabled
+                ? "6eb7fbbf1b0aa2f2214771a9e362892266510bf8e82872e06b6005227d15f65d"
+                : "6942ea770ee801ef98c53015a64532abf094af8f295821268e178c09000631bf"
+              : disabled
+                ? "ed13402558c5c2a2c0df08d2f4f46d65438b5b0e01675101fac12a78ee21fa37"
+                : "a14ebffa8503ba2ca4f78872b2784d70576b308563ecb01cbb69d34999874402";
+            assert.equal(
+              createHash("sha256").update(JSON.stringify(command)).digest("hex"),
+              baseCommand,
+            );
             const outer = program(command.slice(RUNTIME_WRAPPER_COMMAND.length));
             const child = /\n\s+name: "Codex",\n\s+args: (.+),\n/.exec(outer);
             assert.equal(child !== null, node);
@@ -1577,6 +1593,146 @@ test("provider Harness protected execution is released only on current signed in
         sandbox.enrollHarness = enrollHarness;
         sandbox.harnessEndpoint = harnessEndpoint;
       }
+    },
+  );
+  await t.test(
+    "OpenShell provisions a protected API-key revision with workspace setup",
+    async (t) => {
+      const gateway = workspaceGatewayClient();
+      let request;
+      gateway.createSandbox = async (input) => {
+        request = structuredClone(input);
+        return {
+          ...request,
+          phase: "SANDBOX_PHASE_PROVISIONING",
+          serviceUrls: { "": providerUrl.replace(/^ws:/, "http:") },
+        };
+      };
+      const backend = {
+        id: "fixture-openshell",
+        drivers: { sandbox: sandbox.id },
+        client: new OpenShellGateway(
+          { serviceName: "openshell-gateway" },
+          { gatewayClient: gateway },
+        ),
+      };
+      const egress = { middlewareName: "fixture-authority", authorityScope: "execution" };
+      const openshell = new OpenShellSandboxDriver(
+        {
+          egress,
+          gateway: { workspaceMode: "operator" },
+          kubernetes: {
+            runtimeClassName: "openshell-sandbox",
+            serviceAccount: { mode: "gatewayConfigured" },
+            sandboxDataMount: {
+              subPath: "workspace",
+              mountPath: providerWorkspaceRoot,
+              readOnly: false,
+            },
+          },
+          policy: {
+            process: { runAsUser: "1000", runAsGroup: "1000" },
+            networkPolicies: [
+              {
+                name: "model",
+                endpoints: [{ host: "api.openai.com", ports: [443] }],
+                binaries: [{ path: "/usr/bin/model-client" }],
+              },
+            ],
+          },
+        },
+        { id: sandbox.id, implementation: "openshell", backend },
+      );
+      const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+      const { KubernetesObjectApi } = require("@kubernetes/client-node");
+      fixture.clients.objects = Object.assign(
+        Object.create(KubernetesObjectApi.prototype),
+        fixture.clients.objects,
+      );
+
+      // A real protected inference route selects API-key auth. The OAuth account
+      // bootstrap belongs to the ordinary OpenShell case.
+      const id = "rev_7b620136-6184-4fe4-a0e4-12d4e9a41b55";
+      const execution = {
+        ...plan.execution,
+        revisionId: id,
+        executionId: "7e373ed8-fc1d-4fd7-a19f-f83b146f1dc5",
+      };
+      const target = {
+        ...protectedRevision,
+        id,
+        revision: protectedRevision.revision + 1,
+        configuration: openshell.configureAgent(
+          protectedRevision.configuration,
+          protectedRevision.harness,
+        ),
+        compute: { ...protectedRevision.compute },
+        egressPlan: {
+          ...plan,
+          id: "80df91f7-e8e1-43da-b1db-579ad56598be",
+          execution,
+          routes: plan.routes.map((route) => ({
+            ...route,
+            binding: { ...route.binding, execution },
+          })),
+        },
+      };
+      target.compute.admission = driver.admitRevision(target);
+      const workspaceSetup = {
+        id: "workspace-setup-1f8d6823-aa87-4cba-ae3e-62352e892d12",
+        namespaceId: target.namespaceId,
+        agentId: target.agentId,
+        defaultsId: WORKSPACE_DEFAULTS_ID,
+        completed: false,
+        files: { "USER.md": "Private protected setup" },
+      };
+      seedNode(target);
+      const name = driver.workspaceNodeName(target);
+      const node = fixture.read("Secret", name);
+      node.data.setupCode = Buffer.from(
+        Buffer.from(
+          JSON.stringify({
+            url:
+              "wss://agents.example.internal/namespaces/" +
+              target.namespaceId +
+              "/agents/" +
+              target.agentId +
+              "/node",
+            bootstrapToken: "one-shot-node-setup",
+            expiresAtMs: Date.now() + 600_000,
+            tlsFingerprint: "ab".repeat(32),
+          }),
+        ).toString("base64url"),
+      ).toString("base64");
+      save(node);
+
+      proxy.configureRevision = async ({ plan, revision }) => ({
+        plan,
+        configuration: openShellEgressConfiguration(plan, egress, revision),
+      });
+      sandbox.validateWorkspaceSetup = openshell.validateWorkspaceSetup.bind(openshell);
+      sandbox.harnessHome = openshell.harnessHome;
+      const provisioned = new Error("captured protected CreateSandbox");
+      sandbox.provisionHarness = async (input) => {
+        await openshell.provisionHarness(input);
+        throw provisioned;
+      };
+      await assert.rejects(
+        driver.prepareRevision(target, { ...protectedContext, workspaceSetup }),
+        (error) => error === provisioned,
+      );
+      assert.ok(request);
+      const { command, environment } = request.spec;
+      assert.equal(environment.CODEX_LOGIN_MODE, "api_key");
+      assert.equal(environment.OCE_CODEX_CREDENTIAL_SOURCE, undefined);
+      assert.ok(environment[COMPUTE_RELEASE_PUBLIC_KEY]);
+      const { loader, supervisor, codex } = inspectOpenShellCodexCommand(t, command, {
+        compact: true,
+      });
+      assert.match(loader, /\.oce-workspace-setup\.json/);
+      assert.match(supervisor, new RegExp(workspaceSetup.id));
+      assert.equal(codex.match(/unbounded_connection_retries/g)?.length, 2);
+      assert.doesNotMatch(codex, /unsupported_l7_protocol/);
     },
   );
 });

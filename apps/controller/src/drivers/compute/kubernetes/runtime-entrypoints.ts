@@ -15,7 +15,7 @@ import { CODEX_PLUGIN_STDIO_HELPER } from "./codex-plugin-stdio.ts";
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
 import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
-import { nodeProgramArguments, type NodeProgramCompression } from "../node-program.ts";
+import { compactNodeChildArguments, nodeProgramArguments } from "../node-program.ts";
 import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
 import {
   DELIBERATE_RESTART_EXIT_STATUS,
@@ -4002,6 +4002,78 @@ function codexReadinessFailure(url, token) {
 }
 `;
 
+// Included only in the newly admitted, provider-managed PAT program. All
+// transcript-specific state lives here; the normal probe still owns tool,
+// process and retry failure handling.
+const OPENSHELL_PAT_RECOVERY = String.raw`
+    const patRecovery = (function openShellPatRecovery() {
+      if (!providerManagedPat || protectedStartup || pluginRuntime?.manifest.providerTools === "none" ||
+          pluginRuntime?.manifest.modelEndpoint !== undefined) return;
+      // The released supervisor emits this exact object in either key order.
+      const error = "unsupported_l7_protocol";
+      const detail = "HTTP upgrade is not supported for REST endpoints; use a separate protocol: websocket endpoint with explicit message rules";
+      const denials = [{ error, detail }, { detail, error }].map(
+        (body) => "unexpected status 403 Forbidden: " + JSON.stringify(body) + ", url: wss://chatgpt.com/backend-api/codex/responses");
+      const fallback = "Falling back from WebSockets to HTTPS transport. ";
+      let phase = "initial";
+      let denial;
+      let invalid = false;
+
+      return {
+        observe(event, failure) {
+          invalid ||= (phase === "initial" && event.type !== "thread.started") || phase === "complete";
+          switch (event.type) {
+            case "thread.started":
+              invalid ||= phase !== "initial";
+              phase = "thread";
+              break;
+            case "turn.started":
+              invalid ||= phase !== "thread";
+              phase = "turn";
+              break;
+            case "error": {
+              const message = event.message;
+              const retry = typeof message === "string" &&
+                /^Reconnecting\.\.\. ([1-9][0-9]?)\/([1-9][0-9]?) \(/.exec(message);
+              if (retry && Number(retry[1]) <= Number(retry[2]) &&
+                  Number(retry[2]) <= MAX_RECOVERED_STREAM_RETRIES &&
+                  denials.some((cause) => message === retry[0] + cause + ")")) {
+                invalid ||= phase !== "turn" && phase !== "upgrade";
+                phase = "upgrade";
+                denial = failure;
+                return "upgrade-retry";
+              }
+              if ((phase === "https" || phase === "answer") &&
+                  typeof message === "string" && !message.startsWith("Reconnecting...") &&
+                  codexAuthenticationRejected(message)) return "authentication-rejected";
+              invalid = true;
+              break;
+            }
+            case "item.completed":
+              if (event.item?.type === "error" &&
+                  denials.some((cause) => event.item.message === fallback + cause)) {
+                invalid ||= phase !== "upgrade";
+                phase = "https";
+              } else if (phase === "https" && event.item?.type === "agent_message" &&
+                  typeof event.item.text === "string" && event.item.text.trim()) {
+                phase = "answer";
+              }
+              break;
+            case "turn.completed":
+              invalid ||= phase !== "answer";
+              phase = "complete";
+              break;
+          }
+        },
+        unrecoveredDenial(result) {
+          if (invalid || phase !== "complete" || result.status !== 0 || result.error || result.signal) {
+            return denial;
+          }
+        },
+      };
+    })();
+`;
+
 // Nested Codex children use their own plugin lifecycle. Keep standalone commands
 // stable while omitting the unused native installer from the bounded supervisor.
 // Zero provider retry budgets do not disable native connection waiting. Protected
@@ -4010,10 +4082,8 @@ function agentRuntimeEntrypoint(
   disableUnboundedConnectionRetries: boolean,
   computeOwned = false,
   includeOpenClawInstaller = true,
+  patRecovery = false,
 ): string {
-  // Protected and Compute-owned launches never use this fallback. Omit it from
-  // those generated commands, including the bounded workspace supervisor.
-  const includeOpenShellPatFallback = !computeOwned && !disableUnboundedConnectionRetries;
   return String.raw`
 const { createHash } = require("node:crypto");
 const { mkdirSync, mkdtempSync, rmSync } = require("node:fs");
@@ -4310,31 +4380,6 @@ function isRecoveredNativeStreamError(event) {
   if (attempt > limit || limit > MAX_RECOVERED_STREAM_RETRIES) return false;
   return !/auth|unauthori[sz]ed|forbidden|credential|api.?key|\b40[13]\b/i.test(event.message);
 }
-${
-  includeOpenShellPatFallback
-    ? String.raw`// OpenShell's REST profile rejects the native Responses WebSocket upgrade before
-// forwarding it. Accept both the insertion order used by the stock supervisor
-// and the same exact object with its keys sorted.
-const OPENSHELL_PAT_UPGRADE_DETAIL = "HTTP upgrade is not supported for REST endpoints; use a separate protocol: websocket endpoint with explicit message rules";
-const OPENSHELL_PAT_UPGRADE_ERROR = "unsupported_l7_protocol";
-const OPENSHELL_PAT_UPGRADE_DENIALS = [
-  { error: OPENSHELL_PAT_UPGRADE_ERROR, detail: OPENSHELL_PAT_UPGRADE_DETAIL },
-  { detail: OPENSHELL_PAT_UPGRADE_DETAIL, error: OPENSHELL_PAT_UPGRADE_ERROR },
-].map((body) => "unexpected status 403 Forbidden: " + JSON.stringify(body) + ", url: wss://chatgpt.com/backend-api/codex/responses");
-const OPENSHELL_PAT_HTTPS_FALLBACK = "Falling back from WebSockets to HTTPS transport. ";
-function isOpenShellPatUpgradeRetry(message) {
-  if (typeof message !== "string") return false;
-  const match = /^Reconnecting\.\.\. ([1-9][0-9]?)\/([1-9][0-9]?) \(/.exec(message);
-  return match !== null && Number(match[1]) <= Number(match[2]) &&
-    Number(match[2]) <= MAX_RECOVERED_STREAM_RETRIES &&
-    OPENSHELL_PAT_UPGRADE_DENIALS.some((denial) => message.slice(match[0].length) === denial + ")");
-}
-`
-    : ""
-}function isNonemptyProbeAnswer(event) {
-  return event.type === "item.completed" && event.item?.type === "agent_message" &&
-    typeof event.item.text === "string" && event.item.text.trim().length > 0;
-}
 // Codex reports a provider 429, a rate limit or an exhausted usage quota (such as
 // "You've hit your usage limit" or "exceeded retry limit, last status: 429 Too Many
 // Requests") as a fatal error event or failed turn; the probe names it rate_limit.
@@ -4481,26 +4526,24 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
     let turnStarted = false;
     let turnCompleted = false;
     let recoveredStreamErrors = 0;
-${
-  includeOpenShellPatFallback
-    ? String.raw`    const allowOpenShellPatFallback = providerManagedPat && !protectedStartup && pluginRuntime?.manifest.providerTools !== "none" &&
-      pluginRuntime?.manifest.modelEndpoint === undefined;
-    let openShellPatUpgradeFailure;
-    let lastUpgradeDenialIndex = -1;
-`
-    : ""
-}    // A transient failure is only a retry candidate: a later deterministic failure in
+    // A transient failure is only a retry candidate: a later deterministic failure in
     // the same attempt (a tool event, a rate limit) still holds at once. A transient
     // message is never a recovered stream notice, so no recovered stream error lands here.
     // Codex reconnects after a network wait on its own, so a network wait inside the turn
     // of an attempt that exits 0 with an answer counts as recovered, like a stream notice.
     let transientFailure;
     let unrecoveredTransientFailure = false;
-    for (const ${includeOpenShellPatFallback ? "[index, event] of events.entries()" : "event of events"}) {
+${patRecovery ? OPENSHELL_PAT_RECOVERY : ""}    for (const event of events) {
       if (event.type === "turn.started") turnStarted = true;
       const failure = event.type === "error" ? codexProbeStatusFailure(event.message, "error-event", modelId)
         : event.type === "turn.failed" ? codexProbeStatusFailure(event.error?.message, "turn-failed", modelId) : undefined;
-      // A protected profile (provider tools none) retries nothing, so its transient
+${
+  patRecovery
+    ? `      const recovery = patRecovery?.observe(event, failure);
+      if (recovery === "authentication-rejected") return finish("AUTHENTICATION_FAILED");
+`
+    : ""
+}      // A protected profile (provider tools none) retries nothing, so its transient
       // failure is held like any other error event (finding 1599).
       if (failure?.transient === true && pluginRuntime?.manifest.providerTools !== "none") {
         transientFailure ??= failure;
@@ -4508,18 +4551,8 @@ ${
         continue;
       }
       if (event.type === "error") {
-        if (pluginRuntime?.manifest.providerTools === "none" || !turnStarted || turnCompleted ||
+        if (pluginRuntime?.manifest.providerTools === "none" || !turnStarted || turnCompleted || ${patRecovery ? '(recovery !== "upgrade-retry" && !isRecoveredNativeStreamError(event))' : "!isRecoveredNativeStreamError(event)"} ||
           ++recoveredStreamErrors > MAX_RECOVERED_STREAM_RETRIES) return finish(failure);
-${
-  includeOpenShellPatFallback
-    ? String.raw`        if (allowOpenShellPatFallback && isOpenShellPatUpgradeRetry(event.message)) {
-          openShellPatUpgradeFailure = failure;
-          lastUpgradeDenialIndex = index;
-          continue;
-        }
-`
-    : ""
-}        if (!isRecoveredNativeStreamError(event)) return finish(failure);
         continue;
       }
       if (event.type === "turn.failed") return finish(failure);
@@ -4532,19 +4565,12 @@ ${
     const answered = events.filter((event) => event.type === "turn.completed").length === 1 &&
       events.filter((event) => event.type === "turn.started").length === 1 &&
       events.at(-1)?.type === "turn.completed" &&
-      events.some(isNonemptyProbeAnswer);
+      events.some((event) => event.type === "item.completed" && event.item?.type === "agent_message" &&
+        typeof event.item.text === "string" && event.item.text.trim().length > 0);
 ${
-  includeOpenShellPatFallback
-    ? String.raw`    if (openShellPatUpgradeFailure !== undefined) {
-      const fallbackIndex = events.findIndex((event) => event.type === "item.completed" &&
-        event.item?.type === "error" &&
-        OPENSHELL_PAT_UPGRADE_DENIALS.some((denial) => event.item.message === OPENSHELL_PAT_HTTPS_FALLBACK + denial));
-      if (!answered || events[0]?.type !== "thread.started" ||
-        events.slice(1).some((event) => event.type === "thread.started") ||
-        fallbackIndex <= lastUpgradeDenialIndex || !events.slice(fallbackIndex + 1).some(isNonemptyProbeAnswer) ||
-        events.some((event) => event.type === "error" && !isOpenShellPatUpgradeRetry(event.message)) ||
-        result.status !== 0 || result.error || result.signal) return finish(openShellPatUpgradeFailure);
-    }
+  patRecovery
+    ? `    const denial = patRecovery?.unrecoveredDenial(result);
+    if (denial !== undefined) return finish(denial);
 `
     : ""
 }    if (transientFailure !== undefined &&
@@ -4842,10 +4868,7 @@ function completeSetupCode(payload) {
 // deadline governs a setup that never arrives. SandboxDriver Harnesses still
 // receive OPENCLAW_NODE_SETUP_CODE in the environment.
 
-function agentWithNodeEntrypoint(
-  entrypoint: string,
-  childCompression: NodeProgramCompression = "deflate",
-): string {
+function agentWithNodeEntrypoint(childArguments: readonly string[]): string {
   return String.raw`
 const { chmodSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, rmSync } = require("node:fs");
 const { join } = require("node:path");
@@ -5160,7 +5183,7 @@ const processes = [
   { name: "workspace node", args: nodeArguments, env: nodeEnv },
   {
     name: "Codex",
-    args: ${JSON.stringify(["-e", ...nodeProgramArguments(entrypoint, childCompression)])},
+    args: ${JSON.stringify(["-e", ...childArguments])},
     env: codexEnv,
     prepare: prepareHookDirectory,
   },
@@ -5295,28 +5318,64 @@ for (const slot of [...processes].reverse()) start(slot);
 
 const providerCodexChild = agentRuntimeEntrypoint(false, false, false);
 const protectedProviderCodexChild = agentRuntimeEntrypoint(true, false, false);
-export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(providerCodexChild);
+export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
+  nodeProgramArguments(providerCodexChild),
+);
 export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  protectedProviderCodexChild,
-);
-
-// Encode these static children once for Sandboxes that also carry the workspace
-// verification program. Other Sandbox commands retain their existing encoding.
-export const AGENT_WITH_NODE_AND_WORKSPACE_SETUP_ENTRYPOINT = agentWithNodeEntrypoint(
-  providerCodexChild,
-  "brotli",
-);
-export const PROTECTED_CODEX_WITH_NODE_AND_WORKSPACE_SETUP_ENTRYPOINT = agentWithNodeEntrypoint(
-  protectedProviderCodexChild,
-  "brotli",
+  nodeProgramArguments(protectedProviderCodexChild),
 );
 
 export const COMPUTE_AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  agentRuntimeEntrypoint(false, true, false),
+  nodeProgramArguments(agentRuntimeEntrypoint(false, true, false)),
 );
 export const COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  agentRuntimeEntrypoint(true, true, false),
+  nodeProgramArguments(agentRuntimeEntrypoint(true, true, false)),
 );
+
+const patEntrypoint = agentRuntimeEntrypoint(false, false, true, true);
+const patChild = agentRuntimeEntrypoint(false, false, false, true);
+const providerLaunches = {
+  ordinary: [
+    AGENT_RUNTIME_ENTRYPOINT,
+    AGENT_WITH_NODE_ENTRYPOINT,
+    agentWithNodeEntrypoint(compactNodeChildArguments(providerCodexChild)),
+  ],
+  protected: [
+    PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+    PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+    agentWithNodeEntrypoint(compactNodeChildArguments(protectedProviderCodexChild)),
+  ],
+  pat: [patEntrypoint, agentWithNodeEntrypoint(compactNodeChildArguments(patChild))],
+} as const;
+
+export interface CodexLaunch {
+  readonly providerOwned: boolean;
+  readonly protected: boolean;
+  readonly openShellProgram?: "pat" | "ordinary";
+}
+
+export function codexLaunchEntrypoint(
+  launch: CodexLaunch | undefined,
+  withNode: boolean,
+  workspaceSetup: boolean,
+): string {
+  if (!launch?.providerOwned) {
+    if (launch?.protected) {
+      return withNode
+        ? COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT
+        : COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT;
+    }
+    return withNode ? COMPUTE_AGENT_WITH_NODE_ENTRYPOINT : COMPUTE_AGENT_RUNTIME_ENTRYPOINT;
+  }
+  if (!launch.protected && launch.openShellProgram === "pat") {
+    return providerLaunches.pat[withNode ? 1 : 0];
+  }
+  const programs = launch.protected ? providerLaunches.protected : providerLaunches.ordinary;
+  if (!withNode) {
+    return programs[0];
+  }
+  return workspaceSetup && launch.openShellProgram !== undefined ? programs[2] : programs[1];
+}
 
 export const NATIVE_WORKER_ENTRYPOINT = String.raw`
 const { join } = require("node:path");

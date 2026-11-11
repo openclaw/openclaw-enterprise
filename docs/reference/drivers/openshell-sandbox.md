@@ -241,7 +241,7 @@ permits cluster-wide Sandbox and Pod mutations. The
 [0.1.8 Workspace Role](https://github.com/NVIDIA/OpenShell/blob/f3d976590d3eb1379690a2abaf0f0e26c21d487d/deploy/helm/openshell-workspace/templates/role.yaml#L39-L57)
 adds Pod create/delete/list/patch/watch and Service/NetworkPolicy create/get.
 The 0.1.6 operator ClusterRole already granted these verbs cluster-wide.
-Disabling sandbox updates (the OCE default), namespace labels and NetworkPolicies
+Disabling sandbox updates, namespace labels and NetworkPolicies
 do not limit Kubernetes permissions. OCE requires operator mode.
 
 OCE controller/worker grants remain separate: Compute access, namespace-scoped
