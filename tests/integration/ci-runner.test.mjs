@@ -733,7 +733,7 @@ test(
   { timeout: 30_000 },
   async (t) => {
     const root = await fixture(t);
-    const file = "tests/integration/progress.test.mjs";
+    const file = "tests/integration/progress.test.ts";
     const resultsPath = join(root, "results/progress.json");
     await writeSingleLaneManifest(root, "progress", [{ path: file }], {});
     await writeFile(
@@ -777,6 +777,7 @@ test("live progress " + "x".repeat(1024 * 1024), async (context) => {
   await released;
   emitOpenShellProgress("installation", "passed");
   context.diagnostic('openclaw-ci-measurement ' + JSON.stringify({ ...stage, outcome: "passed", elapsedMs: 123 }));
+  context.diagnostic('openclaw-ci-measurement ' + JSON.stringify({ kind: "openshell-git-retention", event: "mixed-grant-setup", phase: "deployment", operation: "agent-admission" }));
 });
 test("failed stage", async () => {
   emitOpenShellProgress("initial-model", "started");
@@ -850,6 +851,12 @@ test("failed stage", async () => {
     assert.equal(summary.counts.failed, 1);
     assert.deepEqual(summary.files[0].measurements, [
       { kind: "openshell-stage", stage: "installation", outcome: "passed", elapsedMs: 123 },
+      {
+        kind: "openshell-git-retention",
+        event: "mixed-grant-setup",
+        phase: "deployment",
+        operation: "agent-admission",
+      },
     ]);
     const diagnostics = await readFile(join(root, "state/progress.jsonl.diagnostics.json"), "utf8");
     const tail = JSON.parse(diagnostics).failures[0].output;
@@ -860,6 +867,80 @@ test("failed stage", async () => {
     ]);
     assert.equal(tail.omittedLines, 400);
     for (const output of [stdout, stderr, artifact, diagnostics]) {
+      assert.doesNotMatch(output, /private-\w+-canary/);
+    }
+    // A separate child makes interruption proof independent of completed-test buffering.
+    await writeFile(
+      join(root, file),
+      `
+import test from "node:test";
+import { emitOpenShellSetupProgress, openShellProgressPrefix } from ${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/openshell-progress.mjs")).href)};
+test("blocked setup", async (context) => {
+  const setup = { kind: "openshell-mixed-grant-setup", phase: "installation", operation: "gateway-connect" };
+  for (const invalid of [
+    { ...setup, phase: "private-phase-canary" },
+    { ...setup, operation: "private-operation-canary" },
+    { ...setup, detail: "private-setup-canary" },
+    { ...setup, elapsedMs: 1 },
+    { ...setup, kind: "private-kind-canary" },
+  ]) process.stdout.write(openShellProgressPrefix + JSON.stringify(invalid) + "\\n");
+  context.diagnostic('openclaw-ci-measurement ' + JSON.stringify({ kind: "openshell-git-retention", event: "mixed-grant-setup", phase: setup.phase, operation: setup.operation }));
+  emitOpenShellSetupProgress(setup.phase, setup.operation);
+  // The runner's deadline terminates only this disposable blocked test process.
+  await new Promise(() => setInterval(() => {}, 1000));
+});
+`,
+    );
+    const interrupted = spawn(
+      process.execPath,
+      [runnerPath, ...laneArgs(root, "progress", "state/interrupted.jsonl", resultsPath)],
+      {
+        cwd: repositoryRoot,
+        env: runnerEnv({ CI_RUNNER_TEST_TIMEOUT_MS: "3000" }),
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let publicOutput = "";
+    const interruptedLines = createInterface({ input: interrupted.stderr });
+    const interruptionClosed = new Promise((resolve, reject) =>
+      interrupted.once("error", reject).once("close", resolve),
+    );
+    t.after(() => {
+      interruptedLines.close();
+      if (interrupted.exitCode === null) {
+        interrupted.kill("SIGTERM");
+      }
+    });
+    const setupProgress = [];
+    const setupLive = new Promise((resolve) => {
+      interruptedLines.on("line", (line) => {
+        if (line.startsWith(label)) {
+          setupProgress.push(line.slice(label.length));
+        }
+        if (line === `${label}openshell-mixed-grant-setup installation gateway-connect`) {
+          resolve(true);
+        }
+      });
+      interrupted.once("close", () => resolve(false));
+    });
+    for (const stream of [interrupted.stdout, interrupted.stderr]) {
+      stream.on("data", (chunk) => {
+        publicOutput += chunk;
+      });
+    }
+    assert.ok(await setupLive, "pre-action marker must arrive while the fixture is blocked");
+    assert.equal(interrupted.exitCode, null);
+    assert.equal(await interruptionClosed, 1);
+    assert.deepEqual(setupProgress, ["openshell-mixed-grant-setup installation gateway-connect"]);
+    const interruptedArtifact = await readFile(resultsPath, "utf8");
+    const interruptedSummary = JSON.parse(interruptedArtifact);
+    assert.ok(interruptedSummary.issues.some((issue) => issue.code === "test-timeout"));
+    assert.equal(interruptedSummary.files[0].measurements, undefined);
+    const interruptedDiagnostics = await readFile(
+      join(root, "state/interrupted.jsonl.diagnostics.json"),
+      "utf8",
+    );
+    for (const output of [publicOutput, interruptedArtifact, interruptedDiagnostics]) {
       assert.doesNotMatch(output, /private-\w+-canary/);
     }
   },

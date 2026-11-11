@@ -19,9 +19,58 @@ const openShellStages = new Set([
   "native-policy",
 ]);
 
+// Setup markers report entry, not successful completion. The retained receipt
+// uses this same closed vocabulary.
+const openShellSetupOperations = new Set([
+  "input-validation",
+  "supplier-selection",
+  "local-stack",
+  "state-readback",
+  "api-bootstrap",
+  "namespace-selection",
+  "workspace-selection",
+  "origin-network",
+  "origin-start",
+  "origin-routing",
+  "authority-configuration",
+  "controller-configuration",
+  "supervisor-trust",
+  "gateway-configuration",
+  "model-source-registration",
+  "gateway-connect",
+  "agent-admission",
+  "committed-admission",
+  "provider-registration",
+]);
+
+export function openShellSetupProgress(value) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 3 ||
+    value.kind !== "openshell-mixed-grant-setup" ||
+    !["installation", "deployment"].includes(value.phase) ||
+    !openShellSetupOperations.has(value.operation)
+  ) {
+    return undefined;
+  }
+  return { kind: value.kind, phase: value.phase, operation: value.operation };
+}
+
+export function emitOpenShellSetupProgress(phase, operation) {
+  const value = openShellSetupProgress({ kind: "openshell-mixed-grant-setup", phase, operation });
+  if (value) {
+    process.stdout.write(`\n${openShellProgressPrefix}${JSON.stringify(value)}\n`);
+  }
+}
+
 // A live log carries only fixed categories. Reject extra fields rather than
 // accidentally turning this channel into an arbitrary diagnostic transport.
 export function openShellProgress(value) {
+  if (value?.kind === "openshell-mixed-grant-setup") {
+    return openShellSetupProgress(value);
+  }
   if (
     !value ||
     typeof value !== "object" ||

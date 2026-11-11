@@ -144,7 +144,11 @@ OpenShell lifecycle tests print live stage progress with their lane and file:
 operation settles. Later stages identify model, policy and credential checks.
 A lone `started` message identifies the operation still running or interrupted;
 it does not establish failure or completion. Progress contains fixed categories
-only. Final timing receipts and test results remain the completion evidence.
+only. Mixed-grant setup also reports the last started operation, for example
+`openshell-mixed-grant-setup installation gateway-connect`, before the fixture
+finishes. These markers use the retained setup receipt's closed phase and operation
+vocabulary; invalid markers and markers with extra fields are discarded.
+Final timing receipts and test results remain the completion evidence.
 
 First-Agent stage measurements appear in `files[].measurements`: Local Setup,
 initial deployment and model calls, reuse after changing only the request nonce, native deployment, native

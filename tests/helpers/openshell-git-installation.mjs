@@ -15,6 +15,7 @@ import {
   projectOpenShellGitRetention,
   selectOpenShellGitWithdrawalDenials,
 } from "../../scripts/ci/openshell-git-retention.mjs";
+import { emitOpenShellSetupProgress } from "../../scripts/ci/openshell-progress.mjs";
 import { run } from "../fixtures/repository-credentials/process.mjs";
 import { startSkipperPrivateGitOrigin } from "../fixtures/skipper-private-git-origin.mjs";
 import { availablePort } from "./available-port.mjs";
@@ -454,6 +455,7 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
   const setupCheckpoint = (operation, phase = "installation") => {
     if (mixedGrant) {
       measurement("mixed-grant-setup", { phase, operation });
+      emitOpenShellSetupProgress(phase, operation);
     }
   };
   // Emit before the guards: failed setup still reaches the normal CI reporter.

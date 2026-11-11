@@ -6,6 +6,8 @@ import {
   WORKSPACE_SETUP_REFUSED,
 } from "../../packages/contracts/src/runtime-failure.mjs";
 
+import { openShellSetupProgress } from "./openshell-progress.mjs";
+
 export const openShellGitRetentionKind = "openshell-git-retention";
 
 const record = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -352,34 +354,6 @@ const policyDenial = {
   endedAt: ["endedAt", count],
 };
 const events = {
-  // Setup points mark entry into an operation, not successful completion.
-  "mixed-grant-setup": {
-    phase: ["phase", choice("installation", "deployment")],
-    operation: [
-      "operation",
-      choice(
-        "input-validation",
-        "supplier-selection",
-        "local-stack",
-        "state-readback",
-        "api-bootstrap",
-        "namespace-selection",
-        "workspace-selection",
-        "origin-network",
-        "origin-start",
-        "origin-routing",
-        "authority-configuration",
-        "controller-configuration",
-        "supervisor-trust",
-        "gateway-configuration",
-        "model-source-registration",
-        "gateway-connect",
-        "agent-admission",
-        "committed-admission",
-        "provider-registration",
-      ),
-    ],
-  },
   "mixed-grant-failure": {
     phase: [
       "phase",
@@ -629,6 +603,25 @@ for (const stage of ["after-expiry", "after-worker-restart"]) {
 
 /** Closed receipt projection; unknown fields, command output and credentials never pass through. */
 export function projectOpenShellGitRetention(value) {
+  if (
+    record(value) &&
+    value.kind === openShellGitRetentionKind &&
+    value.event === "mixed-grant-setup"
+  ) {
+    const selected = openShellSetupProgress({
+      kind: "openshell-mixed-grant-setup",
+      phase: value.phase,
+      operation: value.operation,
+    });
+    return selected
+      ? {
+          kind: value.kind,
+          event: value.event,
+          phase: selected.phase,
+          operation: selected.operation,
+        }
+      : undefined;
+  }
   if (
     !record(value) ||
     value.kind !== openShellGitRetentionKind ||
