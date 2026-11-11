@@ -127,6 +127,20 @@ empty issue lists and each file's exercised status, exit code, and signal for
 coverage validation. Focused or incomplete results carry no full-coverage proof.
 Raw test output and diagnostics remain private. Failed native operations report a known operation label and, when available, a bounded exit code or allowlisted signal/error code. These log fields do not prove that the installed journey passed.
 
+If the installed proof fails and the job can continue, look for
+`attempt-<attempt>-full-failure-skipper-prepared-git-installed`, retained for seven
+days. Its single JSON file records the run, attempt, source SHA, failed outcome,
+last recorded stage and installed cleanup status. A missed checkpoint write can
+leave an earlier stage visible. Missing or unrecognized
+checkpoints become `unknown`; they do not establish successful cleanup.
+
+Cleanup `passed` covers registered teardown callbacks, verified cluster and
+network removal, released installation ports and model-directory removal. It
+excludes the private work directory and the outer Git fixture's teardown. This
+failure receipt is separate from success aggregation and cannot qualify images.
+Cancellation, runner loss or job timeout can prevent its publication. A passing
+proof does not exercise this failure upload.
+
 Checkout image-build failures identify each failed role (controller or runtime), exit code, known error code or signal, killed flag, elapsed time and configured budget. Process fields come only from Docker command failures; journal and pre-dispatch failures leave them `unknown`. Accessor-backed fields also stay `unknown`. A signal or elapsed time alone does not prove a timeout. The [build helper](../../../tests/helpers/dev-up-model-provider.mjs) preserves original errors for local inspection but excludes their command arguments and output from CI summaries.
 
 The `openshell` dispatch runs two OpenShell lanes on separate VMs. Each runs
