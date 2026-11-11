@@ -89,16 +89,20 @@ test("Codex runtime gates startup and readiness on a successful native authentic
   const threadStarted = { type: "thread.started", thread_id: "fixture-thread" };
   const completedFallbackTurn = (...events) => [threadStarted, ...completedTurn(...events)];
   const deniedUpgrade =
+    'unexpected status 403 Forbidden: {"error":"unsupported_l7_protocol","detail":"HTTP upgrade is not supported for REST endpoints; use a separate protocol: websocket endpoint with explicit message rules"}, url: wss://chatgpt.com/backend-api/codex/responses';
+  const detailFirstDenial =
     'unexpected status 403 Forbidden: {"detail":"HTTP upgrade is not supported for REST endpoints; use a separate protocol: websocket endpoint with explicit message rules","error":"unsupported_l7_protocol"}, url: wss://chatgpt.com/backend-api/codex/responses';
   const reconnectUpgrade = (cause = deniedUpgrade, attempts = "2/5") =>
     errorEvent("Reconnecting... " + attempts + " (" + cause + ")");
-  const httpsFallback = {
+  const fallbackAdvisory = (cause) => ({
     type: "item.completed",
     item: {
       id: "item_0",
-      ...errorEvent("Falling back from WebSockets to HTTPS transport. " + deniedUpgrade),
+      ...errorEvent("Falling back from WebSockets to HTTPS transport. " + cause),
     },
-  };
+  });
+  const httpsFallback = fallbackAdvisory(deniedUpgrade);
+  const denialWithExtraField = deniedUpgrade.replace('{"error"', '{"policy":"denied","error"');
   const forbiddenUpgradeFailure = probeFailure(
     { kind: "PROBE_STATUS", detail: "error-event" },
     { status: 403 },
@@ -151,13 +155,22 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       expect: ready,
     },
     {
-      name: "OpenShell provider PAT is ready after native fallback to HTTPS answers the probe",
+      name: "OpenShell provider PAT accepts the released error-first denial after HTTPS answers",
       providerPat: true,
       events: completedFallbackTurn(
         ...["2/5", "3/5", "4/5", "5/5"].map((attempts) =>
           reconnectUpgrade(deniedUpgrade, attempts),
         ),
         httpsFallback,
+      ),
+      expect: ready,
+    },
+    {
+      name: "OpenShell provider PAT also accepts the equivalent detail-first denial",
+      providerPat: true,
+      events: completedFallbackTurn(
+        reconnectUpgrade(detailFirstDenial),
+        fallbackAdvisory(detailFirstDenial),
       ),
       expect: ready,
     },
@@ -187,6 +200,7 @@ test("Codex runtime gates startup and readiness on a successful native authentic
         ),
       ],
       ["wrong protocol code", deniedUpgrade.replace("unsupported_l7_protocol", "policy_denied")],
+      ["an unexpected body field", denialWithExtraField],
     ].map(([label, cause]) => ({
       name: "OpenShell provider PAT refuses a reconnect with " + label,
       providerPat: true,
@@ -214,6 +228,10 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       ],
       ["no fallback advisory", completedFallbackTurn(reconnectUpgrade())],
       ["a different fallback advisory", completedFallbackTurn(reconnectUpgrade(), advisory)],
+      [
+        "an unexpected field in the fallback advisory",
+        completedFallbackTurn(reconnectUpgrade(), fallbackAdvisory(denialWithExtraField)),
+      ],
       [
         "a second thread",
         completedFallbackTurn(

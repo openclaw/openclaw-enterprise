@@ -4308,15 +4308,21 @@ function isRecoveredNativeStreamError(event) {
   return !/auth|unauthori[sz]ed|forbidden|credential|api.?key|\b40[13]\b/i.test(event.message);
 }
 // OpenShell's REST profile rejects the native Responses WebSocket upgrade before
-// forwarding it. Recognize only the pinned Codex notice for that exact denial.
-const OPENSHELL_PAT_UPGRADE_DENIAL = 'unexpected status 403 Forbidden: {"detail":"HTTP upgrade is not supported for REST endpoints; use a separate protocol: websocket endpoint with explicit message rules","error":"unsupported_l7_protocol"}, url: wss://chatgpt.com/backend-api/codex/responses';
-const OPENSHELL_PAT_HTTPS_FALLBACK = "Falling back from WebSockets to HTTPS transport. " + OPENSHELL_PAT_UPGRADE_DENIAL;
+// forwarding it. Accept both the insertion order used by the stock supervisor
+// and the same exact object with its keys sorted.
+const OPENSHELL_PAT_UPGRADE_DETAIL = "HTTP upgrade is not supported for REST endpoints; use a separate protocol: websocket endpoint with explicit message rules";
+const OPENSHELL_PAT_UPGRADE_ERROR = "unsupported_l7_protocol";
+const OPENSHELL_PAT_UPGRADE_DENIALS = [
+  { error: OPENSHELL_PAT_UPGRADE_ERROR, detail: OPENSHELL_PAT_UPGRADE_DETAIL },
+  { detail: OPENSHELL_PAT_UPGRADE_DETAIL, error: OPENSHELL_PAT_UPGRADE_ERROR },
+].map((body) => "unexpected status 403 Forbidden: " + JSON.stringify(body) + ", url: wss://chatgpt.com/backend-api/codex/responses");
+const OPENSHELL_PAT_HTTPS_FALLBACK = "Falling back from WebSockets to HTTPS transport. ";
 function isOpenShellPatUpgradeRetry(message) {
   if (typeof message !== "string") return false;
   const match = /^Reconnecting\.\.\. ([1-9][0-9]?)\/([1-9][0-9]?) \(/.exec(message);
   return match !== null && Number(match[1]) <= Number(match[2]) &&
     Number(match[2]) <= MAX_RECOVERED_STREAM_RETRIES &&
-    message.slice(match[0].length) === OPENSHELL_PAT_UPGRADE_DENIAL + ")";
+    OPENSHELL_PAT_UPGRADE_DENIALS.some((denial) => message.slice(match[0].length) === denial + ")");
 }
 function isNonemptyProbeAnswer(event) {
   return event.type === "item.completed" && event.item?.type === "agent_message" &&
@@ -4515,7 +4521,8 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
       events.some(isNonemptyProbeAnswer);
     if (openShellPatUpgradeFailure !== undefined) {
       const fallbackIndex = events.findIndex((event) => event.type === "item.completed" &&
-        event.item?.type === "error" && event.item.message === OPENSHELL_PAT_HTTPS_FALLBACK);
+        event.item?.type === "error" &&
+        OPENSHELL_PAT_UPGRADE_DENIALS.some((denial) => event.item.message === OPENSHELL_PAT_HTTPS_FALLBACK + denial));
       if (!answered || events[0]?.type !== "thread.started" ||
         events.slice(1).some((event) => event.type === "thread.started") ||
         fallbackIndex <= lastUpgradeDenialIndex || !events.slice(fallbackIndex + 1).some(isNonemptyProbeAnswer) ||
