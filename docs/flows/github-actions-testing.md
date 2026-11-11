@@ -229,8 +229,9 @@ Fixture bootstrap diagnostics upload separately as `diagnostics-<artifact-prefix
 They survive cluster/private-state cleanup but cannot satisfy required test results.
 
 Per-file cleanup releases databases; job cleanup removes owned resources,
-including Collector objects and logging data. Errors fail
-except [QA image warnings](github-actions-testing/preparation.md).
+including Collector objects and logging data.
+Sign-in transitions and proof readers reject already-expired issuance observations.
+Cleanup errors fail except [QA image warnings](github-actions-testing/preparation.md).
 `cleanup-staged-signin.mjs` passes the prepared state digest and custody to
 `scripts/ci/cleanup.ts:cleanupState`: locked validation precedes exact server/network
 deletion and volume checks. [Named-volume limits](../testing/local.md#staged-sign-in-cleanup)

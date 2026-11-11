@@ -162,7 +162,8 @@
         "upgrade availability preserves action and evidence-write failures",
         "timed-out fixture commands reject success and terminate their subprocesses without exposing output",
         "interrupted rehearsal runners stop concurrent command groups before exiting",
-        "interrupted commands close local pipes without killing a separate-session holder"
+        "interrupted commands close local pipes without killing a separate-session holder",
+        "fixture command reports independently signalled child as unsettled"
       ]
     },
     {
