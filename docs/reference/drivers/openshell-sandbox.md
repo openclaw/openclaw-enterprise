@@ -70,12 +70,11 @@ creation are deferred; `exec` runs inside the selected Harness sandbox.
 
 ## Configuration
 
-Select `drivers.sandbox` in Installation YAML with bundled Kubernetes Compute;
-installed Compute Drivers fail startup. Its [`openshell` Backend](../backends.md#openshell-gateway)
-must match this ID and the [Credential Gateway](openshell-credential-gateway.md#configure-the-driver).
-Backend `rootCertificatePath` supplies public CA trust for the Agent Gateway's WSS
-endpoint. Sandbox `gateway` rejects connection fields: `endpoint`, `scheme`,
-`serviceName`, `port`, `auth`, `requestTimeoutMs`, and `rootCertificatePath`.
+Select `drivers.sandbox` with bundled Kubernetes Compute. The
+[`openshell` Backend](../backends.md#openshell-gateway) must match the Sandbox
+and [Credential Gateway](openshell-credential-gateway.md#configure-the-driver)
+IDs. Configure Gateway connection fields and the WSS CA
+(`rootCertificatePath`) on the Backend.
 
 ```yaml
 drivers:
@@ -123,22 +122,25 @@ runtime baseline: `/bin`, `/usr`, `/lib`, `/proc`, `/dev/urandom`, `/etc`,
 approved mounts, and `/sandbox/.openclaw-runtime` are writable. An explicit `filesystem` block replaces the baseline; the Driver still adds
 required mounts, runtime root, and `/tmp`.
 
-Startup refuses an unknown key in `kubernetes`, `kubernetes.serviceAccount`,
-`kubernetes.sandboxDataMount`, `kubernetes.agentResources`, `policy`,
-`policy.process` and `gateway.readiness`, so a misspelled key never falls back
-to its default. Each `kubernetes.agentResources.requests` and `limits` value is
-a quoted, non-negative Kubernetes quantity (`cpu: "500m"`), and a request may
-not exceed its limit. The Driver always sets the Agent container's
-`ephemeral-storage` to a `256Mi` request and `1Gi` limit, replacing configured
-values.
+Startup rejects unknown Kubernetes, policy, and Gateway readiness keys. Set
+`kubernetes.agentResources` using quoted, non-negative Kubernetes quantities.
+The Driver submits `256Mi` and `1Gi` for ephemeral-storage request and limit.
+Provider template resource keys take precedence. Verify CPU, memory, and
+ephemeral storage on the rendered Agent container.
 
-The Driver requires `policy.process.runAsUser` and `runAsGroup`, but the pinned
-OpenShell ignores them: every Sandbox process runs as the workload identity,
-default `10001:10001`.
+`kubernetes.agentResourceOverrides` binds exact `namespaceId` and `agentId`
+pairs. Set `cpu` or `memory` in `requests` and `limits`. Omitted keys inherit
+`agentResources`. Optional `runtimeClassName` applies to the Agent Pod and
+native OpenClaw's workspace preparation Pod. Startup rejects malformed IDs,
+duplicates, and requests above limits. Before replacement, check scheduling and
+the provider ServiceAccount's `get` access to that RuntimeClass. Redeploy after
+changes. Adoption checks the exact Sandbox spec.
 
-Do not add a policy for the model endpoint: the credential source's provider
-profile allows `api.openai.com` with TLS inspection, and an uninspected rule for
-that host conflicts.
+Set `policy.process.runAsUser` and `runAsGroup`. The pinned OpenShell runs
+Sandbox processes as the workload identity, normally `10001:10001`.
+
+The credential provider already configures TLS inspection for `api.openai.com`.
+An uninspected rule for that host conflicts.
 
 v0.1.6 requires unique network policy names and nonempty executable
 paths. `workspace-node-enrollment` is reserved. Options include `enforcement: enforce|audit`
@@ -305,11 +307,11 @@ their process-owned state root to `0700`, clearing inherited setgid bits. Shared
 workspace directories keep their permissions. OpenClaw prepares its private
 children, including a `control` directory retained after a failed setup.
 
-The supervisor probes the image's `/tmp`; native OpenClaw uses its runtime-home
-`tmp` child without changing supervisor directory permissions. Codex's container has
-a `1Gi` ephemeral-storage limit. Native provisioning privatizes writable PVC
-subpaths, keeping retained entries, in a restricted per-revision Deployment;
-ownership/mode checks, foreground deletion and writer termination
+The supervisor probes the image's `/tmp`. Native OpenClaw uses its runtime-home
+`tmp` child without changing supervisor directory permissions. Native
+provisioning privatizes writable PVC subpaths in a restricted per-revision
+Deployment and preserves retained entries.
+Ownership and mode checks, foreground deletion, and writer termination
 precede Sandbox creation. It needs `kubernetes.userNamespaces: false`,
 at most one `gateway.operatorWorkspaceResources` ServiceAccount and the pinned
 Gateway's default identity, without UID/GID overrides; Agent save refuses
