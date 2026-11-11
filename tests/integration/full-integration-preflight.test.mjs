@@ -701,6 +701,8 @@ test("same-SHA reuse waits at most twelve minutes and falls back without delayin
       "utf8",
     ),
   );
+  // The model job reads the artifact output directly; its producer must be a dependency.
+  assert.ok(workflow.jobs["docker-model"].needs.includes("runtime-artifact"));
   for (const lane of ["docker-model", "k3d-model", "gateway-routing", "slack", "openshell"]) {
     assert.equal([workflow.jobs[lane].needs].flat().includes("ci-reuse"), false, lane);
   }
