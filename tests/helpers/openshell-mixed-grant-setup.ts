@@ -288,7 +288,11 @@ export async function registerMixedGrantProviders({
               ].includes(gitProvider.name),
             );
             assert.notEqual(modelProvider.id, gitProvider.id);
-            selected = { modelProvider, gitProvider } as SelectedProviders;
+            // Attach fixture observations to owned copies of immutable Gateway responses.
+            selected = {
+              modelProvider: { ...modelProvider, id: modelProvider.id },
+              gitProvider: { ...gitProvider, id: gitProvider.id },
+            };
             break;
           }
         }
