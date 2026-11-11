@@ -13052,7 +13052,10 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
   // supplementary Gateway read reject first; the Gateway diagnostics failure
   // still determines the safe transport category.
   let collectionDeadline = new AbortController();
-  const timeout = context.mock.method(AbortSignal, "timeout", () => collectionDeadline.signal);
+  const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+  const timeout = context.mock.method(AbortSignal, "timeout", realTimeout);
+  // Only the collection owns this signal. Each Kubernetes request keeps its own deadline.
+  timeout.mock.mockImplementationOnce(() => collectionDeadline.signal);
   const pendingProxyReads = new Map();
   const gatewayDiagnostics = "gateway:openclaw/runtime/diagnostics";
   privateProxyRead = (role, path) =>
@@ -13077,6 +13080,7 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
     privateProxyRead = undefined;
     collectionDeadline = new AbortController();
     namespaceDiscoveryDeadline = collectionDeadline;
+    timeout.mock.mockImplementationOnce(() => collectionDeadline.signal);
     const previousProxyReads = proxyReads.length;
     await assert.rejects(driver.diagnoseAgentDeployment(binding), {
       name: "DependencyUnavailableError",
