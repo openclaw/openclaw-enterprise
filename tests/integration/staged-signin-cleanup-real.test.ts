@@ -157,8 +157,7 @@ async function fixture(
   let extraVolumes: string[] = [];
   let assertionsPassed = false;
   let requiresReconciliation = false;
-  let cleanupAuthority: Owned | undefined;
-  let cleanupStateHash: string | undefined;
+  let cleanupAuthority: { identity: Owned; stateSha256: string } | undefined;
   // Register ownership before creation. This cleanup is independent of the CLI
   // assertions, so it cannot turn a refused or partial deletion into a pass.
   registerCleanup(async () => {
@@ -200,19 +199,20 @@ async function fixture(
         throw error;
       });
       if (state) {
-        assert.ok(
-          cleanupAuthority && cleanupStateHash,
-          "no acknowledged cluster cleanup authority",
+        assert.ok(cleanupAuthority.identity, "no acknowledged cluster cleanup authority");
+        assert.equal(
+          hash(state),
+          cleanupAuthority.stateSha256,
+          "fixture state changed before final cleanup",
         );
-        assert.equal(hash(state), cleanupStateHash, "fixture state changed before final cleanup");
         const current = await capture(
-          cleanupAuthority.cluster,
+          cleanupAuthority.identity.cluster,
           join(work, "final-kubeconfig"),
           cleanupRun,
         );
         assert.deepEqual(
           current.owned,
-          cleanupAuthority,
+          cleanupAuthority.identity,
           "fixture cluster changed before final cleanup",
         );
         await execute(
@@ -223,11 +223,11 @@ async function fixture(
             'import {cleanupState} from "./scripts/ci/cleanup.mjs"; await cleanupState(process.argv[1], JSON.parse(process.argv[2]));',
             statePath,
             JSON.stringify({
-              expectedStateSha256: cleanupStateHash,
+              expectedStateSha256: cleanupAuthority.stateSha256,
               k3dIdentity: {
-                cluster: cleanupAuthority.cluster,
-                serverID: cleanupAuthority.serverID,
-                ...cleanupAuthority.membership,
+                cluster: cleanupAuthority.identity.cluster,
+                serverID: cleanupAuthority.identity.serverID,
+                ...cleanupAuthority.identity.membership,
               },
             }),
           ],
@@ -288,8 +288,7 @@ async function fixture(
   const current = await capture(resource.name, join(work, "original-kubeconfig"), command);
   captures.push(current.owned);
   assert.ok(current.owned.membership.volumes.every((v) => !beforeVolumes.has(v.name)));
-  cleanupAuthority = current.owned;
-  cleanupStateHash = hash(await readFile(statePath));
+  cleanupAuthority = { identity: current.owned, stateSha256: hash(await readFile(statePath)) };
   requiresReconciliation = false;
   const image = {
     reference: "fixture.invalid/controller@sha256:" + "1".repeat(64),
@@ -367,7 +366,8 @@ async function fixture(
         "replacement mounted a pre-existing volume",
       );
       captures.push(owned);
-      cleanupAuthority = owned;
+      assert.ok(cleanupAuthority);
+      cleanupAuthority.identity = owned;
       requiresReconciliation = false;
     },
     setExtraContainer(id: string, volumes?: string[]) {

@@ -651,10 +651,24 @@ async function deleteBoundK3dCluster(
     [identity.serverID],
     "bound k3d server identity changed",
   );
-  assert.deepEqual(
-    await lines("network", "ls", "-q", "--no-trunc", "--filter", label),
-    [identity.networkID],
-    "bound k3d network identity changed",
+  const networkName = `k3d-${identity.cluster}`;
+  const attachments: unknown = JSON.parse(
+    await text(
+      "container",
+      "inspect",
+      "--format",
+      "{{json .NetworkSettings.Networks}}",
+      identity.serverID,
+    ),
+  );
+  assert.ok(isRecord(attachments));
+  assert.deepEqual(Object.keys(attachments), [networkName]);
+  const attachment = attachments[networkName];
+  assert.ok(isRecord(attachment));
+  assert.equal(attachment.NetworkID, identity.networkID, "bound k3d network identity changed");
+  assert.equal(
+    (await text("network", "inspect", "--format", "{{.Name}}", identity.networkID)).trim(),
+    networkName,
   );
   const network: unknown = JSON.parse(
     await text("network", "inspect", "--format", "{{json .Containers}}", identity.networkID),
@@ -709,9 +723,8 @@ async function deleteBoundK3dCluster(
     [],
     "k3d server remains or was replaced during cleanup",
   );
-  assert.deepEqual(
-    await lines("network", "ls", "-q", "--no-trunc", "--filter", label),
-    [],
+  assert.ok(
+    !(await lines("network", "ls", "--format", "{{.Name}}")).includes(networkName),
     "k3d network remains or was replaced during cleanup",
   );
   const volumes = await lines("volume", "ls", "-q");

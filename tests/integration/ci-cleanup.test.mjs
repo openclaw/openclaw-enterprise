@@ -1616,13 +1616,27 @@ for (const scenario of ["owned", "replaced-network", "shared-volume", "late-volu
         };
       }
       if (kind === "network" && action === "ls") {
-        const networkID = scenario === "replaced-network" ? "4".repeat(64) : identity.networkID;
-        return { stdout: networkPresent ? networkID : "" };
+        // Real k3d networks have no k3d.cluster label; names are used only
+        // for the final absence observation, never as deletion authority.
+        return { stdout: networkPresent && !args.includes("--filter") ? `k3d-${name}` : "" };
       }
       if (kind === "network" && action === "inspect") {
-        return { stdout: JSON.stringify({ [identity.serverID]: {} }) };
+        return {
+          stdout: args.includes("{{.Name}}")
+            ? `k3d-${name}`
+            : JSON.stringify({ [identity.serverID]: {} }),
+        };
       }
       if (kind === "container" && action === "inspect") {
+        if (args.includes("{{json .NetworkSettings.Networks}}")) {
+          return {
+            stdout: JSON.stringify({
+              [`k3d-${name}`]: {
+                NetworkID: scenario === "replaced-network" ? "4".repeat(64) : identity.networkID,
+              },
+            }),
+          };
+        }
         return { stdout: identity.volumes[0].name };
       }
       if (kind === "volume" && action === "inspect") {

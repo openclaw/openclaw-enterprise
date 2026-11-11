@@ -578,11 +578,19 @@ export async function bindLocalRehearsalCluster(
         server.id,
       ]);
       const networkName = "k3d-" + cluster;
-      const networkIDs = lines(
-        await docker("network", "ls", "-q", "--no-trunc", "--filter", clusterLabel),
+      // k3d labels its server, but its network has only app=k3d. Bind the
+      // network through the already verified server's sole attachment.
+      const networks = JSON.parse(
+        await docker(
+          "container",
+          "inspect",
+          "--format",
+          "{{json .NetworkSettings.Networks}}",
+          server.id,
+        ),
       );
-      assert.equal(networkIDs.length, 1);
-      const [networkID] = networkIDs;
+      assert.deepEqual(Object.keys(networks), [networkName]);
+      const networkID = networks[networkName].NetworkID;
       assert.ok(networkID && containerIDPattern.test(networkID));
       assert.equal(
         (await docker("network", "inspect", "--format", "{{.Name}}", networkID)).trim(),
@@ -600,17 +608,6 @@ export async function bindLocalRehearsalCluster(
         ),
         [server.id],
       );
-      const networks = JSON.parse(
-        await docker(
-          "container",
-          "inspect",
-          "--format",
-          "{{json .NetworkSettings.Networks}}",
-          server.id,
-        ),
-      );
-      assert.deepEqual(Object.keys(networks), [networkName]);
-      assert.equal(networks[networkName].NetworkID, networkID);
       const named = networkName + "-images";
       const volumes = lines(
         await docker(

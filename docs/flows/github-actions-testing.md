@@ -203,9 +203,7 @@ Required cases must pass; every skip or TODO fails the lane. There are no counte
 
 `.github/actions/run-ci-lane/action.yml` uploads one sanitized result artifact
 per lane and run. A retry replaces that lane's artifact, preventing aggregation
-of a stale result; other lanes retain theirs. Each attempt also uploads the same
-file as `attempt-<run attempt>-<artifact-prefix>-<lane>`, which no aggregate
-pattern matches, so a failed attempt's cases survive a `--failed` rerun.
+of a stale result; other lanes retain theirs. Each attempt also uploads `attempt-<run attempt>-<artifact-prefix>-<lane>`, outside aggregate patterns, preserving failed cases after a `--failed` rerun.
 
 `scripts/ci/memory-sampler.sh` samples memory pressure, RSS, process IDs,
 containers and disk every 15 seconds, excluding arguments and environment.
