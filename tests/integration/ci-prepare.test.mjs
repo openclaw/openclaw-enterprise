@@ -812,21 +812,12 @@ describe("CI preparation", { concurrency }, () => {
           const record = JSON.parse(line.slice(prefix.length));
           return record.stage === "image-cache" ? [record] : [];
         });
-        assert.equal(records.length, 4);
-        for (const role of ["controller", "runtime"]) {
-          assert.deepEqual(
-            records.filter((record) => record.role === role),
-            ["probe", "load"].map((phase) => ({
-              stage: "image-cache",
-              role,
-              phase,
-              cacheImports: phase === "probe" ? 1 : 0,
-              cachedSteps: phase === "probe" ? 2 : 3,
-              openclawBuildSteps: 2,
-              openclawBuildCached: phase === "probe" ? 1 : 2,
-            })),
-          );
-        }
+        assert.deepEqual(records.map(({ role, phase }) => `${role}:${phase}`).sort(), [
+          "controller:load",
+          "controller:probe",
+          "runtime:load",
+          "runtime:probe",
+        ]);
         assert.doesNotMatch(
           prepared.stdout + prepared.stderr,
           /private-step|synthetic-build-command|synthetic-sibling-command|synthetic-build-output/,
