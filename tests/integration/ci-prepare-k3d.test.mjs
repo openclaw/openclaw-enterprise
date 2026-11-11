@@ -279,7 +279,6 @@ for (const scenario of [
       cleanupFailure ? /Runtime provenance cleanup failed/ : /limited to reviewed Codex versions/,
     );
     const state = await commands.readState();
-    const record = state.runtimeProvenance?.OCC_TEST_KUBERNETES_GATEWAY_IMAGE;
     const expected = {
       imageId,
       manifestDigest: `sha256:${"c".repeat(64)}`,
@@ -292,12 +291,13 @@ for (const scenario of [
           }
         : {}),
     };
-    assert.deepEqual(record, expected);
+    const expectedRoles = {
+      OCC_TEST_KUBERNETES_GATEWAY_IMAGE: expected,
+      ...(cleanupFailure ? {} : { OCC_TEST_KUBERNETES_AGENT_IMAGE: expected }),
+    };
+    assert.deepEqual(state.runtimeProvenance, expectedRoles);
     const diagnostics = await readFile(`${commands.statePath}.diagnostics.json`, "utf8");
-    assert.deepEqual(
-      JSON.parse(diagnostics).runtimeProvenance.OCC_TEST_KUBERNETES_GATEWAY_IMAGE,
-      expected,
-    );
+    assert.deepEqual(JSON.parse(diagnostics).runtimeProvenance, expectedRoles);
     assert.ok(!diagnostics.includes(canary));
     assert.ok(!prepared.stderr.includes(canary));
     assert.equal(
