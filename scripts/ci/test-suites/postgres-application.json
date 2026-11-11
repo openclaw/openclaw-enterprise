@@ -77,6 +77,8 @@
         "worker refuses repository credentials when nativeRepositorySender is present with the wrong id",
         "worker refuses repository credentials when nativeRepositorySender is present with the wrong implementation",
         "worker refuses repository credentials when nativeRepositorySender is absent",
+        "worker startup binds built-in repository provisioning without public registration",
+        "built-in Worker settles legacy admission through the original repository sender",
         "live repository cleanup uses the persisted owner with revision identity only"
       ]
     },

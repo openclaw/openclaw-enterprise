@@ -56,6 +56,7 @@ type AgentDetailScenario = {
   scrollToTabs?: false;
   readOnlyPermissionSummary?: true;
   revisionHistory?: number;
+  unrecordedHarnessRevision?: number;
   earlierFailedVersion?: number;
   earlierVersionError?: AgentDeploymentStatusWire["error"];
   revisionPageSize?: number;
@@ -324,6 +325,35 @@ export function createAgentDetailScenarios({
           "Find Open draft once, in the page header. The version picker names the draft as New version, Editable Configuration.",
         ],
         gap: "Simulated UI proof only; this preview does not run a deployment.",
+      },
+      retainedHarnessHistory: {
+        group: "Pages/Agent detail",
+        name: "Retained Harness history",
+        path: revision,
+        deployed: true,
+        revisionHistory: 2,
+        revisionPageSize: 1,
+        unrecordedHarnessRevision: 1,
+        description:
+          "A retained version predates recorded Harness settings. Its metadata remains browsable beside a readable current version.",
+        steps: [
+          "Load older versions, then select v1. Confirm the saved-settings warning appears without invented settings. Return to v2 and confirm its Configuration remains readable.",
+        ],
+        gap: "Simulated API responses matching the PostgreSQL history regression; no persistence or deployment proof.",
+      },
+      retainedHarnessWithoutOverrides: {
+        group: "Pages/Agent detail",
+        name: "Retained Harness without overrides",
+        path: revision,
+        deployed: true,
+        unrecordedHarnessRevision: 1,
+        description:
+          "The last admitted version has no recorded Harness overrides. The draft must not offer to retain settings that are absent.",
+        steps: [
+          "Open draft, then Harness destination. Confirm Use Installation default is selected and Override model provider is the only other choice; no Retain option is offered.",
+          "Choose Override model provider, then return to Use Installation default without deploying. The destination summary follows the selected choice.",
+        ],
+        gap: "Simulated UI proof only; the draft is readable independently of the retained snapshot. No deployment is submitted.",
       },
       newVersion: {
         group: "Pages/Agent detail",
@@ -941,6 +971,29 @@ export function createAgentDetailScenarios({
           "Deploy new version is disabled with the allowUsers refusal deploy gives.",
         ],
         gap: "The stored setting and the preflight refusal are simulated; tests/browser/console-agent-detail.test.mjs covers the page with the real Kubernetes Compute rules.",
+      },
+      codexGatewayPasswordMissingRefused: {
+        group: "Pages/Agent detail",
+        name: "Dedicated Codex without the gateway password",
+        path: draft,
+        deployed: true,
+        rules: [
+          {
+            suffix: "/agents/validate",
+            method: "POST",
+            status: 400,
+            code: "INVALID_REQUEST",
+            message:
+              'Configuration setting gateway.auth.password must be the environment reference {source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD"} on a Dedicated Codex Agent: its Gateway uses it to apply the workspace node.',
+          },
+        ],
+        description:
+          "An older release saved a Dedicated Codex Configuration without gateway.auth.password. Kubernetes Compute refuses it where it applies the workspace node at runtime, so the page asks Create Agent's preflight, which runs the Installation's Compute rules. Here it refuses, so the page shows that refusal and holds Deploy.",
+        steps: [
+          "In Prepare this version, the first step reads Fix the gateway password.",
+          "Deploy new version is disabled with the gateway.auth.password refusal deploy gives.",
+        ],
+        gap: "The stored setting and the preflight refusal are simulated; tests/browser/console-agent-detail-deployment.ts covers the page with the real Kubernetes Compute rules.",
       },
       kubernetesEntryKeyVariantChecking: {
         group: "Pages/Agent detail",
@@ -2197,6 +2250,46 @@ export function createAgentDetailScenarios({
         ],
         gap: "The failure is simulated; this story does not verify a live deployment.",
       },
+      deploymentFailedCodexPolicy: {
+        group: "Pages/Agent detail",
+        name: "New version failed, incompatible Codex policy",
+        path: candidateVersion,
+        deployed: true,
+        candidateDeploymentStatus: "failed",
+        candidateFailure: {
+          code: "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+          message:
+            "This Codex runtime’s managed permission policy does not allow the sandbox mode, named profile or human reviewer required by OpenShell. Ask the policy owner to verify compatibility, then deploy a new version.",
+        },
+        description:
+          "v7 failed because Codex's managed policy refuses the required sandbox mode, profile or reviewer. Recovery names the policy owner’s action before redeployment.",
+        steps: [
+          "At 1440 and 390 wide, read the failure code and policy-owner remedy without horizontal scrolling.",
+          "The recovery block offers Open v7 Logs, with no Deploy again shortcut or generic advice appended to the policy remedy.",
+          "Open v7 Logs and confirm v7 remains selected as the Logs tab opens. No deployment is submitted.",
+        ],
+        gap: "Policy, deployment and logs are simulated. This preview proves presentation and navigation, not native policy enforcement.",
+      },
+      deploymentFailedCodexRequirementsSize: {
+        group: "Pages/Agent detail",
+        name: "New version failed, oversized Codex requirements",
+        path: candidateVersion,
+        deployed: true,
+        candidateDeploymentStatus: "failed",
+        candidateFailure: {
+          code: "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE",
+          message:
+            "The Codex runtime’s managed requirements reply exceeds OCE’s 1 MiB limit. Ask the policy owner to reduce the requirements document, then deploy a new version.",
+        },
+        description:
+          "v7 failed because Codex's requirements reply exceeds OCE's supported size. Recovery names the policy owner’s action before redeployment.",
+        steps: [
+          "At 1440 and 390 wide, read the failure code and policy-owner remedy without horizontal scrolling.",
+          "The recovery block offers Open v7 Logs, with no Deploy again shortcut or generic advice appended to the policy remedy.",
+          "Open v7 Logs and confirm v7 remains selected as the Logs tab opens. No deployment is submitted.",
+        ],
+        gap: "Policy, deployment and logs are simulated. This preview proves presentation and navigation, not native policy enforcement.",
+      },
       deploymentFailedStoredInconsistent: {
         group: "Pages/Agent detail",
         name: "New version failed, stored records inconsistent",
@@ -2993,6 +3086,44 @@ export function createAgentDetailScenarios({
         ],
         gap: "Simulated permission responses through the production Console; Native IAM browser regressions cover real authorization. See unreadable-configuration-workflow.md for reload, refocus, and Save recovery instructions.",
       },
+      configurationReadInterruptedOnRefocus: {
+        group: "Pages/Agent detail",
+        name: "Recover a Configuration read on tab return",
+        path: draft,
+        rules: [
+          {
+            method: "GET",
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+            status: 503,
+            skip: 1,
+            once: true,
+          },
+        ],
+        description: "The Console retries one temporary Configuration read failure on tab return.",
+        steps: [
+          "Open the preview in its own tab and choose Edit Configuration. Make an unsaved edit.",
+          "Switch to another browser tab and return. The draft and focus return without selecting Retry.",
+        ],
+      },
+      configurationReadUnavailableOnRefocus: {
+        group: "Pages/Agent detail",
+        name: "Retry an unavailable Configuration on tab return",
+        path: draft,
+        rules: Array.from({ length: 2 }, () => ({
+          method: "GET",
+          path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+          status: 503,
+          skip: 1,
+          once: true,
+        })),
+        description:
+          "Both Configuration reads fail. The Agent page shows a warning and hides the draft.",
+        steps: [
+          "Open the preview in its own tab and choose Edit Configuration. Make an unsaved edit.",
+          "Switch to another browser tab and return. The Agent name remains above the warning. The draft and its controls are hidden.",
+          "Select Retry. The Configuration returns with the unsaved edit.",
+        ],
+      },
       unreadableAgentConfiguration: {
         group: "Pages/Agent detail",
         name: "Unreadable Agent draft",
@@ -3109,6 +3240,33 @@ export function createAgentDetailScenarios({
           "Read the note beside Deploy new version: it names Demo model API key (simulated) and asks an Installation administrator to grant Secret operate.",
         ],
         gap: "The Secret answer is simulated; the API still authorizes the deployment and every Secret it binds.",
+      },
+      deploySecretOperateGrantedOnRefocus: {
+        group: "Pages/Agent detail",
+        name: "Deployment regains Secret operate on refocus",
+        path: draft,
+        rules: [
+          {
+            method: "POST",
+            suffix: "/deploy",
+            status: 403,
+            code: "FORBIDDEN",
+            message: "The exact platform operation was not authorized.",
+            once: true,
+          },
+          {
+            suffix: "/agents/agt_00000000-0000-4000-8000-000000000001/permissions/secrets",
+            // The first read allows Deploy. The read after the refusal sees the changed access.
+            skip: 1,
+            once: true,
+            data: { operateDenied: ["sec_demo_model"], unreadableOperateDenied: 0 },
+          },
+        ],
+        description: "A Deploy request is refused. The next refocus reads a simulated grant.",
+        steps: [
+          "Open the preview in its own tab and select Deploy new version. Read the Secret operate alert beside the unavailable action.",
+          "Switch to another tab and return. Deploy new version is enabled and the refusal clears on the same draft.",
+        ],
       },
       deployInProgress: {
         group: "Pages/Agent detail",

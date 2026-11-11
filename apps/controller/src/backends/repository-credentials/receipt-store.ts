@@ -3,9 +3,10 @@ import type {
   RepositorySessionAttempt,
   PlatformStateStore,
 } from "@openclaw-enterprise/occ";
-import type {
-  RepositoryCredentialBoundSessionInput,
-  SessionStatus,
+import {
+  hasUnsettledCleanupCounts,
+  type RepositoryCredentialBoundSessionInput,
+  type SessionStatus,
 } from "../../drivers/repo/access/service-contracts.ts";
 import { sameBinding } from "../../drivers/repo/access/grant-identity.ts";
 
@@ -22,11 +23,11 @@ export class RepositoryReceiptStore {
     this.owner = owner;
   }
 
-  private matches(
+  private acceptsInput(
     attempt: Readonly<RepositorySessionAttempt>,
     input: RepositoryCredentialBoundSessionInput,
   ): boolean {
-    const { binding, driver } = attempt.cleanupContext;
+    const { binding } = attempt.cleanupContext;
     return (
       attempt.brokerProtocol === (input.preparedOnly === true ? 3 : 1) &&
       attempt.namespaceId === input.namespaceId &&
@@ -34,16 +35,13 @@ export class RepositoryReceiptStore {
       attempt.durationSeconds === input.durationSeconds &&
       attempt.deadlineWallMs === input.deadlineWallMs &&
       binding.profile === input.profile &&
-      binding.backendId === this.owner.backendId &&
-      driver.id === this.owner.driverId &&
-      driver.implementation === this.owner.implementation &&
+      this.ownsCurrentAttempt(attempt) &&
       sameBinding(binding.grant, input.expectedBinding)
     );
   }
 
-  private eligible(attempt: Readonly<RepositorySessionAttempt>): boolean {
+  private ownsCurrentAttempt(attempt: Readonly<RepositorySessionAttempt>): boolean {
     return (
-      [1, 3].includes(attempt.brokerProtocol) &&
       attempt.phase !== "invalidated" &&
       attempt.cleanupContext.binding.backendId === this.owner.backendId &&
       attempt.cleanupContext.driver.id === this.owner.driverId &&
@@ -56,7 +54,8 @@ export class RepositoryReceiptStore {
     receipt: Readonly<RepositoryBrokerReceipt>,
   ): SessionStatus {
     if (
-      !this.eligible(attempt) ||
+      ![1, 3].includes(attempt.brokerProtocol) ||
+      !this.ownsCurrentAttempt(attempt) ||
       receipt.state !== "disposed" ||
       receipt.sessionId === undefined ||
       receipt.deadlineWallMs === undefined ||
@@ -91,7 +90,7 @@ export class RepositoryReceiptStore {
   ) {
     return this.state.transact(async (unit) => {
       const attempt = await unit.repositorySessions.lockAttempt(admissionId);
-      if (!attempt || !this.matches(attempt, input) || attempt.phase === "invalidated") {
+      if (!attempt || !this.acceptsInput(attempt, input)) {
         throw new Error("RECEIPT_UNAVAILABLE");
       }
       const current = await unit.repositorySessions.findBrokerReceipt(admissionId);
@@ -144,8 +143,7 @@ export class RepositoryReceiptStore {
       const attempt = await unit.repositorySessions.lockAttempt(admissionId);
       if (
         !attempt ||
-        !this.matches(attempt, input) ||
-        !this.eligible(attempt) ||
+        !this.acceptsInput(attempt, input) ||
         status.state !== "OPEN" ||
         !sameBinding(status.binding, input.expectedBinding) ||
         status.deadlineWallMs > input.deadlineWallMs
@@ -183,7 +181,7 @@ export class RepositoryReceiptStore {
   ) {
     await this.state.transact(async (unit) => {
       const attempt = await unit.repositorySessions.lockAttempt(admissionId);
-      if (!attempt || !this.matches(attempt, input) || !this.eligible(attempt)) {
+      if (!attempt || !this.acceptsInput(attempt, input)) {
         throw new Error("RECEIPT_UNAVAILABLE");
       }
       const current = await unit.repositorySessions.findBrokerReceipt(admissionId);
@@ -207,13 +205,9 @@ export class RepositoryReceiptStore {
       const attempt = await unit.repositorySessions.lockAttempt(admissionId);
       if (
         !attempt ||
-        !this.matches(attempt, input) ||
-        !this.eligible(attempt) ||
+        !this.acceptsInput(attempt, input) ||
         status.state !== "DISPOSED" ||
-        status.activeUses !== 0 ||
-        status.cleanup.active !== 0 ||
-        status.cleanup.pending !== 0 ||
-        status.cleanup.uncertain !== 0 ||
+        hasUnsettledCleanupCounts(status) ||
         status.cleanup.auxiliaryPending ||
         !sameBinding(status.binding, input.expectedBinding)
       ) {

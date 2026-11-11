@@ -187,6 +187,7 @@ engine connection, environment, project, Compose files, and overrides. For
 example, after setting `DEV_COMPOSE_PROJECT` to your own recorded project:
 
 ```sh
+export OCC_DEVELOPMENT_COMPUTE_DRIVER=docker
 ./bin/occ dev down --volumes -- -p "$DEV_COMPOSE_PROJECT" -f compose.yaml
 ./bin/occ dev up --key-output /absolute/private/new-installation-key.json -- \
   -p "$DEV_COMPOSE_PROJECT" -f compose.yaml

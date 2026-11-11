@@ -17,7 +17,9 @@ model call.
 
 Compose supports control-plane startup and Namespace operations.
 
-Follow the [quickstart](../guides/quickstart.md), or run the host/startup cases:
+Start the Docker Compute preview with
+`OCC_DEVELOPMENT_COMPUTE_DRIVER=docker ./scripts/dev-up`; with no selection,
+startup uses the Kubernetes-only profile. Or run the host/startup cases:
 
 ```sh
 node --test tests/integration/dev-up-compose.test.mjs

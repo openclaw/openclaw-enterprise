@@ -273,7 +273,7 @@ function escapeHtml(value: string): string {
 function browserDocumentNavigation(request: FastifyRequest, pathname: string): boolean {
   return (
     request.method === "GET" &&
-    /^\/(?:chat\/main(?:\/[0-9a-f]{32})?\/?)?$/.test(pathname) &&
+    /^\/(?:chat\/main(?:\/[A-Za-z0-9_-]+)?\/?)?$/.test(pathname) &&
     request.headers["sec-fetch-mode"] === "navigate" &&
     request.headers["sec-fetch-dest"] === "document" &&
     acceptsHtml(request.headers.accept)
@@ -435,13 +435,12 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       if (
         !nativeBrowser ||
         options.auth.humanProfile !== "guarded" ||
-        !options.auth.githubEnabled ||
+        !options.auth.oidcEnabled ||
         options.auth.googleEnabled ||
-        options.auth.oidcEnabled ||
         options.auth.sharedCookieDomain !== undefined
       ) {
         throw new Error(
-          "Native admin UI host-only exchange requires guarded GitHub sign-in without shared cookies, Google or OIDC.",
+          "Native admin UI host-only exchange requires guarded OIDC sign-in without shared cookies or Google.",
         );
       }
       const consoleSite = parseDomain(new URL(publicOrigin).hostname, {
@@ -1648,6 +1647,23 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
           reply,
           "Sign in",
           `<p><a href="${escapeHtml(consoleUrl.href)}">Sign in</a></p>`,
+        );
+        return true;
+      }
+      if (
+        agentKey !== undefined &&
+        hostname === `agent-${agentKey}.${nativeAdminDomain}` &&
+        admission?.reason === "revision_changed" &&
+        publicOrigin !== undefined &&
+        documentNavigation
+      ) {
+        const consoleUrl = new URL("/console/", publicOrigin);
+        consoleUrl.hash = `native-agent=${agentKey}`;
+        sendNativeAdminHtmlRefusal(
+          request,
+          reply,
+          "Agent version changed",
+          `<p>This Agent has a new version. Open it again from the console.</p><p><a href="${escapeHtml(consoleUrl.href)}">Return to console</a></p>`,
         );
         return true;
       }

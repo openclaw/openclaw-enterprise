@@ -1,3 +1,4 @@
+import { prepareProviderScope } from "./provider-transport/request-options.ts";
 import type { Clock } from "../../access/backend-contracts.ts";
 import type { GitHubKeyOwner } from "./types.ts";
 import type { GitHubPreparationAdmission, GitHubPreparationStore } from "./prepared-contracts.ts";
@@ -36,7 +37,8 @@ export function createGitHubPreparationOwner(options: PreparationOptions) {
     throw new Error("prepared-issuer-authority-mismatch");
   }
   const { grant } = admission;
-  const exchange = createProviderTransport(options.apiOrigin, options.ca, clock, grant);
+  const scope = prepareProviderScope(options.apiOrigin, grant);
+  const exchange = createProviderTransport(options.ca, clock, scope);
 
   type Observation = Omit<TokenPreparationObservation, "attemptId"> | ProviderObservation;
   type Snapshot = Partial<Omit<GitHubPreparationDiagnostic, "attemptId" | "outcome">>;
@@ -93,10 +95,8 @@ export function createGitHubPreparationOwner(options: PreparationOptions) {
               packet,
               candidate,
               clock.wallNow(),
-              {
-                ...grant,
-                minimumValidityMs,
-              },
+              scope,
+              minimumValidityMs,
             );
             observe(attemptId, {
               stage: "validation",

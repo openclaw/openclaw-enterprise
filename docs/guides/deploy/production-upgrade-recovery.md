@@ -15,20 +15,18 @@ Keep one operator and the freeze for unfinished deployments. Before
 Then reconcile processes, release, migration, rollout and dispatch;
 add `--resume` with unchanged arguments, protected paths, kubeconfig contents,
 OCC URL, scripts, flow and chart. Keep candidates semantically unchanged.
-The helper rechecks images, nodes and live state against baseline or candidate.
+Resume rechecks images, nodes and live state against baseline or candidate.
 
 For an [immutable reference switch](immutable-installation-upgrade.md), retain both
-Secrets with their recorded UIDs and data; resume refuses replacements.
+Secrets' recorded UIDs and data; resume refuses replacements.
 
-When selected, `controller-compatibility-results.json` is immutable prepared
-evidence. Resume uses this copy, not the external file; changing its bytes or
-presence refuses recovery.
+Resume uses immutable `controller-compatibility-results.json`, when selected.
+Changing or removing this prepared copy refuses recovery.
 
-After verified completion, clean up only; do not resume or repeat rollout or Doctor.
-Any `completed` entry refuses resume before live access. Preserve it and use fresh
-evidence for another upgrade. If output or marker writing failed, reconcile live
-state: neither an absent marker nor surviving `prepared` proves unfinished work.
-Older runs may lack a marker.
+After verified completion, clean up without repeating rollout or Doctor.
+Any `completed` entry refuses resume before live access; preserve it. New upgrades
+require fresh evidence. Reconcile live state after output or marker failures:
+neither an absent marker nor `prepared` proves unfinished work. Older runs may lack markers.
 
 ## Correct unusable comparison inputs
 
@@ -38,22 +36,21 @@ this does not establish drift.
 
 ## Clean up preflight resources
 
-One owner-assigned operator cleans up without a freeze. Unconfirmed cleanup stops
-preparation. After interruption (`SIGHUP`, `SIGINT`, `SIGTERM`), preserve evidence
+One operator cleans up, retaining any freeze. Unconfirmed cleanup blocks progress. After interruption (`SIGHUP`, `SIGINT`, `SIGTERM`), preserve evidence
 and `.upgrade-lock`. Confirm helper/children stopped and reconcile accepted
-operations/resources before cleanup, retry, directory restoration or unlocking.
+operations before cleanup, retry, restoration or unlocking.
 
-Acknowledged creates retain `preflight-<slot>-identity.json` with fields
-`kind`, `name`, `uid`: `networkpolicy` and `secret` identify dependencies;
-`api`/`worker` identify Jobs; `api-pod`/`worker-pod` identify observed children.
-Optional policy, missing children and interrupted creates leave fewer records.
+`preflight-<slot>-identity.json` records acknowledged `kind`, `name`, `uid`:
+`networkpolicy`/`secret` are dependencies; `api`/`worker`/`migration` are Jobs;
+`-pod` slots identify observed children. Optional policy or interrupted creates can leave fewer records.
 Match kubeconfig digest to `parameters.json`'s `kubeconfigSha256`, and path,
 context, namespace and release to its first four `arguments`. Confirm ownership;
 preserve original records. They establish create identity, not current identity
 or deletion authority.
 
 Labels `app.kubernetes.io/instance=<release>` and
-`app.kubernetes.io/component=upgrade-preflight` only discover candidates.
+`app.kubernetes.io/component=upgrade-preflight` only discover startup candidates.
+Migration Jobs retain the initializer's `component=initialization` label.
 Stop and consult the owner for old helpers without records or missing, changed,
 replaced, conflicting or uncertain evidence. Also stop for refused creates, lost
 acknowledgement, successful creates without usable UIDs, or explicitly failed or uncertain
@@ -70,6 +67,11 @@ Job acknowledgements require reconciling possible children; labels alone do not
 establish ownership.
 
 ## Resume an unfinished prepared upgrade
+
+Failed migration preflight prevents further shutdown; writers may already be stopped.
+Inspect the current `migration-preflight-resume.*/preflight-migration.log` and
+`preflight-migration-logs.err`. Reconcile unknown creates; retain the original
+evidence, lock and dispatch journal for `--resume`.
 
 With `--verify-agent`, inspect `agent-continuity.json` and
 `agent-continuity-after*.json`. The former binds the original revision and workload
@@ -99,9 +101,8 @@ values/Installation. It can retry the recorded prior or failed expected revision
 after the checks below. Invalid intents and other revisions refuse.
 For completed initialization, see [same-candidate Helm recovery](production-helm-recovery.md).
 
-If external recovery moves outside this pair, preserve intent and evidence
-unchanged. The release owner must verify the
-recovered manifest, values, Installation, required hook outcomes and migration
+Outside this pair, preserve intent and evidence. The release owner must verify
+the recovered manifest, values, Installation, required hook outcomes and migration
 history, then finish verification separately.
 
 Never start old writers against a migrated database. For a retry within the recorded pair, wait
@@ -164,17 +165,17 @@ For stalled ReplicaSet creation, check [namespace object capacity](upgrade-check
 
 ## Correct a refused Agent deployment
 
-The startup preflight refuses some such drafts before any writer stops. When
+The startup preflight refuses some such drafts before any writer stops. If
 OCC still refuses an Agent's deployment with a 4xx answer, such as
-`HTTP 400 ... must use reviewed task actions` for a saved Configuration that
-the new release refuses, it saved no new version. The command lists each
-refused Agent with OCC's message, keeps the message in `dispatch/*.rejected`,
-and stops. Correct the cause, for example with `occ configuration update`, and
-repeat the command with `--resume`. The resume deploys each refused Agent once,
-so do not deploy it yourself. A 408 or 5xx answer stays an unknown dispatch.
-When OCC rejects the command's own service key, the command says so and lists
-the Agents it did not deploy; get a new key, point `OCC_SERVICE_KEY_FILE` at it,
-and resume.
+`HTTP 400 ... must use reviewed task actions`, it saved no new version. The same
+applies when `occ` sends no request because it cannot establish the active
+revision's Harness overrides. The command lists each such Agent with the
+message, keeps it in `dispatch/*.rejected`, and stops. Correct the cause, for
+example with `occ configuration update`, and repeat the command with `--resume`.
+The resume deploys each refused Agent once; do not deploy it yourself. A 408 or
+5xx answer stays an unknown dispatch. When OCC rejects the command's service
+key, the command lists the Agents it did not deploy; get a new key, point
+`OCC_SERVICE_KEY_FILE` at it, and resume.
 
 ## Correct a Doctor failure
 
@@ -286,7 +287,7 @@ keeping baseline files matched to live state.
 
 | Refused value                                                                                                                                                                     | Correction                                                                                                                                                                                                      |
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `auth.github.allowedOrgs`, `allowedTeams` or `auth.google.allowedDomains` set while that provider is disabled                                                                     | Remove the list.                                                                                                                                                                                                |
+| `auth.google.allowedDomains` set while Google is disabled                                                                                                                         | Remove the list.                                                                                                                                                                                                |
 | `""` or `{}` for those allowlists, or `{}` for a provider's `egressCidrs`                                                                                                         | Write `[]` or remove the key.                                                                                                                                                                                   |
 | An IPv4-mapped `api.trustedProxy.cidrs` entry with a prefix from 97 to 128, such as `::ffff:a00:0/104`                                                                            | Write the IPv4 CIDR with the prefix minus 96: `10.0.0.0/8`. A Compose install's API refuses the same entry in `OCC_AUTH_TRUSTED_PROXY_CIDRS` at startup.                                                        |
 | An IPv6 `api.trustedProxy.cidrs` entry that contains `::ffff:0:0/96`, such as `::ffff:0:0/96`, `::ffff:a00:0/64` or `::/64`                                                       | Such an entry trusts forwarded headers from every IPv4 peer. List your proxies' own CIDRs instead.                                                                                                              |

@@ -138,3 +138,23 @@ rehearsal does not prove active Agent, model, or Slack continuity. A historical
 compatible pair does not qualify later schema changes or a deployment of current
 main. Recheck migration, restore and saved-configuration compatibility when
 selecting another pair; retain those limits with the evidence.
+
+## Check a separate migration while the incumbent serves
+
+Use the same local fixture and image inputs with
+`OCC_TEST_PRODUCTION_TUI_ONLINE_MIGRATION=1` in place of
+`OCC_TEST_PRODUCTION_TUI_REHEARSAL=1`. Select an image pair whose candidate
+appends entries to the incumbent's canonical PostgreSQL migration catalog.
+
+The test installs the previous release and runs the candidate chart's migrator
+in a separate Job. It holds the real PostgreSQL migration lock and confirms the
+candidate is waiting for it on both sides of a successful authenticated HTTPS
+request. After releasing the lock, it checks the Job exit, verifies the complete
+ordered migration history against the candidate catalog, and repeats the read
+through the original API endpoint. The original API and worker Pod identities
+and Helm release must remain unchanged at the measured checks.
+
+This test does not change how the production upgrade command runs. The reads
+show that the incumbent served before, while the candidate waited, and after
+the migration completed. They do not measure availability during SQL execution
+or qualify overlapping API or worker versions, browser sessions, or rollback.

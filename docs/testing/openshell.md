@@ -39,7 +39,10 @@ To stop even a partially started environment, run:
 ```
 
 This deletes only the owned cluster and its database. For a Compose control
-plane, set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup.
+plane, set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup: an unset
+control plane follows the Compute Driver, so
+`OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell`
+alone starts Kubernetes-only.
 
 ## Finite repository removal
 
@@ -159,7 +162,7 @@ OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL=1 \
 
 Each command selects one case and skips the other. Both check setup, Workspace
 reconciliation, and cleanup. Kubernetes also checks browser access and a model
-reply from a real Agent, using a GitHub protocol fixture. Compose uses a
+reply from a real Agent, using an OIDC protocol fixture. Compose uses a
 synthetic credential without calling a model. Both default to Docker. Set
 `OCC_TEST_DEV_UP_CONTAINER_ENGINE=podman` for Podman.
 

@@ -1,17 +1,17 @@
 ---
-tags: [human_verified, nolimit]
+tags: [human_verified]
 # Backfilled from the verification tag recorded in a66a9cdfd.
 last_verified: "2026-11-02"
 ---
 
 # Set up OCE on Amazon EKS
 
-Install OpenClaw Enterprise (OCE), configure browser access, on Amazon Elastic Kubernetes Service (EKS). Start in the matching OCE checkout on the operator’s laptop. Use Bash, AWS CLI, version-compatible kubectl, Helm, OpenSSL, jq, Node.js satisfying `engines.node` in the selected release checkout's `package.json`, Python 3, yq v4, PostgreSQL client tools and the [OCC CLI](../cli.md). Image selection needs Git and Docker; builds also need Buildx. Select compatible source, chart and image revisions.
+Prepare Amazon Elastic Kubernetes Service (EKS) for OpenClaw Enterprise (OCE). Start in the matching OCE checkout on the operator’s laptop. Use Bash, AWS CLI, version-compatible kubectl, Helm, OpenSSL, jq, Node.js satisfying `engines.node` in the selected release checkout's `package.json`, Python 3, yq v4, PostgreSQL client tools and the [OCC CLI](../cli.md). Image selection needs Git and Docker; builds also need Buildx. Select compatible source, chart and image revisions.
 
 This OpenShell workflow supports development and evaluation.
 [OpenShell production qualification remains incomplete](../../reference/drivers/openshell-sandbox.md#remaining-qualification-work).
 
-After installation, [deploy your first Agent](deploy-first-agent.md). Git and plugins are optional.
+After preparation, [install OCE](eks-openshell-installation.md) in the same protected Bash session. Then [deploy your first Agent](deploy-first-agent.md). Git and plugins are optional.
 
 ## Before you start
 
@@ -20,6 +20,12 @@ After installation, [deploy your first Agent](deploy-first-agent.md). Git and pl
 Provision the following through your reviewed AWS infrastructure workflow. The OCE chart does not create the EKS cluster, VPC, IAM roles, database or storage add-ons.
 
 Use an authorized AWS account and role. The Kubernetes operator needs permission to create namespaces, RBAC, Secrets and storage claims; Kubernetes access does not replace OCC IAM grants.
+
+Choose a cluster whose workloads can trust the OpenShell Gateway with its
+[cluster-wide Kubernetes authority](../../reference/drivers/openshell-sandbox.md#gateway-kubernetes-authority).
+For stock OpenShell v0.1.6 operator mode, namespace selectors do not restrict
+that authority. Use a dedicated evaluation cluster when other tenants must
+remain outside this trust boundary.
 
 - An IPv4 EKS cluster running Kubernetes 1.35 or later, with private worker subnets and an API reachable by the operator and controller Pods. The chart uses exact IPv4 `/32` API and database egress rules; [IPv4 policies do not apply to IPv6 clusters](https://docs.aws.amazon.com/eks/latest/userguide/cni-network-policy.html).
 - Separate EC2 managed node groups labeled `oce-role=control` and `oce-role=agents`. OCC and Agent Gateways use the control group; Codex workloads use the Agent group. Reserve capacity for volume reattachment in each volume’s availability zone. Verify the [Codex node requirements](../../reference/drivers/kubernetes-compute.md#requirements), including the reviewed seccomp profile on replacement nodes. The EKS-managed Kubernetes control plane is separate from OCC’s Pods.
@@ -38,6 +44,19 @@ Enable Amazon VPC CNI NetworkPolicy support with `NETWORK_POLICY_ENFORCING_MODE=
 Install the [EBS CSI driver](https://docs.aws.amazon.com/eks/latest/userguide/ebs-csi.html). Allow its controller to reach Kubernetes, DNS and regional EC2, STS and credential endpoints. The node plugin needs Kubernetes and DNS when instance metadata is unavailable. Keep workload access to instance metadata disabled. Require ready CSI Pods and topology labels on every eligible node before creating claims.
 
 Create encrypted `encrypted-gp3` RWO filesystem storage with `WaitForFirstConsumer` for Gateway and bootstrap claims. Configure a default StorageClass that supports dedicated Agents’ `40Gi` RWO claims and UID/GID 1000; review other workloads before changing the default. Keep eligible capacity in the claim’s availability zone. Replacement stops the predecessor before disk reattachment, so allow downtime. Validate storage failover and node fencing separately. See the [storage contract](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage).
+
+Before binding a PersistentVolume to an existing EBS volume, check the
+[tag conditions of the CSI controller's selected IAM policy](https://docs.aws.amazon.com/eks/latest/best-practices/identity-and-access-management.html#iam-permissions-recommendations-when-using-the-amazon-ebs-csi-driver)
+for both the volume and the target node. For
+`AmazonEBSCSIDriverEKSClusterScopedPolicy`, the volume's
+`ebs.csi.aws.com/cluster-name` tag must match the principal's `eks-cluster-name`
+tag. For `AmazonEBSCSIDriverPolicyV2`, a new manually created volume needs
+`ebs.csi.aws.com/cluster=true`.
+
+A `Bound` claim confirms PV binding. For attachment timeouts, match the
+`VolumeAttachment` to the PV and node. If the attachment status or Pod events
+only show a timeout, check the leader EBS CSI controller's `ebs-plugin` logs
+for the volume and time of the failed attach.
 
 ### Enable Console workspace files
 
@@ -88,6 +107,16 @@ kubectl get nodes -L oce-role
 kubectl get storageclass encrypted-gp3
 ```
 
+If either node group lacks Ready workers, ask the infrastructure owner to inspect
+that group's health issues and provisioning events using
+[AWS's node troubleshooting guide](https://docs.aws.amazon.com/eks/latest/userguide/troubleshooting.html).
+An offered instance type does not guarantee launch capacity:
+[`InsufficientInstanceCapacity`](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/troubleshooting-launch.html#troubleshooting-launch-capacity)
+means AWS cannot currently fulfill the launch. Keep retries and rollback in the
+owning infrastructure workflow. After a failed replacement, verify the previous
+group's health, template and scaling, and cleanup of attempted resources before
+retrying. Preserve the volume-zone constraints above.
+
 Confirm the account and role, then test Kubernetes TLS from the operator host. Successive connections through shared NAT can use different public IP addresses. For a public API allowlist change, authorize only the exact stable egress addresses or CIDRs listed for that host in the authoritative NAT inventory. A single observed IP address cannot establish or justify a broader prefix. Preserve existing allowlist entries, public and private endpoint settings, and AWS and Kubernetes authentication.
 
 ### Refresh API network policies after the node groups join
@@ -119,7 +148,7 @@ printf 'API egress: %s\nWebhook ingress: %s\n' "$API_CIDRS" "$webhook_cidrs"
 
 Update and apply the affected prerequisite NetworkPolicies through the infrastructure workflow. Use the API CIDRs for clients that need Kubernetes API egress, including controllers, certificate Jobs and storage components. Allow the verified control-plane interface CIDRs to reach every installed prerequisite webhook, including the AWS Load Balancer Controller when used. Match each webhook's actual port and Pod labels. Use the refreshed `API_CIDRS` when rendering OCC values.
 
-Before changing OCC workloads, verify real API-server admission through every installed prerequisite webhook using its owning infrastructure procedure. Controller readiness alone does not prove webhook connectivity. For cert-manager, also confirm that a certificate request produces a Ready certificate under strict NetworkPolicy.
+Before changing OCC workloads, verify real API-server admission through every installed prerequisite webhook using its owning infrastructure procedure. Controller readiness alone does not prove webhook connectivity. For cert-manager, also confirm that a certificate request produces a Ready certificate under strict NetworkPolicy. The production upgrade command checks server-side admission for rendered Certificates before stopping the controllers.
 
 ### Authenticate the image builder to ECR
 
@@ -174,23 +203,41 @@ the network and certificate checks above.
 
 <a id="configure-the-protected-copies-and-install"></a>
 
-Confirm the database endpoint from your infrastructure outputs; EKS does not select RDS automatically. For RDS, obtain its [approved CA bundle](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/PostgreSQL.Concepts.General.SSL.html). The templates use Secret `occ-database-ca`, key `ca.pem`, mounted at `/etc/openclaw/database-ca`. Both database URLs must use the database hostname and `sslmode=verify-full&sslrootcert=/etc/openclaw/database-ca/ca.pem`. Use the provider’s verified CA for other PostgreSQL services. Keep exact database and API egress addresses current through failover; security groups do not replace NetworkPolicies.
+[Configure protected database inputs](eks-openshell-installation.md#configure-the-protected-copies-and-install) in the installation guide.
 
-<Snippet file="../../snippets/openshell-quickstart/cluster-installation.md" />
+<a id="2.-install-openshell-and-bootstrap-occ"></a>
+<a id="2-install-openshell-and-bootstrap-occ"></a>
+
+[Install OpenShell and bootstrap OCC](eks-openshell-installation.md#2-install-openshell-and-bootstrap-occ) in the installation guide.
+
+<a id="set-the-production-browser-origins-before-installing-occ"></a>
+
+[Set browser origins before installing OCC](eks-openshell-installation.md#set-the-production-browser-origins-before-installing-occ) in the installation guide.
+
+<a id="configure-browser-access"></a>
+
+[Configure browser access](eks-openshell-installation.md#configure-browser-access) in the installation guide.
+
+<a id="read-the-protected-initial-owner-files"></a>
+
+[Read the protected initial owner files](eks-openshell-installation.md#read-the-protected-initial-owner-files) in the installation guide.
+
+<a id="install-the-loopback-tls-listener"></a>
+
+[Install the loopback TLS listener](eks-openshell-installation.md#install-the-loopback-tls-listener) in the installation guide.
+
+<a id="3.-authenticate-and-prepare-the-namespace"></a>
+<a id="3-authenticate-and-prepare-the-namespace"></a>
+
+[Authenticate and prepare the Namespace](eks-openshell-installation.md#3-authenticate-and-prepare-the-namespace) in the installation guide.
 
 <a id="4-enroll-linear-and-protected-git"></a>
 <a id="5-deploy-and-open-the-owners-agent"></a>
+<a id="4.-prepare-the-operator-session"></a>
+<a id="4-prepare-the-operator-session"></a>
 
-## 4. Prepare the operator session
+[Prepare the operator session](eks-openshell-installation.md#4-prepare-the-operator-session) in the installation guide.
 
-Continue in the same Bash shell to [Deploy your first Agent](deploy-first-agent.md).
+<a id="verify-workspace-routing"></a>
 
-## Verify workspace routing
-
-After activation, check accepted/programmed Gateway and HTTPRoute status, ready certificates and an accepted API-key SecurityPolicy. Follow the [routing checks](workspace-routing.md#verify-routing-and-file-access) to verify invalid operator keys are rejected and dedicated Harnesses cannot bypass Envoy to reach the native Gateway.
-
-In the Console **Workspace files** tab, read all four paths, save and reload a harmless change, then restore the original. Previously absent files should report `NOT_FOUND` with editable fields, not `DEPENDENCY_UNAVAILABLE`. A bound PVC or healthy OCC API alone does not prove routing. Across Pod replacement, compare PVC identities and existing session IDs to verify retained Gateway state. Record resource ownership, backups, credential renewal and recovery responsibilities using [production handoff](production-handoff.md).
-
-For later upgrades, first repeat the [API and webhook policy refresh](#refresh-api-network-policies-after-the-node-groups-join). Then use [Upgrade production images](production-upgrade.md), its [checklist](upgrade-checklist.md) and [baseline](upgrade-baseline.md). Helm rollback does not undo committed migrations or restore Agent-volume data; use [upgrade recovery](production-upgrade-recovery.md) after a failure.
-
-To finish, [delete the Agent](quickstart-delete-agent.md), then clean up the installation with [Amazon EKS cleanup](eks-cleanup.md).
+[Verify workspace routing](eks-openshell-installation.md#verify-workspace-routing) in the installation guide.

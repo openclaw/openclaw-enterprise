@@ -5,13 +5,77 @@ import { mkdtemp, mkdir, readFile, rm, writeFile, copyFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { loadRuntimeArtifact } from "../../scripts/ci/runtime-artifact.mjs";
+import {
+  loadRuntimeArtifact,
+  prepareRuntimeArtifactLayout,
+} from "../../scripts/ci/runtime-artifact.mjs";
 import { prepareLane } from "../../scripts/ci/prepare.mjs";
 import { cleanupResourceIds } from "../../scripts/ci/cleanup.mjs";
 
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const run = (program, args) =>
   execFileSync(program, args, { encoding: "utf8", timeout: 120_000, maxBuffer: 8 * 1024 * 1024 });
+
+test("same-run runtime artifact enforces the OCI metadata limit before conversion", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "oce-runtime-metadata-"));
+  const previousSha = process.env.GITHUB_SHA;
+  const previousRun = process.env.GITHUB_RUN_ID;
+  t.after(async () => {
+    for (const [key, value] of [
+      ["GITHUB_SHA", previousSha],
+      ["GITHUB_RUN_ID", previousRun],
+    ]) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const sourceSha = run("git", ["rev-parse", "HEAD"]).trim();
+  const runId = "123456";
+  const producerAttempt = "1";
+  Object.assign(process.env, { GITHUB_SHA: sourceSha, GITHUB_RUN_ID: runId });
+  const layout = join(directory, "layout");
+  const archive = join(directory, "runtime.tar");
+  await mkdir(layout);
+  await writeFile(join(layout, "oci-layout"), '{"imageLayoutVersion":"1.0.0"}');
+
+  const index = '{"schemaVersion":2,"manifests":[]}';
+  const limit = 16 * 1024 * 1024;
+  for (const [size, expected] of [
+    [limit, /Expected one runtime platform/],
+    [limit + 1, /Oversized OCI metadata/],
+  ]) {
+    await writeFile(join(layout, "index.json"), index.padEnd(size, " "));
+    run("tar", ["-cf", archive, "-C", layout, "index.json", "oci-layout"]);
+    const archiveSha256 = hash(await readFile(archive));
+    await writeFile(
+      join(directory, "receipt.json"),
+      JSON.stringify({
+        version: 1,
+        sourceSha,
+        runId,
+        producerAttempt,
+        archiveSha256,
+        platform: `linux/${process.arch === "x64" ? "amd64" : process.arch}`,
+      }),
+    );
+    await assert.rejects(
+      loadRuntimeArtifact({
+        directory,
+        archiveSha256,
+        sourceSha,
+        runId,
+        producerAttempt,
+        tag: "localhost/oce-runtime-metadata:proof",
+      }),
+      expected,
+    );
+  }
+});
 
 test(
   "same-run runtime artifact prepares an owned image and supplies a real OCI build context",
@@ -26,8 +90,10 @@ test(
     const statePath = join(directory, "state.json");
     const savedEnv = { ...process.env };
     let loaded;
+    let namedContext;
     t.after(async () => {
       await loaded?.cleanup();
+      await namedContext?.cleanup();
       if (builderCreated) {
         run("docker", ["buildx", "rm", builder]);
       }
@@ -114,7 +180,33 @@ test(
     };
     delete receipt.directory;
     await writeFile(join(artifact, "receipt.json"), JSON.stringify(receipt));
-    loaded = await loadRuntimeArtifact({ ...selection, tag });
+    await assert.rejects(
+      loadRuntimeArtifact({ ...selection, tag }, Date.now() - 1),
+      /preparation deadline/,
+    );
+    assert.throws(() => run("docker", ["image", "inspect", tag]), { status: 1 });
+    const probeBin = join(directory, "probe-bin");
+    await mkdir(probeBin);
+    await writeFile(
+      join(probeBin, "git"),
+      `#!/usr/bin/env node
+process.on("SIGTERM", () => {});
+setTimeout(() => process.stdout.write(${JSON.stringify(`${sourceSha}\n`)}), 2100);
+`,
+      { mode: 0o700 },
+    );
+    const previousPath = process.env.PATH;
+    try {
+      process.env.PATH = `${probeBin}:${previousPath}`;
+      await assert.rejects(loadRuntimeArtifact({ ...selection, tag }, Date.now() + 750), {
+        code: "ETIMEDOUT",
+        signal: "SIGKILL",
+      });
+    } finally {
+      process.env.PATH = previousPath;
+    }
+    assert.throws(() => run("docker", ["image", "inspect", tag]), { status: 1 });
+    loaded = await loadRuntimeArtifact({ ...selection, tag }, Date.now() + 60_000);
     assert.equal(loaded.configDigest, manifest.config.digest);
     assert.equal(
       JSON.parse(run("docker", ["image", "inspect", loaded.reference]))[0].Config.Labels[
@@ -130,8 +222,12 @@ test(
     assert.equal(imported.Config.WorkingDir, "/workspace");
     assert.equal(imported.Config.StopSignal, "SIGUSR1");
     assert.deepEqual(imported.Config.ExposedPorts, { "12345/tcp": {} });
-    // The separate BuildKit builder receives the verified OCI layout as a named
-    // base; this proves that host Docker tag visibility is not required.
+    // The named context has its own verified layout and does not need the
+    // imported Docker image. Keep both paths covered on the same bytes.
+    namedContext = await prepareRuntimeArtifactLayout(selection, Date.now() + 60_000);
+    assert.equal(namedContext.platformManifestDigest, loaded.platformManifestDigest);
+    assert.notEqual(namedContext.layoutDirectory, loaded.layoutDirectory);
+    await loaded.cleanup();
     await writeFile(
       join(context, "Dockerfile.derived"),
       "FROM runtime-base\nCOPY payload /derived\nCOPY --from=runtime-base /payload /from-base\n",
@@ -141,7 +237,7 @@ test(
       "build",
       "--provenance=false",
       "--build-context",
-      `runtime-base=oci-layout://${loaded.layoutDirectory}@${loaded.platformManifestDigest}`,
+      `runtime-base=oci-layout://${namedContext.layoutDirectory}@${namedContext.platformManifestDigest}`,
       "--load",
       "-t",
       derivedTag,
@@ -182,7 +278,7 @@ test(
             context,
             dockerfile: "Dockerfile.derived",
             contexts: {
-              "runtime-base": `oci-layout://${loaded.layoutDirectory}@${loaded.platformManifestDigest}`,
+              "runtime-base": `oci-layout://${namedContext.layoutDirectory}@${namedContext.platformManifestDigest}`,
             },
             output: ["type=docker"],
             tags: [bakeTag],
@@ -196,7 +292,7 @@ test(
       "--builder",
       builder,
       `--allow=fs.read=${context}`,
-      `--allow=fs.read=${loaded.layoutDirectory}`,
+      `--allow=fs.read=${namedContext.layoutDirectory}`,
       "-f",
       bakeFile,
       "proof",
@@ -245,6 +341,10 @@ test(
     // corruption and unavailable artifacts fail before a tag can be loaded.
     await assert.rejects(loadRuntimeArtifact({ ...selection, tag, runId: "999" }), /workflow run/);
     await assert.rejects(
+      loadRuntimeArtifact({ ...selection, tag, producerAttempt: "999" }),
+      /producerAttempt mismatch/,
+    );
+    await assert.rejects(
       loadRuntimeArtifact({ ...selection, tag, sourceSha: "0".repeat(40) }),
       /checkout/,
     );
@@ -284,6 +384,45 @@ test(
     await assert.rejects(
       loadRuntimeArtifact({ ...selection, archiveSha256: duplicateHash, tag }),
       /Duplicate OCI archive member/,
+    );
+
+    // Keep all compressed bytes and descriptor checks valid, but make the
+    // executable config claim a different uncompressed layer identity.
+    const wrongConfig = await blob(manifest.config);
+    wrongConfig.rootfs.diff_ids[0] = `sha256:${"0".repeat(64)}`;
+    const writeBlob = async (value, mediaType) => {
+      const bytes = Buffer.from(JSON.stringify(value));
+      const digest = hash(bytes);
+      await writeFile(join(layout, "blobs/sha256", digest), bytes);
+      return { mediaType, digest: `sha256:${digest}`, size: bytes.length };
+    };
+    const config = await writeBlob(wrongConfig, manifest.config.mediaType);
+    const newManifest = await writeBlob({ ...manifest, config }, descriptor.mediaType);
+    const index = Buffer.from(JSON.stringify({ schemaVersion: 2, manifests: [newManifest] }));
+    await writeFile(join(layout, "index.json"), index);
+    run("tar", [
+      "-cf",
+      join(artifact, "runtime.tar"),
+      "-C",
+      layout,
+      "oci-layout",
+      "index.json",
+      "blobs",
+    ]);
+    const archiveSha256 = hash(await readFile(join(artifact, "runtime.tar")));
+    await writeFile(
+      join(artifact, "receipt.json"),
+      JSON.stringify({
+        ...receipt,
+        archiveSha256,
+        indexDigest: `sha256:${hash(index)}`,
+        platformManifestDigest: newManifest.digest,
+        configDigest: config.digest,
+      }),
+    );
+    await assert.rejects(
+      prepareRuntimeArtifactLayout({ ...selection, archiveSha256 }),
+      /OCI layer diff ID mismatch/,
     );
   },
 );

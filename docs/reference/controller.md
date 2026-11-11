@@ -20,7 +20,7 @@ process startup procedures.
 ## Requirements
 
 - Node.js 24 or newer and the repository's existing workspace dependencies.
-- For default Compose development, Docker Engine and `docker compose`. To deploy
+- For the Docker Compute development preview, Docker Engine and `docker compose`. To deploy
   Agents locally, follow [Local Setup](../guides/quickstart.md).
 - A migrated local PostgreSQL database and an API using the same application
   connection; the full Compose stack starts both. See the
@@ -243,9 +243,9 @@ A prepared repository App key that cannot sign stops the worker with
 - **`WORKER_READINESS_PATH_INVALID` or `WORKER_LIVENESS_PATH_INVALID` at startup:**
   The worker refuses an `OCC_WORKER_READINESS_PATH` or `OCC_WORKER_LIVENESS_PATH`
   that is relative, names a directory, or cannot be written.
-- **`EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED` at startup:** GitHub native access
-  requires [host-only exchange](agent-native-admin.md#host-only-session-exchange).
-  Google does not support native access; OIDC supports it with shared cookies.
+- **`EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED` at startup:** Google does not support
+  native access. OIDC supports shared cookies or the
+  [host-only exchange](agent-native-admin.md#host-only-session-exchange).
 - **Configuration operations fail:** Verify exact Namespace or Configuration
   authorization, tenant-local ConfigMap CRUD, and a native JSON configuration
   document;

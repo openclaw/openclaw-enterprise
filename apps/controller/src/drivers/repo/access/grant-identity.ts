@@ -1,4 +1,14 @@
 import type { RepositoryCredentialGrantIdentity } from "@openclaw-enterprise/contracts";
+import { hasControlCharacter } from "./client-contracts.ts";
+
+export function isRepositoryCredentialIdentity(value: unknown): value is string {
+  return !(
+    typeof value !== "string" ||
+    value.length === 0 ||
+    Buffer.byteLength(value) > 512 ||
+    hasControlCharacter(value)
+  );
+}
 
 export function sameBinding(
   left: RepositoryCredentialGrantIdentity,

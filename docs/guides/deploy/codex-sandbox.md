@@ -34,6 +34,13 @@ and container security context. Check the host's user-namespace support and any
 AppArmor or SELinux restrictions separately. Successful execution through
 `require_escalated` establishes neither sandbox compatibility nor containment.
 
+On disposable k3d, a failed probe on a Ready Pod emits an
+`OCE_CODEX_SECCOMP_PROBE_FAILURE` record before cleanup. Use the Pod and container
+IDs, node, image digest, and timestamps to correlate authorized host evidence.
+`profileVerification: "passed"` means the effective OCI profile matched the
+installed profile. The sandbox probe still failed. The record reports the
+Pod's security settings and omits raw command output and runtime inspection.
+
 An EKS investigation on Amazon Linux 2023, kernel `6.12.103`, containerd `2.2.7`,
 and Codex `0.156.0` found that the effective profile defaulted to
 `SCMP_ACT_ERRNO`. Its `clone` mask excluded namespace flags, and it omitted
