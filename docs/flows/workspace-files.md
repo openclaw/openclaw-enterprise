@@ -244,8 +244,8 @@ owns recovery. Native provisioning requires Sandbox; expired unpaired setup awai
   The memory flush run gets Gateway-local `read` and `write`, so
   `agents.defaults.compaction.memoryFlush.enabled` is `false`. Codex's native
   tools act in the Harness; file-transfer reaches it through the node.
-- For workspace-node Gateways, `pinCodexProviderTransport` drops request
-  overrides and replaces authored transports (always for `codex`) with
+- For a Codex workspace-node Gateway’s `codex` and `openai` rows,
+  `pinCodexProviderTransport` drops request overrides and replaces authored transports (always for `codex`) with
   `http://127.0.0.1:9`, blocking Gateway-local model access.
   Model `reasoning`, `thinkingLevelMap`, and valid nonempty
   `compat.supportedReasoningEfforts` remain. All other `compat` fields are
