@@ -1,6 +1,6 @@
 # CI resource preparation
 
-Prepare the selected commit and lane's resources. [Parent flow](../github-actions-testing.md).
+Prepare selected resources. [Parent flow](../github-actions-testing.md).
 
 ## Execution trace
 
@@ -51,36 +51,38 @@ selected artifact or builds source when both are absent; selected pairs retain t
 Controller build selection is independent.
 
 `scripts/ci/prepare.mjs:imageBuildArgs` restores read-only caches, including
-`k3d-otel`. `prepareLane` primes selected `sourceBuildFiles`, including whole lanes;
-whole OpenShell lanes share one stack build. Tests inherit builder and epoch,
-never cache credentials; installers still build source.
-`imageCacheObservation` reports counts for Gateway Routing, Slack Live, Production
-TUI, `k3d-otel` and OpenShell (`image-cache`; OpenShell: `first-agent-image-cache`), including
-alternate sources. Step counts deduplicate IDs; imports count lines.
-Imports do not prove hits; loads may reuse probe work.
+`k3d-otel`. `prepareLane` primes selected `sourceBuildFiles`;
+each OpenShell lane builds its stack. Tests inherit builder and epoch,
+not cache credentials; installers still build source.
+`openshell-build-inputs` resolves the `integration-main` controller base for
+`all`/`openshell` builds, including Local Setup. `openshell-image-cache` requires
+caller-source exports and successful cleanup before admission. Strict export
+errors propagate after sibling settlement; standalone exports remain best effort.
+Queued writers remain unordered by commit; mutable caches permit misses.
+`imageCacheObservation` counts steps/imports for Gateway Routing, Slack Live,
+Production TUI, `k3d-otel` and OpenShell, including alternate sources.
+It deduplicates step IDs; import lines do not prove hits. Loads may reuse probes.
 
 Image lanes, First Agent Smoke, Docker Model Runtime, Gateway Routing and
-Production TUI download artifacts by repository, producer run and artifact IDs,
-using the job token’s `actions: read` permission.
+Production TUI fetch artifacts by repository/run/artifact IDs with `actions: read`.
 
 Docker Model Runtime requires an artifact ID on producer success. Failure or
-skip selects a standalone build. After download, local import cancellation
-starts three minutes before the lane deadline. Gateway Routing and default
+skip selects standalone builds. Local import cancels three minutes before the
+lane deadline. Gateway Routing and default
 Production TUI share that deadline. Full and focused runs wait for the producer
 before controller preparation and runtime import. `integration-main` snapshots
 the Gateway/Agent pair; consumers reject incomplete mode, pair or artifact ID
 before setup. Focused explicit pairs skip the producer. Artifacts cannot accompany
 Gateway inputs or TUI upgrade candidates; conflicts fail before allocation.
 
-`loadRuntimeArtifact` verifies archive, source, run, attempt, platform, OCI index,
-manifest and config digests, and the loaded image. Docker's image ID may equal
-the config digest. `buildRuntimeImages` records tag ownership before load,
-rejects alternate sources and import fallback, and sets aliases. Startup imports
-skip Buildx. Packaging and source builds retain it. Envoy and seccomp stay separate.
+`loadRuntimeArtifact` verifies archive, source/run/attempt, platform, OCI
+index/manifest/config digests and loaded image. Docker image IDs can equal config digests. `buildRuntimeImages` records ownership before import, rejects
+alternate sources and import fallback, and sets aliases. Startup skips Buildx;
+packaging/source builds retain it. Envoy and seccomp stay separate.
 
-First Agent Smoke checks compressed and uncompressed layer digests with
-`prepareRuntimeArtifactLayout`. Buildx uses the verified layout's platform
-manifest digest to build the trust layer.
+First Agent Smoke's `prepareRuntimeArtifactLayout` verifies compressed and
+uncompressed layer digests; Buildx builds its trust layer from the verified
+platform manifest digest.
 
 Before tagging or import, the CLI records image ownership in private
 `RUNNER_TEMP` state, excluded from uploads. Database tests use the limited

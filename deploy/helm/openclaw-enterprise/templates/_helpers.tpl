@@ -290,6 +290,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- end -}}
 {{- if hasKey .Values.agentNativeAdmin "sharedCookieDomain" -}}{{- fail "agentNativeAdmin.sharedCookieDomain is no longer supported; session cookie scope is derived from auth.baseUrl and agentNativeAdmin.domain" -}}{{- end -}}
+{{- if and .Values.agentNativeAdmin.enabled (gt (len .Values.agentNativeAdmin.domain) 214) -}}{{- fail "agentNativeAdmin.domain must not exceed 214 characters, leaving room for the Agent hostname prefix" -}}{{- end -}}
 {{- if not .Values.agentNativeAdmin.domain -}}{{- fail "agentNativeAdmin.domain is required for shared browser sessions, including when native browser access is disabled" -}}{{- end -}}
 {{- if not (regexMatch "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$" .Values.agentNativeAdmin.domain) -}}{{- fail "agentNativeAdmin.domain must be a DNS hostname without a wildcard, port, scheme, or path" -}}{{- end -}}
 {{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.baseUrl must use HTTPS for browser sessions" -}}{{- end -}}

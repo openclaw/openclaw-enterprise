@@ -144,7 +144,14 @@ function parseArgs(argv) {
     if (!arg.startsWith("--")) {
       throw new Error(`Unexpected argument: ${arg}`);
     }
+    if (arg.startsWith("--require-cache-export=")) {
+      throw new Error("--require-cache-export is a flag and takes no value.");
+    }
     const name = arg.slice(2);
+    if (name === "require-cache-export") {
+      args[name] = true;
+      continue;
+    }
     const value = argv[index + 1];
     if (value === undefined || value.startsWith("--")) {
       args[name] = "1";
@@ -1076,9 +1083,9 @@ function imageCacheOnlyArgs(buildArgs, ...options) {
 }
 
 // Only main's warm job (ci-image-cache.yml) writes the cache. It runs for every
-// image input change and on a schedule from main's newest commit, in order and
-// never cancelled, so the newest commit's export lands last. CI lanes only
-// restore: a lane export on main could land after a newer commit's warm export
+// image input change, on a schedule, and before selected OpenShell runs. The
+// singleton queue prevents concurrent writers, but does not order source commits.
+// CI lanes only restore: a lane export on main could land after a newer commit's warm export
 // and replace it, and on a pull request it cost about 40 s and filled only the
 // merge ref's scope. The warm job exports in a second build after the image is
 // built and loaded: the same arguments without --load or the tag, so BuildKit
@@ -1351,6 +1358,7 @@ async function buildRuntimeImages(
     nodeBaseImage = process.env.NODE_BASE_IMAGE,
     localStore = false,
     cacheWarm = false,
+    requireCacheExport = false,
     reuseEngineImages = true,
     revision,
     controllerTarget = "runtime",
@@ -1413,7 +1421,8 @@ async function buildRuntimeImages(
       );
     }
     await warmCommand(`${role} build`, args, Math.max(1, Math.round(deadline - performance.now())));
-    // The export is best effort with its own limit. Without it, image lanes restore
+    // Standalone exports are best effort; prerequisites require success. Without an
+    // export, image lanes restore
     // the previous cache: content-addressed steps that still match are reused and
     // the rest rebuild, so a missed export makes builds slower, never wrong.
     // BuildKit writes the cache manifest after the layers, so an interrupted
@@ -1424,6 +1433,9 @@ async function buildRuntimeImages(
       await warmCommand(`${role} cache export`, exportArgs, imageCacheExportTimeoutMs);
     } catch (error) {
       outcome = error.timedOut ? "timed-out" : "failed";
+      if (requireCacheExport) {
+        throw error;
+      }
       const reason =
         outcome === "timed-out"
           ? `did not finish within ${imageCacheExportTimeoutMs} ms`
@@ -4182,12 +4194,19 @@ const warmRuntimeImageRepository = "localhost/openclaw-ci-main/runtime";
 // main's hosted BuildKit cache (ci-image-cache.yml). It uses that lane's state,
 // inputs and build arguments, so the cache keys are the ones the CI image lanes
 // restore. GitHub scopes cache writes to the run's ref; only main may warm.
-async function warmImageCache({ statePath }) {
+async function warmImageCache({ statePath, requireCacheExport = false, nodeBaseImage }) {
   if (
     process.env.GITHUB_REF !== "refs/heads/main" ||
     !["push", "schedule", "workflow_dispatch"].includes(process.env.GITHUB_EVENT_NAME)
   ) {
     throw new Error("Only a push, schedule or dispatch on main may warm the image cache.");
+  }
+  if (requireCacheExport) {
+    if (process.env.GITHUB_REPOSITORY !== "openclaw/openclaw-enterprise") {
+      throw new Error("Required cache exports run only in the canonical repository.");
+    }
+    // The protected caller resolves this input once for both producer and consumers.
+    assertNodeBaseImage(nodeBaseImage);
   }
   const lane = "images-packaging";
   await validateLaneInputsBeforeSideEffects(lane);
@@ -4197,7 +4216,7 @@ async function warmImageCache({ statePath }) {
   }
   const state = baseState(lane, resolvedStatePath);
   await writeState(resolvedStatePath, state);
-  const nodeBaseImage = effectiveLaneEnv(lane).NODE_BASE_IMAGE;
+  const effectiveNodeBaseImage = nodeBaseImage ?? effectiveLaneEnv(lane).NODE_BASE_IMAGE;
   // The two builds are independent; in parallel their exports land sooner.
   const [, runtime] = await timedPreparation(
     "image-cache-warm",
@@ -4207,10 +4226,16 @@ async function warmImageCache({ statePath }) {
         () =>
           buildRuntimeImages(resolvedStatePath, state, {
             controller: true,
-            nodeBaseImage,
+            nodeBaseImage: effectiveNodeBaseImage,
             cacheWarm: true,
+            requireCacheExport,
           }),
-        () => buildRuntimeImages(resolvedStatePath, state, { runtime: true, cacheWarm: true }),
+        () =>
+          buildRuntimeImages(resolvedStatePath, state, {
+            runtime: true,
+            cacheWarm: true,
+            requireCacheExport,
+          }),
       ]),
   );
   // The hosted runners' Docker data comes from a shared image cache, which keeps
@@ -4237,11 +4262,24 @@ async function warmImageCache({ statePath }) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  if (args["warm-image-cache"]) {
-    if (args.lane || args.file || args["github-env"]) {
-      throw new Error("--warm-image-cache takes only --state.");
+  const warmImageCacheSelected = Object.hasOwn(args, "warm-image-cache");
+  if (
+    !warmImageCacheSelected &&
+    ["require-cache-export", "node-base-image"].some((name) => Object.hasOwn(args, name))
+  ) {
+    throw new Error("--require-cache-export and --node-base-image require --warm-image-cache.");
+  }
+  if (warmImageCacheSelected) {
+    if (["lane", "file", "selected-file", "github-env"].some((name) => Object.hasOwn(args, name))) {
+      throw new Error(
+        "--warm-image-cache cannot be combined with lane, file, selected-file or github-env.",
+      );
     }
-    await warmImageCache({ statePath: args.state });
+    await warmImageCache({
+      statePath: args.state,
+      requireCacheExport: args["require-cache-export"] === true,
+      nodeBaseImage: args["node-base-image"],
+    });
     return;
   }
   if (!args.lane) {
@@ -4269,7 +4307,14 @@ async function main() {
   process.stdout.write(`${JSON.stringify({ envNames: Object.keys(env).sort() }, null, 2)}\n`);
 }
 
-export { defaultK3sImage, imageCacheLanes, lanesWithoutK3sAddons, prepareFile, prepareLane };
+export {
+  assertNodeBaseImage,
+  defaultK3sImage,
+  imageCacheLanes,
+  lanesWithoutK3sAddons,
+  prepareFile,
+  prepareLane,
+};
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((error) => {

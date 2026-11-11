@@ -1430,7 +1430,7 @@ test("CI Required always reports and fails at once when a dependency was cancell
   }
 });
 
-test("full-integration lanes read NODE_BASE_IMAGE from a variable their environment has", () => {
+test("full-integration lanes receive NODE_BASE_IMAGE from an available protected input", () => {
   // The shared integration-main environment defines NODE_BASE_IMAGE. Jobs without it
   // must read the repository variable, or they can never start (finding 662).
   const path = ".github/workflows/full-integration-execution.yml";
@@ -1439,6 +1439,15 @@ test("full-integration lanes read NODE_BASE_IMAGE from a variable their environm
   const environment = "${{ vars.NODE_BASE_IMAGE }}";
   for (const [lane, job] of lanes) {
     const name = job.environment?.name ?? job.environment;
+    if (lane === "openshell") {
+      // The preflight suite verifies this producer resolves and validates the protected variable.
+      assert.equal(name, "integration-main");
+      assert.equal(
+        job.env.NODE_BASE_IMAGE,
+        "${{ needs.openshell-build-inputs.outputs.node-base-image }}",
+      );
+      continue;
+    }
     const allowed = name === "integration-main" ? [repository, environment] : [repository];
     assert.ok(allowed.includes(job.env.NODE_BASE_IMAGE), lane);
   }
