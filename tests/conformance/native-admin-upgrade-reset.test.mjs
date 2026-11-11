@@ -778,13 +778,16 @@ test("native-admin denial ownership retains HTTP audit failure and timeout respo
     assert.equal(timely.statusCode, 503);
     assert.equal(timely.body.error.code, "DEPENDENCY_UNAVAILABLE");
     const late = reply();
-    const pending = owner.access.interceptHttp({ headers: raw.headers, url: "/", raw }, late);
+    const lateRequest = { headers: raw.headers, url: "/", raw };
+    const pending = owner.access.interceptHttp(lateRequest, late);
     await settleCallbacks();
     t.mock.timers.tick(5_000);
     await pending;
     assert.equal(late.statusCode, 503);
+    assert.equal(owner.access.httpAdmissionReason(lateRequest), "admission_unavailable");
     admission.reject(owner.denied);
     await settleCallbacks();
+    assert.equal(owner.access.httpAdmissionReason(lateRequest), "admission_unavailable");
     assert.equal(owner.denials().length, 2);
     assert.equal(owner.upstreams.length, 0);
   } finally {

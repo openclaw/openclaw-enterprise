@@ -114,10 +114,11 @@ Without a valid session, `/` or `/chat/main[/<session>]` navigations can return 
 
 Only a user-activated (`Sec-Fetch-User: ?1`) top-level HTML navigation is redirected. The same page load without that header, including every Safari navigation, stays HTTP `403` with one **Sign in** link to that console URL. Link previews, API requests, and WebSocket upgrades send no navigation Fetch Metadata and keep their ordinary refusal.
 
-Session-store or other admission outages return `503 DEPENDENCY_UNAVAILABLE`.
-Retry after recovery.
+Native HTTP admission returns `503 DEPENDENCY_UNAVAILABLE` on session-store failure,
+timeout or failed denial audit. Unavailable Agents return `403`; refused WebSocket
+upgrades close. Retry after recovery.
 
-The console offers sign-in if needed. Its authenticated `GET /native-admin/return/<key>` operation checks exact Agent `operate` or `administer` access and returns the Namespace and Agent IDs even if the Agent is stopped. Unknown and unauthorized keys receive the same `404`. Recovery ends at Agent detail; opening native chat is a separate action.
+The Console’s authenticated `GET /native-admin/return/<key>` operation checks exact Agent `operate` or `administer` access and returns the Namespace and Agent IDs even if the Agent is stopped. Unknown and unauthorized keys receive the same `404`. Recovery ends at Agent detail; opening native chat is a separate action.
 
 A signed-in person who has neither chat nor administration access to the Agent is never redirected. Their top-level HTML navigation stays HTTP 403 on a page that does not name the Agent; its only link, **Go to your Agents**, points at `/console/agents`. JSON requests still receive the JSON `403`; WebSocket upgrades still close.
 

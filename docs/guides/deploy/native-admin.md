@@ -277,7 +277,7 @@ Full runtime proof still requires a real browser test that loads native assets t
 
 ## Troubleshooting
 
-For a refused Agent-host request, match its request ID to the API’s `http.completed` log. The `nativeAdmissionReason` field distinguishes session, revision, authorization, and dependency failures.
+Match the refused request’s ID to `http.completed`. HTTP admission refusals carry `nativeAdmissionReason`; early guards and post-admission failures may omit it.
 
 | Symptom                                             | Check                                                                                                                                                                                                                     |
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -1487,10 +1487,19 @@ for (const changedField of [undefined, "id", "implementation"]) {
     );
     const host = new URL(nativeOriginForAgent(controller.installation.id, namespace.id, agent.id))
       .host;
+    const proxyLogStart = logLines.length;
     const proxy = await injectJson({ app }, "GET", "/", {
       headers: { ...headers, host, origin: `https://${host}` },
     });
     if (changedField === undefined) {
+      const proxyCompletions = logLines
+        .slice(proxyLogStart)
+        .map((line) => JSON.parse(line))
+        .filter((line) => line.event === "http.completed");
+      assert.equal(proxyCompletions.length, 1);
+      assert.equal(proxyCompletions[0].status, 200);
+      assert.ok(proxyCompletions[0].requestId);
+      assert.equal(proxyCompletions[0].nativeAdmissionReason, undefined);
       const refused = await app.inject({
         method: "GET",
         url: "/?private=discard-query-marker",
@@ -1507,11 +1516,6 @@ for (const changedField of [undefined, "id", "implementation"]) {
       assert.equal(completed.nativeAdmissionReason, "session_invalid");
       assert.equal(completed.status, 403);
       assert.ok(!JSON.stringify(completed).includes("discard-"));
-      assert.equal(
-        completions.find((line) => line.requestId === proxy.headers["x-request-id"])
-          ?.nativeAdmissionReason,
-        undefined,
-      );
     }
     // A console poll repeats the status read; the mismatch is still warned only once.
     const repeated = await injectJson(

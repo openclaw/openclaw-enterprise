@@ -203,13 +203,14 @@ account or grant. See [session limits](../reference/agent-native-admin.md#host-o
 
 The `onRequest` hook prevents Agent origins from exposing controller routes.
 It authenticates the session or handle, resolves the Agent and IAM identity,
-selects `admin` or `chat`, and checks the version and native configuration.
+selects `admin` or `chat`, and checks version and configuration.
 Attributable IAM denials get one audit attempt, even after the five-second
 admission wait, disconnect or shutdown. Timely denials await that append before
-returning `403`; dependency failures, append failures and admission timeouts
-return `503`. Failed session lookups do not redirect to sign-in.
-The request-correlated `http.completed` log records a fixed `nativeAdmissionReason`,
-without adding URLs, cookies, identities or error text.
+returning `403`. Classified dependency failures, append failures and admission
+timeouts return `503`; unavailable Agents remain `403`.
+For HTTP admission refusals, `http.completed` records a fixed `nativeAdmissionReason`,
+without URLs, cookies, identities or error text. Early guards and post-admission
+failures may omit it.
 
 Without a session, supported top-level HTML navigations with
 `Sec-Fetch-User: ?1` redirect to the Console, carrying only the opaque host key.
