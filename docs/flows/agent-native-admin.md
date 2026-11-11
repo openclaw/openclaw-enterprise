@@ -117,7 +117,8 @@ does not enroll devices or issue reusable device tokens. Existing helper-owned n
 `apps/controller/src/drivers/compute/kubernetes/index.ts:gatewayRouteHeaderFilter`
 
 Preparation creates or reuses the revision's immutable browser Secret, mounted
-only in the Gateway. Generated configuration names its file and authority.
+only in the Gateway. Configuration specifies its file; the protocol fixes
+authority and subject prefix.
 `/native-browser/` preserves delegated headers; machine/node routes remove the
 credential. Retirement removes the Secret, retaining native profiles.
 

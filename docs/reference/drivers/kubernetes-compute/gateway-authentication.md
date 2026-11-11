@@ -72,9 +72,9 @@ from authenticated server state. The Gateway binds authority `oce` and that
 exact subject to a native profile, independently of email aliases.
 
 For a browser-enabled revision, Compute renders
-`gateway.auth.trustedProxy.delegation` with `authority: "oce"`,
-`subjectPrefix: "oce:v1:"`, and
+`gateway.auth.trustedProxy.delegation` with only
 `credentialFile: "/var/run/openclaw/browser-delegation/browser-key"`.
+The authority `oce` and subject prefix `oce:v1:` are fixed protocol values.
 The immutable revision-owned Secret holds a random 32-byte credential encoded
 as lowercase hex in `browser-key`. Preparation retries reuse it; admission only
 reads it. The Gateway mounts it read-only. Retirement removes it without
