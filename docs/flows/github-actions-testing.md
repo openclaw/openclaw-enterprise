@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-11
-last_updated_session: authoring-run/c4d4109e-2324-46f7-bceb-42e3780475b1
+last_updated_session: authoring-run/50635a3d-c178-492d-877c-8688e35b2615
 ---
 
 # GitHub Actions testing flow
@@ -61,14 +61,16 @@ graph TD
 `scripts/ci/full-integration-preflight.mjs:validateFullIntegrationPreflight`, and
 `scripts/ci/test-suites.mjs:loadTestSuites`
 
-`loadTestSuites` reads tests, inputs and preparation from `scripts/ci/test-suites.json` and its ordered lane references.
+`loadTestSuites` reads `scripts/ci/test-suites.json` and its ordered lane references.
 
-For [complete local attempts](../testing/ci/run-lanes.md#run-a-complete-local-attempt),
-`run-tests.mjs:main` rejects noncanonical paths before reading the manifest or calling `runCompleteLifecycle`.
+For [complete attempts](../testing/ci/run-lanes.md#run-a-complete-local-attempt),
+`run-tests.mjs:main` rejects noncanonical manifest paths before `runCompleteLifecycle`.
 
-`run-tests.mjs:selectLane` validates focused paths before setup. Focused results
-retain cases, environment and cleanup. `validateLaneEvidence` rejects them for
-full-lane aggregation, including one-file lanes.
+`run-tests.mjs:selectLane` validates focused files and required literal names. `runFile` sends an escaped, anchored pattern to the Node child
+and requires one exact, passing standalone case. Environment and cleanup remain.
+Results retain focus and name on preparation failure;
+`validateLaneEvidence` rejects them for full-lane aggregation.
+See [named-case limits](../testing/ci/run-lanes.md#run-a-complete-local-attempt).
 
 `CI Impact` selects coverage; `Suite Audit and Static Checks` verifies checkout identity.
 [Ordinary CI](../testing/ci/required-checks.md#scenarios) uses the event checkout without external service credentials.
@@ -117,7 +119,7 @@ Only the native IAM barrier test receives its migrated PostgreSQL database and b
 `runtime-artifact` supplies CI `image-lanes`, Full Integration's `image-lanes-same-sha`
 and Docker Model Runtime, and First Agent Smoke. Aggregates check producer and consumers.
 
-[run-ci-lane](../../.github/actions/run-ci-lane/action.yml) prepares and cleans resources, runs tests, and uploads sanitized results. Callers set source, credentials, environment and timeout; tests stop five minutes early.
+[run-ci-lane](../../.github/actions/run-ci-lane/action.yml) prepares and cleans resources, runs tests, and uploads sanitized results. Callers set inputs and timeout; tests stop five minutes early.
 
 Dependency caches stay scoped to GitHub PR merge-refs or main. Results and credential-bearing state are never cached; protected jobs never promote PR artifacts.
 
@@ -186,7 +188,7 @@ with declared inputs restored, `lane.env`, preparation defaults, `file.env`, the
 generated values. Later values win.
 `scripts/ci/prepare.mjs:prepareFile` separates re-resolved defaults from generated outputs. `file.env` affects neither preflight nor resource preparation. Keep differing prerequisites in separate files.
 
-The reporter records case names, locations and outcomes. Results and logs retain failure messages (600 characters) and top frames (240). Redaction removes repository paths, replaces nonpublic job/child environment values (8+ characters) with `[env:NAME]`, and masks token/key shapes, URL passwords and `password=` values as `[redacted]`; generated values require a matching shape.
+The reporter records names, locations and outcomes. Logs retain failure messages (600 characters) and top frames (240). Redaction removes repository paths, replaces nonpublic job/child environment values (8+ characters) with `[env:NAME]`, and masks token/key shapes, URL passwords and `password=` values as `[redacted]`; generated values require a matching shape.
 
 HTTP diagnostics retain numeric actual/expected statuses, allowlisted OCC codes and available ChatGPT operation/status. Denied traffic retains an allowlisted category and plugin failures an allowlisted readiness/rollout stage. Rollouts retain allowed Pod phases, readiness/scheduling flags, restart counts, exit codes and allowlisted reasons.
 
@@ -200,7 +202,7 @@ and millisecond offsets enter [file receipts](../testing/ci/openshell-execution.
 not live logs. Readers bound partial records; parent byte limits apply first.
 Markers and separators stay out of failure tails. Timing and case accounting remain separate.
 
-Required cases must pass; every skip or TODO fails the lane. There are no counterpart-skip lists or CI name filters. Synthetic file-wrapper success, missing output, zero cases, or interruption without final reporter output cannot establish coverage. Lane results retain failure, timeout and cleanup outcomes.
+Required cases must pass; skips and TODOs fail. Synthetic wrappers, missing output, zero cases, or interruption without final reporter output cannot establish coverage. Results retain failure, timeout and cleanup outcomes.
 
 <a id="4-clean-up-and-publish-the-bounded-result" class="anchor-alias"></a>
 
@@ -285,6 +287,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 14:40: Trace literal case selection. (authoring-run/50635a3d-c178-492d-877c-8688e35b2615 - ee419a1969d414d4aa934c59b39b868e8777b127)
 
 - 2026-11-11 14:02: Document canonical manifest guard. (authoring-run/c4d4109e-2324-46f7-bceb-42e3780475b1 - 6bfff2b8a3a07d91637dac4391affc9dde8e0547)
 

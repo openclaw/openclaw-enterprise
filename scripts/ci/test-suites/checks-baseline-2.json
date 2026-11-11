@@ -230,6 +230,7 @@
     {
       "path": "tests/integration/ci-runner.test.mjs",
       "expectedTests": [
+        "focused runs retain case enforcement and cleanup but cannot complete a full lane",
         "complete lifecycle preserves phase failures and performs owned cleanup",
         "complete lifecycle drains interrupted preparation before cleanup and never starts tests",
         "complete lifecycle retains owned state when preparation exceeds its deadline",
