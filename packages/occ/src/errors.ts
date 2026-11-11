@@ -1600,6 +1600,25 @@ export class CredentialSourceRegistrationConfigError extends ScopeViolationError
 }
 
 /**
+ * A Credential Gateway refuses, at registration or update, a resolved Secret value that the
+ * gateway cannot store as a credential (OpenShell: values containing CR, LF, or NUL). The
+ * Driver refuses it before any gateway write, so the caller learns the field and the rule at
+ * the request instead of a later data-plane denial. A ScopeViolationError, so OCC's gateway
+ * wrapper passes it through; HTTP answers 400 with the secret field, as for
+ * CredentialSourceConfigError (finding 2536). The message names only the rule, never the value.
+ */
+export class CredentialSourceSecretValueError extends ScopeViolationError {
+  readonly field: string;
+  readonly group = "secrets" as const;
+
+  constructor(field: string, message: string) {
+    super(message);
+    this.name = "CredentialSourceSecretValueError";
+    this.field = field;
+  }
+}
+
+/**
  * A stored credential source's config breaks a Credential Gateway rule added after it was saved
  * (OpenShell: an IP or numeric host, findings 1293 and 1360). Updating it, or deploying an Agent
  * that binds it, can never succeed, so it is a 409 naming the fix, not a 404 (finding 2536).

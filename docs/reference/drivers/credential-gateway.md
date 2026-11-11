@@ -44,6 +44,12 @@ method below. Startup rejects a Driver that omits one.
 | `attachmentStatus`     | The same context plus the provisioned `SandboxResourceRef`.                                      | Per-source state: `ready`, `pending`, `withheld`, `failed`, `revoked`, or `absent`.                                                                            | Compute blocks activation on any state other than `ready` or `pending`.                |
 | `withdraw`             | Placement, Agent revision, its required `SandboxResourceRef`, and one source ID; no source list. | Revokes that Agent revision's access, including running processes. `revoked` only on gateway evidence, `absent` when the Sandbox is gone, otherwise `pending`. | Anything but `revoked` or `absent` keeps the OCC withdrawal `pending` for retry.       |
 
+`registerSource` and `updateSource` may refuse a submitted value by throwing a
+`ScopeViolationError` subclass that carries a `field` and `group` (OpenShell:
+`CredentialSourceRegistrationConfigError`, `CredentialSourceSecretValueError`).
+OCC passes it through and HTTP answers a field-specific `400`; any other throw
+is a dependency-unavailable failure.
+
 `validateSourceConfig({ type, config })` checks nonsecret values synchronously,
 without network calls or other effects. OCC calls it after catalog field checks,
 before reading Secrets or creating a record. It may return the configuration

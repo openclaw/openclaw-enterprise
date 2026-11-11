@@ -151,6 +151,10 @@ reads or persistence:
 - `client_id` is 1 to 256 visible characters; `scope` is space-separated
   OAuth2 scopes.
 
+A Secret value must not contain CR, LF, or NUL: it is refused with the same
+`400` before any Gateway write. Multiline storage, such as PEM keys, stays
+valid.
+
 The workload sends the placeholder itself:
 `curl -H "Authorization: Bearer $API_TOKEN" https://api.example.com/v1/items`.
 The proxy substitutes the token only on requests from `toolBinaries` to the
@@ -158,14 +162,12 @@ source's endpoint. Never put a placeholder, or its `openshell:resolve:env:` pref
 OpenShell refuses a model request whose body carries one, so the Agent's turns
 fail until that history is gone.
 
-Registration rejects provider types outside this catalog.
-
 See how to configure `protocol: mcp`. [Slack example](../../guides/topics/plugins-configure.md#configure-slack-search)
 
 ### Experimental Codex OAuth PoC
 
-The experimental `codex-oauth` type, its operator TLS, token custody and WIP boundaries
-are described in [Experimental Codex OAuth PoC](openshell-credential-gateway/codex-oauth-poc.md).
+The experimental `codex-oauth` type is described in
+[Experimental Codex OAuth PoC](openshell-credential-gateway/codex-oauth-poc.md).
 
 ## OAuth2 refresh sources
 
@@ -235,8 +237,8 @@ exchange nor reseeds credentials.
 
 `updateSource` verifies exact source ownership, reconciles changed binary lists,
 then calls `UpdateProvider`. That operation merges non-empty values, so the
-Driver rejects empty values. Only processes started after the update receive
-the new value; restart a running Harness to apply it.
+Driver rejects empty values. A running Agent uses the new value only after its
+next deployment.
 
 `removeSource` deletes the owned provider, confirms it gone, then deletes the
 source's profile; OpenShell cannot delete a Workspace still holding profiles.
@@ -314,7 +316,6 @@ The Harness, child processes and administrators have different access:
 
 ## Limits
 
-- A running Agent uses an updated static value only after its next deployment.
 - The OAuth2 types support the client-credentials and refresh-token grants
   only. Google service accounts, AWS STS, token
   exchange, and other OpenShell source types remain unavailable.

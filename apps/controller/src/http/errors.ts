@@ -22,6 +22,7 @@ import {
   CredentialSourceConfigError,
   CredentialSourceDriverError,
   CredentialSourceRegistrationConfigError,
+  CredentialSourceSecretValueError,
   CredentialTokenUnsettledError,
   CredentialWithdrawalInProgressError,
   CredentialWithdrawalNotFoundError,
@@ -806,7 +807,8 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   }
   if (
     error instanceof CredentialSourceConfigError ||
-    error instanceof CredentialSourceRegistrationConfigError
+    error instanceof CredentialSourceRegistrationConfigError ||
+    error instanceof CredentialSourceSecretValueError
   ) {
     // OCC's catalog check names a submitted field, which can be any key: cap the message and
     // escape the detail path. A registration-time refusal names a catalog field the same way.

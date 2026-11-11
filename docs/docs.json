@@ -1366,6 +1366,7 @@
               "flows/credential-source-lifecycle",
               "flows/token-service-static-custody",
               "flows/credential-source-refresh",
+              "flows/credential-gateway-static-registration",
               "flows/driver-plugin-loading",
               "flows/agent-plugins",
               "flows/agent-channel-directory",

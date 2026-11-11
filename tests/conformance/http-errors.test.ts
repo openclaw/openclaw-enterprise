@@ -31,6 +31,7 @@ import {
   CredentialGatewayNotConfiguredError,
   CredentialProxyAdmissionError,
   CredentialSourceRegistrationConfigError,
+  CredentialSourceSecretValueError,
   CredentialTokenUnsettledError,
   CredentialWithdrawalInProgressError,
   DedicatedOpenClawSandboxError,
@@ -383,6 +384,19 @@ const cases = [
       message:
         "The oauth2-client-credentials token_url host must not be a Kubernetes Pod name or a name in the OpenShell gateway's namespace.",
       details: [{ path: "/config/token_url", code: "INVALID_VALUE" }],
+    },
+  ],
+  [
+    "a Secret value refused at Gateway registration names its field and the prohibited characters",
+    new CredentialSourceSecretValueError(
+      "api_key",
+      "The credential source secret api_key cannot contain CR, LF, or NUL.",
+    ),
+    {
+      status: 400,
+      code: "INVALID_REQUEST",
+      message: "The credential source secret api_key cannot contain CR, LF, or NUL.",
+      details: [{ path: "/secrets/api_key", code: "INVALID_VALUE" }],
     },
   ],
   [

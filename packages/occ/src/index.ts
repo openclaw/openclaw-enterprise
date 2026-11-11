@@ -159,6 +159,7 @@ export {
   CredentialSourceDriverError,
   CredentialSourceRegistrationConfigError,
   CredentialSourceRevisionError,
+  CredentialSourceSecretValueError,
   CredentialSourceTypeNotOfferedError,
   CredentialSourceUnprotectedError,
   CredentialTokenUnsettledError,

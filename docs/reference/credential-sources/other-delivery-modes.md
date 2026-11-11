@@ -69,7 +69,9 @@ The `201` response includes the `cs_` ID and binding `ref`. Gateway registration
 
 Before reading Secrets, OCC rejects invalid fields or configuration with `400 INVALID_REQUEST`
 at `/config/<field>` or `/secrets/<field>`. OCC records `registering` before the external operation.
-For Gateway copies, definitive rejection triggers cleanup. An uncertain write,
+A value with CR, LF, or NUL is refused with `400` at `/secrets/<field>` before any Gateway
+write. Multiline storage stays supported. For Gateway copies,
+definitive rejection triggers cleanup. An uncertain write,
 such as a timeout, leaves the source `deleting` because a copy may still
 appear. Use DELETE to finish cleanup.
 
@@ -160,7 +162,7 @@ the Secret alone does not change the copy:
 - `{ "secrets": { "api_key": <SecretReference> } }` switches each named field to
   a replacement same-Namespace Secret. The field set stays the source type's
   catalog fields, and non-secret `config` cannot change; register a new source
-  instead.
+  instead. An unusable value gets the same `400`.
 
 Only a `ready` source can be updated. Success returns `200` with the source and
 live Gateway `status`. A Gateway failure returns `503`, preserves Secret references,
@@ -281,6 +283,7 @@ after the caller's grant and the source lookup. `GET` on such a source reports a
 
 - [OAuth connection templates](../connection-templates.md)
 - [Protected credential request flow](../../flows/credential-source-egress.md)
+- [Static registration flow](../../flows/credential-gateway-static-registration.md)
 - [OpenShell Credential Gateway](../drivers/openshell-credential-gateway.md)
 - [CredentialGatewayDriver contract](../drivers/credential-gateway.md)
 - [Credential source lifecycle flow](../../flows/credential-source-lifecycle.md)

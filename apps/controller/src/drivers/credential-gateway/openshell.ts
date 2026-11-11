@@ -21,6 +21,7 @@ import type {
 import {
   CredentialSourceConfigError,
   CredentialSourceRegistrationConfigError,
+  CredentialSourceSecretValueError,
   ScopeViolationError,
   StoredCredentialSourceConfigError,
 } from "@openclaw-enterprise/occ";
@@ -928,7 +929,16 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const client = this.client(context);
     const credentials = providerCredentials(type, input);
     const name = openShellProviderName(context.source.id);
-    await this.getOwnedProvider(client, workspace, name, context);
+    const existing = await this.getOwnedProvider(client, workspace, name, context);
+    // OpenShell keeps a provider's stored values until they are replaced, so an existing
+    // provider must receive the current Secret value instead of being adopted as-is.
+    const replaceCredentials = async () => {
+      // Refresh-type sources have no static credentials to push.
+      if (Object.keys(credentials).length === 0) {
+        return;
+      }
+      await client.updateProviderCredentials(workspace, name, credentials, context.signal);
+    };
     // Reject known collisions before changing the profile. These are separate RPCs:
     // orphan profiles and provider replacement after this read remain outside this check.
     await this.ensureProfile(
@@ -940,27 +950,32 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       () => this.placement(context),
       context.signal,
     );
-    try {
-      await client.createProvider(
-        {
-          workspace,
-          name,
-          type: name,
-          labels: {
-            [MANAGED_BY_LABEL]: MANAGED_BY,
-            [SOURCE_ID_LABEL]: context.source.id,
-            [NAMESPACE_ID_LABEL]: context.namespace.id,
+    if (existing !== undefined) {
+      await replaceCredentials();
+    } else {
+      try {
+        await client.createProvider(
+          {
+            workspace,
+            name,
+            type: name,
+            labels: {
+              [MANAGED_BY_LABEL]: MANAGED_BY,
+              [SOURCE_ID_LABEL]: context.source.id,
+              [NAMESPACE_ID_LABEL]: context.namespace.id,
+            },
+            credentials,
           },
-          credentials,
-        },
-        context.signal,
-      );
-    } catch (error) {
-      if (!(error instanceof OpenShellProviderAlreadyExistsError)) {
-        throw error;
+          context.signal,
+        );
+      } catch (error) {
+        if (!(error instanceof OpenShellProviderAlreadyExistsError)) {
+          throw error;
+        }
+        // Replay after an uncertain create adopts only this exact source's provider.
+        await this.getOwnedProvider(client, workspace, name, context, true);
+        await replaceCredentials();
       }
-      // Replay after an uncertain create adopts only this exact source's provider.
-      await this.getOwnedProvider(client, workspace, name, context, true);
     }
     return { state: input.type === CODEX_OAUTH_TYPE ? "pending" : "ready" };
   }
@@ -987,6 +1002,8 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     if (existing === undefined) {
       return { state: "absent" };
     }
+    // Refuse an unusable value before any gateway write, including the profile narrowing below.
+    const credentials = providerCredentials(type, input);
     // The profile follows the current configuration, so a narrowed binary list applies here.
     // Narrow first: if the credential update then fails, the old token is only less reachable.
     await this.ensureProfile(
@@ -998,12 +1015,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       () => this.placement(context),
       context.signal,
     );
-    await client.updateProviderCredentials(
-      workspace,
-      name,
-      providerCredentials(type, input),
-      context.signal,
-    );
+    await client.updateProviderCredentials(workspace, name, credentials, context.signal);
     return { state: "ready" };
   }
 
@@ -1114,6 +1126,14 @@ function providerCredentials(
       const value = input.secrets[field];
       if (!isNonEmptyString(value)) {
         throw new ScopeViolationError(`The credential source secret ${field} is required.`);
+      }
+      // OpenShell refuses such values only when a binding uses them, which reads as a runtime
+      // failure. Refuse here, before any gateway write, with the field and the rule.
+      if (/[\r\n\0]/.test(value)) {
+        throw new CredentialSourceSecretValueError(
+          field,
+          `The credential source secret ${field} cannot contain CR, LF, or NUL.`,
+        );
       }
       return [key, value];
     }),
