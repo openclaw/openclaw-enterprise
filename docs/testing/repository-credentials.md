@@ -300,8 +300,10 @@ default pins stay unchanged.
 
 Required outcomes:
 
-- After startup, the first model turn proves fresh successful Gateway-signed
-  redemption for its exact provider and execution. Git issuance and requests stay zero.
+- During the first model turn, OCC consumes a fresh Gateway-signed assertion for
+  the exact provider and execution; the origin accepts the marked turn with the
+  expected bearer. These observations do not prove material release for that
+  approval. Git issuance and requests stay zero.
 - Codex `exec_command` fetches an independently published, previously absent
   commit and exact content through stock Git, with one credential scoped to the
   selected repository and permissions.
