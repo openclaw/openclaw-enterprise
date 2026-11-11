@@ -1,5 +1,6 @@
 import { createStatusWirePrimitives } from "./status-wire.ts";
 import { request } from "node:http";
+import { admissionIdTimestamp } from "../../drivers/repo/access/admission-id.ts";
 import type { RepositoryCredentialGrantIdentity } from "@openclaw-enterprise/contracts";
 import type { RepositoryCredentialClientConfiguration } from "../../drivers/repo/access/client-contracts.ts";
 import {
@@ -181,11 +182,7 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
     admissionId: string,
     signal: AbortSignal,
   ): Promise<RepositoryCredentialControlOpenResult> {
-    if (
-      !/^[0-9]{13}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
-        admissionId,
-      )
-    ) {
+    if (admissionIdTimestamp(admissionId) === undefined) {
       throw new RepositoryCredentialControlError(false);
     }
     const reply = await this.call("POST", "/v1/sessions", signal, input, admissionId);
