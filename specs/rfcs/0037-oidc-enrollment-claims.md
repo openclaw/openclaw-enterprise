@@ -83,19 +83,28 @@ The implementation passes 17 PostgreSQL enrollment checks, 11 PostgreSQL OIDC
 sign-in checks, and two Helm/profile configuration checks. The controlled real
 Keycloak 26.7.5 matrix passes 23 checks against PostgreSQL 18.6, including
 IdP-emitted false and absent verification. These results cover AC-1, AC-2 and
-AC-4. A 22-second browser recording shows first-login creation and returning SSO
-with absent verification and an explicit no-grant policy.
+AC-4. The hosted [Keycloak OIDC](https://github.com/openclaw/openclaw-enterprise/actions/runs/43087783484/job/130756778780)
+and [PostgreSQL authentication](https://github.com/openclaw/openclaw-enterprise/actions/runs/43087783484/job/130756779023)
+lanes also pass at implementation revision `a9f946bbc`.
 
-AC-3 remains incomplete: the updated supported Agent workflow is registered in
-the existing `oidc-agent-chat` QA scenario, but local qualification lacks a
-prepared Kubernetes/model environment. The host Keycloak port is occupied by
-an unrelated service; the real-IdP matrix used an isolated container network.
-Neither that matrix nor the recording establishes Agent deployment or a model
-response. The [hosted qualification](https://github.com/openclaw/openclaw-enterprise/actions/runs/43078127870/job/130723402490)
-stopped before the scenario because its Codex sandbox prerequisite failed with
-`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`.
-The [native GitHub recording](https://github.com/openclaw/openclaw-enterprise/pull/5523#issuecomment-6804107540)
-covers real enrollment and returning SSO only.
+AC-3 passes in the [real OIDC Agent-chat qualification](https://github.com/openclaw/openclaw-enterprise/actions/runs/43087783341/job/130756991811):
+one test passed, none failed or skipped, and cleanup passed. The job tested PR
+revision `a9f946bbc` as merge revision
+`ac56da7a0bbfe4cee989ec2a37fb43186287bb31`. Real Keycloak and PostgreSQL create
+accounts with configured access and reuse them on returning login. The regular
+Agent workflow creates and deploys an Agent, then an exact-Agent operator gets
+real browser model responses. The test also verifies streaming, Stop, persisted
+history after reconnect, a second response, and administration and sibling-Agent
+access denials over HTTP and WebSocket.
+
+The [33-second native GitHub video and screenshot](https://github.com/openclaw/openclaw-enterprise/pull/5523#issuecomment-6805569496)
+show the real chat exchange after sign-in. A separate
+[22-second enrollment recording](https://github.com/openclaw/openclaw-enterprise/pull/5523#issuecomment-6804107540)
+shows first-login creation and returning SSO with absent verification and an
+explicit no-grant policy. The uploaded chat video was opened and visually
+verified. This qualification uses real Kubernetes runtime workloads and the
+production application entrypoints with test ingress; it does not establish a
+Helm-installed production deployment.
 
 ## Rationale and alternatives
 
