@@ -16,6 +16,10 @@ export interface ClientFiles {
   readonly hasPublicCa: boolean;
 }
 
+export function isClientBearer(bearer: string): boolean {
+  return /^[A-Za-z0-9_-]{32,256}$/.test(bearer);
+}
+
 function ghHosts(client: RepositoryCredentialClientConfiguration, bearer: string): string {
   return `${JSON.stringify(client.canonicalApiHost)}:\n  api_host: ${JSON.stringify(client.apiHost)}\n  git_protocol: https\n  oauth_token: ${JSON.stringify(bearer)}\n`;
 }
@@ -30,7 +34,7 @@ export async function requireGhMaterial(
   let expected: Buffer | undefined;
   try {
     const bearer = credential.toString("utf8");
-    if (!/^[A-Za-z0-9_-]{32,256}$/.test(bearer)) {
+    if (!isClientBearer(bearer)) {
       throw new Error("invalid-client-gh-material");
     }
     hosts = await readPrivateFile(join(directory, "gh", "hosts.yml"), 16 * 1024);
@@ -75,7 +79,7 @@ export function encodeRepositoryCredentialSessionFiles(
 ): RepositoryCredentialSessionFiles {
   validateClient(opened.client);
   if (
-    !/^[A-Za-z0-9_-]{32,256}$/.test(opened.bearer) ||
+    !isClientBearer(opened.bearer) ||
     !/^[A-Za-z0-9_-]{1,128}$/.test(opened.session.sessionId) ||
     !Number.isFinite(opened.session.deadlineWallMs) ||
     (publicCa && publicCa.byteLength > 64 * 1024)
