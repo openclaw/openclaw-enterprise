@@ -143,14 +143,25 @@ test(
       } else {
         // OpenClaw's own 15 s --probe-timeout covers the whole isolated run, local work
         // included. When the hogs hold that work back long enough, it fires before the
-        // cap and the wrapper reports the CLI's timeout status as MODEL_PROBE_TIMEOUT
-        // without reading CPU wait (main run 40419787603: returned at 105.4 s of a
-        // 110 s cap with 66 s of CPU wait; finding 2673). The cap rule above does not
-        // apply to this path, so require exactly that code. Whether a starved probe should
-        // report CPU_STARVED here too is a product question (finding 2675).
-        assert.equal(probe.code, "MODEL_PROBE_TIMEOUT", `turn timeout before the cap${detail}`);
+        // cap (main run 40419787603: returned at 105.4 s of a 110 s cap with 66 s of CPU
+        // wait; finding 2673). The wrapper then judges only the 15 s window the CLI
+        // preload sampled, not the whole run, whose boot waits even when the provider
+        // hangs (finding 2675): over a quarter waiting and no 5 s idle stretch is
+        // starvation. The hogs keep the CLI runnable through its window, so pressure
+        // accounting must read starvation; without it, throttling alone decides, as at
+        // the cap.
         assert.ok(cliMs >= 15_000, `the CLI ran its 15 s timeout${detail}`);
-        assert.equal(runtimeFailure(events), "MODEL_PROBE_TIMEOUT", detail);
+        assert.ok(probe.timeoutWindowMs >= 15_000, `the preload read the window${detail}`);
+        const starved =
+          probe.timeoutWindowCpuWaitMs > probe.timeoutWindowMs / 4 &&
+          probe.timeoutWindowIdleMs < 5_000;
+        const windowCode = starved ? "MODEL_PROBE_CPU_STARVED" : "MODEL_PROBE_TIMEOUT";
+        assert.equal(probe.code, windowCode, `turn timeout before the cap${detail}`);
+        assert.ok(
+          starved || probe.pressureWaitMs === null,
+          `pressure accounting reads the hogs as starvation in the window${detail}`,
+        );
+        assert.equal(runtimeFailure(events), windowCode, detail);
         assert.equal(phaseAt(phases, "model-probe")?.outcome, "failed", detail);
         assert.equal(phaseAt(phases, "native-spawn"), undefined, detail);
       }
