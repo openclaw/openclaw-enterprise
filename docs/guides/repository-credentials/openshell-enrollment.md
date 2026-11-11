@@ -107,7 +107,8 @@ release and run normal Installation startup validation before admitting Agents.
 
 The OpenShell request-grant profile can share a token for one selected read-only repository
 within the same Namespace and enrollment. Each Git operation requires a fresh authorization
-and matching redemption.
+and matching redemption. If another approval holds the quota lock, the Worker retries briefly
+within the original request deadline and rechecks the live grant.
 
 Apply the database migrations and stop Workers using per-admission issuance before enabling
 this feature. Set `worker.githubSharedIssuanceGeneration: 1` in Helm, or set

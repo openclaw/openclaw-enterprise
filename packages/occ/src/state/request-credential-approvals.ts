@@ -81,19 +81,35 @@ export function memoryRequestCredentialApprovals(
   };
 }
 
+type PostgresApprovalInsert = "inserted" | "contended" | "denied";
+
+interface PostgresRequestCredentialApprovalRepository extends RequestCredentialApprovalRepository {
+  /** Only failure to acquire the first, pre-write quota lock can be retried by the owner. */
+  tryInsert(
+    ...input: Parameters<RequestCredentialApprovalRepository["insert"]>
+  ): Promise<PostgresApprovalInsert>;
+}
+
 export function postgresRequestCredentialApprovals(
   client: PostgresQueryClient,
-): RequestCredentialApprovalRepository {
-  return {
-    async insert(approval, _now, limits) {
+): PostgresRequestCredentialApprovalRepository {
+  const repository: PostgresRequestCredentialApprovalRepository = {
+    async insert(...input) {
+      return (await repository.tryInsert(...input)) === "inserted";
+    },
+    async tryInsert(approval, _now, limits) {
       // Never wait for quota capacity while retaining the caller's policy locks.
       // The database clock owns both shared retention and eligibility across replicas.
       // Refuse snapshot isolation: its counts could miss a preceding lock holder's insertion.
       const lock = await client.query(
         "SELECT pg_try_advisory_xact_lock(1868785008, 0) AS acquired",
       );
-      if ((lock.rows[0] as { acquired?: boolean } | undefined)?.acquired !== true) {
-        return false;
+      const acquired = (lock.rows[0] as { acquired?: boolean } | undefined)?.acquired;
+      if (acquired === false) {
+        return "contended";
+      }
+      if (acquired !== true) {
+        return "denied";
       }
       await client.query(
         "DELETE FROM occ.request_credential_approvals WHERE replay_until_at <= clock_timestamp()",
@@ -127,7 +143,7 @@ export function postgresRequestCredentialApprovals(
           approval.expectedCredentialIdentity ?? null,
         ],
       );
-      return result.rowCount === 1;
+      return result.rowCount === 1 ? "inserted" : "denied";
     },
     async consume(grant, driver, _now) {
       // Claim the assertion in the same transaction as the approval. The unique index
@@ -188,4 +204,5 @@ export function postgresRequestCredentialApprovals(
       );
     },
   };
+  return repository;
 }

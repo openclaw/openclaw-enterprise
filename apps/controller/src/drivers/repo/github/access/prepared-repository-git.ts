@@ -25,6 +25,7 @@ import {
   type PostgresPool,
 } from "@openclaw-enterprise/occ";
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import type { OperationReceipt } from "../../access/backend-contracts.ts";
 import { draftOperationId, validateDraftProjection } from "./prepared-draft-pull.ts";
 import { isDeepStrictEqual } from "node:util";
@@ -58,6 +59,7 @@ import {
 } from "../../access/protected-repository-git-installation.ts";
 
 const pulls = "occ.prepared_repository_draft_pulls";
+const gitApprovalContentionBudgetMs = 400;
 type PullRow = {
   settled_at?: Date;
   scope: PreparedGitHubPullScope & { repositoryId: string };
@@ -348,6 +350,7 @@ type GitUseDecision =
     })
   | OperationReceipt
   | { readonly kind: "approved"; readonly decisionBy: string }
+  | { readonly kind: "approval-contended" }
   | {
       readonly kind: "redeemed";
       readonly source: PreparedRepositoryGitSource;
@@ -999,16 +1002,47 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     approval: PreparedGitGrantApproval,
     signal: AbortSignal,
   ): Promise<string | undefined> {
-    const result = await this.transaction((c) =>
-      this.recordUse(c, q, signal, installed, "online-request", { kind: "approve", approval }),
-    );
-    if (
-      "kind" in result &&
-      result.kind === "approved" &&
-      !signal.aborted &&
-      Date.now() < Date.parse(result.decisionBy)
-    ) {
-      return result.decisionBy;
+    const deadline = Date.parse(q.deadlineAt);
+    const started = performance.now();
+    const deadlineMono = started + (deadline - Date.now());
+    const retryUntil = Math.min(deadlineMono, started + gitApprovalContentionBudgetMs);
+    const active = () =>
+      !signal.aborted && Date.now() < deadline && performance.now() < deadlineMono;
+    let interval = 5;
+    while (active()) {
+      // Each attempt rechecks the original revision, live grant and recipient fence.
+      // A thrown transaction or commit error is terminal.
+      const result = await this.transaction((c) =>
+        this.recordUse(c, q, signal, installed, "online-request", { kind: "approve", approval }),
+      );
+      if (!("kind" in result)) {
+        return;
+      }
+      if (result.kind === "approved") {
+        return active() && Date.now() < Date.parse(result.decisionBy)
+          ? result.decisionBy
+          : undefined;
+      }
+      if (result.kind !== "approval-contended" || !active()) {
+        return;
+      }
+      // The transaction has returned without any write. Wait outside policy and quota locks.
+      const remaining = Math.floor(Math.min(retryUntil - performance.now(), deadline - Date.now()));
+      if (remaining <= 0) {
+        return;
+      }
+      try {
+        await delay(Math.min(interval, remaining), undefined, { signal });
+      } catch (error) {
+        if (!signal.aborted) {
+          throw error;
+        }
+        return;
+      }
+      if (performance.now() >= retryUntil) {
+        return;
+      }
+      interval = Math.min(interval * 2, 50);
     }
   }
 
@@ -1169,7 +1203,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         return receipt;
       });
       if ("kind" in result) {
-        if (result.kind === "approved" || result.kind === "redeemed") {
+        if (result.kind !== "recorded") {
           throw new Error("PREPARED_REPOSITORY_GIT_UNAVAILABLE");
         }
         return result;
@@ -1361,28 +1395,29 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       const decisionBy = new Date(until).toISOString();
       const now = new Date().toISOString();
       if (grantDecision.kind === "approve") {
-        if (
-          !(await approvals.insert(
-            {
-              recipientId: identity.recipientId,
-              bindingId: identity.bindingId,
-              requestId: identity.requestId,
-              deadlineAt: decisionBy,
-              replayUntilAt: new Date(Date.now() + 60_000).toISOString(),
-              driver,
-              execution: {
-                namespaceId: session.namespaceId,
-                agentId: session.agentId,
-                revisionId: session.revisionId,
-              },
-              policyDigest: requestDigestSha256,
-              expectedCredentialIdentity: grantDecision.approval.credentialIdentity,
+        const inserted = await approvals.tryInsert(
+          {
+            recipientId: identity.recipientId,
+            bindingId: identity.bindingId,
+            requestId: identity.requestId,
+            deadlineAt: decisionBy,
+            replayUntilAt: new Date(Date.now() + 60_000).toISOString(),
+            driver,
+            execution: {
+              namespaceId: session.namespaceId,
+              agentId: session.agentId,
+              revisionId: session.revisionId,
             },
-            now,
-            { requestIds: 8192, sandboxRequestIds: 2048 },
-          )) ||
-          !valid(until)
-        ) {
+            policyDigest: requestDigestSha256,
+            expectedCredentialIdentity: grantDecision.approval.credentialIdentity,
+          },
+          now,
+          { requestIds: 8192, sandboxRequestIds: 2048 },
+        );
+        if (inserted === "contended") {
+          return { kind: "approval-contended" } as const;
+        }
+        if (inserted !== "inserted" || !valid(until)) {
           return fail();
         }
         return { kind: "approved", decisionBy } as const;

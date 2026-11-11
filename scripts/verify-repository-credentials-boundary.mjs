@@ -201,6 +201,8 @@ const reviewedImports = {
     "@openclaw-enterprise/occ": ["CredentialDeliveries"],
     // Process-local identity for the existing recipient-delivery worker.
     "node:crypto": ["randomUUID"],
+    // Bounded pre-write contention wait, outside the approval transaction.
+    "node:timers/promises": ["setTimeout"],
     "node:util": ["isDeepStrictEqual"],
   },
   // Hash only admitted enrollment/scope, compare the persisted grant, and bound polling

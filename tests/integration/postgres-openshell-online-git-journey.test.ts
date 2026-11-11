@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID, sign } from "node:crypto";
 import { request as httpsRequest } from "node:https";
 import { buffer } from "node:stream/consumers";
+import { setTimeout as delay } from "node:timers/promises";
 import test, { type TestContext } from "node:test";
 import {
   narrowOnlineGitJourney,
@@ -11,6 +12,7 @@ import {
 } from "../helpers/postgres-repository-set-journey.ts";
 import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
 import { gitCommandBodies } from "../helpers/openshell-online-git-journey.mjs";
+import { within } from "../helpers/wait-for.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { standingExecutionPlatform } from "../helpers/postgres-standing-execution.ts";
 import { preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
@@ -322,7 +324,38 @@ test(
   "two independently bound Git Workers share one mint without sharing request authority",
   { ...requiresPostgres, timeout: 90_000 },
   async (t) => {
-    await selectedReadGitTwoWorkerJourney(t, import.meta.url, async (first, second) => {
+    const afterInsert = new Map<string, () => Promise<void>>();
+    function holdInsert(requestId: string) {
+      const inserted = Promise.withResolvers<void>();
+      const commit = Promise.withResolvers<void>();
+      afterInsert.set(requestId, () => {
+        inserted.resolve();
+        return commit.promise;
+      });
+      return {
+        inserted: inserted.promise,
+        release() {
+          afterInsert.delete(requestId);
+          commit.resolve();
+        },
+      };
+    }
+    const contentions = new Map<string, () => void>();
+    const expectContention = (
+      requestId: string,
+      timeoutMessage = "The signed request did not observe PostgreSQL quota contention.",
+    ) => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      contentions.set(requestId, resolve);
+      return async () => {
+        try {
+          await within(promise, timeoutMessage, 1500);
+        } finally {
+          contentions.delete(requestId);
+        }
+      };
+    };
+    const exercise = async (first: SelectedReadJourney, second: SelectedReadJourney) => {
       async function client(journey: SelectedReadJourney) {
         const { pool, peer, revision, runtime, sandboxId, workspace } = journey;
         const bindingId = revision.egressPlan!.execution.executionId;
@@ -361,24 +394,126 @@ test(
       assert.equal(first.revision.namespaceId, second.revision.namespaceId);
       assert.equal(first.peer.gh.issuesOfTokens.length, 0);
 
-      const requestA = await a.approval();
-      const contended = second.peer.input(b.bindingId, second.sandboxId, false, second.workspace);
-      const quotaOwner = await first.pool.connect();
-      try {
-        await quotaOwner.query("BEGIN");
-        await quotaOwner.query("SELECT pg_advisory_xact_lock(1868785008, 0)");
-        const decision = await second.evaluateRequest(contended);
-        assert.equal(decision.decision, 2);
-        assert.equal(decision.reason_code, "route_not_ready");
-      } finally {
-        quotaOwner.release(true);
+      async function holdQuota<T>(exercise: () => Promise<T>) {
+        const owner = await first.pool.connect();
+        try {
+          await owner.query("BEGIN");
+          await owner.query("SELECT pg_advisory_xact_lock(1868785008, 0)");
+          return await exercise();
+        } finally {
+          try {
+            await owner.query("ROLLBACK");
+          } finally {
+            owner.release(true);
+          }
+        }
       }
-      assert.deepEqual(await b.grant(contended.context.request_id, b.assertion()), {
+      const approvals = async (...ids: string[]) =>
+        (
+          await first.pool.query<{
+            request_id: string;
+            recipient_id: string;
+            binding_id: string;
+            consumed: boolean;
+          }>(
+            `SELECT request_id, recipient_id, binding_id, consumed FROM occ.request_credential_approvals
+         WHERE request_id = ANY($1::text[]) ORDER BY request_id`,
+            [ids],
+          )
+        ).rows;
+      const expired = second.peer.input(b.bindingId, second.sandboxId, false, second.workspace);
+      await holdQuota(async () => {
+        const sawContention = expectContention(expired.context.request_id);
+        const refusal = second.evaluateRequest(expired, 300).then(
+          ({ decision }) => assert.equal(decision, 2),
+          (error: { code: number }) =>
+            assert.equal(error.code, 4, "original gRPC deadline elapsed"),
+        );
+        await sawContention();
+        await refusal;
+      });
+      assert.deepEqual(await approvals(expired.context.request_id), []);
+      assert.deepEqual(await b.grant(expired.context.request_id, b.assertion()), {
         status: 403,
         value: undefined,
       });
-      // Quota contention ends the inspected request. A fresh signed request can proceed.
-      const requestB = await b.approval();
+
+      const cancelled = second.peer.input(b.bindingId, second.sandboxId, false, second.workspace);
+      const cancelledId = cancelled.context.request_id;
+      await holdQuota(async () => {
+        const sawContention = expectContention(cancelledId);
+        const abort = new AbortController();
+        const refusal = second.evaluateRequest(cancelled, 5000, abort.signal).then(
+          () => assert.fail("cancellation must terminate the original RPC"),
+          (error: { code: number }) =>
+            assert.equal(error.code, 1, "original gRPC request cancelled"),
+        );
+        await sawContention();
+        abort.abort();
+        await refusal;
+      });
+      // Give an already scheduled retry enough time to wake after the lock is free.
+      await delay(60);
+      assert.deepEqual(await approvals(cancelledId), []);
+      assert.deepEqual(await b.grant(cancelledId, b.assertion()), {
+        status: 403,
+        value: undefined,
+      });
+
+      const inputA = first.peer.input(a.bindingId, first.sandboxId, false, first.workspace);
+      const inputB = second.peer.input(b.bindingId, second.sandboxId, false, second.workspace);
+      const requestA = inputA.context.request_id;
+      const requestB = inputB.context.request_id;
+      const insertedA = holdInsert(requestA);
+      const insertedB = holdInsert(requestB);
+      const sawB = expectContention(
+        requestB,
+        "Request B did not observe PostgreSQL quota contention.",
+      );
+      // Start B only after A has inserted its row and still owns the quota lock.
+      const pendingA = first.evaluateRequest(inputA);
+      const pendingB = within(insertedA.inserted, "A did not insert its approval", 1500).then(() =>
+        second.evaluateRequest(inputB),
+      );
+      const rowA = {
+        request_id: requestA,
+        recipient_id: first.sandboxId,
+        binding_id: a.bindingId,
+        consumed: false,
+      };
+      const rowB = {
+        request_id: requestB,
+        recipient_id: second.sandboxId,
+        binding_id: b.bindingId,
+        consumed: false,
+      };
+      async function observeCommitOrder() {
+        await sawB();
+        assert.deepEqual(await approvals(requestA, requestB), [], "A's uncommitted row is private");
+        insertedA.release();
+        // The original B call has retried. While its insert is uncommitted, only A is visible.
+        await within(insertedB.inserted, "B did not insert after quota contention", 1500);
+        assert.deepEqual(await approvals(requestA, requestB), [rowA]);
+        insertedB.release();
+      }
+      const order = observeCommitOrder();
+      try {
+        const [decisionA, decisionB] = await Promise.all([pendingA, pendingB, order]);
+        assert.equal(decisionA.decision, 1, decisionA.reason_code);
+        assert.equal(decisionB.decision, 1, decisionB.reason_code);
+      } finally {
+        insertedA.release();
+        insertedB.release();
+        await Promise.allSettled([pendingA, pendingB, order]);
+      }
+      const committed = await approvals(requestA, requestB);
+      assert.deepEqual(new Set(committed), new Set([rowA, rowB]));
+      assert.equal(
+        (await first.evaluateRequest(inputA)).decision,
+        2,
+        "duplicate request stays denied",
+      );
+      assert.deepEqual(await approvals(requestA, requestB), committed);
       // Use the trusted fixture signer's JWT for B's exact endpoint. A's recipient,
       // binding and request ID are otherwise correct. B cannot redeem A's approval.
       const wrongOwner = b.assertion(first.sandboxId, a.providerId);
@@ -414,10 +549,10 @@ test(
         family_id: string;
       }>(
         `SELECT s.revision_id, s.admission_id, u.material_version, m.family_id
-         FROM occ.prepared_repository_git_uses u
-         JOIN occ.repository_session_attempts s USING (admission_id)
-         JOIN occ.prepared_github_shared_members m USING (admission_id)
-         WHERE s.revision_id = ANY($1::text[])`,
+       FROM occ.prepared_repository_git_uses u
+       JOIN occ.repository_session_attempts s USING (admission_id)
+       JOIN occ.prepared_github_shared_members m USING (admission_id)
+       WHERE s.revision_id = ANY($1::text[])`,
         [[first.revision.id, second.revision.id]],
       );
       assert.deepEqual(
@@ -431,7 +566,28 @@ test(
 
       assert.deepEqual(await a.delivery(), originalA);
       const withdrawnRequest = await a.approval();
-      await first.removeBinding();
+      const withdrawing = first.peer.input(a.bindingId, first.sandboxId, true, first.workspace);
+      const withdrawingId = withdrawing.context.request_id;
+      const withdrawal = await holdQuota(async () => {
+        const sawContention = expectContention(withdrawingId);
+        let answered = false;
+        const decision = first.evaluateRequest(withdrawing).finally(() => (answered = true));
+        await sawContention();
+        // Withdrawal commits while the original authorization waits outside its transaction.
+        await first.removeBinding();
+        assert.equal(
+          answered,
+          false,
+          "withdrawal commits while the original request is still live",
+        );
+        return { decision };
+      });
+      assert.equal((await withdrawal.decision).decision, 2);
+      assert.deepEqual(await approvals(withdrawingId), [], "retry rereads the withdrawn grant");
+      assert.deepEqual(await a.grant(withdrawingId, a.assertion()), {
+        status: 403,
+        value: undefined,
+      });
       assert.deepEqual(await a.grant(withdrawnRequest, a.assertion()), {
         status: 403,
         value: undefined,
@@ -445,6 +601,14 @@ test(
       assert.ok(fetch.bytes.includes("PACK"));
       assert.equal(first.peer.gh.issuesOfTokens.length, 1);
       assert.deepEqual(await b.delivery(), originalB);
+    };
+    await selectedReadGitTwoWorkerJourney(t, import.meta.url, exercise, (id, outcome) => {
+      if (outcome === "contended") {
+        contentions.get(id)?.();
+      }
+      if (outcome === "inserted") {
+        return afterInsert.get(id)?.();
+      }
     });
   },
 );

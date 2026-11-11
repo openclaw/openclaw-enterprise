@@ -32,6 +32,11 @@ export function clockBehind(behindMs: number): Clock {
   return Object.freeze({ ...system, wallNow: () => system.wallNow() - behindMs });
 }
 
+export type ObserveGitApproval = (
+  requestId: string,
+  outcome: Awaited<ReturnType<ReturnType<typeof postgresRequestCredentialApprovals>["tryInsert"]>>,
+) => void | Promise<void>;
+
 export interface SelectedRepositories {
   allowStandingApproval?: true;
   selectedRepositoryIds: readonly string[];
@@ -152,6 +157,7 @@ export async function preparedStandingGitPeer(
   namespaceId: string,
   options: {
     beforeIssue?: () => Promise<void>;
+    observeGitApproval?: ObserveGitApproval;
     prepareGitOnDemand?: boolean;
     sharedGitIssuanceGeneration?: number;
     driver?: DriverRegistrationRef;
@@ -227,7 +233,19 @@ export async function preparedStandingGitPeer(
         custodyKeyPath,
         ca: tls.ca,
         startWorker: false,
-        gitGrantApprovals: postgresRequestCredentialApprovals,
+        gitGrantApprovals: options.observeGitApproval
+          ? (client) => {
+              const approvals = postgresRequestCredentialApprovals(client);
+              return {
+                ...approvals,
+                async tryInsert(...input) {
+                  const outcome = await approvals.tryInsert(...input);
+                  await options.observeGitApproval!(input[0].requestId, outcome);
+                  return outcome;
+                },
+              };
+            }
+          : postgresRequestCredentialApprovals,
         prepareGitOnDemand: options.prepareGitOnDemand ?? false,
         ...(options.sharedGitIssuanceGeneration !== undefined && {
           sharedGitIssuanceGeneration: options.sharedGitIssuanceGeneration,
