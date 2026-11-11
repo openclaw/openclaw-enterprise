@@ -155,6 +155,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
       );
     }
     assert.deepEqual(await transaction.namespaces.createNamespace(namespace), namespace);
+    assert.equal(await transaction.namespaces.hasConfigurations(namespace.id), false);
     assert.deepEqual(
       await transaction.configurations.createConfiguration(configuration),
       configuration,
@@ -167,6 +168,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     // Creation defaults editing to disabled; reloads must preserve the same Agent shape.
     const { sandboxPolicyEditing: _editing, ...agentWithoutEditing } = agent;
     assert.deepEqual(await transaction.agents.createAgent(agentWithoutEditing), agent);
+    assert.equal(await transaction.namespaces.hasAgents(namespace.id), true);
     assertCreatedRevision(await transaction.revisions.createRevision(revision), revision);
     await transaction.audit.append(audit);
     await transaction.operations.append(operation);

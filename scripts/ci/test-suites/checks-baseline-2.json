@@ -129,6 +129,10 @@
     "tests/integration/credential-proxy-configuration.test.ts",
     "tests/helpers/socket-relay.test.mjs",
     "tests/integration/gateway-workspace-readiness.test.mjs",
+    "tests/integration/oidc-provider.test.ts",
+    "tests/integration/signin-network-probe.test.ts",
+    "tests/integration/port-forward-cleanup.test.ts",
+    "tests/integration/staged-signin-proof.test.ts",
     "tests/integration/shared-session-cookie.test.ts"
   ],
   "serialFiles": {
@@ -158,7 +162,8 @@
         "upgrade availability preserves action and evidence-write failures",
         "timed-out fixture commands reject success and terminate their subprocesses without exposing output",
         "interrupted rehearsal runners stop concurrent command groups before exiting",
-        "interrupted commands close local pipes without killing a separate-session holder"
+        "interrupted commands close local pipes without killing a separate-session holder",
+        "fixture command reports independently signalled child as unsettled"
       ]
     },
     {
@@ -228,7 +233,17 @@
       "path": "tests/integration/local-first-agent-session-identity.test.ts"
     },
     {
-      "path": "tests/integration/ci-runner.test.mjs"
+      "path": "tests/integration/ci-runner.test.mjs",
+      "expectedTests": [
+        "focused runs retain case enforcement and cleanup but cannot complete a full lane",
+        "complete lifecycle preserves phase failures and performs owned cleanup",
+        "complete lifecycle drains interrupted preparation before cleanup and never starts tests",
+        "complete lifecycle retains owned state when preparation exceeds its deadline",
+        "complete lifecycle refuses invalid attempts and legacy output paths before starting phases",
+        "complete lifecycle restricts manifest selection before effects",
+        "complete lifecycle losing an attempt claim cannot run phases or clean its winner",
+        "complete lifecycle owns detached test groups after deadline or coordinator loss"
+      ]
     },
     {
       "path": "tests/integration/k3d-quickstart-diagnostics.test.ts"
@@ -676,6 +691,34 @@
     },
     {
       "path": "tests/integration/openshell-full-integration.test.ts"
+    },
+    {
+      "path": "tests/integration/oidc-provider.test.ts"
+    },
+    {
+      "path": "tests/integration/signin-network-probe.test.ts",
+      "expectedTests": [
+        "sign-in TCP commands preserve outcomes and fail missing positive controls",
+        "only the initial egress control retries bounded transport rejections"
+      ]
+    },
+    {
+      "path": "tests/integration/port-forward-cleanup.test.ts",
+      "expectedTests": [
+        "operator forwarder shutdown waits for normal closure and can repeat",
+        "operator forwarder shutdown escalates a stubborn child before returning",
+        "operator forwarder shutdown refuses an exited child with an open inherited pipe",
+        "forwarder launch failure remains available after confirmed cleanup"
+      ]
+    },
+    {
+      "path": "tests/integration/staged-signin-proof.test.ts",
+      "expectedTests": [
+        "sign-in proof reader accepts complete observations for both protocols and return branches",
+        "sign-in proof reader refuses incomplete or misbound observations without reflecting proof",
+        "sign-in proof reader binds a regular file and enforces its own size limit",
+        "sign-in coordinator refuses a missed issuance window before using the control"
+      ]
     },
     {
       "path": "tests/integration/shared-session-cookie.test.ts"

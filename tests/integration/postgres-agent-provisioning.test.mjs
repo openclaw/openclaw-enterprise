@@ -5016,11 +5016,47 @@ test(
 );
 
 test(
+  "overlong retained native domain refuses opt-in before durable provisioning",
+  requiresPostgres,
+  async (context) => {
+    const domain = `${"a.".repeat(100)}a.oce.localhost`;
+    assert.equal(domain.length, 215);
+    const fixture = await createFixture(context, { nativeAdmin: true, nativeAdminDomain: domain });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const configs = await fixture.pool.query(
+      "SELECT * FROM occ.configurations WHERE namespace_id = $1 ORDER BY id",
+      [namespace.id],
+    );
+    const response = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: provisioningBody(namespace.id, secrets, { nativeAdmin: true }),
+    });
+    assert.equal(response.status, 400, JSON.stringify(response.body));
+    assert.match(response.body.error.message, /214 characters/);
+    assert.deepEqual(await storedProvisioningCounts(fixture.pool, namespace.id), {
+      jobs: 0,
+      agents: 0,
+    });
+    const after = await fixture.pool.query(
+      "SELECT * FROM occ.configurations WHERE namespace_id = $1 ORDER BY id",
+      [namespace.id],
+    );
+    assert.deepEqual(after.rows, configs.rows);
+  },
+);
+
+test(
   "native admin opt-in provisions the exact origin in the first version and preserves retry identity",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
+    // Canonical DNS length, not presentation whitespace or a root dot, controls admission.
+    const domain = `${"a.".repeat(99)}a.oce.localhost`;
+    assert.equal(domain.length, 213);
+    const canonicalDomain = `a${domain}`;
+    assert.equal(canonicalDomain.length, 214);
     const fixture = await createFixture(context, {
       nativeAdmin: true,
+      nativeAdminDomain: `  ${canonicalDomain.toUpperCase()}.  `,
       stopAfterProvisioning: true,
     });
     const namespace = await fixture.bootstrapNamespace();
@@ -5081,7 +5117,8 @@ test(
     await fixture.stopWorker();
     assert.equal(status.agentId, queued.plan.reservedAgentId);
     const installation = await fixture.state.loadInstallation();
-    const origin = `https://${deriveNativeAdminHost(installation.id, { id: status.agentId, namespaceId: namespace.id }, "agents.oce.localhost")}:9443`;
+    const origin = `https://${deriveNativeAdminHost(installation.id, { id: status.agentId, namespaceId: namespace.id }, canonicalDomain)}:9443`;
+    assert.equal(new URL(origin).hostname.length, 253);
     const configuration = await fixture.request(
       "GET",
       `/namespaces/${namespace.id}/configurations/${status.configurationId}`,

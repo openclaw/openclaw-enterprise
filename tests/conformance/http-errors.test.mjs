@@ -1179,9 +1179,13 @@ for (const [name, error, expected] of cases) {
     assert.doesNotMatch(failure.message, /internal detail/);
     // The wire cap (256 characters) must not cut a mapped message, such as a trailing doc link.
     let sent;
+    const headers = new Map();
     const reply = {
       request: { id: "req_1" },
-      header: () => reply,
+      header: (name, value) => {
+        headers.set(name, value);
+        return reply;
+      },
       status: () => reply,
       send: (body) => {
         sent = body;
@@ -1190,6 +1194,12 @@ for (const [name, error, expected] of cases) {
     };
     canonicalFailure(reply, failure);
     assert.equal(sent.error.message, failure.message);
+    assert.equal(
+      sent.error.reason,
+      undefined,
+      "unrelated failures must not request a registration retry",
+    );
+    assert.equal(headers.has("retry-after"), false);
   });
 }
 

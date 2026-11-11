@@ -1,6 +1,8 @@
+import { constants } from "node:os";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 
 import {
+  skipperGatewayChatPhases,
   skipperOperations,
   skipperOperationDiagnostic,
   skipperSelectedFailure,
@@ -19,10 +21,23 @@ const stages = [
 ] as const;
 const cleanups = ["passed", "failed", "unknown"] as const;
 
+const installerPrefix = "install/occ-dev-up/";
+
+function installerExit(status: string) {
+  const code = Number(status);
+  if (Number.isInteger(code) && code > 0 && code <= 255 && String(code) === status) {
+    return { component: "occ-dev-up", exitCode: code };
+  }
+  if (Object.hasOwn(constants.signals, status)) {
+    return { component: "occ-dev-up", signal: status };
+  }
+}
+
 type Checkpoint =
   | ["skipper_test_operation", (typeof skipperOperations)[number] | "unknown"]
   | ["skipper_last_test_checkpoint", string]
-  | ["skipper_stage", (typeof stages)[number]]
+  | ["skipper_gateway_chat_phase", (typeof skipperGatewayChatPhases)[number]]
+  | ["skipper_stage", (typeof stages)[number] | `${typeof installerPrefix}${string}`]
   | ["skipper_installed_cleanup", (typeof cleanups)[number]];
 
 export async function recordSkipperCheckpoint(...[key, value]: Checkpoint): Promise<void> {
@@ -30,6 +45,24 @@ export async function recordSkipperCheckpoint(...[key, value]: Checkpoint): Prom
   if (process.env.GITHUB_ACTIONS === "true" && output) {
     // A failure to record evidence must leave the original proof and cleanup in charge.
     await appendFile(output, key + "=" + value + "\n").catch(() => {});
+  }
+}
+
+/** Append the observed process termination before cleanup can fail or the owner exits. */
+export async function recordSkipperInstallerExit(result?: {
+  code: number | null;
+  signal: string | null;
+}) {
+  if (!result) {
+    return;
+  }
+  const status = String(result.code ?? result.signal);
+  const exit = installerExit(status);
+  if (exit) {
+    await recordSkipperCheckpoint("skipper_stage", `${installerPrefix}${status}`);
+    return exit.exitCode === undefined
+      ? `occ dev up terminated by ${exit.signal}`
+      : `occ dev up exited ${exit.exitCode}`;
   }
 }
 
@@ -64,14 +97,20 @@ export async function recordSkipperTestFailure(
   teamReview: boolean,
 ) {
   let operation: (typeof skipperOperations)[number] | "unknown" = "unknown";
+  let gatewayChatPhase: (typeof skipperGatewayChatPhases)[number] | undefined;
   try {
-    operation =
-      skipperOperationDiagnostic(skipperSelectedFailure(resultText).error.diagnostic)?.operation ??
-      "unknown";
+    const diagnostic = skipperOperationDiagnostic(
+      skipperSelectedFailure(resultText).error.diagnostic,
+    );
+    operation = diagnostic?.operation ?? "unknown";
+    gatewayChatPhase = diagnostic?.gatewayChatPhase;
   } catch {
     // Missing or malformed runner evidence does not establish an operation.
   }
   await recordSkipperCheckpoint("skipper_test_operation", operation);
+  if (gatewayChatPhase) {
+    await recordSkipperCheckpoint("skipper_gateway_chat_phase", gatewayChatPhase);
+  }
   const entries = await readSkipperJourney(ledgerPath, true);
   const known = skipperTestCheckpoints(teamReview);
   const last =
@@ -105,7 +144,15 @@ if (import.meta.main && process.env.SKIPPER_PROOF_OUTCOME === "failure") {
     console.error("Invalid installed Skipper failure receipt identity.");
     process.exitCode = 1;
   } else {
-    const lastStage = selected(stages, process.env.SKIPPER_STAGE);
+    const stage = process.env.SKIPPER_STAGE;
+    const installer = stage?.startsWith(installerPrefix)
+      ? installerExit(stage.slice(installerPrefix.length))
+      : undefined;
+    const lastStage = installer ? "install" : selected(stages, stage);
+    const testOperation = selected(skipperOperations, process.env.SKIPPER_TEST_OPERATION);
+    const gatewayChatPhase = skipperGatewayChatPhases.find(
+      (phase) => phase === process.env.SKIPPER_GATEWAY_CHAT_PHASE,
+    );
     const receipt = {
       version: 1,
       runId,
@@ -113,9 +160,11 @@ if (import.meta.main && process.env.SKIPPER_PROOF_OUTCOME === "failure") {
       sourceSha,
       outcome: "failed",
       lastStage,
+      ...(installer ? { installer } : {}),
       ...(lastStage === "selected-test"
         ? {
-            testOperation: selected(skipperOperations, process.env.SKIPPER_TEST_OPERATION),
+            testOperation,
+            ...(testOperation === "gateway-chat" && gatewayChatPhase ? { gatewayChatPhase } : {}),
             lastTestCheckpoint: selected(
               [...skipperTestCheckpoints(false), ...skipperTestCheckpoints(true)],
               process.env.SKIPPER_LAST_TEST_CHECKPOINT,

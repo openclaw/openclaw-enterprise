@@ -43,7 +43,7 @@ concurrency:
 jobs:
   demo:
     name: Demo Observability Smoke
-    runs-on: ubuntu-22.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

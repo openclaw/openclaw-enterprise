@@ -42,6 +42,7 @@ import { oidcLoginConfiguration, oidcProviderId, type OidcSignInConfiguration } 
 import { resolveOidcEnrollmentPolicy } from "./oidc-enrollment.ts";
 import { sessionBindingKey, sessionKeyHeader, sessionKeyMatches } from "./session-binding.ts";
 import { sessionAuthority } from "./session-authority.ts";
+import { createServiceKeyVerification } from "./service-key-verification.ts";
 import { passwordSignOut } from "./password-sign-out.ts";
 import { scryptPasswordHasher, type PasswordHasher } from "./password-hasher.ts";
 import { resolveClientAddress, type ClientAddressConfiguration } from "./client-address.ts";
@@ -183,13 +184,17 @@ export const OCC_AUTH_COOKIE_PREFIX = "openclaw_occ";
 export const OCC_SHARED_AUTH_COOKIE_PREFIX = "openclaw_occ_shared";
 export const OCC_SERVICE_KEY_HEADER = "x-api-key";
 const SERVICE_KEY_CONFIG = "occ-service";
+const serviceKeyVerification = createServiceKeyVerification();
 // The createServiceKey schema allows 1 to 32 characters, which Ajv counts in code points.
 // Better Auth counts UTF-16 units, so its own cap is twice that: a 32-emoji name is 64 units.
 // The schema stays the authority; storage is unbounded text.
 export const SERVICE_KEY_NAME_MAX_LENGTH = 32;
 const SERVICE_KEY_NAME_MAX_UTF16_UNITS = SERVICE_KEY_NAME_MAX_LENGTH * 2;
 type ControllerPlugins = (
-  ReturnType<typeof apiKey> | ReturnType<typeof createHumanLogin>["plugin"] | typeof passwordSignOut
+  | ReturnType<typeof apiKey>
+  | ReturnType<typeof createHumanLogin>["plugin"]
+  | ReturnType<typeof createServiceKeyVerification>["plugin"]
+  | typeof passwordSignOut
 )[];
 type ControllerBetterAuth = Auth<BetterAuthOptions & { plugins: ControllerPlugins }>;
 
@@ -862,9 +867,11 @@ export class ControllerAdmissionVerifier implements AdmissionVerifier {
     const headers = authHeaders(request.headers);
     // An explicitly supplied key never falls back to a potentially more privileged cookie.
     if (headers.has(OCC_SERVICE_KEY_HEADER)) {
-      const result = await this.#auth.api.verifyApiKey({
-        body: { key: headers.get(OCC_SERVICE_KEY_HEADER)!, configId: SERVICE_KEY_CONFIG },
-      });
+      const result = await serviceKeyVerification.verify(() =>
+        this.#auth.api.verifyApiKey({
+          body: { key: headers.get(OCC_SERVICE_KEY_HEADER)!, configId: SERVICE_KEY_CONFIG },
+        }),
+      );
       if (!result.valid || !result.key) {
         throw new AdmissionFailure(401, "UNAUTHENTICATED", "A valid service API key is required.");
       }
@@ -1027,6 +1034,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         rateLimit: { enabled: false },
         keyExpiration: { defaultExpiresIn: 30 * 24 * 60 * 60 },
       }),
+      serviceKeyVerification.plugin,
     ],
     emailAndPassword: {
       enabled: true,

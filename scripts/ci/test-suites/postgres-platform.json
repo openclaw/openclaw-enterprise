@@ -33,6 +33,7 @@
     "tests/integration/postgres-presets.test.mjs",
     "tests/integration/postgres-workspace-setup.test.mjs",
     "tests/integration/postgres-connection-auth.test.mjs",
+    "tests/integration/postgres-pool-options.test.ts",
     "tests/integration/postgres-repository-transactions.test.mjs",
     "tests/integration/postgres-controller-work-targets.test.mjs",
     "tests/integration/postgres-transaction-commit.test.mjs",
@@ -82,6 +83,15 @@
         "the pool survives PostgreSQL terminating an idle backend",
         "verify-full checks the server certificate against an IP database host",
         "the IP host identity check leaves other connection configurations unchanged"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-pool-options.test.ts",
+      "expectedTests": [
+        "worker metrics pool rejects writes despite conflicting URL options",
+        "explicit PostgreSQL statement deadline overrides the database URL",
+        "explicit PostgreSQL query deadline overrides the database URL",
+        "worker metrics collection preserves caller limits and unspecified URL settings"
       ]
     },
     {

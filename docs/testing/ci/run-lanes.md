@@ -67,6 +67,14 @@ still builds its controller, and each lane owns its other preparation and tests.
 [First Agent Smoke](first-agent-smoke.md#trigger) adds runtime trust and reuses
 its WebSocket package for the provider loaded into the job's Docker engine.
 
+Full Integration also shares this runtime with Docker Model Runtime, Gateway
+Routing and Production TUI. When Gateway Routing or Production TUI selects the
+current runtime, both full and focused runs wait for the producer. Their job
+budgets cover import, controller preparation and tests. Focused Gateway runs
+with explicit Gateway/Agent images skip the producer; full runs still wait for
+it because other lanes need it. Local TUI upgrade checks retain their selected
+baseline and candidate images.
+
 The shared action passes the downloaded directory in
 `OCC_CI_RUNTIME_ARTIFACT_DIRECTORY` and the producer outputs in
 `OCC_CI_RUNTIME_ARTIFACT_SHA256`, `OCC_CI_RUNTIME_ARTIFACT_SOURCE_SHA`,
@@ -187,6 +195,97 @@ lane's same-source evidence, even when other lanes passed. If the artifact is
 missing, check the **CI lane first failure** annotation when present. It reports
 the first failed or cancelled action step, or `unavailable` when unknown.
 
+### Run a complete local attempt
+
+On Linux, give the runner one fresh private attempt directory to prepare, run and
+clean up a lane with one command. Its parent directory must already exist, belong
+to the runner's user, and deny group and other write access:
+
+```sh
+node scripts/ci/run-tests.mjs run checks-baseline-1 --lifecycle complete \
+  --attempt "$HOME/oce-profile-wire-attempt-1" \
+  --file tests/conformance/openshell-provider-profile-wire.test.ts
+```
+
+Choose an unused attempt name. This example runs one existing wire-conformance
+file without preparing services. Omit `--file` to run the whole selected lane.
+The command validates the selection before preparation and retains the lane's
+required inputs. A file-only run requires all of the file’s expected cases.
+It does not select images, provide missing credentials, or enable optional
+wire tests. Follow the selected lane's setup requirements first.
+
+To select one top-level standalone Node.js case, keep `--file` and add
+`--test-name`. With Docker Compose available, this example prepares PostgreSQL,
+runs the idle-backend regression, and cleans up:
+
+```sh
+node scripts/ci/run-tests.mjs run postgres-platform --lifecycle complete \
+  --attempt "$HOME/oce-postgres-idle-attempt-1" \
+  --file tests/integration/postgres-connection-auth.test.mjs \
+  --test-name 'the pool survives PostgreSQL terminating an idle backend'
+```
+
+The value is a nonempty literal name of at most 256 UTF-8 bytes. Missing `--file`,
+names outside that range, `<root>`, and the selected file's absolute path fail
+before preparation. For names beginning with `--`, use
+`--test-name='--dry-run preserves state'`. Both forms select literal names;
+the runner rejects a second selector before preparation or attempt creation.
+A bare `--test-name` still needs a value.
+The runner rejects `--test-name-pattern`.
+
+The name must exactly match one required case in the selected file’s manifest.
+Exactly one standalone top-level case with that name must pass. Missing, extra
+or duplicate cases, suites, nested tests, skips, TODOs and failures fail the run.
+Use a file-only run for suites or nested tests. Other registered cases may be
+omitted. Results record the literal `testName` and `scope: focused`, including
+when preparation fails; aggregation rejects them as full-lane evidence.
+
+Complete mode uses only `<root>/scripts/ci/test-suites.json`, where `--root`
+selects the checkout and defaults to the runner's checkout. You can omit
+`--manifest` or explicitly supply that canonical path. Relative manifest paths
+resolve from the selected root; normalized relative and absolute paths must equal
+the canonical pathname. Symlink aliases are rejected. A different manifest fails
+before the runner creates an attempt or starts any phase, so selection,
+preparation and execution use the same definitions. Ordinary externally managed
+`run --state ... --results ...` still accepts alternate manifests.
+
+Complete mode rejects `--state` and `--results`. It creates the attempt directory
+exclusively with mode `0700`, then owns `state.json`, `run.json` and `result.json`
+inside it. Do not write into an active attempt or reuse its directory. A competing
+invocation that cannot claim the directory starts no phase and cleans nothing.
+
+The final `result.json` includes separate `lifecycle.phases.prepare`, `run` and
+`cleanup` outcomes. It is written after cleanup, or after the command determines
+that cleanup cannot start safely. Passing tests alone do not make the attempt
+pass. The ordinary test result, when available, remains in `run.json` even if later
+cleanup fails. Phase exceptions use closed failure codes; command arguments and
+output are not copied into phase errors.
+
+SIGINT, SIGTERM and SIGHUP request deferred cancellation. The command reports the
+request immediately, waits for the current phase, then cleans up without starting
+the next test phase. Cancellation still fails the attempt. Preparation and tests
+share a 30-minute deadline unless `CI_RUNNER_DEADLINE_MS` supplies an absolute Unix
+millisecond deadline. Cleanup has its own `CI_RUNNER_CLEANUP_TIMEOUT_MS` allowance
+(default 120 seconds). This mode does not promise immediate interruption.
+
+A timeout, lost phase result or unconfirmed process termination produces
+`reconciliation-required` and prevents a later cleanup phase. Command owners stop
+their process groups when their phase loses its parent. Retain the attempt,
+confirm its processes have stopped, then use the existing cleanup command below
+with its `state.json`. Do not remove another attempt's resources. SIGKILL or host
+failure can prevent a final result; a missing result is not cleanup evidence.
+
+The [runner](../../../scripts/ci/run-tests.mjs) starts each phase through a private IPC channel.
+[Preparation](../../../scripts/ci/prepare.mjs) and
+[cleanup](../../../scripts/ci/cleanup.ts) report their owned command groups.
+The runner checks that these groups have stopped before it starts cleanup.
+
+This mode covers resources recorded by the selected preparation and test owners.
+It does not add installed-image qualification, verify unrelated resource absence,
+or restore host settings changed outside those owners.
+
+### Keep an owned service between file runs
+
 Prepare infrastructure on a disposable host. Keep the private state file until cleanup completes:
 
 ```sh
@@ -199,7 +298,9 @@ Run cleanup after preparation or test failures too. See [local browser diagnosti
 
 For focused local proof, first validate the exact manifest path with
 `node scripts/ci/run-tests.mjs check-selection <lane> --file <manifest-path>`.
-Then prepare the lane and pass the same `--file` argument to `run`. Omit `--file`
+Then prepare the lane and pass the same `--file` argument to `run`. The `run`
+command also accepts `--test-name` for the top-level cases described
+above; `check-selection` validates only the file. Omit both selection arguments
 for the complete lane. The composite action validates focused selection before
 tool setup or preparation; an unknown path, path alias, or another lane's file fails.
 

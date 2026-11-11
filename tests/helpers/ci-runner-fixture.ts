@@ -1,3 +1,5 @@
+import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -78,4 +80,69 @@ export function aggregateArgs(root: string, target: string) {
     "--results-dir",
     "results",
   ];
+}
+
+export function spawnLifecycleRunner(args: readonly string[], cwd: string, env: NodeJS.ProcessEnv) {
+  const child = spawn(process.execPath, args, {
+    cwd,
+    env,
+    detached: true,
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let stderr = "";
+  let exit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
+  child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+    stderr += chunk;
+  });
+  child.on("exit", (code, signal) => {
+    exit = { code, signal };
+  });
+  return { child, exit: () => exit, stderr: () => stderr };
+}
+
+export function lifecycleReady(path: string) {
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) !== null;
+  } catch {
+    return false;
+  }
+}
+
+// Field 5 of /proc/<pid>/stat is the process group; the name in parentheses may hold spaces.
+export function procStat(pid: number) {
+  try {
+    const fields = readFileSync(`/proc/${pid}/stat`, "utf8")
+      .replace(/^.*\) /su, "")
+      .split(" ");
+    return { state: fields[0], pgid: Number(fields[2]) };
+  } catch {
+    return undefined;
+  }
+}
+
+export function killRecordedProcessGroupMembers(
+  pgid: number | undefined,
+  pids: readonly (number | undefined)[],
+) {
+  if (pgid === undefined || !Number.isSafeInteger(pgid) || pgid <= 1) {
+    return;
+  }
+
+  for (const pid of pids) {
+    if (
+      pid === undefined ||
+      !Number.isSafeInteger(pid) ||
+      pid <= 1 ||
+      pid === process.pid ||
+      procStat(pid)?.pgid !== pgid
+    ) {
+      continue;
+    }
+
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Already gone.
+    }
+  }
 }

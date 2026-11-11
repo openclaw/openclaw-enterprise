@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
 updated: 2026-11-11
-last_updated_session: authoring-run/28db5867-56df-4145-a1c5-07be7a7874ee
+last_updated_session: authoring-run/6c64aee6-cdeb-442f-b8bf-936f62eb5bc5
 ---
 
 # Agent Native Admin UI Flow
@@ -85,16 +85,15 @@ graph TD
 `packages/occ/src/index.ts:provisionAgent`
 
 **Enable browser chat** sends `nativeAdmin: true`. The adapter derives the origin
-from Installation settings and refuses conflicting policy.
+from Installation settings, refuses conflicting policy, and limits the normalized
+Agent suffix to 214 characters.
 
-Ordinary creation also sends `expectedConfigurationGeneration`. `createAgent`
-authorizes Agent creation and Configuration update, checks the generation and
-absence of Agent references, then prepares the new Agent's policy. It saves
-Configuration and Agent in one transaction. The caller deploys normally.
+`createAgent` authorizes Agent creation and Configuration update, checks
+`expectedConfigurationGeneration` and absence of Agent references, then prepares
+policy. Configuration and Agent save atomically; the caller deploys normally.
 
-Guided provisioning authorizes, reserves an Agent ID, and prepares policy before
-queueing. The request fingerprint includes this choice; retries reuse the saved
-plan and identity. The worker creates and deploys the Agent.
+Guided provisioning authorizes and prepares policy before queueing. Retries
+reuse its fingerprinted plan and identity. The worker creates and deploys.
 
 ### 0a. Local first-Agent opts into native admin
 
@@ -160,7 +159,9 @@ Compute `id` and `implementation` must match `revision.compute`; changing select
 `apps/controller/src/gateway/native-admin.ts:nativeAdminTarget`
 `apps/controller/src/gateway/native-admin-host.mjs:deriveNativeAdminHost`
 
-`deriveNativeAdminHost` hashes Installation, Namespace and Agent IDs under the configured domain. `nativeAdminTarget` returns the origin’s `/`. Admission resolves this hash through State; unknown, deleted or ambiguous hosts fail closed.
+Overlong suffixes refuse native targets after authorization; opt-in fails before persistence.
+
+`deriveNativeAdminHost` hashes scoped Agent identity under the configured domain. `nativeAdminTarget` returns `/`. Unknown, deleted or ambiguous hosts fail closed.
 
 `nativeAdminGatewayHttpBase` converts `wss:` to `https:`, preserving authority and Agent path, rejecting userinfo, query or hash. Workspace-file WSS is unchanged.
 
@@ -307,6 +308,10 @@ admin Configuration remains Pod-local.
 
 ## Changelog
 
+- 2026-11-11 18:51: Integrate admission classification; retain canonical domain refusal. (authoring-run/6c64aee6-cdeb-442f-b8bf-936f62eb5bc5 - d7f1a5a6196545a406f46a616278c123ab970095)
+
+- 2026-11-11 17:17: Normalize opt-in admission; accompanying changes. (authoring-run/73aeafdb-519f-47fb-b027-583d0eb74522 - a6d44b96ce4c4029e6e2e24be61b97d71da75df1)
+
 - 2026-11-11 09:26: Classify native admission failures. (authoring-run/28db5867-56df-4145-a1c5-07be7a7874ee - f0b9c002c0577bcc8854913b0eafa5449bd5fbe3)
 
 - 2026-11-10 08:30: Add named chat and stale-version browser recovery. (authoring-run/37c71df8-7e9c-4224-bc36-e4091f387620 - eef0b3f10d0e0f4ed09fd32086c84628c41f1b93)
@@ -319,22 +324,5 @@ admin Configuration remains Pod-local.
 - 2026-11-03 12:55: Sign-in link for unactivated page loads. (fix/native-admin-signed-out-html-fallback)
 
 - 2026-11-02 09:55: Shorten provisioning prose and link shared status definitions after rebasing. (authoring-run/275c0d0a-d040-47d3-9e52-47ff86b87ab9 - 393b1585e4b10a3232abf10c60b766d8e55d85ce)
-
-- 2026-10-28 19:58: Document how managed deployments supply read-only configuration guidance. (codex/01a1558e-c27f-7bc0-a403-af59e9364ddf - aa352e92bcdc7cab58364c692a01042c5e459db0)
-- 2026-10-28 12:08: Preserve current native UI navigation and human identity grants during the main refresh. (authoring-run/bafb2708-241b-4261-ab93-1df07dbe94fc - 19c62e378cce0658dff99f5a2d264669a48fc5c6)
-
-- 2026-10-27 11:18: Added creation-time native admin preparation before the first deployment. (authoring-run/5809f10b-3a85-4a0a-8cce-2d3ba6714791 - b91dc40eaaa6e5d29759f5cf4e9dada5a36be86e)
-- 2026-10-27 09:30: Document direct Open Agent UI navigation and availability recovery. Accompanying uncommitted changes. (authoring-run/f3434faa-8624-4f34-83a2-521047f80329 - 24a35dff22e1efb2a9b7058f5c90d6d9e2f9caf7)
-- 2026-10-27 01:52: Preserve current socket-admission behavior while integrating human Gateway grants. (authoring-run/7761d6fc-94f3-45f2-96c0-171d284aa937 - d56aaf212)
-
-- 2026-10-26 22:00: Close refused sockets and denied leases before their denial audit settles; track admission through its audit attempt and bound the shutdown drain. (wf-land-1707 - #1707)
-- 2026-10-26 01:00: A JSON `administer` denial names the grant, not the Agent.
-- 2026-10-25 16:40: Preserve current native-admin flow and identity-grant eligibility while rebasing. (authoring-run/7761d6fc-94f3-45f2-96c0-171d284aa937 - e1c6288c28b8dcc62926e44ba43f8edd945dfcd1)
-
-- 2026-10-15 21:41: Allowed narrow device enrollment with machine admin grants. (authoring-run/4a439216-a1ba-4628-b96e-660a9db92d59 - e03429ce3d889b0ac07fedad801aacacc3498a6a)
-
-- 2026-10-25 12:00: Skip the status read when the permission answer denies `administer`.
-- 2026-10-24 23:25: Documented the authenticated browser 403 Agents link.
-- 2026-10-20 14:54: Extract persistence repair; trim repeated prose. (agent:roboclaw:dashboard:830a6ba7-3357-4ae0-9037-95d98205608c - 1ce18eeea10c83c856c8c08f6b0815e4b39308e0)
 
 [Agent native admin documentation history](agent-native-admin/history.md) preserves the older dated entries.

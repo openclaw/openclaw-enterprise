@@ -1,6 +1,6 @@
 import { preparationIdentity, readRuntimeProvenance } from "./runtime-provenance.mjs";
 import { randomUUID } from "node:crypto";
-import { spawn, spawnSync } from "node:child_process";
+import { fork, spawn, spawnSync } from "node:child_process";
 import {
   closeSync,
   constants,
@@ -17,7 +17,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { availableParallelism, cpus, constants as osConstants } from "node:os";
-import { access, appendFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { access, appendFile, lstat, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
@@ -51,7 +51,10 @@ function usage() {
     "Usage:",
     "  node scripts/ci/run-tests.mjs audit [--manifest <file>] [--root <dir>]",
     "  node scripts/ci/run-tests.mjs check-selection <lane> --file <manifest-path> [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--file <manifest-path>] [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--file <manifest-path> [--test-name <literal>]] [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.mjs run <lane> --lifecycle complete --attempt <fresh-directory> [--file <manifest-path> [--test-name <literal>]] [--manifest scripts/ci/test-suites.json] [--root <dir>]",
+    "    Use --test-name=<literal> for names beginning with --.",
+    "    Complete mode requires the canonical manifest under --root; normalized relative or absolute paths are accepted, symlink aliases are not.",
     "  node scripts/ci/run-tests.mjs aggregate <group> --results-dir <dir> [--needs <json-file>] [--lanes <json-array>] [--release-selection <file>] [--manifest <file>] [--root <dir>]",
   ].join("\n");
 }
@@ -68,6 +71,21 @@ function parseArgs(argv) {
       continue;
     }
 
+    if (token === "--test-name-pattern" || token.startsWith("--test-name-pattern=")) {
+      throw new Error(
+        "--test-name-pattern is unsupported; use --test-name with one literal case name.",
+      );
+    }
+    if (
+      (token === "--test-name" || token.startsWith("--test-name=")) &&
+      Object.hasOwn(options, "test-name")
+    ) {
+      throw new Error("--test-name may only be specified once.");
+    }
+    if (token.startsWith("--test-name=")) {
+      options["test-name"] = token.slice("--test-name=".length);
+      continue;
+    }
     const key = token.slice(2);
     const value = rest[index + 1];
     if (!value || value.startsWith("--")) {
@@ -77,7 +95,7 @@ function parseArgs(argv) {
     index += 1;
   }
 
-  if (!["audit", "check-selection", "run", "aggregate"].includes(command)) {
+  if (!["audit", "check-selection", "run", "aggregate", "prepared-signin"].includes(command)) {
     throw new Error(usage());
   }
 
@@ -522,6 +540,7 @@ function shouldRemoveInheritedEnv(name) {
     name === "DEBUG" ||
     name === "NODE_TEST_CONTEXT" ||
     name === "NODE_TEST_WORKER_ID" ||
+    name === "OPENCLAW_CI_COMPLETE_PHASE" ||
     name.startsWith("OCC_TEST_") ||
     name.startsWith("OCC_PROBE_") ||
     name.endsWith("_KEEP") ||
@@ -867,6 +886,9 @@ function addLiveGroup(pgid) {
     }
   }
   liveGroups.add(pgid);
+  if (process.env.OPENCLAW_CI_COMPLETE_PHASE === "1" && process.send) {
+    process.send({ type: "ci-lifecycle-group", id: pgid });
+  }
 }
 
 // spawnSync's contract, without blocking the runner while other files run: stdout
@@ -888,12 +910,24 @@ function runNode(args, { cwd, env, timeout, onProgress }) {
     let error;
     let settled = false;
     let graceTimer;
-    const child = spawn(process.execPath, args, {
-      cwd,
-      env,
-      detached: true,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    // The existing command owner keeps the test group alive until its result
+    // drains and stops that group if the complete-mode phase loses its parent.
+    const supervised = process.env.OPENCLAW_CI_COMPLETE_PHASE === "1";
+    let commandResult;
+    const child = supervised
+      ? fork(new URL("./cleanup-command.mjs", import.meta.url), [], {
+          cwd,
+          env,
+          detached: true,
+          execArgv: [],
+          stdio: ["ignore", "pipe", "pipe", "ipc"],
+        })
+      : spawn(process.execPath, args, {
+          cwd,
+          env,
+          detached: true,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
     const pgid = child.pid;
     if (pgid !== undefined) {
       addLiveGroup(pgid);
@@ -906,7 +940,12 @@ function runNode(args, { cwd, env, timeout, onProgress }) {
       if (error === undefined) {
         error = Object.assign(new Error(`child ${code}`), { code });
         if (code === "ETIMEDOUT") {
-          child.kill("SIGTERM");
+          if (supervised) {
+            // The anchor ignores TERM; the Node runner and its children receive it.
+            killGroup(pgid, "SIGTERM");
+          } else {
+            child.kill("SIGTERM");
+          }
           graceTimer = setTimeout(() => {
             killGroup(pgid, "SIGKILL");
             closePipes();
@@ -921,9 +960,9 @@ function runNode(args, { cwd, env, timeout, onProgress }) {
     };
     const timer = setTimeout(() => stop("ETIMEDOUT"), timeout);
     for (const stream of [child.stdin, child.stdout, child.stderr]) {
-      stream.on("error", () => {});
+      stream?.on("error", () => {});
     }
-    child.stdin.end();
+    child.stdin?.end();
     child.stderr.resume();
     const readProgress = boundedProgressLines((line) => {
       // Only this small closed record reaches the live log. Ordinary reporter
@@ -962,6 +1001,16 @@ function runNode(args, { cwd, env, timeout, onProgress }) {
       settled = true;
       clearTimeout(timer);
       clearTimeout(graceTimer);
+      if (supervised) {
+        if (commandResult) {
+          ({ code: status, signal } = commandResult);
+          if (commandResult.error) {
+            error ??= new Error("Node command could not start.");
+          }
+        } else {
+          error ??= new Error("Node command owner exited without a result.");
+        }
+      }
       resolvePromise({
         status,
         signal,
@@ -971,16 +1020,33 @@ function runNode(args, { cwd, env, timeout, onProgress }) {
       });
     };
     child.on("exit", () => {
-      // The runner has reported; whatever it left in its group goes now.
-      killGroup(pgid, "SIGKILL");
+      // The anchor stops its own group before exiting. Ordinary runners retain
+      // their existing exit cleanup; never signal a departed anchor's numeric ID.
+      if (!supervised) {
+        killGroup(pgid, "SIGKILL");
+      }
       liveGroups.delete(pgid);
     });
     child.on("error", (spawnError) => {
+      if (supervised && child.pid !== undefined) {
+        stop("EPIPE");
+        return;
+      }
       error ??= spawnError;
       liveGroups.delete(pgid);
       finish(null, null);
     });
     child.on("close", finish);
+    if (supervised) {
+      child.on("message", (result) => {
+        commandResult = result;
+      });
+      child.send({ command: process.execPath, args }, (sendError) => {
+        if (sendError) {
+          stop("EPIPE");
+        }
+      });
+    }
   });
 }
 
@@ -1366,7 +1432,7 @@ function readK3dCase2Phase(directory) {
   }
 }
 
-async function runFile(root, lane, file, statePath, prepareFile, setup, preparationId) {
+async function runFile(root, lane, file, statePath, prepareFile, setup, preparationId, testName) {
   const issues = [];
   const relativePath = repoRelativePath(root, file.path);
   const absolutePath = resolveRepoPath(root, file.path, issues, relativePath);
@@ -1499,17 +1565,20 @@ async function runFile(root, lane, file, statePath, prepareFile, setup, preparat
   let case2Phase;
   try {
     if (issues.length === 0) {
-      agentActivity = await startAgentNamespaceCapture({
-        statePath,
-        lane: lane.name,
-        file: relativePath,
-        preparationId,
-      }).catch(() => {
-        console.error(
-          `[run:${lane.name}] Agent namespace activity unavailable for ${relativePath}`,
-        );
-        return undefined;
-      });
+      // An externally prepared release case has no diagnostic collection state.
+      agentActivity =
+        statePath &&
+        (await startAgentNamespaceCapture({
+          statePath,
+          lane: lane.name,
+          file: relativePath,
+          preparationId,
+        }).catch(() => {
+          console.error(
+            `[run:${lane.name}] Agent namespace activity unavailable for ${relativePath}`,
+          );
+          return undefined;
+        }));
       // The capture names a private directory for the file's container log records.
       Object.assign(env, agentActivity?.env);
       delete env[case2PhaseEnv];
@@ -1528,7 +1597,15 @@ async function runFile(root, lane, file, statePath, prepareFile, setup, preparat
       }
       const nodeStarted = performance.now();
       timeout = fileTimeout();
-      nodeResult = await runNode(["--test", "--test-reporter", reporterPath, absolutePath], {
+      const args = ["--test", "--test-reporter", reporterPath];
+      if (testName !== undefined) {
+        // Only the Node child needs a regex. Parent accounting uses the literal
+        // name, and rejects any extra cases selected by Node's ancestry rules.
+        const escaped = testName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        args.push("--test-name-pattern", new RegExp(`^${escaped}$`).toString());
+      }
+      args.push(absolutePath);
+      nodeResult = await runNode(args, {
         cwd: root,
         env,
         timeout: timeout.timeoutMs,
@@ -1552,6 +1629,24 @@ async function runFile(root, lane, file, statePath, prepareFile, setup, preparat
       nodeElapsedMs = Math.round(performance.now() - nodeStarted);
 
       const events = parseReporter(nodeResult.stdout, nodeResult.error?.code === "ETIMEDOUT");
+      if (
+        testName !== undefined &&
+        events.some(
+          (event) =>
+            ["test:pass", "test:fail"].includes(event.type) &&
+            (event.data?.testType === "suite" || event.data?.nesting > 0),
+        )
+      ) {
+        // Flat required names cannot establish which absent descendants belong
+        // to a selected ancestor. Nested coverage still requires the whole file.
+        issues.push(
+          issue(
+            "unsupported-test-selection",
+            "--test-name supports only standalone top-level test cases; run the whole file for suites or subtests",
+            { file: relativePath },
+          ),
+        );
+      }
       // The job env holds OCC_TEST_* values the child never got; the child env
       // holds prepared values (database URLs) the job never had. Redact both.
       const secrets = failureSecrets([process.env, env]);
@@ -1673,9 +1768,25 @@ async function runFile(root, lane, file, statePath, prepareFile, setup, preparat
     }
   }
 
-  if (nodeResult && tests.length === 0) {
+  if (
+    nodeResult &&
+    (tests.length === 0 ||
+      (testName !== undefined && !tests.some((testCase) => testCase.name === testName)))
+  ) {
     issues.push(
       issue("selected-zero", `selected file produced no test cases: ${relativePath}`, {
+        file: relativePath,
+      }),
+    );
+  }
+
+  if (
+    nodeResult &&
+    testName !== undefined &&
+    (tests.some((testCase) => testCase.name !== testName) || tests.length > 1)
+  ) {
+    issues.push(
+      issue("unexpected-test-selection", "--test-name must execute only one exactly named case", {
         file: relativePath,
       }),
     );
@@ -1731,7 +1842,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup, preparat
   const status = nodeExitCode === 0 && issues.length === 0 ? "passed" : "failed";
   // A file the runner timeout stopped always gets a record, even with nothing captured.
   const timedOut = nodeResult?.error?.code === "ETIMEDOUT";
-  if (status === "failed" && (details !== undefined || timedOut)) {
+  if (statePath && status === "failed" && (details !== undefined || timedOut)) {
     await recordFailure(
       setup,
       statePath,
@@ -1774,7 +1885,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup, preparat
   };
 }
 
-function selectLane(manifest, laneName, selectedFile) {
+function selectLane(manifest, laneName, selectedFile, testName) {
   let lane = manifest.lanes.get(laneName);
   const issues = [...manifest.issues];
 
@@ -1787,10 +1898,30 @@ function selectLane(manifest, laneName, selectedFile) {
         }),
       );
     } else {
-      // Keep the manifest's expected tests, environment and cleanup requirements.
+      if (
+        testName !== undefined &&
+        selected.expectedTests.filter((name) => name === testName).length !== 1
+      ) {
+        issues.push(
+          issue(
+            "invalid-test-selection",
+            "--test-name must exactly match one required manifest case",
+            { file: selectedFile },
+          ),
+        );
+      }
+      // File-only runs keep every required case. Explicit case selection keeps
+      // the exact required name; the child must still report that passing case.
       lane = {
         ...lane,
-        files: [selected],
+        files: [
+          testName === undefined
+            ? selected
+            : {
+                ...selected,
+                expectedTests: selected.expectedTests.filter((name) => name === testName),
+              },
+        ],
         parallelFiles: lane.parallelFiles.filter((path) => path === selected.path),
       };
     }
@@ -1806,9 +1937,9 @@ function selectLane(manifest, laneName, selectedFile) {
   return { lane, issues };
 }
 
-async function runLane(root, manifest, laneName, statePath, resultsPath, selectedFile) {
+async function runLane(root, manifest, laneName, statePath, resultsPath, selectedFile, testName) {
   const source = sourceEvidence(root);
-  const { lane, issues } = selectLane(manifest, laneName, selectedFile);
+  const { lane, issues } = selectLane(manifest, laneName, selectedFile, testName);
   issues.push(...source.issues);
   const files = [];
   let preservedNodeExitCode = 0;
@@ -1855,6 +1986,7 @@ async function runLane(root, manifest, laneName, statePath, resultsPath, selecte
         prepareFile,
         setup,
         preparationId,
+        testName,
       );
       result.mode = mode;
       // Round both ends, so start + duration is the rounded end and never passes a
@@ -1916,6 +2048,7 @@ async function runLane(root, manifest, laneName, statePath, resultsPath, selecte
       (await readRuntimeProvenance(statePath, identity)) ?? initialRuntimeProvenance,
     lane: laneName,
     scope: selectedFile === undefined ? "full" : "focused",
+    ...(testName === undefined ? {} : { testName }),
     status,
     exitCode: preservedNodeExitCode || (status === "passed" ? 0 : 1),
     fileConcurrency: concurrency,
@@ -2346,14 +2479,449 @@ async function writeSummary(path, summary) {
   await writeFile(path, `${JSON.stringify(summary, null, 2)}\n`);
 }
 
+// Complete mode owns a fresh attempt. Phase children keep their group leader
+// alive until the parent acknowledges the result, so its final signal cannot
+// target a reused group ID. Ordinary externally managed runs keep their behavior.
+async function completePhaseChild() {
+  if (!process.send || process.env.OPENCLAW_CI_COMPLETE_PHASE !== "1") {
+    throw new Error("A lifecycle phase requires its owning IPC channel.");
+  }
+  const stop = () => process.kill(-process.pid, "SIGKILL");
+  process.once("disconnect", stop);
+  process.once("exit", stop);
+  process.on("message", (message) => {
+    if (message?.type === "ci-lifecycle-ack") {
+      stop();
+    }
+  });
+  const request = await new Promise((resolveRequest) => {
+    process.once("message", resolveRequest);
+  });
+  let exitCode = 1;
+  let uncertain = false;
+  let error;
+  try {
+    const { phase, root, lane, statePath, resultsPath, manifestPath, file, testName } = request;
+    if (phase === "prepare") {
+      const owner = await import(pathToFileURL(join(root, "scripts/ci/prepare.mjs")));
+      await owner.prepareLane({ lane, statePath, file });
+      exitCode = 0;
+    } else if (phase === "cleanup") {
+      const owner = await import(pathToFileURL(join(root, "scripts/ci/cleanup.mjs")));
+      await owner.cleanupState(statePath);
+      exitCode = 0;
+    } else if (phase === "run") {
+      const manifest = normalizeManifest(
+        loadTestSuites(manifestPath, process.env.OCC_CI_SUITE_VIEW),
+        manifestPath,
+      );
+      exitCode = await runLane(root, manifest, lane, statePath, resultsPath, file, testName);
+      uncertain = abandonedSteps > 0;
+    }
+  } catch {
+    // Command owners can embed opaque argv and output in Error.message. Only
+    // this closed category crosses the phase boundary, never exception text.
+    error = { code: "phase-failed" };
+    exitCode = 1;
+  }
+  process.send({ type: "ci-lifecycle-result", exitCode, uncertain, error });
+  await new Promise(() => {});
+}
+
+function lifecycleGroupsTerminal(groups) {
+  try {
+    for (const name of readdirSync("/proc")) {
+      if (!/^\d+$/u.test(name)) {
+        continue;
+      }
+      let stat;
+      try {
+        stat = readFileSync(`/proc/${name}/stat`, "utf8");
+      } catch (error) {
+        if (error.code === "ENOENT" || error.code === "ESRCH") {
+          continue;
+        }
+        return false;
+      }
+      const fields = stat
+        .slice(stat.lastIndexOf(")") + 2)
+        .trim()
+        .split(/\s+/u);
+      if (fields.length < 20) {
+        return false;
+      }
+      if (groups.has(Number(fields[2])) && !["Z", "X"].includes(fields[0])) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function lifecyclePhase(request, timeoutMs) {
+  const startedAt = new Date().toISOString();
+  const empty = { status: "not-run", exitCode: null, signal: null, terminal: true, startedAt };
+  if (timeoutMs <= 0) {
+    return { ...empty, reason: "deadline-exhausted", endedAt: new Date().toISOString() };
+  }
+  const groups = new Set();
+  let result;
+  let invalid = false;
+  let timedOut = false;
+  let child;
+  try {
+    child = fork(fileURLToPath(import.meta.url), ["__lifecycle-phase"], {
+      cwd: request.root,
+      env: { ...process.env, OPENCLAW_CI_COMPLETE_PHASE: "1" },
+      detached: true,
+      execArgv: [],
+      stdio: ["ignore", "ignore", "ignore", "ipc"],
+    });
+  } catch {
+    return {
+      ...empty,
+      status: "failed",
+      exitCode: 1,
+      reason: "spawn-failed",
+      endedAt: new Date().toISOString(),
+    };
+  }
+  groups.add(child.pid);
+  let settle;
+  let abandonTimer;
+  const exited = new Promise((resolveExit) => {
+    settle = resolveExit;
+  });
+  const stop = () => {
+    if (child.pid > 1 && child.exitCode === null && child.signalCode === null) {
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch (error) {
+        if (error.code !== "ESRCH") {
+          invalid = true;
+        }
+      }
+    }
+    // Even SIGKILL can wait on uninterruptible kernel work. A missing exit is
+    // unconfirmed termination, never permission to race resource cleanup.
+    abandonTimer ??= setTimeout(() => {
+      invalid = true;
+      if (child.connected) {
+        child.disconnect();
+      }
+      child.unref();
+      settle(null);
+    }, 5_000);
+  };
+  const timer = setTimeout(() => {
+    timedOut = true;
+    stop();
+  }, timeoutMs);
+  child.on("message", (message) => {
+    if (
+      message?.type === "ci-lifecycle-group" &&
+      Number.isInteger(message.id) &&
+      message.id > 1 &&
+      !result
+    ) {
+      groups.add(message.id);
+    } else if (
+      message?.type === "ci-lifecycle-result" &&
+      !result &&
+      Number.isInteger(message.exitCode) &&
+      message.exitCode >= 0 &&
+      typeof message.uncertain === "boolean"
+    ) {
+      result = message;
+      child.send({ type: "ci-lifecycle-ack" }, (error) => {
+        if (error) {
+          invalid = true;
+          stop();
+        }
+      });
+    } else {
+      invalid = true;
+      stop();
+    }
+  });
+  child.on("error", () => {
+    invalid = true;
+    if (child.pid) {
+      stop();
+    } else {
+      settle(null);
+    }
+  });
+  child.once("exit", (_code, signal) => settle(signal));
+  child.send(request, (error) => {
+    if (error) {
+      invalid = true;
+      stop();
+    }
+  });
+  const signal = await exited;
+  clearTimeout(timer);
+  clearTimeout(abandonTimer);
+  // Never signal reported nested IDs: their leaders may already have exited.
+  // Read-only checks also include descendants which outlived their parent.
+  const drainDeadline = Date.now() + 5_000;
+  let groupsTerminal = lifecycleGroupsTerminal(groups);
+  while (!groupsTerminal && Date.now() < drainDeadline) {
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+    groupsTerminal = lifecycleGroupsTerminal(groups);
+  }
+  const terminal = Boolean(result && !invalid && !timedOut && !result.uncertain && groupsTerminal);
+  let status = terminal && result.exitCode === 0 ? "passed" : "failed";
+  if (timedOut) {
+    status = "timed-out";
+  }
+  return {
+    status,
+    exitCode: result?.exitCode ?? null,
+    signal: result ? null : signal,
+    terminal,
+    ...(result?.error ? { error: result.error } : {}),
+    startedAt,
+    endedAt: new Date().toISOString(),
+  };
+}
+
+async function runCompleteLifecycle(root, manifest, manifestPath, lane, attempt, file, testName) {
+  if (process.platform !== "linux") {
+    throw new Error("Complete lifecycle mode requires Linux process-group verification.");
+  }
+  const source = sourceEvidence(root);
+  const selection = selectLane(manifest, lane, file, testName);
+  const audit = await auditManifest(root, manifest);
+  if (selection.lane) {
+    fileConcurrency(selection.lane, selection.issues);
+  }
+  if (selection.issues.length || audit.issues.length || source.issues.length) {
+    logIssues([...selection.issues, ...audit.issues, ...source.issues]);
+    return 1;
+  }
+  // One atomic directory claim owns every path used by this invocation. Its
+  // existing parent must not permit another user to replace the claimed directory.
+  let parent;
+  try {
+    parent = realpathSync(dirname(attempt));
+    const owner = statSync(parent);
+    if (!owner.isDirectory() || owner.uid !== process.getuid() || (owner.mode & 0o022) !== 0) {
+      throw new Error("Uncontrolled parent");
+    }
+  } catch {
+    throw new Error(
+      "Complete lifecycle requires an existing runner-owned parent without group or other write access.",
+    );
+  }
+  attempt = join(parent, basename(attempt));
+  try {
+    await mkdir(attempt, { mode: 0o700 });
+  } catch {
+    throw new Error("Complete lifecycle requires a fresh attempt directory.");
+  }
+  const identity = await lstat(attempt);
+  if (
+    !identity.isDirectory() ||
+    identity.uid !== process.getuid() ||
+    (identity.mode & 0o777) !== 0o700
+  ) {
+    throw new Error("Attempt directory ownership is invalid; reconciliation is required.");
+  }
+  const assertAttemptOwned = async () => {
+    try {
+      const current = await lstat(attempt);
+      if (current.isDirectory() && current.dev === identity.dev && current.ino === identity.ino) {
+        return;
+      }
+    } catch {
+      // A missing or replaced owner directory is not authority over another path.
+    }
+    throw new Error("Attempt directory changed; reconciliation is required.");
+  };
+  const statePath = join(attempt, "state.json");
+  const resultsPath = join(attempt, "result.json");
+  const startedAt = new Date().toISOString();
+  const deadline = laneDeadlineMs() ?? Date.now() + 30 * 60_000;
+  const phases = Object.fromEntries(
+    ["prepare", "run", "cleanup"].map((name) => [
+      name,
+      { status: "not-run", exitCode: null, signal: null, terminal: false },
+    ]),
+  );
+  let interrupted = null;
+  let activeDeadline = deadline;
+  let finalizing = false;
+  const interrupt = (signal) => {
+    if (!finalizing && interrupted === null) {
+      interrupted = signal;
+      process.stderr.write(
+        `run-tests: ${signal} received; cancellation pending, waiting up to ${Math.max(0, Math.ceil((activeDeadline - Date.now()) / 1000))}s for the current phase before owned cleanup.\n`,
+      );
+    }
+  };
+  for (const signal of forwardedSignals) {
+    process.on(signal, interrupt);
+  }
+  const phaseRequest = {
+    root,
+    lane,
+    statePath,
+    resultsPath: join(attempt, "run.json"),
+    manifestPath,
+    file,
+    testName,
+  };
+  try {
+    if (!interrupted) {
+      await assertAttemptOwned();
+      if (!interrupted) {
+        phases.prepare = await lifecyclePhase(
+          { ...phaseRequest, phase: "prepare" },
+          deadline - Date.now(),
+        );
+      }
+    }
+    if (!interrupted && phases.prepare.status === "passed") {
+      await assertAttemptOwned();
+      if (!interrupted) {
+        phases.run = await lifecyclePhase({ ...phaseRequest, phase: "run" }, deadline - Date.now());
+      }
+    }
+    const previous = phases.run.status === "not-run" ? phases.prepare : phases.run;
+    if (previous.terminal) {
+      await assertAttemptOwned();
+      activeDeadline = Date.now() + cleanupAllowanceMs();
+      phases.cleanup = await lifecyclePhase(
+        { ...phaseRequest, phase: "cleanup" },
+        cleanupAllowanceMs(),
+      );
+    }
+    let summary = {
+      version: 1,
+      command: "run",
+      sourceSha: source.sha,
+      lane,
+      scope: file === undefined ? "full" : "focused",
+      ...(testName === undefined ? {} : { testName }),
+      startedAt,
+      counts: { passed: 0, failed: 0, skipped: 0, todo: 0, total: 0 },
+      files: [],
+      issues: [],
+    };
+    if (phases.run.terminal) {
+      try {
+        const candidate = JSON.parse(await readFile(phaseRequest.resultsPath, "utf8"));
+        if (
+          candidate.command !== "run" ||
+          candidate.lane !== lane ||
+          candidate.sourceSha !== source.sha ||
+          candidate.testName !== testName ||
+          !Array.isArray(candidate.issues)
+        ) {
+          throw new Error("Invalid run evidence");
+        }
+        summary = candidate;
+      } catch {
+        phases.run.status = "failed";
+        phases.run.exitCode = 1;
+      }
+    }
+    finalizing = true;
+    const uncertain = Object.values(phases).some(
+      (phase) => phase.status !== "not-run" && !phase.terminal,
+    );
+    const passed =
+      !interrupted &&
+      Object.values(phases).every((phase) => phase.status === "passed") &&
+      summary.status === "passed";
+    let exitCode = passed ? 0 : 1;
+    if (interrupted) {
+      exitCode = 128 + osConstants.signals[interrupted];
+    }
+    let status = passed ? "passed" : "failed";
+    if (uncertain) {
+      status = "reconciliation-required";
+    }
+    const lifecycle = {
+      status,
+      interrupted,
+      phases,
+    };
+    if (!passed) {
+      summary.issues.push(
+        issue(
+          "lifecycle-incomplete",
+          uncertain
+            ? "Phase termination is unconfirmed; retain state for reconciliation."
+            : "Complete lifecycle did not pass.",
+        ),
+      );
+    }
+    await assertAttemptOwned();
+    await writeFile(
+      resultsPath,
+      `${JSON.stringify({ ...summary, status: passed ? "passed" : "failed", exitCode, endedAt: new Date().toISOString(), lifecycle }, null, 2)}\n`,
+      { flag: "wx", mode: 0o600 },
+    );
+    return exitCode;
+  } finally {
+    for (const signal of forwardedSignals) {
+      process.removeListener(signal, interrupt);
+    }
+  }
+}
+
 async function main() {
   const { command, positionals, options } = parseArgs(process.argv.slice(2));
+  if (command === "prepared-signin") {
+    if (positionals.length || Object.keys(options).length) {
+      throw new Error(
+        "prepared-signin accepts no file, command, preparation or manifest overrides",
+      );
+    }
+    const { runPreparedSigninCase } = await import("./prepared-signin-case.mjs");
+    return runPreparedSigninCase(repositoryRoot, runFile);
+  }
   const root = resolve(options.root ?? repositoryRoot);
+  const testName = options["test-name"];
+  if (testName !== undefined) {
+    if (command !== "run" || options.file === undefined) {
+      throw new Error("--test-name requires run with --file.");
+    }
+    if (testName.trim().length === 0 || Buffer.byteLength(testName, "utf8") > 256) {
+      throw new Error("--test-name must be a nonempty literal of at most 256 UTF-8 bytes.");
+    }
+    if (testName === "<root>" || testName === resolve(root, options.file)) {
+      throw new Error("--test-name cannot select Node's reserved root or file-wrapper name.");
+    }
+    process.stderr.write(
+      `run-tests: focused file ${JSON.stringify(options.file)} testName ${JSON.stringify(testName)}\n`,
+    );
+  }
   const manifestPath = resolve(root, options.manifest ?? defaultManifestPath);
+  if (
+    command === "run" &&
+    options.lifecycle === "complete" &&
+    manifestPath !== resolve(root, defaultManifestPath)
+  ) {
+    throw new Error(
+      "Complete lifecycle requires the canonical scripts/ci/test-suites.json manifest under --root.",
+    );
+  }
   const manifest = normalizeManifest(
     loadTestSuites(manifestPath, process.env.OCC_CI_SUITE_VIEW),
     manifestPath,
   );
+
+  if (options.lifecycle !== undefined && (command !== "run" || options.lifecycle !== "complete")) {
+    throw new Error("--lifecycle supports only run --lifecycle complete.");
+  }
+  if (options.attempt !== undefined && (command !== "run" || options.lifecycle !== "complete")) {
+    throw new Error("--attempt requires run --lifecycle complete.");
+  }
 
   if (command === "check-selection") {
     if (!positionals[0] || options.file === undefined) {
@@ -2372,6 +2940,27 @@ async function main() {
 
   if (command === "run") {
     const laneName = positionals[0];
+    if (options.lifecycle === "complete") {
+      if (
+        !laneName ||
+        !options.attempt ||
+        options.state !== undefined ||
+        options.results !== undefined
+      ) {
+        throw new Error(
+          "Complete lifecycle requires <lane> and --attempt, without --state or --results.",
+        );
+      }
+      return runCompleteLifecycle(
+        root,
+        manifest,
+        manifestPath,
+        laneName,
+        resolve(root, options.attempt),
+        options.file,
+        testName,
+      );
+    }
     if (!laneName || !options.state || !options.results) {
       throw new Error(`run requires <lane>, --state, and --results\n${usage()}`);
     }
@@ -2382,6 +2971,7 @@ async function main() {
       resolve(root, options.state),
       resolve(root, options.results),
       options.file,
+      testName,
     );
   }
 
@@ -2498,7 +3088,11 @@ function killDescendants() {
 }
 
 try {
-  process.exitCode = await main();
+  if (process.argv[2] === "__lifecycle-phase") {
+    await completePhaseChild();
+  } else {
+    process.exitCode = await main();
+  }
 } catch (error) {
   console.error(error.message);
   process.exitCode = 1;

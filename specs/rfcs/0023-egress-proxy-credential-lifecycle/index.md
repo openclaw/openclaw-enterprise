@@ -26,6 +26,10 @@ The [proposed protected Codex artifact amendment](contracts.md#protected-codex-a
 adds explicitly qualified credential-free download authority to the same frozen
 admission. Its deployment qualification remains pending.
 
+The [classification refusal amendment](contracts.md#classification-refusal-diagnostics)
+proposes provider-owned numeric diagnostics in OCC's denial audit. It is submitted
+with the implementation for review under the repository contribution policy.
+
 The [public-egress proposal](public-egress.md) would let new protected
 installations reach public TCP destinations while keeping credentials outside
 the Agent. Shipping this default requires a qualified OpenShell pair.

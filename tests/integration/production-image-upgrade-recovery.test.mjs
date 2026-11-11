@@ -1074,7 +1074,29 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
             if (
               child.metadata.ownerReferences.some((owner) => owner.uid === current.metadata.uid)
             ) {
-              if (
+              if (fault === "child-replacement-after-delete") {
+                // The original child is gone; another Job now owns a Pod at
+                // that name. Its absent discovery label leaves only the saved
+                // child identity able to detect the replacement during cleanup.
+                state.preflight.pods[childName] = {
+                  ...child,
+                  metadata: {
+                    ...child.metadata,
+                    uid: randomUUID(),
+                    labels: {},
+                    annotations: { fixture: `replacement-child-${randomUUID()}` },
+                    ownerReferences: [
+                      {
+                        apiVersion: "batch/v1",
+                        kind: "Job",
+                        name: "another-preflight-job",
+                        uid: randomUUID(),
+                        controller: true,
+                      },
+                    ],
+                  },
+                };
+              } else if (
                 state.preflightFault?.mode !== "retained-child" ||
                 state.preflightFault.target !== child.spec.containers[0].name
               ) {
@@ -1178,12 +1200,15 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       } else if (
         args.includes("get") &&
         args.includes("pods") &&
-        args.some((arg) => arg.startsWith("batch.kubernetes.io/controller-uid="))
+        (args.some((arg) => arg.startsWith("batch.kubernetes.io/controller-uid=")) ||
+          !args.includes("--selector"))
       ) {
         const selector = args.find((arg) => arg.startsWith("batch.kubernetes.io/controller-uid="));
-        const ownerUid = selector.slice("batch.kubernetes.io/controller-uid=".length);
+        const ownerUid = selector?.slice("batch.kubernetes.io/controller-uid=".length);
         const pods = Object.values(state.preflight.pods).filter(
-          (pod) => pod.metadata.labels["batch.kubernetes.io/controller-uid"] === ownerUid,
+          (pod) =>
+            ownerUid === undefined ||
+            pod.metadata.labels?.["batch.kubernetes.io/controller-uid"] === ownerUid,
         );
         const changing = pods.find(
           (pod) =>
@@ -2058,14 +2083,14 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       handle: ({ command, args, cwd, io }) => {
         commands.push(command);
         if (
-          preflightFault?.mode === "interrupt" &&
+          ["interrupt", "interrupt-hard"].includes(preflightFault?.mode) &&
           !interrupted &&
           command === "kubectl" &&
           args.includes("get") &&
           args.some((arg) => arg.startsWith("job.batch/oce-upgrade-preflight-"))
         ) {
           interrupted = true;
-          upgradeProcess.kill("SIGTERM");
+          upgradeProcess.kill(preflightFault.mode === "interrupt-hard" ? "SIGKILL" : "SIGTERM");
         }
         return fakeCommand(directory, { command, args, cwd }, io, afterDeploy);
       },
@@ -2368,6 +2393,32 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         });
         upgradeProcess = result.child;
         return result;
+      },
+      cleanup: (...extra) => {
+        // Cleanup is a separate operator command with no deployment credentials,
+        // image selection, or mutable values/Installation inputs.
+        const cleanupEnv = { ...env, ...environment };
+        delete cleanupEnv.OCC_URL;
+        delete cleanupEnv.OCC_SERVICE_KEY_FILE;
+        delete cleanupEnv.OCC_CA_BUNDLE;
+        return execute(
+          script,
+          [
+            "--cleanup-preflight",
+            "--kubeconfig",
+            join(directory, "kubeconfig"),
+            "--context",
+            "selected",
+            "--namespace",
+            "system",
+            "--release",
+            release,
+            "--evidence-dir",
+            evidence,
+            ...extra,
+          ],
+          { cwd: repository, env: cleanupEnv },
+        );
       },
       runWithStderr: (fd) =>
         spawnResult("/bin/bash", ["--", script, ...args], { cwd: repository, env }, fd),
@@ -3955,6 +4006,18 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.deepEqual(await f.events(), ["scale-api"]);
     assert.deepEqual(await readFile(join(f.evidence, "preflight-migration.log")), originalCheck);
     assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+    // A separate cleanup traverses the resumed migration attempt but must not
+    // continue the partially stopped upgrade or erase its original evidence.
+    await f.cleanup("--previous-process-settled", "--evidence-unrestored");
+    const cleaned = await f.state();
+    assert.deepEqual(cleaned.preflight.jobs, {});
+    assert.deepEqual(cleaned.preflight.pods, {});
+    assert.equal(cleaned.api, 0);
+    assert.equal(cleaned.worker, 1);
+    assert.deepEqual(await f.events(), ["scale-api"]);
+    assert.deepEqual(await readFile(join(f.evidence, "preflight-migration.log")), originalCheck);
+    assert.ok(existsSync(join(f.evidence, ".upgrade-lock")));
+    assert.equal(existsSync(join(f.evidence, "completed")), false);
   });
 
   test("a lost resumed migration acknowledgement preserves the original recovery path", async (t) => {
