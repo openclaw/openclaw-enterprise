@@ -1,3 +1,4 @@
+import { PostgresWorkQueue } from "../../packages/occ/src/state/postgres-work-queue.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -1966,7 +1967,7 @@ async function canonicalData(db) {
       "gateway_managed_mode",
     ],
     agent_revisions: ["gateway_managed_mode"],
-    controller_work: ["work_kind"],
+    controller_work: ["work_kind", "readiness_deferred"],
   };
   const hasPresets =
     (await db.app.query("SELECT to_regclass('occ.presets') AS relation")).rows[0].relation !== null;
@@ -2000,6 +2001,86 @@ async function canonicalData(db) {
   }
   return result;
 }
+
+test(
+  "Canonical readiness migration defaults historical work to ineligible and constrains ownership",
+  requiresHistoryPostgres,
+  async (context) => {
+    const db = await historyDatabase(context, await migrationHistoryFixture(), "readiness", {
+      prefix: 78,
+    });
+    const namespaceId = `ns_${randomUUID()}`;
+    const { agent: agentId, revision: revisionId } = await seedCanonicalAgent(db, namespaceId, {
+      computeAdmission: true,
+      executionAdmission: true,
+      harnessSettings: true,
+    });
+    const idempotencyKey = `agent_revision:${revisionId}:reconcile`;
+    const actorId = `service-agent-${agentId}`;
+    // Historical readiness evidence must not backfill authority during migration.
+    await db.app.query(
+      `INSERT INTO occ.controller_work
+       (idempotency_key,namespace_id,agent_id,revision_id,actor_id,state,available_at,created_at,updated_at)
+       VALUES($1,$2,$3,$4,$5,'queued',now(),now(),now())`,
+      [idempotencyKey, namespaceId, agentId, revisionId, actorId],
+    );
+    await db.app.query(
+      `INSERT INTO occ.audit_events
+       (id,occurred_at,kind,actor_id,action,namespace_id,resource_kind,resource_id,outcome,details)
+       VALUES($1,clock_timestamp(),'mutation',$2,'reconcile',$3,'agent_revision',$4,'success',$5)`,
+      [
+        `aud_${randomUUID()}`,
+        actorId,
+        namespaceId,
+        revisionId,
+        { workId: idempotencyKey, reasonCode: "REVISION_INCOMPLETE" },
+      ],
+    );
+    assert.deepEqual(await runHistoryMigration(db), {
+      ok: true,
+      history: "preControllerWorkReadiness",
+    });
+    const queue = new PostgresWorkQueue(db.app);
+    const owner = { namespaceId, agentId, revisionId };
+    const marker = async () =>
+      (
+        await db.app.query(
+          "SELECT readiness_deferred FROM occ.controller_work WHERE idempotency_key=$1",
+          [idempotencyKey],
+        )
+      ).rows[0].readiness_deferred;
+    assert.equal(await marker(), false);
+    assert.equal(await queue.requestCredentialCandidateEligible(owner), false);
+    const claim = await queue.claim();
+    assert.ok(claim);
+    await queue.defer(claim, { code: "REVISION_INCOMPLETE" }, { delayMs: 1 });
+    assert.equal(await marker(), true);
+    await queue.enqueue({ ...owner, actorId, idempotencyKey });
+    assert.equal(await marker(), true, "idempotent enqueue preserves current readiness");
+    // The actual app privilege permits transitions, while the database rejects an
+    // authority bit on other work shapes or states, including nullable owner fields.
+    for (const rewrite of [
+      "state='succeeded', completed_at=now(), reason_code='DONE'",
+      "work_kind='provisioning', agent_id=NULL, revision_id=NULL",
+      "agent_target='credentials_withdrawn'",
+      "idempotency_key='other'",
+      "agent_id=NULL, revision_id=NULL, namespace_target='ready'",
+    ]) {
+      await assert.rejects(
+        db.migrator.query(`UPDATE occ.controller_work SET ${rewrite} WHERE idempotency_key=$1`, [
+          idempotencyKey,
+        ]),
+        (error) => error.code === "23514",
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const again = await queue.claim();
+    assert.ok(again);
+    assert.equal(await marker(), false);
+    await queue.complete(again);
+    assert.equal(await queue.requestCredentialCandidateEligible(owner), false);
+  },
+);
 
 test(
   "An authenticated user can browse revisions retained across the Harness settings migration",
@@ -2193,6 +2274,7 @@ test(
       [74, "preHumanAuthenticationResults"],
       [75, "preNativeBrowserAccess"],
       [76, "preRequestCredentialApprovals"],
+      [78, "preControllerWorkReadiness"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2696,6 +2778,7 @@ test(
       [75, "preNativeBrowserAccess"],
       [76, "preRequestCredentialApprovals"],
       [77, "preRequestCredentialAssertions"],
+      [78, "preControllerWorkReadiness"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2893,6 +2976,7 @@ test(
       [75, "preNativeBrowserAccess"],
       [76, "preRequestCredentialApprovals"],
       [77, "preRequestCredentialAssertions"],
+      [78, "preControllerWorkReadiness"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(

@@ -115,12 +115,15 @@ worker-owned Git custody state.
 
 `packages/occ/src/index.ts:checkRequestCredential` accepts the active revision,
 or the latest inactive candidate with eligible startup work. The candidate must
-have a live claim, or queued work whose latest exact-work attempt has outcome
-`success` and code `REVISION_INCOMPLETE`. A later failure overrides earlier
-readiness evidence, even with the same code. Expired claims, recovered failures,
-missing or ambiguous evidence, and terminal candidate work refuse access.
-Repeated deferrals can reuse the last success; its timestamp need not equal the
-work update timestamp.
+have a live claim, or queued work with `readiness_deferred` set on its exact
+revision reconciliation row. The queue sets this private marker in the same SQL
+transition as a plain `REVISION_INCOMPLETE` defer without refusal or stop.
+Repeated genuine deferrals set it even when duplicate audit evidence is suppressed.
+All other deferrals, claims, retries, completion, failure and recovery clear it.
+New and preexisting rows default to false; historical audit events cannot grant
+authority. The database constrains true to queued lifecycle work with a valid
+Agent/revision owner, the exact reconcile key, and no other target.
+Expired claims and terminal candidate work refuse access.
 
 `packages/occ/src/state/postgres-work-queue.ts:lockRequestCredentialWork` holds
 the exact work row with `FOR SHARE NOWAIT`, only for the latest inactive candidate,
@@ -134,9 +137,8 @@ live installation verification, before opening a fresh Read Committed transactio
 Every attempt uses the original signal and absolute deadline. Contention alone
 creates no withdrawal audit. Other errors retain their fail-closed handling.
 A separate statement,
-`requestCredentialCandidateEligible`, reads work and the latest unfiltered
-attempt together after the lock. This sees any transition committed during lock
-acquisition, with its matching audit evidence. OCC retains this fence through
+`requestCredentialCandidateEligible`, reads the current row after the lock and
+checks its marker or live database-clock lease. OCC retains this fence through
 approval or release, and rechecks database lease time before each. Redemption
 runs the same policy checks again. Namespace, source, IAM configuration and Agent
 locks retain the existing withdrawal and ownership fences. Memory state has no

@@ -748,13 +748,6 @@ const insertEvidenceCteSql = (filter = "", reasonCode = "$4::text", details = "'
     WHERE true ${filter}
     RETURNING id
   )`;
-// Bind evidence to immutable work ownership, not merely a revision's visible progress.
-const WORK_ATTEMPT_PREDICATE = `event.namespace_id = work.namespace_id AND event.actor_id = work.actor_id
-         AND event.resource_kind = 'agent_revision' AND event.resource_id = work.revision_id
-         AND event.kind = 'mutation' AND event.action = 'reconcile'
-         AND event.details->>'workId' = work.idempotency_key
-         AND event.occurred_at >= work.created_at`;
-
 const INSERT_EVIDENCE_CTE_SQL = insertEvidenceCteSql();
 const INSERT_EVIDENCE_SQL = `${INSERT_EVIDENCE_CTE_SQL}
   SELECT transitioned.* FROM transitioned`;
@@ -1104,7 +1097,8 @@ export class PostgresWorkQueue {
              LIMIT 1
            )
            UPDATE occ.controller_work AS work
-           SET state = 'claimed',
+           SET readiness_deferred = false,
+               state = 'claimed',
                attempt_count = CASE WHEN ${repositoryCleanupSql("work")}
                  THEN LEAST(work.attempt_count::bigint + 1, $2::integer)::integer
                  ELSE work.attempt_count + 1 END,
@@ -1212,30 +1206,19 @@ export class PostgresWorkQueue {
   }
 
   /**
-   * Call after locking work. A fresh statement snapshot sees the audit committed with its
-   * last transition even if that transition finished during the preceding locking read.
+   * Call after locking work. Read the current transition fact under the same lock.
    * Keep the lock through authorization/release; recheck database lease time before either.
    */
   async requestCredentialCandidateEligible(owner: RepositoryRevisionOwner): Promise<boolean> {
     const found = await this.client.query(
       `SELECT 1 FROM occ.controller_work AS work
-       LEFT JOIN LATERAL (
-         SELECT event.outcome, event.details,
-           count(*) OVER (PARTITION BY event.occurred_at) AS simultaneous
-         FROM occ.audit_events AS event
-         WHERE ${WORK_ATTEMPT_PREDICATE}
-         ORDER BY event.occurred_at DESC, event.id DESC LIMIT 1
-       ) AS attempt ON true
        WHERE work.idempotency_key = 'agent_revision:' || $3::text || ':reconcile'
          AND work.namespace_id = $1 AND work.agent_id = $2 AND work.revision_id = $3
          AND work.work_kind = 'lifecycle' AND work.namespace_target IS NULL
          AND work.agent_target IS NULL
          AND (
            (work.state = 'claimed' AND work.lease_expires_at > clock_timestamp()) OR
-           (work.state = 'queued' AND attempt.outcome = 'success'
-             AND attempt.details->>'reasonCode' = 'REVISION_INCOMPLETE'
-             AND NOT (attempt.details ? 'refusal') AND NOT (attempt.details ? 'final')
-             AND attempt.simultaneous = 1)
+           (work.state = 'queued' AND work.readiness_deferred)
          )`,
       [owner.namespaceId, owner.agentId, owner.revisionId],
     );
@@ -1325,7 +1308,11 @@ export class PostgresWorkQueue {
          event.details->>'refusal' AS refusal
        FROM occ.controller_work AS work
        JOIN occ.audit_events AS event
-         ON ${WORK_ATTEMPT_PREDICATE}
+         ON event.namespace_id = work.namespace_id AND event.actor_id = work.actor_id
+         AND event.resource_kind = 'agent_revision' AND event.resource_id = work.revision_id
+         AND event.kind = 'mutation' AND event.action = 'reconcile'
+         AND event.details->>'workId' = work.idempotency_key
+         AND event.occurred_at >= work.created_at
          AND ($2::text[] IS NULL OR event.details->>'reasonCode' = ANY($2::text[]))
        WHERE work.idempotency_key = $1
        ORDER BY event.occurred_at DESC, event.id DESC LIMIT 1`,
@@ -1356,7 +1343,11 @@ export class PostgresWorkQueue {
          event.details->>'stopYielded' AS stop_yielded
        FROM occ.controller_work AS work
        JOIN occ.audit_events AS event
-         ON ${WORK_ATTEMPT_PREDICATE}
+         ON event.namespace_id = work.namespace_id AND event.actor_id = work.actor_id
+         AND event.resource_kind = 'agent_revision' AND event.resource_id = work.revision_id
+         AND event.kind = 'mutation' AND event.action = 'reconcile'
+         AND event.details->>'workId' = work.idempotency_key
+         AND event.occurred_at >= work.created_at
        WHERE work.idempotency_key = $1
        ORDER BY event.occurred_at DESC, event.id DESC LIMIT 64`,
       [nonempty(idempotencyKey, "Controller work idempotency key")],
@@ -1384,7 +1375,8 @@ export class PostgresWorkQueue {
     const completed = await this.client.query(
       `WITH transitioned AS (
          UPDATE occ.controller_work
-         SET state = 'succeeded',
+         SET readiness_deferred = false,
+             state = 'succeeded',
              claim_token = NULL,
              lease_expires_at = NULL,
              completed_at = clock_timestamp(),
@@ -1461,7 +1453,13 @@ export class PostgresWorkQueue {
     const deferred = await this.client.query(
       `WITH transitioned AS (
          UPDATE occ.controller_work
-         SET state = 'queued',
+         SET readiness_deferred = (work_kind = 'lifecycle'
+               AND agent_id IS NOT NULL AND revision_id IS NOT NULL
+               AND namespace_target IS NULL AND agent_target IS NULL
+               AND idempotency_key = 'agent_revision:' || revision_id || ':reconcile'
+               AND $4::text = 'REVISION_INCOMPLETE' AND $10::text IS NULL
+               AND NOT $13::boolean),
+             state = 'queued',
              attempt_count = GREATEST(attempt_count - 1, 0),
              available_at = clock_timestamp() +
                COALESCE($8::double precision, ${backoffDelayMsSql("attempt_count", "$5", "$6", "$7")}) * interval '1 millisecond',
@@ -1487,6 +1485,7 @@ export class PostgresWorkQueue {
         pending.refusal === undefined ? null : safeFailureCode(pending.refusal),
         options.repeatEvidence ?? false,
         pending.refusal !== undefined && pending.stopYielded === true,
+        pending.stopYielded === true,
       ],
     );
     if (deferred.rows.length === 0) {
@@ -1502,7 +1501,8 @@ export class PostgresWorkQueue {
     const retried = await this.client.query(
       `WITH transitioned AS (
          UPDATE occ.controller_work AS work
-         SET state = CASE
+         SET readiness_deferred = false,
+             state = CASE
                WHEN ${exhausted} THEN 'failed_permanent'
                ELSE 'queued'
              END,
@@ -1603,7 +1603,8 @@ export class PostgresWorkQueue {
            ))
        ), transitioned AS (
          UPDATE occ.controller_work AS work
-         SET state = 'failed_permanent',
+         SET readiness_deferred = false,
+             state = 'failed_permanent',
              claim_token = NULL,
              lease_expires_at = NULL,
              completed_at = clock_timestamp(),
@@ -1668,7 +1669,8 @@ export class PostgresWorkQueue {
           AND work.idempotency_key NOT IN (SELECT idempotency_key FROM recovering_refused_stops)`,
        )} transitioned AS (
          UPDATE occ.controller_work AS work
-         SET state = CASE
+         SET readiness_deferred = false,
+             state = CASE
                WHEN ${exhaustedClaim} THEN 'failed_permanent'
                ELSE 'queued'
              END,
@@ -1743,7 +1745,8 @@ export class PostgresWorkQueue {
        )} transitioned AS (
          -- A requeued row keeps its available_at: it was already queued.
          UPDATE occ.controller_work AS work
-         SET state = CASE WHEN ${predecessorStop} THEN 'queued' ELSE 'failed_permanent' END,
+         SET readiness_deferred = false,
+             state = CASE WHEN ${predecessorStop} THEN 'queued' ELSE 'failed_permanent' END,
              attempt_count = CASE
                WHEN ${predecessorStop} THEN GREATEST($2::integer - 1, 0)
                ELSE work.attempt_count

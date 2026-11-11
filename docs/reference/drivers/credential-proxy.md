@@ -111,7 +111,7 @@ admit `policyReduction`.
 Removing either binding may stop or redeploy execution; uninterrupted use of the
 other path is not guaranteed.
 
-Startup follows [candidate eligibility](../../flows/credential-source-egress/model-requests.md#2-approve-the-captured-request).
+Startup requires [current queue authority](../../flows/credential-source-egress/model-requests.md#2-approve-the-captured-request).
 
 `authorizeRequestCredential` checks the captured request and saves a nonsecret,
 single-use approval. `resolveRequestCredential` authenticates its redemption,

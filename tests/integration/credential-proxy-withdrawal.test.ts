@@ -1972,6 +1972,13 @@ test(
       assert.equal(latest.at(-1)?.id, revision.id);
       assert.equal(work.state, expected.state);
       assert.equal(work.leaseActive, expected.leased);
+      const marker = (
+        await f.pool.query(
+          "SELECT readiness_deferred FROM occ.controller_work WHERE idempotency_key=$1",
+          [key],
+        )
+      ).rows[0].readiness_deferred;
+      assert.equal(marker, expected.state === "queued" && expected.approved);
       const agent = await f.request("GET", path);
       assert.equal(agent.status, 200);
       assert.equal(agent.data.status, "active");
@@ -2113,6 +2120,108 @@ test(
   },
 );
 
+for (const disabling of ["suppressed refusal", "out-of-order history"] as const) {
+  test(
+    `current queue transition overrides ${disabling} for model credentials (PostgreSQL)`,
+    { ...requiresPostgres, timeout: 30_000 },
+    async (t) => {
+      const { f, revision, exchange, request, grant } = await requestCredentialFixture(t, {
+        activateRevision: false,
+      });
+      const key = `agent_revision:${revision.id}:reconcile`;
+      const queue = new PostgresWorkQueue(f.pool, { random: () => 0 });
+      const signal = t.signal;
+      const claim = async () => {
+        const work = await queue.findWork(key);
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.max(0, work!.availableAt.getTime() - Date.now()) + 20),
+        );
+        const selected = await claimIsolatedWork(f.pool, { workId: key });
+        assert.ok(selected);
+        return selected;
+      };
+      const marker = async () =>
+        (
+          await f.pool.query(
+            "SELECT readiness_deferred FROM occ.controller_work WHERE idempotency_key=$1",
+            [key],
+          )
+        ).rows[0].readiness_deferred;
+      await queue.defer(await claim(), { code: "REVISION_INCOMPLETE" }, { delayMs: 1 });
+      const held = request();
+      assert.equal(await exchange.authorizeRequestCredential(held, signal), "credential");
+      const events = async () =>
+        (
+          await f.pool.query(
+            "SELECT count(*)::int AS count FROM occ.audit_events WHERE details->>'workId'=$1",
+            [key],
+          )
+        ).rows[0].count;
+      const before = await events();
+      const next = await claim();
+      if (disabling === "suppressed refusal") {
+        // The queue accepts this combination. Suppressing audit must not preserve authority.
+        await queue.defer(
+          next,
+          { code: "REVISION_INCOMPLETE", refusal: "CREDENTIAL_WITHDRAWN" },
+          { delayMs: 1, recordEvidence: false },
+        );
+        assert.equal(await events(), before);
+      } else {
+        await queue.retry(next, { code: "REVISION_INCOMPLETE" });
+        // Isolated synthetic negative evidence: a historical success appears later than
+        // the real retry. This is not a runtime timestamp or a simulated worker result.
+        await f.pool.query(
+          `INSERT INTO occ.audit_events
+           (id, occurred_at, kind, actor_id, action, namespace_id, resource_kind, resource_id, outcome, details)
+           SELECT $2, clock_timestamp() + interval '1 day', kind, actor_id, action,
+             namespace_id, resource_kind, resource_id, outcome, details
+           FROM occ.audit_events WHERE details->>'workId'=$1 AND outcome='success' LIMIT 1`,
+          [key, `aud_${randomUUID()}`],
+        );
+      }
+      const denied = request();
+      const reads = f.secretReads;
+      assert.equal(await exchange.authorizeRequestCredential(denied, signal), undefined);
+      assert.equal(await exchange.resolveRequestCredential(grant(held), signal), undefined);
+      assert.equal(f.secretReads, reads, "disabled readiness refuses before Secret access");
+      assert.equal(
+        (
+          await f.pool.query(
+            "SELECT count(*)::int AS count FROM occ.request_credential_approvals WHERE request_id=$1",
+            [denied.requestId],
+          )
+        ).rows[0].count,
+        0,
+      );
+      assert.equal(await marker(), false);
+      // Only a new owned claim and plain readiness defer restores queued eligibility.
+      await queue.defer(
+        await claim(),
+        { code: "REVISION_INCOMPLETE" },
+        { delayMs: 1, recordEvidence: false },
+      );
+      assert.equal(await marker(), true);
+      const restored = request();
+      assert.equal(await exchange.authorizeRequestCredential(restored, signal), "credential");
+      assert.equal(
+        (await exchange.resolveRequestCredential(grant(restored), signal))?.value,
+        "synthetic-key-initial",
+      );
+      assert.equal(await exchange.resolveRequestCredential(grant(restored), signal), undefined);
+      t.diagnostic(
+        JSON.stringify({
+          disabling,
+          workId: key,
+          deniedRequestId: denied.requestId,
+          restoredRequestId: restored.requestId,
+          marker: await marker(),
+        }),
+      );
+    },
+  );
+}
+
 test(
   "a newer public admission refuses the older model candidate despite its live lease (PostgreSQL)",
   { ...requiresPostgres, timeout: 30_000 },
@@ -2219,6 +2328,15 @@ test(
     await refuse(held);
     await queue.recoverStale();
     assert.equal((await queue.findWorkAttempt(key))?.code, "LEASE_EXPIRED");
+    assert.equal(
+      (
+        await f.pool.query(
+          "SELECT readiness_deferred FROM occ.controller_work WHERE idempotency_key=$1",
+          [key],
+        )
+      ).rows[0].readiness_deferred,
+      false,
+    );
     await refuse(request());
     const recovered = await claim();
     const recoveredInput = await approve();
@@ -2376,11 +2494,27 @@ for (const phase of ["authorization", "consumed approval", "final release"] as c
         if (phase !== "authorization") {
           assert.equal(await exchange.authorizeRequestCredential(input, signal), "credential");
         }
+        const redemption = {
+          ...grant(input),
+          deadlineAt: new Date(Date.now() + 25_000).toISOString(),
+        };
+        const originalExpiry =
+          phase === "authorization"
+            ? undefined
+            : (
+                await f.pool.query(
+                  "SELECT expires_at FROM occ.request_credential_approvals WHERE request_id=$1",
+                  [input.requestId],
+                )
+              ).rows[0].expires_at;
+        if (originalExpiry) {
+          assert.ok(originalExpiry.getTime() < Date.parse(redemption.deadlineAt));
+        }
         // On final release, preserve both original outside-lock material observations.
         // Stage contention only after the second read has captured the original value.
         const materialPause = phase === "final release" ? fixture.pauseMaterialRead(1) : undefined;
         let operation = materialPause
-          ? exchange.resolveRequestCredential(grant(input), signal)
+          ? exchange.resolveRequestCredential(redemption, signal)
           : undefined;
         if (materialPause) {
           await materialPause.reached;
@@ -2395,7 +2529,7 @@ for (const phase of ["authorization", "consumed approval", "final release"] as c
           operation ??=
             phase === "authorization"
               ? exchange.authorizeRequestCredential(input, signal)
-              : exchange.resolveRequestCredential(grant(input), signal);
+              : exchange.resolveRequestCredential(redemption, signal);
           materialPause?.release();
           await Promise.race([
             pause.reached,
@@ -2435,6 +2569,13 @@ for (const phase of ["authorization", "consumed approval", "final release"] as c
           if (outcome === "aborted" || outcome === "expired") {
             if (outcome === "aborted") {
               controller.abort();
+            }
+            if (outcome === "expired" && originalExpiry) {
+              // Hold the external scheduling barrier past the persisted expiry. This
+              // uses real elapsed time; the later grant deadline cannot renew approval.
+              await new Promise((resolve) =>
+                setTimeout(resolve, Math.max(0, originalExpiry.getTime() - Date.now()) + 30),
+              );
             }
             pause.release();
             // The request's real absolute deadline/abort ends the wait while work
@@ -2488,8 +2629,25 @@ for (const phase of ["authorization", "consumed approval", "final release"] as c
               }
             }
             assert.equal(typeof result === "object" ? result?.value : result, expected);
+            if (outcome === "benign" && originalExpiry && typeof result === "object") {
+              assert.ok(result);
+              assert.ok(Date.parse(result.usableUntil) <= originalExpiry.getTime());
+            }
             if (!allowed && outcome !== "installation changed") {
               assert.equal((await denials()).rowCount, 1);
+            }
+          }
+          if (originalExpiry) {
+            const current = (
+              await f.pool.query(
+                "SELECT expires_at, expires_at <= clock_timestamp() AS expired FROM occ.request_credential_approvals WHERE request_id=$1",
+                [input.requestId],
+              )
+            ).rows[0];
+            assert.equal(current.expires_at.getTime(), originalExpiry.getTime());
+            if (outcome === "expired") {
+              assert.equal(current.expired, true);
+              assert.ok(Date.now() < Date.parse(redemption.deadlineAt));
             }
           }
           const expectedApprovals = [];
