@@ -12,12 +12,13 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Command-boundary coverage of the actual default preload/importer, not a
 // container engine test. The release manifest/config bytes are independently pinned.
 func TestAgentSandboxNativeCacheImport(t *testing.T) {
-	for _, scenario := range []string{"index-only", "config-id-store", "child-local", "pull-child", "descriptor-only", "engine-error", "wrong-repository", "wrong-child", "wrong-imported-config"} {
+	for _, scenario := range []string{"index-only", "config-id-store", "child-local", "pull-child", "descriptor-only", "engine-error", "mixed-error", "wrong-repository", "wrong-child", "wrong-native-id", "wrong-annotation", "wrong-platform", "missing-platform", "null-platform", "wrong-imported-config"} {
 		t.Run(scenario, func(t *testing.T) {
 			state := kubernetesOnlyOpenShellState(t)
 			marker := filepath.Join(state.directory, "tag")
@@ -51,9 +52,9 @@ func TestAgentSandboxNativeCacheImport(t *testing.T) {
 					t.Fatal(err)
 				}
 				indexReply = "echo " + shellQuote(string(data))
-				nativeReply = indexReply
+				nativeReply = "echo platform-inspect-unavailable >&2; exit 17"
 			}
-			absent := "echo 'No such image' >&2; exit 1"
+			absent := "for image do :; done; printf 'Error response from daemon: No such image: %s\n' \"$image\" >&2; exit 1"
 			pullReply := "echo 'offline registry: cache hit must not pull' >&2; exit 61"
 			if scenario == "pull-child" || scenario == "descriptor-only" {
 				pullReply = ": > " + shellQuote(pulled)
@@ -71,6 +72,23 @@ func TestAgentSandboxNativeCacheImport(t *testing.T) {
 			}
 			if scenario == "engine-error" {
 				localChild = "echo 'engine unavailable' >&2; exit 17"
+			}
+			if scenario == "mixed-error" {
+				localChild = "echo 'Cannot connect to daemon: No such image: " + source + "' >&2; exit 1"
+			}
+			switch scenario {
+			case "wrong-native-id":
+				nativeReply = strings.Replace(nativeReply, `"Id":"`+child+`"`, `"Id":"`+index+`"`, 1)
+			case "wrong-annotation":
+				nativeReply = strings.Replace(nativeReply, `"Descriptor":{`, `"Descriptor":{"annotations":{"config.digest":"`+index+`"},`, 1)
+			case "wrong-platform":
+				nativeReply = strings.Replace(nativeReply, `"Descriptor":{`, `"Descriptor":{"platform":{"os":"linux","architecture":"arm64"},`, 1)
+			case "missing-platform":
+				for _, field := range []string{`"Os":"linux"`, `"Architecture":"amd64"`} {
+					nativeReply = strings.ReplaceAll(strings.ReplaceAll(nativeReply, ","+field, ""), field+",", "")
+				}
+			case "null-platform":
+				nativeReply = strings.Replace(strings.Replace(nativeReply, `"Os":"linux"`, `"Os":null`, 1), `"Architecture":"amd64"`, `"Architecture":null`, 1)
 			}
 			if scenario == "wrong-repository" {
 				indexReply = strings.ReplaceAll(indexReply, repo, "registry.example/foreign")
@@ -117,7 +135,7 @@ func TestAgentSandboxNativeCacheImport(t *testing.T) {
 			r.engine = "docker"
 			delete(r.env, "OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST")
 			output, err := r.preloadAgentSandboxController(context.Background(), state, state.directory, manifest)
-			failed := slices.Contains([]string{"engine-error", "wrong-repository", "wrong-child", "wrong-imported-config"}, scenario)
+			failed := slices.Contains([]string{"engine-error", "mixed-error", "wrong-repository", "wrong-child", "wrong-native-id", "wrong-annotation", "wrong-platform", "missing-platform", "null-platform", "wrong-imported-config"}, scenario)
 			if failed {
 				if err == nil {
 					t.Fatal("invalid image accepted")
@@ -164,7 +182,7 @@ func TestOpenShellStagingTagRecovery(t *testing.T) {
 			proof := filepath.Join(state.directory, "intent.json")
 			id := profileTestDigest
 			jsonImage := `[{"Id":"` + id + `"}]`
-			inspect := `if [ -f ` + shellQuote(marker) + ` ]; then /bin/cat ` + shellQuote(marker) + `; else echo 'No such image' >&2; exit 1; fi`
+			inspect := `if [ -f ` + shellQuote(marker) + ` ]; then /bin/cat ` + shellQuote(marker) + `; else for image do :; done; printf 'Error response from daemon: No such image: %s\n' "$image" >&2; exit 1; fi`
 			tag := `/bin/cp ` + shellQuote(filepath.Join(state.directory, "state.json")) + ` ` + shellQuote(proof) + `; echo '` + jsonImage + `' > ` + shellQuote(marker)
 			if scenario == "inspect-error" {
 				inspect = "exit 17"
@@ -291,7 +309,7 @@ func TestOpenShellImportInterruptedTag(t *testing.T) {
 	commands := fakeProfileCommands(t, map[string]string{
 		"docker": `"image inspect ` + source + `") ` + held + ` ;;
 "image inspect --format {{.Os}}/{{.Architecture}} ` + source + `") echo linux/amd64 ;;
-"image inspect ` + stage + `") if [ -f ` + shellQuote(marker) + ` ]; then ` + held + `; else echo 'No such image' >&2; exit 1; fi ;;
+"image inspect ` + stage + `") if [ -f ` + shellQuote(marker) + ` ]; then ` + held + `; else for image do :; done; printf 'Error response from daemon: No such image: %s\n' "$image" >&2; exit 1; fi ;;
 "tag ` + source + ` ` + stage + `") : > ` + shellQuote(marker) + `; kill -KILL "$PPID" ;;
 "image rm ` + stage + `") /bin/rm ` + shellQuote(marker) + ` ;;
 "volume ls "*) ;;`,
@@ -333,5 +351,136 @@ func TestOpenShellImportInterruptedTag(t *testing.T) {
 	}
 	if !slices.Contains(commands(), "docker image rm "+stage) {
 		t.Fatal("recovery did not use the exact staging name")
+	}
+}
+
+// A quoted absence inside another failure cannot authorize a tag write or erase
+// the only recovery receipt. These cases exercise both sides of custody.
+func TestOpenShellAmbiguousImageAbsence(t *testing.T) {
+	for _, scenario := range []string{"mixed", "wrong-object", "truncated", "signaled"} {
+		t.Run(scenario, func(t *testing.T) {
+			state := kubernetesOnlyOpenShellState(t)
+			state.DockerHost = "unix:///fixture/recovery.sock"
+			state.KeyPath = filepath.Join(state.directory, "unused-key.json")
+			if err := os.WriteFile(filepath.Join(state.directory, ".openclaw-development"), []byte(stateMarker), 0600); err != nil {
+				t.Fatal(err)
+			}
+			stage := "openclaw-development/openshell-gateway:" + state.Cluster
+			missing := "Error response from daemon: No such image: " + stage
+			diagnostic := "printf '%s\n' " + shellQuote("Cannot connect to engine\n"+missing) + " >&2; exit 1"
+			switch scenario {
+			case "wrong-object":
+				diagnostic = "echo " + shellQuote(missing+"-foreign") + " >&2; exit 1"
+			case "truncated":
+				diagnostic = "printf '%65536s' x >&2; echo " + shellQuote(missing) + " >&2; exit 1"
+			case "signaled":
+				diagnostic = "echo " + shellQuote(missing) + " >&2; kill -TERM $$"
+			}
+			commands := fakeProfileCommands(t, map[string]string{"docker": `"image inspect ` + stage + `") ` + diagnostic + ` ;;`})
+			r := newRunner(Options{Repository: state.Repository})
+			r.engine = "docker"
+			if err := r.stageOpenShellImage(context.Background(), state, "registry.example/source@"+profileTestDigest, stage, profileTestDigest); err == nil {
+				t.Fatal("ambiguous absence admitted staging")
+			}
+			state.OpenShellImageTag = &openShellImageTag{Name: stage, ImageID: profileTestDigest}
+			if err := rewriteState(state); err != nil {
+				t.Fatal(err)
+			}
+			if err := r.reconcileOpenShellImageTag(context.Background(), state); err == nil {
+				t.Fatal("ambiguous absence discharged custody")
+			}
+			saved, err := readState(state.directory)
+			if err != nil || saved.OpenShellImageTag == nil {
+				t.Fatalf("lost durable custody: %v", err)
+			}
+			for _, call := range commands() {
+				if !strings.HasPrefix(call, "docker image inspect ") {
+					t.Fatalf("unexpected mutation: %s", call)
+				}
+			}
+		})
+	}
+}
+
+func TestOpenShellRecoveryBoundsAndProvider(t *testing.T) {
+	for _, scenario := range []string{"hung-removal", "missing-provider"} {
+		t.Run(scenario, func(t *testing.T) {
+			state := kubernetesOnlyOpenShellState(t)
+			state.DockerHost = "unix:///fixture/recovery.sock"
+			state.KeyPath = filepath.Join(state.directory, "unused-key.json")
+			stage := "openclaw-development/openshell-gateway:" + state.Cluster
+			state.OpenShellImageTag = &openShellImageTag{Name: stage, ImageID: profileTestDigest}
+			engine := "docker"
+			if scenario == "missing-provider" {
+				engine = "podman"
+				state.ContainerEngine = engine
+				state.DeploymentMode = ""
+				state.ComposeProject = "occ-dev-owned"
+				if err := os.WriteFile(filepath.Join(state.directory, "compose.yaml"), []byte("services: {}\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(state.directory, ".openclaw-development"), []byte(stateMarker), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := rewriteState(state); err != nil {
+				t.Fatal(err)
+			}
+			marker := filepath.Join(t.TempDir(), "host-tag")
+			hang := filepath.Join(t.TempDir(), "hang")
+			if err := os.WriteFile(marker, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "hung-removal" {
+				if err := os.WriteFile(hang, nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			commands := fakeProfileCommands(t, map[string]string{engine: `"image inspect ` + stage + `") if [ -f ` + shellQuote(marker) + ` ]; then echo '[{"Id":"` + profileTestDigest + `"}]'; else echo 'Error response from daemon: No such image: ` + stage + `' >&2; exit 1; fi ;;
+"image rm ` + stage + `") test "$DOCKER_HOST" = 'unix:///fixture/recovery.sock' || exit 89; if [ -f ` + shellQuote(hang) + ` ]; then /bin/sleep 2 & wait; fi; /bin/rm ` + shellQuote(marker) + ` ;;
+"volume ls "*) ;;`, "k3d": `"cluster list -o json") echo '[]' ;;`})
+			t.Setenv("OCC_DEVELOPMENT_STATE_DIRECTORY", state.directory)
+			t.Setenv("OCC_DEVELOPMENT_COMPUTE_DRIVER", "kubernetes")
+			t.Setenv("OCC_DEVELOPMENT_SANDBOX_DRIVER", "openshell")
+			if scenario == "hung-removal" {
+				r := newRunner(Options{Repository: state.Repository})
+				r.engine = engine
+				r.useEndpoint(state.DockerHost)
+				ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+				defer cancel()
+				start := time.Now()
+				err := r.reconcileOpenShellImageTag(ctx, state)
+				if err == nil || time.Since(start) > time.Second {
+					t.Fatalf("unbounded or successful hung removal: %v", err)
+				}
+				if state.OpenShellImageTag == nil {
+					t.Fatal("timeout lost custody")
+				}
+				if err := os.Remove(hang); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				// Only the fake engine remains on PATH; no Compose provider exists.
+				t.Setenv("PATH", strings.Split(os.Getenv("PATH"), string(os.PathListSeparator))[0])
+			}
+			err := Down(context.Background(), Options{Repository: state.Repository})
+			if scenario == "missing-provider" {
+				if err == nil || !strings.Contains(err.Error(), "compose") {
+					t.Fatalf("provider failure not retained: %v", err)
+				}
+				saved, readErr := readState(state.directory)
+				if readErr != nil || saved.OpenShellImageTag != nil {
+					t.Fatalf("host custody not independently recovered: %v", readErr)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatal("Down left host tag")
+			}
+			if !slices.Contains(commands(), engine+" image rm "+stage) {
+				t.Fatal("missing owned removal")
+			}
+		})
 	}
 }

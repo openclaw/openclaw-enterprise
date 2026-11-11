@@ -117,8 +117,8 @@ native identity: cached child/index or exact-child pull. Manifest/config/CRI che
 precede apply (`Never`); custom manifests stay unchanged. Real checks bind Ready Pods.
 
 `internal/occdev/openshell_image.go` persists tag/engine-ID intent before creation.
-Return/rollback/`dev down` reconcile without requiring a cluster, retaining
-uncertain/replaced-tag state.
+Return/rollback/`dev down` bound reconciliation independently of clusters or
+Compose providers; uncertain/replaced tags retain state.
 
 `internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout`
 reports rollout failures once, preserving rollback errors: Deployment, UID-linked

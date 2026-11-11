@@ -7,6 +7,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"os/exec"
 	"slices"
 	"strings"
 	"time"
@@ -23,11 +24,16 @@ type nativeImageSelection struct {
 type localImage struct {
 	ID           string   `json:"Id"`
 	RepoDigests  []string `json:"RepoDigests"`
-	OS           string   `json:"Os"`
-	Architecture string   `json:"Architecture"`
+	OS           *string  `json:"Os"`
+	Architecture *string  `json:"Architecture"`
 	Descriptor   *struct {
-		MediaType string `json:"mediaType"`
-		Digest    string `json:"digest"`
+		MediaType   string            `json:"mediaType"`
+		Digest      string            `json:"digest"`
+		Annotations map[string]string `json:"annotations"`
+		Platform    *struct {
+			OS           string `json:"os"`
+			Architecture string `json:"architecture"`
+		} `json:"platform"`
 	} `json:"Descriptor"`
 }
 
@@ -40,6 +46,7 @@ func (r *runner) imageCommand(ctx context.Context, args ...string) ([]byte, bool
 	stderr := &tailBuffer{limit: 64 << 10}
 	cmd := r.command(ctx, r.engine, args...)
 	cmd.Stdout, cmd.Stderr = stdout, stderr
+	cmd.WaitDelay = 200 * time.Millisecond
 	started := time.Now()
 	err := cmd.Run()
 	r.commandTiming(r.engine, args, started, err)
@@ -47,8 +54,21 @@ func (r *runner) imageCommand(ctx context.Context, args ...string) ([]byte, bool
 		return nil, false, ctx.Err()
 	}
 	if err != nil {
-		text := strings.ToLower(string(stderr.Bytes()))
-		absent := strings.Contains(text, "no such image") || strings.Contains(text, "no such object") || strings.Contains(text, "image not known")
+		var exited *exec.ExitError
+		diagnostic := strings.TrimSpace(string(stderr.Bytes()))
+		output := strings.TrimSpace(string(stdout.Bytes()))
+		reference := args[len(args)-1]
+		query := reference
+		if _, digest, pinned := strings.Cut(reference, "@"); pinned {
+			reference = imageRepository(reference) + "@" + digest
+		}
+		// Match the complete engine result for this exact object. In particular,
+		// a connection diagnostic quoting an absent object is not absence.
+		absent := errors.As(err, &exited) && exited.ExitCode() == 1 && len(stderr.Bytes()) < 64<<10 &&
+			(output == "" || output == "[]") &&
+			(diagnostic == "Error response from daemon: No such image: "+reference ||
+				diagnostic == "Error response from daemon: No such image: "+query ||
+				diagnostic == "Error: "+reference+": image not known")
 		return nil, absent, fmt.Errorf("%s image operation failed: %w", r.engine, err)
 	}
 	data := stdout.Bytes()
@@ -110,22 +130,35 @@ func (r *runner) selectNativeImage(ctx context.Context, source string, selected 
 		if held.Descriptor != nil && (held.Descriptor.Digest != digest || held.ID != held.Descriptor.Digest) {
 			return "", false, fmt.Errorf("local image descriptor contradicts its acquisition identity")
 		}
-		native, err := r.inspectLocalImage(ctx, reference, selected.platform)
-		if err != nil || native == nil {
-			return "", false, err
+		native := held
+		if held.Descriptor != nil {
+			native, err = r.inspectLocalImage(ctx, reference, selected.platform)
+			if err != nil || native == nil {
+				return "", false, err
+			}
+		}
+		if native.OS == nil || native.Architecture == nil {
+			return "", false, fmt.Errorf("local image has no explicit native platform")
 		}
 		if native.Descriptor != nil {
-			if (native.Descriptor.MediaType != "application/vnd.oci.image.manifest.v1+json" && native.Descriptor.MediaType != "application/vnd.docker.distribution.manifest.v2+json") || native.Descriptor.Digest != child {
+			if (native.Descriptor.MediaType != "application/vnd.oci.image.manifest.v1+json" && native.Descriptor.MediaType != "application/vnd.docker.distribution.manifest.v2+json") || native.Descriptor.Digest != child || native.ID != child {
 				return "", false, fmt.Errorf("local image does not match the selected native manifest")
 			}
-			// Docker can list a known descriptor with no loaded native config.
-			if r.engine == "docker" && native.OS == "" && native.Architecture == "" {
+			if config, present := native.Descriptor.Annotations["config.digest"]; present && config != selected.configDigest {
+				return "", false, fmt.Errorf("local image descriptor contradicts its native config")
+			}
+			if platform := native.Descriptor.Platform; platform != nil && platform.OS+"/"+platform.Architecture != selected.platform {
+				return "", false, fmt.Errorf("local image descriptor contradicts its native platform")
+			}
+			// Docker can list a known descriptor with explicit empty platform
+			// strings when the native config is not loaded.
+			if r.engine == "docker" && *native.OS == "" && *native.Architecture == "" {
 				return "", false, nil
 			}
 		} else if native.ID != selected.configDigest {
 			return "", false, fmt.Errorf("local image does not match the selected native config")
 		}
-		if native.OS+"/"+native.Architecture != selected.platform {
+		if *native.OS+"/"+*native.Architecture != selected.platform {
 			return "", false, fmt.Errorf("local image does not match the selected node platform")
 		}
 		return held.ID, true, nil
@@ -193,6 +226,8 @@ func (r *runner) stageOpenShellImage(ctx context.Context, state *developmentStat
 }
 
 func (r *runner) reconcileOpenShellImageTag(ctx context.Context, state *developmentState) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	record := state.OpenShellImageTag
 	if record == nil {
 		return nil
@@ -208,7 +243,7 @@ func (r *runner) reconcileOpenShellImageTag(ctx context.Context, state *developm
 		if held.ID != record.ImageID {
 			return fmt.Errorf("OpenShell staging image %s was replaced; preserving it and recovery state", record.Name)
 		}
-		if err := r.run(ctx, r.engine, "image", "rm", record.Name); err != nil {
+		if _, _, err := r.imageCommand(ctx, "image", "rm", record.Name); err != nil {
 			return err
 		}
 		held, err = r.inspectLocalImage(ctx, record.Name, "")

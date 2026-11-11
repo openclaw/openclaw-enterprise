@@ -2896,7 +2896,20 @@ async function selectNativeSourceImage(image, selection, envName) {
         reference,
       ]);
     } catch (error) {
-      if (/No such (?:image|object)|image not known/i.test(error.stderr ?? "")) {
+      const expected = reference.includes("@")
+        ? `${repository(reference)}@sha256:${immutableDigest(reference)}`
+        : reference;
+      const diagnostic = (error.stderr ?? "").trim();
+      if (
+        error.exitCode === 1 &&
+        !error.signal &&
+        ["", "[]"].includes((error.stdout ?? "").trim()) &&
+        [
+          `Error response from daemon: No such image: ${expected}`,
+          `Error response from daemon: No such image: ${reference}`,
+          `Error: ${expected}: image not known`,
+        ].includes(diagnostic)
+      ) {
         return undefined;
       }
       throw error;
@@ -2926,7 +2939,7 @@ async function selectNativeSourceImage(image, selection, envName) {
     ) {
       throw new Error(`${envName} local descriptor contradicts its acquisition identity.`);
     }
-    const native = await inspect(reference, selection.platform);
+    const native = held.Descriptor ? await inspect(reference, selection.platform) : held;
     if (!native) {
       return undefined;
     }
@@ -2936,9 +2949,19 @@ async function selectNativeSourceImage(image, selection, envName) {
           "application/vnd.oci.image.manifest.v1+json",
           "application/vnd.docker.distribution.manifest.v2+json",
         ].includes(native.Descriptor.mediaType) ||
-        native.Descriptor.digest !== `sha256:${immutableDigest(image)}`
+        native.Descriptor.digest !== `sha256:${immutableDigest(image)}` ||
+        native.Id !== native.Descriptor.digest
       ) {
         throw new Error(`${envName} does not match the selected native manifest.`);
+      }
+      const annotated = native.Descriptor.annotations?.["config.digest"];
+      const platform = native.Descriptor.platform;
+      if (
+        (annotated !== undefined && annotated !== selection.configDigest) ||
+        (platform !== undefined &&
+          `${platform?.os}/${platform?.architecture}` !== selection.platform)
+      ) {
+        throw new Error(`${envName} descriptor contradicts its native config or platform.`);
       }
       if (basename(docker) !== "podman" && native.Os === "" && native.Architecture === "") {
         return undefined;

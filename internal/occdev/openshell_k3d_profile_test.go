@@ -345,7 +345,7 @@ func TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP(t 
 				}
 				fmt.Fprintf(&engineCases, `"image inspect %s") %s ;;
 'image inspect --format {{ index .Config.Labels "org.opencontainers.image.revision" }} %s') echo %s ;;
-"image inspect %s") if [ -f %s ]; then %s; else echo 'No such image' >&2; exit 1; fi ;;
+"image inspect %s") if [ -f %s ]; then %s; else for image do :; done; printf 'Error response from daemon: No such image: %%s\n' "$image" >&2; exit 1; fi ;;
 "tag %s %s") : > %s ;;
 "image inspect --format {{json .RepoTags}} %s") echo '["%s"]' ;;
 "image inspect --format {{.Os}}/{{.Architecture}} %s") echo linux/amd64 ;;
@@ -521,7 +521,7 @@ func TestOpenShellImageImportRegistersThePodmanRecordedName(t *testing.T) {
 	// keep the archive, import it again, and still verify the digest.
 	commands := fakeProfileCommands(t, map[string]string{
 		"podman": `"image inspect ` + source + `") echo '[{"Id":"` + profileTestDigest + `"}]' ;;
-"image inspect ` + staging + `") if [ -f ` + shellQuote(marker) + ` ]; then echo '[{"Id":"` + profileTestDigest + `"}]'; else echo "No such image" >&2; exit 1; fi ;;
+"image inspect ` + staging + `") if [ -f ` + shellQuote(marker) + ` ]; then echo '[{"Id":"` + profileTestDigest + `"}]'; else for image do :; done; printf 'Error response from daemon: No such image: %s\n' "$image" >&2; exit 1; fi ;;
 "tag ` + source + ` ` + staging + `") : > ` + shellQuote(marker) + ` ;;
 "image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + recorded + `"]' ;;
 "image inspect --format {{.Os}}/{{.Architecture}} ` + source + `") echo linux/amd64 ;;
@@ -610,7 +610,7 @@ func TestOpenShellImageImportTagsThePlatformChildOfAManifestList(t *testing.T) {
 	commands := fakeProfileCommands(t, map[string]string{
 		"docker": `"image inspect ` + source + `") echo '[{"Id":"` + profileTestDigest + `"}]' ;;
 "pull ` + source + `") ;;
-"image inspect ` + staging + `") if [ -f ` + shellQuote(marker) + ` ]; then echo '[{"Id":"` + profileTestDigest + `"}]'; else echo "No such image" >&2; exit 1; fi ;;
+"image inspect ` + staging + `") if [ -f ` + shellQuote(marker) + ` ]; then echo '[{"Id":"` + profileTestDigest + `"}]'; else for image do :; done; printf 'Error response from daemon: No such image: %s\n' "$image" >&2; exit 1; fi ;;
 "tag ` + source + ` ` + staging + `") : > ` + shellQuote(marker) + ` ;;
 "image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + staging + `"]' ;;
 "image inspect --format {{.Os}}/{{.Architecture}} ` + source + `") echo linux/amd64 ;;
@@ -659,7 +659,7 @@ func TestOpenShellImageImportKeepsAPlainManifestSource(t *testing.T) {
 	commands := fakeProfileCommands(t, map[string]string{
 		"docker": `"image inspect ` + source + `") echo '[{"Id":"` + profileTestDigest + `"}]' ;;
 "pull ` + source + `") ;;
-"image inspect ` + staging + `") if [ -f ` + shellQuote(marker) + ` ]; then echo '[{"Id":"` + profileTestDigest + `"}]'; else echo "No such image" >&2; exit 1; fi ;;
+"image inspect ` + staging + `") if [ -f ` + shellQuote(marker) + ` ]; then echo '[{"Id":"` + profileTestDigest + `"}]'; else for image do :; done; printf 'Error response from daemon: No such image: %s\n' "$image" >&2; exit 1; fi ;;
 "tag ` + source + ` ` + staging + `") : > ` + shellQuote(marker) + ` ;;
 "image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + staging + `"]' ;;
 "image inspect --format {{.Os}}/{{.Architecture}} ` + source + `") echo linux/amd64 ;;
@@ -708,7 +708,7 @@ func TestOpenShellImageImportKeepsTheSourceWhenTheChildPullFails(t *testing.T) {
 	commands := fakeProfileCommands(t, map[string]string{
 		"docker": `"image inspect ` + source + `") echo '[{"Id":"` + profileTestDigest + `"}]' ;;
 "pull ` + source + `") ;;
-"image inspect ` + staging + `") if [ -f ` + shellQuote(marker) + ` ]; then echo '[{"Id":"` + profileTestDigest + `"}]'; else echo "No such image" >&2; exit 1; fi ;;
+"image inspect ` + staging + `") if [ -f ` + shellQuote(marker) + ` ]; then echo '[{"Id":"` + profileTestDigest + `"}]'; else for image do :; done; printf 'Error response from daemon: No such image: %s\n' "$image" >&2; exit 1; fi ;;
 "tag ` + source + ` ` + staging + `") : > ` + shellQuote(marker) + ` ;;
 "image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + staging + `"]' ;;
 "image inspect --format {{.Os}}/{{.Architecture}} ` + source + `") echo linux/amd64 ;;
@@ -1036,7 +1036,7 @@ func TestOpenShellImageImportPreservesFailureBoundaries(t *testing.T) {
 			t.Setenv("PATH", t.TempDir())
 			commands := fakeProfileCommands(t, map[string]string{
 				"docker": `"image inspect ` + source + `") ` + reply("source", "echo '[{\"Id\":\""+profileTestDigest+"\"}]'") + ` ;;
-"image inspect ` + stage + `") ` + reply("collision", "if [ -f "+shellQuote(marker)+" ]; then echo '[{\"Id\":\""+profileTestDigest+"\"}]'; else echo 'No such image' >&2; exit 1; fi") + ` ;;
+"image inspect ` + stage + `") ` + reply("collision", "if [ -f "+shellQuote(marker)+" ]; then echo '[{\"Id\":\""+profileTestDigest+"\"}]'; else for image do :; done; printf 'Error response from daemon: No such image: %s\n' \"$image\" >&2; exit 1; fi") + ` ;;
 "tag ` + source + ` ` + stage + `") : > ` + shellQuote(marker) + ` ;;
 "image inspect --format {{json .RepoTags}} ` + stage + `") echo '["` + stage + `"]' ;;
 "image inspect --format {{.Os}}/{{.Architecture}} ` + source + `") ` + reply("platform", "echo linux/amd64") + ` ;;
@@ -1307,7 +1307,7 @@ func TestAgentSandboxPreloadSelectsNodeImageBeforeImport(t *testing.T) {
 			// the real preload path asks it to acquire, before any apply is possible.
 			commands := fakeProfileCommands(t, map[string]string{
 				"kubectl": `"get nodes -o json") echo '{"items":[{"status":{"nodeInfo":{"operatingSystem":"linux","architecture":"` + tc.arch + `"}}}]}' ;;`,
-				"docker": `"image inspect "*) echo "No such image" >&2; exit 1 ;;
+				"docker": `"image inspect "*) for image do :; done; printf 'Error response from daemon: No such image: %s\n' "$image" >&2; exit 1 ;;
 "pull "*) exit 1 ;;`,
 			})
 			r := newRunner(Options{Repository: state.Repository})
