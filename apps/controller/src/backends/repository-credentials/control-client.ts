@@ -1,16 +1,19 @@
+import { createStatusWirePrimitives } from "./status-wire.ts";
 import { request } from "node:http";
-import { isAbsolute, resolve } from "node:path";
 import type { RepositoryCredentialGrantIdentity } from "@openclaw-enterprise/contracts";
-import type { RepositoryCredentialClientConfiguration } from "../../drivers/repo/credentials/client-contracts.ts";
+import type { RepositoryCredentialClientConfiguration } from "../../drivers/repo/access/client-contracts.ts";
 import {
   hasControlCharacter,
+  isCanonicalUnixSocketPath,
+  isValidGitClientConnection,
   normalizePushRefAllowlist,
-} from "../../drivers/repo/credentials/client-contracts.ts";
-import type {
-  RepositoryCredentialBoundSessionInput,
-  RepositoryCredentialSessionResult,
-  SessionStatus,
-} from "../../drivers/repo/credentials/service-contracts.ts";
+} from "../../drivers/repo/access/client-contracts.ts";
+import {
+  hasUnsettledCleanupCounts,
+  type RepositoryCredentialBoundSessionInput,
+  type RepositoryCredentialSessionResult,
+  type SessionStatus,
+} from "../../drivers/repo/access/service-contracts.ts";
 
 /** Private wire response; the selected Driver renders the portable runtime files. */
 export type RepositoryCredentialControlOpenResult =
@@ -47,37 +50,7 @@ function unavailable(): never {
   throw new RepositoryCredentialControlError(true);
 }
 
-function object(value: unknown, fields: readonly string[]): Record<string, unknown> {
-  if (
-    value === null ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    Object.keys(value).some((key) => !fields.includes(key)) ||
-    fields.some((key) => !Object.hasOwn(value, key))
-  ) {
-    return unavailable();
-  }
-  return value as Record<string, unknown>;
-}
-
-function identity(value: unknown): string {
-  if (
-    typeof value !== "string" ||
-    value.length === 0 ||
-    Buffer.byteLength(value) > 512 ||
-    hasControlCharacter(value)
-  ) {
-    return unavailable();
-  }
-  return value;
-}
-
-function counter(value: unknown): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-    return unavailable();
-  }
-  return value;
-}
+const { object, identity, counter, parseCleanup } = createStatusWirePrimitives(unavailable);
 
 function sessionId(value: unknown): string {
   if (typeof value !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
@@ -104,18 +77,10 @@ function status(value: unknown): SessionStatus {
     "activeUses",
     "cleanup",
   ]);
-  const cleanup = object(parsed.cleanup, [
-    "active",
-    "pending",
-    "revoked",
-    "expired",
-    "uncertain",
-    "auxiliaryPending",
-  ]);
+  const cleanup = parseCleanup(parsed.cleanup);
   const deadlineWallMs = counter(parsed.deadlineWallMs);
   if (
     (parsed.state !== "OPEN" && parsed.state !== "CLOSED" && parsed.state !== "DISPOSED") ||
-    typeof cleanup.auxiliaryPending !== "boolean" ||
     deadlineWallMs === 0
   ) {
     return unavailable();
@@ -126,22 +91,11 @@ function status(value: unknown): SessionStatus {
     deadlineWallMs,
     binding: binding(parsed.binding),
     activeUses: counter(parsed.activeUses),
-    cleanup: Object.freeze({
-      active: counter(cleanup.active),
-      pending: counter(cleanup.pending),
-      revoked: counter(cleanup.revoked),
-      expired: counter(cleanup.expired),
-      uncertain: counter(cleanup.uncertain),
-      auxiliaryPending: cleanup.auxiliaryPending,
-    }),
+    cleanup: Object.freeze(cleanup),
   });
   if (
     result.state === "DISPOSED" &&
-    (result.activeUses !== 0 ||
-      result.cleanup.active !== 0 ||
-      result.cleanup.pending !== 0 ||
-      result.cleanup.uncertain !== 0 ||
-      result.cleanup.auxiliaryPending)
+    (hasUnsettledCleanupCounts(result) || result.cleanup.auxiliaryPending)
   ) {
     return unavailable();
   }
@@ -172,15 +126,7 @@ function client(value: unknown): RepositoryCredentialClientConfiguration {
   const origin = new URL(fields.gatewayOrigin);
   const remote = new URL(fields.gitRemote);
   if (
-    origin.protocol !== "https:" ||
-    origin.origin !== fields.gatewayOrigin ||
-    origin.username ||
-    origin.password ||
-    remote.origin !== origin.origin ||
-    remote.username ||
-    remote.password ||
-    remote.search ||
-    remote.hash ||
+    !isValidGitClientConnection(origin, remote, fields) ||
     fields.apiHost !== origin.hostname ||
     !/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(fields.canonicalApiHost) ||
     !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(fields.repository) ||
@@ -214,9 +160,7 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
 
   constructor(options: { readonly controlSocket: string }) {
     if (
-      !isAbsolute(options.controlSocket) ||
-      resolve(options.controlSocket) !== options.controlSocket ||
-      Buffer.byteLength(options.controlSocket) > 103 ||
+      !isCanonicalUnixSocketPath(options.controlSocket) ||
       hasControlCharacter(options.controlSocket)
     ) {
       throw new Error("The repository credential control socket must be an absolute Unix path.");

@@ -1,5 +1,18 @@
 /// <reference lib="es2024.promise" />
 
+import {
+  openCreateSecretDialog,
+  createModelCredentialSecret,
+  enterManualModel,
+  openAdvancedSettings,
+  optionValues,
+  runProvisioningPolls,
+  waitForCreateFormReads,
+  submitCreateAgent,
+  createAgentThroughForm,
+  expectCreateAccess,
+  expectCreateRefused,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -56,33 +69,22 @@ import {
   waitForInputValue,
   statusTone,
   isMaskedSecretValue,
-  trackSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { trackSettledFetches } from "./console-fetch-accounting.ts";
 import {
   STARTER_CONTROL_UI,
-  openCreateSecretDialog,
-  createModelCredentialSecret,
-  enterManualModel,
-  openAdvancedSettings,
   configurationPostRequests,
   agentProvisionPostRequests,
   routeInstallationProvisioning,
   routeInstallationWithoutProvisioning,
   nativeSandboxDriver,
   agentPostRequests,
-  optionValues,
   createRepositoryLaunchFixture,
-  runProvisioningPolls,
-  waitForCreateFormReads,
-  submitCreateAgent,
-  createAgentThroughForm,
-  expectCreateAccess,
-  expectCreateRefused,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import {
   expectDeploymentOutcome,
   openFailureDetails,
-} from "./console-deployment-activity-helpers.mjs";
+} from "./console-deployment-activity-helpers.ts";
 import {
   ADMINISTRATOR_ACCESS_DENIED,
   AGENT_CREATE_DENIED,
@@ -206,6 +208,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   assert.equal(await page.getByRole("link", { name: "OpenAI admin", exact: true }).count(), 0);
   await page.getByLabel("Agent name").fill("Console-created Agent");
   const secret = await enterManualModel(page, key, "gpt-5.1");
+  assert.ok(secret, "Expected the created model credential Secret");
   for (const [filename, content] of Object.entries(WORKSPACE_DEFAULTS)) {
     assert.equal(await page.getByLabel(filename, { exact: true }).inputValue(), content);
   }
@@ -609,7 +612,7 @@ test("Dedicated repository Agent keeps its bindings through a Slack save that bi
   assert.deepEqual(agent.repositoryBindings, [
     { repositoryRef: "application", profile: "git-full" },
   ]);
-  assert.equal(agent.harnessAuth.method, "api_key");
+  assert.equal(agent.harnessAuth?.method, "api_key");
   assert.equal(agent.harnessAuth.source.namespaceId, namespace.id);
   assert.notEqual(agent.harnessAuth.source.id, modelSecret.id);
   await page.getByRole("tab", { name: "Channels", exact: true }).click();
@@ -1732,7 +1735,9 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   await page.getByText("This installation creates draft Agents for later deployment.").waitFor();
   await assert.rejects(
-    page.getByRole("heading", { name: "Secrets" }).waitFor({ state: "visible", timeout: 300 }),
+    page
+      .getByRole("heading", { name: "Credentials", exact: true })
+      .waitFor({ state: "visible", timeout: 300 }),
     /Timeout/,
   );
 
@@ -2638,6 +2643,7 @@ test("Agent creation saves native models for dedicated and embedded harnesses", 
       page,
       `test-${mode}-${selectedModel}-key`,
     );
+    assert.ok(selectedSecret, "Expected the created model credential Secret");
     const agent = await createAgentThroughForm(page, fixture, namespace.id);
     assert.equal(agent.executionMode, mode);
     assert.deepEqual(agent.harnessAuth, { method: "api_key", source: selectedSecret.ref });
@@ -2674,18 +2680,15 @@ test("Agent creation saves native models for dedicated and embedded harnesses", 
   }
 });
 
-test("Create Agent offers native admin only on an enabled installation and submits an explicit opt-in", async (t) => {
+test("Create Agent offers browser chat only on an enabled installation and submits an explicit opt-in", async (t) => {
   const fixture = await createConsoleAppFixture(t, {
     https: true,
     development: { enabled: false },
     originHost: "console.example.test",
     publicOrigin: true,
-    authCookieDomain: "example.test",
-    authSecureCookies: true,
     nativeAdmin: {
       enabled: true,
       domain: "agents.example.test",
-      sharedCookieDomain: "example.test",
     },
     nativeAdminGatewayApiKey: async () => "synthetic-native-admin-gateway-key",
     agentProvisioning: true,
@@ -2698,7 +2701,7 @@ test("Create Agent offers native admin only on an enabled installation and submi
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset", exact: true }).click();
   await waitForCreateFormReads(page);
-  const toggle = page.getByRole("checkbox", { name: "Enable Native admin UI" });
+  const toggle = page.getByRole("checkbox", { name: "Enable browser chat" });
   assert.equal(await toggle.isChecked(), false);
   assert.equal(await toggle.isEnabled(), true);
   await page.getByLabel("Agent name", { exact: true }).fill("Native admin test");

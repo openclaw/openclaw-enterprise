@@ -24,6 +24,7 @@ import {
   mkdir,
   readFile,
   realpath,
+  rename,
   rm,
   statfs,
   writeFile,
@@ -34,7 +35,7 @@ import { fileURLToPath } from "node:url";
 
 import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { PUBLIC_GITHUB_READ_SKILL } from "../../apps/controller/src/drivers/repo/github/public-read/codex.ts";
-import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import { createHarnessConfiguration } from "../../tests/helpers/harness-configuration.mjs";
 import { installPublicGithubReadFixture } from "../../tests/helpers/public-github-read-k3d.mjs";
 import {
@@ -42,6 +43,7 @@ import {
   createModelProviderFiles,
   writeModelProviderTrust,
 } from "../../tests/helpers/runtime-model-provider.mjs";
+import { postgresImage, runtimeNodeBaseImage } from "./fixture-support-images.mjs";
 import { ensureImage } from "./image-pull.ts";
 import {
   openclawBuildArguments,
@@ -49,6 +51,7 @@ import {
   readOpenclawSource,
 } from "../lib/openclaw-source.mjs";
 import { compareEvents, eventObservedTime } from "./kubernetes-event-time.ts";
+import { prepareRuntimeArtifactLayout, runtimeArtifactSelection } from "./runtime-artifact.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const occ = join(root, "bin", "occ");
@@ -111,15 +114,20 @@ const minute = 60_000;
 // minute for API observation/finalization. This is a finite smoke allowance,
 // not a change to runtime grace, worker retries or the 40-minute CI job bound.
 export const STOP_PHASE_TIMEOUT_MS = 2 * (GATEWAY_STOP_TIMEOUT_MS + 3 * minute);
-const timings = [];
+const { step, smokeStep, initialAdmissions, timings, writeTimingReport } = createStepRecorder();
 const proofResults = [];
 
 function log(message) {
   process.stdout.write(`[first-agent-smoke] ${message}\n`);
 }
 
-export function run(command, args, { env = process.env, input, timeout = 5 * minute, label } = {}) {
+export function run(
+  command,
+  args,
+  { env = process.env, input, timeout = 5 * minute, label, signal: abortSignal } = {},
+) {
   return new Promise((resolveRun, reject) => {
+    abortSignal?.throwIfAborted();
     const child = spawn(command, args, { cwd: root, env, stdio: ["pipe", "pipe", "pipe"] });
     const stdout = [];
     const stderr = [];
@@ -137,13 +145,23 @@ export function run(command, args, { env = process.env, input, timeout = 5 * min
     child.stderr.on("data", stream(process.stderr, stderr));
     child.stdin.on("error", () => {});
     child.stdin.end(input);
-    const timer = setTimeout(() => child.kill("SIGKILL"), timeout);
-    child.once("error", (error) => {
+    const stop = () => child.kill("SIGKILL");
+    const timer = setTimeout(stop, timeout);
+    abortSignal?.addEventListener("abort", stop, { once: true });
+    const cleanup = () => {
       clearTimeout(timer);
+      abortSignal?.removeEventListener("abort", stop);
+    };
+    child.once("error", (error) => {
+      cleanup();
       reject(error);
     });
     child.once("close", (code, signal) => {
-      clearTimeout(timer);
+      cleanup();
+      if (abortSignal?.aborted) {
+        reject(abortSignal.reason);
+        return;
+      }
       const result = {
         code,
         signal,
@@ -163,20 +181,88 @@ export function run(command, args, { env = process.env, input, timeout = 5 * min
   });
 }
 
-async function step(name, operation) {
-  const started = Date.now();
-  log(`${name}: started`);
-  try {
-    const result = await operation();
-    const seconds = Math.round((Date.now() - started) / 1000);
-    timings.push([name, seconds, "ok"]);
-    log(`${name}: ok (${seconds}s)`);
-    return result;
-  } catch (error) {
-    timings.push([name, Math.round((Date.now() - started) / 1000), "failed"]);
-    log(`${name}: FAILED`);
-    throw error;
+export function createStepRecorder(now = () => performance.now()) {
+  const origin = now();
+  const timings = [];
+  const phases = new Map([
+    ["local-setup", "Local Setup (occ dev up)"],
+    ["install-reader", "install public reader and select its peer"],
+    ["route-model", "route api.openai.com to the stand-in provider"],
+    ["initial-admissions", "initial Agent admissions"],
+    ["admit-embedded", "embedded OpenClaw Agent via scripts/first-agent.mjs"],
+    ["admit-codex", "dedicated Codex Agent via the API"],
+    ["admit-reader-control", "selected reader control via the API"],
+    ["codex-chat", "dedicated Codex chat turn"],
+    ["public-read", "selected Agent managed-skill public read"],
+    ["reader-retirement", "reader retirement and unselected successor"],
+    ["agent-logs", "occ agent logs"],
+    ["stop-agents", "stop both Agents"],
+    ["start-agents", "start both Agents"],
+    ["chat-after-start", "chat turns after start"],
+  ]);
+
+  async function step(name, operation, phase) {
+    const started = now();
+    log(`${name}: started`);
+    function record(status) {
+      const ended = now();
+      const seconds = Math.round((ended - started) / 1000);
+      timings.push({
+        name,
+        seconds,
+        status,
+        phase,
+        startMs: Math.round(started - origin),
+        endMs: Math.round(ended - origin),
+      });
+      return seconds;
+    }
+    try {
+      const result = await operation();
+      const seconds = record("ok");
+      log(`${name}: ok (${seconds}s)`);
+      return result;
+    } catch (error) {
+      record("failed");
+      log(`${name}: FAILED`);
+      throw error;
+    }
   }
+
+  function smokeStep(phase, operation) {
+    return step(phases.get(phase), operation, phase);
+  }
+
+  function initialAdmissions({ embedded, codex, control }) {
+    return smokeStep("initial-admissions", () =>
+      Promise.all([
+        smokeStep("admit-embedded", embedded),
+        smokeStep("admit-codex", codex),
+        smokeStep("admit-reader-control", control),
+      ]),
+    );
+  }
+
+  async function writeTimingReport(runnerTemp) {
+    // A phase without a completed row is unknown. In particular, a rejected
+    // Promise.all can finish before some of its branches do.
+    const rows = timings
+      .filter(({ phase }) => phases.has(phase))
+      .map(({ phase, startMs, endMs, status }) => ({ phase, startMs, endMs, status }));
+    const file = join(runnerTemp, "first-agent-smoke-timing.json");
+    const temporary = `${file}.tmp`;
+    try {
+      await writeFile(temporary, JSON.stringify({ version: 1, rows }) + "\n", {
+        flag: "wx",
+        mode: 0o600,
+      });
+      await rename(temporary, file);
+    } catch {
+      log("Timing report unavailable");
+    }
+  }
+
+  return { step, smokeStep, initialAdmissions, timings, writeTimingReport };
 }
 
 function validTimeout(timeout) {
@@ -348,15 +434,12 @@ async function recordedDigest(tag) {
   return reference;
 }
 
-// Local Setup's PostgreSQL pin: developmentPostgres in internal/occdev/openshell_k3d.go.
-export const postgresImage =
-  "docker.io/library/postgres:18.6@sha256:86c951e05bf56c93d95d397747fb8820ac76cc3bedb78f43abd83eedbe3666ae";
-
 // The image-pull.ts retry helper over `run`.
 async function pullExecFile(command, args, { timeoutMs }) {
   try {
     return await run(command, args, { timeout: timeoutMs });
   } catch (error) {
+    error.stdout = error.result?.stdout ?? "";
     error.stderr = error.result?.stderr ?? "";
     error.timedOut = error.result?.signal === "SIGKILL";
     throw error;
@@ -512,8 +595,15 @@ async function writeReleaseSelection(file) {
 }
 
 async function buildImages({ preparedGit = false } = {}) {
+  const selection = runtimeArtifactSelection(process.env);
+  if (selection && process.env.OCC_K3D_OPENCLAW_SOURCE) {
+    throw new Error("A runtime artifact cannot be combined with OCC_K3D_OPENCLAW_SOURCE.");
+  }
   const revision = (await run("git", ["rev-parse", "--verify", "HEAD"])).stdout.trim();
   assert.match(revision, /^[a-f0-9]{40}$/);
+  if (selection) {
+    assert.equal(selection.sourceSha, revision, "runtime artifact must match checked-out HEAD");
+  }
   await mkdir(workDirectory, { recursive: true });
   const modelDirectory = join(workDirectory, "model");
   await step("model certificates", () =>
@@ -549,26 +639,61 @@ async function buildImages({ preparedGit = false } = {}) {
   const context = join(workDirectory, "runtime-trust");
   await writeModelProviderTrust({ context, caPath: join(modelDirectory, "ca.pem") });
   const driver = await builderDriver();
-  // Both finish before a failure is reported, so neither keeps running unseen.
-  const settled = await Promise.allSettled([
-    driver === "docker-container"
-      ? bakeAndPushImages({
-          revision,
-          controllerTag,
-          smokeRuntimeTag,
-          context,
-          // The prepared-Git acceptance imports archives, so the engine needs both.
-          load: preparedGit,
-        })
-      : buildAndPushImages({ revision, controllerTag, smokeRuntimeTag, context }),
-    // The prepared-Git acceptance keeps the archive path for every image.
-    preparedGit
-      ? undefined
-      : step("PostgreSQL image to the loopback registry", () => publishPostgresImage({ registry })),
-  ]);
-  const failure = settled.find(({ status }) => status === "rejected");
-  if (failure) {
-    throw failure.reason;
+  let runtimeArtifact;
+  let settled;
+  const failures = [];
+  try {
+    if (selection) {
+      runtimeArtifact = await step("verified runtime artifact", () =>
+        prepareRuntimeArtifactLayout(selection),
+      );
+    }
+    // Both finish before cleanup, so neither keeps using the artifact unseen.
+    settled = await Promise.allSettled([
+      driver === "docker-container"
+        ? bakeAndPushImages({
+            revision,
+            controllerTag,
+            smokeRuntimeTag,
+            context,
+            runtimeArtifact,
+            // The prepared-Git acceptance imports archives, so the engine needs both.
+            load: preparedGit,
+          })
+        : buildAndPushImages({
+            revision,
+            controllerTag,
+            smokeRuntimeTag,
+            context,
+            runtimeArtifact,
+          }),
+      // The prepared-Git acceptance keeps the archive path for every image.
+      preparedGit
+        ? undefined
+        : step("PostgreSQL image to the loopback registry", () =>
+            publishPostgresImage({ registry }),
+          ),
+    ]);
+    failures.push(
+      ...settled.filter(({ status }) => status === "rejected").map(({ reason }) => reason),
+    );
+  } catch (error) {
+    failures.push(error);
+  } finally {
+    try {
+      await runtimeArtifact?.cleanup();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length === 1) {
+    throw failures[0];
+  }
+  if (failures.length > 1) {
+    throw new AggregateError(
+      failures,
+      failures.map((error) => error.message ?? String(error)).join("\n"),
+    );
   }
   const [[controller, runtime, providerImage], postgres] = settled.map(({ value }) => value);
   const repository = {};
@@ -636,13 +761,6 @@ export const providerImageDockerfile = [
   "",
 ].join("\n");
 
-// The runtime image's pinned Node base, which the provider image shares.
-export function runtimeNodeBaseImage(dockerfile) {
-  const image = /^ARG NODE_RUNTIME_BASE_IMAGE=(\S+@sha256:[a-f0-9]{64})$/m.exec(dockerfile)?.[1];
-  assert.ok(image, "deploy/runtime/Dockerfile pins no NODE_RUNTIME_BASE_IMAGE");
-  return image;
-}
-
 // The bake definition for the checkout's images. With `load` (the prepared-Git
 // acceptance, which imports archives) the engine also loads the controller and
 // runtime images. Without it they only go to the registry: Local Setup reads
@@ -657,6 +775,7 @@ export function smokeBakeDefinition({
   nodeRuntimeBaseImage,
   openclawSource,
   registryAddress,
+  runtimeContext,
   load,
   caches = cacheSources,
 }) {
@@ -664,6 +783,7 @@ export function smokeBakeDefinition({
     ...(load ? [`type=docker,name=${tag}`] : []),
     `type=image,name=${registryAddress}${tag.slice(registry.length)},push=true,registry.insecure=true`,
   ];
+  const runtimeBase = runtimeContext ?? "target:smoke-runtime-base";
   const target = {
     "smoke-controller": {
       context: root,
@@ -674,20 +794,24 @@ export function smokeBakeDefinition({
       pull: false,
       output: outputs(controllerTag),
     },
-    "smoke-runtime-base": {
-      context: root,
-      dockerfile: "deploy/runtime/Dockerfile",
-      args: {
-        ...openclawBuildValues(openclawSource),
-        OCC_BUILD_REVISION: revision,
-        SOURCE_DATE_EPOCH: cacheEpoch,
-      },
-      "cache-from": caches("runtime"),
-      pull: false,
-    },
+    ...(runtimeContext
+      ? {}
+      : {
+          "smoke-runtime-base": {
+            context: root,
+            dockerfile: "deploy/runtime/Dockerfile",
+            args: {
+              ...openclawBuildValues(openclawSource),
+              OCC_BUILD_REVISION: revision,
+              SOURCE_DATE_EPOCH: cacheEpoch,
+            },
+            "cache-from": caches("runtime"),
+            pull: false,
+          },
+        }),
     "smoke-runtime": {
       context,
-      contexts: { "smoke-runtime-base": "target:smoke-runtime-base" },
+      contexts: { "smoke-runtime-base": runtimeBase },
       args: { RUNTIME_IMAGE: "smoke-runtime-base" },
       output: outputs(smokeRuntimeTag),
     },
@@ -695,7 +819,7 @@ export function smokeBakeDefinition({
   if (!load) {
     target["smoke-provider"] = {
       context: providerContext,
-      contexts: { "smoke-runtime-base": "target:smoke-runtime-base" },
+      contexts: { "smoke-runtime-base": runtimeBase },
       args: { NODE_RUNTIME_BASE_IMAGE: nodeRuntimeBaseImage },
       output: [`type=docker,name=${providerImageTag(revision)}`],
     };
@@ -710,7 +834,14 @@ export function smokeBakeDefinition({
 // network, so it must run there (setup-buildx's default) or on the host
 // network. Unless `load` is set, neither image is loaded into the engine, and
 // the bake's metadata names their registry digests.
-async function bakeAndPushImages({ revision, controllerTag, smokeRuntimeTag, context, load }) {
+async function bakeAndPushImages({
+  revision,
+  controllerTag,
+  smokeRuntimeTag,
+  context,
+  load,
+  runtimeArtifact,
+}) {
   const address = (
     await run("docker", [
       "inspect",
@@ -735,6 +866,9 @@ async function bakeAndPushImages({ revision, controllerTag, smokeRuntimeTag, con
     nodeRuntimeBaseImage,
     openclawSource: await readOpenclawSource(),
     registryAddress: `${address}:5000`,
+    runtimeContext: runtimeArtifact
+      ? `oci-layout://${runtimeArtifact.layoutDirectory}@${runtimeArtifact.platformManifestDigest}`
+      : undefined,
     load,
   });
   const targets = Object.keys(definition.target).filter((name) => name !== "smoke-runtime-base");
@@ -753,6 +887,7 @@ async function bakeAndPushImages({ revision, controllerTag, smokeRuntimeTag, con
         "bake",
         `--allow=fs.read=${context}`,
         `--allow=fs.read=${providerContext}`,
+        ...(runtimeArtifact ? [`--allow=fs.read=${runtimeArtifact.layoutDirectory}`] : []),
         "--file",
         file,
         "--metadata-file",
@@ -763,7 +898,7 @@ async function bakeAndPushImages({ revision, controllerTag, smokeRuntimeTag, con
         // Single-platform image manifests without attestation indexes, so the
         // recorded digest is the image manifest's.
         env: { ...process.env, BUILDX_NO_DEFAULT_ATTESTATIONS: "1" },
-        timeout: 40 * minute,
+        timeout: (runtimeArtifact ? 40 : 180) * minute,
         label: "image-bake",
       },
     ),
@@ -811,7 +946,13 @@ export function bakeReferences(metadata, { controllerTag, smokeRuntimeTag }) {
 }
 
 // The engine's own builder: build, add the trust layer, then push.
-async function buildAndPushImages({ revision, controllerTag, smokeRuntimeTag, context }) {
+async function buildAndPushImages({
+  revision,
+  controllerTag,
+  smokeRuntimeTag,
+  context,
+  runtimeArtifact,
+}) {
   const runtimeTag = `${registry}/oce-smoke/runtime-base:${revision}`;
   const sourceArguments = openclawBuildArguments(await readOpenclawSource());
   // Both builds read the hosted caches main's warm job (ci-image-cache.yml) writes.
@@ -838,26 +979,30 @@ async function buildAndPushImages({ revision, controllerTag, smokeRuntimeTag, co
         ],
         { timeout: 40 * minute, label: "controller-build" },
       ),
-      run(
-        "docker",
-        [
-          "buildx",
-          "build",
-          "--load",
-          ...cacheArguments("runtime"),
-          ...cacheBuildArguments,
-          ...sourceArguments,
-          "--pull=false",
-          "--file",
-          "deploy/runtime/Dockerfile",
-          "--build-arg",
-          `OCC_BUILD_REVISION=${revision}`,
-          "--tag",
-          runtimeTag,
-          ".",
-        ],
-        { timeout: 40 * minute, label: "runtime-build" },
-      ),
+      ...(runtimeArtifact
+        ? []
+        : [
+            run(
+              "docker",
+              [
+                "buildx",
+                "build",
+                "--load",
+                ...cacheArguments("runtime"),
+                ...cacheBuildArguments,
+                ...sourceArguments,
+                "--pull=false",
+                "--file",
+                "deploy/runtime/Dockerfile",
+                "--build-arg",
+                `OCC_BUILD_REVISION=${revision}`,
+                "--tag",
+                runtimeTag,
+                ".",
+              ],
+              { timeout: 180 * minute, label: "runtime-build" },
+            ),
+          ]),
     ]),
   );
   await step("runtime trust layer", () =>
@@ -868,7 +1013,13 @@ async function buildAndPushImages({ revision, controllerTag, smokeRuntimeTag, co
       "default",
       "--load",
       "--build-arg",
-      `RUNTIME_IMAGE=${runtimeTag}`,
+      `RUNTIME_IMAGE=${runtimeArtifact ? "smoke-runtime-base" : runtimeTag}`,
+      ...(runtimeArtifact
+        ? [
+            "--build-context",
+            `smoke-runtime-base=oci-layout://${runtimeArtifact.layoutDirectory}@${runtimeArtifact.platformManifestDigest}`,
+          ]
+        : []),
       "--tag",
       smokeRuntimeTag,
       context,
@@ -926,24 +1077,31 @@ const clusterName = slotNames.cluster;
 const watchLog = join(workDirectory, "cluster-watch.log");
 
 // `occ dev up` deletes its cluster when a step fails, so record what the
-// cluster looked like while it was being installed. The returned stop function
-// wakes an idle wait without another capture; one already running finishes.
-// `finalCapture` takes one last snapshot, for a failed setup.
-export function watchCluster() {
-  const kubeconfig = join(workDirectory, "watch-kubeconfig");
+// cluster looked like while it was being installed. On success, stop and reap
+// any optional capture. On failure, preserve its output and take a final snapshot.
+export function watchCluster({ directory = workDirectory, intervalMs = 30_000 } = {}) {
+  const kubeconfig = join(directory, "watch-kubeconfig");
+  const captureLog = join(directory, "cluster-watch.log");
   const wake = new AbortController();
+  const stopCapture = new AbortController();
   let finalCapture = false;
-  const record = async (label, command, args) => {
+  const capture = async (signal) => {
+    const runCapture = (command, args, options) => run(command, args, { ...options, signal });
+    const record = async (label, command, args) => {
+      try {
+        const { stdout } = await runCapture(command, args, { timeout: minute });
+        await appendFile(captureLog, `----- ${new Date().toISOString()} ${label}\n${stdout}\n`);
+      } catch (error) {
+        if (!signal?.aborted) {
+          await appendFile(
+            captureLog,
+            `----- ${label} unavailable: ${error.message.slice(0, 300)}\n`,
+          );
+        }
+      }
+    };
     try {
-      const { stdout } = await run(command, args, { timeout: minute });
-      await appendFile(watchLog, `----- ${new Date().toISOString()} ${label}\n${stdout}\n`);
-    } catch (error) {
-      await appendFile(watchLog, `----- ${label} unavailable: ${error.message.slice(0, 300)}\n`);
-    }
-  };
-  const capture = async () => {
-    try {
-      const { stdout } = await run("k3d", ["kubeconfig", "get", clusterName], {
+      const { stdout } = await runCapture("k3d", ["kubeconfig", "get", clusterName], {
         timeout: minute,
       });
       await writeFile(kubeconfig, stdout, { mode: 0o600 });
@@ -968,7 +1126,7 @@ export function watchCluster() {
       'jsonpath={range .items[*].status.conditions[*]}{.type}={.status} {.message}{"\\n"}{end}{.items[*].spec.taints}',
     ]);
     try {
-      const { stdout } = await run("kubectl", [...k, "get", "pods", "-A", "-o", "json"]);
+      const { stdout } = await runCapture("kubectl", [...k, "get", "pods", "-A", "-o", "json"]);
       for (const pod of JSON.parse(stdout).items) {
         const ready = pod.status?.conditions?.some(
           ({ type, status }) => type === "Ready" && status === "True",
@@ -1002,11 +1160,11 @@ export function watchCluster() {
   const loop = (async () => {
     while (!wake.signal.aborted) {
       try {
-        await delay(30_000, undefined, { signal: wake.signal });
+        await delay(intervalMs, undefined, { signal: wake.signal });
       } catch {
         break;
       }
-      await capture();
+      await capture(stopCapture.signal);
     }
     if (finalCapture) {
       await capture();
@@ -1015,6 +1173,9 @@ export function watchCluster() {
   return async ({ finalCapture: final = false } = {}) => {
     finalCapture = final;
     wake.abort();
+    if (!final) {
+      stopCapture.abort();
+    }
     await loop;
   };
 }
@@ -1037,7 +1198,11 @@ export async function startLocalSetup(environment, { privateInstall = false } = 
     try {
       await run(occ, ["dev", "up"], { env: environment, timeout: 25 * minute, label: "dev-up" });
     } catch (error) {
-      await stopWatching({ finalCapture: true });
+      try {
+        await stopWatching({ finalCapture: true });
+      } catch {
+        // Watcher diagnostics are supplemental to the installation failure.
+      }
       await printWatchLog();
       throw error;
     }
@@ -2202,15 +2367,13 @@ async function smoke() {
   );
   let stack;
   try {
-    stack = await step("Local Setup (occ dev up)", () => startLocalSetup(environment));
+    stack = await smokeStep("local-setup", () => startLocalSetup(environment));
     stack.agents = [];
     const namespaces = await stack.api("GET", "/namespaces");
     stack.namespaceId = namespaces.find(({ name }) => name === "default")?.id;
     assert.ok(stack.namespaceId, "Local Setup created no default Namespace");
-    const reader = await step("install public reader and select its peer", () =>
-      enablePublicReader(stack),
-    );
-    await step("route api.openai.com to the stand-in provider", () =>
+    const reader = await smokeStep("install-reader", () => enablePublicReader(stack));
+    await smokeStep("route-model", () =>
       routeModelProvider(
         stack,
         modelDirectory,
@@ -2219,39 +2382,31 @@ async function smoke() {
         { credentialDigests },
       ),
     );
-    // The two Agents are independent; deploy them together to bound CI time.
-    const [embedded, codex, control] = await Promise.all([
-      step("embedded OpenClaw Agent via scripts/first-agent.mjs", () =>
-        runFirstAgent(stack, modelCredentials.embedded),
-      ),
-      step("dedicated Codex Agent via the API", () =>
-        createCodexAgent(stack, reader, "codex", modelCredentials.codex),
-      ),
-      step("selected reader control via the API", () =>
+    const [embedded, codex, control] = await initialAdmissions({
+      embedded: () => runFirstAgent(stack, modelCredentials.embedded),
+      codex: () => createCodexAgent(stack, reader, "codex", modelCredentials.codex),
+      control: () =>
         createCodexAgent(stack, reader, "reader-control", modelCredentials["reader-control"]),
-      ),
-    ]);
-    await step("dedicated Codex chat turn", () => chatTurn(stack, codex.agent, codex.revisionId));
-    await step("selected Agent managed-skill public read", () =>
-      publicReadTurn(stack, codex, reader),
-    );
-    const retiredRevision = await step("reader retirement and unselected successor", () =>
+    });
+    await smokeStep("codex-chat", () => chatTurn(stack, codex.agent, codex.revisionId));
+    await smokeStep("public-read", () => publicReadTurn(stack, codex, reader));
+    const retiredRevision = await smokeStep("reader-retirement", () =>
       proveRetirement(stack, codex, control, reader),
     );
-    await step("occ agent logs", async () => {
+    await smokeStep("agent-logs", async () => {
       await readLogs(stack, embedded.agent, "gateway");
       await readLogs(stack, codex.agent, "gateway");
       await readLogs(stack, codex.agent, "agent");
     });
-    await step("stop both Agents", () =>
+    await smokeStep("stop-agents", () =>
       Promise.all([stopAgent(stack, embedded.agent), stopAgent(stack, codex.agent)]),
     );
-    const [embeddedRevision, codexRevision] = await step("start both Agents", () =>
+    const [embeddedRevision, codexRevision] = await smokeStep("start-agents", () =>
       Promise.all([deployAgent(stack, embedded.agent), deployAgent(stack, codex.agent)]),
     );
     assert.notEqual(embeddedRevision, embedded.revisionId, "start must admit a new revision");
     assert.notEqual(codexRevision, retiredRevision, "start must admit a new revision");
-    await step("chat turns after start", () =>
+    await smokeStep("chat-after-start", () =>
       Promise.all([
         chatTurn(stack, embedded.agent, embeddedRevision),
         chatTurn(stack, codex.agent, codexRevision),
@@ -2265,7 +2420,7 @@ async function smoke() {
 
 async function summarize() {
   const lines = ["| Step | Seconds | Result |", "| --- | ---: | --- |"];
-  for (const [name, seconds, status] of timings) {
+  for (const { name, seconds, status } of timings) {
     lines.push(`| ${name} | ${seconds} | ${status} |`);
   }
   for (const proof of proofResults) {
@@ -2304,8 +2459,14 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     process.stderr.write(`first-agent-smoke: ${error.stack ?? error.message}\n`);
     process.exitCode = 1;
   } finally {
-    if (command !== "release-selection") {
-      await summarize();
+    try {
+      if (command !== "release-selection") {
+        await summarize();
+      }
+    } finally {
+      if (command === "run" && process.env.GITHUB_ACTIONS === "true" && process.env.RUNNER_TEMP) {
+        await writeTimingReport(process.env.RUNNER_TEMP);
+      }
     }
   }
 }

@@ -4,6 +4,8 @@ A repository binding gives an Agent HTTPS access to a named repository under
 an approved profile. The OpenClaw Control Plane (OCC) saves the grant with the
 Agent revision. To configure a binding, follow the [operator guide](../guides/repository-credentials.md).
 
+For the OpenShell path, see the [Git setup and request diagrams](../design/credential-proxy-architecture.md#how-does-openshell-authorize-a-git-request).
+
 ## Native Git from the Agent to GitHub
 
 Prepared native Git requires a dedicated Codex Harness (API key or ChatGPT service
@@ -93,6 +95,8 @@ older cleanup. Deletion, invalidation and elapsed deadlines do not establish
 disposal or provider revocation. Evidence pruning and durable recovery of lost token material from
 a session are unimplemented. See [sessions and closure](#sessions-and-closure)
 for what the original broker can confirm.
+
+For prospective checks, see [repository access across worker replacement](repository-credentials/worker-replacement.md).
 
 ## Configuration
 
@@ -193,19 +197,9 @@ Keep the App key there and retain the existing approval scope. The development
 
 ## Token Service lifecycle
 
-The worker signs an App JSON Web Token (JWT), requests approved repository IDs
-and permissions, verifies scope and expiry, and saves the encrypted token in
-PostgreSQL. It owns renewal and retirement; renewal cannot extend the session.
-See [token preparation and withdrawal](../flows/credential-source-refresh.md#6-issue-and-renew-a-github-installation-token).
-Protected metadata reads use `metadata: read`; OCC separately authorizes the
-sender's exact GET.
+The Token Service signs an App JWT, validates the issued token’s scope and expiry, and stores it encrypted in PostgreSQL. An authorized Credential Proxy metadata GET resolves a `github_app_installation` reference. Its provider generation and registered grant determine which installation token can serve the request. Git sessions use background preparation until the session expires. See [issuance, renewal and withdrawal](../flows/credential-source-refresh.md#6-issue-and-renew-a-github-installation-token).
 
-`PREPARED_GITHUB_RECOVERY_REQUIRED` (`quarantined` or `blocked`) stops automatic
-minting. [Recover on the issuing owner](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key),
-preserving the original attempt and custody. Preserve its original bound:
-72 minutes after starting, or known provider expiry plus clock skew, whichever
-is later. A GET does not settle it. Never replay, reset custody, or
-change profiles, families or clusters to bypass recovery.
+`PREPARED_GITHUB_RECOVERY_REQUIRED` stops minting. [Recover the issuing owner](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key) with its original attempt and custody. Wait at least 72 minutes from intent, or through verified provider expiry plus clock skew, whichever is later. A GET cannot settle an uncertain issue.
 
 ## Sessions and closure
 

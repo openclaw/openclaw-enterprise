@@ -8,6 +8,9 @@ migration commands use the same connection pool factory.
 credentials. Its other mode is `azure-workload-identity`; unknown
 modes fail before opening a pool.
 
+Explicit pool options override URL query parameters. Unspecified values retain
+URL, environment, and client defaults.
+
 | Variable                     | Requirement in Azure workload-identity mode                          |
 | ---------------------------- | -------------------------------------------------------------------- |
 | `OCC_DATABASE_AUTH`          | Set to `azure-workload-identity` in each connecting process.         |
@@ -98,18 +101,17 @@ the manifest pairs the PostgreSQL 18.6 restored catalog with its exact native
 digest. For the next schema, qualify both upgrading that restore and restoring
 the new schema. A match cannot establish backup completeness or provenance.
 
-Confirm the target and authorization before `pnpm db:migrate`
-(development) or `pnpm db:migrate:production`. Both check source, roles, receipts,
-definitions and effective privileges under one advisory lock; Drizzle applies SQL
-and receipts transactionally. Production also accepts `--check`.
+Confirm target and authorization before running `pnpm db:migrate` or
+`pnpm db:migrate:production`. Under one advisory lock, both verify source,
+roles, receipts, definitions and grants. Drizzle applies SQL and receipts transactionally.
 
-On first install, Helm adds `--expect-empty`. `MIGRATION_HISTORY_NOT_EMPTY`
-means migration stopped before changing recognized OCE history, not that the
-history is corrupt. Inspect the original attempt and confirm the target.
-`empty` describes OCE schemas, not the whole database or its identity.
-`--check` inspects without migrating; it cannot authorize a retry. Upgrades,
-recovery, and unflagged migrations are unchanged. Older controller images
-reject the unknown option.
+Production `--check` inspects recognized history. [Separate service deployment](../../guides/deploy/separate-database-upgrade.md)
+uses `--require-current`: pending history returns `MIGRATION_HISTORY_PENDING`,
+drift returns `MIGRATION_HISTORY_UNSUPPORTED`. Neither check applies SQL or authorizes a retry.
+
+Helm installs with `--expect-empty`. `MIGRATION_HISTORY_NOT_EMPTY` means recognized
+history already exists. Inspect the original attempt and target. `empty` describes OCE
+schemas only. Older controllers reject unknown options.
 
 Compatibility appends a receipt without rewriting either published 31-receipt
 history. On Provider terminology databases, it renames owned relational columns,
@@ -188,6 +190,7 @@ engine connection, environment, project, Compose files, and overrides. For
 example, after setting `DEV_COMPOSE_PROJECT` to your own recorded project:
 
 ```sh
+export OCC_DEVELOPMENT_COMPUTE_DRIVER=docker
 ./bin/occ dev down --volumes -- -p "$DEV_COMPOSE_PROJECT" -f compose.yaml
 ./bin/occ dev up --key-output /absolute/private/new-installation-key.json -- \
   -p "$DEV_COMPOSE_PROJECT" -f compose.yaml
@@ -226,18 +229,18 @@ access; qualify worker, Agent, repository, and provider behavior separately.
 The [controller worker](../controller.md) uses a bootstrapped Installation and
 the API's migrated PostgreSQL database, not its listener or authentication settings.
 
-| Variable                            | Requirement or default         | Behavior                                                                                                                                                                    |
-| ----------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `NODE_ENV`                          | `development` or `production`. | Both modes process Namespace and selected AgentRevision work through the selected Compute Driver.                                                                           |
-| `OCC_DATABASE_URL`                  | Required application-role URL. | Must use a `postgresql:` or `postgres:` connection to the API's PostgreSQL database.                                                                                        |
-| `OCC_CONFIG_PATH`                   | Required in production.        | Absolute startup YAML shared with the API; development omits it to use the Docker Compute default or sets it to explicitly select another trusted Driver set.               |
-| `OCC_WORKER_POLL_INTERVAL_MS`       | `250`.                         | Positive integer controlling the delay between idle polling attempts; at most `2147483647`.                                                                                 |
-| `OCC_WORKER_LEASE_DURATION_MS`      | `5000`.                        | Positive integer controlling the claim lease in milliseconds; at most `2147483647`.                                                                                         |
-| `OCC_WORKER_MAX_ATTEMPTS`           | `5`.                           | Positive safe integer limiting attempts before permanent failure.                                                                                                           |
-| `OCC_WORKER_CONVERGENCE_TIMEOUT_MS` | `900000`.                      | Positive safe integer bounding Namespace convergence from operation creation, on PostgreSQL's clock.                                                                        |
-| `OCC_WORKER_DATABASE_TIMEOUT_MS`    | `60000`.                       | Client-side bound on each worker query and connection; a silent connection is dropped and retried, and longer lock waits fail the pass as an attempt; at most `2147483647`. |
-| `OCC_WORKER_READINESS_PATH`         | Optional absolute path.        | Writes a private freshness marker after real queue-health observations; required by packaged worker probes.                                                                 |
-| `OCC_WORKER_LIVENESS_PATH`          | Optional absolute path.        | Writes a private marker as the run loop makes progress, even through database outages; the packaged liveness probe restarts a worker whose marker is stale.                 |
+| Variable                            | Requirement or default         | Behavior                                                                                                                                                                         |
+| ----------------------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`                          | `development` or `production`. | Both modes process Namespace and selected AgentRevision work through the selected Compute Driver.                                                                                |
+| `OCC_DATABASE_URL`                  | Required application-role URL. | Must use a `postgresql:` or `postgres:` connection to the API's PostgreSQL database.                                                                                             |
+| `OCC_CONFIG_PATH`                   | Required in production.        | Absolute startup YAML shared with the API; development omits it to use the Docker Compute default or sets it to explicitly select another trusted Driver set.                    |
+| `OCC_WORKER_POLL_INTERVAL_MS`       | `250`.                         | Positive integer controlling the delay between idle polling attempts; at most `2147483647`.                                                                                      |
+| `OCC_WORKER_LEASE_DURATION_MS`      | `5000`.                        | Positive integer controlling the claim lease in milliseconds; at most `2147483647`.                                                                                              |
+| `OCC_WORKER_MAX_ATTEMPTS`           | `5`.                           | Positive safe integer limiting attempts before permanent failure.                                                                                                                |
+| `OCC_WORKER_CONVERGENCE_TIMEOUT_MS` | `900000`.                      | Positive safe integer for [Namespace, Agent and live SandboxPolicy convergence](../controller/reconciliation.md#deferred-namespace-and-agent-convergence), including queue time. |
+| `OCC_WORKER_DATABASE_TIMEOUT_MS`    | `60000`.                       | Client-side bound on each worker query and connection; a silent connection is dropped and retried, and longer lock waits fail the pass as an attempt; at most `2147483647`.      |
+| `OCC_WORKER_READINESS_PATH`         | Optional absolute path.        | Writes a private freshness marker after real queue-health observations; required by packaged worker probes.                                                                      |
+| `OCC_WORKER_LIVENESS_PATH`          | Optional absolute path.        | Writes a private marker as the run loop makes progress, even through database outages; the packaged liveness probe restarts a worker whose marker is stale.                      |
 
 Packaged worker probes require regular marker files and refuse directory paths.
 

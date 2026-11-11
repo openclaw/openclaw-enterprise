@@ -1,14 +1,20 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
+import { Check } from "typebox/value";
 
-import type { NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
+import {
+  AgentListResponse,
+  type NamespaceWire,
+} from "../../packages/contracts/src/api/resources.ts";
 import type { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 
 import {
   AGENT_READ,
   apiRequests,
+  denyRevisionRead,
   detailUrl,
+  expireSessions,
   fileBrowser,
   grantMember,
   hasFocus,
@@ -17,13 +23,17 @@ import {
   nativeValues,
   newPage,
   nonAuthWriteRequests,
+  recordFocusTrail,
   secretOptionLabel,
   selectSecret,
   settledView,
+  stopFocusTrail,
   waitForEnabled,
   waitForInputValue,
-} from "./console-agents-browser-helpers.mjs";
-import { confirmAgentAction } from "./console-action-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
+import { openAdvancedSettings } from "./console-agents-ui-test-support.ts";
+import { confirmAgentAction, responseTo } from "./console-action-helpers.ts";
 import {
   focusedLabel,
   fulfillMethod,
@@ -33,16 +43,133 @@ import {
   tagView,
   viewTag,
   waitForFocusedLabel,
-} from "./console-refocus-helpers.mjs";
-import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+} from "./console-refocus-helpers.ts";
+import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.ts";
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { within } from "../helpers/wait-for.mjs";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
-import { deleteRefused } from "../helpers/refusal-text.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import { deleteRefused, VERSION_READ_DENIED_HEADING } from "../helpers/refusal-text.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
+
+test("a pending sign-in keeps keyboard focus without taking it back after a refusal", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  for (const attempt of ["password", "provider", "move", "late OIDC"] as const) {
+    const provider = attempt === "provider";
+    const lateDiscovery = attempt === "late OIDC";
+    const { page } = await newPage(t, fixture, {
+      browser,
+      context: { viewport: provider ? { width: 390, height: 844 } : { width: 1440, height: 900 } },
+    });
+    const outsideOrigins: string[] = [];
+    await page.route("**/*", (route) => {
+      const origin = new URL(route.request().url()).origin;
+      if (origin === fixture.origin) {
+        return route.fallback();
+      }
+      outsideOrigins.push(origin);
+      return route.abort();
+    });
+    // Only discovery is simulated. The local Controller refuses Google start with no provider
+    // configured, and it rejects the wrong password through the real sign-in route.
+    await page.route("**/api/auth/providers", (route) =>
+      route.fulfill({ json: { data: { password: true, google: true }, meta: {} } }),
+    );
+    const discovery = lateDiscovery
+      ? await holdRequests(t, page, `${fixture.origin}/api/auth/providers`, {
+          once: true,
+          method: "GET",
+          fulfill: {
+            json: {
+              data: {
+                password: true,
+                google: true,
+                oidc: true,
+                oidcSignIn: {
+                  label: "Example SSO",
+                  authorizationUrl: "https://sso.example.invalid/authorize",
+                },
+              },
+              meta: {},
+            },
+          },
+        })
+      : null;
+    await page.goto(`${fixture.origin}/console/login`);
+    const submit = page.getByRole("button", { name: "Sign in", exact: true });
+    const google = page.getByRole("button", { name: "Continue with Google", exact: true });
+    const password = page.getByLabel("Password", { exact: true });
+    if (discovery) {
+      await discovery.requested;
+      await page.getByRole("button", { name: "Recovery sign-in", exact: true }).click();
+    } else {
+      await google.waitFor();
+    }
+    await page.getByLabel("Email", { exact: true }).fill("synthetic@example.invalid");
+    await password.fill("not-the-password");
+    await page.keyboard.press("Tab");
+    if (provider) {
+      await page.keyboard.press("Tab");
+    }
+    const trigger = provider ? google : submit;
+    const sibling = provider ? submit : google;
+    assert.equal(await hasFocus(trigger), true, `${attempt}: keyboard reaches the control`);
+
+    const path = provider ? "/api/auth/providers/google/start" : "/api/auth/sign-in/email";
+    const url = `${fixture.origin}${path}`;
+    const requests = apiRequests(page, fixture.origin);
+    const held = await holdRequests(t, page, url, {
+      once: true,
+      method: "POST",
+      afterServer: true,
+    });
+    const answered = responseTo(page, "POST", url);
+    await page.keyboard.press("Enter");
+    const upstream = await held.requested;
+    assert.ok(upstream, "the real Controller must answer before the hold");
+    const expectedStatus = provider ? 403 : 401;
+    assert.equal(upstream.status(), expectedStatus);
+    assert.equal(await hasFocus(trigger), true, `${attempt}: focus stays during the request`);
+    const oidc = page.getByRole("button", { name: "Continue with Example SSO", exact: true });
+    if (discovery) {
+      // Discovery can add a provider while a password request is already pending.
+      discovery.release();
+      await oidc.waitFor();
+      assert.notEqual(await oidc.getAttribute("disabled"), null);
+      assert.equal(await hasFocus(trigger), true);
+    }
+    assert.equal(await trigger.getAttribute("aria-disabled"), "true");
+    assert.notEqual(await sibling.getAttribute("disabled"), null);
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Space");
+    if (attempt === "move") {
+      await page.keyboard.press("Shift+Tab");
+      assert.equal(await hasFocus(password), true);
+    }
+
+    held.release();
+    assert.equal((await answered).status(), expectedStatus);
+    const refusal = provider
+      ? "Google sign-in is unavailable. Try again or use your password."
+      : "Could not sign in. Check your email and password.";
+    await page.getByText(refusal, { exact: true }).waitFor();
+    assert.equal(await hasFocus(attempt === "move" ? password : trigger), true);
+    assert.equal(await trigger.isEnabled(), true);
+    assert.equal(await sibling.isEnabled(), true);
+    if (discovery) {
+      assert.equal(await oidc.isEnabled(), true);
+    }
+    assert.equal(
+      requests.filter((request) => request.method === "POST" && request.path === path).length,
+      1,
+    );
+    assert.deepEqual(outsideOrigins, []);
+    await page.close();
+  }
+});
 
 // A navigation that holds the shown page keeps focus on its heading (findings 1626, 1636), but a
 // refocus recheck does not: the list stays inert while we check access, then the reader can
@@ -75,6 +202,105 @@ test("refocusing the Agents list restores its focused link unless the reader mov
     read.release();
     await link.waitFor();
     assert.equal(await hasFocus(expectedFocus), true, "keep the reader's place after the check");
+  }
+});
+
+// The admitted selector becomes usable before the Agent list read settles. A reader who
+// tabs to it during the wait should keep that place when the shell redraws.
+test("The Namespace selector keeps keyboard focus acquired during Agents list revalidation", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Selected workspace");
+  const other = await fixture.createNamespace("Other workspace", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Visible Agent", nativeValues("visible"));
+  await fixture.createAgent(other.id, "Other Agent", nativeValues("other"));
+  const { page } = await newPage(t, fixture, {
+    browser,
+    context: { viewport: { width: 1440, height: 900 } },
+  });
+  await trackSettledFetches(page);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  const row = page.locator(settledView).getByRole("link", { name: "Visible Agent", exact: true });
+  await row.waitFor();
+  await waitForIdleFetches(page);
+
+  const requests = apiRequests(page, fixture.origin);
+  const selector = page.getByRole("combobox", { name: "Namespace", exact: true });
+  const navigation = page.getByRole("link", { name: "Namespaces", exact: true });
+  const listUrl = page.url();
+  const agentsUrl = `${fixture.origin}/namespaces/${namespace.id}/agents`;
+
+  for (const focus of ["navigation", "selector"] as const) {
+    await row.focus();
+    assert.equal(await hasFocus(row), true);
+    const read = await holdRequests(t, page, agentsUrl, {
+      once: true,
+      method: "GET",
+      afterServer: true,
+    });
+    await refocus(page);
+    const response = await read.requested;
+    assert.ok(response, "the hold received a real Controller response");
+    assert.equal(response.status(), 200, "the Controller admitted the selected list read");
+    const body: unknown = await response.json();
+    assert.ok(Check(AgentListResponse, body), "the Controller answered with the Agents list");
+    assert.deepEqual(
+      body.data.map(({ id }) => id),
+      [agent.id],
+    );
+
+    await page.locator(heldView).waitFor();
+    await waitForEnabled(selector);
+    await navigation.focus();
+    for (let step = 0; step < 6 && !(await hasFocus(selector)); step += 1) {
+      await page.keyboard.press("Tab");
+    }
+    const previous = await selector.elementHandle();
+    assert.equal(await hasFocus(previous), true, "Tab reached the admitted Namespace selector");
+    assert.equal(await selector.inputValue(), namespace.id);
+    if (focus === "navigation") {
+      await navigation.focus();
+      assert.equal(await hasFocus(navigation), true, "the reader moved away from the selector");
+    }
+
+    await recordFocusTrail(page);
+    const delivered = page.waitForResponse(
+      (answer) => answer.url() === agentsUrl && answer.request().method() === "GET",
+    );
+    read.release();
+    assert.equal((await delivered).status(), 200);
+    await row.waitFor();
+    assert.equal(
+      await previous.evaluate((node) => node.isConnected),
+      false,
+      "the shell replaced its selector",
+    );
+    assert.equal(await selector.isVisible(), true);
+    assert.equal(await selector.isEnabled(), true);
+    assert.equal(await selector.inputValue(), namespace.id);
+    assert.equal(page.url(), listUrl, "keyboard focus does not switch Namespace");
+    assert.equal(await page.getByRole("link", { name: "Other Agent", exact: true }).count(), 0);
+    assert.deepEqual(nonAuthWriteRequests(requests), [], "moving focus sends no writes");
+    assert.equal(
+      requests.some(({ path }) => path.startsWith(`/namespaces/${other.id}/`)),
+      false,
+    );
+
+    const { trail } = await stopFocusTrail(page);
+    const active = await page.evaluate(() => globalThis.document.activeElement?.tagName);
+    t.diagnostic(
+      `${focus} focus after the Controller read: ${trail.join(" → ")} (active ${active})`,
+    );
+    assert.equal(
+      trail.some((entry) => entry.endsWith(": Visible Agent")),
+      false,
+      "the old Agent link did not take focus back",
+    );
+    assert.equal(
+      await hasFocus(focus === "selector" ? selector : navigation),
+      true,
+      focus === "selector"
+        ? "focus remains on the current usable Namespace selector"
+        : "the Namespace selector does not take focus from navigation",
+    );
   }
 });
 
@@ -502,6 +728,149 @@ for (const view of ["Agent page", "Create Agent"] as const) {
   });
 }
 
+test("a session reply missing its binding blocks private reads until Retry", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Session binding");
+  const agentName = "Session binding Agent";
+  await fixture.createAgent(namespace.id, agentName, nativeValues("v1"));
+  const { page } = await newPage(t, fixture, { browser });
+  const agentLink = page.getByRole("link", { name: agentName, exact: true });
+  const account = page.locator(".account-toggle");
+  const sessionPath = "/api/auth/session";
+  const agentsPath = `/namespaces/${namespace.id}/agents`;
+  const requests = apiRequests(page, fixture.origin);
+  let genuineBinding: string | undefined;
+  await page.route(
+    `**${sessionPath}`,
+    async (route) => {
+      const actual = await route.fetch();
+      assert.equal(actual.status(), 200);
+      const payload: unknown = await actual.json();
+      assert.ok(payload !== null && typeof payload === "object" && "data" in payload);
+      const data = payload.data;
+      assert.ok(data !== null && typeof data === "object" && "sessionKey" in data);
+      const { sessionKey, ...withoutBinding } = data;
+      assert.ok(typeof sessionKey === "string" && sessionKey.length > 0);
+      genuineBinding = sessionKey;
+      await route.fulfill({
+        response: actual,
+        json: { ...payload, data: withoutBinding },
+      });
+    },
+    { times: 1 },
+  );
+
+  // Sign in through the fixture on a fresh tab. Only the first Console session read is malformed.
+  const firstSession = page.waitForResponse(
+    (result) => new URL(result.url()).pathname === sessionPath,
+  );
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  assert.equal((await firstSession).status(), 200);
+  await page.getByRole("heading", { name: "Session unavailable", exact: true }).waitFor();
+  assert.equal(await account.count(), 0);
+  assert.equal(await agentLink.count(), 0);
+  assert.equal(
+    requests.some(({ path }) => path.startsWith("/namespaces") || path === "/observability"),
+    false,
+    "malformed admission sends no private reads",
+  );
+
+  const recoveredSession = page.waitForResponse(
+    (result) => new URL(result.url()).pathname === sessionPath,
+  );
+  const namespaceRead = page.waitForResponse(
+    (result) => new URL(result.url()).pathname === "/namespaces",
+  );
+  const agentRead = page.waitForResponse((result) => new URL(result.url()).pathname === agentsPath);
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  assert.equal((await recoveredSession).status(), 200);
+  for (const read of [await namespaceRead, await agentRead]) {
+    assert.equal(read.status(), 200);
+    assert.ok(
+      genuineBinding && read.request().headers()["x-occ-session-key"] === genuineBinding,
+      "Retry pins the genuine session binding before requesting private data",
+    );
+  }
+  await agentLink.waitFor();
+  assert.ok((await account.innerText()).includes(fixture.credentials.email));
+});
+
+for (const status of [200, 503]) {
+  test(`discovery ${status} preserves keyboard focus when revealing passwords`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const { page } = await newPage(t, fixture, { browser });
+    const discovery = await holdRequests(t, page, "**/api/auth/providers", {
+      method: "GET",
+      once: true,
+      fulfill:
+        status === 503
+          ? apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Sign-in discovery is unavailable.")
+          : {
+              status,
+              json: {
+                data: { google: true, oidc: false, password: true, sessionBinding: true },
+                meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+              },
+            },
+    });
+    await page.goto(`${fixture.origin}/console/login`);
+    await discovery.requested;
+    const recovery = page.getByRole("button", { name: "Recovery sign-in", exact: true });
+    await page.keyboard.press("Tab");
+    assert.equal(await hasFocus(recovery), true);
+
+    // Both ordinary password discovery and its failure fallback replace the
+    // focused recovery action with the form. Keyboard entry must remain usable.
+    discovery.release();
+    const email = page.getByLabel("Email", { exact: true });
+    await email.waitFor();
+    assert.equal(await hasFocus(email), true);
+    await page.keyboard.type("recovery@example.com");
+    assert.equal(await email.inputValue(), "recovery@example.com");
+  });
+}
+
+test("recovery-only discovery preserves explicitly opened recovery sign-in", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  const providersPath = "/api/auth/providers";
+  const discovery = await holdRequests(t, page, `**${providersPath}`, {
+    method: "GET",
+    once: true,
+    fulfill: {
+      status: 200,
+      json: {
+        data: { google: true, password: false, sessionBinding: true },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+      },
+    },
+  });
+  const response = responseTo(page, "GET", `${fixture.origin}${providersPath}`);
+  await page.goto(`${fixture.origin}/console/login`);
+  await discovery.requested;
+  const email = page.getByLabel("Email", { exact: true });
+  // Do not expose ordinary password sign-in before its policy is known. The
+  // recovery path remains available even if discovery never answers.
+  assert.equal(await email.isVisible(), false);
+  await page.getByRole("button", { name: "Recovery sign-in", exact: true }).click();
+  assert.equal(await hasFocus(email), true);
+  assert.equal(await email.inputValue(), "");
+
+  discovery.release();
+  assert.equal((await response).status(), 200);
+  await page.getByRole("button", { name: "Continue with Google", exact: true }).waitFor();
+  assert.equal(await hasFocus(email), true);
+  await page.getByText("Use the recovery account's email.", { exact: true }).waitFor();
+  await page.keyboard.type("recovery@example.com");
+  assert.equal(await email.inputValue(), "recovery@example.com");
+  assert.equal(
+    requests.some(({ method, path }) => method === "POST" && path === "/api/auth/sign-in/email"),
+    false,
+  );
+});
+
 // Initial admission allows Agent metadata without Configuration read. Refocus must preserve
 // that same partial view instead of replacing the accessible Agent with a page-wide denial.
 test("mounted Agent refocus preserves a stable Configuration denial", async (t) => {
@@ -545,6 +914,657 @@ test("mounted Agent refocus preserves a stable Configuration denial", async (t) 
       true,
     );
   }
+});
+
+test("mounted Agent refocus cannot infer revision omission from a malformed page", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Revision refocus");
+  const agent = await fixture.createAgent(namespace.id, "Revision Agent", nativeValues("v1"));
+  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
+  denyRevisionRead(fixture, namespace, active.revision);
+
+  const { page } = await newPage(t, fixture, { browser });
+  await trackSettledFetches(page);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id).href);
+  await page.getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true }).waitFor();
+  const tabs = page.locator(".agent-tabs");
+  await tabs.waitFor();
+  await page.locator(settledView).waitFor();
+  await waitForIdleFetches(page);
+
+  // The real view has already admitted the Agent with a restricted active revision. A malformed
+  // terminal list during refocus cannot prove that this version is still omitted.
+  const revisionsPath = `/namespaces/${namespace.id}/agents/${agent.id}/revisions`;
+  const requests = apiRequests(page, fixture.origin);
+  const list = await holdRequests(t, page, `**${revisionsPath}`, {
+    once: true,
+    method: "GET",
+    fulfill: {
+      status: 200,
+      json: { data: [null], meta: { requestId: "req_test_revision_refocus", nextCursor: null } },
+    },
+  });
+  const response = page.waitForResponse(
+    (result) => new URL(result.url()).pathname === revisionsPath,
+  );
+  await refocus(page);
+  await list.requested;
+  list.release();
+  assert.equal((await response).status(), 200);
+
+  await page.getByRole("heading", { name: "Request unavailable", exact: true }).waitFor();
+  assert.equal(await tabs.count(), 0);
+  const snapshotPath = `${revisionsPath}/${active.revision.id}`;
+  assert.equal(
+    requests.some((request) => request.path.split("?")[0] === snapshotPath),
+    false,
+    "the malformed page never triggers a read of the restricted revision",
+  );
+});
+
+async function openRefocusDraft(t: TestContext) {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Refocus recovery");
+  const agent = await fixture.createAgent(namespace.id, "Example Agent", nativeValues("v1"));
+  const { page, artifacts } = await newPage(t, fixture, { browser });
+  await trackSettledFetches(page);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  await login(page, fixture, url);
+  await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
+  await openAdvancedSettings(page);
+  const editor = page.getByLabel("Configuration JSON", { exact: true });
+  const draft = JSON.stringify({ ...JSON.parse(await editor.inputValue()), exampleDraft: true });
+  await editor.fill(draft);
+  await editor.evaluate((node) => (node as HTMLTextAreaElement).setSelectionRange(3, 7));
+  await waitForIdleFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  const readCount = (path: string) =>
+    requests.filter((request) => request.method === "GET" && request.path === path).length;
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  return {
+    fixture,
+    namespace,
+    agent,
+    page,
+    artifacts,
+    url,
+    editor,
+    draft,
+    requests,
+    readCount,
+    agentPath,
+    configurationPath,
+  };
+}
+
+test("a transient refocus failure recovers the same focused Agent draft automatically", async (t) => {
+  const {
+    fixture,
+    page,
+    artifacts,
+    url,
+    editor,
+    draft,
+    requests,
+    readCount,
+    agentPath,
+    configurationPath,
+  } = await openRefocusDraft(t);
+  await tagView(page);
+  if (process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR) {
+    await page.screenshot({ path: `${artifacts}/refocus-draft-before.png` });
+  }
+  const revisionsPath = `${agentPath}/revisions`;
+  const revisionsUrl = fixture.origin + revisionsPath;
+  const sessionPath = "/api/auth/session";
+  const failedRead = await holdRequests(t, page, revisionsUrl, {
+    once: true,
+    method: "GET",
+    fulfill: apiErrorResponse(500, "INTERNAL_ERROR", "The request could not be completed."),
+  });
+  const statuses: number[] = [];
+  page.on("response", (response) => {
+    if (response.url() === revisionsUrl && response.request().method() === "GET") {
+      statuses.push(response.status());
+    }
+  });
+
+  await page.evaluate(() => {
+    const view = document.querySelector(".content")!;
+    new MutationObserver(() => {
+      if (view.textContent?.includes("Could not check Agent details") || !view.isConnected) {
+        document.documentElement.dataset.refocusInterruption = "true";
+      }
+    }).observe(document.getElementById("app")!, { subtree: true, childList: true });
+    Object.defineProperty(document, "hidden", { value: true, configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    Object.defineProperty(document, "hidden", { value: false, configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new Event("focus"));
+  });
+  await failedRead.requested;
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event("focus"));
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  failedRead.release();
+  await waitForIdleFetches(page);
+  if (process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR) {
+    await page.screenshot({ path: `${artifacts}/refocus-draft-after.png` });
+  }
+  assert.deepEqual(
+    statuses,
+    [500, 200],
+    "refocus retries the failed read exactly once without a click",
+  );
+  assert.equal(readCount(sessionPath), 1, "duplicate focus and visibility events share admission");
+  assert.equal(readCount(revisionsPath), 2);
+  assert.equal(readCount(configurationPath), 2);
+  assert.equal(await viewTag(page), "kept", "the Agent view was never replaced");
+  assert.equal(
+    await page.locator("html").getAttribute("data-refocus-interruption"),
+    null,
+    "the original layout stayed mounted without a retry warning",
+  );
+  assert.equal(page.url(), url.href);
+  assert.equal(await editor.inputValue(), draft);
+  assert.equal(await hasFocus(editor), true);
+  assert.deepEqual(
+    await editor.evaluate((node) => {
+      const input = node as HTMLTextAreaElement;
+      return [input.selectionStart, input.selectionEnd];
+    }),
+    [3, 7],
+  );
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
+test("persistent refocus failure leaves a local warning and Retry checks fresh access", async (t) => {
+  const {
+    fixture,
+    agent,
+    namespace,
+    page,
+    artifacts,
+    url,
+    editor,
+    draft,
+    requests,
+    readCount,
+    agentPath,
+    configurationPath,
+  } = await openRefocusDraft(t);
+  const configurationUrl = fixture.origin + configurationPath;
+  const heading = page.getByRole("heading", { name: "Example Agent", exact: true });
+  const warning = page.getByRole("status").filter({ hasText: "Could not check Agent details" });
+  const retry = warning.getByRole("button", { name: "Retry", exact: true });
+  await heading.evaluate((node) => node.setAttribute("data-refocus-header", "original"));
+
+  await fixture.withIamOutage(
+    ({ action, resource }) =>
+      action === "read" &&
+      resource.kind === "configuration" &&
+      resource.id === agent.configurationId,
+    async () => {
+      const statuses: number[] = [];
+      page.on("response", (response) => {
+        if (response.url() === configurationUrl && response.request().method() === "GET") {
+          statuses.push(response.status());
+        }
+      });
+      await refocus(page);
+      await warning.waitFor();
+      await waitForIdleFetches(page);
+      assert.deepEqual(statuses, [503, 503], "a real Controller outage exhausts the one retry");
+      assert.equal(await heading.getAttribute("data-refocus-header"), "original");
+      assert.equal(
+        await editor.count(),
+        0,
+        "the private draft is detached while its access is unknown",
+      );
+      assert.equal(
+        await page.getByRole("button", { name: "Edit Configuration", exact: true }).count(),
+        0,
+      );
+      assert.equal(
+        await page.getByRole("combobox", { name: "Namespace", exact: true }).inputValue(),
+        namespace.id,
+      );
+      assert.equal(await hasFocus(retry), true);
+      await refocus(page);
+      await waitForIdleFetches(page);
+      assert.equal(
+        readCount(configurationPath),
+        2,
+        "warning does not retry on another focus event",
+      );
+      if (process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR) {
+        await page.screenshot({ path: `${artifacts}/persistent-refocus-warning.png` });
+      }
+    },
+  );
+
+  const recovered = responseTo(page, "GET", configurationUrl);
+  await retry.click();
+  assert.equal((await recovered).status(), 200);
+  await editor.waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await editor.inputValue(), draft);
+  assert.equal(page.url(), url.href);
+
+  restrict(fixture.policy, "read", "configuration", {
+    namespaceId: namespace.id,
+    resourceId: agent.configurationId,
+  });
+  const revisions = await holdRequests(t, page, `${fixture.origin}${agentPath}/revisions`, {
+    once: true,
+    method: "GET",
+  });
+  const beforeRefusal = readCount(configurationPath);
+  const refused = responseTo(page, "GET", configurationUrl);
+  await refocus(page);
+  try {
+    await revisions.requested;
+    assert.equal((await refused).status(), 403);
+    await page
+      .getByRole("heading", { name: "Access denied", exact: true })
+      .waitFor({ timeout: 5_000 });
+  } finally {
+    revisions.release();
+  }
+  await waitForIdleFetches(page);
+  assert.equal(await editor.count(), 0);
+  assert.equal(await retry.count(), 0);
+  assert.equal(readCount(configurationPath) - beforeRefusal, 1, "access refusal is never retried");
+
+  assert.equal(await heading.count(), 0);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
+for (const recover of [false, true]) {
+  test(`Agent refocus keeps Delete gated ${recover ? "after a recovered 5xx" : "after healthy reads"}`, async (t) => {
+    const { fixture, namespace, agent, page, editor, draft, requests, agentPath } =
+      await openRefocusDraft(t);
+    const remove = page.getByRole("button", { name: "Delete Agent", exact: true });
+    const save = page.getByRole("button", { name: "Save Configuration", exact: true });
+    const actionable = (control: Locator) =>
+      control.click({ trial: true, timeout: 600 }).then(
+        () => true,
+        () => false,
+      );
+    await remove.click({ trial: true });
+    await save.click({ trial: true });
+
+    const permissionsUrl = `${fixture.origin}${agentPath}/permissions`;
+    const revisionsUrl = `${fixture.origin}${agentPath}/revisions`;
+    const revisionStatuses: number[] = [];
+    page.on("response", (response) => {
+      if (response.url() === revisionsUrl && response.request().method() === "GET") {
+        revisionStatuses.push(response.status());
+      }
+    });
+    const transient = recover
+      ? await holdRequests(t, page, revisionsUrl, {
+          once: true,
+          method: "GET",
+          fulfill: apiErrorResponse(500, "INTERNAL_ERROR", "The request could not be completed."),
+        })
+      : null;
+    const allowed = await holdRequests(t, page, permissionsUrl, {
+      once: true,
+      method: "GET",
+      afterServer: true,
+    });
+    const allowedInBrowser = responseTo(page, "GET", permissionsUrl);
+    await refocus(page);
+    if (transient) {
+      await transient.requested;
+      transient.release();
+    }
+    const allowedByServer = await allowed.requested;
+    assert.ok(allowedByServer);
+    assert.equal(allowedByServer.status(), 200);
+    assert.equal((await allowedByServer.json()).data.delete, true);
+    const pendingActionable = {
+      delete: await actionable(remove),
+      save: await actionable(save),
+    };
+    allowed.release();
+    assert.equal((await allowedInBrowser).status(), 200);
+    await waitForIdleFetches(page);
+    assert.deepEqual(revisionStatuses, recover ? [500, 200] : [200]);
+    await remove.click({ trial: true });
+
+    const failure = await holdRequests(t, page, permissionsUrl, {
+      once: true,
+      method: "GET",
+      fulfill: proxyErrorResponse(503),
+    });
+    const failed = responseTo(page, "GET", permissionsUrl);
+    await refocus(page);
+    await failure.requested;
+    failure.release();
+    assert.equal((await failed).status(), 503);
+    await waitForIdleFetches(page);
+    const failedActionable = {
+      delete: await actionable(remove),
+      save: await actionable(save),
+    };
+    assert.equal(await editor.inputValue(), draft);
+    assert.equal(await hasFocus(editor), true);
+    assert.deepEqual(
+      await editor.evaluate((node: HTMLTextAreaElement) => [
+        node.selectionStart,
+        node.selectionEnd,
+      ]),
+      [3, 7],
+    );
+
+    const granted = responseTo(page, "GET", permissionsUrl);
+    await refocus(page);
+    assert.equal((await granted).status(), 200);
+    await remove.click({ trial: true });
+    restrict(fixture.policy, "delete", "agent", {
+      namespaceId: namespace.id,
+      resourceId: agent.id,
+    });
+    const denied = responseTo(page, "GET", permissionsUrl);
+    await refocus(page);
+    const revoked = await denied;
+    assert.equal(revoked.status(), 200);
+    assert.equal((await revoked.json()).data.delete, false);
+    await waitForIdleFetches(page);
+    const revokedActionable = {
+      delete: await actionable(remove),
+      save: await actionable(save),
+    };
+
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+    assert.deepEqual(
+      { pendingActionable, failedActionable, revokedActionable },
+      {
+        pendingActionable: { delete: false, save: false },
+        failedActionable: { delete: false, save: false },
+        revokedActionable: { delete: false, save: true },
+      },
+    );
+  });
+}
+
+test("a failed sharing refresh retains permissions confirmed on Agent refocus", async (t) => {
+  const { fixture, agent, page, editor, draft, requests, readCount, agentPath } =
+    await openRefocusDraft(t);
+  const save = page.getByRole("button", { name: "Save Configuration", exact: true });
+  const permissionsPath = `${agentPath}/permissions`;
+  const permissionsUrl = fixture.origin + permissionsPath;
+
+  await tagView(page);
+  const confirmed = responseTo(page, "GET", permissionsUrl);
+  await refocus(page);
+  const answer = await confirmed;
+  assert.equal(answer.status(), 200);
+  const { configurationUpdate, configurationSecretsOperate } = (await answer.json()).data;
+  assert.equal(configurationUpdate, true);
+  assert.equal(configurationSecretsOperate, true);
+  await page.locator(settledView).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await viewTag(page), "kept");
+  await save.click({ trial: true });
+
+  await page.getByRole("tab", { name: "Access", exact: true }).click();
+  const sharing = page.getByRole("region", { name: "Share Agent", exact: true });
+  const refresh = sharing.getByRole("button", { name: "Refresh sharing", exact: true });
+  await sharing.getByText("Current policy loaded.", { exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(readCount(permissionsPath), 1);
+
+  // Only the Agent permission summary probes Delete. The Controller reports that decision's
+  // outage while Refresh sharing runs as an ordinary reread after foreground admission.
+  await fixture.withIamOutage(
+    ({ action, resource }) =>
+      action === "delete" && resource.kind === "agent" && resource.id === agent.id,
+    async () => {
+      const reread = responseTo(page, "GET", permissionsUrl);
+      await refresh.click();
+      assert.equal((await reread).status(), 503);
+      await waitForEnabled(refresh);
+      await waitForIdleFetches(page);
+    },
+  );
+
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await waitForIdleFetches(page);
+  const actionable = await save.click({ trial: true, timeout: 600 }).then(
+    () => true,
+    () => false,
+  );
+  assert.equal(readCount(permissionsPath), 2);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.equal(actionable, true, "a failed ordinary reread must retain the confirmed Save grant");
+  assert.equal(await editor.inputValue(), draft);
+});
+
+test("Agent refocus keeps Save gated on a replacement view after a permission outage", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Replacement Agent refocus");
+  const agent = await fixture.createAgent(namespace.id, "Example Agent", nativeValues("v1"));
+  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
+  const { page, artifacts } = await newPage(t, fixture, { browser });
+  await trackSettledFetches(page);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+  const revisionsUrl = `${agentUrl}/revisions`;
+  const permissionsUrl = `${agentUrl}/permissions`;
+  const initialVersions = responseTo(page, "GET", revisionsUrl);
+  await login(page, fixture, url);
+  const initial = await initialVersions;
+  assert.equal(initial.status(), 200);
+  assert.deepEqual(
+    (await initial.json()).data.map(({ id }: { id: string }) => id),
+    [active.revision.id, first.revision.id],
+  );
+  await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
+  await openAdvancedSettings(page);
+  const editor = page.getByLabel("Configuration JSON", { exact: true });
+  const draft = JSON.stringify({ ...JSON.parse(await editor.inputValue()), exampleDraft: true });
+  await editor.fill(draft);
+  const save = page.getByRole("button", { name: "Save Configuration", exact: true });
+  await save.click({ trial: true });
+  await page.locator(settledView).waitFor();
+  await waitForIdleFetches(page);
+  await tagView(page);
+
+  // The Controller's real version list shrinks, so the shell must rebuild. Only its exact
+  // Agent permission summary probes Delete, whose IAM decision now fails.
+  denyRevisionRead(fixture, namespace, first.revision);
+  const blocked = restrict(fixture.policy, "update", "configuration", {
+    namespaceId: namespace.id,
+    resourceId: agent.configurationId,
+  });
+  const requests = apiRequests(page, fixture.origin);
+  const reads: { url: string; status: number }[] = [];
+  page.on("response", (response) => {
+    const url = response.url();
+    if (response.request().method() === "GET" && [revisionsUrl, permissionsUrl].includes(url)) {
+      reads.push({ url, status: response.status() });
+    }
+  });
+  await fixture.withIamOutage(
+    ({ action, resource }) =>
+      action === "delete" && resource.kind === "agent" && resource.id === agent.id,
+    async () => {
+      const narrowed = responseTo(page, "GET", revisionsUrl);
+      const failed = responseTo(page, "GET", permissionsUrl);
+      await refocus(page);
+      const versions = await narrowed;
+      assert.equal(versions.status(), 200);
+      assert.deepEqual(
+        (await versions.json()).data.map(({ id }: { id: string }) => id),
+        [active.revision.id],
+      );
+      assert.equal((await failed).status(), 503);
+      await editor.waitFor();
+      await page.locator(settledView).waitFor();
+      await waitForIdleFetches(page);
+    },
+  );
+  assert.equal(page.url(), url.href);
+  assert.equal(await viewTag(page), null);
+  assert.equal(await page.locator('[data-nav-tag="kept"]').count(), 0, "the old view was retired");
+  assert.deepEqual(reads[0], { url: revisionsUrl, status: 200 });
+  assert.deepEqual(
+    reads.filter(({ url }) => url === revisionsUrl).map(({ status }) => status),
+    [200, 200],
+  );
+  assert.deepEqual(
+    reads.filter(({ url }) => url === permissionsUrl).map(({ status }) => status),
+    [503],
+  );
+  assert.equal(await editor.inputValue(), draft);
+  await save.waitFor();
+  const actionableAfterFailure = await save.click({ trial: true, timeout: 600 }).then(
+    () => true,
+    () => false,
+  );
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+
+  if (process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR) {
+    await save.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${artifacts}/replacement-save-unavailable.png` });
+  }
+
+  liftRestriction(fixture.policy, blocked);
+  const granted = responseTo(page, "GET", permissionsUrl);
+  await refocus(page);
+  const answer = await granted;
+  assert.equal(answer.status(), 200);
+  const { configurationUpdate, configurationSecretsOperate } = (await answer.json()).data;
+  assert.equal(configurationUpdate, true);
+  assert.equal(configurationSecretsOperate, true);
+  await save.click({ trial: true });
+  assert.equal(await editor.inputValue(), draft);
+  assert.deepEqual(
+    reads.filter(({ url }) => url === permissionsUrl).map(({ status }) => status),
+    [503, 200],
+  );
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.equal(
+    actionableAfterFailure,
+    false,
+    "a failed replacement permission read must gate Save",
+  );
+});
+
+test("a rate-limited Agent refocus respects the longest delay and waits for explicit Retry", async (t) => {
+  const { fixture, page, editor, requests, readCount, agentPath, configurationPath } =
+    await openRefocusDraft(t);
+  const path = `${agentPath}/revisions`;
+  const url = fixture.origin + path;
+  const configurationUrl = fixture.origin + configurationPath;
+  await page.clock.install();
+  const unavailable = await holdRequests(t, page, url, {
+    once: true,
+    method: "GET",
+    fulfill: { ...proxyErrorResponse(503), headers: { "retry-after": "1" } },
+  });
+  const throttle = await holdRequests(t, page, configurationUrl, {
+    once: true,
+    method: "GET",
+    fulfill: { ...proxyErrorResponse(429), headers: { "retry-after": "60" } },
+  });
+  const unavailableResponse = responseTo(page, "GET", url);
+  const limited = responseTo(page, "GET", configurationUrl);
+  await refocus(page);
+  await Promise.all([unavailable.requested, throttle.requested]);
+  unavailable.release();
+  throttle.release();
+  assert.equal((await unavailableResponse).status(), 503);
+  assert.equal((await limited).status(), 429);
+  const warning = page.getByRole("status").filter({ hasText: "Could not check Agent details" });
+  const retry = warning.getByRole("button", { name: "Retry", exact: true });
+  await warning.waitFor();
+  assert.equal(await retry.isEnabled(), false);
+  assert.equal(await editor.count(), 0);
+  await page.clock.fastForward(2_000);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.equal(await retry.isEnabled(), false, "the longer Configuration delay still applies");
+  await page.clock.fastForward(57_000);
+  assert.equal(await retry.isEnabled(), false, "Retry stays disabled just before the deadline");
+  await page.clock.fastForward(1_000);
+  assert.equal(await retry.isEnabled(), true);
+  assert.equal(readCount(path), 1, "the server delay does not schedule another revision read");
+  assert.equal(
+    readCount(configurationPath),
+    1,
+    "the server delay does not schedule another Configuration read",
+  );
+  const admitted = responseTo(page, "GET", url);
+  await retry.click();
+  assert.equal((await admitted).status(), 200);
+  await editor.waitFor();
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
+test("session expiry during a refocus retry removes the private Agent", async (t) => {
+  const { fixture, page, editor, requests, readCount, agentPath, configurationPath } =
+    await openRefocusDraft(t);
+  const path = `${agentPath}/revisions`;
+  const url = fixture.origin + path;
+  const held = await holdRequests(t, page, url, {
+    once: true,
+    method: "GET",
+    fulfill: apiErrorResponse(500, "INTERNAL_ERROR", "The request could not be completed."),
+  });
+  const failed = responseTo(page, "GET", url);
+  const configuration = responseTo(page, "GET", fixture.origin + configurationPath);
+  await refocus(page);
+  await held.requested;
+  assert.equal((await configuration).status(), 200);
+  expireSessions(fixture);
+  const unauthorized = responseTo(page, "GET", fixture.origin + agentPath);
+  held.release();
+  assert.equal((await failed).status(), 500);
+  assert.equal((await unauthorized).status(), 401);
+  await page.getByText("Your session has expired.", { exact: true }).waitFor();
+  assert.equal(await editor.count(), 0);
+  assert.equal(await page.getByRole("heading", { name: "Example Agent", exact: true }).count(), 0);
+  assert.equal(readCount(path), 1, "the expired retry never reads revision history");
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
+test("switching Namespace during the refocus retry drops the stale Agent result", async (t) => {
+  const { fixture, page, editor, requests, readCount, agentPath } = await openRefocusDraft(t);
+  const other = await fixture.createNamespace("Other workspace", { ready: true });
+  await fixture.createAgent(other.id, "Other Agent", nativeValues("v1"));
+  const revisionsPath = `${agentPath}/revisions`;
+  const revisionsUrl = fixture.origin + revisionsPath;
+  // Install the later handler first. The first read is fulfilled by the one-shot 500.
+  const retryRead = await holdRequests(t, page, revisionsUrl, { once: true, method: "GET" });
+  const failure = await holdRequests(t, page, revisionsUrl, {
+    once: true,
+    method: "GET",
+    fulfill: apiErrorResponse(500, "INTERNAL_ERROR", "The request could not be completed."),
+  });
+  const first = responseTo(page, "GET", revisionsUrl);
+  await refocus(page);
+  await failure.requested;
+  failure.release();
+  assert.equal((await first).status(), 500);
+  await retryRead.requested;
+  assert.equal(
+    await editor.evaluate((node) => node.checkVisibility({ opacityProperty: true })),
+    false,
+    "a pending retry cannot paint the private draft",
+  );
+  await page.getByRole("combobox", { name: "Namespace", exact: true }).selectOption(other.id);
+  await page.waitForURL(`**/console/agents?namespace=${other.id}`);
+  await page.getByRole("link", { name: "Other Agent", exact: true }).waitFor();
+  retryRead.release();
+  await waitForIdleFetches(page);
+  assert.equal(readCount(revisionsPath), 2);
+  assert.equal(await editor.count(), 0);
+  assert.equal(await page.getByRole("heading", { name: "Example Agent", exact: true }).count(), 0);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 
 for (const revoked of ["configuration", "agent"] as const) {

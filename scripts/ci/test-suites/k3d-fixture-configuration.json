@@ -11,12 +11,14 @@
   "prepare": {
     "postgres": true,
     "k3d": true,
-    "requiresPreparedStateForFile": true
+    "requiresPreparedStateForFile": true,
+    "selfProvisionedFiles": ["tests/integration/staged-signin-cleanup-real.test.ts"]
   },
   "fileConcurrency": 2,
   "parallelFiles": [
     "tests/integration/kubernetes-compute-real.test.mjs",
-    "tests/integration/kubernetes-plugin-status-real.test.mjs"
+    "tests/integration/kubernetes-plugin-status-real.test.mjs",
+    "tests/integration/installation-handoff-k3d-real.test.ts"
   ],
   "files": [
     {
@@ -31,6 +33,28 @@
       "expectedTests": [
         "authenticated PostgreSQL OCC API and worker deploy real Agent-owned gateways, Secret bindings, and revisions"
       ]
+    },
+    {
+      "path": "tests/integration/installation-handoff-k3d-real.test.ts",
+      "expectedTests": [
+        "installation handoff distinguishes replaced Helm Jobs with only named get access",
+        "installation prerequisites report Job quota headroom, address drift and unreadable resources",
+        "first install retains exact attempt evidence after a lost client"
+      ]
+    },
+    {
+      "path": "tests/integration/staged-signin-cleanup-real.test.ts",
+      "env": {
+        "OCC_TEST_STAGED_SIGNIN_CLEANUP_REAL": "1"
+      },
+      "expectedTests": [
+        "staged sign-in cleans owned resources after a settled failed case",
+        "staged sign-in refuses a replacement cluster",
+        "staged sign-in refuses a newly shared volume"
+      ]
     }
-  ]
+  ],
+  "serialFiles": {
+    "tests/integration/staged-signin-cleanup-real.test.ts": "creates and deletes owned cleanup-authority clusters; preserve exclusive fixture resource and process environment ownership"
+  }
 }

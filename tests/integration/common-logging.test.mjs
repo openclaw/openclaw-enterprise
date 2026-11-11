@@ -30,7 +30,7 @@ import {
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { occLogLine, unloggedFields } from "../helpers/occ-log-line.ts";
@@ -602,8 +602,8 @@ test("worker emitter reports health at debug and failures at error", () => {
     event: "worker.error",
     code: "DEPENDENCY_UNAVAILABLE",
     method: "CreateSandbox",
-    grpcStatus: 3,
-    validationCategory: "UNKNOWN",
+    grpcStatus: 9,
+    validationCategory: "PVC_ADMISSION_LABELS",
   });
   // A graceful shutdown that aborts a pass is no failure (finding 1040).
   emit({
@@ -627,8 +627,8 @@ test("worker emitter reports health at debug and failures at error", () => {
   assert.equal(output.lines.at(-1).cause, "WorkerStopping");
   const failure = output.lines.find((line) => line.event === "worker.error");
   assert.equal(failure.method, "CreateSandbox");
-  assert.equal(failure.grpcStatus, 3);
-  assert.equal(failure.validationCategory, "UNKNOWN");
+  assert.equal(failure.grpcStatus, 9);
+  assert.equal(failure.validationCategory, "PVC_ADMISSION_LABELS");
   const completed = output.lines.find((line) => line.event === "worker.completed");
   assert.equal(completed.workId, "namespace:ns_test:reconcile:ready");
   assert.equal(completed.attempt, 1);

@@ -138,8 +138,9 @@ func TestMissingCommandsPointAtWhatOCCOffers(t *testing.T) {
 		{[]string{"agent", "lst"}, `unknown command "lst" for "occ agent"; did you mean "occ agent list"?`},
 		{[]string{"secrets"}, `unknown command "secrets" for "occ"; did you mean "occ secret"?`},
 		{[]string{"agent", "gat"}, `unknown command "gat" for "occ agent"; did you mean "occ agent get"?`},
-		// A prefix suggests only the one command it starts, and only from two characters.
-		{[]string{"agent", "revi"}, `unknown command "revi" for "occ agent"; did you mean "occ agent revisions"?`},
+		// A prefix suggests only one unambiguous command, and only from two characters.
+		{[]string{"agent", "up"}, `unknown command "up" for "occ agent"; did you mean "occ agent update"?`},
+		{[]string{"agent", "revi"}, `unknown command "revi" for "occ agent"`},
 		{[]string{"agent", "de"}, `unknown command "de" for "occ agent"`},
 		{[]string{"agent", "u"}, `unknown command "u" for "occ agent"`},
 		{[]string{"agent", ""}, `unknown command "" for "occ agent"`},
@@ -316,9 +317,18 @@ func TestUnreachableEndpointNamesTheURLAndTheCause(t *testing.T) {
 	closed := server.URL
 	server.Close()
 	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
-	_, _, err := runHelp(t, "--url", closed, "--service-key-file", keyFile, "installation", "get")
-	if want := "cannot connect to OCC at " + closed + " (connection refused). Check OCC_URL (or --url)."; err == nil || err.Error() != want {
-		t.Fatalf("error = %v, want %q", err, want)
+	for _, args := range [][]string{
+		{"installation", "get"},
+		{"--namespace", testNamespaceID, "agent", "deploy-first", testAgentID, "--key", "review-1", "--configuration", "cfg_55555555-5555-4555-8555-555555555555", "--generation", "1"},
+	} {
+		_, notices, err := runHelp(t, append([]string{"--url", closed, "--service-key-file", keyFile}, args...)...)
+		if want := "cannot connect to OCC at " + closed + " (connection refused). Check OCC_URL (or --url)."; err == nil || err.Error() != want {
+			t.Fatalf("error = %v, want %q", err, want)
+		}
+		// The refused TCP connection cannot have delivered this attempt to OCC.
+		if strings.Contains(notices, "unconfirmed") || strings.Contains(notices, "recover-first-deployment") {
+			t.Fatalf("unsent request reported as uncertain: %s", notices)
+		}
 	}
 }
 

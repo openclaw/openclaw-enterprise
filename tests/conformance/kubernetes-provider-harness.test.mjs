@@ -13,7 +13,7 @@ import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 import { waitFor } from "../helpers/qa-utils.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { listen } from "../helpers/listen.mjs";
-import { openAiStaticProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
+import { createOpenAiStaticProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
 import {
   HARNESS_EGRESS_ENROLLMENT_HELPER,
   HARNESS_EGRESS_ENROLLMENT_PATH,
@@ -83,6 +83,8 @@ async function preparedEndpoint(fixture = providerEndpointFixture(), context) {
   });
   return fixture;
 }
+
+const openAiStaticProvider = createOpenAiStaticProvider();
 
 test("provider Harness endpoint bootstraps Gateway before provisioning and requests node setup", async () => {
   const fixture = providerEndpointFixture({
@@ -308,6 +310,7 @@ test("provider Harness endpoint writes transport and runtime requirements", asyn
   assert.deepEqual(JSON.parse(requirements.files[0].content), {
     kind: "codex",
     selections: {},
+    modelEndpoint: { baseUrl: "https://api.openai.com/v1", modelProvider: "openai-compatible" },
   });
   await fixture.activate(undefined, context);
   assert.equal(renderedHookDirectory(), providerHookDirectory);
@@ -985,14 +988,18 @@ test("provider Harness protected execution is released only on current signed in
     driver: protectedDriver.ref,
     sandboxDriverId: sandbox.id,
     egressDriverId: proxy.id,
-    routes: openAiStaticProvider.routes(source, {
-      binding: { id: "00000000-0000-4000-8000-000000000549", generation: 1 },
-      execution,
-      source: sourceKey,
-      grant,
-      grantHash: createHash("sha256").update(JSON.stringify(grant)).digest("hex"),
-      isolationId: revision.agentId,
-    }),
+    routes: openAiStaticProvider.routes(
+      source,
+      {
+        binding: { id: "00000000-0000-4000-8000-000000000549", generation: 1 },
+        execution,
+        source: sourceKey,
+        grant,
+        grantHash: createHash("sha256").update(JSON.stringify(grant)).digest("hex"),
+        isolationId: revision.agentId,
+      },
+      revision.harness.configuration,
+    ),
   };
   const protectedAuth = {
     method: "credential_source",
@@ -1293,6 +1300,8 @@ test("provider Harness protected execution is released only on current signed in
         id,
         revision: protectedRevision.revision + 1,
         harnessAuth: { method: "runtime" },
+        harness: { ...protectedRevision.harness, configuration: {} },
+        compute: { id: driver.id, implementation: driver.implementation },
         egressPlan: zeroPlan,
         credentialSources: [],
       };
@@ -1380,6 +1389,8 @@ test("provider Harness protected execution is released only on current signed in
         id,
         revision: protectedRevision.revision + 2,
         harnessAuth: { method: "runtime" },
+        harness: { ...protectedRevision.harness, configuration: {} },
+        compute: { id: driver.id, implementation: driver.implementation },
         egressPlan: metadataPlan,
       };
       seedNode(metadata);
@@ -1468,7 +1479,10 @@ test("provider Harness protected execution is released only on current signed in
       // finding 2256): the Sandbox launch carries the workspace node; activation renders
       // the same Harness without it for the endpoint and status reads.
       const admission = driver.admitRevision(protectedRevision);
-      assert.equal(admission, "protected-codex-no-connection-retry:v1");
+      assert.match(
+        admission,
+        /^model-provider:v1:[a-f0-9]{64}:protected-codex-no-connection-retry:v1$/,
+      );
       const admitted = {
         ...protectedRevision,
         compute: { ...protectedRevision.compute, admission },
@@ -1523,12 +1537,16 @@ test("provider Harness protected execution is released only on current signed in
             const child = /\n\s+name: "Codex",\n\s+args: (.+),\n/.exec(outer);
             assert.equal(child !== null, node);
             const codex = node ? program(JSON.parse(child[1]).slice(1)) : outer;
-            assert.equal(
-              codex,
-              withoutLineComments(
-                disabled ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT,
-              ),
-            );
+            // Standalone commands retain their full source. The nested child
+            // omits unused native helpers; both must preserve the admission below.
+            if (!node) {
+              assert.equal(
+                codex,
+                withoutLineComments(
+                  disabled ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT,
+                ),
+              );
+            }
             // Only the two model-calling invocations: the authentication probe and app-server.
             assert.equal(
               codex.match(/unbounded_connection_retries/g)?.length ?? 0,

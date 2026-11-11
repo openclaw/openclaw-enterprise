@@ -1,16 +1,16 @@
 ---
 created: 2026-09-02
-updated: 2026-10-31
-last_updated_session: authoring-run/71d9343b-72da-449a-8e8a-a55be95876c7
+updated: 2026-11-08
+last_updated_session: authoring-run/b490de13-d3f2-4301-b212-4393219a8625
 ---
 
 # Common Operational Logging Flow
 
 ## Overview
 
-Trusted startup configuration selects the OCC logging level. At deployment, OCC
-saves the runtime logging settings in the Agent revision. Optional Collectors export reviewed operational records; PostgreSQL audit remains separate
-durable evidence.
+Startup selects OCC's logging level; deployment saves runtime logging settings
+in the Agent revision. Optional Collectors export reviewed operational records;
+PostgreSQL audit remains separate durable evidence.
 
 ## Entry Points
 
@@ -50,6 +50,9 @@ graph TD
     M --> N["Classify records and strip unapproved content"]
     N --> O["Queue with a size limit and OTLP HTTP exporter"]
   end
+  R["Operator starts worker observer"] --> S["Scoped Pod LIST then WATCH"]
+  S --> T["Project and deduplicate termination fields"]
+  T --> U["Private file receiver and retained backend"]
   O --> P["Optional demo Loki stores event body and structured metadata"]
   P --> Q["Grafana filters and formats retained metadata"]
 ```
@@ -77,29 +80,29 @@ Worker (`apps/controller/src/worker.mjs`), bootstrap
 also create Pino loggers at the selected level. The API disables Fastify request
 logging. Bootstrap and migration separate success protocol output from structured
 failure diagnostics. Before Pino writes, `apps/controller/src/logging.ts:emitOccLogEvent`
-keeps reviewed scalar fields and drops unapproved fields, credentials, provider
-payloads, request/reply objects, and unsafe strings. This source boundary precedes
-the separate Collector filter in step 7. For worker records, the Collector retains
-allowlisted `work.operation` values and allowed `work.id` formats. Agent stop keys
+keeps reviewed scalar fields and drops credentials, provider payloads, request/reply
+objects, and unsafe strings before the Collector filter in step 7. The Collector
+retains allowed worker `work.operation` values and `work.id` formats. Agent stop keys
 include the operation UUID. Credential withdrawal keys end in the operation UUID or
 `activation` (the attempt a candidate's activation queues), optionally followed by
 `:recovery:<n>` for a later attempt series. Deletion keys have no operation suffix.
 Provisioning keys use `agent-provisioning:` and exactly 32 lowercase hexadecimal
-characters, matching the work ID the API and worker share.
-Unsupported values and key shapes are excluded.
-The local worker emitter also retains `stopYields` from throttled drain-yield and
-completion records as a nonnegative safe integer; the Collector does not export this count.
-For any process, the sanitizer keeps `check`, `failure`, `reasonCode` and `harnessState`
-only as short identifier codes, never free text, and `fence` only as a nonnegative safe
-integer. The worker and the OpenShell Git runtime use them for expiry steps, failure
-classes, the reason code an Agent is shown, Harness state and route generations.
-`hintCode` (named refusal guidance) is a code too, and so is `command` on
-`auth:maintain` events. `installationId` and `orphanedConfigurationId` are kept only as
+characters. The local emitter retains `stopYields` from throttled drain-yield and
+completion records as a nonnegative safe integer; the Collector excludes it.
+The sanitizer keeps `check`, `failure`, `reasonCode`, `harnessState`, `hintCode`
+and the `auth:maintain` event's `command` as identifier codes, never free text;
+`fence` must be a nonnegative safe integer. `installationId` and `orphanedConfigurationId` are kept only as
 OCC-assigned `ins_` and `cfg_` UUIDs.
 
-Compute preparation failures may include a Driver-reviewed stage, classification,
-status, and a message of at most 256 characters. The worker never serializes the raw exception, and
-the sanitizer drops secret-shaped messages before local output.
+`apps/controller/src/worker.ts:finalizeActiveRevision` adds only the runtime failure
+code to active maintenance's `worker.completed.failure`, normalized through the
+shared vocabulary. Unknown codes become `UNRECOGNIZED`; absent or malformed
+evidence adds nothing and does not establish health. Pending outcomes and
+scheduling are unchanged.
+
+Compute preparation failures may carry a Driver-reviewed stage, classification,
+status and message (up to 256 characters). The worker excludes raw exceptions;
+the sanitizer drops secret-shaped messages before output.
 
 ### 3. Admission freezes runtime logging
 
@@ -152,13 +155,10 @@ for enablement and existing-Collector reuse, and the
 for isolation limits.
 
 `k8sattributes` maps identity before `transform/kubernetes-resource` removes
-internal Pod labels; removing shared labels per record would lose identity for
-later records in the batch. It also blocks pipeline start until its Pod cache
-syncs: `filelog` reads existing CRI files immediately, and a record processed
-without Pod identity is filtered out while its offset is still committed, so
-startup events such as `worker.started` would otherwise be lost for good.
+shared Pod labels, preserving identity across the batch. It blocks startup until
+its Pod cache syncs. Otherwise a downstream filter drops records without Pod
+identity while `filelog` commits their offsets, losing those startup events.
 
-Before emitting the DaemonSet,
 `deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.quantity`
 checks the Collector resource and volume quantities for obvious syntax errors,
 and `openclaw.nonNegativeQuantity` and `openclaw.resourceRequirements` refuse
@@ -195,6 +195,10 @@ the replaced owner settings stay in `occ agent logs`.
 `worker.openshell-git-continuity-refused` keeps `occ.check`, a SHA-256
 `occ.continuity.key_hash`, and `occ.continuity.result`: a boolean, a count from
 0 to 2,147,483,647, or the fixed value `invalid`. Other values are discarded.
+`worker.openshell-git-probe-failed` keeps `occ.git_probe.reason` only for
+`probe_process_failed` or `probe_response_invalid`. A process failure also keeps
+`occ.git_probe.exit_code` when `code` is an integer from 1 to 99. Other reasons,
+invalid exit codes, process output, response bodies, URLs and proofs are discarded.
 Kubernetes resources drop the `latest` image tag that metadata extraction reports
 for a digest-only image. For retained records it keeps allowlisted
 attributes and replaces the body with the event name, stripping arbitrary content;
@@ -203,13 +207,13 @@ keeps a short plain-text Codex message only from `codex_app_server` or the fixed
 `codex_core::responses_retry` retry messages; a Codex warning without such a
 message is dropped (as are span lifecycle records).
 OCC `compute.preflight-warning` records retain WARN severity and `occ.code` values of at most 64 allowed characters;
-the local diagnostic message is excluded from remote export.
+local diagnostic messages are not exported.
 `authentication.sign-in-limit-warning` and `authentication.forwarded-refused-warning` keep
 `occ.code`, and
 `authentication.sign-in-limited` keeps only `occ.sign_in.lane`; its local key
 hash is not exported. `authentication.provider-unavailable-warning` keeps
-`occ.sign_in.provider`, `.step` (`authorization`, `token`, `jwks`, `profile` or
-`membership`), `.cause` and `.status`, plus a transport code as `occ.code`; the provider
+`occ.sign_in.provider`, `.step` (`authorization`, `token`, `jwks`, `profile`,
+`membership` or `email`), `.cause` and `.status`, plus a transport code as `occ.code`; the provider
 instance ID stays local.
 `worker.repository-cleanup-warning` keeps `occ.code` and its cause code of at most 64 allowed characters as
 `occ.worker.cause`.
@@ -218,13 +222,14 @@ letter, then at most 63 letters, digits, `_` or `-`, and no key or token shape):
 `check`, `failure`, `harnessState`, `hintCode` and `reasonCode` as `occ.check`,
 `occ.failure` (a device login keeps its own, below), `occ.harness_state`,
 `occ.hint_code` and `occ.reason_code`, and `fence`, a nonnegative safe integer, as
-`occ.fence`. So `worker.openshell-git-expiry` names the OpenShell Git expiry step
-and why it is pending, with `work.outcome` `pending`, `withdrawn` or
-`retire-runtime`, and `worker.repository-delivery-pending` shows that protected Git
-delivery is retrying. The reconcile retries every second, but that line is written when
-delivery starts failing (the first failed pass after the worker starts or after a completed
-pass), then at most once a minute. Its Sandbox Driver ID stays local, as do Installation and
-Configuration IDs.
+`occ.fence`. `worker.openshell-git-expiry` keeps `work.outcome` (`pending`,
+`withdrawn` or `retire-runtime`).
+`apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts:subtractExpiredOpenShellGit`
+adds `failure` and `grpcStatus`, never supplier text.
+`worker.repository-delivery-pending` reports Git
+delivery retries. Reconciliation retries each second, logging failures initially
+and then at most once a minute. Sandbox Driver, Installation and
+Configuration IDs stay local.
 `worker.compute-prepare-failed` (a Compute Driver could not prepare a version) is
 ERROR and keeps `occ.code` plus the Namespace, Agent and Agent revision IDs and work identity
 other worker events keep; the stage, error class, status and message stay local.
@@ -237,9 +242,8 @@ and its failure class of at most 64 allowed characters (such as `TimeoutError`) 
 `agent_runtime_credentials.cluster_denied` keeps only `request.id`; the denied verb,
 resource and Kubernetes namespace stay local. `agent_provisioning.compute_refused` (the
 Compute Driver refused a provisioning plan for a reason the caller cannot fix) keeps only
-`request.id`; the Driver's reason stays local. `http.dependency_unavailable` (the cause
-of an API `503 DEPENDENCY_UNAVAILABLE`, whose response keeps generic text) keeps only
-`request.id`; its route, error class, message and causes stay in the API's local log.
+`request.id`; the Driver's reason stays local. `http.dependency_unavailable` keeps only `request.id`; the API returns generic
+`503 DEPENDENCY_UNAVAILABLE` text. Its route, error class, message and causes stay local.
 `native_admin.websocket_audit_failed`
 keeps the Namespace, Agent and Agent revision IDs. `native_admin.http_denial_audit_failed`
 and `native_admin.websocket_denial_audit_failed` carry no request, user, error or payload
@@ -273,25 +277,34 @@ service, worker reconciliation, or PostgreSQL audit persistence.
 `deploy/helm/openclaw-observability-demo/templates/grafana.yaml:logs.json`
 
 `deploy/helm/openclaw-observability-demo/templates/_helpers.tpl:demo.serviceName`
-preserves short DNS-label Service names. For dotted, leading-digit or overlong
-release names, it prefixes the component and a normalized release name,
-then appends the original release hash. Ending with the hash separates these
-names from unchanged component-suffixed Service names. `templates/deployments.yaml` creates those Services;
-`templates/grafana.yaml` uses the same names in both datasource URLs.
-Deployment names, Pod selectors and discovery identity keep the full release.
-Before rendering, `demo.validate` refuses an uppercase image repository path
-that kubelet cannot pull. Registry hosts and tags may retain uppercase spelling.
-The separately configured Collector endpoint remains in its exporter Secret.
-If an upgrade renames Loki, the operator updates that endpoint and refreshes
-the Collector Pods before new records can reach Loki; the
-[recovery procedure](../guides/observability/demo-cleanup.md#refresh-a-renamed-loki-address)
-covers managed and external exporters.
+preserves short DNS-label Service names. Other release names use the component,
+normalized release and original release hash, avoiding collisions with unchanged
+names. Deployments and Grafana datasource URLs share these Service names;
+Deployment names, selectors and discovery keep the full release.
+`demo.validate` rejects uppercase image repository paths, but permits uppercase
+registry hosts and tags. The Collector endpoint remains in its exporter Secret.
+After a Loki rename, update that endpoint and refresh Collector Pods as described
+in [recovery](../guides/observability/demo-cleanup.md#refresh-a-renamed-loki-address).
 
 For the bundled Collector path, Loki retains event names and normalizes attributes
 as structured metadata. Grafana formats metadata at query time without changing
 records. External and Driver-owned pipelines require separate operator review.
 See the [demo guide](../guides/observability/demo.md#read-and-narrow-operational-logs)
 for panels, correlation, and authorization limits.
+
+### 9. The optional operator command observes worker exits
+
+`scripts/observe-worker-terminations.ts:main` lists worker Pods in the selected
+namespace and watches from the list's resource version. For each Pod UID it reads
+the worker's container status, including restartable init containers. During
+backoff the waiting container ID can identify the current exit in `lastState`
+before kubelet increments the restart count. The observer syncs each new exit
+and count change to the private file. A closed watch stops observation until the
+supervisor starts a new list.
+
+`deploy/logging/worker-observer.yaml` projects the file records into a separate
+OTLP pipeline. The [operator procedure](../guides/observability/worker-terminations.md)
+covers credentials, supervision, queue storage and backend verification.
 
 ## Debugging and Verification
 
@@ -320,9 +333,21 @@ for panels, correlation, and authorization limits.
 
 ## Changelog
 
+- 2026-11-08 16:26: Record bounded Git retirement diagnostics. (authoring-run/b490de13-d3f2-4301-b212-4393219a8625 - 842bea47b86394333aa46a900c962a8a81272580)
+
+- 2026-11-07 09:24: Retain closed-vocabulary runtime failure codes in active maintenance logs. (authoring-run/47c08087-e796-42e1-a716-e321ec52e41e - 5ed0898c6fba9875e075472747b660c27fb74bf6)
+
+- 2026-11-06 15:37: Retain the verified-email lookup stage in provider outage exports. (authoring-run/3cb37e31-4ea8-4dfe-bb12-965884fa83db - 3e29a60b00d2a4c6eb15d4ea2f1f283113592f74)
+
+- 2026-11-05 20:53: Export held Git probe failure categories and bounded curl exit codes through the Collector. (authoring-run/3c7815cf-f818-421f-879b-2b2fe90deac5 - 0a9351b645)
+
+- 2026-11-04 23:10: Trace worker exits during kubelet backoff and watch closure. (authoring-run/07eb6957-9eeb-45ad-9f95-abc240f6e218 - e8ae41a62e9b480db3b67b894611b3d7fe340342)
+
 - 2026-10-31 04:17: Export bounded continuity comparisons and startup hashes. (authoring-run/71d9343b-72da-449a-8e8a-a55be95876c7 - 370dc4d10297a81fbb18f850500dc945bc7925d5)
 
 - 2026-10-26 22:00: Export `native_admin.http_denial_audit_failed` and `native_admin.pending_work_unresolved` (bounded count only); both denial-audit failure events drop caller context. (wf-land-1707 - #1707)
+
+- 2026-10-23 22:59: Add opt-in worker termination observation through scoped Pod LIST/WATCH, a private file and a fixed Collector schema; document coverage limits and operator setup. (worker-termination-observation - 341952eef)
 
 - 2026-10-23 21:00: Log `worker.repository-delivery-pending` when delivery starts failing, then at most once a minute, not on every one-second retry. (fix-2251)
 

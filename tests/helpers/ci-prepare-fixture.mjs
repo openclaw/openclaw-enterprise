@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { commandShim, startFixtureCommandServer } from "./ci-prepare-fixture-command.mjs";
@@ -58,13 +58,14 @@ const hungCommandExitMs = watchdogMs + 30_000;
 // the timeout gets SIGTERM and an ETIMEDOUT error, and its output pipes are closed, as
 // spawnSync does. Unlike spawnSync, output is not capped at 1 MiB (these children write
 // a few kilobytes).
-export function spawnResult(command, args, { env, timeout = watchdogMs } = {}) {
+export function spawnResult(command, args, { env, timeout = watchdogMs, onSpawn } = {}) {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd: repositoryRoot,
       env,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    onSpawn?.(child);
     const output = { stdout: "", stderr: "" };
     let error;
     for (const stream of ["stdout", "stderr"]) {
@@ -140,6 +141,7 @@ export async function fixtureImageCommands(
   for (const file of ["docker.mjs", "k3d.mjs", "kubectl.mjs", "podman", "corepack", "helm", "yq"]) {
     await writeFixtureCommand(join(bin, file), file.replace(/\.mjs$/, ""), server);
   }
+  await symlink(process.execPath, join(bin, "node"));
   const statePath = join(root, "state.json");
   const githubEnv = join(root, "github.env");
   // The fake PostgreSQL server's Unix socket (ci-prepare-fixture-command.mjs).
@@ -165,14 +167,32 @@ export async function fixtureImageCommands(
     OPENCLAW_CI_POSTGRES_SOCKET_DIR: postgresSockets,
     ...extraEnv,
   };
-  const run = (script, args) =>
-    spawnResult(process.execPath, [join(repositoryRoot, "scripts/ci", script), ...args], { env });
+  const run = (script, args, options) =>
+    spawnResult(process.execPath, [join(repositoryRoot, "scripts/ci", script), ...args], {
+      ...options,
+      env,
+    });
   const prepareArgs = ["--lane", lane, "--state", statePath, "--github-env", githubEnv];
   const cleanup = () => run("cleanup.mjs", ["--state", statePath]);
   return {
     statePath,
     githubEnv,
-    prepare: () => run("prepare.mjs", prepareArgs),
+    runShell: (script, extraEnv = {}) =>
+      spawnResult(hostProgram("bash"), ["-e", "-o", "pipefail", "-c", script], {
+        env: { ...env, ...extraEnv },
+      }),
+    prepare: (args = [], options) => run("prepare.mjs", [...prepareArgs, ...args], options),
+    prepareStagingSignin: () =>
+      spawnResult(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          'import { prepareStagingSigninCluster } from "./scripts/ci/prepare.mjs"; await prepareStagingSigninCluster(process.argv[1]);',
+          statePath,
+        ],
+        { env },
+      ),
     warmImageCache: (args = []) =>
       run("prepare.mjs", ["--warm-image-cache", "--state", statePath, ...args]),
     prepareFile: (file) =>

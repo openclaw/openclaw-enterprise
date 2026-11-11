@@ -1,4 +1,5 @@
-import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
+import { isGatewayCompletionId } from "../../scripts/first-agent-model.mjs";
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -26,7 +27,7 @@ import {
 } from "./kubernetes-real.mjs";
 
 const authSecret = "plugin-driver-real-auth-secret-32-bytes";
-const authBaseURL = "http://127.0.0.1";
+const authBaseURL = "https://console.oce.localhost";
 const proofPrefix = "occ-plugin-01a08228";
 
 export const realPluginProofSelected = process.env.OCC_TEST_PLUGIN_DRIVER_REAL === "1";
@@ -271,7 +272,7 @@ function installationConfiguration({
   configuration.drivers.secret.configuration.authentication = authentication;
   configuration.drivers.configuration.id = "configuration-kubernetes-plugin-real";
   configuration.drivers.compute.id = "compute-kubernetes-plugin-real";
-  configuration.drivers.plugin = { id: pluginDriverId, configuration: pluginDriverConfiguration };
+  configuration.drivers.plugin = [{ id: pluginDriverId, configuration: pluginDriverConfiguration }];
   if (workspaceGateway !== undefined) {
     configuration.drivers.compute.configuration.gatewayRouting = workspaceGateway.routing;
     configuration.drivers.compute.configuration.network.gatewayTrustedProxyCidrs =
@@ -470,6 +471,28 @@ function sanitizedPluginProofWorkerEvents(events, revisionId) {
     }));
 }
 
+// Only these locally defined outcomes may leave the Gateway reader.
+const replyFailures = new Set([
+  "command",
+  "timeout",
+  "session_missing",
+  "binding",
+  "transcript",
+  "prompt_missing",
+  "answer_missing",
+  "source",
+  "run",
+  "integrity",
+  "continuity",
+  "sequence",
+]);
+export class ConversationReplyError extends Error {
+  constructor(reason) {
+    super(reason === "continuity" ? "Conversation mismatch." : "Conversation reply unavailable.");
+    this.reason = replyFailures.has(reason) ? reason : "transcript";
+  }
+}
+
 const sessionEvidenceScript = String.raw`
   const { DatabaseSync } = require("node:sqlite");
   const { isDeepStrictEqual } = require("node:util");
@@ -481,6 +504,7 @@ const sessionEvidenceScript = String.raw`
   const expectedArguments = JSON.parse(process.argv[5] || "null");
   const expectedCatalog = JSON.parse(process.argv[6] || "null");
   const codeModeCall = JSON.parse(process.argv[7] || "null");
+  const conversationReply = process.argv[8] === "conversation-reply";
   const databasePath = "/home/node/.openclaw/agents/main/agent/openclaw-agent.sqlite";
   const db = new DatabaseSync(databasePath, { readOnly: true });
   function contains(value, needle) {
@@ -537,9 +561,82 @@ const sessionEvidenceScript = String.raw`
   }
   try {
     db.exec("PRAGMA busy_timeout=5000");
-    const session = db.prepare("SELECT current_session_id, entry_json FROM session_nodes WHERE session_key = ?").get(sessionKey);
+    const session = db.prepare(conversationReply ? "SELECT current_session_id FROM session_nodes WHERE session_key = ?" : "SELECT current_session_id, entry_json FROM session_nodes WHERE session_key = ?").get(sessionKey);
     if (!session) {
+      if (conversationReply) throw new Error("Conversation reply unavailable.");
       process.stdout.write(JSON.stringify({ databasePath, sessionKey, exists: false }));
+      process.exit(0);
+    }
+    if (conversationReply) {
+      const fail = (reason = "integrity") => {
+        process.stdout.write(JSON.stringify({ failure: reason }));
+        process.exit(0);
+      };
+      const id = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
+      if (!id(session.current_session_id)) fail();
+      let storedRemaining = 1048576, decodedRemaining = 1048576;
+      const window = [];
+      // Select only sequence numbers first. Apply the remaining budgets in SQLite
+      // before bringing each payload into JS, and bound decompression separately.
+      const recent = db.prepare("SELECT seq FROM transcript_events WHERE session_id = ? ORDER BY seq DESC LIMIT 256");
+      const payload = db.prepare("SELECT event_json, CASE WHEN event_json IS NULL THEN event_zstd END AS event_zstd, event_utf8_bytes FROM transcript_events WHERE session_id = ? AND seq = ? AND (event_utf8_bytes IS NULL OR event_utf8_bytes BETWEEN 0 AND ?) AND ((event_json IS NOT NULL AND length(CAST(event_json AS BLOB)) <= ?) OR (event_json IS NULL AND length(event_zstd) <= ?))");
+      for (const {seq} of recent.iterate(session.current_session_id)) {
+        if (!storedRemaining || !decodedRemaining) fail();
+        const row = payload.get(session.current_session_id, seq, decodedRemaining,
+          Math.min(storedRemaining, decodedRemaining), storedRemaining);
+        if (!row) fail();
+        const stored = row.event_json == null ? row.event_zstd.byteLength : Buffer.byteLength(row.event_json);
+        storedRemaining -= stored;
+        const text = row.event_json ?? zstdDecompressSync(row.event_zstd, {maxOutputLength:decodedRemaining}).toString("utf8");
+        const size = Buffer.byteLength(text);
+        if (size > decodedRemaining || (row.event_utf8_bytes != null && size !== row.event_utf8_bytes)) fail();
+        decodedRemaining -= size;
+        const event = parseEvent(text);
+        if (!event) fail();
+        window.push({seq,event});
+        if (event.type === "message" && event.message?.role === "user" &&
+            textOf(event.message.content).includes(marker)) break;
+      }
+      window.reverse();
+      const messages = window.map((row) => {
+        const event = row.event;
+        if (!event || !Number.isSafeInteger(row.seq) || row.seq < 0) fail();
+        return { seq: row.seq, message: event.type === "message" ? event.message : null };
+      });
+      const prompt = messages[0];
+      if (prompt?.message?.role !== "user" || !textOf(prompt.message.content).includes(marker)) fail("prompt_missing");
+      const source = prompt.message.__openclaw;
+      if (source?.mirrorOrigin !== "codex-app-server" || typeof source.mirrorIdentity !== "string" ||
+          !/^[A-Za-z0-9_-]+:prompt$/.test(source.mirrorIdentity) ||
+          typeof source.mirrorSourceFingerprint !== "string" || !source.mirrorSourceFingerprint) fail("source");
+      const runId = process.argv[10];
+      if (source.runId !== runId) fail("run");
+      const replies = messages.filter(({message}) => message?.role === "assistant" && textOf(message.content).includes(marker));
+      const answer = replies[replies.length - 1];
+      const meta = answer?.message.__openclaw;
+      // The pinned Codex mirror writer assigns this key to the assistant message
+      // at write time. The session's current thread binding alone cannot attribute a reply.
+      const expectedKey = "codex-app-server:" + process.argv[9] + ":" + meta?.mirrorIdentity;
+      if (!answer) fail("answer_missing");
+      // A recovered logical run keeps its admitted prompt and can finish on a new native turn.
+      if (meta?.mirrorOrigin !== "codex-app-server" || typeof meta.mirrorIdentity !== "string" ||
+          !/^[A-Za-z0-9_-]+:assistant$/.test(meta.mirrorIdentity) ||
+          typeof meta.mirrorSourceFingerprint !== "string" || !meta.mirrorSourceFingerprint ||
+          answer.message.idempotencyKey !== expectedKey) fail("source");
+      if (meta.runId !== runId || meta.runTerminal !== true) fail("run");
+      if (answer.seq <= prompt.seq ||
+          answer.message.stopReason !== "stop" ||
+          messages.some(({message, seq}) => seq < answer.seq && message?.role === "assistant" &&
+            message.__openclaw?.runId === runId && message.__openclaw.runTerminal === true) ||
+          messages.some(({message}, i) => i > 0 && message?.role === "user") ||
+          messages.some(({message, seq}) => message?.isError === true || message?.stopReason === "error" ||
+            (seq > answer.seq && message?.role === "assistant")) ||
+          messages.some((row,i) => i > 0 && row.seq <= messages[i-1].seq)) fail();
+      const current = db.prepare("SELECT current_session_id FROM session_nodes WHERE session_key = ?").get(sessionKey);
+      if (current?.current_session_id !== session.current_session_id) fail();
+      process.stdout.write(JSON.stringify({
+        sessionId: session.current_session_id, userSeq: prompt.seq, assistantSeq: answer.seq,
+      }));
       process.exit(0);
     }
     const entry = JSON.parse(session.entry_json);
@@ -1084,7 +1181,28 @@ let catalogStage = "local app-server authentication";
   // RPC errors can contain upstream response text. Emit only locally classified facts.
   const timedOut = error.message?.startsWith("Codex app-server plugin runtime request timed out during ");
   const reason = timedOut ? "timed out" : "failed";
-  process.stderr.write("Native Codex catalog query " + reason + " during " + catalogStage + ".");
+  const categories = new Map([
+    ["Codex app-server plugin runtime transport failed.", "transport-failed"],
+    ["Codex app-server plugin runtime transport closed.", "transport-closed"],
+    ["Codex app-server plugin runtime response was invalid JSON.", "invalid-json"],
+    ["Codex app-server plugin runtime response was malformed.", "malformed-response"],
+    ["Codex plugin search deadline expired.", "search-deadline"],
+    ["Codex plugin search repeated its cursor.", "repeated-cursor"],
+    ["Local plugin runtime status is unavailable.", "local-status-unavailable"],
+    ["Local plugin runtime status is not ready.", "local-status-not-ready"],
+  ]);
+  const rpcError = error instanceof CodexAppServerRequestError;
+  const category = timedOut ? "request-timeout" :
+    rpcError ? "rpc-error" : categories.get(error.message) ?? "unknown";
+  // Keep only a numeric HTTP status, never the surrounding upstream text or URLs.
+  const httpStatus = rpcError && typeof error.message === "string"
+    ? error.message.slice(0, 4096).match(/\b(?:HTTP(?:\/\d(?:\.\d)?)?\s+|status(?:\s+code)?[:=]?\s+)([45]\d{2})\b/i)?.[1]
+    : undefined;
+  const rpcMethod = rpcError && ["initialize", "plugin/search", "plugin/read"].includes(error.method)
+    ? ", RPC method: " + error.method : "";
+  const status = httpStatus === undefined ? "" : ", HTTP status: " + httpStatus;
+  process.stderr.write("Native Codex catalog query " + reason + " during " + catalogStage +
+    " (category: " + category + rpcMethod + status + ").");
   process.exitCode = 1;
 });
 `;
@@ -1501,6 +1619,62 @@ export function createNativePluginAssertions({
     });
   }
 
+  async function captureRuntimeFailureLogs(logTarget, secrets = []) {
+    if (readRuntimeLogs && recordRuntimeLogs && logTarget.revisionId) {
+      // OCC authorizes and redacts each exact revision read. Apply the existing QA
+      // redactor again for fixture secrets before writing the public evidence artifact.
+      try {
+        for (const value of secrets) {
+          if (typeof value === "string" && value) {
+            registerQaSecret(value);
+          }
+        }
+        const sources = [];
+        for (const source of ["gateway", "agent"]) {
+          // Stay within OCC's two log reads/second per principal and Agent.
+          await delay(500);
+          try {
+            const page = await readRuntimeLogs({ ...logTarget, source });
+            const lines = page.records.map((record) => {
+              if (record.type === "line") {
+                const { type, time, level, message, fields } = record;
+                return JSON.stringify({ type, time, level, message, fields });
+              }
+              const { type, time, reason, count } = record;
+              return JSON.stringify({ type, time, reason, count });
+            });
+            sources.push({
+              source,
+              lines: redactedQaTail(lines.join("\n"), process.env, {
+                lines: 80,
+                lineChars: 900,
+              }),
+            });
+          } catch {
+            sources.push({ source, unavailable: true });
+          }
+        }
+        await recordRuntimeLogs({ ...logTarget, sources });
+      } catch {
+        // Diagnostic reads/writes must never replace the original turn failure.
+      }
+    }
+  }
+
+  async function withRuntimeFailureLogs(agent, action) {
+    const logTarget = {
+      namespaceId: agent.namespaceId,
+      agentId: agent.id,
+      revisionId: agent.revision?.id,
+    };
+    try {
+      return await action();
+    } catch (error) {
+      await captureRuntimeFailureLogs(logTarget);
+      throw error;
+    }
+  }
+
   async function normalGatewayTurn({
     agent,
     gatewayPassword,
@@ -1654,45 +1828,7 @@ export function createNativePluginAssertions({
       }
       return content;
     } catch (error) {
-      if (readRuntimeLogs && recordRuntimeLogs && logTarget.revisionId) {
-        // OCC authorizes and redacts each exact revision read. Apply the existing QA
-        // redactor again for fixture secrets before writing the public evidence artifact.
-        try {
-          for (const value of [password, ...secrets]) {
-            if (typeof value === "string" && value) {
-              registerQaSecret(value);
-            }
-          }
-          const sources = [];
-          for (const source of ["gateway", "agent"]) {
-            // Stay within OCC's two log reads/second per principal and Agent.
-            await delay(500);
-            try {
-              const page = await readRuntimeLogs({ ...logTarget, source });
-              const lines = page.records.map((record) => {
-                if (record.type === "line") {
-                  const { type, time, level, message, fields } = record;
-                  return JSON.stringify({ type, time, level, message, fields });
-                }
-                const { type, time, reason, count } = record;
-                return JSON.stringify({ type, time, reason, count });
-              });
-              sources.push({
-                source,
-                lines: redactedQaTail(lines.join("\n"), process.env, {
-                  lines: 80,
-                  lineChars: 900,
-                }),
-              });
-            } catch {
-              sources.push({ source, unavailable: true });
-            }
-          }
-          await recordRuntimeLogs({ ...logTarget, sources });
-        } catch {
-          // Diagnostic reads/writes must never replace the original turn failure.
-        }
-      }
+      await captureRuntimeFailureLogs(logTarget, [password, ...secrets]);
       throw error;
     } finally {
       abort.abort();
@@ -1749,12 +1885,14 @@ export function createNativePluginAssertions({
     return { runtime: execution.label, ...evidence };
   }
 
-  async function readCodexSessionBinding(agent, { sessionKey }) {
+  async function readCodexSessionBinding(agent, { sessionKey, conversationReply = false }) {
     assert.equal(proofMode, "codex");
     const execution = await execGateway(agent, [
       "node",
       "-e",
       String.raw`
+      const qa = process.argv[2] === "conversation-reply";
+      try {
       const assert = require("node:assert/strict");
       const { createHash } = require("node:crypto");
       const { DatabaseSync } = require("node:sqlite");
@@ -1763,21 +1901,141 @@ export function createNativePluginAssertions({
       const state = new DatabaseSync("/home/node/.openclaw/state/openclaw.sqlite", { readOnly: true });
       try {
         const session = sessions.prepare("SELECT current_session_id FROM session_nodes WHERE session_key = ?").get(sessionKey);
+        if (qa && !session) {
+          process.stdout.write('{"failure":"session_missing"}');
+          process.exit(0);
+        }
         assert.ok(session, "the original OC session must exist");
         const key = "session-key:main:" + createHash("sha256").update(sessionKey.trim()).digest("base64url");
-        const row = state.prepare("SELECT value_json FROM plugin_state_entries WHERE plugin_id = 'codex' AND namespace = 'app-server-thread-bindings' AND entry_key = ? AND (expires_at IS NULL OR expires_at > ?)").get(key, Date.now());
+        const bindingColumn = qa ? "CASE WHEN length(CAST(value_json AS BLOB)) <= 65536 THEN value_json END AS value_json" : "value_json";
+        const row = state.prepare("SELECT " + bindingColumn + " FROM plugin_state_entries WHERE plugin_id = 'codex' AND namespace = 'app-server-thread-bindings' AND entry_key = ? AND (expires_at IS NULL OR expires_at > ?)").get(key, Date.now());
         assert.ok(row, "the OC session must have an active Codex binding");
         const stored = JSON.parse(row.value_json);
         assert.equal(stored.version, 1);
         assert.equal(stored.state, "active");
         assert.equal(stored.sessionId, session.current_session_id);
         assert.ok(typeof stored.binding.threadId === "string" && stored.binding.threadId.length > 0);
+        if (qa && ![session.current_session_id, stored.binding.threadId].every((value) =>
+          typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value))) throw new Error();
         process.stdout.write(JSON.stringify({ sessionId: session.current_session_id, threadId: stored.binding.threadId }));
       } finally { sessions.close(); state.close(); }
+      } catch (error) {
+        if (!qa) throw error;
+        process.stdout.write('{"error":"Conversation reply unavailable."}');
+      }
     `,
       sessionKey,
+      conversationReply ? "conversation-reply" : "",
     ]);
     return JSON.parse(execution.stdout);
+  }
+
+  async function readConversationReply(agent, { sessionKey, turnMarker, runId, previous } = {}) {
+    let reading = "binding";
+    let before;
+    let after;
+    let reply;
+    let prior;
+    const id = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
+    const valid = (value) =>
+      value &&
+      id(value.sessionId) &&
+      id(value.threadId) &&
+      Number.isSafeInteger(value.userSeq) &&
+      value.userSeq >= 0 &&
+      Number.isSafeInteger(value.assistantSeq) &&
+      value.assistantSeq > value.userSeq;
+    try {
+      if (
+        proofMode !== "codex" ||
+        !id(agent?.id) ||
+        typeof sessionKey !== "string" ||
+        !/^agent:main:git-withdrawal-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          sessionKey,
+        ) ||
+        typeof turnMarker !== "string" ||
+        !/^FIRST_AGENT_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          turnMarker,
+        ) ||
+        !isGatewayCompletionId(runId) ||
+        (previous !== undefined && !valid(previous))
+      ) {
+        throw new ConversationReplyError("integrity");
+      }
+      prior = previous === undefined ? undefined : { ...previous };
+      const selected = Object.freeze({
+        id: agent.id,
+        namespaceId: agent.namespaceId,
+        revision: Object.freeze({ id: agent.revision?.id }),
+      });
+      before = await readCodexSessionBinding(selected, { sessionKey, conversationReply: true });
+      if (!id(before?.sessionId) || !id(before?.threadId)) {
+        throw new ConversationReplyError(
+          before?.failure === "session_missing" ? "session_missing" : "binding",
+        );
+      }
+      reading = "transcript";
+      const execution = await execGateway(selected, [
+        "node",
+        "-e",
+        "try {\n" +
+          sessionEvidenceScript +
+          '\n} catch { process.stdout.write(\'{"error":"Conversation reply unavailable."}\'); }',
+        sessionKey,
+        turnMarker,
+        "",
+        "[]",
+        "null",
+        "null",
+        "null",
+        "conversation-reply",
+        before.threadId,
+        runId,
+      ]);
+      const evidence = JSON.parse(execution.stdout);
+      reading = "binding";
+      after = await readCodexSessionBinding(selected, { sessionKey, conversationReply: true });
+      if (after?.sessionId !== before.sessionId || after?.threadId !== before.threadId) {
+        throw new ConversationReplyError("binding");
+      }
+      if (evidence?.failure !== undefined) {
+        throw new ConversationReplyError(
+          ["integrity", "prompt_missing", "answer_missing", "source", "run"].includes(
+            evidence.failure,
+          )
+            ? evidence.failure
+            : "transcript",
+        );
+      }
+      reading = "transcript";
+      reply = {
+        sessionId: evidence.sessionId,
+        threadId: before.threadId,
+        userSeq: evidence.userSeq,
+        assistantSeq: evidence.assistantSeq,
+      };
+      if (
+        !valid(reply) ||
+        evidence.sessionId !== before.sessionId ||
+        agent.id !== selected.id ||
+        agent.namespaceId !== selected.namespaceId ||
+        agent.revision?.id !== selected.revision.id
+      ) {
+        throw new ConversationReplyError("transcript");
+      }
+    } catch (error) {
+      if (error instanceof ConversationReplyError) {
+        throw error;
+      }
+      throw new ConversationReplyError(reading);
+    }
+    if (prior && (reply.sessionId !== prior.sessionId || reply.threadId !== prior.threadId)) {
+      throw new ConversationReplyError("continuity");
+    }
+    if (prior && reply.userSeq <= prior.assistantSeq) {
+      throw new ConversationReplyError("sequence");
+    }
+    return reply;
   }
 
   async function readCodexThreadMetadata(agent, thread) {
@@ -2227,7 +2485,9 @@ export function createNativePluginAssertions({
 
   return {
     normalGatewayTurn,
+    withRuntimeFailureLogs,
     readCodexSessionBinding,
+    readConversationReply,
     readCodexThreadMetadata,
     assertSessionToolCallEvidence,
     assertSessionToolDeniedEvidence,
@@ -2535,8 +2795,8 @@ export async function createPluginDriverRealFixture(
       environment: { ...driverEnvironment, OCC_CONFIG_PATH: workerConfigurationPath },
     }),
   ]);
-  assert.equal(apiDrivers.pluginDriver?.id, pluginDriverId);
-  assert.equal(workerDrivers.pluginDriver?.id, pluginDriverId);
+  assert.equal(apiDrivers.pluginDrivers[0]?.id, pluginDriverId);
+  assert.equal(workerDrivers.pluginDrivers[0]?.id, pluginDriverId);
 
   const serviceAccountDriverFactory =
     codexServiceAccountImport === undefined
@@ -2561,6 +2821,7 @@ export async function createPluginDriverRealFixture(
       installationId: existing.id,
       secret: authSecret,
       baseURL: authBaseURL,
+      agentDomain: "agents.oce.localhost",
       pool,
     });
     const servicePrincipal = installationAdministratorServicePrincipal(
@@ -2592,6 +2853,7 @@ export async function createPluginDriverRealFixture(
     databaseUrl: selectedDatabaseUrl,
     authSecret,
     authBaseURL,
+    nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
     drivers: apiDrivers,
     ...(serviceAccountDriverFactory === undefined ? {} : { serviceAccountDriverFactory }),
   });

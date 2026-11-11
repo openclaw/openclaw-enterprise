@@ -92,6 +92,42 @@ model selection and discovery are refused before reading the Secret. The trusted
 sender injects the selected version. Neither the Agent nor the admission snapshot
 receives its value.
 
+Responses requests may declare local function and custom tools, including namespaces,
+in the top-level `tools` list or a developer `additional_tools` input item. Inline
+declarations use the same local-tool restrictions; they do not authorize hosted tools.
+Local function parameter schemas accept `encrypted: true` only on a string schema.
+This annotation does not itself encrypt data. Native `agent_message` input
+accepts bounded `/root` agent paths and one text part, optionally followed by one
+encrypted content part. Agent paths label the message. Credential authority
+still comes from the admitted execution. Request `reasoning.effort` accepts
+`none`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`. The JSON string in
+`client_metadata["x-codex-turn-metadata"]` may include `reasoning_effort` with the value
+`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` or `ultra`.
+The proxy accepts `ultra` only in telemetry; it does not translate effort values. The metadata can also include
+`workspaces` with one absolute Git root. Each entry must include at least one
+of `latest_git_commit_hash` (a lowercase SHA-1 or SHA-256 hash), `has_changes`
+(a Boolean), or `associated_remote_urls` (1–16 named Git remotes).
+The proxy accepts HTTPS URLs without user info and SCP-style URLs with the
+literal `git` transport user. Both forms use plain ASCII repository paths and
+omit queries and fragments. The separate optional
+`client_metadata["mcp_attribution"]` JSON string accepts exactly
+`{"status":"none"}`. These fields carry telemetry and grant no authority.
+For `request_kind: "compaction"`, turn metadata may include a `compaction` object
+with a native trigger, reason and phase, `implementation: "responses"` and
+`strategy: "memento"`. All five fields are required in that object.
+Replayed assistant `output_text` parts can include `annotations` and `logprobs`.
+Each field must be an empty array if present. Replayed `reasoning` items accept
+`content: null` or an array of `reasoning_text` parts. Codex can send null after
+loading a saved thread whose reasoning item omitted the field. The proxy refuses
+unknown request fields.
+
+In streamed Responses envelopes, tool echoes may contain null descriptions,
+`strict`, `defer_loading`, or custom-tool `format`; their nonnull values retain
+the same type and local-tool restrictions. Namespace descriptions remain text. The optional
+`image` response object accepts only `context_compression: "enabled" | "disabled"`,
+the effective policy reported by the provider. Missing or unknown members and other
+values are refused; the request-only `"auto"` value is not an effective response policy.
+
 Static provider generation two identifies whole-execution authority. A generation-one
 grant remains narrower. Adopting live material and authorizing the broader execution
 are explicit, separate decisions; a Secret edit grants neither. The first cutover

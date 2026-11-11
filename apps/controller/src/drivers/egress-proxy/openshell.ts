@@ -39,7 +39,7 @@ import {
   advertisesOpenShellExecutionProfile,
   openShellExchangeCapabilities as capabilities,
 } from "./openshell-exchange-capabilities.ts";
-import { openAiStaticProvider } from "./openai-provider.ts";
+import { createOpenAiStaticProvider } from "./openai-provider.ts";
 import { openShellProtectedCodexArtifacts } from "../sandbox/openshell-codex-artifacts.ts";
 import { assertBoundedWorkspaceNodeRule } from "../sandbox/openshell-workspace-node-policy.ts";
 
@@ -356,7 +356,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       sender: { id: `${selection.backend.id}/supervisor`, generation: 1 },
       resolver: { id: `${selection.id}/resolver`, generation: 1 },
       providers: [
-        openAiStaticProvider,
+        createOpenAiStaticProvider(),
         credentialFreeMetadataProvider,
         ...(selection.preparedProviders ?? []),
       ],

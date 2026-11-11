@@ -786,6 +786,14 @@ export function nativeWorkerTurnObservation({ outcome, error, messages, runId, h
     const detail = value.slice(0, 4096);
     const patterns = [
       [
+        "session-read-changed",
+        /^(?:Error: )?Session changed while preparing its description; retry the request$/,
+      ],
+      [
+        "session-binding-changed",
+        /^(?:Error: )?Session repository binding changed while preparing its description$/,
+      ],
+      [
         "model-authentication",
         /invalid.api.key|incorrect.api.key|authentication_error|No API key/i,
       ],
@@ -951,7 +959,9 @@ export async function collectNativeWorkerFailure({
     elapsedMs,
   });
   if (runId === undefined) {
-    return worker;
+    return error === undefined
+      ? worker
+      : { ...worker, proofError: nativeWorkerTurnObservation({ error }).proofError };
   }
   const history = await historyObservation;
   let historyLookup = "unavailable";
@@ -983,6 +993,331 @@ export function nativeWorkerSessionPlacement(description, sessionId) {
   return description.session.placement;
 }
 
+// The pinned Gateway returns this plain read-generation error through
+// UNAVAILABLE + formatForLog. The SDK separately proves response correlation.
+export function nativePlacementReadRetryable(error, correlatedResponse) {
+  return (
+    correlatedResponse === true &&
+    error?.code === "UNAVAILABLE" &&
+    error.message === "Error: Session changed while preparing its description; retry the request"
+  );
+}
+
+// This same program runs through the model's exec and in the local diagnostic proof.
+export function nativeWorkerProofProgram({
+  sessionFile,
+  sessionFileContent,
+  workspaceFile,
+  toolPrefix,
+  createSessionFile,
+}) {
+  return [
+    'process.stderr.write("FIRST_AGENT_NATIVE_PROGRAM_ENTRY\\n");',
+    'let operation="write-session-file";try{',
+    ...(createSessionFile
+      ? [
+          `require("node:fs").writeFileSync(${JSON.stringify(sessionFile.path)},${JSON.stringify(sessionFileContent)},{flag:"wx"});`,
+        ]
+      : []),
+    'operation="read-session-file";',
+    `const sessionFileSha256=require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(${JSON.stringify(sessionFile.path)})).digest("hex");`,
+    ...(workspaceFile === undefined
+      ? []
+      : [
+          'operation="read-workspace-file";',
+          `const workspaceFileSha256=require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(${JSON.stringify(workspaceFile.path)})).digest("hex");`,
+        ]),
+    'operation="emit-proof";',
+    `process.stdout.write(${JSON.stringify(toolPrefix)} + JSON.stringify({`,
+    'hostname:require("node:os").hostname(),',
+    'cwd:process.cwd(),modelCredentialPresent:Object.hasOwn(process.env,"OPENAI_API_KEY")||Object.hasOwn(process.env,"CODEX_ACCESS_TOKEN"),sessionFileSha256,',
+    ...(workspaceFile === undefined ? [] : ["workspaceFileSha256,"]),
+    '}) + "\\n");',
+    "}catch(error){",
+    'const code=["EACCES","EPERM","ENOENT","EEXIST","EISDIR","ENOTDIR","ENOSPC","EROFS","EMFILE","EIO"].includes(error?.code)?error.code:"other";',
+    'process.stderr.write("FIRST_AGENT_NATIVE_FAILURE "+JSON.stringify({operation,code})+"\\n");process.exitCode=1;}',
+  ].join("");
+}
+
+// Keep exact run, explicit success, standalone tool output and final-marker
+// predicates together. Only the fixed observation is retained in diagnostics.
+export function nativeWorkerHistoryEvidence({
+  messages: history,
+  runId,
+  toolPrefix,
+  marker,
+  command,
+}) {
+  if (!Array.isArray(history)) {
+    throw new Error("Invalid native history");
+  }
+  const text = (content) =>
+    typeof content === "string"
+      ? content
+      : (Array.isArray(content) ? content : [])
+          .filter((part) => part?.type === "text" && typeof part.text === "string")
+          .map((part) => part.text)
+          .join("\n");
+  const execOutput = (content) => {
+    const output = text(content);
+    try {
+      const result = JSON.parse(output);
+      if (typeof result?.value?.aggregated === "string") {
+        return result.value.aggregated;
+      }
+    } catch {
+      // Plain exec output is already the recorded tool result.
+    }
+    return output;
+  };
+  const messages = history.filter((message) => message.__openclaw?.runId === runId);
+  const tool = messages.find(
+    (message) =>
+      message.role === "toolResult" &&
+      message.toolName === "exec" &&
+      message.isError === false &&
+      // A failed command can echo the marker in its source. Only a
+      // standalone proof line identifies the command's actual output.
+      execOutput(message.content)
+        .split(/\r?\n/)
+        .some((line) => line.startsWith(toolPrefix)),
+  );
+  const final = messages.find(
+    (message) =>
+      message.role === "assistant" &&
+      text(message.content).trim() === marker &&
+      !["toolUse", "error"].includes(message.stopReason) &&
+      !(
+        Array.isArray(message.content) && message.content.some((part) => part?.type === "toolCall")
+      ),
+  );
+  const exec = messages.filter(
+    (message) => message.role === "toolResult" && message.toolName === "exec",
+  );
+  const errorFlag = (value) => {
+    if (value === false) {
+      return "false";
+    }
+    if (value === true) {
+      return "true";
+    }
+    if (value === undefined) {
+      return "absent";
+    }
+    return "other";
+  };
+  const flags = new Set(exec.map((message) => errorFlag(message.isError)));
+  let flag = "mixed";
+  if (flags.size === 0) {
+    flag = "none";
+  } else if (flags.size === 1) {
+    flag = [...flags][0];
+  }
+  const assistants = messages.filter((message) => message.role === "assistant");
+  // Classify only fixed shapes and comparisons; never retain peer-supplied types or values.
+  const parts = messages.flatMap((message) =>
+    Array.isArray(message.content) ? message.content : [],
+  );
+  const calls = assistants.flatMap((message) =>
+    Array.isArray(message.content)
+      ? message.content.filter((part) => part?.type === "toolCall" && part.name === "exec")
+      : [],
+  );
+  const nestedExitCodes = [];
+  const nestedFailures = [];
+  const execStage = {};
+  let failureMarkerCount = 0;
+  const envelopes = exec.map((message) => {
+    try {
+      const value = JSON.parse(text(message.content));
+      if (exec.length === 1) {
+        if (["completed", "failed", "waiting"].includes(value?.status)) {
+          execStage.historyExecOuterStatus = value.status;
+        }
+        if (value?.status === "failed") {
+          if (
+            [
+              "aborted",
+              "invalid_input",
+              "runtime_unavailable",
+              "timeout",
+              "output_limit_exceeded",
+              "snapshot_limit_exceeded",
+              "internal_error",
+            ].includes(value.code)
+          ) {
+            execStage.historyExecOuterCode = value.code;
+          }
+          if (["input", "guest", "bridge", "host"].includes(value.failurePhase)) {
+            execStage.historyExecOuterFailurePhase = value.failurePhase;
+          }
+          if (typeof value.bridgeDispatchStarted === "boolean") {
+            execStage.historyExecBridgeDispatchStarted = value.bridgeDispatchStarted;
+          }
+        }
+        const nested = value?.status === "completed" ? value.value : undefined;
+        if (typeof nested?.aggregated === "string") {
+          execStage.historyExecProofProgramEntryPresent = nested.aggregated
+            .split(/\r?\n/)
+            .includes("FIRST_AGENT_NATIVE_PROGRAM_ENTRY");
+          if (["completed", "failed"].includes(nested.status)) {
+            execStage.historyExecNestedStatus = nested.status;
+          }
+          if (
+            nested.status === "failed" &&
+            [
+              "shell-command-not-found",
+              "shell-not-executable",
+              "overall-timeout",
+              "no-output-timeout",
+              "memory-limit",
+              "signal",
+              "aborted",
+              "runtime-error",
+            ].includes(nested.failureKind)
+          ) {
+            execStage.historyExecNestedFailureKind = nested.failureKind;
+          }
+        }
+      }
+      if (
+        typeof value?.value?.aggregated === "string" &&
+        Number.isSafeInteger(value.value.exitCode)
+      ) {
+        nestedExitCodes.push(value.value.exitCode);
+        if (value.value.exitCode > 0 && value.value.exitCode <= 255) {
+          for (const line of value.value.aggregated.split(/\r?\n/)) {
+            const prefix = "FIRST_AGENT_NATIVE_FAILURE ";
+            if (!line.startsWith(prefix)) {
+              continue;
+            }
+            failureMarkerCount += 1;
+            if (line.length > 256) {
+              continue;
+            }
+            try {
+              const failure = JSON.parse(line.slice(prefix.length));
+              if (
+                [
+                  "write-session-file",
+                  "read-session-file",
+                  "read-workspace-file",
+                  "emit-proof",
+                ].includes(failure?.operation) &&
+                [
+                  "EACCES",
+                  "EPERM",
+                  "ENOENT",
+                  "EEXIST",
+                  "EISDIR",
+                  "ENOTDIR",
+                  "ENOSPC",
+                  "EROFS",
+                  "EMFILE",
+                  "EIO",
+                  "other",
+                ].includes(failure?.code)
+              ) {
+                nestedFailures.push({ operation: failure.operation, code: failure.code });
+              }
+            } catch {
+              // A malformed peer marker cannot supply diagnostic fields.
+            }
+          }
+        }
+      }
+      return typeof value?.value?.aggregated === "string" ? "aggregated" : "other";
+    } catch {
+      return "plain";
+    }
+  });
+  return {
+    tool,
+    final,
+    messages,
+    output: tool ? execOutput(tool.content) : undefined,
+    observation: {
+      ...execStage,
+      historyMessageCount: history.length,
+      historyRunMessageCount: messages.length,
+      historyExecCount: exec.length,
+      historyExplicitSuccessCount: exec.filter((message) => message.isError === false).length,
+      historyExecErrorFlag: flag,
+      historyStringContentCount: messages.filter((message) => typeof message.content === "string")
+        .length,
+      historyArrayContentCount: messages.filter((message) => Array.isArray(message.content)).length,
+      historyOtherContentCount: messages.filter(
+        (message) => typeof message.content !== "string" && !Array.isArray(message.content),
+      ).length,
+      historyTextPartCount: parts.filter(
+        (part) => part?.type === "text" && typeof part.text === "string",
+      ).length,
+      historyToolCallPartCount: parts.filter((part) => part?.type === "toolCall").length,
+      historyOtherPartCount: parts.filter(
+        (part) =>
+          part?.type !== "toolCall" && !(part?.type === "text" && typeof part.text === "string"),
+      ).length,
+      historyExecCallCount: calls.length,
+      historyExecCodeStringCount: calls.filter((part) => typeof part.arguments?.code === "string")
+        .length,
+      // A source mention is not evidence that the nested command executed.
+      historyExecCodeToolPrefixContainsCount: calls.filter(
+        (part) =>
+          typeof part.arguments?.code === "string" && part.arguments.code.includes(toolPrefix),
+      ).length,
+      ...(nestedExitCodes.length === 1 && nestedExitCodes[0] >= 0 && nestedExitCodes[0] <= 255
+        ? { historyExecNestedExitCode: nestedExitCodes[0] }
+        : {}),
+      ...(nestedExitCodes.length === 1 && failureMarkerCount === 1 && nestedFailures.length === 1
+        ? {
+            historyExecFailureOperation: nestedFailures[0].operation,
+            historyExecFailureCode: nestedFailures[0].code,
+          }
+        : {}),
+      historyExecNestedExitZeroCount: nestedExitCodes.filter((code) => code === 0).length,
+      historyExecNestedExitNonzeroCount: nestedExitCodes.filter((code) => code !== 0).length,
+      historyExecCommandStringCount: calls.filter(
+        (part) => typeof part.arguments?.command === "string",
+      ).length,
+      historyExecExactCommandCount: calls.filter(
+        (part) => typeof command === "string" && part.arguments?.command === command,
+      ).length,
+      historyExecNonemptyTextCount: exec.filter(
+        (message) => execOutput(message.content).trim().length > 0,
+      ).length,
+      historyExecAggregatedCount: envelopes.filter((shape) => shape === "aggregated").length,
+      historyExecOtherJsonCount: envelopes.filter((shape) => shape === "other").length,
+      historyToolPrefixContainsCount: exec.filter((message) =>
+        execOutput(message.content).includes(toolPrefix),
+      ).length,
+      historyAssistantNonemptyTextCount: assistants.filter(
+        (message) => text(message.content).trim().length > 0,
+      ).length,
+      historyFinalMarkerContainsCount: assistants.filter((message) =>
+        text(message.content).includes(marker),
+      ).length,
+      historyToolPrefixCount: exec.filter((message) =>
+        execOutput(message.content)
+          .split(/\r?\n/)
+          .some((line) => line.startsWith(toolPrefix)),
+      ).length,
+      historyFinalMarkerCount: assistants.filter(
+        (message) => text(message.content).trim() === marker,
+      ).length,
+      historyTerminalAssistantCount: assistants.filter(
+        (message) =>
+          !["toolUse", "error"].includes(message.stopReason) &&
+          !(
+            Array.isArray(message.content) &&
+            message.content.some((part) => part?.type === "toolCall")
+          ),
+      ).length,
+      historyToolProofPresent: Boolean(tool),
+      historyFinalProofPresent: Boolean(final),
+    },
+  };
+}
+
 // Run in the existing trusted controller: it already has the private route key,
 // cluster DNS and CA. Native admin sign-in is neither enabled nor required.
 async function nativeWorkerProof({
@@ -1002,8 +1337,13 @@ async function nativeWorkerProof({
   const { setTimeout: delay } = await import("node:timers/promises");
   const { pathToFileURL } = await import("node:url");
   const require = createRequire(resolve("apps/controller/package.json"));
-  const { GatewayClient } = await import(
+  const { GatewayClient, isGatewayProtocolResponseError } = await import(
     pathToFileURL(require.resolve("@openclaw/gateway-client"))
+  );
+  assert.equal(
+    typeof isGatewayProtocolResponseError,
+    "function",
+    "The controller SDK must recognize correlated Gateway errors",
   );
   const { loadYaml } = await import(pathToFileURL(require.resolve("@kubernetes/client-node")));
   let stage = "startup";
@@ -1013,6 +1353,9 @@ async function nativeWorkerProof({
   let lastPlacement;
   let runId;
   let outcome;
+  let historyPredicates;
+  let historySignal;
+  let placementReadRetries = 0;
   const proofStarted = performance.now();
   const emit = (data) =>
     process.stdout.write("OCE_NATIVE_FIRST_AGENT_PROOF " + JSON.stringify(data) + "\n");
@@ -1059,17 +1402,35 @@ async function nativeWorkerProof({
     assert.equal(required.inference, "worker");
     assert.ok(required.executionModes.includes("worker-turn"));
     let session = existingSession;
-    collectFailure = (error) =>
-      collectNativeWorkerFailure({
-        request: (method, params, options) => client.request(method, params, options),
-        session,
-        lastPlacement,
-        expectedNodeId,
-        elapsedMs: Math.round(performance.now() - proofStarted),
-        runId,
-        outcome,
-        error,
-      });
+    collectFailure = async (error) => {
+      let proofRpcCode = "other";
+      if (error?.code == null) {
+        proofRpcCode = "absent";
+      } else if (
+        ["UNAVAILABLE", "INVALID_REQUEST", "NOT_FOUND", "UNAUTHORIZED", "FORBIDDEN"].includes(
+          error.code,
+        )
+      ) {
+        proofRpcCode = error.code;
+      }
+      return {
+        ...(await collectNativeWorkerFailure({
+          request: (method, params, options) => client.request(method, params, options),
+          session,
+          lastPlacement,
+          expectedNodeId,
+          elapsedMs: Math.round(performance.now() - proofStarted),
+          runId,
+          outcome,
+          error,
+        })),
+        ...historyPredicates,
+        historySettleExpired: historySignal?.aborted === true,
+        proofRpcCode,
+        proofRpcResponse: isGatewayProtocolResponseError(error),
+        placementReadRetries,
+      };
+    };
     if (session === undefined) {
       stage = "create";
       const key = `agent:main:first-agent-native-${randomUUID()}`;
@@ -1088,10 +1449,18 @@ async function nativeWorkerProof({
       session = { key, sessionId };
       stage = "required-placement";
       while (!signal.aborted) {
-        const described = await call("sessions.describe", { key, agentId: "main" }).catch(() => {
+        let described;
+        try {
+          described = await call("sessions.describe", { key, agentId: "main" });
+        } catch (error) {
           stage = "required-placement-describe-rejected";
-          assert.fail();
-        });
+          if (!nativePlacementReadRetryable(error, isGatewayProtocolResponseError(error))) {
+            throw error;
+          }
+          placementReadRetries++;
+          await delay(500, undefined, { signal });
+          continue;
+        }
         stage = "session-identity";
         lastPlacement = nativeWorkerSessionPlacement(described, session.sessionId);
         stage = "required-placement";
@@ -1126,23 +1495,13 @@ async function nativeWorkerProof({
     assert.match(sessionFile.sha256, /^[a-f0-9]{64}$/);
     const marker = `FIRST_AGENT_NATIVE_${randomUUID()}`;
     const toolPrefix = "FIRST_AGENT_NATIVE_TOOL ";
-    const program = [
-      ...(existingSession === undefined
-        ? [
-            `require("node:fs").writeFileSync(${JSON.stringify(sessionFile.path)},${JSON.stringify(sessionFileContent)},{flag:"wx"});`,
-          ]
-        : []),
-      `process.stdout.write(${JSON.stringify(toolPrefix)} + JSON.stringify({`,
-      'hostname:require("node:os").hostname(),',
-      'cwd:process.cwd(),modelCredentialPresent:Object.hasOwn(process.env,"OPENAI_API_KEY")||Object.hasOwn(process.env,"CODEX_ACCESS_TOKEN"),',
-      `sessionFileSha256:require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(${JSON.stringify(sessionFile.path)})).digest("hex"),`,
-      ...(workspaceFile === undefined
-        ? []
-        : [
-            `workspaceFileSha256:require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(${JSON.stringify(workspaceFile.path)})).digest("hex"),`,
-          ]),
-      '}) + "\\n")',
-    ].join("");
+    const program = nativeWorkerProofProgram({
+      sessionFile,
+      sessionFileContent,
+      workspaceFile,
+      toolPrefix,
+      createSessionFile: existingSession === undefined,
+    });
     const command = `node -e '${program.replaceAll("'", "'\\''")}'`;
     stage = "send";
     const sent = await call("sessions.send", {
@@ -1164,47 +1523,28 @@ async function nativeWorkerProof({
     signal.throwIfAborted();
     stage = "model-outcome";
     assert.equal(outcome.status, "ok");
-    const text = (content) =>
-      typeof content === "string"
-        ? content
-        : (content ?? [])
-            .filter((part) => part?.type === "text" && typeof part.text === "string")
-            .map((part) => part.text)
-            .join("\n");
-    while (!signal.aborted) {
+    // The model turn is already terminal. Allow history delivery to settle,
+    // but do not spend the remaining model-execution budget on a missing proof.
+    historySignal = AbortSignal.any([signal, AbortSignal.timeout(30_000)]);
+    while (!historySignal.aborted) {
       stage = "model-history";
-      const history = await call("chat.history", { sessionKey: key, limit: 30 });
-      const messages = (history.messages ?? []).filter(
-        (message) => message.__openclaw?.runId === sent.runId,
+      const history = await client.request(
+        "chat.history",
+        { sessionKey: key, limit: 30 },
+        { signal: historySignal, timeoutMs: 30_000 },
       );
-      const tool = messages.find(
-        (message) =>
-          message.role === "toolResult" &&
-          message.toolName === "exec" &&
-          message.isError === false &&
-          text(message.content).includes(toolPrefix),
-      );
-      const final = messages.find(
-        (message) =>
-          message.role === "assistant" &&
-          text(message.content).trim() === marker &&
-          !["toolUse", "error"].includes(message.stopReason) &&
-          !(
-            Array.isArray(message.content) &&
-            message.content.some((part) => part?.type === "toolCall")
-          ),
-      );
+      const evidence = nativeWorkerHistoryEvidence({
+        messages: history.messages,
+        runId: sent.runId,
+        toolPrefix,
+        marker,
+        command,
+      });
+      historyPredicates = evidence.observation;
+      const { tool, final, messages } = evidence;
       if (tool && final) {
         stage = "exec-proof";
-        let output = text(tool.content);
-        try {
-          const result = JSON.parse(output);
-          if (typeof result?.value?.aggregated === "string") {
-            output = result.value.aggregated;
-          }
-        } catch {
-          // Plain exec output already has the diagnostic line.
-        }
+        const output = evidence.output;
         const line = output.split(/\r?\n/).find((line) => line.startsWith(toolPrefix));
         assert.ok(line);
         const proof = JSON.parse(line.slice(toolPrefix.length));
@@ -1241,9 +1581,9 @@ async function nativeWorkerProof({
       assert.ok(
         !messages.some((message) => message.role === "assistant" && message.stopReason === "error"),
       );
-      await delay(500, undefined, { signal });
+      await delay(500, undefined, { signal: historySignal });
     }
-    signal.throwIfAborted();
+    historySignal.throwIfAborted();
   } catch (error) {
     // Dependency/RPC errors can include private headers. Preserve the failing
     // stage, never raw exceptions, keys, transcripts or controller output.
@@ -1281,7 +1621,7 @@ export async function assertNativeWorkerProofInController(
   delete safeEnvironment.OPENAI_API_KEY_FILE;
   delete safeEnvironment.CODEX_ACCESS_TOKEN;
   delete safeEnvironment.CODEX_ACCESS_TOKEN_FILE;
-  const input = `const nativeWorkerSessionPlacement = (${nativeWorkerSessionPlacement.toString()});\nconst nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, expectedNodeId, session, sessionFile })});`;
+  const input = `const nativePlacementReadRetryable = (${nativePlacementReadRetryable.toString()});\nconst nativeWorkerProofProgram = (${nativeWorkerProofProgram.toString()});\nconst nativeWorkerHistoryEvidence = (${nativeWorkerHistoryEvidence.toString()});\nconst nativeWorkerSessionPlacement = (${nativeWorkerSessionPlacement.toString()});\nconst nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, expectedNodeId, session, sessionFile })});`;
   const command = state.deploymentMode === "k3d" ? "kubectl" : state.containerEngine;
   const args =
     state.deploymentMode === "k3d"

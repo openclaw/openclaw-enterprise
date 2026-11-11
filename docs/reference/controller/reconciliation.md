@@ -215,11 +215,24 @@ deployment fails with that code rather than `CONVERGENCE_DEADLINE_EXCEEDED`.
 When a bundled Compute Driver's cleanup after a failed preparation or activation
 fails too, the pass is decided by the preparation's or activation's own failure,
 and `worker.completed` adds `cleanupCause`.
-Pending convergence has its own limit: `OCC_WORKER_CONVERGENCE_TIMEOUT_MS`,
-measured from operation creation on PostgreSQL's clock, so
-controller clock skew cannot move it. Exceeding it fails the operation with
-`CONVERGENCE_DEADLINE_EXCEEDED`. A runtime reporting a deterministic
-credential rejection fails deployment earlier with
+
+Pending Namespace convergence and Agent deployment share
+`OCC_WORKER_CONVERGENCE_TIMEOUT_MS` (default: 15 minutes), measured from
+operation creation on PostgreSQL's clock. Queue time counts; starting or
+restarting the worker does not reset it. Have the worker ready before submitting
+deployment work. After the limit, a deployment's first pending result can fail
+with `CONVERGENCE_DEADLINE_EXCEEDED`.
+
+For an intentional longer wait, configure the worker timeout before resuming
+(`worker.convergenceTimeoutMs` in Helm). It must cover the operation's total age
+plus remaining convergence time. The setting applies across that worker's
+Namespace and Agent deployment work and live SandboxPolicy applications.
+Extending it can delay `SANDBOX_POLICY_UNCONFIRMED`; the provider may already
+have applied the policy. Follow [SandboxPolicy recovery](../sandbox-policies.md#desired-and-applied-versions)
+for an unconfirmed outcome. The setting cannot reopen terminal operations.
+Restore the normal limit after affected work finishes.
+
+A runtime reporting a deterministic credential rejection fails deployment earlier with
 `RUNTIME_AUTHENTICATION_FAILED`, and one whose startup model probe ran out of
 CPU at its limit with `RUNTIME_CPU_STARVED`. Other failures that need a new
 version fail it early too: `RUNTIME_MODEL_PROBE_TIMEOUT`,

@@ -16,12 +16,9 @@ after the production installation sequence is complete.
 
 `./scripts/k3d` has **no upgrade command**. Its interactive demo is a disposable
 test harness, not a persistent Helm installation: it uses loopback HTTP and
-creates its own topology. The production upgrade script cannot directly upgrade
-that demo. Its normal Ctrl-C shutdown removes demo resources and port-forwards;
-restarting creates fresh demo resources while reusing prepared infrastructure and
-images. `reset` deletes its test Namespaces and replaces its database; `down`
-removes its cluster and PostgreSQL resources. Do not use these commands to
-upgrade or preserve a demo. See the [demo lifecycle](../../testing/kubernetes.md#develop-with-local-containers-and-k3d).
+creates its own topology. The production upgrade script cannot upgrade
+that demo. Ctrl-C, `reset` and `down` remove or replace its resources; never use
+them to upgrade or preserve one. See the [demo lifecycle](../../testing/kubernetes.md#develop-with-local-containers-and-k3d).
 
 ## Prepare the existing installation
 
@@ -59,7 +56,8 @@ upgrade or preserve a demo. See the [demo lifecycle](../../testing/kubernetes.md
 - If the bundled Collector is enabled, including the [observability demo](../observability/demo.md)'s
   `occ-demo-collector-config`, [refresh the Secret named by `logging.collector.configSecretName`](../observability.md#refresh-the-collector-configuration-on-upgrade)
   from the `RELEASE_SOURCE_SHA` checkout and restart the Collector. Helm does not
-  update it, and the script stops while it differs from that checkout.
+  update it. Differences in `collector.yaml` or `kubernetes.yaml` stop preparation.
+  Use `--collector-config-reviewed` only for intentional, reviewed differences.
 
 From a secure operator shell, replace placeholders with the existing paths and
 names. The evidence parent must exist; the final directory must be new.
@@ -79,24 +77,64 @@ export OCC_CA_BUNDLE='/secure/occ/occ-ca.pem' # omit if the system trust store i
 export UPGRADE_EVIDENCE="/secure/occ/upgrades/$(date -u +%Y%m%dT%H%M%SZ)"
 ```
 
-If the retained YAML is unavailable, set `VALUES` and `INSTALLATION` to new,
-protected paths before recovering the live values and Secret below. Do not
-overwrite retained files. Compare the recovered files with the operator's
-records; do not substitute fresh example templates.
+For missing YAML, recover to unused, protected `VALUES`/`INSTALLATION` paths.
+Resolve errors before retrying. Validate Installation
+separately. Compare both files with operator records; never use example templates.
 
 ```bash
-helm --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
-  --namespace "$NAMESPACE" get values "$RELEASE" --output yaml > "$VALUES"
-export INSTALLATION_SECRET="$(yq -er '.installation.secretName // "occ-installation-startup"' "$VALUES")"
-export INSTALLATION_KEY="$(yq -er '.installation.key // "installation.yaml"' "$VALUES")"
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  --namespace "$NAMESPACE" get secret "$INSTALLATION_SECRET" -o json |
-  jq -er --arg key "$INSTALLATION_KEY" '.data[$key]' |
-  python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.buffer.read()))' > "$INSTALLATION"
-chmod 600 "$VALUES" "$INSTALLATION"
+(
+  set +x
+  set -o pipefail
+  umask 077
+  fail() { echo "$1" >&2; exit 1; }
+  mapping() {
+    [ -s "$1" ] && yq ea --header-preprocess=false -e '[.] | select(length == 1) | .[0] | tag == "!!map"' "$1" &>/dev/null
+  }
+  setting() {
+    yq -o=json "$1"' | select(tag == "!!str" or tag == "!!null")' "$values_stage" 2>/dev/null
+  }
+  [ ! -e "$VALUES" ] && [ ! -L "$VALUES" ] &&
+    [ ! -e "$INSTALLATION" ] && [ ! -L "$INSTALLATION" ] ||
+    fail "Choose unused output paths."
+  values_stage=$(mktemp "${VALUES}.XXXXXX") || fail "Values staging failed."
+  installation_stage=''
+  trap 'rm -f -- "$values_stage"; [ -z "$installation_stage" ] || rm -f -- "$installation_stage"' EXIT
+  installation_stage=$(mktemp "${INSTALLATION}.XXXXXX") || fail "Installation staging failed."
+
+  helm --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
+    --namespace "$NAMESPACE" get values "$RELEASE" --output yaml > "$values_stage" 2>/dev/null ||
+    fail "Helm read failed; check release, context, permissions."
+  mapping "$values_stage" || fail "Helm YAML: require one mapping."
+  INSTALLATION_SECRET=$(setting '.installation.secretName' |
+    jq -er 'if . == null then "occ-installation-startup" else . end |
+      select(length <= 253 and
+      test("\\A[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*\\z"))' 2>/dev/null) &&
+    INSTALLATION_KEY=$(setting '.installation.key' |
+      jq -er 'if . == null then "installation.yaml" else . end |
+        select(. != "." and (startswith("..") | not)) |
+        select(length > 0 and length <= 253 and
+        test("\\A[-._a-zA-Z0-9]+\\z"))' 2>/dev/null) &&
+    test -n "$INSTALLATION_SECRET" && test -n "$INSTALLATION_KEY" ||
+    fail "Invalid Secret name/key; correct Helm values."
+
+  secret_json=$(kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
+    --namespace "$NAMESPACE" get secret "$INSTALLATION_SECRET" -o json 2>/dev/null) ||
+    fail "Secret read failed; check name, namespace, permissions."
+  installation_data=$(printf '%s' "$secret_json" |
+    jq -er --arg key "$INSTALLATION_KEY" '.data[$key] | select(type == "string" and length > 0)' 2>/dev/null) &&
+    [ -n "$installation_data" ] || fail "Missing/invalid Secret data; check configured key."
+  printf '%s' "$installation_data" |
+    python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.buffer.read(), validate=True))' > "$installation_stage" 2>/dev/null ||
+    fail "Decode failed; correct Secret base64 data."
+  mapping "$installation_stage" || fail "Installation YAML: require one mapping."
+
+  ln -- "$values_stage" "$VALUES" || fail "Values publication failed."
+  ln -- "$installation_stage" "$INSTALLATION" ||
+    { rm -f -- "$VALUES"; fail "Installation publication failed."; }
+)
 ```
 
-Record the Installation ID, Agent inventory, PVC UIDs and bound volume names:
+Record the Installation ID, Agents, PVC UIDs and bound volumes:
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" get --raw=/readyz
@@ -110,8 +148,8 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
 ```
 
 The first command returns `ok`, Helm reports the release, and OCC authenticates.
-For a runtime upgrade, also save `occ --output json installation deployment-inventory`
-before and after the change; that operation requires the runtime upgrade permissions.
+For every upgrade, save `occ --output json installation deployment-inventory`
+before and after the change using the [required inventory permissions](production-upgrade.md#prepare-the-release).
 Keep inventories private. Check data and backups with the database and storage
 owners; object names alone do not prove retention.
 
@@ -241,16 +279,27 @@ registry index digests can differ.
 
 ## Run the upgrade
 
-Use a separate clean checkout at `RELEASE_SOURCE_SHA`, with its chart and upgrade
-script, and a compatible installed `occ` CLI. From that checkout confirm
-`git rev-parse HEAD` equals `RELEASE_SOURCE_SHA`. If that source does not
-contain the upgrade script, stop; this procedure cannot be run from it. Do not
-overwrite a working checkout. Install `helm`, `kubectl`, `jq`, `yq` v4, and
-Python 3. Use a fresh
+Use a separate clean checkout at `RELEASE_SOURCE_SHA`, with its chart, upgrade
+script, and a compatible installed `occ` CLI. Confirm
+`git rev-parse HEAD` equals `RELEASE_SOURCE_SHA`. Stop if the upgrade script is missing. Do not
+overwrite a working checkout. Install Node.js, `helm`, `kubectl`, `jq`, `yq` v4,
+and Python 3. Follow `engines.node` in this checkout's `package.json` even without
+repository credentials. Use a fresh
 `UPGRADE_EVIDENCE` directory for each new release; retain it when resuming an
 interrupted release. The script changes the protected
 input files as well as the cluster; it saves their previous contents in that
 private evidence directory before cluster mutation.
+
+Older `dev-up` installations set `agentNativeAdmin.sharedCookieDomain`,
+which the chart refuses; pass a copy without it:
+
+```bash
+CANDIDATE_ARGS=()
+if [[ "$(yq '.agentNativeAdmin | has("sharedCookieDomain")' "$VALUES")" == true ]]; then
+  (umask 077; yq 'del(.agentNativeAdmin.sharedCookieDomain)' "$VALUES" > /secure/occ/candidate-values.yaml)
+  CANDIDATE_ARGS=(--candidate-values /secure/occ/candidate-values.yaml)
+fi
+```
 
 Choose exactly one invocation below. Both options together perform a combined
 release; omitting one leaves that image selection unchanged.
@@ -262,7 +311,7 @@ scripts/upgrade-production-images \
   --namespace "$NAMESPACE" --release "$RELEASE" \
   --values "$VALUES" --installation "$INSTALLATION" \
   --source-revision "$RELEASE_SOURCE_SHA" --evidence-dir "$UPGRADE_EVIDENCE" \
-  --controller-image "$CONTROLLER_IMAGE" "${BROKER_ARGS[@]}"
+  --controller-image "$CONTROLLER_IMAGE" "${BROKER_ARGS[@]}" "${CANDIDATE_ARGS[@]}"
 
 # Runtime only: use a fresh UPGRADE_EVIDENCE for a new release.
 scripts/upgrade-production-images \
@@ -270,7 +319,7 @@ scripts/upgrade-production-images \
   --namespace "$NAMESPACE" --release "$RELEASE" \
   --values "$VALUES" --installation "$INSTALLATION" \
   --source-revision "$RELEASE_SOURCE_SHA" --evidence-dir "$UPGRADE_EVIDENCE" \
-  --runtime-image "$RUNTIME_IMAGE" "${RUNTIME_REPOSITORY_ARGS[@]}"
+  --runtime-image "$RUNTIME_IMAGE" "${RUNTIME_REPOSITORY_ARGS[@]}" "${CANDIDATE_ARGS[@]}"
 
 # Combined: use a fresh UPGRADE_EVIDENCE for a new release.
 scripts/upgrade-production-images \
@@ -279,7 +328,7 @@ scripts/upgrade-production-images \
   --values "$VALUES" --installation "$INSTALLATION" \
   --source-revision "$RELEASE_SOURCE_SHA" --evidence-dir "$UPGRADE_EVIDENCE" \
   --controller-image "$CONTROLLER_IMAGE" --runtime-image "$RUNTIME_IMAGE" \
-  "${BROKER_ARGS[@]}"
+  "${BROKER_ARGS[@]}" "${CANDIDATE_ARGS[@]}"
 ```
 
 The helper stops the API and worker and waits for their Pods to terminate. Helm
@@ -354,3 +403,8 @@ already created a version. Check compatibility before selecting an older image
 or restoring state, and follow [partial-failure recovery](production-upgrade-recovery.md).
 Do not delete the cluster, database volume, Namespaces, Agents, versions,
 Secrets, bootstrap volume, or Agent PVCs to force an upgrade or recovery.
+
+## Rehearse a compatible controller return
+
+Use the [populated controller return rehearsal](../../testing/populated-controller-return.md)
+to check a compatible release pair with a disposable installation and database.

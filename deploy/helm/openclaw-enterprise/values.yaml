@@ -37,6 +37,10 @@ logging:
       sizeLimit: 64Mi
 
 installation:
+  # Set by occ installation install to bind retained initialization evidence.
+  attemptId: ""
+  # Set by upgrade-production-images for one actual Helm submission.
+  upgradeAttemptId: ""
   name: openclaw-enterprise
   secretName: occ-installation-startup
   key: installation.yaml
@@ -45,37 +49,16 @@ auth:
   baseUrl: ""
   secretName: occ-auth
   secretKey: secret
-  # Existing local password administrator's user ID. Required with auth.github,
-  # auth.google or auth.oidc; it designates the recovery account when the API first starts with
+  # Existing local password administrator's user ID. Required with auth.google or auth.oidc; it designates the recovery account when the API first starts with
   # external sign-in.
   recoveryUserId: ""
-  # Who may sign in with a password once auth.github, auth.google or auth.oidc is enabled:
+  # Who may sign in with a password once auth.google or auth.oidc is enabled:
   # "all" (every enrolled account) or "recovery-only" (only the recovery account; everyone
   # else uses an external provider). Attach every ordinary account's external identity first:
   # accounts without one cannot sign in until an administrator attaches it.
   passwordSignIn: all
-  # Optional GitHub browser sign-in for existing password accounts (API Pod only).
-  # Needs an HTTPS baseUrl, auth.recoveryUserId and agentNativeAdmin.enabled: false.
-  # Create the dedicated Secret first.
-  github:
-    enabled: false
-    secretName: occ-github-login
-    clientIdKey: client-id
-    clientSecretKey: client-secret
-    # Optional allowlist (RFC-0061): GitHub organization logins, and "org/team-slug" entries,
-    # whose active members may sign in; at most 10 entries together. Empty admits any
-    # attached GitHub identity. Set, the GitHub App needs the organization permission
-    # Members: read and an installation on each listed organization; sign-in fails closed
-    # when GitHub cannot answer the membership lookup.
-    allowedOrgs: []
-    allowedTeams: []
-    # API Pod HTTPS egress for github.com and api.github.com. Empty allows TCP 443 to any
-    # address except link-local 169.254.0.0/16; list the web and api IPv4 ranges from
-    # api.github.com/meta to narrow it.
-    egressCidrs: []
-  # Optional Google sign-in (OpenID Connect) for existing password accounts (API Pod
-  # only). Same requirements as auth.github; its Secret must differ from auth.github's.
-  # Create the dedicated Secret first.
+  # Optional Google sign-in for existing accounts (API Pod only).
+  # Requires HTTPS, a recovery account and a dedicated operator-created Secret.
   google:
     enabled: false
     secretName: occ-google-login
@@ -90,8 +73,8 @@ auth:
     # an egress proxy.
     egressCidrs: []
   # Optional generic OpenID Connect sign-in (Keycloak, Okta, Entra ID, Auth0) for
-  # existing password accounts (API Pod only). Same requirements as auth.github; its
-  # Secret must differ from auth.github's and auth.google's. Copy issuer and the three URLs
+  # existing password accounts (API Pod only). Requires HTTPS and a recovery account. Its
+  # Secret must differ from auth.google's. Copy issuer and the three URLs
   # from the IdP's discovery document: each must be https on port 443 on the issuer's
   # host, with no query or fragment. The API never runs discovery.
   oidc:
@@ -120,11 +103,13 @@ auth:
     egressCidrs: []
 
 agentNativeAdmin:
+  # Agent DNS suffix: at most 214 characters, reserving the per-Agent host prefix.
   enabled: false
+  # host-only-exchange is an explicit opt-in for guarded OIDC sign-in.
+  sessionMode: shared-cookie
+  # Required even when browser access is disabled; shares a non-public DNS suffix
+  # with auth.baseUrl for automatically scoped browser session cookies.
   domain: ""
-  # Must not be a public suffix such as co.uk or github.io. Helm has no public suffix
-  # list: the installation profile renderer and API startup refuse one.
-  sharedCookieDomain: ""
 
 # Console and API runtime status and container log reads (Agent administer for text).
 # Grants pods/log get and events get,list to the tenant API and Gateway observer roles
@@ -247,6 +232,8 @@ database:
   secretName: occ-database
   appUrlKey: application-url
   migrationUrlKey: migration-url
+  # On upgrade, separate requires the candidate schema before Helm can replace services.
+  upgradeMigration: hook
   # Public CA trust; may share a Secret with the other CA settings, not secretName.
   caSecretName: ""
   caKey: ca.pem

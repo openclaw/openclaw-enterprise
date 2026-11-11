@@ -54,7 +54,8 @@ Harness configuration selects the Agent's execution topology:
 
 - **Embedded:** OpenClaw runs the gateway and Harness in one Pod. It accepts
   an Agent-scoped model API key, uses `openai/` models, and does not require
-  shared storage.
+  shared storage. For custom OpenAI-compatible HTTPS endpoints, see
+  [model provider configuration](kubernetes-compute/model-provider.md).
 - **Dedicated:** The gateway and Codex Harness run in separate Pods in the same
   tenant namespace, with separate ServiceAccounts and storage. They communicate through
   authenticated app-server transport. The Gateway uses fully qualified Harness
@@ -71,7 +72,8 @@ Harness configuration selects the Agent's execution topology:
   selection. A missing or disconnected Harness fails the turn without gateway
   inference fallback. Explicit `openai/` models require complete API,
   token-limit, input, reasoning, and cost metadata. Custom endpoints require
-  endpoint-bound `credential_source` authentication and HTTPS on port 443 ending
+  the [shared provider](kubernetes-compute/model-provider.md), endpoint-bound
+  `credential_source` authentication and HTTPS on port 443 ending
   in `/v1`. Secret-backed keys require `https://api.openai.com/v1`. Model URLs
   reject credentials, queries, fragments and wildcards.
 
@@ -142,9 +144,9 @@ model turn.
 
 ### Sandbox provisioning
 
-With OpenShell sandboxing, the optional `SandboxDriver.ensureNamespace`
-hook uses Compute's Kubernetes access directly, without a separate
-SandboxDriver Kubernetes access adapter. The hook applies approved
+With OpenShell sandboxing, composition adapts `SandboxDriver.ensureNamespace`
+to OCC Namespace lifecycle hooks. Compute resolves the exact backing namespace
+and selected Kubernetes client without calling Sandbox. The hook applies approved
 namespace-scoped OpenShell labels and NetworkPolicy resources, checks OpenShell
 gateway readiness, and creates or adopts the Namespace Workspace. Harness
 provisioning and cleanup follow the [SandboxDriver lifecycle](sandbox.md#admission-and-lifecycle):
@@ -228,7 +230,7 @@ See [authentication](kubernetes-compute/configuration.md#authentication) and
   Native workspace initialization uses `resources.gateway`, including in dedicated
   Harness Pods, because it loads the OpenClaw CLI.
 - For real gateways in either topology, an explicitly selected
-  `runtime.gatewayStorageClassName` for a private disk supporting `10Gi`
+  `runtime.gatewayStorageClassName` for a private disk supporting the configured Gateway capacity
   `ReadWriteOnce` filesystem claims (`local-path` in the disposable k3d suite).
   Check the [gateway disk requirements](kubernetes-compute/storage-and-credentials.md#gateway-storage)
   before selecting a production StorageClass.
@@ -272,7 +274,11 @@ before replacing the controller images.
   [network profile](kubernetes-compute/networking-and-isolation.md#explicit-network-profiles)
   label. Private HTTP readiness returns `503` until native, plugin,
   authentication, or identity gates pass. Dedicated Codex clears its plugin
-  marker at process start to reject stale readiness. Access-token login retries timeouts,
+  marker at process start to reject stale readiness. For Compute-owned Harnesses, resident HTTP `GET /readyz`
+  requires a successful loopback app-server `initialize` response. It creates no
+  thread or model turn. The resident RPC check has a two-second internal deadline;
+  Kubernetes retains its one-second default HTTP-probe timeout. This does not
+  verify the Gateway's network path to the Harness. Access-token login retries timeouts,
   `network` and `http_5xx` failures: five attempts, 90 seconds. Exhausted startup remains unready
   until an explicit restart; see the
   [authentication probe contract](../harness-execution.md#harness-authentication)
@@ -282,9 +288,18 @@ before replacing the controller images.
   reports a verified current-startup warning for an admitted selected plugin.
 - **Check `gateway-config` fails:** See
   [configuration OpenClaw refuses](kubernetes-compute/managed-native-configuration.md#configuration-openclaw-refuses-at-startup).
+- **`RUNTIME_STARTUP_FAILED` with a container in `CrashLoopBackOff`:** A live
+  Pod's `gateway` container, or a Deployment-run `agent` container, exited 3
+  times in a row without a deliberate restart (internal check `crash-loop`).
+  The Gateway wrapper exits 75 and logs startup phase `container-restart` when
+  it restarts its container on purpose; those restarts never count, and readiness
+  resets the count. Without the wrapper's count (a Harness, or an older Pod),
+  restart count 2 in backoff is the third exit. `occ agent runtime` shows the
+  restart count and last exit code; `occ agent logs --previous` shows the
+  crashed container's output.
 - **Gateway storage is pending or rejected:** Check the configured
-  `runtime.gatewayStorageClassName`, available `10Gi` capacity, filesystem
-  support, worker PVC permissions, and the PVC's exact ownership. Preserve
+  `runtime.gatewayStorageClassName`, available space for the configured Gateway
+  capacity, filesystem support, worker PVC permissions, and the PVC's exact ownership. Preserve
   data when resolving an incompatible or foreign claim; the driver does not
   adopt or convert it.
 - **Dedicated Harness cannot start:** Verify the default StorageClass supports

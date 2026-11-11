@@ -1,3 +1,4 @@
+import { preparationIdentity, readRuntimeProvenance } from "./runtime-provenance.mjs";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -377,6 +378,11 @@ export async function captureK3dDiagnostics({
   const k3dCreateOutput = k3dOutputExcerpt(k3dOutput);
   const report = {
     capturedAt: new Date().toISOString(),
+    preparationId: preparationIdentity(cluster.owner),
+    runtimeProvenance: await readRuntimeProvenance(statePath, {
+      lane,
+      preparationId: preparationIdentity(cluster.owner),
+    }),
     lane,
     cluster: cluster.name,
     ...(failure ? { failure } : {}),
@@ -457,7 +463,7 @@ function compareEventTimestamps(left, right) {
 // transitions for Compute-managed Pods and the Kubernetes events of the
 // namespaces that ran them. Pod specs, environments and credential-bearing
 // event lines are never retained.
-export function projectAgentNamespaceActivity(eventsText, podsText) {
+export function projectAgentNamespaceActivity(eventsText, podsText, secrets = []) {
   const namespaces = new Set();
   const pods = [];
   const lastByPod = new Map();
@@ -483,7 +489,7 @@ export function projectAgentNamespaceActivity(eventsText, podsText) {
     }
     // Later watch records for the same event carry its updated count.
     events.set(object.metadata.uid ?? `${namespace}/${object.metadata.name}`, {
-      ...eventStatus(object),
+      ...eventStatus(object, secrets),
       namespace,
     });
   }
@@ -511,14 +517,21 @@ const MAX_CONTAINER_LOG_INPUT_BYTES = 4 * 1024 * 1024;
 const CONTAINER_LOG_LINES = 1_500;
 const CONTAINER_LOG_LINE_CHARS = 1_000;
 
-function eventStatus(object) {
+function eventStatus(object, secrets = []) {
   return {
     namespace: object.metadata?.namespace ?? object.involvedObject?.namespace,
     kind: object.involvedObject?.kind,
     name: object.involvedObject?.name,
     type: object.type,
     reason: object.reason,
-    message: safeText(object.message)?.slice(0, 512),
+    // Mask whole multiline keys and registered values before the publication limit.
+    message:
+      typeof object.message === "string"
+        ? maskPrivateKeyLines(object.message.split("\n"))
+            .map((line) => redactLogLine(redactCredentialLine(line), secrets, 512))
+            .join("\n")
+            .slice(0, 512)
+        : undefined,
     count: object.series?.count ?? object.count,
     firstTimestamp: object.firstTimestamp ?? object.eventTime,
     lastTimestamp: eventObservedTime(object),
@@ -597,8 +610,7 @@ export function projectContainerLog(value, secrets = []) {
         events: (Array.isArray(snapshot.events) ? snapshot.events : [])
           .filter(record)
           .map((event) => {
-            const status = eventStatus(event);
-            return { ...status, message: text(status.message, 512) };
+            return eventStatus(event, secrets);
           })
           .sort(compareEventTimestamps)
           .slice(-MAX_ACTIVITY_RECORDS),
@@ -690,10 +702,13 @@ async function stopWatch(child) {
  * projection to the report's `containerLogs`. Pass the child's environment as
  * `finish({ env })` so its prepared secrets are redacted too.
  */
-export async function startAgentNamespaceCapture({ statePath, lane, file }) {
+export async function startAgentNamespaceCapture({ statePath, lane, file, preparationId }) {
   let clusters;
   try {
     const state = JSON.parse(await readFile(statePath, "utf8"));
+    if (state.lane !== lane || preparationIdentity(state.prefix) !== preparationId) {
+      return undefined;
+    }
     clusters = (state.resources ?? []).filter(
       (resource) =>
         resource.kind === "k3d-cluster" &&
@@ -772,6 +787,7 @@ export async function startAgentNamespaceCapture({ statePath, lane, file }) {
           const activity = projectAgentNamespaceActivity(
             await readWatchTail(paths.events),
             await readWatchTail(paths.pods),
+            failureSecrets([process.env, env]),
           );
           await Promise.all(Object.values(paths).map((path) => rm(path, { force: true })));
           if (activity.namespaces.length > 0) {
@@ -797,12 +813,18 @@ export async function startAgentNamespaceCapture({ statePath, lane, file }) {
           return;
         }
         const diagnosticsPath = `${statePath}.diagnostics.json`;
-        let report = { lane };
+        let report = { lane, preparationId };
         try {
-          report = JSON.parse(await readFile(diagnosticsPath, "utf8"));
+          const previous = JSON.parse(await readFile(diagnosticsPath, "utf8"));
+          if (previous.lane === lane && previous.preparationId === preparationId) {
+            report = previous;
+          }
         } catch {
           // The first passing file starts the report.
         }
+        report.runtimeProvenance =
+          (await readRuntimeProvenance(statePath, { lane, preparationId })) ??
+          report.runtimeProvenance;
         if (captured.length > 0) {
           report.agentNamespaces = [...(report.agentNamespaces ?? []), ...captured].slice(
             -MAX_ACTIVITY_FILES,

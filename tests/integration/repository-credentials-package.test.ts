@@ -2,9 +2,17 @@
 
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
-import { request } from "node:http";
+import { createServer, request } from "node:http";
+import { once } from "node:events";
+import { buffer } from "node:stream/consumers";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { startGitHubFixture } from "../fixtures/repository-credentials/github.mjs";
+import { loadGitHubRepositoryRegistry } from "../../apps/controller/src/composition/repository-credentials/registry.ts";
+import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import { callControl } from "../../apps/controller/src/drivers/repo/github/access/client/operator.ts";
+import type { OperationReceipt } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import { request as requestHttps } from "node:https";
 import { syncBuiltinESMExports } from "node:module";
 import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service.mjs";
@@ -34,13 +42,13 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
 import { credentialClientPath } from "../fixtures/repository-credentials/runtime.mjs";
-import type { RuntimeRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/credentials/client/manifest.ts";
-import type { ClientFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
+import type { RuntimeRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/access/client/manifest.ts";
+import type { ClientFiles } from "../../apps/controller/src/drivers/repo/github/access/client/config.ts";
 import type {
   SafeConfigurationSummary,
   SessionStatus,
   ShutdownSummary,
-} from "../../apps/controller/src/drivers/repo/credentials/service-contracts.ts";
+} from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 
 interface PortReservation {
   port: number;
@@ -103,14 +111,14 @@ test(
     assert.equal(built.status, 0, built.stdout + built.stderr);
     // Make the real emitted signer reachable under a new name. The package
     // builder must reject its authority rather than relying on a filename list.
-    const emittedCredentials = join(build, "apps/controller/dist/drivers/repo/github/credentials");
+    const emittedCredentials = join(build, "apps/controller/dist/drivers/repo/github/access");
     await cp(
       join(emittedCredentials, "material.js"),
       join(emittedCredentials, "package-issuer-control.js"),
     );
     await appendFile(
       join(build, "apps/controller/dist/repository-credentials.js"),
-      '\nimport "./drivers/repo/github/credentials/package-issuer-control.js";\n',
+      '\nimport "./drivers/repo/github/access/package-issuer-control.js";\n',
     );
     const issuerRejected = spawnSync(
       process.execPath,
@@ -120,7 +128,7 @@ test(
     assert.notEqual(issuerRejected.status, 0);
     assert.match(
       issuerRejected.stderr,
-      /Unsupported service cryptographic capability in drivers\/repo\/github\/credentials\/package-issuer-control\.js/,
+      /Unsupported service cryptographic capability in drivers\/repo\/github\/access\/package-issuer-control\.js/,
     );
     const artifact = join(build, ".build/repository-credentials/service");
     const runtime = join(temporary, "runtime");
@@ -145,7 +153,7 @@ test(
       "driver/retirement",
     ]) {
       assert.ok(
-        !emitted.includes(`drivers/repo/github/credentials/${module}.js`),
+        !emitted.includes(`drivers/repo/github/access/${module}.js`),
         `native package includes issuer module ${module}`,
       );
     }
@@ -161,16 +169,16 @@ test(
         .filter((path) => path.endsWith(".js"))
         .every(
           (path) =>
-            path.startsWith("drivers/repo/github/credentials/client/") ||
-            path === "drivers/repo/credentials/client-contracts.js",
+            path.startsWith("drivers/repo/github/access/client/") ||
+            path === "drivers/repo/access/client-contracts.js",
         ),
     );
-    assert.ok(clientModules.includes("drivers/repo/github/credentials/client/router.js"));
-    assert.ok(clientModules.includes("drivers/repo/github/credentials/client/draft-pr.js"));
-    assert.ok(clientModules.includes("drivers/repo/github/credentials/client/hook-dispatch.js"));
+    assert.ok(clientModules.includes("drivers/repo/github/access/client/router.js"));
+    assert.ok(clientModules.includes("drivers/repo/github/access/client/draft-pr.js"));
+    assert.ok(clientModules.includes("drivers/repo/github/access/client/hook-dispatch.js"));
     assert.equal(
-      (await lstat(join(client, "dist/drivers/repo/github/credentials/client/hooks/pre-push")))
-        .mode & 0o111,
+      (await lstat(join(client, "dist/drivers/repo/github/access/client/hooks/pre-push"))).mode &
+        0o111,
       0o111,
     );
     // Delete the emitted workspace and tooling links before starting either runtime.
@@ -204,8 +212,8 @@ test(
     await chmod(key, 0o600);
     await chmod(certificate, 0o644);
     // Hold the gateway port across the prepared and development process launches.
-    const serviceReservation: PortReservation = await reservePort();
-    t.after(serviceReservation.release);
+    let serviceReservation: PortReservation = await reservePort();
+    t.after(() => serviceReservation.release());
     const registryFile = join(temporary, "registry.json");
     await writeFile(
       registryFile,
@@ -225,8 +233,9 @@ test(
               {
                 namespaceId: "fixture",
                 profiles: ["git-write"],
-                transport: "git-only",
+                transport: "git-and-draft-pr",
                 pushRefAllowlist: ["refs/heads/agent-work"],
+                pullRequestBase: "main",
               },
             ],
           },
@@ -418,12 +427,104 @@ test(
         args.join(" "),
       );
     }
-    // The prepared entrypoint starts without development authority modules.
-    // A real protocol reply establishes completed startup before SIGTERM.
+    // Keep the guard active through admission, dispatch, settlement and receipt readback.
+    const forbiddenLoads = join(temporary, "forbidden-loads.log");
+    await writeFile(forbiddenLoads, "");
+    const githubOptions = {
+      clock: createControlledClock(),
+      repository: "example/project",
+      repositoryId: "789",
+    };
+    const github = await startGitHubFixture(t, githubOptions);
+    const preparedToken = `ghs_${"p".repeat(36)}`;
+    github.acceptStatic(preparedToken);
+    const registry = await loadGitHubRepositoryRegistry(registryFile, "github-fixture");
+    const selection = { namespaceId: "fixture", repositoryRef: "project", profile: "git-write" };
+    const binding = resolveGitHubRepositoryBinding(registry, selection).grant;
+    const operationId = randomUUID();
+    const admissionId = `${Date.now()}-${randomUUID()}`;
+    const admissionEvents: string[] = [];
+    let sessionId: string;
+    let exchangeId = "";
+    let digest: string;
+    let settlements = 0;
+    let readbacks = 0;
+    let receipt: OperationReceipt | undefined;
+    // Controlled owner protocols; the emitted application still owns every service operation.
+    const owner = createServer(async (incoming, response) => {
+      const use = JSON.parse((await buffer(incoming)).toString());
+      assert.equal(incoming.url, "/v1/prepared-git/use");
+      if (use.operation === "record-draft-pull") {
+        settlements++;
+        assert.equal(use.receiptId, exchangeId);
+        assert.equal(use.outcome.created.draft, true);
+        receipt = {
+          kind: "recorded",
+          status: 201,
+          body: { operationId, receiptId: exchangeId, ...use.outcome.created },
+        };
+      } else {
+        assert.equal(use.operation, "create-draft-pull");
+        assert.equal(use.sessionId, sessionId);
+        assert.equal(use.grantId, binding.grantId);
+        assert.equal(use.pull.operationId, operationId);
+        assert.match(use.requestDigestSha256, /^[0-9a-f]{64}$/);
+        if (receipt) {
+          readbacks++;
+          assert.equal(use.requestDigestSha256, digest);
+        } else {
+          exchangeId = use.exchangeId;
+          digest = use.requestDigestSha256;
+          response.writeHead(200, { "content-type": "application/json" }).end(
+            JSON.stringify({
+              exchangeId,
+              preparationAttemptId: "fixture-attempt",
+              materialVersion: "fixture-version",
+              sendStartBy: new Date(Date.now() + 5000).toISOString(),
+              value: preparedToken,
+            }),
+          );
+          return;
+        }
+      }
+      response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(receipt));
+    });
+    t.after(() => owner[Symbol.asyncDispose]());
+    owner.listen(join(sockets, "prepared-git-use.sock"));
+    await once(owner, "listening");
+    const journal = createServer(async (incoming, response) => {
+      const event = JSON.parse((await buffer(incoming)).toString());
+      assert.equal(incoming.url, "/v1/receipt");
+      assert.equal(event.admissionId, admissionId);
+      admissionEvents.push(event.kind);
+      if (event.kind === "bind") {
+        assert.deepEqual(event.status.binding, binding);
+      }
+      response.writeHead(200, { "content-type": "application/json" }).end(
+        JSON.stringify({
+          kind: event.kind === "reserve" ? "reserved" : "acknowledged",
+        }),
+      );
+    });
+    t.after(() => journal[Symbol.asyncDispose]());
+    journal.listen(join(sockets, "receipt.sock"));
+    await once(journal, "listening");
+    await writeFile(
+      configuration,
+      JSON.stringify({
+        ...preparedConfiguration,
+        backend: {
+          ...preparedConfiguration.backend,
+          apiOrigin: github.origin,
+          gitCaFile: github.tls.certFile,
+        },
+      }),
+      { mode: 0o600 },
+    );
     const preparedRuntime = join(temporary, "prepared-runtime");
     await cp(runtime, preparedRuntime, { recursive: true });
     for (const module of ["config.js", "factory.js", "driver.js", "static-token.js"]) {
-      await rm(join(preparedRuntime, "dist/drivers/repo/github/credentials", module));
+      await rm(join(preparedRuntime, "dist/drivers/repo/github/access", module));
     }
     const preparedService = spawn(
       process.execPath,
@@ -437,7 +538,11 @@ test(
       ],
       {
         cwd: preparedRuntime,
-        env: { PATH: process.env.PATH, CREDENTIAL_TEST_DEVELOPMENT: "0" },
+        env: {
+          PATH: process.env.PATH,
+          CREDENTIAL_TEST_DEVELOPMENT: "0",
+          CREDENTIAL_TEST_LOAD_RECEIPT: forbiddenLoads,
+        },
         stdio: ["ignore", "pipe", "pipe"],
         timeout: 15000,
         killSignal: "SIGKILL",
@@ -467,9 +572,107 @@ test(
         },
         { timeoutMs: 5000, intervalMs: 10 },
       );
+      await serviceReservation.release();
+      const opened = await callControl(
+        preparedConfiguration.gateway.controlSocket,
+        {
+          method: "POST",
+          path: "/v1/sessions",
+          body: {
+            ...selection,
+            durationSeconds: 30,
+            deadlineWallMs: Date.now() + 30000,
+            expectedBinding: binding,
+            durableAdmission: true,
+            preparedOnly: true,
+          },
+        },
+        admissionId,
+      );
+      assert.ok("bearer" in opened);
+      assert.deepEqual(opened.session.binding, binding);
+      sessionId = opened.session.sessionId;
+      assert.deepEqual(admissionEvents, ["reserve", "bind"]);
+      const send = () =>
+        new Promise<{ status: number | undefined; body: unknown }>((resolve, reject) => {
+          const outgoing = requestHttps(
+            {
+              hostname: "127.0.0.1",
+              servername: "credentials.example.test",
+              port: serviceReservation.port,
+              path: "/repos/example/project/pulls",
+              method: "POST",
+              ca: readCertificate,
+              agent: false,
+              signal: AbortSignal.timeout(5000),
+              headers: {
+                host: "credentials.example.test",
+                authorization: `Bearer ${opened.bearer}`,
+                "content-type": "application/json",
+                "x-oce-operation-id": operationId,
+              },
+            },
+            (response) => {
+              void buffer(response).then(
+                (bytes) =>
+                  resolve({ status: response.statusCode, body: JSON.parse(bytes.toString()) }),
+                reject,
+              );
+            },
+          );
+          outgoing.on("error", reject);
+          outgoing.end(
+            JSON.stringify({
+              title: "Packaged draft",
+              head: "agent-work",
+              base: "main",
+              draft: true,
+            }),
+          );
+        });
+      const readCertificate = await readFile(certificate);
+      const first = await send();
+      assert.equal(first.status, 201);
+      assert.deepEqual(first.body, {
+        operationId,
+        receiptId: exchangeId,
+        id: "1",
+        number: 1,
+        url: "https://github.com/example/project/pull/1",
+        state: "open",
+        draft: true,
+        head: { repositoryId: "789", ref: "agent-work", sha: "a".repeat(40) },
+        base: { repositoryId: "789", ref: "main", sha: "b".repeat(40) },
+      });
+      assert.equal(github.trace.length, 1);
+      assert.equal(settlements, 1);
+      assert.deepEqual(await send(), first);
+      assert.equal(readbacks, 1);
+      assert.equal(github.trace.length, 1, "receipt readback must not send again");
+      assert.equal(github.pulls.size, 1);
+      assert.equal(settlements, 1, "receipt readback must not settle again");
+      await callControl(preparedConfiguration.gateway.controlSocket, {
+        method: "POST",
+        path: `/v1/sessions/${sessionId}/close`,
+      });
+      serviceReservation = await reservePort({ port: serviceReservation.port });
       preparedService.kill("SIGTERM");
       assert.deepEqual(await preparedExit, { code: 0, signal: null });
-      assert.equal(preparedOutput.includes(token), false);
+      assert.equal(
+        await readFile(forbiddenLoads, "utf8"),
+        "guard-active\n",
+        "prepared process attempted forbidden loads",
+      );
+      assert.equal(
+        preparedOutput.includes(preparedToken),
+        false,
+        "prepared process output exposed the provider credential",
+      );
+      assert.equal(
+        preparedOutput.includes(opened.bearer),
+        false,
+        "prepared process output exposed the session bearer",
+      );
     } finally {
       if (preparedService.exitCode === null && preparedService.signalCode === null) {
         preparedService.kill("SIGKILL");
@@ -539,7 +742,7 @@ test(
       );
       // The control socket is bound after the gateway port, so the hold can end.
       await serviceReservation.release();
-      const clientRoot = join(client, "dist/drivers/repo/github/credentials/client");
+      const clientRoot = join(client, "dist/drivers/repo/github/access/client");
       const invoke = (entrypoint: string, args: string[], input?: string) =>
         spawnSync(process.execPath, [join(clientRoot, entrypoint), ...args], {
           cwd: client,
@@ -689,6 +892,20 @@ test(
       const deniedPush = await invokeHook("refs/heads/main");
       assert.equal(deniedPush.status, 1);
       assert.match(deniedPush.stderr, /repository-push-ref-not-allowed/);
+      // Relocated packages must resolve a linked wrapper from its installed location,
+      // even after the build tree and its dependency graph have been removed.
+      await symlink(
+        relative(checkout, join(client, "dist/drivers/repo/github/access/client/hooks/pre-push")),
+        join(checkout, "managed-hook"),
+      );
+      await symlink("../../managed-hook", join(checkout, ".git/hooks/pre-push"));
+      const recursiveHook = await invokeHook("refs/heads/agent/allowed");
+      assert.equal(recursiveHook.status, 1);
+      assert.equal(recursiveHook.stdout, "");
+      assert.equal(
+        recursiveHook.stderr,
+        "repository-hook-failed: pre-push: recursive-repository-hook\n",
+      );
       // An unsupported command must reach the router's public error boundary;
       // a missing router or import cannot satisfy this detached-entrypoint check.
       const rejected = invoke("router.js", ["git", "status"]);
@@ -751,20 +968,20 @@ test("credential artifact builder rejects dependencies outside its emitted closu
     { recursive: true },
   );
   await symlink(join(root, "node_modules"), join(temporary, "node_modules"));
-  const clientEntry = join(emitted, "drivers/repo/github/credentials/client/launch.js");
+  const clientEntry = join(emitted, "drivers/repo/github/access/client/launch.js");
   for (const path of [
     join(emitted, "repository-credentials.js"),
     entrypoint,
     join(emitted, "composition/repository-credentials/projected-inputs.js"),
     join(emitted, "composition/repository-credentials/probe.js"),
-    join(emitted, "drivers/repo/github/credentials/client/router.js"),
+    join(emitted, "drivers/repo/github/access/client/router.js"),
     clientEntry,
-    join(emitted, "drivers/repo/github/credentials/client/operator.js"),
-    join(emitted, "drivers/repo/github/credentials/client/git-helper.js"),
-    join(emitted, "drivers/repo/github/credentials/client/draft-pr.js"),
-    join(emitted, "drivers/repo/github/credentials/client/native-git.js"),
-    join(emitted, "drivers/repo/github/credentials/client/hook-dispatch.js"),
-    join(emitted, "drivers/repo/github/credentials/client/router.js"),
+    join(emitted, "drivers/repo/github/access/client/operator.js"),
+    join(emitted, "drivers/repo/github/access/client/git-helper.js"),
+    join(emitted, "drivers/repo/github/access/client/draft-pr.js"),
+    join(emitted, "drivers/repo/github/access/client/native-git.js"),
+    join(emitted, "drivers/repo/github/access/client/hook-dispatch.js"),
+    join(emitted, "drivers/repo/github/access/client/router.js"),
   ]) {
     await mkdir(join(path, ".."), { recursive: true });
     await writeFile(path, "export {};\n");
@@ -862,7 +1079,7 @@ test("emitted credential Docker contexts contain only staged runtime inputs", as
               (name === "client" &&
                 hooks.includes(file.name) &&
                 relative(join(context, "dist"), file.parentPath) ===
-                  "drivers/repo/github/credentials/client/hooks"))),
+                  "drivers/repo/github/access/client/hooks"))),
       ),
       "runtime contexts exclude declarations, source maps, compiler state and linked inputs",
     );

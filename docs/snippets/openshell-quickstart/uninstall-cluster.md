@@ -4,10 +4,11 @@ published: false
 
 ## Remove the Installation
 
-Keep the saved session and complete [Delete Agent](quickstart-delete-agent.md) first. Verify that this dedicated quickstart installation has no other Agents to retain. The following removes the recorded OCE release and the OpenShell release installed for it:
+From the checkout containing these instructions, keep the saved session and complete [Delete Agent](quickstart-delete-agent.md) first. Verify that this dedicated quickstart installation has no other Agents to retain. The following removes the recorded OCE release and the OpenShell release installed for it:
 
 ```bash
 source /path/to/private/run/session.sh
+source docs/snippets/openshell-quickstart/platform-kubernetes.sh
 helm --kubeconfig "$KUBECONFIG" --kube-context "$CONTEXT" -n "$PLATFORM_NS" list
 helm --kubeconfig "$KUBECONFIG" --kube-context "$CONTEXT" -n "$PLATFORM_NS" uninstall "$RELEASE"
 helm --kubeconfig "$KUBECONFIG" --kube-context "$CONTEXT" -n "$PLATFORM_NS" uninstall openshell-gateway
@@ -16,12 +17,11 @@ kube -n "$PLATFORM_NS" delete configmap oce-owner-listener --ignore-not-found
 kube -n "$PLATFORM_NS" delete secret oce-owner-browser-tls --ignore-not-found
 ```
 
-Stop the laptop port-forward. Remove the quickstart network policies recorded by setup and Add Git, if those files exist:
+Stop the laptop port-forward. For each run directory used by this installation, source its session and the checkout’s platform helper as above, then run `delete_service_peers`. It removes every service policy set recorded before deployment or Add Git applied it. In the setup session, also remove the listener and bootstrap policies:
 
 ```bash
-for policy_file in "$RUN_DIR/agent-service-peers.json" "$RUN_DIR/protected-service-peers.json" "$RUN_DIR/listener.json"; do
-  if [[ -f $policy_file ]]; then kube delete -f "$policy_file" --ignore-not-found; fi
-done
+delete_service_peers
+if [[ -f $RUN_DIR/listener.json ]]; then kube delete -f "$RUN_DIR/listener.json" --ignore-not-found; fi
 kube -n "$PLATFORM_NS" delete networkpolicy oce-initialization-dns-vip oce-controller-openshell-management --ignore-not-found
 ```
 

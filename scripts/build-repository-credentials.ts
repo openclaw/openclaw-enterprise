@@ -16,8 +16,8 @@ const clientOnly = options[0] === "--client-only";
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const emittedRoot = await realpath(join(repositoryRoot, "apps/controller/dist"));
 const artifactRoot = join(repositoryRoot, ".build/repository-credentials");
-const clientRoot = join(emittedRoot, "drivers/repo/github/credentials/client");
-const clientContracts = join(emittedRoot, "drivers/repo/credentials/client-contracts.js");
+const clientRoot = join(emittedRoot, "drivers/repo/github/access/client");
+const clientContracts = join(emittedRoot, "drivers/repo/access/client-contracts.js");
 // The sender needs hashing, random identifiers and certificate inspection, but
 // signing belongs to the worker. Keep this independent of module filenames.
 const serviceCryptoImports = new Set([
@@ -193,7 +193,7 @@ const service = clientOnly
 const client = await closure(
   "client",
   ["launch", "operator", "git-helper", "native-git", "draft-pr", "router", "hook-dispatch"].map(
-    (name) => `drivers/repo/github/credentials/client/${name}.js`,
+    (name) => `drivers/repo/github/access/client/${name}.js`,
   ),
 );
 
@@ -229,12 +229,18 @@ async function stage(name: Runtime, files: ReadonlyMap<string, string>) {
     ) {
       throw new Error("Invalid native Git hook inventory");
     }
-    const directory = join(destination, "dist/drivers/repo/github/credentials/client/hooks");
+    const directory = join(destination, "dist/drivers/repo/github/access/client/hooks");
     await mkdir(directory, { recursive: true });
     for (const hook of hooks) {
       await writeFile(
         join(directory, hook),
-        '#!/bin/sh\nexec node "$(dirname "$0")/../hook-dispatch.js" ' + hook + ' "$@"\n',
+        `#!/usr/bin/env node
+import { fileURLToPath } from "node:url";
+
+const dispatcher = new URL("../hook-dispatch.js", import.meta.url);
+process.argv.splice(1, 1, fileURLToPath(dispatcher), ${JSON.stringify(hook)});
+await import(dispatcher.href);
+`,
         { mode: 0o755 },
       );
       await chmod(join(directory, hook), 0o755);

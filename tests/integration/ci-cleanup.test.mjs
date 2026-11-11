@@ -7,10 +7,11 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+import { cleanupState, deleteOwnedK3dCluster } from "../../scripts/ci/cleanup.mjs";
 import { restoreLaneImages } from "../../scripts/ci/lane-images.ts";
 import { postgresSuperuserPassword, runPostgresAdmin } from "../../scripts/ci/postgres-admin.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.ts";
-import { commandCalls, writeCommand } from "../helpers/fake-commands.mjs";
+import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
 import { startFakePostgres } from "../helpers/fake-postgres-server.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -489,6 +490,12 @@ test("cleanup continues after a failed database drop and retains only the failed
   );
   const statePath = join(root, "state.json");
   const state = failedDropState(postgres.port);
+  const directory = join(root, `${state.resources[0].name}-bootstrap`);
+  await mkdir(directory);
+  await writeFile(join(directory, "init-local.sql"), "-- public bootstrap\n");
+  state.resources[0].directory = directory;
+  state.resources[0].directoryCreated = true;
+  state.resources[0].initSqlCreated = true;
   await writeState(statePath, state);
 
   const result = await runAsync(statePath, { OCC_DOCKER_BIN: docker });
@@ -511,7 +518,85 @@ test("cleanup continues after a failed database drop and retains only the failed
     resources: state.resources.filter(({ id }) => id === "database-1"),
   });
   assert.equal((await stat(statePath)).mode & 0o777, 0o600);
+  await assert.rejects(stat(directory), { code: "ENOENT" });
 });
+
+for (const location of ["unrelated-name", "matching-name-under-other-parent"]) {
+  test(`cleanup rejects a PostgreSQL bootstrap directory at ${location}`, async (t) => {
+    const root = await fixture(t);
+    const statePath = join(root, "state.json");
+    const state = failedDropState();
+    const directory =
+      location === "unrelated-name"
+        ? join(root, "unrelated-inputs")
+        : join(root, "other-parent", `${state.resources[0].name}-bootstrap`);
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "sentinel"), "unrelated content");
+    state.resources = [
+      { ...state.resources[0], directory, directoryCreated: true, initSqlCreated: true },
+    ];
+    await writeState(statePath, state);
+    const docker = await writeCommand(join(root, "bin"), "docker", "exit 0\n");
+
+    // A matching basename does not grant ownership of another directory.
+    const result = await runAsync(statePath, { OCC_DOCKER_BIN: docker });
+    assert.equal(await readFile(join(directory, "sentinel"), "utf8"), "unrelated content");
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /outside the owned PostgreSQL directory/);
+    assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
+  });
+}
+
+test("cleanup preserves unexpected PostgreSQL bootstrap contents and state", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state.json");
+  const state = failedDropState();
+  const directory = join(root, `${state.resources[0].name}-bootstrap`);
+  await mkdir(directory);
+  await writeFile(join(directory, "init-local.sql"), "-- public bootstrap\n");
+  await writeFile(join(directory, "sentinel"), "unrelated content");
+  state.resources = [
+    { ...state.resources[0], directory, directoryCreated: true, initSqlCreated: true },
+  ];
+  await writeState(statePath, state);
+  const docker = await writeCommand(join(root, "bin"), "docker", "exit 0\n");
+
+  // Even an owned directory cannot authorize deleting files preparation did not create.
+  const result = await runAsync(statePath, { OCC_DOCKER_BIN: docker });
+  assert.equal(await readFile(join(directory, "sentinel"), "utf8"), "unrelated content");
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /unexpected PostgreSQL bootstrap contents/);
+  assert.equal(await readFile(join(directory, "init-local.sql"), "utf8"), "-- public bootstrap\n");
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
+});
+
+for (const directoryCreated of [false, true]) {
+  test(`cleanup handles empty PostgreSQL staging with directory confirmation ${directoryCreated}`, async (t) => {
+    const root = await fixture(t);
+    const statePath = join(root, "state.json");
+    const state = failedDropState();
+    const directory = join(root, `${state.resources[0].name}-bootstrap`);
+    // A crash can leave mkdir either unconfirmed or confirmed, before SQL creation.
+    await mkdir(directory);
+    state.resources = [
+      { ...state.resources[0], directory, directoryCreated, initSqlCreated: false },
+    ];
+    await writeState(statePath, state);
+
+    const result = await runAsync(statePath, { OCC_DOCKER_BIN: join(root, "must-not-run") });
+
+    if (directoryCreated) {
+      assert.equal(result.status, 0, result.stderr);
+      await assert.rejects(stat(directory), { code: "ENOENT" });
+      await assert.rejects(stat(statePath), { code: "ENOENT" });
+    } else {
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /unconfirmed PostgreSQL bootstrap ownership/);
+      assert.equal((await stat(directory)).isDirectory(), true);
+      assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
+    }
+  });
+}
 
 test("cleanup drops a selected database before waiting for the CI state lock", async (t) => {
   const root = await fixture(t);
@@ -1388,4 +1473,238 @@ test("QA image cleanup reports an unavailable final inventory without inventing 
     changed: null,
     missing: null,
   });
+});
+
+// Test ownership decisions against Docker's inspect contract. The credentialed
+// first-Agent shards separately prove creation and removal of real resources.
+test("first-Agent registry cleanup refuses foreign ownership and replaced containers", async (t) => {
+  for (const scenario of [
+    "owned",
+    "absent-container",
+    "foreign-image",
+    "foreign-container",
+    "replaced-container",
+    "foreign-owner",
+  ]) {
+    const root = await fixture(t);
+    const prefix = "openclaw-ci-local-first-images-test";
+    const name = "openclaw-ci-first-images-test";
+    const containerId = "b".repeat(64);
+    const controllerImage = `127.0.0.1:5000/${name}/controller@sha256:${"d".repeat(64)}`;
+    const log = join(root, "calls.jsonl");
+    const container = {
+      Id: scenario === "replaced-container" ? "c".repeat(64) : containerId,
+      Config: {
+        Labels: {
+          "openclaw.dev/ci-owner": scenario === "foreign-container" ? "another-owner" : prefix,
+        },
+      },
+    };
+    const docker = await writeCommand(
+      join(root, "bin"),
+      "docker",
+      `
+import { appendFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
+if (${JSON.stringify(scenario)} === 'absent-container' && args[0] === 'container' && args[1] === 'inspect') { console.error('No such container'); process.exit(1); }
+if (args[1] === 'inspect') { console.log(JSON.stringify([${JSON.stringify(container)}])); }
+else if (args[1] !== 'rm') { process.exit(99); }
+`,
+      { interpreter: process.execPath },
+    );
+    const statePath = join(root, "state.json");
+    await writeState(statePath, {
+      version: 1,
+      repositoryRoot,
+      prefix,
+      resources: [
+        {
+          id: "first-images",
+          kind: "first-agent-image-registry",
+          owner: scenario === "foreign-owner" ? "another-owner" : prefix,
+          name,
+          port: 5000,
+          containerId,
+          controllerImage:
+            scenario === "foreign-image"
+              ? controllerImage.replace(name, "another-repository")
+              : controllerImage,
+        },
+      ],
+    });
+    const result = runCleanup(statePath, { OCC_DOCKER_BIN: docker });
+    const calls = await readFile(log, "utf8").catch((error) => {
+      if (error.code === "ENOENT") {
+        return "";
+      }
+      throw error;
+    });
+    if (["owned", "absent-container"].includes(scenario)) {
+      assert.equal(result.status, 0, result.stderr);
+      await assert.rejects(readFile(statePath), { code: "ENOENT" });
+      assert.ok(calls.includes(JSON.stringify(["image", "rm", controllerImage])));
+      assert.equal(
+        calls.includes(JSON.stringify(["container", "rm", "--force", "--volumes", containerId])),
+        scenario === "owned",
+      );
+    } else {
+      assert.equal(result.status, 1, result.stderr);
+      assert.equal(JSON.parse(await readFile(statePath, "utf8")).resources.length, 1);
+      assert.doesNotMatch(calls, /"rm"/);
+    }
+  }
+});
+
+// The engine changes ownership after the caller's custody observation. The
+// destructive owner must use that observation instead of resolving the name again.
+test("bound k3d cleanup refuses a replacement before deleting its resources", async () => {
+  const name = "openclaw-k8s-bound-abc123def456";
+  const identity = {
+    cluster: name,
+    serverID: "1".repeat(64),
+    networkID: "2".repeat(64),
+    volumes: [{ name: `k3d-${name}-images`, createdAt: "2026-11-11T00:00:00Z" }],
+  };
+  let replacementDeleted = false;
+  const run = async (command, args) => {
+    if (command === "k3d") {
+      if (args[1] === "delete") {
+        replacementDeleted = true;
+        return { stdout: "" };
+      }
+      return { stdout: JSON.stringify(replacementDeleted ? [] : [{ name }]) };
+    }
+    if (args[0] === "ps" && args.includes("--no-trunc")) {
+      return { stdout: "3".repeat(64) + "\n" };
+    }
+    return { stdout: "" };
+  };
+  await assert.rejects(
+    deleteOwnedK3dCluster({ name }, { execFile: run, identity }),
+    /bound k3d server identity/,
+  );
+  assert.equal(replacementDeleted, false, "replacement must survive the owner's refusal");
+});
+
+// This protocol fixture models Docker responses, not live Docker effects. The
+// real staged-cleanup cases cover the latter through the supported cleanup CLI.
+for (const scenario of ["owned", "replaced-network", "shared-volume", "late-volume-consumer"]) {
+  test(`bound k3d cleanup preserves destructive authority: ${scenario}`, async () => {
+    const name = "openclaw-k8s-bound-abc123def456";
+    const identity = {
+      cluster: name,
+      serverID: "1".repeat(64),
+      networkID: "2".repeat(64),
+      volumes: [{ name: `k3d-${name}-images`, createdAt: "2026-11-11T00:00:00Z" }],
+    };
+    const removed = [];
+    let serverPresent = true;
+    let networkPresent = true;
+    let volumePresent = true;
+    const run = async (command, args) => {
+      assert.equal(command, "docker", "bound cleanup must not resolve a cluster name through k3d");
+      const [kind, action] = args;
+      if (kind === "ps") {
+        const volume = args.some((arg) => arg.startsWith("volume="));
+        const shared =
+          scenario === "shared-volume" || (scenario === "late-volume-consumer" && !serverPresent);
+        return {
+          stdout: [serverPresent ? identity.serverID : "", volume && shared ? "3".repeat(64) : ""]
+            .filter(Boolean)
+            .join("\n"),
+        };
+      }
+      if (kind === "network" && action === "ls") {
+        // Real k3d networks have no k3d.cluster label; names are used only
+        // for the final absence observation, never as deletion authority.
+        return { stdout: networkPresent && !args.includes("--filter") ? `k3d-${name}` : "" };
+      }
+      if (kind === "network" && action === "inspect") {
+        return {
+          stdout: args.includes("{{.Name}}")
+            ? `k3d-${name}`
+            : JSON.stringify({ [identity.serverID]: {} }),
+        };
+      }
+      if (kind === "container" && action === "inspect") {
+        if (args.includes("{{json .NetworkSettings.Networks}}")) {
+          return {
+            stdout: JSON.stringify({
+              [`k3d-${name}`]: {
+                NetworkID: scenario === "replaced-network" ? "4".repeat(64) : identity.networkID,
+              },
+            }),
+          };
+        }
+        return { stdout: identity.volumes[0].name };
+      }
+      if (kind === "volume" && action === "inspect") {
+        return {
+          stdout: JSON.stringify({
+            Name: identity.volumes[0].name,
+            CreatedAt: identity.volumes[0].createdAt,
+            Driver: "local",
+            Scope: "local",
+          }),
+        };
+      }
+      if (kind === "rm") {
+        assert.deepEqual(args, ["rm", "-f", identity.serverID]);
+        serverPresent = false;
+        removed.push("server");
+        return { stdout: identity.serverID };
+      }
+      if (kind === "network" && action === "rm") {
+        assert.equal(args[2], identity.networkID);
+        networkPresent = false;
+        removed.push("network");
+        return { stdout: identity.networkID };
+      }
+      if (kind === "volume" && action === "rm") {
+        assert.deepEqual(args, ["volume", "rm", identity.volumes[0].name]);
+        volumePresent = false;
+        removed.push("volume");
+        return { stdout: identity.volumes[0].name };
+      }
+      if (kind === "volume" && action === "ls") {
+        return { stdout: volumePresent ? identity.volumes[0].name : "" };
+      }
+      throw new Error(`Unexpected Docker operation: ${args.join(" ")}`);
+    };
+    const operation = deleteOwnedK3dCluster({ name }, { execFile: run, identity });
+    if (scenario === "owned") {
+      await operation;
+      assert.deepEqual(removed, ["server", "network", "volume"]);
+    } else {
+      await assert.rejects(
+        operation,
+        scenario === "replaced-network" ? /network identity/ : /volume is shared/,
+      );
+      assert.deepEqual(removed, scenario === "late-volume-consumer" ? ["server", "network"] : []);
+      assert.equal(volumePresent, true, "shared resource must survive refusal");
+    }
+  });
+}
+
+test("bound cleanup refuses changed prepared state before destructive work", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state.json");
+  await writeFile(
+    statePath,
+    JSON.stringify({ version: 1, repositoryRoot, prefix: "openclaw-ci-bound", resources: [] }),
+  );
+  await assert.rejects(
+    cleanupState(statePath, {
+      expectedStateSha256: "0".repeat(64),
+      k3dIdentity: {
+        cluster: "openclaw-k8s-bound",
+        serverID: "1".repeat(64),
+        networkID: "2".repeat(64),
+        volumes: [],
+      },
+    }),
+    /cleanup state changed after preparation/,
+  );
+  assert.ok((await readFile(statePath, "utf8")).includes("openclaw-ci-bound"));
 });

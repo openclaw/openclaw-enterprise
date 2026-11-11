@@ -8,6 +8,46 @@ This record preserves the dated changes to the production startup flow. See the 
 
 ## Changelog
 
+- 2026-11-02 15:26: Refuse incompatible PostgreSQL servers before catalog checks and migration. (authoring-run/c6926504-08f3-4eb6-ba6c-28b3e113eede - 9138a0f9617742d9c4997156e7a6cf19f6241c10)
+
+- 2026-11-02 14:57: Enable Helm private routing by default and retain prerequisite validation and explicit opt-out. (authoring-run/4fcd344c-7374-490d-979d-a6995b6a19dc - cf67413c378cce3989d28fa8178ed29a405b9ce6)
+
+- 2026-10-30 14:36: Attempt every worker resource close in order after a close fails. (authoring-run/b8400fae-dc1a-49fd-be49-5d07e9dbb899 - 2b3b206b63525e31a6170e239991394b7909fc15)
+
+- 2026-10-30 05:46: Attempt every PostgreSQL API resource close in order and preserve the original error. (authoring-run/3277ff6a-7559-43e6-842d-93513c8dd124 - 60b6beb56d038c012d318cc6249003707c7ec9d5)
+
+- 2026-10-30 03:58: Load the native repository transport only for explicit native delivery. (authoring-run/43b61103-4082-4fc2-b9a0-511a18ebc761 - 87ed6c37e543e5501eae6285450d01d03d8abe7d)
+
+- 2026-10-28: Give the worker a startup probe and 5-second exec probe timeouts.
+
+- 2026-10-24 17:23: Reject metrics and repository listeners sharing port 8443 before deployment. (authoring-run/21b9b442-e8b7-45d3-a482-742f1742b077 - fd5723d94aebbd96d93e85649eec908adbc6d58a)
+
+- 2026-10-23 11:15: Recognize the reviewed logical-restore catalog. (authoring-run/1b38bd1a-842f-42a8-8641-4858e5a2183a - a4146f54983537954246bc4df3a937293d92b220)
+
+- 2026-10-21 19:06: Preserve shared configuration diagnostics through the rebased API startup entry point. (authoring-run/445d1431-dae8-461a-8559-e95dfa03b4f6 - d4e78cadca361efaf089a31972f084a91ff307e1)
+
+- 2026-10-20 01:48: Trace safe typed startup refusals. (authoring-run/9d1ff825-b9f4-492a-9420-1e316d820e28 - e7e5f3321cb0a8471d74964eba56ddd069a4e4c5)
+
+- 2026-10-18 14:40: Compare database CA mount destinations before rendering. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - bcf4fbcf0)
+
+- 2026-10-18: Check the Installation before upgrade migration.
+
+- 2026-10-15 22:24: Validate sandbox suffixes. (authoring-run/13774107-9c73-4561-8bb0-6e910588052a - 417cb2b7b57f)
+
+- 2026-10-14 21:02: Document hostname refusal and correction. (authoring-run/4a613194-6dc8-454f-9cf8-c2a6b46b25af - 44252f8544beb031bf9f9b4d5f9e8093d0b10176)
+
+- 2026-10-13: Trace OIDC CA assembly and the database trust preload.
+
+- 2026-10-11 18:29: Validate database URL Secret keys. (authoring-run/a5a228f3-a952-4e1f-bbba-1a113599bb93 - 19304cadb9a8b8c6473a22b183055ff7b5852e02)
+
+- 2026-10-10 08:22: Retain Namespace and bootstrap guidance with peer-map validation. (authoring-run/3cecc2d2-5f5c-4ce3-9901-928542c3d370 - ac237c12f504fd8f49a5e66c05a8d3865b13444e)
+
+- 2026-10-10 07:58: Preserve landed Namespace admission alongside database ports. (authoring-run/cf8f1d6f-c7a3-4864-8ece-9fc5834ac8b5 - c425fbb8a24df83efdfb1615cfb26a609f0749ca)
+
+- 2026-10-10 07:41: Merge hostname/database-CA guidance and bounded database ports. (authoring-run/714d166d-82e8-4e99-a0ae-a49c8ee235c7 - 3bfadece19cdbea1a23574549265953f9d0e54fc)
+
+- 2026-10-10 02:11: Validate active production peer matchLabels before submission, preserving accepted values. (authoring-run/e1243091-f075-4ff3-b6e2-0ee47714a472 - dd8bbacc9b974b77f416d48f6783e3e113faa2f9)
+
 - 2026-10-09 22:28: Refuse invalid database ports before rendering NetworkPolicies. (authoring-run/4363ed9a-5724-4d4f-a14d-f1bc0485443e - dc95c2261d4b46cff8aca703e13e43cdd71d153e)
 - 2026-10-09 23:51: Refuse custom Gateway hostnames Compute rejects during production configuration loading. (authoring-run/0d8da3d8-474a-4801-9887-230406a6b7bd - 5b9dd76c497c1b552a2651ee4b984978cdef0a93)
 - 2026-10-09 22:22: Validate release Namespace labels before Helm rendering. (authoring-run/25ae11d6-4539-4513-9b2a-24d10996f971 - 7f358117e68076912a6062411d363e920a0e6adb)

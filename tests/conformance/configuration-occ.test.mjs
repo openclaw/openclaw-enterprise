@@ -22,7 +22,7 @@ import {
   resolveConfiguredHarnessId,
 } from "../../packages/occ/src/index.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import {
   createDevelopmentComputeDriver,
   registerAndSelectDrivers,
@@ -1167,7 +1167,13 @@ test("Agent deployment snapshots its selected Configuration and Compute identity
   assert.equal(Object.isFrozen(configuration.values.models.providers.openai.apiKey), true);
   assert.equal(Object.isFrozen(revision.configuration.plugins.entries.example.regions), true);
   assert.equal(agent.executionMode, "embedded");
-  assert.deepEqual(revision.harness, { id: "openclaw", version: "1.0.0", mode: "embedded" });
+  assert.deepEqual(revision.harness, {
+    id: "openclaw",
+    version: "1.0.0",
+    mode: "embedded",
+    overrides: {},
+    configuration: {},
+  });
   assert.deepEqual(revision.compute, { id: compute.id, implementation: compute.implementation });
 });
 
@@ -1206,8 +1212,9 @@ test("Agent deployment keeps the display name its Configuration sets", async () 
 });
 
 // Every Compute Driver renders the defaults OCE admits. Embedded and dedicated Gateways
-// keep explicit choices about steering, workspace access, and command approvals.
-test("deployment admission keeps apply_patch in the workspace, the sandbox off, exec runnable and steering to the Configuration", async () => {
+// keep explicit choices about steering, workspace access, direct-message sessions, and command
+// approvals.
+test("deployment admission keeps apply_patch in the workspace, the sandbox off, exec runnable, DMs per sender and steering to the Configuration", async () => {
   const { agent, configuration, controller, namespace } = await fixture();
   const codexValues = {
     agents: {
@@ -1245,9 +1252,10 @@ test("deployment admission keeps apply_patch in the workspace, the sandbox off, 
       tools: { exec: { strictInlineEval: true } },
     },
     // Explicit values reach the Gateway as written; inline programs need no approval in an
-    // explicit mode "full" either.
+    // explicit mode "full" either. An explicit dmScope is kept.
     "explicit looser values": {
       messages: { queue: { allowCollaborativeSteering: true } },
+      session: { dmScope: "main" },
       tools: { exec: { mode: "full", applyPatch: { enabled: true, workspaceOnly: false } } },
     },
     // An explicit steering restriction is kept, and so is an exec
@@ -1291,6 +1299,39 @@ test("deployment admission keeps apply_patch in the workspace, the sandbox off, 
   );
   assert.equal(revision.configuration.tools.exec.strictInlineEval, false);
   assert.deepEqual(revision.configuration.agents.entries.main.tools.exec, entryExec);
+
+  // With a channel enabled, each direct-message sender gets a session per account, channel and
+  // sender, so external senders never share the main conversation browser chat opens (finding
+  // 3191). Without one, admission adds no session settings, so OpenClaw keeps recall across the
+  // Agent's conversations.
+  const slack = { enabled: true, allowBots: false };
+  for (const [name, settings, dmScope] of [
+    ["no channel", {}, undefined],
+    ["a disabled channel", { channels: { slack: { ...slack, enabled: false } } }, undefined],
+    ["a Slack channel", { channels: { slack } }, "per-account-channel-peer"],
+    [
+      "named Slack accounts",
+      { channels: { slack: { enabled: true, accounts: { work: { allowBots: false } } } } },
+      "per-account-channel-peer",
+    ],
+    [
+      "an explicit main with a channel",
+      { channels: { slack }, session: { dmScope: "main" } },
+      "main",
+    ],
+  ]) {
+    const values = { ...codexValues, ...settings };
+    const channelRevision = await deploy(values, "dedicated");
+    assert.equal(channelRevision.configuration.session?.dmScope, dmScope, name);
+    if (dmScope === undefined) {
+      assert.equal(channelRevision.configuration.session, undefined, name);
+    }
+    assert.deepEqual(
+      channelRevision.configuration,
+      admittedConfiguration(servedAs(values, agent.name), "info"),
+      name,
+    );
+  }
 
   // Admission fills only unset settings. A value of the wrong type, or a
   // non-object on the path, stays for the Gateway's own validation, which refuses it at startup,
@@ -2323,6 +2364,8 @@ test("one installation admits embedded and dedicated revisions without rewriting
     id: "codex",
     version: "1.0.0",
     mode: "dedicated",
+    overrides: {},
+    configuration: {},
   });
   const updated = await controller.updateAgent(administrator, {
     namespaceId: namespace.id,
@@ -2337,8 +2380,20 @@ test("one installation admits embedded and dedicated revisions without rewriting
     { namespaceId: namespace.id, agentId: agent.id },
     resolveApprovedDevelopmentHarness,
   );
-  assert.deepEqual(embedded.harness, { id: "openclaw", version: "1.0.0", mode: "embedded" });
-  assert.deepEqual(dedicated.harness, { id: "codex", version: "1.0.0", mode: "dedicated" });
+  assert.deepEqual(embedded.harness, {
+    id: "openclaw",
+    version: "1.0.0",
+    mode: "embedded",
+    overrides: {},
+    configuration: {},
+  });
+  assert.deepEqual(dedicated.harness, {
+    id: "codex",
+    version: "1.0.0",
+    mode: "dedicated",
+    overrides: {},
+    configuration: {},
+  });
   assert.equal(embedded.configurationId, configuration.id);
   assert.equal(dedicated.configurationId, codexConfiguration.id);
 
@@ -2438,7 +2493,13 @@ for (const scope of ["primary", "default-fallback", "entry-fallback", "provider-
         "info",
       ),
     );
-    assert.deepEqual(admitted.harness, { id: "codex", version: "1.0.0", mode: "dedicated" });
+    assert.deepEqual(admitted.harness, {
+      id: "codex",
+      version: "1.0.0",
+      mode: "dedicated",
+      overrides: {},
+      configuration: {},
+    });
     assert.equal(admitted.compute.id, "configuration-occ-compute");
   });
 }
@@ -2836,7 +2897,12 @@ test("Harness admission rejects conflicting selections, mode mismatches, and una
     { namespaceId: namespace.id, agentId: agent.id },
     resolveApprovedProductionHarness,
   );
-  assert.deepEqual(embedded.harness, { ...DEVELOPMENT_HARNESS_DESCRIPTOR, mode: "embedded" });
+  assert.deepEqual(embedded.harness, {
+    ...DEVELOPMENT_HARNESS_DESCRIPTOR,
+    mode: "embedded",
+    overrides: {},
+    configuration: {},
+  });
   await controller.updateAgent(administrator, {
     namespaceId: namespace.id,
     agentId: agent.id,
@@ -3077,6 +3143,8 @@ test("a dedicated Agent's runtime refusals offer only what the Installation runs
     id: "codex",
     version: "1.0.0",
     mode: "dedicated",
+    overrides: {},
+    configuration: {},
   });
   // openclaw, which the refusal no longer offers, gets the 409; Codex runs this model, so the
   // refusal names codex as the next step.
@@ -3185,6 +3253,8 @@ test("an embedded Agent's runtime refusals offer only what it runs, and name the
     id: "openclaw",
     version: "1.0.0",
     mode: "embedded",
+    overrides: {},
+    configuration: {},
   });
 
   // On a codex/<model> model neither runtime deploys an embedded Agent, so the refusal names the

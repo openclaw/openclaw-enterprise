@@ -3,16 +3,24 @@ package occcli
 import (
 	"bytes"
 	"encoding/json/v2"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/openclaw/openclaw-enterprise/internal/occclient"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -91,11 +99,47 @@ func runOCCAgainst(t *testing.T, handler http.Handler, args ...string) (string, 
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
+	return runOCCWithArgs(append([]string{"--url", server.URL, "--service-key-file", keyFile}, args...)...)
+}
+
+// runOCCWithArgs executes exactly the supplied arguments, using the current environment.
+func runOCCWithArgs(args ...string) (string, string, error) {
 	var out, errOut bytes.Buffer
 	command := New(&out, &errOut)
-	command.SetArgs(append([]string{"--url", server.URL, "--service-key-file", keyFile}, args...))
+	command.SetArgs(args)
 	err := command.Execute()
 	return out.String(), errOut.String(), err
+}
+
+func TestAgentStopRejectsAnAcceptedResponseWithoutTheStoppedAgent(t *testing.T) {
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	wantRequests := []string{"GET " + agentPath, "POST " + agentPath + "/stop"}
+	for _, test := range []struct {
+		name string
+		data string
+	}{
+		{"null Agent", "null"},
+		{"empty Agent", "{}"},
+		{"missing desired state", `{"id":"` + testAgentID + `","namespaceId":"` + testNamespaceID + `"}`},
+		{"different Agent", `{"id":"agt_00000000-0000-4000-8000-000000000001","namespaceId":"` + testNamespaceID + `","desiredRuntimeState":"stopped"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			out, errOut, requested, err := runOCCWithNotices(t, map[string]string{
+				wantRequests[0]: `{"id":"` + testAgentID + `","namespaceId":"` + testNamespaceID + `","desiredRuntimeState":"running"}`,
+				wantRequests[1]: `raw:202 {"data":` + test.data + `,"meta":{"requestId":"req_00000000-0000-4000-8000-000000000001"}}`,
+			}, "--namespace", testNamespaceID, "agent", "stop", testAgentID, "-o", "json")
+			if !slices.Equal(requested, wantRequests) {
+				t.Fatalf("requests = %v, want %v", requested, wantRequests)
+			}
+			wantHint := `occ --namespace ` + testNamespaceID + ` agent get ` + testAgentID
+			if err == nil || !strings.Contains(err.Error(), "stop outcome is unknown") || !strings.Contains(err.Error(), wantHint) {
+				t.Errorf("stop error = %v, want an unknown outcome and %q", err, wantHint)
+			}
+			if out != "" || strings.Contains(errOut, "stop requested") {
+				t.Errorf("stdout = %q, stderr = %q, want no success output", out, errOut)
+			}
+		})
+	}
 }
 
 func TestNamespaceTableLabelsTheAdoptedNamespaceColumn(t *testing.T) {
@@ -539,6 +583,33 @@ func TestAgentRevisionsTellsRevisionsApart(t *testing.T) {
 	}
 }
 
+func TestAgentRevisionReadsExactSnapshotWithoutListing(t *testing.T) {
+	path := "GET /namespaces/" + testNamespaceID + "/agents/" + testAgentID + "/revisions/" + testRevision1ID
+	snapshot := `{"id":"` + testRevision1ID + `","namespaceId":"` + testNamespaceID + `","agentId":"` + testAgentID + `","harness":{"id":"codex","version":"1","mode":"dedicated","overrides":{},"configuration":{}}}`
+	out, requested, err := runOCC(t, map[string]string{path: snapshot}, "--namespace", testNamespaceID, "-o", "json", "agent", "revision", testAgentID, testRevision1ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(requested, []string{path}) {
+		t.Fatalf("exact revision read must not select from history: %v", requested)
+	}
+	var got, want any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(snapshot), &want); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("snapshot changed: %s", out)
+	}
+	denied := &fakeOCC{refuse: "revision read denied"}
+	out, _, err = runOCCAgainst(t, denied, "--namespace", testNamespaceID, "-o", "json", "agent", "revision", testAgentID, testRevision1ID)
+	if err == nil || out != "" || !slices.Equal(denied.requested, []string{path}) {
+		t.Fatalf("refused exact read must not fall back: output=%q requests=%v error=%v", out, denied.requested, err)
+	}
+}
+
 func TestAgentRevisionsStructuredOutputCarriesActiveAndStatus(t *testing.T) {
 	for _, format := range []string{"json", "yaml"} {
 		out, _, err := runOCC(t, agentRevisionResponses(), "--namespace", testNamespaceID, "-o", format, "agent", "revisions", testAgentID)
@@ -569,13 +640,16 @@ func TestAgentRevisionsStructuredOutputCarriesActiveAndStatus(t *testing.T) {
 func TestDeploymentStatusDefaultsToTheLatestRevision(t *testing.T) {
 	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
 	out, requested, err := runOCC(t, map[string]string{
-		"GET " + agentPath:                `{"id":"` + testAgentID + `","activeRevisionId":"` + testRevision2ID + `"}`,
+		"GET " + agentPath:                `{"id":"` + testAgentID + `","desiredRuntimeState":"running","activeRevisionId":"` + testRevision2ID + `"}`,
 		"GET " + agentPath + "/revisions": agentRevisionsResponse(),
 		"GET " + agentPath + "/deployments/" + testRevision2ID: `{"deploymentId":"` + testRevision2ID + `","agentId":"` + testAgentID +
 			`","namespaceId":"` + testNamespaceID + `","status":"failed","error":{"code":"CONVERGENCE_DEADLINE_EXCEEDED","message":"Deployment did not converge."}}`,
 	}, "--namespace", testNamespaceID, "agent", "deployment-status", testAgentID)
 	if err != nil {
 		t.Fatalf("%v (requests %v)", err, requested)
+	}
+	if len(requested) != 3 || !strings.HasSuffix(strings.TrimSpace(out), testRevision2ID) {
+		t.Fatalf("expected the active revision after one list, deployment and Agent read: %v\n%s", requested, out)
 	}
 	if !strings.Contains(out, "failed") || !strings.Contains(out, "CONVERGENCE_DEADLINE_EXCEEDED") {
 		t.Fatalf("expected the latest deployment failure:\n%s", out)
@@ -643,6 +717,47 @@ func TestDeploymentStatusNamesTheRevisionItChose(t *testing.T) {
 			}
 			if strings.Contains(out, "notice:") {
 				t.Fatalf("notice leaked to stdout:\n%s", out)
+			}
+		})
+	}
+}
+
+func TestDeploymentStatusReportsCurrentAgentBesideRecordedSuccess(t *testing.T) {
+	path := "GET /namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	record := path + "/deployments/" + testRevision1ID
+	const reason = "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED"
+	for _, tc := range []struct {
+		name, agent, cells string
+		current            map[string]any
+		redeploy           bool
+	}{
+		{"replaced", `{"desiredRuntimeState":"running","activeRevisionId":"` + testRevision2ID + `"}`, "running " + testRevision2ID, map[string]any{"desiredRuntimeState": "running", "activeRevisionId": testRevision2ID}, false},
+		{"retired", `{"desiredRuntimeState":"running"}`, "running none", map[string]any{"desiredRuntimeState": "running", "activeRevisionId": nil}, true},
+		{"stopped", `{"desiredRuntimeState":"stopped"}`, "stopped none", map[string]any{"desiredRuntimeState": "stopped", "activeRevisionId": nil}, false},
+		{"revision-only reader", `raw:403 {"error":{"code":"FORBIDDEN","message":"Denied."}}`, "", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deployment := `{"deploymentId":"` + testRevision1ID + `","status":"succeeded"`
+			wantRow := strings.TrimSpace(testRevision1ID + " - succeeded - - " + tc.cells)
+			if tc.redeploy {
+				deployment += `,"repositoryAccess":{"state":"redeploy-required","code":"` + reason + `","message":"Deploy again."}`
+				wantRow += " " + reason + ": Deploy again."
+			}
+			responses := map[string]string{path: tc.agent, record: deployment + "}"}
+			args := []string{"--namespace", testNamespaceID, "agent", "deployment-status", testAgentID, testRevision1ID}
+			out, _, err := runOCC(t, responses, args...)
+			_, row, _ := strings.Cut(out, "\n")
+			if err != nil || strings.Join(strings.Fields(row), " ") != wantRow {
+				t.Fatalf("table = %q, want row %q, error %v", out, wantRow, err)
+			}
+			out, _, err = runOCC(t, responses, append(args, "-o", "json")...)
+			var got map[string]any
+			if err != nil || json.Unmarshal([]byte(out), &got) != nil {
+				t.Fatalf("JSON = %q, error %v", out, err)
+			}
+			current, present := got["currentAgent"]
+			if got["status"] != "succeeded" || strings.Contains(out, reason) != tc.redeploy || present != (tc.current != nil) || (present && !reflect.DeepEqual(current, tc.current)) {
+				t.Fatalf("unexpected deployment: %s", out)
 			}
 		})
 	}
@@ -1172,53 +1287,193 @@ func TestAgentRevisionsTableNamesNeutralEndings(t *testing.T) {
 func TestAgentRevisionsPagesWithCursor(t *testing.T) {
 	// A stale environment scope must not replace the explicitly selected Namespace.
 	t.Setenv("OCC_NAMESPACE", "ns_55555555-5555-4555-8555-555555555555")
-	responses := agentRevisionResponses()
 	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
-	responses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision2ID + `","revision":2,"createdAt":"2026-09-30T01:00:00.000Z"}],"meta":{"requestId":"req_test","nextCursor":"v1.2"}}`
-	out, notices, requested, err := runOCCWithNotices(t, responses, "--namespace", testNamespaceID, "agent", "revisions", testAgentID, "--limit", "1", "--cursor", "v1.3")
+	firstResponses := agentRevisionResponses()
+	firstResponses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision2ID + `","revision":2,"namespaceId":"` + testNamespaceID + `","agentId":"` + testAgentID + `","backendId":null,"configurationId":"cfg_55555555-5555-4555-8555-555555555555","harness":{"id":"codex","version":"fixture","mode":"dedicated","overrides":{},"configuration":{}},"configurationGeneration":2,"createdAt":"2026-09-30T01:00:00.000Z","deploymentStatus":"failed","deploymentErrorCode":"CONVERGENCE_DEADLINE_EXCEEDED"}],"meta":{"requestId":"req_66666666-6666-4666-8666-666666666666","nextCursor":"v1.2"}}`
+	lastResponses := agentRevisionResponses()
+	lastResponses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision1ID + `","revision":1,"namespaceId":"` + testNamespaceID + `","agentId":"` + testAgentID + `","backendId":null,"configurationId":"cfg_55555555-5555-4555-8555-555555555555","harness":{"id":"codex","version":"fixture","mode":"dedicated","overrides":{},"configuration":{}},"configurationGeneration":1,"createdAt":"2026-09-30T00:00:00.000Z","deploymentStatus":"succeeded","deploymentErrorCode":null}],"meta":{"requestId":"req_66666666-6666-4666-8666-666666666666","nextCursor":null}}`
+	first := &fakeOCC{responses: firstResponses}
+	last := &fakeOCC{responses: lastResponses}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("cursor") == "v1.2" {
+			last.ServeHTTP(w, r)
+			return
+		}
+		first.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+	t.Setenv("OCC_URL", server.URL)
+	t.Setenv("OCC_SERVICE_KEY_FILE", writeKeyFile(t, `{"data":{"key":"test-key"}}`))
+	t.Setenv("OCC_CA_BUNDLE", "")
+	t.Setenv("OCC_TIMEOUT_SECONDS", "5")
+	out, notices, err := runOCCWithArgs("--namespace", testNamespaceID, "agent", "revisions", testAgentID, "--limit", "1", "--cursor", "v1.3")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(requested, "GET "+agentPath+"/revisions?cursor=v1.3&limit=1") {
-		t.Fatalf("limit and cursor must reach OCC: %v", requested)
+	if !slices.Contains(first.requested, "GET "+agentPath+"/revisions?cursor=v1.3&limit=1") {
+		t.Fatalf("limit and cursor must reach OCC: %v", first.requested)
 	}
 	if !strings.Contains(out, testRevision2ID) || strings.Contains(out, testRevision1ID) {
 		t.Fatalf("expected only the page's revision:\n%s", out)
 	}
-	if !strings.Contains(notices, "agent revisions "+testAgentID+" --limit 1 --cursor v1.2") {
-		t.Fatalf("expected a next-page hint that keeps --limit: %q", notices)
-	}
-	responses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision1ID + `","revision":1,"createdAt":"2026-09-30T00:00:00.000Z"}],"meta":{"requestId":"req_test","nextCursor":null}}`
-	nextOut, nextRequested, err := runOCC(t, responses, nextPageCommand(t, notices)...)
+	nextOut, nextNotices, err := runOCCWithArgs(nextPageCommand(t, notices)...)
 	if err != nil {
 		t.Fatalf("advertised next-page command failed: %v", err)
 	}
-	if !slices.Contains(nextRequested, "GET "+agentPath+"/revisions?cursor=v1.2&limit=1") || !strings.Contains(nextOut, testRevision1ID) {
-		t.Fatalf("next-page command lost the selected Namespace, limit, or cursor: %v\n%s", nextRequested, nextOut)
+	if !slices.Contains(last.requested, "GET "+agentPath+"/revisions?cursor=v1.2&limit=1") || !strings.Contains(nextOut, testRevision1ID) {
+		t.Fatalf("next-page command lost the selected Namespace, limit, or cursor: %v\n%s", last.requested, nextOut)
+	}
+	if nextNotices != "" {
+		t.Fatalf("last page printed a continuation: %q", nextNotices)
 	}
 	for _, limit := range []string{"0", "101"} {
-		if _, _, err := runOCC(t, responses, "--namespace", testNamespaceID, "agent", "revisions", testAgentID, "--limit", limit); err == nil {
+		if _, _, err := runOCCWithArgs("--namespace", testNamespaceID, "agent", "revisions", testAgentID, "--limit", limit); err == nil {
 			t.Fatalf("--limit %s must be refused locally", limit)
+		}
+	}
+
+	// A default page contains 50 readable revisions; revision 1 is the
+	// lookahead that makes v1.2 a valid continuation. The hint must not add
+	// --limit 0, which the CLI would reject.
+	var defaultPage []map[string]any
+	for revision := 51; revision >= 2; revision-- {
+		id := fmt.Sprintf("rev_00000000-0000-4000-8000-%012d", revision)
+		if revision == 2 {
+			id = testRevision2ID
+		}
+		defaultPage = append(defaultPage, map[string]any{
+			"id":              id,
+			"revision":        revision,
+			"agentId":         testAgentID,
+			"namespaceId":     testNamespaceID,
+			"backendId":       nil,
+			"configurationId": "cfg_55555555-5555-4555-8555-555555555555",
+			"harness": map[string]any{
+				"id": "codex", "version": "fixture", "mode": "dedicated",
+				"overrides": map[string]any{}, "configuration": map[string]any{},
+			},
+			"configurationGeneration": 2,
+			"createdAt":               "2026-09-30T01:00:00.000Z",
+			"deploymentStatus":        "failed",
+			"deploymentErrorCode":     "CONVERGENCE_DEADLINE_EXCEEDED",
+		})
+	}
+	pageJSON, err := json.Marshal(defaultPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstResponses["GET "+agentPath+"/revisions"] = `raw:200 {"data":` + string(pageJSON) + `,"meta":{"requestId":"req_66666666-6666-4666-8666-666666666666","nextCursor":"v1.2"}}`
+	_, notices, err = runOCCWithArgs("--namespace", testNamespaceID, "agent", "revisions", testAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(first.requested, "GET "+agentPath+"/revisions") {
+		t.Fatalf("an unset --limit must send no limit: %v", first.requested)
+	}
+	if next := nextPageCommand(t, notices); slices.Contains(next, "--limit") {
+		t.Fatalf("next-page command adds a --limit the caller did not pass: %q", next)
+	}
+}
+
+// A page is incomplete without its continuation notice. A failed stderr write
+// must not report success after printing only that page, including JSON output.
+func TestAgentRevisionsReportsContinuationWriteFailure(t *testing.T) {
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	writeErr := errors.New("continuation output unavailable")
+	for _, format := range []string{"table", "json"} {
+		for _, cursor := range []string{"v1.2", ""} {
+			t.Run(format+"/"+cursor, func(t *testing.T) {
+				responses := agentRevisionResponses()
+				cursorJSON := "null"
+				if cursor != "" {
+					cursorJSON = strconv.Quote(cursor)
+				}
+				responses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision2ID + `","revision":2,"namespaceId":"` + testNamespaceID + `","agentId":"` + testAgentID + `","backendId":null,"configurationId":"cfg_55555555-5555-4555-8555-555555555555","harness":{"id":"codex","version":"fixture","mode":"dedicated","overrides":{},"configuration":{}},"configurationGeneration":2,"createdAt":"2026-09-30T01:00:00.000Z","deploymentStatus":"failed","deploymentErrorCode":"CONVERGENCE_DEADLINE_EXCEEDED"}],"meta":{"requestId":"req_test","nextCursor":` + cursorJSON + `}}`
+				fake := &fakeOCC{responses: responses}
+				server := httptest.NewServer(fake)
+				defer server.Close()
+				t.Setenv("OCC_URL", server.URL)
+				t.Setenv("OCC_SERVICE_KEY_FILE", writeKeyFile(t, `{"data":{"key":"test-key"}}`))
+				t.Setenv("OCC_CA_BUNDLE", "")
+				t.Setenv("OCC_TIMEOUT_SECONDS", "5")
+				var out, notice bytes.Buffer
+				command := New(&out, logOutputFunc(func(data []byte) (int, error) {
+					notice.Write(data)
+					return 0, writeErr
+				}))
+				args := []string{"--namespace", testNamespaceID, "agent", "revisions", testAgentID, "--limit", "1"}
+				// Preserve both the complete-command branch and the explicit-override branch.
+				if format == "json" {
+					args = append(args, "-o", format)
+				}
+				command.SetArgs(args)
+				err := command.Execute()
+				if cursor != "" {
+					if !errors.Is(err, writeErr) {
+						t.Fatalf("continuation failure = %v, want %v", err, writeErr)
+					}
+					if !strings.Contains(notice.String(), "--cursor "+cursor) {
+						t.Fatalf("missing attempted continuation: %q", notice.String())
+					}
+				} else if err != nil || notice.Len() != 0 {
+					t.Fatalf("last page: error=%v notice=%q", err, notice.String())
+				}
+				if !strings.Contains(out.String(), testRevision2ID) {
+					t.Fatalf("page was not delivered: %q", out.String())
+				}
+				if want := []string{"GET " + agentPath + "/revisions?limit=1", "GET " + agentPath}; !slices.Equal(fake.requested, want) {
+					t.Fatalf("requests=%v, want one page and Agent read %v", fake.requested, want)
+				}
+			})
 		}
 	}
 }
 
-// Without --limit, the next-page hint must not add one: "--limit 0" is refused
-// locally, so the advertised command would fail.
-func TestAgentRevisionsNextPageHintOmitsAnUnsetLimit(t *testing.T) {
-	responses := agentRevisionResponses()
+func TestAgentRevisionsContinuationKeepsOverrides(t *testing.T) {
 	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
-	responses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision2ID + `","revision":2,"createdAt":"2026-09-30T01:00:00.000Z"}],"meta":{"requestId":"req_test","nextCursor":"v1.2"}}`
-	_, notices, requested, err := runOCCWithNotices(t, responses, "--namespace", testNamespaceID, "agent", "revisions", testAgentID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The request leaves the page size to OCC too: OCC refuses limit=0.
-	if !slices.Contains(requested, "GET "+agentPath+"/revisions") {
-		t.Fatalf("an unset --limit must send no limit (OCC refuses limit=0): %v", requested)
-	}
-	if next := nextPageCommand(t, notices); slices.Contains(next, "--limit") {
-		t.Fatalf("next-page command adds a --limit the caller did not pass: %q", next)
+	responses := agentRevisionResponses()
+	// With --limit 1, revision 2 fills the page and readable revision 1
+	// allows OCC to return v1.2 as the next cursor.
+	responses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision2ID + `","revision":2,"namespaceId":"` + testNamespaceID + `","agentId":"` + testAgentID + `","backendId":null,"configurationId":"cfg_55555555-5555-4555-8555-555555555555","harness":{"id":"codex","version":"fixture","mode":"dedicated","overrides":{},"configuration":{}},"configurationGeneration":2,"createdAt":"2026-09-30T01:00:00.000Z","deploymentStatus":"failed","deploymentErrorCode":"CONVERGENCE_DEADLINE_EXCEEDED"}],"meta":{"requestId":"req_66666666-6666-4666-8666-666666666666","nextCursor":"v1.2"}}`
+	server := httptest.NewServer(&fakeOCC{responses: responses})
+	defer server.Close()
+	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
+	t.Setenv("OCC_URL", server.URL)
+	t.Setenv("OCC_SERVICE_KEY_FILE", keyFile)
+	t.Setenv("OCC_CA_BUNDLE", "")
+	t.Setenv("OCC_TIMEOUT_SECONDS", "5")
+	t.Setenv("OCC_NAMESPACE", "")
+	for _, flag := range []struct {
+		name, arg string
+	}{
+		{"url", "--url=" + server.URL},
+		{"service-key-file", "--service-key-file=" + keyFile},
+		{"ca-bundle", "--ca-bundle="},
+		{"timeout-seconds", "--timeout-seconds=9"},
+		{"output", "-o=json"},
+	} {
+		t.Run(flag.name, func(t *testing.T) {
+			if flag.name == "url" {
+				t.Setenv("OCC_URL", "")
+			}
+			if flag.name == "service-key-file" {
+				t.Setenv("OCC_SERVICE_KEY_FILE", "")
+			}
+			out, notices, err := runOCCWithArgs(flag.arg, "--namespace", testNamespaceID, "agent", "revisions", testAgentID, "--limit", "1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if flag.name == "output" {
+				var rows []map[string]any
+				if err := json.Unmarshal([]byte(out), &rows); err != nil || len(rows) != 1 || rows[0]["id"] != testRevision2ID {
+					t.Fatalf("expected revision 2 as JSON, got %q (error %v)", out, err)
+				}
+			}
+			if !strings.Contains(notices, "repeat the same command") || !strings.Contains(notices, "--cursor v1.2") ||
+				strings.Contains(notices, "occ --namespace") || strings.Contains(notices, server.URL) || strings.Contains(notices, keyFile) {
+				t.Fatalf("expected a cursor hint that preserves the invocation without printing connection settings, got %q", notices)
+			}
+		})
 	}
 }
 
@@ -1318,5 +1573,583 @@ func TestIAMAccessBindingTablesDistinguishIdentityAndGroupSubjects(t *testing.T)
 				t.Fatalf("table must keep %s subject beside its opaque ID: %s", want, line)
 			}
 		}
+	}
+}
+
+func TestFirstDeploymentCommandsUseExplicitRoutes(t *testing.T) {
+	configurationID := "cfg_55555555-5555-4555-8555-555555555555"
+	path := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID + "/deploy-first"
+	for _, command := range []string{"deploy-first", "recover-first-deployment"} {
+		t.Run(command, func(t *testing.T) {
+			calls := 0
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				expectedPath := path
+				if command == "recover-first-deployment" {
+					expectedPath += "/review-1/" + configurationID + "/3"
+				}
+				if r.URL.Path != expectedPath {
+					t.Errorf("unexpected path: %s", r.URL.Path)
+				}
+				if command == "deploy-first" {
+					if r.Method != http.MethodPost {
+						t.Errorf("method = %s", r.Method)
+					}
+					var body map[string]any
+					if err := json.UnmarshalRead(r.Body, &body); err != nil {
+						t.Fatal(err)
+					}
+					if body["key"] != "review-1" || body["expectedConfigurationId"] != configurationID || body["expectedGeneration"] != float64(3) {
+						t.Errorf("body = %#v", body)
+					}
+				} else {
+					if r.Method != http.MethodGet || r.ContentLength > 0 {
+						t.Errorf("recovery must be bodyless GET")
+					}
+					if r.URL.RawQuery != "" {
+						t.Errorf("unexpected query: %s", r.URL.RawQuery)
+					}
+
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if command == "deploy-first" {
+					w.WriteHeader(http.StatusAccepted)
+				}
+				_, _ = w.Write([]byte(`{"data":{"revisionId":"` + testRevision1ID + `","namespaceId":"` + testNamespaceID + `","agentId":"` + testAgentID + `","configurationId":"` + configurationID + `","configurationGeneration":3,"createdAt":"2026-10-30T00:00:00.000Z"},"meta":{"requestId":"test"}}`))
+			})
+			stdout, stderr, err := runOCCAgainst(t, handler, "--namespace", testNamespaceID, "--output", "json", "agent", command, testAgentID, "--key", "review-1", "--configuration", configurationID, "--generation", "3")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 {
+				t.Fatalf("requests = %d", calls)
+			}
+			var receipt map[string]any
+			if err := json.Unmarshal([]byte(stdout), &receipt); err != nil {
+				t.Fatal(err)
+			}
+			if len(receipt) != 6 || receipt["revisionId"] != testRevision1ID || receipt["configurationGeneration"] != float64(3) || receipt["configurationId"] != configurationID || receipt["agentId"] != testAgentID || receipt["namespaceId"] != testNamespaceID || receipt["createdAt"] != "2026-10-30T00:00:00.000Z" {
+				t.Fatalf("receipt = %s", stdout)
+			}
+			if strings.Contains(stderr, "No matching admission") {
+				t.Fatalf("receipt reported as a miss: %s", stderr)
+			}
+		})
+	}
+}
+
+func TestFirstDeploymentLostResponsePrintsExactRecoveryCommand(t *testing.T) {
+	calls := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		// Simulate a missing HTTP reply, not server admission. The API integration
+		// test drops a real accepted reply after the regular workflow commits.
+		connection, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_ = connection.Close()
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "operator's $(printf injected) key.json")
+	caBundle := filepath.Join(dir, "operator's $(printf injected) ca.pem")
+	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"private-test-credential"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(caBundle, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	configurationID := "cfg_55555555-5555-4555-8555-555555555555"
+	var out, notices bytes.Buffer
+	command := New(&out, &notices)
+	command.SetArgs([]string{"--url", server.URL, "--service-key-file", keyFile, "--ca-bundle", caBundle, "--timeout-seconds", "17", "--namespace", testNamespaceID, "agent", "deploy-first", testAgentID, "--key", "review-1", "--configuration", configurationID, "--generation", "3"})
+	err := command.Execute()
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("lost original transport cause: %v", err)
+	}
+	if calls != 1 || out.Len() != 0 {
+		t.Fatalf("requests = %d, stdout = %q; no request or receipt may be invented", calls, out.String())
+	}
+	if !strings.Contains(notices.String(), "same caller") || strings.Contains(notices.String(), "private-test-credential") {
+		t.Fatalf("missing caller reminder or leaked credential: %s", notices.String())
+	}
+	lines := strings.Split(strings.TrimSpace(notices.String()), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], "outcome is unconfirmed") {
+		t.Fatalf("missing recovery guidance: %s", notices.String())
+	}
+	// Parse the displayed command with a real POSIX shell, without executing occ.
+	// Paths with quotes and command substitutions must remain literal arguments.
+	parsed, err := exec.Command("sh", "-c", `occ() { printf '%s\0' "$@"; }; `+lines[1]).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Split(strings.TrimSuffix(string(parsed), "\x00"), "\x00")
+	want := []string{"--url", server.URL, "--service-key-file", keyFile, "--ca-bundle", caBundle, "--timeout-seconds", "17", "--namespace", testNamespaceID, "agent", "recover-first-deployment", testAgentID, "--key", "review-1", "--configuration", configurationID, "--generation", "3"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("recovery arguments = %q, want %q", got, want)
+	}
+}
+
+func TestFirstDeploymentRecoveryGuidanceDistinguishesRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		hint   bool
+	}{
+		{"malformed accepted reply", http.StatusAccepted, `{`, true},
+		{"unavailable", http.StatusServiceUnavailable, `{"error":{"code":"UNAVAILABLE","message":"unavailable"}}`, true},
+		{"request timeout", http.StatusRequestTimeout, ``, true},
+		{"forbidden", http.StatusForbidden, `{"error":{"code":"FORBIDDEN","message":"The operation is not permitted."}}`, false},
+		{"precondition", http.StatusConflict, `{"error":{"code":"FIRST_DEPLOYMENT_PRECONDITION_FAILED","message":"review configuration"}}`, false},
+		{"unsupported server", http.StatusNotFound, ``, false},
+		{"redirect", http.StatusTemporaryRedirect, ``, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			})
+			out, notices, err := runOCCAgainst(t, handler, "--ca-bundle=", "--namespace", testNamespaceID, "agent", "deploy-first", testAgentID, "--key", "review-1", "--configuration", "cfg_55555555-5555-4555-8555-555555555555", "--generation", "1")
+			if err == nil || calls != 1 || out != "" {
+				t.Fatalf("err = %v, requests = %d, stdout = %q", err, calls, out)
+			}
+			if strings.Contains(notices, "agent recover-first-deployment") != tc.hint {
+				t.Fatalf("recovery hint = %q, want present = %t", notices, tc.hint)
+			}
+			if tc.hint && !strings.Contains(notices, "--ca-bundle ''") {
+				t.Fatalf("recovery command must preserve explicit empty trust setting: %s", notices)
+			}
+		})
+	}
+}
+
+func TestFirstDeploymentDoesNotFallBackOnOlderServer(t *testing.T) {
+	_, _, requests, err := runOCCWithNotices(t, map[string]string{}, "--namespace", testNamespaceID, "agent", "deploy-first", testAgentID, "--key", "review-1", "--configuration", "cfg_55555555-5555-4555-8555-555555555555", "--generation", "1")
+	if err == nil {
+		t.Fatal("older server must fail closed")
+	}
+	if len(requests) != 1 || !strings.HasSuffix(requests[0], "/deploy-first") {
+		t.Fatalf("unexpected fallback: %v", requests)
+	}
+}
+
+func TestFirstDeploymentRejectsUnusableReceipts(t *testing.T) {
+	configurationID := "cfg_55555555-5555-4555-8555-555555555555"
+	for _, command := range []string{"deploy-first", "recover-first-deployment"} {
+		for _, tc := range []struct {
+			name, field string
+			value       any
+		}{
+			{"empty", "", nil},
+			{"revision ID", "revisionId", "unusable-private-receipt"},
+			{"timestamp", "createdAt", "2026-10-30T00:00:00Z"},
+			{"Namespace", "namespaceId", "ns_66666666-6666-4666-8666-666666666666"},
+			{"Agent", "agentId", "agt_66666666-6666-4666-8666-666666666666"},
+			{"Configuration", "configurationId", "cfg_66666666-6666-4666-8666-666666666666"},
+			{"generation", "configurationGeneration", 4},
+			{"additional field", "unexpected", "unusable-private-receipt"},
+		} {
+			t.Run(command+"/"+tc.name, func(t *testing.T) {
+				receipt := map[string]any{"revisionId": testRevision1ID, "namespaceId": testNamespaceID, "agentId": testAgentID, "configurationId": configurationID, "configurationGeneration": 3, "createdAt": "2026-10-30T00:00:00.000Z"}
+				if tc.field == "" {
+					clear(receipt)
+				} else {
+					receipt[tc.field] = tc.value
+				}
+				calls := 0
+				handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					calls++
+					if command == "deploy-first" {
+						w.WriteHeader(http.StatusAccepted)
+					}
+					_ = json.MarshalWrite(w, map[string]any{"data": receipt, "meta": map[string]string{"requestId": "test"}})
+				})
+				out, notices, err := runOCCAgainst(t, handler, "--namespace", testNamespaceID, "--output", "json", "agent", command, testAgentID, "--key", "review-1", "--configuration", configurationID, "--generation", "3")
+				// A readable envelope is not a receipt for the requested admission.
+				// Reject it without echoing payload values or inventing another request.
+				if err == nil || !strings.Contains(err.Error(), "invalid first-deployment receipt") || out != "" || calls != 1 {
+					t.Fatalf("error = %v, stdout = %q, requests = %d", err, out, calls)
+				}
+				if strings.Contains(err.Error()+notices, "unusable-private-receipt") {
+					t.Fatal("invalid receipt payload leaked")
+				}
+				if strings.Contains(notices, "agent recover-first-deployment") != (command == "deploy-first") {
+					t.Fatalf("unexpected recovery guidance: %s", notices)
+				}
+			})
+		}
+	}
+}
+
+func TestFirstDeploymentClientRejectsDotSegmentsBeforeRequest(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(404)
+	}))
+	defer server.Close()
+	client, err := occclient.New(occclient.Config{URL: server.URL, Timeout: time.Second, ServiceKeyFile: writeKeyFile(t, `{"data":{"key":"test-key"}}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{".", "..", "a/b"} {
+		intent := occclient.FirstDeploymentIntent{Key: key, ExpectedConfigurationID: "cfg_55555555-5555-4555-8555-555555555555", ExpectedGeneration: 1}
+		if _, err := client.RecoverAgentFirstDeployment(testNamespaceID, testAgentID, intent); err == nil {
+			t.Fatalf("accepted recovery key %q", key)
+		}
+		if _, err := client.DeployAgentFirst(testNamespaceID, testAgentID, intent); err == nil {
+			t.Fatalf("accepted deployment key %q", key)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("invalid keys caused %d requests", calls)
+	}
+}
+
+func TestFirstDeploymentNullResponse(t *testing.T) {
+	for _, command := range []string{"recover-first-deployment", "deploy-first"} {
+		formats := []string{"", "json", "yaml"}
+		if command == "deploy-first" {
+			formats = []string{"json"}
+		}
+		for _, format := range formats {
+			t.Run(command+"/"+format, func(t *testing.T) {
+				calls := 0
+				handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					calls++
+					if command == "recover-first-deployment" && r.Method != http.MethodGet {
+						t.Errorf("recovery used %s", r.Method)
+					}
+					w.Header().Set("Content-Type", "application/json")
+					if command == "deploy-first" {
+						w.WriteHeader(http.StatusAccepted)
+					}
+					_, _ = w.Write([]byte(`{"data":null,"meta":{"requestId":"test"}}`))
+				})
+				args := []string{"--namespace", testNamespaceID}
+				if format != "" {
+					args = append(args, "--output", format)
+				}
+				args = append(args, "agent", command, testAgentID, "--key", "review-1", "--configuration", "cfg_55555555-5555-4555-8555-555555555555", "--generation", "1")
+				stdout, stderr, err := runOCCAgainst(t, handler, args...)
+				if calls != 1 {
+					t.Fatalf("requests = %d; must not retry", calls)
+				}
+				if command == "deploy-first" {
+					if err == nil || !strings.Contains(err.Error(), "invalid") {
+						t.Fatalf("null admission must be malformed: %v", err)
+					}
+					if strings.Contains(stderr, "No matching admission") {
+						t.Fatalf("admission was reported as a lookup miss: %s", stderr)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(stderr, "No matching admission found") || !strings.Contains(stderr, "does not prove failure") {
+					t.Fatalf("missing uncertainty notice: %s", stderr)
+				}
+				if format == "" {
+					if stdout != "" {
+						t.Fatalf("unexpected table: %s", stdout)
+					}
+				} else if strings.TrimSpace(stdout) != "null" {
+					t.Fatalf("structured miss = %q", stdout)
+				}
+			})
+		}
+	}
+}
+
+func TestFirstDeploymentRecoveryMissWithClosedStderr(t *testing.T) {
+	const configurationID = "cfg_55555555-5555-4555-8555-555555555555"
+	path := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID + "/deploy-first/review-1/" + configurationID + "/1"
+	for _, format := range []string{"table", "json", "yaml"} {
+		t.Run(format, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				body, err := io.ReadAll(r.Body)
+				if err != nil || len(body) != 0 || r.ContentLength != 0 || r.Method != http.MethodGet || r.URL.RequestURI() != path {
+					t.Errorf("recovery must be a bodyless GET to %s; got %s %s, content length %d, body length %d, read error %v", path, r.Method, r.URL.RequestURI(), r.ContentLength, len(body), err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"data":null,"meta":{"requestId":"req_00000000-0000-4000-8000-000000000001"}}`))
+			}))
+			t.Cleanup(server.Close)
+			caBundle := filepath.Join(t.TempDir(), "ca.pem")
+			if err := os.WriteFile(caBundle, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
+				t.Fatal(err)
+			}
+			keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
+			reader, stderr := io.Pipe()
+			defer stderr.Close()
+			if err := reader.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			var stdout bytes.Buffer
+			command := New(&stdout, stderr)
+			command.SetArgs([]string{"--url", server.URL, "--service-key-file", keyFile, "--ca-bundle", caBundle, "--namespace", testNamespaceID, "--output", format, "agent", "recover-first-deployment", testAgentID, "--key", "review-1", "--configuration", configurationID, "--generation", "1"})
+			err := command.Execute()
+			server.Close()
+			if calls != 1 {
+				t.Fatalf("requests = %d; recovery must make exactly one GET", calls)
+			}
+			if format == "table" {
+				if stdout.Len() != 0 {
+					t.Fatalf("unexpected table output: %q", stdout.String())
+				}
+				if !errors.Is(err, io.ErrClosedPipe) {
+					t.Fatalf("table recovery returned %v; want closed stderr pipe error", err)
+				}
+				if !strings.HasPrefix(err.Error(), "write first-deployment recovery notice to stderr: ") {
+					t.Fatalf("table recovery error lacks notice write context: %v", err)
+				}
+				if !strings.Contains(err.Error(), "restore stderr and repeat this recover-first-deployment command") {
+					t.Fatalf("table recovery error lacks read-only retry guidance: %v", err)
+				}
+			} else if err != nil || stdout.String() != "null\n" {
+				t.Fatalf("%s recovery with closed stderr: stdout = %q, err = %v; want null and success", format, stdout.String(), err)
+			}
+		})
+	}
+}
+
+func TestFirstDeploymentIntentValidationBeforeClientConstruction(t *testing.T) {
+	for _, command := range []string{"deploy-first", "recover-first-deployment"} {
+		for _, invalid := range []struct{ key, configuration, generation, field string }{
+			{"review-1", "cfg_55555555-5555-4555-8555-555555555555", "0", "--generation"},
+			{"review-1", "cfg_55555555-5555-4555-8555-555555555555", "9007199254740992", "--generation"},
+			{"..", "cfg_55555555-5555-4555-8555-555555555555", "1", "--key"},
+			{"review-1", "wrong", "1", "--configuration"},
+		} {
+			_, _, requests, err := runOCCWithNotices(t, map[string]string{}, "--url", ":invalid-url", "--namespace", testNamespaceID, "agent", command, testAgentID, "--key", invalid.key, "--configuration", invalid.configuration, "--generation", invalid.generation)
+			if err == nil || !strings.Contains(err.Error(), invalid.field) || len(requests) != 0 {
+				t.Fatalf("%s validation: error=%v requests=%v", invalid.field, err, requests)
+			}
+		}
+	}
+}
+
+func TestFirstDeploymentClientGenerationBoundary(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Method != http.MethodGet || !strings.HasSuffix(r.URL.Path, "/9007199254740991") || r.ContentLength > 0 {
+			t.Errorf("unexpected recovery: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":null,"meta":{"requestId":"test"}}`))
+	}))
+	defer server.Close()
+	client, err := occclient.New(occclient.Config{URL: server.URL, Timeout: time.Second, ServiceKeyFile: writeKeyFile(t, `{"data":{"key":"test-key"}}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := occclient.FirstDeploymentIntent{Key: "review-1", ExpectedConfigurationID: "cfg_55555555-5555-4555-8555-555555555555", ExpectedGeneration: 9007199254740991}
+	if receipt, err := client.RecoverAgentFirstDeployment(testNamespaceID, testAgentID, intent); err != nil || receipt != nil {
+		t.Fatalf("maximum generation: %v %v", receipt, err)
+	}
+	for _, generation := range []int64{0, -1, 9007199254740992} {
+		intent.ExpectedGeneration = generation
+		for _, call := range []func(string, string, occclient.FirstDeploymentIntent) (any, error){client.DeployAgentFirst, client.RecoverAgentFirstDeployment} {
+			if _, err := call(testNamespaceID, testAgentID, intent); err == nil || !strings.Contains(err.Error(), "--generation") {
+				t.Fatalf("accepted invalid generation %d: %v", generation, err)
+			}
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("requests = %d", calls)
+	}
+}
+
+func TestFirstDeploymentCLICanonicalDecimal(t *testing.T) {
+	for _, command := range []string{"deploy-first", "recover-first-deployment"} {
+		for _, generation := range []string{"01", "010", "08", "0x10", "10"} {
+			t.Run(command+"/"+generation, func(t *testing.T) {
+				calls := 0
+				handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					calls++
+					if command == "deploy-first" {
+						var body occclient.FirstDeploymentIntent
+						if err := json.UnmarshalRead(r.Body, &body); err != nil {
+							t.Fatal(err)
+						}
+						if r.Method != http.MethodPost || body.ExpectedGeneration != 10 {
+							t.Errorf("unexpected POST: %s %+v", r.Method, body)
+						}
+					} else if r.Method != http.MethodGet || !strings.HasSuffix(r.URL.Path, "/10") {
+						t.Errorf("unexpected GET: %s %s", r.Method, r.URL.Path)
+					}
+					w.Header().Set("Content-Type", "application/json")
+					if command == "deploy-first" {
+						w.WriteHeader(http.StatusAccepted)
+					}
+					_, _ = w.Write([]byte(`{"data":{"revisionId":"` + testRevision1ID + `","namespaceId":"` + testNamespaceID + `","agentId":"` + testAgentID + `","configurationId":"cfg_55555555-5555-4555-8555-555555555555","configurationGeneration":10,"createdAt":"2026-10-30T00:00:00.000Z"},"meta":{"requestId":"test"}}`))
+				})
+				_, _, err := runOCCAgainst(t, handler, "--namespace", testNamespaceID, "agent", command, testAgentID, "--key", "review-1", "--configuration", "cfg_55555555-5555-4555-8555-555555555555", "--generation", generation)
+				if generation == "10" {
+					if err != nil || calls != 1 {
+						t.Fatalf("decimal control: err=%v calls=%d", err, calls)
+					}
+				} else if err == nil || !strings.Contains(err.Error(), "--generation") || calls != 0 {
+					t.Fatalf("noncanonical %s: err=%v calls=%d", generation, err, calls)
+				}
+			})
+		}
+	}
+}
+
+func TestDeployRetainsRequestedOverridesInsteadOfResolvedDefaults(t *testing.T) {
+	base := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	readable := func(overrides map[string]any) map[string]any {
+		return map[string]any{
+			"id": testRevision1ID, "namespaceId": testNamespaceID, "agentId": testAgentID,
+			"revision": 1, "backendId": nil, "configurationId": "cfg_55555555-5555-4555-8555-555555555555",
+			"configurationKind": "agent", "configurationGeneration": 1, "gatewayManagedMode": false,
+			"configuration": map[string]any{"agents": map[string]any{"defaults": map[string]any{"model": "codex/gpt-5"}}},
+			"harness": map[string]any{"id": "codex", "version": "fixture", "mode": "dedicated", "overrides": overrides,
+				"configuration": map[string]any{"modelProvider": map[string]any{"protocol": "openai-responses", "baseUrl": "https://previous.example.com/v1", "supportsStandaloneWebSearch": false}}},
+			"compute":     map[string]any{"id": "kubernetes", "implementation": "kubernetes"},
+			"harnessAuth": map[string]any{"method": "api_key", "source": map[string]any{"kind": "secret", "namespaceId": testNamespaceID, "id": "sec_44444444-4444-4444-8444-444444444444"}},
+			"createdAt":   "2026-11-06T00:00:00.000Z",
+		}
+	}
+	// OCC returns a revision whose saved settings it cannot decode as metadata and a
+	// read error, with no settings. That covers revisions saved before OCC recorded
+	// Harness settings and other invalid or legacy saved state alike.
+	unreadable := map[string]any{
+		"id": testRevision1ID, "namespaceId": testNamespaceID, "agentId": testAgentID,
+		"revision": 1, "backendId": nil, "createdAt": "2026-10-20T00:00:00.000Z",
+		"configurationReadError": map[string]any{"code": "SAVED_CONFIGURATION_UNREADABLE", "field": "harnessAuth"},
+	}
+	// summary is the revision as the Agent's revision list returns it. OCC includes
+	// harness.overrides there only when the revision recorded them.
+	summary := func(harness map[string]any) map[string]any {
+		return map[string]any{
+			"id": testRevision1ID, "namespaceId": testNamespaceID, "agentId": testAgentID, "revision": 1, "backendId": nil,
+			"configurationId": "cfg_55555555-5555-4555-8555-555555555555", "configurationGeneration": 1,
+			"createdAt": "2026-10-20T00:00:00.000Z", "deploymentStatus": "succeeded", "deploymentErrorCode": nil,
+			"harness": harness,
+		}
+	}
+	descriptor := map[string]any{"id": "codex", "version": "fixture", "mode": "dedicated"}
+	provider := map[string]any{"modelProvider": map[string]any{"protocol": "openai-responses", "baseUrl": "https://evaluation.example.com/v1"}}
+	for _, test := range []struct {
+		name     string
+		revision map[string]any
+		// summaries is the revision list page; nil means the CLI must not list.
+		summaries []any
+		// body is the deploy request body; nil means none. OCC treats a missing
+		// body as no overrides, and servers older than Harness overrides refuse a body.
+		body   map[string]any
+		notice string
+		// refusal is the expected error; the CLI must then send no deploy request.
+		refusal string
+	}{
+		// The old revision inherited a default. Retaining its request must send no
+		// overrides, so an upgrade resolves the current default instead of inventing one.
+		{name: "inherited default", revision: readable(map[string]any{})},
+		{name: "requested override", revision: readable(provider), body: map[string]any{"harnessOverrides": provider}},
+		{
+			// A revision saved before OCC recorded Harness settings requested none.
+			name: "read error and summary without overrides", revision: unreadable,
+			summaries: []any{summary(descriptor)},
+			notice:    "notice: revision " + testRevision1ID + " has unreadable saved settings (SAVED_CONFIGURATION_UNREADABLE: harnessAuth) and records no Harness overrides, so none are retained; the deployment uses current Installation defaults.\n",
+		},
+		{
+			// A revision that recorded overrides but is unreadable for another reason
+			// must keep them; redeploying with Installation defaults would drop them silently.
+			name: "read error and summary with overrides", revision: unreadable,
+			summaries: []any{summary(map[string]any{"id": "codex", "version": "fixture", "mode": "dedicated", "overrides": provider})},
+			body:      map[string]any{"harnessOverrides": provider},
+			notice:    "notice: revision " + testRevision1ID + " has unreadable saved settings (SAVED_CONFIGURATION_UNREADABLE: harnessAuth); retaining the Harness overrides that its revision summary records.\n",
+		},
+		{
+			name:     "no Harness settings",
+			revision: map[string]any{"id": testRevision1ID, "namespaceId": testNamespaceID, "agentId": testAgentID, "revision": 1},
+			refusal:  "the selected revision has no Harness settings",
+		},
+		{
+			name:     "no requested overrides",
+			revision: map[string]any{"id": testRevision1ID, "namespaceId": testNamespaceID, "agentId": testAgentID, "revision": 1, "harness": descriptor},
+			refusal:  "the selected revision has no requested Harness overrides",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var calls []string
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls = append(calls, r.Method+" "+r.URL.Path)
+				w.Header().Set("Content-Type", "application/json")
+				var data any
+				meta := map[string]any{"requestId": "test"}
+				switch r.Method + " " + r.URL.Path {
+				case "GET " + base + "/revisions/" + testRevision1ID:
+					data = test.revision
+				case "GET " + base + "/revisions":
+					data = test.summaries
+					meta["nextCursor"] = nil
+				case "POST " + base + "/deploy":
+					raw, err := io.ReadAll(r.Body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if test.body == nil {
+						if len(raw) != 0 || r.Header.Get("Content-Type") != "" {
+							t.Errorf("expected no deploy body, got %q (%q)", raw, r.Header.Get("Content-Type"))
+						}
+					} else {
+						var body map[string]any
+						if err := json.Unmarshal(raw, &body); err != nil {
+							t.Fatal(err)
+						}
+						if !reflect.DeepEqual(body, test.body) {
+							t.Errorf("deploy body = %#v, want %#v", body, test.body)
+						}
+					}
+					w.WriteHeader(http.StatusAccepted)
+					data = map[string]any{"id": testRevision2ID, "revision": 2, "agentId": testAgentID, "configurationId": "cfg_55555555-5555-4555-8555-555555555555"}
+				case "GET " + base + "/deployments/" + testRevision2ID:
+					data = map[string]any{"deploymentId": testRevision2ID, "namespaceId": testNamespaceID, "agentId": testAgentID, "status": "queued"}
+				default:
+					t.Errorf("unexpected operation: %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				if err := json.MarshalWrite(w, map[string]any{"data": data, "meta": meta}); err != nil {
+					t.Fatal(err)
+				}
+			})
+			out, notices, err := runOCCAgainst(t, handler, "--namespace", testNamespaceID, "agent", "deploy", testAgentID, "--retain-harness-overrides", testRevision1ID)
+			want := []string{"GET " + base + "/revisions/" + testRevision1ID}
+			if test.summaries != nil {
+				want = append(want, "GET "+base+"/revisions")
+			}
+			if test.refusal != "" {
+				if err == nil || err.Error() != test.refusal {
+					t.Fatalf("error = %v, want %q", err, test.refusal)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(out, testRevision2ID) || notices != test.notice {
+					t.Fatalf("wrong deployment receipt: %q %s", notices, out)
+				}
+				want = append(want, "POST "+base+"/deploy", "GET "+base+"/deployments/"+testRevision2ID)
+			}
+			if !slices.Equal(calls, want) {
+				t.Fatalf("operations = %v", calls)
+			}
+		})
 	}
 }

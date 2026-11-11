@@ -34,19 +34,27 @@ in the controller's ServiceAccount or protected kubeconfig, not inline YAML valu
 
 ## Images and resources
 
-| Setting                                 | Type       | Requirement | Value, default, and constraints                                                                            |
-| --------------------------------------- | ---------- | ----------- | ---------------------------------------------------------------------------------------------------------- |
-| `images.gateway`, `images.agent`        | string     | Required    | Approved image references with lowercase repository paths.                                                 |
-| `images.requireImmutableDigest`         | boolean    | Required    | Must be `true` in production, requiring lowercase `@sha256:` digests.                                      |
-| `resources.gateway`, `resources.agent`  | object     | Required    | Each has `requests` and `limits`, both with `cpu` and `memory` quantity strings. Requests must fit limits. |
-| `resources.namespace.quota`             | string map | Required    | Nonempty Kubernetes resource quota; nonnegative quantity strings.                                          |
-| `resources.namespace.containerDefaults` | object     | Required    | Namespace default `requests` and `limits`, each with `cpu` and `memory`.                                   |
+| Setting                                 | Type       | Requirement | Value, default, and constraints                                                                                         |
+| --------------------------------------- | ---------- | ----------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `images.gateway`, `images.agent`        | string     | Required    | Approved image references with lowercase repository paths.                                                              |
+| `images.requireImmutableDigest`         | boolean    | Required    | Must be `true` in production, requiring lowercase `@sha256:` digests.                                                   |
+| `resources.gateway`, `resources.agent`  | object     | Required    | Each has `requests` and `limits`, both with non-negative `cpu` and `memory` quantity strings. Requests must fit limits. |
+| `resources.namespace.quota`             | string map | Required    | Nonempty Kubernetes resource quota; non-negative quantity strings.                                                      |
+| `resources.namespace.containerDefaults` | object     | Required    | Namespace default `requests` and `limits`, each with non-negative `cpu` and `memory` quantities.                        |
 
 Quotas and defaults cover both roles in a shared tenant namespace; the two-cluster
 profile applies them to each physical target. Quote quantities such as `cpu: "4"`.
 The [installation profiles](../../../guides/deploy/installation-profiles.md) explain
 the measured memory defaults. Invalid resource pairs, quotas, and selector labels
 fail before resource creation.
+
+Object-count quotas, such as `pods`, `services`, and `count/deployments.apps`,
+must satisfy Kubernetes integer precision. Use whole counts such as `"4"`;
+quantity suffixes that represent a whole count, such as `"1000m"` or `"1.5Ki"`,
+remain valid. Fractional CPU and storage quotas retain their existing rules.
+Previously accepted counted quotas that Kubernetes refuses now stop API and
+worker startup with a diagnostic naming `resources.namespace.quota` and the
+resource. Correct that entry before restarting either process.
 
 ## Network
 
@@ -79,30 +87,29 @@ for label constraints, egress rules, and source-address verification.
 Omission selects the verification runtime. Storage requirements are defined in
 [storage and credentials](storage-and-credentials.md).
 
-| Setting                                         | Type       | Requirement | Value, default, and constraints                                                                                                                                                    |
-| ----------------------------------------------- | ---------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `runtime.transportSecretPrefix`                 | string     | Required    | Must form a DNS-safe Secret name with `-` and a 12-character suffix.                                                                                                               |
-| `runtime.gatewayStorageClassName`               | string     | Required    | DNS-safe StorageClass name for private `10Gi` RWO gateway disks with filesystem locking and durability.                                                                            |
-| `runtime.nodeSelector`                          | string map | Optional    | Harness and embedded Pod placement. Omission adds no selector.                                                                                                                     |
-| `runtime.gatewayNodeSelector`                   | string map | Optional    | Required for dedicated real Gateways, including their state initializer. Use separate trusted and tenant node pools.                                                               |
-| `runtime.nativeOpenClawSessionCapacity`         | integer    | Optional    | `1`–`1024`, default `8` retained native session workers per AgentRevision Sandbox.                                                                                                 |
-| `runtime.codexSeccompProfile`                   | string     | Optional    | Relative localhost profile installed on every eligible node. Omission uses `RuntimeDefault`.                                                                                       |
-| `runtime.codexModelBaseUrl`                     | string     | Optional    | HTTPS streaming Responses endpoint ending in `/v1` for dedicated Codex API-key auth; omission retains OpenAI's default.                                                            |
-| `runtime.codexModelSupportsStandaloneWebSearch` | boolean    | Optional    | Default `false` for an explicit endpoint; `true` requires `codexModelBaseUrl`. See [provider capabilities](managed-native-configuration.md#custom-codex-provider-capabilities).    |
-| `runtime.channels`                              | object     | Optional    | Requires `proxyUrl`; optional `managedProxy` has `hostname`, `namespace`, `podLabels`, and `port`. No channel proxy by default. See [channel egress](networking-and-isolation.md). |
+| Setting                                 | Type       | Requirement | Value, default, and constraints                                                                                                                                                    |
+| --------------------------------------- | ---------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `runtime.transportSecretPrefix`         | string     | Required    | Must form a DNS-safe Secret name with `-` and a 12-character suffix.                                                                                                               |
+| `runtime.gatewayStorageClassName`       | string     | Required    | DNS-safe StorageClass name for private RWO Gateway disks with filesystem locking and durability.                                                                                   |
+| `runtime.gatewayStorageSizeGiB`         | integer    | Optional    | `1`–`65536` GiB, default `10`. Choose before creating claims and keep fixed until they are removed; see [Gateway storage](storage-and-credentials.md#gateway-storage).             |
+| `runtime.nodeSelector`                  | string map | Optional    | Harness and embedded Pod placement. Omission adds no selector.                                                                                                                     |
+| `runtime.gatewayNodeSelector`           | string map | Optional    | Required for dedicated real Gateways, including their state initializer. Use separate trusted and tenant node pools.                                                               |
+| `runtime.nativeOpenClawSessionCapacity` | integer    | Optional    | `1`–`1024`, default `8` retained native session workers per AgentRevision Sandbox.                                                                                                 |
+| `runtime.codexSeccompProfile`           | string     | Optional    | Relative localhost profile installed on every eligible node. Omission uses `RuntimeDefault`.                                                                                       |
+| `runtime.modelProvider`                 | object     | Optional    | Default OpenAI-compatible provider for new revisions. Requires `protocol` and `baseUrl`; see [model providers](model-provider.md).                                                 |
+| `runtime.channels`                      | object     | Optional    | Requires `proxyUrl`; optional `managedProxy` has `hostname`, `namespace`, `podLabels`, and `port`. No channel proxy by default. See [channel egress](networking-and-isolation.md). |
 
 Stopping a hosted native session releases its slot; saved history does not consume
 capacity. OpenClaw does not retire idle paired-node workers, so size capacity
-against workload CPU and memory limits.
+against workload CPU and memory limits. See
+[workload capacity checks](../../../guides/topics/agent-troubleshoot.md#check-workload-capacity)
+before relying on totals reported inside the Sandbox.
 
-`codexModelBaseUrl` rejects wildcards, port `0`, `@` or credentials, spaces,
-controls, missing `//`, queries, fragments, and shorthand IPv4. A non-443 port,
-IPv6, or excluded IPv4 [starts with a warning](../../../guides/operate/network-isolation.md#if-a-check-fails).
-OpenShell credential sources select their own endpoint. OAuth, account logins,
-and OpenClaw ignore this option. Only the Harness receives the key. Private
-Gateway configuration qualifies parent and subagent selections (strings or
-primary/fallback objects), preserving native IDs and admitted values. Transport
-uses the authenticated app server and fail-closed HTTP; see [Harness execution](../../harness-execution.md).
+[Revision model settings](model-provider.md) own endpoint selection and
+validation. Credential Sources retain separate destination authorization.
+Only the Harness receives its key. For dedicated Codex, transport uses the
+authenticated app server and fail-closed HTTP; see
+[Harness execution](../../harness-execution.md).
 
 ## Private routing
 

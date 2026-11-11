@@ -3,18 +3,34 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { cp, mkdtemp, mkdir, open, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import {
+  cp,
+  lstat,
+  mkdtemp,
+  mkdir,
+  open,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { Readable } from "node:stream";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 
 import {
   firstAgentPriorPatPolicy,
   firstAgentPriorPatPolicyWarning,
   firstAgentRevisionValuesMatch,
+  verifyFirstAgentModel,
 } from "../../scripts/first-agent-model.mjs";
 import { listen } from "../helpers/listen.mjs";
-import { commandPath, writeCommand } from "../helpers/fake-commands.mjs";
+import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
 import { servedAs } from "../helpers/agent-identity.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
@@ -51,6 +67,9 @@ async function fixture(t, sandboxDriver) {
         containerEngine: "docker",
         composeProject: "first-agent-startup-test",
         cluster: "occ-dev-first-agent-test",
+        browserPort: 8443,
+        browserOrigin: "https://console.occ-dev-first-agent-test.oce.localhost:8443",
+        nativeAdminDomain: "agents.occ-dev-first-agent-test.oce.localhost",
         dockerHost: "unix:///tmp/first-agent-startup-test.sock",
         keyPath,
         keyOwned: true,
@@ -111,7 +130,13 @@ test("first-Agent starts without installed workspace dependencies", async (t) =>
   for (const path of [
     "package.json",
     "scripts/first-agent.mjs",
+    "scripts/first-agent.ts",
     "scripts/first-agent-database.mjs",
+    "scripts/first-agent-api.mjs",
+    "scripts/first-agent-api.ts",
+    "scripts/first-agent-diagnostics.mjs",
+    "scripts/first-agent-diagnostics.ts",
+    "packages/contracts/src/runtime-failure.mjs",
     "scripts/first-agent-model.mjs",
     "scripts/lib/private-owned-path.mjs",
     "packages/contracts/src/api/plain-text.ts",
@@ -246,10 +271,19 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
   );
   // Each admission fill landed separately, so a saved revision can lack any subset of the
   // defaults (finding 2770). Only the identified prior revision gets them filled before comparing.
-  for (let mask = 0; mask < 2 ** GATEWAY_SECURITY_DEFAULTS.length - 1; mask += 1) {
-    const filled = GATEWAY_SECURITY_DEFAULTS.filter((_, index) => mask & (1 << index));
+  // The defaults that apply here: this Configuration enables no channel, so admission fills no
+  // session.dmScope (finding 3191).
+  const unfilled = values("danger-full-access", undefined, []);
+  const applicable = GATEWAY_SECURITY_DEFAULTS.filter(
+    (row) =>
+      JSON.stringify(values("danger-full-access", undefined, [row])) !== JSON.stringify(unfilled),
+  );
+  assert.ok(!applicable.some(({ path }) => path.join(".") === "session.dmScope"));
+  for (let mask = 0; mask < 2 ** applicable.length - 1; mask += 1) {
+    const filled = applicable.filter((_, index) => mask & (1 << index));
     const snapshot = values("danger-full-access", undefined, filled);
-    const missing = `without ${GATEWAY_SECURITY_DEFAULTS.filter((row) => !filled.includes(row))
+    const missing = `without ${applicable
+      .filter((row) => !filled.includes(row))
       .map(({ path }) => path.join("."))
       .join(", ")}`;
     assert.equal(matches(snapshot, "rev_saved"), true, `a prior revision ${missing}`);
@@ -310,32 +344,9 @@ test("first-Agent flags a prior OpenShell PAT revision and points at --replace-k
   assert.match(warning, /current sandbox mode \(danger-full-access/);
 });
 
-test("first-Agent admits dedicated Codex with OpenShell development state", async (t) => {
+test("first-Agent admits dedicated Codex Control UI with OpenShell development state", async (t) => {
   const { engineLog, env } = await fixture(t, "openshell");
 
-  assert.match(runFirstAgent(env, "--harness", "codex"), /docker did not complete successfully/);
-  assert.match(await readFile(engineLog, "utf8"), /compose .* port controller 3000/);
-});
-
-test("first-Agent control UI requires the launcher-owned native admin endpoint", async (t) => {
-  const { directory, engineLog, env } = await fixture(t, "openshell");
-
-  assert.match(
-    runFirstAgent(env, "--harness", "codex", "--control-ui"),
-    /did not enable its durable native admin endpoint/,
-  );
-  await assert.rejects(readFile(engineLog), { code: "ENOENT" });
-
-  const state = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
-  await writeFile(
-    join(directory, "state.json"),
-    `${JSON.stringify({
-      ...state,
-      browserOrigin: "https://console.occ-dev-first-agent-test.oce.localhost:8443",
-      nativeAdminDomain: "agents.occ-dev-first-agent-test.oce.localhost",
-    })}\n`,
-    { mode: 0o600 },
-  );
   assert.match(
     runFirstAgent(env, "--harness", "codex", "--control-ui"),
     /docker did not complete successfully/,
@@ -343,15 +354,40 @@ test("first-Agent control UI requires the launcher-owned native admin endpoint",
   assert.match(await readFile(engineLog, "utf8"), /compose .* port controller 3000/);
 });
 
+test("first-Agent validates launcher-owned HTTPS endpoints before external calls", async (t) => {
+  const { directory, engineLog, env } = await fixture(t, "none");
+  const state = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
+  // Browser settings are mandatory even when this setup disables Agent browser access.
+  for (const [label, change] of [
+    ["missing origin", { browserOrigin: undefined }],
+    ["missing domain", { nativeAdminDomain: undefined }],
+    ["unowned domain", { nativeAdminDomain: "agents.other.oce.localhost" }],
+    ["unowned origin", { browserOrigin: "https://console.other.oce.localhost:8443" }],
+    ["insecure origin", { browserOrigin: state.browserOrigin.replace("https:", "http:") }],
+    ["mismatched port", { browserPort: 8444 }],
+    ["missing port", { browserPort: undefined }],
+    ["invalid port", { browserPort: 65536 }],
+  ]) {
+    await writeFile(join(directory, "state.json"), JSON.stringify({ ...state, ...change }));
+    assert.match(runFirstAgent(env), /recorded Local Setup .* is invalid/, label);
+    await assert.rejects(readFile(engineLog), { code: "ENOENT" });
+  }
+  await writeFile(join(directory, "state.json"), JSON.stringify(state));
+  assert.match(
+    runFirstAgent(env, "--control-ui"),
+    /Control UI requires the OpenShell Sandbox Driver/,
+  );
+  await assert.rejects(readFile(engineLog), { code: "ENOENT" });
+});
+
 test("first-Agent admits a native admin origin on the default HTTPS port", async (t) => {
   const { directory, engineLog, env } = await fixture(t, "openshell");
   const state = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
   const host = "console.occ-dev-first-agent-test.oce.localhost";
-  // The canonical origin current Local Setup records for port 443, the explicit
-  // :443 form older Local Setup recorded, and forms that are still refused.
+  // Only the canonical origin emitted by Local Setup is accepted.
   for (const [browserOrigin, admitted] of [
     [`https://${host}`, true],
-    [`https://${host}:443`, true],
+    [`https://${host}:443`, false],
     [`https://${host}:443/`, false],
     [`https://${host}/`, false],
     [`https://${host}:0443`, false],
@@ -362,6 +398,7 @@ test("first-Agent admits a native admin origin on the default HTTPS port", async
       `${JSON.stringify({
         ...state,
         browserOrigin,
+        browserPort: 443,
         nativeAdminDomain: "agents.occ-dev-first-agent-test.oce.localhost",
       })}\n`,
       { mode: 0o600 },
@@ -379,19 +416,24 @@ test("first-Agent admits a native admin origin on the default HTTPS port", async
 // A k3d development state whose controller answers the reads first-agent makes before it
 // touches the database: the Installation, a ready default Namespace and its (empty) Agent list.
 // kubectl records the PostgreSQL exec and fails, so a run that gets that far stops there.
-async function k3dFixture(t) {
-  const fixtureState = await fixture(t, "none");
+async function k3dFixture(t, sandboxDriver = "none", handleRequest) {
+  const fixtureState = await fixture(t, sandboxDriver);
   const { directory } = fixtureState;
-  const server = createServer((request, response) => {
-    const data = {
-      "/installation": { id: "ins_test" },
-      "/namespaces": [{ id: "ns_test", name: "default" }],
-      "/namespaces/ns_test": { id: "ns_test", status: "ready" },
-      "/namespaces/ns_test/agents": [],
-    }[request.url];
-    response.writeHead(data === undefined ? 404 : 200, { "content-type": "application/json" });
-    response.end(JSON.stringify(data === undefined ? { error: { code: "NOT_FOUND" } } : { data }));
-  });
+  const server = createServer(
+    handleRequest ??
+      ((request, response) => {
+        const data = {
+          "/installation": { id: "ins_test" },
+          "/namespaces": [{ id: "ns_test", name: "default" }],
+          "/namespaces/ns_test": { id: "ns_test", status: "ready" },
+          "/namespaces/ns_test/agents": [],
+        }[request.url];
+        response.writeHead(data === undefined ? 404 : 200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify(data === undefined ? { error: { code: "NOT_FOUND" } } : { data }),
+        );
+      }),
+  );
   await listen(t, server);
   const state = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
   await writeFile(
@@ -438,6 +480,233 @@ async function runFirstAgentAsync(env, ...args) {
   return output;
 }
 
+test("first-Agent deployment failure advice follows the reported cause", async (t) => {
+  for (const code of [
+    "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+    "RUNTIME_AUTHENTICATION_FAILED",
+    "RUNTIME_STARTUP_FAILED",
+  ]) {
+    await t.test(code, async (t) => {
+      const suffix = "00000000-0000-4000-8000-000000000001";
+      const installationId = `ins_${suffix}`;
+      const namespaceId = `ns_${suffix}`;
+      const agentId = `agt_${suffix}`;
+      const configurationId = `cfg_${suffix}`;
+      const revisionId = `rev_${suffix}`;
+      const base = `/namespaces/${namespaceId}`;
+      const agentPath = `${base}/agents/${agentId}`;
+      const name = "state-contract-test";
+      const secret = {
+        id: `sec_${suffix}`,
+        name: "saved-model-key",
+        ref: { kind: "secret", namespaceId: namespaceId, id: `sec_${suffix}` },
+      };
+      let configuration;
+      let agent;
+      let revision;
+      let deploymentReads = 0;
+      const unexpected = [];
+      // Run the real helper and HTTP client against supported API envelopes. The
+      // fixture supplies deployment evidence, not policy or credential decisions;
+      // this does not exercise a controller, database, cluster, or model provider.
+      const { directory, engineLog, env } = await k3dFixture(
+        t,
+        "openshell",
+        async (request, response) => {
+          const chunks = [];
+          for await (const chunk of request) {
+            chunks.push(chunk);
+          }
+          const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined;
+          let data;
+          let status = 200;
+          const meta = { requestId: `req_${suffix}` };
+          switch (`${request.method} ${request.url}`) {
+            case "GET /installation":
+              data = { id: installationId };
+              break;
+            case "GET /namespaces":
+              data = [{ id: namespaceId, name: "default" }];
+              break;
+            case `GET ${base}`:
+              data = { id: namespaceId, status: "ready" };
+              break;
+            case `GET ${base}/agents`:
+            case `GET ${base}/credential-sources`:
+            case `GET ${base}/iam/roles`:
+            case `GET ${base}/iam/access-bindings`:
+              data = [];
+              break;
+            case `GET ${base}/secrets/${secret.id}`:
+              data = secret;
+              break;
+            case `POST ${base}/credential-sources`:
+              status = 201;
+              data = { ...body, id: `cs_${suffix}`, state: "ready" };
+              break;
+            case `POST ${base}/configurations`:
+              status = 201;
+              configuration = {
+                ...body,
+                id: configurationId,
+                namespaceId: namespaceId,
+                generation: 1,
+              };
+              data = configuration;
+              break;
+            case `GET ${base}/configurations/${configurationId}`:
+              data = configuration;
+              break;
+            case `POST ${base}/agents`:
+              status = 201;
+              agent = {
+                ...body,
+                id: agentId,
+                namespaceId: namespaceId,
+                servicePrincipalId: "sp_agent",
+                backendId: null,
+                activeRevisionId: null,
+                desiredRuntimeState: "stopped",
+              };
+              data = agent;
+              break;
+            case `GET ${agentPath}`:
+              data = agent;
+              break;
+            case `POST ${base}/iam/roles`:
+              status = 201;
+              data = { ...body, id: "role_test" };
+              break;
+            case `POST ${base}/iam/access-bindings`:
+              status = 201;
+              data = { ...body, id: "binding_test" };
+              break;
+            case `GET ${agentPath}/runtime-credentials`:
+              data = { transportConfigured: false };
+              break;
+            case `POST ${agentPath}/runtime-credentials`:
+              data = { transportConfigured: true };
+              break;
+            case `GET ${agentPath}/revisions?limit=1`:
+              data = revision ? [{ id: revision.id }] : [];
+              meta.nextCursor = null;
+              break;
+            case `POST ${agentPath}/deploy`: {
+              status = 202;
+              agent.desiredRuntimeState = "running";
+              // Model the admitted snapshot from the helper's actual Configuration,
+              // including the existing OpenShell workspace and permission settings.
+              const values = withGatewaySecurityDefaults(
+                servedAs(structuredClone(configuration.values), name),
+              );
+              values.agents.defaults.workspace = "/sandbox/enterprise";
+              values.plugins.entries.codex.config.appServer.sandbox = "danger-full-access";
+              values.plugins.entries.codex.config.appServer.approvalsReviewer = "user";
+              revision = {
+                id: revisionId,
+                agentId: agent.id,
+                namespaceId: namespaceId,
+                configurationId: configuration.id,
+                configurationKind: "agent",
+                configurationGeneration: 1,
+                configuration: {
+                  ...values,
+                  logging: { level: "info", consoleLevel: "info", consoleStyle: "json" },
+                  diagnostics: { otel: { logs: false } },
+                },
+                harness: { id: "codex", mode: "dedicated" },
+                harnessAuth: agent.harnessAuth,
+                backendId: null,
+              };
+              data = revision;
+              break;
+            }
+            case `GET ${agentPath}/deployments/${revisionId}`:
+              deploymentReads++;
+              data = {
+                namespaceId: namespaceId,
+                agentId: agent.id,
+                deploymentId: revision.id,
+                status: "failed",
+                cleanup: null,
+                progress: null,
+                warnings: [],
+                error: { code, message: "private-provider-message" },
+              };
+              break;
+            default:
+              unexpected.push(`${request.method} ${request.url}`);
+          }
+          response.writeHead(data === undefined ? 404 : status, {
+            "content-type": "application/json",
+          });
+          response.end(
+            JSON.stringify(
+              data === undefined ? { error: { code: "NOT_FOUND" }, meta } : { data, meta },
+            ),
+          );
+        },
+      );
+      const keyPath = join(directory, "initial-admin-service-key.json");
+      const key = JSON.parse(await readFile(keyPath, "utf8"));
+      key.meta.installationId = installationId;
+      await writeFile(keyPath, JSON.stringify(key));
+      // Resume an interrupted run after it saved its Secret. No model credential
+      // is needed or read, and the real helper creates the remaining resources.
+      const recordPath = join(
+        directory,
+        `first-agent-${createHash("sha256").update(name).digest("hex").slice(0, 32)}.json`,
+      );
+      await writeFile(
+        recordPath,
+        JSON.stringify({
+          version: 3,
+          name,
+          namespaceId: namespaceId,
+          model: "fixture-model",
+          harness: "codex",
+          sandboxDriver: "openshell",
+          controlUi: false,
+          authMethod: "codex_pat",
+          secretId: secret.id,
+          secretName: secret.name,
+          credentialSourceName: "saved-model-source",
+        }),
+        { mode: 0o600 },
+      );
+      for (const key of [
+        "OPENCLAW_FIRST_AGENT_MODEL",
+        "OPENAI_API_KEY",
+        "OPENAI_API_KEY_FILE",
+        "CODEX_ACCESS_TOKEN",
+        "CODEX_ACCESS_TOKEN_FILE",
+      ]) {
+        delete env[key];
+      }
+      const output = await runFirstAgentAsync(env, "--harness", "codex");
+      assert.match(output, new RegExp(`The Agent deployment failed \\(${code}\\)`));
+      assert.doesNotMatch(output, /private-provider-message/);
+      if (code === "RUNTIME_AUTHENTICATION_FAILED") {
+        assert.match(output, /Check the model key.*--replace-key/);
+      } else {
+        assert.doesNotMatch(output, /Check the model key|--replace-key/);
+        if (code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE") {
+          assert.match(output, /managed permission policy.*incompatible/);
+          assert.match(output, /sandbox.*permission profile.*approval reviewer/);
+        } else {
+          assert.match(
+            output,
+            /Inspect the deployment in the Console and the controller worker logs/,
+          );
+        }
+      }
+      assert.equal(deploymentReads, 1, "terminal failure stops polling immediately");
+      assert.deepEqual(unexpected, [], "no runtime or model request follows failed deployment");
+      await assert.rejects(readFile(engineLog), { code: "ENOENT" });
+    });
+  }
+});
+
 test("first-Agent runs psql through the k3d PostgreSQL StatefulSet", async (t) => {
   const { engineLog, env, context } = await k3dFixture(t);
 
@@ -449,6 +718,123 @@ test("first-Agent runs psql through the k3d PostgreSQL StatefulSet", async (t) =
       `^--kubeconfig \\S+ --context ${context} -n occ-system exec -i statefulset/postgres -c postgres -- psql `,
     ),
   );
+});
+
+test("first-Agent preserves live and abandoned locks until inspected recovery", async (t) => {
+  let agentReads = 0;
+  let holdOwner = true;
+  const entered = Promise.withResolvers();
+  const { directory, engineLog, env } = await k3dFixture(t, "none", (request, response) => {
+    if (request.url === "/namespaces/ns_test/agents") {
+      agentReads++;
+      if (holdOwner) {
+        entered.resolve();
+        return;
+      }
+    }
+    const data = {
+      "/installation": { id: "ins_test" },
+      "/namespaces": [{ id: "ns_test", name: "default" }],
+      "/namespaces/ns_test": { id: "ns_test", status: "ready" },
+      "/namespaces/ns_test/agents": [],
+    }[request.url];
+    response.writeHead(data === undefined ? 404 : 200, { "content-type": "application/json" });
+    response.end(JSON.stringify(data === undefined ? { error: { code: "NOT_FOUND" } } : { data }));
+  });
+  for (const name of [
+    "CODEX_ACCESS_TOKEN",
+    "CODEX_ACCESS_TOKEN_FILE",
+    "OPENAI_API_KEY",
+    "OPENAI_API_KEY_FILE",
+  ]) {
+    delete env[name];
+  }
+  const recordPath = join(
+    directory,
+    `first-agent-${createHash("sha256").update("state-contract-test").digest("hex").slice(0, 32)}.json`,
+  );
+  const lockPath = `${recordPath}.lock`;
+  // Hold a real CLI invocation after it has acquired its lock and saved its record.
+  const owner = spawn(process.execPath, [firstAgent, "state-contract-test"], {
+    cwd: repository,
+    env,
+    stdio: "ignore",
+    timeout: 10_000,
+  });
+  const ownerClosed = once(owner, "close");
+  t.after(async () => {
+    owner.kill("SIGKILL");
+    await ownerClosed;
+  });
+  await Promise.race([
+    entered.promise,
+    ownerClosed.then(() => {
+      throw new Error("Lock owner exited before its first Agent read");
+    }),
+  ]);
+  const snapshotLock = async () => {
+    const file = await open(lockPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const opened = await file.stat();
+      const named = await lstat(lockPath);
+      assert.equal(named.isFile(), true);
+      assert.equal(named.dev, opened.dev);
+      assert.equal(named.ino, opened.ino);
+      return { dev: opened.dev, ino: opened.ino, pid: await file.readFile("utf8") };
+    } finally {
+      await file.close();
+    }
+  };
+  const lock = await snapshotLock();
+  const record = await readFile(recordPath, "utf8");
+  assert.equal(lock.pid, String(owner.pid));
+  const assertUnchanged = async () => {
+    assert.deepEqual(await snapshotLock(), lock);
+    assert.equal(await readFile(recordPath, "utf8"), record);
+  };
+  const contender = await runFirstAgentAsync(env);
+  assert.match(contender, /lock exists|already using this Agent name/);
+  assert.equal(agentReads, 1);
+  await assertUnchanged();
+
+  // A killed owner leaves a genuine abandoned lock. Concurrent retries must not
+  // guess ownership from its dead PID and unlink a successor's directory entry.
+  owner.kill("SIGKILL");
+  await ownerClosed;
+  holdOwner = false;
+  const retries = await Promise.all([runFirstAgentAsync(env), runFirstAgentAsync(env)]);
+  assert.equal(agentReads, 1, "abandoned-lock retries must not enter the record workflow");
+  for (const output of retries) {
+    assert.match(output, /lock exists/);
+    assert.ok(output.includes(lockPath));
+  }
+  await assertUnchanged();
+  await assert.rejects(readFile(engineLog), { code: "ENOENT" });
+
+  // All children are reaped before the operator removes only the inspected lock.
+  // The preserved record is reused, and an ordinary action error releases the new lock.
+  await unlink(lockPath);
+  const resumed = await runFirstAgentAsync(env);
+  assert.match(resumed, /kubectl did not complete successfully \(exit 23\)/);
+  assert.equal(agentReads, 2);
+  assert.equal(await readFile(recordPath, "utf8"), record);
+  await assert.rejects(lstat(lockPath), { code: "ENOENT" });
+});
+
+test("first-Agent refuses a lock symlink without following or removing it", async (t) => {
+  const { directory, engineLog, env } = await k3dFixture(t);
+  const target = join(directory, "lock-target");
+  const lockPath = join(
+    directory,
+    `first-agent-${createHash("sha256").update("state-contract-test").digest("hex").slice(0, 32)}.json.lock`,
+  );
+  await writeFile(target, "untouched lock target", { mode: 0o600 });
+  await symlink(target, lockPath);
+  const output = await runFirstAgentAsync(env);
+  assert.match(output, /lock exists|must be private and owned/);
+  assert.equal((await lstat(lockPath)).isSymbolicLink(), true);
+  assert.equal(await readFile(target, "utf8"), "untouched lock target");
+  await assert.rejects(readFile(engineLog), { code: "ENOENT" });
 });
 
 test(
@@ -621,4 +1007,429 @@ test("first-Agent does not take the next flag as the prompt or harness", () => {
   assert.equal(kept.status, 1);
   assert.match(kept.stderr, /Local Kubernetes state or its recorded key was not found/);
   assert.doesNotMatch(kept.stderr, /--prompt requires text/);
+});
+
+test("model verification retains safe failure metadata without forwarding probe output", async (t) => {
+  let responseStatus = 503;
+  let responseBody = "private-upstream-body";
+  let requests = 0;
+  const server = createServer(async (request, response) => {
+    requests++;
+    response.writeHead(request.headers.authorization ? responseStatus : 401);
+    if (typeof responseBody === "function") {
+      let body = "";
+      for await (const chunk of request) {
+        body += chunk;
+      }
+      response.end(responseBody(JSON.parse(body)));
+    } else {
+      response.end(responseBody);
+    }
+  });
+  const port = await listen(t, server);
+  const hash = (value) => createHash("sha256").update(value).digest("hex").slice(0, 12);
+  let suppliedOutput;
+  const kubectl = async (...args) => {
+    if (args[1] === "namespaces") {
+      return JSON.stringify({ items: [{ metadata: { name: "tenant" } }] });
+    }
+    if (args[1] === "pods") {
+      return JSON.stringify({
+        items: [
+          {
+            metadata: { name: "gateway", uid: "gateway-uid" },
+            spec: {
+              volumes: [
+                { configMap: { name: `gateway-${hash("agent")}-rev-${hash("revision")}` } },
+              ],
+            },
+            status: {
+              phase: "Running",
+              conditions: [{ type: "Ready", status: "True" }],
+              containerStatuses: [{ name: "gateway", restartCount: 2 }],
+            },
+          },
+        ],
+      });
+    }
+    if (suppliedOutput !== undefined) {
+      return suppliedOutput;
+    }
+    // Execute the production serialized probe. Only its transport destination is
+    // adapted to an owned loopback server; this does not claim a Gateway/model run.
+    let output = "";
+    const input = args.at(-1).input;
+    const program = args.at(-2);
+    const { nonce } = JSON.parse(input);
+    assert.ok(!program.includes(nonce));
+    await runInNewContext(program, {
+      AbortSignal,
+      process: {
+        env: { OPENCLAW_GATEWAY_PASSWORD: "synthetic-password" },
+        stdin: Readable.from([input]),
+        stdout: {
+          write: (value) => {
+            output += value;
+          },
+        },
+      },
+      fetch: (url, options) => {
+        assert.equal(url, "http://127.0.0.1:8080/v1/chat/completions");
+        return fetch(`http://127.0.0.1:${port}/v1/chat/completions`, options);
+      },
+    });
+    return output;
+  };
+  let sessionKey;
+  let interval;
+  let selectedGateway;
+  const verify = (code, status) =>
+    assert.rejects(
+      verifyFirstAgentModel(kubectl, {
+        namespaceId: "namespace",
+        agentId: "agent",
+        revisionId: "revision",
+        expectProviderKey: false,
+        onGatewaySelected: (target) => {
+          selectedGateway = target;
+        },
+        sessionKey,
+      }),
+      (error) => {
+        interval = error.requestInterval;
+        assert.equal(error.code, code);
+        assert.equal(error.status, status);
+        assert.equal(error.cause, undefined);
+        assert.doesNotMatch(error.message + JSON.stringify(error), /private-|synthetic-password/);
+        return true;
+      },
+    );
+  await verify("upstream", 503);
+  assert.deepEqual(selectedGateway, { pod: "gateway", uid: "gateway-uid", restartCount: 2 });
+  assert.equal(requests, 2, "one unauthenticated check and one authorized request; no replay");
+  assert.equal(interval, undefined);
+  sessionKey = "agent:main:git-withdrawal-00000000-0000-4000-8000-000000000001";
+  responseStatus = 500;
+  const start = Date.now();
+  await verify("upstream", 500);
+  assert.ok(
+    interval.start >= start && interval.end <= Date.now() && interval.start <= interval.end,
+  );
+  assert.equal(requests, 4, "diagnostic timing must not replay a model request");
+  assert.equal(Object.isFrozen(interval), true);
+  for (const invalid of [
+    null,
+    {},
+    { start: "private-start", end: 1 },
+    { start: 2, end: 1 },
+    { start: 0, end: 180001 },
+  ]) {
+    suppliedOutput = JSON.stringify({ error: "upstream", status: 500, requestInterval: invalid });
+    await verify("upstream", 500);
+    assert.equal(interval, undefined, "invalid timing cannot replace the original HTTP failure");
+  }
+  suppliedOutput = undefined;
+  responseStatus = 401;
+  await verify("authorization", 401);
+  responseStatus = 200;
+  responseBody = JSON.stringify({ choices: [{ message: { content: "private-wrong-answer" } }] });
+  await verify("nonce", undefined);
+  suppliedOutput = JSON.stringify({
+    error: "private-unknown",
+    status: 503,
+    cause: "private-cause",
+  });
+  await verify("unexpected", undefined);
+  // Successful exec does not authorize the wire payload to claim a local catch,
+  // nor a status/category pair that the serialized probe could never emit.
+  for (const invalid of [
+    { error: "execution" },
+    { error: "invalid_result" },
+    { error: "authorization", status: 200 },
+    { error: "upstream", status: 404 },
+    { error: "endpoint", status: 503 },
+    { error: "unauthenticated", status: 401 },
+    { error: "nonce", status: 200 },
+    { error: "upstream", status: "private-status" },
+  ]) {
+    await t.test(`${invalid.error}/${invalid.status ?? "absent"}`, async () => {
+      suppliedOutput = JSON.stringify(invalid);
+      await verify("unexpected", undefined);
+    });
+  }
+  suppliedOutput = undefined;
+  const id = "chatcmpl_20000000-0000-4000-8000-000000000001";
+  let completionId = id;
+  responseBody = (body) =>
+    JSON.stringify({
+      id: completionId,
+      choices: [
+        { message: { content: body.messages[0].content.match(/FIRST_AGENT_[0-9a-f-]+/)[0] } },
+      ],
+    });
+  const before = requests;
+  const proof = await verifyFirstAgentModel(kubectl, {
+    namespaceId: "namespace",
+    agentId: "agent",
+    revisionId: "revision",
+    expectProviderKey: false,
+    sessionKey,
+  });
+  assert.equal(proof.runId, id);
+  assert.equal(requests - before, 2, "one denial and one accepted nonce request");
+  completionId = "private-invalid-id";
+  await verify("response_format", undefined);
+
+  suppliedOutput = "private-invalid-json";
+  await verify("invalid_result", undefined);
+});
+
+test("first-Agent diagnostics bind runtime streams and bound the authenticated HTTP read", async (t) => {
+  const { createFirstAgentApi } = await import("../../scripts/first-agent-api.mjs");
+  const { collectFirstAgentDiagnostics } =
+    await import("../../scripts/first-agent-diagnostics.mjs");
+  const { sanitizeRuntimeLogChunk, runtimeLogGap } =
+    await import("../../packages/occ/src/runtime-logs/sanitize.ts");
+  const replay = JSON.parse(
+    await readFile(
+      join(
+        repository,
+        "tests/fixtures/runtime-logs/replay/codex-model-connection-failures.golden.json",
+      ),
+      "utf8",
+    ),
+  );
+  const targets = ["gateway", "agent"].map((role) => ({
+    role,
+    name: `${role}-pod`,
+    uid: `${role}-uid`,
+    container: role === "agent" ? "sandbox" : "gateway",
+    restartCount: 0,
+  }));
+  const description = {
+    revisionId: "revision",
+    harness: { state: "running" },
+    pods: targets.map((target) => ({
+      ...target,
+      ready: true,
+      containers: [
+        {
+          name: target.container,
+          state: "running",
+          ready: true,
+          restartCount: 0,
+          lastTermination: null,
+        },
+      ],
+    })),
+    sources: targets.map((target) => ({
+      id: target.role,
+      kind: "container",
+      available: true,
+      pods: [target],
+    })),
+  };
+  let mode = "normal";
+  let reads = [];
+  // Exercise the real CLI HTTP reader and evidence reducer. The server supplies the
+  // documented runtime API envelope; this is not a Kubernetes/OpenShell runtime proof.
+  const server = createServer((request, response) => {
+    assert.equal(request.headers["x-api-key"], "synthetic-service-key");
+    assert.equal(request.method, "GET");
+    const url = new URL(request.url, "http://localhost");
+    reads.push(url);
+    response.setHeader("content-type", "application/json");
+    if (mode === "oversized") {
+      response.end(JSON.stringify({ data: "private-response".repeat(10_000) }));
+      return;
+    }
+    if (mode === "denied") {
+      response.writeHead(403);
+      response.end(JSON.stringify({ error: { code: "FORBIDDEN", message: "private-denial" } }));
+      return;
+    }
+    if (mode === "stalled") {
+      response.write("{");
+      return;
+    }
+    if (url.pathname.endsWith("/runtime")) {
+      const data = structuredClone(description);
+      if (mode === "pod-replaced") {
+        data.pods[0].uid = "replacement-uid";
+      }
+      if (mode === "extra-gateway") {
+        data.pods.push({ ...data.pods[0], name: "other-gateway", uid: "other-uid" });
+        data.sources[0].pods.push({ ...targets[0], name: "other-gateway", uid: "other-uid" });
+      }
+      if (mode === "gateway-init") {
+        data.pods[0].containers.push({
+          name: "initialize-workspace",
+          state: "terminated",
+          ready: false,
+          restartCount: 0,
+        });
+        data.sources[0].pods.push({ ...targets[0], container: "initialize-workspace" });
+      }
+      response.end(JSON.stringify({ data }));
+      return;
+    }
+    const target = targets.find((item) => item.role === url.searchParams.get("source"));
+    assert.equal(url.searchParams.get("pod"), target.name);
+    assert.equal(url.searchParams.get("container"), target.container);
+    assert.equal(url.searchParams.has("sensitiveContent"), false);
+    const stream = {
+      source: target.role,
+      pod: target.name,
+      podUid: target.uid,
+      container: target.container,
+      restartCount: mode === "restarted" ? 1 : 0,
+    };
+    let records = replay.records.map((record) => ({ ...record, stream }));
+    if (mode === "private-prose") {
+      // Real API sanitization removes credential patterns, but retains some free-form
+      // operational prose. The CLI promises a narrower, fixed diagnostic summary.
+      records = sanitizeRuntimeLogChunk({
+        stream,
+        truncated: false,
+        lines: [
+          {
+            level: "warn",
+            subsystem: "openai-compat",
+            message: "Provider returned confidential launch schedule",
+          },
+          {
+            level: "error",
+            target: "codex_app_server",
+            message: "Provider returned confidential business plan",
+          },
+          {
+            level: "error",
+            target: "codex_api::endpoint::responses_websocket",
+            message:
+              "failed to connect to websocket: HTTP error: 403 confidential provider reason, url: wss://provider.invalid/responses",
+          },
+          {
+            level: "error",
+            target: "codex_api::endpoint::responses_websocket",
+            message:
+              "failed to connect to websocket: IO error: confidential network detail, url: wss://provider.invalid/responses",
+          },
+          {
+            level: "error",
+            target: "codex_api::endpoint::responses_websocket",
+            message:
+              "failed to connect to websocket: TLS error: confidential certificate detail, url: wss://provider.invalid/responses",
+          },
+        ].map((value) => ({ time: null, raw: JSON.stringify(value) })),
+      }).records;
+      assert.ok(
+        records.some((record) => record.type === "line" && record.message.includes("confidential")),
+        "the real sanitizer retains prose that the CLI must omit",
+      );
+      records = [...records];
+    }
+    if (["truncated", "window_exceeded", "stream_replaced"].includes(mode)) {
+      records.push(runtimeLogGap(mode, stream));
+    }
+    records.push({
+      type: "line",
+      kind: "codex",
+      contentClass: "activity",
+      level: "error",
+      message: "private-agent-output",
+      stream,
+    });
+    response.end(
+      JSON.stringify({
+        data: {
+          revisionId: "revision",
+          source: target.role,
+          stream,
+          records,
+          withheld: mode === "incomplete" ? 1 : 0,
+          truncated: false,
+        },
+      }),
+    );
+  });
+  const port = await listen(t, server);
+  const api = createFirstAgentApi({
+    origin: `http://127.0.0.1:${port}`,
+    key: { data: { key: "synthetic-service-key" } },
+  });
+  const collect = () =>
+    collectFirstAgentDiagnostics(api, {
+      namespaceId: "namespace",
+      agentId: "agent",
+      revisionId: "revision",
+      gateway: { pod: "gateway-pod", uid: "gateway-uid", restartCount: 0 },
+    });
+  const output = await collect();
+  assert.match(output, /agent\/sandbox: running, ready=true, restarts=0/);
+  assert.match(output, /codex\.connection httpStatus=401/);
+  assert.match(output, /codex\.connection failureClass=network/);
+  assert.match(output, /codex\.connection fallback=http/);
+  assert.match(output, /codex\.connection retrying/);
+  assert.doesNotMatch(output, /private-agent-output|synthetic-service-key/);
+  assert.equal(reads.length, 3);
+  assert.ok(
+    reads.every((url) =>
+      url.pathname.startsWith("/namespaces/namespace/agents/agent/deployments/revision/runtime"),
+    ),
+  );
+  await t.test("withholds free-form provider prose after real API sanitization", async () => {
+    mode = "private-prose";
+    const summary = await collect();
+    assert.doesNotMatch(summary, /confidential|provider\.invalid/);
+    assert.match(summary, /codex\.connection httpStatus=403/);
+    assert.match(summary, /codex\.connection failureClass=network/);
+    assert.match(summary, /codex\.connection failureClass=tls/);
+  });
+  for (const gap of ["truncated", "window_exceeded"]) {
+    await t.test(`retains observations beside a same-stream ${gap} gap`, async () => {
+      mode = gap;
+      const summary = await collect();
+      assert.match(summary, /401/);
+      assert.match(summary, /incomplete log evidence/);
+    });
+  }
+  for (const topology of ["extra-gateway", "gateway-init"]) {
+    await t.test(`keeps the selected Gateway with ${topology}`, async () => {
+      mode = topology;
+      reads = [];
+      const summary = await collect();
+      assert.equal(
+        reads.filter(
+          (url) =>
+            url.pathname.endsWith("/runtime/logs") && url.searchParams.get("source") === "gateway",
+        ).length,
+        1,
+      );
+      assert.match(summary, /gateway\/gateway: running/);
+      assert.doesNotMatch(summary, /gateway: .*unavailable|gateway: .*replaced/);
+    });
+  }
+  mode = "stream_replaced";
+  const changedStream = await collect();
+  assert.match(changedStream, /log stream unavailable or replaced/);
+  assert.doesNotMatch(changedStream, /httpStatus=401|failureClass=network/);
+  mode = "pod-replaced";
+  reads = [];
+  assert.match(await collect(), /original Pod unavailable or replaced/);
+  assert.ok(reads.every((url) => url.searchParams.get("source") !== "gateway"));
+  mode = "restarted";
+  const replaced = await collect();
+  assert.match(replaced, /log stream unavailable or replaced/);
+  assert.doesNotMatch(replaced, /httpStatus=401|failureClass=network/);
+  mode = "incomplete";
+  assert.match(await collect(), /incomplete log evidence/);
+  for (mode of ["denied", "oversized"]) {
+    const unavailable = await collect();
+    assert.match(unavailable, /Runtime evidence unavailable/);
+    assert.doesNotMatch(unavailable, /private-|FORBIDDEN/);
+  }
+  mode = "stalled";
+  const start = Date.now();
+  assert.match(await collect(), /Runtime evidence unavailable/);
+  assert.ok(Date.now() - start < 15_000, "a stalled response body must not hold the CLI open");
 });

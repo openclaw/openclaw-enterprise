@@ -350,6 +350,8 @@ spec:
             {{- include "openclaw.resourceRequirements" (dict "name" "resources" "requirements" $.Values.resources) }}
             {{- toYaml $.Values.resources | nindent 12 }}
           env:
+            - name: OCC_INSTALLATION_SECRET_NAMESPACE
+              value: {{ include "openclaw.installationSecretNamespace" $ | quote }}
             - name: NODE_ENV
               value: production
             {{- if and (eq $component "api") $.Values.api.consoleTheme.configMapName }}
@@ -400,18 +402,6 @@ spec:
             {{- include "openclaw.secretEnv" (dict "name" "OCC_AUTH_SECRET" "secretName" $.Values.auth.secretName "key" $.Values.auth.secretKey) | nindent 12 }}
             - name: OCC_AUTH_BASE_URL
               value: {{ $.Values.auth.baseUrl | quote }}
-            {{- if and $.Values.auth.github $.Values.auth.github.enabled }}
-            {{- include "openclaw.secretEnv" (dict "name" "OCC_AUTH_GITHUB_CLIENT_ID" "secretName" $.Values.auth.github.secretName "key" $.Values.auth.github.clientIdKey) | nindent 12 }}
-            {{- include "openclaw.secretEnv" (dict "name" "OCC_AUTH_GITHUB_CLIENT_SECRET" "secretName" $.Values.auth.github.secretName "key" $.Values.auth.github.clientSecretKey) | nindent 12 }}
-            {{- if $.Values.auth.github.allowedOrgs }}
-            - name: OCC_AUTH_GITHUB_ALLOWED_ORGS
-              value: {{ join "," $.Values.auth.github.allowedOrgs | quote }}
-            {{- end }}
-            {{- if $.Values.auth.github.allowedTeams }}
-            - name: OCC_AUTH_GITHUB_ALLOWED_TEAMS
-              value: {{ join "," $.Values.auth.github.allowedTeams | quote }}
-            {{- end }}
-            {{- end }}
             {{- if and $.Values.auth.google $.Values.auth.google.enabled }}
             {{- include "openclaw.secretEnv" (dict "name" "OCC_AUTH_GOOGLE_CLIENT_ID" "secretName" $.Values.auth.google.secretName "key" $.Values.auth.google.clientIdKey) | nindent 12 }}
             {{- include "openclaw.secretEnv" (dict "name" "OCC_AUTH_GOOGLE_CLIENT_SECRET" "secretName" $.Values.auth.google.secretName "key" $.Values.auth.google.clientSecretKey) | nindent 12 }}
@@ -421,6 +411,10 @@ spec:
             {{- end }}
             {{- end }}
             {{- if and $.Values.auth.oidc $.Values.auth.oidc.enabled }}
+            {{- if hasKey $.Values.auth.oidc "enrollment" }}
+            - name: OCC_AUTH_OIDC_ENROLLMENT
+              value: {{ toJson $.Values.auth.oidc.enrollment | quote }}
+            {{- end }}
             - name: OCC_AUTH_OIDC_ISSUER
               value: {{ $.Values.auth.oidc.issuer | quote }}
             - name: OCC_AUTH_OIDC_AUTHORIZATION_URL
@@ -441,7 +435,7 @@ spec:
             {{- end }}
             {{- end }}
             {{- if $.Values.auth.recoveryUserId }}
-            - name: OCC_AUTH_GITHUB_RECOVERY_USER_ID
+            - name: OCC_AUTH_RECOVERY_USER_ID
               value: {{ $.Values.auth.recoveryUserId | quote }}
             {{- end }}
             {{- if eq (toString (default "all" $.Values.auth.passwordSignIn)) "recovery-only" }}
@@ -474,11 +468,11 @@ spec:
               value: {{ ternary "true" "false" $.Values.agentNativeAdmin.enabled | quote }}
             - name: OCC_AGENT_RUNTIME_LOGS_ENABLED
               value: {{ ternary "true" "false" $.Values.agentRuntimeLogs.enabled | quote }}
-            {{- if $.Values.agentNativeAdmin.enabled }}
             - name: OCC_AGENT_NATIVE_ADMIN_DOMAIN
               value: {{ $.Values.agentNativeAdmin.domain | quote }}
-            - name: OCC_AUTH_COOKIE_DOMAIN
-              value: {{ $.Values.agentNativeAdmin.sharedCookieDomain | quote }}
+            {{- if eq $.Values.agentNativeAdmin.sessionMode "host-only-exchange" }}
+            - name: OCC_AGENT_NATIVE_ADMIN_SESSION_MODE
+              value: "host-only-exchange"
             {{- end }}
             {{- else }}
             - name: OCC_WORKER_READINESS_PATH
@@ -664,7 +658,7 @@ spec:
             - --public-origin
             - {{ include "openclaw.repositoryCredentials.origin" $ | quote }}
             - --backend-id
-            - {{ $.Values.repositoryCredentials.backendId | quote }}
+            - {{ $.Values.repositoryCredentials.backendId | toString | replace "$" "$$" | quote }}
             {{- if eq $.Values.repositoryCredentials.authority "prepared-git" }}
             - --authority
             - prepared-git

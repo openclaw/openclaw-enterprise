@@ -11,9 +11,9 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { signInToControllerApp } from "../helpers/auth-session.mjs";
-import { injectJson } from "../helpers/inject-json.mjs";
+import { injectJson as injectJsonRequest } from "../helpers/inject-json.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
@@ -22,6 +22,11 @@ import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs"
 
 const adminEmail = "postgres-admin@openclaw.local";
 const adminPassword = "postgres-development-password";
+const authBaseURL = "https://console.oce.localhost";
+
+function injectJson(app, method, url, options = {}) {
+  return injectJsonRequest(app, method, url, { host: "console.oce.localhost", ...options });
+}
 
 function installationPrincipal(state) {
   const administratorRoles = new Set(
@@ -85,7 +90,8 @@ test(
       mode: "development",
       host: "127.0.0.1",
       databaseUrl,
-      authBaseURL: "http://127.0.0.1",
+      authBaseURL,
+      nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
       authSecret: "openclaw-postgres-local-auth-secret-minimum-32-bytes",
     };
     await assert.rejects(
@@ -220,7 +226,8 @@ test(
       mode: "development",
       host: "127.0.0.1",
       databaseUrl,
-      authBaseURL: "http://127.0.0.1",
+      authBaseURL,
+      nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
       authSecret: "openclaw-postgres-local-auth-secret-minimum-32-bytes",
     };
     await ensureDevelopmentBootstrap(context, {
@@ -492,6 +499,43 @@ test(
     );
     const stillDenied = await injectJson(appB, "GET", "/installation", { session: noGrantSession });
     assert.equal(stillDenied.statusCode, 403, stillDenied.body);
+
+    await context.test(
+      "account creation throttles hashing without writing an account",
+      async () => {
+        // Controller B has a fresh per-administrator budget. Duplicate requests still hash
+        // passwords, so they must consume it even though their transactions cannot create users.
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+          const duplicate = await injectJson(appB, "POST", "/api/auth/accounts", {
+            session,
+            body: { email, password },
+          });
+          assertApiError(duplicate, 409, "RESOURCE_CONFLICT");
+        }
+        const limitedEmail = `limited-${randomUUID()}@example.test`;
+        const limited = await injectJson(appB, "POST", "/api/auth/accounts", {
+          session,
+          body: { email: limitedEmail, password },
+        });
+        assertApiError(limited, 429, "RATE_LIMITED");
+        assert.ok(Number(limited.headers["retry-after"]) > 0);
+        assert.deepEqual(
+          (await observerPool.query('SELECT id FROM occ."user" WHERE email=$1', [limitedEmail]))
+            .rows,
+          [],
+        );
+        // A caller cannot reset the budget by signing in again under the same Principal.
+        const nextSession = await signInToControllerApp(appB, {
+          email: adminEmail,
+          password: adminPassword,
+        });
+        const stillLimited = await injectJson(appB, "POST", "/api/auth/accounts", {
+          session: nextSession,
+          body: { email: limitedEmail, password },
+        });
+        assertApiError(stillLimited, 429, "RATE_LIMITED");
+      },
+    );
   },
 );
 
@@ -513,7 +557,8 @@ test(
       mode: "development",
       host: "127.0.0.1",
       databaseUrl,
-      authBaseURL: "http://127.0.0.1",
+      authBaseURL,
+      nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
       authSecret: "openclaw-postgres-local-auth-secret-minimum-32-bytes",
     };
     await ensureDevelopmentBootstrap(context, {
@@ -604,7 +649,8 @@ test(
       mode: "development",
       host: "127.0.0.1",
       databaseUrl,
-      authBaseURL: "http://127.0.0.1",
+      authBaseURL,
+      nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
       authSecret: "openclaw-postgres-local-auth-secret-minimum-32-bytes",
     };
     await ensureDevelopmentBootstrap(context, {
@@ -708,5 +754,73 @@ test(
     const iamAfter = await state.loadNativeIAMState(installation.id);
     assert.equal(iamAfter.identities.length, iamBefore.identities.length + 1);
     assert.equal(iamAfter.bindings.length, iamBefore.bindings.length + 1);
+  },
+);
+
+test(
+  "password-only logout waits for persisted revocation before clearing the session",
+  requiresPostgres,
+  async (context) => {
+    const observerPool = new pg.Pool({ connectionString: databaseUrl, max: 2 });
+    const blocker = await observerPool.connect();
+    let app;
+    context.after(async () => {
+      await blocker.query("ROLLBACK");
+      blocker.release();
+      await app?.close();
+      await observerPool.end();
+    });
+    const config = {
+      mode: "development",
+      host: "127.0.0.1",
+      databaseUrl,
+      authBaseURL,
+      nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
+      authSecret: "openclaw-postgres-local-auth-secret-minimum-32-bytes",
+    };
+    await ensureDevelopmentBootstrap(context, {
+      databaseUrl,
+      email: adminEmail,
+      password: adminPassword,
+      authSecret: config.authSecret,
+      authBaseURL: config.authBaseURL,
+      installationName: "PostgreSQL password logout",
+    });
+    const boundedDatabase = new URL(databaseUrl);
+    boundedDatabase.searchParams.set("options", "-c lock_timeout=100ms");
+    app = await composePostgresDevelopment(
+      { ...config, databaseUrl: boundedDatabase.toString() },
+      {
+        computeDriver: createDevelopmentComputeDriver(),
+        configurationDriver: createTestConfigurationDriver(),
+      },
+    );
+    const session = await signInToControllerApp(app, {
+      email: adminEmail,
+      password: adminPassword,
+    });
+
+    // The real database still permits session reads, but cannot complete deletion
+    // while another transaction holds its row. No authentication adapter is replaced.
+    await blocker.query("BEGIN");
+    const locked = await blocker.query(
+      `SELECT s.id FROM occ.session s JOIN occ."user" u ON u.id = s.user_id
+       WHERE u.email = $1 FOR UPDATE OF s`,
+      [adminEmail],
+    );
+    assert.ok(locked.rowCount > 0);
+    const refused = await injectJson(app, "POST", "/api/auth/sign-out", { session });
+    assertApiError(refused, 503, "DEPENDENCY_UNAVAILABLE");
+    assert.equal(refused.headers["set-cookie"], undefined);
+    const retained = await injectJson(app, "GET", "/installation", { session });
+    assert.equal(retained.statusCode, 200, retained.body);
+
+    // A deliberate retry after storage recovers revokes the persisted session.
+    await blocker.query("ROLLBACK");
+    const completed = await injectJson(app, "POST", "/api/auth/sign-out", { session });
+    assert.equal(completed.statusCode, 200, completed.body);
+    assert.ok(completed.headers["set-cookie"]);
+    const revoked = await injectJson(app, "GET", "/installation", { session });
+    assertApiError(revoked, 401, "UNAUTHENTICATED");
   },
 );

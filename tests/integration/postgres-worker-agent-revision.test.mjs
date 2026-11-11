@@ -1,3 +1,7 @@
+import {
+  CodexPluginDriver,
+  OCCPluginDriver,
+} from "../../apps/controller/src/drivers/plugin/index.ts";
 import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -1494,6 +1498,7 @@ test(
     );
     const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
     const secret = `synthetic-reflected-${randomUUID()}`;
+    const labelRefusal = "': external resource not admitted by required labels";
     const cases = [
       { prefix: "policy contains unsafe content: ", category: "POLICY_SAFETY" },
       { prefix: "policy middleware validation failed: ", category: "POLICY_MIDDLEWARE_VALIDATION" },
@@ -1509,6 +1514,31 @@ test(
         category: "UNKNOWN",
       },
       { prefix: "policy contains unsafe content: ", method: "Health", category: "UNKNOWN" },
+      {
+        prefix: "PersistentVolumeClaim 'fixture/",
+        suffix: labelRefusal,
+        status: grpc.status.FAILED_PRECONDITION,
+        category: "PVC_ADMISSION_LABELS",
+      },
+      {
+        prefix: "RuntimeClass '",
+        suffix: labelRefusal,
+        status: grpc.status.FAILED_PRECONDITION,
+        category: "CLASS_ADMISSION_LABELS",
+      },
+      {
+        prefix: "reflected PersistentVolumeClaim 'fixture/",
+        suffix: labelRefusal,
+        status: grpc.status.FAILED_PRECONDITION,
+        category: "UNKNOWN",
+      },
+      {
+        prefix:
+          "create sandbox failed: gateway is forbidden from reading metadata for RuntimeClass '",
+        suffix: "' (Kubernetes 403); check gateway RBAC",
+        status: grpc.status.INTERNAL,
+        category: "RESOURCE_METADATA_FORBIDDEN",
+      },
     ].map((scenario, index) => ({
       name: `diagnostic-${index}`,
       method: "CreateSandbox",
@@ -1537,7 +1567,10 @@ test(
         // logger must discard it, even though it has no recognizable credential shape.
         callback({
           code: scenario.status,
-          details: scenario.prefix + call.request.annotations["fixture-reflection"],
+          details:
+            scenario.prefix +
+            call.request.annotations["fixture-reflection"] +
+            (scenario.suffix ?? ""),
         });
       },
       Health(_call, callback) {
@@ -1745,6 +1778,55 @@ test(
       status: 422,
     });
     assert.equal(JSON.stringify(events).includes(failure.message), false);
+  },
+);
+
+test(
+  "a worker stopped during queue recovery leaves fresh work for its successor",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context, { maxAttempts: 1 });
+    const connection = Promise.withResolvers();
+    await fixture.start(fixture.compute, {
+      emit({ event }) {
+        if (event === "worker.started") {
+          // Hold the worker pool's only connection before its first recovery transaction.
+          connection.resolve(fixture.workerPool.connect());
+        }
+      },
+    });
+    const held = await connection.promise;
+    let candidate;
+    let stopping;
+    try {
+      ({ candidate } = await fixture.admitInitialRevision("shutdown-before-claim"));
+      stopping = fixture.stop();
+    } finally {
+      held.release();
+    }
+    await stopping;
+    const work = await fixture.observerPool.query(
+      `SELECT state, attempt_count, claim_token IS NOT NULL AS has_claim,
+              lease_expires_at IS NOT NULL AS has_lease
+       FROM occ.controller_work WHERE idempotency_key = $1`,
+      [candidate.idempotencyKey],
+    );
+    assert.deepEqual(work.rows, [
+      { state: "queued", attempt_count: 0, has_claim: false, has_lease: false },
+    ]);
+
+    const prepared = [];
+    await fixture.start({
+      ...fixture.compute,
+      async prepareRevision(revision, deploymentContext) {
+        prepared.push(revision.id);
+        return fixture.compute.prepareRevision(revision, deploymentContext);
+      },
+    });
+    const succeeded = await fixture.work(candidate, "succeeded");
+    await fixture.stop();
+    assert.equal(succeeded.attempt_count, 1);
+    assert.deepEqual(prepared, [candidate.id]);
   },
 );
 
@@ -2418,11 +2500,11 @@ revisionTest(
     // and then hold the container unready with nothing to restart it, so the
     // default 900-second deadline could only report the same failure later.
     const probeStatusFailure = {
-      component: "gateway",
+      component: "agent",
       check: "model-probe",
       checkedAt: "2026-10-01T08:00:00.000Z",
       code: "MODEL_PROBE_FAILED",
-      cause: { kind: "PROBE_STATUS", detail: "format" },
+      cause: { kind: "PROBE_STATUS", detail: "model_not_found" },
     };
     const wrapperFailure = {
       ...probeStatusFailure,
@@ -3224,6 +3306,23 @@ for (const refusal of [
     cause: "ActivationFailedError",
   },
   {
+    label: "that discovers incompatible Codex permission policy",
+    slug: "activation-codex-permission-policy",
+    failure: () =>
+      new ActivationFailedError(
+        "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+        "The Codex Harness reports managed permission requirements incompatible with activation.",
+        ["named-profile-denied", "reviewer-denied"],
+      ),
+    error: {
+      code: "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+      message:
+        "This Codex runtime’s managed permission policy does not allow the sandbox mode, named profile or human reviewer required by OpenShell. Ask the policy owner to verify compatibility, then deploy a new version.",
+    },
+    cause: "ActivationFailedError",
+    diagnosticFailure: "named-profile-denied_reviewer-denied",
+  },
+  {
     label: "whose private Secret write Kubernetes refuses with 403",
     slug: "activation-secret-forbidden",
     failure: () =>
@@ -3298,8 +3397,18 @@ for (const refusal of [
           )
           .at(-1);
         assert.deepEqual(
-          { outcome: last?.outcome, code: last?.code, cause: last?.cause },
-          { outcome: "permanent", code: refusal.error.code, cause: refusal.cause },
+          {
+            outcome: last?.outcome,
+            code: last?.code,
+            cause: last?.cause,
+            failure: last?.failure,
+          },
+          {
+            outcome: "permanent",
+            code: refusal.error.code,
+            cause: refusal.cause,
+            failure: refusal.diagnosticFailure,
+          },
         );
       },
     );
@@ -3432,6 +3541,52 @@ for (const { label, failure, code, message } of [
   );
 }
 
+function withBothPluginDrivers(drivers) {
+  return { ...drivers, pluginDrivers: [new OCCPluginDriver(), new CodexPluginDriver()] };
+}
+
+revisionTest(
+  "a worker with a missing pinned Plugin Driver keeps the previous revision active",
+  async (fixture) => {
+    const { owner, candidate: previous } = await fixture.admitInitialRevision("plugin-cutover", {
+      agent: { executionMode: "dedicated" },
+    });
+    await fixture.start(
+      {
+        ...fixture.compute,
+        requiresStoppedPredecessors: () => true,
+        maintenanceIntervalMs: 3_600_000,
+        async stopRevision(revision) {
+          assert.notEqual(
+            revision.id,
+            previous.id,
+            "a rejected plugin pin cannot stop the active revision",
+          );
+          return fixture.compute.stopRevision(revision);
+        },
+      },
+      { transformDrivers: (drivers) => ({ ...drivers, pluginDrivers: [new OCCPluginDriver()] }) },
+    );
+    await fixture.work(previous, "succeeded");
+    // The admitted revision pins Codex, but this worker no longer has that Driver.
+    const next = await fixture.revision(owner, 2, {
+      plugins: codexPluginRevisionState("codex-plugin:linear@openai-curated-remote"),
+    });
+    await fixture.work(next, "failed_permanent");
+    assert.equal((await fixture.workResult(next)).rows[0].reason_code, "PLUGIN_DRIVER_MISMATCH");
+    const {
+      rows: [nextMaintenance],
+    } = await fixture.advanceMaintenance(previous);
+    const maintenance = { ...previous, idempotencyKey: nextMaintenance.idempotency_key };
+    await fixture.work(maintenance, "succeeded");
+    assert.equal(
+      (await fixture.workResult(maintenance)).rows[0].reason_code,
+      "REVISION_ALREADY_ACTIVE",
+    );
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, previous.id);
+  },
+);
+
 revisionTest(
   "plugin startup warnings complete deployment and remain visible in status",
   async (fixture) => {
@@ -3452,22 +3607,25 @@ revisionTest(
     });
     const prepared = [];
 
-    await fixture.start({
-      ...fixture.compute,
-      async prepareRevision(revision) {
-        prepared.push(revision.id);
-        if (revision.id !== candidate.id) {
-          return fixture.compute.prepareRevision(revision);
-        }
-        return {
-          namespaceId: revision.namespaceId,
-          agentId: revision.agentId,
-          revisionId: revision.id,
-          ready: true,
-          warnings,
-        };
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision) {
+          prepared.push(revision.id);
+          if (revision.id !== candidate.id) {
+            return fixture.compute.prepareRevision(revision);
+          }
+          return {
+            namespaceId: revision.namespaceId,
+            agentId: revision.agentId,
+            revisionId: revision.id,
+            ready: true,
+            warnings,
+          };
+        },
       },
-    });
+      { transformDrivers: withBothPluginDrivers },
+    );
 
     await fixture.work(candidate, "succeeded");
     const terminal = await fixture.observerPool.query(
@@ -3520,22 +3678,25 @@ revisionTest(
 
     let prepareCount = 0;
     const activations = [];
-    await fixture.start({
-      ...fixture.compute,
-      async prepareRevision(revision) {
-        prepareCount += 1;
-        return {
-          namespaceId: revision.namespaceId,
-          agentId: revision.agentId,
-          revisionId: revision.id,
-          ready: true,
-          warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId }],
-        };
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision) {
+          prepareCount += 1;
+          return {
+            namespaceId: revision.namespaceId,
+            agentId: revision.agentId,
+            revisionId: revision.id,
+            ready: true,
+            warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId }],
+          };
+        },
+        async activateRevision(revision) {
+          activations.push(revision.id);
+        },
       },
-      async activateRevision(revision) {
-        activations.push(revision.id);
-      },
-    });
+      { transformDrivers: withBothPluginDrivers },
+    );
 
     await fixture.work(candidate, "succeeded");
     assert.equal(prepareCount, 1);
@@ -3563,23 +3724,26 @@ revisionTest(
       agent: { executionMode: "dedicated" },
       revision: { plugins: codexPluginRevisionState(pluginId) },
     });
-    await fixture.start({
-      ...fixture.compute,
-      async prepareRevision(revision) {
-        return {
-          namespaceId: revision.namespaceId,
-          agentId: revision.agentId,
-          revisionId: revision.id,
-          ready: true,
-          warnings: [
-            {
-              code: "PLUGIN_INSTALL_FAILED",
-              pluginId: "codex-plugin:foreign@openai-curated-remote",
-            },
-          ],
-        };
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision) {
+          return {
+            namespaceId: revision.namespaceId,
+            agentId: revision.agentId,
+            revisionId: revision.id,
+            ready: true,
+            warnings: [
+              {
+                code: "PLUGIN_INSTALL_FAILED",
+                pluginId: "codex-plugin:foreign@openai-curated-remote",
+              },
+            ],
+          };
+        },
       },
-    });
+      { transformDrivers: withBothPluginDrivers },
+    );
 
     await fixture.work(candidate, "failed_permanent");
     const generic = await fixture.observerPool.query(

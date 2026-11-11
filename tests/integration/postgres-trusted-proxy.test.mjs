@@ -31,7 +31,7 @@ test(
       email,
       password,
       authSecret: secret,
-      authBaseURL: "http://127.0.0.1",
+      authBaseURL: "https://console.oce.localhost",
       installationName: "Trusted proxy proof",
     });
     const recoveryUserId = (await pool.query('SELECT id FROM occ."user" WHERE email=$1', [email]))
@@ -47,13 +47,15 @@ test(
       installationId: installation.id,
       secret,
       baseURL: origin,
+      agentDomain: "agents.example.test",
       pool,
       state,
       iamDriver,
       clientAddress,
-      github: {
+      google: {
         clientId: "proxy-test-client",
         clientSecret: "proxy-test-secret",
+        allowedDomains: [],
         recoveryUserId,
       },
     });
@@ -130,6 +132,6 @@ test(
       assert.equal((await read(outsider, { forwarded: "for=1.2.3.4" })).statusCode, 403);
     });
 
-    // postgres-password-sign-in-limit.test.mjs proves the same keying with GitHub off.
+    // postgres-password-sign-in-limit.test.mjs proves the same keying with Google off.
   },
 );

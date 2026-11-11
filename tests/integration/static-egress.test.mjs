@@ -5,6 +5,7 @@ import {
   encodeSyntheticEvents,
   outputWithIndependentCitation,
 } from "../fixtures/synthetic-egress-provider.mjs";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { readFileSync } from "node:fs";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
@@ -375,7 +376,12 @@ test("protected admission requires the actual counterpart and exact loaded polic
   assert.ok(manifest.extension.required_capabilities.includes(capability));
   f.observed.available = false;
   const refused = await f.request("POST", f.path, {
-    body: { name: "unsupported-peer", type: "openai", secrets: { api_key: f.secret.ref } },
+    body: {
+      name: "unsupported-peer",
+      type: "openai",
+      config: { authorized_base_url: f.modelProvider.baseUrl },
+      secrets: { api_key: f.secret.ref },
+    },
   });
   assert.equal(refused.status, 503, JSON.stringify(refused.body));
   assert.equal(
@@ -489,7 +495,7 @@ test("legacy approved copies survive Secret rotation and failed live adoption; o
   const { id, namespaceId } = f.legacySource;
   await f.controller.transact(async ({ credentialSources: sources }) => {
     const { egress } = await sources.findCredentialSource(namespaceId, id);
-    assert.equal(egress.key.provider.generation, 2);
+    assert.equal(egress.key.provider.generation, 3);
     const key = {
       ...egress.key,
       source: { id, generation: egress.key.source.generation + 1 },
@@ -1169,6 +1175,164 @@ test("Responses incremental text snapshots cannot reveal selected material", asy
   await check.events(laterProgress, false, "later in_progress snapshot");
 });
 
+test("Responses follow-up replays assistant text with empty provider metadata", async (t) => {
+  const f = await staticEgressFixture(t);
+  const check = responseChecks(f);
+  const events = responseEvents();
+  const assistant = events.at(-1).response.output[0];
+  assistant.content[0].logprobs = [];
+  const tool = {
+    type: "custom_tool_call",
+    id: "ct_local",
+    call_id: "call_local",
+    name: "fixture_custom_0",
+    input: "fixture input",
+  };
+  events.splice(
+    -1,
+    0,
+    { type: "response.output_item.added", output_index: 1, item: { ...tool, input: "" } },
+    { type: "response.output_item.done", output_index: 1, item: tool },
+  );
+  events.at(-1).response.output.push(tool);
+  const initial = {
+    ...wire.request,
+    tools: [...wire.request.tools, { type: "custom", name: tool.name }],
+  };
+  // The local tool call and assistant message must pass the response policy before replay.
+  await check.events(events, false, "the first exchange releases a local call", true, initial);
+
+  const output = {
+    type: "custom_tool_call_output",
+    call_id: tool.call_id,
+    output: [{ type: "input_text", text: "fixture result" }],
+  };
+  const followup = {
+    ...initial,
+    input: [...initial.input, assistant, tool, output],
+  };
+  await check.events(responseEvents(), false, "the follow-up admits the replay", true, followup);
+  assert.deepEqual(f.providerRequests.at(-1).body, followup);
+
+  const [part] = assistant.content;
+  const withPart = (content) => ({ ...assistant, content: [content] });
+  // Keep the metadata confined to replayed assistant output text.
+  const deniedInputs = [
+    ...["system", "developer", "user"].map((role) => [{ ...assistant, role }, tool, output]),
+    [assistant, tool, { ...output, output: [part] }],
+    [withPart({ ...part, type: "input_text" }), tool, output],
+    [withPart({ ...part, annotations: [{}] }), tool, output],
+    [withPart({ ...part, logprobs: [{}] }), tool, output],
+    [withPart({ ...part, annotations: null }), tool, output],
+    [withPart({ ...part, logprobs: null }), tool, output],
+    [withPart({ ...part, unknown: [] }), tool, output],
+  ];
+  const reads = f.secretReads;
+  const sends = f.providerRequests.length;
+  for (const input of deniedInputs) {
+    const request = { ...followup, input: [...initial.input, ...input] };
+    assert.ok((await f.resolve(f.capture(request))).refused);
+  }
+  assert.equal(f.secretReads, reads, "unsupported metadata cannot read credentials");
+  assert.equal(f.providerRequests.length, sends, "unsupported metadata cannot send");
+});
+
+test("Responses admits bounded native agent messages", async (t) => {
+  const f = await staticEgressFixture(t);
+  const check = responseChecks(f);
+  const message = {
+    type: "agent_message",
+    id: "amsg_fixture",
+    author: "/root",
+    recipient: "/root/worker",
+    content: [{ type: "input_text", text: "Synthetic task" }],
+  };
+  const encrypted = { type: "encrypted_content", encrypted_content: "synthetic-ciphertext" };
+  const requestWith = (item) => ({ ...wire.request, input: [...wire.request.input, item] });
+
+  for (const content of [message.content, [...message.content, encrypted]]) {
+    const request = requestWith({ ...message, content });
+    await check.events(responseEvents(), false, "native agent input completes", true, request);
+    assert.deepEqual(f.providerRequests.at(-1).body, request);
+  }
+
+  const reads = f.secretReads;
+  const sends = f.providerRequests.length;
+  for (const item of [
+    { ...message, author: "https://example.invalid/agent" },
+    { ...message, recipient: "/other/worker" },
+    { ...message, recipient: "/root/../other" },
+    { ...message, tools: [{ type: "web_search" }] },
+    { ...message, content: [] },
+    { ...message, content: [encrypted] },
+    { ...message, content: [...message.content, encrypted, encrypted] },
+    { ...message, content: [{ type: "input_image", image_url: "https://example.invalid/image" }] },
+    { ...message, content: [...message.content, { ...encrypted, encrypted_content: {} }] },
+  ]) {
+    assert.ok((await f.resolve(f.capture(requestWith(item)))).refused);
+  }
+  assert.equal(f.secretReads, reads, "unsupported agent messages cannot read credentials");
+  assert.equal(f.providerRequests.length, sends, "unsupported agent messages cannot send");
+});
+
+test("Codex manual compaction forwards its closed metadata through protected inference", async (t) => {
+  const f = await staticEgressFixture(t);
+  const key = "x-codex-turn-metadata";
+  const metadata = JSON.parse(wire.request.client_metadata[key]);
+  const compaction = {
+    trigger: "manual",
+    reason: "user_requested",
+    implementation: "responses",
+    phase: "standalone_turn",
+    strategy: "memento",
+  };
+  function request(record, kind = "compaction") {
+    return {
+      ...wire.request,
+      client_metadata: {
+        ...wire.request.client_metadata,
+        [key]: JSON.stringify({ ...metadata, request_kind: kind, compaction: record }),
+      },
+    };
+  }
+  const manual = request(compaction);
+  const check = responseChecks(f);
+  await check.events(responseEvents(), false, "manual compaction", true, manual);
+  assert.deepEqual(f.providerRequests.at(-1).body, manual);
+
+  // Codex serializes reasoning content as null when a prior provider item omitted it.
+  const reasoning = {
+    type: "reasoning",
+    id: "rs_fixture",
+    summary: [{ type: "summary_text", text: "Earlier reasoning" }],
+    content: null,
+    encrypted_content: "opaque reasoning fixture",
+  };
+  const replay = { ...manual, input: [...manual.input, reasoning] };
+  await check.events(responseEvents(), false, "manual compaction replays reasoning", true, replay);
+  assert.deepEqual(f.providerRequests.at(-1).body, replay);
+
+  const reads = f.secretReads;
+  const sends = f.providerRequests.length;
+  for (const invalid of [
+    request({ ...compaction, strategy: "unknown" }),
+    request({ ...compaction, phase: undefined }),
+    request({ ...compaction, authority: "owner" }),
+    request(compaction, "turn"),
+    { ...manual, tools: [{ type: "web_search" }] },
+    { ...manual, model: "outside-the-grant" },
+    ...[{}, "text", [{ type: "input_text", text: "unexpected" }]].map((content) => ({
+      ...replay,
+      input: [...manual.input, { ...reasoning, content }],
+    })),
+    { ...replay, input: [...manual.input, { ...reasoning, unknown: null }] },
+  ]) {
+    assert.ok((await f.resolve(f.capture(invalid))).refused);
+  }
+  assert.equal(f.secretReads, reads);
+  assert.equal(f.providerRequests.length, sends);
+});
+
 test("selected Codex Responses wire admits local tools and finite SSE while rejecting remote tools and unprotected events", async (t) => {
   const f = await staticEgressFixture(t);
   // Sanitized packaged 0.163.0-alpha.2 request and synthetic response consumed by that
@@ -1178,11 +1342,168 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
   await check.wireBody(body);
   assert.deepEqual(f.providerRequests[0].body, wire.request);
   await check.wireBody(body.replaceAll("\n", "\r\n"), { label: "CRLF" });
+
+  // A reduced, sanitized packaged-client capture uses developer input for local tools.
+  // Its format header participates in the signed request. This proves the OCE
+  // contract with a fixture sender, not native relay or model-provider support.
+  const inline = JSON.parse(
+    readFileSync(new URL("../fixtures/static-egress/codex-inline-tools.json", import.meta.url)),
+  );
+  inline.request.client_metadata.mcp_attribution = JSON.stringify({ status: "none" });
+  const metadataKey = "x-codex-turn-metadata";
+  const turnMetadata = JSON.parse(inline.request.client_metadata[metadataKey]);
+  const repositoryRoot = "/workspace/repository";
+  const origin = "https://example.invalid/owner/repository.git";
+  // Extend the sanitized request with the metadata Codex sends from a Git checkout.
+  const workspace = {
+    latest_git_commit_hash: "a".repeat(40),
+    has_changes: false,
+    associated_remote_urls: {
+      origin,
+      mirror: "git@example.invalid:owner/repository.git",
+    },
+  };
+  const captureInline = (request) => {
+    const captured = f.capture(request);
+    captured.request.headers.push(
+      ...Object.entries(inline.headers).map(([name, value]) => ({ name, value })),
+    );
+    return captured;
+  };
+  // Captured native requests paired telemetry "ultra" with wire "xhigh". Preserve each field's
+  // supported spelling through authorization and the actual TLS provider request.
+  for (const [effort, metadata] of [
+    [inline.request.reasoning.effort, turnMetadata],
+    [
+      inline.request.reasoning.effort,
+      { ...turnMetadata, workspaces: { [repositoryRoot]: workspace } },
+    ],
+    ["high", { ...turnMetadata, reasoning_effort: "high" }],
+    ["xhigh", { ...turnMetadata, reasoning_effort: "ultra" }],
+    ["max", { ...turnMetadata, reasoning_effort: "max" }],
+  ]) {
+    inline.request.reasoning.effort = effort;
+    inline.request.client_metadata[metadataKey] = JSON.stringify(metadata);
+    const captured = captureInline(inline.request);
+    const { ready } = await f.resolve(captured);
+    assert.ok(ready, "native metadata and inline tools resolve through the installed provider");
+    assert.ok((await f.authorize(f.permitRequest(captured, ready))).allowed);
+    f.setResponse({ status: 200, contentType: "text/event-stream", rawBody: body });
+    const protectedReply = await f.protect(captured, await f.send(captured, ready));
+    assert.equal(protectedReply.response_complete, true);
+    assert.equal(protectedReply.body.toString(), body);
+    assert.deepEqual(f.providerRequests.at(-1).body, inline.request);
+  }
+
+  // Inline declarations cannot expand the admitted local-tool grant or let
+  // client metadata select authority. Refuse before another Secret read/send.
+  const inlineReads = f.secretReads;
+  const inlineSends = f.providerRequests.length;
+  const mutations = [
+    ...[
+      { status: "none" },
+      " ".repeat(8192) + '{"status":"none"}',
+      '{"status":"none","status":"none"}',
+      '{"status":"active"}',
+      '{"status":"none","server":"https://remote.example.test"}',
+    ].map((attribution) => (request) => {
+      request.client_metadata.mcp_attribution = attribution;
+    }),
+    ...["system", "user", "assistant"].map((role) => (request) => {
+      request.input[0].role = role;
+    }),
+    (request) => {
+      request.input[0].tools.push({ type: "web_search" });
+    },
+    (request) => {
+      request.input[0].tools[0].tools.push({ type: "web_search" });
+    },
+    (request) => {
+      request.input[0].authority = "owner";
+    },
+    (request) => {
+      request.input[0].tools[1].tools[0].parameters.properties.message.encrypted = false;
+    },
+    (request) => {
+      request.input[0].tools[1].tools[0].parameters.properties.message.type = "number";
+    },
+    (request) => {
+      const metadata = JSON.parse(request.client_metadata[metadataKey]);
+      metadata.reasoning_effort = "unrecognized";
+      request.client_metadata[metadataKey] = JSON.stringify(metadata);
+    },
+    ...["ultra", "unrecognized"].map((effort) => (request) => {
+      request.reasoning.effort = effort;
+    }),
+    ...[
+      { relative: workspace },
+      { ["/".repeat(4097)]: workspace },
+      { ["/workspace/line\nbreak"]: workspace },
+      { [repositoryRoot]: workspace, "/workspace/another-repository": workspace },
+      { [repositoryRoot]: {} },
+      { [repositoryRoot]: { namespace_id: f.namespace.id } },
+      { [repositoryRoot]: { latest_git_commit_hash: "1234" } },
+      { [repositoryRoot]: { has_changes: "false" } },
+      ...[
+        {},
+        { "up\u017ftream": origin },
+        { origin: "https://\u212A.example.invalid/owner/repository.git" },
+        { origin: "https://example.invalid/owner/repo\u017fitory.git" },
+        {
+          origin: syntheticCredentialUrl({
+            username: "fixture-user",
+            password: "fixture-password",
+            host: "example.invalid",
+            pathname: "/owner/repository.git",
+          }),
+        },
+        { origin: origin + "?query=value" },
+        { origin: origin + "#fragment" },
+        { origin: "ssh://git@example.invalid/owner/repository.git" },
+        { origin: "fixture-user@example.invalid:owner/repository.git" },
+        { origin: "helper::git@example.invalid:owner/repository.git" },
+        { origin: "https://example.invalid/" + "a".repeat(2048) },
+        Object.fromEntries(Array.from({ length: 17 }, (_, index) => [index, origin])),
+      ].map((associated_remote_urls) => ({
+        [repositoryRoot]: { associated_remote_urls },
+      })),
+    ].map((workspaces) => (request) => {
+      request.client_metadata[metadataKey] = JSON.stringify({ ...turnMetadata, workspaces });
+    }),
+    (request) => {
+      request.client_metadata[metadataKey] =
+        '{"workspaces":{"/workspace/repository":{"has_changes":false,"has_changes":true}}}';
+    },
+    (request) => {
+      request.client_metadata.namespace_id = f.namespace.id;
+    },
+    (request) => {
+      request.model = "model-outside-the-inference-grant";
+    },
+    (request) => {
+      request.text.format = {
+        type: "json_schema",
+        name: "output",
+        schema: { type: "string", encrypted: true },
+      };
+    },
+    (request) => {
+      request.store = true;
+    },
+  ];
+  for (const mutate of mutations) {
+    const request = structuredClone(inline.request);
+    mutate(request);
+    assert.ok((await f.resolve(captureInline(request))).refused);
+  }
+  assert.equal(f.secretReads, inlineReads, "unsupported inline requests cannot read credentials");
+  assert.equal(f.providerRequests.length, inlineSends, "unsupported inline requests cannot send");
   const beforeReads = f.secretReads;
   for (const body of [
     { ...wire.request, tools: [...wire.request.tools, ...wire.refusedTools] },
     { ...wire.request, tools: [{ type: "mcp", server_url: "https://remote.example.test" }] },
     { ...wire.request, tools: [{ type: "namespace", name: "remote", tools: wire.refusedTools }] },
+    { ...wire.request, tools: [{ ...wire.request.tools[0], strict: null }] },
     { ...wire.request, previous_response_id: "unadmitted-state" },
     {
       ...wire.request,
@@ -1397,6 +1718,77 @@ test("live-shaped Responses envelopes pass while undeclared or credential-bearin
     { ...completed, sequence_number: base.length + 1 },
   ];
   await check.events(live, false, "documented envelope fields on every envelope event");
+  // The provider reports its effective image policy even when the request omits it.
+  // Check each envelope event and preserve its original bytes through signed egress.
+  const withImage = (image) =>
+    live.map((event) =>
+      event.response ? { ...event, response: { ...event.response, image } } : event,
+    );
+  for (const context_compression of ["enabled", "disabled"]) {
+    await check.events(
+      withImage({ context_compression }),
+      false,
+      `documented image context compression: ${context_compression}`,
+    );
+  }
+  for (const [label, image] of [
+    ["null image policy", null],
+    ["missing image context compression", {}],
+    ["request-only automatic image policy", { context_compression: "auto" }],
+    ["wrong image context compression type", { context_compression: true }],
+    ["unknown image policy member", { context_compression: "enabled", extra: false }],
+    ["image policy reflects selected material", { context_compression: selectedMaterial }],
+  ]) {
+    await check.events(withImage(image), true, label);
+  }
+  // The admitted local declarations omit optional fields. Responses may echo their
+  // documented null defaults; they must not turn an otherwise valid turn into a 502.
+  const functionTool = {
+    type: "function",
+    name: "fixture_local",
+    parameters: { type: "object", properties: {} },
+  };
+  const customTool = { type: "custom", name: "fixture_custom" };
+  const localTools = [
+    functionTool,
+    customTool,
+    { type: "namespace", name: "fixture_namespace", tools: [functionTool, customTool] },
+  ];
+  const localRequest = { ...wire.request, tools: localTools };
+  const responseFunction = {
+    ...functionTool,
+    description: null,
+    strict: null,
+    defer_loading: null,
+  };
+  const responseCustom = { ...customTool, description: null, defer_loading: null, format: null };
+  const echoedTools = [
+    responseFunction,
+    responseCustom,
+    { ...localTools[2], tools: [responseFunction, responseCustom] },
+  ];
+  const withTools = (tools) =>
+    live.map((event) =>
+      event.response ? { ...event, response: { ...event.response, tools } } : event,
+    );
+  await check.events(
+    withTools(echoedTools),
+    false,
+    "nullable local-tool response defaults",
+    true,
+    localRequest,
+  );
+  for (const [label, tools] of [
+    ["wrong strict type", [{ ...responseFunction, strict: "false" }]],
+    ["wrong description type", [{ ...responseCustom, description: {} }]],
+    ["wrong defer_loading type", [{ ...responseFunction, defer_loading: 0 }]],
+    ["unknown custom format", [{ ...responseCustom, format: { type: "remote" } }]],
+    ["unknown function field", [{ ...responseFunction, remote_execution: true }]],
+    ["hosted tool", [{ type: "web_search" }]],
+    ["nested hosted tool", [{ ...localTools[2], tools: [{ type: "web_search" }] }]],
+  ]) {
+    await check.events(withTools(tools), true, label, true, localRequest);
+  }
   // Documented fields that the admitted request cannot ask for still have to be absent,
   // and documented optional structures are typed, not free-form.
   const nullableStructures = structuredClone(live);
@@ -3072,13 +3464,21 @@ function admissionCases(revision) {
 test("production Compute refuses protected admission and release, including empty plans", async (t) => {
   const compute = createTestKubernetesComputeDriver("admission-cutoff");
   const f = await staticEgressFixture(t);
-  const { unprotected, refused } = admissionCases(f.revision);
+  const admittingCompute = createTestKubernetesComputeDriver("admission-origin", {
+    gatewayRuntime: true,
+  });
+  // Keep valid resolved-provider admission while testing the independent protection gate.
+  const admitted = {
+    ...f.revision,
+    compute: { ...f.revision.compute, admission: admittingCompute.admitRevision(f.revision) },
+  };
+  const { unprotected, refused } = admissionCases(admitted);
   const cases = [
     ...refused,
-    [f.revision, /Protected execution is unavailable/],
+    [admitted, /Protected execution is unavailable/],
     [
       {
-        ...f.revision,
+        ...admitted,
         credentialSources: [],
         egressPlan: { ...f.revision.egressPlan, routes: [] },
       },
@@ -3101,7 +3501,7 @@ test("production Compute refuses protected admission and release, including empt
   await compute.activateRevision({
     ...unprotected,
     gatewayManagedMode: false,
-    compute: { id: compute.id, implementation: compute.implementation },
+    compute: { ...unprotected.compute, id: compute.id, implementation: compute.implementation },
   });
 
   // Protection comes from the selected execution policy, not the number of credentials.

@@ -7,8 +7,9 @@ import type {
 import type { OpenShellGateway } from "../../backends/openshell.ts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import type { RepositoryTransportBinding } from "../../composition/repository-credentials/contracts.ts";
-import type { RepositoryGitDeliveryResolver } from "../repo/credentials/delivery.ts";
+import type { RepositoryGitDeliveryResolver } from "../repo/access/delivery.ts";
 import type { OpenShellSandboxDriverSelection } from "../sandbox/openshell.ts";
+import { PostgresOpenShellGitRouteStore } from "./openshell-git-route-store.ts";
 import { OpenShellCredentialProxyDriver, type OpenShellProxyOptions } from "./openshell.ts";
 import {
   OpenShellGitRuntime,
@@ -49,9 +50,7 @@ export function createOpenShellCapabilities(input: {
     throw new Error("OpenShell Git requires its protected credential proxy.");
   }
   const git =
-    configuration &&
-    resolveDelivery &&
-    new OpenShellGitRuntime({ ...configuration, protectedExecution: true }, resolveDelivery);
+    configuration && resolveDelivery && new OpenShellGitRuntime(configuration, resolveDelivery);
   const sandbox = input.createSandbox(
     { ...input.sandbox.configuration, ...(input.proxy && { egress: input.proxy.configuration }) },
     {
@@ -77,6 +76,10 @@ export function createOpenShellCapabilities(input: {
       }),
     });
   const repositoryTransport: RepositoryTransportBinding | undefined = git && {
+    connectRestartObservation(pool) {
+      const store = new PostgresOpenShellGitRouteStore(pool);
+      git.connectRestartObservation(store.restartEvidence.bind(store));
+    },
     async bind(authority, pool, emit) {
       if (!authority || !proxy?.bindRepositoryGit) {
         throw new Error("Missing the selected Driver's protected repository Git authority.");

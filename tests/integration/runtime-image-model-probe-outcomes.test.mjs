@@ -10,7 +10,7 @@ import {
   runtimeFailure,
 } from "../helpers/runtime-image-model-probe.mjs";
 import { jsonLines } from "../helpers/json-lines.mjs";
-import { recordModelProbeMeasurement } from "../helpers/runtime-model-probe-observation.mjs";
+import { recordModelProbeMeasurement } from "../helpers/runtime-model-probe-observation.ts";
 
 // The embedded Gateway's startup model probe on the real runtime image at a 500m
 // CPU limit (setup: tests/helpers/runtime-image-model-probe.mjs). The CPU
@@ -89,6 +89,10 @@ describe("runtime image embedded Gateway model probe outcomes", { concurrency: 2
       );
       assert.equal(probe?.code, "MODEL_PROBE_TIMEOUT", detail);
       assert.ok(probe.elapsedMs < probe.capMs, detail);
+      // OpenClaw's own timer ended it, and the CLI preload read its 15 s window, in
+      // which the CLI sat idle on the provider for over 5 s (finding 2675).
+      assert.ok(probe.timeoutWindowMs >= 15_000, detail);
+      assert.ok(probe.timeoutWindowIdleMs >= 5_000, detail);
       assert.doesNotMatch(output, new RegExp(probeApiKey));
       t.diagnostic(
         `hung provider at --cpus ${constrainedGatewayCpuLimit}: ${JSON.stringify(probe)}`,
