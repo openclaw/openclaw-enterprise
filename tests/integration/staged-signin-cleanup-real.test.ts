@@ -157,7 +157,7 @@ async function fixture(
   let extraVolumes: string[] = [];
   let assertionsPassed = false;
   let requiresReconciliation = false;
-  let cleanupAuthority: { identity: Owned; stateSha256: string } | undefined;
+  const cleanupAuthority: { identity?: Owned; stateSha256?: string } = {};
   // Register ownership before creation. This cleanup is independent of the CLI
   // assertions, so it cannot turn a refused or partial deletion into a pass.
   registerCleanup(async () => {
@@ -199,7 +199,10 @@ async function fixture(
         throw error;
       });
       if (state) {
-        assert.ok(cleanupAuthority, "no acknowledged cluster cleanup authority");
+        assert.ok(
+          cleanupAuthority.identity && cleanupAuthority.stateSha256,
+          "no acknowledged cluster cleanup authority",
+        );
         assert.equal(
           hash(state),
           cleanupAuthority.stateSha256,
@@ -288,7 +291,8 @@ async function fixture(
   const current = await capture(resource.name, join(work, "original-kubeconfig"), command);
   captures.push(current.owned);
   assert.ok(current.owned.membership.volumes.every((v) => !beforeVolumes.has(v.name)));
-  cleanupAuthority = { identity: current.owned, stateSha256: hash(await readFile(statePath)) };
+  cleanupAuthority.identity = current.owned;
+  cleanupAuthority.stateSha256 = hash(await readFile(statePath));
   requiresReconciliation = false;
   const image = {
     reference: "fixture.invalid/controller@sha256:" + "1".repeat(64),
@@ -366,7 +370,7 @@ async function fixture(
         "replacement mounted a pre-existing volume",
       );
       captures.push(owned);
-      assert.ok(cleanupAuthority);
+      assert.ok(cleanupAuthority.identity && cleanupAuthority.stateSha256);
       cleanupAuthority.identity = owned;
       requiresReconciliation = false;
     },
