@@ -2668,6 +2668,7 @@ async function prepareProductionInstallation(
       request,
       agentPath: `/namespaces/${namespaceId}/agents/${agent.data.id}`,
       revisionId: deployed.data.id,
+      workerEvents: events,
     });
   } catch (error) {
     // These refusals already identify the failing readiness check. No Pod log read is needed.
