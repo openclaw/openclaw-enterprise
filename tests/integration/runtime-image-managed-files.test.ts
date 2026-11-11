@@ -4,6 +4,7 @@
 // configuration as externally managed and starts with OCE's Node options.
 import assert from "node:assert/strict";
 import test from "node:test";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
 import {
   OPTIONAL_BOOTSTRAP_FILES,
@@ -30,8 +31,18 @@ import {
   runGatewaySmoke,
 } from "../helpers/runtime-image-startup.mjs";
 
+function requiredRecord(value: unknown): Record<string, unknown> {
+  const record = asRecord(value);
+  assert.ok(record, "expected an object");
+  return record;
+}
+
+function runtimeFailure(status: unknown): Record<string, unknown> {
+  return requiredRecord(requiredRecord(status).runtimeFailure);
+}
+
 // The native Gateway process's environment, as OpenClaw itself sees it.
-async function gatewayProcessEnvironment(containerName) {
+async function gatewayProcessEnvironment(containerName: string) {
   const { stdout } = await runDocker([
     "exec",
     containerName,
@@ -173,7 +184,11 @@ for (let attempt = 0; attempt < 3; attempt++) {
     // Native setup reports the invalid configuration as a multi-line JSON document,
     // which runtime logs withhold line by line (finding 2686). The Harness logs its
     // message on one line that `occ agent logs` shows, and keeps the document out.
-    const failure = JSON.parse(/^SETUP_FAILURE (.*)$/m.exec(stdout)[1]);
+    const failureLine = /^SETUP_FAILURE (.*)$/m.exec(stdout)?.[1];
+    assert.ok(failureLine, "expected setup failure output");
+    const failure = requiredRecord(JSON.parse(failureLine));
+    assert.ok(typeof failure.stdout === "string");
+    assert.ok(typeof failure.stderr === "string");
     assert.equal(failure.held, true, failure.stderr);
     assert.doesNotMatch(failure.stdout, /cli_error|WORKSPACE_CHILD_STARTED/);
     const summary =
@@ -184,8 +199,11 @@ for (let attempt = 0; attempt < 3; attempt++) {
     assert.match(failure.stderr, /^Config invalid at \S+\.$/m, failure.stderr);
     assert.doesNotMatch(failure.stderr, /openclaw\b.*\b(?:doctor|config validate)\b/i);
     // Compute reads the held check, never the setup's text, on the status port.
-    assert.equal(failure.status?.status, 200, failure.stderr);
-    const { checkedAt, ...held } = JSON.parse(failure.status.body).runtimeFailure;
+    const status = asRecord(failure.status);
+    assert.equal(status?.status, 200, failure.stderr);
+    assert.ok(typeof status?.body === "string");
+    const { checkedAt, ...held } = runtimeFailure(JSON.parse(status.body));
+    assert.ok(typeof checkedAt === "string");
     assert.ok(!Number.isNaN(Date.parse(checkedAt)));
     assert.deepEqual(held, {
       component: "agent",
@@ -236,10 +254,15 @@ test(
       ],
       { timeout: 120_000 * imageSmokeTimeoutMultiplier, maxBuffer: 16 * 1024 * 1024 },
     );
-    const schema = JSON.parse(stdout);
-    const files =
-      schema.properties?.agents?.properties?.defaults?.properties?.skipOptionalBootstrapFiles?.items
-        ?.enum;
+    const schema = requiredRecord(JSON.parse(stdout));
+    const schemaProperty = (node: unknown, key: string): unknown =>
+      asRecord(asRecord(node)?.properties)?.[key];
+    const optionalBootstrapFiles = [
+      "agents",
+      "defaults",
+      "skipOptionalBootstrapFiles",
+    ].reduce<unknown>(schemaProperty, schema);
+    const files = asRecord(asRecord(optionalBootstrapFiles)?.items)?.enum;
     assert.ok(Array.isArray(files), "the image schema lists the optional bootstrap files");
     assert.deepEqual([...files].sort(), [...OPTIONAL_BOOTSTRAP_FILES].sort());
     // Plugin settings have their own schemas, separate from the core config schema.
@@ -247,9 +270,12 @@ test(
       ([path]) => !path.startsWith("plugins.entries."),
     )) {
       const keys = setting.split(".");
-      const parent = keys.slice(0, -1).reduce((node, key) => node?.properties?.[key], schema);
-      assert.ok(parent?.properties, `the image schema has ${keys.slice(0, -1).join(".")}`);
-      assert.equal(parent.properties[keys.at(-1)], undefined, `the image schema has no ${setting}`);
+      const parent = keys.slice(0, -1).reduce<unknown>(schemaProperty, schema);
+      const properties = asRecord(asRecord(parent)?.properties);
+      assert.ok(properties, `the image schema has ${keys.slice(0, -1).join(".")}`);
+      const lastKey = keys.at(-1);
+      assert.ok(lastKey);
+      assert.equal(properties[lastKey], undefined, `the image schema has no ${setting}`);
     }
   },
 );
@@ -260,7 +286,7 @@ test(
   async (t) => {
     // An embedded OpenClaw Gateway starts from the Configuration OCC mounts read-only.
     const configurationPath = await temporaryGatewayConfiguration(t, "openclaw");
-    const startGateway = (managedMode) =>
+    const startGateway = (managedMode: boolean) =>
       runGatewaySmoke(t, "openclaw", {
         configurationPath: "/etc/openclaw/openclaw.json",
         entrypoint: gatewayRuntimeEntrypoint(managedMode),
@@ -280,7 +306,7 @@ test(
     // operator's options after it, so an operator's own flag still wins.
     assert.ok(
       environment.includes("NODE_OPTIONS=--max-semi-space-size=8 --max-old-space-size=3072"),
-      environment.find((entry) => entry.startsWith("NODE_OPTIONS=")),
+      environment.find((entry) => entry.startsWith("NODE_OPTIONS=")) ?? "NODE_OPTIONS is absent",
     );
     // OpenClaw promotes its last-known-good backup just after it reports ready,
     // and only then releases its post-ready work. That work includes the remote
@@ -324,12 +350,13 @@ for (const { topology, harnessId, withAppServer, event } of [
     async (t) => {
       // A beam plugin entry without its required mirror settings.
       const admitted = createAdmittedRuntimeImageConfiguration(harnessId);
+      const plugins = asRecord(admitted.plugins);
       const configuration = {
         ...admitted,
         plugins: {
-          ...admitted.plugins,
+          ...plugins,
           entries: {
-            ...admitted.plugins?.entries,
+            ...asRecord(plugins?.entries),
             beam: { enabled: true, config: { mirror: { token: "synthetic-beam-token-value" } } },
           },
         },
@@ -366,8 +393,9 @@ for (const { topology, harnessId, withAppServer, event } of [
         "-e",
         'const status = "http://127.0.0.1:" + process.env.OPENCLAW_RUNTIME_STATUS_PORT; Promise.all([fetch(status + "/openclaw/runtime/status").then((response) => response.json()), fetch(status + "/readyz").then((response) => response.status)]).then(([held, ready]) => process.stdout.write(JSON.stringify({ status: held, ready })))',
       ]);
-      const { status, ready } = JSON.parse(stdout);
-      const { checkedAt, ...held } = status.runtimeFailure;
+      const { status, ready } = requiredRecord(JSON.parse(stdout));
+      const { checkedAt, ...held } = runtimeFailure(status);
+      assert.ok(typeof checkedAt === "string");
       assert.ok(!Number.isNaN(Date.parse(checkedAt)));
       assert.deepEqual(held, {
         component: "gateway",
@@ -384,7 +412,7 @@ for (const { topology, harnessId, withAppServer, event } of [
         // of reporting a config change.
         const openClawLines = output.split("\n").flatMap((line) => {
           try {
-            const { message } = JSON.parse(line);
+            const message = asRecord(JSON.parse(line))?.message;
             return typeof message === "string" ? message.split("\n") : [];
           } catch {
             return [];

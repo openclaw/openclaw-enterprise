@@ -6,14 +6,15 @@ import {
   observed,
   phaseAt,
   probeApiKey,
+  probeLogRecords,
   runEmbeddedGatewayProbe,
   runtimeFailure,
-} from "../helpers/runtime-image-model-probe.mjs";
-import { jsonLines } from "../helpers/json-lines.mjs";
+} from "../helpers/runtime-image-model-probe.ts";
+import type { ProbeSnapshot } from "../helpers/runtime-image-model-probe.ts";
 import { recordModelProbeMeasurement } from "../helpers/runtime-model-probe-observation.ts";
 
 // The embedded Gateway's startup model probe on the real runtime image at a 500m
-// CPU limit (setup: tests/helpers/runtime-image-model-probe.mjs). The CPU
+// CPU limit (setup: tests/helpers/runtime-image-model-probe.ts). The CPU
 // contention case runs in the runtime image model probe file, in its own lane.
 
 // Each case starts its own stand-in provider and CPU-limited Gateway: random
@@ -46,9 +47,7 @@ describe("runtime image embedded Gateway model probe outcomes", { concurrency: 2
         events.some((event) => event.event === "turn-answered"),
         detail,
       );
-      const probe = jsonLines(output, { lenient: true }).find(
-        ({ event }) => event === "openclaw.model_probe",
-      );
+      const probe = probeLogRecords(output).find(({ event }) => event === "openclaw.model_probe");
       t.diagnostic(
         `embedded Gateway at --cpus ${constrainedGatewayCpuLimit}, ${delayMs} ms model turn: ` +
           JSON.stringify({
@@ -63,7 +62,7 @@ describe("runtime image embedded Gateway model probe outcomes", { concurrency: 2
     },
   );
 
-  const failed = ({ events }) => runtimeFailure(events) !== undefined;
+  const failed = ({ events }: ProbeSnapshot) => runtimeFailure(events) !== undefined;
 
   // A provider that never answers the turn: OpenClaw's own turn timeout ends the
   // probe well inside the wrapper's cap, and the Gateway holds MODEL_PROBE_TIMEOUT,
@@ -84,13 +83,16 @@ describe("runtime image embedded Gateway model probe outcomes", { concurrency: 2
       assert.equal(runtimeFailure(events), "MODEL_PROBE_TIMEOUT", detail);
       assert.equal(phaseAt(phases, "model-probe")?.outcome, "failed", detail);
       assert.equal(phaseAt(phases, "native-spawn"), undefined, detail);
-      const probe = jsonLines(output, { lenient: true }).find(
-        ({ event }) => event === "openclaw.model_probe",
-      );
+      const probe = probeLogRecords(output).find(({ event }) => event === "openclaw.model_probe");
       assert.equal(probe?.code, "MODEL_PROBE_TIMEOUT", detail);
+      assert.ok(probe, detail);
+      assert.ok(typeof probe.elapsedMs === "number", detail);
+      assert.ok(typeof probe.capMs === "number", detail);
       assert.ok(probe.elapsedMs < probe.capMs, detail);
       // OpenClaw's own timer ended it, and the CLI preload read its 15 s window, in
       // which the CLI sat idle on the provider for over 5 s (finding 2675).
+      assert.ok(typeof probe.timeoutWindowMs === "number", detail);
+      assert.ok(typeof probe.timeoutWindowIdleMs === "number", detail);
       assert.ok(probe.timeoutWindowMs >= 15_000, detail);
       assert.ok(probe.timeoutWindowIdleMs >= 5_000, detail);
       assert.doesNotMatch(output, new RegExp(probeApiKey));

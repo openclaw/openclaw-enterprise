@@ -134,16 +134,16 @@ docker pull "$RUNTIME_IMAGE"
 OCC_TEST_PRODUCTION_IMAGE="$CONTROLLER_IMAGE" OCC_TEST_RUNTIME_IMAGE="$RUNTIME_IMAGE" \
   node --test tests/integration/production-image-startup.test.mjs \
     tests/integration/runtime-image-startup.test.mjs \
-    tests/integration/runtime-image-gateway-workspace.test.mjs \
+    tests/integration/runtime-image-gateway-workspace.test.ts \
     tests/integration/runtime-image-startup-probe.test.mjs \
     tests/integration/runtime-image-codex-readiness.test.ts \
-    tests/integration/runtime-image-startup-termination.test.mjs \
+    tests/integration/runtime-image-startup-termination.test.ts \
     tests/integration/runtime-image-gateway-unclean-restart.test.mjs \
     tests/integration/runtime-image-gateway-retained-state.test.mjs \
     tests/integration/runtime-image-gateway-peer.test.mjs \
     tests/integration/runtime-image-native-worker.test.mjs \
     tests/integration/runtime-image-state-migration.test.mjs \
-    tests/integration/runtime-image-managed-files.test.mjs \
+    tests/integration/runtime-image-managed-files.test.ts \
     tests/integration/runtime-image-native-listener.test.mjs \
     tests/integration/repository-runtime-volume.test.mjs
 ```

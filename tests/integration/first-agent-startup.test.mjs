@@ -29,7 +29,7 @@ import {
   firstAgentRevisionValuesMatch,
   verifyFirstAgentModel,
 } from "../../scripts/first-agent-model.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
 import { servedAs } from "../helpers/agent-identity.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";

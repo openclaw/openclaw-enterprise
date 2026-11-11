@@ -289,7 +289,7 @@ Prepare native runtime and Envoy images, then set both `OCC_TEST_RUNTIME_IMAGE`
 and `OCC_TEST_WORKSPACE_ENVOY_IMAGE`:
 
 ```sh
-node --test tests/integration/workspace-files-native.test.mjs
+node --test tests/integration/workspace-files-native.test.ts
 ```
 
 This checks file access without model calls. It does not prove Kubernetes

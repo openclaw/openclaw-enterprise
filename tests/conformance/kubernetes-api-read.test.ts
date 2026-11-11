@@ -13,7 +13,7 @@ import { commandCalls, prependPath, writeCommand } from "../helpers/fake-command
 import { kubectlGetJson, plainGet } from "../helpers/kubernetes-api-read.mjs";
 import { isTransientKubectlFailure } from "../helpers/kubernetes-real.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const resource = (name: string, kind: string, namespaced: boolean, shortNames?: string[]) => ({

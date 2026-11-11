@@ -14,7 +14,7 @@ import type { createKubernetesClientConfiguration } from "../../apps/controller/
 import { RepositoryReceiptClient } from "../../apps/controller/src/drivers/repo/access/receipt-client.ts";
 import { callControl } from "../../apps/controller/src/drivers/repo/github/access/client/operator.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // Each upstream here sends more than its reader's limit and then holds the response

@@ -7,7 +7,7 @@ import { InstallationFieldError } from "../../apps/controller/src/composition/in
 import { validateOpenShellRepositoryTransport } from "../../apps/controller/src/drivers/egress-proxy/openshell-configuration.ts";
 import type { OpenShellSandboxDriverOptions } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import type { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
-import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { makeStructuralRefusal as structuralRefusal } from "./sandbox-driver-installation-fixture.ts";
 import {
