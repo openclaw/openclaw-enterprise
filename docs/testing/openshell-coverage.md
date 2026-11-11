@@ -110,8 +110,9 @@ The receipt compares approval/profile requirements and the returned profile,
 reviewer, approval policy, ephemeral flag, and legacy sandbox representation.
 `accepted` requires matching permission settings and an ephemeral thread; unknown provenance is
 `unconfirmed`, and different settings are `mismatch`. RPC errors do not establish
-a policy denial. Only fixed classifications, booleans and known enums are
-retained; credentials, account details, instructions and peer text are excluded.
+a policy denial. Receipts include the fixture revision ID and fixed phase,
+outcome and cleanup classifications. Peer fields contain known enums and boolean
+or null comparisons; credentials, account details, instructions and peer text are excluded.
 
 No diagnostic model turn or approval response is sent; ordinary runtime startup
 still performs its authentication probe. The exchange has ten seconds, socket
