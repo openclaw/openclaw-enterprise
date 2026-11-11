@@ -115,9 +115,9 @@ Missing metadata records `unavailable`; image policy is unchanged.
 Extraction journals IDs before removal. Cleanup removes containers and anonymous volumes. Journal and cleanup errors fail preparation; unresolved resources retain receipts.
 
 `scripts/ci/prepare.mjs:ensurePostgresServer` journals exclusive bootstrap-directory
-and SQL-copy ownership, refusing existing paths. Failed directory creation retires
-its record. The public `migrations/init-local.sql` copy becomes container-readable;
-`OPENCLAW_CI_POSTGRES_INIT_SQL` selects it without changing checkout permissions.
+and SQL-copy ownership, refusing existing paths and retiring failed directory creation
+records. Its public `migrations/init-local.sql` copy is container-readable, selected by
+`OPENCLAW_CI_POSTGRES_INIT_SQL`; checkout permissions stay unchanged.
 
 Docker assigns PostgreSQL's loopback port. Preparation inspects its owned container,
 rejects missing, non-loopback and developer-port `55432` mappings, then saves the port
@@ -131,9 +131,11 @@ empty-directory removal; confirmed SQL is removed after Compose teardown. Unexpe
 contents or teardown failure retain state. Subnet exhaustion preserves the original
 error and planned resource and prints [owned cleanup](../../testing/postgresql.md#subnet-pool-exhaustion).
 
-`prepareFile` journals the allocation test's two child states before exposing them.
-`cleanupResource` resolves only owned sibling names and runs canonical child cleanup,
-including after worker death. Failed children retain their parent references.
+`prepareFile` journals child paths and cleanup owners before startup.
+`prepareLane` exclusively creates journals; `--cleanup-owner` binds identity.
+Under the state lock, `cleanupResource` verifies identity before cleanup,
+including after worker death. Mismatches and failures retain parent references;
+foreign journals remain untouched.
 
 For hosted repository QA, `scripts/ci/qa-matrix-credentials.mjs` reads the selected
 reviewed registry file only when a repository scenario is selected. It copies

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,9 +14,12 @@ test(
   { skip: process.env.OCC_TEST_CI_POSTGRES_REAL !== "1", timeout: 180_000 },
   async (t) => {
     const root = await mkdtemp(join(tmpdir(), "ci-postgres-real-"));
-    const states: string[] = process.env.OCC_TEST_CI_POSTGRES_STATES
+    const states: { path: string; owner: string }[] = process.env.OCC_TEST_CI_POSTGRES_STATES
       ? JSON.parse(process.env.OCC_TEST_CI_POSTGRES_STATES)
-      : [join(root, "first.json"), join(root, "second.json")];
+      : ["first.json", "second.json"].map((file) => ({
+          path: join(root, file),
+          owner: randomUUID(),
+        }));
     const projects: string[] = [];
     const env = { ...process.env, GITHUB_ENV: "", GITHUB_OUTPUT: "" };
     const node = (args: string[]) =>
@@ -31,7 +35,7 @@ test(
       const errors: unknown[] = [];
       for (const state of states) {
         try {
-          node(["scripts/ci/cleanup.mjs", "--state", state]);
+          node(["scripts/ci/cleanup.mjs", "--state", state.path, "--cleanup-owner", state.owner]);
         } catch (error) {
           errors.push(error);
         }
@@ -50,8 +54,16 @@ test(
     const ports = new Set<number>();
     // Keep both real servers alive: Docker, rather than a released caller-side
     // probe, must assign distinct usable ports to the independent preparations.
-    for (const statePath of states) {
-      node(["scripts/ci/prepare.mjs", "--lane", "postgres-auth", "--state", statePath]);
+    for (const { path: statePath, owner } of states) {
+      node([
+        "scripts/ci/prepare.mjs",
+        "--lane",
+        "postgres-auth",
+        "--state",
+        statePath,
+        "--cleanup-owner",
+        owner,
+      ]);
       const state = JSON.parse(await readFile(statePath, "utf8"));
       const server = state.resources.find(
         (resource: { kind: string }) => resource.kind === "compose-postgres",
@@ -88,7 +100,7 @@ test(
       "--lane",
       "postgres-auth",
       "--state",
-      states[0]!,
+      states[0]!.path,
       "--file",
       "tests/integration/native-admin-session-postgres.test.mjs",
       "--github-env",

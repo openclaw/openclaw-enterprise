@@ -79,8 +79,9 @@ PostgreSQL image access and installed workspace dependencies. It removes only it
 cleanup failures retain the state directory printed in the error. In CI, file preparation
 journals both child state paths in the lane state before the test starts. File and
 lane cleanup can therefore recover accepted projects even if the test worker is
-killed. Keep the lane state until cleanup passes. A direct local invocation keeps
-its existing after-hook cleanup and requires the same Docker prerequisites.
+killed. Keep the lane state until cleanup passes. Both CI and direct local runs bind
+cleanup to a fresh owner identity: refused existing or replaced journals are preserved,
+not adopted. A direct local invocation uses its after-hook and the same Docker prerequisites.
 
 ## Subnet pool exhaustion
 

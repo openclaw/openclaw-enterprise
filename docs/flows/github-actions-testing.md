@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: "2026-11-11"
-last_updated_session: "authoring-run/567c3011-a36a-4bfb-b1f1-c2390ca67345"
+last_updated_session: "authoring-run/bfbc4468-ece0-4912-b2df-e60c34f373b1"
 ---
 
 # GitHub Actions testing flow
@@ -187,7 +187,7 @@ with declared inputs restored, `lane.env`, preparation defaults, `file.env`, the
 generated values. Later values win.
 `scripts/ci/prepare.mjs:prepareFile` separates re-resolved defaults from generated outputs. `file.env` affects neither preflight nor resource preparation. Keep differing prerequisites in separate files.
 
-The reporter records case names, locations and outcomes. Results and logs retain failure messages (600 characters) and top frames (240). Redaction removes repository paths, replaces nonpublic job/child environment values (8+ characters) with `[env:NAME]`, and masks token/key shapes, URL passwords and `password=` values as `[redacted]`; generated values require a matching shape.
+The reporter retains names, locations, outcomes, failure messages (600 characters) and top frames (240). Redaction removes repository paths, substitutes nonpublic job/child values (8+ characters) with `[env:NAME]`, and masks token/key shapes, URL passwords and `password=` as `[redacted]`. Generated values require a matching shape.
 
 HTTP diagnostics retain numeric actual/expected statuses, allowlisted OCC codes and available ChatGPT operation/status. Denied traffic retains an allowlisted category and plugin failures an allowlisted readiness/rollout stage. Rollouts retain allowed Pod phases, readiness/scheduling flags, restart counts, exit codes and allowlisted reasons.
 
@@ -286,6 +286,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 16:18: Bind child cleanup ownership. (authoring-run/bfbc4468-ece0-4912-b2df-e60c34f373b1 - b5eb70f7384601a69ad62e089e5909c01789e011)
 
 - 2026-11-11 15:55: Retain child cleanup custody. (authoring-run/567c3011-a36a-4bfb-b1f1-c2390ca67345 - cbd2ffb5bff1896373bd4a91d0a1636fcd3a40ff)
 

@@ -1715,9 +1715,11 @@ test("parent cleanup retains failed child journals and rejects paths outside its
   const name = `${prefix}-child-0123456789ab`;
   const statePath = join(root, "state.json");
   const childPath = join(root, `${name}.json`);
+  const id = "child-state-0123456789ab";
   const child = {
     version: 1,
     repositoryRoot,
+    cleanupOwner: id,
     lane: "postgres-auth",
     prefix: "openclaw-ci-child-0123456789ab",
     resources: [{ id: "unknown", kind: "unsupported" }],
@@ -1727,7 +1729,7 @@ test("parent cleanup retains failed child journals and rejects paths outside its
     repositoryRoot,
     lane: "postgres",
     prefix,
-    resources: [{ id: "child", kind: "child-state", owner: prefix, name }],
+    resources: [{ id, kind: "child-state", owner: prefix, name }],
   };
   await writeState(statePath, parent);
   await writeState(childPath, child);
@@ -1740,9 +1742,63 @@ test("parent cleanup retains failed child journals and rejects paths outside its
   await assert.rejects(stat(statePath), { code: "ENOENT" });
   await assert.rejects(stat(childPath), { code: "ENOENT" });
 
+  // A correctly named file is not custody: preserve a replaced or foreign journal.
+  for (const cleanupOwner of [undefined, "another-owner"]) {
+    const foreign = { ...child, cleanupOwner, resources: [] };
+    await writeState(statePath, parent);
+    await writeState(childPath, foreign);
+    const before = await readFile(childPath, "utf8");
+    await assert.rejects(cleanupState(statePath), /CI cleanup owner mismatch/);
+    assert.equal(await readFile(childPath, "utf8"), before);
+    assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), parent);
+  }
+
   // A forged path cannot redirect the parent's canonical child cleanup.
   parent.resources[0].name = `${prefix}-child-../../unrelated`;
   await writeState(statePath, parent);
   await assert.rejects(cleanupState(statePath), /unowned child state path/);
   assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), parent);
+});
+
+test("real PostgreSQL test does not adopt state when preparation refuses an existing path", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "foreign.json");
+  const foreign = JSON.stringify({
+    version: 1,
+    repositoryRoot,
+    prefix: "openclaw-ci-foreign",
+    lane: "postgres-auth",
+    cleanupOwner: "foreign-owner",
+    resources: [],
+  });
+  await writeFile(statePath, foreign);
+  const log = join(root, "docker.log");
+  const docker = await writeCommand(root, "docker", "exit 97", { log });
+  // Run the real test and its after-hook. Neither failed setup nor cleanup may
+  // take custody of an existing journal, and neither should reach Docker.
+  const env = {
+    ...process.env,
+    OCC_DOCKER_BIN: docker,
+    TMPDIR: root,
+    OCC_TEST_CI_POSTGRES_REAL: "1",
+    OCC_TEST_CI_POSTGRES_STATES: JSON.stringify([
+      { path: statePath, owner: "new-owner" },
+      { path: join(root, "absent.json"), owner: "second-owner" },
+    ]),
+  };
+  delete env.NODE_TEST_CONTEXT;
+  const result = spawnSync(
+    process.execPath,
+    ["--test", "tests/integration/ci-prepare-postgres-real.test.ts"],
+    {
+      cwd: repositoryRoot,
+      env,
+      encoding: "utf8",
+      timeout: 30_000,
+    },
+  );
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout + result.stderr, /CI state already exists/);
+  assert.equal(await readFile(statePath, "utf8"), foreign);
+  assert.deepEqual(await commandCalls(log), []);
 });

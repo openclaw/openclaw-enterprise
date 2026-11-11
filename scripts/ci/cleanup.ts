@@ -32,6 +32,7 @@ type K3dCleanupIdentity = {
   volumes: { name: string; createdAt: string }[];
 };
 type CleanupAuthority = {
+  expectedCleanupOwner?: string;
   expectedStateSha256?: string;
   k3dIdentity?: K3dCleanupIdentity;
 };
@@ -906,7 +907,9 @@ async function cleanupResource(
       }
       const childPath = join(dirname(statePath), `${resource.name}.json`);
       assert.notEqual(childPath, statePath, "A child state cannot own its parent.");
-      await cleanupState(childPath);
+      assertString(resource.id, "child state identity");
+      assert.match(resource.id, /^child-state-[a-f0-9]{12}$/);
+      await cleanupState(childPath, { expectedCleanupOwner: resource.id });
       break;
     }
     case "postgres-database":
@@ -956,7 +959,7 @@ async function cleanupResourceIds(
     authority.k3dIdentity !== undefined,
     "bound cleanup requires both state digest and resource custody",
   );
-  if (authority.k3dIdentity) {
+  if (authority.k3dIdentity || authority.expectedCleanupOwner !== undefined) {
     assert.equal(resourceIds, undefined, "bound cleanup requires the complete prepared state");
   }
   const path = resolve(statePath);
@@ -1041,6 +1044,9 @@ async function cleanupLockedResourceIds(
     return false;
   }
   const state = await readState(path, authority.expectedStateSha256);
+  if (authority.expectedCleanupOwner !== undefined) {
+    assert.equal(state.cleanupOwner, authority.expectedCleanupOwner, "CI cleanup owner mismatch");
+  }
   if (authority.k3dIdentity) {
     assert.equal(state.resources.length, 1, "bound cleanup requires exactly one cluster resource");
     const resource = resourceFields(state.resources[0]);
@@ -1128,7 +1134,9 @@ export async function main() {
   }
   let processedState: boolean;
   try {
-    processedState = await cleanupState(args.state);
+    processedState = await cleanupState(args.state, {
+      expectedCleanupOwner: args["cleanup-owner"],
+    });
   } catch (error) {
     if (args.results) {
       await recordLaneCleanup(args.results, "failed");

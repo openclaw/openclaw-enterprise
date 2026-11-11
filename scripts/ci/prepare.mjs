@@ -3318,7 +3318,13 @@ async function prepareLaneLogging(statePath, state, env, cluster) {
   await markResourceReady(statePath, state, logging.resource);
 }
 
-async function prepareLane({ lane, statePath, file }) {
+async function prepareLane({ lane, statePath, file, cleanupOwner }) {
+  if (
+    cleanupOwner !== undefined &&
+    (typeof cleanupOwner !== "string" || !/^[a-z0-9-]{1,128}$/.test(cleanupOwner))
+  ) {
+    throw new Error("Invalid CI cleanup owner.");
+  }
   const name = assertLane(lane);
   const relativeFile = file === undefined ? undefined : toRepositoryRelative(filePath(file));
   if (
@@ -3377,8 +3383,16 @@ async function prepareLane({ lane, statePath, file }) {
   }
   const state = baseState(name, resolvedStatePath);
   state.selectedFile = relativeFile;
+  if (cleanupOwner !== undefined) {
+    state.cleanupOwner = cleanupOwner;
+  }
   const env = baseEnv(resolvedStatePath, state);
-  await writeState(resolvedStatePath, state);
+  // Claim the fresh journal without replacing a concurrent owner's state.
+  await mkdir(dirname(resolvedStatePath), { recursive: true, mode: 0o700 });
+  await writeFile(resolvedStatePath, `${JSON.stringify(state, null, 2)}\n`, {
+    flag: "wx",
+    mode: 0o600,
+  });
 
   const sourceBuild = lanePrepare(name).sourceBuildFiles?.some((path) =>
     relativeFile === undefined
@@ -4052,7 +4066,7 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
       const name = `${effectiveState.prefix}-child-${randomSuffix()}`;
       const resource = addResource(effectiveState, "child-state", { name });
       resourceIds.push(resource.id);
-      return join(dirname(resolvedStatePath), `${name}.json`);
+      return { path: join(dirname(resolvedStatePath), `${name}.json`), owner: resource.id };
     });
     await writeState(resolvedStatePath, effectiveState);
     env.OCC_TEST_CI_POSTGRES_STATES = JSON.stringify(children);
@@ -4237,7 +4251,12 @@ async function main() {
   }
   const result = args.file
     ? await prepareFile({ lane: args.lane, file: args.file, statePath: args.state })
-    : await prepareLane({ lane: args.lane, statePath: args.state, file: args["selected-file"] });
+    : await prepareLane({
+        lane: args.lane,
+        statePath: args.state,
+        file: args["selected-file"],
+        cleanupOwner: args["cleanup-owner"],
+      });
   const env = { ...result.defaults, ...result.env };
   await appendGithubEnv(args["github-env"] ?? process.env.GITHUB_ENV, env);
   process.stdout.write(`${JSON.stringify({ envNames: Object.keys(env).sort() }, null, 2)}\n`);
