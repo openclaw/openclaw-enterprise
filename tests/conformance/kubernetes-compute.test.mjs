@@ -12793,14 +12793,6 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
       },
     }),
   );
-  const resolveNamespace = driver.resolveNamespace.bind(driver);
-  driver.resolveNamespace = async (...args) => {
-    assert.ok(
-      currentComputeAbortSignal(),
-      "the overall diagnostic deadline covers namespace reads",
-    );
-    return resolveNamespace(...args);
-  };
   const namespaceName = kubernetesNamespaceName(tenant.id);
   const gatewayNamespaceName = kubernetesNamespaceName(tenant.id);
   const agent = {
@@ -12850,6 +12842,8 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
   let diagnosticsServing = true;
   let gatewayTransportFailure = false;
   let privateProxyRead;
+  let namespaceDiscoveryDeadline;
+  let discoverySignal;
   // Unrun channel checks the Gateway adds to its one socket check (a status report may carry at
   // most 32 checks).
   let extraGatewayChecks = 0;
@@ -12857,6 +12851,13 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
     core: {
       async listNamespace({ labelSelector }) {
         assert.equal(labelSelector, `openclaw.dev/namespace=${tenant.id}`);
+        if (namespaceDiscoveryDeadline !== undefined) {
+          discoverySignal = currentComputeAbortSignal();
+          namespaceDiscoveryDeadline.abort(
+            new DOMException("private discovery detail", "TimeoutError"),
+          );
+          discoverySignal?.throwIfAborted();
+        }
         return {
           apiVersion: "v1",
           kind: "NamespaceList",
@@ -12932,7 +12933,6 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
   });
 
   assert.equal(diagnostics.revisionId, revision.id);
-  assert.equal(diagnostics.checks.length, 2);
   assert.deepEqual(
     diagnostics.checks.map(({ component, check, state }) => ({ component, check, state })),
     [
@@ -13051,8 +13051,11 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
   // All four private reads expire at the shared deadline. The Agent reads and
   // supplementary Gateway read reject first; the Gateway diagnostics failure
   // still determines the safe transport category.
-  const collectionDeadline = new AbortController();
-  const timeout = context.mock.method(AbortSignal, "timeout", () => collectionDeadline.signal);
+  let collectionDeadline = new AbortController();
+  const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+  const timeout = context.mock.method(AbortSignal, "timeout", realTimeout);
+  // Only the collection owns this signal. Each Kubernetes request keeps its own deadline.
+  timeout.mock.mockImplementationOnce(() => collectionDeadline.signal);
   const pendingProxyReads = new Map();
   const gatewayDiagnostics = "gateway:openclaw/runtime/diagnostics";
   privateProxyRead = (role, path) =>
@@ -13072,9 +13075,24 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
     });
   try {
     await assert.rejects(driver.diagnoseAgentDeployment(binding), RuntimeDiagnosticsTransportError);
+
+    // The same shared deadline during Namespace discovery has no Gateway proxy to classify.
+    privateProxyRead = undefined;
+    collectionDeadline = new AbortController();
+    namespaceDiscoveryDeadline = collectionDeadline;
+    timeout.mock.mockImplementationOnce(() => collectionDeadline.signal);
+    const previousProxyReads = proxyReads.length;
+    await assert.rejects(driver.diagnoseAgentDeployment(binding), {
+      name: "DependencyUnavailableError",
+      message: "Runtime diagnostics timed out.",
+    });
+    assert.ok(discoverySignal?.aborted);
+    assert.equal(discoverySignal.reason, collectionDeadline.signal.reason);
+    assert.equal(proxyReads.length, previousProxyReads);
   } finally {
     timeout.mock.restore();
     privateProxyRead = undefined;
+    namespaceDiscoveryDeadline = undefined;
   }
 
   // A status read that is refused or returns another Pod's report adds nothing;
@@ -13109,8 +13127,8 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
   const owner = new AbortController();
   const cancelled = new Error("diagnostics caller went away");
   runtimeStatus = async () => {
-    // The diagnostics reads have finished by now, so only the failed status read sees it.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Let the in-memory diagnostics reads finish before cancelling the pending status read.
+    await new Promise((resolve) => setImmediate(resolve));
     owner.abort(cancelled);
     throw Object.assign(new Error("pods/proxy denied"), { code: 403, headers: {} });
   };
