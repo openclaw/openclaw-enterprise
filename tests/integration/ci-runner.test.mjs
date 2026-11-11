@@ -20,8 +20,10 @@ import {
   aggregateArgs,
   killRecordedProcessGroupMembers,
   laneArgs,
+  lifecycleReady,
   procStat,
   runnerArtifactPaths,
+  spawnLifecycleRunner,
   writeFirstAgentCliFixture,
   writeJson,
   writeRunnerManifest,
@@ -1105,10 +1107,7 @@ function lifecycleProcessLive(record) {
 }
 
 async function startLifecycleFixture(t, options, env = {}) {
-  let fixture;
-  let child;
-  let exit;
-  let stderr = "";
+  let runner;
   let processes = [];
   // Reap only observed fixture identities, before temporaryDirectory removes the
   // evidence. Assertions below check termination before this fallback can run.
@@ -1122,25 +1121,16 @@ async function startLifecycleFixture(t, options, env = {}) {
         }
       }
     }
-    if (child && exit === undefined) {
-      child.kill("SIGKILL");
-      await waitFor(() => exit !== undefined, 2_000);
+    if (runner && runner.exit() === undefined) {
+      runner.child.kill("SIGKILL");
+      await waitFor(() => runner.exit() !== undefined, 2_000);
     }
   });
-  fixture = await lifecycleFixture(t, options);
-  child = spawn(process.execPath, [runnerPath, ...fixture.args], {
-    cwd: repositoryRoot,
-    env: runnerEnv(env),
-    detached: true,
-    stdio: ["ignore", "ignore", "pipe"],
-  });
-  child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
-  child.on("exit", (code, signal) => (exit = { code, signal }));
+  const fixture = await lifecycleFixture(t, options);
+  runner = spawnLifecycleRunner([runnerPath, ...fixture.args], repositoryRoot, runnerEnv(env));
   return {
     ...fixture,
-    child,
-    exit: () => exit,
-    stderr: () => stderr,
+    ...runner,
     remember: (records) => {
       processes = records;
     },
@@ -1217,6 +1207,70 @@ test(
         }
       });
     }
+    // Focused execution shares the lifecycle, including a receipt when
+    // preparation fails before Node can report any selected case.
+    for (const failure of [null, "prepare"]) {
+      await t.test(
+        failure === null ? "focused success" : "focused preparation failure",
+        async (t) => {
+          const fixture = await lifecycleFixture(t, { failure });
+          const path = "tests/integration/lifecycle.test.mjs";
+          const name = "owned lifecycle resource is usable";
+          await writeFile(
+            join(fixture.root, path),
+            'test("unselected lifecycle case", () => { throw new Error("unselected case executed"); });\n',
+            { flag: "a" },
+          );
+          await writeRunnerManifest(
+            fixture.root,
+            {
+              lanes: {
+                lifecycle: {
+                  files: [{ path, expectedTests: [name, "unselected lifecycle case"] }],
+                },
+              },
+              groups: { ci: ["lifecycle"] },
+            },
+            "scripts/ci/test-suites.json",
+          );
+          const result = await runAsync(
+            fixture.root,
+            [...fixture.args, "--file", path, "--test-name", name],
+            {},
+            { timeout: 30_000 },
+          );
+          assert.equal(result.error, undefined, result.stderr);
+          assert.equal(result.status, failure === null ? 0 : 1, result.stderr);
+          const summary = JSON.parse(await readFile(fixture.results, "utf8"));
+          assert.equal(summary.scope, "focused");
+          assert.equal(summary.testName, name);
+          assert.equal(
+            summary.lifecycle.phases.prepare.status,
+            failure === null ? "passed" : "failed",
+          );
+          assert.equal(
+            summary.lifecycle.phases.run.status,
+            failure === null ? "passed" : "not-run",
+          );
+          assert.equal(summary.lifecycle.phases.cleanup.status, "passed");
+          assert.equal(summary.counts.total, failure === null ? 1 : 0);
+          if (failure === null) {
+            assert.deepEqual(
+              summary.files[0].tests.map(({ name }) => name),
+              [name],
+            );
+          }
+          assert.deepEqual(
+            (await readFile(fixture.trace, "utf8")).trim().split("\n"),
+            failure === null
+              ? ["prepare:start", "prepare:end", "run", "cleanup"]
+              : ["prepare:start", "cleanup"],
+          );
+          await assert.rejects(readFile(fixture.owned), { code: "ENOENT" });
+          await assert.rejects(readFile(fixture.state), { code: "ENOENT" });
+        },
+      );
+    }
   },
 );
 
@@ -1225,49 +1279,38 @@ test(
   { skip: process.platform !== "linux" && "lifecycle process ownership reads /proc" },
   async (t) => {
     let fixture;
-    let child;
-    let exit;
+    let runner;
     // Release or stop the owned CLI before the fixture directory is removed.
     t.after(async () => {
-      if (!child || exit !== undefined) {
+      if (!runner || runner.exit() !== undefined) {
         return;
       }
       await writeFile(fixture.release, "release");
-      if (!(await waitFor(() => exit !== undefined, 2_000))) {
-        child.kill("SIGKILL");
-        await waitFor(() => exit !== undefined, 2_000);
+      if (!(await waitFor(() => runner.exit() !== undefined, 2_000))) {
+        runner.child.kill("SIGKILL");
+        await waitFor(() => runner.exit() !== undefined, 2_000);
       }
     });
     fixture = await lifecycleFixture(t, { hold: true });
-    child = spawn(process.execPath, [runnerPath, ...fixture.args], {
-      cwd: repositoryRoot,
-      env: runnerEnv({ CI_RUNNER_DEADLINE_MS: String(Date.now() + 30_000) }),
-      detached: true,
-      stdio: ["ignore", "ignore", "pipe"],
-    });
-    let stderr = "";
-    child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
-    child.on("exit", (code, signal) => (exit = { code, signal }));
-    assert.equal(
-      await waitFor(() => {
-        try {
-          return JSON.parse(readFileSync(fixture.ready, "utf8")) !== null;
-        } catch {
-          return false;
-        }
-      }, 15_000),
-      true,
-      stderr,
+    runner = spawnLifecycleRunner(
+      [runnerPath, ...fixture.args],
+      repositoryRoot,
+      runnerEnv({ CI_RUNNER_DEADLINE_MS: String(Date.now() + 30_000) }),
     );
-    process.kill(child.pid, "SIGTERM");
+    assert.equal(await waitFor(() => lifecycleReady(fixture.ready), 15_000), true, runner.stderr());
+    process.kill(runner.child.pid, "SIGTERM");
     // Release only after the real CLI acknowledges the signal; an arbitrary sleep
     // could let preparation finish before the cancellation latch is exercised.
-    assert.equal(await waitFor(() => stderr.includes("SIGTERM"), 5_000), true, stderr);
+    assert.equal(
+      await waitFor(() => runner.stderr().includes("SIGTERM"), 5_000),
+      true,
+      runner.stderr(),
+    );
     assert.equal(await readFile(fixture.trace, "utf8"), "prepare:start\n");
     await assert.rejects(readFile(fixture.results), { code: "ENOENT" });
     await writeFile(fixture.release, "release");
-    assert.ok(await waitFor(() => exit !== undefined, 10_000), stderr);
-    assert.deepEqual(exit, { code: 143, signal: null }, stderr);
+    assert.ok(await waitFor(() => runner.exit() !== undefined, 10_000), runner.stderr());
+    assert.deepEqual(runner.exit(), { code: 143, signal: null }, runner.stderr());
     const summary = JSON.parse(await readFile(fixture.results, "utf8"));
     assert.equal(summary.lifecycle.interrupted, "SIGTERM");
     assert.equal(summary.lifecycle.phases.prepare.status, "passed");
@@ -1313,6 +1356,24 @@ test(
       "legacy state",
       "legacy results",
       "legacy state/result alias",
+      "name without file",
+      "missing name value",
+      "name followed by option",
+      "empty equals name",
+      "duplicate separate then equals",
+      "duplicate equals then separate",
+      "duplicate separate",
+      "duplicate equals",
+      "duplicate empty then separate",
+      "duplicate empty then equals",
+      "unregistered name",
+      "empty name",
+      "overlong name",
+      "reserved root name",
+      "reserved file name",
+      "name on audit",
+      "removed pattern option",
+      "removed equals pattern option",
     ]) {
       await t.test(scenario, async (t) => {
         const fixture = await lifecycleFixture(t);
@@ -1329,6 +1390,88 @@ test(
           args = [...args, "--state", fixture.state];
         } else if (scenario === "legacy results") {
           args = [...args, "--results", fixture.results];
+        } else if (scenario === "missing name value") {
+          args = [...args, "--file", "tests/integration/lifecycle.test.mjs", "--test-name"];
+        } else if (scenario === "name followed by option") {
+          args = [...args, "--test-name", "--file", "tests/integration/lifecycle.test.mjs"];
+        } else if (scenario === "empty equals name") {
+          args = [...args, "--file", "tests/integration/lifecycle.test.mjs", "--test-name="];
+        } else if (scenario.startsWith("duplicate ")) {
+          const name = "owned lifecycle resource is usable";
+          await writeRunnerManifest(
+            fixture.root,
+            {
+              lanes: {
+                lifecycle: {
+                  files: [{ path: "tests/integration/lifecycle.test.mjs", expectedTests: [name] }],
+                },
+              },
+            },
+            "scripts/ci/test-suites.json",
+          );
+          const selectors = {
+            "duplicate separate then equals": ["--test-name", name, `--test-name=${name}`],
+            "duplicate equals then separate": [`--test-name=${name}`, "--test-name", name],
+            "duplicate separate": ["--test-name", name, "--test-name", name],
+            "duplicate equals": [`--test-name=${name}`, `--test-name=${name}`],
+            "duplicate empty then separate": ["--test-name=", "--test-name", name],
+            "duplicate empty then equals": ["--test-name=", `--test-name=${name}`],
+          };
+          args = [
+            ...args,
+            "--file",
+            "tests/integration/lifecycle.test.mjs",
+            ...selectors[scenario],
+          ];
+        } else if (scenario === "unregistered name") {
+          args = [
+            ...args,
+            "--file",
+            "tests/integration/lifecycle.test.mjs",
+            "--test-name",
+            "unregistered",
+          ];
+        } else if (scenario === "name without file") {
+          args = [...args, "--test-name", "resource"];
+        } else if (
+          ["empty name", "overlong name", "reserved root name", "reserved file name"].includes(
+            scenario,
+          )
+        ) {
+          const names = {
+            "empty name": " ",
+            "overlong name": "é".repeat(129),
+            "reserved root name": "<root>",
+            "reserved file name": join(fixture.root, "tests/integration/lifecycle.test.mjs"),
+          };
+          args = [
+            ...args,
+            "--file",
+            "tests/integration/lifecycle.test.mjs",
+            "--test-name",
+            names[scenario],
+          ];
+        } else if (scenario === "name on audit") {
+          args = [
+            "audit",
+            ...args.slice(2),
+            "--file",
+            "tests/integration/lifecycle.test.mjs",
+            "--test-name",
+            "resource",
+          ];
+        } else if (
+          scenario === "removed pattern option" ||
+          scenario === "removed equals pattern option"
+        ) {
+          args = [
+            ...args,
+            "--file",
+            "tests/integration/lifecycle.test.mjs",
+            ...(scenario === "removed pattern option"
+              ? ["--test-name-pattern", "resource"]
+              : ["--test-name-pattern=resource"]),
+          ];
         } else if (scenario === "legacy state/result alias") {
           // The former result/ownership-marker collision is rejected as a
           // legacy configuration before either pathname can be written.
@@ -1343,6 +1486,10 @@ test(
         const result = await runAsync(fixture.root, args, {}, { timeout: 30_000 });
         assert.equal(result.error, undefined, result.stderr);
         assert.equal(result.status, 1, result.stderr);
+        if (scenario.startsWith("duplicate ")) {
+          // Reject during parsing, before preparation or creation of an owned attempt.
+          assert.match(result.stderr, /--test-name may only be specified once/);
+        }
         if (scenario === "existing attempt") {
           assert.equal(await readFile(fixture.state, "utf8"), sentinel);
         } else {
@@ -1459,17 +1606,7 @@ test(
   { skip: process.platform !== "linux" && "lifecycle process ownership reads /proc" },
   async (t) => {
     const winner = await startLifecycleFixture(t, { hold: true });
-    assert.equal(
-      await waitFor(() => {
-        try {
-          return JSON.parse(readFileSync(winner.ready, "utf8")) !== null;
-        } catch {
-          return false;
-        }
-      }, 15_000),
-      true,
-      winner.stderr(),
-    );
+    assert.equal(await waitFor(() => lifecycleReady(winner.ready), 15_000), true, winner.stderr());
     const state = await readFile(winner.state, "utf8");
     assert.equal(JSON.parse(state).version, 1);
     assert.equal((await stat(winner.attempt)).mode & 0o777, 0o700);
@@ -1736,6 +1873,182 @@ test("focused runs retain case enforcement and cleanup but cannot complete a ful
       assert.ok(evidence.issues.some(({ code }) => code === "missing-lane-evidence"));
     }
   }
+  // The literal name must reach the actual Node child. The other required
+  // case must not execute, but the result remains focused evidence.
+  const testName = "required case";
+  const filteredArgs = [...args("single"), "--test-name", testName];
+  await writeSingleLaneManifest(
+    root,
+    "single",
+    [{ path: selectedPath, expectedTests: [testName, "unselected required case"] }],
+    { ci: ["single"] },
+  );
+  await writeFile(
+    join(root, selectedPath),
+    [
+      'import test from "node:test";',
+      'test("required case", () => {});',
+      'test("unselected required case", () => { throw new Error("unselected case executed"); });',
+    ].join("\n"),
+  );
+  const filtered = run(root, filteredArgs);
+  assert.equal(filtered.status, 0, filtered.stderr);
+  const focused = JSON.parse(await readFile(join(root, "results/single.json"), "utf8"));
+  assert.equal(focused.scope, "focused");
+  assert.equal(focused.testName, testName);
+  assert.deepEqual(focused.counts, { passed: 1, failed: 0, skipped: 0, todo: 0, total: 1 });
+  assert.deepEqual(
+    focused.files[0].tests.map(({ name }) => name),
+    [testName],
+  );
+  assert.equal(focused.files[0].cleanup.status, "passed");
+  const filteredAggregate = run(root, [
+    "aggregate",
+    "single",
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--results-dir",
+    "results",
+  ]);
+  assert.equal(filteredAggregate.status, 1, filteredAggregate.stderr);
+  assert.ok(
+    JSON.parse(filteredAggregate.stdout).issues.some(
+      ({ code }) => code === "focused-lane-evidence",
+    ),
+  );
+
+  // Node can also match trimmed ancestry. Reject every extra or differently
+  // named test, and reject suites/subtests even when named as the file wrapper.
+  for (const scenario of [
+    {
+      name: "no match",
+      testName: "absent",
+      source: 'test("required case", () => {});',
+      issue: "invalid-test-selection",
+    },
+    {
+      name: "unregistered existing case",
+      testName: "unregistered",
+      source: 'test("unregistered", () => {});',
+      issue: "invalid-test-selection",
+    },
+    {
+      name: "missing selected expectation",
+      source: 'test("different case", () => {});',
+      issue: "missing-expected-test",
+    },
+    {
+      name: "trimmed name is not exact",
+      source: 'test(" required case ", () => {});',
+      issue: "unexpected-test-selection",
+    },
+    {
+      name: "additional trimmed name",
+      source: 'test("required case", () => {}); test(" required case ", () => {});',
+      issue: "unexpected-test-selection",
+    },
+    {
+      name: "duplicate exact name",
+      source: 'test("required case", () => {}); test("required case", () => {});',
+      issue: "unexpected-test-selection",
+    },
+    {
+      name: "selected skip",
+      source: 'test.skip("required case", () => {});',
+      issue: "unexpected-skip",
+    },
+    { name: "selected todo", source: 'test.todo("required case");', issue: "unexpected-skip" },
+    {
+      name: "nested case",
+      source: 'test("required case", async (t) => { await t.test("descendant", () => {}); });',
+      issue: "unsupported-test-selection",
+    },
+    {
+      name: "nested case named as the file wrapper",
+      source:
+        'test("required case", async (t) => { await t.test(new URL(import.meta.url).pathname, () => {}); });',
+      issue: "unsupported-test-selection",
+    },
+    {
+      name: "suite",
+      source: 'describe("required case", () => { test("descendant", () => {}); });',
+      issue: "unsupported-test-selection",
+    },
+    {
+      name: "nested suite named as the file wrapper",
+      source:
+        'describe("required case", () => { describe(new URL(import.meta.url).pathname, () => {}); });',
+      issue: "unsupported-test-selection",
+    },
+  ]) {
+    await writeSingleLaneManifest(
+      root,
+      "single",
+      [{ path: selectedPath, expectedTests: [testName, "unselected required case"] }],
+      { ci: ["single"] },
+    );
+    await writeFile(
+      join(root, selectedPath),
+      `import test, { describe } from "node:test";\n${scenario.source}\n`,
+    );
+    const result = run(root, [...args("single"), "--test-name", scenario.testName ?? testName]);
+    assert.equal(result.status, 1, `${scenario.name}: ${result.stderr}`);
+    const evidence = JSON.parse(await readFile(join(root, "results/single.json"), "utf8"));
+    assert.ok(
+      evidence.issues.some(({ code }) => code === scenario.issue),
+      JSON.stringify(evidence.issues),
+    );
+    assert.equal(evidence.scope, "focused");
+    assert.equal(evidence.testName, scenario.testName ?? testName);
+    if (scenario.issue === "invalid-test-selection") {
+      assert.deepEqual(evidence.files, []);
+    } else {
+      assert.equal(evidence.files[0].cleanup.status, "passed");
+    }
+  }
+
+  // Regex metacharacters are literal. A 256-byte UTF-8 name is accepted, and
+  // the manifest and reported name must both match exactly.
+  for (const name of ["--dry-run=preserves state", "literal [case].* /i", "é".repeat(128)]) {
+    await writeSingleLaneManifest(
+      root,
+      "single",
+      [{ path: selectedPath, expectedTests: [name, "unselected required case"] }],
+      { ci: ["single"] },
+    );
+    await writeFile(
+      join(root, selectedPath),
+      `import test from "node:test";
+      test(${JSON.stringify(name)}, () => {});
+      test("unselected required case", () => { throw new Error("unselected case executed"); });\n`,
+    );
+    // A leading switch-like name needs the equals form; the throwing sibling
+    // proves that exactly the selected literal reaches the child.
+    const selector = name.startsWith("--") ? [`--test-name=${name}`] : ["--test-name", name];
+    const result = run(root, [...args("single"), ...selector]);
+    assert.equal(result.status, 0, result.stderr);
+    const evidence = JSON.parse(await readFile(join(root, "results/single.json"), "utf8"));
+    assert.equal(evidence.scope, "focused");
+    assert.equal(evidence.testName, name);
+    assert.deepEqual(evidence.counts, { passed: 1, failed: 0, skipped: 0, todo: 0, total: 1 });
+    assert.deepEqual(
+      evidence.files[0].tests.map(({ name }) => name),
+      [name],
+    );
+    assert.equal(evidence.files[0].cleanup.status, "passed");
+  }
+
+  // Restore the file-only lanes for their unchanged missing-case contract.
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: {
+      baseline: { files: [selected, { path: "tests/integration/second.test.mjs" }] },
+      single: { files: [selected] },
+    },
+    groups: { ci: ["baseline"] },
+  });
   // A green Node process is insufficient when the selected file omits its required case.
   await writeFile(
     join(root, selectedPath),
@@ -6210,8 +6523,7 @@ export async function prepareFile({ file }) {
 
 test("run records a preparation failure's redacted message in the diagnostics report", async (t) => {
   const root = await fixture(t);
-  const resultsPath = join(root, "results/prepare.json");
-  const statePath = join(root, "state/prepare.json");
+  const { statePath, resultsPath } = runnerArtifactPaths(root, "prepare");
   await writeFile(
     join(root, "scripts/ci/prepare.mjs"),
     [
@@ -7489,36 +7801,28 @@ test("a failed local setup reports only paired outcomes", async (t) => {
     measurements.filter(({ kind }) => kind === "local-first-agent-manifest-failure"),
     reasons.map((reason) => ({ kind: "local-first-agent-manifest-failure", reason })),
   );
+  const expectedRoutingFailure = {
+    kind: "local-first-agent-startup-failure",
+    primaryStage: "routing",
+    cleanupFailed: true,
+    parentContextDone: false,
+  };
   assert.deepEqual(
     measurements.filter(({ kind }) => kind === "local-first-agent-startup-failure"),
     [
       {
-        kind: "local-first-agent-startup-failure",
-        primaryStage: "routing",
-        cleanupFailed: true,
-        parentContextDone: false,
+        ...expectedRoutingFailure,
         routingOperation: "manifest-download",
         routingController: "cert-manager",
       },
+      expectedRoutingFailure,
       {
-        kind: "local-first-agent-startup-failure",
-        primaryStage: "routing",
-        cleanupFailed: true,
-        parentContextDone: false,
-      },
-      {
-        kind: "local-first-agent-startup-failure",
-        primaryStage: "routing",
-        cleanupFailed: true,
-        parentContextDone: false,
+        ...expectedRoutingFailure,
         routingOperation: "controller-rollout",
         routingController: "envoy-gateway",
       },
       {
-        kind: "local-first-agent-startup-failure",
-        primaryStage: "routing",
-        cleanupFailed: true,
-        parentContextDone: false,
+        ...expectedRoutingFailure,
         routingOperation: "node-pod-cidr",
       },
     ],
@@ -9136,14 +9440,10 @@ for (const scenario of [
 ]) {
   test(`run retains safe preparation ${scenario.name} diagnostics without starting tests`, async (t) => {
     const root = await fixture(t);
-    await writeSingleLaneManifest(
+    await writeSingleFileRunnerLane(
       root,
       "preparation",
-      [{ path: "tests/integration/unstarted.test.mjs" }],
-      { ci: ["preparation"] },
-    );
-    await writeFile(
-      join(root, "tests/integration/unstarted.test.mjs"),
+      "tests/integration/unstarted.test.mjs",
       'import { writeFileSync } from "node:fs"; writeFileSync(new URL("../../started", import.meta.url), "started");\n',
     );
     const payload = {

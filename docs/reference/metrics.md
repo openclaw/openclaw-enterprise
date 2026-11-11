@@ -109,7 +109,8 @@ lose a sample; observations are operational metrics, not durable audit evidence.
 
 Worker startup supplies a separate read-only application-role pool with maximum
 one connection, a 500 ms connection deadline, and 1500 ms query/statement
-deadlines. Concurrent scrapes share collection. Failed collections destroy the
+deadlines. These settings take precedence over conflicting database URL parameters.
+Concurrent scrapes share collection. Failed collections destroy the
 affected connection and return 503 without partial exposition or a stale-value
 fallback. Reconciliation uses its own pool and continues. API scrapes do not
 query the database.

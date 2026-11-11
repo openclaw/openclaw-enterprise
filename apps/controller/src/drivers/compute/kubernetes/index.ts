@@ -5518,32 +5518,41 @@ export class KubernetesComputeDriver implements ComputeDriver {
         { mutating: true },
       );
     } catch (error) {
-      await this.discardFailedServiceAccountCredential(name, namespace, ownership, accessToken);
+      if (
+        await this.reconcileFailedServiceAccountCredential(
+          name,
+          namespace,
+          ownership,
+          credentialId,
+          accessToken,
+        )
+      ) {
+        return { name, key: SERVICE_ACCOUNT_TOKEN_KEY };
+      }
       throw error;
     }
     return { name, key: SERVICE_ACCOUNT_TOKEN_KEY };
   }
 
   /**
-   * A credential Secret create that applied but answered with an error (the request
-   * deadline, a lost response) would leave an account-owned Secret OCC never records: the
-   * issuance fails, its provider credential is revoked, and every later issuance stops at
-   * "already exists" (finding 924). So a failed create reads its own deterministic name and
-   * deletes the object it finds, but only when it carries this account's exact ownership and
-   * this request's token, with uid and resourceVersion preconditions. An absent or foreign
-   * object means the create never applied and its own error stands. When that cannot be
-   * checked, the outcome is reported as unknown. A create still in flight that lands after
-   * this read is not covered.
+   * A failed create can have persisted its Secret before losing the reply. An exact
+   * readback can confirm that the requested owned state exists without repeating the
+   * mutation. It does not prove which request created the object. A missing or different
+   * object leaves the original failure in force; an unreadable or unidentified object
+   * remains an unknown outcome. The ServiceAccount Driver owns provider revocation and
+   * any later exact Secret cleanup, so this readback never destroys a recovery receipt.
+   * A create still in flight that lands after the read is not covered.
    */
-  private async discardFailedServiceAccountCredential(
+  private async reconcileFailedServiceAccountCredential(
     name: string,
     namespace: KubernetesNamespaceAddress,
     ownership: Ownership,
+    credentialId: string,
     accessToken: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const unknown = () =>
       new DependencyUnavailableError(
-        "The ServiceAccount credential Secret create outcome is unknown, and its cleanup could not finish.",
+        "The ServiceAccount credential Secret create outcome could not be confirmed.",
       );
     let existing: ManagedKubernetesObject<"Secret"> | undefined;
     try {
@@ -5552,39 +5561,24 @@ export class KubernetesComputeDriver implements ComputeDriver {
       throw unknown();
     }
     if (existing === undefined) {
-      return;
+      return false;
     }
     try {
       this.verifyOwnership(existing, ownership);
     } catch {
-      // Someone else's object under this name: nothing of this create's is stored.
-      return;
+      return false;
     }
-    if (!storesServiceAccountToken(existing, accessToken)) {
-      // The account's Secret, but not this request's token: not this create's either.
-      return;
+    if (
+      !storesServiceAccountToken(existing, accessToken) ||
+      existing.metadata.annotations?.[SERVICE_ACCOUNT_CREDENTIAL_ID_ANNOTATION] !== credentialId
+    ) {
+      return false;
     }
     const { uid, resourceVersion } = existing.metadata;
     if (!isNonEmptyString(uid) || !isNonEmptyString(resourceVersion)) {
       throw unknown();
     }
-    try {
-      const clients = await this.clients(namespace.plane);
-      await this.request(
-        () =>
-          clients.core.deleteNamespacedSecret({
-            name,
-            namespace: namespace.name,
-            body: { preconditions: { uid, resourceVersion } },
-          }),
-        { mutating: true },
-      );
-    } catch (error) {
-      if (numericErrorStatus(error) === 404) {
-        return;
-      }
-      throw unknown();
-    }
+    return true;
   }
 
   /**
@@ -5634,11 +5628,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
   /**
    * Removes the account's credential Secret. Account deletion passes neither a token nor a
    * credential ID and removes the Secret the account owns. A failed issuance's compensation
-   * passes its own token: it runs after the transaction's ROLLBACK released the account row
+   * passes its own token and credential ID: it runs after the transaction's ROLLBACK released the account row
    * lock, so another issuance may already have stored its Secret under this same
    * deterministic name (finding 944). An issuance reclaiming a leftover passes the provider
-   * credential ID it just revoked (finding 1397). Either way it deletes the Secret only while
-   * it holds that token or records that credential, with uid and resourceVersion
+   * credential ID it just revoked (finding 1397). It deletes the Secret only while
+   * every supplied selector matches, with uid and resourceVersion
    * preconditions, and leaves any other Secret alone.
    */
   async deleteServiceAccountCredential(input: {
@@ -5700,9 +5694,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return;
     }
     const matches =
-      accessToken !== undefined
-        ? storesServiceAccountToken(existing, accessToken)
-        : serviceAccountCredentialId(existing) === credentialId;
+      (accessToken === undefined || storesServiceAccountToken(existing, accessToken)) &&
+      (credentialId === undefined ||
+        (accessToken === undefined
+          ? serviceAccountCredentialId(existing)
+          : existing.metadata.annotations?.[SERVICE_ACCOUNT_CREDENTIAL_ID_ANNOTATION]) ===
+          credentialId);
     if (!matches) {
       // Another issuance's Secret: the one this request meant is already gone.
       return;

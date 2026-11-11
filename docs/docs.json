@@ -102,7 +102,8 @@
               "guides/repository-credentials/openshell-read-only",
               "guides/repository-credentials/openshell-git-renewal",
               "guides/kubernetes-setup",
-              "guides/deploy/quickstart-session"
+              "guides/deploy/quickstart-session",
+              "guides/deploy/native-admin-domain-recovery"
             ]
           },
           {

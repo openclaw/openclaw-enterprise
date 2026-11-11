@@ -25,6 +25,7 @@ type ReceiptImage = {
   ciRunId: string;
   ciAttempt: string;
   destination: unknown;
+  platformDigests?: unknown;
   digest: string;
   tag: string;
 };

@@ -72,6 +72,7 @@
     "../packages/contracts/prepack.ts",
     "../packages/utils/prepack.ts",
     "helpers/temporary-directory.ts",
+    "helpers/production-chart-quantity-cases.ts",
     "helpers/bounded-teardown.ts",
     "helpers/environment.ts",
     "helpers/fake-commands.ts",

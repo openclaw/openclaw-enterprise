@@ -1,3 +1,4 @@
+import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
 import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { acquireInstallationCeilingStartup } from "./installation-ceiling-startup.ts";
 import { closeResources } from "./close-resources.ts";
@@ -398,8 +399,9 @@ export async function composePostgresDevelopment(
     await drivers?.preparedGitHub?.connect(pool);
     exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));
+    const checkDatabaseReadiness = createPostgresReadinessCheck(pool);
     app.get("/readyz", async () => {
-      await pool.query("SELECT 1");
+      await checkDatabaseReadiness();
       return { status: "ready" };
     });
     app.addHook("onClose", () => close(state));
