@@ -62,7 +62,7 @@ async function checkWorkflowCommand(
     // Use real repository objects so the fixed reader/catalog projection is
     // checked by the production planner, without replacing Git decisions.
     await execute("git", ["clone", "--shared", "--quiet", process.cwd(), root]);
-    await git(["checkout", "--quiet", "b30d3def3d6c1751ea8d9a57b70dd3157c385eab"]);
+    await git(["checkout", "--quiet", "19b4a7b444e3d8e2bb9d405f06526670c995fe77"]);
     await cp("scripts/ci", join(root, "scripts/ci"), { recursive: true });
     await cp("scripts/upgrade-image-identity.py", join(root, "scripts/upgrade-image-identity.py"));
     await symlink(resolve("node_modules"), join(root, "node_modules"), "dir");
@@ -552,7 +552,7 @@ else:
           assert.equal(
             plan.migrationTree,
             (
-              await git(["rev-parse", "b30d3def3d6c1751ea8d9a57b70dd3157c385eab:migrations"])
+              await git(["rev-parse", "19b4a7b444e3d8e2bb9d405f06526670c995fe77:migrations"])
             ).stdout.trim(),
           );
           assert.equal(

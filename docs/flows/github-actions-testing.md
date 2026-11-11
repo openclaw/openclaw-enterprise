@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: "2026-11-11"
-last_updated_session: "authoring-run/2f6528e7-fc71-4854-a473-7c5fd68410cc"
+last_updated_session: "authoring-run/d71f35f5-549c-4312-9000-cc24c8cee1cd"
 ---
 
 # GitHub Actions testing flow
@@ -262,8 +262,8 @@ awaits an approved resource ledger.
 
 ## Debugging and Verification
 
-- `node scripts/ci/run-tests.mjs audit` checks the actual checkout inventory against the suite map.
-- `node --test tests/integration/ci-runner.test.mjs` exercises the runner with real child Node processes and controlled pass/fail/skip cases.
+- `node scripts/ci/run-tests.mjs audit` checks checkout inventory against the suite map.
+- `node --test tests/integration/ci-runner.test.mjs` exercises real Node children with controlled pass/fail/skip.
 - After measured local VM disk/network instability, serialize Kubernetes lanes; GitHub Actions keeps its matrix.
 - Missing prerequisites fail setup; supply approved resources without skipping required tests or substituting fixtures.
 - Retain sanitized results for seven days; exclude private state and credentials from uploads. Recover local teardown using run-owned state on its original host and path.
@@ -280,6 +280,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 13:14: Refresh the exact current sign-in profile. (authoring-run/d71f35f5-549c-4312-9000-cc24c8cee1cd - 2b8436a5da1e75427c8aa72523d16b9bdc6d0f35)
 
 - 2026-11-11 08:45: Preserve uncertain cleanup. (authoring-run/2f6528e7-fc71-4854-a473-7c5fd68410cc - b561b6bc134053ea9ff7ab4286c4f2f501a80391)
 
