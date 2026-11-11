@@ -6540,6 +6540,12 @@ export class ControllerWorker {
       outcome: reported.outcome,
       code: reported.code,
       ...failureLogFields,
+      // Keep the held check only when this completion still reports that failure.
+      ...(runtimeFailure !== undefined &&
+      heldFailureCode !== undefined &&
+      reported.code === heldFailureCode
+        ? { check: recognizedRuntimeFailureValues(runtimeFailure).check }
+        : {}),
       ...this.deployTimingFields(claim),
       ...stopYieldsField(stopYields),
     });

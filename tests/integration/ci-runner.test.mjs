@@ -1044,6 +1044,27 @@ test("mixed-grant output closes deployment codes and projects before diagnostics
   );
   const workerEvents = [
     { event: "completion", budgetAttempt: 1, outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" },
+    {
+      event: "completion",
+      budgetAttempt: 1,
+      outcome: "permanent",
+      code: "RUNTIME_AUTHENTICATION_FAILED",
+      check: "login",
+    },
+    {
+      event: "completion",
+      budgetAttempt: 1,
+      outcome: "permanent",
+      code: "RUNTIME_AUTHENTICATION_FAILED",
+      check: "model-probe",
+    },
+    {
+      event: "completion",
+      budgetAttempt: 1,
+      outcome: "permanent",
+      code: "RUNTIME_AUTHENTICATION_FAILED",
+      check: "other",
+    },
   ];
   for (const [code, registrationStage] of [
     ["PRIVATE_UPPERCASE_CANARY", "before"],
@@ -1110,7 +1131,15 @@ export function createOpenShellGitInstallation(t) {
               revisionId: target.id, workId: "agent_revision:" + target.id + ":reconcile",
               operation: "agent_revision.reconcile", attempt: 1, outcome: "retry", code: "DEPENDENCY_UNAVAILABLE",
               message: "PRIVATE_WORKER_MESSAGE_CANARY", details: "PRIVATE_WORKER_DETAILS_CANARY" };
-            return [JSON.stringify({ ...event, revisionId: "other-revision" }), JSON.stringify(event)].join("\\n");
+            // Synthetic projection inputs, not a chronological Worker history.
+            // The reporter reprojects each row; unknown checks cannot survive either pass.
+            return [
+              JSON.stringify({ ...event, revisionId: "other-revision" }),
+              JSON.stringify(event),
+              ...["login", "model-probe", "PRIVATE_CHECK_CANARY"].map((check) => JSON.stringify({
+                ...event, outcome: "permanent", code: "RUNTIME_AUTHENTICATION_FAILED", check,
+              })),
+            ].join("\\n");
           },
         }),
         checkpoint: async (event, data) => {

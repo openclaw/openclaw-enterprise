@@ -137,6 +137,12 @@ The case requires [on-demand grants, Git withdrawal and retained conversation](.
 Source checks alone do not qualify an installed candidate; retain its complete
 result and cleanup receipts.
 
+On deployment failure, the retained `workerEvents` preserve
+`RUNTIME_AUTHENTICATION_FAILED` and a bounded `check`: `login`, `model-probe`, or
+`other`. An absent `check` leaves the startup step unknown. `login` and
+`model-probe` identify the failing startup step; they do not establish an upstream
+status or credential value.
+
 ## Interpret timing and proof
 
 OpenShell lifecycle tests print live stage progress with their lane and file:

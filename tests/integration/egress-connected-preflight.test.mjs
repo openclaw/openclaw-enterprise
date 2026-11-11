@@ -695,6 +695,14 @@ test("failed custody deployment preserves worker event order across a reused att
       cleanupCause: "TypeError",
       deployPasses: 8,
     },
+    // The same deployment code must retain which held authentication check failed.
+    {
+      attempt: 8,
+      outcome: "permanent",
+      code: "RUNTIME_AUTHENTICATION_FAILED",
+      check: "login",
+      deployPasses: 9,
+    },
   ];
   for (const completion of completions) {
     emit({ ...work, event: "worker.completed", result: completion.outcome, ...completion });
@@ -720,6 +728,7 @@ test("failed custody deployment preserves worker event order across a reused att
     event: "worker.completed",
     outcome: sentinel,
     code: sentinel,
+    check: sentinel,
     cause: sentinel,
     dependency: sentinel,
     method: sentinel,
@@ -733,6 +742,7 @@ test("failed custody deployment preserves worker event order across a reused att
   const log = lines.join("");
   assert.ok(log.includes(sentinel), "private sentinel must actually reach the collector");
   assert.ok(log.includes('"method":"' + sentinel + '"'), "unknown method reaches projection");
+  assert.ok(log.includes('"check":"' + sentinel + '"'), "unknown check reaches projection");
 
   // Use the actual installed response decoder, deploy failure, private ledger and public diagnostic.
   const diagnostics = [];
@@ -813,6 +823,7 @@ test("failed custody deployment preserves worker event order across a reused att
         budgetAttempt,
         outcome: "other",
         code: "other",
+        check: "other",
         cause: "other",
         dependency: "other",
         method: "other",

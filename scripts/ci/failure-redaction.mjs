@@ -460,8 +460,9 @@ export function projectInstalledWorkerEvent(value) {
     outcome: knownWorkerValue(value.outcome, "pending retry permanent success"),
     code: knownWorkerValue(
       value.code,
-      "DEPENDENCY_UNAVAILABLE AGENT_GATEWAY_UNAVAILABLE KUBERNETES_API_UNAVAILABLE SANDBOX_ADMISSION_LIMIT_REACHED SANDBOX_GATEWAY_UNAVAILABLE",
+      "DEPENDENCY_UNAVAILABLE AGENT_GATEWAY_UNAVAILABLE KUBERNETES_API_UNAVAILABLE SANDBOX_ADMISSION_LIMIT_REACHED SANDBOX_GATEWAY_UNAVAILABLE RUNTIME_AUTHENTICATION_FAILED",
     ),
+    check: knownWorkerValue(value.check, "login model-probe"),
     cause: knownWorkerValue(value.cause, "unreachable timeout unavailable " + workerErrorClasses),
     dependency: knownWorkerValue(
       value.dependency,
