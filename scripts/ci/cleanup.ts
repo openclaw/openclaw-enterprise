@@ -1140,7 +1140,7 @@ async function recordLaneCleanup(
   status: "passed" | "failed",
   processedState = false,
 ) {
-  if (!(await stateExists(path, authority.expectedCleanupOwner !== undefined))) {
+  if (!(await stateExists(path))) {
     return; // Setup may have failed before a lane result existed.
   }
   const result: unknown = JSON.parse(await readFile(path, "utf8"));
