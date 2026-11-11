@@ -62,7 +62,11 @@ availability. The registry never selects a Driver from submitted additions.
 
 `apps/controller/src/index.ts:authorizeBeforeBody` calls
 `OpenClawController.authorizeAgentSandboxPolicyWrite` for preview and save before
-reading the request body. It checks Agent `manage_policy` and SandboxPolicy
+reading the request body. These routes first resolve the principal and charge a
+shared replica-local `RequestRateLimiter` budget (2 requests per second, burst 10)
+for that principal across Agents and both operations. A depleted budget returns
+429 and `Retry-After` before body reads or policy authorization work. The guard
+checks Agent `manage_policy` and SandboxPolicy
 `update`; the owning handler repeats authorization during admission. Those two
 routes accept up to 32 MiB unless `maxBodyBytes` supplies another limit. The shared
 `packages/contracts/src/sandbox-policy.ts:SandboxNetworkGrantsSchema` permits
@@ -273,6 +277,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-11 11:21: Record shared preview/save rate limits before body reads and policy authorization. (01a1cb2b-f8fd-79b0-9789-7d0ca67c4ddd - 5445a0281)
 
 - 2026-11-11 10:55: Trace 16,384-entry policy admission and authorization before large body reads. (01a1cb2b-f8fd-79b0-9789-7d0ca67c4ddd - 9afd6412e)
 

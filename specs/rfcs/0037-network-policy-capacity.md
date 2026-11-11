@@ -39,7 +39,10 @@ Give policy preview and update requests a separate finite body budget large
 enough for 16,384 ordinary rules. Preserve explicit operator overrides and the
 ordinary request limit for unrelated routes. Byte limits remain independent of
 entry limits; arbitrary JSON whitespace or escaping does not receive unlimited
-space. Recommendation batches remain limited to 32 suggestions.
+space. Policy preview and save share a replica-local per-principal token bucket:
+2 requests per second with a burst of 10 across Agents. Exhaustion returns 429
+and Retry-After before reading the body. Recommendation batches remain limited
+to 32 suggestions.
 
 Compile the trusted ceiling into an executable/hostname index and combine
 adjacent port ranges. Admission must preserve exact executable matching,

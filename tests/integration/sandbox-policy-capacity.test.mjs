@@ -180,6 +180,49 @@ test("HTTP policy preview and save preserve 16,384 rules and reject excess entri
     assert.notEqual(oversized, null, "oversized request waited for its body");
     assert.equal(oversized.status, 413, JSON.stringify(oversized.body));
   }
+  const otherAgent = await fixture.createAgent(
+    namespace.id,
+    "Other policy",
+    {},
+    { executionMode: "dedicated" },
+  );
+  const bursts = await Promise.all(
+    Array.from({ length: 20 }, () =>
+      fixture.request("POST", `${path}/validate`, {
+        body: { expectedVersion: saved.data.version, additions: [] },
+      }),
+    ),
+  );
+  const limited = bursts.find((result) => result.status === 429);
+  assert.ok(limited, "policy preview must bound repeated admission work");
+  assert.equal(limited.body.error.code, "SANDBOX_POLICY_RATE_LIMITED");
+  assert.ok(Number(limited.headers.get("retry-after")) >= 1);
+  for (const target of [path, path.replace(agent.id, otherAgent.id)]) {
+    const refused = await partialWrite({
+      origin: fixture.origin,
+      transportOrigin: `http://127.0.0.1:${fixture.app.server.address().port}`,
+      method: "PUT",
+      path: target,
+      session: adminSession,
+      declaredBytes: 2 * 1024 * 1024,
+      bodyPrefix: '{"expectedVersion":2,"additions":[{"id":"',
+    });
+    assert.notEqual(refused, null, "rate-limited save waited for the unfinished body");
+    assert.equal(refused.status, 429, JSON.stringify(refused.body));
+  }
+  const otherMember = await fixture.createNamespaceMember("policy-rate-other", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["manage_policy", "agent"],
+    ["update", "sandbox_policy"],
+  ]);
+  const otherSession = await fixture.signIn(otherMember.credentials);
+  const independent = await fixture.request("POST", `${path}/validate`, {
+    session: otherSession,
+    body: { expectedVersion: saved.data.version, additions: [] },
+  });
+  assert.equal(independent.status, 200, JSON.stringify(independent.body));
+  assert.equal(independent.data.success, true);
   const unchanged = await fixture.request("GET", path);
   assert.equal(unchanged.data.policy.version, saved.data.version);
   assert.deepEqual(unchanged.data.policy.additions, additions);

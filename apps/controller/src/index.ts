@@ -1458,6 +1458,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     schema: {},
   })) as unknown as readonly OccApiRoute[];
   const runtimeLogLimiter = new RuntimeLogLimiter();
+  const sandboxPolicyRateLimit = new RequestRateLimiter(10, 2);
   const runtimeLogCursor =
     options.agentRuntimeLogs?.enabled === true
       ? createRuntimeLogCursorCodec(options.agentRuntimeLogs.cursorSecret)
@@ -4710,7 +4711,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ? { security: [{ sessionCookie: [] }] }
           : {}),
       } as DocumentedFastifySchema;
-      routes.route({
+      routes.route<RouteGenericInterface, { rateLimit?: RequestRateLimiter }>({
         method: operation.method as HTTPMethods,
         url: operation.path,
         ...(operation.operationId === "putAgentWorkspaceFile"
@@ -4727,13 +4728,32 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 : {}),
         ...(operation.operationId === "validateAgentSandboxPolicy" ||
         operation.operationId === "updateAgentSandboxPolicy"
-          ? { bodyLimit: options.maxBodyBytes ?? SANDBOX_POLICY_BODY_LIMIT }
+          ? {
+              bodyLimit: options.maxBodyBytes ?? SANDBOX_POLICY_BODY_LIMIT,
+              config: { rateLimit: sandboxPolicyRateLimit },
+            }
           : {}),
         schema,
-        onRequest: async (request) => {
+        onRequest: async (request, reply) => {
           await admit(request, operation);
           if (authorizesBeforeBody(operation)) {
             await resolveIdentity(request, operation);
+            const rateLimit = request.routeOptions.config.rateLimit;
+            if (rateLimit !== undefined) {
+              const context = contexts.get(request);
+              if (context === undefined) {
+                throw dependencyUnavailable();
+              }
+              const retryAfter = rateLimit.consume(context.actorId);
+              if (retryAfter !== undefined) {
+                reply.header("retry-after", String(retryAfter));
+                throw failure(
+                  429,
+                  "SANDBOX_POLICY_RATE_LIMITED",
+                  "Too many network policy requests. Wait before retrying.",
+                );
+              }
+            }
             await authorizeBeforeBody(request, operation);
           }
         },

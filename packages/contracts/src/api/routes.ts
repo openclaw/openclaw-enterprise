@@ -1788,7 +1788,7 @@ export const occApiRoutes = [
       params: SandboxPolicyParams,
       querystring: EmptyQuery,
       body: SandboxPolicyValidateBody,
-      response: { 200: ConfigurationValidationResponse, ...createErrors },
+      response: { 200: ConfigurationValidationResponse, ...createErrors, 429: ErrorResponseRef },
     },
   },
   {
@@ -1821,7 +1821,7 @@ export const occApiRoutes = [
       params: SandboxPolicyParams,
       querystring: EmptyQuery,
       body: SandboxPolicyUpdateBody,
-      response: { 200: SandboxPolicyResponse, ...createErrors },
+      response: { 200: SandboxPolicyResponse, ...createErrors, 429: ErrorResponseRef },
     },
   },
   {

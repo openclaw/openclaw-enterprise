@@ -79,7 +79,10 @@ unsupported constraints. An Installation delegation ceiling and an Agent's addit
 can each contain at most 16,384 grants, with at most 16 ranges per grant. Policy
 preview and update requests have a separate 32 MiB body limit; an explicit
 `maxBodyBytes` override still applies. JSON escaping and whitespace count toward
-that byte limit. OpenShell additionally limits each grant to 1024 distinct ports.
+that byte limit. Preview and update share a replica-local budget per principal:
+2 requests per second with a burst of 10 across Agents. A depleted budget returns
+`429 SANDBOX_POLICY_RATE_LIMITED` with `Retry-After` before reading the body. OpenShell additionally
+limits each grant to 1024 distinct ports.
 
 Default rules, generated workspace access, model credential delivery, and Compute
 isolation remain controlled by their existing owners. Users cannot submit

@@ -18,6 +18,8 @@ const rateLimitCodes: Record<string, string | undefined> = {
   signInEmail: "RATE_LIMITED",
   completeNamespaceConnection: "RATE_LIMITED",
   getAgentSandboxRecommendations: "RUNTIME_LOGS_RATE_LIMITED",
+  validateAgentSandboxPolicy: "SANDBOX_POLICY_RATE_LIMITED",
+  updateAgentSandboxPolicy: "SANDBOX_POLICY_RATE_LIMITED",
   getAgentDeploymentRuntime: "RUNTIME_LOGS_RATE_LIMITED",
   getAgentDeploymentRuntimeLogs: "RUNTIME_LOGS_RATE_LIMITED",
   getAgentHarnessStatus: "RUNTIME_LOGS_RATE_LIMITED",
