@@ -102,7 +102,7 @@ Manual dispatch checks dispatcher, team and environment in separate queues.
 Slack serializes channel/app access; installation and installed Skipper Git serialize
 per branch. Retries need [approved dispatch](../testing/ci/configuration.md#environments).
 
-For first-attempt `all`, `full-integration-reuse.mjs:main` discovers
+For first-attempt `all`, `scripts/ci/full-integration-reuse.mjs:main` discovers
 same-SHA push CI results. `validateResults` checks evidence; `selectFreshLanes`
 omits only published lanes; others run fresh.
 QA awaits Slack despite failure; cancellation stops QA. Aggregation requires
