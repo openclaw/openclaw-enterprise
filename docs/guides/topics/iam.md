@@ -12,8 +12,8 @@ overrides a grant.
 - **People** sign in with an administrator-provisioned email and password. See
   [Authentication](../../reference/authentication.md) for sign-in and account
   provisioning, and [external sign-in](../../reference/authentication/external-sign-in.md)
-  for GitHub, Google or OIDC sign-in of enrolled accounts. Public signup and OIDC
-  provisioning are not supported.
+  for Google or OIDC sign-in. Optional [OIDC enrollment](../../reference/authentication/team-enrollment.md)
+  creates admitted accounts with configured initial access. Public signup is not supported.
 - **Non-Agent automation** authenticates as an existing ServicePrincipal with a
   [service API key](../../reference/authentication/service-api-keys.md). Issuing
   a key does not give that identity new permissions.
@@ -46,16 +46,14 @@ does not give access to every resource in it.
 
 ## Add a person
 
-A new account starts with no access. As a human Installation administrator:
+New accounts join configured default Groups. As a human Installation administrator:
 
 1. [Sign in](../../reference/authentication/service-api-keys.md#sign-in-as-a-human-administrator)
    so `OCC_SESSION_COOKIE_JAR` holds your session, and set `OCC_ORIGIN` to the
    console origin. Under `recovery-only` password sign-in, only the recovery
    account signs in this way.
 2. Create the account from a private file with a generated password, and keep
-   the returned `id` and `principalId`. For a person who will sign in with
-   GitHub, add `"github":{"subject":"<numeric user ID>"}` to the body to attach
-   that identity in the same transaction:
+   the returned `id` and `principalId`:
 
    ```bash
    umask 077
@@ -69,13 +67,12 @@ A new account starts with no access. As a human Installation administrator:
    PRINCIPAL_ID="$(jq -r .data.principalId created.json)"
    ```
 
-   No API lists accounts. With GitHub, Google or OIDC sign-in enabled,
+   No API lists accounts. With Google or OIDC sign-in enabled,
    `GET /api/auth/accounts/$USER_ID` returns `principalId` again; a signed-in
    person finds their `USER_ID` as `user.id` in `GET /api/auth/session`.
 
-3. If the person signs in only through GitHub, Google or OIDC (always, under
-   `recovery-only`), attach their identity to `USER_ID` now unless step 2
-   did: see [GitHub](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts),
+3. If the person signs in only through Google or OIDC (always, under
+   `recovery-only`), explicitly attach their identity to `USER_ID`: see
    [Google](../deploy/google-sign-in.md#attach-and-detach) or
    [OIDC](../deploy/oidc-sign-in.md#attach-and-detach). Then delete
    `account.json`; never hand the password over.
@@ -105,8 +102,8 @@ A new account starts with no access. As a human Installation administrator:
 5. For a person who signs in with a password, give them the password from
    `account.json` through your own secure channel, then delete the file.
 
-Creation always requires a password, so an SSO-only account keeps one that
-nobody uses. It is still a credential:
+Manual account creation requires a password, so a manually created SSO-only
+account keeps one that nobody uses. It is still a credential:
 
 - Under `auth.passwordSignIn: all`, the default even with a provider enabled, it
   signs in. Switch to
@@ -120,9 +117,8 @@ nobody uses. It is still a credential:
   person's SSO sign-in.
 - Accounts cannot be deleted. If an attach fails, for example with `409`
   because another account already holds the subject, correct the subject and
-  attach again. (A refused `github.subject` in step 2 creates nothing; retry
-  the creation.) An account you abandon keeps its email, which creation will
-  not reuse, so disable it. Account controls need GitHub, Google or OIDC
+  attach again. An account you abandon keeps its email, which creation will
+  not reuse, so disable it. Account controls need Google or OIDC
   sign-in. On a password-only Installation they return `409`, so an abandoned
   account there cannot be disabled.
 
@@ -214,7 +210,7 @@ jq -n --argjson version "$VERSION" '{expectedVersion: $version}' |
 
 The response acknowledges `data.userId`. Repeat the GET above to verify
 `data.disabled: true` and read the new `data.version`. Every session of the account
-ends at once, and password and GitHub, Google or OIDC sign-in are refused; an external
+ends at once, and password and Google or OIDC sign-in are refused; an external
 sign-in tells the person the account is disabled. IAM grants stay, unused. The recovery
 account cannot be disabled, and account controls need external sign-in (on a
 password-only Installation they return `409`). `POST .../enable` reverses disablement;
@@ -284,11 +280,10 @@ login on the Agent needs Agent `update` and `read`, plus Secret and
 credential-source `create` in the Namespace, which exact-resource grants
 cannot give; see
 [Use a personal Codex login](../deploy/credential-lifecycle.md#use-a-personal-codex-login).
-To message
-the Agent, the person needs a channel its Configuration sets up or
-[native admin](../../reference/agent-native-admin.md) with Agent `administer`,
-which is unavailable on Installations with GitHub, Google or OIDC sign-in
-enabled.
+To message the Agent, the person can use a configured channel or
+[native chat](../../reference/agent-native-admin.md) with exact Agent `operate`.
+Native administration requires `administer`. Password and OIDC sessions support
+native access; Google sessions do not.
 
 ## Let an Agent use a Secret
 

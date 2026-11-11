@@ -144,9 +144,9 @@ model turn.
 
 ### Sandbox provisioning
 
-With OpenShell sandboxing, the optional `SandboxDriver.ensureNamespace`
-hook uses Compute's Kubernetes access directly, without a separate
-SandboxDriver Kubernetes access adapter. The hook applies approved
+With OpenShell sandboxing, composition adapts `SandboxDriver.ensureNamespace`
+to OCC Namespace lifecycle hooks. Compute resolves the exact backing namespace
+and selected Kubernetes client without calling Sandbox. The hook applies approved
 namespace-scoped OpenShell labels and NetworkPolicy resources, checks OpenShell
 gateway readiness, and creates or adopts the Namespace Workspace. Harness
 provisioning and cleanup follow the [SandboxDriver lifecycle](sandbox.md#admission-and-lifecycle):
@@ -288,6 +288,15 @@ before replacing the controller images.
   reports a verified current-startup warning for an admitted selected plugin.
 - **Check `gateway-config` fails:** See
   [configuration OpenClaw refuses](kubernetes-compute/managed-native-configuration.md#configuration-openclaw-refuses-at-startup).
+- **`RUNTIME_STARTUP_FAILED` with a container in `CrashLoopBackOff`:** A live
+  Pod's `gateway` container, or a Deployment-run `agent` container, exited 3
+  times in a row without a deliberate restart (internal check `crash-loop`).
+  The Gateway wrapper exits 75 and logs startup phase `container-restart` when
+  it restarts its container on purpose; those restarts never count, and readiness
+  resets the count. Without the wrapper's count (a Harness, or an older Pod),
+  restart count 2 in backoff is the third exit. `occ agent runtime` shows the
+  restart count and last exit code; `occ agent logs --previous` shows the
+  crashed container's output.
 - **Gateway storage is pending or rejected:** Check the configured
   `runtime.gatewayStorageClassName`, available `10Gi` capacity, filesystem
   support, worker PVC permissions, and the PVC's exact ownership. Preserve

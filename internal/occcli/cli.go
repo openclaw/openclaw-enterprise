@@ -1,6 +1,7 @@
 package occcli
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json/jsontext"
@@ -807,6 +808,9 @@ func (app *application) agentCommand() *cobra.Command {
 				}
 			}
 			if retainedHarnessRevision != "" {
+				if err := revisionIDArg.check(retainedHarnessRevision, namespace); err != nil {
+					return err
+				}
 				previous, err := client.GetAgentRevision(namespace, args[0], retainedHarnessRevision)
 				if err != nil {
 					return err
@@ -815,13 +819,9 @@ func (app *application) agentCommand() *cobra.Command {
 				if !ok {
 					return fmt.Errorf("the selected revision is unavailable")
 				}
-				harness, ok := record["harness"].(map[string]any)
-				if !ok {
-					return fmt.Errorf("the selected revision has no Harness settings")
-				}
-				overrides, ok = harness["overrides"].(map[string]any)
-				if !ok {
-					return fmt.Errorf("the selected revision has no requested Harness overrides")
+				overrides, err = retainedHarnessOverrides(client, namespace, args[0], record, command.ErrOrStderr())
+				if err != nil {
+					return err
 				}
 			}
 			revision, err := client.DeployAgent(namespace, args[0], overrides)
@@ -895,8 +895,12 @@ func (app *application) agentCommand() *cobra.Command {
 					return err
 				}
 				if receipt == nil {
-					fmt.Fprintln(command.ErrOrStderr(), "No matching admission found. An in-flight request may still commit; this does not prove failure.")
+					_, noticeErr := fmt.Fprintln(command.ErrOrStderr(), "No matching admission found. An in-flight request may still commit; this does not prove failure.")
 					if app.output == "table" {
+						// The notice is the entire result in table mode.
+						if noticeErr != nil {
+							return fmt.Errorf("write first-deployment recovery notice to stderr: %w; restore stderr and repeat this recover-first-deployment command", noticeErr)
+						}
 						return nil
 					}
 				}
@@ -914,6 +918,27 @@ func (app *application) agentCommand() *cobra.Command {
 			_ = cmd.MarkFlagRequired(flag)
 		}
 		return cmd
+	}
+	revision := &cobra.Command{
+		Use:   "revision AGENT_ID REVISION_ID",
+		Short: "Read one exact Agent revision and its saved settings",
+		Args:  idArgs(agentIDArg, revisionIDArg),
+		RunE: func(_ *cobra.Command, args []string) error {
+			namespace, client, err := app.namespaceClient()
+			if err != nil {
+				return err
+			}
+			value, err := client.GetAgentRevision(namespace, args[0], args[1])
+			if err != nil {
+				return err
+			}
+			return app.printBrowsingItems(value, false, []column{
+				{title: "ID", key: "id"},
+				{title: "REVISION", key: "revision"},
+				{title: "CONFIGURATION", key: "configurationId"},
+				{title: "GENERATION", key: "configurationGeneration"},
+			})
+		},
 	}
 	var revisionLimit int
 	var revisionCursor string
@@ -941,11 +966,16 @@ func (app *application) agentCommand() *cobra.Command {
 				return err
 			}
 			if page.NextCursor != "" {
+				flags := command.Flags()
+				if flags.Changed("url") || flags.Changed("service-key-file") || flags.Changed("ca-bundle") ||
+					flags.Changed("timeout-seconds") || flags.Changed("output") {
+					return noticef(command.ErrOrStderr(), "notice: older revisions may exist; repeat the same command and set --cursor %s", page.NextCursor)
+				}
 				limit := ""
-				if command.Flags().Changed("limit") {
+				if flags.Changed("limit") {
 					limit = fmt.Sprintf(" --limit %d", revisionLimit)
 				}
-				noticef(command.ErrOrStderr(), "notice: older revisions may exist; run \"occ --namespace %s agent revisions %s%s --cursor %s\"", namespace, args[0], limit, page.NextCursor)
+				return noticef(command.ErrOrStderr(), "notice: older revisions may exist; run \"occ --namespace %s agent revisions %s%s --cursor %s\"", namespace, args[0], limit, page.NextCursor)
 			}
 			return nil
 		},
@@ -962,23 +992,27 @@ func (app *application) agentCommand() *cobra.Command {
 				return err
 			}
 			var deploymentID string
+			var number float64
 			if len(args) == 2 {
 				deploymentID = args[1]
 			} else {
-				var number float64
 				if deploymentID, number, err = latestReadableRevision(client, namespace, args[0]); err != nil {
 					if errors.Is(err, errNoReadableRevisions) {
 						err = noReadableRevisionsError(client, namespace, args[0], fmt.Sprintf("agent %s has no revision you can read", args[0]), "")
 					}
 					return err
 				}
-				defaultDeploymentNotice(client, command.ErrOrStderr(), namespace, args[0], deploymentID, number)
 			}
 			deployment, err := client.GetAgentDeployment(namespace, args[0], deploymentID)
 			if err != nil {
 				return err
 			}
-			return app.printDeploymentStatus(deployment)
+			agent, _ := client.GetAgent(namespace, args[0])
+			resource, _ := agent.(map[string]any)
+			if len(args) == 1 {
+				defaultDeploymentNotice(client, command.ErrOrStderr(), namespace, args[0], deploymentID, number, resource)
+			}
+			return app.printDeploymentStatus(deployment, resource)
 		},
 	}
 	stop := &cobra.Command{
@@ -1008,6 +1042,10 @@ func (app *application) agentCommand() *cobra.Command {
 			agent, err := client.StopAgent(namespace, args[0])
 			if err != nil {
 				return err
+			}
+			resource, _ := agent.(map[string]any)
+			if resource["id"] != args[0] || resource["namespaceId"] != namespace || resource["desiredRuntimeState"] != "stopped" {
+				return fmt.Errorf("OCC returned an invalid Agent stop response; the stop outcome is unknown. Run \"occ --namespace %s agent get %s\" to check the Agent's state", namespace, args[0])
 			}
 			if err := app.printAgent(agent, false); err != nil {
 				return err
@@ -1049,6 +1087,7 @@ func (app *application) agentCommand() *cobra.Command {
 		deploy,
 		firstDeploymentCommand(false),
 		firstDeploymentCommand(true),
+		revision,
 		revisions,
 		deploymentStatus,
 		stop,
@@ -1060,6 +1099,78 @@ func (app *application) agentCommand() *cobra.Command {
 		app.agentPolicyCommand(),
 	)
 	return command
+}
+
+// retainedHarnessOverrides returns the Harness overrides that an exact revision
+// requested. OCC returns a revision whose saved settings it cannot decode with a
+// read error instead of its settings. That happens for a revision saved before
+// OCC recorded Harness settings, but also for other invalid or legacy saved
+// state, so the read error alone does not say what the revision requested. The
+// revision summary is not decoded as strictly and carries the overrides only
+// when OCC recorded them: retain those, and retain none only when none were
+// recorded.
+func retainedHarnessOverrides(client *occclient.Client, namespace, agentID string, record map[string]any, notices io.Writer) (map[string]any, error) {
+	harness, ok := record["harness"].(map[string]any)
+	if ok {
+		overrides, ok := harness["overrides"].(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("the selected revision has no requested Harness overrides")
+		}
+		return overrides, nil
+	}
+	readError, unreadable := record["configurationReadError"].(map[string]any)
+	if !unreadable {
+		return nil, fmt.Errorf("the selected revision has no Harness settings")
+	}
+	code, _ := readError["code"].(string)
+	field, _ := readError["field"].(string)
+	revisionID, _ := record["id"].(string)
+	number, _ := record["revision"].(float64)
+	summary, err := revisionSummary(client, namespace, agentID, revisionID, number)
+	if err != nil {
+		return nil, err
+	}
+	summaryHarness, _ := summary["harness"].(map[string]any)
+	if summaryHarness == nil {
+		return nil, fmt.Errorf("revision %s has unreadable saved settings (%s: %s) and the Agent's revision list has no Harness summary for it, so its requested Harness overrides are unknown; pass them with --harness-overrides instead", revisionID, code, field)
+	}
+	recorded, present := summaryHarness["overrides"]
+	if !present {
+		noticef(notices, "notice: revision %s has unreadable saved settings (%s: %s) and records no Harness overrides, so none are retained; the deployment uses current Installation defaults.", revisionID, code, field)
+		return map[string]any{}, nil
+	}
+	overrides, ok := recorded.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("revision %s has unreadable saved settings (%s: %s) and invalid recorded Harness overrides; pass them with --harness-overrides instead", revisionID, code, field)
+	}
+	noticef(notices, "notice: revision %s has unreadable saved settings (%s: %s); retaining the Harness overrides that its revision summary records.", revisionID, code, field)
+	return overrides, nil
+}
+
+// revisionSummary finds one revision in the Agent's revision list, newest first.
+// It stops below the revision's number, or returns nil when the list does not
+// include it.
+func revisionSummary(client *occclient.Client, namespace, agentID, revisionID string, number float64) (map[string]any, error) {
+	cursor := ""
+	for {
+		page, err := client.ListAgentRevisions(namespace, agentID, 100, cursor)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range page.Revisions {
+			summary, _ := item.(map[string]any)
+			if summary["id"] == revisionID {
+				return summary, nil
+			}
+			if listed, ok := summary["revision"].(float64); ok && number > 0 && listed < number {
+				return nil, nil
+			}
+		}
+		if page.NextCursor == "" || page.NextCursor == cursor {
+			return nil, nil
+		}
+		cursor = page.NextCursor
+	}
 }
 
 func (app *application) firstDeploymentRecoveryNotice(notices io.Writer, namespace, agentID string, intent occclient.FirstDeploymentIntent, err error, overridesFile string) {
@@ -1090,12 +1201,10 @@ func (app *application) firstDeploymentRecoveryNotice(notices io.Writer, namespa
 // defaultDeploymentNotice says which revision deployment-status chose without
 // an ID. Revision lists are permission-filtered, so the latest revision the
 // caller can read may be an old failed one while the active revision is hidden.
-func defaultDeploymentNotice(client *occclient.Client, notices io.Writer, namespace, agentID, latest string, number float64) {
-	agent, err := client.GetAgent(namespace, agentID)
-	resource, _ := agent.(map[string]any)
+func defaultDeploymentNotice(client *occclient.Client, notices io.Writer, namespace, agentID, latest string, number float64, resource map[string]any) {
 	active, _ := resource["activeRevisionId"].(string)
 	switch {
-	case err != nil:
+	case resource == nil:
 		noticef(notices, "notice: showing revision %s, the latest revision you can read", latest)
 		return
 	case active == "":
@@ -1501,9 +1610,22 @@ func readJSON(path string) (jsontext.Value, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read JSON file %s: %w", path, err)
 	}
-	value := jsontext.Value(contents)
-	if !value.IsValid() {
+	decoder := jsontext.NewDecoder(bytes.NewBuffer(contents))
+	if _, err := decoder.ReadValue(); err != nil {
+		// Decoder errors can contain input fragments and object names.
+		var syntax *jsontext.SyntacticError
+		if errors.As(err, &syntax) {
+			switch syntax.Err {
+			case jsontext.ErrDuplicateName:
+				return nil, fmt.Errorf("invalid JSON file %s: duplicate object key at byte offset %d", path, syntax.ByteOffset)
+			case io.ErrUnexpectedEOF:
+				return nil, fmt.Errorf("invalid JSON file %s: incomplete JSON at byte offset %d", path, syntax.ByteOffset)
+			}
+		}
 		return nil, fmt.Errorf("invalid JSON file %s", path)
 	}
-	return value, nil
+	if _, err := decoder.ReadToken(); err != io.EOF {
+		return nil, fmt.Errorf("invalid JSON file %s", path)
+	}
+	return jsontext.Value(contents), nil
 }

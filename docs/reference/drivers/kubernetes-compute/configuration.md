@@ -48,6 +48,14 @@ The [installation profiles](../../../guides/deploy/installation-profiles.md) exp
 the measured memory defaults. Invalid resource pairs, quotas, and selector labels
 fail before resource creation.
 
+Object-count quotas, such as `pods`, `services`, and `count/deployments.apps`,
+must satisfy Kubernetes integer precision. Use whole counts such as `"4"`;
+quantity suffixes that represent a whole count, such as `"1000m"` or `"1.5Ki"`,
+remain valid. Fractional CPU and storage quotas retain their existing rules.
+Previously accepted counted quotas that Kubernetes refuses now stop API and
+worker startup with a diagnostic naming `resources.namespace.quota` and the
+resource. Correct that entry before restarting either process.
+
 ## Network
 
 A peer object has required `namespace` and `podLabels` fields. Use exact workload
@@ -92,7 +100,9 @@ Omission selects the verification runtime. Storage requirements are defined in
 
 Stopping a hosted native session releases its slot; saved history does not consume
 capacity. OpenClaw does not retire idle paired-node workers, so size capacity
-against workload CPU and memory limits.
+against workload CPU and memory limits. See
+[workload capacity checks](../../../guides/topics/agent-troubleshoot.md#check-workload-capacity)
+before relying on totals reported inside the Sandbox.
 
 [Revision model settings](model-provider.md) own endpoint selection and
 validation. Credential Sources retain separate destination authorization.

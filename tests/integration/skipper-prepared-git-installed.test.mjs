@@ -222,6 +222,8 @@ test(
       assert.equal(Object.hasOwn(removed, "repositoryBindings"), false);
       assert.equal(removed.activeRevisionId, revision.id);
       await witness("/release-discovery", "POST");
+      // A diagnostic write must not replace the pending native completion failure.
+      await checkpoint("repository-binding-withdrawn-discovery-released").catch(() => {});
       const done = await outcome;
       if (done.error) {
         throw done.error;

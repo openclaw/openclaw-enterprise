@@ -13,6 +13,9 @@ For the MVP's [online authorization profile](online-authorization.md), the trust
 release requirements there apply. The stronger dispatch and response guarantees below
 remain a distinct profile; an existing admission does not change meaning.
 
+See the [proposed public-egress contract](public-egress.md) for mode selection,
+Driver admission and supervisor evidence.
+
 ## Admission and configuration
 
 OpenClaw Control Plane (OCC) records the version 2 `ExecutionAdmission` decision in

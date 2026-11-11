@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
-import { createHumanLogin } from "../../apps/controller/src/auth/github.ts";
+import { createHumanLogin } from "../../apps/controller/src/auth/human-login.ts";
 import { googleNonce } from "../../apps/controller/src/auth/google.ts";
 import { humanLoginConfiguration } from "../../apps/controller/src/auth/index.ts";
 import {
@@ -62,43 +62,25 @@ function loginFixture(state = {}, providers = {}, options = {}) {
   });
 }
 
-test("Google sign-in configuration shares the recovery user with GitHub", () => {
+test("Google sign-in configuration uses the shared recovery user", () => {
   const google = {
     OCC_AUTH_GOOGLE_CLIENT_ID: clientId,
     OCC_AUTH_GOOGLE_CLIENT_SECRET: clientSecret,
   };
-  const github = {
-    OCC_AUTH_GITHUB_CLIENT_ID: "github-client",
-    OCC_AUTH_GITHUB_CLIENT_SECRET: "github-secret",
-  };
-  const recovery = { OCC_AUTH_GITHUB_RECOVERY_USER_ID: "recovery-user" };
+  const recovery = { OCC_AUTH_RECOVERY_USER_ID: "recovery-user" };
   assert.deepEqual(humanLoginConfiguration({}), {});
   assert.deepEqual(humanLoginConfiguration({ ...google, ...recovery }), {
     google: { clientId, clientSecret, allowedDomains: [], recoveryUserId: "recovery-user" },
   });
-  assert.deepEqual(humanLoginConfiguration({ ...github, ...recovery }), {
-    github: {
-      clientId: "github-client",
-      clientSecret: "github-secret",
-      recoveryUserId: "recovery-user",
-    },
-  });
-  assert.deepEqual(Object.keys(humanLoginConfiguration({ ...github, ...google, ...recovery })), [
-    "github",
-    "google",
-  ]);
   assert.throws(
     () => humanLoginConfiguration(google),
     /Google sign-in requires client ID, client secret and recovery user ID/,
   );
   assert.throws(
-    () => humanLoginConfiguration({ ...google, OCC_AUTH_GITHUB_RECOVERY_USER_ID: " " }),
+    () => humanLoginConfiguration({ ...google, OCC_AUTH_RECOVERY_USER_ID: " " }),
     /Google sign-in requires client ID, client secret and recovery user ID/,
   );
-  assert.throws(
-    () => humanLoginConfiguration(github),
-    /GitHub sign-in requires client ID, client secret and recovery user ID/,
-  );
+
   assert.throws(
     () => humanLoginConfiguration(recovery),
     /requires client ID, client secret and recovery user ID/,
@@ -209,18 +191,6 @@ test(
       assert.equal(googleOnly.login.googleProviderId, providerId);
       assert.equal(googleOnly.login.githubProviderId, undefined);
       assert.equal((await googleOnly.start("10.0.0.1", "github")).status, 404);
-      const both = loginFixture(
-        {},
-        { github: { clientId: "github-client", clientSecret: "github-secret" } },
-      );
-      assert.equal(
-        both.login.githubProviderId,
-        providerInstanceId("github", { clientId: "github-client" }),
-      );
-      const github = new URL((await (await both.start("10.0.0.1", "github")).json()).url);
-      assert.equal(github.origin, "https://github.com");
-      assert.equal(github.searchParams.has("nonce"), false);
-      assert.equal(both.attempts[0].providerId.startsWith("github:"), true);
     });
 
     await t.test(
@@ -245,14 +215,17 @@ test(
           issueSession: async (_proof, session) => {
             issued = {
               ...session,
+              resultExpiresAt: createdAt.getTime() + 120_000,
               createdAt,
               updatedAt: createdAt,
               expiresAt: new Date(createdAt.getTime() + 28_800_000),
             };
             return issued;
           },
-          currentSession: async (token) =>
-            issued?.token === token ? { ...issued, user } : undefined,
+          consumeLoginResult: async (token, receipt) =>
+            issued.token === token &&
+            issued.id === receipt.sessionId &&
+            issued.resultExpiresAt === receipt.expiresAt,
         });
         const started = await login.start();
         const { url, attemptId } = await started.json();
@@ -280,7 +253,6 @@ test(
         assert.equal(exchanged.status, 200);
         const { sessionKey } = await exchanged.json();
         assert.match(sessionKey, /^[A-Za-z0-9_-]{43}$/);
-        await expectDenied(await login.result(attemptId, cookies));
         assertNoSecrets(login, cookies, sessionKey);
       },
     );
@@ -377,25 +349,64 @@ test(
       assert.deepEqual(login.denials, [["PROVIDER_UNAVAILABLE", "google"]]);
     });
 
-    await t.test("GitHub and Google share each external step's admission budget", async () => {
-      const login = loginFixture(
-        {},
-        { github: { clientId: "github-client", clientSecret: "github-secret" } },
-      );
+    await t.test("Google keeps independent external step admission budgets", async () => {
+      const login = loginFixture();
       const before = requests.length;
       for (let i = 0; i < 30; i += 1) {
         await expectDenied(await login.callback("state=invalid", "10.0.7.1"));
       }
       assert.equal((await login.callback(undefined, "10.0.7.1")).status, 429);
       // Each step keeps its own budget, so the callback flood leaves start admitted, and
-      // both providers spend one start budget.
-      assert.equal((await login.start("10.0.7.1", "github")).status, 200);
+      // requests spend the same start budget.
+      assert.equal((await login.start("10.0.7.1", "google")).status, 200);
       for (let i = 1; i < 30; i += 1) {
         assert.equal((await login.start("10.0.7.1")).status, 200);
       }
-      assert.equal((await login.start("10.0.7.1", "github")).status, 429);
+      assert.equal((await login.start("10.0.7.1", "google")).status, 429);
       assert.equal((await login.start("10.0.7.2")).status, 200);
       assert.equal(requests.length, before);
     });
   },
 );
+
+test("guarded adapter never lists, counts or mutates raw session rows", async () => {
+  const login = loginFixture({
+    // State owns session reads; this row would be rejected by it (for example, revoked).
+    currentSession: async () => undefined,
+  });
+  const now = new Date();
+  login.db.user.push({
+    id: "stale-user",
+    email: "stale@example.test",
+    name: "Stale",
+    emailVerified: true,
+    createdAt: now,
+    updatedAt: now,
+  });
+  login.db.session.push({
+    id: "stale-session",
+    userId: "stale-user",
+    token: "stale-session-token",
+    expiresAt: new Date(now.getTime() + 3_600_000),
+    createdAt: now,
+    updatedAt: now,
+  });
+  const context = await login.auth.$context;
+  assert.deepEqual(await context.internalAdapter.listSessions("stale-user"), []);
+  assert.deepEqual(await context.adapter.findMany({ model: "session" }), []);
+  assert.equal(await context.adapter.count({ model: "session" }), 0);
+  const where = [{ field: "id", value: "stale-session" }];
+  const refused = {
+    name: "APIError",
+    status: "UNAUTHORIZED",
+    message: "Authentication was not accepted.",
+  };
+  await assert.rejects(context.adapter.consumeOne({ model: "session", where }), refused);
+  await assert.rejects(
+    context.adapter.incrementOne({ model: "session", where, increment: { version: 1 } }),
+    refused,
+  );
+  assert.equal(login.db.session.length, 1, "the raw row is untouched");
+  // Other models still pass through to the underlying adapter.
+  assert.equal(await context.adapter.count({ model: "user" }), 1);
+});

@@ -120,7 +120,7 @@ export function createOccMetrics(
   // These bounded label sets provide a baseline before the first observation.
   worker?.operationDuration.zero({ operation: "deploy" });
   worker?.operationDuration.zero({ operation: "stop" });
-  for (const provider of ["github", "google", "oidc"]) {
+  for (const provider of ["google", "oidc"]) {
     api?.unmatchedCallbacks.inc({ provider }, 0);
   }
   let inFlight: Promise<string> | undefined;
@@ -144,7 +144,7 @@ export function createOccMetrics(
     observeAgentOperation(operation: "deploy" | "stop", seconds: number) {
       worker?.operationDuration.observe({ operation }, seconds);
     },
-    observeUnmatchedSignInCallback(provider: "github" | "google" | "oidc") {
+    observeUnmatchedSignInCallback(provider: "google" | "oidc") {
       api?.unmatchedCallbacks.inc({ provider });
     },
     exposition(): Promise<string> {

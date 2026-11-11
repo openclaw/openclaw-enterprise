@@ -15,7 +15,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { availableParallelism, cpus, constants as osConstants } from "node:os";
-import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
@@ -29,8 +29,15 @@ import {
   redactLogLine,
   redactOutputLines,
 } from "./failure-redaction.mjs";
-import { qualifySkipperRelease } from "./skipper-release.ts";
+import {
+  exercisedLaneStatus,
+  exercisedAssertionFailures,
+  recordsCoverage,
+} from "./full-integration-coverage.ts";
+import { projectSkipperRunnerReceipt, qualifySkipperRelease } from "./skipper-release.ts";
 import { loadTestSuites } from "./test-suites.mjs";
+import { collectInstallationPhases } from "./openshell-installation-phase.ts";
+import { boundedProgressLines, openShellProgress } from "./openshell-progress.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const reporterPath = fileURLToPath(new URL("./reporter.mjs", import.meta.url));
@@ -108,7 +115,11 @@ function envObject(value, path, issues) {
 
   const env = {};
   for (const [name, envValue] of Object.entries(value)) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || typeof envValue !== "string") {
+    if (
+      name === "__proto__" ||
+      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ||
+      typeof envValue !== "string"
+    ) {
       issues.push(issue("invalid-manifest", `${path}.${name} must be a string env value`));
       continue;
     }
@@ -132,6 +143,7 @@ function normalizeFile(file, laneName, index, issues) {
   return {
     path: file.path,
     expectedTests: stringArray(file.expectedTests, `${path}.expectedTests`, issues),
+    env: envObject(file.env, `${path}.env`, issues),
     requiredEnv: stringArray(file.requiredEnv, `${path}.requiredEnv`, issues),
     optionalEnv: stringArray(file.optionalEnv, `${path}.optionalEnv`, issues),
   };
@@ -749,16 +761,21 @@ async function preparationFailureText(error, lane, statePath, root) {
     .filter((line) => /^\s+at\s/u.test(line))
     .map((line) => line.trim())
     .join("\n");
-  let stateEnv;
+  let state;
   try {
-    stateEnv = JSON.parse(await readFile(statePath, "utf8"))?.env;
+    state = JSON.parse(await readFile(statePath, "utf8"));
   } catch {
     // No lane state, or not JSON.
   }
   return (
     redactFailureDetail(
       { message: message.slice(0, failureInputLimit), stack: frames.slice(0, failureInputLimit) },
-      failureSecrets([process.env, lane.env, isObject(stateEnv) ? stateEnv : {}]),
+      failureSecrets([
+        process.env,
+        lane.env,
+        isObject(state?.defaults) ? state.defaults : {},
+        isObject(state?.env) ? state.env : {},
+      ]),
       root,
     ) ?? {}
   );
@@ -772,7 +789,11 @@ function validatePreparedEnv(value) {
     throw new Error("prepareFile env must be an object");
   }
   for (const [name, envValue] of Object.entries(value)) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || typeof envValue !== "string") {
+    if (
+      name === "__proto__" ||
+      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ||
+      typeof envValue !== "string"
+    ) {
       throw new Error("prepareFile env must contain string env values");
     }
   }
@@ -858,7 +879,7 @@ function addLiveGroup(pgid) {
 // gets SIGKILL once the grace period is over, and whenever the runner exits:
 // anything still in its group then has outlived its file. ENOBUFS discards the
 // rest of the output, so it kills the group at once.
-function runNode(args, { cwd, env, timeout }) {
+function runNode(args, { cwd, env, timeout, onProgress }) {
   return new Promise((resolvePromise) => {
     const chunks = [];
     let bytes = 0;
@@ -902,18 +923,35 @@ function runNode(args, { cwd, env, timeout }) {
     }
     child.stdin.end();
     child.stderr.resume();
+    const readProgress = boundedProgressLines((line) => {
+      // Only this small closed record reaches the live log. Ordinary reporter
+      // output still waits for final accounting and failure redaction below.
+      try {
+        const event = JSON.parse(line);
+        const progress =
+          event?.type === "test:progress" ? openShellProgress(event.data) : undefined;
+        if (progress) {
+          onProgress(progress);
+        }
+      } catch {
+        // Final parsing owns malformed reporter output and its failure result.
+      }
+    });
     child.stdout.on("data", (chunk) => {
       if (error?.code === "ENOBUFS") {
         return;
       }
       if (bytes + chunk.length > maxReporterBytes) {
-        chunks.push(chunk.subarray(0, maxReporterBytes - bytes));
+        const admitted = chunk.subarray(0, maxReporterBytes - bytes);
+        chunks.push(admitted);
         bytes = maxReporterBytes;
+        readProgress(admitted.toString("utf8"));
         stop("ENOBUFS");
         return;
       }
       chunks.push(chunk);
       bytes += chunk.length;
+      readProgress(chunk.toString("utf8"));
     });
     const finish = (status, signal) => {
       if (settled) {
@@ -926,6 +964,7 @@ function runNode(args, { cwd, env, timeout }) {
         status,
         signal,
         stdout: Buffer.concat(chunks).toString("utf8"),
+        processGroupId: pgid,
         ...(error ? { error } : {}),
       });
     };
@@ -1324,7 +1363,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   const issues = [];
   const relativePath = repoRelativePath(root, file.path);
   const absolutePath = resolveRepoPath(root, file.path, issues, relativePath);
-  const prepared = { env: {}, cleanup: null };
+  const prepared = { defaults: {}, env: {}, cleanup: null };
   let cleanupResult = null;
 
   if (!absolutePath || !(await exists(absolutePath))) {
@@ -1367,11 +1406,14 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
             prepareLimitMs(),
           ),
         )) ?? {};
-      prepared.env = validatePreparedEnv(result.env);
-      prepared.cleanup = result.cleanup ?? null;
-      if (prepared.cleanup !== null && typeof prepared.cleanup !== "function") {
+      const cleanup = result.cleanup ?? null;
+      if (cleanup !== null && typeof cleanup !== "function") {
         throw new Error("prepareFile cleanup must be a function");
       }
+      // A returned resource owner still needs cleanup when its output is invalid.
+      prepared.cleanup = cleanup;
+      prepared.defaults = validatePreparedEnv(result.defaults);
+      prepared.env = validatePreparedEnv(result.env);
     } catch (error) {
       if (error instanceof StepTimeoutError) {
         // Its turn in the setup queue came after the deadline, or it ran into the deadline.
@@ -1397,7 +1439,9 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
         reason: "prepare",
         error: { ...sanitized, ...(await preparationFailureText(error, lane, statePath, root)) },
       });
-      return emptyFileResult(relativePath, issues);
+      if (!prepared.cleanup) {
+        return emptyFileResult(relativePath, issues);
+      }
     }
   }
 
@@ -1410,6 +1454,8 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   const env = mergeEnv(
     baseChildEnv([...requiredEnv, ...lane.optionalEnv, ...file.optionalEnv]),
     lane.env,
+    prepared.defaults,
+    file.env,
     prepared.env,
   );
   for (const name of requiredEnv) {
@@ -1427,9 +1473,12 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   let tests = [];
   let skippedSuites = [];
   let fileFailure;
+  let testRunExercised = false;
   let details;
   let nodeElapsedMs;
   let agentActivity;
+  const installationProgress = ["openshell", "openshell-policy"].includes(lane.name);
+  const installationPhases = collectInstallationPhases();
   let measurements = [];
   let timeout;
   let case2Directory;
@@ -1459,12 +1508,31 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
           env[case2PhaseEnv] = JSON.stringify({ path: case2Directory.path, dev, ino });
         }
       }
+      if (installationProgress) {
+        env.OCC_TEST_OPENSHELL_INSTALLATION_PROGRESS = "1";
+      }
       const nodeStarted = performance.now();
       timeout = fileTimeout();
       nodeResult = await runNode(["--test", "--test-reporter", reporterPath, absolutePath], {
         cwd: root,
         env,
         timeout: timeout.timeoutMs,
+        onProgress: (progress) => {
+          const { kind, stage, outcome } = progress;
+          if (kind === "openshell-installation") {
+            if (installationProgress) {
+              installationPhases.accept(progress);
+            }
+            return;
+          }
+          if (kind === "openshell-stage-failure") {
+            process.stderr.write(
+              `[run:${lane.name}] ${relativePath}: ${kind} ${stage} ${progress.category} code=${progress.code ?? "unknown"} workflow=${progress.location}\n`,
+            );
+            return;
+          }
+          process.stderr.write(`[run:${lane.name}] ${relativePath}: ${kind} ${stage} ${outcome}\n`);
+        },
       });
       nodeElapsedMs = Math.round(performance.now() - nodeStarted);
 
@@ -1494,19 +1562,40 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
       measurements = events
         .filter((event) => event.type === "test:diagnostic" && event.data?.kind === "measurement")
         .map((event) => event.data.measurement);
-      tests = events
-        .filter((event) => isRealTestEvent(event, absolutePath))
-        .map((event) => ({
-          name: event.data.name,
-          status: testStatus(event),
-          file: event.data.file ? repoRelativePath(root, event.data.file) : relativePath,
-          line: event.data.line,
-          column: event.data.column,
-          skip: event.data.skip,
-          todo: event.data.todo,
-          error: failureError(event.data.error),
-          durationMs: event.data.durationMs,
-        }));
+      const terminalEvents = events.filter(
+        (event) =>
+          isRealTestEvent(event, absolutePath) ||
+          ((event.type === "test:pass" || event.type === "test:fail") &&
+            event.data?.testType === "suite"),
+      );
+      const caseEvents = terminalEvents.filter((event) => event.data.testType !== "suite");
+      let coverageAssertions;
+      if (
+        recordsCoverage(process.env.GITHUB_WORKFLOW) &&
+        !nodeResult.error &&
+        !nodeResult.signal &&
+        !rootFailure &&
+        !events.some((event) => event.type === "test:interrupted")
+      ) {
+        coverageAssertions = exercisedAssertionFailures(
+          events.filter((event) => event.type === "test:summary").map((event) => event.data),
+          terminalEvents,
+          nodeResult.status,
+        );
+        testRunExercised = coverageAssertions !== undefined;
+      }
+      tests = caseEvents.map((event) => ({
+        name: event.data.name,
+        status: testStatus(event),
+        ...(coverageAssertions?.has(event) ? { assertionFailure: true } : {}),
+        file: event.data.file ? repoRelativePath(root, event.data.file) : relativePath,
+        line: event.data.line,
+        column: event.data.column,
+        skip: event.data.skip,
+        todo: event.data.todo,
+        error: failureError(event.data.error),
+        durationMs: event.data.durationMs,
+      }));
       // A skipped describe() never registers its tests, so only its suite event shows the skip.
       skippedSuites = events
         .filter(
@@ -1641,16 +1730,22 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     });
   }
 
+  const exercised =
+    testRunExercised &&
+    issues.every(({ code, status }) => code === "expected-test-not-passed" && status === "failed");
   return {
     path: relativePath,
     status,
     nodeExitCode,
     signal: nodeResult?.signal ?? null,
+    ...(exercised ? { exercised: true } : {}),
+    ...(nodeResult?.processGroupId ? { processGroupId: nodeResult.processGroupId } : {}),
     ...(fileFailure ? { fileFailure } : {}),
     counts,
     tests,
     ...(measurements.length > 0 ? { measurements } : {}),
     ...(case2Phase ? { case2Phase } : {}),
+    ...(installationProgress ? { installationPhases: installationPhases.result() } : {}),
     issues,
     cleanup: cleanupResult,
     imageDigests: imageDigests(env),
@@ -1879,10 +1974,34 @@ function validateLaneEvidence(summary, laneName, lane, issues) {
     );
   }
 
-  const observedFiles = new Map(summary.files.map((file) => [file.path, file]));
+  const observedFiles = Map.groupBy(summary.files, (file) => file.path);
+  for (const [file, records] of observedFiles) {
+    if (records.length > 1) {
+      const expectedFile = lane.files.find((entry) => entry.path === file);
+      if (expectedFile) {
+        issues.push(
+          issue(
+            "duplicate-lane-file",
+            `lane ${laneName} has duplicate file evidence for ${expectedFile.path}`,
+            { lane: laneName, file: expectedFile.path },
+          ),
+        );
+      } else {
+        issues.push(
+          issue(
+            "duplicate-lane-file",
+            `lane ${laneName} has duplicate file evidence for an unregistered file`,
+            {
+              lane: laneName,
+            },
+          ),
+        );
+      }
+    }
+  }
   for (const expectedFile of lane.files) {
-    const observed = observedFiles.get(expectedFile.path);
-    if (!observed) {
+    const records = observedFiles.get(expectedFile.path);
+    if (!records) {
       issues.push(
         issue("missing-lane-evidence", `lane ${laneName} is missing file evidence`, {
           lane: laneName,
@@ -1891,37 +2010,44 @@ function validateLaneEvidence(summary, laneName, lane, issues) {
       );
       continue;
     }
-    if (observed.status !== "passed") {
-      issues.push(
-        issue("lane-file-failed", `lane ${laneName} file did not pass`, {
-          lane: laneName,
-          file: expectedFile.path,
-          status: observed.status,
-        }),
-      );
-    }
-    if (
-      !observed.counts ||
-      !Number.isInteger(observed.counts.total) ||
-      observed.counts.total < 1 ||
-      !Array.isArray(observed.tests)
-    ) {
-      issues.push(
-        issue("missing-lane-evidence", `lane ${laneName} file has no test evidence`, {
-          lane: laneName,
-          file: expectedFile.path,
-        }),
-      );
-    } else {
-      validateExpectedTests(expectedFile.path, expectedFile.expectedTests, observed.tests, issues);
-    }
-    if (observed.cleanup != null && observed.cleanup.status !== "passed") {
-      issues.push(
-        issue("cleanup-failed", `lane ${laneName} file cleanup did not pass`, {
-          lane: laneName,
-          file: expectedFile.path,
-        }),
-      );
+    for (const observed of records) {
+      if (observed.status !== "passed") {
+        issues.push(
+          issue("lane-file-failed", `lane ${laneName} file did not pass`, {
+            lane: laneName,
+            file: expectedFile.path,
+            status: observed.status,
+          }),
+        );
+      }
+      if (
+        !observed.counts ||
+        !Number.isInteger(observed.counts.total) ||
+        observed.counts.total < 1 ||
+        !Array.isArray(observed.tests)
+      ) {
+        issues.push(
+          issue("missing-lane-evidence", `lane ${laneName} file has no test evidence`, {
+            lane: laneName,
+            file: expectedFile.path,
+          }),
+        );
+      } else {
+        validateExpectedTests(
+          expectedFile.path,
+          expectedFile.expectedTests,
+          observed.tests,
+          issues,
+        );
+      }
+      if (observed.cleanup != null && observed.cleanup.status !== "passed") {
+        issues.push(
+          issue("cleanup-failed", `lane ${laneName} file cleanup did not pass`, {
+            lane: laneName,
+            file: expectedFile.path,
+          }),
+        );
+      }
     }
   }
 }
@@ -1962,6 +2088,16 @@ async function aggregateGroup(
   const issues = [...manifest.issues, ...source.issues];
   let laneNames = laneNamesForTarget(manifest, groupName);
   const lanes = [];
+  const exercised = new Map();
+  const recordFullCoverage =
+    process.env.GITHUB_WORKFLOW === "Full Integration" &&
+    process.env.OCC_CI_SUITE_VIEW === "full-integration" &&
+    groupName === "full" &&
+    selection === undefined &&
+    Boolean(needsPath) &&
+    process.env.GITHUB_REF === "refs/heads/main" &&
+    process.env.GITHUB_RUN_ATTEMPT === "1" &&
+    source.sha === process.env.GITHUB_SHA;
   const currentSha = source.sha;
 
   if (!laneNames) {
@@ -1998,6 +2134,19 @@ async function aggregateGroup(
               }),
             );
           }
+          if (
+            need?.lanes !== undefined &&
+            (!Array.isArray(need.lanes) ||
+              need.lanes.length === 0 ||
+              new Set(need.lanes).size !== need.lanes.length ||
+              !need.lanes.every((lane) => typeof lane === "string" && lane.length > 0))
+          ) {
+            issues.push(
+              issue("invalid-need-lanes", `needs JSON has invalid lanes for ${needName}`, {
+                need: needName,
+              }),
+            );
+          }
         }
       }
     } catch (error) {
@@ -2009,9 +2158,18 @@ async function aggregateGroup(
 
   for (const laneName of laneNames ?? []) {
     if (needs) {
-      const need = needs[laneName];
-      if (!need) {
+      const owners = Object.entries(needs).filter(
+        ([name, need]) =>
+          name === laneName || (Array.isArray(need?.lanes) && need.lanes.includes(laneName)),
+      );
+      if (owners.length === 0) {
         issues.push(issue("missing-need", `needs JSON is missing ${laneName}`, { lane: laneName }));
+      } else if (owners.length > 1) {
+        issues.push(
+          issue("ambiguous-need", `needs JSON has multiple jobs for ${laneName}`, {
+            lane: laneName,
+          }),
+        );
       }
     }
 
@@ -2029,25 +2187,11 @@ async function aggregateGroup(
     try {
       const summary = await readJson(resultPath);
       const lane = manifest.lanes.get(laneName);
-      lanes.push({
-        lane: summary.lane,
-        status: summary.status,
-        exitCode: summary.exitCode,
-        sourceSha: summary.sourceSha,
-      });
       if (summary.lane !== laneName) {
         issues.push(
           issue("lane-output-mismatch", `result file for ${laneName} reports ${summary.lane}`, {
             lane: laneName,
             reportedLane: summary.lane,
-          }),
-        );
-      }
-      if (summary.status !== "passed") {
-        issues.push(
-          issue("lane-failed", `lane ${laneName} did not pass`, {
-            lane: laneName,
-            status: summary.status,
           }),
         );
       }
@@ -2059,6 +2203,38 @@ async function aggregateGroup(
             observedSourceSha: summary.sourceSha,
           }),
         );
+      }
+      if (summary.lane !== laneName || summary.sourceSha !== currentSha) {
+        continue;
+      }
+      lanes.push({
+        lane: summary.lane,
+        status: summary.status,
+        exitCode: summary.exitCode,
+        sourceSha: summary.sourceSha,
+      });
+      if (summary.status !== "passed") {
+        issues.push(
+          issue("lane-failed", `lane ${laneName} did not pass`, {
+            lane: laneName,
+            status: summary.status,
+          }),
+        );
+      }
+      if (recordFullCoverage && lane) {
+        let outcome = exercisedLaneStatus(summary, lane.files);
+        if (outcome && laneName === "skipper-prepared-git-installed") {
+          try {
+            const projected = projectSkipperRunnerReceipt(summary);
+            outcome = exercisedLaneStatus({ ...projected, cleanup: summary.cleanup }, lane.files);
+          } catch {
+            // Its owning contract requires file cleanup even when other lanes do not.
+            outcome = undefined;
+          }
+        }
+        if (outcome) {
+          exercised.set(laneName, outcome);
+        }
       }
       if (lane && summary.status === "passed") {
         validateLaneEvidence(summary, laneName, lane, issues);
@@ -2090,11 +2266,31 @@ async function aggregateGroup(
     }
   }
 
+  const fullCoverageExercised =
+    recordFullCoverage &&
+    laneNames?.length > 0 &&
+    exercised.size === laneNames.length &&
+    issues.every((entry) => {
+      if (entry.code === "lane-failed") {
+        return exercised.get(entry.lane) === "failed";
+      }
+      if (entry.code !== "need-not-success" || entry.result !== "failure") {
+        return false;
+      }
+      const ownedLanes = needs?.[entry.need]?.lanes ?? [entry.need];
+      return (
+        Array.isArray(ownedLanes) &&
+        ownedLanes.length > 0 &&
+        ownedLanes.every((lane) => exercised.has(lane))
+      );
+    });
+
   return {
     version: 1,
     command: "aggregate",
     sourceSha: currentSha,
     group: groupName,
+    ...(fullCoverageExercised ? { fullCoverageExercised: true } : {}),
     ...(releaseQualification && issues.length === 0 ? { releaseQualification } : {}),
     status: issues.length === 0 ? "passed" : "failed",
     lanes,
@@ -2111,7 +2307,10 @@ async function main() {
   const { command, positionals, options } = parseArgs(process.argv.slice(2));
   const root = resolve(options.root ?? repositoryRoot);
   const manifestPath = resolve(root, options.manifest ?? defaultManifestPath);
-  const manifest = normalizeManifest(loadTestSuites(manifestPath), manifestPath);
+  const manifest = normalizeManifest(
+    loadTestSuites(manifestPath, process.env.OCC_CI_SUITE_VIEW),
+    manifestPath,
+  );
 
   if (command === "check-selection") {
     if (!positionals[0] || options.file === undefined) {
@@ -2156,6 +2355,21 @@ async function main() {
     options.lanes,
     options["release-selection"] ? resolve(root, options["release-selection"]) : null,
   );
+  if (
+    options["full-coverage-marker"] &&
+    summary.fullCoverageExercised &&
+    process.env.GITHUB_REF === "refs/heads/main" &&
+    process.env.GITHUB_RUN_ATTEMPT === "1" &&
+    summary.sourceSha === process.env.GITHUB_SHA &&
+    process.env.GITHUB_OUTPUT
+  ) {
+    try {
+      await writeFile(options["full-coverage-marker"], "1\n", { flag: "wx" });
+      await appendFile(process.env.GITHUB_OUTPUT, "full_coverage_exercised=true\n");
+    } catch {
+      process.stderr.write("run-tests: full coverage marker could not be written.\n");
+    }
+  }
   process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
   return summary.status === "passed" ? 0 : 1;
 }

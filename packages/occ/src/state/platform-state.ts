@@ -1,3 +1,4 @@
+import { repositoryRemovalWorkKey } from "../repository-withdrawal.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
   assertExecutionAdmission,
@@ -1284,6 +1285,7 @@ interface PlatformSnapshot {
   readonly repositoryStandingApprovals: Map<string, Readonly<RepositoryStandingApproval>>;
   readonly repositorySessions: Map<string, Readonly<RepositorySessionAttempt>>;
   readonly repositoryBrokerReceipts: Map<string, Readonly<RepositoryBrokerReceipt>>;
+  readonly repositoryWithdrawals: Map<string, Readonly<ControllerWork>>;
   readonly audit: Readonly<AuditEvent>[];
   readonly operations: Readonly<PlatformOperation>[];
 }
@@ -1426,6 +1428,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     servicePrincipals: new Map(snapshot.servicePrincipals),
     repositoryStandingExecutions: new Map(snapshot.repositoryStandingExecutions),
     repositoryStandingApprovals: new Map(snapshot.repositoryStandingApprovals),
+    repositoryWithdrawals: new Map(snapshot.repositoryWithdrawals),
     repositorySessions: new Map(
       Array.from(snapshot.repositorySessions, ([key, attempt]) => [key, storedCopy(attempt)]),
     ),
@@ -4162,6 +4165,58 @@ function repositories(
         agent.activeRevisionId === owner.revisionId
       );
     },
+    (owner, at) => {
+      const namespace = snapshot.namespaces.get(owner.namespaceId);
+      const agent = snapshot.agents.get(agentKey(owner.namespaceId, owner.agentId));
+      if (
+        namespace?.status !== "ready" ||
+        agent?.status !== "active" ||
+        agent.activeRevisionId !== owner.revisionId
+      ) {
+        throw new ScopeViolationError("Finite withdrawal requires the exact active revision.");
+      }
+      const original = snapshot.operations.find(
+        (operation) =>
+          operation.kind === "agent_revision" &&
+          operation.target === undefined &&
+          operation.namespaceId === owner.namespaceId &&
+          operation.resourceId === owner.revisionId,
+      );
+      if (!original) {
+        throw new ScopeViolationError(
+          "Finite withdrawal requires the original deployment authority.",
+        );
+      }
+      const actorId = original.actorId;
+      const key = repositoryRemovalWorkKey(owner.revisionId);
+      if (!snapshot.repositoryWithdrawals.has(key)) {
+        const time = new Date(at);
+        snapshot.repositoryWithdrawals.set(
+          key,
+          immutableCopy({
+            kind: "lifecycle",
+            idempotencyKey: key,
+            ...owner,
+            actorId,
+            state: "queued",
+            availableAt: time,
+            attemptCount: 0,
+            createdAt: time,
+            updatedAt: time,
+          }),
+        );
+      }
+    },
+    (owner) => {
+      const withdrawal = snapshot.repositoryWithdrawals.get(
+        repositoryRemovalWorkKey(owner.revisionId),
+      );
+      return (
+        withdrawal?.namespaceId === owner.namespaceId &&
+        withdrawal.agentId === owner.agentId &&
+        withdrawal.revisionId === owner.revisionId
+      );
+    },
   );
 
   const provisioningUnavailable = async (): Promise<never> => {
@@ -4312,6 +4367,10 @@ function repositories(
             operation.resourceId === revisionId,
         ),
       findWork: async (idempotencyKey) => {
+        const withdrawal = snapshot.repositoryWithdrawals.get(idempotencyKey);
+        if (withdrawal) {
+          return immutableCopy(withdrawal);
+        }
         const operation = snapshot.operations.find(
           (candidate) => operationIdempotencyKey(candidate) === idempotencyKey,
         );
@@ -4494,6 +4553,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     servicePrincipals: new Map(),
     repositoryStandingExecutions: new Map(),
     repositoryStandingApprovals: new Map(),
+    repositoryWithdrawals: new Map(),
     repositorySessions: new Map(),
     repositoryBrokerReceipts: new Map(),
     audit: [],

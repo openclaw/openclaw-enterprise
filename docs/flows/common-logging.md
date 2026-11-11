@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
-updated: 2026-11-07
-last_updated_session: authoring-run/47c08087-e796-42e1-a716-e321ec52e41e
+updated: 2026-11-08
+last_updated_session: authoring-run/b490de13-d3f2-4301-b212-4393219a8625
 ---
 
 # Common Operational Logging Flow
@@ -207,7 +207,7 @@ keeps a short plain-text Codex message only from `codex_app_server` or the fixed
 `codex_core::responses_retry` retry messages; a Codex warning without such a
 message is dropped (as are span lifecycle records).
 OCC `compute.preflight-warning` records retain WARN severity and `occ.code` values of at most 64 allowed characters;
-the local diagnostic message is excluded from remote export.
+local diagnostic messages are not exported.
 `authentication.sign-in-limit-warning` and `authentication.forwarded-refused-warning` keep
 `occ.code`, and
 `authentication.sign-in-limited` keeps only `occ.sign_in.lane`; its local key
@@ -223,10 +223,13 @@ letter, then at most 63 letters, digits, `_` or `-`, and no key or token shape):
 `occ.failure` (a device login keeps its own, below), `occ.harness_state`,
 `occ.hint_code` and `occ.reason_code`, and `fence`, a nonnegative safe integer, as
 `occ.fence`. `worker.openshell-git-expiry` keeps `work.outcome` (`pending`,
-`withdrawn` or `retire-runtime`); `worker.repository-delivery-pending` reports Git
-delivery retries. Reconciliation retries every second; this event logs the first failure after
-worker startup or a completed pass, then at most once a minute. Its Sandbox Driver ID stays local, as do Installation and
-Configuration IDs.
+`withdrawn` or `retire-runtime`).
+`apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts:subtractExpiredOpenShellGit`
+adds `failure` and `grpcStatus`, never supplier text.
+`worker.repository-delivery-pending` reports Git
+delivery retries. Reconciliation retries each second, logging failures initially
+and then at most once a minute. Sandbox Driver, Installation and
+Configuration IDs stay local.
 `worker.compute-prepare-failed` (a Compute Driver could not prepare a version) is
 ERROR and keeps `occ.code` plus the Namespace, Agent and Agent revision IDs and work identity
 other worker events keep; the stage, error class, status and message stay local.
@@ -329,6 +332,8 @@ covers credentials, supervision, queue storage and backend verification.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-08 16:26: Record bounded Git retirement diagnostics. (authoring-run/b490de13-d3f2-4301-b212-4393219a8625 - 842bea47b86394333aa46a900c962a8a81272580)
 
 - 2026-11-07 09:24: Retain closed-vocabulary runtime failure codes in active maintenance logs. (authoring-run/47c08087-e796-42e1-a716-e321ec52e41e - 5ed0898c6fba9875e075472747b660c27fb74bf6)
 
