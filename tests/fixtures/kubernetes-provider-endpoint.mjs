@@ -4,39 +4,12 @@ import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.t
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { tenant, digest, authContext } from "../helpers/kubernetes-routed-scenarios.mjs";
+import { openShellWorkspaceHarnessConfiguration } from "../integration/sandbox-driver-installation-fixture.ts";
 import { workspaceGatewayClient } from "../integration/sandbox-workspace-gateway-fixture.ts";
 import {
   providerReadinessFixture,
   supervisorPeerLabels,
 } from "./kubernetes-provider-readiness.mjs";
-
-export function openShellWorkspaceHarnessConfiguration() {
-  return {
-    gateway: {
-      workspaceMode: "operator",
-    },
-    kubernetes: {
-      runtimeClassName: "openshell-sandbox",
-      userNamespaces: false,
-      serviceAccount: { mode: "gatewayConfigured" },
-      sandboxDataMount: {
-        subPath: "workspace",
-        mountPath: "/sandbox/enterprise",
-        readOnly: false,
-      },
-    },
-    policy: {
-      process: { runAsUser: "1000", runAsGroup: "1000" },
-      networkPolicies: [
-        {
-          name: "model-egress",
-          endpoints: [{ host: "api.openai.com", ports: [443] }],
-          binaries: [{ path: "/app/bin/model-client" }],
-        },
-      ],
-    },
-  };
-}
 
 // Run the real Sandbox Driver and stop before Compute observes its endpoint.
 export function captureOpenShellHarness({ clients, core, read }, sandbox, egress) {
@@ -66,10 +39,8 @@ export function captureOpenShellHarness({ clients, core, read }, sandbox, egress
       };
     }
   };
-  const configuration = openShellWorkspaceHarnessConfiguration();
-  if (egress !== undefined) {
-    configuration.egress = egress;
-  }
+  const base = openShellWorkspaceHarnessConfiguration();
+  const configuration = egress === undefined ? base : { ...base, egress };
   const openshell = new OpenShellSandboxDriver(configuration, {
     id: sandbox.id,
     implementation: "openshell",

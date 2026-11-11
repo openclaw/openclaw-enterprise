@@ -122,6 +122,7 @@
     "tests/integration/managed-plugin-request-authority.test.ts",
     "tests/integration/egress-stock-online-git-authority.test.mjs",
     "tests/integration/harness-egress-probe-diagnostics.test.ts",
+    "tests/integration/openshell-permission-diagnostic.test.ts",
     "tests/conformance/openshell-prepared-git-provider.test.mjs",
     "tests/conformance/openshell-git-runtime.test.mjs",
     "tests/conformance/openshell-git-denial.test.mjs",
@@ -517,10 +518,8 @@
         "development cleanup with Compose options keeps the Docker profile",
         "development cleanup treats a Kubernetes control plane without a Compute selection as Kubernetes",
         "dev-up refuses Keycloak sign-in for the Docker profile before startup",
-        "dev-down removes the service key directory dev-up created and keeps a chosen key output",
-        "dev-down --volumes removes the Installation's Docker Compute Namespace networks",
-        "a failed dev-up removes the empty service key directory it created",
-        "dev-up records a clean key directory path when TMPDIR ends in a slash"
+        "Compose shutdown keeps copied service keys and leaves Namespace networks to Docker Compute",
+        "a failed dev-up removes the empty service key directory it created"
       ]
     },
     {
@@ -678,6 +677,51 @@
         "Git preparation refuses broad or noncanonical workspace trust before provider writes",
         "Git preparation refuses missing admission or plan identity before gateway calls",
         "a fresh Git route uses the execution ID admitted before gateway reads"
+      ]
+    },
+    {
+      "path": "tests/integration/openshell-permission-diagnostic.test.ts",
+      "expectedTests": [
+        "a confirmed diagnostic grant preserves the actual Driver refusal and redacts the complete receipt",
+        "non-PAT refusals and serving PAT Drivers do not trigger diagnostics",
+        "diagnostic wrong-profile retains the classified failure",
+        "diagnostic wrong-reviewer retains the classified failure",
+        "diagnostic wrong-approval retains the classified failure",
+        "diagnostic wrong-legacy-mode retains the classified failure",
+        "diagnostic persistent retains the classified failure",
+        "diagnostic unknown-profile retains the classified failure",
+        "diagnostic missing-profile retains the classified failure",
+        "diagnostic missing-approval retains the classified failure",
+        "diagnostic init-missing retains the classified failure",
+        "diagnostic auth-api-key retains the classified failure",
+        "diagnostic auth-token retains the classified failure",
+        "diagnostic both-envelope retains the classified failure",
+        "diagnostic null-error retains the classified failure",
+        "diagnostic fractional-error retains the classified failure",
+        "diagnostic approval retains the classified failure",
+        "diagnostic trailing-approval retains the classified failure",
+        "diagnostic binary retains the classified failure",
+        "diagnostic single-oversize retains the classified failure",
+        "diagnostic aggregate-oversize retains the classified failure",
+        "diagnostic cancelled retains the classified failure",
+        "diagnostic timeout retains the classified failure",
+        "diagnostic RPC code -32700 is protocol-error, not evidence of policy refusal",
+        "diagnostic RPC code -32600 is protocol-error, not evidence of policy refusal",
+        "diagnostic RPC code -32601 is protocol-error, not evidence of policy refusal",
+        "diagnostic RPC code -32602 is protocol-error, not evidence of policy refusal",
+        "diagnostic RPC code -32603 is server-error, not evidence of policy refusal",
+        "diagnostic RPC code -32000 is rpc-error, not evidence of policy refusal",
+        "diagnostic TLS valid authenticates the endpoint before sending its bearer",
+        "diagnostic TLS wrong-identity authenticates the endpoint before sending its bearer",
+        "diagnostic writer throw cannot replace the Driver refusal",
+        "diagnostic writer reject cannot replace the Driver refusal",
+        "diagnostic writer stall cannot replace the Driver refusal",
+        "a pre-existing cancellation stays cancellation and never opens a diagnostic",
+        "diagnostic records absent approval requirements without their content",
+        "diagnostic records only-never approval requirements without their content",
+        "diagnostic records granular approval requirements without their content",
+        "cancellation after Driver classification retains its failure without opening another connection",
+        "a peer that ignores close is terminated within the diagnostic cleanup budget"
       ]
     },
     {
