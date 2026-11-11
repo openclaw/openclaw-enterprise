@@ -119,11 +119,20 @@ async function fakeCommand({
       [["volume", "ls"], "{{.Name}}"],
     ]) {
       if (equals(args.slice(0, list.length), list)) {
-        assert.ok(state.clusterDeleted, "cluster inventory is checked after deletion");
         assert.ok(
-          ["label=k3d.cluster=" + state.cluster, "name=k3d-" + state.cluster].includes(
-            args[list.length + 1],
-          ),
+          !state.cluster || state.clusterDeleted,
+          "cluster inventory is checked after deletion",
+        );
+        // A cancelled preparation can own a planned cluster that was never created.
+        // Keep exact ownership checks even when the fake has no live cluster name.
+        const cluster =
+          state.cluster ??
+          JSON.parse(readFileSync(join(root, "state.json"), "utf8")).resources.find(
+            ({ kind }) => kind === "k3d-cluster",
+          )?.name;
+        assert.ok(cluster, "cleanup must own a recorded cluster");
+        assert.ok(
+          ["label=k3d.cluster=" + cluster, "name=k3d-" + cluster].includes(args[list.length + 1]),
         );
         assert.deepEqual(args.slice(list.length), [
           "--filter",
@@ -873,7 +882,9 @@ async function fakeCommand({
       return finish("apiVersion: v1\n");
     }
     if (equals(args, ["cluster", "list", "-o", "json"])) {
-      return finish(JSON.stringify(state.clusterDeleted ? [] : [{ name: state.cluster }]));
+      return finish(
+        JSON.stringify(!state.cluster || state.clusterDeleted ? [] : [{ name: state.cluster }]),
+      );
     }
     if (equals(args, ["cluster", "delete", state.cluster])) {
       state.clusterDeleted = true;

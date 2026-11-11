@@ -51,7 +51,15 @@ function unavailable(): never {
   throw new RepositoryCredentialControlError(true);
 }
 
-const { object, identity, counter, parseCleanup } = createStatusWirePrimitives(unavailable);
+const {
+  object,
+  identity,
+  counter,
+  parseCleanup,
+  sessionStatusObject,
+  grantIdentityObject,
+  projectGrantIdentity,
+} = createStatusWirePrimitives(unavailable);
 
 function sessionId(value: unknown): string {
   if (typeof value !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
@@ -61,23 +69,12 @@ function sessionId(value: unknown): string {
 }
 
 function binding(value: unknown): RepositoryCredentialGrantIdentity {
-  const parsed = object(value, ["providerInstanceId", "repositoryId", "grantId"]);
-  return Object.freeze({
-    providerInstanceId: identity(parsed.providerInstanceId),
-    repositoryId: identity(parsed.repositoryId),
-    grantId: identity(parsed.grantId),
-  });
+  const parsed = grantIdentityObject(value);
+  return Object.freeze(projectGrantIdentity(parsed));
 }
 
 function status(value: unknown): SessionStatus {
-  const parsed = object(value, [
-    "sessionId",
-    "state",
-    "deadlineWallMs",
-    "binding",
-    "activeUses",
-    "cleanup",
-  ]);
+  const parsed = sessionStatusObject(value);
   const cleanup = parseCleanup(parsed.cleanup);
   const deadlineWallMs = counter(parsed.deadlineWallMs);
   if (
