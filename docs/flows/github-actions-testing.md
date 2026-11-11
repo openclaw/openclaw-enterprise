@@ -58,10 +58,11 @@ graph TD
 `scripts/ci/test-suites/<lane>.json` references for runners and preparation.
 Each lane owns its tests, environment, required inputs and preparation settings.
 
-For focused proof, `run-tests.mjs:selectLane` requires a lane-owned path; the action
-validates it before setup. Focused results retain expected cases, environment and
-cleanup, but `validateLaneEvidence` rejects them for full-lane aggregation,
-including one-file lanes.
+`run-tests.mjs:selectLane` validates lane-owned paths before setup. Focused runs
+retain environment and cleanup requirements. File-only runs require all expected
+cases; [named-case runs](../testing/ci/run-lanes.md#run-a-complete-local-attempt)
+require matching cases. `validateLaneEvidence` rejects both for full-lane
+aggregation, including one-file lanes.
 
 CI uses the event checkout without external service credentials. `CI Impact` selects coverage independently of `Suite Audit and Static Checks`, which verifies checkout identity and runs in every mode. The [coverage map](../testing/ci/required-checks.md#scenarios) lists ordinary lanes and the separate `runtime-image-fixture`. The workflow owns runner classes; Kubernetes lanes require a NetworkPolicy-enforcing kernel.
 
@@ -160,7 +161,7 @@ both commits.
 
 `scripts/ci/run-tests.mjs:main`, `scripts/ci/reporter.mjs:jsonLinesReporter` and `scripts/ci/failure-redaction.mjs:redactFailure`
 
-The runner verifies one lane per active file and runs whole files with scoped environments. Different prerequisites require separate files. Its Node reporter publishes case names, locations and outcomes. Failure lines retain messages (600 characters) and top stack frames (240). Redaction removes repository paths, replaces nonpublic job and child environment values of eight or more characters with `[env:NAME]`, and masks common tokens, keys, URL passwords and `password=` values as `[redacted]`. The job log uses the same lines. Generated values are masked only when they match those shapes. HTTP assertions retain numeric actual/expected statuses, an allowlisted OCC error code and available upstream ChatGPT operation/status. Denied-traffic failures retain only an allowlisted category. Plugin-status fixture failures retain an allowlisted readiness or rollout stage. Rollout diagnostics include allowed Pod phases, readiness and scheduling flags, container restart counts and exit codes, and allowlisted reasons. These structured diagnostics exclude response bodies, credentials, and identities.
+The runner verifies one lane per file. Full lanes execute whole files with scoped environments; different prerequisites require separate files. The Node reporter publishes names, locations and outcomes. Failure messages retain 600 characters; top stack frames retain 240. Redaction removes repository paths and replaces nonpublic job and child environment values (eight characters or longer) with `[env:NAME]`. Common tokens, keys, URL passwords and `password=` values become `[redacted]`. Job logs reuse these lines. Masking generated values requires matching shapes. HTTP assertions retain actual/expected status numbers, an allowlisted OCC error code and available ChatGPT operation/status. Denied-traffic failures retain only allowlisted categories. Plugin-status fixtures retain an allowlisted readiness or rollout stage. Rollout diagnostics allow Pod phases, readiness/scheduling flags, container restart counts, exit codes, and reasons. These diagnostics exclude response bodies, credentials, and identities.
 
 OpenShell lifecycle stages call `scripts/ci/openshell-progress.mjs:emitOpenShellProgress`
 before and after measured operations. The reporter admits only fixed kind, stage
