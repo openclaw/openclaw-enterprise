@@ -165,17 +165,17 @@ For stalled ReplicaSet creation, check [namespace object capacity](upgrade-check
 
 ## Correct a refused Agent deployment
 
-The startup preflight refuses some such drafts before any writer stops. When
+The startup preflight refuses some such drafts before any writer stops. If
 OCC still refuses an Agent's deployment with a 4xx answer, such as
-`HTTP 400 ... must use reviewed task actions` for a saved Configuration that
-the new release refuses, it saved no new version. The command lists each
-refused Agent with OCC's message, keeps the message in `dispatch/*.rejected`,
-and stops. Correct the cause, for example with `occ configuration update`, and
-repeat the command with `--resume`. The resume deploys each refused Agent once,
-so do not deploy it yourself. A 408 or 5xx answer stays an unknown dispatch.
-When OCC rejects the command's own service key, the command says so and lists
-the Agents it did not deploy; get a new key, point `OCC_SERVICE_KEY_FILE` at it,
-and resume.
+`HTTP 400 ... must use reviewed task actions`, it saved no new version. The same
+applies when `occ` sends no request because it cannot establish the active
+revision's Harness overrides. The command lists each such Agent with the
+message, keeps it in `dispatch/*.rejected`, and stops. Correct the cause, for
+example with `occ configuration update`, and repeat the command with `--resume`.
+The resume deploys each refused Agent once; do not deploy it yourself. A 408 or
+5xx answer stays an unknown dispatch. When OCC rejects the command's service
+key, the command lists the Agents it did not deploy; get a new key, point
+`OCC_SERVICE_KEY_FILE` at it, and resume.
 
 ## Correct a Doctor failure
 
