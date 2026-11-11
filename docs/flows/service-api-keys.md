@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-10-17
-last_updated_session: authoring-run/d3c892f5-7e68-41ed-bef2-6b8e0f1e1968
+updated: 2026-11-10
+last_updated_session: authoring-run/edc4984b-d876-4ddc-af2b-42f3d3b0a4c4
 ---
 
 # Service API Keys Flow
@@ -73,6 +73,7 @@ graph TD
     F --> H["GET Namespace with x-api-key"]
     H --> I["ControllerAdmissionVerifier verifies stored key"]
     I -->|Invalid, expired, or deleted| J["Return 401 without cookie fallback"]
+    I -->|Key-store operation fails| R["Return 503 dependency unavailable"]
     I -->|Valid| K["resolveIdentity checks current IAM identity and fixed scope"]
     K -->|Scope matches| L["getNamespace asks IAM to authorize exact read"]
     K -->|Missing identity or scope mismatch| M["Audit denial and return 403"]
@@ -131,6 +132,7 @@ effort, not an atomic transaction with the audit sink.
 ### 3. Verify the credential and enforce its fixed identity scope
 
 [apps/controller/src/auth/index.ts:ControllerAdmissionVerifier.verify](../../apps/controller/src/auth/index.ts);
+[apps/controller/src/auth/service-key-verification.ts:createServiceKeyVerification](../../apps/controller/src/auth/service-key-verification.ts);
 [apps/controller/src/index.ts:resolveIdentity](../../apps/controller/src/index.ts).
 
 For the resource request, an explicitly supplied `x-api-key` selects Better
@@ -139,6 +141,12 @@ keys return `401` without falling back to a session. A mismatched Installation
 or malformed stored key also fails authentication. Without the key header,
 the existing session path remains unchanged; bearer authentication remains
 unsupported.
+
+The controller records storage exceptions from the composed Better Auth adapter
+for the active key verification. A failed key read, usage update, or expiry
+deletion returns `503 DEPENDENCY_UNAVAILABLE`, even if Better Auth reports an
+invalid key. Each concurrent verification retains its own failure state. Better
+Auth still owns key hashing, validity, expiry, and revocation decisions.
 
 Successful verification supplies the service-principal ID and stored scope to
 `resolveIdentity`. The selected IAM Driver looks up the current identity by ID.
@@ -208,6 +216,11 @@ schedule rotation.
   This separately checks stored hashing, foreign-Installation rejection,
   cross-instance revocation, and deletion during concurrent verification.
   Use the existing [test environment instructions](../testing/postgresql.md#postgresql-test-environment).
+- [PostgreSQL dependency regression](../../tests/integration/postgres-service-key-dependency.test.ts):
+  run `node --test tests/integration/postgres-service-key-dependency.test.ts` in
+  the prepared `postgres-auth` lane. It checks a closed authentication pool, a
+  failed key-use update, and isolation from a concurrent successful verification.
+  Invalid, expired, and revoked keys retain `401`; State and IAM remain healthy.
 - [IAM conformance](../../tests/conformance/iam.test.mjs) verifies identity lookup.
   Run `pnpm openapi:check` to check that the OpenAPI contract, HTTP API reference,
   and API cheat sheet remain current with the controller routes.
@@ -234,6 +247,8 @@ These commands describe the proof hooks, not a new runtime execution record.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 15:43: Preserve key-store operation failures through verification and trace concurrent-request isolation. (authoring-run/edc4984b-d876-4ddc-af2b-42f3d3b0a4c4 - a8742611463ea306e85a543b11887ea038d9cfb0)
 
 - 2026-10-17 17:30: Trace explicit owner access on the CLI key output before issuance, including restrictive umask and permission failure. (authoring-run/d3c892f5-7e68-41ed-bef2-6b8e0f1e1968 - 4c15e69650b440b8b4bbd995bb61669f69d1d049)
 

@@ -179,6 +179,12 @@
       "expectedTests": [
         "a guarded Console opens host-only Agent sessions bound to the browser, live parent and exact revision"
       ]
+    },
+    {
+      "path": "tests/integration/postgres-service-key-dependency.test.ts",
+      "expectedTests": [
+        "PostgreSQL service-key admission distinguishes invalid credentials from a key-store outage"
+      ]
     }
   ]
 }
