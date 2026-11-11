@@ -8,7 +8,7 @@ author: Kimiyu-186
 
 - **ID:** RFC-0030
 - **Created:** 2026-11-05
-- **Last updated:** 2026-11-06
+- **Last updated:** 2026-11-10
 - **RFC PR:** [#4857](https://github.com/openclaw/openclaw-enterprise/pull/4857)
 - **Related:** [Image upgrades](0011-coordinated-image-upgrade.md), [pre-stop checks proposal #1045](https://github.com/openclaw/openclaw-enterprise/pull/1045)
 
@@ -177,11 +177,16 @@ write-custody release. Keep admission paused between completion and stopping.
 Still-valid authorization can renew normally; revoked or expired authority is
 never extended for deployment convenience.
 
-**New input:** retain native UI outbox/reconnection behavior and stable message
-identity. A rejected, unadmitted request must not be displayed as accepted. This
-RFC does not claim all channels already persist/retry during the pause. Native UI
-exactly-once admission must pass before advertising that path; channel-specific
-gaps remain separately visible. Scheduler catch-up retains its existing policy.
+**New input:** V1 rejects new independent task requests while admission is paused.
+Tell the caller that the request was not accepted and can be retried after the
+deployment completes; do not display it as accepted or queued. V1 does not add a
+queue or promise automatic resubmission after deployment. Existing task
+continuations and approval replies remain allowed as described above. Scheduler
+catch-up retains its existing policy.
+
+**Deployment visibility:** use the existing deployment UI to show "Waiting for
+ongoing tasks to finish." Metrics and logs must expose the wait duration and its
+outcome: completion, deadline expiry or cancellation.
 
 **Deadline:** end the wait and perform the existing bounded stop, then replacement
 readiness checks. Preserve current no-blind-replay recovery. A safe stop failure
@@ -213,8 +218,10 @@ fixed image digests. Required observations:
 
 1. A task spans the former stop point, keeps valid tool access, completes and
    delivers once on its original turn; idle peers upgrade while it is waiting.
-2. Gateway and Harness replacement preserve an old conversation; native UI
-   messages submitted during the pause each gain one admission and one effect.
+2. Gateway and Harness replacement preserve an old conversation. New independent
+   task requests during the pause are visibly rejected, with no admission or
+   execution. After deployment, an explicit retry in that conversation is admitted
+   and executes once; no rejected request is queued for later execution.
 3. An existing scheduled job with a test OAuth connection runs naturally before
    and after upgrade, without reauthorization or duplicate execution.
 4. A task exceeds 30 minutes with an available Controller: the first authorized
@@ -228,9 +235,11 @@ fixed image digests. Required observations:
    change between completion and handoff, and native UI/approval reconnection
    during waiting. A missing capability is explicit; first enrollment and the
    subsequent protected update are distinct.
+7. The existing deployment UI shows task-completion waiting; metrics and logs
+   expose its duration and distinguish completion, deadline expiry and cancellation.
 
 These are acceptance requirements, not completed tests of the proposal. Native UI
-offline handling, real OAuth continuity and the administrative suspension route
+rejection/retry behavior, real OAuth continuity and the administrative suspension route
 remain unverified. Docker, OpenShell and other Harnesses need their own qualification.
 
 ## Alternatives and review choices
