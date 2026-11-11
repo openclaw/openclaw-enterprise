@@ -2511,7 +2511,9 @@ function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
 `;
 
 const WORKSPACE_ASSET_HELPERS = String.raw`
-const { cpSync, existsSync, lstatSync, readdirSync, symlinkSync } = require("node:fs");
+const assetFs = require("node:fs");
+const { existsSync, lstatSync, readdirSync, symlinkSync } = assetFs;
+const assetPath = require("node:path");
 const runtimeHomeDirectory = process.env.HOME || "/home/node";
 if (!runtimeHomeDirectory.startsWith("/")) {
   throw new Error("The runtime HOME must be an absolute path.");
@@ -2520,9 +2522,91 @@ const runtimeAssetsDirectory = runtimeHomeDirectory + "/openclaw-runtime-assets"
 const runtimeOpenClawDirectory = runtimeHomeDirectory + "/.openclaw";
 
 function clearDirectoryContents(directory) {
-  mkdirSync(directory, { recursive: true });
+  const existing = lstatSync(directory, { throwIfNoEntry: false });
+  if (existing === undefined) {
+    mkdirSync(directory, { recursive: true });
+  } else if (!existing.isDirectory()) {
+    throw new Error("Runtime asset destination is not a directory: " + directory);
+  }
   for (const entry of readdirSync(directory)) {
     rmSync(join(directory, entry), { recursive: true, force: true });
+  }
+}
+
+// Copy bytes with a fixed buffer: filesystem copy accelerators are not available
+// in every runtime sandbox. Keep the first failure while closing both handles.
+function copyImageFile(source, destination, mode) {
+  let input;
+  let output;
+  let failure;
+  try {
+    input = assetFs.openSync(source, assetFs.constants.O_RDONLY | assetFs.constants.O_NOFOLLOW);
+    output = assetFs.openSync(destination, "wx", 0o600);
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    for (;;) {
+      const count = assetFs.readSync(input, buffer, 0, buffer.length, null);
+      if (count === 0) break;
+      let offset = 0;
+      while (offset < count) {
+        const written = assetFs.writeSync(output, buffer, offset, count - offset, null);
+        if (written === 0) throw new Error("Runtime asset copy made no write progress");
+        offset += written;
+      }
+    }
+    assetFs.fchmodSync(output, mode);
+  } catch (error) {
+    failure = error;
+  } finally {
+    for (const descriptor of [output, input]) {
+      if (descriptor === undefined) continue;
+      try {
+        assetFs.closeSync(descriptor);
+      } catch (error) {
+        if (failure === undefined) failure = error;
+      }
+    }
+  }
+  if (failure !== undefined) throw failure;
+}
+
+function imageLinkTarget(source) {
+  const link = assetFs.readlinkSync(source);
+  const lastComponent = link.split("/").at(-1);
+  const directoryTarget = lastComponent === "" || lastComponent === "." || lastComponent === "..";
+  let prefix = assetPath.isAbsolute(link) ? link : assetPath.dirname(source) + "/" + link;
+  const tail = [];
+  for (;;) {
+    try {
+      const target = assetPath.join(assetFs.realpathSync.native(prefix), ...tail);
+      // A missing suffix can require a directory even after dot segments are removed.
+      return tail.length > 0 && directoryTarget && !target.endsWith("/") ? target + "/" : target;
+    } catch (error) {
+      // Like the recursive copier, resolve existing prefixes while retaining
+      // a missing suffix so a dangling image link stays a link.
+      if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
+      const parent = assetPath.dirname(prefix);
+      if (parent === prefix) throw error;
+      tail.unshift(assetPath.basename(prefix));
+      prefix = parent;
+    }
+  }
+}
+
+function copyImageDirectory(source, destination) {
+  // Match the recursive copy's treatment of special files such as FIFOs.
+  for (const name of readdirSync(source)) {
+    const from = join(source, name);
+    const to = join(destination, name);
+    const info = lstatSync(from);
+    if (info.isDirectory()) {
+      mkdirSync(to, { mode: 0o700 });
+      copyImageDirectory(from, to);
+      assetFs.chmodSync(to, info.mode & 0o7777);
+    } else if (info.isSymbolicLink()) {
+      symlinkSync(imageLinkTarget(from), to);
+    } else if (info.isFile()) {
+      copyImageFile(from, to, info.mode & 0o7777);
+    }
   }
 }
 
@@ -2542,7 +2626,7 @@ function publishImageTree(source, destination, required) {
   }
   mkdirSync(runtimeAssetsDirectory, { recursive: true });
   clearDirectoryContents(destination);
-  cpSync(source, destination, { recursive: true });
+  copyImageDirectory(source, destination);
 }
 
 function initializeRuntimeAssets() {
