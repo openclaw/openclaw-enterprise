@@ -234,7 +234,7 @@ RUN echo 'b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538  /tmp
 # Remove this bridge when the pinned OpenClaw includes openclaw#197151: a
 # session-scoped member may open and start its Agent's unused main conversation.
 COPY deploy/runtime/openclaw-chat-main-session-start.patch /tmp/openclaw-chat-main-session-start.patch
-RUN echo 'a380c3144a69355454c660ac31e59979a46e6264489ef36242dfaafdd51abebd  /tmp/openclaw-chat-main-session-start.patch' | sha256sum --check --strict \
+RUN echo '483c9c4ec832d0a5b0e016106c817a01d1fbd5b53693b08be7b9c18873e782e4  /tmp/openclaw-chat-main-session-start.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-chat-main-session-start.patch
 
 # Broad source verification is an explicit target, separate from image assembly.
