@@ -127,6 +127,7 @@ async function main() {
   console.log(`Run directory: ${JSON.stringify(directory)}`);
 
   let unresolvedPreparation: { pgid: number | undefined } | undefined;
+  let unknownPreparationOutcome = false;
 
   async function run(stage: keyof typeof durations, script: string, args: string[]) {
     const stageStarted = performance.now();
@@ -151,12 +152,14 @@ async function main() {
                 stdio: ["ignore", log.fd, log.fd],
               });
         let commandPassed = false;
+        let commandTerminatedNaturally = false;
         let commandError = false;
         const closed = new Promise<boolean>((resolve) => {
           child.on("error", () => {
             commandError = true;
           });
           child.on("message", (result: { code?: number; error?: unknown }) => {
+            commandTerminatedNaturally = typeof result.code === "number" && !result.error;
             commandPassed = result.code === 0 && !result.error;
           });
           child.once("close", (code) => {
@@ -165,7 +168,11 @@ async function main() {
         });
         if (stage === "prepare") {
           const interrupted = new Promise<void>((resolve) => {
-            interruptPreparation = resolve;
+            interruptPreparation = () => {
+              // A daemon can finish accepted work after its client group dies.
+              unknownPreparationOutcome = true;
+              resolve();
+            };
           });
           child.send?.({ command: process.execPath, args: command }, (error) => {
             if (error) {
@@ -176,12 +183,16 @@ async function main() {
             interruptPreparation?.();
           }
           await Promise.race([closed, interrupted]);
+          unknownPreparationOutcome ||= !commandTerminatedNaturally;
           if (!(await settlePreparation(child, closed))) {
             unresolvedPreparation = { pgid: child.pid };
             // Neither an unresponsive process nor its IPC channel may hold the CLI.
             // Disconnection on exit still lets the supervisor stop its owned group.
             child.unref();
             child.channel?.unref();
+            throw new Error();
+          }
+          if (unknownPreparationOutcome) {
             throw new Error();
           }
         }
@@ -256,7 +267,12 @@ async function main() {
   } finally {
     if (unresolvedPreparation) {
       console.error(
-        `openshell-grant-wire: unresolved preparation operation; group ${unresolvedPreparation.pgid ?? "unknown"} settlement unconfirmed. Cleanup not started; preserve state and resolve the operation before manual cleanup.`,
+        `openshell-grant-wire: unresolved preparation operation; group ${unresolvedPreparation.pgid ?? "unknown"} settlement unconfirmed.`,
+      );
+    }
+    if (unknownPreparationOutcome || unresolvedPreparation) {
+      console.error(
+        "openshell-grant-wire: unknown external preparation outcome. Cleanup not started; preserve state. A daemon may still complete accepted work; resolve local and daemon operations before manual cleanup with scripts/ci/cleanup.mjs --state and the retained state.json path.",
       );
     } else if (existsSync(state)) {
       try {

@@ -100,7 +100,7 @@ function run(root, args, env = {}, { timeout } = {}) {
 }
 
 test(
-  "grant wire CLI preserves failures and settles terminal interruptions before cleanup",
+  "grant wire CLI preserves failures and retains interrupted preparation state",
   { skip: process.platform !== "linux" && "uses Linux process groups and /proc" },
   async (t) => {
     const wireName =
@@ -124,17 +124,22 @@ test(
       ],
       ["cleanup", 1, "cleanup failed", ["prepare", "test", "cleanup"]],
       ["cleanup-no-state", 1, "cleanup failed", ["prepare", "test", "cleanup"]],
-      ["interrupt-prepare", 130, "SIGINT", ["prepare", "cleanup"]],
+      ["interrupt-prepare", 130, "SIGINT", ["prepare"]],
       ["interrupt-test", 143, "SIGTERM", ["prepare", "test", "cleanup"]],
       ["interrupt-cleanup", 130, "SIGINT", ["prepare", "test", "cleanup"]],
-      ["stuck-SIGINT", 130, "SIGINT", ["prepare", "cleanup"]],
-      ["stuck-SIGTERM", 143, "SIGTERM", ["prepare", "cleanup"]],
+      ["stuck-SIGINT", 130, "SIGINT", ["prepare"]],
+      ["stuck-SIGTERM", 143, "SIGTERM", ["prepare"]],
       ["lost-supervisor", 130, "unresolved preparation operation", ["prepare"]],
     ]) {
       await t.test(scenario, async (t) => {
         let blockerRecord;
+        let daemon;
         // Stop our recorded fixture processes before temporaryDirectory removes its files.
         t.after(async () => {
+          if (daemon && daemon.exitCode === null) {
+            daemon.kill("SIGKILL");
+            await new Promise((resolve) => daemon.once("close", resolve));
+          }
           const pids = JSON.parse(await readFile(blockerRecord, "utf8").catch(() => "null"));
           if (pids) {
             for (const pid of [pids.preparation, pids.pid]) {
@@ -170,6 +175,35 @@ test(
         const lostSupervisor = scenario === "lost-supervisor";
         blockerRecord = join(root, "blocker.json");
         const afterTerm = join(root, "after-term");
+        const daemonRequest = join(root, "daemon-request");
+        const daemonAccepted = join(root, "daemon-accepted");
+        const daemonCreated = join(root, "daemon-created");
+        if (scenario === "stuck-SIGTERM") {
+          // Independent fake daemon: accepting a create outlives its client group.
+          daemon = spawn(
+            process.execPath,
+            [
+              "-e",
+              `
+            const fs = require("node:fs");
+            setInterval(() => {
+              if (!fs.existsSync(${JSON.stringify(daemonRequest)})) return;
+              fs.writeFileSync(${JSON.stringify(daemonAccepted)}, "accepted");
+              if (!fs.existsSync(${JSON.stringify(blockerRecord)})) return;
+              let pgid;
+              try { ({ pgid } = JSON.parse(fs.readFileSync(${JSON.stringify(blockerRecord)}))); }
+              catch { return; } // The client may still be writing the record.
+              try { process.kill(-pgid, 0); } catch (error) {
+                if (error.code !== "ESRCH") throw error;
+                fs.writeFileSync(${JSON.stringify(daemonCreated)}, "created after client group exit");
+                process.exit(0);
+              }
+            }, 10);
+          `,
+            ],
+            { stdio: "ignore" },
+          );
+        }
         // Safe CI process substitutes exercise the unchanged normal entrypoint only.
         // Only the real process supervisor runs; prepare/test/cleanup are substitutes.
         const helper = String.raw`
@@ -177,6 +211,7 @@ test(
           import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
           import { spawn } from "node:child_process";
           import { basename } from "node:path";
+          import { setTimeout as delay } from "node:timers/promises";
           const scenario = ${JSON.stringify(scenario)};
           const stage = basename(import.meta.filename, ".mjs").replace("run-tests", "test");
           const arg = (name) => process.argv[process.argv.indexOf(name) + 1];
@@ -195,9 +230,9 @@ test(
           }
           const proc = (pid) => readFileSync("/proc/" + pid + "/stat", "utf8")
             .replace(/^.*\) /su, "").split(" ");
-          if (stage === "cleanup" && scenario.startsWith("stuck-")) {
-            const pids = JSON.parse(readFileSync(${JSON.stringify(blockerRecord)}, "utf8"));
-            assert.throws(() => process.kill(-pids.pgid, 0), { code: "ESRCH" });
+          if (stage === "prepare" && scenario === "stuck-SIGTERM") {
+            writeFileSync(${JSON.stringify(daemonRequest)}, "create");
+            while (!existsSync(${JSON.stringify(daemonAccepted)})) await delay(10);
           }
           let operator = process.ppid;
           if (readFileSync("/proc/" + operator + "/cmdline", "utf8").includes("cleanup-command.mjs")) {
@@ -278,7 +313,8 @@ test(
         assert.equal(result.status, code, result.stderr);
         const output = result.stdout + result.stderr;
         const unresolved = output.includes("unresolved preparation operation");
-        const expectedStages = unresolved ? ["prepare"] : stages;
+        const unknownOutcome = stuck || lostSupervisor || scenario === "interrupt-prepare";
+        const expectedStages = stages;
         if (stuck || lostSupervisor) {
           assert.ok(performance.now() - began < 6_500, "interrupted preparation must be bounded");
           if (stuck) {
@@ -301,7 +337,7 @@ test(
           t.diagnostic(
             unresolved
               ? "unresolved group retained; no cleanup"
-              : "group stopped; cleanup completed",
+              : "group stopped; external outcome unknown, no cleanup",
           );
         } else {
           assert.equal(unresolved, false, output);
@@ -338,8 +374,33 @@ test(
         assert.equal(directories.length, code === 0 ? 0 : 1);
         if (code !== 0) {
           const retained = await readdir(join(root, directories[0]));
-          assert.equal(retained.includes("state.json"), cleanupFailure || unresolved);
+          assert.equal(retained.includes("state.json"), cleanupFailure || unknownOutcome);
           assert.ok(retained.includes("prepare.log"));
+        }
+        if (daemon) {
+          assert.ok(
+            await waitFor(() => {
+              try {
+                return readFileSync(daemonCreated, "utf8") === "created after client group exit";
+              } catch {
+                return false;
+              }
+            }, 2_000),
+            "accepted create must finish after client group exit",
+          );
+          assert.doesNotMatch(await readFile(events, "utf8"), /cleanup|test/);
+          assert.equal(
+            await readFile(join(root, directories[0], "state.json"), "utf8"),
+            "owned-substitute-state",
+          );
+          t.diagnostic(
+            "fake daemon completed accepted create after client group exit; state retained without cleanup",
+          );
+        }
+        assert.equal(output.includes("unknown external preparation outcome"), unknownOutcome);
+        if (unknownOutcome) {
+          assert.match(output, /Cleanup not started; preserve state/);
+          assert.match(output, /daemon may still complete accepted work/);
         }
       });
     }
