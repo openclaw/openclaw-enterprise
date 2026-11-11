@@ -93,15 +93,7 @@ function useGithubHeadingIds(html, headingIds) {
     }
     return result
       .replace(/^(<h[1-6]\b[^>]*\bid=")[^"]*"/, (_, open) => open + escape(target.id) + '"')
-      .replace(/^<h[1-6]\b[^>]*>/, (open) => open + (target.alias ? span(target.alias) : ""))
-      .replace(
-        'href="#' + escape(encodeURIComponent(previous)) + '"',
-        () => 'href="#' + escape(encodeURIComponent(target.id)) + '"',
-      )
-      .replace(
-        'data-heading-anchor="' + escape(previous) + '"',
-        () => 'data-heading-anchor="' + escape(target.id) + '"',
-      );
+      .replace(/^<h[1-6]\b[^>]*>/, (open) => open + (target.alias ? span(target.alias) : ""));
   });
 }
 
@@ -386,7 +378,11 @@ for (const page of pages.values()) {
   }
   const text = renderComputeMatrixBlocks(page.text, { sourceFile: page.file, root: docs });
   page.html = useGithubHeadingIds(
-    renderMdxish(text, md, { sourceFile: page.file, root: docs }),
+    renderMdxish(text, md, {
+      sourceFile: page.file,
+      root: docs,
+      headingIds: page.headingIds,
+    }),
     page.headingIds,
   ).replace(/<(?:a|img|source|span)\b[^>]*>/g, (tag) =>
     tag.replace(/\b(href|src|data-href)=(['"])(.*?)\2/g, (_, name, quote, href) => {
