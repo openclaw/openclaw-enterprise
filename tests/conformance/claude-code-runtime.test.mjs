@@ -33,8 +33,12 @@ function prepare(t, { env, version = `${VERSION} (Claude Code)\n`, status = 0, l
   const imageFs = {
     ...fs,
     readlinkSync: (path) => {
-      if (path !== "/etc/claude-code") return fs.readlinkSync(path);
-      if (linked === null) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      if (path !== "/etc/claude-code") {
+        return fs.readlinkSync(path);
+      }
+      if (linked === null) {
+        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      }
       return linked;
     },
   };
