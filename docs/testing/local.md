@@ -132,8 +132,10 @@ removal. A consumer attached after server removal preserves the volume and fails
 cleanup. Docker has no atomic generation condition for named-volume deletion;
 these checks do not protect against a privileged actor recreating an unused
 same-name volume between inspection and removal. Run this proof on an isolated
-host without competing Docker writers. Partial or uncertain cleanup retains state
-for reconciliation and never qualifies a release.
+host without competing Docker writers. The CLI records mutation intent before
+deletion. Without its completed cleanup receipt, the fixture retains state and
+never retries deletion. Fallback requires a verified pre-mutation refusal.
+Partial or uncertain cleanup never qualifies a release.
 
 ## Packaged-driver integration
 

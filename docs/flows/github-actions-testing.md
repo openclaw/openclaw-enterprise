@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: "2026-11-11"
-last_updated_session: "authoring-run/43e450db-975c-4b32-b88b-ed179d4d50f0"
+last_updated_session: "authoring-run/2f6528e7-fc71-4854-a473-7c5fd68410cc"
 ---
 
 # GitHub Actions testing flow
@@ -234,8 +234,9 @@ Sign-in transitions and proof readers reject already-expired issuance observatio
 Cleanup errors fail except [QA image warnings](github-actions-testing/preparation.md).
 `cleanup-staged-signin.mjs` passes the prepared state digest and custody to
 `scripts/ci/cleanup.ts:cleanupState`: locked validation precedes exact server/network
-deletion and volume checks. [Named-volume limits](../testing/local.md#staged-sign-in-cleanup)
-remain. State stays on its runner; unrelated resources remain untouched.
+deletion and volume checks. A persisted mutation marker forbids fixture fallback
+without completed cleanup; verified pre-mutation refusals retain fallback authority.
+[Named-volume limits](../testing/local.md#staged-sign-in-cleanup) remain.
 
 `scripts/ci/cleanup.ts:execFile` awaits exit and drained output. On POSIX,
 `scripts/ci/cleanup-command.ts` kills its group on caller IPC closure, including caller SIGKILL.
@@ -263,7 +264,6 @@ awaits an approved resource ledger.
 
 - `node scripts/ci/run-tests.mjs audit` checks the actual checkout inventory against the suite map.
 - `node --test tests/integration/ci-runner.test.mjs` exercises the runner with real child Node processes and controlled pass/fail/skip cases.
-- Reproduce the reported case with approved prerequisites. The named aggregate bounds coverage.
 - After measured local VM disk/network instability, serialize Kubernetes lanes; GitHub Actions keeps its matrix.
 - Missing prerequisites fail setup; supply approved resources without skipping required tests or substituting fixtures.
 - Retain sanitized results for seven days; exclude private state and credentials from uploads. Recover local teardown using run-owned state on its original host and path.
@@ -280,6 +280,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 08:45: Preserve uncertain cleanup. (authoring-run/2f6528e7-fc71-4854-a473-7c5fd68410cc - b561b6bc134053ea9ff7ab4286c4f2f501a80391)
 
 - 2026-11-11 08:39: Retain unacknowledged staging resources. (authoring-run/43e450db-975c-4b32-b88b-ed179d4d50f0 - 16478e96645985bd7501e149a19dbbd784500501)
 

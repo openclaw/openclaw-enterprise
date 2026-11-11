@@ -112,6 +112,13 @@ async function cleanup(planHash, preparedHash) {
     assert.equal(current.nodeUID, owned.nodeUID);
     assert.deepEqual(await current.cleanupIdentity(), owned.membership);
     const { cleanupState } = await import("./cleanup.mjs");
+    // A normal CLI exit cannot settle a timed-out inner Docker request. Persist
+    // intent before entering the destructive owner; only cleanup.json closes it.
+    await writeFile(
+      join(auditDir, "mutation-started.json"),
+      JSON.stringify({ planSha256: planHash, preparedSha256: preparedHash }) + "\n",
+      { flag: "wx", mode: 0o600 },
+    );
     await cleanupState(join(dir, "cluster-state.json"), {
       expectedStateSha256: owned.stateSha256,
       k3dIdentity: {

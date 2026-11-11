@@ -157,6 +157,7 @@ async function fixture(
   let extraVolumes: string[] = [];
   let assertionsPassed = false;
   let requiresReconciliation = false;
+  let cleanupOutcome: "not-run" | "unknown" | "refused" | "removed" = "not-run";
   const cleanupAuthority: { identity?: Owned; stateSha256?: string } = {};
   // Register ownership before creation. This cleanup is independent of the CLI
   // assertions, so it cannot turn a refused or partial deletion into a pass.
@@ -179,6 +180,15 @@ async function fixture(
         !uncertain && !requiresReconciliation,
         `unconfirmed resource ownership; retain ${directory}`,
       );
+      assert.ok(
+        cleanupOutcome === "not-run" ||
+          cleanupOutcome === "removed" ||
+          (cleanupOutcome === "refused" && assertionsPassed),
+        `unconfirmed cleanup outcome; retain ${directory}`,
+      );
+      if (cleanupOutcome === "removed") {
+        await absent(statePath);
+      }
       if (extraContainer) {
         // Stop here on any removal or absence failure. A still-shared volume
         // never grants fallback authority to delete the cluster underneath it.
@@ -385,7 +395,8 @@ async function fixture(
     passed() {
       assertionsPassed = true;
     },
-    async cleanup() {
+    async cleanup(expectedOutcome: "removed" | "refused") {
+      cleanupOutcome = "unknown";
       const result = await execute(
         process.execPath,
         ["scripts/ci/cleanup-staged-signin.mjs", planHash, preparedHash],
@@ -409,6 +420,37 @@ async function fixture(
       );
       assert.match(result.stderr, /installed sign-in runner failed/);
       await absent(join(directory, "staging-signin-qualification.json"));
+      const mutation = await readFile(join(work, "cleanup", "mutation-started.json"), "utf8").catch(
+        (error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") {
+            return undefined;
+          }
+          throw error;
+        },
+      );
+      if (mutation !== undefined) {
+        assert.deepEqual(JSON.parse(mutation), {
+          planSha256: planHash,
+          preparedSha256: preparedHash,
+        });
+        // After dispatch, only the completed receipt permits absence checks.
+        // Missing/partial cleanup never authorizes a second deletion attempt.
+        const receipt = JSON.parse(await readFile(join(work, "cleanup.json"), "utf8"));
+        assert.equal(receipt.kind, "staging-signin-cleanup");
+        assert.equal(receipt.workflowSha, workflowSha);
+        assert.equal(receipt.runId, "1");
+        assert.equal(receipt.runAttempt, "1");
+        assert.equal(receipt.planSha256, planHash);
+        assert.equal(receipt.preparedSha256, preparedHash);
+        assert.equal(receipt.caseExitCode, 1);
+        assert.equal(receipt.removed, true);
+        cleanupOutcome = "removed";
+      } else {
+        // The case must still prove its expected refusal before fallback gains
+        // authority. Unexpected pre-mutation failures retain the fixture too.
+        cleanupOutcome = "refused";
+      }
+      assert.equal(cleanupOutcome, expectedOutcome);
       if (evidenceRoot) {
         await mkdir(evidenceRoot, { recursive: true });
         await jsonFile(join(evidenceRoot, `${t.name}.json`), {
@@ -463,7 +505,7 @@ const options = {
 
 test("staged sign-in cleans owned resources after a settled failed case", options, (t) =>
   runCase(t, async (f) => {
-    await f.cleanup();
+    await f.cleanup("removed");
     await assertRemoved(f.owned, f.run);
     const receipt = JSON.parse(await readFile(join(f.work, "cleanup.json"), "utf8"));
     assert.equal(receipt.removed, true);
@@ -510,7 +552,7 @@ test("staged sign-in refuses a replacement cluster", options, (t) =>
     assert.notEqual(replacement.owned.clusterUID, f.owned.clusterUID);
     assert.notEqual(replacement.owned.serverID, f.owned.serverID);
     f.acknowledgeReplacement(replacement.owned);
-    const result = await f.cleanup();
+    const result = await f.cleanup("refused");
     // These exact compared values distinguish the identity refusal from setup failure.
     assert.ok(result.stderr.includes(f.owned.clusterUID));
     assert.ok(result.stderr.includes(replacement.owned.clusterUID));
@@ -557,7 +599,7 @@ test("staged sign-in refuses a newly shared volume", options, (t) =>
       lines(await f.run("docker", ["ps", "-aq", "--no-trunc", "--filter", `volume=${volume}`])),
       [f.owned.serverID, helper].sort(),
     );
-    const result = await f.cleanup();
+    const result = await f.cleanup("refused");
     assert.ok(
       result.stderr.includes(helper),
       "the refusal must identify the extra volume consumer",
