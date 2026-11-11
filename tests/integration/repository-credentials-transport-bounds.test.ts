@@ -102,6 +102,7 @@ async function startTransport(
   return {
     config: config as { gateway: { publicOrigin: string; controlSocket: string } },
     tls,
+    upstream,
     service,
     listeners: listeners as { address: { port: number } },
     opened,
@@ -435,6 +436,37 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
     const refused = await readDiscovery(fixture, { opened: unknown });
     assert.equal(refused.status, 401);
     assert.deepEqual(await readDiscovery(fixture), completed());
+    await released(fixture);
+  });
+
+  // Finding 3169: when the provider refuses the connect, as a stale egress allowlist
+  // (repositoryCredentials.upstreamCidrs) does, the Agent still receives a bare 503, but the
+  // operator line names the host, the address it resolved to and the socket error, so it does
+  // not read as a broker outage. The line never carries the session credential or a path.
+  bounded("a refused provider connect names the upstream host, address and error", async (t) => {
+    const fixture = await startTransport(t, (incoming, outgoing) => {
+      incoming.resume();
+      outgoing.writeHead(200, replyHeaders).end("0000");
+    });
+    const [origin] = fixture.trustedOrigins;
+    assert.ok(origin);
+    const port = Number(new URL(origin).port);
+    // Stop the upstream listener: its port now refuses TCP connects.
+    await new Promise<void>((resolve) => fixture.upstream.close(() => resolve()));
+    assertRefused(await readDiscovery(fixture));
+    assert.deepEqual(fixture.logs, [
+      {
+        event: "repository-credentials.denied",
+        status: 503,
+        reasonCode: "unavailable",
+        reason: "not_dispatched",
+        operation: "git-discovery",
+        upstreamConnect: { host: "127.0.0.1", address: "127.0.0.1", port, error: "ECONNREFUSED" },
+        sessionId: fixture.opened.session.sessionId,
+      },
+    ]);
+    assert.ok(!JSON.stringify(fixture.logs).includes(fixture.opened.bearer));
+    assert.equal(fixture.received.length, 0);
     await released(fixture);
   });
 

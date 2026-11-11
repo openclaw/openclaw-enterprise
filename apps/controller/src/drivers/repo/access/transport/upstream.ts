@@ -1,10 +1,11 @@
 import { request as httpsRequest } from "node:https";
 import type { ClientRequest, IncomingMessage, ServerResponse } from "node:http";
+import { isIP } from "node:net";
 import type { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 import type { Clock, HeaderFields, RequestHead } from "../backend-contracts.ts";
-import type { ExchangeSender } from "../internal-contracts.ts";
+import type { ExchangeSender, UpstreamConnectFailure } from "../internal-contracts.ts";
 import type { JsonValue } from "../json-value.ts";
 import { ByteLimit, watchdog } from "./streams.ts";
 import { responseHeaders, safeResponseHeaders } from "./response-headers.ts";
@@ -21,6 +22,12 @@ export interface UpstreamSenderOptions {
   readonly upstreamCa?: Uint8Array;
   readonly headerBytes?: number;
   readonly headerPairs?: number;
+}
+
+// A socket or TLS error code (ECONNREFUSED, ETIMEDOUT, CERT_HAS_EXPIRED); never its message.
+function connectErrorCode(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" && /^[A-Z][A-Z0-9_]{1,63}$/.test(code) ? code : "unknown";
 }
 
 /** One sender owns exactly one exchange; it never retries an upstream request. */
@@ -75,6 +82,25 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
     let failed = false;
     let inputCompleted = false;
     let receivedHeaders = false;
+    // Where the provider connection failed before TLS was established. A stale egress
+    // allowlist (repositoryCredentials.upstreamCidrs) refuses or drops the connect, and
+    // the operator log names this instead of a bare not_dispatched (finding 3169).
+    const hostname = origin.hostname.replace(/^\[|\]$/g, "");
+    const port = Number(origin.port || 443);
+    let resolvedAddress = isIP(hostname) ? hostname : undefined;
+    let tlsEstablished = false;
+    let connectFailure: UpstreamConnectFailure | undefined;
+    const failConnect = (error: string, address = resolvedAddress) => {
+      // A local cancel (client gone, deadline) is not a provider connect failure.
+      if (!tlsEstablished && !failed && connectFailure === undefined) {
+        connectFailure = {
+          host: hostname,
+          ...(address === undefined ? {} : { address }),
+          port,
+          error,
+        };
+      }
+    };
     const pending: Promise<unknown>[] = [];
     const stopUpstream = () => {
       failed = true;
@@ -127,8 +153,8 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
         const req = httpsRequest(
           {
             protocol: "https:",
-            hostname: origin.hostname.replace(/^\[|\]$/g, ""),
-            port: origin.port || 443,
+            hostname,
+            port,
             method: plan.method,
             path: plan.target,
             headers,
@@ -143,7 +169,12 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
             resolveResponse(response);
           },
         );
-        req.once("error", () => {
+        req.once("error", (cause) => {
+          const address = (cause as { address?: unknown }).address;
+          failConnect(
+            connectErrorCode(cause),
+            typeof address === "string" && isIP(address) ? address : resolvedAddress,
+          );
           const error = new Error("upstream-failed");
           rejectResponse(error);
           tlsFailed(error);
@@ -153,7 +184,16 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
           resolveSocket();
         });
         req.once("socket", (socket) => {
+          socket.once("lookup", (error: Error | null, address: unknown) => {
+            if (!error && typeof address === "string") {
+              resolvedAddress = address;
+            }
+          });
+          socket.once("connect", () => {
+            resolvedAddress = socket.remoteAddress ?? resolvedAddress;
+          });
           socket.once("secureConnect", () => {
+            tlsEstablished = true;
             stopConnect?.();
             tlsReady();
           });
@@ -166,7 +206,11 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
         Math.max(0, context.deadlineMonoMs - options.clock.monotonicNow()),
         cancel,
       );
-      stopConnect = options.clock.schedule(plan.limits.connectMs, cancel);
+      stopConnect = options.clock.schedule(plan.limits.connectMs, () => {
+        // A dropped connect (a NetworkPolicy without reject) ends here, not in a socket error.
+        failConnect("connect-timeout");
+        cancel();
+      });
       stopInput = options.clock.schedule(plan.limits.inputMs, cancel);
       await connected;
       const req = outbound;
@@ -326,6 +370,13 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
         } else {
           cancel();
         }
+      }
+      if (!dispatched && connectFailure !== undefined) {
+        return {
+          kind: "not-dispatched",
+          code: "upstream-connect-failed",
+          upstreamConnect: connectFailure,
+        };
       }
       return {
         kind: dispatched ? "possibly-dispatched" : "not-dispatched",

@@ -21,10 +21,25 @@ export interface DispatchGate {
   dispatch<T>(cancel: () => void, open: () => T, assertReady?: () => void): T | Promise<T>;
   track(io: Promise<void>): void;
 }
+/**
+ * The provider connection that failed before TLS was established, for operator logs only
+ * (finding 3169): the upstream host, the address it resolved to when known, the port, and the
+ * socket or TLS error code. It never carries a credential, URL path, ref or request body.
+ */
+export type UpstreamConnectFailure = Readonly<{
+  host: string;
+  address?: string;
+  port: number;
+  error: string;
+}>;
 export type ExchangeOutcome =
   | OperationReceipt
   | Readonly<{ kind: "completed"; status: number }>
-  | Readonly<{ kind: "not-dispatched" | "possibly-dispatched"; code: string }>;
+  | Readonly<{
+      kind: "not-dispatched" | "possibly-dispatched";
+      code: string;
+      upstreamConnect?: UpstreamConnectFailure;
+    }>;
 export type ExchangeSender = (
   request: PrivateUpstreamRequest,
   context: Bounds & Readonly<{ gate: DispatchGate }>,
