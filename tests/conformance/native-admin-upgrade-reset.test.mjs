@@ -926,30 +926,31 @@ test("native-admin HTTP admission preserves typed refusals and dependency failur
     [new AdmissionFailure(403, "FORBIDDEN", "scope refused"), 403, "admission_forbidden"],
     [new Error("session store unavailable"), 503, "dependency_failure"],
   ]) {
-    // The verifier's public failure contract drives the real HTTP admission owner.
-    const owner = await denialOwner(t, { admissionError: error });
-    const raw = owner.request();
-    const request = { headers: raw.headers, url: "/", raw };
-    const reply = {
-      request: { id: "request_test" },
-      header() {
-        return this;
-      },
-      status(code) {
-        this.statusCode = code;
-        return this;
-      },
-      send(body) {
-        this.body = body;
-      },
-    };
-    await owner.access.interceptHttp(request, reply);
-    assert.equal(reply.statusCode, status);
-    assert.equal(owner.access.httpAdmissionReason(request), reason);
-    assert.equal(owner.denials().length, 0, "no attributed IAM operation was attempted");
-    assert.equal(owner.upstreams.length, 0);
-    await owner.shutdown();
-    t.mock.timers.reset();
+    await t.test(reason, async (t) => {
+      // The verifier's public failure contract drives the real HTTP admission owner.
+      const owner = await denialOwner(t, { admissionError: error });
+      const raw = owner.request();
+      const request = { headers: raw.headers, url: "/", raw };
+      const reply = {
+        request: { id: "request_test" },
+        header() {
+          return this;
+        },
+        status(code) {
+          this.statusCode = code;
+          return this;
+        },
+        send(body) {
+          this.body = body;
+        },
+      };
+      await owner.access.interceptHttp(request, reply);
+      assert.equal(reply.statusCode, status);
+      assert.equal(owner.access.httpAdmissionReason(request), reason);
+      assert.equal(owner.denials().length, 0, "no attributed IAM operation was attempted");
+      assert.equal(owner.upstreams.length, 0);
+      await owner.shutdown();
+    });
   }
 });
 
