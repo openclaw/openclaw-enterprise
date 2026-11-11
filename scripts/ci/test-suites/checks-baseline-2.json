@@ -667,6 +667,7 @@
         "connected database selection rejects missing, remote and redirected observers before effects",
         "connected receipt observation preserves proto3 zero and uint64 precision",
         "connected failed-turn observation rejects partial text without a completed message",
+        "synthetic provider separates TLS handshakes from partial HTTP bytes",
         "connected adversarial wire carries split and nested-JSON material without raw reflection",
         "connected request bytes pass the real Fastify parser and preserve missing-capability refusals",
         "failed custody deployment preserves worker event order across a reused attempt budget",

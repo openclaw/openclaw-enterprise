@@ -526,22 +526,23 @@ async function revokeExactGrantAndObserveDenial(stack, evidence, owned, deployme
   const { requestId } = await turn("fresh-iam-revoked", "failed", 403);
   // The supervisor may establish TCP/TLS before authorizing the captured HTTP
   // request. Record transport activity separately from the forbidden request send.
-  await checkpoint("fresh-iam-provider-observed", {
+  const observed = {
     httpRequestsBefore: beforeDenied,
     httpRequestsAfter: provider.observations.length,
     tcpConnectionsBefore: beforeConnections,
     tcpConnectionsAfter: provider.tcpConnections,
     applicationBytesBefore: beforeApplicationBytes,
     applicationBytesAfter: provider.applicationBytes,
-  });
+  };
+  await checkpoint("fresh-iam-provider-observed", observed);
   assert.equal(
-    provider.observations.length,
-    beforeDenied,
+    observed.httpRequestsAfter,
+    observed.httpRequestsBefore,
     "fresh IAM denial must precede every provider send",
   );
   assert.equal(
-    provider.applicationBytes,
-    beforeApplicationBytes,
+    observed.applicationBytesAfter,
+    observed.applicationBytesBefore,
     "fresh IAM denial must precede every provider application byte",
   );
   const denials = await pool.query(
