@@ -38,6 +38,7 @@
     "tests/integration/model-provider.test.ts",
     "tests/integration/repository-credentials-service-loss.test.ts",
     "tests/integration/ci-runner.test.mjs",
+    "tests/integration/ci-runner-redaction.test.ts",
     "tests/integration/k3d-quickstart-diagnostics.test.ts",
     "tests/integration/local-first-agent-session-identity.test.ts",
     "tests/integration/k3d-launcher.test.mjs",
@@ -133,7 +134,8 @@
     "tests/integration/signin-network-probe.test.ts",
     "tests/integration/port-forward-cleanup.test.ts",
     "tests/integration/staged-signin-proof.test.ts",
-    "tests/integration/shared-session-cookie.test.ts"
+    "tests/integration/shared-session-cookie.test.ts",
+    "tests/integration/workspace-gateway-host-route.test.ts"
   ],
   "serialFiles": {
     "tests/conformance/postgres-auth-binding.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read",
@@ -244,6 +246,9 @@
         "complete lifecycle losing an attempt claim cannot run phases or clean its winner",
         "complete lifecycle owns detached test groups after deadline or coordinator loss"
       ]
+    },
+    {
+      "path": "tests/integration/ci-runner-redaction.test.ts"
     },
     {
       "path": "tests/integration/k3d-quickstart-diagnostics.test.ts"
@@ -728,6 +733,13 @@
     },
     {
       "path": "tests/integration/shared-session-cookie.test.ts"
+    },
+    {
+      "path": "tests/integration/workspace-gateway-host-route.test.ts",
+      "expectedTests": [
+        "Linux Gateway routes reuse distinct bound ports and preserve the HTTPS Service target",
+        "Gateway Service mapping failure retains forwarder cleanup and reports shutdown failure"
+      ]
     }
   ]
 }

@@ -213,20 +213,14 @@ export async function startWorkspaceGatewayHostRelay(
   { kubectl, resources, waitFor, startPortForwardTarget, gatewayImage },
 ) {
   const context = withBoundedTeardown(testContext, { label: "Workspace Gateway cleanup" });
-  const containerEngine = process.env.OCC_DOCKER_BIN ?? "docker";
-  // Docker Desktop and Podman Machine host networking stays in their Linux VM.
-  // Publish to macOS loopback and use the engine's host alias for the port-forward.
   const usesContainerVm = process.platform === "darwin";
-  const relayHost = usesContainerVm
-    ? basename(containerEngine) === "podman"
-      ? "host.containers.internal"
-      : "host.docker.internal"
-    : "127.0.0.1";
-  const dockerRuntimeImage = process.env.OCC_DOCKER_RUNTIME_IMAGE;
-  assert.ok(
-    dockerRuntimeImage,
-    "OCC_DOCKER_RUNTIME_IMAGE is required for the loopback-only Gateway routing relay.",
-  );
+  const dockerRuntimeImage = process.env.OCC_DOCKER_RUNTIME_IMAGE ?? "";
+  if (usesContainerVm) {
+    assert.ok(
+      dockerRuntimeImage,
+      "OCC_DOCKER_RUNTIME_IMAGE is required for the loopback-only Gateway routing relay.",
+    );
+  }
   const gatewayHostname = nonempty(workspaceGateway.routing.hostname, "Gateway hostname");
   const services = await resources(
     "services",
@@ -243,32 +237,6 @@ export async function startWorkspaceGatewayHostRelay(
     /^(?:\d{1,3}\.){3}\d{1,3}$/,
     "the disposable k3d Gateway must expose an IPv4 ClusterIP.",
   );
-  const endpointPort = usesContainerVm ? await availablePort() : 443;
-  if (usesContainerVm) {
-    const envoyHttpsPort = envoyService.spec.ports.find(({ port }) => port === 443);
-    assert.ok(envoyHttpsPort, "the workspace Gateway Service must retain its HTTPS port.");
-    await kubectl(
-      "patch",
-      "service",
-      envoyService.metadata.name,
-      "--namespace",
-      workspaceGateway.routing.envoyNamespace,
-      "--type=json",
-      "--patch",
-      JSON.stringify([
-        {
-          op: "add",
-          path: "/spec/ports/-",
-          value: {
-            name: "oce-host-relay",
-            protocol: envoyHttpsPort.protocol ?? "TCP",
-            port: endpointPort,
-            targetPort: envoyHttpsPort.targetPort ?? envoyHttpsPort.port,
-          },
-        },
-      ]),
-    );
-  }
   const relayPod = `oce-routing-relay-${hash(randomUUID())}`;
   const relayLabels = Object.entries(workspaceGateway.apiPodLabels)
     .map(([name, value]) => `${name}=${value}`)
@@ -311,39 +279,71 @@ export async function startWorkspaceGatewayHostRelay(
     `pod/${relayPod}`,
     "0:8443",
   );
-  const forwardedPort = Number(new URL(forwarding.url).port);
-  const relayName = `oce-openshell-routing-${hash(randomUUID())}`;
-  // Bind/startup failure must still close the forwarding process and owned relay.
+  // Reuse kubectl's bound socket on Linux; a second listener would race other tests.
   context.after(() => forwarding.stop());
-  const relayProgram = [
-    'const net = require("node:net");',
-    "const targetPort = Number(process.argv[1]);",
-    "const server = net.createServer((client) => {",
-    `  const upstream = net.connect({ host: ${JSON.stringify(relayHost)}, port: targetPort });`,
-    "  client.pipe(upstream).pipe(client);",
-    '  client.on("error", () => upstream.destroy());',
-    '  upstream.on("error", () => client.destroy());',
-    "});",
-    `server.listen(443, ${JSON.stringify(usesContainerVm ? "0.0.0.0" : "127.0.0.1")});`,
-    'process.on("SIGTERM", () => server.close(() => process.exit(0)));',
-  ].join("\n");
-  await startWorkspaceGatewayRelayContainer(context, {
-    containerEngine,
-    relayName,
-    runArguments: [
-      ...(usesContainerVm ? ["--publish", `127.0.0.1:${endpointPort}:443`] : ["--network", "host"]),
-      "--user",
-      "0",
-      "--stop-timeout",
-      "2",
-      "--entrypoint",
-      "node",
-      dockerRuntimeImage,
-      "-e",
-      relayProgram,
-      String(forwardedPort),
-    ],
-  });
+  const forwardedPort = Number(new URL(forwarding.url).port);
+  const endpointPort = usesContainerVm ? await availablePort() : forwardedPort;
+  // In-cluster callers use the same endpoint port through the Envoy Service.
+  const envoyHttpsPort = envoyService.spec.ports.find(({ port }) => port === 443);
+  assert.ok(envoyHttpsPort, "the workspace Gateway Service must retain its HTTPS port.");
+  await kubectl(
+    "patch",
+    "service",
+    envoyService.metadata.name,
+    "--namespace",
+    workspaceGateway.routing.envoyNamespace,
+    "--type=json",
+    "--patch",
+    JSON.stringify([
+      {
+        op: "add",
+        path: "/spec/ports/-",
+        value: {
+          name: "oce-host-relay",
+          protocol: envoyHttpsPort.protocol ?? "TCP",
+          port: endpointPort,
+          targetPort: envoyHttpsPort.targetPort ?? envoyHttpsPort.port,
+        },
+      },
+    ]),
+  );
+  if (usesContainerVm) {
+    // Docker Desktop and Podman Machine host networking stays in their Linux VM.
+    const containerEngine = process.env.OCC_DOCKER_BIN ?? "docker";
+    const relayHost =
+      basename(containerEngine) === "podman" ? "host.containers.internal" : "host.docker.internal";
+    const relayName = `oce-openshell-routing-${hash(randomUUID())}`;
+    const relayProgram = [
+      'const net = require("node:net");',
+      "const targetPort = Number(process.argv[1]);",
+      "const server = net.createServer((client) => {",
+      `  const upstream = net.connect({ host: ${JSON.stringify(relayHost)}, port: targetPort });`,
+      "  client.pipe(upstream).pipe(client);",
+      '  client.on("error", () => upstream.destroy());',
+      '  upstream.on("error", () => client.destroy());',
+      "});",
+      'server.listen(443, "0.0.0.0");',
+      'process.on("SIGTERM", () => server.close(() => process.exit(0)));',
+    ].join("\n");
+    await startWorkspaceGatewayRelayContainer(context, {
+      containerEngine,
+      relayName,
+      runArguments: [
+        "--publish",
+        `127.0.0.1:${endpointPort}:443`,
+        "--user",
+        "0",
+        "--stop-timeout",
+        "2",
+        "--entrypoint",
+        "node",
+        dockerRuntimeImage,
+        "-e",
+        relayProgram,
+        String(forwardedPort),
+      ],
+    });
+  }
   const originalLookup = dns.lookup;
   dns.lookup = function lookup(hostname, options, callback) {
     if (hostname !== gatewayHostname) {
