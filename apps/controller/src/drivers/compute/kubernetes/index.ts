@@ -15,6 +15,11 @@ import {
 } from "../egress-enrollment.ts";
 import { forwardMethod } from "../../../backends/token-service/forward-method.ts";
 import { ProtectedExecutionDriver } from "../protected-execution-driver.ts";
+import {
+  decodeReplacementRuntime,
+  encodeReplacementRuntime,
+  replacementCompatibility,
+} from "./replacement-runtime.ts";
 import type { InstalledDriver } from "@openclaw-enterprise/occ";
 import { requireConfiguration, ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import { rewrittenIpv4Hostname } from "../../../auth/configuration.ts";
@@ -6337,6 +6342,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     context?: ComputeRevisionContext,
   ): void {
     const provider = this.providerAdmission(revision);
+    this.replacementRuntime(revision);
     const admission = revision.compute.admission;
     if (admission?.startsWith("model-provider:v1:")) {
       if (provider === undefined || !admission.startsWith(`model-provider:v1:${provider}:`)) {
@@ -7118,7 +7124,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
               gatewayName,
               gatewayOwnership,
               gatewayNamespace,
-              this.options.images.gateway,
+              this.workloadImages(revision, "gateway"),
               gatewayAccountName,
               "gateway",
               environment,
@@ -7282,7 +7288,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         revisionName,
         revisionOwnership,
         namespace,
-        nativeRuntime === undefined ? this.options.images.agent : this.options.images.gateway,
+        this.workloadImages(revision, "agent"),
         agentName,
         "agent",
         launch.environment,
@@ -8029,7 +8035,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
               gatewayName,
               gatewayOwnership,
               namespace,
-              this.options.images.gateway,
+              this.workloadImages(revision, "gateway"),
               agentName,
               "gateway",
               launch.environment,
@@ -8139,7 +8145,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         revisionName,
         { ...ownership, revisionId: revision.id },
         namespace,
-        nativeRuntime === undefined ? this.options.images.agent : this.options.images.gateway,
+        this.workloadImages(revision, "agent"),
         agentName,
         "agent",
         environment,
@@ -8299,7 +8305,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         gatewayName,
         gatewayOwnership,
         gatewayNamespace,
-        this.options.images.gateway,
+        this.workloadImages(revision, "gateway"),
         gatewayName,
         "gateway",
         {},
@@ -14780,6 +14786,67 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return provider === undefined ? runtime : `model-provider:v1:${provider}:${runtime ?? ""}`;
   }
 
+  snapshotRuntimeInputs(revision: Readonly<AgentRevision>): string | undefined {
+    // Optional completion metadata must not introduce a new admission failure
+    // when this Compute cannot identify the selected Sandbox execution contract.
+    const sandbox = revision.sandboxDriverId === undefined ? undefined : this.sandboxDriver;
+    if (revision.sandboxDriverId !== undefined && sandbox?.id !== revision.sandboxDriverId) {
+      return undefined;
+    }
+    if (
+      this.options.runtime === undefined ||
+      revision.harness.id !== "codex" ||
+      revision.harness.mode !== "dedicated" ||
+      revision.egressPlan !== undefined ||
+      sandbox?.provisionHarness !== undefined
+    ) {
+      return undefined;
+    }
+    return encodeReplacementRuntime({
+      gateway: this.options.images.gateway,
+      agent: this.options.images.agent,
+      compatibility: this.runtimeCompatibility(revision, revision.compute.admission),
+    });
+  }
+
+  private replacementRuntime(revision: Readonly<AgentRevision>) {
+    const saved = decodeReplacementRuntime(revision.compute.runtimeInputs);
+    if (saved === null) {
+      throw new ConfigurationFailure("AgentRevision runtime admission is invalid.");
+    }
+    return saved;
+  }
+
+  private runtimeCompatibility(
+    revision: Readonly<AgentRevision>,
+    policyAdmission: string | undefined,
+  ) {
+    const { images, ...settings } = this.options;
+    return replacementCompatibility(
+      revision,
+      {
+        settings,
+        requireImmutableDigest: images.requireImmutableDigest,
+        gatewayEntrypoint: gatewayRuntimeEntrypoint(revision.gatewayManagedMode === true),
+        harnessEntrypoint: COMPUTE_AGENT_RUNTIME_ENTRYPOINT,
+        harnessWithNodeEntrypoint: COMPUTE_AGENT_WITH_NODE_ENTRYPOINT,
+        runtimeWrapper: RUNTIME_WRAPPER_COMMAND,
+        setupWrapper: SETUP_WRAPPER_COMMAND,
+        workspaceSetup: WORKSPACE_SETUP_RUNTIME,
+      },
+      policyAdmission,
+    );
+  }
+
+  private workloadImages(revision: Readonly<AgentRevision>, role: "gateway" | "agent") {
+    const images = this.replacementRuntime(revision) ?? this.options.images;
+    return {
+      runtime:
+        role === "gateway" || revision.harness.id === "openclaw" ? images.gateway : images.agent,
+      workspaceSetup: images.gateway,
+    };
+  }
+
   private publicGithubReadForRevision(revision: AgentRevision) {
     if (
       this.runtimeAdmission(revision) !== undefined &&
@@ -16510,7 +16577,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     name: string,
     ownership: Ownership,
     namespace: KubernetesNamespaceAddress,
-    image: string,
+    images: { readonly runtime: string; readonly workspaceSetup: string },
     serviceAccountName: string,
     role: "gateway" | "agent",
     environment: Readonly<Record<string, string>>,
@@ -16529,6 +16596,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     providerEndpoint?: SandboxHarnessEndpoint,
     providerOwnsHarness = false,
   ): ManagedKubernetesObject {
+    const image = images.runtime;
     const harnessSetupWorkspace = providerOwnsHarness
       ? { environment: "OPENCLAW_WORKSPACE_DIR" as const }
       : "/home/node/workspace";
@@ -17103,7 +17171,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       });
       initContainers.push({
         name: "initialize-workspace",
-        image: this.options.images.gateway,
+        image: images.workspaceSetup,
         imagePullPolicy: "IfNotPresent",
         // Native setup loads the Gateway CLI and needs its configured resource budget.
         resources: this.options.resources.gateway,

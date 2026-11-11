@@ -133,6 +133,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
       id: "compute-contract",
       implementation: "deterministic-contract",
       admission: `driver-state:v1:${"a".repeat(64)}`,
+      runtimeInputs: "fixture-runtime-inputs:v1",
     },
     executionAdmission: { version: 2, mode: "unprotected" },
     servicePrincipalId: agent.servicePrincipalId,
@@ -188,6 +189,25 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
         postgresOwnershipViolation,
       ),
       "malformed Compute admission must be rejected",
+    );
+  }
+
+  for (const runtimeInputs of ["", "a".repeat(4097), "bad\nvalue", {}]) {
+    await assert.rejects(
+      store.transact((transaction) =>
+        transaction.revisions.createRevision({
+          ...revision,
+          id: identifier("rev"),
+          revision: 2,
+          compute: { ...revision.compute, runtimeInputs },
+        }),
+      ),
+      storeRefusal(
+        "ScopeViolationError",
+        "An AgentRevision requires valid Configuration metadata, a native document, and pinned Harness and Compute descriptors.",
+        postgresOwnershipViolation,
+      ),
+      "malformed runtime inputs must be rejected",
     );
   }
 

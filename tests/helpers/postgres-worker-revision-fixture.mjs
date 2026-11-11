@@ -674,6 +674,10 @@ export function createWorkerRevisionFixtures(
         if (admission !== undefined) {
           candidate.compute = { ...candidate.compute, admission };
         }
+        const runtimeInputs = compute.snapshotRuntimeInputs?.(candidate);
+        if (runtimeInputs !== undefined) {
+          candidate.compute = { ...candidate.compute, runtimeInputs };
+        }
         admitted = await unit.revisions.createRevision(candidate);
         await unit.agents.transitionAgentDesiredRuntimeState(
           namespace.id,

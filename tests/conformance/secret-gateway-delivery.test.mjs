@@ -103,7 +103,10 @@ test("secret-gateway-delivery renders exact bound Namespace Secret env only into
     `gateway-${suffix}`,
     { namespaceId: tenant.id, agentId: candidate.agentId },
     { name: namespace, plane: "execution" },
-    "openclaw-enterprise/gateway-fixture:local",
+    {
+      runtime: "openclaw-enterprise/gateway-fixture:local",
+      workspaceSetup: driver.options.images.gateway,
+    },
     `agent-${suffix}`,
     "gateway",
     {},
@@ -144,7 +147,10 @@ test("secret-gateway-delivery renders exact bound Namespace Secret env only into
         `agent-${suffix}`,
         { namespaceId: tenant.id, agentId: candidate.agentId, revisionId: candidate.id },
         { name: namespace, plane: "execution" },
-        "openclaw-enterprise/agent-fixture:local",
+        {
+          runtime: "openclaw-enterprise/agent-fixture:local",
+          workspaceSetup: driver.options.images.gateway,
+        },
         `agent-${suffix}`,
         "agent",
         {},
