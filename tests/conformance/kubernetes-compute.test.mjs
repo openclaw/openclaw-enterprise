@@ -22945,10 +22945,7 @@ function runtimeLogDriverFixture({ twoCluster = false } = {}) {
 
 test("Kubernetes runtime description reads each plane's Pods and only their own Events", async () => {
   const fixture = runtimeLogDriverFixture({ twoCluster: true });
-  const description = await fixture.driver.describeAgentRuntime(
-    fixture.binding,
-    new AbortController().signal,
-  );
+  const description = await fixture.describeAgentRuntime(new AbortController().signal);
   assert.equal(description.revisionId, fixture.binding.revision.id);
   assert.deepEqual(
     description.pods.map(({ role, cluster, name }) => ({ role, cluster, name })),
@@ -23022,17 +23019,11 @@ test("Kubernetes runtime description reads each plane's Pods and only their own 
 
   // A Pod of another Agent in the same namespace fails the whole description.
   fixture.state.foreignPod = true;
-  await assert.rejects(
-    fixture.driver.describeAgentRuntime(fixture.binding, new AbortController().signal),
-    /invalid Pod/,
-  );
+  await assert.rejects(fixture.describeAgentRuntime(new AbortController().signal), /invalid Pod/);
   // So does a listed Pod that names another namespace (finding 1581).
   fixture.state.foreignPod = false;
   fixture.state.foreignNamespacePod = true;
-  await assert.rejects(
-    fixture.driver.describeAgentRuntime(fixture.binding, new AbortController().signal),
-    /invalid Pod/,
-  );
+  await assert.rejects(fixture.describeAgentRuntime(new AbortController().signal), /invalid Pod/);
 });
 
 test("Kubernetes runtime description reports declared main and init containers independently", async () => {
@@ -23048,8 +23039,7 @@ test("Kubernetes runtime description reports declared main and init containers i
   // Kubernetes can report the completed init container before the main has started.
   // Its successful exit must not stand in for the main container's missing status.
   fixture.state.noMainStatus = true;
-  const describe = () =>
-    fixture.driver.describeAgentRuntime(fixture.binding, new AbortController().signal);
+  const describe = () => fixture.describeAgentRuntime(new AbortController().signal);
   const pending = await describe();
   assert.deepEqual(
     pending.pods[0].containers.map(({ name, state, lastTermination }) => ({
@@ -23094,8 +23084,12 @@ test("Kubernetes runtime description retains newest Events across API pages", as
     assert.equal(limit, 100);
     assert.equal(fieldSelector, "involvedObject.uid=gateway-runtime-logs-uid");
     if (_continue === undefined) {
+      // The newest Event starts on the first page and must survive later pages.
       return {
-        items: Array.from({ length: 100 }, (_, index) => event(index)),
+        items: [
+          ...Array.from({ length: 99 }, (_, index) => event(index + 1)),
+          event(201, "Warning"),
+        ],
         metadata: { _continue: "filtered" },
       };
     }
@@ -23114,17 +23108,15 @@ test("Kubernetes runtime description retains newest Events across API pages", as
       metadata: { _continue: "" },
     };
   };
-  const description = await fixture.driver.describeAgentRuntime(
-    fixture.binding,
-    new AbortController().signal,
-    { source: "gateway" },
-  );
+  const description = await fixture.describeAgentRuntime(new AbortController().signal, {
+    source: "gateway",
+  });
   const events = description.pods[0].events;
   assert.equal(events.length, 100);
   assert.equal(events[0].reason, "BackOff");
   assert.deepEqual(
     events.map(({ lastObservedAt }) => lastObservedAt),
-    Array.from({ length: 100 }, (_, index) => event(200 - index).lastTimestamp.toISOString()),
+    Array.from({ length: 100 }, (_, index) => event(201 - index).lastTimestamp.toISOString()),
   );
   assert.deepEqual(
     fixture.calls
@@ -23143,7 +23135,7 @@ test("Kubernetes runtime Event pagination preserves later-page RBAC failures", a
     throw { code: 403 };
   };
   await assert.rejects(
-    fixture.driver.describeAgentRuntime(fixture.binding, new AbortController().signal, {
+    fixture.describeAgentRuntime(new AbortController().signal, {
       source: "gateway",
     }),
     (error) => error.name === "RuntimeLogsForbiddenByClusterError",
@@ -23168,7 +23160,7 @@ test("Kubernetes runtime Event pagination remains bounded by the caller abort", 
   };
   try {
     await assert.rejects(
-      fixture.driver.describeAgentRuntime(fixture.binding, abort.signal, { source: "gateway" }),
+      fixture.describeAgentRuntime(abort.signal, { source: "gateway" }),
       (error) => error === reason,
     );
   } finally {
@@ -23235,10 +23227,7 @@ for (const scenario of [
       restartCount: scenario.lastState.terminated === undefined ? 0 : 1,
       ready: scenario.state.running !== undefined,
     };
-    const description = await fixture.driver.describeAgentRuntime(
-      fixture.binding,
-      new AbortController().signal,
-    );
+    const description = await fixture.describeAgentRuntime(new AbortController().signal);
     const expected =
       scenario.expected === null
         ? null
@@ -23251,8 +23240,7 @@ for (const scenario of [
 }
 
 test("Kubernetes runtime times keep real UTC instants and refuse rolled-over or offset strings", async (t) => {
-  const describe = (fixture) =>
-    fixture.driver.describeAgentRuntime(fixture.binding, new AbortController().signal);
+  const describe = (fixture) => fixture.describeAgentRuntime(new AbortController().signal);
   const withContainerState = (state) => {
     const fixture = runtimeLogDriverFixture();
     fixture.state.containerStatus = { state };
@@ -23338,10 +23326,7 @@ test("Kubernetes runtime times keep real UTC instants and refuse rolled-over or 
       await assert.rejects(describe(fixture), invalidTime);
       // A log read re-reads the Pod status and refuses the same time.
       const reader = withContainerState({ running: { startedAt: value } });
-      await assert.rejects(
-        reader.driver.readAgentRuntimeLogs(reader.binding, reader.request("gateway")),
-        invalidTime,
-      );
+      await assert.rejects(reader.readAgentRuntimeLogs(reader.request("gateway")), invalidTime);
     });
   }
   // Absent times stay absent rather than refused.
@@ -23382,7 +23367,7 @@ test("Kubernetes runtime description drops only a settled VolumeBinding conflict
   ];
   fixture.state.extraEvents = [conflict, ...kept];
   const reasons = async () =>
-    (await fixture.driver.describeAgentRuntime(fixture.binding, new AbortController().signal)).pods
+    (await fixture.describeAgentRuntime(new AbortController().signal)).pods
       .find(({ role }) => role === "gateway")
       .events.map(({ reason, message }) => `${reason}: ${message}`);
 
@@ -23402,11 +23387,10 @@ test("Kubernetes runtime description drops only a settled VolumeBinding conflict
 
 test("Kubernetes runtime description for a log read lists one source's Pods and no Events", async () => {
   const fixture = runtimeLogDriverFixture({ twoCluster: true });
-  const description = await fixture.driver.describeAgentRuntime(
-    fixture.binding,
-    new AbortController().signal,
-    { source: "gateway", events: false },
-  );
+  const description = await fixture.describeAgentRuntime(new AbortController().signal, {
+    source: "gateway",
+    events: false,
+  });
   assert.deepEqual(
     description.sources.map(({ id }) => id),
     ["gateway"],
@@ -23427,8 +23411,7 @@ test("Kubernetes runtime log reads are bounded, timestamped and re-check the Pod
   const fixture = runtimeLogDriverFixture();
   fixture.state.logs.gateway =
     '2026-09-30T12:00:00.123456789Z {"level":"info","message":"ready"}\n2026-09-30T12:00:01Z plain text\n';
-  const chunk = await fixture.driver.readAgentRuntimeLogs(
-    fixture.binding,
+  const chunk = await fixture.readAgentRuntimeLogs(
     fixture.request("gateway", { previous: true, sinceSeconds: 30, tailLines: 50 }),
   );
   assert.deepEqual(chunk.lines, [
@@ -23470,35 +23453,25 @@ test("Kubernetes runtime log reads are bounded, timestamped and re-check the Pod
   );
   // The Pod is listed before and after the read, so a restart during the read is visible.
   fixture.state.restartDuringRead = true;
-  const restarted = await fixture.driver.readAgentRuntimeLogs(
-    fixture.binding,
-    fixture.request("gateway"),
-  );
+  const restarted = await fixture.readAgentRuntimeLogs(fixture.request("gateway"));
   assert.equal(restarted.stream.restartCount, 3);
   fixture.state.restartDuringRead = false;
 
   // Output that fills the byte limit is reported as truncated.
   fixture.state.logs.gateway = `2026-09-30T12:00:02Z ${"x".repeat(64)}`;
-  const cut = await fixture.driver.readAgentRuntimeLogs(
-    fixture.binding,
-    fixture.request("gateway", { limitBytes: 32 }),
-  );
+  const cut = await fixture.readAgentRuntimeLogs(fixture.request("gateway", { limitBytes: 32 }));
   assert.equal(cut.truncated, true);
 
   // A Pod name the revision does not own never reaches readNamespacedPodLog.
   const before = fixture.calls.filter(({ call }) => call === "readNamespacedPodLog").length;
   await assert.rejects(
-    fixture.driver.readAgentRuntimeLogs(
-      fixture.binding,
+    fixture.readAgentRuntimeLogs(
       fixture.request("gateway", { pod: "kube-apiserver", podUid: "gateway-runtime-logs-uid" }),
     ),
     /no longer available/,
   );
   await assert.rejects(
-    fixture.driver.readAgentRuntimeLogs(
-      fixture.binding,
-      fixture.request("gateway", { container: "agent" }),
-    ),
+    fixture.readAgentRuntimeLogs(fixture.request("gateway", { container: "agent" })),
     /does not match/,
   );
   assert.equal(fixture.calls.filter(({ call }) => call === "readNamespacedPodLog").length, before);
@@ -23523,10 +23496,7 @@ test("Kubernetes runtime log reads normalize RFC3339 offsets without losing nano
   ];
   fixture.state.logs.gateway =
     [...lines.map(([time]) => `${time} ready`), ...unknown].join("\n") + "\n";
-  const chunk = await fixture.driver.readAgentRuntimeLogs(
-    fixture.binding,
-    fixture.request("gateway"),
-  );
+  const chunk = await fixture.readAgentRuntimeLogs(fixture.request("gateway"));
   assert.deepEqual(chunk.lines, [
     ...lines.map(([, time]) => ({ time, raw: "ready" })),
     ...unknown.map((raw) => ({ time: null, raw })),
@@ -23540,22 +23510,19 @@ test("Kubernetes runtime log and Event 403s become the typed cluster RBAC error"
   const fixture = runtimeLogDriverFixture();
   fixture.state.logError = forbidden();
   await assert.rejects(
-    fixture.driver.readAgentRuntimeLogs(fixture.binding, fixture.request("gateway")),
+    fixture.readAgentRuntimeLogs(fixture.request("gateway")),
     RuntimeLogsForbiddenByClusterError,
   );
   fixture.state.eventError = forbidden();
   await assert.rejects(
-    fixture.driver.describeAgentRuntime(fixture.binding, new AbortController().signal),
+    fixture.describeAgentRuntime(new AbortController().signal),
     RuntimeLogsForbiddenByClusterError,
   );
   // A container without a previous instance yields no lines instead of an error.
   fixture.state.logError = Object.assign(new Error("previous terminated container not found"), {
     statusCode: 400,
   });
-  const empty = await fixture.driver.readAgentRuntimeLogs(
-    fixture.binding,
-    fixture.request("gateway", { previous: true }),
-  );
+  const empty = await fixture.readAgentRuntimeLogs(fixture.request("gateway", { previous: true }));
   assert.deepEqual(empty.lines, []);
 });
 
@@ -23580,10 +23547,7 @@ test("Kubernetes initial container log reads wait without swallowing other failu
             }),
           });
         fixture.state.logError = waiting();
-        const empty = await fixture.driver.readAgentRuntimeLogs(
-          fixture.binding,
-          fixture.request(source),
-        );
+        const empty = await fixture.readAgentRuntimeLogs(fixture.request(source));
         assert.deepEqual(empty.lines, []);
         assert.equal(empty.stream.restartCount, 0);
         assert.equal(empty.truncated, false);
@@ -23591,10 +23555,7 @@ test("Kubernetes initial container log reads wait without swallowing other failu
         // Pod status can lag startup. A readable current instance must still be read.
         fixture.state.logError = undefined;
         fixture.state.logs[source] = "2026-09-30T12:00:00Z runtime started\n";
-        const running = await fixture.driver.readAgentRuntimeLogs(
-          fixture.binding,
-          fixture.request(source),
-        );
+        const running = await fixture.readAgentRuntimeLogs(fixture.request(source));
         assert.deepEqual(running.lines, [{ time: "2026-09-30T12:00:00Z", raw: "runtime started" }]);
 
         for (const message of [
@@ -23604,7 +23565,7 @@ test("Kubernetes initial container log reads wait without swallowing other failu
         ]) {
           fixture.state.logError = waiting(message);
           await assert.rejects(
-            fixture.driver.readAgentRuntimeLogs(fixture.binding, fixture.request(source)),
+            fixture.readAgentRuntimeLogs(fixture.request(source)),
             fixture.state.logError,
           );
         }
@@ -23616,7 +23577,7 @@ test("Kubernetes initial container log reads wait without swallowing other failu
         );
         fixture.state.containerId = "containerd://existing-instance";
         await assert.rejects(
-          fixture.driver.readAgentRuntimeLogs(fixture.binding, fixture.request(source)),
+          fixture.readAgentRuntimeLogs(fixture.request(source)),
           fixture.state.logError,
         );
         fixture.state.containerId = undefined;
@@ -23626,7 +23587,7 @@ test("Kubernetes initial container log reads wait without swallowing other failu
           `container "${source}" in pod "${source}-runtime-logs-pod" is waiting to start: CrashLoopBackOff`,
         );
         await assert.rejects(
-          fixture.driver.readAgentRuntimeLogs(fixture.binding, fixture.request(source)),
+          fixture.readAgentRuntimeLogs(fixture.request(source)),
           fixture.state.logError,
         );
       });
@@ -23640,16 +23601,14 @@ test("Kubernetes runtime log reads drop kubelet's untimestamped log-unavailable 
   // no timestamp. It is not container output.
   fixture.state.logs.gateway =
     "unable to retrieve container logs for containerd://50c25aa8e1ba378edb6953635f4b49e376f6802d3d9a49775772c89845d8a7e0";
-  const restarting = await fixture.driver.readAgentRuntimeLogs(
-    fixture.binding,
+  const restarting = await fixture.readAgentRuntimeLogs(
     fixture.request("gateway", { previous: true }),
   );
   assert.deepEqual(restarting.lines, []);
   // The same text printed by the container carries a timestamp and stays.
   fixture.state.logs.gateway =
     "2026-09-30T12:00:00Z unable to retrieve container logs for containerd://abc\n";
-  const printed = await fixture.driver.readAgentRuntimeLogs(
-    fixture.binding,
+  const printed = await fixture.readAgentRuntimeLogs(
     fixture.request("gateway", { previous: true }),
   );
   assert.deepEqual(printed.lines, [
