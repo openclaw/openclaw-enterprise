@@ -71,6 +71,8 @@ func Down(ctx context.Context, opts Options) error {
 		if err := r.run(ctx, r.engine, args...); err != nil {
 			return err
 		}
+		// The service key belongs to the stopped stack; the next start copies a new one.
+		removeRecordedDevelopmentKeyDirectories(filepath.Dir(browserEnvironment["OCC_DEVELOPMENT_BROWSER_TLS_CERT"]), r.opts.Out, r.opts.Err)
 		if choice.Reason == downNoRecordedState {
 			// Say why down chose Docker when nothing selected it.
 			fmt.Fprintf(r.opts.Out, "Stopped Docker-compatible development stack (no recorded Kubernetes development state in %s).\n", choice.StateDirectory)

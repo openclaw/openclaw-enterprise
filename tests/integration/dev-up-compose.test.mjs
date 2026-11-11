@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import test from "node:test";
 import {
@@ -226,6 +226,56 @@ test("dev-up rejects a public controller port rendered by real Compose", async (
     dockerLogs.some((entry) => entry.args[0] === "compose" && entry.args.includes("up")),
     false,
   );
+});
+
+async function ownedKeyDirectories(fixture) {
+  // TMPDIR is the fixture directory, so dev-up creates its key directories here.
+  return (await readdir(fixture.directory)).filter((name) =>
+    name.startsWith("openclaw-dev-up-key."),
+  );
+}
+
+test("dev-down removes the service key directory dev-up created and keeps a chosen key output", async (t) => {
+  const fixture = await createFixture(t);
+  const options = composeOptions(fixture);
+
+  const started = await runDevUp(["--", ...options], fixture.env);
+  assert.equal(started.status, 0, started.stderr);
+  const [owned, ...others] = await ownedKeyDirectories(fixture);
+  assert.deepEqual(others, []);
+  const ownedKey = join(fixture.directory, owned, "initial-admin-service-key.json");
+  assert.ok(started.stdout.includes(`Service key file: ${ownedKey}`), started.stdout);
+  assert.match(await readFile(ownedKey, "utf8"), new RegExp(serviceKey));
+
+  // A key the operator placed with --key-output is theirs: down never removes it.
+  const chosenDirectory = join(fixture.directory, "chosen key directory");
+  await mkdir(chosenDirectory, { mode: 0o700 });
+  const chosenKey = join(chosenDirectory, "service-key.json");
+  const chosen = await runDevUp(["--key-output", chosenKey, "--", ...options], fixture.env);
+  assert.equal(chosen.status, 0, chosen.stderr);
+
+  const stopped = await runCommand(fixture.cli, ["dev", "down", "--", ...options], {
+    cwd: fixture.fixtureRepository,
+    env: fixture.env,
+  });
+  assert.equal(stopped.status, 0, stopped.stderr);
+  assert.ok(
+    stopped.stdout.includes(`Removed service key directory ${join(fixture.directory, owned)}.`),
+    stopped.stdout,
+  );
+  assert.deepEqual(await ownedKeyDirectories(fixture), []);
+  assert.match(await readFile(chosenKey, "utf8"), new RegExp(serviceKey));
+});
+
+test("a failed dev-up removes the empty service key directory it created", async (t) => {
+  const fixture = await createFixture(t, { scenario: "bootstrap-failed" });
+
+  // Startup fails before the key copy, so its key directory is still empty.
+  const result = await runDevUp(["--", ...composeOptions(fixture)], fixture.env);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /startup failed: bootstrap exited with 1/);
+  assert.deepEqual(await ownedKeyDirectories(fixture), []);
 });
 
 test("dev-up refuses an existing key destination before invoking Compose", async (t) => {
