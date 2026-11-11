@@ -12,13 +12,13 @@ stops both commands with the exact path to fix. If `go.mod` contains CRLF line
 endings, convert the file to LF and retry. These errors do not fall through to
 an outer checkout that could own a different stack.
 
-| Command                                         | What it does                                                                                                                                                                                                                      |
-| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `occ dev up`                                    | Starts the selected profile; with no selection, the Kubernetes-only profile. `OCC_DEVELOPMENT_COMPUTE_DRIVER=docker` selects a control-plane preview that cannot deploy Agents.                                                   |
-| `occ dev up --key-output PATH`                  | Writes the bootstrap service-key file to an absent absolute path in a private directory.                                                                                                                                          |
-| `occ dev up --sandbox-network-policy-file FILE` | Adds binary and endpoint rules for Kubernetes Compute with OpenShell; see [startup network policy](../../guides/deploy/local-sandbox-network-policy.md).                                                                          |
-| `occ dev down`                                  | Stops the selected profile, else the recorded one (below). Docker keeps Compose volumes; a plain down removes the copied service key, not `--key-output` files. Kubernetes removes its owned k3d cluster and any Compose volumes. |
-| `occ dev down --volumes`                        | Also removes Docker Compose volumes and the deleted Installation's Docker Compute Namespace networks; Kubernetes cleanup already removes its volumes.                                                                             |
+| Command                                         | What it does                                                                                                                                                                       |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `occ dev up`                                    | Starts the selected profile; with no selection, the Kubernetes-only profile. `OCC_DEVELOPMENT_COMPUTE_DRIVER=docker` selects a control-plane preview that cannot deploy Agents.    |
+| `occ dev up --key-output PATH`                  | Writes the bootstrap service-key file to an absent absolute path in a private directory.                                                                                           |
+| `occ dev up --sandbox-network-policy-file FILE` | Adds binary and endpoint rules for Kubernetes Compute with OpenShell; see [startup network policy](../../guides/deploy/local-sandbox-network-policy.md).                           |
+| `occ dev down`                                  | Stops the selected profile, else the recorded one (below). Docker keeps Compose volumes and copied service keys. Kubernetes removes its owned k3d cluster and any Compose volumes. |
+| `occ dev down --volumes`                        | Also removes Compose volumes. Docker Compute Namespace networks and local key files remain. Kubernetes cleanup already removes its volumes.                                        |
 
 In the Go Kubernetes helpers, a failed exclusive write removes its newly created
 output, including a partial key file. Existing targets stay unchanged. If removal

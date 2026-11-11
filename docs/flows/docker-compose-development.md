@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-11-10
-last_updated_session: authoring-run/a9d9f372-a4a3-4832-9356-328d27967ab2
+updated: 2026-11-11
+last_updated_session: authoring-run/f416a831-2d60-4973-af5c-9f0bf35a8899
 ---
 
 # Compose development flow
@@ -42,8 +42,7 @@ selected Kubernetes Compute Driver and the
 
 - Trigger: `./bin/occ dev up [--key-output PATH] [-- COMPOSE_GLOBAL_OPTIONS...]`
   from the repository root, followed by authenticated Namespace operations.
-- Source: `scripts/dev-up:require_command`, `internal/occdev/up.go:Up`, and
-  `internal/occdev/openshell.go:prepareOpenShell`.
+- Source: `scripts/dev-up:require_command` and `internal/occdev/up.go:Up`.
 - Assumptions: Docker Engine with Compose, or Podman with `docker-compose` or `podman-compose` (Docker Compute requires `podman-compose`);
   Bash, curl, Python 3, and `yq` v4 for the Docker profile; writable PostgreSQL
   and Configuration volumes; loopback API publication; executable `bin/occ`
@@ -170,11 +169,10 @@ its reported API socket sets `OCC_CONTAINER_ENGINE_SOCKET` only to resolve the
 worker mount, never replacing the host connection with a macOS VM socket. An
 unavailable engine or invalid socket fails cleanup.
 
-Compose removes its project containers and network; database, Configuration,
-and bootstrap volumes remain without `--volumes`. Down removes the service-key
-directory `scripts/dev-up` created. `--volumes` first reads the Installation's
-Namespace IDs from its database, then removes their idle Docker Compute
-networks. For Agent containers, see [safe development shutdown](../guides/deploy/local-operations.md#stop-development-safely).
+Compose removes its project containers and network. With `--volumes`, it also
+removes project volumes. Down leaves local service-key copies and Docker Compute Namespace
+networks in place because the Compose project does not own them. See
+[safe development shutdown](../guides/deploy/local-operations.md#stop-development-safely).
 
 ### 4. Start and clean up Kubernetes development
 
@@ -347,6 +345,8 @@ describes accepted selectors.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 03:59: Limit Compose shutdown to its project. (authoring-run/f416a831-2d60-4973-af5c-9f0bf35a8899 - 5ee1a6b2650e988ddd2f03ded0142dba685ca504)
 
 - 2026-11-10 22:18: Identify in-flight Docker request aborts while preserving caller cancellation and cleanup. (authoring-run/a9d9f372-a4a3-4832-9356-328d27967ab2 - ee73157fdf2982a8e0eab3dcb22d8ff9cf87fbd0)
 
