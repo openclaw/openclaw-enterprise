@@ -649,6 +649,12 @@ test("failed custody deployment preserves worker event order across a reused att
     status,
     message: sentinel,
   });
+  emit({
+    ...work,
+    event: "worker.compute-prepare-failed",
+    step: "sandbox_provision",
+    errorClass: "KubernetesPreparationFailure",
+  });
   const completions = [
     {
       attempt: 5,
@@ -667,7 +673,7 @@ test("failed custody deployment preserves worker event order across a reused att
       method: "GetProviderProfile",
       grpcStatus: 14,
       validationCategory: "UNKNOWN",
-      cleanupCause: "KubernetesRequestTimeout",
+      cleanupCause: "SyntaxError",
       deployPasses: 6,
     },
     {
@@ -678,13 +684,15 @@ test("failed custody deployment preserves worker event order across a reused att
       method: "CreateSandbox",
       grpcStatus: 3,
       validationCategory: "POLICY_SAFETY",
+      cleanupCause: "RangeError",
       deployPasses: 7,
     },
     {
       attempt: 7,
       outcome: "retry",
       code: "DEPENDENCY_UNAVAILABLE",
-      cause: "Error",
+      cause: "OpenShellSandboxConfigurationFailure",
+      cleanupCause: "TypeError",
       deployPasses: 8,
     },
   ];
@@ -705,6 +713,8 @@ test("failed custody deployment preserves worker event order across a reused att
   }
   // A partial log line and unknown fields are diagnostic input, not valid Worker behavior.
   lines.push("{partial\n", "null\n");
+  // Unknown class names must stay private in preparation as well as completion.
+  emit({ ...work, event: "worker.compute-prepare-failed", step, errorClass: sentinel });
   emit({
     ...work,
     event: "worker.completed",
@@ -786,11 +796,18 @@ test("failed custody deployment preserves worker event order across a reused att
     const budgetAttempt = 5;
     assert.deepEqual(failure.workerEvents, [
       { event: "preparation", budgetAttempt, step, errorClass, status, cause: "other" },
+      {
+        event: "preparation",
+        budgetAttempt,
+        step: "sandbox_provision",
+        errorClass: "KubernetesPreparationFailure",
+      },
       ...completions.map(({ attempt, ...fields }) => ({
         event: "completion",
         budgetAttempt: attempt,
         ...fields,
       })),
+      { event: "preparation", budgetAttempt, step, errorClass: "other" },
       {
         event: "completion",
         budgetAttempt,
