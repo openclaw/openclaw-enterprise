@@ -348,7 +348,7 @@ async function fixture(
       }),
     ),
   });
-  await jsonFile(join(work, "case-returned.json"), {
+  const caseReturnedSha256 = await jsonFile(join(work, "case-returned.json"), {
     version: 1,
     bindings: {
       OCC_TEST_SIGNIN_PLAN_SHA256: planHash,
@@ -442,6 +442,7 @@ async function fixture(
         assert.equal(receipt.runAttempt, "1");
         assert.equal(receipt.planSha256, planHash);
         assert.equal(receipt.preparedSha256, preparedHash);
+        assert.equal(receipt.caseReturnedSha256, caseReturnedSha256);
         assert.equal(receipt.caseExitCode, 1);
         assert.equal(receipt.removed, true);
         cleanupOutcome = "removed";
@@ -541,6 +542,7 @@ test("staged sign-in refuses a replacement cluster", options, (t) =>
         "--kubeconfig-update-default=false",
         "--kubeconfig-switch-context=false",
         "--no-lb",
+        "--no-rollback",
       ],
       { timeout: 180_000 },
     );
