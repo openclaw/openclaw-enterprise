@@ -7055,6 +7055,14 @@ function concurrencyProbe(name, partner) {
   ].join("\n");
 }
 
+async function runSharedLaneFixture(root, name, exitCode, env, manifestPath) {
+  const resultsPath = `results/${name}.json`;
+  const args = laneArgs(root, "shared", `state/${name}.jsonl`, resultsPath, manifestPath);
+  const { status, stderr } = run(root, args, env);
+  assert.equal(status, exitCode, stderr);
+  return { summary: JSON.parse(await readFile(join(root, resultsPath), "utf8")), stderr };
+}
+
 test("run shares slots only between audited parallel files and runs the rest alone", async (t) => {
   const root = await fixture(t);
   const running = join(root, "running");
@@ -7086,12 +7094,9 @@ test("run shares slots only between audited parallel files and runs the rest alo
       },
     },
   });
-  const args = (name) => laneArgs(root, "shared", `state/${name}.jsonl`, `results/${name}.json`);
   const env = { CI_RUNNER_PROBE_DIR: running, CI_RUNNER_FILE_CONCURRENCY: "2" };
 
-  const result = run(root, args("shared"), env);
-  assert.equal(result.status, 0, result.stderr);
-  const summary = JSON.parse(await readFile(join(root, "results/shared.json"), "utf8"));
+  const { summary, stderr } = await runSharedLaneFixture(root, "shared", 0, env);
   assert.equal(summary.fileConcurrency, 2);
   assert.equal(summary.counts.passed, 4);
   // Results keep manifest order; serial files ran first, before the shared slots.
@@ -7111,19 +7116,17 @@ test("run shares slots only between audited parallel files and runs the rest alo
   // Shared slots start in parallelFiles order.
   assert.ok(right.startOffsetMs <= left.startOffsetMs);
   assert.match(
-    result.stderr,
+    stderr,
     /^run-tests: passed tests\/integration\/left\.test\.mjs \d+\.\ds \(parallel\)$/m,
   );
 
   // One slot runs every file alone; the partners then cannot meet, and the
   // result says so instead of passing.
-  const alone = run(root, args("alone"), {
+  const { summary: aloneSummary } = await runSharedLaneFixture(root, "alone", 1, {
     ...env,
     CI_RUNNER_FILE_CONCURRENCY: "1",
     CI_RUNNER_PROBE_WAIT_MS: "300",
   });
-  assert.equal(alone.status, 1);
-  const aloneSummary = JSON.parse(await readFile(join(root, "results/alone.json"), "utf8"));
   assert.equal(aloneSummary.fileConcurrency, 1);
   assert.deepEqual(
     aloneSummary.files.map((file) => [file.mode, file.status]),
@@ -7135,9 +7138,10 @@ test("run shares slots only between audited parallel files and runs the rest alo
     ],
   );
 
-  const invalid = run(root, args("invalid"), { ...env, CI_RUNNER_FILE_CONCURRENCY: "many" });
-  assert.equal(invalid.status, 1);
-  const invalidSummary = JSON.parse(await readFile(join(root, "results/invalid.json"), "utf8"));
+  const { summary: invalidSummary } = await runSharedLaneFixture(root, "invalid", 1, {
+    ...env,
+    CI_RUNNER_FILE_CONCURRENCY: "many",
+  });
   assert.deepEqual(invalidSummary.files, []);
   assert.deepEqual(
     invalidSummary.issues.map((entry) => entry.code),
@@ -7169,15 +7173,10 @@ test("run starts shared files longest first from the measured table, unmeasured 
   const starts = async (name, fileDurations) => {
     const manifestPath = `${name}.json`;
     await writeRunnerManifest(root, { lanes, fileDurations }, manifestPath);
-    const result = run(
-      root,
-      laneArgs(root, "shared", `state/${name}.jsonl`, `results/${name}.json`, manifestPath),
-      { CI_RUNNER_FILE_CONCURRENCY: "2" },
-    );
-    assert.equal(result.status, 0, result.stderr);
-    const summary = JSON.parse(await readFile(join(root, `results/${name}.json`), "utf8"));
+    const env = { CI_RUNNER_FILE_CONCURRENCY: "2" };
+    const { summary, stderr } = await runSharedLaneFixture(root, name, 0, env, manifestPath);
     return {
-      stderr: result.stderr,
+      stderr,
       ...Object.fromEntries(
         summary.files.map((file) => [
           file.path.split("/").at(-1).replace(".test.mjs", ""),
@@ -7281,6 +7280,12 @@ test("audit requires current discovered test files and rejects duplicate ownersh
   );
 });
 
+async function aggregateWithNeeds(root, target, needs) {
+  const needsFile = "needs.json";
+  await writeJson(join(root, needsFile), needs);
+  return run(root, [...aggregateArgs(root, target), "--needs", needsFile]);
+}
+
 test("aggregate requires fixed lane outputs, successful needs, and matching source SHA", async (t) => {
   const root = await fixture(t);
   const sha = currentSha();
@@ -7305,12 +7310,10 @@ test("aggregate requires fixed lane outputs, successful needs, and matching sour
     exitCode: 1,
     files: [],
   });
-  await writeJson(join(root, "needs.json"), {
+  const result = await aggregateWithNeeds(root, "full", {
     baseline: { result: "success" },
     runtime: { result: "failure" },
   });
-
-  const result = run(root, [...aggregateArgs(root, "full"), "--needs", "needs.json"]);
 
   assert.equal(result.status, 1);
   const summary = JSON.parse(result.stdout);
@@ -7358,9 +7361,8 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
   const args = aggregateArgs(root, "docker-model");
   const tampered = run(root, args);
   assert.equal(tampered.status, 1);
-  let summary = JSON.parse(tampered.stdout);
   assert.deepEqual(
-    summary.issues.map((entry) => entry.code),
+    JSON.parse(tampered.stdout).issues.map((entry) => entry.code),
     ["missing-lane-evidence"],
   );
 
@@ -7381,10 +7383,14 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
   );
   assert.equal(produced.status, 0, produced.stderr);
 
+  const checkOutcome = (result, exitCode, diagnostic) => {
+    assert.equal(result.status, exitCode, diagnostic);
+    const summary = JSON.parse(result.stdout);
+    assert.equal(summary.status, exitCode === 0 ? "passed" : "failed");
+    return summary;
+  };
   const passed = run(root, args);
-  assert.equal(passed.status, 0, passed.stderr);
-  summary = JSON.parse(passed.stdout);
-  assert.equal(summary.status, "passed");
+  const summary = checkOutcome(passed, 0, passed.stderr);
   assert.deepEqual(
     summary.lanes.map((entry) => entry.lane),
     ["docker-model"],
@@ -7398,6 +7404,10 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
   const optional = fileEvidence.tests.find((testCase) => testCase.name === "optional nested case");
   assert.equal(required?.status, "passed");
   assert.equal(optional?.status, "passed");
+  const aggregateFiles = async (files) => {
+    await writeJson(resultPath, { ...evidence, files });
+    return run(root, args);
+  };
 
   const failedFileEvidence = {
     ...fileEvidence,
@@ -7431,11 +7441,8 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
     ["duplicate file passes both times", [fileEvidence, fileEvidence], []],
   ]) {
     await t.test(label, async () => {
-      await writeJson(resultPath, { ...evidence, files });
-      const result = run(root, args);
-      assert.equal(result.status, 1, result.stdout || result.stderr);
-      const aggregate = JSON.parse(result.stdout);
-      assert.equal(aggregate.status, "failed");
+      const result = await aggregateFiles(files);
+      const aggregate = checkOutcome(result, 1, result.stdout || result.stderr);
       assert.deepEqual(aggregate.issues, [duplicateFileIssue, ...issues]);
     });
   }
@@ -7443,11 +7450,7 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
   await t.test("duplicate unregistered file evidence does not expose its path", async () => {
     const unregisteredPath = "tests/integration/untrusted-receipt-path-canary.test.mjs";
     const unregisteredFile = { ...fileEvidence, path: unregisteredPath };
-    await writeJson(resultPath, {
-      ...evidence,
-      files: [fileEvidence, unregisteredFile, unregisteredFile],
-    });
-    const result = run(root, args);
+    const result = await aggregateFiles([fileEvidence, unregisteredFile, unregisteredFile]);
     assert.equal(result.status, 1, result.stderr);
     assert.ok(
       !result.stdout.includes(unregisteredPath) && !result.stderr.includes(unregisteredPath),
@@ -7504,18 +7507,12 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
     ],
   ]) {
     await t.test(label, async () => {
-      await writeJson(resultPath, {
-        ...evidence,
-        files: [{ ...fileEvidence, tests: [optional, ...cases] }],
-      });
-      const result = run(root, args);
+      const result = await aggregateFiles([{ ...fileEvidence, tests: [optional, ...cases] }]);
       assert.ok(
         !result.stdout.includes(marker) && !result.stderr.includes(marker),
         "aggregate printed untrusted case status",
       );
-      assert.equal(result.status, issues.length === 0 ? 0 : 1, result.stdout);
-      const aggregate = JSON.parse(result.stdout);
-      assert.equal(aggregate.status, issues.length === 0 ? "passed" : "failed");
+      const aggregate = checkOutcome(result, issues.length === 0 ? 0 : 1, result.stdout);
       assert.deepEqual(aggregate.issues, issues);
     });
   }
@@ -7529,13 +7526,10 @@ test("aggregate requires successful job gates and unambiguous lane ownership", a
     ci: ["baseline"],
   });
   await writePassedBaselineResult(root, sha, baselinePath);
-  await writeJson(join(root, "needs.json"), {
+  const result = await aggregateWithNeeds(root, "ci", {
     audit: { result: "failure" },
     baseline: { result: "success" },
   });
-
-  const args = [...aggregateArgs(root, "ci"), "--needs", "needs.json"];
-  const result = run(root, args);
 
   assert.equal(result.status, 1);
   const summary = JSON.parse(result.stdout);
@@ -7549,10 +7543,9 @@ test("aggregate requires successful job gates and unambiguous lane ownership", a
   // A matrix parent carries its job conclusion, never a conclusion for each
   // child. Unselected siblings may remain in a shared workflow's parent list.
   for (const state of ["success", "failure", "cancelled", "skipped", undefined]) {
-    await writeJson(join(root, "needs.json"), {
+    const observed = await aggregateWithNeeds(root, "ci", {
       matrix: { result: state, lanes: ["baseline", "unselected-sibling"] },
     });
-    const observed = run(root, args);
     assert.equal(observed.status, state === "success" ? 0 : 1, observed.stderr);
     const aggregated = JSON.parse(observed.stdout);
     assert.deepEqual(
@@ -7567,19 +7560,17 @@ test("aggregate requires successful job gates and unambiguous lane ownership", a
 
   // Valid artifacts cannot replace missing ownership, and malformed ownership
   // must fail even when a separate direct job could otherwise satisfy the lane.
-  await writeJson(join(root, "needs.json"), {});
-  const missing = run(root, args);
+  const missing = await aggregateWithNeeds(root, "ci", {});
   assert.equal(missing.status, 1);
   assert.deepEqual(
     JSON.parse(missing.stdout).issues.map((entry) => entry.code),
     ["missing-need"],
   );
   for (const lanes of [null, "baseline", [], [""], ["baseline", "baseline"], [1]]) {
-    await writeJson(join(root, "needs.json"), {
+    const malformed = await aggregateWithNeeds(root, "ci", {
       baseline: { result: "success" },
       matrix: { result: "success", lanes },
     });
-    const malformed = run(root, args);
     assert.equal(malformed.status, 1);
     assert.ok(
       JSON.parse(malformed.stdout).issues.some((entry) => entry.code === "invalid-need-lanes"),
@@ -7590,11 +7581,10 @@ test("aggregate requires successful job gates and unambiguous lane ownership", a
     { baseline: { result: "success" } },
     { another: { result: "success", lanes: ["baseline"] } },
   ]) {
-    await writeJson(join(root, "needs.json"), {
+    const ambiguous = await aggregateWithNeeds(root, "ci", {
       matrix: { result: "success", lanes: ["baseline"] },
       ...other,
     });
-    const ambiguous = run(root, args);
     assert.equal(ambiguous.status, 1);
     assert.deepEqual(
       JSON.parse(ambiguous.stdout).issues.map((entry) => entry.code),
