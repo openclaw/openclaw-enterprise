@@ -14,6 +14,7 @@ import {
 import { createRunEvidence } from "../helpers/egress-installed-stack.mjs";
 import { deleteInstalledResource } from "../helpers/egress-installed-resource-cleanup.mjs";
 import { createKubernetesClient } from "../helpers/kubernetes-real.mjs";
+import { captureMixedGrantFailure } from "../helpers/openshell-mixed-grant-agent.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
   encodeSyntheticEvents,
@@ -835,4 +836,120 @@ test("failed custody deployment preserves worker event order across a reused att
       "public safe projection",
     );
   }
+});
+
+test("mixed-grant terminal capture rejects malformed observations without inventing availability", async () => {
+  const error = new Error(
+    "MIXED_GRANT_DEPLOYMENT_FAILED: RUNTIME_AUTHENTICATION_FAILED; selected revision failed after provider registration",
+  );
+  const target = { namespaceId: "ns_fixture", agentId: "agent_fixture", id: "rev_fixture" };
+  const receipts = [];
+  const observation = {
+    target,
+    collect: async () => "unavailable",
+    checkpoint: async (event, data) => receipts.push({ event, ...data }),
+  };
+  const unavailableOrigin = { state: "unavailable", truncated: false, events: [] };
+  const unavailableApprovals = {
+    state: "unavailable",
+    truncated: false,
+    matched: 0,
+    consumed: 0,
+    replayClaimed: 0,
+    requestIdHashes: [],
+  };
+  // Missing optional readers and malformed envelopes cannot claim an empty observed result.
+  for (const readers of [
+    {},
+    {
+      collectModelOrigin: () => ({ state: "PRIVATE_STATE_CANARY", events: [] }),
+      collectModelApprovals: async () => ({
+        state: "observed",
+        requestIdHashes: "PRIVATE_IDS_CANARY",
+      }),
+    },
+  ]) {
+    await captureMixedGrantFailure(error, { ...observation, ...readers });
+    const receipt = receipts.at(-1);
+    assert.equal(receipt.event, "mixed-grant-deployment-failed");
+    assert.equal(receipt.workerEvents, "unavailable");
+    assert.deepEqual(receipt.modelOrigin, unavailableOrigin);
+    assert.deepEqual(receipt.modelApprovals, unavailableApprovals);
+  }
+  // Snapshots cross a trust boundary: invalid numbers and hash-like strings must
+  // not become evidence, while an explicit retention limit remains visible.
+  const hash = "a".repeat(64);
+  await captureMixedGrantFailure(error, {
+    ...observation,
+    collectModelOrigin: () => ({
+      state: "observed",
+      truncated: true,
+      events: [
+        {
+          kind: "probe",
+          status: Infinity,
+          count: Number.MAX_SAFE_INTEGER + 1,
+          harness: "codex",
+          auth: "missing",
+          token: "PRIVATE_TOKEN_CANARY",
+        },
+      ],
+    }),
+    collectModelApprovals: async () => ({
+      state: "observed",
+      truncated: "PRIVATE_TRUNCATED_CANARY",
+      matched: -1,
+      consumed: NaN,
+      replayClaimed: Number.MAX_SAFE_INTEGER + 1,
+      requestIdHashes: [hash, hash.toUpperCase(), "sha256:" + hash, "PRIVATE_REQUEST_CANARY"],
+    }),
+  });
+  assert.deepEqual(receipts.at(-1).modelOrigin, unavailableOrigin);
+  assert.deepEqual(receipts.at(-1).modelApprovals, unavailableApprovals);
+  // A malformed row or hash cannot hide valid evidence; its omission is visible.
+  await captureMixedGrantFailure(error, {
+    ...observation,
+    collectModelOrigin: () => ({
+      state: "observed",
+      truncated: false,
+      events: [
+        { kind: "probe", status: 200, count: 1, harness: "codex", auth: "accepted" },
+        { kind: "probe", status: 99, count: 1, harness: "codex", auth: "accepted" },
+      ],
+    }),
+    collectModelApprovals: async () => ({
+      state: "observed",
+      truncated: false,
+      matched: 1,
+      consumed: 0,
+      replayClaimed: 0,
+      requestIdHashes: [hash, hash.toUpperCase(), "sha256:" + hash, "PRIVATE_REQUEST_CANARY"],
+    }),
+  });
+  assert.deepEqual(receipts.at(-1).modelOrigin, {
+    state: "observed",
+    truncated: true,
+    events: [{ kind: "probe", status: 200, count: 1, harness: "codex", auth: "accepted" }],
+  });
+  assert.deepEqual(receipts.at(-1).modelApprovals, {
+    state: "observed",
+    truncated: true,
+    matched: 1,
+    consumed: 0,
+    replayClaimed: 0,
+    requestIdHashes: [hash],
+  });
+  // Valid empty snapshots remain distinguishable from missing observations.
+  await captureMixedGrantFailure(error, {
+    ...observation,
+    collectModelOrigin: () => ({ state: "observed", truncated: false, events: [] }),
+    collectModelApprovals: async () => ({ ...unavailableApprovals, state: "observed" }),
+  });
+  assert.deepEqual(receipts.at(-1).modelOrigin, { ...unavailableOrigin, state: "observed" });
+  assert.deepEqual(receipts.at(-1).modelApprovals, { ...unavailableApprovals, state: "observed" });
+  assert.doesNotMatch(JSON.stringify(receipts), /PRIVATE_[A-Z_]+_CANARY/);
+  // The existing terminal/selected-target gate still owns whether capture runs.
+  await captureMixedGrantFailure(new Error("unrelated"), observation);
+  await captureMixedGrantFailure(error, { ...observation, target: undefined });
+  assert.equal(receipts.length, 5);
 });

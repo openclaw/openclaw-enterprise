@@ -132,6 +132,7 @@ export async function mixedGrantOrigins({ host, tls, cleanup }: MixedGrantOrigin
     port: 0,
     model,
     bearerDigests: { codex: sha256(modelBearer), openclaw: sha256(randomBytes(32)) },
+    expectedGuestPlaceholder: "oce:request-authorized:model",
     turns: Object.values(turns),
     tls: tls.model,
     onObservation: (event) => observations.push(event),
@@ -198,6 +199,7 @@ type SelectedProvider = OpenShellProviderResponse & {
 };
 
 interface SelectedProviders {
+  sandboxId: string;
   modelProvider: SelectedProvider;
   gitProvider: SelectedProvider;
 }
@@ -290,6 +292,7 @@ export async function registerMixedGrantProviders({
             assert.notEqual(modelProvider.id, gitProvider.id);
             // Attach fixture observations to owned copies of immutable Gateway responses.
             selected = {
+              sandboxId: sandbox.id,
               modelProvider: { ...modelProvider, id: modelProvider.id },
               gitProvider: { ...gitProvider, id: gitProvider.id },
             };
@@ -316,7 +319,7 @@ export async function registerMixedGrantProviders({
   assert.equal(gatewayValues.gatewayConfig["openshell.gateway.provider_assertions"], undefined);
   gatewayValues.gatewayConfig["openshell.gateway.provider_assertions"] = rows;
   await upgradeGateway(gatewayValues);
-  for (const provider of Object.values(selected)) {
+  for (const provider of [selected.modelProvider, selected.gitProvider]) {
     provider.profile = await gatewayClient
       .getProviderProfile(workspace, provider.type, signal)
       .catch((error: unknown) => {

@@ -21,6 +21,10 @@ import type {
   ModelOriginObservation,
   ModelOriginTurn,
 } from "../fixtures/openshell-model-origin.ts";
+import {
+  projectInstalledModelApprovals,
+  projectInstalledModelOrigin,
+} from "../../scripts/ci/failure-redaction.mjs";
 import { mixedGrantDeploymentCode } from "./openshell-mixed-grant-setup.ts";
 import { availablePort } from "./available-port.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
@@ -29,6 +33,8 @@ import { stopProcess } from "./stop-process.mjs";
 interface MixedGrantFailureCapture {
   target: { id: string; namespaceId: string; agentId: string } | undefined;
   collect: () => Promise<unknown>;
+  collectModelOrigin?: () => unknown;
+  collectModelApprovals?: () => Promise<unknown>;
   checkpoint: (event: string, data: Record<string, unknown>) => Promise<void>;
 }
 
@@ -52,7 +58,22 @@ export async function captureMixedGrantFailure(
   // Worker outcomes may still say retry; the selected deployment's terminal
   // failure is the trigger, and observation must not replace that failure.
   try {
-    const workerEvents = await collect().catch(() => "unavailable");
+    // Snapshot the in-process origin before asynchronous readers can delay it.
+    // Each source remains useful when another source cannot be observed.
+    let modelOrigin;
+    try {
+      modelOrigin = projectInstalledModelOrigin(observation.collectModelOrigin?.());
+    } catch {
+      modelOrigin = projectInstalledModelOrigin(undefined);
+    }
+    const [worker, approvals] = await Promise.allSettled([
+      Promise.resolve().then(collect),
+      Promise.resolve().then(() => observation.collectModelApprovals?.()),
+    ]);
+    const workerEvents = worker.status === "fulfilled" ? worker.value : "unavailable";
+    const modelApprovals = projectInstalledModelApprovals(
+      approvals.status === "fulfilled" ? approvals.value : undefined,
+    );
     const hashIdentity = (value: string) => createHash("sha256").update(value).digest("hex");
     await checkpoint("mixed-grant-deployment-failed", {
       namespaceIdHash: hashIdentity(target.namespaceId),
@@ -61,6 +82,8 @@ export async function captureMixedGrantFailure(
       workIdHash: hashIdentity(`agent_revision:${target.id}:reconcile`),
       registrationStage: failed[1],
       workerEvents,
+      modelOrigin,
+      modelApprovals,
     });
   } catch {
     // Best-effort evidence cannot hide the original deployment failure.

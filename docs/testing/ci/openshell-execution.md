@@ -137,11 +137,29 @@ The case requires [on-demand grants, Git withdrawal and retained conversation](.
 Source checks alone do not qualify an installed candidate; retain its complete
 result and cleanup receipts.
 
-On deployment failure, the retained `workerEvents` preserve
-`RUNTIME_AUTHENTICATION_FAILED` and a bounded `check`: `login`, `model-probe`, or
+On deployment failure, inspect the retained `mixed-grant-deployment-failed`
+receipt. Its `workerEvents` preserve
+`RUNTIME_AUTHENTICATION_FAILED` and the `check` values `login`, `model-probe`, or
 `other`. An absent `check` leaves the startup step unknown. `login` and
 `model-probe` identify the failing startup step; they do not establish an upstream
 status or credential value.
+
+The receipt also retains up to 8 `modelOrigin` observations with request kind,
+status, count, and an authentication class:
+
+- `missing`: the request has no syntactically valid Bearer credential.
+- `placeholder`: the credential matches the configured guest marker exactly.
+- `rejected`: another Bearer credential fails the configured digest check.
+- `accepted`: the credential matches a configured digest.
+
+An unrecognized authentication class becomes `unknown`. `modelApprovals` retains
+`matched`, `consumed`, and `replayClaimed` counts and up to 8 request-ID hashes
+for approval records that match the selected identity. For both fields, read
+`state` and `truncated` before interpreting the records. An `observed` result
+with no records differs from `unavailable`; a truncated result is incomplete.
+These fields exclude raw credentials and headers. They help diagnose a failed
+deployment; they do not prove that the Supervisor injected a credential or that
+the seven required acceptance checkpoints passed.
 
 ## Interpret timing and proof
 

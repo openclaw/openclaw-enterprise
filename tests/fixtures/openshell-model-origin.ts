@@ -29,9 +29,12 @@ export interface ModelOriginToolTurn {
   timeoutMs: number;
 }
 
+type OriginAuthentication = "missing" | "placeholder" | "rejected" | "accepted";
+
 export type ModelOriginObservation =
   | {
       event: "request";
+      auth: OriginAuthentication;
       kind: "probe" | "unmarked" | "rejected";
       harness?: ModelHarness;
       status: number;
@@ -39,6 +42,7 @@ export type ModelOriginObservation =
     }
   | {
       event: "request";
+      auth: OriginAuthentication;
       kind: "turn";
       harness: ModelHarness;
       status: 200;
@@ -48,6 +52,7 @@ export type ModelOriginObservation =
     }
   | {
       event: "request";
+      auth: OriginAuthentication;
       kind: "tool";
       harness: "codex";
       status: 200;
@@ -65,6 +70,7 @@ interface ModelOriginOptions {
   bearerDigests: Record<ModelHarness, string>;
   turns: readonly ModelOriginTurn[];
   tls?: ServerOptions;
+  expectedGuestPlaceholder?: string;
   onObservation?: (observation: ModelOriginObservation) => void;
 }
 
@@ -210,10 +216,18 @@ function createOpenShellModelOrigin(options: ModelOriginOptions) {
   const turnCounts = new Map(turns.map(({ id }) => [id, 0]));
   const handle = async (request: IncomingMessage, response: ServerResponse) => {
     let harness: ModelHarness | undefined;
+    let auth: OriginAuthentication = "missing";
     function record(kind: "probe" | "unmarked" | "rejected", status: number) {
       response.once("finish", () => {
         const count = ++counts[kind];
-        onObservation?.({ event: "request", kind, status, count, ...(harness && { harness }) });
+        onObservation?.({
+          event: "request",
+          auth,
+          kind,
+          status,
+          count,
+          ...(harness && { harness }),
+        });
       });
     }
     function reject(status: number, code: string, message: string, kind: "probe" | "rejected") {
@@ -227,11 +241,16 @@ function createOpenShellModelOrigin(options: ModelOriginOptions) {
 
     try {
       const bearer = /^Bearer (\S+)$/iu.exec(request.headers.authorization ?? "")?.[1];
+      if (bearer !== undefined) {
+        auth = bearer === options.expectedGuestPlaceholder ? "placeholder" : "rejected";
+      }
       const digest = bearer && createHash("sha256").update(bearer).digest("hex");
       if (digest === codexDigest) {
         harness = "codex";
+        auth = "accepted";
       } else if (digest === openClawDigest) {
         harness = "openclaw";
+        auth = "accepted";
       } else {
         reject(401, "invalid_api_key", "Incorrect API key provided.", "rejected");
         return;
@@ -345,6 +364,7 @@ function createOpenShellModelOrigin(options: ModelOriginOptions) {
             response.once("finish", () => {
               onObservation?.({
                 event: "request",
+                auth,
                 kind: "tool",
                 harness: "codex",
                 status: 200,
@@ -397,6 +417,7 @@ function createOpenShellModelOrigin(options: ModelOriginOptions) {
           turnCounts.set(turn.id, count);
           onObservation?.({
             event: "request",
+            auth,
             kind: "turn",
             harness: turn.harness,
             status: 200,

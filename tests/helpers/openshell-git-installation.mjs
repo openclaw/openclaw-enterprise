@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { openShellGrantCredentialIdentity } from "../../apps/controller/src/drivers/egress-proxy/openshell-token-grant.ts";
 import {
   openShellGitRetentionKind,
   projectOpenShellGitExpiryObservation,
@@ -53,6 +54,51 @@ try {
     process.argv.slice(1),
   );
   process.stdout.write(JSON.stringify(rows));
+} finally {
+  await pool.end();
+}
+`;
+
+// Count only the selected model's retained approvals. Aggregate in PostgreSQL
+// and hash the bounded request sample before it leaves the API container.
+const readModelApprovalSummary = `
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { createPostgresPool } from './packages/occ/src/index.ts';
+const pool = await createPostgresPool(process.env.OCC_DATABASE_URL, {
+  max: 1, connectionTimeoutMillis: 5000, query_timeout: 10000,
+});
+try {
+  const { rows } = await pool.query(
+    \`WITH selected AS MATERIALIZED (
+      SELECT request_id, consumed, assertion_replay_key IS NOT NULL AS replay_claimed
+      FROM occ.request_credential_approvals
+      WHERE namespace_id = $1 AND agent_id = $2 AND revision_id = $3
+        AND recipient_id = $4 AND binding_id = $5 AND expected_credential_identity = $6
+    )
+    SELECT count(*) AS matched,
+      count(*) FILTER (WHERE consumed) AS consumed,
+      count(*) FILTER (WHERE replay_claimed) AS "replayClaimed",
+      ARRAY(SELECT request_id FROM selected ORDER BY request_id LIMIT 8) AS "requestIds"
+    FROM selected\`,
+    process.argv.slice(1),
+  );
+  assert.equal(rows.length, 1);
+  const row = rows[0];
+  const matched = Number(row.matched);
+  const consumed = Number(row.consumed);
+  const replayClaimed = Number(row.replayClaimed);
+  assert.ok([matched, consumed, replayClaimed].every((value) =>
+    Number.isSafeInteger(value) && value >= 0));
+  assert.ok(Array.isArray(row.requestIds) && row.requestIds.length <= 8);
+  const requestIdHashes = row.requestIds.map((id) => {
+    assert.equal(typeof id, 'string');
+    return createHash('sha256').update(id).digest('hex');
+  });
+  process.stdout.write(JSON.stringify({
+    state: 'observed', truncated: matched > 8, matched, consumed, replayClaimed,
+    requestIdHashes,
+  }));
 } finally {
   await pool.end();
 }
@@ -1877,6 +1923,8 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
         // Pin the pre-deployment Worker; diagnostics must not follow a replacement.
         const controllerPods = await readControllerPods("--request-timeout=8s").catch(() => []);
         let target;
+        let modelAdmission;
+        let selectedProviders;
         setupCheckpoint("agent-admission", "deployment");
         fixture.mixedGrantFailureObservation = {
           get target() {
@@ -1892,6 +1940,65 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
               since,
               target,
             }),
+          collectModelOrigin: () => {
+            const events = mixed.modelOrigin.snapshot();
+            return {
+              state: "observed",
+              truncated: events.length > 8,
+              events: events.slice(-8).map(({ kind, status, count, harness, auth }) => ({
+                kind,
+                status,
+                count,
+                harness,
+                auth,
+              })),
+            };
+          },
+          collectModelApprovals: async () => {
+            if (!target || !modelAdmission || !selectedProviders) {
+              return undefined;
+            }
+            const bindingId = modelAdmission.route.bindingId;
+            const provider = selectedProviders.modelProvider;
+            // Admission and registration are established independently of the
+            // approval rows; never infer the expected scope from the rows read.
+            assert.equal(modelAdmission.namespaceId, target.namespaceId);
+            assert.equal(modelAdmission.agentId, target.agentId);
+            assert.equal(modelAdmission.revisionId, target.id);
+            assert.equal(modelAdmission.route.sourceId, modelSource.id);
+            assert.equal(modelAdmission.route.grantKind, "inference");
+            assert.ok(typeof bindingId === "string" && bindingId.length > 0);
+            assert.ok(
+              typeof selectedProviders.sandboxId === "string" &&
+                selectedProviders.sandboxId.length > 0,
+            );
+            const credentials = provider.profile.definition?.credentials;
+            assert.ok(Array.isArray(credentials) && credentials.length === 1);
+            assert.equal(credentials[0]?.name, "access_token");
+            assert.equal(credentials[0]?.token_grant?.audience, bindingId);
+            return JSON.parse(
+              await kube(
+                [
+                  "exec",
+                  "-n",
+                  platform,
+                  "deployment/openclaw-enterprise-api",
+                  "--",
+                  "node",
+                  "--input-type=module",
+                  "-e",
+                  readModelApprovalSummary,
+                  target.namespaceId,
+                  target.agentId,
+                  target.id,
+                  selectedProviders.sandboxId,
+                  bindingId,
+                  openShellGrantCredentialIdentity(provider.id, "access_token"),
+                ],
+                { timeout: 20_000 },
+              ),
+            );
+          },
           checkpoint,
         };
         return await deployMixedGrantAgent(t, {
@@ -1919,14 +2026,15 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
             );
             assert.ok(Array.isArray(rows), "expected committed model admission records");
             assert.equal(rows.length, 1, "expected exactly one selected committed admission");
-            return rows[0];
+            modelAdmission = rows[0];
+            return modelAdmission;
           },
           stateDirectory: stack.directory,
           after: (operation) => cleanup.push(operation),
-          registerProviders: (revision, agent) => {
+          registerProviders: async (revision, agent) => {
             target = { id: revision.id, agentId: agent.id, namespaceId: namespace.id };
             setupCheckpoint("provider-registration", "deployment");
-            return registerMixedGrantProviders({
+            selectedProviders = await registerMixedGrantProviders({
               request,
               namespace,
               agent,
@@ -1940,6 +2048,7 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
               upgradeGateway,
               signal: t.signal,
             });
+            return selectedProviders;
           },
         });
       },

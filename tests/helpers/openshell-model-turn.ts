@@ -150,6 +150,7 @@ export async function assertOpenShellModelTurn({
   );
   const origin: ModelTurnReceipt = {
     event: "request",
+    auth: observed.auth,
     kind: "turn",
     harness: observed.harness,
     status: observed.status,
@@ -257,6 +258,7 @@ export async function assertOpenShellToolTurn({
   );
   const origin: ToolTurnReceipt = {
     event: "request",
+    auth: observed.auth,
     kind: "tool",
     harness: observed.harness,
     status: observed.status,

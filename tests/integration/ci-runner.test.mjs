@@ -18,6 +18,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test, { describe } from "node:test";
 import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.mjs";
+import { projectOpenShellGitRetention } from "../../scripts/ci/openshell-git-retention.mjs";
 import { skipperFailureSummary } from "../../scripts/ci/skipper-release.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -1066,6 +1067,115 @@ test("mixed-grant output closes deployment codes and projects before diagnostics
       check: "other",
     },
   ];
+  const originEvent = { kind: "probe", status: 200, count: 3, harness: "codex", auth: "accepted" };
+  const modelOriginInput = {
+    state: "observed",
+    truncated: false,
+    events: [
+      { ...originEvent, headers: "PRIVATE_HEADER_CANARY", identity: "PRIVATE_IDENTITY_CANARY" },
+      {
+        kind: "PRIVATE_KIND_CANARY",
+        status: 401,
+        count: 1,
+        harness: "PRIVATE_HARNESS_CANARY",
+        auth: "PRIVATE_AUTH_CANARY",
+      },
+      ...Array.from({ length: 33 }, () => originEvent),
+    ],
+    token: "PRIVATE_ORIGIN_TOKEN_CANARY",
+  };
+  const modelOrigin = {
+    state: "observed",
+    truncated: true,
+    events: [
+      originEvent,
+      { kind: "other", status: 401, count: 1, harness: "unknown", auth: "unknown" },
+      ...Array.from({ length: 6 }, () => originEvent),
+    ],
+  };
+  const requestIdHashes = Array.from({ length: 35 }, (_, index) =>
+    createHash("sha256")
+      .update("request-" + index)
+      .digest("hex"),
+  );
+  const modelApprovalsInput = {
+    state: "observed",
+    truncated: false,
+    matched: 7,
+    consumed: 5,
+    replayClaimed: 2,
+    requestIdHashes: ["PRIVATE_REQUEST_CANARY", ...requestIdHashes],
+    tokenDigest: "PRIVATE_DIGEST_CANARY",
+    requestId: "PRIVATE_REQUEST_ID_CANARY",
+  };
+  const modelApprovals = {
+    state: "observed",
+    truncated: true,
+    matched: 7,
+    consumed: 5,
+    replayClaimed: 2,
+    requestIdHashes: requestIdHashes.slice(0, 8),
+  };
+  const unavailableOrigin = { state: "unavailable", truncated: false, events: [] };
+  const unavailableApprovals = {
+    state: "unavailable",
+    truncated: false,
+    matched: 0,
+    consumed: 0,
+    replayClaimed: 0,
+    requestIdHashes: [],
+  };
+  // Maximum-width schema input checks the combined checkpoint budget. This is
+  // a size adversary, not a reachable Worker history or a deployment proof.
+  const maximum = Number.MAX_SAFE_INTEGER;
+  const bounded = projectOpenShellGitRetention({
+    kind: "openshell-git-retention",
+    event: "mixed-grant-deployment-failed",
+    ...identityHashes,
+    registrationStage: "before",
+    workerEvents: Array.from({ length: 32 }, () => ({
+      event: "completion",
+      budgetAttempt: maximum,
+      deployPasses: maximum,
+      outcome: "permanent",
+      code: "SANDBOX_ADMISSION_LIMIT_REACHED",
+      check: "model-probe",
+      cause: "OpenShellSandboxConfigurationFailure",
+      cleanupCause: "OpenShellSandboxConfigurationFailure",
+      dependency: "sandbox_admission",
+      method: "GetSandboxProviderStatus",
+      grpcStatus: 16,
+      validationCategory: "POLICY_MIDDLEWARE_VALIDATION",
+      status: 503,
+    })),
+    modelOrigin: {
+      state: "observed",
+      truncated: false,
+      events: Array.from({ length: 32 }, () => ({
+        kind: "unmarked",
+        status: 401,
+        count: maximum,
+        harness: "openclaw",
+        auth: "placeholder",
+      })),
+    },
+    modelApprovals: {
+      state: "observed",
+      truncated: false,
+      matched: maximum,
+      consumed: maximum,
+      replayClaimed: maximum,
+      requestIdHashes,
+    },
+  });
+  assert.ok(bounded);
+  assert.equal(bounded.workerEvents.length, 32);
+  assert.equal(bounded.modelOrigin.events.length, 8);
+  assert.equal(bounded.modelApprovals.requestIdHashes.length, 8);
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(bounded)) <= 16_384,
+    "combined diagnostic must fit the existing qualification checkpoint limit",
+  );
   for (const [code, registrationStage] of [
     ["PRIVATE_UPPERCASE_CANARY", "before"],
     ["SANDBOX_GATEWAY_UNAUTHORIZED", "after"],
@@ -1091,10 +1201,13 @@ test("mixed-grant output closes deployment codes and projects before diagnostics
             ...identityHashes,
             registrationStage,
             workerEvents: registrationStage === "before" ? workerEvents : "unavailable",
+            modelOrigin: registrationStage === "before" ? modelOrigin : unavailableOrigin,
+            modelApprovals: registrationStage === "after" ? modelApprovals : unavailableApprovals,
           },
         ];
-    // Control only external deployment and Worker observations. The normal test
-    // catch invokes the shared capture, real collector and diagnostic projection.
+    // Control only external observations. The normal test catch invokes the
+    // shared capture, real Worker collector, checkpoint and reporter projections.
+    // Opposite reader failures must not hide the other source's bounded receipt.
     const failureSource = `
 import assert from "node:assert/strict";
 import { collectInstalledWorkerEvents } from ${JSON.stringify(collectorUrl)};
@@ -1107,16 +1220,33 @@ export function createOpenShellGitInstallation(t) {
     status: { containerStatuses: [{ name: "worker", containerID: "container-id", restartCount: 0, state: { running: {} } }] } };
   let receipts = 0;
   let reads = 0;
+  let originReads = 0;
+  let approvalReads = 0;
   let tornDown = false;
   t.after(() => {
     tornDown = true;
     assert.equal(receipts, ${gatewayFailure ? 0 : 1}, "capture must emit exactly once before teardown");
     assert.equal(reads, ${gatewayFailure ? 0 : 1}, "capture must read the selected Worker once");
+    assert.equal(originReads, ${gatewayFailure ? 0 : 1}, "capture snapshots the origin once");
+    assert.equal(approvalReads, ${gatewayFailure ? 0 : 1}, "capture reads approvals once");
   });
   return {
     deployMixedGrantAgent: async () => { throw original; },
     mixedGrantFailureObservation: {
         target,
+        collectModelOrigin: () => {
+          assert.equal(tornDown, false);
+          assert.equal(reads, 0, "snapshot origin before asynchronous Worker collection");
+          originReads++;
+          if (${JSON.stringify(registrationStage)} === "after") throw new Error("PRIVATE_ORIGIN_READ_CANARY");
+          return ${JSON.stringify(modelOriginInput)};
+        },
+        collectModelApprovals: async () => {
+          assert.equal(tornDown, false);
+          approvalReads++;
+          if (${JSON.stringify(registrationStage)} === "before") throw new Error("PRIVATE_APPROVAL_READ_CANARY");
+          return ${JSON.stringify(modelApprovalsInput)};
+        },
         collect: () => collectInstalledWorkerEvents({
           target, controllerNamespace: "controller-namespace", controllerImage: "controller-selected",
           controllerPods: [pod], since: "2026-01-01T00:00:00.000Z",

@@ -8,7 +8,11 @@ import {
 } from "../../packages/contracts/src/runtime-failure.mjs";
 
 import { openShellSetupProgress, openShellVerificationOperations } from "./openshell-progress.mjs";
-import { projectInstalledWorkerEvent } from "./failure-redaction.mjs";
+import {
+  projectInstalledModelApprovals,
+  projectInstalledModelOrigin,
+  projectInstalledWorkerEvent,
+} from "./failure-redaction.mjs";
 
 export const openShellGitRetentionKind = "openshell-git-retention";
 
@@ -362,6 +366,8 @@ const events = {
     revisionIdHash: ["revisionIdHash", hash],
     workIdHash: ["workIdHash", hash],
     registrationStage: ["registrationStage", choice("before", "after")],
+    modelOrigin: ["modelOrigin", projectInstalledModelOrigin],
+    modelApprovals: ["modelApprovals", projectInstalledModelApprovals],
     workerEvents: [
       "workerEvents",
       (value) => {

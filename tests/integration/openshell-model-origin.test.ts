@@ -20,6 +20,8 @@ test(
     const nonce = randomUUID();
     const token = randomBytes(32).toString("hex");
     const model = "fixture-model";
+    const placeholder = "oce:request-authorized:model";
+    const rejectedToken = randomBytes(32).toString("hex");
     const before: ModelOriginTurn = {
       harness: "codex",
       id: "before",
@@ -43,16 +45,36 @@ test(
         openclaw: createHash("sha256").update(randomBytes(32)).digest("hex"),
       },
       turns: [before, after],
+      expectedGuestPlaceholder: placeholder,
       onObservation: (observation) => observations.push(observation),
     });
     t.after(() => upstream.close());
-    const request = (input: unknown[]) =>
+    const request = (input: unknown[], authorization: string | null = `Bearer ${token}`) =>
       fetch(`${upstream.origin}/v1/responses`, {
         method: "POST",
-        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        headers: {
+          ...(authorization === null ? {} : { authorization }),
+          "content-type": "application/json",
+        },
         body: JSON.stringify({ model, stream: true, input }),
         signal: t.signal,
       });
+
+    // These are actual rejected HTTP requests, so the diagnostic must separate a
+    // missing bearer from the expected guest placeholder and an unrelated value.
+    for (const authorization of [null, `Bearer ${placeholder}`, `Bearer ${rejectedToken}`]) {
+      const rejected = await request([{ role: "user", content: before.marker }], authorization);
+      assert.equal(rejected.status, 401);
+      assert.equal((await rejected.json()).error.code, "invalid_api_key");
+    }
+    assert.deepEqual(
+      observations.map(({ auth, status }) => ({ auth, status })),
+      [
+        { auth: "missing", status: 401 },
+        { auth: "placeholder", status: 401 },
+        { auth: "rejected", status: 401 },
+      ],
+    );
 
     const first = await request([{ role: "user", content: before.marker }]);
     assert.equal(first.status, 200);
@@ -80,6 +102,7 @@ test(
         {
           event: "request",
           kind: "turn",
+          auth: "accepted",
           harness: "codex",
           status: 200,
           turnId: before.id,
@@ -89,6 +112,7 @@ test(
         {
           event: "request",
           kind: "turn",
+          auth: "accepted",
           harness: "codex",
           status: 200,
           turnId: after.id,
@@ -97,6 +121,17 @@ test(
         },
       ],
     );
+    assert.equal(
+      observations.find((observation) => observation.status === 400)?.auth,
+      "accepted",
+      "valid authentication is distinct from a rejected conversation payload",
+    );
+    const serialized = JSON.stringify(observations);
+    for (const value of [token, rejectedToken, placeholder]) {
+      assert.equal(serialized.includes(value), false);
+      assert.equal(serialized.includes(createHash("sha256").update(value).digest("hex")), false);
+      assert.equal(serialized.includes(`Bearer ${value}`), false);
+    }
   },
 );
 
@@ -204,6 +239,7 @@ test(
     assert.deepEqual(receipt(wrong.id), {
       event: "request",
       kind: "tool",
+      auth: "accepted",
       harness: "codex",
       status: 200,
       turnId: wrong.id,
@@ -241,6 +277,7 @@ test(
     assert.deepEqual(receipt(correct.id), {
       event: "request",
       kind: "tool",
+      auth: "accepted",
       harness: "codex",
       status: 200,
       turnId: correct.id,

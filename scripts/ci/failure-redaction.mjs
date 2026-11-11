@@ -485,3 +485,74 @@ export function projectInstalledWorkerEvent(value) {
         : undefined,
   };
 }
+
+const observationRecord = (value) =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+const observationCount = (value) => Number.isSafeInteger(value) && value >= 0;
+const observationChoice = (value, choices, fallback) =>
+  choices.split(" ").includes(value) ? value : fallback;
+
+/** Closed, bounded snapshot shared by terminal capture and public CI reprojection. */
+export function projectInstalledModelOrigin(value) {
+  if (!observationRecord(value) || value.state !== "observed" || !Array.isArray(value.events)) {
+    return { state: "unavailable", truncated: false, events: [] };
+  }
+  const events = value.events.filter(
+    (event) =>
+      observationRecord(event) &&
+      observationCount(event.count) &&
+      Number.isSafeInteger(event.status) &&
+      event.status >= 100 &&
+      event.status <= 599,
+  );
+  if (value.events.length > 0 && events.length === 0) {
+    return { state: "unavailable", truncated: false, events: [] };
+  }
+  return {
+    state: "observed",
+    truncated:
+      value.truncated === true || value.events.length > 8 || events.length !== value.events.length,
+    events: events.slice(0, 8).map((event) => ({
+      kind: observationChoice(event.kind, "probe unmarked rejected turn tool", "other"),
+      status: event.status,
+      count: event.count,
+      harness: observationChoice(event.harness, "codex openclaw", "unknown"),
+      auth: observationChoice(event.auth, "missing placeholder rejected accepted", "unknown"),
+    })),
+  };
+}
+
+/** Preserve only selected approval counts and already-hashed request identifiers. */
+export function projectInstalledModelApprovals(value) {
+  if (
+    !observationRecord(value) ||
+    value.state !== "observed" ||
+    !Array.isArray(value.requestIdHashes) ||
+    !observationCount(value.matched) ||
+    !observationCount(value.consumed) ||
+    !observationCount(value.replayClaimed)
+  ) {
+    return {
+      state: "unavailable",
+      truncated: false,
+      matched: 0,
+      consumed: 0,
+      replayClaimed: 0,
+      requestIdHashes: [],
+    };
+  }
+  const requestIdHashes = value.requestIdHashes.filter(
+    (hash) => typeof hash === "string" && /^[a-f0-9]{64}$/.test(hash),
+  );
+  return {
+    state: "observed",
+    truncated:
+      value.truncated === true ||
+      value.requestIdHashes.length > 8 ||
+      requestIdHashes.length !== value.requestIdHashes.length,
+    matched: value.matched,
+    consumed: value.consumed,
+    replayClaimed: value.replayClaimed,
+    requestIdHashes: requestIdHashes.slice(0, 8),
+  };
+}
