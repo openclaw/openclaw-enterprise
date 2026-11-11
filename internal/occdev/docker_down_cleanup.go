@@ -27,9 +27,24 @@ const developmentKeyDirectoryPrefix = "openclaw-dev-up-key."
 // is removed only when it is still the private, owned directory dev-up made
 // in the temporary directory and holds nothing but the copied service key
 // (or an interrupted copy of it); anything else is kept and reported. The
-// stack is already stopped, and the next start copies a new key.
+// stack is already stopped, and the next start copies a new key. The browser
+// directory and the record are read only while they are private and owned
+// by the current user, so a planted directory or a symlinked record in the
+// shared temporary directory is never followed.
 func removeRecordedDevelopmentKeyDirectories(browserDirectory string, out, warnings io.Writer) {
 	record := filepath.Join(browserDirectory, developmentKeyDirectoryRecord)
+	for _, path := range []struct {
+		name      string
+		directory bool
+	}{{browserDirectory, true}, {record, false}} {
+		if _, err := os.Lstat(path.name); errors.Is(err, fs.ErrNotExist) {
+			return
+		}
+		if err := privateOwned(path.name, path.directory); err != nil {
+			fmt.Fprintf(warnings, "Warning: did not read the service key directory record: %v\n", err)
+			return
+		}
+	}
 	data, err := os.ReadFile(record)
 	if errors.Is(err, fs.ErrNotExist) {
 		return
@@ -45,6 +60,9 @@ func removeRecordedDevelopmentKeyDirectories(browserDirectory string, out, warni
 		if directory == "" {
 			continue
 		}
+		// dev-up joins ${TMPDIR:-/tmp} and the directory name; a TMPDIR ending in
+		// "/" (the macOS default) would otherwise record "...//openclaw-dev-up-key.X".
+		directory = filepath.Clean(directory)
 		removed, err := removeDevelopmentKeyDirectory(directory)
 		if err != nil {
 			fmt.Fprintf(warnings, "Warning: kept service key directory %s: %v\n", directory, err)
@@ -62,9 +80,30 @@ func removeRecordedDevelopmentKeyDirectories(browserDirectory string, out, warni
 		return
 	}
 	// Keep the entries that still need attention so a later down retries them.
-	if err := os.WriteFile(record, []byte(strings.Join(kept, "\n")+"\n"), 0600); err != nil {
+	if err := replacePrivateFile(record, []byte(strings.Join(kept, "\n")+"\n")); err != nil {
 		fmt.Fprintf(warnings, "Warning: could not update %s: %v\n", record, err)
 	}
+}
+
+// replacePrivateFile replaces path with a new private file holding data. It
+// writes a temporary file next to path and renames it over path, so a
+// symlink at path is replaced rather than followed.
+func replacePrivateFile(path string, data []byte) error {
+	file, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	_, err = file.Write(data)
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Rename(file.Name(), path)
+	}
+	if err != nil {
+		os.Remove(file.Name())
+	}
+	return err
 }
 
 // removeDevelopmentKeyDirectory removes one recorded key directory. It

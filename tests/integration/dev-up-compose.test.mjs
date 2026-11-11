@@ -268,6 +268,33 @@ test("dev-down removes the service key directory dev-up created and keeps a chos
   assert.match(await readFile(chosenKey, "utf8"), new RegExp(serviceKey));
 });
 
+test("dev-up records a clean key directory path when TMPDIR ends in a slash", async (t) => {
+  const fixture = await createFixture(t);
+  const options = composeOptions(fixture);
+  // macOS sets TMPDIR to ".../T/".
+  const env = { ...fixture.env, TMPDIR: fixture.directory + "/" };
+
+  const started = await runDevUp(["--", ...options], env);
+  assert.equal(started.status, 0, started.stderr);
+  const [owned, ...others] = await ownedKeyDirectories(fixture);
+  assert.deepEqual(others, []);
+  const [browser] = (await readdir(fixture.directory)).filter((name) =>
+    name.startsWith("occ-docker-"),
+  );
+  assert.equal(
+    await readFile(join(fixture.directory, browser, "dev-up-key-directories"), "utf8"),
+    join(fixture.directory, owned) + "\n",
+  );
+
+  const stopped = await runCommand(fixture.cli, ["dev", "down", "--", ...options], {
+    cwd: fixture.fixtureRepository,
+    env,
+  });
+  assert.equal(stopped.status, 0, stopped.stderr);
+  assert.doesNotMatch(stopped.stderr, /kept service key directory/);
+  assert.deepEqual(await ownedKeyDirectories(fixture), []);
+});
+
 test("dev-down --volumes removes the Installation's Docker Compute Namespace networks", async (t) => {
   const fixture = await createFixture(t);
   const options = composeOptions(fixture);

@@ -441,7 +441,10 @@ export OCC_DEVELOPMENT_BROWSER_ORIGIN OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN 
 export OCC_DEVELOPMENT_BROWSER_TLS_CERT OCC_DEVELOPMENT_BROWSER_TLS_KEY
 export OCC_AGENT_NATIVE_ADMIN_ENABLED=false
 if [ -z "$key_output" ]; then
-  key_directory="$(mktemp -d "${TMPDIR:-/tmp}/openclaw-dev-up-key.XXXXXXXXXX")"
+  # Drop trailing slashes (macOS sets TMPDIR to ".../T/") so the recorded path is clean.
+  key_parent="${TMPDIR:-/tmp}"
+  while [ "$key_parent" != "${key_parent%/}" ]; do key_parent="${key_parent%/}"; done
+  key_directory="$(mktemp -d "$key_parent/openclaw-dev-up-key.XXXXXXXXXX")"
   chmod 700 "$key_directory"
   key_output="$key_directory/initial-admin-service-key.json"
   # Record only directories this script created: occ dev down removes them with the
