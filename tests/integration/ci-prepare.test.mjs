@@ -3801,6 +3801,16 @@ if (args[0] === "pull") {
         { harness: "codex", endpoint: true, credentials: ["OPENAI_API_KEY"], file },
       );
     }
+    // The new finite-Git installer still consumes a PAT; joining the installer
+    // lane must not make its file-level preparation accept an API key alone.
+    for (const credentials of [["OPENAI_API_KEY"], ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"]]) {
+      cases.push({
+        harness: "codex",
+        credentials,
+        file: "tests/integration/openshell-git-finite-removal-real.test.ts",
+        ...(credentials.includes("CODEX_ACCESS_TOKEN") ? {} : { missing: "CODEX_ACCESS_TOKEN" }),
+      });
+    }
     // Generic workflows use API keys even when an unrelated managed PAT is present.
     // PAT-only input must fail before the preparer creates a state file or any resources.
     for (const file of [

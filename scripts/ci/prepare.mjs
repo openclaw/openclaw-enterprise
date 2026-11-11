@@ -1022,7 +1022,7 @@ async function validateLaneInputsBeforeSideEffects(lane, { file, modelSelectors 
   ].includes(file);
   // Custom keys must not reach sibling tests that register the public provider.
   if (isOpenShellLane(name)) {
-    const endpoint = modelEnv.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim();
+    const endpoint = effectiveEnv.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim();
     const parsedEndpoint = endpoint ? URL.parse(endpoint) : null;
     if (endpoint && !parsedEndpoint) {
       throw new Error("The OpenShell model endpoint must be a valid absolute URL.");

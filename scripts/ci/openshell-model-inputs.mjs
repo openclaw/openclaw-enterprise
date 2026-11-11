@@ -40,7 +40,7 @@ export function openShellRequiredEnv(lane, file, requiredEnv, env) {
         "tests/integration/dev-up-openshell-k3d-real.test.mjs",
       ].includes(file) ||
       (env.OCC_TEST_OPENSHELL_HARNESS === "openclaw" &&
-      (gatewayFile || (file === undefined && env.OCC_K3D_HARNESS === "openclaw"))) ||
+        (gatewayFile || (file === undefined && env.OCC_K3D_HARNESS === "openclaw"))) ||
       (gatewayFile && Boolean(env.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim())));
   return [
     ...new Set(
