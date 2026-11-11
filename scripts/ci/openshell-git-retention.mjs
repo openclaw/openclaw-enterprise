@@ -352,6 +352,62 @@ const policyDenial = {
   endedAt: ["endedAt", count],
 };
 const events = {
+  // Setup points mark entry into an operation, not successful completion.
+  "mixed-grant-setup": {
+    phase: ["phase", choice("installation", "deployment")],
+    operation: [
+      "operation",
+      choice(
+        "input-validation",
+        "supplier-selection",
+        "local-stack",
+        "state-readback",
+        "api-bootstrap",
+        "namespace-selection",
+        "workspace-selection",
+        "origin-network",
+        "origin-start",
+        "origin-routing",
+        "authority-configuration",
+        "controller-configuration",
+        "supervisor-trust",
+        "gateway-configuration",
+        "model-source-registration",
+        "gateway-connect",
+        "agent-admission",
+        "committed-admission",
+        "provider-registration",
+      ),
+    ],
+  },
+  "mixed-grant-failure": {
+    phase: [
+      "phase",
+      choice(
+        "installation",
+        "deployment",
+        "Gateway assertion profiles",
+        "model before Git",
+        "first fresh Git fetch",
+        "Git withdrawal",
+        "withdrawn fresh Git fetch",
+        "same conversation after Git withdrawal",
+      ),
+    ],
+    category: [
+      "category",
+      choice("assertion", "command-timeout", "cancelled", "http", "deployment", "operation"),
+    ],
+    httpStatus: [
+      "httpStatus",
+      (value) => {
+        if (value === null) {
+          return null;
+        }
+        return Number.isInteger(value) && value >= 100 && value <= 599 ? value : undefined;
+      },
+    ],
+  },
   "mixed-grant-agent-git-tool": {
     revisionIdHash: ["revisionId", identityHash],
     turnIdHash: ["turnId", identityHash],
@@ -593,6 +649,13 @@ export function projectOpenShellGitRetention(value) {
     };
   }
   const selected = project(value, fields);
+  if (
+    selected !== undefined &&
+    value.event === "mixed-grant-failure" &&
+    (selected.category === "http") !== (selected.httpStatus !== null)
+  ) {
+    return undefined;
+  }
   if (
     selected !== undefined &&
     value.event === "mixed-grant-withdrawal-denied" &&

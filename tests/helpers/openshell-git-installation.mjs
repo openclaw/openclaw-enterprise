@@ -146,7 +146,10 @@ export function createOpenShellGitApi({ origin, key, signal, after }) {
     });
     if (!response.ok) {
       await response.body?.cancel();
-      throw new Error(`OCC ${method} ${path} returned HTTP ${response.status}`);
+      throw Object.assign(new Error(`OCC ${method} ${path} returned HTTP ${response.status}`), {
+        code: "OCC_HTTP_FAILURE",
+        status: response.status,
+      });
     }
     if (response.status === 204) {
       return undefined;
@@ -439,6 +442,21 @@ export function createOpenShellGitInstallation(
 }
 
 async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
+  const measurement = (event, data) => {
+    const value = { kind: openShellGitRetentionKind, event, ...data };
+    assert.ok(
+      projectOpenShellGitRetention(value),
+      "qualification receipt must have a safe CI projection",
+    );
+    t.diagnostic(`openclaw-ci-measurement ${JSON.stringify(value)}`);
+  };
+  const setupCheckpoint = (operation, phase = "installation") => {
+    if (mixedGrant) {
+      measurement("mixed-grant-setup", { phase, operation });
+    }
+  };
+  // Emit before the guards: failed setup still reaches the normal CI reporter.
+  setupCheckpoint("input-validation");
   const eventually = (description, operation, timeout = 120_000) =>
     waitUntil(description, operation, timeout, t.signal);
   let tearingDown = false;
@@ -471,14 +489,6 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
   }
   const cleanup = [];
   const stackCleanup = [];
-  const measurement = (event, data) => {
-    const value = { kind: openShellGitRetentionKind, event, ...data };
-    assert.ok(
-      projectOpenShellGitRetention(value),
-      "qualification receipt must have a safe CI projection",
-    );
-    t.diagnostic(`openclaw-ci-measurement ${JSON.stringify(value)}`);
-  };
   // Stop workloads before the issuer, and run every cleanup even after a failure.
   t.after(async () => {
     tearingDown = true;
@@ -497,7 +507,9 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
   });
   const directory = await mkdtemp(join(tmpdir(), "oce-installed-git-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  setupCheckpoint("supplier-selection");
   const supplier = mixedGrant ? await mixedGrantSupplier(directory, t.signal) : undefined;
+  setupCheckpoint("local-stack");
   const stack = await localFirstAgentStack(
     {
       diagnostic: (message) => t.diagnostic(message),
@@ -505,6 +517,7 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
     },
     { modelCredential: mixedGrant ? "controlled" : "openai", supplier },
   );
+  setupCheckpoint("state-readback");
   const state = JSON.parse(await readFile(join(stack.directory, "state.json"), "utf8"));
   assert.equal(state.deploymentMode, "k3d");
   assert.equal(state.sandboxDriver, "openshell");
@@ -557,6 +570,7 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
     "--namespace",
     platform,
   ];
+  setupCheckpoint("api-bootstrap");
   const admin = JSON.parse(
     await readFile(join(stack.directory, "initial-admin-service-key.json"), "utf8"),
   );
@@ -566,11 +580,13 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
     signal: t.signal,
     after: (operation) => cleanup.push(operation),
   });
+  setupCheckpoint("namespace-selection");
   const namespaces = await request("GET", "/namespaces");
   const defaults = namespaces.filter(({ name }) => name === "default");
   assert.equal(defaults.length, 1);
   const namespace = await request("GET", `/namespaces/${defaults[0].id}`);
   assert.equal(namespace.status, "ready");
+  setupCheckpoint("workspace-selection");
   const namespaceList = JSON.parse(
     await kube(["get", "namespaces", "-l", "openclaw.dev/namespace", "-o", "json"]),
   );
@@ -605,6 +621,7 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
     });
   }
 
+  setupCheckpoint("origin-network");
   const network = JSON.parse(
     await command("docker", ["network", "inspect", `k3d-${state.cluster}`]),
   );
@@ -614,6 +631,7 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
   const authorityHost = `openclaw-enterprise-openshell-git.${platform}.svc.cluster.local`;
   const modelHost = `model-fixture.${platform}.svc.cluster.local`;
   const modelAuthorityHost = `openclaw-enterprise-egress-authority.${platform}.svc.cluster.local`;
+  setupCheckpoint("origin-start");
   const tls = await certificates(
     command,
     directory,
@@ -636,6 +654,7 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
   }
   const modelPort = mixed ? Number(new URL(mixed.modelOrigin.origin).port) : undefined;
   const originPort = Number(new URL(origin.origin).port);
+  setupCheckpoint("origin-routing");
   const metadata = (name) => ({ name, namespace: platform });
   await apply([
     {
@@ -692,6 +711,7 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
     timeout: 130_000,
   });
 
+  setupCheckpoint("authority-configuration");
   const gatewayValues = JSON.parse(
     await command("helm", ["get", "values", "openshell-gateway", ...helmContext, "-o", "json"]),
   );
@@ -952,6 +972,7 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
       clients: [peer(sandboxNamespace, supervisorLabels)],
     };
   }
+  setupCheckpoint("controller-configuration");
   const valuesFile = join(directory, "oce-values.json");
   await writeFile(valuesFile, JSON.stringify(values), { mode: 0o600 });
   await command(
@@ -970,6 +991,7 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
     { timeout: 190_000 },
   );
 
+  setupCheckpoint("supervisor-trust");
   const supervisor = await trustedSupervisor({
     command,
     cleanup,
@@ -1012,6 +1034,7 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
     ...(gatewayValues.server.extraVolumeMounts ?? []),
     { name: "git-authority-ca", mountPath: "/etc/openshell-git-ca", readOnly: true },
   ];
+  setupCheckpoint("gateway-configuration");
   const gatewayFile = join(directory, "gateway-values.json");
   await writeFile(gatewayFile, JSON.stringify(gatewayValues), { mode: 0o600 });
   const charts = supplier
@@ -1040,6 +1063,7 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
     { timeout: 190_000 },
   );
 
+  setupCheckpoint("model-source-registration");
   if (mixed) {
     const secret = await request("POST", `/namespaces/${namespace.id}/secrets`, {
       name: "mixed-grant-model",
@@ -1062,6 +1086,7 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
       return current.state === "ready" && current.status?.state === "ready" ? current : undefined;
     });
   }
+  setupCheckpoint("gateway-connect");
   const port = await availablePort();
   const forward = spawn(
     "kubectl",
@@ -1675,13 +1700,15 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
         assert.ok(Array.isArray(rows), "expected installed model approval records");
         return rows;
       },
-      deployMixedGrantAgent: () =>
-        deployMixedGrantAgent(t, {
+      deployMixedGrantAgent: () => {
+        setupCheckpoint("agent-admission", "deployment");
+        return deployMixedGrantAgent(t, {
           ...fixture,
           model: mixed.model,
           modelTurns: mixed.modelTurns,
           modelOrigin: mixed.modelOrigin,
           readModelAdmission: async ({ agentId, revisionId }) => {
+            setupCheckpoint("committed-admission", "deployment");
             const rows = JSON.parse(
               await kube([
                 "exec",
@@ -1704,8 +1731,9 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
           },
           stateDirectory: stack.directory,
           after: (operation) => cleanup.push(operation),
-          registerProviders: (revision, agent) =>
-            registerMixedGrantProviders({
+          registerProviders: (revision, agent) => {
+            setupCheckpoint("provider-registration", "deployment");
+            return registerMixedGrantProviders({
               request,
               namespace,
               agent,
@@ -1718,8 +1746,10 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
               gitEndpoint,
               upgradeGateway,
               signal: t.signal,
-            }),
-        }),
+            });
+          },
+        });
+      },
     });
   }
   return fixture;

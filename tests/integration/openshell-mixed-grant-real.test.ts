@@ -1,6 +1,13 @@
-import assert from "node:assert/strict";
+import assert, { AssertionError } from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+import {
+  openShellGitRetentionKind,
+  projectOpenShellGitRetention,
+} from "../../scripts/ci/openshell-git-retention.mjs";
+import { FixtureCommandTimeoutError } from "../fixtures/repository-credentials/process.mjs";
 
 import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.mjs";
 import { observeUntil } from "../helpers/finite-git-agent.ts";
@@ -19,12 +26,13 @@ test(
   "OpenShell grants model and Git on demand and preserves the conversation after Git withdrawal",
   { skip: !selected, timeout: 45 * 60_000 },
   async (t) => {
-    let phase = "setup";
+    let phase = "installation";
     try {
       // Only the upstream model and Git issuer are controlled. Admission, signed
       // grants, workload execution and withdrawal use the installed platform.
       const fixture = await createOpenShellGitInstallation(t, { mode: "mixed-grant" });
       assert.ok(fixture.deployMixedGrantAgent);
+      phase = "deployment";
       const a = await fixture.deployMixedGrantAgent();
       const { origin, gitScope, modelOrigin } = fixture;
       assert.ok(gitScope);
@@ -337,14 +345,89 @@ test(
               error.message,
             )
           : null;
+      let category = "operation";
+      let httpStatus: number | null = null;
+      if (terminalFailure) {
+        category = "deployment";
+      } else if (t.signal.aborted) {
+        category = "cancelled";
+      } else if (error instanceof AssertionError) {
+        category = "assertion";
+      } else if (error instanceof FixtureCommandTimeoutError) {
+        category = "command-timeout";
+      } else if (
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "OCC_HTTP_FAILURE" &&
+        "status" in error &&
+        typeof error.status === "number" &&
+        Number.isInteger(error.status) &&
+        error.status >= 100 &&
+        error.status <= 599
+      ) {
+        category = "http";
+        httpStatus = error.status;
+      }
+      const failure = {
+        kind: openShellGitRetentionKind,
+        event: "mixed-grant-failure",
+        phase,
+        category,
+        httpStatus,
+      };
+      assert.ok(
+        projectOpenShellGitRetention(failure),
+        "failure diagnostic must have a safe CI projection",
+      );
+      t.diagnostic(`openclaw-ci-measurement ${JSON.stringify(failure)}`);
       if (terminalFailure) {
         // eslint-disable-next-line preserve-caught-error -- The raw cause may contain credentials; retain only the fixed diagnostic.
         throw new Error(
           `MIXED_GRANT_DEPLOYMENT_FAILED: ${terminalFailure[1]}; verification phase ${phase}.`,
         );
       }
-      // eslint-disable-next-line preserve-caught-error -- Raw upstream errors may contain credentials; the phase locates private evidence.
-      throw new Error(`Mixed model and Git grant verification failed (${phase}).`);
+      const locations: string[] = [];
+      if (error instanceof Error && typeof error.stack === "string") {
+        const sources = [
+          "tests/integration/openshell-mixed-grant-real.test.ts",
+          "tests/helpers/openshell-git-installation.mjs",
+          "tests/helpers/openshell-mixed-grant-agent.ts",
+          "tests/helpers/openshell-mixed-grant-setup.ts",
+          "tests/helpers/openshell-model-turn.ts",
+          "tests/helpers/local-first-agent-stack.mjs",
+          "tests/fixtures/repository-credentials/process.mjs",
+        ];
+        // Exclude the complete message, including multiline assertion details.
+        // Only fixed source paths and numeric coordinates may leave this catch.
+        const messageIndex = error.stack.indexOf(error.message);
+        const frames =
+          messageIndex < 0 ? "" : error.stack.slice(messageIndex + error.message.length);
+        for (const line of frames.split("\n").slice(0, 32)) {
+          const frame =
+            /^\s+at (?:[^()\n]* \()?((?:file:\/\/|\/)[^()\n]+):([1-9]\d{0,5}):([1-9]\d{0,5})\)?$/u.exec(
+              line,
+            );
+          if (!frame) {
+            continue;
+          }
+          const source = sources.find((candidate) => {
+            const url = new URL(`../../${candidate}`, import.meta.url);
+            return frame[1] === url.href || frame[1] === fileURLToPath(url);
+          });
+          if (source) {
+            locations.push(`${source}:${frame[2]}:${frame[3]}`);
+            if (locations.length === 3) {
+              break;
+            }
+          }
+        }
+      }
+      const location = locations.length ? locations.join(" -> ") : "location unavailable";
+      const status = httpStatus === null ? "" : ` HTTP ${httpStatus}`;
+      // eslint-disable-next-line preserve-caught-error -- Preserve only closed diagnostics; the raw cause may contain credentials.
+      throw new Error(
+        `Mixed model and Git grant verification failed (${phase}; ${category}${status}; ${location}).`,
+      );
     }
   },
 );
