@@ -1,4 +1,5 @@
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createOpenShellInstallationConfiguration } from "../helpers/openshell-kubernetes-real.mjs";
 import { verifyOpenShellPushNegotiation } from "../helpers/openshell-git-push-negotiation.mjs";
 import { runDocker, image, imageTestOptions } from "../helpers/runtime-image-startup.mjs";
 import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
@@ -2843,6 +2844,15 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
     };
   };
   const options = sandboxInstallation().drivers.sandbox.configuration;
+  // Exercise the real-runtime fixture's policy: an incomplete filesystem override
+  // makes OpenShell enrich the policy and advance its version during startup.
+  options.policy = createOpenShellInstallationConfiguration({
+    authentication: {},
+    platformNamespace: "openclaw-system",
+    gatewayImage: "gateway-fixture",
+    codexImage: "codex-fixture",
+    cluster: { name: "fixture" },
+  }).drivers.sandbox.configuration.policy;
   // The advertised workspace, Harness environment, and writable mount must agree even
   // when an operator chooses a path other than the development default.
   options.kubernetes.sandboxDataMount.mountPath = "/sandbox/custom-workspace";
