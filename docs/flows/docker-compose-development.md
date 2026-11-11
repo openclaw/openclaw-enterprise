@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-11-08
-last_updated_session: authoring-run/2c3fb5d2-955a-471d-a236-332a4bdb34c2
+updated: 2026-11-10
+last_updated_session: authoring-run/a9d9f372-a4a3-4832-9356-328d27967ab2
 ---
 
 # Compose development flow
@@ -155,6 +155,9 @@ traces API authorization, queued controller operations, tenant network ownership
 Agent authentication and exact resource removal.
 The Driver rejects Docker API responses above 4 MiB from either a declared
 content length or the bytes received before buffering the complete body.
+For in-flight aborts, `DockerComputeDriver.request` preserves the error and adds
+[request diagnostics](../reference/drivers/docker-compute.md#troubleshooting)
+to its message. Preflight cancellation remains unchanged.
 
 ### 3. Clean up Docker or Podman Compose
 
@@ -345,6 +348,8 @@ describes accepted selectors.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 22:18: Identify in-flight Docker request aborts while preserving caller cancellation and cleanup. (authoring-run/a9d9f372-a4a3-4832-9356-328d27967ab2 - ee73157fdf2982a8e0eab3dcb22d8ff9cf87fbd0)
 
 - 2026-11-08 05:18: Reject invalid or unresolvable Compose markers before development dispatch. (authoring-run/2c3fb5d2-955a-471d-a236-332a4bdb34c2 - 2b6201f1bd74549ffb38bfa910d00b49e6ebc07c)
 

@@ -311,6 +311,10 @@
                         "label": "Overview"
                       },
                       {
+                        "page": "guides/topics/openclaw-plugins",
+                        "label": "OpenClaw Plugins"
+                      },
+                      {
                         "page": "guides/topics/plugins-configure",
                         "label": "Configure"
                       }
