@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: "2026-11-11"
-last_updated_session: "authoring-run/bfbc4468-ece0-4912-b2df-e60c34f373b1"
+last_updated_session: "authoring-run/fac6c060-7d04-496a-9194-8dfc3ba080e5"
 ---
 
 # GitHub Actions testing flow
@@ -223,13 +223,12 @@ Each attempt uploads `memory-<artifact-prefix>-<lane>-attempt-<run attempt>`
 (about 1 MiB maximum). Sampler and upload errors do not fail the lane.
 Only live summaries survive runner loss.
 
-For `images-packaging`, `scripts/ci/export-image-reconciliation.mjs` attempts to
-retain attempt-specific cleanup records for prepared controller and runtime tags.
-Planned records do not prove image creation; tag names confer no authentication
-or deletion authority. Missing state is unavailable, and empty inventories do not
-prove cleanup. The separate runtime-images test tag, other resource kinds and
-private environment values are excluded. Export, upload or runner failure can
-prevent retention.
+For `images-packaging`, `scripts/ci/export-image-reconciliation.mjs` retains
+prepared controller and runtime tag cleanup records when available.
+Planned records do not prove creation; tags confer no authentication or deletion
+authority. Missing state or empty inventories cannot prove cleanup. The runtime-images
+test tag, other resources and private environment values are excluded.
+Export, upload or runner failure can prevent retention.
 
 Fixture bootstrap diagnostics upload separately as `diagnostics-<artifact-prefix>-<lane>-attempt-<N>`.
 They survive cluster/private-state cleanup but cannot satisfy required test results.
@@ -286,6 +285,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 16:53: Publish journals atomically. (authoring-run/fac6c060-7d04-496a-9194-8dfc3ba080e5 - 9209a107a78a5850f7f11b68e1763956d65cde3a)
 
 - 2026-11-11 16:18: Bind child cleanup ownership. (authoring-run/bfbc4468-ece0-4912-b2df-e60c34f373b1 - b5eb70f7384601a69ad62e089e5909c01789e011)
 

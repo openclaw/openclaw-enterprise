@@ -8,6 +8,7 @@ import {
   appendFile,
   chmod,
   lstat,
+  link,
   mkdir,
   mkdtemp,
   readFile,
@@ -347,13 +348,21 @@ async function writeState(path, state) {
   }
 }
 
-async function persistState(path, state) {
+async function persistState(path, state, { exclusive = false } = {}) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temp = join(dirname(path), `.${basename(path)}.${process.pid}.${randomSuffix()}.tmp`);
-  await writeFile(temp, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-  await chmod(temp, 0o600);
-  await rename(temp, path);
-  await chmod(path, 0o600);
+  await writeFile(temp, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+  try {
+    await chmod(temp, 0o600);
+    if (exclusive) {
+      // Publish a complete initial journal without replacing another owner's state.
+      await link(temp, path);
+    } else {
+      await rename(temp, path);
+    }
+  } finally {
+    await rm(temp, { force: true });
+  }
 }
 
 async function prepareTogether(operations, concurrency = operations.length) {
@@ -3387,12 +3396,7 @@ async function prepareLane({ lane, statePath, file, cleanupOwner }) {
     state.cleanupOwner = cleanupOwner;
   }
   const env = baseEnv(resolvedStatePath, state);
-  // Claim the fresh journal without replacing a concurrent owner's state.
-  await mkdir(dirname(resolvedStatePath), { recursive: true, mode: 0o700 });
-  await writeFile(resolvedStatePath, `${JSON.stringify(state, null, 2)}\n`, {
-    flag: "wx",
-    mode: 0o600,
-  });
+  await persistState(resolvedStatePath, state, { exclusive: true });
 
   const sourceBuild = lanePrepare(name).sourceBuildFiles?.some((path) =>
     relativeFile === undefined
