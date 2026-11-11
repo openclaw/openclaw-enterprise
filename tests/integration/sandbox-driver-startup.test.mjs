@@ -33,6 +33,7 @@ import {
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
+  AGENT_WITH_NODE_ENTRYPOINT,
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
@@ -3309,16 +3310,38 @@ test("OpenShell holds withdrawn Codex authentication after a Harness restart", a
   }
 });
 
-for (const harnessId of ["codex", "openclaw"]) {
-  test(`OpenShell delivers ${harnessId} initial workspace files privately after supervisor readiness`, async (t) => {
+for (const { harnessId, loginMode } of [
+  { harnessId: "codex", loginMode: "chatgptAuthTokens" },
+  { harnessId: "codex", loginMode: "codex_pat" },
+  { harnessId: "openclaw", loginMode: "api_key" },
+]) {
+  const providerPat = loginMode === "codex_pat";
+  const description = providerPat
+    ? "OpenShell fits the provider-owned Codex PAT workspace setup command"
+    : `OpenShell delivers ${harnessId} initial workspace files privately after supervisor readiness`;
+  test(description, async (t) => {
     const gatewayClient = workspaceGatewayClient();
     const driver = openShellDriver(gatewayClient);
     const { context, revision, requirements, prepared } = runtimeSandboxFixture(driver, {
       harnessId,
     });
-    if (harnessId === "codex") {
+    if (providerPat) {
+      requirements.command = harnessRuntimeCommand(AGENT_WITH_NODE_ENTRYPOINT);
+      requirements.loginMode = loginMode;
+      revision.harnessAuth = {
+        method: "credential_source",
+        sourceId: requirements.credentialAttachments[0].sourceId,
+        credentialGatewayId: "openshell-credentials",
+        sourceType: "codex-pat",
+        loginMode,
+      };
+      requirements.environment.push(
+        { name: "CODEX_LOGIN_MODE", value: loginMode },
+        { name: "OCE_CODEX_CREDENTIAL_SOURCE", value: "1" },
+      );
+    } else if (harnessId === "codex") {
       requirements.command = harnessRuntimeCommand(PROTECTED_CODEX_WITH_NODE_ENTRYPOINT);
-      requirements.loginMode = "chatgptAuthTokens";
+      requirements.loginMode = loginMode;
       requirements.credentialAttachments[0].externalChatgptAuth = {
         accessTokenPlaceholder: `openshell:resolve:env:s${"1".repeat(64)}_CODEX_ACCESS_TOKEN`,
         accountId: "account",
@@ -3388,7 +3411,15 @@ for (const harnessId of ["codex", "openclaw"]) {
       commandBytes <= 65_536,
       `final OpenShell command with workspace setup is ${commandBytes} bytes`,
     );
-    t.diagnostic(`Final ${harnessId} command with workspace setup: ${commandBytes} bytes`);
+    t.diagnostic(
+      `Final ${harnessId} ${loginMode} command with workspace setup: ${commandBytes} bytes`,
+    );
+    if (providerPat) {
+      // This variant measures the separate PAT payload; the cases below exercise initialization.
+      assert.equal(sandbox.spec.environment.CODEX_LOGIN_MODE, "codex_pat");
+      assert.equal(sandbox.spec.environment.OCE_CODEX_CREDENTIAL_SOURCE, "1");
+      return;
+    }
     assert.equal(executions.length, 0, "private initialization waits for supervisor readiness");
     assert.equal(prepared.length, harnessId === "openclaw" ? 1 : 0);
     sandbox.phase = "SANDBOX_PHASE_READY";

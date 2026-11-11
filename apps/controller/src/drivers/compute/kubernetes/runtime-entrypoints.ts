@@ -4011,6 +4011,9 @@ function agentRuntimeEntrypoint(
   computeOwned = false,
   includeOpenClawInstaller = true,
 ): string {
+  // Protected and Compute-owned launches never use this fallback. Omit it from
+  // those generated commands, including the bounded workspace supervisor.
+  const includeOpenShellPatFallback = !computeOwned && !disableUnboundedConnectionRetries;
   return String.raw`
 const { createHash } = require("node:crypto");
 const { mkdirSync, mkdtempSync, rmSync } = require("node:fs");
@@ -4307,7 +4310,9 @@ function isRecoveredNativeStreamError(event) {
   if (attempt > limit || limit > MAX_RECOVERED_STREAM_RETRIES) return false;
   return !/auth|unauthori[sz]ed|forbidden|credential|api.?key|\b40[13]\b/i.test(event.message);
 }
-// OpenShell's REST profile rejects the native Responses WebSocket upgrade before
+${
+  includeOpenShellPatFallback
+    ? String.raw`// OpenShell's REST profile rejects the native Responses WebSocket upgrade before
 // forwarding it. Accept both the insertion order used by the stock supervisor
 // and the same exact object with its keys sorted.
 const OPENSHELL_PAT_UPGRADE_DETAIL = "HTTP upgrade is not supported for REST endpoints; use a separate protocol: websocket endpoint with explicit message rules";
@@ -4324,7 +4329,9 @@ function isOpenShellPatUpgradeRetry(message) {
     Number(match[2]) <= MAX_RECOVERED_STREAM_RETRIES &&
     OPENSHELL_PAT_UPGRADE_DENIALS.some((denial) => message.slice(match[0].length) === denial + ")");
 }
-function isNonemptyProbeAnswer(event) {
+`
+    : ""
+}function isNonemptyProbeAnswer(event) {
   return event.type === "item.completed" && event.item?.type === "agent_message" &&
     typeof event.item.text === "string" && event.item.text.trim().length > 0;
 }
@@ -4474,19 +4481,22 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
     let turnStarted = false;
     let turnCompleted = false;
     let recoveredStreamErrors = 0;
-    const allowOpenShellPatFallback = ${!computeOwned && !disableUnboundedConnectionRetries} &&
-      providerManagedPat && !protectedStartup && pluginRuntime?.manifest.providerTools !== "none" &&
+${
+  includeOpenShellPatFallback
+    ? String.raw`    const allowOpenShellPatFallback = providerManagedPat && !protectedStartup && pluginRuntime?.manifest.providerTools !== "none" &&
       pluginRuntime?.manifest.modelEndpoint === undefined;
     let openShellPatUpgradeFailure;
     let lastUpgradeDenialIndex = -1;
-    // A transient failure is only a retry candidate: a later deterministic failure in
+`
+    : ""
+}    // A transient failure is only a retry candidate: a later deterministic failure in
     // the same attempt (a tool event, a rate limit) still holds at once. A transient
     // message is never a recovered stream notice, so no recovered stream error lands here.
     // Codex reconnects after a network wait on its own, so a network wait inside the turn
     // of an attempt that exits 0 with an answer counts as recovered, like a stream notice.
     let transientFailure;
     let unrecoveredTransientFailure = false;
-    for (const [index, event] of events.entries()) {
+    for (const ${includeOpenShellPatFallback ? "[index, event] of events.entries()" : "event of events"}) {
       if (event.type === "turn.started") turnStarted = true;
       const failure = event.type === "error" ? codexProbeStatusFailure(event.message, "error-event", modelId)
         : event.type === "turn.failed" ? codexProbeStatusFailure(event.error?.message, "turn-failed", modelId) : undefined;
@@ -4500,12 +4510,16 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
       if (event.type === "error") {
         if (pluginRuntime?.manifest.providerTools === "none" || !turnStarted || turnCompleted ||
           ++recoveredStreamErrors > MAX_RECOVERED_STREAM_RETRIES) return finish(failure);
-        if (allowOpenShellPatFallback && isOpenShellPatUpgradeRetry(event.message)) {
+${
+  includeOpenShellPatFallback
+    ? String.raw`        if (allowOpenShellPatFallback && isOpenShellPatUpgradeRetry(event.message)) {
           openShellPatUpgradeFailure = failure;
           lastUpgradeDenialIndex = index;
-        } else if (!isRecoveredNativeStreamError(event)) {
-          return finish(failure);
+          continue;
         }
+`
+    : ""
+}        if (!isRecoveredNativeStreamError(event)) return finish(failure);
         continue;
       }
       if (event.type === "turn.failed") return finish(failure);
@@ -4519,7 +4533,9 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
       events.filter((event) => event.type === "turn.started").length === 1 &&
       events.at(-1)?.type === "turn.completed" &&
       events.some(isNonemptyProbeAnswer);
-    if (openShellPatUpgradeFailure !== undefined) {
+${
+  includeOpenShellPatFallback
+    ? String.raw`    if (openShellPatUpgradeFailure !== undefined) {
       const fallbackIndex = events.findIndex((event) => event.type === "item.completed" &&
         event.item?.type === "error" &&
         OPENSHELL_PAT_UPGRADE_DENIALS.some((denial) => event.item.message === OPENSHELL_PAT_HTTPS_FALLBACK + denial));
@@ -4529,7 +4545,9 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
         events.some((event) => event.type === "error" && !isOpenShellPatUpgradeRetry(event.message)) ||
         result.status !== 0 || result.error || result.signal) return finish(openShellPatUpgradeFailure);
     }
-    if (transientFailure !== undefined &&
+`
+    : ""
+}    if (transientFailure !== undefined &&
       (unrecoveredTransientFailure || !answered || result.status !== 0 || result.error)) return finish(transientFailure);
     // A timeout cannot make an observed tool call or protocol failure retryable.
     if (result.error?.code === "ETIMEDOUT") return finish("MODEL_PROBE_TIMEOUT");
