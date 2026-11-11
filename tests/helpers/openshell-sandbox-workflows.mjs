@@ -1941,6 +1941,11 @@ function createIntegrationSandboxDriverFactory(
     policyWriteBarrier = barrier;
   };
   createDriver.createBackend = createBackend;
+  createDriver.sandboxServiceAccountForNamespace = (namespaceName) => {
+    const state = gatewayState.get(namespaceName);
+    assert.ok(state, `OpenShell gateway for namespace ${namespaceName} was not initialized.`);
+    return state.sandboxServiceAccountName;
+  };
   // An independent read of the Namespace gateway's own state, for assertions.
   createDriver.gatewayClientForNamespace = (namespaceName, auth) => {
     const state = gatewayState.get(namespaceName);
@@ -3105,6 +3110,7 @@ async function prepareProductionInstallation(
     revision: deployed.data,
     scratchBinding,
     scratchEffects,
+    sandboxServiceAccountName: createSandboxDriver.sandboxServiceAccountForNamespace(placement),
     createScratchBinding,
     configureScratch,
     async requestWithKey(key, method, url, payload) {
@@ -6772,7 +6778,16 @@ async function assertScratchSiblingIsolation(topology) {
   });
   const sandbox = await waitForSandbox(topology.placement, sibling.revision);
   const pod = await waitForProviderHarnessPod(topology.placement, sibling.revision);
-  await assertProviderOwnedHarness(topology.placement, sibling.revision, sandbox, pod);
+  // This namespace Gateway retains its first configured account for Agents without
+  // projected workload identity. Agent and revision ownership remain exact.
+  await assertProviderOwnedHarness(
+    topology.placement,
+    sibling.revision,
+    sandbox,
+    pod,
+    "namespaceShared",
+    topology.sandboxServiceAccountName,
+  );
   const siblingCounts = assertScratchObserverControl(topology, sibling.revision, []);
   // Inspect every actual sibling Pod, including its Gateway and all init/sidecar
   // containers. Checking only the Harness container name would miss another mount.
