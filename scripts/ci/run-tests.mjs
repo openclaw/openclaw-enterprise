@@ -51,8 +51,9 @@ function usage() {
     "Usage:",
     "  node scripts/ci/run-tests.mjs audit [--manifest <file>] [--root <dir>]",
     "  node scripts/ci/run-tests.mjs check-selection <lane> --file <manifest-path> [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--file <manifest-path>] [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs run <lane> --lifecycle complete --attempt <fresh-directory> [--file <manifest-path>] [--manifest scripts/ci/test-suites.json] [--root <dir>]",
+    "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--file <manifest-path> [--test-name <literal>]] [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.mjs run <lane> --lifecycle complete --attempt <fresh-directory> [--file <manifest-path> [--test-name <literal>]] [--manifest scripts/ci/test-suites.json] [--root <dir>]",
+    "    Use --test-name=<literal> for names beginning with --.",
     "    Complete mode requires the canonical manifest under --root; normalized relative or absolute paths are accepted, symlink aliases are not.",
     "  node scripts/ci/run-tests.mjs aggregate <group> --results-dir <dir> [--needs <json-file>] [--lanes <json-array>] [--release-selection <file>] [--manifest <file>] [--root <dir>]",
   ].join("\n");
@@ -70,6 +71,21 @@ function parseArgs(argv) {
       continue;
     }
 
+    if (token === "--test-name-pattern" || token.startsWith("--test-name-pattern=")) {
+      throw new Error(
+        "--test-name-pattern is unsupported; use --test-name with one literal case name.",
+      );
+    }
+    if (
+      (token === "--test-name" || token.startsWith("--test-name=")) &&
+      Object.hasOwn(options, "test-name")
+    ) {
+      throw new Error("--test-name may only be specified once.");
+    }
+    if (token.startsWith("--test-name=")) {
+      options["test-name"] = token.slice("--test-name=".length);
+      continue;
+    }
     const key = token.slice(2);
     const value = rest[index + 1];
     if (!value || value.startsWith("--")) {
@@ -1416,7 +1432,7 @@ function readK3dCase2Phase(directory) {
   }
 }
 
-async function runFile(root, lane, file, statePath, prepareFile, setup, preparationId) {
+async function runFile(root, lane, file, statePath, prepareFile, setup, preparationId, testName) {
   const issues = [];
   const relativePath = repoRelativePath(root, file.path);
   const absolutePath = resolveRepoPath(root, file.path, issues, relativePath);
@@ -1581,7 +1597,15 @@ async function runFile(root, lane, file, statePath, prepareFile, setup, preparat
       }
       const nodeStarted = performance.now();
       timeout = fileTimeout();
-      nodeResult = await runNode(["--test", "--test-reporter", reporterPath, absolutePath], {
+      const args = ["--test", "--test-reporter", reporterPath];
+      if (testName !== undefined) {
+        // Only the Node child needs a regex. Parent accounting uses the literal
+        // name, and rejects any extra cases selected by Node's ancestry rules.
+        const escaped = testName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        args.push("--test-name-pattern", new RegExp(`^${escaped}$`).toString());
+      }
+      args.push(absolutePath);
+      nodeResult = await runNode(args, {
         cwd: root,
         env,
         timeout: timeout.timeoutMs,
@@ -1605,6 +1629,24 @@ async function runFile(root, lane, file, statePath, prepareFile, setup, preparat
       nodeElapsedMs = Math.round(performance.now() - nodeStarted);
 
       const events = parseReporter(nodeResult.stdout, nodeResult.error?.code === "ETIMEDOUT");
+      if (
+        testName !== undefined &&
+        events.some(
+          (event) =>
+            ["test:pass", "test:fail"].includes(event.type) &&
+            (event.data?.testType === "suite" || event.data?.nesting > 0),
+        )
+      ) {
+        // Flat required names cannot establish which absent descendants belong
+        // to a selected ancestor. Nested coverage still requires the whole file.
+        issues.push(
+          issue(
+            "unsupported-test-selection",
+            "--test-name supports only standalone top-level test cases; run the whole file for suites or subtests",
+            { file: relativePath },
+          ),
+        );
+      }
       // The job env holds OCC_TEST_* values the child never got; the child env
       // holds prepared values (database URLs) the job never had. Redact both.
       const secrets = failureSecrets([process.env, env]);
@@ -1726,9 +1768,25 @@ async function runFile(root, lane, file, statePath, prepareFile, setup, preparat
     }
   }
 
-  if (nodeResult && tests.length === 0) {
+  if (
+    nodeResult &&
+    (tests.length === 0 ||
+      (testName !== undefined && !tests.some((testCase) => testCase.name === testName)))
+  ) {
     issues.push(
       issue("selected-zero", `selected file produced no test cases: ${relativePath}`, {
+        file: relativePath,
+      }),
+    );
+  }
+
+  if (
+    nodeResult &&
+    testName !== undefined &&
+    (tests.some((testCase) => testCase.name !== testName) || tests.length > 1)
+  ) {
+    issues.push(
+      issue("unexpected-test-selection", "--test-name must execute only one exactly named case", {
         file: relativePath,
       }),
     );
@@ -1827,7 +1885,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup, preparat
   };
 }
 
-function selectLane(manifest, laneName, selectedFile) {
+function selectLane(manifest, laneName, selectedFile, testName) {
   let lane = manifest.lanes.get(laneName);
   const issues = [...manifest.issues];
 
@@ -1840,10 +1898,30 @@ function selectLane(manifest, laneName, selectedFile) {
         }),
       );
     } else {
-      // Keep the manifest's expected tests, environment and cleanup requirements.
+      if (
+        testName !== undefined &&
+        selected.expectedTests.filter((name) => name === testName).length !== 1
+      ) {
+        issues.push(
+          issue(
+            "invalid-test-selection",
+            "--test-name must exactly match one required manifest case",
+            { file: selectedFile },
+          ),
+        );
+      }
+      // File-only runs keep every required case. Explicit case selection keeps
+      // the exact required name; the child must still report that passing case.
       lane = {
         ...lane,
-        files: [selected],
+        files: [
+          testName === undefined
+            ? selected
+            : {
+                ...selected,
+                expectedTests: selected.expectedTests.filter((name) => name === testName),
+              },
+        ],
         parallelFiles: lane.parallelFiles.filter((path) => path === selected.path),
       };
     }
@@ -1859,9 +1937,9 @@ function selectLane(manifest, laneName, selectedFile) {
   return { lane, issues };
 }
 
-async function runLane(root, manifest, laneName, statePath, resultsPath, selectedFile) {
+async function runLane(root, manifest, laneName, statePath, resultsPath, selectedFile, testName) {
   const source = sourceEvidence(root);
-  const { lane, issues } = selectLane(manifest, laneName, selectedFile);
+  const { lane, issues } = selectLane(manifest, laneName, selectedFile, testName);
   issues.push(...source.issues);
   const files = [];
   let preservedNodeExitCode = 0;
@@ -1908,6 +1986,7 @@ async function runLane(root, manifest, laneName, statePath, resultsPath, selecte
         prepareFile,
         setup,
         preparationId,
+        testName,
       );
       result.mode = mode;
       // Round both ends, so start + duration is the rounded end and never passes a
@@ -1969,6 +2048,7 @@ async function runLane(root, manifest, laneName, statePath, resultsPath, selecte
       (await readRuntimeProvenance(statePath, identity)) ?? initialRuntimeProvenance,
     lane: laneName,
     scope: selectedFile === undefined ? "full" : "focused",
+    ...(testName === undefined ? {} : { testName }),
     status,
     exitCode: preservedNodeExitCode || (status === "passed" ? 0 : 1),
     fileConcurrency: concurrency,
@@ -2421,7 +2501,7 @@ async function completePhaseChild() {
   let uncertain = false;
   let error;
   try {
-    const { phase, root, lane, statePath, resultsPath, manifestPath, file } = request;
+    const { phase, root, lane, statePath, resultsPath, manifestPath, file, testName } = request;
     if (phase === "prepare") {
       const owner = await import(pathToFileURL(join(root, "scripts/ci/prepare.mjs")));
       await owner.prepareLane({ lane, statePath, file });
@@ -2435,7 +2515,7 @@ async function completePhaseChild() {
         loadTestSuites(manifestPath, process.env.OCC_CI_SUITE_VIEW),
         manifestPath,
       );
-      exitCode = await runLane(root, manifest, lane, statePath, resultsPath, file);
+      exitCode = await runLane(root, manifest, lane, statePath, resultsPath, file, testName);
       uncertain = abandonedSteps > 0;
     }
   } catch {
@@ -2608,12 +2688,12 @@ async function lifecyclePhase(request, timeoutMs) {
   };
 }
 
-async function runCompleteLifecycle(root, manifest, manifestPath, lane, attempt, file) {
+async function runCompleteLifecycle(root, manifest, manifestPath, lane, attempt, file, testName) {
   if (process.platform !== "linux") {
     throw new Error("Complete lifecycle mode requires Linux process-group verification.");
   }
   const source = sourceEvidence(root);
-  const selection = selectLane(manifest, lane, file);
+  const selection = selectLane(manifest, lane, file, testName);
   const audit = await auditManifest(root, manifest);
   if (selection.lane) {
     fileConcurrency(selection.lane, selection.issues);
@@ -2692,6 +2772,7 @@ async function runCompleteLifecycle(root, manifest, manifestPath, lane, attempt,
     resultsPath: join(attempt, "run.json"),
     manifestPath,
     file,
+    testName,
   };
   try {
     if (!interrupted) {
@@ -2724,6 +2805,7 @@ async function runCompleteLifecycle(root, manifest, manifestPath, lane, attempt,
       sourceSha: source.sha,
       lane,
       scope: file === undefined ? "full" : "focused",
+      ...(testName === undefined ? {} : { testName }),
       startedAt,
       counts: { passed: 0, failed: 0, skipped: 0, todo: 0, total: 0 },
       files: [],
@@ -2736,6 +2818,7 @@ async function runCompleteLifecycle(root, manifest, manifestPath, lane, attempt,
           candidate.command !== "run" ||
           candidate.lane !== lane ||
           candidate.sourceSha !== source.sha ||
+          candidate.testName !== testName ||
           !Array.isArray(candidate.issues)
         ) {
           throw new Error("Invalid run evidence");
@@ -2803,6 +2886,21 @@ async function main() {
     return runPreparedSigninCase(repositoryRoot, runFile);
   }
   const root = resolve(options.root ?? repositoryRoot);
+  const testName = options["test-name"];
+  if (testName !== undefined) {
+    if (command !== "run" || options.file === undefined) {
+      throw new Error("--test-name requires run with --file.");
+    }
+    if (testName.trim().length === 0 || Buffer.byteLength(testName, "utf8") > 256) {
+      throw new Error("--test-name must be a nonempty literal of at most 256 UTF-8 bytes.");
+    }
+    if (testName === "<root>" || testName === resolve(root, options.file)) {
+      throw new Error("--test-name cannot select Node's reserved root or file-wrapper name.");
+    }
+    process.stderr.write(
+      `run-tests: focused file ${JSON.stringify(options.file)} testName ${JSON.stringify(testName)}\n`,
+    );
+  }
   const manifestPath = resolve(root, options.manifest ?? defaultManifestPath);
   if (
     command === "run" &&
@@ -2860,6 +2958,7 @@ async function main() {
         laneName,
         resolve(root, options.attempt),
         options.file,
+        testName,
       );
     }
     if (!laneName || !options.state || !options.results) {
@@ -2872,6 +2971,7 @@ async function main() {
       resolve(root, options.state),
       resolve(root, options.results),
       options.file,
+      testName,
     );
   }
 

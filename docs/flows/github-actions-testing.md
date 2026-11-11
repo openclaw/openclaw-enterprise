@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: "2026-11-11"
-last_updated_session: "authoring-run/e533d196-4ff0-450d-b662-d41ede51e945"
+last_updated_session: authoring-run/713d85c0-4416-4c1d-b492-d63c41faeea4
 ---
 
 # GitHub Actions testing flow
@@ -61,14 +61,15 @@ graph TD
 `scripts/ci/full-integration-preflight.mjs:validateFullIntegrationPreflight`, and
 `scripts/ci/test-suites.mjs:loadTestSuites`
 
-`loadTestSuites` reads tests, inputs and preparation from `scripts/ci/test-suites.json` and its ordered lane references.
+`loadTestSuites` reads tests, inputs and preparation from ordered `scripts/ci/test-suites.json` lanes.
 
-For [complete local attempts](../testing/ci/run-lanes.md#run-a-complete-local-attempt),
-`run-tests.mjs:main` rejects noncanonical paths before reading the manifest or calling `runCompleteLifecycle`.
+`run-tests.mjs:main` rejects noncanonical manifests before [complete attempts](../testing/ci/run-lanes.md#run-a-complete-local-attempt).
 
-`run-tests.mjs:selectLane` validates focused paths before setup. Focused results
-retain cases, environment and cleanup. `validateLaneEvidence` rejects them for
-full-lane aggregation, including one-file lanes.
+`run-tests.mjs:parseArgs` accepts `--test-name=<literal>` with leading dashes;
+duplicates, including empty values, fail before effects. `selectLane` validates paths/names.
+`runFile` requires one passing standalone case through an escaped, anchored Node-child pattern.
+Results retain environment, cleanup and focus/name on preparation failure.
+`validateLaneEvidence` rejects focused aggregation.
 
 `CI Impact` selects coverage; `Suite Audit and Static Checks` verifies checkout identity.
 [Ordinary CI](../testing/ci/required-checks.md#scenarios) uses the event checkout without external service credentials.
@@ -200,7 +201,7 @@ and millisecond offsets enter [file receipts](../testing/ci/openshell-execution.
 not live logs. Readers bound partial records; parent byte limits apply first.
 Markers and separators stay out of failure tails. Timing and case accounting remain separate.
 
-Required cases must pass; every skip or TODO fails the lane. There are no counterpart-skip lists or CI name filters. Synthetic file-wrapper success, missing output, zero cases, or interruption without final reporter output cannot establish coverage. Lane results retain failure, timeout and cleanup outcomes.
+Required cases must pass; skips and TODOs fail. Synthetic wrappers, missing output, zero cases, or interruption without final reporter output cannot establish coverage. Results retain failure, timeout and cleanup outcomes.
 
 <a id="4-clean-up-and-publish-the-bounded-result" class="anchor-alias"></a>
 
@@ -285,6 +286,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 15:21: Literal selection. (authoring-run/713d85c0-4416-4c1d-b492-d63c41faeea4 - 93460c542b3ca6840aab156e2311fe5b22d1ad29)
 
 - 2026-11-11 14:43: Preserve installed sign-in and complete CI lifecycle paths. (authoring-run/e533d196-4ff0-450d-b662-d41ede51e945 - 21417f21dd22a6410350395ac43a24146a2f8027)
 

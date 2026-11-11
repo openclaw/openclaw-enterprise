@@ -1943,6 +1943,7 @@ test("split dispatcher leaves skipped ticks outside the execution queue", async 
             preflight: { result: "success", outputs: { selected_lane: "skip", run_all: "false" } },
             "manual-approval": { result: "skipped" },
             "runtime-artifact": { result: "skipped" },
+            "gateway-image-selection": { result: "skipped", outputs: {} },
             slack: { result: "skipped" },
           },
           inputs: {},
@@ -2226,6 +2227,7 @@ function workflowCondition(expression, context) {
     expression
       .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
       .replace(/\b(needs|steps)\.([a-z][a-z0-9-]*)/g, '$1["$2"]')
+      .replace(/\.outputs\.([a-z][a-z0-9_-]*)/g, '.outputs["$1"]')
       .replace(/\.([a-z][a-z0-9]*-[a-z0-9-]+)/g, '["$1"]'),
     { cancelled: () => false, ...context },
   );
@@ -2371,6 +2373,10 @@ test("workflow gates scheduled and approved manual attempts before starting lane
         "runtime-artifact": { result: "success" },
         "openshell-build-inputs": { result: "success" },
         "openshell-image-cache": { result: "success", outputs: { "source-sha": "a".repeat(40) } },
+        "gateway-image-selection": {
+          result: "success",
+          outputs: { "use-runtime-artifact": "true" },
+        },
       };
       const inputs = { lane: needs.preflight.outputs.selected_lane };
       assert.equal(
