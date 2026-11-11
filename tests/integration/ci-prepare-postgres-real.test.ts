@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { lstat, mkdtemp, readFile, rm } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdtemp, open, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,34 +20,46 @@ test(
       managed !== undefined ? JSON.parse(managed) : [];
     if (managed !== undefined) {
       assert.ok(parentPath, "Managed PostgreSQL states require their parent journal");
-      assert.ok(
-        (await lstat(parentPath)).isFile(),
-        "Managed PostgreSQL parent must be a regular journal",
+      // Validate and read the same file even if the pathname is replaced.
+      const parentFile = await open(
+        parentPath,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
       );
-      const parent = JSON.parse(await readFile(parentPath, "utf8"));
-      assert.equal(parent.version, 1);
-      assert.equal(parent.statePath, resolve(parentPath));
-      assert.equal(parent.repositoryRoot, resolve(repositoryRoot));
-      assert.equal(parent.lane, "postgres");
-      assert.match(parent.prefix, /^openclaw-ci-[a-z0-9-]+$/);
-      const children = parent.resources.filter(
-        (resource: { kind: string }) => resource.kind === "child-state",
-      );
-      assert.equal(
-        children.length,
-        2,
-        "Managed PostgreSQL requires exactly two registered children",
-      );
-      const registered = children.map((child: { owner: string; id: string; name: string }) => {
-        assert.equal(child.owner, parent.prefix);
-        assert.match(child.id, /^child-state-[a-f0-9]{12}$/);
-        assert.ok(child.name.startsWith(`${parent.prefix}-child-`));
-        assert.match(child.name.slice(`${parent.prefix}-child-`.length), /^[a-f0-9]{12}$/);
-        return { path: join(dirname(resolve(parentPath)), `${child.name}.json`), owner: child.id };
-      });
-      assert.equal(new Set(registered.map((child: { path: string }) => child.path)).size, 2);
-      assert.equal(new Set(registered.map((child: { owner: string }) => child.owner)).size, 2);
-      assert.deepEqual(states, registered, "Managed PostgreSQL states must match their parent");
+      try {
+        assert.ok(
+          (await parentFile.stat()).isFile(),
+          "Managed PostgreSQL parent must be a regular journal",
+        );
+        const parent = JSON.parse(await parentFile.readFile("utf8"));
+        assert.equal(parent.version, 1);
+        assert.equal(parent.statePath, resolve(parentPath));
+        assert.equal(parent.repositoryRoot, resolve(repositoryRoot));
+        assert.equal(parent.lane, "postgres");
+        assert.match(parent.prefix, /^openclaw-ci-[a-z0-9-]+$/);
+        const children = parent.resources.filter(
+          (resource: { kind: string }) => resource.kind === "child-state",
+        );
+        assert.equal(
+          children.length,
+          2,
+          "Managed PostgreSQL requires exactly two registered children",
+        );
+        const registered = children.map((child: { owner: string; id: string; name: string }) => {
+          assert.equal(child.owner, parent.prefix);
+          assert.match(child.id, /^child-state-[a-f0-9]{12}$/);
+          assert.ok(child.name.startsWith(`${parent.prefix}-child-`));
+          assert.match(child.name.slice(`${parent.prefix}-child-`.length), /^[a-f0-9]{12}$/);
+          return {
+            path: join(dirname(resolve(parentPath)), `${child.name}.json`),
+            owner: child.id,
+          };
+        });
+        assert.equal(new Set(registered.map((child: { path: string }) => child.path)).size, 2);
+        assert.equal(new Set(registered.map((child: { owner: string }) => child.owner)).size, 2);
+        assert.deepEqual(states, registered, "Managed PostgreSQL states must match their parent");
+      } finally {
+        await parentFile.close();
+      }
     }
     const root = await mkdtemp(join(tmpdir(), "ci-postgres-real-"));
     if (managed === undefined) {
