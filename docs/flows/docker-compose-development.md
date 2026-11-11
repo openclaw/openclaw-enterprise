@@ -232,7 +232,7 @@ credential preview admits 0.1.6 through its existing opt-in, held-launcher and
 recipient checks. Repository-scoped access uses the separate
 [protected Git enrollment](../guides/repository-credentials/openshell-enrollment.md).
 
-By default, the Kubernetes lifecycle starts PostgreSQL, migration, bootstrap,
+With `OCC_DEVELOPMENT_CONTROL_PLANE=compose`, the Kubernetes lifecycle starts PostgreSQL, migration, bootstrap,
 the API, and the worker in Compose. It installs the central Gateway in
 `openshell-system` and exposes its fixed NodePort only to the owned container
 network. Before starting the API and worker, the launcher installs pinned

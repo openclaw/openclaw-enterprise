@@ -261,7 +261,8 @@ inputs, and upgrades Helm with the Repo Driver and worker sidecar. Discovery mus
 match approved references and profiles; it proves no model turn, native sandbox,
 or Git operation. See [required inputs](../../guides/deploy/local-repository-credentials.md#prepare-the-approved-inputs).
 
-`OCC_DEVELOPMENT_CONTROL_PLANE` defaults to `compose`; unsupported values fail
+`OCC_DEVELOPMENT_CONTROL_PLANE` defaults to `compose` with Docker Compute and to
+`kubernetes` with Kubernetes Compute; unsupported values fail
 before resource creation. The
 [OpenShell provisioning flow](../openshell-sandbox-provisioning.md#0-create-the-development-control-plane)
 owns both OpenShell control-plane sequences.
