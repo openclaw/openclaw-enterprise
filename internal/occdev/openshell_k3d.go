@@ -175,7 +175,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	if err := r.pinEndpoint(ctx); err != nil {
 		return err
 	}
-	if err := r.checkDevelopmentHostPorts(ctx, []developmentHostPort{
+	if err := r.checkDevelopmentHostPorts(ctx, developmentStack{cluster: state.Cluster}, []developmentHostPort{
 		{apiPort, "OPENCLAW_DEV_PORT"},
 		{browserPort, "OCC_DEVELOPMENT_BROWSER_PORT"},
 		{kubernetesPort, "OCC_DEVELOPMENT_KUBERNETES_API_PORT"},

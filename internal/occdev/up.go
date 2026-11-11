@@ -223,7 +223,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if state.BrowserPort != 0 {
 		hostPorts = append(hostPorts, developmentHostPort{state.BrowserPort, "OCC_DEVELOPMENT_BROWSER_PORT"})
 	}
-	if err := r.checkDevelopmentHostPorts(ctx, hostPorts); err != nil {
+	if err := r.checkDevelopmentHostPorts(ctx, developmentStack{composeProject: state.ComposeProject, cluster: state.Cluster}, hostPorts); err != nil {
 		return err
 	}
 	snapshot, err := yaml.Marshal(escapeInterpolation(rendered))

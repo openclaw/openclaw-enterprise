@@ -24,6 +24,10 @@ func TestPublishesLoopbackPortMatchesHostBindings(t *testing.T) {
 		{"3000/tcp", 3000, false},
 		// Another specific address does not hold the loopback port.
 		{"192.0.2.10:3000->3000/tcp", 3000, false},
+		// A UDP or SCTP publication does not hold the TCP port.
+		{"0.0.0.0:3000->3000/udp", 3000, false},
+		{"127.0.0.1:2999-3001->2999-3001/udp, [::]:3000->3000/sctp", 3000, false},
+		{"0.0.0.0:3000->3000/udp, 0.0.0.0:3000->3000/tcp", 3000, true},
 		{"", 3000, false},
 	} {
 		if got := publishesLoopbackPort(tc.published, tc.port); got != tc.want {
@@ -50,7 +54,9 @@ func TestDevelopmentHostPortPreflightNamesTheLikelyHolder(t *testing.T) {
 	ports := []developmentHostPort{{3000, "OPENCLAW_DEV_PORT"}, {8443, "OCC_DEVELOPMENT_BROWSER_PORT"}, {6443, "OCC_DEVELOPMENT_KUBERNETES_API_PORT"}}
 	for _, tc := range []struct {
 		name, listing string
+		starting      developmentStack
 		want          []string
+		absent        []string
 	}{
 		{
 			// The stack holds several ports; the API port is named whatever the listing order.
@@ -73,6 +79,21 @@ func TestDevelopmentHostPortPreflightNamesTheLikelyHolder(t *testing.T) {
 			want:    []string{"container k3d-occ-dev-other-serverlb", "another Kubernetes development stack (k3d cluster occ-dev-other)"},
 		},
 		{
+			// Restarting the stack that holds the port: stop it, never move the port.
+			name:     "the Kubernetes Compute control plane being started",
+			listing:  `printf 'openclaw-enterprise-development-kubernetes-controller-1\t127.0.0.1:3000->3000/tcp\tcom.docker.compose.project=openclaw-enterprise-development-kubernetes\n'`,
+			starting: developmentStack{composeProject: "openclaw-enterprise-development-kubernetes", cluster: "occ-dev-new"},
+			want:     []string{"the Compose control plane being started (Compose project openclaw-enterprise-development-kubernetes) is already running; stop it with OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes occ dev down, then start it again"},
+			absent:   []string{"may be running", "to a free port"},
+		},
+		{
+			name:     "the k3d cluster being started",
+			listing:  `printf 'k3d-occ-dev-fixed-serverlb\t127.0.0.1:6443->6443/tcp\tapp=k3d,k3d.cluster=occ-dev-fixed\n'`,
+			starting: developmentStack{cluster: "occ-dev-fixed"},
+			want:     []string{"the Kubernetes development stack being started (k3d cluster occ-dev-fixed) is already running", "then start it again"},
+			absent:   []string{"another", "to a free port"},
+		},
+		{
 			name:    "unrelated container",
 			listing: `printf 'web\t[::]:6443->443/tcp\t\n'`,
 			want:    []string{"(OCC_DEVELOPMENT_KUBERNETES_API_PORT) is already published by container web; stop that container"},
@@ -82,7 +103,7 @@ func TestDevelopmentHostPortPreflightNamesTheLikelyHolder(t *testing.T) {
 			fakeEngine(t, "docker", `"ps --format "*) `+tc.listing+` ;;
 `)
 			r := &runner{engine: "docker", env: newRunner(Options{}).env}
-			err := r.checkDevelopmentHostPorts(context.Background(), ports)
+			err := r.checkDevelopmentHostPorts(context.Background(), tc.starting, ports)
 			if err == nil {
 				t.Fatal("a held port was not refused")
 			}
@@ -91,13 +112,18 @@ func TestDevelopmentHostPortPreflightNamesTheLikelyHolder(t *testing.T) {
 					t.Errorf("error %q does not contain %q", err, want)
 				}
 			}
+			for _, absent := range tc.absent {
+				if strings.Contains(err.Error(), absent) {
+					t.Errorf("error %q contains %q", err, absent)
+				}
+			}
 		})
 	}
 	t.Run("free ports", func(t *testing.T) {
 		fakeEngine(t, "docker", `"ps --format "*) printf 'other\t127.0.0.1:4000->3000/tcp\t\n' ;;
 `)
 		r := &runner{engine: "docker", env: newRunner(Options{}).env}
-		if err := r.checkDevelopmentHostPorts(context.Background(), ports); err != nil {
+		if err := r.checkDevelopmentHostPorts(context.Background(), developmentStack{}, ports); err != nil {
 			t.Fatalf("free ports were refused: %v", err)
 		}
 	})
@@ -105,7 +131,7 @@ func TestDevelopmentHostPortPreflightNamesTheLikelyHolder(t *testing.T) {
 		// Best effort: k3d's own error still reports a clash.
 		fakeEngine(t, "docker", "")
 		r := &runner{engine: "docker", env: newRunner(Options{}).env}
-		if err := r.checkDevelopmentHostPorts(context.Background(), ports); err != nil {
+		if err := r.checkDevelopmentHostPorts(context.Background(), developmentStack{}, ports); err != nil {
 			t.Fatalf("a failed listing refused startup: %v", err)
 		}
 	})

@@ -24,14 +24,23 @@ const (
 	kubernetesDevelopmentComposeProject = "openclaw-enterprise-development-kubernetes"
 )
 
+// developmentStack names the Compose project and k3d cluster of the stack a
+// start creates, so the port preflight can tell that stack, already running,
+// from another one. An empty field matches nothing.
+type developmentStack struct {
+	composeProject string
+	cluster        string
+}
+
 // checkDevelopmentHostPorts refuses a start whose loopback host ports a
 // container on the selected engine already publishes. k3d would otherwise
 // fail several seconds later with only "port is already allocated" in its
-// output; the likely holder is another development stack, so the message
-// names the container and how to stop that stack. The probe is best effort:
-// when the engine cannot list containers, k3d's own error still reports the
-// clash. A process outside the engine is not detected here.
-func (r *runner) checkDevelopmentHostPorts(ctx context.Context, ports []developmentHostPort) error {
+// output; the likely holder is another development stack, or the one being
+// started, so the message names the container and how to stop that stack.
+// The probe is best effort: when the engine cannot list containers, k3d's own
+// error still reports the clash. A process outside the engine is not
+// detected here.
+func (r *runner) checkDevelopmentHostPorts(ctx context.Context, starting developmentStack, ports []developmentHostPort) error {
 	data, err := r.output(ctx, r.engine, "ps", "--format", "{{.Names}}\t{{.Ports}}\t{{.Labels}}")
 	if err != nil {
 		return nil
@@ -51,20 +60,20 @@ func (r *runner) checkDevelopmentHostPorts(ctx context.Context, ports []developm
 				labels = fields[2]
 			}
 			if publishesLoopbackPort(published, wanted.port) {
-				return developmentHostPortHeld(wanted, name, labels)
+				return developmentHostPortHeld(starting, wanted, name, labels)
 			}
 		}
 	}
 	return nil
 }
 
-// A published port in `ps` output: "127.0.0.1:3000->3000/tcp",
+// A published TCP port in `ps` output: "127.0.0.1:3000->3000/tcp",
 // "0.0.0.0:3000-3001->3000-3001/tcp", "[::]:3000->3000/tcp". Entries without
-// "->" are only exposed.
-var publishedPortEntry = regexp.MustCompile(`^(?:(.*):)?(\d+)(?:-(\d+))?->`)
+// "->" are only exposed; UDP and SCTP publications never hold a TCP port.
+var publishedPortEntry = regexp.MustCompile(`^(?:(.*):)?(\d+)(?:-(\d+))?->\d+(?:-\d+)?/tcp$`)
 
-// publishesLoopbackPort reports whether a container's published ports bind
-// port on an address that overlaps 127.0.0.1.
+// publishesLoopbackPort reports whether a container's published TCP ports
+// bind port on an address that overlaps 127.0.0.1.
 func publishesLoopbackPort(published string, port int) bool {
 	for _, entry := range strings.Split(published, ",") {
 		match := publishedPortEntry.FindStringSubmatch(strings.TrimSpace(entry))
@@ -111,9 +120,17 @@ func containerLabel(labels, key string) (string, bool) {
 	return "", false
 }
 
-func developmentHostPortHeld(wanted developmentHostPort, container, labels string) error {
+func developmentHostPortHeld(starting developmentStack, wanted developmentHostPort, container, labels string) error {
 	prefix := fmt.Sprintf("host port 127.0.0.1:%d (%s) is already published by container %s", wanted.port, wanted.setting, container)
 	move := fmt.Sprintf("or set %s to a free port", wanted.setting)
+	// The stack being started is already running: another port would only start
+	// a second copy of the same Compose project or cluster, so stopping it is the fix.
+	if cluster, ok := containerLabel(labels, "k3d.cluster"); ok && cluster == starting.cluster {
+		return fmt.Errorf("%s: the Kubernetes development stack being started (k3d cluster %s) is already running; stop it with occ dev down using the state directory it printed, then start it again", prefix, cluster)
+	}
+	if project, ok := containerLabel(labels, "com.docker.compose.project"); ok && project == starting.composeProject {
+		return fmt.Errorf("%s: the Compose control plane being started (Compose project %s) is already running; stop it with OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes occ dev down, then start it again", prefix, project)
+	}
 	if cluster, ok := containerLabel(labels, "k3d.cluster"); ok {
 		return fmt.Errorf("%s: another Kubernetes development stack (k3d cluster %s) may be running; stop it with occ dev down using the state directory it printed, %s", prefix, cluster, move)
 	}
