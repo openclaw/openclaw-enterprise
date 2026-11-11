@@ -33,7 +33,27 @@ test(
     const marker = `schema-private-${randomUUID()}`;
     const valid = { model: "fixture-model", input: "hello", store: false };
     // The real signed TLS exchange must retain an attributable, value-free reason
-    // before any credential read. Required presence wins over invalid optional data.
+    // before any credential read. Missing input wins over an invalid store value.
+    const providers =
+      /** @type {import("../../packages/contracts/src/index.ts").CredentialProviderDefinition[]} */ (
+        f.egress.sourceControl.providers
+      );
+    const index = providers.findIndex((entry) => entry.sourceType.type === "openai");
+    const original = providers[index];
+    // A registered classifier may mutate its borrowed request. Attribution must
+    // still use the original signed ID, never this unvalidated replacement.
+    providers[index] = {
+      ...original,
+      classify(route, request, refused) {
+        return original.classify(route, request, (rule) => {
+          Reflect.set(request, "id", marker);
+          refused?.(rule);
+        });
+      },
+    };
+    t.after(() => {
+      providers[index] = original;
+    });
     for (const [body, rule] of [
       [{ model: "fixture-model", store: true }, 3],
       [{ ...valid, store: true }, 4],
@@ -43,8 +63,8 @@ test(
       const rejected = f.capture(body);
       assert.equal((await f.resolve(rejected)).refused.code, f.refusalCode("DENIED"));
       const audit = await f.pool.query(
-        "SELECT * FROM occ.audit_events WHERE namespace_id=$1 AND action='openclaw.egress.authorize' AND details->>'requestId'=$2",
-        [f.namespace.id, rejected.request.context.request_id],
+        "SELECT * FROM occ.audit_events WHERE namespace_id=$1 AND action='openclaw.egress.authorize' AND details->>'requestId' IN ($2, $3)",
+        [f.namespace.id, rejected.request.context.request_id, marker],
       );
       assert.equal(JSON.stringify(audit.rows).includes(marker), false);
       assert.deepEqual(
@@ -71,6 +91,7 @@ test(
       assert.equal(f.secretReads, readsBeforeRefusal);
       assert.equal(f.providerRequests.length, 0);
     }
+    providers[index] = original;
     const freshState = new PostgresPlatformState(f.pool);
     const plan = f.revision.egressPlan;
     const installed = await freshState.read((view) =>

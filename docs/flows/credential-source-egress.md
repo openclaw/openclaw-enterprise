@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-11
-last_updated_session: authoring-run/4725ad71-5a10-4e44-9484-68c6f372df23
+last_updated_session: authoring-run/2a39c130-861a-4051-b73e-56c1a20b8fee
 ---
 
 # Protected credential request flow
@@ -162,8 +162,8 @@ refused route reports a valid rule, `createCredentialProxy` audits it with the
 execution and exact request ID before capture or credential access. Persistence
 failure returns authority-unavailable, never permission.
 
-Enrollment starts at the authenticated supervisor hello. Its private key stays outside
-the Agent; its downstream reply sink is pinned before queueing. This path remains
+Enrollment must start at the authenticated supervisor hello. The supplier must keep
+its private key outside the Agent and pin its actual reply sink before queueing. This path remains
 unqualified. Required capability `openshell.supervisor-middleware.installation-exchange.v1`
 cannot be substituted by an old executable-restricted grant.
 
@@ -264,7 +264,7 @@ The protected startup probe also disables retries.
 
 `apps/controller/src/drivers/egress-proxy/openai-provider.ts:createOpenAiStaticProvider`
 checks [request forms](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
-through `openai-responses.ts:validResponsesRequest` before Secret resolution.
+through `openai-responses.ts:responsesRequestFailure` before Secret resolution.
 Separate validators accept `max` for request effort or telemetry; only telemetry
 accepts `ultra`. The admitted grant
 selects the model and destination. Replayed assistant text can carry empty
@@ -314,12 +314,13 @@ verifies the original fence, recipient, material, policy and request without rea
 ## Debugging and Verification
 
 Follow the [testing guide](../testing/static-egress.md) to qualify model execution,
-response custody and NetworkPolicy on the selected deployment. Observe origin and
-caller independently. Correlate `openclaw.egress.authorize` denials by exact `requestId`.
-Optional `classificationRule` refers to the selected provider's stable rules. OpenAI
-Responses rules (`apps/controller/src/drivers/egress-proxy/openai-responses.ts:responsesRequestFailure`)
-identify root slots; wire rule 1 hides the unknown member's name. No rule reveals
-request values; an absent rule identifies no slot.
+response custody and NetworkPolicy; observe origin and caller separately.
+Each `openclaw.egress.authorize` row describes one attempt. Pre-reservation refusals
+can reuse `requestId`; correlate actor, source, revision and time too. Optional
+`classificationRule` maps to provider rules. For Responses
+(`apps/controller/src/drivers/egress-proxy/openai-responses.ts:responsesRequestFailure`),
+rules identify root slots; wire rule 1 hides the unknown name. Neither includes
+values; an absent rule identifies no slot.
 
 ## Related docs
 
@@ -336,7 +337,7 @@ None.
 
 ## Changelog
 
-- 2026-11-11 09:24: Record bounded provider classification rules on refused requests. (authoring-run/4725ad71-5a10-4e44-9484-68c6f372df23 - f0b9c002c0577bcc8854913b0eafa5449bd5fbe3)
+- 2026-11-11 09:40: Record bounded provider rules with pinned request attribution. (authoring-run/2a39c130-861a-4051-b73e-56c1a20b8fee - d3482937ffe662b48e36afafe044c96b5a4474e3)
 
 - 2026-11-11 08:40: Distinguish native telemetry effort from Responses request effort. (authoring-run/89ba83c7-7553-45e6-a3b5-a8e067da1d65 - 6b4e85174966c1a172f2ecd25a3ea1238fe6f0d7)
 

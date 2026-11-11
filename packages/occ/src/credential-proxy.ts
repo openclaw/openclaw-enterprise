@@ -571,7 +571,8 @@ export class CredentialProxy implements CredentialProxyExchange {
       return { kind: "refused", error: { kind: "unavailable", code: "resolver" } };
     }
     const deadline = Date.parse(request.deadlineAt);
-    const createdAt = operationCreatedAt(request.id);
+    const requestId = request.id;
+    const createdAt = operationCreatedAt(requestId);
     if (
       createdAt === undefined ||
       createdAt > now + 1000 ||
@@ -583,7 +584,7 @@ export class CredentialProxy implements CredentialProxyExchange {
     ) {
       return { kind: "refused", error: { kind: "deadline_exceeded" } };
     }
-    const replayKey = JSON.stringify([peer.sender, sandboxId, peer.instanceId, request.id]);
+    const replayKey = JSON.stringify([peer.sender, sandboxId, peer.instanceId, requestId]);
     // Refuse a known replay before any I/O; the reservation below checks again.
     if (this.requests.has(replayKey)) {
       return refuse("invalid_handle");
@@ -622,7 +623,8 @@ export class CredentialProxy implements CredentialProxyExchange {
       }
     }
     const matches = [];
-    const refused: { route: EgressRoute; provider: ExchangeProvider; rule: number }[] = [];
+    const refused: { route: EgressRoute; provider: ExchangeProvider; rule: number | undefined }[] =
+      [];
     for (const { route, provider } of candidates) {
       if (!provider.isCurrent()) {
         return refuse("stale_configuration");
@@ -649,8 +651,8 @@ export class CredentialProxy implements CredentialProxyExchange {
       }
       if (operation) {
         matches.push({ route, provider, operation });
-      } else if (reports === 1 && rule !== undefined) {
-        refused.push({ route, provider, rule });
+      } else if (reports > 0) {
+        refused.push({ route, provider, rule: reports === 1 ? rule : undefined });
       }
     }
     if (matches.length !== 1) {
@@ -658,13 +660,14 @@ export class CredentialProxy implements CredentialProxyExchange {
       if (matches.length === 0 && refused.length === 1 && !signal.aborted) {
         const { route, provider, rule } = refused[0]!;
         if (
+          rule !== undefined &&
           provider.isCurrent() &&
           deadline <= createdAt + route.deadlineMs &&
           this.ports.now() < deadline
         ) {
           try {
             await this.ports.classificationRefused?.(
-              immutableCopy({ id: request.id, route, installation }),
+              immutableCopy({ id: requestId, route, installation }),
               rule,
             );
           } catch {
