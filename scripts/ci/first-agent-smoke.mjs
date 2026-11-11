@@ -50,11 +50,7 @@ import {
   readOpenclawSource,
 } from "../lib/openclaw-source.mjs";
 import { compareEvents, eventObservedTime } from "./kubernetes-event-time.ts";
-import {
-  assertRuntimeArtifactTagAvailable,
-  loadRuntimeArtifact,
-  runtimeArtifactSelection,
-} from "./runtime-artifact.mjs";
+import { prepareRuntimeArtifactLayout, runtimeArtifactSelection } from "./runtime-artifact.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const occ = join(root, "bin", "occ");
@@ -646,17 +642,13 @@ async function buildImages({ preparedGit = false } = {}) {
   const context = join(workDirectory, "runtime-trust");
   await writeModelProviderTrust({ context, caPath: join(modelDirectory, "ca.pem") });
   const driver = await builderDriver();
-  const artifactTag = `localhost/oce-smoke/runtime-artifact:${randomUUID()}`;
-  if (selection) {
-    assertRuntimeArtifactTagAvailable(artifactTag);
-  }
   let runtimeArtifact;
   let settled;
   const failures = [];
   try {
     if (selection) {
       runtimeArtifact = await step("verified runtime artifact", () =>
-        loadRuntimeArtifact({ ...selection, tag: artifactTag }),
+        prepareRuntimeArtifactLayout(selection),
       );
     }
     // Both finish before cleanup, so neither keeps using the artifact unseen.
@@ -691,22 +683,10 @@ async function buildImages({ preparedGit = false } = {}) {
   } catch (error) {
     failures.push(error);
   } finally {
-    if (selection) {
-      const cleanup = await Promise.allSettled([
-        run("docker", ["image", "rm", artifactTag]).catch((error) => {
-          // A refused load may never create the owned tag.
-          if (
-            error.result?.code !== 1 ||
-            !/No such (?:image|object):/.test(error.result?.stderr ?? "")
-          ) {
-            throw error;
-          }
-        }),
-        runtimeArtifact?.cleanup(),
-      ]);
-      failures.push(
-        ...cleanup.filter(({ status }) => status === "rejected").map(({ reason }) => reason),
-      );
+    try {
+      await runtimeArtifact?.cleanup();
+    } catch (error) {
+      failures.push(error);
     }
   }
   if (failures.length === 1) {
