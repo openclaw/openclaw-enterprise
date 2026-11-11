@@ -5547,18 +5547,19 @@ const warning = (message = signature, time = interval.start + 500) => JSON.strin
 });
 const failureLine = line(warning());
 const observations = [
+  { name: "empty Gateway logs", observation: "no_matching_warning", logs: "" },
+  { name: "unrecognized Gateway failure", observation: "unrecognized_warning", logs: line(warning("chat completion failed: private-command-data")) },
   { name: "unique Gateway failure", observation: "workspace_skill_discovery_failure_observed", logs: failureLine },
-  { name: "quoted subsystem prefix", observation: "unclassified", logs: line("[workspace] [openai-compat] " + signature) },
+  { name: "quoted subsystem prefix", observation: "no_matching_warning", logs: line("[workspace] [openai-compat] " + signature) },
   { name: "missing producer time", observation: "observation_unavailable", logs: failureLine + line(JSON.stringify({level: "warn", subsystem: "openai-compat", message: signature})) },
   { name: "invalid producer time", observation: "observation_unavailable", logs: line(JSON.stringify({time: "private-command-invalid-time", level: "warn", subsystem: "openai-compat", message: signature})) },
   { name: "delayed capture", observation: "workspace_skill_discovery_failure_observed", logs: line(warning(), interval.end + 1) },
   { name: "early capture", observation: "workspace_skill_discovery_failure_observed", logs: line(warning(), interval.start - 1) },
   { name: "delayed competing warning", observation: "ambiguous", logs: failureLine + line(warning("chat completion failed: private-command-data"), interval.end + 1) },
-  { name: "old producer time", observation: "unclassified", logs: line(warning(signature, interval.start - 1)) },
-  { name: "later producer time", observation: "unclassified", logs: line(warning(signature, interval.end + 1)) },
+  { name: "old producer time", observation: "no_matching_warning", logs: line(warning(signature, interval.start - 1)) },
+  { name: "later producer time", observation: "no_matching_warning", logs: line(warning(signature, interval.end + 1)) },
   { name: "ambiguous Gateway failure", observation: "ambiguous", logs: failureLine + line(warning("chat completion failed: private-command-data")) },
-  { name: "unclassified Gateway failure", observation: "unclassified", logs: line(warning("chat completion failed: private-command-data")) },
-  { name: "background disconnect", observation: "unclassified", logs: line("[workspace] " + signature) },
+  { name: "background disconnect", observation: "no_matching_warning", logs: line("[workspace] " + signature) },
   { name: "truncated Gateway logs", observation: "observation_unavailable", logs: failureLine + "x".repeat(65536) },
   { name: "incomplete Gateway record", observation: "observation_unavailable", logs: failureLine.trimEnd() },
   { name: "log read failure", observation: "observation_unavailable" },
@@ -5566,7 +5567,14 @@ const observations = [
   { name: "Gateway restarted during read", observation: "observation_unavailable", drift: 3, logs: failureLine },
   { name: "invalid request interval", observation: "observation_unavailable", interval: { start: "private-command-data", end: interval.end }, logs: failureLine },
 ];
+const [emptyLogs, unknownWarning, ...remainingObservations] = observations.map(item => ({
+  ...item, stage: "model turn", detail: "model turn; probe=upstream; HTTP=500; gateway=" + item.observation,
+  output: JSON.stringify({ error: "upstream", status: 500, requestInterval: item.interval ?? interval }),
+}));
+// Retain the two new observations without displacing private readback controls.
 const cases = [
+  emptyLogs,
+  unknownWarning,
   ...["execution identity", "target discovery", "gateway identity", "model turn"].map(stage => ({
     name: stage, stage, detail: stage === "model turn" ? "model turn; probe=execution" : stage,
   })),
@@ -5581,10 +5589,7 @@ const cases = [
     ["unmarked before", "integrity"], ["unmarked after", "integrity"],
     ["prior error", "integrity"], ["later answer", "integrity"], ["stale sequence", "sequence"],
   ].map(([read, outcome]) => ({name: read, read, stage: "persisted reply", detail: "persisted reply; read=" + outcome, outcome})),
-  ...observations.map(item => ({
-    ...item, stage: "model turn", detail: "model turn; probe=upstream; HTTP=500; gateway=" + item.observation,
-    output: JSON.stringify({ error: "upstream", status: 500, requestInterval: item.interval ?? interval }),
-  })),
+  ...remainingObservations,
   { name: "unauthenticated HTTP 500", stage: "model turn", detail: "model turn; probe=unauthenticated; HTTP=500", output: JSON.stringify({ error: "unauthenticated", status: 500 }) },
   { name: "upstream status", stage: "model turn", detail: "model turn; probe=upstream; HTTP=503", output: JSON.stringify({ error: "upstream", status: 503, extra: "private-command-data" }) },
   { name: "unknown probe", stage: "model turn", detail: "model turn; probe=unexpected", output: JSON.stringify({ error: "private-command-data", status: 503 }) },
@@ -5701,8 +5706,20 @@ for (const { name, stage, detail, output, logs, drift, observation, read, outcom
   const detail = JSON.parse(detailText).failures[0];
   const details = detail.tests;
   assert.equal(details.length, 20);
-  assert.equal(detail.omittedTests, 27);
-  assert.equal(summary.files[0].tests.length, 49);
+  // Keep both new observations and private readback failures inside the detail cap.
+  for (const name of [
+    "empty Gateway logs",
+    "unrecognized Gateway failure",
+    "read command",
+    "read transcript",
+  ]) {
+    assert.ok(
+      details.some((entry) => entry.name === name),
+      `Missing retained detail: ${name}`,
+    );
+  }
+  assert.equal(detail.omittedTests, 28);
+  assert.equal(summary.files[0].tests.length, 50);
   const expected = {
     ...Object.fromEntries(
       ["foreign answer", "foreign prompt", "missing run", "nonterminal"].map((name) => [
@@ -5734,18 +5751,19 @@ for (const { name, stage, detail, output, logs, drift, observation, read, outcom
     "invalid status": "model turn; probe=unexpected",
   };
   const observations = {
+    "empty Gateway logs": "no_matching_warning",
     "unique Gateway failure": "workspace_skill_discovery_failure_observed",
-    "quoted subsystem prefix": "unclassified",
+    "quoted subsystem prefix": "no_matching_warning",
     "missing producer time": "observation_unavailable",
     "invalid producer time": "observation_unavailable",
     "delayed capture": "workspace_skill_discovery_failure_observed",
     "early capture": "workspace_skill_discovery_failure_observed",
     "delayed competing warning": "ambiguous",
-    "old producer time": "unclassified",
-    "later producer time": "unclassified",
+    "old producer time": "no_matching_warning",
+    "later producer time": "no_matching_warning",
     "ambiguous Gateway failure": "ambiguous",
-    "unclassified Gateway failure": "unclassified",
-    "background disconnect": "unclassified",
+    "unrecognized Gateway failure": "unrecognized_warning",
+    "background disconnect": "no_matching_warning",
     "truncated Gateway logs": "observation_unavailable",
     "incomplete Gateway record": "observation_unavailable",
     "log read failure": "observation_unavailable",
