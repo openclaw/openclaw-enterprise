@@ -7843,6 +7843,91 @@ test("a failed local setup reports only paired outcomes", async (t) => {
   assert.match(diagnostics, /ordinary setup diagnostic survives/);
 });
 
+test("first-Agent startup preserves bounded redacted stderr and the original failure", async (t) => {
+  for (const scenario of ["short", "large", "success"]) {
+    await t.test(scenario, async (t) => {
+      const root = await fixture(t);
+      const resultsPath = join(root, "results/startup-stderr.json");
+      await writeFirstAgentCliFixture(
+        root,
+        `
+import { writeSync, writeFileSync } from "node:fs";
+if (process.argv[3] === "down") writeFileSync(new URL("../cleanup.txt", import.meta.url), "done");
+if (process.argv[3] === "up") {
+  process.stdout.write("stdout-must-stay-private");
+  writeSync(2, "failed to create network: Pool overlaps with other one on this address space\\n");
+  writeSync(2, "AUTHORIZATION: Bear");
+  writeSync(2, "er private-header-value\\n");
+  writeSync(2, "environment value: invented-fixture-input\\n");
+  writeSync(2, "password: {\\n  value: 'private-nested-value'\\n}\\n");
+  writeSync(2, "-----BEGIN PRIVATE KEY-----\\nprivate-key-body\\n-----END PRIVATE KEY-----\\n");
+  if (${JSON.stringify(scenario)} === "large") writeSync(2, "x".repeat(40_000) + "private-cut-tail");
+  else writeSync(2, "unterminated actionable detail");
+  process.exitCode = ${scenario === "success" ? 0 : 23};
+}
+`,
+      );
+      await writeSingleFileRunnerLane(
+        root,
+        "measure",
+        "tests/integration/startup-stderr.test.mjs",
+        `
+import { syncBuiltinESMExports } from "node:module";
+import net from "node:net";
+import test from "node:test";
+// The CLI fixture does not use ports; preserve the real child/error/cleanup path.
+net.createServer = () => ({ once() {}, listen(_address, ready) { ready(); }, address() { return { port: 3000 }; }, close(done) { done(); } });
+syncBuiltinESMExports();
+const { localFirstAgentStack } = await import("../helpers/local-first-agent-stack.mjs");
+test("startup", async (t) => {
+  process.env.OCC_TEST_LOCAL_FIRST_AGENT_REAL = "1";
+  process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE = "compose";
+  process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "none";
+  process.env.OPENAI_API_KEY = "invented-fixture-input";
+  delete process.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
+  delete process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE;
+  await localFirstAgentStack(t);
+});
+`,
+      );
+      const result = run(
+        root,
+        laneArgs(root, "measure", "state/startup-stderr.jsonl", resultsPath),
+      );
+      assert.equal(result.status, scenario === "success" ? 0 : 1, result.stderr);
+      const artifact = JSON.parse(await readFile(resultsPath, "utf8"));
+      assert.equal(await readFile(join(root, "cleanup.txt"), "utf8"), "done");
+      assert.doesNotMatch(
+        result.stdout + result.stderr + JSON.stringify(artifact),
+        /stdout-must-stay-private|private-header-value|invented-fixture-input|private-nested-value|private-key-body|private-cut-tail/,
+      );
+      if (scenario === "success") {
+        assert.doesNotMatch(JSON.stringify(artifact), /Pool overlaps|unterminated actionable/);
+        return;
+      }
+      const diagnostics = await readFile(
+        join(root, "state/startup-stderr.jsonl.diagnostics.json"),
+        "utf8",
+      );
+      assert.match(diagnostics, /Start Local Setup exited with status 23/);
+      assert.match(diagnostics, /Pool overlaps with other one on this address space/);
+      assert.doesNotMatch(
+        diagnostics,
+        /stdout-must-stay-private|private-header-value|invented-fixture-input|private-nested-value|private-key-body|private-cut-tail/,
+      );
+      if (scenario === "short") {
+        assert.match(diagnostics, /unterminated actionable detail/);
+      } else {
+        assert.match(diagnostics, /stderr truncated/);
+      }
+      assert.ok(
+        diagnostics.length < 10_000,
+        "stderr must not inflate retained diagnostics without bound",
+      );
+    });
+  }
+});
+
 test("startup observations require one terminal record from a failed dev-up", async (t) => {
   const root = await fixture(t);
   const legacyRecord =
