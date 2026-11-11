@@ -212,36 +212,40 @@ IdP and Gateway roots for `NODE_EXTRA_CA_CERTS`;
 `deploy/helm/openclaw-enterprise/files/check-api-database-ca.mjs` preloads to refuse
 database TLS not pinned to that CA.
 
-API readiness validates the listener, Better Auth, database, Installation YAML,
-Driver, Backend membership, and Compute preflight. Private routes, `/healthz`, and database-backed `/readyz` use the operator-managed endpoint. API permits
-120 one-second startup failures, then requires one-second readiness. Worker exec
-probes start Node within its CPU limit and five-second timeout; startup allows
-24 failures.
+Startup validates the listener, Better Auth, database, Installation YAML,
+Drivers, Backend membership, and Compute preflight. The operator-managed endpoint
+serves private routes, `/healthz`, and `/readyz`.
+`apps/controller/src/composition/postgres-readiness.ts:createPostgresReadinessCheck`
+shares one application-pool `SELECT 1` per instance across overlapping `GET` and
+implicit `HEAD` probes until PostgreSQL settles despite disconnects; later probes query afresh.
+API startup allows 120 one-second failures; readiness has a one-second timeout.
+Worker exec probes run Node under its CPU limit; 24 five-second startup failures
+allow two minutes.
 
-`apps/controller/src/metrics/listener.ts:startMetricsListener` holds slots
+`apps/controller/src/metrics/listener.ts:startMetricsListener` holds scrape slots
 until collection settles and response finishes or socket closes.
-[Host/Expect count toward capacity](../reference/metrics.md#configuration-and-access).
+[Host/Expect share response capacity](../reference/metrics.md#configuration-and-access).
 
 `apps/controller/src/index.ts:createFastifyApp`
 
 On `SIGTERM`, the API stops accepting connections and drains requests with
 `Connection: close`, avoiding the 72-second keep-alive wait. Its single `Recreate`
 replica has no peer or `preStop`; the 30-second grace cuts off unfinished requests.
-Logs show `shutdown.started` (`signal`), then `shutdown.completed` (`durationMs`),
-or `shutdown.failed` (exit 1). Only `shutdown.started` means an interrupted drain.
+Logs progress from `shutdown.started` (`signal`) to `shutdown.completed` (`durationMs`)
+or `shutdown.failed` (exit 1). A lone `shutdown.started` means interrupted drain.
 
-The PostgreSQL API compositions close the exchange binding, protected Driver,
-prepared GitHub owner, and database in order, continuing after a close fails.
-Shutdown reports the first failure, wrapping a falsey thrown value as an error
-with the original value as its cause. Failed startup preserves the startup error.
-The exchange binding is independent of the protected Driver. See
-`apps/controller/src/composition/production.ts:composeProduction` and
+PostgreSQL API compositions close the exchange binding, protected Driver,
+prepared GitHub owner, and database in order despite failures.
+Shutdown reports the first failure; errors wrap falsey thrown values as their
+cause. Startup errors survive cleanup.
+Exchange binding and protected Driver are independent:
+`apps/controller/src/composition/production.ts:composeProduction`;
 `apps/controller/src/composition/development-postgres.ts:composePostgresDevelopment`.
 
-The worker closes the repository Git sender binding, prepared Git owner, receipt
-listener, metrics, and prepared GitHub owner in order, continuing after a close
-fails, then stops its loop and database. A listener left open would keep the Pod
-running until its grace ends. Any failure logs `worker.error` `SHUTDOWN_FAILED`
+The worker closes its repository Git sender binding, prepared Git owner, receipt
+listener, metrics, and prepared GitHub owner in order despite failures, then stops
+its loop and database. Open listeners keep the Pod running until grace expires.
+Failures log `worker.error` `SHUTDOWN_FAILED`
 (exit 1). See `apps/controller/src/worker/shutdown.ts:closeWorkerComposition`.
 
 Nonempty `controlPlane.nodeSelector` places API, worker, migration and bootstrap
@@ -278,12 +282,12 @@ that Pod egress to the proxy's exact `/32` and TCP port. The proxy must permit
 CONNECT to `slack.com:443`. The empty default renders no rule and leaves
 production Slack directory lookup unavailable with manual exact-ID entry.
 
-The Kubernetes Compute Driver queries the API server version and verifies
-authenticated Namespace access. Below the supported 1.35 baseline, the API logs
+The Kubernetes Compute Driver checks the API server version and authenticated
+Namespace access. Below supported version 1.35, the API logs
 `compute.preflight-warning` with both versions and continues. An invalid version
 response, unreachable API, or failed Namespace access fails preflight.
 
-The worker independently validates production settings, opens the same
+The worker validates production settings, opens the same
 application-role database, loads selected Drivers, validates IAM, runs Compute
 preflight with the same advisory warning, emits `worker.started`, and polls
 durable Namespace/AgentRevision work. Readiness requires fresh queue-health
@@ -298,7 +302,7 @@ With `repository` selected, both processes load the same registry and construct
 `drivers.repo`. API startup performs no control operation and loads no App key.
 With prepared repository Git, the worker reads the App key at startup and exits
 before readiness with `PREPARED_GITHUB_APP_KEY_INVALID` if it cannot sign.
-The worker owns session lifecycle; API readiness remains database-backed.
+The worker owns session lifecycle.
 
 `apps/controller/src/composition/repository-credentials/projected-inputs.ts:prepareProjectedInputs`
 
@@ -394,6 +398,8 @@ until tenant deployment/TUI procedures run.
 - 2026-11-11 17:38: Count implicit metrics responses. (authoring-run/36f5ccfa-01c1-4cdb-b694-2692e3715fd6 - 755ebc38280f84b3ec420cc0b2a475ed1fb2be0a)
 
 - 2026-11-11 17:15: Bound metrics pipelines. (authoring-run/bec1d5fe-2f91-4072-a8ee-b716656390ef - 755ebc38280f84b3ec420cc0b2a475ed1fb2be0a)
+
+- 2026-11-11 17:05: Coalesce database readiness. (authoring-run/89773c17-5c87-4c2d-aa19-3b5a0af84b68 - 755ebc38280f84b3ec420cc0b2a475ed1fb2be0a)
 
 - 2026-11-11 15:06: Preserve explicit PostgreSQL caller options after URL parsing. (authoring-run/8367ab20-ba98-4ec6-9700-296442c6eb96 - ee419a1969d414d4aa934c59b39b868e8777b127)
 

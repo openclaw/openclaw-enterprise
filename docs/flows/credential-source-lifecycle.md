@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: 2026-11-03
-last_updated_session: authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc
+updated: 2026-11-11
+last_updated_session: authoring-run/b642b758-0314-4f01-a300-5e37962b8fb4
 ---
 
 # Credential source lifecycle Flow
@@ -246,23 +246,26 @@ Neither refresh tokens nor legacy bundles reach Codex. See the
 `packages/occ/src/index.ts:deleteCredentialSource`,
 `apps/controller/src/drivers/credential-gateway/openshell.ts:removeSource`
 
-OCC authorizes `delete`, locks the source and checks references. An Agent,
-revision or pending deployment can block deletion (`409`), as can unfinished
-withdrawal (`CREDENTIAL_WITHDRAWAL_IN_PROGRESS`). OCC requires the recorded
-owner, then changes `registering` or `ready` to `deleting`. Neither transition is reversible.
+OCC authorizes `delete`, locks the source and refuses Agent, revision or
+pending-deployment references (`409`) and unfinished withdrawal
+(`CREDENTIAL_WITHDRAWAL_IN_PROGRESS`). After matching the recorded owner, it
+irreversibly marks the source `deleting`.
 
-For prepared material, OCC calls the issuer's `withdraw`; a token that may still be
-valid returns `409 CREDENTIAL_TOKEN_UNSETTLED`. A credential-free source
-has no material to remove. Otherwise the Refresh Driver removes refresh state,
-then Gateway `removeSource` verifies ownership and removes the provider and profile.
+Prepared material calls issuer `withdraw`; a possibly valid token returns
+`409 CREDENTIAL_TOKEN_UNSETTLED`. Credential-free sources have no material.
+Otherwise Refresh removes refresh state, then Gateway `removeSource` verifies
+ownership and removes the provider and profile.
 Existing Gateway-owned live sources still use Compute placement and Gateway removal
 on DELETE, including sources whose registration made no Gateway write.
 Unknown ownership or a failed read cannot establish absence. Failure leaves
 `deleting` (`404` for refused ownership, `503` for an unavailable dependency).
 
-OCC returns `503` until 70 seconds after `createdAt`, allowing 30 seconds each for
-late registration and Backend calls. It then deletes the record and commits its audit
-in one transaction. Until then, Namespace deletion returns `NAMESPACE_NOT_EMPTY`.
+For 70 seconds after `createdAt`, OCC retains the source against late registration.
+`packages/occ/src/errors.ts:RetryLaterError` retains the remaining seconds;
+`apps/controller/src/http/errors.ts:canonicalFailure` sends `503 DEPENDENCY_UNAVAILABLE`,
+`error.reason: "credential_registration_pending"` and `Retry-After`.
+After that delay, retry DELETE to remove the record and commit its audit.
+Until deletion, the Namespace remains nonempty.
 
 ### 8. Update a source
 
@@ -366,6 +369,8 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 16:45: Expose structured retry guidance for the existing registration deletion fence. (authoring-run/b642b758-0314-4f01-a300-5e37962b8fb4 - 5eed51d18d8ea86a6c9450c352e967b433fa47da)
 
 - 2026-11-03 16:57: Correct catalog-field refusal status. (authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc - 82a04653d)
 

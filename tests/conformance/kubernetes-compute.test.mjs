@@ -8993,7 +8993,7 @@ test("dedicated Codex projects the account-owned token through the common PAT lo
   assert.equal(gatewayEnvironment.has("MSTEAMS_APP_PASSWORD"), false);
 });
 
-test("a ServiceAccount credential Secret create that applied but answered an error removes only its own Secret", async (t) => {
+test("a ServiceAccount credential Secret create that applied but answered an error retains its recovery receipt", async (t) => {
   const serviceAccountId = "sa_00000000-0000-4000-8000-000000000001";
   const input = {
     namespaceId: tenant.id,
@@ -9005,21 +9005,20 @@ test("a ServiceAccount credential Secret create that applied but answered an err
     .update(serviceAccountId)
     .digest("hex")
     .slice(0, 32)}`;
+  const secretRef = { name: secretName, key: "token" };
   const dropped = Object.assign(new Error("dropped"), { statusCode: 500 });
   const unknown = (error) =>
     error instanceof DependencyUnavailableError &&
-    error.message ===
-      "The ServiceAccount credential Secret create outcome is unknown, and its cleanup could not finish.";
+    error.message === "The ServiceAccount credential Secret create outcome could not be confirmed.";
   // Faults injected around the fixture's in-memory Secret calls.
   const harness = async ({ applied, mutate, readStatus, deleteStatus }) => {
     const { driver, namespace, objects } = workspaceSetupFixture(false);
     const { core } = await driver.apiClients;
     const key = `Secret:${namespace}:${secretName}`;
-    const calls = { reads: 0, deletes: [] };
-    let created = false;
+    const calls = { creates: 0, reads: 0, deletes: [] };
     const create = core.createNamespacedSecret;
     core.createNamespacedSecret = async (request) => {
-      created = true;
+      calls.creates += 1;
       if (applied) {
         await create(request);
         mutate?.(objects.get(key));
@@ -9028,7 +9027,7 @@ test("a ServiceAccount credential Secret create that applied but answered an err
     };
     const read = core.readNamespacedSecret;
     core.readNamespacedSecret = async (request) => {
-      if (created && request.name === secretName) {
+      if (calls.creates > 0 && request.name === secretName) {
         calls.reads += 1;
         if (readStatus !== undefined) {
           throw Object.assign(new Error("read failed"), { statusCode: readStatus });
@@ -9038,48 +9037,44 @@ test("a ServiceAccount credential Secret create that applied but answered an err
     };
     const remove = core.deleteNamespacedSecret;
     core.deleteNamespacedSecret = async (request) => {
-      calls.deletes.push(request.body.preconditions);
+      calls.deletes.push(request.body?.preconditions);
       if (deleteStatus !== undefined) {
         throw Object.assign(new Error("delete failed"), { statusCode: deleteStatus });
       }
       return remove(request);
     };
-    const restore = () => {
-      core.createNamespacedSecret = create;
-    };
-    return { driver, objects, key, calls, restore };
+    return { driver, namespace, objects, key, calls };
   };
 
-  await t.test(
-    "applied, reply lost: the exact Secret is removed and issuance can retry",
-    async () => {
-      const { driver, objects, key, calls, restore } = await harness({ applied: true });
-      await assert.rejects(
-        driver.storeServiceAccountCredential(input),
-        (error) => error === dropped,
-      );
-      assert.equal(objects.has(key), false);
-      assert.equal(calls.reads, 1);
-      assert.deepEqual(calls.deletes, [{ uid: `${secretName}-uid`, resourceVersion: "1" }]);
-      // Without the cleanup, every later issuance stopped at "already exists".
-      restore();
-      assert.deepEqual(await driver.storeServiceAccountCredential(input), {
-        name: secretName,
-        key: "token",
-      });
-      assert.equal(
-        Buffer.from(objects.get(key).data.token, "base64").toString(),
-        "at-request-fixture",
-      );
-    },
-  );
+  await t.test("applied, reply lost: the exact Secret confirms storage and stays", async () => {
+    const { driver, objects, key, calls } = await harness({ applied: true });
+    assert.deepEqual(await driver.storeServiceAccountCredential(input), secretRef);
+    assert.deepEqual(calls, { creates: 1, reads: 1, deletes: [] });
+    const stored = objects.get(key);
+    assert.equal(stored.metadata.uid, `${secretName}-uid`);
+    assert.equal(stored.metadata.resourceVersion, "1");
+    assert.equal(
+      stored.metadata.annotations["openclaw.dev/provider-credential-id"],
+      input.credentialId,
+    );
+    assert.equal(Buffer.from(stored.data.token, "base64").toString(), input.accessToken);
+    // Only the ServiceAccount Driver can confirm provider revocation before exact cleanup.
+    assert.deepEqual(
+      await driver.findServiceAccountCredential({ namespaceId: tenant.id, serviceAccountId }),
+      {
+        secretNamespace: key.split(":")[1],
+        secretRef,
+        credentialId: input.credentialId,
+      },
+    );
+    assert.deepEqual(calls.deletes, []);
+  });
 
   await t.test("never applied: nothing is deleted and the create keeps its error", async () => {
     const { driver, objects, key, calls } = await harness({ applied: false });
     await assert.rejects(driver.storeServiceAccountCredential(input), (error) => error === dropped);
     assert.equal(objects.has(key), false);
-    assert.equal(calls.reads, 1);
-    assert.deepEqual(calls.deletes, []);
+    assert.deepEqual(calls, { creates: 1, reads: 1, deletes: [] });
   });
 
   for (const [name, mutate] of [
@@ -9101,6 +9096,18 @@ test("a ServiceAccount credential Secret create that applied but answered an err
         stored.data.token = Buffer.from("at-another-request").toString("base64");
       },
     ],
+    [
+      "another provider credential ID",
+      (stored) => {
+        stored.metadata.annotations["openclaw.dev/provider-credential-id"] = "cred-another";
+      },
+    ],
+    [
+      "no provider credential ID",
+      (stored) => {
+        delete stored.metadata.annotations["openclaw.dev/provider-credential-id"];
+      },
+    ],
   ]) {
     await t.test(`an object with ${name} is kept and the create keeps its error`, async () => {
       const { driver, objects, key, calls } = await harness({ applied: true, mutate });
@@ -9109,7 +9116,7 @@ test("a ServiceAccount credential Secret create that applied but answered an err
         (error) => error === dropped,
       );
       assert.equal(objects.has(key), true);
-      assert.deepEqual(calls.deletes, []);
+      assert.deepEqual(calls, { creates: 1, reads: 1, deletes: [] });
     });
   }
 
@@ -9117,60 +9124,59 @@ test("a ServiceAccount credential Secret create that applied but answered an err
     const { driver, objects, key, calls } = await harness({ applied: true, readStatus: 403 });
     await assert.rejects(driver.storeServiceAccountCredential(input), unknown);
     assert.equal(objects.has(key), true);
-    assert.deepEqual(calls.deletes, []);
+    assert.deepEqual(calls, { creates: 1, reads: 1, deletes: [] });
   });
 
-  await t.test("a Secret already gone at delete counts as removed", async () => {
-    const { driver, calls } = await harness({ applied: true, deleteStatus: 404 });
-    await assert.rejects(driver.storeServiceAccountCredential(input), (error) => error === dropped);
-    assert.equal(calls.deletes.length, 1);
-  });
+  for (const field of ["uid", "resourceVersion"]) {
+    for (const value of [undefined, ""]) {
+      await t.test(
+        `a Secret with ${value === undefined ? "missing" : "empty"} ${field} remains unknown`,
+        async () => {
+          const { driver, objects, key, calls } = await harness({
+            applied: true,
+            mutate: (stored) => {
+              if (value === undefined) {
+                delete stored.metadata[field];
+              } else {
+                stored.metadata[field] = value;
+              }
+            },
+          });
+          await assert.rejects(driver.storeServiceAccountCredential(input), unknown);
+          assert.equal(objects.has(key), true);
+          assert.deepEqual(calls, { creates: 1, reads: 1, deletes: [] });
+        },
+      );
+    }
+  }
 
-  await t.test("a Secret without a resource version is not deleted blindly", async () => {
-    const { driver, objects, key, calls } = await harness({
-      applied: true,
-      mutate: (stored) => {
-        delete stored.metadata.resourceVersion;
-      },
-    });
-    await assert.rejects(driver.storeServiceAccountCredential(input), unknown);
-    assert.equal(objects.has(key), true);
-    assert.deepEqual(calls.deletes, []);
-  });
-
-  await t.test("a Secret changed before the delete is kept as unknown", async () => {
-    const { driver, objects, key, calls } = await harness({ applied: true, deleteStatus: 409 });
-    await assert.rejects(driver.storeServiceAccountCredential(input), unknown);
-    assert.equal(objects.has(key), true);
-    assert.equal(calls.deletes.length, 1);
-  });
-
-  await t.test("the cleanup delete fails: the outcome is reported as unknown", async () => {
+  await t.test("a later exact cleanup failure retains the confirmed receipt", async () => {
     const { driver, objects, key, calls } = await harness({ applied: true, deleteStatus: 503 });
-    await assert.rejects(driver.storeServiceAccountCredential(input), unknown);
-    assert.equal(objects.has(key), true);
-    assert.equal(calls.deletes.length, 1);
+    assert.deepEqual(await driver.storeServiceAccountCredential(input), secretRef);
+    assert.deepEqual(calls, { creates: 1, reads: 1, deletes: [] });
+    const receipt = structuredClone(objects.get(key));
+    // This explicit call is the cleanup the ServiceAccount Driver owns after revocation.
+    await assert.rejects(driver.deleteServiceAccountCredential({ ...input, secretRef }), {
+      message: "delete failed",
+      statusCode: 503,
+    });
+    assert.deepEqual(objects.get(key), receipt);
+    assert.deepEqual(calls.deletes, [
+      { uid: receipt.metadata.uid, resourceVersion: receipt.metadata.resourceVersion },
+    ]);
   });
 
   await t.test(
     "a leftover Secret blocks the retry with a conflict that names it, not an outage",
     async () => {
-      const { driver, objects, key, calls, restore } = await harness({
-        applied: true,
-        deleteStatus: 503,
-      });
-      await assert.rejects(driver.storeServiceAccountCredential(input), unknown);
-      restore();
+      const { driver, namespace, objects, key, calls } = await harness({ applied: true });
+      assert.deepEqual(await driver.storeServiceAccountCredential(input), secretRef);
       const leftover = structuredClone(objects.get(key));
-      const namespace = key.split(":")[1];
-      const { core } = await driver.apiClients;
-      let creates = 0;
-      const create = core.createNamespacedSecret;
-      core.createNamespacedSecret = async (request) => {
-        creates += 1;
-        return create(request);
+      const retry = {
+        ...input,
+        credentialId: "cred-retry-fixture",
+        accessToken: "at-retry-fixture",
       };
-      const retry = { ...input, accessToken: "at-retry-fixture" };
       await assert.rejects(driver.storeServiceAccountCredential(retry), (error) => {
         // Before finding 935 this was a ConfigurationFailure the controller hid behind 503.
         assert.ok(error instanceof ServiceAccountCredentialSecretExistsError, error.name);
@@ -9185,23 +9191,22 @@ test("a ServiceAccount credential Secret create that applied but answered an err
         assert.doesNotMatch(error.message, /at-request-fixture|at-retry-fixture/);
         return true;
       });
-      // Nothing is written: the leftover stays for the operator, and no create is attempted.
-      assert.equal(creates, 0);
+      // Compute cannot revoke the provider credential, so it leaves the receipt untouched.
       assert.deepEqual(objects.get(key), leftover);
-      assert.equal(calls.deletes.length, 1);
+      assert.equal(calls.creates, 1);
+      assert.deepEqual(calls.deletes, []);
     },
   );
 
   await t.test("a foreign object under the name keeps the ownership failure", async () => {
-    const { driver, objects, key, restore } = await harness({
+    const { driver, objects, key, calls } = await harness({
       applied: true,
       mutate: (stored) => {
         stored.metadata.labels["openclaw.dev/service-account"] = "sa_another";
       },
     });
     await assert.rejects(driver.storeServiceAccountCredential(input), (error) => error === dropped);
-    restore();
-    assert.equal(objects.has(key), true);
+    const foreign = structuredClone(objects.get(key));
     await assert.rejects(
       driver.storeServiceAccountCredential(input),
       // Not the account's own leftover, so the Driver's ownership refusal stands (still 503).
@@ -9209,6 +9214,9 @@ test("a ServiceAccount credential Secret create that applied but answered an err
         error.constructor.name === "OwnershipFailure" &&
         !(error instanceof ResourceStateConflictError),
     );
+    assert.deepEqual(objects.get(key), foreign);
+    assert.equal(calls.creates, 1);
+    assert.deepEqual(calls.deletes, []);
   });
 });
 
