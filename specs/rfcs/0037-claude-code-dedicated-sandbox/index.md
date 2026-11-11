@@ -9,7 +9,7 @@ author: freeqaz
 - **ID:** RFC-0037
 - **Created:** 2026-11-11
 - **Last updated:** 2026-11-11
-- **RFC PR:** Draft; link added once opened
+- **RFC PR:** [#5424](https://github.com/openclaw/openclaw-enterprise/pull/5424)
 - **Evidence:** [Sandbox spike](spike-evidence.md)
 - **Related:** [Embedded Claude Code runtime, draft #3027](https://github.com/openclaw/openclaw-enterprise/pull/3027),
   [Harness execution topology](../../../docs/flows/harness-execution-topology.md),
