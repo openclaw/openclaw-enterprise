@@ -12,8 +12,7 @@ Local protected static-inference launches are retired. Before effects, the launc
 Unset, empty or `0` protected-egress selections retain ordinary startup. There is
 no fallback. See the [retirement notice](../guides/deploy/local-openshell-images.md#select-the-protected-profile).
 
-Use these retained checks for existing installations. Keep recorded state and
-ownership evidence for withdrawal and cleanup.
+For existing installations, retain state and ownership evidence for withdrawal and cleanup.
 
 Bundled OpenShell cannot enforce this profile. Candidate Kubernetes Compute verifies
 the current installation before signing the workload release. Other Compute Drivers
@@ -30,9 +29,9 @@ pnpm test:files -- tests/integration/static-egress.test.mjs \
   tests/integration/egress-installation-exchange.test.mjs
 ```
 
-This selects literal files without provisioning dependencies or guaranteeing
-no skips. For strict PostgreSQL coverage, use `postgres-platform` with local
-Docker; no provider or cluster credentials are needed:
+This selects literal files without provisioning dependencies or preventing skips.
+For strict PostgreSQL coverage, use `postgres-platform` with local Docker;
+provider and cluster credentials are unnecessary:
 
 ```sh
 (
@@ -77,23 +76,21 @@ cover permission revoked between checks, material rotation, replay, selection mi
 credential reflection, rejection fencing and withdrawal. Sequential requests exceed 4,096 reservations using the test clock;
 blocked Secret reads fill the 1,024 active slots, which delivery releases.
 
-The fast digest regression reads the committed authorization from the in-memory receipt
-store; it sends no request. `postgres-egress-send-receipts.test.mjs` uses real PostgreSQL
-transactions, a fault proxy and a byte-counting origin. It drops the second COMMIT reply
-after reservation, verifies no permit or origin arrival, and reconstructs the Forwarder
-before the deadline to rule out a replacement send. Policy, material and acceptance remain
-synthetic. The suite also covers expiry, cancellation and lost custody after authorization.
+The digest regression reads in-memory committed authorization without sending.
+`postgres-egress-send-receipts.test.mjs` uses PostgreSQL, a fault proxy and a byte-counting
+origin. It drops the second COMMIT reply after reservation, verifies no permit or
+origin arrival, then reconstructs the Forwarder before the deadline to exclude
+replacement sends. Policy, material and acceptance remain synthetic. Other cases
+cover expiry, cancellation and lost custody after authorization.
 
-`tests/fixtures/static-egress/codex-responses.json` preserves a selected Codex
-0.163.0-alpha.2 packaged CLI request and finite synthetic SSE response consumed by
-that CLI. Prompt, model, identity, local tool names and descriptive values are sanitized;
-field and local-tool schema shapes are retained. The protected profile disables
-provider web search while keeping local functions and namespaces. The default remote web-search
-tool is a refusal vector. The application test sends these bytes through actual
-classification, credential access, send authorization and whole-response protection.
-It also rejects unknown fields/events, remote tools, duplicate JSON keys, incomplete
-SSE, credential reflection split across distinct output-item IDs, and credentials
-escaped inside function-argument JSON or its accumulated streaming deltas.
+`tests/fixtures/static-egress/codex-responses.json` preserves a Codex 0.163.0-alpha.2
+packaged CLI request and consumed finite synthetic SSE response. Prompt, model,
+identity, local-tool names and descriptions are sanitized; field and tool schemas remain.
+The profile retains local functions and namespaces but refuses provider web search,
+including the default remote tool. Tests exercise classification, credential access,
+send authorization and whole-response protection. They reject unknown fields/events,
+remote tools, duplicate JSON keys, incomplete SSE, credential reflection across
+output-item IDs, and credentials escaped in function-argument JSON or accumulated deltas.
 
 `tests/fixtures/static-egress/codex-inline-tools.json` reduces a sanitized packaged
 capture to two local tools and representative messages. The case authorizes its
@@ -109,10 +106,9 @@ The live-envelope case verifies nullable local-tool metadata against public
 [namespace](https://github.com/openai/openai-python/blob/0f73f1d519f8719b226e9084d78c8bdb4a60e48f/src/openai/types/responses/namespace_tool.py)
 types, including rejection of invalid types, formats and hosted tools.
 
-Synthetic wire fixtures do not establish runtime-image byte identity, generated
-Harness execution, model responses or installed enforcement. A separate interrupted
-response probe with zero request/stream retries observed one request and a failed
-CLI turn; it does not prove provider-effect recovery.
+Synthetic wires do not prove runtime-image identity, generated Harness execution,
+model responses or installed enforcement. An interrupted-response probe with zero
+request/stream retries observed one request and a failed CLI turn, not provider-effect recovery.
 
 ## Startup enrollment
 
@@ -165,10 +161,9 @@ after process restart. This nonce check does not establish automatic recovery:
 the default Kubernetes selection queues no periodic active-revision maintenance.
 Also verify timeout holds startup without a business retry.
 
-Before qualifying a deployment, also prove the actual supervisor requires
-the credential-access capability, binds the exact loaded policy, refuses missing
-counterparts, withholds response bytes until protection completes, and prevents
-workload bypass. Use the [OpenShell qualification contract](../reference/drivers/openshell-sandbox.md#qualification-contract)
+Also prove the supervisor requires credential-access capability, binds exact loaded
+policy, refuses missing counterparts, withholds responses until protection completes,
+and prevents workload bypass. Use the [OpenShell qualification contract](../reference/drivers/openshell-sandbox.md#qualification-contract)
 and [real runtime procedures](kubernetes.md). The bundled legacy release is not
 qualified by these tests. Indefinite streaming, WebSockets and dynamic credentials
 remain unsupported. Finite SSE is released only complete and under 4 MiB; the
@@ -180,9 +175,8 @@ installed native model-turn evidence.
 
 ## Protected launch packaging
 
-The local protected-launch packaging recipe has been retired. The launcher no
-longer provisions the static-inference authority or its Gateway middleware.
-The independent loopback wire and production Kubernetes packaging checks remain:
+The retired local launcher no longer provisions static-inference authority or Gateway
+middleware. Independent loopback wire and production Kubernetes packaging checks remain:
 
 ```sh
 node --test --test-name-pattern='OpenShell mTLS|OpenShell service transport never' \
@@ -191,11 +185,10 @@ OCC_HELM_BIN=/absolute/bin/helm node --test --test-name-pattern='protected autho
   tests/integration/production-kubernetes-packaging.test.mjs
 ```
 
-The loopback gRPC cases check DNS and IP server identity, foreign-client refusal
-and absence of client credentials on the separate service transport. The
-production packaging cases check the separately prepared authority configuration.
-These checks do not establish cluster behavior, PostgreSQL execution, middleware
-negotiation or OpenShell role mapping.
+Loopback gRPC checks DNS/IP server identity, foreign-client refusal and absence of
+client credentials on the separate service transport. Packaging checks the prepared
+authority configuration. Neither proves cluster behavior, PostgreSQL execution,
+middleware negotiation or OpenShell role mapping.
 
 Connected qualification additionally requires reviewed, revision-matched images,
 normal Agent admission, a disposable `openclaw_k8s_` database, and verified public
@@ -222,14 +215,12 @@ supervisor enforcement or bypass prevention.
 node --test tests/integration/egress-connected-preflight.test.mjs
 ```
 
-The `checks-baseline-2` lane runs this file. It checks serialized request bytes
-through Fastify's real content parser, authentication and native IAM with
-in-memory storage and fixture Compute. Valid protected requests must reach the
-missing-counterpart refusal; an unrelated `400` cannot qualify them. It also
-checks the connected observer's database guards, proto3 uint64 handling and
-rejection of partial assistant output, exact bearer/mTLS input shapes, fixture
-hostname restrictions and obfuscated provider vectors. It starts no provider,
-cluster or model runtime and supplies no installation receipt.
+`checks-baseline-2` checks serialized bytes through Fastify parsing, authentication
+and native IAM with in-memory storage and fixture Compute. Valid protected requests
+must reach missing-counterpart refusal; unrelated `400`s cannot qualify them.
+It covers observer database guards, proto3 uint64 handling, partial-output rejection,
+exact bearer/mTLS shapes, fixture hostname restrictions and obfuscated provider vectors.
+No provider, cluster or model runs; no installation receipt is supplied.
 
 ## Select the prepared connected lane
 
@@ -329,9 +320,9 @@ Pod Ready. The ledger records selection counts and pre-exec checks. After each
 custody snapshot, the fixture rechecks UID and readiness, then targets `gateway`.
 Name-based exec can still race replacement; the fixture never selects a replacement.
 
-Public APIs create resources; the worker deploys; authenticated supplier and
-persisted receipts prove installation. The packaged Codex caller uses a fresh
-source adopted with `adoption: "live"` and `authorityScope: "execution"`.
+Public APIs create resources; the worker deploys. Authenticated supplier and persisted
+receipts prove installation. Packaged Codex uses a fresh source with
+`adoption: "live"` and `authorityScope: "execution"`.
 Expected traffic: one startup probe, seventeen Codex sends (including seven
 hostile responses and recovery), one sibling request, and one retained turn
 if upgrading after B becomes ready.

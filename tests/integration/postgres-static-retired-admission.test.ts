@@ -3,6 +3,7 @@ import test from "node:test";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
+import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import type { ComputeDriver } from "../../packages/contracts/src/index.ts";
@@ -144,22 +145,6 @@ test(
     assert.deepEqual(stored.secrets, secretUpdate.secrets);
     assert.equal(f.providerRequests.length, 0);
 
-    const selected = new OpenClawController(installation, {
-      state: p.state,
-      driverConfigurations: registered,
-      recordOperations: true,
-    });
-    for (const capability of [
-      "iam",
-      "compute",
-      "configuration",
-      "secret",
-      "credential_gateway",
-    ] as const) {
-      const driver = p.controller.selectedDriver(capability);
-      selected.registerDriver(driver);
-      selected.selectDriver(capability, driver.id);
-    }
     // A fresh application owner shares the real capabilities and durable PostgreSQL state.
     const retiredStaticProviderRefs = [openAiStaticProviderRef];
     const selection = {
@@ -184,6 +169,25 @@ test(
     assert.ok(Object.isFrozen(owner));
     // Caller mutation must not undo the owner's private retirement policy.
     retiredStaticProviderRefs.length = 0;
+    const selected = new OpenClawController(installation, {
+      state: p.state,
+      driverConfigurations: registered,
+      namespaceLifecycleBindings: [
+        sandboxNamespaceLifecycleBinding(p.controller.selectedDriver("compute"), sandbox, owner),
+      ],
+      recordOperations: true,
+    });
+    for (const capability of [
+      "iam",
+      "compute",
+      "configuration",
+      "secret",
+      "credential_gateway",
+    ] as const) {
+      const driver = p.controller.selectedDriver(capability);
+      selected.registerDriver(driver);
+      selected.selectDriver(capability, driver.id);
+    }
     selected.installDriver(owner, ["sandbox", "credential_proxy"]);
     assert.equal(selected.selectedDriver("sandbox"), sandbox);
     assert.equal(selected.selectedDriver("credential_proxy"), proxy);

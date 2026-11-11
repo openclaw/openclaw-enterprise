@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-11
-last_updated_session: authoring-run/bae8dfee-ecba-461e-ac6d-fe124241f6aa
+last_updated_session: authoring-run/789515e7-d00d-4e5c-bf44-04a1275c340d
 ---
 
 # Protected credential request flow
@@ -25,27 +25,25 @@ and [threat model](../reference/security/credential-proxy.md).
 
 ### Follow the metadata GET
 
-Suppose the revision admits `github-app-metadata` for repository ID `12345`,
-`acme/widgets`, at `https://api.github.com`.
+For an admitted `github-app-metadata` route to repository `12345`,
+`acme/widgets`, at `https://api.github.com`:
 
-1. **Match the request.** The supervisor binds the bodyless `GET /repos/acme/widgets`
-   reply to its exchange. The GitHub adapter checks method, URL, headers and body
-   against the installed route.
-2. **Resolve the token.** OCC authorizes the Agent and resolves the registered grant. The Token Service can start or join issuance. OCC rechecks authority and token version before returning the header.
-3. **Permit one send.** OCC rechecks the binding on the same stream. The supervisor must start its request by the permit deadline.
-4. **Release the identity.** The adapter checks GitHub's complete reply: `200` JSON,
-   at most 64 KiB, with the admitted ID and name (ASCII case may differ). The caller
-   receives `200`, `Content-Type: application/json`, `Cache-Control: no-store`
-   and only this body.
+1. **Match.** The supervisor binds the bodyless `GET /repos/acme/widgets` reply
+   to its exchange. The adapter checks method, URL, headers and body against the route.
+2. **Resolve.** OCC authorizes the Agent and registered grant. The Token Service
+   starts or joins issuance; OCC rechecks authority and token version before returning the header.
+3. **Permit.** OCC rechecks the same-stream binding. Sending must start by the permit deadline.
+4. **Release.** The adapter requires complete `200` JSON, at most 64 KiB, matching
+   the admitted ID and name (ASCII case may differ). The caller receives `200`,
+   `Content-Type: application/json`, `Cache-Control: no-store` and only this body.
 
 ```json
 { "id": 12345, "full_name": "acme/widgets" }
 ```
 
-For ID `67890` under the same name, the supervisor withholds the response
-although GitHub received the request. With the credential-free
-profile the same filters apply, but resolution records `no_material_required`
-and the supervisor sends no credential header.
+ID `67890` under the same name is withheld after GitHub receives the request.
+The credential-free profile applies the same filters, records
+`no_material_required` and sends no credential header.
 [GitHub metadata adapter](https://github.com/openclaw/openclaw-enterprise/blob/0418ef3a2c116b73f025281395d92477daf665d2/apps/controller/src/drivers/egress-proxy/github-metadata.ts)
 
 ```mermaid
@@ -87,10 +85,10 @@ Compute rechecks admission with the worker before launch. PostgreSQL rejects
 unknown decisions and mixed v2/v3 fields. Older workers refuse v3. Upgrade
 all writers before admitting it.
 
-For each prepared route, `apps/controller/src/drivers/compute/kubernetes/index.ts:preparedEgressReady`
-selects the current issuer, projects the admitted source and checks readiness. Compute retains
-only these observation methods, without token-read or lifecycle authority. A missing or mismatched
-owner refuses release; a cold source remains pending.
+For each route, `apps/controller/src/drivers/compute/kubernetes/index.ts:preparedEgressReady`
+selects the issuer, projects the admitted source and checks readiness. Compute has
+observation methods, without token-read or lifecycle authority. Missing or mismatched
+owners refuse release; cold sources remain pending.
 
 Deploy returns `409` for missing Git delivery profiles
 (`REPOSITORY_GIT_PROFILE_UNSUPPORTED`), bundled `git-write`
@@ -115,10 +113,9 @@ Installation and revalidation accept only the exact name-only rule exception.
 Missing, legacy, widened or changed evidence refuses. The local comparison
 fingerprint covers both policies and hashes.
 
-For protected provider Harnesses, Compute sets
-`OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID` from admission. The helper matches it
-to the manifest before opening the authenticated service listener.
-The provider receives only the verifier. Compute withholds the private status
+Compute sets `OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID` from protected Harness admission.
+The helper matches the manifest before opening the authenticated listener.
+The provider receives only the verifier; Compute withholds the private status
 revision, port, container name and Pod UID.
 
 The Harness waits before its first model probe. Compute awaits installation commit, rechecks evidence
@@ -186,16 +183,15 @@ without material.
 
 ### 3. Resolve versioned material and authorize its sole send
 
-The selected Secret Driver verifies ownership and reads UID/resourceVersion from the authoritative
-API. Static and prepared GitHub read ports share one `{ signal, deadlineAt }` lifetime.
-The Kubernetes Secret reader carries it through namespace verification, GET and retries;
-child scopes inherit cancellation and the earliest deadline. Each HTTP dispatch checks
-expiry independently of timers. Invalid deadlines fail closed; per-attempt timeouts cannot
-extend the lifetime.
+The Secret Driver verifies ownership and reads authoritative UID/resourceVersion.
+Static and prepared GitHub reads share one `{ signal, deadlineAt }` lifetime through
+namespace verification, GET and retries. Child scopes inherit cancellation and the earliest
+deadline. Each HTTP dispatch checks expiry independently of timers. Invalid deadlines
+fail closed; per-attempt timeouts cannot extend the lifetime.
 GitHub acquisition validation, transport and metadata injection share a wire check:
 1–16,384 bytes of nonspace printable ASCII, not authentication.
 
-`apps/controller/src/drivers/repo/github/access/prepared-lifecycle.ts:resolve` checks the registered source and the token's remaining lifetime. It reads only ciphertext for the selected issuer, attempt and version. The store rechecks the caller’s deadline and cancellation before decryption. If issuance cannot supply an eligible token in time, OCC releases no header. Background cleanup retains access to retired material.
+`apps/controller/src/drivers/repo/github/access/prepared-lifecycle.ts:resolve` checks source registration and token lifetime, reading ciphertext only for the selected issuer, attempt and version. Decryption rechecks deadline and cancellation. Without a timely eligible token, OCC withholds the header. Background cleanup can access retired material.
 
 Before send, `packages/occ/src/state/prepared-github-state.ts:postgresPreparedGitHubProof`
 queries current material metadata in the active platform transaction, without another
@@ -206,13 +202,12 @@ original settings in the same unit before rechecking cancellation and absolute e
 SQL errors leave rollback to the transaction owner. OCC checks withdrawal, rejection
 and binding in that unit.
 
-The same-stream authorization frame must echo the original deadline, evidence and
-injection digest. The registry reserves the handle, then
-`packages/occ/src/egress-send-receipts.ts:EgressSendReceipts.begin` commits possible
-dispatch before permission. Its key includes authenticated sender Ref, instance,
-stable request/use ID and attempt ID; its binding includes exact store-qualified
-material and original deadline. An existing attempt, failed write or unknown commit
-refuses permission, including after an authority restart.
+Same-stream authorization echoes the original deadline, evidence and injection digest.
+The registry reserves the handle; `packages/occ/src/egress-send-receipts.ts:EgressSendReceipts.begin`
+commits possible dispatch before permission. The key includes authenticated sender Ref,
+instance, stable request/use ID and attempt ID; the binding includes exact store-qualified
+material and original deadline. Existing attempts, failed writes or unknown commits
+refuse permission, even after authority restart.
 
 The sender and OCC bind the same Sandbox, instance, configuration, peer key, policy hash,
 authority scope and plan to the exchange. The Git recipient has its own delivery evidence.
@@ -343,6 +338,8 @@ Caller refusals stay generic.
 None.
 
 ## Changelog
+
+- 2026-11-11 18:22: Shorten the flow without changing its boundaries. (authoring-run/789515e7-d00d-4e5c-bf44-04a1275c340d - 81097025d513c9faac0b0c75c7fda61835369ad6)
 
 - 2026-11-11 11:51: Qualify audit-only diagnostics and model eligibility. (authoring-run/bae8dfee-ecba-461e-ac6d-fe124241f6aa - 6ffb2a4f4b5b4018af06247e6aba5c5061a7066a)
 
