@@ -150,8 +150,7 @@ cleanup() {
   local status=$?
   trap - EXIT
   rm -rf -- "$temporary_directory"
-  # A failed or interrupted start removes the key directory it created while it is still
-  # empty. One that holds a copied key stays, recorded for occ dev down.
+  # Keep a copied key, even when startup fails after the copy.
   if [ "$status" -ne 0 ] && [ -n "$key_directory" ]; then
     rmdir -- "$key_directory" 2>/dev/null || true
   fi
@@ -185,12 +184,13 @@ if stat.S_IMODE(parent_stat.st_mode) & 0o077:
 PY
 }
 
-# Without --key-output the key goes to a directory this script creates once the checkout's
-# browser directory is known (below), so occ dev down can find and remove it.
-if [ -n "$key_output" ]; then
-  if ! key_output_error="$(validate_key_output "$key_output" 2>&1)"; then
-    usage_error "key output" "$key_output_error"
-  fi
+if [ -z "$key_output" ]; then
+  key_parent="${TMPDIR:-/tmp}"
+  key_directory="$(mktemp -d "${key_parent%/}/openclaw-dev-up-key.XXXXXXXXXX")"
+  chmod 700 "$key_directory"
+  key_output="$key_directory/initial-admin-service-key.json"
+elif ! key_output_error="$(validate_key_output "$key_output" 2>&1)"; then
+  usage_error "key output" "$key_output_error"
 fi
 
 container_engine=""
@@ -442,17 +442,6 @@ fi
 export OCC_DEVELOPMENT_BROWSER_ORIGIN OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN OCC_DEVELOPMENT_BROWSER_PORT
 export OCC_DEVELOPMENT_BROWSER_TLS_CERT OCC_DEVELOPMENT_BROWSER_TLS_KEY
 export OCC_AGENT_NATIVE_ADMIN_ENABLED=false
-if [ -z "$key_output" ]; then
-  # Drop trailing slashes (macOS sets TMPDIR to ".../T/") so the recorded path is clean.
-  key_parent="${TMPDIR:-/tmp}"
-  while [ "$key_parent" != "${key_parent%/}" ]; do key_parent="${key_parent%/}"; done
-  key_directory="$(mktemp -d "$key_parent/openclaw-dev-up-key.XXXXXXXXXX")"
-  chmod 700 "$key_directory"
-  key_output="$key_directory/initial-admin-service-key.json"
-  # Record only directories this script created: occ dev down removes them with the
-  # stack and never touches a --key-output path.
-  printf '%s\n' "$key_directory" >>"${OCC_DEVELOPMENT_BROWSER_TLS_CERT%/*}/dev-up-key-directories"
-fi
 browser_compose_file_selected=0
 for arg in "${compose_args[@]+${compose_args[@]}}"; do
   case "$arg" in -f | --file | -f?* | --file=*) browser_compose_file_selected=1 ;; esac

@@ -112,10 +112,11 @@ startup, including macOS machine connections. See the
 [cleanup flow](../../flows/docker-compose-development.md#3-clean-up-docker-or-podman-compose)
 for how the host connection and worker socket are handled.
 
-This preserves PostgreSQL, Configuration, and bootstrap-key volumes. Use
-`--volumes` only to delete the local Installation. First account for any Agent
-containers owned by Docker Compute; down then removes the Installation's idle
-Namespace networks.
+Compose keeps PostgreSQL, Configuration, and bootstrap-key volumes unless you
+pass `--volumes` to delete the local Installation. Account for Agent containers
+and their Namespace networks before deleting the database. Docker Compute owns
+those networks. The service-key copy at the path printed by `dev up` also
+stays on disk. Remove that copy when you no longer need it.
 
 A Kubernetes profile's `Cleanup` command instead deletes its k3d cluster,
 database, Agents, and volumes; see [stop and clean up](local-kubernetes-development.md#stop-and-clean-up).

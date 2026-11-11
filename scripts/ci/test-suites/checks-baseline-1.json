@@ -517,10 +517,8 @@
         "development cleanup with Compose options keeps the Docker profile",
         "development cleanup treats a Kubernetes control plane without a Compute selection as Kubernetes",
         "dev-up refuses Keycloak sign-in for the Docker profile before startup",
-        "dev-down removes the service key directory dev-up created and keeps a chosen key output",
-        "dev-down --volumes removes the Installation's Docker Compute Namespace networks",
-        "a failed dev-up removes the empty service key directory it created",
-        "dev-up records a clean key directory path when TMPDIR ends in a slash"
+        "Compose shutdown keeps copied service keys and leaves Namespace networks to Docker Compute",
+        "a failed dev-up removes the empty service key directory it created"
       ]
     },
     {
