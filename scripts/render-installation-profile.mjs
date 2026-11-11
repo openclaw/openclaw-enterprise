@@ -997,6 +997,7 @@ function renderOidc(source, diagnostics) {
     diagnostics.errors.push("controlPlane.oidc.providers must contain at least one provider.");
   }
   const providers = {};
+  const displayNames = new Set();
   let hasLegacyCallback = false;
   for (const [key, value] of entries) {
     const entryPath = [...providerPath, key];
@@ -1013,6 +1014,11 @@ function renderOidc(source, diagnostics) {
       diagnostics.errors.push(`${label}.secretName is required.`);
     }
     const rendered = renderOidcProvider(entry, entryPath, diagnostics);
+    const displayName = (rendered.displayName ?? key).trim().toLowerCase();
+    if (displayNames.has(displayName)) {
+      diagnostics.errors.push("controlPlane.oidc.providers must have distinct button labels.");
+    }
+    displayNames.add(displayName);
     if (entry.allowSelfLink !== undefined) {
       if (typeof entry.allowSelfLink !== "boolean") {
         diagnostics.errors.push(`${label}.allowSelfLink must be a boolean.`);

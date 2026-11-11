@@ -1365,6 +1365,20 @@ test(
       ],
     );
     assert.equal(apiEnv.find(({ name }) => name === "OCC_API_HTTPS_EGRESS_OPEN").value, "false");
+
+    // Go lowercases the dotted capital I to "i"; the API preserves the combining dot.
+    await assertParity({
+      label: "distinct Unicode button labels",
+      controlPlane: {
+        oidc: {
+          providers: {
+            okta: { ...providers.okta, displayName: "İ" },
+            "keycloak-sso": { ...providers["keycloak-sso"], displayName: "i" },
+          },
+        },
+      },
+      accepted: true,
+    });
   },
 );
 
@@ -1374,6 +1388,21 @@ test("invalid named OIDC provider settings fail preflight and Helm", { skip: hel
   const providers = { okta, keycloak };
   const cases = [
     ["bad provider key", { providers: { Okta_SSO: okta } }, /providers key "Okta_SSO"/],
+    [
+      "explicit label collides with another provider's default label",
+      { providers: { okta: { ...okta, displayName: "Keycloak" }, keycloak } },
+      /distinct button labels/,
+    ],
+    [
+      "identical trimmed Unicode provider labels",
+      {
+        providers: {
+          okta: { ...okta, displayName: " Équipe " },
+          keycloak: { ...keycloak, displayName: "Équipe" },
+        },
+      },
+      /distinct button labels/,
+    ],
     [
       "missing Secret name",
       { providers: { okta: oidcEndpoints } },
