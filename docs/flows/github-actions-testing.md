@@ -135,9 +135,9 @@ Collector and Node images and the shared Prometheus and Grafana pins.
 limits retry within the shared budget; missing manifests/authorization refusals
 fail immediately. Unpinned Node overrides retain test-owned pulls.
 
-`scripts/ci/prepare.mjs:imageBuildArgs` restores scoped BuildKit caches for hosted image jobs. Only the [CI Image Cache workflow](../../.github/workflows/ci-image-cache.yml) calls `warmImageCache` to export the shared controller/runtime cache. Full OpenShell lanes retain this builder and `SOURCE_DATE_EPOCH=0` through
-[source-build tests](../testing/ci/openshell-execution.md#hosted-preparation).
-Cache credentials stay in preparation.
+Full Integration requires [compatible cache exports](github-actions-testing/preparation.md)
+before OpenShell source builds. These retain their builder and fixed epoch;
+cache credentials stay in preparation. Mutable scopes make cache hits best effort.
 
 Kubernetes preparation records host snapshots. Failed reads, bounded
 by time and size, save `<state-file>.diagnostics.json` outside the cluster directory.
@@ -304,6 +304,8 @@ awaits an approved resource ledger.
 - 2026-11-11 08:11: Bind sign-in rehearsal to the current v3 profile. (authoring-run/8a266aca-074d-4db2-a374-624cabc77861 - 9bf18bf3244b0a0e6f26f5a10263f51ea0b08b3c)
 
 - 2026-11-11 07:55: Retain selected runtime Codex provenance in CI evidence. (authoring-run/59e3fbae-c2ef-496b-ad18-c965758bee04 - 7fa7a37738bb24b27d9a835e409ea20eafb43cee)
+
+- 2026-11-11 04:31: Order OpenShell cache prerequisites. (authoring-run/3b974b52-31d5-4b10-a36c-7cd8a485fc74 - 5d28dd8e93338af9f0ece8796b3bb4a83bd46295)
 
 - 2026-11-11 03:43: Guard reuse and fresh fallback. (authoring-run/c0ca6f34-2aa6-47f9-87c1-e5f3708617f6 - 993a38b318c249b00f951bf92c8d136214ec82fd)
 - 2026-11-11 03:28: Explain qualified CI reuse. (authoring-run/1b85588b-87c6-47d0-8c6e-8b78b0030aea - dfd55e679c9c9869ddc786b85f6f9b27a53fb833)
