@@ -153,8 +153,8 @@ engine selection, database initialization, local API admission and worker startu
 [Namespace execution and Agent admission](docker-compose-development/agent-execution.md)
 traces API authorization, queued controller operations, tenant network ownership, unsupported
 Agent authentication and exact resource removal.
-The Driver rejects Docker API responses above 4 MiB from either a declared
-content length or the bytes received before buffering the complete body.
+The Driver rejects Docker API responses above 4 MiB, by declared length or
+bytes received, before buffering the body.
 For in-flight aborts, `DockerComputeDriver.request` preserves the error and adds
 [request diagnostics](../reference/drivers/docker-compute.md#troubleshooting)
 to its message. Preflight cancellation remains unchanged.
@@ -164,18 +164,16 @@ to its message. Preflight cancellation remains unchanged.
 `internal/occdev/down.go:Down`, `internal/occdev/down.go:podmanComposeArgs`
 
 `occ dev down` uses the selected engine and forwarded Compose project and file
-options, including after partial startup. Podman retains the caller's selected
-connection. Its reported API socket supplies `OCC_CONTAINER_ENGINE_SOCKET` only
-to resolve the worker mount; a socket inside a macOS VM is not substituted for
-the host connection. An unavailable engine or invalid socket fails cleanup.
+options, including after partial startup. Podman keeps the caller's connection;
+its reported API socket sets `OCC_CONTAINER_ENGINE_SOCKET` only to resolve the
+worker mount, never replacing the host connection with a macOS VM socket. An
+unavailable engine or invalid socket fails cleanup.
 
-Compose removes its project containers and network. Named database,
-Configuration, and bootstrap volumes remain unless `--volumes` is explicit.
-Down also removes the service-key directory `scripts/dev-up` created. With
-`--volumes`, it first reads the Installation's Namespace IDs from its running
-database, then removes the idle Docker Compute networks labelled for those
-Namespaces. Agent-owned containers remain the responsibility of their platform
-deletion workflows; follow [safe development shutdown](../guides/deploy/local-operations.md#stop-development-safely).
+Compose removes its project containers and network; database, Configuration,
+and bootstrap volumes remain without `--volumes`. Down removes the service-key
+directory `scripts/dev-up` created. `--volumes` also removes idle Docker Compute
+networks labelled with the Installation's Namespace IDs, read from its database
+first. For Agent containers, see [safe development shutdown](../guides/deploy/local-operations.md#stop-development-safely).
 
 ### 4. Start and clean up Kubernetes development
 
