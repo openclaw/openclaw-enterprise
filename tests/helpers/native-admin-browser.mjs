@@ -6,7 +6,7 @@ import {
 } from "../helpers/native-ui-chat.mjs";
 import assert from "node:assert/strict";
 import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
-import { keycloakRealmAdmin } from "./ci-keycloak-realm.mjs";
+import { findKeycloakRealmClient, keycloakRealmAdmin } from "./ci-keycloak-realm.mjs";
 import {
   keycloakInstructions,
   keycloakLauncher,
@@ -1413,12 +1413,7 @@ export async function runOidcAgentChatScenario(context) {
 
   // A disposable client admits this run's exact Console callback without changing
   // the separately prepared sign-in fixture or weakening redirect validation.
-  const [preparedClient] = await keycloakRealmAdmin(
-    issuer,
-    secrets.admin,
-    "GET",
-    `/clients?clientId=${secrets.clientId}`,
-  );
+  const preparedClient = await findKeycloakRealmClient(issuer, secrets.admin, secrets.clientId);
   assert.ok(preparedClient);
   const clientId = `oce-native-${randomUUID()}`;
   const clientSecret = randomUUID() + randomUUID();

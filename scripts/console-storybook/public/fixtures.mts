@@ -224,16 +224,19 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
   let signedIn = !scenario.signedOut;
   let repositoryDescriptionRequests = 0;
   sessionStorage.removeItem("occ.console.externalAttempt");
-  const pendingRoute =
-    scenario.pendingOidcAttempt ?? (scenario.pendingGoogleAttempt ? "google" : null);
-  if (pendingRoute !== null) {
-    const label = { oidc: "single sign-on", "oidc/keycloak": "Keycloak", google: "Google" }[
-      pendingRoute
-    ];
-    // Simulates returning from a callback started in this tab.
+  // Select fixed callback data so the fixture never copies scenario data to browser storage.
+  let pendingAttempt: { route: string; label: string } | undefined;
+  if (scenario.pendingOidcAttempt === "oidc") {
+    pendingAttempt = { route: "oidc", label: "single sign-on" };
+  } else if (scenario.pendingOidcAttempt === "oidc/keycloak") {
+    pendingAttempt = { route: "oidc/keycloak", label: "Keycloak" };
+  } else if (scenario.pendingGoogleAttempt) {
+    pendingAttempt = { route: "google", label: "Google" };
+  }
+  if (pendingAttempt !== undefined) {
     sessionStorage.setItem(
       "occ.console.externalAttempt",
-      JSON.stringify({ route: pendingRoute, label, attemptId: "a".repeat(43) }),
+      JSON.stringify({ ...pendingAttempt, attemptId: "a".repeat(43) }),
     );
   }
   // Preview frames share tab storage, so every scenario sets the signed-in mark itself: only

@@ -3718,6 +3718,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 },
               }),
               403: { description: "Forbidden", ...error },
+              ...(provider.name === "google"
+                ? {}
+                : { 400: { description: "Bad Request", ...error }, ...bodyErrors }),
             },
           },
         },

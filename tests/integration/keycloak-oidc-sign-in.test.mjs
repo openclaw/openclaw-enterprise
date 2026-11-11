@@ -1,4 +1,8 @@
-import { createKeycloakTestRealm, keycloakRealmAdmin } from "../helpers/ci-keycloak-realm.mjs";
+import {
+  createKeycloakTestRealm,
+  findKeycloakRealmClient,
+  keycloakRealmAdmin,
+} from "../helpers/ci-keycloak-realm.mjs";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -413,10 +417,10 @@ const keycloakAdmin = (prepared, method, path, body) =>
   keycloakRealmAdmin(issuer, prepared.secrets.admin, method, path, body);
 
 async function registerNamedCallback(t, prepared) {
-  const [client] = await keycloakAdmin(
-    prepared,
-    "GET",
-    `/clients?clientId=${prepared.secrets.clientId}`,
+  const client = await findKeycloakRealmClient(
+    issuer,
+    prepared.secrets.admin,
+    prepared.secrets.clientId,
   );
   assert.ok(client, "the fixture's confidential client exists");
   const redirectUri = `${origin}${namedCallbackPath}`;

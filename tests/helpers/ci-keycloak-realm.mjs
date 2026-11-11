@@ -35,6 +35,12 @@ export async function keycloakRealmAdmin(issuer, admin, method, path, body) {
   return keycloakAdmin(issuer, admin, method, `/admin/realms/oce${path}`, body);
 }
 
+/** Matches the configured client locally so fixture data stays out of the request URL. */
+export async function findKeycloakRealmClient(issuer, admin, clientId) {
+  const clients = await keycloakRealmAdmin(issuer, admin, "GET", "/clients");
+  return clients.find((client) => client.clientId === clientId);
+}
+
 /** Creates a realm for one test and returns a function that deletes it. */
 export async function createKeycloakTestRealm(issuer, admin, realm) {
   const name = realm.realm;
