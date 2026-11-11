@@ -2356,9 +2356,33 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   assert.equal(gitJob.steps[0].with.ref, "${{ github.sha }}");
   assert.equal(gitJob.steps[0].with["persist-credentials"], false);
   assert.doesNotMatch(JSON.stringify(gitJob), /secrets\.|diagnostics\//);
-  const [receipt] = gitJob.steps.filter(({ uses }) => uses?.startsWith("actions/upload-artifact@"));
+  const uploads = gitJob.steps.filter(({ uses }) => uses?.startsWith("actions/upload-artifact@"));
+  const receipt = uploads.find((step) => step.with.name === "full-results-" + privateGit);
   assert.equal(receipt.with.path, "${{ runner.temp }}/results/" + privateGit + ".json");
   assert.equal(receipt.if, undefined, "publish the receipt only after successful fixture cleanup");
+  const failure = uploads.find(
+    (step) => step.with.name === "attempt-${{ github.run_attempt }}-full-failure-" + privateGit,
+  );
+  assert.equal(failure.with.path, "${{ runner.temp }}/skipper-installed-failure.json");
+  assert.equal(failure.with["if-no-files-found"], "error");
+  const recordFailure = gitJob.steps.find((step) => step.id === "installed-skipper-failure");
+  // Failure evidence stays separate from success aggregation and is withheld on cancellation.
+  for (const outcome of ["success", "failure", "skipped", "cancelled"]) {
+    for (const cancelled of [false, true]) {
+      const context = {
+        cancelled: () => cancelled,
+        steps: {
+          "installed-skipper-proof": { outcome },
+          "installed-skipper-failure": { outcome },
+        },
+      };
+      assert.equal(
+        workflowCondition(recordFailure.if, context),
+        !cancelled && outcome === "failure",
+      );
+      assert.equal(workflowCondition(failure.if, context), !cancelled && outcome === "success");
+    }
+  }
   assert.ok(workflow.jobs["full-aggregate"].needs.includes(privateGit));
   const qa = workflow.jobs["qa-matrix"];
   assert.ok(qa.needs.includes("slack"), "shared Slack consumers must run sequentially");
