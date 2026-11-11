@@ -194,20 +194,17 @@ for threads/turns; constrained threads fail before a turn. First Agent warns tha
 prior PAT `workspace-write` versions break shell tools; `--replace-key` deploys
 current policy. OpenShell blocks nested bubblewrap; model readiness does not prove shell execution.
 
-PAT bootstrap (`prepareHarnessAuth`;
-`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:AGENT_RUNTIME_ENTRYPOINT`)
-writes an opaque placeholder to private `auth.json`, clears the child override and validates
-native login. Scoped [PAT routes](../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
-admit bootstrap/model traffic. In the unprotected PAT profile, the readiness
-probe can recover the specific REST upgrade refusal on the first-party
-Responses route. Codex must report the switch to HTTPS and then return an
-answer in the same successful, tool-free turn. Failure keeps versions inactive.
-`requireModelSourceDestination` checks immutable `config.authorized_base_url`
-before API-key profiles bind the [shared provider](../reference/drivers/kubernetes-compute/model-provider.md)
+PAT bootstrap (`prepareHarnessAuth`, `runtime-entrypoints.ts:AGENT_RUNTIME_ENTRYPOINT`)
+writes the placeholder to private `auth.json`, clears the child override and verifies native login.
+After a [PAT route](../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
+denies a WebSocket upgrade, unprotected readiness requires Codex's HTTPS fallback
+and a subsequent answer in one successful tool-free turn.
+`requireModelSourceDestination` checks immutable `config.authorized_base_url` before binding
+the [shared provider](../reference/drivers/kubernetes-compute/model-provider.md)
 URL plus `/**`, preserving `/api/v1` prefixes. `attachForRevision` translates native
-OpenClaw configuration and matches selected endpoints to this URL. For Codex,
+OpenClaw configuration and matches endpoints. For explicit Codex endpoints,
 `apps/controller/src/drivers/compute/plugin-runtime.ts:codexConfigurationToml`
-selects a named provider and HTTPS Responses transport.
+selects the named HTTPS Responses provider.
 
 ### 3. Validate and serialize the Sandbox
 

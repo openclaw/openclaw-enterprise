@@ -115,18 +115,15 @@ Personal and service-account Codex PATs use `CODEX_ACCESS_TOKEN` over HTTPS:
 - `POST /backend-api/ps/apps/batch` on `chatgpt.com` for app metadata lookup.
 - `POST /backend-api/ps/mcp` on `chatgpt.com` for native hosted-app MCP transport.
 
-`*` matches one path segment; GET includes HEAD. These source-wide routes apply
-to all Agents using the source. The MCP rule does not filter apps or tools or
-enforce read-only access; native managed policy enforces Agent selections and
-approvals. Direct Plugin Service sharing, suggestions and uninstall routes remain
-denied. Package downloads use separate credential-free egress. Other routes remain denied.
+`*` matches one segment. GET includes HEAD. Every Agent using the source shares
+these routes. Native managed policy enforces Agent selections and approvals.
+The MCP rule enforces neither read-only access nor app/tool filtering. Unlisted routes,
+including sharing, suggestions and uninstall, remain denied. Package downloads
+use separate credential-free egress.
 
-The Harness stores only an opaque `personal_access_token`. Readiness requires
-native login and model execution
-([bootstrap flow](../../flows/openshell-sandbox-provisioning.md#2-derive-the-provider-owned-harness-request)).
-The PAT Responses route uses HTTPS. OpenShell denies WebSocket upgrades.
-On an unprotected Harness, the native probe can complete after Codex switches
-to HTTPS within the same turn.
+The Harness stores an opaque `personal_access_token`. Readiness requires native
+login and model execution. Unprotected probes can complete after Codex falls
+back to HTTPS on the [PAT Responses route](../../flows/openshell-sandbox-provisioning.md#2-derive-the-provider-owned-harness-request).
 
 `openai` sources authorize the default OpenAI endpoint unless `authorized_base_url`
 explicitly authorizes another endpoint. The [revision model provider](kubernetes-compute/model-provider.md)
