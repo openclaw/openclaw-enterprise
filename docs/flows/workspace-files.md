@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
-updated: 2026-11-05
-last_updated_session: authoring-run/813d3dd8-d371-45db-a6f1-d70156152311
+updated: 2026-11-11
+last_updated_session: authoring-run/34b5633f-b4b7-4b67-98ff-d5b3c3ab1a6b
 ---
 
 # Agent Workspace Files Flow
@@ -244,13 +244,14 @@ owns recovery. Native provisioning requires Sandbox; expired unpaired setup awai
   The memory flush run gets Gateway-local `read` and `write`, so
   `agents.defaults.compaction.memoryFlush.enabled` is `false`. Codex's native
   tools act in the Harness; file-transfer reaches it through the node.
-- The Harness reaches the model itself, so the Gateway's `codex` and `openai`
-  provider rows keep only their models: overrides (`request`, `headers`,
-  `params`, `localService`) are dropped, and an authored transport (always for
-  `codex`) becomes the `http://127.0.0.1:9` stub. A session switched to
-  OpenClaw's built-in runtime with
-  `/model <ref> --runtime openclaw` runs in the Gateway with no reachable model,
-  and Codex never hands that runtime a turn.
+- For a Codex workspace-node Gateway’s `codex` and `openai` rows,
+  `pinCodexProviderTransport` drops request overrides and replaces authored transports (always for `codex`) with
+  `http://127.0.0.1:9`, blocking Gateway-local model access.
+  Model `reasoning`, `thinkingLevelMap`, and valid nonempty
+  `compat.supportedReasoningEfforts` remain. All other `compat` fields are
+  stripped; specifically, `thinkingLevels` would trigger native fallback.
+  [Capabilities](../reference/harness-execution.md#native-runtime-selection)
+  are authored, not inferred.
 - At startup Gateway emits `runtime.gateway_settings_overridden` naming, never
   valuing, replaced or dropped settings. `occ agent logs` exposes names; the
   Collector exports only the [event](common-logging.md#7-collector-exports-only-operational-classes).
@@ -376,6 +377,8 @@ replays it. Cleanup closes the native client.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 09:02: Retain native effort capabilities without request overrides. (authoring-run/34b5633f-b4b7-4b67-98ff-d5b3c3ab1a6b - 9f30b1e6b9f6552865d47fedd6d0b82729bf70fb)
 
 - 2026-11-05 00:00: Clarify enrollment limits. (authoring-run/813d3dd8-d371-45db-a6f1-d70156152311 - a23d33a4d561d0678410a993e5c10a8cddf1a720)
 

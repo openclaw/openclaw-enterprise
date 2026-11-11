@@ -1270,6 +1270,115 @@ export function createOpenShellKubernetesFixture({
     );
   }
 
+  async function readPermissionHarnessLogs(namespace, revision, since, signal) {
+    const read = async (...args) =>
+      (
+        await execute(
+          "kubectl",
+          base.kubectlArguments(["--namespace", namespace, "--request-timeout=5s", ...args]),
+          {
+            env: { PATH: process.env.PATH, HOME: process.env.HOME },
+            signal,
+            killSignal: "SIGKILL",
+            maxBuffer: 256 * 1024,
+          },
+        )
+      ).stdout;
+    const selector = [
+      `openclaw.dev/namespace=${revision.namespaceId}`,
+      `openclaw.dev/agent=${revision.agentId}`,
+      `openclaw.dev/revision=${revision.id}`,
+      "openclaw.dev/workload-role=agent",
+    ].join(",");
+    const harness = async () => {
+      const sandboxes = JSON.parse(
+        await read(
+          "get",
+          sandboxApiResource,
+          "--selector",
+          `openshell.ai/sandbox-name=os-${openshellHash(revision.id, 16)}`,
+          "-o",
+          "json",
+        ),
+      ).items;
+      if (sandboxes.length !== 1) {
+        return undefined;
+      }
+      const [sandbox] = sandboxes;
+      if (
+        sandbox.metadata?.namespace !== namespace ||
+        sandbox.metadata.deletionTimestamp !== undefined ||
+        !sandbox.metadata.name ||
+        !sandbox.metadata.uid ||
+        !sandbox.apiVersion
+      ) {
+        return undefined;
+      }
+      const { items } = JSON.parse(await read("get", "pods", "--selector", selector, "-o", "json"));
+      if (items.length !== 1) {
+        return undefined;
+      }
+      const [pod] = items;
+      const agent = pod.status?.containerStatuses?.find(({ name }) => name === "agent");
+      if (
+        pod.metadata?.namespace !== namespace ||
+        pod.metadata.deletionTimestamp !== undefined ||
+        !pod.metadata.ownerReferences?.some(
+          (owner) =>
+            owner.kind === "Sandbox" &&
+            owner.apiVersion === sandbox.apiVersion &&
+            owner.name === sandbox.metadata.name &&
+            owner.uid === sandbox.metadata.uid &&
+            owner.controller === true,
+        ) ||
+        !pod.metadata.name ||
+        !pod.metadata.uid ||
+        !agent?.containerID ||
+        !agent.state?.running
+      ) {
+        return undefined;
+      }
+      return {
+        name: pod.metadata.name,
+        uid: pod.metadata.uid,
+        container: agent.containerID,
+        sandboxUid: sandbox.metadata.uid,
+      };
+    };
+    const before = await harness();
+    if (before === undefined) {
+      return undefined;
+    }
+    const logs = await read(
+      "logs",
+      before.name,
+      "--container=agent",
+      "--timestamps",
+      `--since-time=${since}`,
+      "--limit-bytes=131072",
+    );
+    const after = await harness();
+    if (
+      after?.uid !== before.uid ||
+      after.container !== before.container ||
+      after.sandboxUid !== before.sandboxUid
+    ) {
+      return undefined;
+    }
+    // kubectl sends sinceTime at second precision. Preserve the diagnostic's
+    // actual start boundary using the timestamps attached by the container log API.
+    const startedAt = Date.parse(since);
+    return logs
+      .split("\n")
+      .flatMap((line) => {
+        const separator = line.indexOf(" ");
+        return separator !== -1 && Date.parse(line.slice(0, separator)) >= startedAt
+          ? [line.slice(separator + 1)]
+          : [];
+      })
+      .join("\n");
+  }
+
   async function waitForSandbox(namespace, revision) {
     return await base.waitFor(
       `OpenShell Sandbox for revision ${revision.id}`,
@@ -1926,6 +2035,7 @@ export function createOpenShellKubernetesFixture({
     customResources,
     maybeResource,
     readAgentTransportCredentials,
+    readPermissionHarnessLogs,
     waitForOpenShellGateway,
     installOpenShellGateway,
     startOpenShellGatewayPortForward,

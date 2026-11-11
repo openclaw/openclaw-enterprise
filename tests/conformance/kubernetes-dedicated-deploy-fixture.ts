@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { labelSelectorLabels, tenant } from "../helpers/kubernetes-routed-scenarios.mjs";
+import {
+  readyServiceEndpointSliceList,
+  singleReplicaReadyDeploymentStatus,
+} from "./kubernetes-gateway-readiness-fixture.ts";
 
 const coreKinds = [
   "ConfigMap",
@@ -216,17 +220,8 @@ export function createDedicatedDeployKubernetesFixture(
     save(object);
     return object;
   };
-  clients.discovery.listNamespacedEndpointSlice = async () => ({
-    items: [
-      {
-        metadata: {
-          labels: { "kubernetes.io/service-name": gatewayName },
-          ownerReferences: [{ kind: "Service", name: gatewayName, uid: `${gatewayName}-uid` }],
-        },
-        endpoints: [{ conditions: { ready: true } }],
-      },
-    ],
-  });
+  clients.discovery.listNamespacedEndpointSlice = async () =>
+    readyServiceEndpointSliceList(gatewayName);
   clients.core.listNamespacedPod = async ({ labelSelector, namespace: requestedNamespace }) => {
     const labels = labelSelectorLabels(labelSelector) as Record<string, string | undefined>;
     const role = labels["openclaw.dev/workload-role"];
@@ -343,12 +338,7 @@ export function createDedicatedDeployKubernetesFixture(
 
   const markReady = (name: string) => {
     const object = read("Deployment", name);
-    object.status = {
-      observedGeneration: object.metadata.generation,
-      replicas: 1,
-      updatedReplicas: 1,
-      readyReplicas: 1,
-    };
+    object.status = singleReplicaReadyDeploymentStatus(object.metadata.generation);
     save(object);
   };
 

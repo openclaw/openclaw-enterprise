@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: 2026-11-10
-last_updated_session: authoring-run/37c71df8-7e9c-4224-bc36-e4091f387620
+updated: 2026-11-11
+last_updated_session: authoring-run/28db5867-56df-4145-a1c5-07be7a7874ee
 ---
 
 # Agent Native Admin UI Flow
@@ -201,29 +201,30 @@ account or grant. See [session limits](../reference/agent-native-admin.md#host-o
 
 `apps/controller/src/http/native-admin.ts:interceptNativeAdminHttp`
 
-The `onRequest` hook intercepts the native domain before routing, preventing
-Agent origins from exposing controller routes. It authenticates the session or
-handle, resolves the exact Agent and IAM identity, selects `admin` or `chat`,
-and checks the selected version and native configuration.
-Attributable IAM denials receive one audit attempt, including after the
-five-second admission wait, disconnect or shutdown. Timely HTTP denials await
-that append before returning `403`; append failures or admission timeouts return `503`.
+The `onRequest` hook prevents Agent origins from exposing controller routes.
+It authenticates the session or handle, resolves the Agent and IAM identity,
+selects `admin` or `chat`, and checks version and configuration.
+Attributable IAM denials get one audit attempt, even after the five-second
+admission wait, disconnect or shutdown. Timely denials await that append before
+returning `403`. Classified dependency failures, append failures and admission
+timeouts return `503`; unavailable Agents remain `403`.
+For HTTP admission refusals, `http.completed` records a fixed `nativeAdmissionReason`,
+without URLs, cookies, identities or error text. Early guards and post-admission
+failures may omit it.
 
-Without a session, a user-activated top-level HTML GET to `/`, `/chat/main` or
-`/chat/main/<session>`, optionally with a trailing slash, gets a `302` to the
-console; session segments accept letters, digits, hyphens and underscores. The
-fragment carries only the opaque host key. Without
-`Sec-Fetch-User: ?1` (never sent by Safari) it gets a 403 **Sign in** link there.
-Link previews, APIs, writes and WebSockets keep their refusal.
+Without a session, supported top-level HTML navigations with
+`Sec-Fetch-User: ?1` redirect to the Console, carrying only the opaque host key.
+Without that header (including Safari), they get a 403 **Sign in** link.
+Link previews, APIs, writes and WebSockets remain refused. See the supported
+[paths and session segments](../reference/agent-native-admin.md#authorization-and-availability).
 
-When admission refuses a different version, eligible document navigations receive
-an HTTP 403 **Agent version changed** page with a Console return link. Other
-refusals keep their normal handling; no cookie changes or automatic relaunch occur.
+Different-version refusals return eligible navigations an HTTP 403
+**Agent version changed** page linking to the Console. Other refusals retain their
+handling; cookies remain unchanged and no automatic relaunch occurs.
 
-Denied browser permissions produce an HTTP 403 page linking to `/console/agents`
-on the configured public origin without naming the Agent. JSON refusals name
-the required permission, not the Agent; unknown hosts receive the same text.
-WebSocket refusals stay unchanged.
+Browser permission denials return HTTP 403 linking to `/console/agents` on the
+configured public origin. JSON refusals name the required permission. Neither
+names the Agent; unknown hosts get identical text. WebSocket refusals remain unchanged.
 
 Status and proxy checks reuse one Better Auth lookup for identity, expiry and
 attribution. Each WebSocket lease checks the original session, selected mode and Agent again. After handling
@@ -305,6 +306,8 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 09:26: Classify native admission failures. (authoring-run/28db5867-56df-4145-a1c5-07be7a7874ee - f0b9c002c0577bcc8854913b0eafa5449bd5fbe3)
 
 - 2026-11-10 08:30: Add named chat and stale-version browser recovery. (authoring-run/37c71df8-7e9c-4224-bc36-e4091f387620 - eef0b3f10d0e0f4ed09fd32086c84628c41f1b93)
 

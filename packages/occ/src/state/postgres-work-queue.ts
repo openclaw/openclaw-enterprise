@@ -275,6 +275,15 @@ const CLEANUP_CONFLICT_SQL = `
         ELSE controller_work.available_at END,
       updated_at = clock_timestamp()`;
 
+const TERMINAL_REPOSITORY_CLEANUP_OWNERSHIP_SQL = `OR (source.agent_target = 'stopped' AND source.revision_id IS NULL
+          AND source.agent_id = revision.agent_id AND revision.admitted_at <= source.created_at)
+        OR (source.agent_target = 'deleted' AND source.revision_id IS NULL
+          AND source.agent_id = revision.agent_id AND agent.status = 'deleting'
+          AND agent.desired_runtime_state = 'stopped' AND revision.admitted_at <= source.created_at)
+        OR (source.namespace_target = 'deleted' AND source.agent_id IS NULL
+          AND source.revision_id IS NULL AND namespace.status = 'deleting'
+          AND revision.admitted_at <= source.created_at)`;
+
 function transferRepositoryCleanupSql(
   continuingRevision = "false",
   mayHaveReachedRepositoryDeadline = "false",
@@ -340,14 +349,7 @@ function transferRepositoryCleanupSql(
       -- admitted_at and created_at are both on this database's clock (finding 1195).
       WHERE (source.revision_id = revision.id AND source.agent_id = revision.agent_id
           AND source.agent_target IS NULL)
-        OR (source.agent_target = 'stopped' AND source.revision_id IS NULL
-          AND source.agent_id = revision.agent_id AND revision.admitted_at <= source.created_at)
-        OR (source.agent_target = 'deleted' AND source.revision_id IS NULL
-          AND source.agent_id = revision.agent_id AND agent.status = 'deleting'
-          AND agent.desired_runtime_state = 'stopped' AND revision.admitted_at <= source.created_at)
-        OR (source.namespace_target = 'deleted' AND source.agent_id IS NULL
-          AND source.revision_id IS NULL AND namespace.status = 'deleting'
-          AND revision.admitted_at <= source.created_at)
+        ${TERMINAL_REPOSITORY_CLEANUP_OWNERSHIP_SQL}
     ), locked_attempts AS MATERIALIZED (
       SELECT attempt.admission_id
       FROM occ.repository_session_attempts AS attempt
@@ -1027,14 +1029,7 @@ export class PostgresWorkQueue {
                AND source.agent_target IS NULL
                AND revision.revision_number <= source_revision.revision_number)
              -- admitted_at and created_at are both on this database's clock (finding 1195).
-             OR (source.agent_target = 'stopped' AND source.revision_id IS NULL
-               AND source.agent_id = revision.agent_id AND revision.admitted_at <= source.created_at)
-             OR (source.agent_target = 'deleted' AND source.revision_id IS NULL
-               AND source.agent_id = revision.agent_id AND agent.status = 'deleting'
-               AND agent.desired_runtime_state = 'stopped' AND revision.admitted_at <= source.created_at)
-             OR (source.namespace_target = 'deleted' AND source.agent_id IS NULL
-               AND source.revision_id IS NULL AND namespace.status = 'deleting'
-               AND revision.admitted_at <= source.created_at)
+             ${TERMINAL_REPOSITORY_CLEANUP_OWNERSHIP_SQL}
            )
        ), registered AS (
          INSERT INTO occ.controller_work (

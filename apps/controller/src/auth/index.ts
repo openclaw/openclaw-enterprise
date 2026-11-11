@@ -1589,6 +1589,8 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       async () => {
         const headers = sessionHeaders(request.headers, sessionCookieName);
         requireSessionKey(headers, options.secret, undefined);
+        // An old session check can finish after a fresh sign-in in another tab.
+        // Its response must never clear the new session's browser cookie.
         const result = await api.getSession({
           headers,
           query: { disableCookieCache: true, disableRefresh: true },
@@ -1597,6 +1599,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
           returnStatus: true,
         });
         requireSessionKey(headers, options.secret, responseSessionId(result?.response));
+        result?.headers?.delete("set-cookie");
         return result;
       },
       (response) => safeSessionResponse(response, options.secret),

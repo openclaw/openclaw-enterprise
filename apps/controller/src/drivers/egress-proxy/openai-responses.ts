@@ -1,5 +1,5 @@
 import { asRecord } from "@openclaw-enterprise/utils";
-import { parseUnambiguousJson } from "../repo/access/json-members.ts";
+import { parseUnambiguousJson } from "../json-members.ts";
 
 // Closed provider-owned schemas. Local tool schemas describe data for the Harness;
 // provider-executed tools and remote references require a different admitted grant.
@@ -209,15 +209,15 @@ const agentInputMessage = object(
   },
   { id: name },
 );
-const reasoningItem = object(
-  { type: oneOf("reasoning"), summary: array(summary) },
-  {
-    id: text,
-    content: array(object({ type: oneOf("reasoning_text"), text })),
-    encrypted_content: nullable(text),
-    status,
-  },
-);
+const reasoningContent = array(object({ type: oneOf("reasoning_text"), text }));
+const reasoningItem = (content: Validator) =>
+  object(
+    { type: oneOf("reasoning"), summary: array(summary) },
+    { id: text, content, encrypted_content: nullable(text), status },
+  );
+// Codex replays an omitted provider reasoning content field as explicit null.
+const inputReasoningItem = reasoningItem(nullable(reasoningContent));
+const outputReasoningItem = reasoningItem(reasoningContent);
 const toolOutput = object(
   {
     type: oneOf("function_call_output", "custom_tool_call_output"),
@@ -247,13 +247,15 @@ const inputItems = array(
     plainInputMessage(item) ||
     assistantInputMessage(item) ||
     agentInputMessage(item) ||
-    reasoningItem(item) ||
+    inputReasoningItem(item) ||
     toolCall(item) ||
     toolOutput(item) ||
     additionalLocalTools(item),
 );
 
-const reasoningEffort = oneOf("none", "minimal", "low", "medium", "high", "xhigh");
+const reasoningEffort = oneOf("none", "minimal", "low", "medium", "high", "xhigh", "max");
+// Native telemetry accepts ultra independently of the request effort.
+const nativeReasoningEffort: Validator = (value) => reasoningEffort(value) || value === "ultra";
 const reasoning = optionalFields({
   effort: reasoningEffort,
   summary: oneOf("auto", "concise", "detailed"),
@@ -314,6 +316,44 @@ const gitWorkspaces: Validator = (value) => {
   );
 };
 // These are telemetry fields emitted by the selected client, never OCC identities or grants.
+const turnMetadata = optionalFields({
+  installation_id: metadataText,
+  session_id: metadataText,
+  thread_id: metadataText,
+  agent_name: metadataText,
+  turn_id: metadataText,
+  window_id: metadataText,
+  window_number: integer,
+  context_window_id: metadataText,
+  request_kind: oneOf("turn", "prewarm", "compaction", "memory"),
+  compaction: object({
+    trigger: oneOf("manual", "auto"),
+    reason: oneOf("user_requested", "context_limit", "model_downshift", "comp_hash_changed"),
+    implementation: oneOf("responses"),
+    phase: oneOf("standalone_turn", "pre_turn", "mid_turn", "post_turn"),
+    strategy: oneOf("memento"),
+  }),
+  history_initialization: metadataText,
+  root_turn_id: metadataText,
+  parent_turn_id: metadataText,
+  parent_thread_id: metadataText,
+  forked_from_thread_id: metadataText,
+  forked_from_ordinal_exclusive: integer,
+  thread_source: metadataText,
+  turn_trigger: metadataText,
+  subagent_kind: metadataText,
+  sandbox: metadataText,
+  sandbox_mode: metadataText,
+  auto_review_enabled: bool,
+  node_repl_auto_review_required: bool,
+  node_repl_disabled: bool,
+  turn_started_at_unix_ms: integer,
+  analytics_enabled: bool,
+  history_ingest_requested: bool,
+  model: metadataText,
+  reasoning_effort: nativeReasoningEffort,
+  workspaces: gitWorkspaces,
+});
 const clientMetadata = optionalFields({
   mcp_attribution: metadataJson(object({ status: oneOf("none") })),
   session_id: metadataText,
@@ -325,39 +365,14 @@ const clientMetadata = optionalFields({
   "x-codex-window-id": metadataText,
   "x-codex-parent-thread-id": metadataText,
   "x-openai-subagent": metadataText,
-  "x-codex-turn-metadata": metadataJson(
-    optionalFields({
-      installation_id: metadataText,
-      session_id: metadataText,
-      thread_id: metadataText,
-      agent_name: metadataText,
-      turn_id: metadataText,
-      window_id: metadataText,
-      window_number: integer,
-      context_window_id: metadataText,
-      request_kind: oneOf("turn", "prewarm", "compaction", "memory"),
-      history_initialization: metadataText,
-      root_turn_id: metadataText,
-      parent_turn_id: metadataText,
-      parent_thread_id: metadataText,
-      forked_from_thread_id: metadataText,
-      forked_from_ordinal_exclusive: integer,
-      thread_source: metadataText,
-      turn_trigger: metadataText,
-      subagent_kind: metadataText,
-      sandbox: metadataText,
-      sandbox_mode: metadataText,
-      auto_review_enabled: bool,
-      node_repl_auto_review_required: bool,
-      node_repl_disabled: bool,
-      turn_started_at_unix_ms: integer,
-      analytics_enabled: bool,
-      history_ingest_requested: bool,
-      model: metadataText,
-      reasoning_effort: reasoningEffort,
-      workspaces: gitWorkspaces,
-    }),
-  ),
+  "x-codex-turn-metadata": metadataJson((value) => {
+    const record = asRecord(value);
+    return (
+      record !== undefined &&
+      turnMetadata(record) &&
+      (record.compaction === undefined || record.request_kind === "compaction")
+    );
+  }),
 });
 const jsonFormat = object(
   { type: oneOf("json_schema"), name, schema: jsonSchema },
@@ -427,7 +442,7 @@ const outputMessage = object(
   { status, phase },
 );
 const outputItem: Validator = (value) =>
-  outputMessage(value) || reasoningItem(value) || toolCall(value);
+  outputMessage(value) || outputReasoningItem(value) || toolCall(value);
 const usage = object(
   { input_tokens: integer, output_tokens: integer, total_tokens: integer },
   {

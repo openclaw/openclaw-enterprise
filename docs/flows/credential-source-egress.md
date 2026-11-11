@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-11
-last_updated_session: authoring-run/4a7d8e1a-0c95-4f57-8628-ea2d59fbe9b2
+last_updated_session: authoring-run/64fa6d5d-af12-40d5-8bf3-b3d4af980236
 ---
 
 # Protected credential request flow
@@ -259,17 +259,15 @@ exact attempt without retrying; returning bytes does not prove delivery.
 
 ### 5. Configure the regular Harness caller
 
-`apps/controller/src/drivers/compute/plugin-runtime.ts:codexToml` enables local
-tools and selects HTTP Responses without provider tools, WebSockets or retries.
-The protected startup probe also disables retries.
+`apps/controller/src/drivers/compute/plugin-runtime.ts:codexToml` selects HTTP
+Responses with local tools. It disables provider tools, WebSockets, and retries.
+Startup probes also disable retries.
 
 `apps/controller/src/drivers/egress-proxy/openai-provider.ts:createOpenAiStaticProvider`
-checks [request forms](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
-through `openai-responses.ts:validResponsesRequest` before Secret resolution.
-The check accepts local tools declared inline, bounded agent messages, optional
-Git workspace metadata and passive no-MCP attribution. The admitted grant
-selects the model and destination. Replayed assistant text can carry empty
-`annotations` and `logprobs` arrays.
+applies the [request policy](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
+through `openai-responses.ts:validResponsesRequest` before Secret resolution. The
+grant selects model and destination. Resumed reasoning input can carry
+`content: null`.
 
 ### 6. Reduce the live credential policy
 
@@ -332,6 +330,10 @@ caller independently.
 None.
 
 ## Changelog
+
+- 2026-11-11 11:04: Admit null content on replayed reasoning input. (authoring-run/64fa6d5d-af12-40d5-8bf3-b3d4af980236 - 81803134a1cc408ef727528e47f00ea36563f092)
+- 2026-11-11 09:39: Validate compaction metadata. (authoring-run/919c1d90-32b8-4d2c-8a66-238508a3c061 - 6905a20332abd7ffcfe2fd431c5ae6888a17dff5)
+- 2026-11-11 08:40: Distinguish native telemetry effort from Responses request effort. (authoring-run/89ba83c7-7553-45e6-a3b5-a8e067da1d65 - 6b4e85174966c1a172f2ecd25a3ea1238fe6f0d7)
 
 - 2026-11-11 06:02: Admit native agent messages. (authoring-run/4a7d8e1a-0c95-4f57-8628-ea2d59fbe9b2 - 82078dad5edc334f21d3feaed447db6601fa5d31)
 

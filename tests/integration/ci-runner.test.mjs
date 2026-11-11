@@ -1,3 +1,4 @@
+import { readRuntimeProvenance } from "../../scripts/ci/runtime-provenance.mjs";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -14,6 +15,15 @@ import {
   projectSkipperRunnerReceipt,
   skipperFailureSummary,
 } from "../../scripts/ci/skipper-release.ts";
+import {
+  aggregateArgs,
+  laneArgs,
+  runnerArtifactPaths,
+  writeFirstAgentCliFixture,
+  writeJson,
+  writeRunnerManifest,
+  writeSingleFileRunnerLane,
+} from "../helpers/ci-runner-fixture.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
   prepareK3dDiagnosticsRun,
@@ -37,6 +47,57 @@ const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
 // checkout. Stop Git's repository search at tmpdir() so the runner never reads
 // that checkout's HEAD as the fixture's source SHA.
 const fixtureGitEnv = { GIT_CEILING_DIRECTORIES: tmpdir() };
+
+test("runtime provenance excludes structured image identities and invalid native metadata", async (t) => {
+  const root = await temporaryDirectory(t, "ci-provenance-projection-");
+  const statePath = join(root, "state.json");
+  const imageId = `sha256:${"a".repeat(64)}`;
+  const manifestDigest = `sha256:${"b".repeat(64)}`;
+  const role = "OCC_TEST_KUBERNETES_AGENT_IMAGE";
+  const prefix = "openclaw-ci-test-lane-123456789abc";
+  const identity = {
+    lane: "test-lane",
+    preparationId: createHash("sha256").update(prefix).digest("hex"),
+  };
+  for (const fields of [
+    { imageId: [imageId], manifestDigest },
+    { imageId, manifestDigest: [[manifestDigest]] },
+  ]) {
+    await writeJson(statePath, {
+      lane: identity.lane,
+      prefix,
+      runtimeProvenance: { [role]: { ...fields, status: "unavailable" } },
+    });
+    assert.equal(await readRuntimeProvenance(statePath, identity), undefined);
+  }
+  for (const version of ["0.164.0\nprivate-value", "0.164.0-..", "0.164.0-01", "01.164.0"]) {
+    await writeJson(statePath, {
+      lane: identity.lane,
+      prefix,
+      runtimeProvenance: {
+        [role]: {
+          imageId,
+          manifestDigest,
+          status: "available",
+          platform: "linux/amd64",
+          openclawCommit: "c".repeat(40),
+          codex: { version, binarySha256: "d".repeat(64) },
+        },
+      },
+    });
+    assert.deepEqual(await readRuntimeProvenance(statePath, identity), {
+      [role]: { imageId, manifestDigest, status: "unavailable" },
+    });
+  }
+  assert.equal(
+    await readRuntimeProvenance(statePath, { ...identity, lane: "another-lane" }),
+    undefined,
+  );
+  assert.equal(
+    await readRuntimeProvenance(statePath, { ...identity, preparationId: "0".repeat(64) }),
+    undefined,
+  );
+});
 
 test("installed Skipper publishes only verified coverage evidence from the runner", () => {
   const path = "tests/integration/skipper-prepared-git-installed.test.mjs";
@@ -123,10 +184,6 @@ async function fixture(t) {
   return root;
 }
 
-async function writeJson(path, value) {
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
-}
-
 function writePassedBaselineResult(root, sourceSha, filePath) {
   return writeJson(join(root, "results/baseline.json"), {
     version: 1,
@@ -168,21 +225,6 @@ function runnerEnv(env = {}) {
     ...fixtureGitEnv,
     ...env,
   };
-}
-
-function laneArgs(root, lane, statePath, resultsPath) {
-  return [
-    "run",
-    lane,
-    "--manifest",
-    "manifest.json",
-    "--root",
-    root,
-    "--state",
-    statePath,
-    "--results",
-    resultsPath,
-  ];
 }
 
 function run(root, args, env = {}, { timeout } = {}) {
@@ -869,26 +911,15 @@ test("run resolves lane documents relative to the manifest and preserves ordered
       },
     ],
   });
-  await writeJson(join(root, "manifests/suites.json"), {
-    version: 1,
-    lanes: { baseline: "./lanes/baseline.json" },
-    groups: { ci: ["baseline"] },
-  });
+  await writeRunnerManifest(
+    root,
+    { lanes: { baseline: "./lanes/baseline.json" } },
+    "manifests/suites.json",
+  );
 
   const result = run(
     root,
-    [
-      "run",
-      "baseline",
-      "--manifest",
-      "manifests/suites.json",
-      "--root",
-      root,
-      "--state",
-      statePath,
-      "--results",
-      resultsPath,
-    ],
+    laneArgs(root, "baseline", statePath, resultsPath, "manifests/suites.json"),
     {
       CI_RUNNER_PROCESS_RECORD: join(root, "state/process-group"),
       ACTIONS_RUNTIME_TOKEN: "synthetic-cache-token",
@@ -959,8 +990,7 @@ test("focused runs retain case enforcement and cleanup but cannot complete a ful
     join(root, "tests/integration/second.test.mjs"),
     'throw new Error("unselected file executed");\n',
   );
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
+  await writeRunnerManifest(root, {
     lanes: {
       baseline: { files: [selected, { path: "tests/integration/second.test.mjs" }] },
       single: { files: [selected] },
@@ -984,16 +1014,7 @@ test("focused runs retain case enforcement and cleanup but cannot complete a ful
     assert.equal(summary.files[0].cleanup.status, "passed");
     assert.equal(await readFile(join(root, `state/${lane}.jsonl`), "utf8"), `${selectedPath}\n`);
     // Even a one-file lane cannot turn explicitly focused proof into full qualification.
-    const aggregated = run(root, [
-      "aggregate",
-      lane,
-      "--manifest",
-      "manifest.json",
-      "--root",
-      root,
-      "--results-dir",
-      "results",
-    ]);
+    const aggregated = run(root, aggregateArgs(root, lane));
     assert.equal(aggregated.status, 1, aggregated.stderr);
     const evidence = JSON.parse(aggregated.stdout);
     assert.ok(evidence.issues.some(({ code }) => code === "focused-lane-evidence"));
@@ -1027,8 +1048,7 @@ test("focused runs retain case enforcement and cleanup but cannot complete a ful
 
 test("run preserves nonzero child Node exits and rejects zero-case files", async (t) => {
   const root = await fixture(t);
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
+  await writeRunnerManifest(root, {
     lanes: {
       exits: {
         files: [{ path: "tests/integration/exits.test.mjs" }],
@@ -1036,9 +1056,6 @@ test("run preserves nonzero child Node exits and rejects zero-case files", async
       empty: {
         files: [{ path: "tests/integration/empty.test.mjs" }],
       },
-    },
-    groups: {
-      ci: ["exits", "empty"],
     },
   });
   await writeFile(join(root, "tests/integration/exits.test.mjs"), "process.exit(42);\n");
@@ -1547,22 +1564,12 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
       "",
     ].join("\n"),
   );
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
-    lanes: {
-      lane: {
-        requiredEnv: ["CI_RUNNER_REQUIRED_INPUT"],
-        files: [
-          {
-            path: "tests/integration/skips.test.mjs",
-            expectedTests: ["ordinary pass", "expected but skipped", "missing named case"],
-          },
-        ],
-      },
-    },
-    groups: {
-      ci: ["lane"],
-    },
+  const file = {
+    path: "tests/integration/skips.test.mjs",
+    expectedTests: ["ordinary pass", "expected but skipped", "missing named case"],
+  };
+  await writeRunnerManifest(root, {
+    lanes: { lane: { files: [file], requiredEnv: ["CI_RUNNER_REQUIRED_INPUT"] } },
   });
 
   const args = laneArgs(root, "lane", "state/lane.jsonl", resultsPath);
@@ -1574,10 +1581,9 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
     ["missing-env"],
   );
 
-  const manifest = JSON.parse(await readFile(join(root, "manifest.json"), "utf8"));
-  delete manifest.lanes.lane.requiredEnv;
-  manifest.lanes.lane.files[0].requiredEnv = ["CI_RUNNER_FILE_INPUT"];
-  await writeJson(join(root, "manifest.json"), manifest);
+  await writeRunnerManifest(root, {
+    lanes: { lane: { files: [{ ...file, requiredEnv: ["CI_RUNNER_FILE_INPUT"] }] } },
+  });
   const missingFileEnv = run(root, args);
   assert.equal(missingFileEnv.status, 1);
   summary = JSON.parse(await readFile(resultsPath, "utf8"));
@@ -1585,8 +1591,7 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
     summary.issues.map((entry) => [entry.code, entry.env]),
     [["missing-env", "CI_RUNNER_FILE_INPUT"]],
   );
-  delete manifest.lanes.lane.files[0].requiredEnv;
-  await writeJson(join(root, "manifest.json"), manifest);
+  await writeRunnerManifest(root, { lanes: { lane: { files: [file] } } });
   const selected = run(root, args);
   assert.equal(selected.status, 1);
   summary = JSON.parse(await readFile(resultsPath, "utf8"));
@@ -1717,8 +1722,7 @@ test("run clears inherited selectors and keep flags while preserving explicit la
       "",
     ].join("\n"),
   );
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
+  await writeRunnerManifest(root, {
     lanes: {
       isolated: {
         env: {
@@ -1739,9 +1743,6 @@ test("run clears inherited selectors and keep flags while preserving explicit la
           { path: "tests/integration/env-sibling.test.mjs" },
         ],
       },
-    },
-    groups: {
-      ci: ["isolated"],
     },
   });
 
@@ -1814,8 +1815,7 @@ test("QA inputs", async () => {
 });
 `,
   );
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
+  await writeRunnerManifest(root, {
     lanes: { "qa-matrix": { ...lane, files: [{ path: file }] } },
     groups: { qa: ["qa-matrix"] },
   });
@@ -1915,7 +1915,7 @@ waitingTest(
   { skip: process.platform !== "linux" && "reads /proc" },
   async (t) => {
     const root = await fixture(t);
-    const statePath = join(root, "state/orphan.json");
+    const { statePath, resultsPath } = runnerArtifactPaths(root, "orphan");
     const recordPath = join(root, "state/orphan-pids.json");
     const waiting = join(root, "state/orphan-waiting");
     // The isolated test-file child ignores SIGTERM and has a child of its own, so the
@@ -1965,7 +1965,7 @@ waitingTest(
     const started = Date.now();
     const result = await runAsync(
       root,
-      laneArgs(root, "orphan", statePath, join(root, "results/orphan.json")),
+      laneArgs(root, "orphan", statePath, resultsPath),
       { CI_RUNNER_TEST_TIMEOUT_MS: "5000", CI_RUNNER_ORPHAN_RECORD: recordPath },
       { timeout: 60_000, execArgv: heldClock(started, [waiting]) },
     );
@@ -1984,7 +1984,7 @@ waitingTest(
     // The Node test runner leads its own process group, apart from this test's.
     assert(Number.isSafeInteger(pids.runner) && pids.runner > 1, String(pids.runner));
     assert.equal(pids.pgid, pids.runner);
-    const summary = JSON.parse(await readFile(join(root, "results/orphan.json"), "utf8"));
+    const summary = JSON.parse(await readFile(resultsPath, "utf8"));
     assert.equal(summary.files[0].processGroupId, pids.pgid);
     assert.equal(pids.grandchildPgid, pids.runner);
     assert.notEqual(pids.pgid, procStat(process.pid).pgid);
@@ -1996,6 +1996,7 @@ test(
   { skip: process.platform !== "linux" && "reads /proc" },
   async (t) => {
     const root = await fixture(t);
+    const { statePath, resultsPath } = runnerArtifactPaths(root, "leftover");
     const recordPath = join(root, "state/leftover-pids.json");
     // The file passes and exits; its grandchild, unref'd, would run on for a minute.
     await writeFile(
@@ -2031,16 +2032,9 @@ test(
       }
     });
 
-    const result = run(
-      root,
-      laneArgs(
-        root,
-        "leftover",
-        join(root, "state/leftover.json"),
-        join(root, "results/leftover.json"),
-      ),
-      { CI_RUNNER_ORPHAN_RECORD: recordPath },
-    );
+    const result = run(root, laneArgs(root, "leftover", statePath, resultsPath), {
+      CI_RUNNER_ORPHAN_RECORD: recordPath,
+    });
 
     assert.equal(result.status, 0, result.stderr);
     pids = JSON.parse(await readFile(recordPath, "utf8"));
@@ -2066,6 +2060,7 @@ for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
     { skip: process.platform !== "linux" && "reads /proc" },
     async (t) => {
       const root = await fixture(t);
+      const { statePath, resultsPath } = runnerArtifactPaths(root, "hang");
       const recordPath = join(root, "state/hang-pids.json");
       // The isolated test-file child ignores the signal and has a child of its own, so
       // only the forwarded SIGKILL to the Node test runner's group can end them.
@@ -2097,19 +2092,7 @@ for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
       // Detached, so the signal reaches only run-tests.mjs, never this test's group.
       const ciRunner = spawn(
         process.execPath,
-        [
-          runnerPath,
-          "run",
-          "hang",
-          "--manifest",
-          "manifest.json",
-          "--root",
-          root,
-          "--state",
-          join(root, "state/hang.json"),
-          "--results",
-          join(root, "results/hang.json"),
-        ],
+        [runnerPath, ...laneArgs(root, "hang", statePath, resultsPath)],
         {
           cwd: repositoryRoot,
           detached: true,
@@ -2770,8 +2753,10 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     },
   ];
 
-  await writeFile(
-    join(root, "tests/integration/redacted.test.mjs"),
+  await writeSingleFileRunnerLane(
+    root,
+    "redacted",
+    "tests/integration/redacted.test.mjs",
     [
       'import assert from "node:assert/strict";',
       'import test from "node:test";',
@@ -3076,14 +3061,6 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
       "}",
       "",
     ].join("\n"),
-  );
-  await writeSingleLaneManifest(
-    root,
-    "redacted",
-    [{ path: "tests/integration/redacted.test.mjs" }],
-    {
-      ci: ["redacted"],
-    },
   );
 
   const result = run(root, laneArgs(root, "redacted", "state/redacted.jsonl", resultsPath), {
@@ -3516,8 +3493,10 @@ test("run names DOMException and empty-message failures", async (t) => {
   const root = await fixture(t);
   const file = "tests/integration/errors.test.mjs";
   const resultsPath = join(root, "results/errors.json");
-  await writeFile(
-    join(root, file),
+  await writeSingleFileRunnerLane(
+    root,
+    "errors",
+    file,
     [
       'import test from "node:test";',
       'test("timeout", () => { throw new DOMException("The operation was aborted due to timeout", "TimeoutError"); });',
@@ -3526,7 +3505,6 @@ test("run names DOMException and empty-message failures", async (t) => {
       "",
     ].join("\n"),
   );
-  await writeSingleLaneManifest(root, "errors", [{ path: file }], { ci: ["errors"] });
 
   const result = run(root, laneArgs(root, "errors", "state/errors.jsonl", resultsPath));
   assert.equal(result.status, 1);
@@ -4455,10 +4433,11 @@ test("Skill policy restore preserves failures that cannot be formatted", async (
 
 test("run retains redacted Skill exercise and restoration failures within its message limit", async (t) => {
   const root = await fixture(t);
-  const resultsPath = join(root, "results/restoration.json");
-  const statePath = join(root, "state/restoration.json");
-  await writeFile(
-    join(root, "tests/integration/restoration.test.mjs"),
+  const { statePath, resultsPath } = runnerArtifactPaths(root, "restoration");
+  await writeSingleFileRunnerLane(
+    root,
+    "restoration",
+    "tests/integration/restoration.test.mjs",
     [
       'import test from "node:test";',
       'import { execFileSync } from "node:child_process";',
@@ -4485,12 +4464,6 @@ test("run retains redacted Skill exercise and restoration failures within its me
       "}",
       "",
     ].join("\n"),
-  );
-  await writeSingleLaneManifest(
-    root,
-    "restoration",
-    [{ path: "tests/integration/restoration.test.mjs" }],
-    { ci: ["restoration"] },
   );
 
   // Run the real helper through Node's serialization, the unchanged reporter, and both outputs.
@@ -4529,15 +4502,16 @@ test("run retains redacted Skill exercise and restoration failures within its me
 
 test("finite conversation failures retain safe stages through the reporter", async (t) => {
   const root = await fixture(t);
-  const resultsPath = join(root, "results/conversation.json");
-  const statePath = join(root, "state/conversation.json");
+  const { statePath, resultsPath } = runnerArtifactPaths(root, "conversation");
   const fixtureProcess = new URL("../fixtures/repository-credentials/process.mjs", import.meta.url)
     .href;
   const helper = new URL("../helpers/finite-git-conversation.ts", import.meta.url).href;
   // Scripted command responses exercise the real diagnostic producer, not a model or cluster.
   // Readback cases exercise the Gateway reader after one accepted synthetic model turn.
-  await writeFile(
-    join(root, "tests/integration/conversation.test.mjs"),
+  await writeSingleFileRunnerLane(
+    root,
+    "conversation",
+    "tests/integration/conversation.test.mjs",
     `import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -4725,12 +4699,6 @@ for (const { name, stage, detail, output, logs, drift, observation, read, outcom
 }
 `,
   );
-  await writeSingleLaneManifest(
-    root,
-    "conversation",
-    [{ path: "tests/integration/conversation.test.mjs" }],
-    { ci: ["conversation"] },
-  );
   const result = run(root, laneArgs(root, "conversation", statePath, resultsPath));
   assert.equal(result.status, 1, result.stderr);
   const summaryText = await readFile(resultsPath, "utf8");
@@ -4878,8 +4846,7 @@ waitingTest(
   "run records a timed-out file's interrupted test and output tail in the diagnostics report",
   async (t) => {
     const root = await fixture(t);
-    const resultsPath = join(root, "results/hang.json");
-    const statePath = join(root, "state/hang.json");
+    const { statePath, resultsPath } = runnerArtifactPaths(root, "hang");
     // Holds when the file printed its last line.
     const printed = join(root, "state/hang-printed");
     await writeFile(
@@ -4984,7 +4951,7 @@ test("each job attempt uploads its own diagnostics report", async () => {
 
 waitingTest("run records a timeout that came before any test started", async (t) => {
   const root = await fixture(t);
-  const statePath = join(root, "state/stuck.json");
+  const { statePath, resultsPath } = runnerArtifactPaths(root, "stuck");
   await writeFile(
     join(root, "tests/integration/stuck.test.mjs"),
     'import test from "node:test";\nawait new Promise((resolve) => setTimeout(resolve, 30_000));\ntest("never registered", () => {});\n',
@@ -4993,11 +4960,9 @@ waitingTest("run records a timeout that came before any test started", async (t)
     ci: ["stuck"],
   });
 
-  const result = await runAsync(
-    root,
-    laneArgs(root, "stuck", statePath, join(root, "results/stuck.json")),
-    { CI_RUNNER_TEST_TIMEOUT_MS: "2000" },
-  );
+  const result = await runAsync(root, laneArgs(root, "stuck", statePath, resultsPath), {
+    CI_RUNNER_TEST_TIMEOUT_MS: "2000",
+  });
 
   assert.equal(result.status, 1);
   const [record] = JSON.parse(await readFile(`${statePath}.diagnostics.json`, "utf8")).failures;
@@ -5024,8 +4989,7 @@ waitingTest(
   "run stops a hung file at the lane deadline, names its test and starts nothing after it",
   async (t) => {
     const root = await fixture(t);
-    const statePath = join(root, "state/deadline.json");
-    const resultsPath = join(root, "results/deadline.json");
+    const { statePath, resultsPath } = runnerArtifactPaths(root, "deadline");
     const marker = join(root, "state/later-started");
     const hung = join(root, "state/teardown-hung");
     await writeFile(
@@ -5113,8 +5077,7 @@ waitingTest("run starts no file with under a second left before the lane deadlin
   // Finding 1215: a file whose turn came within a second of the deadline was started and
   // stopped at once, then reported as selected-zero and a test-timeout naming no test.
   const root = await fixture(t);
-  const statePath = join(root, "state/near-deadline.json");
-  const resultsPath = join(root, "results/near-deadline.json");
+  const { statePath, resultsPath } = runnerArtifactPaths(root, "near-deadline");
   const marker = join(root, "state/started");
   // The preparation returns half a second before the deadline.
   await writeFile(
@@ -5167,8 +5130,7 @@ waitingTest("a runner timeout while no test was running says so", async (t) => {
   // Finding 1215: a file stopped in a hook or teardown named no test, which read like a
   // reporting gap rather than where it hung.
   const root = await fixture(t);
-  const statePath = join(root, "state/hook.json");
-  const resultsPath = join(root, "results/hook.json");
+  const { statePath, resultsPath } = runnerArtifactPaths(root, "hook");
   const inHook = join(root, "state/in-hook");
   await writeFile(
     join(root, "tests/integration/hook.test.mjs"),
@@ -5218,8 +5180,7 @@ waitingTest(
   "run gives up on a preparation still running at the lane deadline and names it",
   async (t) => {
     const root = await fixture(t);
-    const statePath = join(root, "state/hung-prepare.json");
-    const resultsPath = join(root, "results/hung-prepare.json");
+    const { statePath, resultsPath } = runnerArtifactPaths(root, "hung-prepare");
     const preparing = join(root, "state/preparing");
     await writeFile(
       join(root, "scripts/ci/prepare.mjs"),
@@ -5294,8 +5255,7 @@ waitingTest(
   "run gives up on a hung cleanup after its allowance, ends its commands and starts no later file",
   async (t) => {
     const root = await fixture(t);
-    const statePath = join(root, "state/hung-cleanup.json");
-    const resultsPath = join(root, "results/hung-cleanup.json");
+    const { statePath, resultsPath } = runnerArtifactPaths(root, "hung-cleanup");
     const cleaned = join(root, "state/later-cleaned");
     // The hung cleanup waits for a command that started one of its own (as `docker compose`
     // or `pnpm` would). Both record their pids, in one rename.
@@ -5448,8 +5408,7 @@ waitingTest(
   "run ends the cleanups of files the deadline stopped together one allowance past it",
   async (t) => {
     const root = await fixture(t);
-    const statePath = join(root, "state/hung-cleanups.json");
-    const resultsPath = join(root, "results/hung-cleanups.json");
+    const { statePath, resultsPath } = runnerArtifactPaths(root, "hung-cleanups");
     const files = ["one", "two", "three", "four"].map(
       (name) => `tests/integration/${name}.test.mjs`,
     );
@@ -5796,6 +5755,7 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
   const pairStatePath = join(root, "state/k3d-pair.json");
   await writeJson(pairStatePath, {
     lane: "k3d-pair",
+    prefix: "openclaw-ci-k3d-pair-23456789abcd",
     resources: JSON.parse(await readFile(statePath, "utf8")).resources,
   });
   const pairResultsPath = join(root, "results/k3d-pair.json");
@@ -5844,6 +5804,7 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
   const brokenStatePath = join(root, "state/k3d-broken.json");
   await writeJson(brokenStatePath, {
     lane: "k3d-lane",
+    prefix: "openclaw-ci-k3d-lane-3456789abcde",
     resources: [
       ...JSON.parse(await readFile(statePath, "utf8")).resources,
       {
@@ -5958,13 +5919,8 @@ test("k3d diagnostics preserve equal-instant event order across precision varian
   });
 });
 
-async function auditManifest(root, { lanes, fileDurations, groups = { ci: Object.keys(lanes) } }) {
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
-    ...(fileDurations === undefined ? {} : { fileDurations }),
-    lanes,
-    groups,
-  });
+async function auditManifest(root, manifest) {
+  await writeRunnerManifest(root, manifest);
   return run(root, ["audit", "--manifest", "manifest.json", "--root", root]);
 }
 
@@ -6117,8 +6073,7 @@ test("run shares slots only between audited parallel files and runs the rest alo
       concurrencyProbe(name, partner),
     );
   }
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
+  await writeRunnerManifest(root, {
     lanes: {
       shared: {
         fileConcurrency: 4,
@@ -6132,7 +6087,6 @@ test("run shares slots only between audited parallel files and runs the rest alo
         ],
       },
     },
-    groups: { ci: ["shared"] },
   });
   const args = (name) => laneArgs(root, "shared", `state/${name}.jsonl`, `results/${name}.json`);
   const env = { CI_RUNNER_PROBE_DIR: running, CI_RUNNER_FILE_CONCURRENCY: "2" };
@@ -6211,24 +6165,15 @@ test("run starts shared files longest first from the measured table, unmeasured 
       "tests/integration/gone.test.mjs": 90_000,
     },
   });
-  const manifest = (fileDurations) => ({
-    version: 1,
-    ...(fileDurations === undefined ? {} : { fileDurations }),
-    lanes: {
-      shared: { fileConcurrency: 2, parallelFiles: files, files: files.map((path) => ({ path })) },
-    },
-    groups: { ci: ["shared"] },
-  });
+  const lanes = {
+    shared: { fileConcurrency: 2, parallelFiles: files, files: files.map((path) => ({ path })) },
+  };
   const starts = async (name, fileDurations) => {
-    await writeJson(join(root, `${name}.json`), manifest(fileDurations));
+    const manifestPath = `${name}.json`;
+    await writeRunnerManifest(root, { lanes, fileDurations }, manifestPath);
     const result = run(
       root,
-      ["run", "shared", "--manifest", `${name}.json`, "--root", root].concat([
-        "--state",
-        `state/${name}.jsonl`,
-        "--results",
-        `results/${name}.json`,
-      ]),
+      laneArgs(root, "shared", `state/${name}.jsonl`, `results/${name}.json`, manifestPath),
       { CI_RUNNER_FILE_CONCURRENCY: "2" },
     );
     assert.equal(result.status, 0, result.stderr);
@@ -6342,8 +6287,7 @@ test("aggregate requires fixed lane outputs, successful needs, and matching sour
   const root = await fixture(t);
   const sha = currentSha();
   const baselinePath = "tests/integration/a.test.mjs";
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
+  await writeRunnerManifest(root, {
     lanes: {
       baseline: { files: [{ path: baselinePath }] },
       runtime: { files: [{ path: "tests/integration/b.test.mjs" }] },
@@ -6368,18 +6312,7 @@ test("aggregate requires fixed lane outputs, successful needs, and matching sour
     runtime: { result: "failure" },
   });
 
-  const result = run(root, [
-    "aggregate",
-    "full",
-    "--manifest",
-    "manifest.json",
-    "--root",
-    root,
-    "--results-dir",
-    "results",
-    "--needs",
-    "needs.json",
-  ]);
+  const result = run(root, [...aggregateArgs(root, "full"), "--needs", "needs.json"]);
 
   assert.equal(result.status, 1);
   const summary = JSON.parse(result.stdout);
@@ -6424,17 +6357,8 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
     files: [],
   });
 
-  const aggregateArgs = [
-    "aggregate",
-    "docker-model",
-    "--manifest",
-    "manifest.json",
-    "--root",
-    root,
-    "--results-dir",
-    "results",
-  ];
-  const tampered = run(root, aggregateArgs);
+  const args = aggregateArgs(root, "docker-model");
+  const tampered = run(root, args);
   assert.equal(tampered.status, 1);
   let summary = JSON.parse(tampered.stdout);
   assert.deepEqual(
@@ -6459,7 +6383,7 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
   );
   assert.equal(produced.status, 0, produced.stderr);
 
-  const passed = run(root, aggregateArgs);
+  const passed = run(root, args);
   assert.equal(passed.status, 0, passed.stderr);
   summary = JSON.parse(passed.stdout);
   assert.equal(summary.status, "passed");
@@ -6510,7 +6434,7 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
   ]) {
     await t.test(label, async () => {
       await writeJson(resultPath, { ...evidence, files });
-      const result = run(root, aggregateArgs);
+      const result = run(root, args);
       assert.equal(result.status, 1, result.stdout || result.stderr);
       const aggregate = JSON.parse(result.stdout);
       assert.equal(aggregate.status, "failed");
@@ -6525,7 +6449,7 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
       ...evidence,
       files: [fileEvidence, unregisteredFile, unregisteredFile],
     });
-    const result = run(root, aggregateArgs);
+    const result = run(root, args);
     assert.equal(result.status, 1, result.stderr);
     assert.ok(
       !result.stdout.includes(unregisteredPath) && !result.stderr.includes(unregisteredPath),
@@ -6586,7 +6510,7 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
         ...evidence,
         files: [{ ...fileEvidence, tests: [optional, ...cases] }],
       });
-      const result = run(root, aggregateArgs);
+      const result = run(root, args);
       assert.ok(
         !result.stdout.includes(marker) && !result.stderr.includes(marker),
         "aggregate printed untrusted case status",
@@ -6612,18 +6536,7 @@ test("aggregate requires successful job gates and unambiguous lane ownership", a
     baseline: { result: "success" },
   });
 
-  const args = [
-    "aggregate",
-    "ci",
-    "--manifest",
-    "manifest.json",
-    "--root",
-    root,
-    "--results-dir",
-    "results",
-    "--needs",
-    "needs.json",
-  ];
+  const args = [...aggregateArgs(root, "ci"), "--needs", "needs.json"];
   const result = run(root, args);
 
   assert.equal(result.status, 1);
@@ -6742,12 +6655,6 @@ test('scenario', { signal: controller.signal }, async (t) => {
 test("first-Agent command timing pairs runtime and manifest outcomes before CI projection", async (t) => {
   const root = await fixture(t);
   const resultsPath = join(root, "results/runtime-outcomes.json");
-  await mkdir(join(root, "bin"));
-  await mkdir(join(root, "tests/helpers"));
-  await writeFile(
-    join(root, "tests/helpers/local-first-agent-stack.mjs"),
-    await readFile(join(repositoryRoot, "tests/helpers/local-first-agent-stack.mjs")),
-  );
   const runtime = "[occ-dev-timing] stage=runtime-build elapsed_ms=11 failed=true";
   const outcome = "[occ-dev-outcome] stage=runtime-build outcome=";
   const manifest = "openshell-agent-sandbox-manifest";
@@ -6792,21 +6699,20 @@ test("first-Agent command timing pairs runtime and manifest outcomes before CI p
     manifestOutcome + "deadline",
     "[occ-dev-startup] primary_stage=routing cleanup_failed=true parent_context_done=false routing_operation=manifest-download routing_controller=cert-manager",
   ];
-  await writeFile(
-    join(root, "bin/occ"),
+  await writeFirstAgentCliFixture(
+    root,
     [
-      "#!" + process.execPath,
       'if (process.argv[3] === "up") {',
       "  process.stdout.write(" + JSON.stringify(lines.join("\n") + "\n") + ");",
       "  process.exitCode = 23;",
       "}",
       "",
     ].join("\n"),
-    { mode: 0o700 },
   );
-  const testPath = "tests/integration/runtime-outcomes.test.mjs";
-  await writeFile(
-    join(root, testPath),
+  await writeSingleFileRunnerLane(
+    root,
+    "measure",
+    "tests/integration/runtime-outcomes.test.mjs",
     `import assert from "node:assert/strict";
 import { syncBuiltinESMExports } from "node:module";
 import net from "node:net";
@@ -6855,7 +6761,6 @@ test("a failed local setup reports only paired outcomes", async (t) => {
 });
 `,
   );
-  await writeSingleLaneManifest(root, "measure", [{ path: testPath }], { ci: ["measure"] });
   const result = run(root, laneArgs(root, "measure", "state/runtime-outcomes.jsonl", resultsPath));
   assert.equal(result.status, 1, result.stderr);
   const artifact = await readFile(resultsPath, "utf8");
@@ -6950,21 +6855,14 @@ test("a failed local setup reports only paired outcomes", async (t) => {
 
 test("startup observations require one terminal record from a failed dev-up", async (t) => {
   const root = await fixture(t);
-  await mkdir(join(root, "bin"));
-  await mkdir(join(root, "tests/helpers"));
-  await writeFile(
-    join(root, "tests/helpers/local-first-agent-stack.mjs"),
-    await readFile(join(repositoryRoot, "tests/helpers/local-first-agent-stack.mjs")),
-  );
   const legacyRecord =
     "[occ-dev-startup] primary_stage=routing cleanup_failed=true parent_context_done=false\n";
   const record =
     legacyRecord.trimEnd() +
     " routing_operation=controller-rollout routing_controller=envoy-gateway\n";
-  await writeFile(
-    join(root, "bin/occ"),
-    `#!${process.execPath}
-const record = ${JSON.stringify(record)};
+  await writeFirstAgentCliFixture(
+    root,
+    `const record = ${JSON.stringify(record)};
 const legacyRecord = ${JSON.stringify(legacyRecord)};
 const scenario = process.env.OCC_FIXTURE_STARTUP_CASE;
 if (process.argv[3] === "down") {
@@ -6990,13 +6888,13 @@ else process.stdout.write(record);
 if (scenario === "signal") process.kill(process.pid, "SIGTERM");
 else process.exitCode = scenario === "success" ? 0 : 23;
 `,
-    { mode: 0o700 },
   );
-  const path = "tests/integration/startup-intake.test.mjs";
   // Real subprocesses exercise both the streaming runner and execFile's error
   // envelope, used by the installed refusal caller. No cluster is started.
-  await writeFile(
-    join(root, path),
+  await writeSingleFileRunnerLane(
+    root,
+    "intake",
+    "tests/integration/startup-intake.test.mjs",
     `
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -7048,7 +6946,6 @@ test("reject ambiguous or non-failure startup records", async (t) => {
 });
 `,
   );
-  await writeSingleLaneManifest(root, "intake", [{ path }], { ci: ["intake"] });
   const results = join(root, "results/intake.json");
   const result = run(root, laneArgs(root, "intake", "state/intake.jsonl", results));
   assert.equal(result.status, 0, result.stderr + result.stdout);
@@ -8334,7 +8231,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
 
 test("run reports a cleanup that fails once a cancelled job's shell is gone as cancelled", async (t) => {
   const root = await fixture(t);
-  const resultsPath = join(root, "results/cancelled.json");
+  const { statePath, resultsPath } = runnerArtifactPaths(root, "cancelled");
   // GitHub cancels a step by signalling and then killing its shell, never this runner, which
   // finishes as an orphan beside the job's own cleanup step. The second file's cleanup kills
   // the runner's parent, as the cancellation kills the shell, and then fails, as the racing
@@ -8388,16 +8285,7 @@ test("run reports a cleanup that fails once a cancelled job's shell is gone as c
       'require("node:child_process").spawnSync(process.argv[1], process.argv.slice(2), { stdio: "inherit" });',
       process.execPath,
       runnerPath,
-      "run",
-      "cancel",
-      "--manifest",
-      "manifest.json",
-      "--root",
-      root,
-      "--state",
-      join(root, "state/cancelled.json"),
-      "--results",
-      resultsPath,
+      ...laneArgs(root, "cancel", statePath, resultsPath),
     ],
     { cwd: repositoryRoot, encoding: "utf8", env: runnerEnv(), timeout: 120_000 },
   );
@@ -8668,6 +8556,11 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
   const bin = join(root, "bin");
   await mkdir(bin);
   const kubectl = await writeK3dKubectl(bin, { kind: "stop", pod, events, logLines });
+  const kubectlCalls = join(root, "kubectl-calls.jsonl");
+  await writeFile(
+    kubectl,
+    `${await readFile(kubectl, "utf8")}\nimport { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(kubectlCalls)}, JSON.stringify(process.argv.slice(2)) + "\\n");\n`,
+  );
   await writeK3dChildTest(join(root, "tests/integration/stop.test.mjs"), { kind: "stop" });
   await writeK3dChildTest(join(root, "tests/integration/pass.test.mjs"), { kind: "passing" });
 
@@ -8679,6 +8572,41 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
     ],
     { OCC_TEST_CHILD_ONLY: childSecret },
   );
+  const provenanceCanary = "private-image-metadata";
+  const runtimeProvenance = {
+    OCC_TEST_KUBERNETES_GATEWAY_IMAGE: {
+      imageId: `sha256:${"a".repeat(64)}`,
+      manifestDigest: `sha256:${"b".repeat(64)}`,
+      status: "available",
+      platform: "linux/amd64",
+      openclawCommit: "c".repeat(40),
+      codex: { version: "0.164.0", binarySha256: "d".repeat(64) },
+    },
+    OCC_TEST_KUBERNETES_AGENT_IMAGE: {
+      imageId: `sha256:${"e".repeat(64)}`,
+      manifestDigest: `sha256:${"f".repeat(64)}`,
+      status: "unavailable",
+    },
+  };
+  const state = JSON.parse(await readFile(statePath, "utf8"));
+  state.prefix = provenanceCanary;
+  state.runtimeProvenance = structuredClone(runtimeProvenance);
+  state.runtimeProvenance.OCC_TEST_KUBERNETES_GATEWAY_IMAGE.config = provenanceCanary;
+  state.runtimeProvenance.OCC_TEST_KUBERNETES_AGENT_IMAGE.error = provenanceCanary;
+  await writeJson(statePath, state);
+  // The last file removes the private state, as per-file cleanup can. Earlier
+  // validated evidence must survive in both the final result and same-run sidecar.
+  const passingFile = join(root, "tests/integration/pass.test.mjs");
+  await writeFile(
+    passingFile,
+    `${await readFile(passingFile, "utf8")}\nimport { rm } from "node:fs/promises";\nawait rm(${JSON.stringify(statePath)});\n`,
+  );
+  await writeJson(`${statePath}.diagnostics.json`, {
+    lane: "previous-lane",
+    preparationId: "previous-preparation",
+    failures: [{ file: "previous-file", private: provenanceCanary }],
+    runtimeProvenance,
+  });
   const result = run(root, args, {
     OCC_KUBECTL_BIN: kubectl,
     PATH: `${bin}:${process.env.PATH}`,
@@ -8686,6 +8614,15 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
 
   assert.equal(result.status, 1, result.stderr);
   const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
+  const summary = JSON.parse(await readFile(join(root, "results/k3d.json"), "utf8"));
+  assert.deepEqual(summary.runtimeProvenance, runtimeProvenance);
+  assert.deepEqual(JSON.parse(text).runtimeProvenance, runtimeProvenance);
+  assert.equal(
+    JSON.parse(text).preparationId,
+    createHash("sha256").update(state.prefix).digest("hex"),
+  );
+  assert.ok(!JSON.stringify(summary).includes(provenanceCanary));
+  assert.ok(!text.includes(provenanceCanary));
   const { containerLogs } = JSON.parse(text);
   // Only the failed wait writes a record: not the wait that settled, not the passing file.
   assert.equal(containerLogs.length, 1);
@@ -8751,6 +8688,50 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
     (await readdir(clusterDirectory)).filter((name) => name.startsWith("container-logs-")),
     [],
   );
+
+  // A different lane must not inherit retained state or the sidecar from this lane.
+  await assert.rejects(readFile(statePath), { code: "ENOENT" });
+  await writeJson(statePath, state);
+  await writeFile(
+    join(root, "tests/integration/later.test.mjs"),
+    'import test from "node:test"; test("later failure", () => { throw new Error("later"); });\n',
+  );
+  await writeJson(join(root, "scripts/ci/k3d-lane.json"), {
+    files: [{ path: "tests/integration/later.test.mjs", expectedTests: ["later failure"] }],
+  });
+  await writeJson(join(root, "scripts/ci/suites.json"), {
+    version: 1,
+    lanes: { "later-lane": "./k3d-lane.json" },
+    groups: {},
+  });
+  const initialCalls = await readFile(kubectlCalls, "utf8");
+  assert.notEqual(initialCalls, "", "the original lane reached namespace capture");
+  for (const retainedState of [true, false]) {
+    if (!retainedState) {
+      await rm(statePath, { force: true });
+    }
+    const later = run(root, [args[0], "later-lane", ...args.slice(2)], {
+      OCC_KUBECTL_BIN: kubectl,
+      PATH: `${bin}:${process.env.PATH}`,
+    });
+    assert.equal(later.status, 1, later.stderr);
+    const laterSummary = JSON.parse(await readFile(join(root, "results/k3d.json"), "utf8"));
+    assert.equal(laterSummary.runtimeProvenance, undefined);
+    const next = JSON.parse(await readFile(`${statePath}.diagnostics.json`, "utf8"));
+    assert.equal(next.lane, "later-lane");
+    assert.equal(next.runtimeProvenance, undefined);
+    assert.equal(next.agentNamespaces, undefined);
+    assert.equal(
+      await readFile(kubectlCalls, "utf8"),
+      initialCalls,
+      "foreign state starts no capture",
+    );
+    assert.equal(next.containerLogs, undefined);
+    assert.deepEqual(
+      next.failures.map(({ file }) => file),
+      ["tests/integration/later.test.mjs"],
+    );
+  }
 });
 
 for (const earlyLogExit of [false, true]) {
