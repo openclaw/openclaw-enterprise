@@ -4187,6 +4187,21 @@ function isRecoveredNativeStreamError(event) {
   if (attempt > limit || limit > MAX_RECOVERED_STREAM_RETRIES) return false;
   return !/auth|unauthori[sz]ed|forbidden|credential|api.?key|\b40[13]\b/i.test(event.message);
 }
+// OpenShell's REST profile rejects the native Responses WebSocket upgrade before
+// forwarding it. Recognize only the pinned Codex notice for that exact denial.
+const OPENSHELL_PAT_UPGRADE_DENIAL = 'unexpected status 403 Forbidden: {"detail":"HTTP upgrade is not supported for REST endpoints; use a separate protocol: websocket endpoint with explicit message rules","error":"unsupported_l7_protocol"}, url: wss://chatgpt.com/backend-api/codex/responses';
+const OPENSHELL_PAT_HTTPS_FALLBACK = "Falling back from WebSockets to HTTPS transport. " + OPENSHELL_PAT_UPGRADE_DENIAL;
+function isOpenShellPatUpgradeRetry(message) {
+  if (typeof message !== "string") return false;
+  const match = /^Reconnecting\.\.\. ([1-9][0-9]?)\/([1-9][0-9]?) \(/.exec(message);
+  return match !== null && Number(match[1]) <= Number(match[2]) &&
+    Number(match[2]) <= MAX_RECOVERED_STREAM_RETRIES &&
+    message.slice(match[0].length) === OPENSHELL_PAT_UPGRADE_DENIAL + ")";
+}
+function isNonemptyProbeAnswer(event) {
+  return event.type === "item.completed" && event.item?.type === "agent_message" &&
+    typeof event.item.text === "string" && event.item.text.trim().length > 0;
+}
 // Codex reports a provider 429, a rate limit or an exhausted usage quota (such as
 // "You've hit your usage limit" or "exceeded retry limit, last status: 429 Too Many
 // Requests") as a fatal error event or failed turn; the probe names it rate_limit.
@@ -4333,6 +4348,11 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
     let turnStarted = false;
     let turnCompleted = false;
     let recoveredStreamErrors = 0;
+    const allowOpenShellPatFallback = ${!computeOwned && !disableUnboundedConnectionRetries} &&
+      providerManagedPat && !protectedStartup && pluginRuntime?.manifest.providerTools !== "none" &&
+      pluginRuntime?.manifest.modelEndpoint === undefined;
+    let openShellPatUpgradeFailure;
+    let lastUpgradeDenialIndex = -1;
     // A transient failure is only a retry candidate: a later deterministic failure in
     // the same attempt (a tool event, a rate limit) still holds at once. A transient
     // message is never a recovered stream notice, so no recovered stream error lands here.
@@ -4340,7 +4360,7 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
     // of an attempt that exits 0 with an answer counts as recovered, like a stream notice.
     let transientFailure;
     let unrecoveredTransientFailure = false;
-    for (const event of events) {
+    for (const [index, event] of events.entries()) {
       if (event.type === "turn.started") turnStarted = true;
       const failure = event.type === "error" ? codexProbeStatusFailure(event.message, "error-event", modelId)
         : event.type === "turn.failed" ? codexProbeStatusFailure(event.error?.message, "turn-failed", modelId) : undefined;
@@ -4352,8 +4372,14 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
         continue;
       }
       if (event.type === "error") {
-        if (pluginRuntime?.manifest.providerTools === "none" || !turnStarted || turnCompleted || !isRecoveredNativeStreamError(event) ||
+        if (pluginRuntime?.manifest.providerTools === "none" || !turnStarted || turnCompleted ||
           ++recoveredStreamErrors > MAX_RECOVERED_STREAM_RETRIES) return finish(failure);
+        if (allowOpenShellPatFallback && isOpenShellPatUpgradeRetry(event.message)) {
+          openShellPatUpgradeFailure = failure;
+          lastUpgradeDenialIndex = index;
+        } else if (!isRecoveredNativeStreamError(event)) {
+          return finish(failure);
+        }
         continue;
       }
       if (event.type === "turn.failed") return finish(failure);
@@ -4366,8 +4392,15 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
     const answered = events.filter((event) => event.type === "turn.completed").length === 1 &&
       events.filter((event) => event.type === "turn.started").length === 1 &&
       events.at(-1)?.type === "turn.completed" &&
-      events.some((event) => event.type === "item.completed" && event.item?.type === "agent_message" &&
-        typeof event.item.text === "string" && event.item.text.trim().length > 0);
+      events.some(isNonemptyProbeAnswer);
+    if (openShellPatUpgradeFailure !== undefined) {
+      const afterDenial = events.slice(lastUpgradeDenialIndex + 1);
+      const fallback = afterDenial.findIndex((event) => event.type === "item.completed" &&
+        event.item?.type === "error" && event.item.message === OPENSHELL_PAT_HTTPS_FALLBACK);
+      if (!answered || fallback === -1 || !afterDenial.slice(fallback + 1).some(isNonemptyProbeAnswer) ||
+        events.some((event) => event.type === "error" && !isOpenShellPatUpgradeRetry(event.message)) ||
+        result.status !== 0 || result.error) return finish(openShellPatUpgradeFailure);
+    }
     if (transientFailure !== undefined &&
       (unrecoveredTransientFailure || !answered || result.status !== 0 || result.error)) return finish(transientFailure);
     // A timeout cannot make an observed tool call or protocol failure retryable.

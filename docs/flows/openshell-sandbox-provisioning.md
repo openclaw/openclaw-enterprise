@@ -198,7 +198,10 @@ PAT bootstrap (`prepareHarnessAuth`;
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:AGENT_RUNTIME_ENTRYPOINT`)
 writes an opaque placeholder to private `auth.json`, clears the child override and validates
 native login. Scoped [PAT routes](../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
-admit bootstrap/model traffic; failure keeps versions inactive.
+admit bootstrap/model traffic. In the unprotected PAT profile, the readiness
+probe can recover the specific REST upgrade refusal on the first-party
+Responses route. Codex must report the switch to HTTPS and then return an
+answer in the same successful, tool-free turn. Failure keeps versions inactive.
 `requireModelSourceDestination` checks immutable `config.authorized_base_url`
 before API-key profiles bind the [shared provider](../reference/drivers/kubernetes-compute/model-provider.md)
 URL plus `/**`, preserving `/api/v1` prefixes. `attachForRevision` translates native

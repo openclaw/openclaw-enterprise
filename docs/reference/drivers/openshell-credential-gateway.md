@@ -124,6 +124,9 @@ denied. Package downloads use separate credential-free egress. Other routes rema
 The Harness stores only an opaque `personal_access_token`. Readiness requires
 native login and model execution
 ([bootstrap flow](../../flows/openshell-sandbox-provisioning.md#2-derive-the-provider-owned-harness-request)).
+The PAT Responses route uses HTTPS. OpenShell denies WebSocket upgrades.
+On an unprotected Harness, the native probe can complete after Codex switches
+to HTTPS within the same turn.
 
 `openai` sources authorize the default OpenAI endpoint unless `authorized_base_url`
 explicitly authorizes another endpoint. The [revision model provider](kubernetes-compute/model-provider.md)
