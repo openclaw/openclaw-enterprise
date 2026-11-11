@@ -108,14 +108,12 @@ function createConfigurationBackend() {
   };
 }
 
-// Building a controller app and signing in to it cost more than most cases, so the cases share
-// one administrator and one session, and one app per Driver shape: with or without a Compute
-// Driver and a Configuration Driver. Cases run one at a time. Each gets a new Namespace and its
-// own Drivers, audit sink and IAM grants: the app's Drivers and sink forward to the running
-// case's. A forwarding Driver keeps one identity, because OCC rechecks it on every selection,
-// so a case Driver's own id and implementation never reach OCC.
+// Cases share the expensive administrator/session setup, but each fixture gets its own app
+// and write budget. Unrelated cases must not spend one another's admission capacity. Cases run
+// one at a time with their own Namespace, Drivers, audit sink and IAM grants. A forwarding
+// Driver keeps one identity, because OCC rechecks it on every selection, so a case Driver's
+// own id and implementation never reach OCC.
 const running = {};
-const apps = new Map();
 let administrator;
 let session;
 
@@ -132,7 +130,7 @@ function forwarder(identity, target) {
   });
 }
 
-async function sharedApp(withCompute, withConfiguration, computeImplementation) {
+async function fixtureApp(withCompute, withConfiguration, computeImplementation) {
   const authFixture = await (administrator ??= createTestAuthPrincipal({
     name: "Configuration Integration Administrator",
   }));
@@ -231,14 +229,11 @@ async function fixture({
   auditSink = new InMemoryAuditSink(),
 } = {}) {
   Object.assign(running, { configurationDriver, computeDriver, auditSink });
-  const shape = `${computeDriver !== undefined}/${configurationDriver !== null}/${computeImplementation}`;
-  if (!apps.has(shape)) {
-    apps.set(
-      shape,
-      sharedApp(computeDriver !== undefined, configurationDriver !== null, computeImplementation),
-    );
-  }
-  const { grant, ...context } = await apps.get(shape);
+  const { grant, ...context } = await fixtureApp(
+    computeDriver !== undefined,
+    configurationDriver !== null,
+    computeImplementation,
+  );
   grant(permissions);
   namespaces += 1;
   const namespace = await request(context.app, "POST", "/namespaces", {

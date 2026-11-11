@@ -4735,7 +4735,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             }
           : {}),
         schema,
-        onRequest: async (request) => admit(request, operation),
+        onRequest: async (request) => {
+          await admit(request, operation);
+        },
         preValidation: async (request) => {
           const hasRequestBody =
             request.body !== undefined ||
