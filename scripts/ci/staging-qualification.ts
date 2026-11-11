@@ -632,7 +632,7 @@ async function pullPair(previousPath: string, candidatePath: string, directory: 
 // releases must retain these production inputs; labels alone cannot establish
 // compatibility. Historical v2-to-v3 qualification needs a separately reviewed pair.
 const signinReferences = [
-  { source: "8a38f3ad496091c1b7f7e7a2710c5d3a2d1ea269", version: 3 },
+  { source: "7e1ac6d88e3893c3d4e6444fb3b9b9776519a3fb", version: 3 },
 ] as const;
 
 function signinBuildInputs(root: string, revision: string) {

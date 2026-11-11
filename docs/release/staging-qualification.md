@@ -135,7 +135,7 @@ After preparation succeeds, the job uploads `staging-pair-images.json` and
 rehearsal fails. The plan binds the observed images to the intended
 sign-in test: the source inputs must match a reviewed controller reader profile
 and both releases must share its migration tree. The current profile is the v3
-reader and catalog at `8a38f3ad496091c1b7f7e7a2710c5d3a2d1ea269`.
+reader and catalog at `7e1ac6d88e3893c3d4e6444fb3b9b9776519a3fb`.
 Both releases must match its production-input projection. A change to those
 inputs requires a new review of the reader behavior and test expectations.
 This admits only releases with that exact projection, not every v3 controller.
