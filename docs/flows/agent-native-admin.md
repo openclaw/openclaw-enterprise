@@ -85,15 +85,15 @@ graph TD
 `packages/occ/src/index.ts:provisionAgent`
 
 **Enable browser chat** sends `nativeAdmin: true`. The adapter derives the origin
-from Installation settings and refuses conflicting policy. The 214-character suffix limit uses the normalized domain.
+from Installation settings, refuses conflicting policy, and limits the normalized
+Agent suffix to 214 characters.
 
 `createAgent` authorizes Agent creation and Configuration update, checks
 `expectedConfigurationGeneration` and absence of Agent references, then prepares
 policy. Configuration and Agent save atomically; the caller deploys normally.
 
-Guided provisioning authorizes, reserves identity, and prepares policy before
-queueing. Its fingerprint includes this choice; retries reuse the plan and
-identity. The worker creates and deploys the Agent.
+Guided provisioning authorizes and prepares policy before queueing. Retries
+reuse its fingerprinted plan and identity. The worker creates and deploys.
 
 ### 0a. Local first-Agent opts into native admin
 
