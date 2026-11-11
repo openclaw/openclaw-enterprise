@@ -1842,10 +1842,19 @@ const topologyStandIn = (exported: string[]) => `
     throw new Error("topology setup failed");
   }
   // The live Slack proof checks both bots before it arranges the topology.
-  export async function slackApi(method, token) {
+  export async function slackApi(method, token, query) {
     return method === "auth.test"
       ? { team_id: "T0", user_id: token }
-      : { channel: { is_member: true } };
+      : {
+          channel: {
+            id: query.channel,
+            is_channel: true,
+            is_private: false,
+            is_im: false,
+            is_mpim: false,
+            is_member: true,
+          },
+        };
   }
   ${exported
     .filter((name) => !["arrangeProductionTopology", "slackApi"].includes(name))
