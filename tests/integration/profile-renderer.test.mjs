@@ -3,6 +3,7 @@ import {
   ConfigurationValidationError as SharedConfigurationValidationError,
 } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
+import { oidcEnrollmentPolicy } from "../../apps/controller/src/auth/oidc-enrollment.ts";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
@@ -2126,6 +2127,42 @@ test(
     assert.match(oidcManifests, /name: OCC_AUTH_OIDC_TOKEN_AUTH\n\s+value: "client_secret_basic"/);
     assert.match(oidcManifests, /name: OCC_AUTH_OIDC_DISPLAY_NAME\n\s+value: "Acme SSO"/);
     assert.match(oidcManifests, /name: openclaw-enterprise-api-oidc-login-egress/);
+    for (const requireVerifiedEmail of [undefined, true, false, null, "false"]) {
+      const input = externalSignInInput({
+        google: undefined,
+        oidc: {
+          issuer: "https://sso.example.com/realms/acme",
+          authorizationUrl: "https://sso.example.com/realms/acme/protocol/openid-connect/auth",
+          tokenUrl: "https://sso.example.com/realms/acme/protocol/openid-connect/token",
+          jwksUrl: "https://sso.example.com/realms/acme/protocol/openid-connect/certs",
+          enrollment: {
+            admission: { groupsClaim: "groups", anyOf: ["members"] },
+            createAccount: { enabled: true, role: null, requireVerifiedEmail },
+          },
+        },
+      });
+      if (requireVerifiedEmail === null || typeof requireVerifiedEmail === "string") {
+        await assert.rejects(
+          () => render("openclaw", input),
+          /requireVerifiedEmail must be a boolean/,
+        );
+      } else {
+        const enrolled = await render("openclaw", input);
+        assert.equal(enrolled.summary.ok, true, enrolled.preflight.errors.join("\n"));
+        assert.equal(
+          oidcEnrollmentPolicy(loadYaml(enrolled.values).auth.oidc.enrollment).createAccount
+            .requireVerifiedEmail,
+          requireVerifiedEmail ?? true,
+        );
+        input.controlPlane.oidc.enrollment.createAccount = { requireVerifiedEmail };
+        const admissionOnly = await render("openclaw", input);
+        const disabled = oidcEnrollmentPolicy(
+          loadYaml(admissionOnly.values).auth.oidc.enrollment,
+        ).createAccount;
+        assert.equal(disabled.enabled, false);
+        assert.equal(disabled.requireVerifiedEmail, requireVerifiedEmail ?? true);
+      }
+    }
     // The API trims each OIDC URL with JavaScript's trim before its checks, and so do the chart
     // and the renderer, which keep the value as written.
     const padded = await render(

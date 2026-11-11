@@ -1308,6 +1308,11 @@ test(
       ),
     );
     const installationPath = join(directory, "installation.yaml");
+    const load = () =>
+      loadInstallationConfiguration({
+        mode: "production",
+        environment: { OCC_CONFIG_PATH: installationPath },
+      });
     const invalid = [
       "192.168.1",
       "2130706433",
@@ -1350,11 +1355,6 @@ test(
         configuration.drivers.compute.configuration.gatewayRouting.hostname = hostname;
       }
       await writeFile(installationPath, JSON.stringify(configuration));
-      const load = () =>
-        loadInstallationConfiguration({
-          mode: "production",
-          environment: { OCC_CONFIG_PATH: installationPath },
-        });
       // Helm --set reads a bare integer or 0x hex as a number. Pass those spellings
       // with --set-string so the chart sees the hostname the Installation stores.
       const numericHostname =
@@ -1426,11 +1426,6 @@ test(
       const configuration = structuredClone(example);
       configuration.drivers.compute.configuration.gatewayRouting.sandbox = { domain };
       await writeFile(installationPath, JSON.stringify(configuration));
-      const load = () =>
-        loadInstallationConfiguration({
-          mode: "production",
-          environment: { OCC_CONFIG_PATH: installationPath },
-        });
       const rendered = () => render({ ...sandboxValues, "gatewayRouting.sandbox.domain": domain });
       if (domain === "192.0.2.1") {
         await assert.rejects(load(), (error) => {
@@ -1649,12 +1644,7 @@ test("production settings coexist in fresh and upgrade chart renders", tooling, 
       initializer.spec.template.metadata.annotations?.["openclaw.dev/upgrade-attempt"],
       isUpgrade ? settings["installation.upgradeAttemptId"] : undefined,
     );
-    const deployment = (component) =>
-      objects.find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === component,
-      );
-    const api = deployment("api").spec.template.spec.containers[0];
+    const api = deploymentPodSpec(objects, "api").containers[0];
     assert.equal(api.image, controllerImage);
     assert.deepEqual(
       api.env.find(({ name }) => name === "OCC_CHANNEL_DIRECTORY_PROXY_URL"),
@@ -1664,7 +1654,7 @@ test("production settings coexist in fresh and upgrade chart renders", tooling, 
       api.env.find(({ name }) => name === "OCC_AGENT_NATIVE_ADMIN_ENABLED"),
       { name: "OCC_AGENT_NATIVE_ADMIN_ENABLED", value: "true" },
     );
-    const broker = deployment("worker").spec.template.spec.containers.find(
+    const broker = deploymentPodSpec(objects, "worker").containers.find(
       ({ name }) => name === "repository-credentials",
     );
     assert.deepEqual(broker.args, [
@@ -1787,14 +1777,9 @@ test(
   async () => {
     const { stdout } = await render(agentNativeAdminValues);
     const objects = await resources(stdout);
-    const deployment = (component) =>
-      objects.find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === component,
-      );
 
-    const apiEnvironment = deployment("api").spec.template.spec.containers[0].env;
-    const workerEnvironment = deployment("worker").spec.template.spec.containers[0].env;
+    const apiEnvironment = deploymentPodSpec(objects, "api").containers[0].env;
+    const workerEnvironment = deploymentPodSpec(objects, "worker").containers[0].env;
     assert.deepEqual(
       apiEnvironment.filter(({ name }) => name.startsWith("OCC_AGENT_NATIVE_ADMIN_")),
       [
@@ -1831,12 +1816,7 @@ test(
     }
 
     const disabledObjects = await resources((await render()).stdout);
-    const disabledDeployment = (component) =>
-      disabledObjects.find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === component,
-      );
-    const disabledApiEnvironment = disabledDeployment("api").spec.template.spec.containers[0].env;
+    const disabledApiEnvironment = deploymentPodSpec(disabledObjects, "api").containers[0].env;
     assert.deepEqual(
       disabledApiEnvironment.filter(({ name }) => name.startsWith("OCC_AGENT_NATIVE_ADMIN_")),
       [
@@ -1856,11 +1836,7 @@ test(
       objects.find(
         ({ kind, metadata }) => kind === "ClusterRole" && metadata.name.endsWith(suffix),
       );
-    const apiEnvironment = (objects) =>
-      objects.find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === "api",
-      ).spec.template.spec.containers[0].env;
+    const apiEnvironment = (objects) => deploymentPodSpec(objects, "api").containers[0].env;
     const hasLogRules = (rules) =>
       rules.some(({ resources = [] }) => resources.includes("pods/log")) ||
       rules.some(({ resources = [] }) => resources.includes("events"));
@@ -2857,12 +2833,9 @@ test("the chart validates scalar and literal repository backend IDs", tooling, a
         )
       ).stdout,
     );
-    const broker = objects
-      .find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === "worker",
-      )
-      .spec.template.spec.containers.find(({ name }) => name === "repository-credentials");
+    const broker = deploymentPodSpec(objects, "worker").containers.find(
+      ({ name }) => name === "repository-credentials",
+    );
     assert.equal(
       broker.args[broker.args.indexOf("--backend-id") + 1],
       argument,
@@ -5493,6 +5466,13 @@ test("default routing refuses missing operator configuration", tooling, async ()
   );
 });
 
+function deploymentPodSpec(objects, component) {
+  return objects.find(
+    ({ kind, metadata }) =>
+      kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === component,
+  ).spec.template.spec;
+}
+
 test(
   "private Envoy Gateway routing defaults on with automatic CA and deterministic hostnames",
   tooling,
@@ -5539,14 +5519,8 @@ test(
       ),
     );
 
-    const deployment = (component) =>
-      configured.find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === component,
-      );
-
     for (const component of ["api", "worker"]) {
-      const pod = deployment(component).spec.template.spec;
+      const pod = deploymentPodSpec(configured, component);
       const apiKeyVolume = pod.volumes.find(({ name }) => name === "gateway-api-key");
       const caVolume = pod.volumes.find(({ name }) => name === "gateway-ca");
       const apiKeyMount = pod.containers[0].volumeMounts.find(
@@ -5805,14 +5779,8 @@ test(
     const gatewayName = "oce-agent-gateways";
     const gatewayNamespace = "openclaw-system";
     const serviceName = gatewayServiceName(gatewayNamespace, gatewayName);
-    const apiPod = configured.find(
-      ({ kind, metadata }) =>
-        kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === "api",
-    ).spec.template.spec;
-    const workerPod = configured.find(
-      ({ kind, metadata }) =>
-        kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === "worker",
-    ).spec.template.spec;
+    const apiPod = deploymentPodSpec(configured, "api");
+    const workerPod = deploymentPodSpec(configured, "worker");
 
     assert.deepEqual(apiPod.volumes.find(({ name }) => name === "gateway-ca").secret, {
       secretName: "occ-private-ca",

@@ -9,20 +9,20 @@ import { RepositoryReceiptStore } from "./receipt-store.ts";
 const generationPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const sessionPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
-const { object, identity, counter, parseCleanup } = createStatusWirePrimitives(() => {
+const {
+  object,
+  counter,
+  parseCleanup,
+  sessionStatusObject,
+  grantIdentityObject,
+  projectGrantIdentity,
+} = createStatusWirePrimitives(() => {
   throw new Error("INVALID_RECEIPT_REQUEST");
 });
 
 function status(value: unknown): SessionStatus {
-  const input = object(value, [
-    "sessionId",
-    "state",
-    "deadlineWallMs",
-    "binding",
-    "activeUses",
-    "cleanup",
-  ]);
-  const binding = object(input.binding, ["providerInstanceId", "repositoryId", "grantId"]);
+  const input = sessionStatusObject(value);
+  const binding = grantIdentityObject(input.binding);
   const cleanup = parseCleanup(input.cleanup);
   if (
     typeof input.sessionId !== "string" ||
@@ -35,11 +35,7 @@ function status(value: unknown): SessionStatus {
     sessionId: input.sessionId,
     state: input.state as SessionStatus["state"],
     deadlineWallMs: counter(input.deadlineWallMs),
-    binding: {
-      providerInstanceId: identity(binding.providerInstanceId),
-      repositoryId: identity(binding.repositoryId),
-      grantId: identity(binding.grantId),
-    },
+    binding: projectGrantIdentity(binding),
     activeUses: counter(input.activeUses),
     cleanup,
   };

@@ -5,6 +5,8 @@
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import type { ExecFileOptions } from "node:child_process";
+import type { TestContext } from "node:test";
 import { randomBytes } from "node:crypto";
 import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -20,6 +22,8 @@ import { temporaryDirectory } from "./temporary-directory.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import type { OpenClawConfigurationDocument } from "../../packages/contracts/src/index.ts";
+import type { ProbeEvent, ProbePhase } from "./runtime-model-probe-diagnostic.ts";
 
 // The embedded Gateway's startup model probe on the real runtime image, under
 // the production example's Gateway memory limit and a 500m CPU limit, an eighth
@@ -30,7 +34,20 @@ import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts
 // through a private CA), and observes the wrapper from outside. Like the
 // kubelet, the sidecar also polls the real HTTP readiness endpoint.
 
-export const execute = promisify(execFile);
+const executeFile = promisify(execFile);
+function assertCapturedOutput(
+  operation: ReturnType<typeof executeFile>,
+): asserts operation is ReturnType<typeof executeFile> & {
+  child: { stdout: NonNullable<typeof operation.child.stdout> };
+} {
+  assert.ok(operation.child.stdout, "the child process must capture stdout");
+}
+
+export function execute(command: string, args: string[], options: ExecFileOptions) {
+  const operation = executeFile(command, args, options);
+  assertCapturedOutput(operation);
+  return operation;
+}
 export const docker = process.env.OCC_DOCKER_BIN ?? "docker";
 export const image = process.env.OCC_TEST_RUNTIME_IMAGE;
 export const imageTestOptions =
@@ -42,7 +59,7 @@ export const constrainedGatewayCpuLimit = "0.5";
 export const probeApiKey = "sk-openclaw-runtime-probe-synthetic";
 
 // Failures carry the exit code, signal, timeout and redacted output tails (finding 2184).
-export async function runDocker(args, options = {}) {
+export async function runDocker(args: string[], options: ExecFileOptions = {}) {
   return runDockerCommand(docker, args, {
     timeout: 60_000 * imageSmokeTimeoutMultiplier,
     maxBuffer: 4_000_000,
@@ -50,7 +67,7 @@ export async function runDocker(args, options = {}) {
   });
 }
 
-async function waitForLog(containerName, pattern) {
+async function waitForLog(containerName: string, pattern: RegExp) {
   const deadline = Date.now() + 20_000 * imageSmokeTimeoutMultiplier;
   const logs = followContainer(undefined, containerName, { docker, exit: false });
   try {
@@ -73,9 +90,9 @@ async function waitForLog(containerName, pattern) {
   }
 }
 
-async function createProbeMaterial(t, configuration) {
+async function createProbeMaterial(t: TestContext, configuration: OpenClawConfigurationDocument) {
   const directory = await temporaryDirectory(t, "oce-runtime-model-probe-");
-  const file = (name) => join(directory, name);
+  const file = (name: string) => join(directory, name);
   // Sign a leaf with a private CA, as a provider certificate would be.
   await createModelProbeCertificates({
     directory,
@@ -111,19 +128,21 @@ async function createProbeMaterial(t, configuration) {
 // model and its provider transport. Only allowPrivateNetwork is added, because
 // the stand-in provider listens on loopback.
 function embeddedGateway() {
-  const configuration = admitLoggingConfiguration(
-    createHarnessConfiguration("openclaw", defaultAgentModel),
-    "info",
-  );
-  const model = configuration.agents.defaults.model;
+  const harness: OpenClawConfigurationDocument & {
+    agents: { defaults: { model: string; models: Record<string, OpenClawConfigurationDocument> } };
+    models: { providers: Record<string, OpenClawConfigurationDocument> };
+  } = createHarnessConfiguration("openclaw", defaultAgentModel);
+  const configuration = admitLoggingConfiguration(harness, "info");
+  const model = harness.agents.defaults.model;
   const provider = model.split("/", 1)[0];
+  assert.ok(provider !== undefined);
   const probeConfiguration = {
     agents: {
       defaults: {
         model,
         models: {
           [model]: {
-            ...configuration.agents.defaults.models?.[model],
+            ...harness.agents.defaults.models?.[model],
             agentRuntime: { id: "openclaw" },
           },
         },
@@ -132,7 +151,7 @@ function embeddedGateway() {
     models: {
       providers: {
         [provider]: {
-          ...configuration.models.providers[provider],
+          ...harness.models.providers[provider],
           request: { allowPrivateNetwork: true },
         },
       },
@@ -163,7 +182,7 @@ function embeddedGateway() {
 }
 
 // Docker reports RFC 3339; Podman reports "YYYY-MM-DD hh:mm:ss.nnnnnnnnn +0000 UTC".
-function containerTime(value) {
+function containerTime(value: string) {
   const trimmed = value.trim();
   const match = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.(\d+))?/.exec(trimmed);
   assert.ok(match, `unrecognized container time ${trimmed}`);
@@ -171,13 +190,45 @@ function containerTime(value) {
   return Date.parse(`${match[1]}T${match[2]}.${(match[3] ?? "0").padEnd(3, "0").slice(0, 3)}Z`);
 }
 
+export type ProbeSnapshot = Omit<
+  Parameters<typeof modelProbeDiagnostic>[0],
+  "events" | "phases" | "probe"
+> & {
+  events: (ProbeEvent & Record<string, unknown> & { ms: number })[];
+  phases: (ProbePhase & Record<string, unknown>)[];
+  probe: Record<string, unknown> | undefined;
+  exitCode: number;
+};
+
+type ProbeOptions = {
+  mode: "answer" | "reject" | "hang";
+  delayMs?: number;
+  cpus: string;
+  until: (snapshot: ProbeSnapshot, containerName: string) => boolean;
+  limitMs: number;
+  stress?: Parameters<typeof modelProbeDiagnostic>[1];
+  afterStop?: () => Promise<void>;
+};
+
+export function probeLogRecords(output: string): Record<string, unknown>[] {
+  const records: unknown[] = jsonLines(output, { lenient: true });
+  return records.filter(
+    (record): record is Record<string, unknown> =>
+      record !== null && typeof record === "object" && !Array.isArray(record),
+  );
+}
+
 // Starts one embedded Gateway against the stand-in provider. `mode` is the
 // provider's behaviour: "answer" after `delayMs`, "reject" with HTTP 401, or
 // "hang". Resolves once `until` accepts an observation snapshot.
 export async function runEmbeddedGatewayProbe(
-  t,
-  { mode, delayMs = 0, cpus, until, limitMs, stress, afterStop },
+  t: TestContext,
+  { mode, delayMs = 0, cpus, until, limitMs, stress, afterStop }: ProbeOptions,
 ) {
+  assert.ok(
+    image !== undefined,
+    "Set OCC_TEST_RUNTIME_IMAGE to a locally built OpenClaw runtime image tag.",
+  );
   const scenarioStartedAt = Date.now();
   const gateway = embeddedGateway();
   const material = await createProbeMaterial(t, gateway.configuration);
@@ -274,23 +325,19 @@ export async function runEmbeddedGatewayProbe(
     changes,
     inspectTimeoutMs: 20_000 * imageSmokeTimeoutMultiplier,
   });
-  const collect = async () => {
+  const collect = async (): Promise<ProbeSnapshot> => {
     const endpoint = endpointLogs.read();
     const wrapper = gatewayLogs.read();
     const output = `${wrapper.stdout}\n${wrapper.stderr}`;
     return {
-      events: jsonLines(endpoint.stdout, { lenient: true }).map((event) => ({
-        ...event,
-        ms: event.at - startedAt,
-      })),
+      events: probeLogRecords(endpoint.stdout).map((event) => {
+        assert.ok(typeof event.at === "number", "provider event must have an epoch timestamp");
+        return { ...event, ms: event.at - startedAt };
+      }),
       output,
-      phases: jsonLines(output, { lenient: true }).filter(
-        ({ event }) => event === "runtime.startup_phase",
-      ),
-      probe: jsonLines(output, { lenient: true }).find(
-        ({ event }) => event === "openclaw.model_probe",
-      ),
-      probeStage: jsonLines(output, { lenient: true })
+      phases: probeLogRecords(output).filter(({ event }) => event === "runtime.startup_phase"),
+      probe: probeLogRecords(output).find(({ event }) => event === "openclaw.model_probe"),
+      probeStage: probeLogRecords(output)
         .filter(({ event }) => event === "openclaw.model_probe_stage")
         .at(-1)?.stage,
       running: wrapper.running,
@@ -309,14 +356,18 @@ export async function runEmbeddedGatewayProbe(
       const error = new assert.AssertionError({
         message: "The Gateway wrapper exited before settlement.",
       });
-      error.openclawCiDiagnostic = modelProbeDiagnostic(snapshot, stress, "wrapper-exited");
+      Object.assign(error, {
+        openclawCiDiagnostic: modelProbeDiagnostic(snapshot, stress, "wrapper-exited"),
+      });
       throw error;
     }
     if (Date.now() > deadline) {
       const error = new assert.AssertionError({
         message: "The embedded Gateway exceeded its settlement guard.",
       });
-      error.openclawCiDiagnostic = modelProbeDiagnostic(snapshot, stress, "outer-timeout");
+      Object.assign(error, {
+        openclawCiDiagnostic: modelProbeDiagnostic(snapshot, stress, "outer-timeout"),
+      });
       throw error;
     }
     // Check again on the next write or exit (at least 5 s apart without one,
@@ -326,10 +377,11 @@ export async function runEmbeddedGatewayProbe(
   }
 }
 
-export const observed = (key, value) => (event) =>
+export const observed = (key: string, value: unknown) => (event: ProbeEvent) =>
   event.event === "observe" && event.key === key && event.value === value;
-export const runtimeFailure = (events) =>
+export const runtimeFailure = (events: ProbeEvent[]) =>
   events.find(
     (event) => event.event === "observe" && event.key === "runtimeFailure" && event.value !== null,
   )?.value;
-export const phaseAt = (phases, phase) => phases.find((entry) => entry.phase === phase);
+export const phaseAt = (phases: ProbeSnapshot["phases"], phase: string) =>
+  phases.find((entry) => entry.phase === phase);

@@ -32,7 +32,7 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { requestId, staticEgressFixture } from "../helpers/static-egress.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { CREDENTIAL_PROXY_ONE_SOURCE } from "../helpers/refusal-text.mjs";
 
 test(

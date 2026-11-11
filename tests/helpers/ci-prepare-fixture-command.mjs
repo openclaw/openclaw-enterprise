@@ -276,6 +276,24 @@ async function fakeCommand({
         return finish();
       }
     }
+    if (
+      equals(args, [
+        "inspect",
+        "--format",
+        "{{json .NetworkSettings.Networks}}",
+        `k3d-${state.cluster}-server-0`,
+      ])
+    ) {
+      return finish(JSON.stringify({ [`k3d-${state.cluster}`]: {} }));
+    }
+    if (equals(args.slice(0, 3), ["network", "connect", `k3d-${state.cluster}`])) {
+      assert.ok(
+        [...postgresServers.keys()].some(
+          (project) => createHash("sha256").update(project).digest("hex") === args[3],
+        ),
+      );
+      return finish();
+    }
     if (equals(args.slice(0, 3), ["inspect", "--format", "{{json .NetworkSettings.Ports}}"])) {
       const [, server] =
         [...postgresServers].find(

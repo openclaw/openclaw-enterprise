@@ -23,7 +23,7 @@ import {
   openShellSettingsChange,
   observeSandboxProbe,
 } from "../helpers/k3d-failure-diagnostics.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import {
   createOpenShellInstallationConfiguration,
   createOpenShellKubernetesFixture,

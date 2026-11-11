@@ -19,6 +19,7 @@ auth:
       additionalScopes: [groups]
       createAccount:
         enabled: true
+        requireVerifiedEmail: true
         role:
           id: role_config_agent_creator
           scope:
@@ -32,7 +33,8 @@ transaction checks them again. Unknown fields and invalid policy combinations
 fail activation.
 
 `admission` is required. The verified ID token must contain the named top-level
-claim as an array of strings, with at least one exact `anyOf` value. Values and
+claim as a string or an array of strings, with at least one exact `anyOf` value.
+A string is one group; OCE does not split commas or trim group values. Values and
 claim names are case-sensitive; the allowlist cannot be empty. Missing or malformed
 claims refuse sign-in for both new and attached identities. This is an admission
 rule, not a mapping from IdP groups to Roles. Configure the IdP to emit the claim
@@ -72,8 +74,13 @@ profile claims to sign in. To use a manually created account, an administrator m
 Email matching never attaches or transfers an identity.
 
 An unknown identity can create an account only when creation is enabled. Its
-standard `email` must be valid, `email_verified` must be boolean `true`, and the
-trimmed, lowercased email must be unused in OCE. The optional `name` supplies the
+standard `email` must be valid, and the trimmed, lowercased email must be unused
+in OCE. `createAccount.requireVerifiedEmail` defaults to `true` and requires
+`email_verified` to be boolean `true`. Set it to `false` to accept boolean `true`,
+boolean `false`, or an absent claim. A present non-boolean claim always refuses
+creation. The stored email verification is true only for a true claim.
+This policy applies only to first-login account creation; returning identities
+keep their stored profile and verification status. The optional `name` supplies the
 display name; otherwise OCE uses the email. Alternative email claims are not read.
 Perform profile mapping at the IdP. Configure verified email only when the IdP can
 vouch for that address. A collision requires administrator resolution.
@@ -90,7 +97,7 @@ another callback's creation or an administrator's account change can be refused;
 start a new login. Only the transaction that creates an identity may issue its
 initial proof without an older account snapshot. Disabled or stale accounts are
 never repaired by enrollment. Changing the effective policy invalidates pending
-attempts, including changes to inherited default Groups.
+attempts, including changes to `requireVerifiedEmail` and inherited default Groups.
 
 ## Offboarding and troubleshooting
 

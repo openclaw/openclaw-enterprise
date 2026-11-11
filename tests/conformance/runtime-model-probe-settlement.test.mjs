@@ -19,7 +19,7 @@ import {
   providerErrorCodes as helperErrorCodes,
   providerErrorTypes as helperErrorTypes,
 } from "../helpers/local-first-agent-native.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const execute = promisify(execFile);
@@ -114,7 +114,7 @@ test("raw probe fields preserve diagnostics and reject nonfinite measurements", 
 
 test("actual starved-case callback accepts READY; guard-removal control does not", async () => {
   const source = await readFile(
-    new URL("../integration/runtime-image-model-probe.test.mjs", import.meta.url),
+    new URL("../integration/runtime-image-model-probe.test.ts", import.meta.url),
     "utf8",
   );
   const body = source.slice(

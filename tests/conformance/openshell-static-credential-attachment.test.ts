@@ -1,5 +1,5 @@
 import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.mjs";
-import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import { loadInstallationFile } from "../helpers/installation-file.ts";
 import {
   OpenShellGateway,
   openShellProviderName,

@@ -6,7 +6,7 @@ author: russellb
 
 # Proposal: Manage the Installation network policy ceiling
 
-- **ID:** RFC-0037
+- **ID:** RFC-0038
 - **Created:** 2026-11-06
 - **Related:** [RFC-0022](0022-driver-configuration-contributions.md), [RFC-0025](0025-installation-driver-values.md)
 
@@ -184,7 +184,7 @@ deployed or applied through its normal workflow.
 
 The owner API, PostgreSQL persistence, startup ownership, worker rechecks, and
 Console editor are implemented in [PR #4920](https://github.com/openclaw/openclaw-enterprise/pull/4920).
-The [implementation plan](../plans/0037-installation-network-policy-ceiling.md)
+The [implementation plan](../plans/0038-installation-network-policy-ceiling.md)
 records verification and remaining delivery requirements. Current behavior is
 specified in [Sandbox policies](../../docs/reference/sandbox-policies.md#installation-ceiling).
 The decision remains Proposed; implementation does not establish acceptance.

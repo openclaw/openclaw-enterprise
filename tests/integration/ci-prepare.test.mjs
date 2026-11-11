@@ -27,7 +27,7 @@ import { defaultK3sImage, prepareLane, prepareFile } from "../../scripts/ci/prep
 import { withStateLock } from "../../scripts/ci/state-lock.ts";
 import { readJsonLines } from "../helpers/json-lines.mjs";
 import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import {
   assertStderrMatch,
   fixture,
@@ -40,7 +40,7 @@ import {
   nodeBaseImage,
   spawnResult,
   writeFixtureCommand,
-} from "../helpers/ci-prepare-fixture.mjs";
+} from "../helpers/ci-prepare-fixture.ts";
 import { waitUntil } from "../helpers/wait-for.mjs";
 import { startFakePostgres } from "../helpers/fake-postgres-server.mjs";
 

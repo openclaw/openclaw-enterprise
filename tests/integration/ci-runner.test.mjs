@@ -1,5 +1,5 @@
 import { prepareGatewayRouting } from "../../scripts/ci/routing.mjs";
-import { readRuntimeProvenance } from "../../scripts/ci/runtime-provenance.mjs";
+import { readRuntimeProvenance } from "../../scripts/ci/runtime-provenance.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -5961,16 +5961,25 @@ test("each job attempt uploads its own diagnostics report", async () => {
   );
 });
 
+const passingLaneFixture = 'import test from "node:test";\ntest("runs", () => {});\n';
+
+async function writeFixtureLane(root, lane, names, source) {
+  const files = names.map((name) => ({ path: `tests/integration/${name}.test.mjs` }));
+  for (const { path } of files) {
+    await writeFile(join(root, path), source);
+  }
+  await writeSingleLaneManifest(root, lane, files, { ci: [lane] });
+}
+
 waitingTest("run records a timeout that came before any test started", async (t) => {
   const root = await fixture(t);
   const { statePath, resultsPath } = runnerArtifactPaths(root, "stuck");
-  await writeFile(
-    join(root, "tests/integration/stuck.test.mjs"),
+  await writeFixtureLane(
+    root,
+    "stuck",
+    ["stuck"],
     'import test from "node:test";\nawait new Promise((resolve) => setTimeout(resolve, 30_000));\ntest("never registered", () => {});\n',
   );
-  await writeSingleLaneManifest(root, "stuck", [{ path: "tests/integration/stuck.test.mjs" }], {
-    ci: ["stuck"],
-  });
 
   const result = await runAsync(root, laneArgs(root, "stuck", statePath, resultsPath), {
     CI_RUNNER_TEST_TIMEOUT_MS: "2000",
@@ -6103,8 +6112,10 @@ waitingTest("run starts no file with under a second left before the lane deadlin
       "",
     ].join("\n"),
   );
-  await writeFile(
-    join(root, "tests/integration/late.test.mjs"),
+  await writeFixtureLane(
+    root,
+    "near",
+    ["late"],
     [
       'import { writeFileSync } from "node:fs";',
       'import test from "node:test";',
@@ -6113,9 +6124,6 @@ waitingTest("run starts no file with under a second left before the lane deadlin
       "",
     ].join("\n"),
   );
-  await writeSingleLaneManifest(root, "near", [{ path: "tests/integration/late.test.mjs" }], {
-    ci: ["near"],
-  });
 
   const result = await runAsync(
     root,
@@ -6144,8 +6152,10 @@ waitingTest("a runner timeout while no test was running says so", async (t) => {
   const root = await fixture(t);
   const { statePath, resultsPath } = runnerArtifactPaths(root, "hook");
   const inHook = join(root, "state/in-hook");
-  await writeFile(
-    join(root, "tests/integration/hook.test.mjs"),
+  await writeFixtureLane(
+    root,
+    "hook",
+    ["hook"],
     [
       'import { writeFileSync } from "node:fs";',
       'import test, { after } from "node:test";',
@@ -6158,9 +6168,6 @@ waitingTest("a runner timeout while no test was running says so", async (t) => {
       "",
     ].join("\n"),
   );
-  await writeSingleLaneManifest(root, "hook", [{ path: "tests/integration/hook.test.mjs" }], {
-    ci: ["hook"],
-  });
 
   // The runner's clock stands still from the start until "passes" is done and the hook has
   // started, so the timeout comes three seconds after that however long the host takes to get
@@ -6188,6 +6195,8 @@ waitingTest("a runner timeout while no test was running says so", async (t) => {
 // These fixtures hang forever, and their intervals keep the runner alive unless it gives up.
 const hangForever = "new Promise(() => setInterval(() => {}, 1_000))";
 
+const hungAndLaterFiles = ["hung", "later"];
+
 waitingTest(
   "run gives up on a preparation still running at the lane deadline and names it",
   async (t) => {
@@ -6208,18 +6217,7 @@ waitingTest(
         "",
       ].join("\n"),
     );
-    for (const name of ["hung", "later"]) {
-      await writeFile(
-        join(root, `tests/integration/${name}.test.mjs`),
-        'import test from "node:test";\ntest("runs", () => {});\n',
-      );
-    }
-    await writeSingleLaneManifest(
-      root,
-      "prepare",
-      [{ path: "tests/integration/hung.test.mjs" }, { path: "tests/integration/later.test.mjs" }],
-      { ci: ["prepare"] },
-    );
+    await writeFixtureLane(root, "prepare", hungAndLaterFiles, passingLaneFixture);
 
     // The runner's clock stands still from the start until the preparation has started, so the
     // deadline comes three seconds after that however long the host takes to get there.
@@ -6344,18 +6342,7 @@ waitingTest(
         "",
       ].join("\n"),
     );
-    for (const name of ["hung", "later"]) {
-      await writeFile(
-        join(root, `tests/integration/${name}.test.mjs`),
-        'import test from "node:test";\ntest("runs", () => {});\n',
-      );
-    }
-    await writeSingleLaneManifest(
-      root,
-      "cleanup",
-      [{ path: "tests/integration/hung.test.mjs" }, { path: "tests/integration/later.test.mjs" }],
-      { ci: ["cleanup"] },
-    );
+    await writeFixtureLane(root, "cleanup", hungAndLaterFiles, passingLaneFixture);
 
     // The runner's clock stands still from the start until the command and its descendant are on
     // record, so the cleanup's allowance ends two seconds after that however long the host takes
@@ -9241,41 +9228,25 @@ test("run reports a cleanup that fails once a cancelled job's shell is gone as c
   // cleanup step makes it.
   await writeFile(
     join(root, "scripts/ci/prepare.mjs"),
-    [
-      "export async function prepareFile({ file }) {",
-      "  if (file.path.endsWith('plain.test.mjs')) {",
-      "    return { cleanup: async () => { throw new Error('secretauthvalue cleanup'); } };",
-      "  }",
-      "  return {",
-      "    cleanup: async () => {",
-      "      const shell = process.ppid;",
-      "      process.kill(shell, 'SIGKILL');",
-      "      const deadline = Date.now() + 10_000;",
-      "      while (process.ppid === shell && Date.now() < deadline) {",
-      "        await new Promise((resolve) => setTimeout(resolve, 10));",
-      "      }",
-      "      throw Object.assign(new Error('secretauthvalue cluster already removed'), { code: 'ENOENT' });",
-      "    },",
-      "  };",
-      "}",
-      "",
-    ].join("\n"),
-  );
-  for (const name of ["plain", "cancelled"]) {
-    await writeFile(
-      join(root, `tests/integration/${name}.test.mjs`),
-      'import test from "node:test";\ntest("runs", () => {});\n',
-    );
+    `export async function prepareFile({ file }) {
+  if (file.path.endsWith('plain.test.mjs')) {
+    return { cleanup: async () => { throw new Error('secretauthvalue cleanup'); } };
   }
-  await writeSingleLaneManifest(
-    root,
-    "cancel",
-    [
-      { path: "tests/integration/plain.test.mjs" },
-      { path: "tests/integration/cancelled.test.mjs" },
-    ],
-    { ci: ["cancel"] },
+  return {
+    cleanup: async () => {
+      const shell = process.ppid;
+      process.kill(shell, 'SIGKILL');
+      const deadline = Date.now() + 10_000;
+      while (process.ppid === shell && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw Object.assign(new Error('secretauthvalue cluster already removed'), { code: 'ENOENT' });
+    },
+  };
+}
+`,
   );
+  await writeFixtureLane(root, "cancel", ["plain", "cancelled"], passingLaneFixture);
 
   // A parent process stands in for the step's shell: it waits for the runner until the second
   // file's cleanup kills it. No shell parses any of these arguments. The timeout only stops a

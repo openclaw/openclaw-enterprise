@@ -1,13 +1,13 @@
 // Shared by the runtime image startup smoke tests, which CI runs in three lanes
 // (runtime-image-startup.test.mjs, runtime-image-startup-probe.test.mjs,
-// runtime-image-startup-termination.test.mjs,
+// runtime-image-startup-termination.test.ts,
 // runtime-image-gateway-unclean-restart.test.mjs,
 // runtime-image-gateway-retained-state.test.mjs,
 // runtime-image-gateway-peer.test.mjs, runtime-image-native-worker.test.mjs,
 // runtime-image-state-migration.test.mjs,
-// runtime-image-managed-files.test.mjs,
+// runtime-image-managed-files.test.ts,
 // runtime-image-native-listener.test.mjs and
-// runtime-image-gateway-workspace.test.mjs).
+// runtime-image-gateway-workspace.test.ts).
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";

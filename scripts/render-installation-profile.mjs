@@ -965,7 +965,15 @@ function renderOidc(source, diagnostics) {
   }
   if (source.enrollment !== undefined) {
     try {
-      rendered.enrollment = oidcEnrollmentPolicy(source.enrollment);
+      const policy = oidcEnrollmentPolicy(source.enrollment);
+      rendered.enrollment = {
+        ...policy,
+        // The resolved disabled policy has no Role; omit the internal null so
+        // the rendered operator input still passes the same configuration parser.
+        createAccount: policy.createAccount.enabled
+          ? policy.createAccount
+          : { enabled: false, requireVerifiedEmail: policy.createAccount.requireVerifiedEmail },
+      };
     } catch (error) {
       diagnostics.errors.push(`controlPlane.oidc.enrollment: ${error.message}`);
     }
