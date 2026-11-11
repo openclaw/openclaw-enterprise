@@ -200,13 +200,13 @@ The [model policy resolver](../../packages/occ/src/configured-harness.ts) select
 OpenClaw for no model or an unambiguous built-in provider. OpenAI, Codex, custom
 and plugin-routed providers require explicit runtime policy. Catalog entries
 accept full references or IDs after the first slash; each must be a selected
-primary or fallback. Missing-model refusals identify the setting to change.
-Codex accepts `codex`, or `openai` with the Codex plugin enabled for WebSocket
-app-server transport.
+primary or fallback. Codex accepts `codex`, or `openai` with the Codex plugin
+enabled for WebSocket app-server transport.
 
-Dedicated Codex preserves authored `reasoning`, `thinkingLevelMap`, and nonempty
+On Kubernetes, a dedicated Codex Gateway with a workspace-node ID or binding
+path preserves `reasoning`, `thinkingLevelMap`, and nonempty
 `compat.supportedReasoningEfforts` containing only `minimal`, `low`, `medium`,
-`high`, `xhigh`, `max`, or `ultra`. Verify against the selected runtime/model.
+`high`, `xhigh`, `max`, or `ultra`. Verify against the runtime/model.
 Other `compat` fields, including `thinkingLevels`, are dropped.
 No capabilities are inferred.
 
