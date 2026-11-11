@@ -2356,9 +2356,28 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   assert.equal(gitJob.steps[0].with.ref, "${{ github.sha }}");
   assert.equal(gitJob.steps[0].with["persist-credentials"], false);
   assert.doesNotMatch(JSON.stringify(gitJob), /secrets\.|diagnostics\//);
-  const [receipt] = gitJob.steps.filter(({ uses }) => uses?.startsWith("actions/upload-artifact@"));
+  const uploads = gitJob.steps.filter(({ uses }) => uses?.startsWith("actions/upload-artifact@"));
+  assert.equal(uploads.length, 2);
+  const receipt = uploads.find((step) => step.with.name === "full-results-" + privateGit);
+  assert.ok(receipt);
   assert.equal(receipt.with.path, "${{ runner.temp }}/results/" + privateGit + ".json");
   assert.equal(receipt.if, undefined, "publish the receipt only after successful fixture cleanup");
+
+  const failure = uploads.find(
+    (step) => step.with.name === "attempt-${{ github.run_attempt }}-full-failure-" + privateGit,
+  );
+  assert.ok(failure);
+  assert.equal(failure.with.path, "${{ runner.temp }}/skipper-installed-failure.json");
+  assert.equal(
+    failure.if,
+    "${{ !cancelled() && steps.installed-skipper-failure.outcome == 'success' }}",
+  );
+  const projection = gitJob.steps.find((step) => step.id === "installed-skipper-failure");
+  assert.ok(projection);
+  assert.equal(
+    projection.if,
+    "${{ !cancelled() && steps.installed-skipper-proof.outcome == 'failure' }}",
+  );
   assert.ok(workflow.jobs["full-aggregate"].needs.includes(privateGit));
   const qa = workflow.jobs["qa-matrix"];
   assert.ok(qa.needs.includes("slack"), "shared Slack consumers must run sequentially");
