@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { readFileSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -1720,6 +1720,7 @@ test("parent cleanup retains failed child journals and rejects paths outside its
     version: 1,
     repositoryRoot,
     cleanupOwner: id,
+    statePath: childPath,
     lane: "postgres-auth",
     prefix: "openclaw-ci-child-0123456789ab",
     resources: [{ id: "unknown", kind: "unsupported" }],
@@ -1753,6 +1754,28 @@ test("parent cleanup retains failed child journals and rejects paths outside its
     assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), parent);
   }
 
+  // Neither another lane/path nor a symlink can inherit this child's authority.
+  for (const change of [{ lane: "postgres" }, { statePath: join(root, "other.json") }]) {
+    const foreign = { ...child, ...change, resources: [] };
+    await writeState(childPath, foreign);
+    const before = await readFile(childPath, "utf8");
+    await assert.rejects(cleanupState(statePath), /CI cleanup (lane|state path) mismatch/);
+    assert.equal(await readFile(childPath, "utf8"), before);
+  }
+  await rm(childPath);
+  const target = join(root, "linked.json");
+  await writeState(target, { ...child, resources: [] });
+  await symlink(target, childPath);
+  const before = await readFile(target, "utf8");
+  await assert.rejects(cleanupState(statePath), /ELOOP|symbolic link/);
+  assert.equal(await readFile(target, "utf8"), before);
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), parent);
+
+  // Even a dangling link is a refused journal, not an already-cleaned child.
+  await rm(target);
+  await assert.rejects(cleanupState(statePath), /ELOOP|symbolic link/);
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), parent);
+
   // A forged path cannot redirect the parent's canonical child cleanup.
   parent.resources[0].name = `${prefix}-child-../../unrelated`;
   await writeState(statePath, parent);
@@ -1762,7 +1785,18 @@ test("parent cleanup retains failed child journals and rejects paths outside its
 
 test("real PostgreSQL test does not adopt state when preparation refuses an existing path", async (t) => {
   const root = await fixture(t);
-  const statePath = join(root, "foreign.json");
+  const prefix = "openclaw-ci-real-parent";
+  const parentPath = join(root, "parent.json");
+  const children = ["0123456789ab", "123456789abc"].map((suffix) => ({
+    id: `child-state-${suffix}`,
+    kind: "child-state",
+    owner: prefix,
+    name: `${prefix}-child-${suffix}`,
+  }));
+  const states = children.map((child) => ({
+    path: join(root, `${child.name}.json`),
+    owner: child.id,
+  }));
   const foreign = JSON.stringify({
     version: 1,
     repositoryRoot,
@@ -1771,34 +1805,64 @@ test("real PostgreSQL test does not adopt state when preparation refuses an exis
     cleanupOwner: "foreign-owner",
     resources: [],
   });
-  await writeFile(statePath, foreign);
+  for (const state of states) {
+    await writeFile(state.path, foreign);
+  }
+  await writeState(parentPath, {
+    version: 1,
+    repositoryRoot,
+    statePath: parentPath,
+    lane: "postgres",
+    prefix,
+    resources: children,
+  });
   const log = join(root, "docker.log");
   const docker = await writeCommand(root, "docker", "exit 97", { log });
-  // Run the real test and its after-hook. Neither failed setup nor cleanup may
-  // take custody of an existing journal, and neither should reach Docker.
   const env = {
     ...process.env,
     OCC_DOCKER_BIN: docker,
     TMPDIR: root,
     OCC_TEST_CI_POSTGRES_REAL: "1",
-    OCC_TEST_CI_POSTGRES_STATES: JSON.stringify([
-      { path: statePath, owner: "new-owner" },
-      { path: join(root, "absent.json"), owner: "second-owner" },
-    ]),
+    OPENCLAW_ENTERPRISE_CI_STATE: parentPath,
   };
   delete env.NODE_TEST_CONTEXT;
-  const result = spawnSync(
+  // The actual test refuses preexisting registered children before adopting them,
+  // and rejects foreign/duplicate environment paths before attempting preparation.
+  for (const selected of [
+    states,
+    [states[0], states[0]],
+    [...states, { path: join(root, "extra.json"), owner: "other" }],
+  ]) {
+    const result = spawnSync(
+      process.execPath,
+      ["--test", "tests/integration/ci-prepare-postgres-real.test.ts"],
+      {
+        cwd: repositoryRoot,
+        env: { ...env, OCC_TEST_CI_POSTGRES_STATES: JSON.stringify(selected) },
+        encoding: "utf8",
+        timeout: 30_000,
+      },
+    );
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(
+      result.stdout + result.stderr,
+      /CI state already exists|Managed PostgreSQL states must match/,
+    );
+    for (const state of states) {
+      assert.equal(await readFile(state.path, "utf8"), foreign);
+    }
+  }
+  const missingParent = { ...env, OCC_TEST_CI_POSTGRES_STATES: JSON.stringify(states) };
+  delete missingParent.OPENCLAW_ENTERPRISE_CI_STATE;
+  const refused = spawnSync(
     process.execPath,
     ["--test", "tests/integration/ci-prepare-postgres-real.test.ts"],
-    {
-      cwd: repositoryRoot,
-      env,
-      encoding: "utf8",
-      timeout: 30_000,
-    },
+    { cwd: repositoryRoot, env: missingParent, encoding: "utf8", timeout: 30_000 },
   );
-  assert.equal(result.status, 1, result.stdout + result.stderr);
-  assert.match(result.stdout + result.stderr, /CI state already exists/);
-  assert.equal(await readFile(statePath, "utf8"), foreign);
+  assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+  assert.match(refused.stdout + refused.stderr, /require their parent journal/);
+  for (const state of states) {
+    assert.equal(await readFile(state.path, "utf8"), foreign);
+  }
   assert.deepEqual(await commandCalls(log), []);
 });

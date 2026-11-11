@@ -76,12 +76,12 @@ OCC_TEST_CI_POSTGRES_REAL=1 node --test tests/integration/ci-prepare-postgres-re
 The `postgres` CI lane selects this check and requires it to pass with no skips.
 Default local suites leave it unselected. It needs Docker Compose,
 PostgreSQL image access and installed workspace dependencies. It removes only its own projects and volumes;
-cleanup failures retain the state directory printed in the error. In CI, file preparation
-journals both child state paths in the lane state before the test starts. File and
-lane cleanup can therefore recover accepted projects even if the test worker is
-killed. Keep the lane state until cleanup passes. Both CI and direct local runs bind
-cleanup to a fresh owner identity: refused existing or replaced journals are preserved,
-not adopted. A direct local invocation uses its after-hook and the same Docker prerequisites.
+cleanup failures print the retained parent journal in CI or private directory locally.
+CI registers exactly two child journals before startup. File and lane cleanup can
+recover their projects after worker death. Keep the parent journal until cleanup passes.
+Cleanup verifies each regular journal's fresh owner identity, path and lane;
+preexisting, replaced or symlinked journals are refused. Direct local runs use
+fresh private paths and an after-hook with the same Docker prerequisites.
 
 ## Subnet pool exhaustion
 

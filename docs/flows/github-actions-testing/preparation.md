@@ -131,11 +131,11 @@ empty-directory removal; confirmed SQL is removed after Compose teardown. Unexpe
 contents or teardown failure retain state. Subnet exhaustion preserves the original
 error and planned resource and prints [owned cleanup](../../testing/postgresql.md#subnet-pool-exhaustion).
 
-`prepareFile` journals child paths and cleanup owners before startup.
-`prepareLane` exclusively creates journals; `--cleanup-owner` binds identity.
-Under the state lock, `cleanupResource` verifies identity before cleanup,
-including after worker death. Mismatches and failures retain parent references;
-foreign journals remain untouched.
+`prepareFile` registers two child paths and identities before startup.
+`prepareLane` exclusively creates journals. Locked cleanup opens regular files,
+verifying identity, lane and path. Tests adopt only fresh registered children.
+Worker death remains recoverable; mismatches, symlinks and failures preserve
+journals and parent references.
 
 For hosted repository QA, `scripts/ci/qa-matrix-credentials.mjs` reads the selected
 reviewed registry file only when a repository scenario is selected. It copies
