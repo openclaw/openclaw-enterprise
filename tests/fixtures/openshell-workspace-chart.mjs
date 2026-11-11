@@ -6,7 +6,7 @@ const installation = fileURLToPath(
 );
 
 // Read the resources the quickstart installs. Packaged-chart parity is checked
-// independently by TestOpenShellPackagedWorkspaceResources in occdev.
+// independently by the openshell_chart_integration Go test in occdev.
 export function openShellWorkspaceChartResources() {
   const document = execFileSync(
     "jq",
