@@ -210,9 +210,9 @@ official operator-mTLS access-token retrieval. Synthetic issuer results do not
 prove real ChatGPT login or model execution; repeat credentialed qualification
 against the exact selected images.
 
-The CI lane requires `CODEX_ACCESS_TOKEN` for dedicated PAT cases and
-`OPENAI_API_KEY` for general installers and native OpenClaw, both permitting
-`OCC_TEST_OPENAI_MODEL`. PAT cases retain managed permission checks. Never put
+General installers, including focused runs, and native OpenClaw use `OPENAI_API_KEY`.
+Dedicated PAT cases require `CODEX_ACCESS_TOKEN` and retain managed permission checks.
+Both must permit `OCC_TEST_OPENAI_MODEL`. Never put
 either value in commands, logs, or shell history. Docker, k3d, kubectl, Helm,
 `openssl`, and network access to pinned assets are required. Preparation creates
 a disposable cluster, installs OpenShell and Agent Sandbox prerequisites, imports
@@ -331,8 +331,8 @@ revision, Namespace, and model. [CI results](ci/openshell-execution.md#interpret
 retain stage timings.
 
 After checking Local Setup's ready default Namespace, the test runs distinct
-Codex and native Agents concurrently. Codex uses its `codex-pat` source. Native
-OpenClaw uses a separate `openai` source from `OPENAI_API_KEY`, the pinned runtime,
+Codex and native Agents concurrently with separate `openai` sources using
+`OPENAI_API_KEY`. Native OpenClaw uses the pinned runtime,
 and production Drivers without the k3d helper's compatibility bridge. Both
 operations drain before shared denial checks and teardown.
 
@@ -341,7 +341,8 @@ To exercise an OpenAI-compatible service, set
 `baseUrl`, `api` (`openai-responses` or `openai-completions`), and a `models` array
 with explicit native model metadata. The first model ID selects the native Agent's
 model; it can differ from the Codex starter model. Supply that service's key as
-`OPENAI_API_KEY`, while retaining the separate `CODEX_ACCESS_TOKEN` for Codex.
+`OPENAI_API_KEY`; this custom-provider case requires a separate
+`CODEX_ACCESS_TOKEN` and `codex-pat` source for Codex.
 Configure the Installation `runtime.modelProvider` with that URL and API first.
 The native source authorizes the same destination. The same provisioning,
 model-and-exec, and retained-session redeployment assertions run with this input;

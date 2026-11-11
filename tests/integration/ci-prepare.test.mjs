@@ -69,7 +69,7 @@ test("focused first-Agent preparation leaves installation to Local Setup and ref
   // Fail before side effects if generic stack preparation is accidentally restored.
   process.env.OCC_HELM_BIN = join(root, "unavailable-helm");
   process.env.OPENAI_API_KEY = "synthetic-model-credential";
-  process.env.CODEX_ACCESS_TOKEN = "synthetic-model-credential";
+  delete process.env.CODEX_ACCESS_TOKEN;
   process.env.OCC_TEST_OPENAI_MODEL = "synthetic-model";
   t.after(() => {
     for (const [key, value] of Object.entries(saved)) {
@@ -80,6 +80,17 @@ test("focused first-Agent preparation leaves installation to Local Setup and ref
       }
     }
   });
+  const suites = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
+  await mkdir(join(root, "scripts/ci"), { recursive: true });
+  await mkdir(join(root, "tests/integration"), { recursive: true });
+  await writeFile(
+    join(root, "scripts/ci/prepare.mjs"),
+    `export { prepareFile } from ${JSON.stringify(new URL("../../scripts/ci/prepare.mjs", import.meta.url).href)};`,
+  );
+  await writeFile(
+    join(root, "manifest.json"),
+    JSON.stringify({ version: 1, lanes: { openshell: suites.lanes.openshell }, groups: {} }),
+  );
   for (const file of [
     "tests/integration/local-first-agent-openshell-real.test.mjs",
     "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
@@ -96,10 +107,59 @@ test("focused first-Agent preparation leaves installation to Local Setup and ref
       prepareFile({
         lane: "openshell",
         statePath,
-        file: "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+        file: file.endsWith("-k3d-real.test.mjs")
+          ? "tests/integration/local-first-agent-openshell-real.test.mjs"
+          : "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
       }),
       /Selected file must match/,
     );
+    // Use canonical metadata and the real preparer/runner; only the child body is a
+    // sentinel. This proves API-key-only runner admission, not a model turn.
+    const testName = suites.lanes.openshell.files.find(({ path }) => path === file)
+      .expectedTests[0];
+    await writeFile(
+      join(root, file),
+      `import assert from "node:assert/strict"; import test from "node:test";
+      test(${JSON.stringify(testName)}, () => {
+        assert.equal(process.env.OPENAI_API_KEY, "synthetic-model-credential");
+        assert.ok(!process.env.CODEX_ACCESS_TOKEN);
+      });`,
+    );
+    const resultsPath = `${statePath}.results.json`;
+    const result = await spawnResult(
+      process.execPath,
+      [
+        join(repositoryRoot, "scripts/ci/run-tests.mjs"),
+        "run",
+        "openshell",
+        "--root",
+        root,
+        "--manifest",
+        "manifest.json",
+        "--state",
+        statePath,
+        "--results",
+        resultsPath,
+        "--file",
+        file,
+        "--test-name",
+        testName,
+      ],
+      {
+        env: {
+          ...process.env,
+          GITHUB_SHA: "a".repeat(40),
+          GIT_CEILING_DIRECTORIES: root,
+          CI_RUNNER_DEADLINE_MS: "",
+          CODEX_ACCESS_TOKEN_FILE: "",
+          OCC_CI_SUITE_VIEW: "default",
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const receipt = JSON.parse(await readFile(resultsPath, "utf8"));
+    assert.equal(receipt.files[0].tests[0].status, "passed");
+    assert.deepEqual(receipt.files[0].issues, []);
     await prepared.cleanup();
     await lane.cleanup();
   }

@@ -201,7 +201,9 @@ test("full coverage receipts require real case evidence and retain approved same
     "OPENAI_API_KEY",
     "OCC_TEST_OPENAI_MODEL",
   ]);
-  assert.ok(full.lanes["openshell-policy"].requiredEnv.includes("CODEX_ACCESS_TOKEN"));
+  for (const file of full.lanes["openshell-policy"].files) {
+    assert.ok(file.requiredEnv.includes("CODEX_ACCESS_TOKEN"));
+  }
   const skipperLane = "skipper-prepared-git-installed";
   const skipperFiles = full.lanes[skipperLane].files;
   const fixtureRoot = await temporaryDirectory(t, "full-coverage-receipts-");

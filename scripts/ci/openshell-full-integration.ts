@@ -15,14 +15,11 @@ export function isOpenShellLane(lane: string) {
   return lane === "openshell" || lane === policyLane || lane === installerLane;
 }
 
-function hasFiles(lane: unknown): lane is { files: { path: string }[]; requiredEnv?: string[] } {
+function hasFiles(lane: unknown): lane is { files: { path: string }[] } {
   return (
     typeof lane === "object" &&
     lane !== null &&
     "files" in lane &&
-    (!("requiredEnv" in lane) ||
-      (Array.isArray(lane.requiredEnv) &&
-        lane.requiredEnv.every((name: unknown) => typeof name === "string"))) &&
     Array.isArray(lane.files) &&
     lane.files.every(
       (file: unknown) =>
@@ -65,11 +62,7 @@ export function projectFullIntegrationOpenShell(manifest: {
     lanes: {
       ...otherLanes,
       [policyLane]: { ...original, files: shared },
-      [installerLane]: {
-        ...original,
-        requiredEnv: (original.requiredEnv ?? []).filter((name) => name !== "CODEX_ACCESS_TOKEN"),
-        files: installers,
-      },
+      [installerLane]: { ...original, files: installers },
     },
     groups: {
       ...manifest.groups,

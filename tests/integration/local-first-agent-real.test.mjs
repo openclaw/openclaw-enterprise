@@ -60,6 +60,11 @@ const commandTimeout = 30 * 60_000;
 const refusalTimeout = 2 * 60_000;
 const stackLifecycleTimeout = 25 * 60_000;
 const nativeSetupExpiryTimeout = 11 * 60_000;
+const credentialVariable =
+  selectedSandboxDriver === "openshell" &&
+  process.env.OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE
+    ? "CODEX_ACCESS_TOKEN"
+    : "OPENAI_API_KEY";
 const sensitiveValues = new Set(
   [process.env.OPENAI_API_KEY, process.env.CODEX_ACCESS_TOKEN].filter(Boolean),
 );
@@ -1148,11 +1153,19 @@ test(
       17 * 60_000,
   },
   async (context) => {
-    assert.ok(process.env.OPENAI_API_KEY, "OPENAI_API_KEY is required for the first invocation");
+    assert.ok(
+      process.env[credentialVariable],
+      `${credentialVariable} is required for the first invocation`,
+    );
+    if (selectedSandboxDriver === "openshell") {
+      assert.ok(process.env.OPENAI_API_KEY, "OPENAI_API_KEY is required for native OpenClaw");
+    }
     const own = ownFirstAgentWork(context);
     let finishCapacity = () => {};
     context.after(() => finishCapacity());
-    const stack = await localFirstAgentStack(context, { modelCredential: "openai" });
+    const stack = await localFirstAgentStack(context, {
+      modelCredential: credentialVariable === "OPENAI_API_KEY" ? "openai" : undefined,
+    });
     const stateDirectory = stack.directory;
     assert.ok(
       stateDirectory && isAbsolute(stateDirectory),
@@ -1193,10 +1206,13 @@ test(
     const firstReply = `FIRST_AGENT_${suffix.toUpperCase()}_ONE`;
     const env = { ...stack.environment, OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes" };
     delete env.OPENAI_API_KEY_FILE;
-    // Installation and credential-replacement proof uses the API-key path;
-    // an unrelated managed PAT must not change this test's credential selection.
     delete env.CODEX_ACCESS_TOKEN_FILE;
-    delete env.CODEX_ACCESS_TOKEN;
+    // A custom native provider keeps its key separate from the Codex starter.
+    if (credentialVariable === "CODEX_ACCESS_TOKEN") {
+      delete env.OPENAI_API_KEY;
+    } else {
+      delete env.CODEX_ACCESS_TOKEN;
+    }
     const promptFor = (reply) => `Reply with exactly ${reply} and no other text.`;
     const resultOrigins = {
       apiOrigin: env.OCC_URL,
@@ -1253,8 +1269,7 @@ test(
       assert.ok(
         installation.capabilities?.credentialSources?.types.some(({ type }) => type === "openai"),
       );
-      // Native OpenClaw uses an OpenAI API key; the first Codex Agent's PAT
-      // Source is valid only for its Codex runtime. Keep both exact bindings.
+      // Keep each Agent's source bound to its own provider destination.
       const nativeSecret = await request("POST", `${base}/secrets`, {
         name: `first-agent-native-${suffix}`,
         value: process.env.OPENAI_API_KEY,
@@ -1961,11 +1976,13 @@ test(
         "GET",
         `${base}/credential-sources/${agent.harnessAuth.sourceId}`,
       );
-      assert.equal(source.type, "openai");
+      const sourceType = credentialVariable === "CODEX_ACCESS_TOKEN" ? "codex-pat" : "openai";
+      const secretField = credentialVariable === "CODEX_ACCESS_TOKEN" ? "access_token" : "api_key";
+      assert.equal(source.type, sourceType);
       assert.equal(source.state, "ready");
-      assert.equal(source.secrets.api_key?.kind, "secret");
-      assert.equal(source.secrets.api_key?.namespaceId, first.namespaceId);
-      secretId = source.secrets.api_key?.id;
+      assert.equal(source.secrets[secretField]?.kind, "secret");
+      assert.equal(source.secrets[secretField]?.namespaceId, first.namespaceId);
+      secretId = source.secrets[secretField]?.id;
 
       const bindings = await requestLocalApi(
         first.origin,
@@ -2067,7 +2084,7 @@ test(
           replaceKey: true,
           allowFailure: true,
           forbiddenOutput: replacementKey,
-          env: { ...reuseEnv, OPENAI_API_KEY: replacementKey },
+          env: { ...reuseEnv, [credentialVariable]: replacementKey },
           signal: context.signal,
           timeout: refusalTimeout,
         }),

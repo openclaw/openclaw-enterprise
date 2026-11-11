@@ -1,5 +1,5 @@
 {
-  "requiredEnv": ["CODEX_ACCESS_TOKEN", "OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL"],
+  "requiredEnv": ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL"],
   "env": {
     "OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL": "1",
     "OCC_TEST_DEV_UP_OPENSHELL_REAL": "1",
@@ -37,6 +37,7 @@
       "path": "tests/integration/openshell-refresh-real.test.ts",
       "expectedTests": ["OpenShell gateway recovery preserves OAuth refresh and revocation"],
       "requiredEnv": [
+        "CODEX_ACCESS_TOKEN",
         "OCC_TEST_KUBERNETES_KUBECONFIG",
         "OCC_TEST_KUBERNETES_CONTEXT",
         "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
@@ -54,6 +55,7 @@
       "path": "tests/integration/openshell-withdrawal-real.test.ts",
       "expectedTests": ["OpenShell credential withdrawal revokes live model access"],
       "requiredEnv": [
+        "CODEX_ACCESS_TOKEN",
         "OCC_TEST_KUBERNETES_KUBECONFIG",
         "OCC_TEST_KUBERNETES_CONTEXT",
         "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
@@ -71,6 +73,7 @@
       "path": "tests/integration/openshell-credentials-real.test.ts",
       "expectedTests": ["OpenShell credential replacement preserves isolation"],
       "requiredEnv": [
+        "CODEX_ACCESS_TOKEN",
         "OCC_TEST_KUBERNETES_KUBECONFIG",
         "OCC_TEST_KUBERNETES_CONTEXT",
         "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
@@ -99,7 +102,8 @@
         "OCC_TEST_OPENSHELL_HELM_CHART",
         "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
         "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
-      ]
+      ],
+      "optionalEnv": ["OCC_TEST_OPENSHELL_MODEL_BASE_URL"]
     },
     {
       "path": "tests/integration/local-first-agent-openshell-real.test.mjs",
@@ -121,6 +125,7 @@
         "OpenShell dedicated Agents enforce Gateway tool policy during normal work"
       ],
       "requiredEnv": [
+        "CODEX_ACCESS_TOKEN",
         "OCC_TEST_KUBERNETES_KUBECONFIG",
         "OCC_TEST_KUBERNETES_CONTEXT",
         "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
@@ -138,6 +143,7 @@
       "path": "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
       "expectedTests": ["OpenShell enforces provider delivery and authenticated Codex exposure"],
       "requiredEnv": [
+        "CODEX_ACCESS_TOKEN",
         "OCC_TEST_KUBERNETES_KUBECONFIG",
         "OCC_TEST_KUBERNETES_CONTEXT",
         "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
@@ -162,6 +168,7 @@
       "path": "tests/integration/openshell-plugin-install-real.test.ts",
       "expectedTests": ["OpenShell Agent workflow installs and retains selected Codex plugins"],
       "requiredEnv": [
+        "CODEX_ACCESS_TOKEN",
         "OCC_TEST_KUBERNETES_KUBECONFIG",
         "OCC_TEST_KUBERNETES_CONTEXT",
         "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
@@ -181,6 +188,7 @@
         "bootstrap reconciles OpenShell gateways and Workspaces before any Agent, then runs Agents in both Namespaces"
       ],
       "requiredEnv": [
+        "CODEX_ACCESS_TOKEN",
         "OCC_TEST_KUBERNETES_KUBECONFIG",
         "OCC_TEST_KUBERNETES_CONTEXT",
         "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
@@ -203,13 +211,15 @@
       "expectedTests": [
         "OpenShell retains its runtime after Git expiry and worker restart",
         "OpenShell isolates Git withdrawal before worker replacement and retains denial afterward"
-      ]
+      ],
+      "requiredEnv": ["CODEX_ACCESS_TOKEN"]
     },
     {
       "path": "tests/integration/openshell-git-finite-removal-real.test.ts",
       "expectedTests": [
         "OpenShell retains a finite Agent after repository removal until model authority is withdrawn"
-      ]
+      ],
+      "requiredEnv": ["CODEX_ACCESS_TOKEN"]
     }
   ],
   "optionalEnv": [
