@@ -6,6 +6,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { RequestHead } from "../../../access/backend-contracts.ts";
 import { parseUnambiguousJson } from "../../../../json-members.ts";
+import { parseCanonicalGitHubOrigin } from "../origin.ts";
 import { planDraftPull } from "../prepared-draft-pull.ts";
 import { classifyRoute } from "./classification.ts";
 import { allowsGraphqlInput } from "../graphql-input.ts";
@@ -73,10 +74,9 @@ export function selectGitHubRequest(
 }
 
 function matchesOrigin(origin: string, request: GitHubRequest): boolean {
-  const url = new URL(origin);
+  const url = parseCanonicalGitHubOrigin(origin);
   return (
-    url.origin === origin &&
-    url.protocol === "https:" &&
+    url !== undefined &&
     url.hostname === request.target.host &&
     Number(url.port || 443) === request.target.port
   );

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: "2026-11-11"
-last_updated_session: "authoring-run/8381f18d-77a3-4a7a-91af-23d1151f2f9e"
+last_updated_session: "authoring-run/8a46c797-57e1-4ac7-8fae-a65a81c7975a"
 ---
 
 # GitHub Actions testing flow
@@ -61,14 +61,15 @@ graph TD
 `scripts/ci/full-integration-preflight.mjs:validateFullIntegrationPreflight`, and
 `scripts/ci/test-suites.mjs:loadTestSuites`
 
-`loadTestSuites` reads tests, inputs and preparation from `scripts/ci/test-suites.json` and its ordered lane references.
+`loadTestSuites` reads tests, inputs and preparation from ordered `scripts/ci/test-suites.json` lanes.
 
-For [complete attempts](../testing/ci/run-lanes.md#run-a-complete-local-attempt),
-`run-tests.mjs:main` rejects noncanonical manifests before reading or executing them.
+`run-tests.mjs:main` rejects noncanonical manifests before [complete attempts](../testing/ci/run-lanes.md#run-a-complete-local-attempt).
 
-`run-tests.mjs:selectLane` validates focused paths before setup. Focused results
-retain cases, environment and cleanup. `validateLaneEvidence` rejects them for
-full-lane aggregation, including one-file lanes.
+`run-tests.mjs:parseArgs` accepts `--test-name=<literal>` with leading dashes;
+duplicates, including empty values, fail before effects. `selectLane` validates paths/names.
+`runFile` requires one passing standalone case through an escaped, anchored Node-child pattern.
+Results retain environment, cleanup and focus/name on preparation failure.
+`validateLaneEvidence` rejects focused aggregation.
 
 `CI Impact` selects coverage; `Suite Audit and Static Checks` verifies checkout identity.
 [Ordinary CI](../testing/ci/required-checks.md#scenarios) uses the event checkout without external service credentials.
@@ -110,7 +111,7 @@ requires completed execution. Preflight supplies fresh fallback; successful reus
 plans select retained artifacts and omit their lanes. Optional reuse failure is nonfatal.
 QA awaits Slack despite failure; cancellation stops it. Selected results are required.
 
-PostgreSQL migration and application suites own separate servers; each Kubernetes fixture lane owns a separate cluster and PostgreSQL server. Before creating k3d nodes that share the runner kernel, the shared action enables bridge netfilter; missing filtering fails setup rather than leaving Pod network policies unenforced. The repository credential platform lane uses Blacksmith for full-image HTTP, PostgreSQL, Unix-control and credential-material proof; NetworkPolicy enforcement remains the fixture lanes' responsibility. State and cleanup stay on each runner; within a lane, `scripts/ci/run-tests.mjs:runLane` runs files sequentially except audited `parallelFiles`.
+PostgreSQL migration and application suites own separate servers; each Kubernetes fixture lane owns its cluster and PostgreSQL server. Before creating k3d nodes, the shared action enables bridge netfilter in the shared runner kernel; missing filtering fails setup. The repository credential platform lane uses Blacksmith for full-image HTTP, PostgreSQL, Unix-control and credential-material proof; NetworkPolicy enforcement remains the fixture lanes' responsibility. State and cleanup stay runner-local; `scripts/ci/run-tests.mjs:runLane` runs files sequentially except audited `parallelFiles`.
 
 Only the native IAM barrier test receives its migrated PostgreSQL database and both application and migrator connection details. The CLI excludes them from `GITHUB_ENV`. The unregistered supplier stays in this disposable database. Production writers still require separate barrier verification.
 
@@ -200,7 +201,7 @@ and millisecond offsets enter [file receipts](../testing/ci/openshell-execution.
 not live logs. Readers bound partial records; parent byte limits apply first.
 Markers and separators stay out of failure tails. Timing and case accounting remain separate.
 
-Required cases must pass; every skip or TODO fails the lane. There are no counterpart-skip lists or CI name filters. Synthetic file-wrapper success, missing output, zero cases, or interruption without final reporter output cannot establish coverage. Lane results retain failure, timeout and cleanup outcomes.
+Required cases must pass; skips and TODOs fail. Synthetic wrappers, missing output, zero cases, or interruption without final reporter output cannot establish coverage. Results retain failure, timeout and cleanup outcomes.
 
 <a id="4-clean-up-and-publish-the-bounded-result" class="anchor-alias"></a>
 
@@ -286,7 +287,11 @@ awaits an approved resource ledger.
 
 ## Changelog
 
+- 2026-11-11 15:48: Preserve named-test selection. (authoring-run/8a46c797-57e1-4ac7-8fae-a65a81c7975a - 757f3c5eaf042c55e92f0776384fdbb853cd7bc5)
+
 - 2026-11-11 15:36: Require the real PostgreSQL preparation lifecycle in its Docker-capable lane. (authoring-run/8381f18d-77a3-4a7a-91af-23d1151f2f9e - 7dbcfc5ec7a62c35ff3585e965470db8cc8c840b)
+
+- 2026-11-11 15:21: Literal selection. (authoring-run/713d85c0-4416-4c1d-b492-d63c41faeea4 - 93460c542b3ca6840aab156e2311fe5b22d1ad29)
 
 - 2026-11-11 14:43: Preserve installed sign-in and complete CI lifecycle paths. (authoring-run/e533d196-4ff0-450d-b662-d41ede51e945 - 21417f21dd22a6410350395ac43a24146a2f8027)
 
