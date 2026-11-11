@@ -6782,18 +6782,19 @@ test("gateway browser routes preserve delegated authority while machine and node
   }
   const rendered = driver.kubernetesGatewayConfigurationDocument(revision.configuration);
   assert.deepEqual(rendered.gateway.auth.trustedProxy.delegation, {
-    authority: "oce",
     credentialFile: "/var/run/openclaw/browser-delegation/browser-key",
-    subjectPrefix: "oce:v1:",
   });
   assert.equal(rendered.gateway.auth.trustedProxy.deviceAutoApprove, undefined);
-  assert.throws(
-    () =>
-      driver.validateGatewaySettings({
-        gateway: { auth: { trustedProxy: { delegation: { authority: "attacker" } } } },
-      }),
-    /delegation/,
-  );
+  for (const delegation of [
+    { ...rendered.gateway.auth.trustedProxy.delegation, authority: "oce" },
+    { ...rendered.gateway.auth.trustedProxy.delegation, subjectPrefix: "oce:v1:" },
+    { credentialFile: "/unsupported/browser-key" },
+  ]) {
+    assert.throws(
+      () => driver.validateGatewaySettings({ gateway: { auth: { trustedProxy: { delegation } } } }),
+      /delegation/,
+    );
+  }
 });
 
 test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", async () => {

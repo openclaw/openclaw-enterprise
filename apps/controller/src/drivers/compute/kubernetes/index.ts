@@ -13743,9 +13743,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (
       trustedProxy.delegation !== undefined &&
       !isDeepStrictEqual(trustedProxy.delegation, {
-        authority: "oce",
         credentialFile: `${BROWSER_DELEGATION_DIRECTORY}/${BROWSER_DELEGATION_KEY}`,
-        subjectPrefix: BROWSER_SUBJECT_PREFIX,
       })
     ) {
       throw new GatewaySettingFailure(
@@ -13949,9 +13947,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             this.usesWritableNativeAdminConfig(configuration)
               ? {
                   delegation: {
-                    authority: "oce",
                     credentialFile: `${BROWSER_DELEGATION_DIRECTORY}/${BROWSER_DELEGATION_KEY}`,
-                    subjectPrefix: BROWSER_SUBJECT_PREFIX,
                   },
                 }
               : {}),

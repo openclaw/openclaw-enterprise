@@ -8,6 +8,11 @@ creation is covered separately by the PostgreSQL enrollment integration.
 
 ## Run the combined OIDC journey
 
+For runtime changes, finish focused checks and this browser proof before the
+final two-architecture [image qualification](../../.agents/skills/local-dev/references/image-version-verification.md).
+After a test-only correction, rerun the affected proof first. Dispatch image
+qualification once the candidate is settled; it must still cover the final PR head.
+
 Prepare the [Kubernetes runtime prerequisites](kubernetes.md#kubernetes-model-turns-and-secrets)
 and the [Keycloak host prerequisites](kubernetes.md#run-the-keycloak-lane).
 Use a disposable k3d cluster and a dedicated database. The lane requires an

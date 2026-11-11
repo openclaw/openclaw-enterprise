@@ -121,6 +121,9 @@ under the existing TLS, service-key, and exact-peer network controls. The
 credential authenticates OCC's authority to assert a person; it does not identify
 that person itself.
 
+Native delegation configuration names only the credential file. The authority
+`oce` and subject prefix `oce:v1:` are fixed protocol values, not settings.
+
 The native verifier requires the revision credential, a valid reserved subject,
 and an allowed scope together. An external ingress trusted for static users must
 not be able to assert an OCE identity. Reserve OCE subjects across every native
