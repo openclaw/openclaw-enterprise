@@ -13,7 +13,9 @@
         "OCC_TEST_CANDIDATE_CONTROLLER_REVISION"
       ],
       "expectedTests": [
+        "Separate database deployment verifies the exact candidate history without applying pending SQL",
         "Logical restore preserves reviewed canonical and Provider migration histories",
+        "An authenticated user can browse revisions retained across the Harness settings migration",
         "First installation requires empty migration history under the migration lock",
         "Canonical migration commands preserve main data and serialize fresh/repeat runners",
         "Canonical migration refuses unexplained histories before mutation",

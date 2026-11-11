@@ -1,15 +1,15 @@
 ---
 created: 2026-10-10
-updated: 2026-10-31
-last_updated_session: bughunt-1031m
+updated: 2026-11-10
+last_updated_session: authoring-run/6e7936d6-d552-4feb-9b02-2d8b7760bac8
 ---
 
 # CLI Agent metadata browsing flow
 
 ## Overview
 
-An operator runs `occ agent get`, `occ agent list`, or `occ agent revisions`
-to inspect saved Agent identity and history. The CLI reads the authorized OCC
+An operator runs `occ agent get`, `occ agent list`, `occ agent revisions`, or
+`occ agent deployment-status` to inspect saved Agent identity and history. The CLI reads the authorized OCC
 HTTP API and prints metadata, including a scoped error when saved settings
 cannot be decoded. Browsing ends at terminal output; it does not repair saved
 settings, admit a deployment, or establish runtime health.
@@ -22,7 +22,8 @@ strict operational failures retain their own error semantics.
 
 ## Entry Points
 
-- `internal/occcli/cli.go:agentCommand`: the `get`, `list`, and `revisions` commands.
+- `internal/occcli/cli.go:agentCommand`: the `get`, `list`,
+  `revisions`, and `deployment-status` commands.
 - `internal/occcli/cli.go:describeAgentRevisions`: marks the selected version in
   authorized version summaries.
 - `internal/occcli/output.go:printBrowsingItems`: conditional error columns for
@@ -36,7 +37,10 @@ CLI presentation does not grant access or make unreadable fields usable.
 
 ```mermaid
 graph TD
-  A["Read authorized Agent metadata"] --> B{"Version history?"}
+  A["Read authorized Agent metadata"] --> J{"Deployment status?"}
+  J -->|Yes| K["Read saved deployment and try current Agent read"]
+  K --> L["Render saved status and available current Agent state"]
+  J -->|No| B{"Version history?"}
   B -->|No| F["Render metadata and saved-settings error"]
   B -->|Yes| C["Read one page of version summaries with deployment status"]
   C --> D["Read Agent selected version"]
@@ -72,7 +76,12 @@ endpoints.
 ### 2. Mark the active version in version history
 
 Version history pages hold summaries, newest first (`--limit`, `--cursor`).
-They carry no saved settings and so no `configurationReadError`.
+`revisionSummaryFromRow` in `packages/occ/src/state/postgres-state.ts` keeps the
+recorded Harness identity, version and mode. It includes overrides and resolved
+configuration only when they were recorded, without inventing defaults. Summaries
+have no `configurationReadError`. For revision detail, `revisionForBrowsingFromRow`
+returns that typed error with metadata when either Harness settings object is
+missing; it does not expose the incomplete saved payload.
 `packages/occ/src/index.ts:listRevisions` adds each version's
 `deploymentStatus` and `deploymentErrorCode` from its deployment work record in
 the same read, so a version or Agent with unreadable saved settings keeps its
@@ -88,7 +97,9 @@ to continue. If you passed `--url`, `--service-key-file`, `--ca-bundle`,
 the complete continuation command with the resolved `--namespace`, the retained
 `--limit` when supplied, and the new `--cursor`. The explicit Namespace keeps
 that command on the selected Namespace even when `OCC_NAMESPACE` is unset or
-differs.
+differs. If writing either continuation notice fails, the command returns an
+error after the already printed page. A final page needs no notice and can
+succeed without writable stderr.
 
 Neither branch treats missing settings as empty settings. The command retains
 the API error object in structured output. Explicit deployment, editing, and
@@ -104,6 +115,13 @@ Stop ended the work reads `superseded` or `stopped`, as in the console. Tables a
 ERROR` when at least one row has `configurationReadError`; the cell contains
 the formal code and field. Healthy rows in a mixed collection have no error
 value, and all-healthy tables retain their existing columns.
+
+For `occ agent deployment-status`, the CLI reads the selected revision's saved
+deployment record and reads the current Agent once. With Agent read access, the
+operator can see that a deployment succeeded even when the Agent now has no
+active revision or has selected a newer one. If the Agent read fails, the CLI
+still prints the revision record. The table shows the repository redeployment
+notice when the revision record contains it.
 
 For one Agent in table output, `cli.go:agentCommand` then reads
 `occclient.Client.GetAgentHarnessStatus`, and
@@ -158,6 +176,12 @@ for each version, and that `--cursor` continues the history. See the PostgreSQL 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 07:15: Show the recorded deployment outcome beside the current Agent state. (authoring-run/6e7936d6-d552-4feb-9b02-2d8b7760bac8 - f06bf60299ad29444685d70fb2708f3f0558a5ad)
+
+- 2026-11-10 04:53: Describe retained Harness settings in summaries and metadata-only revision detail. (authoring-run/bac7470a-fbc4-403a-999f-c19334ecbc3a - 2dcb04358876be5a95e1c578d542dbbbb101587a)
+
+- 2026-11-09 18:25: Return revision continuation delivery errors. (authoring-run/f324ad31-8ab0-4bf3-aaa2-0df9af461d0a - 2b8973f478478cc9f426daeb4e9de932207544cf)
 
 - 2026-11-01: The version history table shows `superseded` or `stopped` for work a newer version or a Stop ended; structured output keeps the listed status. (ux-superseded-1101)
 

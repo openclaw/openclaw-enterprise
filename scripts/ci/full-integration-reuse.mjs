@@ -3,6 +3,9 @@ import { copyFile, mkdir, readFile, writeFile, appendFile } from "node:fs/promis
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { exercisedLaneStatus } from "./full-integration-coverage.ts";
+import { loadTestSuites } from "./test-suites.mjs";
+
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const repository = "openclaw/openclaw-enterprise";
 const freshOnly = new Set(["k3d-observability-demo", "repository-credentials-container"]);
@@ -19,7 +22,7 @@ async function reusableRows() {
   const [rows, ci, full] = await Promise.all([
     laneRows(),
     readFile(join(root, ".github/workflows/ci.yml"), "utf8"),
-    readFile(join(root, ".github/workflows/full-integration.yml"), "utf8"),
+    readFile(join(root, ".github/workflows/full-integration-execution.yml"), "utf8"),
   ]);
   const table = JSON.parse(ci.match(/LANE_TABLE: \|\n\s*(\[[\s\S]*?\n\s*\])/)[1]);
   const node = (source) => source.match(/^ {2}NODE_VERSION: (.+)$/m)?.[1];
@@ -163,13 +166,26 @@ export async function validateResults({ directory, producer, sha, get }) {
   if (JSON.stringify(admitted) !== JSON.stringify(producer)) {
     return [];
   }
+  const manifest = loadTestSuites(join(root, "scripts/ci/test-suites.json"));
   const accepted = [];
   await mkdir(join(directory, "accepted"), { recursive: true });
   for (const { lane } of producer.artifacts) {
     try {
       const path = join(directory, "download", `${lane}.json`);
       const summary = JSON.parse(await readFile(path, "utf8"));
-      if (summary.scope !== "full" || summary.sourceSha !== sha || summary.lane !== lane) {
+      if (
+        summary.scope !== "full" ||
+        summary.sourceSha !== sha ||
+        summary.lane !== lane ||
+        summary.cleanup?.status !== "passed" ||
+        exercisedLaneStatus(
+          summary,
+          manifest.lanes[lane].files.map((file) => ({
+            path: file.path,
+            expectedTests: file.expectedTests ?? [],
+          })),
+        ) !== "passed"
+      ) {
         continue;
       }
       const validation = spawnSync(
@@ -248,7 +264,7 @@ async function main(command) {
     if (
       process.env.GITHUB_REPOSITORY !== repository ||
       process.env.GITHUB_REF !== "refs/heads/main" ||
-      process.env.GITHUB_EVENT_NAME !== "push" ||
+      !["push", "schedule", "workflow_dispatch"].includes(process.env.GITHUB_EVENT_NAME) ||
       !/^[a-f0-9]{40}$/.test(sha || "")
     ) {
       await output(command === "discover" ? { artifact_ids: "" } : { lanes: [] });

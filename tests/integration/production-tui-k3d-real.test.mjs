@@ -42,11 +42,14 @@ import {
   rehearsePopulatedReturn,
   selectRehearsalControllers,
 } from "../helpers/staging-upgrade-return.ts";
+import { rehearseOnlineMigration } from "../helpers/staging-online-migration.ts";
 
 const selected = process.env.OCC_TEST_PRODUCTION_TUI_REAL === "1";
 const harnessRoot = fileURLToPath(new URL("../../", import.meta.url));
 const signinSelected = process.env.OCC_TEST_PRODUCTION_SIGNIN_REHEARSAL === "1";
-const rehearsalSelected = signinSelected || process.env.OCC_TEST_PRODUCTION_TUI_REHEARSAL === "1";
+const returnSelected = process.env.OCC_TEST_PRODUCTION_TUI_REHEARSAL === "1";
+const onlineSelected = process.env.OCC_TEST_PRODUCTION_TUI_ONLINE_MIGRATION === "1";
+const rehearsalSelected = signinSelected || returnSelected || onlineSelected;
 const protectedTuiSelection = {
   kubeconfigPath: process.env.OCC_TEST_KUBERNETES_KUBECONFIG,
   kubernetesContext: process.env.OCC_TEST_KUBERNETES_CONTEXT,
@@ -55,7 +58,9 @@ const protectedTuiSelection = {
 test(
   signinSelected
     ? "Owned P/A sign-in receipts survive only the admitted controller transitions"
-    : rehearsalSelected
+    : onlineSelected
+      ? "An incumbent production Helm Installation serves while the candidate migrates PostgreSQL"
+      : returnSelected
       ? "A populated production Helm Installation retains the acknowledged write after controller return"
       : "Helm production installation supports interactive TUI and revision cutover",
   {
@@ -66,6 +71,10 @@ test(
     timeout: rehearsalSelected ? 2_700_000 : 1_800_000,
   },
   async (context) => {
+    assert.ok(
+      [signinSelected, onlineSelected, returnSelected].filter(Boolean).length <= 1,
+      "Select exactly one local controller rehearsal",
+    );
     const preparedHash = process.env.OCC_TEST_SIGNIN_PREPARED_SHA256;
     const signinReader = signinSelected ? await import("../helpers/signin/staged.mjs") : undefined;
     if (preparedHash) {
@@ -552,10 +561,13 @@ test(
         suffix,
         configuration,
         ...materialization?.helmOptions,
-        authBaseURL: signinSelected ? "https://console.signin-rehearsal.test" : baseURL,
+        authBaseURL: signinSelected
+          ? "https://console.signin-rehearsal.test"
+          : `https://console.oce.localhost:${port}`,
+        agentNativeAdminDomain: "agents.oce.localhost",
         installationName: `Production TUI ${suffix}`,
         apiClients: [{ namespace: system, podLabels: { app: "production-tui-proxy" } }],
-        channelDirectoryProxyUrl: rehearsal ? "http://198.51.100.25:3128" : undefined,
+        channelDirectoryProxyUrl: returnSelected ? "http://198.51.100.25:3128" : undefined,
         metrics: rehearsal
           ? undefined
           : {
@@ -2042,6 +2054,23 @@ test(
           signinFailure = error;
           throw error;
         }
+        rehearsalComplete = true;
+        return;
+      }
+      if (onlineSelected) {
+        await rehearseOnlineMigration({
+          controllers: rehearsal,
+          namespace: system,
+          release,
+          directory,
+          run,
+          kubectl,
+          externalRequest,
+          custody,
+          localCluster,
+          waitFor,
+          record,
+        });
         rehearsalComplete = true;
         return;
       }

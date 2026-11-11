@@ -30,7 +30,7 @@ import {
   watchCluster,
 } from "../../scripts/ci/first-agent-smoke.mjs";
 import { withEnvironment } from "../helpers/environment.ts";
-import { commandPath } from "../helpers/fake-commands.ts";
+import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
 import { listen } from "../helpers/listen.mjs";
 
 const revision = "rev_00000000-0000-4000-8000-000000000001";
@@ -595,6 +595,60 @@ test("a failed setup stops the watcher at once with one final capture", async ()
   assert.equal(calls, `kubeconfig get ${cluster}\n`);
 });
 
+test("a successful setup stops and reaps an in-flight watcher command", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "first-agent-smoke-capture-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const ready = join(directory, "capture-started");
+  const completed = join(directory, "capture-completed");
+  await writeFile(join(directory, "k3d"), "#!/bin/sh\nprintf 'fixture kubeconfig\\n'\n", {
+    mode: 0o755,
+  });
+  await writeFile(
+    join(directory, "kubectl"),
+    "#!" +
+      process.execPath +
+      "\n" +
+      'const fs = require("node:fs");\n' +
+      'if (process.argv.includes("wide")) {\n' +
+      "  fs.writeFileSync(" +
+      JSON.stringify(ready + ".tmp") +
+      ", String(process.pid));\n" +
+      "  fs.renameSync(" +
+      JSON.stringify(ready + ".tmp") +
+      ", " +
+      JSON.stringify(ready) +
+      ");\n" +
+      "  setTimeout(() => fs.writeFileSync(" +
+      JSON.stringify(completed) +
+      ', "done"), 3000);\n' +
+      "}\n",
+    { mode: 0o755 },
+  );
+  await withEnvironment({ PATH: commandPath(directory) }, async () => {
+    const stop = watchCluster({ directory, intervalMs: 1 });
+    try {
+      let pid;
+      const deadline = Date.now() + 5_000;
+      while (pid === undefined && Date.now() < deadline) {
+        try {
+          pid = Number(await readFile(ready, "utf8"));
+        } catch (error) {
+          if (error.code !== "ENOENT") {
+            throw error;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      }
+      assert.ok(Number.isSafeInteger(pid) && pid > 0, "capture command started");
+      await stop();
+      await assert.rejects(readFile(completed), { code: "ENOENT" });
+      assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+    } finally {
+      await stop();
+    }
+  });
+});
+
 test("smoke slots keep CI's names at slot 0 and give other slots distinct host resources", () => {
   const ci = {
     cluster: "occ-dev-first-agent-smoke",
@@ -918,6 +972,66 @@ test("the PostgreSQL copy pulls the pin and returns the loopback registry digest
       redirect: "error",
     },
   ]);
+});
+
+test("the PostgreSQL copy retains stdout progress from its signalled pull command", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "postgres-pull-progress-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const calls = join(directory, "calls.jsonl");
+  const marker = join(directory, "pulled");
+  // Exercise the default run/adapter path. The first inert pull is SIGKILLed,
+  // producing the smoke executor's timeout shape; the second fails permanently.
+  // This proves captured stdout survives the adapter, not a live Docker timeout.
+  await writeCommand(
+    directory,
+    "docker",
+    `import { appendFileSync, existsSync, writeFileSync, writeSync } from "node:fs";
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + "\\n");
+if (args[0] === "info") {
+  console.log("[]");
+} else if (args[0] === "image" && args[1] === "inspect") {
+  console.error("No such image");
+  process.exit(1);
+} else if (args[0] === "pull" && !existsSync(${JSON.stringify(marker)})) {
+  writeFileSync(${JSON.stringify(marker)}, "first pull");
+  writeSync(1, "aaaaaaaaaaaa: Downloading\\n");
+  process.kill(process.pid, "SIGKILL");
+} else {
+  console.error("denied");
+  process.exit(1);
+}`,
+    { interpreter: process.execPath },
+  );
+  const owner = new URL("../../scripts/ci/first-agent-smoke.mjs", import.meta.url).href;
+  const { stdout, stderr } = await promisify(execFile)(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      `import { publishPostgresImage } from ${JSON.stringify(owner)};
+try {
+  await publishPostgresImage({ registry: "127.0.0.1:5000" });
+  throw new Error("unexpected publication");
+} catch (error) {
+  if (error.result?.stderr !== "denied\\n") throw error;
+  console.log(JSON.stringify({ code: error.result.code, signal: error.result.signal }));
+}`,
+    ],
+    { env: { ...process.env, PATH: commandPath(directory) }, timeout: 15_000 },
+  );
+  assert.deepEqual(JSON.parse(stdout), { code: 1, signal: null });
+  assert.match(
+    stderr,
+    /Image pull attempt 1\/4 failed after \d+ ms \(timeout\).*aaaaaaaaaaaa: Downloading/,
+  );
+  assert.deepEqual(
+    (await readFile(calls, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line)[0]),
+    ["info", "image", "pull", "pull"],
+  );
 });
 
 test("the PostgreSQL copy refuses a registry manifest that names another image", async () => {

@@ -19,6 +19,7 @@ export async function prepareProductionHelmControlPlane({
   suffix,
   configuration,
   authBaseURL,
+  agentNativeAdminDomain,
   installationName,
   apiClients,
   channelDirectoryProxyUrl = undefined,
@@ -283,6 +284,7 @@ export async function prepareProductionHelmControlPlane({
     images: { controller: images.controller },
     installation: { name: installationName },
     auth: { baseUrl: authBaseURL },
+    agentNativeAdmin: { domain: agentNativeAdminDomain },
     bootstrap: { adminEmail, password: { claimName: "bootstrap-password" } },
     database: {
       cidrs: [`${postgresIP}/32`],

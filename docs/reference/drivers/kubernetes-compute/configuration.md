@@ -48,6 +48,14 @@ The [installation profiles](../../../guides/deploy/installation-profiles.md) exp
 the measured memory defaults. Invalid resource pairs, quotas, and selector labels
 fail before resource creation.
 
+Object-count quotas, such as `pods`, `services`, and `count/deployments.apps`,
+must satisfy Kubernetes integer precision. Use whole counts such as `"4"`;
+quantity suffixes that represent a whole count, such as `"1000m"` or `"1.5Ki"`,
+remain valid. Fractional CPU and storage quotas retain their existing rules.
+Previously accepted counted quotas that Kubernetes refuses now stop API and
+worker startup with a diagnostic naming `resources.namespace.quota` and the
+resource. Correct that entry before restarting either process.
+
 ## Network
 
 A peer object has required `namespace` and `podLabels` fields. Use exact workload
@@ -82,7 +90,8 @@ Omission selects the verification runtime. Storage requirements are defined in
 | Setting                                 | Type       | Requirement | Value, default, and constraints                                                                                                                                                    |
 | --------------------------------------- | ---------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `runtime.transportSecretPrefix`         | string     | Required    | Must form a DNS-safe Secret name with `-` and a 12-character suffix.                                                                                                               |
-| `runtime.gatewayStorageClassName`       | string     | Required    | DNS-safe StorageClass name for private `10Gi` RWO gateway disks with filesystem locking and durability.                                                                            |
+| `runtime.gatewayStorageClassName`       | string     | Required    | DNS-safe StorageClass name for private RWO Gateway disks with filesystem locking and durability.                                                                                   |
+| `runtime.gatewayStorageSizeGiB`         | integer    | Optional    | `1`–`65536` GiB, default `10`. Choose before creating claims and keep fixed until they are removed; see [Gateway storage](storage-and-credentials.md#gateway-storage).             |
 | `runtime.nodeSelector`                  | string map | Optional    | Harness and embedded Pod placement. Omission adds no selector.                                                                                                                     |
 | `runtime.gatewayNodeSelector`           | string map | Optional    | Required for dedicated real Gateways, including their state initializer. Use separate trusted and tenant node pools.                                                               |
 | `runtime.nativeOpenClawSessionCapacity` | integer    | Optional    | `1`–`1024`, default `8` retained native session workers per AgentRevision Sandbox.                                                                                                 |
@@ -92,7 +101,9 @@ Omission selects the verification runtime. Storage requirements are defined in
 
 Stopping a hosted native session releases its slot; saved history does not consume
 capacity. OpenClaw does not retire idle paired-node workers, so size capacity
-against workload CPU and memory limits.
+against workload CPU and memory limits. See
+[workload capacity checks](../../../guides/topics/agent-troubleshoot.md#check-workload-capacity)
+before relying on totals reported inside the Sandbox.
 
 [Revision model settings](model-provider.md) own endpoint selection and
 validation. Credential Sources retain separate destination authorization.

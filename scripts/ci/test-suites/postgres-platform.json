@@ -11,7 +11,7 @@
     "tests/integration/postgres-agent-provisioning.test.mjs",
     "tests/integration/postgres-plugin-discovery.test.ts",
     "tests/integration/postgres-platform-state.test.mjs",
-    "tests/integration/postgres-github-recovery-replacement.test.mjs",
+    "tests/integration/postgres-oidc-recovery-replacement.test.mjs",
     "tests/integration/postgres-production-wireup.test.mjs",
     "tests/integration/compute-singleton-worker-postgres.test.mjs",
     "tests/integration/postgres-backend-ownership.test.mjs",
@@ -67,7 +67,8 @@
     "tests/integration/postgres-egress-policy-transaction.test.ts",
     "tests/integration/postgres-credential-source-revision-owner.test.ts",
     "tests/integration/postgres-worker-process-shutdown.test.ts",
-    "tests/integration/postgres-harness-overrides.test.ts"
+    "tests/integration/postgres-harness-overrides.test.ts",
+    "tests/integration/postgres-preset-template-validation.test.ts"
   ],
   "files": [
     {
@@ -151,6 +152,7 @@
       "expectedTests": [
         "the Installation starts with an editable Google OAuth template and preserves saved destination versions",
         "an administrator registers OAuth clients against a pinned template and its availability",
+        "OAuth client secret mutations refuse an enclosing controller transaction",
         "OAuth client rotation updates its stable private reference across an unknown commit",
         "the worker removes an unpublished OAuth client after interrupted creation",
         "MCP discovery selects one advertised issuer and saves only the administrator's approved scopes",
@@ -324,7 +326,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-github-recovery-replacement.test.mjs",
+      "path": "tests/integration/postgres-oidc-recovery-replacement.test.mjs",
       "expectedTests": [
         "online recovery replacement moves the reserved lane and survives a restart with the original seed"
       ]
@@ -446,6 +448,7 @@
         "an installed external Driver fetches private Git across rotation and receives the next fetch after withdrawal",
         "an installed external Driver uses an explicit GitHub installation for private Git fetch, push, REST and GraphQL until withdrawal",
         "an online sender uses the admitted GitHub installation for real Git and API requests until withdrawal",
+        "built-in repository policy admits authenticated native Git, survives worker restart, and denies withdrawn access",
         "a capable external Driver reduces Git on the original running execution through cleanup and worker replacement",
         "a capable external Driver reduces finite Git binding removal on the original execution across worker replacement",
         "a capable registered Driver observes only the original lost rotation across worker replacement and withdrawal",
@@ -651,6 +654,15 @@
       "path": "tests/integration/postgres-harness-overrides.test.ts",
       "expectedTests": [
         "PostgreSQL preserves Harness destinations across restart and default replacement"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-preset-template-validation.test.ts",
+      "expectedTests": [
+        "shipped Preset API distinguishes literal launch text from variable tokens through PostgreSQL",
+        "shipped Preset API preserves gateway password reference placeholders through PostgreSQL",
+        "filesystem Configuration Driver validates gateway password reference placeholders",
+        "Kubernetes Configuration Driver validates gateway password reference placeholders"
       ]
     }
   ]

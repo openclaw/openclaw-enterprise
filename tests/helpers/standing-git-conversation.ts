@@ -278,6 +278,7 @@ export async function standingGitConversation(t: TestContext, executable: string
             requests: responses.length,
           }),
         );
+        return { sessionId: threadId, turnId: turn.id };
       };
     },
   };

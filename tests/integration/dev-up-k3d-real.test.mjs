@@ -166,8 +166,7 @@ test(
           body: JSON.stringify({ email: "admin@development.openclaw.invalid", password }),
         });
         assert.equal(signedIn.statusCode, 200, "browser sign-in failed");
-        // Sign-in clears stale cookie variants before issuing the new session.
-        // Select the nonempty session rather than one of those clearing cookies.
+        // Select the issued shared session cookie.
         const sessionCookie = signedIn.headers["set-cookie"]?.find((entry) =>
           /^(?:__Secure-)?openclaw_occ_shared\.session_token=[^;]+/.test(entry),
         );

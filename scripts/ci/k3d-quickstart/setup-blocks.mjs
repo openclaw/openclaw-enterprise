@@ -30,6 +30,8 @@ const before = [
   step(agent, 'agent=$(jq -er .data.id "$RUN_DIR/agent")'),
   step(agent, 'cfg=$(jq -er .data.id "$RUN_DIR/configuration")'),
   step(agent, "# Provision transport once, before the first revision."),
+  // Failure recovery must know the new Agent even if its first deployment fails.
+  "save_session",
   step(agent, "deploy_and_wait"),
 ];
 const after = [step(agent, "save_session")];

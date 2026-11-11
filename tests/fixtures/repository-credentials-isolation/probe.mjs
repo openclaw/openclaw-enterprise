@@ -62,15 +62,15 @@ const forbidden = [
   "/app/dist/repository-credentials.js",
   "/app/dist/composition",
   "/app/dist/backends",
-  "/app/dist/drivers/repo/github/credentials/driver",
-  "/app/dist/drivers/repo/github/credentials/driver.js",
-  "/app/dist/drivers/repo/github/credentials/factory.js",
-  "/app/dist/drivers/repo/github/credentials/material.js",
+  "/app/dist/drivers/repo/github/access/driver",
+  "/app/dist/drivers/repo/github/access/driver.js",
+  "/app/dist/drivers/repo/github/access/factory.js",
+  "/app/dist/drivers/repo/github/access/material.js",
 ];
 const present = [];
 // The client shares only this pure validator with the service. Any other
 // common-owner module, directory or symlink still fails the delivered boundary.
-const commonDirectory = "/app/dist/drivers/repo/credentials";
+const commonDirectory = "/app/dist/drivers/repo/access";
 if (!(await lstat(commonDirectory)).isDirectory()) {
   present.push(commonDirectory);
 } else {

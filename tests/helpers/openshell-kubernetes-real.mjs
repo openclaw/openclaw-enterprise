@@ -1,4 +1,5 @@
 import { OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { DEPLOYMENT_FAILURE_STEPS } from "../../packages/occ/src/deployment-failure-steps.ts";
 import { sha256Hex } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -17,6 +18,7 @@ import {
   productionGatewayMemoryLimit,
   withinDiagnosticDeadline,
 } from "./kubernetes-real.mjs";
+import { runGatewayInstallation } from "./openshell-installation.ts";
 
 const execute = promisify(execFile);
 
@@ -165,6 +167,58 @@ export function registerOpenShellInstallationCleanups(context, operations) {
   if (stopped !== undefined) {
     throw stopped;
   }
+}
+
+export class OpenShellDeploymentFailedError extends Error {
+  constructor(revisionId, code, workerEvents = []) {
+    // Only emit codes from the controller's fixed deployment failure vocabulary.
+    const reason =
+      typeof code === "string" && Object.hasOwn(DEPLOYMENT_FAILURE_STEPS, code) ? code : undefined;
+    let detail = reason;
+    if (reason === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE") {
+      const completed = workerEvents.findLast(
+        (event) =>
+          event.event === "worker.completed" &&
+          event.revisionId === revisionId &&
+          event.code === reason,
+      );
+      // The worker joins these categories in canonical order. Omit the entire
+      // value if any part differs, including mixed known and unknown fields.
+      const categories = ["sandbox-mode-denied", "named-profile-denied", "reviewer-denied"];
+      const parts = typeof completed?.failure === "string" ? completed.failure.split("_") : [];
+      const denied = categories.filter((category) => parts.includes(category)).join("_");
+      if (denied && denied === completed.failure) {
+        detail = `${reason}: ${denied}`;
+      }
+    }
+    super(
+      `OpenShell revision ${revisionId} deployment failed${detail === undefined ? "" : ` (${detail})`}.`,
+    );
+    this.code = reason;
+  }
+}
+
+export function waitForOpenShellRevisionActivation(
+  waitFor,
+  { request, agentPath, revisionId, workerEvents = [] },
+) {
+  return waitFor(`OpenShell revision ${revisionId} activation`, async () => {
+    const observed = await request("GET", agentPath);
+    assert.equal(observed.status, 200, "OpenShell Agent status read failed.");
+    if (observed.data.activeRevisionId === revisionId) {
+      return observed.data;
+    }
+    const deployment = await request("GET", `${agentPath}/deployments/${revisionId}`);
+    assert.equal(deployment.status, 200, "OpenShell deployment status read failed.");
+    if (deployment.data.status === "failed") {
+      throw new OpenShellDeploymentFailedError(
+        revisionId,
+        deployment.data.error?.code,
+        workerEvents,
+      );
+    }
+    return undefined;
+  });
 }
 
 // One poll of the gateway-outage proof: the revision's work back in `queued` after a pass, then
@@ -586,7 +640,7 @@ export function createOpenShellInstallationConfiguration({
       policy: {
         filesystem: {
           includeWorkdir: true,
-          readOnly: ["/app"],
+          readOnly: ["/bin", "/usr", "/lib", "/proc", "/dev/urandom", "/etc", "/var/log", "/app"],
           readWrite: ["/sandbox/.openclaw-runtime", "/dev/null"],
         },
         process: { runAsUser: "1000", runAsGroup: "1000" },
@@ -1078,100 +1132,90 @@ export function createOpenShellKubernetesFixture({
       `--set-string=gateway.serviceAccount.namespace=${namespace}`,
       `--set-string=gateway.networkPolicy.podSelector.app\\.kubernetes\\.io/instance=${instance}`,
     ];
-    await execute(
-      openShellHelmPath,
-      [
-        "upgrade",
-        "--install",
-        `${instance}-workspace`,
-        openShellWorkspaceHelmChart,
-        "--namespace",
-        namespace,
-        "--kubeconfig",
-        kubeconfigPath,
-        "--kube-context",
-        kubernetesContext,
-        "--wait",
-        "--timeout",
-        "240s",
-        ...workspaceValues,
-      ],
-      { maxBuffer: 8 * 1024 * 1024 },
-    );
-    const values = [
-      `--set-string=fullnameOverride=${instance}`,
-      "--set=pkiInitJob.enabled=false",
-      "--set=server.disableTls=true",
-      "--set=server.auth.allowUnauthenticatedUsers=true",
-      "--set=server.drivers.kubernetes.allowDriverConfig=true",
-      // The gateway rejects every Sandbox template label it does not allow; Harness
-      // Pods carry the OCE selector labels that NetworkPolicies and Services match.
-      `--set-json=gatewayConfig.openshell\\.drivers\\.kubernetes.allowed_pod_labels=${JSON.stringify(OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST)}`,
-      "--set=server.drivers.kubernetes.resourceAdmission.enabled=false",
-      "--set-string=server.drivers.kubernetes.workspaceMode=operator",
-      "--set-string=server.drivers.kubernetes.operatorNamespaceLabel=openshell.ai/openclaw-workspace=true",
-      "--set=workspaceResources.enabled=false",
-      "--set=podSecurityContext.seccompProfile.type=RuntimeDefault",
-      `--set-string=server.defaultRuntimeClassName=${openShellRuntimeClass}`,
-      ...chartImageValues("gateway.image", openShellGatewayImage),
-      ...chartImageValues("sandboxRuntime.image", openShellSandboxImage),
-      ...chartImageValues("supervisor.image", openShellSupervisorImage),
-    ];
-    if (sandboxServiceAccountName !== undefined) {
-      values.push("--set=sandboxServiceAccount.create=false");
-      values.push(`--set-string=sandboxServiceAccount.name=${sandboxServiceAccountName}`);
-    }
-    if (extraTrustPem !== undefined) {
-      const trust = "oce-gateway-extra-trust";
-      const directory = await mkdtemp(join(tmpdir(), "openshell-gateway-trust-"));
-      const path = join(directory, "configmap.json");
-      try {
-        await writeFile(
-          path,
-          JSON.stringify({
-            apiVersion: "v1",
-            kind: "ConfigMap",
-            metadata: { name: trust, namespace },
-            data: { "ca.crt": [...rootCertificates, extraTrustPem].join("\n") },
-          }),
-          { mode: 0o600 },
-        );
-        // The bundle exceeds what client-side apply can record in its annotation.
-        await kubectl("apply", "--server-side", "--namespace", namespace, "-f", path);
-      } finally {
-        await rm(directory, { recursive: true, force: true });
-      }
-      values.push(
-        `--set-string=server.extraVolumes[0].name=${trust}`,
-        `--set-string=server.extraVolumes[0].configMap.name=${trust}`,
-        `--set-string=server.extraVolumeMounts[0].name=${trust}`,
-        "--set-string=server.extraVolumeMounts[0].mountPath=/etc/ssl/certs/ca-certificates.crt",
-        "--set-string=server.extraVolumeMounts[0].subPath=ca.crt",
-        "--set=server.extraVolumeMounts[0].readOnly=true",
+    function installChart(release, chart, values) {
+      return execute(
+        openShellHelmPath,
+        [
+          "upgrade",
+          "--install",
+          release,
+          chart,
+          "--namespace",
+          namespace,
+          "--kubeconfig",
+          kubeconfigPath,
+          "--kube-context",
+          kubernetesContext,
+          "--wait",
+          "--timeout",
+          "240s",
+          ...values,
+        ],
+        { maxBuffer: 8 * 1024 * 1024 },
       );
     }
+    async function gatewayValues() {
+      const values = [
+        `--set-string=fullnameOverride=${instance}`,
+        "--set=pkiInitJob.enabled=false",
+        "--set=server.disableTls=true",
+        "--set=server.auth.allowUnauthenticatedUsers=true",
+        "--set=server.drivers.kubernetes.allowDriverConfig=true",
+        // The gateway rejects every Sandbox template label it does not allow; Harness
+        // Pods carry the OCE selector labels that NetworkPolicies and Services match.
+        `--set-json=gatewayConfig.openshell\\.drivers\\.kubernetes.allowed_pod_labels=${JSON.stringify(OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST)}`,
+        "--set=server.drivers.kubernetes.resourceAdmission.enabled=false",
+        "--set-string=server.drivers.kubernetes.workspaceMode=operator",
+        "--set-string=server.drivers.kubernetes.operatorNamespaceLabel=openshell.ai/openclaw-workspace=true",
+        "--set=workspaceResources.enabled=false",
+        "--set=podSecurityContext.seccompProfile.type=RuntimeDefault",
+        `--set-string=server.defaultRuntimeClassName=${openShellRuntimeClass}`,
+        ...chartImageValues("gateway.image", openShellGatewayImage),
+        ...chartImageValues("sandboxRuntime.image", openShellSandboxImage),
+        ...chartImageValues("supervisor.image", openShellSupervisorImage),
+      ];
+      if (sandboxServiceAccountName !== undefined) {
+        values.push("--set=sandboxServiceAccount.create=false");
+        values.push(`--set-string=sandboxServiceAccount.name=${sandboxServiceAccountName}`);
+      }
+      if (extraTrustPem !== undefined) {
+        const trust = "oce-gateway-extra-trust";
+        const directory = await mkdtemp(join(tmpdir(), "openshell-gateway-trust-"));
+        const path = join(directory, "configmap.json");
+        try {
+          await writeFile(
+            path,
+            JSON.stringify({
+              apiVersion: "v1",
+              kind: "ConfigMap",
+              metadata: { name: trust, namespace },
+              data: { "ca.crt": [...rootCertificates, extraTrustPem].join("\n") },
+            }),
+            { mode: 0o600 },
+          );
+          // The bundle exceeds what client-side apply can record in its annotation.
+          await kubectl("apply", "--server-side", "--namespace", namespace, "-f", path);
+        } finally {
+          await rm(directory, { recursive: true, force: true });
+        }
+        values.push(
+          `--set-string=server.extraVolumes[0].name=${trust}`,
+          `--set-string=server.extraVolumes[0].configMap.name=${trust}`,
+          `--set-string=server.extraVolumeMounts[0].name=${trust}`,
+          "--set-string=server.extraVolumeMounts[0].mountPath=/etc/ssl/certs/ca-certificates.crt",
+          "--set-string=server.extraVolumeMounts[0].subPath=ca.crt",
+          "--set=server.extraVolumeMounts[0].readOnly=true",
+        );
+      }
 
-    await execute(
-      openShellHelmPath,
-      [
-        "upgrade",
-        "--install",
-        openShellGatewayServiceName(namespace),
-        openShellHelmChart,
-        "--namespace",
-        namespace,
-        "--kubeconfig",
-        kubeconfigPath,
-        "--kube-context",
-        kubernetesContext,
-        "--wait",
-        "--timeout",
-        "240s",
-        ...values,
-      ],
-      { maxBuffer: 8 * 1024 * 1024 },
+      return values;
+    }
+    const gateway = await runGatewayInstallation(
+      () => installChart(`${instance}-workspace`, openShellWorkspaceHelmChart, workspaceValues),
+      gatewayValues,
+      (values) => installChart(instance, openShellHelmChart, values),
+      () => waitForOpenShellGateway(namespace),
     );
-    const gateway = await waitForOpenShellGateway(namespace);
     assertRenderedOpenShellImages({
       gatewayPod: gateway,
       statefulSet: await base.resource("statefulset", instance, namespace),

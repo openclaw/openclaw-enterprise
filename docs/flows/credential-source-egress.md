@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
-updated: 2026-11-06
-last_updated_session: authoring-run/96255fab-cb34-45d9-b940-d3055029e29f
+updated: 2026-11-11
+last_updated_session: authoring-run/4a7d8e1a-0c95-4f57-8628-ea2d59fbe9b2
 ---
 
 # Protected credential request flow
@@ -188,7 +188,7 @@ extend the lifetime.
 GitHub acquisition validation, transport and metadata injection share a wire check:
 1–16,384 bytes of nonspace printable ASCII, not authentication.
 
-`apps/controller/src/drivers/repo/github/credentials/prepared-lifecycle.ts:resolve` checks the registered source and the token's remaining lifetime. It reads only ciphertext for the selected issuer, attempt and version. The store rechecks the caller’s deadline and cancellation before decryption. If issuance cannot supply an eligible token in time, OCC releases no header. Background cleanup retains access to retired material.
+`apps/controller/src/drivers/repo/github/access/prepared-lifecycle.ts:resolve` checks the registered source and the token's remaining lifetime. It reads only ciphertext for the selected issuer, attempt and version. The store rechecks the caller’s deadline and cancellation before decryption. If issuance cannot supply an eligible token in time, OCC releases no header. Background cleanup retains access to retired material.
 
 Before send, `packages/occ/src/state/prepared-github-state.ts:postgresPreparedGitHubProof`
 queries current material metadata in the active platform transaction, without another
@@ -259,15 +259,17 @@ exact attempt without retrying; returning bytes does not prove delivery.
 
 ### 5. Configure the regular Harness caller
 
-`apps/controller/src/drivers/compute/plugin-runtime.ts:codexToml` keeps local tools,
-disables provider tools, and selects HTTP Responses without WebSockets or retries.
-Its `--ignore-user-config` probe disables
-request/stream retries and never repeats a timed-out protected probe.
+`apps/controller/src/drivers/compute/plugin-runtime.ts:codexToml` enables local
+tools and selects HTTP Responses without provider tools, WebSockets or retries.
+The protected startup probe also disables retries.
 
 `apps/controller/src/drivers/egress-proxy/openai-provider.ts:createOpenAiStaticProvider`
 checks [request forms](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
 through `openai-responses.ts:validResponsesRequest` before Secret resolution.
-Inline developer tools keep the local-tool restrictions.
+The check accepts local tools declared inline, bounded agent messages, optional
+Git workspace metadata and passive no-MCP attribution. The admitted grant
+selects the model and destination. Replayed assistant text can carry empty
+`annotations` and `logprobs` arrays.
 
 ### 6. Reduce the live credential policy
 
@@ -331,6 +333,12 @@ None.
 
 ## Changelog
 
+- 2026-11-11 06:02: Admit native agent messages. (authoring-run/4a7d8e1a-0c95-4f57-8628-ea2d59fbe9b2 - 82078dad5edc334f21d3feaed447db6601fa5d31)
+
+- 2026-11-10 08:22: Accept empty metadata on replayed assistant output text. (authoring-run/098bcc8c-9e1b-4318-aff3-06c464edb33e - 33c820f6daf4ba6a1559680911ab2d509ee4a131)
+
+- 2026-11-10 07:15: Admit bounded Codex Git workspace metadata and passive MCP attribution on Responses requests. (authoring-run/13d2e44f-b996-453e-8cbc-db80b8f8e3e2 - f06bf60299ad29444685d70fb2708f3f0558a5ad)
+
 - 2026-11-06 02:38: Refuse historical Git issuance and session renewal while preserving original detach recovery. (authoring-run/96255fab-cb34-45d9-b940-d3055029e29f - 37b81d16bbbb3f0c864fc652060075c06eb4dc52)
 
 - 2026-11-06 02:36: Preserve request-time token resolution and held-probe diagnostics when merging the current flow. (authoring-run/c13df234-5a0d-4e3c-b254-cc806ee046e7 - 585e7ac2c6673611ec29a3c76ca507e61308fa6f)
@@ -342,19 +350,5 @@ None.
 - 2026-11-05 20:36: Trace one-shot Git enrollment probe failures to the worker log. (authoring-run/5e3df28f-4382-449e-a9db-e26d5347994e - b1da9eddd3a594982ce36639610d1e3480a9e1f7)
 
 - 2026-11-05 11:50: Retain historical cleanup without legacy live recovery. (authoring-run/8ffac278-3c9e-4308-aec7-96da3b06d9d4 - 8389365da2b59206fb8727901a64f6cf1311a3b7)
-
-- 2026-11-05 02:35: Refresh model observation after Git credential rotation. (authoring-run/cdb62c1d-61db-4f65-985f-7b44e64f10d0 - 261e4b54cbd0366ff0cba0dc6a00b7890b8e39f2)
-
-- 2026-11-04 08:59: Validate effective image policy in streamed response envelopes. (authoring-run/62d369a1-b693-49c9-badd-c92eeda35a6b - 54ad9dad2610ed99ab8ce8134fb03d3b10ed6be4)
-
-- 2026-11-04 05:11: Separate response metadata validation. (authoring-run/aa69859c-0fd2-4688-97b0-b99dbbd65f95 - b9741c28dacdd6012790be431b97872de6611969)
-
-- 2026-11-04 01:56: Trace inline tool validation. (authoring-run/c172d58e-be9c-43c1-a44d-7853dfb585af - fdca6e74421067adc66dce4f141d153af0355f68)
-
-- 2026-10-30 10:12: Retain guarded OpenShell 0.1.6 preview. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
-
-- 2026-10-27 16:00: Document provider pinning. (authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d - e2dfabf042852adea8ed797b48aae122927d6226)
-
-- 2026-10-27 10:54: Trace send authorization and response release for a repository metadata read. (authoring-run/2c5a77ee-7b17-4553-b360-486daa794f9a - 0418ef3a2c116b73f025281395d92477daf665d2)
 
 [Protected credential request documentation history](credential-source-egress/history.md) preserves the older dated entries.

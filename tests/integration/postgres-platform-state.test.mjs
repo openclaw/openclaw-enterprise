@@ -280,17 +280,36 @@ test(
     assert.ok(listed.data.every(({ id }) => id !== namespaceId));
 
     const audits = await pool.query(
-      "SELECT action, outcome FROM occ.audit_events WHERE resource_id = $1",
+      "SELECT action, outcome, details FROM occ.audit_events WHERE resource_id = $1",
       [namespaceId],
     );
     assert.deepEqual(
-      audits.rows.map(({ action }) => action).sort(),
+      audits.rows
+        .filter(({ details }) => details.registrationId === undefined)
+        .map(({ action }) => action)
+        .sort(),
       [
         "openclaw.namespaces.create",
         "openclaw.namespaces.delete",
         "openclaw.namespaces.lifecycle.delete",
         "openclaw.namespaces.lifecycle.ensure",
       ].sort(),
+    );
+    // Driver-step evidence is separate from the existing lifecycle transition audit.
+    assert.deepEqual(
+      audits.rows
+        .filter(({ details }) => details.registrationId !== undefined)
+        .map(({ details }) => ({
+          registrationId: details.registrationId,
+          phase: details.phase,
+          outcome: details.outcome,
+        }))
+        .sort((a, b) => a.phase.localeCompare(b.phase)),
+      ["delete", "ensure"].map((phase) => ({
+        registrationId: controller.selectedDriver("compute").id,
+        phase,
+        outcome: "complete",
+      })),
     );
     assert.ok(audits.rows.every(({ outcome }) => outcome === "success"));
   },
