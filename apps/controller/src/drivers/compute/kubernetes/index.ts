@@ -156,6 +156,7 @@ import {
   ActivationFailedError,
   ActivationPendingError,
   agentEntryMessage,
+  agentRuntimeTelemetryEnabled,
   ComputeGatewaySettingError,
   ConfigurationHarnessError,
   configurationSettingMessage,
@@ -16061,7 +16062,16 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               // from this, after the model probe; the probe itself stays on OpenClaw's
               // HTTP client (harnessProbeConfiguration pins agentRuntime to openclaw).
               ...(selectsClaudeCodeRuntime(revision.configuration)
-                ? [{ name: "OPENCLAW_HARNESS_AGENT_RUNTIME", value: CLAUDE_CLI_AGENT_RUNTIME_ID }]
+                ? [
+                    { name: "OPENCLAW_HARNESS_AGENT_RUNTIME", value: CLAUDE_CLI_AGENT_RUNTIME_ID },
+                    // The runtime's vendor telemetry stays off unless the Configuration opts in.
+                    {
+                      name: "OCE_AGENT_RUNTIME_TELEMETRY",
+                      value: agentRuntimeTelemetryEnabled(revision.configuration)
+                        ? "enabled"
+                        : "disabled",
+                    },
+                  ]
                 : []),
             ]
           : []),

@@ -22,6 +22,8 @@ type ConfigurationScenario = {
   kubernetesEntryKeyVariant?: boolean;
   gatewayPasswordAllowlistOmits?: boolean;
   messageQueue?: OpenClawConfigurationDocument;
+  // OpenClaw's telemetry.enabled, the opt-in to agent runtime telemetry.
+  runtimeTelemetry?: boolean;
   retiredSetting?: boolean;
   slack?: boolean;
   slackOff?: boolean;
@@ -56,6 +58,7 @@ type FixtureConfiguration = {
   models?: OpenClawConfigurationDocument;
   messages?: OpenClawConfigurationDocument;
   security?: OpenClawConfigurationDocument;
+  telemetry?: OpenClawConfigurationDocument;
 };
 
 function slackChannels(scenario: ConfigurationScenario): NonNullable<SlackConfig["channels"]> {
@@ -168,6 +171,9 @@ export function configurationValues(scenario: ConfigurationScenario): FixtureCon
   }
   if (scenario.messageQueue !== undefined) {
     values.messages = { queue: structuredClone(scenario.messageQueue) };
+  }
+  if (scenario.runtimeTelemetry !== undefined) {
+    values.telemetry = { enabled: scenario.runtimeTelemetry };
   }
   if (scenario.retiredSetting) {
     // A setting an older release saved and the pinned OpenClaw has since retired.

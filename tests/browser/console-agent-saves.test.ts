@@ -259,6 +259,10 @@ test("collaboration and safety toggles stage their settings in the Configuration
   );
   assert.equal(await source("collaborative-steering").textContent(), "Default: on. ");
   assert.equal(await source("apply-patch-workspace").textContent(), "Default: on. ");
+  // Agent runtime telemetry is off unless the Configuration opts in.
+  const telemetry = page.locator("#gateway-safety-runtime-telemetry");
+  assert.equal(await telemetry.isChecked(), false);
+  assert.equal(await source("runtime-telemetry").textContent(), "Default: off. ");
 
   // Strict mode opens the editor with every locked-down value written, and keeps focus.
   await strict.check();
@@ -269,6 +273,7 @@ test("collaboration and safety toggles stage their settings in the Configuration
     ...nativeValues("before"),
     messages: { queue: { allowCollaborativeSteering: false } },
     tools: { exec: { applyPatch: { workspaceOnly: true } } },
+    telemetry: { enabled: false },
   });
   assert.equal(await strict.evaluate((node) => node === globalThis.document.activeElement), true);
   assert.equal(await steering.isChecked(), false);
@@ -323,6 +328,7 @@ test("collaboration and safety toggles stage their settings in the Configuration
     ...nativeValues("before"),
     messages: { queue: { collaborativeSteeringFallback: "reject" } },
     tools: { exec: { applyPatch: { workspaceOnly: true } } },
+    telemetry: { enabled: false },
   });
   const url = c.fixture.origin + configurationPath(c);
   const patched = page.waitForResponse((r) => r.url() === url && r.request().method() === "PATCH");

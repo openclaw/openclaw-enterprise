@@ -1,6 +1,6 @@
 ---
 created: 2026-08-21
-updated: 2026-11-06
+updated: 2026-11-11
 last_updated_session: authoring-run/7315b76f-e581-43e4-a73a-06f924640ea0
 ---
 
@@ -63,19 +63,13 @@ OCC locks the authorized Agent and Configuration, resolves `agentRuntime.id`
 (`packages/occ/src/configured-harness.ts:resolveConfiguredAgentRuntimeId`),
 and validates primary/fallback routes and Harness modes. Fallbacks preserve native order,
 primary provider and Harness. Only unambiguous built-in configuration defaults
-to embedded OpenClaw. The `claude-cli` runtime (Claude Code) is accepted on
-`anthropic/*` models only and maps to the `openclaw` Harness
-(`harnessIdForAgentRuntime`); Kubernetes Compute's `validateHarnessAuth` then
-refuses it outside embedded execution, and its `harnessAuthEnvironment` adds
-`OPENCLAW_HARNESS_AGENT_RUNTIME=claude-cli` to the gateway. The gateway
-entrypoint (`runtime-entrypoints.ts:CLAUDE_CODE_RUNTIME_HELPERS`) runs the
-normal model probe first, then checks the image's pinned `claude` binary and
-writes the Pod-local `$HOME/.claude/settings.json` (endpoint, credential,
-hardening) that OpenClaw's `claude-cli` backend lets the binary read; a failure
-holds the gateway with `UNAVAILABLE` under startup phase `claude-code-runtime`.
-Compute mounts the gateway private state claim's `claude-projects` subPath at
-`$HOME/.claude/projects` (`CLAUDE_CODE_PROJECTS_STATE`) so `claude --resume` finds
-a session's transcript after a restart; the rest of `$HOME/.claude` stays Pod-local.
+to embedded OpenClaw. The `claude-cli` runtime (Claude Code) needs an `anthropic/*`
+model and embedded execution and maps to the `openclaw` Harness
+(`harnessIdForAgentRuntime`). Compute's `harnessAuthEnvironment` passes
+`OPENCLAW_HARNESS_AGENT_RUNTIME` and `OCE_AGENT_RUNTIME_TELEMETRY` to the gateway.
+After the model probe, `runtime-entrypoints.ts:CLAUDE_CODE_RUNTIME_HELPERS` checks
+the pinned binary and writes the Pod-local settings file; transcripts use the private
+state claim's `claude-projects` subPath. See the [Claude Code runtime](../reference/claude-code-runtime.md).
 Missing/ambiguous policies, unsupported IDs and incompatible modes fail closed.
 Compute's `apps/controller/src/drivers/compute/native-gateway-transport.ts:validatePlaintextNativeGateway`
 rejects `gateway.tls.enabled: true` before version creation and preparation:
@@ -370,8 +364,7 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 
 ## Changelog
 
-- 2026-10-20 13:10: Keep Claude Code session transcripts on the gateway private state claim. (feat/claude-code-harness)
-- 2026-10-20 10:30: Admit the Claude Code agent runtime (`claude-cli`) for embedded OpenClaw and prepare its Pod-local configuration after the model probe. (feat/claude-code-harness)
+- 2026-11-11 02:00: Trace the Claude Code agent runtime (`claude-cli`). (feat/claude-code-harness)
 
 - 2026-11-06 01:25: Persist Harness settings. (authoring-run/7315b76f-e581-43e4-a73a-06f924640ea0 - 37144f62101a9e99b066f1abbbf75ede787d26dd)
 
@@ -386,17 +379,5 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 - 2026-11-03 18:15: Trace provider guards. (authoring-run/01a1a454-f48a-7ef3-81a3-bf8ac904b03f - 39c0ad271114a3340f9eba00d47a195607180c85)
 
 - 2026-11-03 15:09: Document shared provider routing and separate destination authorization. (authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc - 47e0e95df)
-
-- 2026-10-31 03:41: Observe catalog pipe writes and reply counts. (authoring-run/afb5c72a-ef2b-4983-990c-427173225f65 - fbe295286b26132acf6330c87710231324afd5b1)
-
-- 2026-10-31 02:28: Trace continuity comparisons and wrapper exits. (authoring-run/c1b37e4b-0ce0-4d5a-b087-b9833636f11e - 4dc71d4678df0f9dc49bcbeaa654819d76e3ebb0)
-
-- 2026-10-29 18:43: Trace the explicit custom-provider standalone search declaration and protected-tool exclusion. (authoring-run/be4eda1a-8676-415e-9999-ffcfe3f9bd17 - 35569940c)
-
-- 2026-10-26 23:35: Trace the model tool policy in both Gateway administration modes and recovery after a forced stop. (authoring-run/5da38bb7-602c-4a49-a7f2-863af81abcba - fac7d121c3c582afb53ca49c7d4579e04b5e5ea5)
-
-- 2026-10-23 17:15: Correct forced-termination recovery. (Codex/01a1558e-c27f-7bc0-a403-af59e9364ddf)
-
-- 2026-10-23 15:51: Rebase the native endpoint trace onto current lifecycle behavior; preserve older entries in linked history. (agent:roboclaw:dashboard:578a8b10-8406-4f5c-a2cc-21ab6524bf68 - 0b326680a7a388de9331c2ae9f0a7cadf2788fe7)
 
 [Harness execution topology documentation history](harness-execution-topology/history.md) preserves the older dated entries.

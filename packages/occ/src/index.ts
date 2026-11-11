@@ -648,7 +648,10 @@ export {
 export { imageReferenceProblem } from "./image-reference.ts";
 export type { ImageReferenceProblem } from "./image-reference.ts";
 export { DEPLOYMENT_FAILURE_STEPS, deploymentFailureStep } from "./deployment-failure-steps.ts";
-export { admitGatewaySecurityDefaults } from "./gateway-security-defaults.ts";
+export {
+  admitGatewaySecurityDefaults,
+  agentRuntimeTelemetryEnabled,
+} from "./gateway-security-defaults.ts";
 export { storedConfigurationProblem } from "./stored-configuration-rules.ts";
 export type { StoredConfigurationRule } from "./stored-configuration-rules.ts";
 export type { DeploymentFailureStep } from "./deployment-failure-steps.ts";

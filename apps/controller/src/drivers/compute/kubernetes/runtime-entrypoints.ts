@@ -2519,15 +2519,54 @@ function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
 // (sk-ant-oat...) is a bearer, as OpenClaw's own client sends it; anything else is an API
 // key. The binary must be the image's pinned version: a missing or different one holds
 // the Gateway unready with UNAVAILABLE, before any turn could reach it.
+// The settings file's env outranks the spawned environment. It always turns off updates and
+// feedback prompts and points every model slot Claude Code fills by itself (aliases, the
+// small/fast and subagent models, classifiers) at the primary model, so it calls only the
+// admitted model. Telemetry, error reporting and other nonessential traffic stay off unless
+// the admitted Configuration sets telemetry.enabled (OCE_AGENT_RUNTIME_TELEMETRY=enabled).
+// The names are those the pinned binary reads; check them again when the pin changes.
 export const CLAUDE_CODE_RUNTIME_HELPERS = String.raw`
 const CLAUDE_CODE_AGENT_RUNTIME = "claude-cli";
 const CLAUDE_CODE_DEFAULT_BASE_URL = "https://api.anthropic.com";
 const CLAUDE_CODE_SETTINGS_HARDENING = Object.freeze({
   DISABLE_AUTOUPDATER: "1",
+  DISABLE_UPDATES: "1",
+  DISABLE_INSTALLATION_CHECKS: "1",
+  CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: "1",
+  DISABLE_FEEDBACK_COMMAND: "1",
+  DISABLE_BUG_COMMAND: "1",
+  CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: "1",
+  // Unset, these send requests or headers outside the admitted endpoint's contract.
+  ANTHROPIC_CUSTOM_HEADERS: "",
+  CLAUDE_CODE_AUTO_MODE_SERVER: "",
+  CLAUDE_CODE_CLIENT_DATA_URL: "",
+});
+const CLAUDE_CODE_TELEMETRY_DENIAL = Object.freeze({
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
   DISABLE_TELEMETRY: "1",
   DISABLE_ERROR_REPORTING: "1",
-  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+  DISABLE_GROWTHBOOK: "1",
+  DO_NOT_TRACK: "1",
+  CLAUDE_CODE_ENABLE_TELEMETRY: "0",
+  CLAUDE_CODE_ENHANCED_TELEMETRY_BETA: "0",
+  OTEL_METRICS_EXPORTER: "none",
+  OTEL_LOGS_EXPORTER: "none",
+  OTEL_TRACES_EXPORTER: "none",
+  OTEL_LOG_USER_PROMPTS: "0",
 });
+const CLAUDE_CODE_MODEL_SLOTS = Object.freeze([
+  "ANTHROPIC_MODEL",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "ANTHROPIC_SMALL_FAST_MODEL",
+  "CLAUDE_CODE_SUBAGENT_MODEL",
+  "CLAUDE_CODE_AUTO_MODE_MODEL",
+  "CLAUDE_CODE_BG_CLASSIFIER_MODEL",
+]);
+function claudeCodeTelemetryEnvironment() {
+  return process.env.OCE_AGENT_RUNTIME_TELEMETRY === "enabled" ? {} : CLAUDE_CODE_TELEMETRY_DENIAL;
+}
 function claudeCodeRuntimeSelected() {
   return process.env.OPENCLAW_HARNESS_AGENT_RUNTIME === CLAUDE_CODE_AGENT_RUNTIME;
 }
@@ -2541,7 +2580,10 @@ function prepareClaudeCodeRuntime(fs, spawnSync) {
   let probeConfiguration;
   try { probeConfiguration = JSON.parse(process.env.OPENCLAW_HARNESS_PROBE_CONFIG); } catch { return "NOT_CONFIGURED"; }
   const provider = probeConfiguration?.models?.providers?.[process.env.OPENCLAW_HARNESS_PROVIDER];
-  if (!expectedVersion || !credential || process.env.OPENCLAW_HARNESS_PROVIDER !== "anthropic" ||
+  const model = process.env.OPENCLAW_HARNESS_MODEL?.startsWith("anthropic/")
+    ? process.env.OPENCLAW_HARNESS_MODEL.slice("anthropic/".length)
+    : "";
+  if (!expectedVersion || !credential || process.env.OPENCLAW_HARNESS_PROVIDER !== "anthropic" || model === "" ||
     typeof probeConfiguration !== "object" || probeConfiguration === null ||
     (provider?.baseUrl !== undefined && typeof provider.baseUrl !== "string")) return "NOT_CONFIGURED";
   const home = process.env.HOME || "/home/node";
@@ -2552,13 +2594,18 @@ function prepareClaudeCodeRuntime(fs, spawnSync) {
     fs.chmodSync(directory, 0o700);
   } catch { return "UNAVAILABLE"; }
   const version = spawnSync("claude", ["--version"], {
-    env: { PATH: process.env.PATH, HOME: home, CLAUDE_CONFIG_DIR: directory, ...CLAUDE_CODE_SETTINGS_HARDENING },
+    env: {
+      PATH: process.env.PATH, HOME: home, CLAUDE_CONFIG_DIR: directory,
+      ...CLAUDE_CODE_SETTINGS_HARDENING, ...CLAUDE_CODE_TELEMETRY_DENIAL,
+    },
     encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 30000, killSignal: "SIGKILL", maxBuffer: 4096,
   });
   if (version.error || version.status !== 0 || version.stdout.trim() !== expectedVersion + " (Claude Code)") return "UNAVAILABLE";
   const baseUrl = (provider?.baseUrl ?? "").replace(/\/+$/, "");
   const env = {
     ...CLAUDE_CODE_SETTINGS_HARDENING,
+    ...claudeCodeTelemetryEnvironment(),
+    ...Object.fromEntries(CLAUDE_CODE_MODEL_SLOTS.map((name) => [name, model])),
     ...(baseUrl !== "" && baseUrl !== CLAUDE_CODE_DEFAULT_BASE_URL ? { ANTHROPIC_BASE_URL: baseUrl } : {}),
     [credential.startsWith("sk-ant-oat") ? "ANTHROPIC_AUTH_TOKEN" : "ANTHROPIC_API_KEY"]: credential,
   };

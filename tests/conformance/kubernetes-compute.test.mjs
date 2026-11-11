@@ -13473,8 +13473,15 @@ test("Kubernetes status readback skips provider-fenced Harness Pods", async () =
 });
 
 async function exerciseEmbeddedReplacement(scenario) {
-  const { providerId, model, environmentName, api, baseUrl, predecessorManagedMode, agentRuntimeId } =
-    scenario;
+  const {
+    providerId,
+    model,
+    environmentName,
+    api,
+    baseUrl,
+    predecessorManagedMode,
+    agentRuntimeId,
+  } = scenario;
   const modelRef = `${providerId}/${model}`;
   const modelPolicy = agentRuntimeId === undefined ? {} : { agentRuntime: { id: agentRuntimeId } };
   const driver = createKubernetesComputeDriver(
@@ -13769,6 +13776,11 @@ async function exerciseEmbeddedReplacement(scenario) {
   assert.equal(
     gatewayEnvironment.OPENCLAW_HARNESS_AGENT_RUNTIME?.value,
     agentRuntimeId === "claude-cli" ? "claude-cli" : undefined,
+  );
+  // Admission fills telemetry.enabled false, so the runtime's vendor telemetry stays off.
+  assert.equal(
+    gatewayEnvironment.OCE_AGENT_RUNTIME_TELEMETRY?.value,
+    agentRuntimeId === "claude-cli" ? "disabled" : undefined,
   );
   // Claude Code transcripts live on the Agent's private state claim, so `claude --resume`
   // finds a conversation after a restart or redeploy; the rest of its configuration

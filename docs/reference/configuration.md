@@ -239,7 +239,8 @@ transform a copy through `configureAgent` before admission; the reusable
 Configuration and its generation remain unchanged. The snapshot adds the
 [Agent display name](agents/deployment.md#versions-and-deployment) to that document;
 its metadata names the source generation. Where unset, OCC sets
-`tools.exec.applyPatch.workspaceOnly: true` and `agents.defaults.sandbox.mode: "off"`.
+`tools.exec.applyPatch.workspaceOnly: true`, `agents.defaults.sandbox.mode: "off"` and
+[`telemetry.enabled: false`](claude-code-runtime.md#telemetry-and-model-pins).
 OCE isolates the Agent and has no Gateway approval screen. Unless `tools.exec`
 sets `security` or `ask`, OCC defaults `tools.exec.mode` to `"full"` and, in that
 mode, `tools.exec.strictInlineEval` to `false`.

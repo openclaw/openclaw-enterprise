@@ -86,7 +86,7 @@ The selected source includes required placement activation, node-local
 model/workspace projection, and the Codex native-child relay. OCE advertises
 `pinned-runtime` native-worker support, so the Console offers Dedicated OpenClaw
 without a custom-image declaration. When the same node hosts an admitted MCP
-tool, the worker can call its MCP client locally. Tools that require Gateway
+tool, the worker can call its MCP client locally. Tools needing Gateway
 policy hooks continue through the Gateway. Deployment still requires a provisioning
 SandboxDriver with networking, filesystem, and process containment.
 
@@ -101,7 +101,7 @@ enrollment, containment, workspace access, or model execution.
 | Build base                                            | `docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a` |
 | OpenClaw commit, archive SHA-256, and build timestamp | [Source manifest](openclaw-source.json)                                                                           |
 | Dedicated Codex CLI (`OPENAI_CODEX_VERSION`)          | `0.164.0`                                                                                                         |
-| Claude Code CLI (`OCE_CLAUDE_CODE_VERSION`)           | `2.1.304`, native `linux-x64` / `linux-arm64` platform packages, SHA-256 per architecture                         |
+| Claude Code (`OCE_CLAUDE_CODE_VERSION`)               | `2.1.304`                                                                                                         |
 | Matrix crypto native library                          | `@matrix-org/matrix-sdk-crypto-nodejs` `v0.6.6`, SHA-256 per architecture                                         |
 
 The source's package version is `2026.10.10`; it does not identify this custom
@@ -110,7 +110,7 @@ hash, every applied patch hash, lockfile hash, pinned package manager, selected 
 package identity, and the SHA-256 of `contents.json`, which inventories
 packaged files, modes, hashes, and symlinks after final-stage permission
 normalization. The final stage copies the assembled
-directory directly, without an intermediate compressed archive. Its pinned
+directory without an intermediate archive. Its pinned
 `node:24.22.1-bookworm-slim` base retains required runtime libraries, Git/SSH, GitHub CLI,
 Python, and process utilities. Both bases apply available Debian package updates
 during the build, including updates published after the pinned Node images.

@@ -20,6 +20,7 @@ export const GATEWAY_SECURITY_DEFAULTS = Object.freeze([
     explicit: true,
     admits: (exec) => exec.mode === "full" && noExecPolicy(exec),
   },
+  { path: ["telemetry", "enabled"], value: false, explicit: true },
 ]);
 
 // Fills `value` at an unset `path` when `admits` accepts the object that would hold it.

@@ -7,6 +7,10 @@ import test from "node:test";
 import vm from "node:vm";
 
 import {
+  admitGatewaySecurityDefaults,
+  agentRuntimeTelemetryEnabled,
+} from "../../packages/occ/src/gateway-security-defaults.ts";
+import {
   CLAUDE_CODE_RUNTIME_HELPERS,
   GATEWAY_RUNTIME_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -46,8 +50,52 @@ const selectedEnvironment = {
   OPENCLAW_HARNESS_CREDENTIAL_ENV: "ANTHROPIC_API_KEY",
   ANTHROPIC_API_KEY: "sk-ant-api03-fixture-key",
   OCE_CLAUDE_CODE_VERSION: VERSION,
+  OPENCLAW_HARNESS_MODEL: "anthropic/claude-sonnet-4-5",
+  OCE_AGENT_RUNTIME_TELEMETRY: "disabled",
   OPENCLAW_HARNESS_PROBE_CONFIG: PROBE_CONFIG({ baseUrl: "https://api.anthropic.com" }),
 };
+
+// Settings Claude Code reads that OCE always sets: no self-update or feedback prompts, no extra
+// headers or side endpoints.
+const ALWAYS = {
+  DISABLE_AUTOUPDATER: "1",
+  DISABLE_UPDATES: "1",
+  DISABLE_INSTALLATION_CHECKS: "1",
+  CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: "1",
+  DISABLE_FEEDBACK_COMMAND: "1",
+  DISABLE_BUG_COMMAND: "1",
+  CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: "1",
+  ANTHROPIC_CUSTOM_HEADERS: "",
+  CLAUDE_CODE_AUTO_MODE_SERVER: "",
+  CLAUDE_CODE_CLIENT_DATA_URL: "",
+};
+// Telemetry, error reporting and nonessential traffic, off unless the Configuration opts in.
+const TELEMETRY_DENIAL = {
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+  DISABLE_TELEMETRY: "1",
+  DISABLE_ERROR_REPORTING: "1",
+  DISABLE_GROWTHBOOK: "1",
+  DO_NOT_TRACK: "1",
+  CLAUDE_CODE_ENABLE_TELEMETRY: "0",
+  CLAUDE_CODE_ENHANCED_TELEMETRY_BETA: "0",
+  OTEL_METRICS_EXPORTER: "none",
+  OTEL_LOGS_EXPORTER: "none",
+  OTEL_TRACES_EXPORTER: "none",
+  OTEL_LOG_USER_PROMPTS: "0",
+};
+// Every model slot Claude Code fills by itself names the admitted primary model.
+const MODEL_SLOTS = Object.fromEntries(
+  [
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+    "CLAUDE_CODE_AUTO_MODE_MODEL",
+    "CLAUDE_CODE_BG_CLASSIFIER_MODEL",
+  ].map((name) => [name, "claude-sonnet-4-5"]),
+);
 
 test("the Gateway entrypoint carries the Claude Code preparation after the model probe", () => {
   assert.ok(GATEWAY_RUNTIME_ENTRYPOINT.includes(CLAUDE_CODE_RUNTIME_HELPERS));
@@ -80,10 +128,9 @@ test("an API key and the default endpoint produce a hardened, private settings f
   assert.equal(statSync(join(directory, "settings.json")).mode & 0o777, 0o600);
   assert.deepEqual(JSON.parse(readFileSync(join(directory, "settings.json"), "utf8")), {
     env: {
-      DISABLE_AUTOUPDATER: "1",
-      DISABLE_TELEMETRY: "1",
-      DISABLE_ERROR_REPORTING: "1",
-      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+      ...ALWAYS,
+      ...TELEMETRY_DENIAL,
+      ...MODEL_SLOTS,
       ANTHROPIC_API_KEY: "sk-ant-api03-fixture-key",
     },
   });
@@ -94,9 +141,39 @@ test("an API key and the default endpoint produce a hardened, private settings f
   assert.deepEqual([...calls[0].args], ["--version"]);
   assert.equal(calls[0].command, "claude");
   assert.equal(calls[0].env.CLAUDE_CONFIG_DIR, directory);
-  assert.equal(calls[0].env.DISABLE_AUTOUPDATER, "1");
+  for (const [name, value] of Object.entries({ ...ALWAYS, ...TELEMETRY_DENIAL })) {
+    assert.equal(calls[0].env[name], value, name);
+  }
   for (const name of ["ANTHROPIC_API_KEY", "OPENCLAW_HARNESS_PROBE_CONFIG"]) {
     assert.equal(Object.hasOwn(calls[0].env, name), false, name);
+  }
+});
+
+test("only an explicit telemetry opt-in leaves Claude Code's telemetry on", (t) => {
+  const settings = (value) => {
+    const env = { ...selectedEnvironment };
+    if (value === undefined) {
+      delete env.OCE_AGENT_RUNTIME_TELEMETRY;
+    } else {
+      env.OCE_AGENT_RUNTIME_TELEMETRY = value;
+    }
+    const { failure, home, calls } = prepare(t, { env });
+    assert.equal(failure, undefined);
+    // The version check never reports, whatever the opt-in.
+    assert.equal(calls[0].env.DISABLE_TELEMETRY, "1");
+    return JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf8")).env;
+  };
+  assert.deepEqual(settings("enabled"), {
+    ...ALWAYS,
+    ...MODEL_SLOTS,
+    ANTHROPIC_API_KEY: "sk-ant-api03-fixture-key",
+  });
+  // Unset or any other value denies, as when an older controller rendered the Pod.
+  for (const value of [undefined, "disabled", "1", "true"]) {
+    const env = settings(value);
+    for (const [name, denied] of Object.entries(TELEMETRY_DENIAL)) {
+      assert.equal(env[name], denied, `${value}: ${name}`);
+    }
   }
 });
 
@@ -133,6 +210,8 @@ test("missing inputs refuse before any file is written", (t) => {
     ["credential", { ANTHROPIC_API_KEY: "  " }],
     ["credential name", { OPENCLAW_HARNESS_CREDENTIAL_ENV: "OPENAI_API_KEY" }],
     ["provider", { OPENCLAW_HARNESS_PROVIDER: "openai" }],
+    ["primary model", { OPENCLAW_HARNESS_MODEL: "openai/gpt-5.5" }],
+    ["empty model", { OPENCLAW_HARNESS_MODEL: "anthropic/" }],
     ["probe configuration", { OPENCLAW_HARNESS_PROBE_CONFIG: "{" }],
     ["endpoint shape", { OPENCLAW_HARNESS_PROBE_CONFIG: PROBE_CONFIG({ baseUrl: 7 }) }],
   ]) {
@@ -156,5 +235,18 @@ test("a binary that is missing or not the pinned version holds the Gateway witho
     assert.equal(failure, "UNAVAILABLE", name);
     assert.equal(fs.existsSync(join(home, ".claude", "settings.json")), false, name);
     assert.equal(env.CLAUDE_CONFIG_DIR, undefined, name);
+  }
+});
+
+test("deployment admission keeps runtime telemetry off unless the Configuration opts in", () => {
+  // Admission fills OpenClaw's telemetry.enabled false and keeps an explicit value; Compute
+  // renders OCE_AGENT_RUNTIME_TELEMETRY=enabled only from an explicit true.
+  assert.deepEqual(admitGatewaySecurityDefaults({}).telemetry, { enabled: false });
+  assert.equal(agentRuntimeTelemetryEnabled(admitGatewaySecurityDefaults({})), false);
+  const optedIn = admitGatewaySecurityDefaults({ telemetry: { enabled: true } });
+  assert.deepEqual(optedIn.telemetry, { enabled: true });
+  assert.equal(agentRuntimeTelemetryEnabled(optedIn), true);
+  for (const telemetry of [{ enabled: "true" }, { enabled: 1 }, true, null, []]) {
+    assert.equal(agentRuntimeTelemetryEnabled({ telemetry }), false, JSON.stringify(telemetry));
   }
 });

@@ -52,14 +52,33 @@ by the provider's literal `baseUrl`. At startup the gateway first runs the usual
 rejected credential or unreachable endpoint fails the deployment with the same
 codes. Only then does the entrypoint prepare a Pod-local Claude Code
 configuration directory (`$HOME/.claude`, on the runtime-state volume, `0700`,
-settings `0600`) carrying the endpoint, the credential, and
-`DISABLE_AUTOUPDATER`, `DISABLE_TELEMETRY`, `DISABLE_ERROR_REPORTING` and
-`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`. Claude Code reads that directory
+settings `0600`) carrying the endpoint, the credential and the settings in
+[Telemetry and model pins](#telemetry-and-model-pins). Claude Code reads that directory
 because OpenClaw's backend scrubs `ANTHROPIC_*` and `CLAUDE_CODE_*` variables
 from the child's environment. A binary missing from the image or not at the
 pinned `OCE_CLAUDE_CODE_VERSION` holds the gateway unready with `UNAVAILABLE`,
 logged as startup phase `claude-code-runtime`. Model egress rules are unchanged:
 the endpoint must be reachable on public TCP/443.
+
+## Telemetry and model pins
+
+The settings file's `env` takes precedence over the process environment. It
+always turns off updates, installation checks and feedback prompts, clears
+`ANTHROPIC_CUSTOM_HEADERS`, and sets every model that Claude Code selects by
+itself (`ANTHROPIC_MODEL`, the `opus`, `sonnet` and `haiku` aliases, the
+small/fast, subagent and classifier models) to the primary model. Claude Code
+therefore calls only the admitted model.
+
+Telemetry is off by default. Deployment admission sets the OpenClaw setting
+`telemetry.enabled` to `false` when it is unset. Then the file also sets
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `DISABLE_TELEMETRY`,
+`DISABLE_ERROR_REPORTING`, `DISABLE_GROWTHBOOK` and `DO_NOT_TRACK`, and selects
+no OpenTelemetry exporter. The pinned binary then runs at its essential-traffic level: no telemetry, error
+reporting, feature-flag or update requests. To opt in, set
+`telemetry.enabled: true` or use the Console toggle in
+[Collaboration and safety](../guides/console/configuration-plugins-and-files.md).
+The setting applies to every agent runtime that OCE configures; Codex keeps its
+OpenTelemetry export off in all cases.
 
 ## Conversation state
 

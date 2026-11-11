@@ -3,6 +3,8 @@
 // OCE has no Gateway approval screen. Exec therefore defaults to "full" without a separate
 // prompt for each inline program. Preserve explicit exec policies, including the older
 // security/ask pair, which an explicit mode would override.
+// Telemetry is off unless the Configuration opts in: OpenClaw's own feature statistics and the
+// vendor telemetry of every agent runtime OCE configures (agentRuntimeTelemetryEnabled).
 // scripts/first-agent-model.mjs runs this module without installed workspace packages: keep it
 // free of imports and of TypeScript syntax that type stripping cannot erase.
 
@@ -28,6 +30,7 @@ const GATEWAY_SECURITY_DEFAULTS: readonly (readonly [
     false,
     (exec) => exec.mode === "full" && noExecPolicy(exec),
   ],
+  [["telemetry", "enabled"], false, always],
 ];
 
 function isObject(value: unknown): value is ConfigurationObject {
@@ -67,4 +70,13 @@ export function admitGatewaySecurityDefaults<T extends object>(values: Readonly<
     admitted = fill(admitted, path, value, admits);
   }
   return admitted as T;
+}
+
+/**
+ * Whether the admitted Configuration opts the Agent's runtimes into their vendors' telemetry and
+ * error reporting. Only an explicit `telemetry.enabled: true` does; admission fills `false`.
+ */
+export function agentRuntimeTelemetryEnabled(values: Readonly<Record<string, unknown>>): boolean {
+  const telemetry = values.telemetry;
+  return isObject(telemetry) && telemetry.enabled === true;
 }

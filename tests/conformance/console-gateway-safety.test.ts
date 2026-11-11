@@ -13,17 +13,20 @@ import {
 // editor saves, and show what a deployment of it runs with. These cases pin what the toggles
 // write, so the JSON round-trips: a toggle never drops a neighbouring setting or leaves an empty
 // object behind, and an unset setting shows the value the Gateway actually gets.
-const [steering, applyPatch] = GATEWAY_SAFETY_SETTINGS;
+const [steering, applyPatch, telemetry] = GATEWAY_SAFETY_SETTINGS;
 assert.ok(steering);
 assert.ok(applyPatch);
+assert.ok(telemetry);
 const effective = (values: Parameters<typeof gatewaySafetyValue>[0]) =>
   GATEWAY_SAFETY_SETTINGS.map((setting) => gatewaySafetyValue(values, setting));
 
 test("an unset setting shows the value deployment admission or OpenClaw gives it", () => {
-  // Admission restricts apply_patch to the workspace. The Gateway enables steering by default.
+  // Admission restricts apply_patch to the workspace and turns runtime telemetry off. The
+  // Gateway enables steering by default.
   assert.deepEqual(effective({}), [
     { kind: "value", value: true, explicit: false },
     { kind: "value", value: true, explicit: false },
+    { kind: "value", value: false, explicit: false },
   ]);
   // An explicit value wins and says so.
   assert.deepEqual(
@@ -79,6 +82,7 @@ test("Strict mode pins every locked-down value and off returns each setting to i
   assert.deepEqual(strict, {
     messages: { queue: { mode: "collect", allowCollaborativeSteering: false } },
     tools: { exec: { applyPatch: { workspaceOnly: true } } },
+    telemetry: { enabled: false },
   });
   assert.equal(gatewaySafetyStrict(strict), true);
   assert.deepEqual(withGatewaySafetyStrict(strict, false), values);
@@ -102,4 +106,19 @@ test("a value the Gateway refuses shows as invalid, and only a reachable one is 
   assert.equal(withGatewaySafetyValue(blocked, applyPatch, false), blocked);
   assert.equal(withGatewaySafetyStrict(blocked, true).tools, blocked.tools);
   assert.equal(gatewaySafetyStrict(blocked), false);
+});
+
+test("the telemetry toggle is the only opt-in to agent runtime telemetry", () => {
+  // OpenClaw's own telemetry.enabled key: an explicit true is the opt-in, which the Gateway
+  // Compute passes to every agent runtime it configures; off removes it again.
+  const values = { telemetry: { consentedAt: "2026-11-11T00:00:00.000Z" } };
+  const on = withGatewaySafetyValue(values, telemetry, true);
+  assert.deepEqual(on, { telemetry: { consentedAt: "2026-11-11T00:00:00.000Z", enabled: true } });
+  assert.deepEqual(gatewaySafetyValue(on, telemetry), {
+    kind: "value",
+    value: true,
+    explicit: true,
+  });
+  assert.deepEqual(withGatewaySafetyValue(on, telemetry, false), values);
+  assert.equal(gatewaySafetyStrict(on), false);
 });
