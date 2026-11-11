@@ -718,49 +718,80 @@ test("same-SHA reuse runs the existing full-coverage validator and rejects damag
   const manifest = loadTestSuites(
     fileURLToPath(new URL("../../scripts/ci/test-suites.json", import.meta.url)),
   );
-  const lane = "postgres";
-  const summary = {
-    version: 1,
-    command: "run",
-    sourceSha: sha,
-    scope: "full",
-    cleanup: { status: "passed" },
-    lane,
-    status: "passed",
-    exitCode: 0,
-    files: manifest.lanes[lane].files.map((file) => ({
-      path: file.path,
-      status: "passed",
-      counts: { total: file.expectedTests.length },
-      tests: file.expectedTests.map((name) => ({ name, status: "passed" })),
+  for (const lane of ["postgres", "checks-baseline-2"]) {
+    const summary = {
+      version: 1,
+      command: "run",
+      sourceSha: sha,
+      scope: "full",
       cleanup: { status: "passed" },
-    })),
-  };
-  const path = join(directory, "download", `${lane}.json`);
-  await writeFile(path, JSON.stringify(summary));
-  assert.deepEqual(await validateResults({ directory, producer, sha, get }), [lane]);
-  assert.deepEqual(
-    JSON.parse(await readFile(join(directory, "accepted", `${lane}.json`))),
-    summary,
-  );
-  for (const patch of [
-    { scope: "focused" },
-    { scope: undefined },
-    { cleanup: undefined },
-    { cleanup: { status: "failed" } },
-    { cleanup: { status: "unknown" } },
-    { sourceSha: "0".repeat(40) },
-    { files: [] },
-    { exitCode: 1 },
-    { files: summary.files.map((file) => ({ ...file, cleanup: { status: "failed" } })) },
-    { files: summary.files.map((file) => ({ ...file, tests: [] })) },
-  ]) {
-    await writeFile(path, JSON.stringify({ ...summary, ...patch }));
+      lane,
+      status: "passed",
+      exitCode: 0,
+      issues: [],
+      files: manifest.lanes[lane].files.map((file) => {
+        // Files without named expectations still need an observed case. These
+        // receipts exercise validation, not the represented database/runtime.
+        const names = file.expectedTests?.length ? file.expectedTests : [file.path];
+        return {
+          path: file.path,
+          status: "passed",
+          exercised: true,
+          nodeExitCode: 0,
+          signal: null,
+          issues: [],
+          counts: { total: names.length, passed: names.length, failed: 0, skipped: 0, todo: 0 },
+          tests: names.map((name) => ({ name, status: "passed" })),
+          cleanup: { status: "passed" },
+        };
+      }),
+    };
+    const total = summary.files.reduce((count, file) => count + file.tests.length, 0);
+    summary.counts = { total, passed: total, failed: 0, skipped: 0, todo: 0 };
+    const path = join(directory, "download", `${lane}.json`);
+    await writeFile(path, JSON.stringify(summary));
+    assert.deepEqual(await validateResults({ directory, producer, sha, get }), [lane]);
+    assert.deepEqual(
+      JSON.parse(await readFile(join(directory, "accepted", `${lane}.json`))),
+      summary,
+    );
+    for (const patch of [
+      { scope: "focused" },
+      { scope: undefined },
+      { cleanup: undefined },
+      { cleanup: { status: "failed" } },
+      { cleanup: { status: "unknown" } },
+      { sourceSha: "0".repeat(40) },
+      { files: [] },
+      { exitCode: 1 },
+      { counts: undefined },
+      ...["exercised", "nodeExitCode", "signal"].map((key) => ({
+        files: summary.files.map((file) => ({ ...file, [key]: undefined })),
+      })),
+      { files: summary.files.map((file) => ({ ...file, cleanup: { status: "failed" } })) },
+      { files: summary.files.map((file) => ({ ...file, tests: [] })) },
+      ...manifest.lanes[lane].files
+        .filter((file) => !file.expectedTests?.length)
+        .slice(0, 1)
+        .map((unconstrained) => ({
+          files: summary.files.map((file) =>
+            file.path === unconstrained.path ? { ...file, tests: [] } : file,
+          ),
+        })),
+    ]) {
+      await writeFile(path, JSON.stringify({ ...summary, ...patch }));
+      const accepted = await validateResults({ directory, producer, sha, get });
+      assert.deepEqual(accepted, []);
+      assert.ok(
+        (await selectFreshLanes(accepted, "success")).matrix.some((row) => row.lane === lane),
+      );
+    }
+    await writeFile(path, JSON.stringify(summary));
+    run.run_attempt = 3;
     assert.deepEqual(await validateResults({ directory, producer, sha, get }), []);
+    run.run_attempt = 2;
+    await rm(path);
   }
-  await writeFile(path, JSON.stringify(summary));
-  run.run_attempt = 3;
-  assert.deepEqual(await validateResults({ directory, producer, sha, get }), []);
 });
 
 test("full integration workflow carries QA and installation outcomes into selected aggregation", async (t) => {
@@ -888,14 +919,93 @@ test("full integration plans fresh fallback and attributes only published reuse 
     new URL("../../.github/workflows/full-integration-execution.yml", import.meta.url),
     "utf8",
   );
-  const script = workflow
-    .split("- name: Write selected job state")[1]
-    .match(/node <<'NODE'\n([\s\S]*?)\n\s+NODE/)[1];
   const { loadYaml } = createRequire(
     new URL("../../apps/controller/package.json", import.meta.url),
   )("@kubernetes/client-node");
+  const execution = loadYaml(workflow);
+  const allRows = JSON.parse(await readFile("scripts/ci/full-integration-lanes.json", "utf8"));
+  const freshStep = execution.jobs.preflight.steps.find((step) => step.id === "fresh-plan");
+  assert.ok(freshStep, "preflight must publish fallback independently of reuse");
+  const freshOutput = join(directory, "fresh-output");
+  const fresh = spawnSync("bash", ["-e", "-c", freshStep.run], {
+    encoding: "utf8",
+    env: { ...process.env, GITHUB_OUTPUT: freshOutput },
+  });
+  assert.equal(fresh.status, 0, fresh.stderr);
+  const freshMatrix = (await readFile(freshOutput, "utf8")).trim().slice("matrix=".length);
+  assert.deepEqual(JSON.parse(freshMatrix), allRows);
+  assert.equal(
+    workflowCondition(execution.jobs.preflight.outputs.matrix, {
+      steps: { "fresh-plan": { outputs: { matrix: freshMatrix } } },
+    }),
+    freshMatrix,
+  );
+  assert.equal(execution.jobs["ci-reuse"]["continue-on-error"], true);
+  for (const outcome of ["failure", "cancelled", "skipped", "success"]) {
+    const published = workflowCondition(execution.jobs["ci-reuse"].outputs.matrix, {
+      steps: { plan: { outcome, outputs: { matrix: JSON.stringify(values.matrix) } } },
+    });
+    assert.equal(published, outcome === "success" ? JSON.stringify(values.matrix) : "");
+  }
+  const matrixJob = execution.jobs["pr-safe-same-sha"];
+  const retained = execution.jobs["full-aggregate"].steps.find(
+    (step) => step.name === "Download committed reused results",
+  );
+  assert.ok(retained, "retained evidence must have a separately gated download");
+  assert.ok(!retained.with.name.startsWith("full-results-"));
+  assert.equal(
+    execution.jobs["ci-reuse"].steps.find((step) => step.id === "upload").with.name,
+    retained.with.name,
+  );
+  // A failed optional job may expose partial outputs after uploading. Neither
+  // those outputs nor an orphaned artifact may displace fresh execution.
+  for (const reuse of [
+    {
+      result: "success",
+      outputs: { matrix: JSON.stringify(values.matrix), lanes: '["postgres"]' },
+    },
+    ...["failure", "skipped", "cancelled", "success"].map((result) => ({
+      result,
+      outputs: { matrix: "", lanes: "" },
+    })),
+    {
+      result: "failure",
+      outputs: { matrix: JSON.stringify(values.matrix), lanes: '["postgres"]' },
+    },
+  ]) {
+    const committed = reuse.result === "success" && reuse.outputs.matrix !== "";
+    const context = {
+      needs: {
+        "ci-reuse": reuse,
+        preflight: { result: "success", outputs: { matrix: freshMatrix, run_all: "true" } },
+      },
+      github: {
+        repository: "openclaw/openclaw-enterprise",
+        ref: "refs/heads/main",
+        ref_type: "branch",
+        run_attempt: "1",
+        event_name: "schedule",
+      },
+      fromJSON: JSON.parse,
+    };
+    assert.deepEqual(
+      workflowCondition(matrixJob.strategy.matrix.include, context),
+      committed ? values.matrix : allRows,
+    );
+    assert.equal(workflowCondition(retained.if, context), committed);
+    assert.equal(workflowCondition(matrixJob.if, context), true);
+    assert.equal(workflowCondition(matrixJob.if, { ...context, cancelled: () => true }), false);
+  }
+  const script = workflow
+    .split("- name: Write selected job state")[1]
+    .match(/node <<'NODE'\n([\s\S]*?)\n\s+NODE/)[1];
   const jobs = loadYaml(workflow).jobs["full-aggregate"].needs;
-  const execute = async (result, reused = ["postgres"], parent = "failure") => {
+  const execute = async (
+    result,
+    reused = ["postgres"],
+    parent = "failure",
+    matrix = JSON.stringify(values.matrix),
+  ) => {
     const aggregated = spawnSync(process.execPath, ["--input-type=commonjs"], {
       input: script,
       encoding: "utf8",
@@ -905,7 +1015,7 @@ test("full integration plans fresh fallback and attributes only published reuse 
         REUSED_LANES: JSON.stringify(reused),
         NEEDS_JSON: JSON.stringify({
           ...Object.fromEntries(jobs.map((name) => [name, { result: "success" }])),
-          "ci-reuse": { result },
+          "ci-reuse": { result, outputs: { matrix } },
           "pr-safe-same-sha": { result: parent },
         }),
       },
@@ -922,6 +1032,10 @@ test("full integration plans fresh fallback and attributes only published reuse 
     assert.equal(needs["postgres-auth"], undefined);
     assert.ok(needs["image-lanes-same-sha"].lanes.includes("images-packaging"));
   }
+  const withoutPlan = await execute("success", ["postgres"], "failure", "");
+  assert.equal(withoutPlan.postgres, undefined);
+  assert.ok(withoutPlan["pr-safe-same-sha"].lanes.includes("postgres"));
+  assert.equal(withoutPlan["pr-safe-same-sha"].result, "failure");
   // Even when every eligible lane is reused, the two fresh-only lanes retain
   // the real parent outcome. Reused lanes must not also belong to that parent.
   const { rows, sha } = await reuseFixture();

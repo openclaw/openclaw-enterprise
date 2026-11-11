@@ -153,9 +153,13 @@ First-attempt scheduled and manual `all` runs can reuse eligible ordinary CI
 lanes from a successful push CI run on official `main` at the exact source SHA.
 Discovery waits at most 12 minutes. Required producer jobs must pass, and
 current-attempt artifacts must contain complete case and cleanup evidence.
-Validated results must be published as `full-results-reused` before their lanes
+Validated results must be published as `full-ci-reused-results` before their lanes
 are omitted from fresh execution. Ineligible lanes and unavailable, invalid or
-unpublished results fall back to fresh runs. The aggregate applies the same
+unpublished results fall back to fresh runs. Preflight supplies the full matrix
+if the optional reuse job fails or times out before completing its plan; that
+failure alone does not fail the workflow. Aggregation reads
+retained results only for a successful plan; abandoned uploads cannot replace
+fresh evidence. The aggregate applies the same
 case and cleanup rules to both sources; reuse is not independent execution.
 Hosted discovery, publication and final reuse accounting remain unverified.
 
