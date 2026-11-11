@@ -63,14 +63,13 @@ Queued writers remain unordered by commit; mutable caches permit misses.
 Production TUI, `k3d-otel` and OpenShell, including alternate sources.
 It deduplicates step IDs; import lines do not prove hits. Loads may reuse probes.
 
-The four ordinary image lanes, First Agent Smoke and Docker Model Runtime fetch
+Ordinary image lanes, First Agent Smoke and Docker Model Runtime fetch
 artifacts by repository/run/artifact IDs with `actions: read`. Docker Model Runtime
 requires artifacts from successful producers; failed/skipped producers select
 standalone builds. Local import cancels three minutes before the lane deadline.
 
 `loadRuntimeArtifact` verifies archive, source/run/attempt, platform, OCI
-index/manifest/config digests and loaded image. Docker's image ID can equal its
-config digest. `buildRuntimeImages` records ownership before import, rejects
+index/manifest/config digests and loaded image. Docker image IDs can equal config digests. `buildRuntimeImages` records ownership before import, rejects
 alternate sources and import fallback, and sets aliases. Startup skips Buildx;
 packaging/source builds retain it. Envoy and seccomp stay separate.
 
