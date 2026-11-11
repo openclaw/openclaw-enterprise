@@ -240,7 +240,12 @@ Limits: five minutes idle, fifteen minutes total, 4 MiB and 16,384 events.
 response-only null local-tool metadata and the optional effective image policy.
 Invalid or unknown fields withhold all bytes. Protection scans SDK snapshots,
 joined assistant text and completed/streamed Codex Plans; ambiguous order or indexes
-refuse. Function arguments parse once as bounded JSON. The
+refuse. A reasoning summary part opens only at the next index; an unopened or
+skipped summary delta withholds the response. Reasoning text has no part event:
+its next content index opens on the first delta, and a gap still withholds it.
+Each index is scanned alone, so material split across one part is withheld when
+another part's delta arrives between the halves.
+Function arguments parse once as bounded JSON. The
 [supported profile](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
 preserves safe bytes. The origin already received the credential.
 
@@ -334,20 +339,9 @@ None.
 
 ## Changelog
 
+- 2026-11-10 02:40: Withhold selected material split across one reasoning part. (codex/six-nov10-05-summary-index - dcb26d2300091d9124a32e0abb1bf296bfeac86c)
 - 2026-11-10 08:22: Accept empty metadata on replayed assistant output text. (authoring-run/098bcc8c-9e1b-4318-aff3-06c464edb33e - 33c820f6daf4ba6a1559680911ab2d509ee4a131)
 
 - 2026-11-10 07:15: Admit bounded Codex Git workspace metadata and passive MCP attribution on Responses requests. (authoring-run/13d2e44f-b996-453e-8cbc-db80b8f8e3e2 - f06bf60299ad29444685d70fb2708f3f0558a5ad)
-
-- 2026-11-06 02:38: Refuse historical Git issuance and session renewal while preserving original detach recovery. (authoring-run/96255fab-cb34-45d9-b940-d3055029e29f - 37b81d16bbbb3f0c864fc652060075c06eb4dc52)
-
-- 2026-11-06 02:36: Preserve request-time token resolution and held-probe diagnostics when merging the current flow. (authoring-run/c13df234-5a0d-4e3c-b254-cc806ee046e7 - 585e7ac2c6673611ec29a3c76ca507e61308fa6f)
-
-- 2026-11-06 01:25: Pin credential destinations. (authoring-run/7315b76f-e581-43e4-a73a-06f924640ea0 - 37144f62101a9e99b066f1abbbf75ede787d26dd)
-
-- 2026-11-05 23:21: Trace request-time token resolution and the permission check before releasing a credential header. (codex/01a19e60-87d0-71d0-8c9a-e3e3b33b1676 - 614169814)
-
-- 2026-11-05 20:36: Trace one-shot Git enrollment probe failures to the worker log. (authoring-run/5e3df28f-4382-449e-a9db-e26d5347994e - b1da9eddd3a594982ce36639610d1e3480a9e1f7)
-
-- 2026-11-05 11:50: Retain historical cleanup without legacy live recovery. (authoring-run/8ffac278-3c9e-4308-aec7-96da3b06d9d4 - 8389365da2b59206fb8727901a64f6cf1311a3b7)
 
 [Protected credential request documentation history](credential-source-egress/history.md) preserves the older dated entries.

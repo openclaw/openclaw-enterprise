@@ -530,7 +530,12 @@ export type ResponseOutputContent =
   { type: "output_text"; text: string } | { type: "refusal"; refusal: string };
 type ResponseOutputItem =
   | { type: "message"; content: ResponseOutputContent[] }
-  | { type: "reasoning" | "custom_tool_call" }
+  | {
+      type: "reasoning";
+      summary: { text: string }[];
+      content?: { text: string }[];
+    }
+  | { type: "custom_tool_call" }
   | { type: "function_call"; arguments: string };
 export type ItemEvent = {
   type: "response.output_item.added" | "response.output_item.done";
@@ -544,6 +549,7 @@ export type ItemContentEvent = {
   delta?: string;
   arguments?: string;
   content_index?: number;
+  summary_index?: number;
   part?: ResponseOutputContent;
 };
 export type ResponsesEvent = { type: string; sequence_number?: number } & (
