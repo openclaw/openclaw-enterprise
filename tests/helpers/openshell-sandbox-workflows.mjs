@@ -8412,10 +8412,28 @@ async function assertImportedNativeMcp(context, topology, provider) {
       180_000,
     );
     assert.equal(terminal.status, "ok");
-    return waitFor("native MCP tool result", async () => {
-      const { messages } = await client.request("chat.history", { sessionKey: key, limit: 40 });
-      return nativeToolResultIndex(messages, expectedCall, expectedResult) >= 0 || undefined;
-    });
+    // Report only what the Gateway history showed. Tool arguments and result text can contain credentials.
+    let sawToolCall = false;
+    let sawExpectedCall = false;
+    let sawPairedText = false;
+    const matchesCall = (call) => {
+      sawToolCall = true;
+      const matches = expectedCall(call);
+      sawExpectedCall ||= matches;
+      return matches;
+    };
+    const matchesText = (text) => {
+      sawPairedText = true;
+      return expectedResult(text);
+    };
+    return waitFor(
+      () =>
+        `native MCP tool result (tool call seen=${sawToolCall}, expected call seen=${sawExpectedCall}, paired successful text seen=${sawPairedText})`,
+      async () => {
+        const { messages } = await client.request("chat.history", { sessionKey: key, limit: 40 });
+        return nativeToolResultIndex(messages, matchesCall, matchesText) >= 0 || undefined;
+      },
+    );
   }
   // Native OpenClaw can expose a deferred MCP tool through dispatch_action by its catalog ID.
   // Both forms require the exact invocation's result and an authenticated provider-side receipt.
