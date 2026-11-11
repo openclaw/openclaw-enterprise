@@ -151,11 +151,9 @@ traces API authorization, queued controller operations, tenant network ownership
 Agent authentication and exact resource removal.
 The Driver rejects Docker API responses above 4 MiB from either a declared
 content length or the bytes received before buffering the complete body.
-`DockerComputeDriver.request` bounds each engine request separately. An in-flight
-abort retains its original error and cause, while its message identifies the fixed
-operation, method, elapsed time, effective deadline, and whether the request timer
-or enclosing operation cancelled it. Resource identifiers, query values and
-request contents are excluded. See the [request diagnostics](../reference/drivers/docker-compute.md#troubleshooting).
+For in-flight aborts, `DockerComputeDriver.request` preserves the error and adds
+[request diagnostics](../reference/drivers/docker-compute.md#troubleshooting)
+to its message. Preflight cancellation remains unchanged.
 
 ### 3. Clean up Docker or Podman Compose
 
