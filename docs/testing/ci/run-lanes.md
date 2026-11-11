@@ -202,8 +202,35 @@ node scripts/ci/run-tests.mjs run checks-baseline-1 --lifecycle complete \
 Choose an unused attempt name. This example runs one existing wire-conformance
 file without preparing services. Omit `--file` to run the whole selected lane.
 The command validates the selection before preparation and retains the lane's
-required inputs and expected cases. It does not select images, provide missing credentials, or enable optional
+required inputs. A file-only run requires all of the file’s expected cases.
+It does not select images, provide missing credentials, or enable optional
 wire tests. Follow the selected lane's setup requirements first.
+
+To select one top-level standalone Node.js case, keep `--file` and add
+`--test-name`. With Docker Compose available, this example prepares PostgreSQL,
+runs the idle-backend regression, and cleans up:
+
+```sh
+node scripts/ci/run-tests.mjs run postgres-platform --lifecycle complete \
+  --attempt "$HOME/oce-postgres-idle-attempt-1" \
+  --file tests/integration/postgres-connection-auth.test.mjs \
+  --test-name 'the pool survives PostgreSQL terminating an idle backend'
+```
+
+The value is a nonempty literal name of at most 256 UTF-8 bytes. Missing `--file`,
+names outside that range, `<root>`, and the selected file's absolute path fail
+before preparation. For names beginning with `--`, use
+`--test-name='--dry-run preserves state'`. Both forms select literal names;
+the runner rejects a second selector before preparation or attempt creation.
+A bare `--test-name` still needs a value.
+The runner rejects `--test-name-pattern`.
+
+The name must exactly match one required case in the selected file’s manifest.
+Exactly one standalone top-level case with that name must pass. Missing, extra
+or duplicate cases, suites, nested tests, skips, TODOs and failures fail the run.
+Use a file-only run for suites or nested tests. Other registered cases may be
+omitted. Results record the literal `testName` and `scope: focused`, including
+when preparation fails; aggregation rejects them as full-lane evidence.
 
 Complete mode uses only `<root>/scripts/ci/test-suites.json`, where `--root`
 selects the checkout and defaults to the runner's checkout. You can omit
@@ -263,7 +290,9 @@ Run cleanup after preparation or test failures too. See [local browser diagnosti
 
 For focused local proof, first validate the exact manifest path with
 `node scripts/ci/run-tests.mjs check-selection <lane> --file <manifest-path>`.
-Then prepare the lane and pass the same `--file` argument to `run`. Omit `--file`
+Then prepare the lane and pass the same `--file` argument to `run`. The `run`
+command also accepts `--test-name` for the top-level cases described
+above; `check-selection` validates only the file. Omit both selection arguments
 for the complete lane. The composite action validates focused selection before
 tool setup or preparation; an unknown path, path alias, or another lane's file fails.
 
