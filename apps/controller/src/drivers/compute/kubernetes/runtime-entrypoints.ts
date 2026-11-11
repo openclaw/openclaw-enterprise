@@ -2514,21 +2514,35 @@ function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
 // selects the claude-cli model policy. OpenClaw's backend scrubs ANTHROPIC_* and
 // CLAUDE_CODE_* auth from the child's environment and runs agent turns with
 // --setting-sources "", so Claude Code ignores its user settings; it always reads its
-// admin-managed settings, whose directory the image links to a Pod-local one under HOME
-// (the runtime-state emptyDir). The admitted endpoint and the bound credential go there:
-// 0700 directory, 0600 file, written only after the HTTP model probe accepted the credential. A setup token
-// (sk-ant-oat...) is a bearer, as OpenClaw's own client sends it; anything else is an API
-// key. The binary must be the image's pinned version: a missing or different one holds
-// the Gateway unready with UNAVAILABLE, before any turn could reach it.
-// The settings file's env outranks the spawned environment. It always turns off updates and
+// admin-managed settings in /etc/claude-code. Those outrank every other tier (their hooks
+// run even under OpenClaw's flag-level disableAllHooks and receive the credential), so the
+// model's tools, which run as the Gateway's uid, must never change them:
+// - the prepare-claude-code-settings init container writes managed-settings.json, holding
+//   the admitted endpoint and the bound credential, into a Memory emptyDir that only it
+//   mounts writable (CLAUDE_CODE_SETTINGS_INIT_ENTRYPOINT);
+// - the Gateway mounts that directory read-only at /etc/claude-code, and the entrypoint
+//   holds the Gateway unready with UNAVAILABLE unless its own mount table lists the mount
+//   read-only, a write attempt fails, the directory holds only that file (no
+//   managed-settings.d drop-ins) and the file is exactly the one these inputs produce.
+// A setup token (sk-ant-oat...) is a bearer, as OpenClaw's own client sends it; anything
+// else is an API key. The binary must be the image's pinned version: a missing or
+// different one also holds the Gateway with UNAVAILABLE, before any turn could reach it.
+// The managed env outranks the spawned environment. It always turns off updates and
 // feedback prompts and points every model slot Claude Code fills by itself (aliases, the
 // small/fast and subagent models, classifiers) at the primary model, so it calls only the
 // admitted model. Telemetry, error reporting and other nonessential traffic stay off unless
 // the admitted Configuration sets telemetry.enabled (OCE_AGENT_RUNTIME_TELEMETRY=enabled).
-// The names are those the pinned binary reads; check them again when the pin changes.
+// disableAllHooks repeats OpenClaw's own flag at the managed tier, the only tier that also
+// disables managed hooks. The names are those the pinned binary reads; check them again
+// when the pin changes.
+export const CLAUDE_CODE_MANAGED_SETTINGS_DIRECTORY = "/etc/claude-code";
+// The init container's mount of the settings volume; the Gateway mounts its subPath.
+export const CLAUDE_CODE_SETTINGS_INIT_ROOT = "/run/oce/claude-code-settings";
+export const CLAUDE_CODE_SETTINGS_SUBPATH = "managed";
 export const CLAUDE_CODE_RUNTIME_HELPERS = String.raw`
 const CLAUDE_CODE_AGENT_RUNTIME = "claude-cli";
 const CLAUDE_CODE_DEFAULT_BASE_URL = "https://api.anthropic.com";
+const CLAUDE_CODE_MANAGED_SETTINGS_FILE = "managed-settings.json";
 const CLAUDE_CODE_SETTINGS_HARDENING = Object.freeze({
   DISABLE_AUTOUPDATER: "1",
   DISABLE_UPDATES: "1",
@@ -2571,44 +2585,21 @@ function claudeCodeTelemetryEnvironment() {
 function claudeCodeRuntimeSelected() {
   return process.env.OPENCLAW_HARNESS_AGENT_RUNTIME === CLAUDE_CODE_AGENT_RUNTIME;
 }
-// deploy/runtime/Dockerfile links this to HOME's .oce-claude-code.
-const CLAUDE_CODE_MANAGED_SETTINGS_LINK = "/etc/claude-code";
-// Returns undefined once the settings are written and CLAUDE_CONFIG_DIR points at the
-// configuration directory, else a code from the runtime failure vocabulary. Never the
-// credential, a path, or native output.
-function prepareClaudeCodeRuntime(fs, spawnSync) {
-  const expectedVersion = process.env.OCE_CLAUDE_CODE_VERSION;
+// The managed-settings.json text the admitted inputs produce, or a code from the runtime
+// failure vocabulary. Never the credential, a path, or native output.
+function claudeCodeManagedSettings() {
   const credentialEnvironment = process.env.OPENCLAW_HARNESS_CREDENTIAL_ENV;
   const credential = credentialEnvironment === undefined ? undefined : process.env[credentialEnvironment]?.trim();
   // The probe configuration is the admitted provider fragment; an unreadable one proves nothing.
   let probeConfiguration;
-  try { probeConfiguration = JSON.parse(process.env.OPENCLAW_HARNESS_PROBE_CONFIG); } catch { return "NOT_CONFIGURED"; }
+  try { probeConfiguration = JSON.parse(process.env.OPENCLAW_HARNESS_PROBE_CONFIG); } catch { return { failure: "NOT_CONFIGURED" }; }
   const provider = probeConfiguration?.models?.providers?.[process.env.OPENCLAW_HARNESS_PROVIDER];
   const model = process.env.OPENCLAW_HARNESS_MODEL?.startsWith("anthropic/")
     ? process.env.OPENCLAW_HARNESS_MODEL.slice("anthropic/".length)
     : "";
-  if (!expectedVersion || !credential || process.env.OPENCLAW_HARNESS_PROVIDER !== "anthropic" || model === "" ||
+  if (!credential || process.env.OPENCLAW_HARNESS_PROVIDER !== "anthropic" || model === "" ||
     typeof probeConfiguration !== "object" || probeConfiguration === null ||
-    (provider?.baseUrl !== undefined && typeof provider.baseUrl !== "string")) return "NOT_CONFIGURED";
-  const home = process.env.HOME || "/home/node";
-  if (!home.startsWith("/")) return "NOT_CONFIGURED";
-  const directory = home + "/.claude";
-  const managed = home + "/.oce-claude-code";
-  try {
-    if (fs.readlinkSync(CLAUDE_CODE_MANAGED_SETTINGS_LINK) !== managed) return "UNAVAILABLE";
-    for (const path of [directory, managed]) {
-      fs.mkdirSync(path, { recursive: true, mode: 0o700 });
-      fs.chmodSync(path, 0o700);
-    }
-  } catch { return "UNAVAILABLE"; }
-  const version = spawnSync("claude", ["--version"], {
-    env: {
-      PATH: process.env.PATH, HOME: home, CLAUDE_CONFIG_DIR: directory,
-      ...CLAUDE_CODE_SETTINGS_HARDENING, ...CLAUDE_CODE_TELEMETRY_DENIAL,
-    },
-    encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 30000, killSignal: "SIGKILL", maxBuffer: 4096,
-  });
-  if (version.error || version.status !== 0 || version.stdout.trim() !== expectedVersion + " (Claude Code)") return "UNAVAILABLE";
+    (provider?.baseUrl !== undefined && typeof provider.baseUrl !== "string")) return { failure: "NOT_CONFIGURED" };
   const baseUrl = (provider?.baseUrl ?? "").replace(/\/+$/, "");
   const env = {
     ...CLAUDE_CODE_SETTINGS_HARDENING,
@@ -2617,13 +2608,106 @@ function prepareClaudeCodeRuntime(fs, spawnSync) {
     ...(baseUrl !== "" && baseUrl !== CLAUDE_CODE_DEFAULT_BASE_URL ? { ANTHROPIC_BASE_URL: baseUrl } : {}),
     [credential.startsWith("sk-ant-oat") ? "ANTHROPIC_AUTH_TOKEN" : "ANTHROPIC_API_KEY"]: credential,
   };
+  return { settings: JSON.stringify({ disableAllHooks: true, env }) + "\n" };
+}
+// The init container's step. A Pod restart reruns it on the same emptyDir, so it first
+// clears whatever an earlier run left, then writes the file only when the inputs are
+// complete; on any failure it leaves the directory empty and the Gateway reports the code.
+// Nothing else mounts the volume writable, and no step follows a symlink: the directory is
+// lstat-checked, entries are unlinked (rmSync never follows links), and the file is
+// created exclusively with O_NOFOLLOW. Returns undefined or a code.
+function writeClaudeCodeManagedSettings(fs, root) {
+  const directory = root + "/" + ${JSON.stringify(CLAUDE_CODE_SETTINGS_SUBPATH)};
+  const file = directory + "/" + CLAUDE_CODE_MANAGED_SETTINGS_FILE;
+  let owned = false;
   try {
-    fs.writeFileSync(managed + "/managed-settings.json", JSON.stringify({ env }) + "\n", { mode: 0o600 });
-    fs.chmodSync(managed + "/managed-settings.json", 0o600);
-  } catch { return "UNAVAILABLE"; }
+    let existing;
+    try { existing = fs.lstatSync(directory); } catch (error) { if (error?.code !== "ENOENT") throw error; }
+    if (existing === undefined) {
+      fs.mkdirSync(directory, { mode: 0o700 });
+    } else if (!existing.isDirectory()) {
+      return "UNAVAILABLE";
+    } else {
+      fs.chmodSync(directory, 0o700);
+    }
+    owned = true;
+    for (const entry of fs.readdirSync(directory)) fs.rmSync(directory + "/" + entry, { recursive: true, force: true });
+    const prepared = claudeCodeManagedSettings();
+    if (prepared.failure !== undefined) return prepared.failure;
+    const { O_WRONLY, O_CREAT, O_EXCL, O_NOFOLLOW } = fs.constants;
+    const descriptor = fs.openSync(file, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o400);
+    try { fs.writeFileSync(descriptor, prepared.settings); } finally { fs.closeSync(descriptor); }
+    return undefined;
+  } catch {
+    if (owned) { try { fs.rmSync(file, { force: true }); } catch {} }
+    return "UNAVAILABLE";
+  } finally {
+    if (owned) { try { fs.chmodSync(directory, 0o500); } catch {} }
+  }
+}
+function claudeCodeWriteRefused(error) {
+  return error?.code === "EROFS" || error?.code === "EACCES" || error?.code === "EPERM";
+}
+// True only when this process sees the directory as a read-only mount it cannot write,
+// holding nothing but the expected file. Mode bits are not the boundary: the Gateway runs
+// as the uid that owns the file, so the mount itself must be read-only.
+function claudeCodeManagedSettingsSealed(fs, directory, settings) {
+  const file = directory + "/" + CLAUDE_CODE_MANAGED_SETTINGS_FILE;
+  const probe = directory + "/.oce-write-check";
+  try {
+    // A later line stacks over an earlier one at the same mount point.
+    let readOnly = false;
+    for (const line of fs.readFileSync("/proc/self/mountinfo", "utf8").split("\n")) {
+      const fields = line.split(" ");
+      if (fields[4] === directory) readOnly = fields[5].split(",").includes("ro");
+    }
+    if (!readOnly || !fs.lstatSync(directory).isDirectory()) return false;
+    // Only the expected file: a managed-settings.d drop-in would outrank it.
+    const entries = fs.readdirSync(directory);
+    if (entries.length !== 1 || entries[0] !== CLAUDE_CODE_MANAGED_SETTINGS_FILE || !fs.lstatSync(file).isFile()) return false;
+    for (const path of [directory, file]) {
+      try { fs.accessSync(path, fs.constants.W_OK); return false; } catch (error) { if (!claudeCodeWriteRefused(error)) return false; }
+    }
+    try {
+      fs.closeSync(fs.openSync(probe, "wx"));
+      fs.rmSync(probe, { force: true });
+      return false;
+    } catch (error) { if (!claudeCodeWriteRefused(error)) return false; }
+    return fs.readFileSync(file, "utf8") === settings;
+  } catch { return false; }
+}
+// Returns undefined once the managed settings are sealed and exactly the admitted ones and
+// CLAUDE_CONFIG_DIR points at the configuration directory (created 0700 by the
+// private-state init), else a code from the runtime failure vocabulary. Never the
+// credential, a path, or native output. It writes nothing.
+function verifyClaudeCodeRuntime(fs, spawnSync, managedDirectory) {
+  const expectedVersion = process.env.OCE_CLAUDE_CODE_VERSION;
+  const prepared = claudeCodeManagedSettings();
+  if (prepared.failure !== undefined) return prepared.failure;
+  const home = process.env.HOME || "/home/node";
+  if (!expectedVersion || !home.startsWith("/")) return "NOT_CONFIGURED";
+  if (!claudeCodeManagedSettingsSealed(fs, managedDirectory, prepared.settings)) return "UNAVAILABLE";
+  const directory = home + "/.claude";
+  const version = spawnSync("claude", ["--version"], {
+    env: {
+      PATH: process.env.PATH, HOME: home, CLAUDE_CONFIG_DIR: directory,
+      ...CLAUDE_CODE_SETTINGS_HARDENING, ...CLAUDE_CODE_TELEMETRY_DENIAL,
+    },
+    encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 30000, killSignal: "SIGKILL", maxBuffer: 4096,
+  });
+  if (version.error || version.status !== 0 || version.stdout.trim() !== expectedVersion + " (Claude Code)") return "UNAVAILABLE";
   process.env.CLAUDE_CONFIG_DIR = directory;
   return undefined;
 }
+`;
+
+// Runs in the runtime image as the prepare-claude-code-settings init container, the only
+// container that mounts the settings volume writable. It prints only a failure code.
+export const CLAUDE_CODE_SETTINGS_INIT_ENTRYPOINT = String.raw`
+"use strict";
+${CLAUDE_CODE_RUNTIME_HELPERS}
+const claudeCodeSettingsFailure = writeClaudeCodeManagedSettings(require("node:fs"), ${JSON.stringify(CLAUDE_CODE_SETTINGS_INIT_ROOT)});
+if (claudeCodeSettingsFailure !== undefined) console.error("claude-code-settings: " + claudeCodeSettingsFailure);
 `;
 
 const WORKSPACE_ASSET_HELPERS = String.raw`
@@ -3229,12 +3313,12 @@ const openClawAuthenticationFailure =
 if (process.env.OPENCLAW_HARNESS_PROBE_CONFIG !== undefined) {
   logStartupPhase("model-probe", startupPhaseOrigin, openClawAuthenticationFailure === undefined ? "ok" : "failed");
 }
-// Claude Code's configuration directory is prepared only once the probe accepted the
-// credential, so a rejected key never reaches a file; the phase names its failure code.
+// Claude Code is verified only once the probe accepted the credential; the phase names its
+// failure code.
 let claudeCodeRuntimeFailure;
 if (openClawAuthenticationFailure === undefined && claudeCodeRuntimeSelected()) {
   const claudeCodeStartedAt = Date.now();
-  claudeCodeRuntimeFailure = prepareClaudeCodeRuntime(require("node:fs"), require("node:child_process").spawnSync);
+  claudeCodeRuntimeFailure = verifyClaudeCodeRuntime(require("node:fs"), require("node:child_process").spawnSync, ${JSON.stringify(CLAUDE_CODE_MANAGED_SETTINGS_DIRECTORY)});
   logStartupPhase("claude-code-runtime", claudeCodeStartedAt, claudeCodeRuntimeFailure === undefined ? "ok" : "failed", claudeCodeRuntimeFailure);
 }
 if (openClawAuthenticationFailure !== undefined) {

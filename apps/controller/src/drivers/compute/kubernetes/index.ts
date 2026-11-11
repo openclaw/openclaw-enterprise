@@ -288,6 +288,10 @@ import {
 } from "../embedded-gateway-owner.ts";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
+  CLAUDE_CODE_MANAGED_SETTINGS_DIRECTORY,
+  CLAUDE_CODE_SETTINGS_INIT_ENTRYPOINT,
+  CLAUDE_CODE_SETTINGS_INIT_ROOT,
+  CLAUDE_CODE_SETTINGS_SUBPATH,
   COMPUTE_AGENT_RUNTIME_ENTRYPOINT,
   COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
   COMPUTE_AGENT_WITH_NODE_ENTRYPOINT,
@@ -1454,11 +1458,22 @@ const GATEWAY_PRIVATE_STATE_CATEGORIES = Object.freeze([
 ] as const);
 // Claude Code keeps each session's transcript under its configuration directory, and
 // OpenClaw resumes a conversation by that session ID (`claude --resume`). The rest of the
-// directory, including the settings file that carries the credential, stays Pod-local.
+// directory stays Pod-local. The managed settings that carry the credential are not in it:
+// they come read-only from CLAUDE_CODE_SETTINGS_VOLUME.
 const CLAUDE_CODE_PROJECTS_STATE = Object.freeze([
   "claude-projects",
   "/home/node/.claude/projects",
 ] as const);
+const CLAUDE_CODE_SETTINGS_VOLUME = "claude-code-settings";
+// What prepare-claude-code-settings reads, besides the credential variable they name.
+const CLAUDE_CODE_SETTINGS_INPUTS: readonly string[] = Object.freeze([
+  "OPENCLAW_HARNESS_AGENT_RUNTIME",
+  "OPENCLAW_HARNESS_PROVIDER",
+  "OPENCLAW_HARNESS_MODEL",
+  "OPENCLAW_HARNESS_CREDENTIAL_ENV",
+  "OPENCLAW_HARNESS_PROBE_CONFIG",
+  "OCE_AGENT_RUNTIME_TELEMETRY",
+]);
 const HARNESS_WORKSPACE_VOLUME = "openclaw-workspace";
 const HARNESS_WORKSPACE_SIZE = "40Gi";
 type WorkspaceRole = "agent" | "gateway";
@@ -16058,9 +16073,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                   ),
                 ),
               },
-              // The Gateway entrypoint prepares the Claude Code configuration directory
-              // from this, after the model probe; the probe itself stays on OpenClaw's
-              // HTTP client (harnessProbeConfiguration pins agentRuntime to openclaw).
+              // This selects the prepare-claude-code-settings init and the Gateway
+              // entrypoint's Claude Code check, after the model probe; the probe itself
+              // stays on OpenClaw's HTTP client (harnessProbeConfiguration pins
+              // agentRuntime to openclaw).
               ...(selectsClaudeCodeRuntime(revision.configuration)
                 ? [
                     { name: "OPENCLAW_HARNESS_AGENT_RUNTIME", value: CLAUDE_CLI_AGENT_RUNTIME_ID },
@@ -17220,6 +17236,46 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       });
       volumeMounts.push({ ...publicKey, readOnly: true }, startup);
       variables.push({ name: "OPENCLAW_EMBEDDED_GATEWAY_OWNER", value: "1" });
+    }
+    if (claudeCode) {
+      // Claude Code's admin-managed settings carry the credential and outrank every other
+      // settings tier, so the model's tools (the Gateway's uid) must not change them. Only
+      // this init mounts the volume writable; the Gateway gets the file read-only, and its
+      // entrypoint refuses to start Claude Code unless that mount is read-only.
+      const credentialVariable = variables.find(
+        ({ name }) => name === "OPENCLAW_HARNESS_CREDENTIAL_ENV",
+      )?.value;
+      const settingsInputs = variables.filter(
+        ({ name }) =>
+          CLAUDE_CODE_SETTINGS_INPUTS.includes(name) ||
+          (credentialVariable !== undefined && name === credentialVariable),
+      );
+      volumes.push({
+        name: CLAUDE_CODE_SETTINGS_VOLUME,
+        emptyDir: { medium: "Memory", sizeLimit: "64Ki" },
+      });
+      initContainers.push({
+        name: "prepare-claude-code-settings",
+        image,
+        imagePullPolicy: "IfNotPresent",
+        command: [...SETUP_WRAPPER_COMMAND],
+        args: [CLAUDE_CODE_SETTINGS_INIT_ENTRYPOINT],
+        env: settingsInputs,
+        volumeMounts: [
+          { name: CLAUDE_CODE_SETTINGS_VOLUME, mountPath: CLAUDE_CODE_SETTINGS_INIT_ROOT },
+        ],
+        securityContext: {
+          allowPrivilegeEscalation: false,
+          readOnlyRootFilesystem: true,
+          capabilities: { drop: ["ALL"] },
+        },
+      });
+      volumeMounts.push({
+        name: CLAUDE_CODE_SETTINGS_VOLUME,
+        mountPath: CLAUDE_CODE_MANAGED_SETTINGS_DIRECTORY,
+        subPath: CLAUDE_CODE_SETTINGS_SUBPATH,
+        readOnly: true,
+      });
     }
     if (dedicated && this.options.executionCluster !== undefined) {
       if (role === "gateway") {

@@ -50,21 +50,39 @@ sent as a bearer), or the bearer token of an Anthropic-compatible endpoint named
 by the provider's literal `baseUrl`. At startup the gateway first runs the usual
 [model probe](harness-execution.md#harness-authentication) through OpenClaw's HTTP client, so a
 rejected credential or unreachable endpoint fails the deployment with the same
-codes. Only then does the entrypoint write Claude Code's admin-managed
-settings (`0600`) carrying the endpoint, the credential and the settings in
-[Telemetry and model pins](#telemetry-and-model-pins). The image links
-`/etc/claude-code` to `$HOME/.oce-claude-code` (`0700`, on the runtime-state volume).
-OpenClaw's backend scrubs `ANTHROPIC_*` and `CLAUDE_CODE_*` variables from the
-child's environment and selects no setting sources, so Claude Code ignores its user
-settings but always reads managed ones. A binary missing from the image or not at the
-pinned `OCE_CLAUDE_CODE_VERSION` holds the gateway unready with `UNAVAILABLE`,
-logged as startup phase `claude-code-runtime`. Model egress rules are unchanged:
+codes.
+
+Claude Code reads its admin-managed settings from `/etc/claude-code`. These
+settings carry the endpoint, the credential and the settings in
+[Telemetry and model pins](#telemetry-and-model-pins). OpenClaw's backend scrubs
+`ANTHROPIC_*` and `CLAUDE_CODE_*` variables from the child's environment and
+selects no setting sources, so Claude Code ignores its user settings but always
+reads managed ones. Managed settings outrank every other tier, and the model's
+tools run as the same uid as the gateway. Therefore no process in the gateway
+container can change them:
+
+- The `prepare-claude-code-settings` init container writes only
+  `managed-settings.json` (`0400`) to a memory-backed volume. It is the only
+  container that mounts the volume writable. It gets only the model inputs and
+  the one credential variable, and it has no Agent state mounted.
+- The gateway mounts that directory read-only at `/etc/claude-code`. Because the
+  directory holds only that file, it has no `managed-settings.d` drop-ins.
+- After the model probe, the gateway checks the mount. It holds the gateway
+  unready with `UNAVAILABLE` unless all of these are true: its mount table lists
+  the directory as read-only, a write attempt fails, the directory holds only
+  `managed-settings.json`, and the file is exactly the one that the admitted
+  inputs produce.
+
+A binary missing from the image or not at the pinned
+`OCE_CLAUDE_CODE_VERSION` also holds the gateway with `UNAVAILABLE`. Both checks
+are logged as startup phase `claude-code-runtime`. Model egress rules are unchanged:
 the endpoint must be reachable on public TCP/443.
 
 ## Telemetry and model pins
 
-The managed settings' `env` takes precedence over the process environment. It
-always turns off updates, installation checks and feedback prompts, clears
+The managed settings set `disableAllHooks`, the only tier at which it also
+disables managed hooks. OpenClaw's own hook callbacks keep working. The
+settings' `env` takes precedence over the process environment. It always turns off updates, installation checks and feedback prompts, clears
 `ANTHROPIC_CUSTOM_HEADERS`, and sets every model that Claude Code selects by
 itself (`ANTHROPIC_MODEL`, the `opus`, `sonnet` and `haiku` aliases, the
 small/fast, subagent and classifier models) to the primary model. Claude Code
@@ -86,7 +104,7 @@ OpenTelemetry export off in all cases.
 Claude Code keeps each session's transcript under `$HOME/.claude/projects`, and
 OpenClaw resumes a conversation by its session ID. Compute mounts that directory
 from the Agent's private gateway state claim, so a conversation continues after a
-gateway restart or redeploy. The rest of `$HOME/.claude`, and the managed settings
-that carry the credential, stay on the Pod-local runtime-state volume; the
-settings are rewritten at each start. Deleting the Agent deletes the claim and its
-transcripts.
+gateway restart or redeploy. The rest of `$HOME/.claude` stays on the Pod-local
+runtime-state volume. The managed settings that carry the credential exist only in
+the Pod's memory-backed volume, and the init container writes them again when the
+Pod starts. Deleting the Agent deletes the claim and its transcripts.

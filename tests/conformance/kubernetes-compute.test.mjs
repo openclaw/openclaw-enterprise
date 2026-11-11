@@ -22,6 +22,7 @@ import {
   AGENT_READINESS_ENTRYPOINT,
   AGENT_WITH_NODE_ENTRYPOINT as SANDBOX_AGENT_WITH_NODE_ENTRYPOINT,
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT as SANDBOX_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+  CLAUDE_CODE_SETTINGS_INIT_ENTRYPOINT,
   COMPUTE_AGENT_RUNTIME_ENTRYPOINT as AGENT_RUNTIME_ENTRYPOINT,
   COMPUTE_AGENT_WITH_NODE_ENTRYPOINT as AGENT_WITH_NODE_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT,
@@ -13802,9 +13803,72 @@ async function exerciseEmbeddedReplacement(scenario) {
     ]);
     assert.match(preparation, /"\/runtime-state\/home\/\.claude"/u);
     assert.match(preparation, /"\/gateway-state\/claude-projects"/u);
+    // Claude Code's admin-managed settings carry the credential and outrank every other
+    // tier, and the model's tools run as the Gateway's uid. Only the settings init mounts
+    // the Memory volume writable; the Gateway sees it read-only at /etc/claude-code.
+    const settingsVolume = gatewayPod.volumes.find(({ name }) => name === "claude-code-settings");
+    assert.deepEqual(settingsVolume, {
+      name: "claude-code-settings",
+      emptyDir: { medium: "Memory", sizeLimit: "64Ki" },
+    });
+    const settingsMounts = (container) =>
+      container.volumeMounts.filter(({ name }) => name === "claude-code-settings");
+    assert.deepEqual(settingsMounts(gatewayPod.containers[0]), [
+      {
+        name: "claude-code-settings",
+        mountPath: "/etc/claude-code",
+        subPath: "managed",
+        readOnly: true,
+      },
+    ]);
+    const writers = gatewayPod.initContainers.filter(
+      (container) => settingsMounts(container).length > 0,
+    );
+    assert.deepEqual(
+      writers.map(({ name }) => name),
+      ["prepare-claude-code-settings"],
+    );
+    const [settingsInit] = writers;
+    assert.deepEqual(settingsMounts(settingsInit), [
+      { name: "claude-code-settings", mountPath: "/run/oce/claude-code-settings" },
+    ]);
+    assert.equal(settingsInit.args[0], CLAUDE_CODE_SETTINGS_INIT_ENTRYPOINT);
+    assert.deepEqual(settingsInit.securityContext, {
+      allowPrivilegeEscalation: false,
+      readOnlyRootFilesystem: true,
+      capabilities: { drop: ["ALL"] },
+    });
+    // It receives only its inputs and the one credential they name, from the same Secret.
+    const settingsEnvironment = Object.fromEntries(
+      settingsInit.env.map((entry) => [entry.name, entry]),
+    );
+    assert.deepEqual(Object.keys(settingsEnvironment).sort(), [
+      environmentName,
+      "OCE_AGENT_RUNTIME_TELEMETRY",
+      "OPENCLAW_HARNESS_AGENT_RUNTIME",
+      "OPENCLAW_HARNESS_CREDENTIAL_ENV",
+      "OPENCLAW_HARNESS_MODEL",
+      "OPENCLAW_HARNESS_PROBE_CONFIG",
+      "OPENCLAW_HARNESS_PROVIDER",
+    ]);
+    for (const [name, entry] of Object.entries(settingsEnvironment)) {
+      assert.deepEqual(entry, gatewayEnvironment[name], name);
+    }
+    // The settings init has no mount of Agent-controlled state.
+    assert.deepEqual(
+      settingsInit.volumeMounts.map(({ name }) => name),
+      ["claude-code-settings"],
+    );
   } else {
     assert.deepEqual(transcriptMounts, []);
     assert.doesNotMatch(preparation, /claude/u);
+    for (const container of [...gatewayPod.containers, ...gatewayPod.initContainers]) {
+      assert.equal(
+        container.volumeMounts?.some(({ mountPath }) => mountPath === "/etc/claude-code"),
+        false,
+        container.name,
+      );
+    }
   }
   assert.equal(
     gatewayPod.containers[0].volumeMounts.some(
