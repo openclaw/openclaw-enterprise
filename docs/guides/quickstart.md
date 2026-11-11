@@ -48,9 +48,10 @@ go build -trimpath -o bin/occ ./cmd/occ
 ```
 
 The first start builds and imports both images unless you selected published
-images. The first build can take a long time; later starts reuse the cached
-images. Wait for `OpenClaw Enterprise development stack is ready.` and
-`Deployment: Kubernetes only`. The
+images. With no build cache, the runtime build first compiles Node.js from
+source, which takes 15-60 minutes or longer depending on CPUs and memory; later
+starts reuse the cache. Wait for `OpenClaw Enterprise development stack is ready.`
+and `Deployment: Kubernetes only`. The
 command prints the browser console URL and CA certificate, then the API URL,
 Installation ID, service-key file, administrator password file, kubeconfig,
 Kubernetes context, and cleanup command. Keep this output. The service-key and

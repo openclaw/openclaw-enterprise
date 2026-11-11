@@ -808,6 +808,9 @@ func (app *application) agentCommand() *cobra.Command {
 				}
 			}
 			if retainedHarnessRevision != "" {
+				if err := revisionIDArg.check(retainedHarnessRevision, namespace); err != nil {
+					return err
+				}
 				previous, err := client.GetAgentRevision(namespace, args[0], retainedHarnessRevision)
 				if err != nil {
 					return err

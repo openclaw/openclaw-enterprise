@@ -68,6 +68,11 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
     await readFile(new URL("../../deploy/runtime/openclaw-source.json", import.meta.url), "utf8"),
   );
   const runtimeBuild = dockerLogs.find((entry) => entry.args[0] === "build");
+  // A missing runtime tag means a first build, which compiles Node.js with no build cache.
+  assert.match(
+    result.stderr,
+    /dev-up: Building the runtime image\. With no build cache, this compiles Node\.js/,
+  );
   assert.deepEqual(runtimeBuild?.args, [
     "build",
     "-f",
@@ -171,6 +176,7 @@ test("dev-up preserves a selected custom runtime image and skips the quickstart 
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /API URL: http:\/\/127\.0\.0\.1:4137/);
+  assert.doesNotMatch(result.stderr, /Building the runtime image/);
   const dockerLogs = await readJsonLines(fixture.dockerLog);
   assert.ok(
     dockerLogs.some((entry) => entry.args.join(" ") === "image inspect custom-runtime:local"),

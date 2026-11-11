@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { createServer } from "node:net";
+import { createServer, type Socket } from "node:net";
 
 // Fake external commands for tests whose code under test starts real processes. Each
 // fake on the fixture's PATH is a small bash script (see commandShim) that connects to
@@ -17,10 +17,55 @@ import { createServer } from "node:net";
 // shim evaluates nothing from a listener that does not answer with the server token.
 // Whatever a handler writes is the server's doing, never the client's.
 
+type CommandShimOptions = {
+  bash: string;
+  sleep: string;
+  setsid: string;
+  port: number;
+  clientToken: string;
+  serverToken: string;
+  command: string;
+  forwardedEnv: readonly string[];
+};
+
+type HoldPipesOptions = { ms: number; pidFile: string } & (
+  { escaped?: false; escapedPidFile?: string } | { escaped: true; escapedPidFile: string }
+);
+
+type CommandIo = {
+  stdout(text?: string | null): void;
+  stderr(text?: string | null): void;
+  exit(code: number): void;
+  exitAfter(code: number, ms: number): void;
+  script(line: string): void;
+  closeStdout(): void;
+  lateStderr(text: string, ms: number): void;
+  readInput(): Promise<string>;
+  holdPipes(options: HoldPipesOptions): void;
+};
+
+type CommandRequest = {
+  command: string;
+  args: string[];
+  env: Record<string, string | undefined>;
+  cwd: string;
+  io: CommandIo;
+};
+
+type CommandServerOptions = {
+  forwardedEnv: readonly string[];
+  handle: (request: CommandRequest) => void | Promise<void>;
+};
+
+type PendingField = {
+  resolve(field: string): void;
+  reject(error: Error): void;
+};
+
 // An ANSI-C quoted bash word holding exactly these bytes, always on one line. Bash
 // strings end at a NUL, so the text may not contain one (no fake's output or argument
 // does).
-export function bashString(text) {
+export function bashString(text: string) {
   assert.ok(!text.includes("\0"), "a fake command's bash text must not contain NUL");
   let word = "$'";
   for (const byte of Buffer.from(text)) {
@@ -45,7 +90,7 @@ export function commandShim({
   serverToken,
   command,
   forwardedEnv,
-}) {
+}: CommandShimOptions) {
   for (const token of [clientToken, serverToken]) {
     assert.match(token, /^[0-9a-f]{64}$/);
   }
@@ -74,24 +119,34 @@ exit 125
 `;
 }
 
-function serveCommand(socket, { tokens, forwardedEnv, handle }) {
-  const timers = new Set();
-  const fields = [];
+function serveCommand(
+  socket: Socket,
+  {
+    tokens,
+    forwardedEnv,
+    handle,
+  }: CommandServerOptions & { tokens: { client: Buffer; server: Buffer } },
+) {
+  const timers = new Set<NodeJS.Timeout>();
+  const fields: string[] = [];
   let buffered = Buffer.alloc(0);
-  let waiter;
+  let waiter: PendingField | undefined;
   let closed = false;
   let ended = false;
   let tokenReceived = false;
-  const nextField = () => {
-    if (fields.length > 0) {
-      return Promise.resolve(fields.shift());
+  const nextField = (): Promise<string> => {
+    const field = fields.shift();
+    if (field !== undefined) {
+      return Promise.resolve(field);
     }
     if (closed) {
       return Promise.reject(new Error("the fake command closed its connection"));
     }
-    return new Promise((resolve, reject) => (waiter = { resolve, reject }));
+    return new Promise((resolve, reject) => {
+      waiter = { resolve, reject };
+    });
   };
-  socket.on("data", (chunk) => {
+  socket.on("data", (chunk: Buffer) => {
     buffered = Buffer.concat([buffered, chunk]);
     for (let end = buffered.indexOf(0); end !== -1; end = buffered.indexOf(0)) {
       fields.push(buffered.subarray(0, end).toString());
@@ -104,10 +159,13 @@ function serveCommand(socket, { tokens, forwardedEnv, handle }) {
       socket.destroy();
       return;
     }
-    if (waiter && fields.length > 0) {
-      const { resolve } = waiter;
-      waiter = undefined;
-      resolve(fields.shift());
+    if (waiter) {
+      const field = fields.shift();
+      if (field !== undefined) {
+        const { resolve } = waiter;
+        waiter = undefined;
+        resolve(field);
+      }
     }
   });
   // A killed command resets its connection; its pending replies are dropped.
@@ -119,12 +177,12 @@ function serveCommand(socket, { tokens, forwardedEnv, handle }) {
     }
     waiter?.reject(new Error("the fake command closed its connection"));
   });
-  const send = (line) => {
+  const send = (line: string) => {
     if (!closed && !ended) {
       socket.write(line + "\n");
     }
   };
-  const io = {
+  const io: CommandIo = {
     // Like a node process, an output write to a closed pipe neither kills nor fails it.
     stdout: (text) => text && send(`printf %s ${bashString(text)} 2>/dev/null`),
     stderr: (text) => text && send(`printf %s ${bashString(text)} >&2`),
@@ -184,11 +242,11 @@ function serveCommand(socket, { tokens, forwardedEnv, handle }) {
     const command = await nextField();
     const cwd = await nextField();
     const argc = Number(await nextField());
-    const args = [];
+    const args: string[] = [];
     for (let index = 0; index < argc; index += 1) {
       args.push(await nextField());
     }
-    const env = {};
+    const env: CommandRequest["env"] = {};
     for (const name of forwardedEnv) {
       const value = await nextField();
       if (value.startsWith("=")) {
@@ -199,7 +257,8 @@ function serveCommand(socket, { tokens, forwardedEnv, handle }) {
       await handle({ command, args, env, cwd, io });
     } catch (error) {
       // As an uncaught error in a command process: its stack on stderr, status 1.
-      io.stderr(`${error?.stack ?? error}\n`);
+      const stack = (error as { stack?: unknown } | null | undefined)?.stack;
+      io.stderr(`${stack ?? error}\n`);
       io.exit(1);
     }
   })().catch(() => socket.destroy());
@@ -215,32 +274,34 @@ function serveCommand(socket, { tokens, forwardedEnv, handle }) {
 // writes its output and ends it. Closing the server ends every command still
 // connected: a command that was hanging exits at once instead of at its own bound. Its
 // clientToken and serverToken go to commandShim, with the same forwardedEnv.
-export async function startCommandServer({ forwardedEnv, handle }) {
+export async function startCommandServer({ forwardedEnv, handle }: CommandServerOptions) {
   assert.ok(Array.isArray(forwardedEnv));
   assert.equal(typeof handle, "function");
   const tokens = {
     client: Buffer.from(randomBytes(32).toString("hex")),
     server: Buffer.from(randomBytes(32).toString("hex")),
   };
-  const connections = new Set();
+  const connections = new Set<ReturnType<typeof serveCommand>>();
   const server = createServer((socket) => {
     const connection = serveCommand(socket, { tokens, forwardedEnv, handle });
     connections.add(connection);
     socket.once("close", () => connections.delete(connection));
   });
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
   });
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
   return {
-    port: server.address().port,
+    port: address.port,
     clientToken: tokens.client.toString(),
     serverToken: tokens.server.toString(),
     close: () => {
       for (const connection of connections) {
         connection.close();
       }
-      return new Promise((resolve) => server.close(() => resolve()));
+      return new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };
 }

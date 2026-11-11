@@ -1,13 +1,7 @@
 #!/bin/sh
 set -eu
 
-jobs=${NODE_BUILD_JOBS-4}
-case "$jobs" in
-  ""|0*|*[!0-9]*)
-    echo "NODE_BUILD_JOBS must be a positive decimal integer without leading zeros" >&2
-    exit 1
-    ;;
-esac
+jobs=$(sh /node-repair/jobs.sh "${NODE_BUILD_JOBS-auto}" "$(nproc)" /proc/meminfo /sys/fs/cgroup)
 
 # TODO: Remove this source-build bridge after a pinned upstream Node release
 # fixes worker termination during require(esm) and passes both native image lanes.
