@@ -815,6 +815,26 @@ test("dev-up rejects an unsupported development selector before startup", async 
   );
 });
 
+test("dev-up refuses Keycloak sign-in for the Docker profile before startup", async (t) => {
+  const fixture = await createFixture(t);
+  const keyOutput = join(fixture.directory, "keycloak-docker-service-key.json");
+
+  // The Docker startup script does not read OCC_DEVELOPMENT_SIGN_IN, so its profile check
+  // must refuse it, as occ dev up does, instead of starting a stack without sign-in.
+  const result = await runDevUp(["--key-output", keyOutput, "--", ...composeOptions(fixture)], {
+    ...fixture.env,
+    OCC_DEVELOPMENT_SIGN_IN: "keycloak",
+  });
+
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(
+    result.stderr,
+    /OCC_DEVELOPMENT_SIGN_IN=keycloak requires OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes and OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes/,
+  );
+  assert.equal((await readJsonLines(fixture.dockerLog)).length, 0);
+  await assert.rejects(stat(keyOutput), { code: "ENOENT" });
+});
+
 test("dev-up routes Kubernetes Compute through the unified entry point", async (t) => {
   const fixture = await createFixture(t);
   const result = await runDevUp(["--help"], {

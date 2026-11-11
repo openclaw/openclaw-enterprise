@@ -74,17 +74,6 @@ func developmentSignIn(env map[string]string) (string, error) {
 	return value, nil
 }
 
-// CheckDevelopmentSignIn refuses OCC_DEVELOPMENT_SIGN_IN for the Docker Compute
-// profile, whose startup script does not read it.
-func CheckDevelopmentSignIn(getenv func(string) string) error {
-	env := map[string]string{}
-	for _, key := range []string{"OCC_DEVELOPMENT_SIGN_IN", "OCC_DEVELOPMENT_COMPUTE_DRIVER", "OCC_DEVELOPMENT_CONTROL_PLANE", "OCC_DEVELOPMENT_SANDBOX_DRIVER"} {
-		env[key] = getenv(key)
-	}
-	_, err := developmentSignIn(env)
-	return err
-}
-
 func developmentKeycloakHost(cluster string) string {
 	return "keycloak." + cluster + ".oce.test"
 }
