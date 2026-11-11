@@ -33,6 +33,7 @@ export async function startWorkspaceGatewayRelayContainer(
   const abort = new AbortController();
   let containerId;
   let startupFailure;
+  let launchIndeterminate = false;
   let startup = Promise.resolve();
   const execute = (args, options = {}) =>
     executeFile(containerEngine, args, { ...diagnosticOptions, ...options });
@@ -63,8 +64,8 @@ export async function startWorkspaceGatewayRelayContainer(
   };
 
   context.after(async () => {
-    // Teardown can start while setup is still pending. Cancel and join its CLI
-    // before resolving ownership, so cleanup cannot race a still-running launch.
+    // Cancel observations, but let the bounded launch settle before resolving
+    // ownership. Aborting a delegating CLI does not join its engine child.
     abort.abort();
     await startup.catch(() => undefined);
     let target;
@@ -74,6 +75,9 @@ export async function startWorkspaceGatewayRelayContainer(
       throw cleanupFailure(`Ownership check: ${commandFailure(error)}`);
     }
     if (target === undefined) {
+      if (launchIndeterminate) {
+        throw cleanupFailure("Launch outcome is indeterminate; absence cannot be confirmed.");
+      }
       return;
     }
     await execute(["stop", "--timeout", "2", target]).catch(() => undefined);
@@ -101,6 +105,9 @@ export async function startWorkspaceGatewayRelayContainer(
         throw cleanupFailure(`Removal: ${commandFailure(error)}`);
       }
     }
+    if (launchIndeterminate) {
+      throw cleanupFailure("Launch outcome is indeterminate; absence cannot be confirmed.");
+    }
   });
 
   startup = (async () => {
@@ -110,7 +117,6 @@ export async function startWorkspaceGatewayRelayContainer(
       // Retain exited containers until cleanup so a fast failure cannot erase logs.
       await execute(["run", "-d", "--name", relayName, "--label", ownership, ...runArguments], {
         timeout: 120_000,
-        signal: abort.signal,
       });
       await delay(250, undefined, { signal: abort.signal });
       stage = "ownership";
@@ -128,6 +134,9 @@ export async function startWorkspaceGatewayRelayContainer(
         failure = "inspect: running=false";
       }
     } catch (error) {
+      launchIndeterminate =
+        stage === "run" &&
+        Boolean(error.killed || error.signal || error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER");
       failure = `${stage}: ${commandFailure(error)}`;
     }
 

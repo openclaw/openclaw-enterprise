@@ -1,8 +1,11 @@
 import { execFileSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { access, writeFile } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 
 // Delegate to the real engine. Only the selected CLI boundary is delayed or
 // interrupted; container creation, state, logs and deletion still use Docker.
-export function relayEngine({ engine, mode, partialOutput }) {
+export function relayEngine({ engine, mode, partialOutput, launchFiles }) {
   const args = process.argv.slice(2);
   const execute = (command, timeout = 60_000) =>
     execFileSync(engine, command, {
@@ -12,6 +15,20 @@ export function relayEngine({ engine, mode, partialOutput }) {
       maxBuffer: 8 * 1024 * 1024,
     });
   try {
+    if (args[0] === "run" && launchFiles) {
+      // A real delegated subprocess remains in flight while the test cancels
+      // setup (or kills this wrapper), then calls the actual engine.
+      const source = `import { delegatedRelayLaunch } from ${JSON.stringify(import.meta.url)}; await delegatedRelayLaunch(${JSON.stringify({ engine, mode, launchFiles, args })});`;
+      process.stdout.write(
+        execFileSync(process.execPath, ["--input-type=module", "-e", source], {
+          encoding: "utf8",
+          timeout: 60_000,
+          killSignal: "SIGKILL",
+          maxBuffer: 64 * 1024,
+        }),
+      );
+      return;
+    }
     if (args[0] === "logs" && mode === "interrupted-logs") {
       process.stdout.write(partialOutput);
       setInterval(() => {}, 1_000);
@@ -38,5 +55,45 @@ export function relayEngine({ engine, mode, partialOutput }) {
     process.stdout.write(error.stdout ?? "");
     process.stderr.write(error.stderr ?? "");
     process.exitCode = typeof error.status === "number" ? error.status : 1;
+  }
+}
+
+export async function waitForRelayFile(path) {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    try {
+      await access(path);
+      return;
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+    }
+    await delay(20);
+  }
+  throw new Error("Delegated relay launch did not reach its synchronization point.");
+}
+
+export async function delegatedRelayLaunch({ engine, mode, launchFiles, args }) {
+  await writeFile(launchFiles.ready, "ready");
+  if (mode === "interrupted-launch") {
+    process.kill(process.ppid, "SIGKILL");
+  }
+  try {
+    await waitForRelayFile(launchFiles.release);
+    const output = execFileSync(engine, args, {
+      encoding: "utf8",
+      timeout: 20_000,
+      killSignal: "SIGKILL",
+      maxBuffer: 64 * 1024,
+    });
+    if (mode !== "interrupted-launch") {
+      process.stdout.write(output);
+    }
+  } catch {
+    process.stderr.write("Delegated relay launch failed.\n");
+    process.exitCode = 1;
+  } finally {
+    writeFileSync(launchFiles.finished, "finished");
   }
 }

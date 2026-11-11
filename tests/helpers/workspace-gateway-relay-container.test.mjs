@@ -5,6 +5,8 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { waitForRelayFile } from "../fixtures/workspace-relay-engine.mjs";
+import { boundedTeardown } from "./bounded-teardown.ts";
 import { registerQaSecret } from "./qa-secrets.mjs";
 import { fileTemporaryDirectory } from "./temporary-directory.mjs";
 import { startWorkspaceGatewayRelayContainer } from "./workspace-gateway-relay-container.mjs";
@@ -12,23 +14,103 @@ import { startWorkspaceGatewayRelayContainer } from "./workspace-gateway-relay-c
 const executeFile = promisify(execFile);
 const containerEngine = process.env.OCC_DOCKER_BIN ?? "docker";
 const image = process.env.OCC_TEST_RUNTIME_IMAGE;
-// Allow the conflict fixture's own 120s launch and 30s wait, then the helper's
-// 120s launch, its 5s diagnostic/cleanup commands, and final verification.
-const options = { skip: !image && "OCC_TEST_RUNTIME_IMAGE is required", timeout: 360_000 };
+// Allow two bounded 120s fixture launches, a 30s wait, the helper's 120s
+// launch, its 5s diagnostic/cleanup commands, and final verification.
+const options = { skip: !image && "OCC_TEST_RUNTIME_IMAGE is required", timeout: 480_000 };
 const commandOptions = { timeout: 5_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 };
 const root = fileTemporaryDirectory("oce-workspace-relay-");
 const helperUrl = new URL("./workspace-gateway-relay-container.mjs", import.meta.url).href;
 const teardownUrl = new URL("./bounded-teardown.ts", import.meta.url).href;
 const fixtureUrl = new URL("../fixtures/workspace-relay-engine.mjs", import.meta.url).href;
 
-async function engineWrapper(mode, partialOutput) {
+async function engineWrapper(mode, partialOutput, launchFiles) {
   const path = join(root, `${randomUUID()}.mjs`);
   await writeFile(
     path,
-    `#!${process.execPath}\nimport { relayEngine } from ${JSON.stringify(fixtureUrl)};\nrelayEngine(${JSON.stringify({ engine: containerEngine, mode, partialOutput })});\n`,
+    `#!${process.execPath}\nimport { relayEngine } from ${JSON.stringify(fixtureUrl)};\nrelayEngine(${JSON.stringify({ engine: containerEngine, mode, partialOutput, launchFiles })});\n`,
     { mode: 0o700 },
   );
   return path;
+}
+
+// Direct fixture commands deliberately report only stage/status: raw execFile
+// errors include the selected private image and inline program in their argv.
+async function engineCommand(stage, args, options = {}) {
+  try {
+    return await executeFile(containerEngine, args, { ...commandOptions, ...options });
+  } catch (error) {
+    const failure = new Error(
+      `Relay fixture ${stage} failed: exit=${error.code ?? "unknown"} signal=${error.signal ?? "none"}`,
+    );
+    failure.indeterminate = Boolean(
+      error.killed || error.signal || error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+    );
+    throw failure;
+  }
+}
+
+function ownedFixture(context) {
+  const label = `org.openclaw.test.relay-fixture=${randomUUID()}`;
+  let launch = Promise.resolve();
+  let indeterminate = false;
+  const find = async () => {
+    const { stdout } = await engineCommand("ownership", [
+      "ps",
+      "--all",
+      "--quiet",
+      "--no-trunc",
+      "--filter",
+      `label=${label}`,
+    ]);
+    const id = stdout.trim();
+    if (id === "") {
+      return undefined;
+    }
+    assert.ok(/^[a-f0-9]{64}$/.test(id), "fixture ownership must resolve to one full container ID");
+    return id;
+  };
+  // Register before acquisition: even a rejected run may leave a created container.
+  context.after(async () => {
+    await launch.catch(() => undefined);
+    const id = await find();
+    if (id !== undefined) {
+      await engineCommand("removal", ["rm", "--force", "--volumes", id]);
+    }
+    assert.equal(await find(), undefined, "fixture cleanup must remove its owned container");
+    assert.equal(indeterminate, false, "fixture launch outcome is indeterminate");
+  });
+  return {
+    label,
+    find,
+    run(args) {
+      launch = engineCommand("launch", ["run", "-d", "--label", label, ...args], {
+        timeout: 120_000,
+      }).catch((error) => {
+        indeterminate = error.indeterminate;
+        throw error;
+      });
+      return launch;
+    },
+  };
+}
+
+async function runChildTest(source) {
+  try {
+    await executeFile(process.execPath, ["--input-type=module", "-e", source], {
+      ...commandOptions,
+      timeout: 190_000,
+      env: { ...process.env, NODE_TEST_CONTEXT: undefined },
+    });
+  } catch (error) {
+    // Never leak the inline test source or incomplete output on a failed child.
+    assert.ok(
+      !error.killed && !error.signal && error.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+      "child test must settle within its output and time budgets",
+    );
+    assert.equal(error.code, 1, "child must report its expected test failure");
+    return `${error.stdout ?? ""}\n${error.stderr ?? ""}`;
+  }
+  assert.fail("child test must report its expected failure");
 }
 
 function runArguments(entrypoint, args) {
@@ -45,11 +127,12 @@ function relay(t, entrypoint, args, engine = containerEngine) {
   // The real TestContext runs the helper's teardown before this hook. Check
   // removal after both successful and failed starts, including stopped containers.
   t.after(async () => {
-    const { stdout } = await executeFile(
-      containerEngine,
-      ["ps", "-aq", "--filter", `name=^/${relayName}$`],
-      commandOptions,
-    );
+    const { stdout } = await engineCommand("final absence", [
+      "ps",
+      "-aq",
+      "--filter",
+      `name=^/${relayName}$`,
+    ]);
     assert.equal(stdout.trim(), "", "the owned relay must be removed during cleanup");
   });
   return started;
@@ -129,62 +212,48 @@ test(
   async (t) => {
     const relayName = `oce-relay-conflict-${randomUUID()}`;
     const unrelatedMarker = `unrelated-relay-${randomUUID()}`;
-    const { stdout } = await executeFile(
-      containerEngine,
-      [
-        "run",
-        "-d",
+    const context = boundedTeardown(t).context;
+    const fixture = ownedFixture(context);
+    await fixture.run([
+      "--name",
+      relayName,
+      ...runArguments("node", [
+        "-e",
+        `require("node:fs").writeSync(2, ${JSON.stringify(unrelatedMarker)}); process.exit(26);`,
+      ]),
+    ]);
+    const originalId = await fixture.find();
+    assert.ok(originalId, "conflicting fixture must be acquired");
+    // The parent disposal helper must also leave another owner's name alone
+    // when its own direct acquisition fails.
+    const conflictedFixture = ownedFixture(context);
+    await assert.rejects(
+      conflictedFixture.run([
         "--name",
         relayName,
-        ...runArguments("node", [
-          "-e",
-          `require("node:fs").writeSync(2, ${JSON.stringify(unrelatedMarker)}); process.exit(26);`,
-        ]),
-      ],
-      { ...commandOptions, timeout: 120_000 },
+        ...runArguments("node", ["-e", "process.exit(0)"]),
+      ]),
+      /Relay fixture launch failed/,
     );
-    const originalId = stdout.trim();
-    // Acquire an unrelated, already-exited container with readable logs. It has
-    // the conflicting name but no label belonging to the helper invocation.
-    try {
-      await executeFile(containerEngine, ["wait", originalId], {
-        ...commandOptions,
-        timeout: 30_000,
-      });
-      const logged = await executeFile(containerEngine, ["logs", originalId], commandOptions);
-      assert.match(`${logged.stdout}${logged.stderr}`, new RegExp(unrelatedMarker));
-    } catch (error) {
-      await executeFile(
-        containerEngine,
-        ["rm", "--force", "--volumes", originalId],
-        commandOptions,
+    assert.equal(await conflictedFixture.find(), undefined);
+
+    await engineCommand("wait", ["wait", originalId], { timeout: 30_000 });
+    const logged = await engineCommand("logs", ["logs", originalId]);
+    assert.match(`${logged.stdout}${logged.stderr}`, new RegExp(unrelatedMarker));
+    // Bounded teardown runs newest-first: helper cleanup, survival check, then
+    // fixture disposal. Each still runs if an earlier step fails.
+    context.after(async () => {
+      const inspected = await engineCommand("inspect", ["inspect", "--format={{.Id}}", originalId]);
+      assert.equal(
+        inspected.stdout.trim(),
+        originalId,
+        "the conflicting container must survive helper teardown",
       );
-      throw error;
-    }
-    const started = startWorkspaceGatewayRelayContainer(t, {
+    });
+    const started = startWorkspaceGatewayRelayContainer(context, {
       containerEngine,
       relayName,
       runArguments: runArguments("node", ["-e", "process.exit(27)"]),
-    });
-    t.after(async () => {
-      try {
-        const inspected = await executeFile(
-          containerEngine,
-          ["inspect", "--format={{.Id}}", originalId],
-          commandOptions,
-        );
-        assert.equal(
-          inspected.stdout.trim(),
-          originalId,
-          "the conflicting container must survive helper teardown",
-        );
-      } finally {
-        await executeFile(
-          containerEngine,
-          ["rm", "--force", "--volumes", originalId],
-          commandOptions,
-        );
-      }
     });
     await assert.rejects(started, (error) => {
       assert.match(error.message, /run: exit=/);
@@ -198,37 +267,22 @@ test(
 test("relay cleanup reports removal failure alongside the startup failure", options, async (t) => {
   const relayName = `oce-relay-removal-${randomUUID()}`;
   const wrapper = await engineWrapper("fail-removal");
-  // The child uses a real TestContext: its expected teardown failure must not
-  // mark this parent failed. The parent owns final disposal even if assertions fail.
-  t.after(() =>
-    executeFile(containerEngine, ["rm", "--force", "--volumes", relayName], commandOptions),
-  );
+  // The parent has an independent ownership label; a reused name is never
+  // sufficient authority to inspect or remove a container after child failure.
+  const fixture = ownedFixture(t);
   const source = `import test from "node:test";
     import { startWorkspaceGatewayRelayContainer } from ${JSON.stringify(helperUrl)};
     import { boundedTeardown } from ${JSON.stringify(teardownUrl)};
     test("startup and cleanup failure", { timeout: 180000 }, async (t) => {
-      await startWorkspaceGatewayRelayContainer(boundedTeardown(t).context, ${JSON.stringify({ containerEngine: wrapper, relayName, runArguments: runArguments("node", ["-e", "process.exit(28)"]) })});
+      await startWorkspaceGatewayRelayContainer(boundedTeardown(t).context, ${JSON.stringify({ containerEngine: wrapper, relayName, runArguments: ["--label", fixture.label, ...runArguments("node", ["-e", "process.exit(28)"])] })});
     });`;
-  await assert.rejects(
-    executeFile(process.execPath, ["--input-type=module", "-e", source], {
-      ...commandOptions,
-      timeout: 190_000,
-      env: { ...process.env, NODE_TEST_CONTEXT: undefined },
-    }),
-    (error) => {
-      assert.equal(error.code, 1, "the child must fail its test, not time out");
-      const output = `${error.stdout}\n${error.stderr}`;
-      assert.match(output, /exit=28/);
-      assert.match(output, /Host routing relay cleanup failed/);
-      assert.match(output, /invalid-relay-cleanup-option/);
-      return true;
-    },
-  );
-  const retained = await executeFile(
-    containerEngine,
-    ["inspect", "--format={{.State.Status}}", relayName],
-    commandOptions,
-  );
+  const output = await runChildTest(source);
+  assert.match(output, /exit=28/);
+  assert.match(output, /Host routing relay cleanup failed/);
+  assert.match(output, /invalid-relay-cleanup-option/);
+  const id = await fixture.find();
+  assert.ok(id, "the child must have acquired its labelled container");
+  const retained = await engineCommand("inspect", ["inspect", "--format={{.State.Status}}", id]);
   assert.equal(retained.stdout.trim(), "exited");
 });
 
@@ -243,5 +297,80 @@ test(
         return true;
       },
     );
+  },
+);
+
+test("fixture cleanup owns containers left by a rejected launch", options, async (t) => {
+  const fixture = ownedFixture(t);
+  t.after(async () => {
+    assert.equal(await fixture.find(), undefined, "failed acquisition must still be disposed");
+  });
+  await assert.rejects(
+    fixture.run(runArguments("/missing-oce-relay-fixture-entrypoint", [])),
+    (error) => {
+      assert.match(error.message, /Relay fixture launch failed: exit=/);
+      assert.doesNotMatch(error.message, /missing-oce-relay-fixture-entrypoint/);
+      assert.ok(!error.message.includes(image), "raw image arguments must not appear in the error");
+      assert.equal(error.cause, undefined);
+      return true;
+    },
+  );
+  assert.ok(await fixture.find(), "a failed run still creates a container requiring disposal");
+});
+
+async function delegatedLaunchTest(t, mode) {
+  const context = boundedTeardown(t).context;
+  const fixture = ownedFixture(context);
+  const launchFiles = Object.fromEntries(
+    ["ready", "release", "finished"].map((name) => [name, join(root, `${randomUUID()}-${name}`)]),
+  );
+  // Always release and await the delegated engine call before parent disposal,
+  // including when the assertion or the child test fails unexpectedly.
+  context.after(async () => {
+    await writeFile(launchFiles.release, "release");
+    await waitForRelayFile(launchFiles.finished);
+  });
+  const wrapper = await engineWrapper(mode, undefined, launchFiles);
+  const source = `import test from "node:test";
+    import { writeFile } from "node:fs/promises";
+    import { setTimeout as delay } from "node:timers/promises";
+    import { waitForRelayFile } from ${JSON.stringify(fixtureUrl)};
+    import { startWorkspaceGatewayRelayContainer } from ${JSON.stringify(helperUrl)};
+    import { boundedTeardown } from ${JSON.stringify(teardownUrl)};
+    const abort = new AbortController();
+    test("delegated launch", { timeout: 180000, signal: abort.signal }, async (t) => {
+      const started = startWorkspaceGatewayRelayContainer(boundedTeardown(t).context, ${JSON.stringify({ containerEngine: wrapper, relayName: `oce-relay-delegated-${randomUUID()}`, runArguments: ["--label", fixture.label, ...runArguments("node", ["-e", "setInterval(() => {}, 1000)"])] })});
+      started.catch(() => {});
+      await waitForRelayFile(${JSON.stringify(launchFiles.ready)});
+      if (${JSON.stringify(mode)} === "cancelled-launch") { abort.abort(); }
+      // Keep the real engine launch pending until cleanup has had time to start.
+      await delay(1000);
+      await writeFile(${JSON.stringify(launchFiles.release)}, "release");
+      await started;
+    });`;
+  const output = await runChildTest(source);
+  await waitForRelayFile(launchFiles.finished);
+  if (mode === "cancelled-launch") {
+    assert.match(output, /testAborted/);
+    assert.equal(
+      await fixture.find(),
+      undefined,
+      "cleanup must join the delegated launch and remove its result",
+    );
+  } else {
+    assert.match(output, /Launch outcome is indeterminate; absence cannot be confirmed/);
+    assert.ok(await fixture.find(), "the late container is owned by the parent for disposal");
+  }
+}
+
+test("relay cleanup waits for a delegated launch when setup is cancelled", options, async (t) => {
+  await delegatedLaunchTest(t, "cancelled-launch");
+});
+
+test(
+  "relay cleanup reports an interrupted delegated launch as indeterminate",
+  options,
+  async (t) => {
+    await delegatedLaunchTest(t, "interrupted-launch");
   },
 );

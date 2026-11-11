@@ -60,7 +60,10 @@ Agent admission, a model call, or Compose orchestration.
 If the host routing relay is not observed running, failed commands contribute
 their exit status; container state and redacted logs are reported when available.
 The fixture verifies its invocation label before reading or removing a container.
-Cleanup reports removal failures unless the engine confirms absence. Each
+Cleanup waits for the bounded launch before checking ownership. An interrupted
+launch reports an indeterminate outcome even if no container is visible; a
+delegated engine may still be creating it. Removal failures are reported unless
+the engine confirms absence. Each
 diagnostic command has a five-second timeout. Output tails keep up to eight
 lines, each with up to 256 characters of content plus a truncation marker.
 Interrupted or over-limit captures are omitted. A running-container check alone

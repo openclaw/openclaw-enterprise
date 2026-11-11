@@ -82,7 +82,10 @@
         "running relay survives startup and is removed by context cleanup",
         "relay name conflicts neither disclose nor remove the existing container",
         "relay cleanup reports removal failure alongside the startup failure",
-        "relay cleanup accepts a lost removal acknowledgement only after confirming absence"
+        "relay cleanup accepts a lost removal acknowledgement only after confirming absence",
+        "fixture cleanup owns containers left by a rejected launch",
+        "relay cleanup waits for a delegated launch when setup is cancelled",
+        "relay cleanup reports an interrupted delegated launch as indeterminate"
       ]
     }
   ]
