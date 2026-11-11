@@ -1028,7 +1028,7 @@ test("mixed-grant output closes deployment codes and projects before diagnostics
   const installationUrl = new URL("../helpers/openshell-git-installation.mjs", import.meta.url)
     .href;
   const realTestUrl = new URL("./openshell-mixed-grant-real.test.ts", import.meta.url).href;
-  const collectorUrl = new URL("../helpers/installed-worker-events.mjs", import.meta.url).href;
+  const collectorUrl = new URL("../helpers/installed-worker-events.ts", import.meta.url).href;
   const target = {
     namespaceId: "PRIVATE_NAMESPACE_CANARY",
     agentId: "PRIVATE_AGENT_CANARY",
