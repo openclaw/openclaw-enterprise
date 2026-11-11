@@ -269,6 +269,7 @@ awaits an approved resource ledger.
 
 - `node scripts/ci/run-tests.mjs audit` checks checkout inventory against the suite map.
 - `node --test tests/integration/ci-runner.test.mjs` exercises real Node children with controlled pass/fail/skip.
+- `node --test tests/integration/ci-runner-redaction.test.ts` checks redaction and container log projection in memory.
 - After measured local VM disk/network instability, serialize Kubernetes lanes; GitHub Actions keeps its matrix.
 - Missing prerequisites fail setup; supply approved resources without skipping required tests or substituting fixtures.
 - Retain sanitized results for seven days; exclude private state and credentials from uploads. Recover local teardown using run-owned state on its original host and path.
