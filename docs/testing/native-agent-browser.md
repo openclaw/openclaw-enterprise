@@ -35,7 +35,8 @@ Lane preparation attaches PostgreSQL to the disposable cluster before it
 discovers and publishes the host port. Test files preserve that attachment;
 lane cleanup removes PostgreSQL before the cluster network. Set
 `OCC_TEST_BROWSER_EXECUTABLE` to use an installed Chromium browser; the lane passes
-this optional selection to its browser tests.
+this optional selection to its browser tests. CI also installs Playwright's
+FFmpeg binary for video recording when using an installed browser.
 Its preparation omits the dedicated Codex sandbox probe because this journey
 deploys only embedded OpenClaw Agents with `RuntimeDefault` seccomp. Preparing
 the full `gateway-routing` lane still requires the Codex probe for its dedicated
