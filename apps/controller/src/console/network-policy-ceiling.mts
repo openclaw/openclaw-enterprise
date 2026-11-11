@@ -478,9 +478,13 @@ export function renderNetworkPolicyCeiling(context: Context) {
       tone: "primary",
       disabled: busy || !dirty(),
     });
+    const draftStatus = element("span", { className: "hint", role: "status" });
     const updateDirty = () => {
-      reviewButton.disabled = busy || !dirty();
+      const unsaved = dirty();
+      reviewButton.disabled = busy || !unsaved;
+      draftStatus.textContent = unsaved ? "Unsaved changes" : "No unsaved changes";
     };
+    updateDirty();
     if (editorIndex !== undefined) {
       const index = editorIndex;
       const fields = configurationFields(
@@ -588,14 +592,7 @@ export function renderNetworkPolicyCeiling(context: Context) {
     if (details.length) {
       content.append(configurationErrors(details));
     }
-    controls.append(
-      element(
-        "span",
-        { className: "hint", role: "status" },
-        dirty() ? "Unsaved changes" : "No unsaved changes",
-      ),
-      reviewButton,
-    );
+    controls.append(draftStatus, reviewButton);
     content.append(controls);
   }
   void load();
