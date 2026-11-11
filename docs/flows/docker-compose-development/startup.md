@@ -10,7 +10,9 @@ last_updated_session: authoring-run/8d183761-a61e-4f89-b6fa-aaf112a75fc6
 
 `scripts/dev-up` runs PostgreSQL, migration, bootstrap, API, and worker in Compose
 or an owned k3d cluster. Startup requires authenticated Installation and bootstrap
-Namespace readiness, plus Workspace readiness for OpenShell.
+Namespace readiness, plus Workspace readiness for OpenShell. With no selection,
+it and `occ dev up` start the Kubernetes-only profile; an unset control plane
+follows the Compute Driver (`internal/occdev/profile.go:ResolveProfile`).
 
 ## Entry Points
 
@@ -28,9 +30,9 @@ Namespace readiness, plus Workspace readiness for OpenShell.
 ```mermaid
 graph TD
   A["<b>Start development</b><br/>scripts/dev-up"] --> B{"<b>Compute Driver</b><br/>Docker or Kubernetes"}
-  B -- "Docker" --> C["<b>Render Compose</b><br/>Validate publications"]
-  B -- "Kubernetes" --> D{"<b>Control plane</b><br/>Compose or Kubernetes"}
-  D -- "Kubernetes" --> E["<b>Owned k3d stack</b><br/>PostgreSQL and OCE"]
+  B -- "Docker (explicit)" --> C["<b>Render Compose</b><br/>Validate publications"]
+  B -- "Kubernetes (default)" --> D{"<b>Control plane</b><br/>Compose or Kubernetes"}
+  D -- "Kubernetes (default)" --> E["<b>Owned k3d stack</b><br/>PostgreSQL and OCE"]
   D -- "Compose" --> F["<b>Hybrid stack</b><br/>Compose OCC and k3d Compute"]
   C --> G["<b>Prove Installation</b><br/>Authenticated service key"]
   F --> F2{"<b>OpenShell selected?</b>"}

@@ -45,13 +45,10 @@ Startup resolves the engine's host API socket. Do not export
 `DOCKER_HOST` or `CONTAINER_HOST` from the path `podman info` reports: on a
 machine-backed installation that path exists only inside the virtual machine.
 
-Build the CLI and start the Kubernetes profile:
+Build the CLI and start the Kubernetes-only profile, which needs no selection:
 
 ```bash
 go build -trimpath -o bin/occ ./cmd/occ
-export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
-export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
-export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
 ./scripts/dev-up
 ```
 
@@ -74,6 +71,29 @@ Recreate the installation after runtime, kernel, or image changes.
 To enable GitHub repository credentials during a fresh start, prepare the
 [approved local repository inputs](local-repository-credentials.md#prepare-the-approved-inputs)
 before running the launcher.
+
+### Select another profile
+
+`./bin/occ dev up` and `./scripts/dev-up` resolve the same profile. Export a
+selection in the shell that runs startup:
+
+| Profile                             | `OCC_DEVELOPMENT_COMPUTE_DRIVER` | `OCC_DEVELOPMENT_CONTROL_PLANE` | `OCC_DEVELOPMENT_SANDBOX_DRIVER` |
+| ----------------------------------- | -------------------------------- | ------------------------------- | -------------------------------- |
+| Kubernetes-only (default)           | unset or `kubernetes`            | unset or `kubernetes`           | unset or `none`                  |
+| Kubernetes-only with OpenShell      | unset or `kubernetes`            | unset or `kubernetes`           | `openshell`                      |
+| Compose OCC with Kubernetes compute | unset or `kubernetes`            | `compose`                       | unset, `none`, or `openshell`    |
+| Docker Compute preview              | `docker`                         | unset or `compose`              | unset or `none`                  |
+
+An unset control plane follows the Compute Driver: Kubernetes Compute selects
+the Kubernetes control plane and Docker Compute selects Compose. Thus
+`OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell`
+alone starts the Kubernetes-only OpenShell profile. Set
+`OCC_DEVELOPMENT_CONTROL_PLANE=compose` for the Compose control plane.
+
+The Docker Compute preview runs OCC in Compose and cannot deploy Agents. Its
+ready text prints `Compute Driver: Docker`, and its service key is in a
+temporary directory outside the state directory. See
+[Docker Compose development](../../flows/docker-compose-development.md).
 
 ### Sign in through Keycloak
 
@@ -109,8 +129,7 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
 ```
 
 Expect `Control plane: Compose` and `Compute Driver: Kubernetes`. PostgreSQL,
-OCC, and its worker run in Compose; Agents run in k3d. Keep these exports for
-cleanup. This profile includes both default Presets, the Codex Plugin Driver,
+OCC, and its worker run in Compose; Agents run in k3d. This profile includes both default Presets, the Codex Plugin Driver,
 and the same Codex seccomp preparation, but not the Kubernetes-only browser
 endpoint, private workspace routing, or repository service. Dedicated Codex
 requires [hybrid private routing](local-compose-kubernetes.md), configured
@@ -126,8 +145,6 @@ For OpenShell, use the owned launcher:
 
 ```bash
 go build -trimpath -o bin/occ ./cmd/occ
-export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
-export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 ./scripts/dev-up
 ```
@@ -165,8 +182,7 @@ To test a candidate release, [select its OpenShell images by digest](local-opens
 For additional binary and endpoint rules, see [startup network policy](local-sandbox-network-policy.md).
 
 Set `OCC_DEVELOPMENT_CONTAINER_ENGINE=podman` or `docker` to select the host
-engine. Kubernetes-only startup rejects Compose arguments. Keep profile exports
-for cleanup; otherwise startup defaults to Compose with Docker Compute.
+engine. Kubernetes-only startup rejects Compose arguments.
 
 Startup prints the private [state directory](../../reference/settings/development.md#required-development-controller-environment)
 containing kubeconfig and credentials. Its default is `openclaw-development`
@@ -411,7 +427,10 @@ Then remove only the cluster and private state the launcher recorded:
 
 Cleanup uses the recorded engine endpoint and cluster name. If deletion fails, it
 keeps the state directory so a retry never discovers or deletes an unrelated
-cluster.
+cluster. Without a profile selection, cleanup stops the stack recorded in the
+state directory; with no recorded state, it stops this checkout's Docker
+Compute preview. Stop that preview explicitly with
+`OCC_DEVELOPMENT_COMPUTE_DRIVER=docker ./bin/occ dev down`.
 
 ## Limits
 
