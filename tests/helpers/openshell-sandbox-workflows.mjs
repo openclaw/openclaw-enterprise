@@ -1,5 +1,5 @@
 import { runOpenShellStage } from "./openshell-stage.mjs";
-import { withOpenShellPermissionDiagnostic } from "./openshell-permission-diagnostic.ts";
+import { observeOpenShellPermissionRefusal } from "./openshell-permission-diagnostic.ts";
 import { openShellTurnoverQualification } from "../../scripts/ci/reporter.mjs";
 import {
   openShellGatewayGrpcChannel,
@@ -1205,21 +1205,13 @@ function bridgeRequirements(context, claimName, subPath) {
   };
 }
 
-function integrationGatewayClient(
-  GrpcOpenShellGatewayClient,
-  endpoint,
-  context,
-  { observeServiceUrl, permissionDiagnostics },
-) {
-  const gateway = withOpenShellPermissionDiagnostic(new GrpcOpenShellGatewayClient({ endpoint }), {
-    endpoint,
-    revisionId: context.revision.id,
-    cwd: "/sandbox/enterprise",
-    model: providerModel,
-    attempted: permissionDiagnostics,
-  });
-  // Preserve the real provider setup and readiness result while retaining failed native-policy evidence.
+function integrationGatewayClient(GrpcOpenShellGatewayClient, endpoint, { observeServiceUrl }) {
+  const gateway = new GrpcOpenShellGatewayClient({ endpoint });
   const observed = {
+    async serviceCodexReadinessStatus(serviceUrl, ...args) {
+      observeServiceUrl(serviceUrl);
+      return await gateway.serviceCodexReadinessStatus(serviceUrl, ...args);
+    },
     async createSandbox(request, signal) {
       const created = await gateway.createSandbox(request, signal);
       observeServiceUrl(created.serviceUrls[""]);
@@ -1620,9 +1612,8 @@ function createIntegrationSandboxDriverFactory(
       const gatewayClient =
         context === undefined
           ? clientForEndpoint(endpoint)
-          : integrationGatewayClient(GrpcOpenShellGatewayClient, endpoint, context, {
+          : integrationGatewayClient(GrpcOpenShellGatewayClient, endpoint, {
               enableCompatibilityBridge: enableCompatibilityBridges,
-              permissionDiagnostics,
               observeServiceUrl: (serviceUrl) => {
                 harnessServiceUrls.set(context.revision.id, serviceUrl);
               },
@@ -1808,12 +1799,25 @@ function createIntegrationSandboxDriverFactory(
           sandboxServiceAccountName: agentSandboxServiceAccount(context),
           exact: context.requirements.workloadIdentity !== undefined,
         });
-        return await delegate(
-          context.requirements,
-          context.namespace.name,
-          endpoint,
-          context,
-        ).harnessStatus(context);
+        return await observeOpenShellPermissionRefusal(
+          () =>
+            delegate(context.requirements, context.namespace.name, endpoint, context).harnessStatus(
+              context,
+            ),
+          {
+            endpoint,
+            revisionId: context.revision.id,
+            cwd: "/sandbox/enterprise",
+            model: providerModel,
+            attempted: permissionDiagnostics,
+            serviceUrl: () => harnessServiceUrls.get(context.revision.id),
+            bearer: context.transportToken,
+            signal: context.signal,
+            requirePat:
+              context.revision.harnessAuth?.method === "credential_source" &&
+              context.revision.harnessAuth.loginMode === "codex_pat",
+          },
+        );
       },
       // Compute drops a native worker's exposure once its node has enrolled (finding 1657).
       async withdrawHarnessExposure(context) {

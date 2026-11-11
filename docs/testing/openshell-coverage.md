@@ -101,18 +101,23 @@ ordinary refresh success alone is not evidence of read recovery.
 
 ## Native permission refusals
 
-When the Codex PAT fixture reports incompatible permission requirements, it
-collects one native permission diagnostic per revision before the worker stops
-the candidate. Through the same OpenShell exposure, one connection reads the
-requirements and authentication status, then requests `:danger-full-access`
-with user review. The receipt contains permission booleans, the effective
-sandbox and reviewer, and fixed failure/cleanup classifications. It excludes
-credentials, account details, instructions, thread contents, and peer error text.
-The diagnostic sends no model turn or approval response; ordinary runtime
-startup still performs its authentication probe. Requests have a ten-second
-deadline plus at most two seconds for socket cleanup. The original readiness
-refusal remains a failure even if the profile is granted. Normal fixture
-teardown removes the disposable candidate and its diagnostic thread.
+After the real Driver classifies a Codex PAT permission refusal, the fixture
+collects one diagnostic per revision before rethrowing that failure. One
+connection through the same OpenShell exposure reads requirements and PAT status,
+then requests an ephemeral `:danger-full-access` thread with user review.
+
+The receipt compares approval/profile requirements and the returned profile,
+reviewer, approval policy, ephemeral flag, and legacy sandbox representation.
+`accepted` requires matching permission settings and an ephemeral thread; unknown provenance is
+`unconfirmed`, and different settings are `mismatch`. RPC errors do not establish
+a policy denial. Only fixed classifications, booleans and known enums are
+retained; credentials, account details, instructions and peer text are excluded.
+
+No diagnostic model turn or approval response is sent; ordinary runtime startup
+still performs its authentication probe. The exchange has ten seconds, socket
+cleanup two seconds, and output one second. Cancellation preserves an already
+classified Driver failure without changing worker claim-loss handling. Normal
+candidate teardown owns thread cleanup; socket closure does not prove removal.
 
 ## Agent network policy
 
