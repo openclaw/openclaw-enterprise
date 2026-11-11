@@ -77,8 +77,12 @@
       "expectedTests": [
         "relay startup retains exit evidence and redacts bounded container logs",
         "relay startup omits container output cut at the capture limit",
+        "relay startup omits interrupted diagnostic output",
         "relay startup preserves engine launch errors before cleanup",
-        "running relay survives startup and is removed by context cleanup"
+        "running relay survives startup and is removed by context cleanup",
+        "relay name conflicts neither disclose nor remove the existing container",
+        "relay cleanup reports removal failure alongside the startup failure",
+        "relay cleanup accepts a lost removal acknowledgement only after confirming absence"
       ]
     }
   ]

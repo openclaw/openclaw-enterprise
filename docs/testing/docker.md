@@ -57,11 +57,14 @@ Agent admission, a model call, or Compose orchestration.
 
 ## Verify host routing relay diagnostics
 
-If the host routing relay is not observed running, the fixture reports its
-startup command result, container exit state, and redacted log tail before
-cleanup stops and removes the owned container. Each diagnostic command has a
-five-second timeout; each output tail keeps at most eight lines of 256 characters.
-A running-container check alone does not prove that the loopback listener bound.
+If the host routing relay is not observed running, failed commands contribute
+their exit status; container state and redacted logs are reported when available.
+The fixture verifies its invocation label before reading or removing a container.
+Cleanup reports removal failures unless the engine confirms absence. Each
+diagnostic command has a five-second timeout. Output tails keep up to eight
+lines, each with up to 256 characters of content plus a truncation marker.
+Interrupted or over-limit captures are omitted. A running-container check alone
+does not prove that the loopback listener bound.
 
 To check relay startup diagnostics with an existing local runtime image, run
 `OCC_TEST_RUNTIME_IMAGE=<local-image> node --test tests/helpers/workspace-gateway-relay-container.test.mjs`.
