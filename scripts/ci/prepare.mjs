@@ -1146,7 +1146,9 @@ async function laneImageCommand(role, args, budgetMs = imageBuildBudgetMs()) {
 }
 
 function observesImageCache(lane) {
-  return isOpenShellLane(lane) || ["slack", "production-tui", "gateway-routing"].includes(lane);
+  return (
+    isOpenShellLane(lane) || ["slack", "production-tui", "gateway-routing", "k3d-otel"].includes(lane)
+  );
 }
 
 // Keep cache evidence without build arguments, URLs, command text or credentials.

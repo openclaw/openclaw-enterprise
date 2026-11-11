@@ -800,6 +800,38 @@ describe("CI preparation", { concurrency }, () => {
       }
       const calls = (await commands.commands()).filter(({ args }) => args[0] === "buildx");
       const builds = calls.filter(({ args }) => args.includes("--load"));
+      if (lane === "k3d-otel") {
+        // Parse synthetic BuildKit output through the real preparation entrypoint;
+        // this proves sanitized counters, not live cache hits.
+        assert.ok(calls.every(({ args }) => args.includes("--progress=plain")));
+        const prefix = `[prepare:${lane}] `;
+        const records = prepared.stderr.split("\n").flatMap((line) => {
+          if (!line.startsWith(prefix + "{")) {
+            return [];
+          }
+          const record = JSON.parse(line.slice(prefix.length));
+          return record.stage === "image-cache" ? [record] : [];
+        });
+        assert.equal(records.length, 4);
+        for (const role of ["controller", "runtime"]) {
+          assert.deepEqual(
+            records.filter((record) => record.role === role),
+            ["probe", "load"].map((phase) => ({
+              stage: "image-cache",
+              role,
+              phase,
+              cacheImports: phase === "probe" ? 1 : 0,
+              cachedSteps: phase === "probe" ? 2 : 3,
+              openclawBuildSteps: 2,
+              openclawBuildCached: phase === "probe" ? 1 : 2,
+            })),
+          );
+        }
+        assert.doesNotMatch(
+          prepared.stdout + prepared.stderr,
+          /private-step|synthetic-build-command|synthetic-sibling-command|synthetic-build-output/,
+        );
+      }
       assert.equal(builds.length, 2, event);
       // Each build first probes for an image the engine already holds.
       assert.equal(calls.length, 4, event);

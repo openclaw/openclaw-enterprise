@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-11
-last_updated_session: authoring-run/bf3df73c-1de0-42d0-b8e4-1326f775739f
+last_updated_session: authoring-run/d63d3aa5-5c9c-493a-b4ea-51a1d64e9454
 ---
 
 # GitHub Actions testing flow
@@ -274,6 +274,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 01:21: Include the OTEL lane in sanitized image-cache observations. (authoring-run/d63d3aa5-5c9c-493a-b4ea-51a1d64e9454 - 60289cbf3d6995ed46960ddb32402e52bf5efad7)
 
 - 2026-11-11 00:08: Select focused advisory jobs and verify their PR merge identity. (authoring-run/bf3df73c-1de0-42d0-b8e4-1326f775739f - 90cee90b34bf20c96538423778a652e55ff02eb4)
 

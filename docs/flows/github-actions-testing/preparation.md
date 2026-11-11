@@ -57,7 +57,7 @@ Controller build selection is independent.
 whole OpenShell lanes share one stack build. Tests inherit builder and epoch,
 never cache credentials; installers still build source.
 `imageCacheObservation` reports counts for Gateway Routing, Slack Live, Production
-TUI and OpenShell (`image-cache`; OpenShell: `first-agent-image-cache`), including
+TUI, `k3d-otel` and OpenShell (`image-cache`; OpenShell: `first-agent-image-cache`), including
 alternate sources. Step counts deduplicate IDs; imports count lines.
 Imports do not prove hits; loads may reuse probe work.
 
