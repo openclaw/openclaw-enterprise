@@ -29,6 +29,7 @@
   },
   "include": [
     "**/*.test.ts",
+    "fixtures/protected-startup-origin.ts",
     "conformance/kubernetes-teardown-cases.ts",
     "browser/console-agent-detail-cases.mts",
     "browser/console-agent-detail-deployment.ts",
