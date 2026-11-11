@@ -6749,6 +6749,20 @@ async function removeScratchTestAgent(topology, agent) {
   }
 }
 
+async function readScratchAdmission(topology, revision) {
+  // Driver admission is intentionally absent from the public revision response.
+  // Read only this immutable field, never the full credential-bearing snapshot.
+  const saved = await diagnosticQuery(
+    topology.observerPool,
+    `SELECT admitted_spec #>> '{compute,admission}' AS admission
+     FROM occ.agent_revisions
+     WHERE namespace_id = $1 AND agent_id = $2 AND id = $3`,
+    [topology.namespaceId, revision.agentId, revision.id],
+  );
+  assert.equal(saved.rowCount, 1);
+  return saved.rows[0].admission;
+}
+
 async function assertScratchSiblingIsolation(topology) {
   const positive = assertScratchObserverControl(topology, topology.revision, [
     {
@@ -6767,7 +6781,8 @@ async function assertScratchSiblingIsolation(topology) {
     topology.agent.harnessAuth.sourceId,
     [],
   );
-  assert.notEqual(sibling.revision.compute.admission?.startsWith("scratch:"), true);
+  const admission = await readScratchAdmission(topology, sibling.revision);
+  assert.notEqual(admission?.startsWith("scratch:"), true);
   await assertWorkerCompleted({
     description: "scratch sibling worker completion",
     events: topology.workerEvents,
@@ -6899,11 +6914,9 @@ async function assertScratchQueuedActorRevocation(topology) {
     const admitted = await asActor("POST", `${candidate.path}/deploy`);
     assert.equal(admitted.status, 202, JSON.stringify(admitted.error));
     const revision = admitted.data;
-    assert.match(revision.compute.admission, /^scratch:v1:/);
-    assert.deepEqual(
-      JSON.parse(revision.compute.admission.slice("scratch:v1:".length)).binding,
-      binding,
-    );
+    const admission = await readScratchAdmission(topology, revision);
+    assert.match(admission, /^scratch:v1:/);
+    assert.deepEqual(JSON.parse(admission.slice("scratch:v1:".length)).binding, binding);
     const readWork = async () => {
       const work = await observerPool.query(
         `SELECT state, actor_id, attempt_count, reason_code,
@@ -7054,8 +7067,13 @@ async function assertScratchQueuedActorRevocation(topology) {
     }
     await cleanup(() => removeScratchTestAgent(topology, candidate));
   }
-  if (errors.length > 0) {
-    throw new AggregateError(errors, "Scratch actor acceptance or cleanup failed");
+  if (errors.length === 1) {
+    throw errors[0];
+  }
+  if (errors.length > 1) {
+    throw new AggregateError(errors, "Scratch actor acceptance and cleanup failed", {
+      cause: errors[0],
+    });
   }
   assert.equal(
     (await resource("persistentvolumeclaim", binding.claimName, topology.placement)).metadata.uid,
