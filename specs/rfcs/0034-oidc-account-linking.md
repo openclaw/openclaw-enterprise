@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Implemented
+implementation_status: Partially implemented
 author: kevinlin-openai
 ---
 
@@ -8,7 +8,7 @@ author: kevinlin-openai
 
 - **ID:** RFC-0034
 - **Created:** 2026-11-10
-- **Last updated:** 2026-11-10
+- **Last updated:** 2026-11-11
 - **Implementation plan:** [RFC-0034 delivery](../plans/0034-oidc-account-linking.md)
 - **Related:** [Issue #5179](https://github.com/openclaw/openclaw-enterprise/issues/5179),
   [RFC-0032](0032-oidc-account-enrollment.md),
@@ -94,8 +94,11 @@ External reauthentication requires a provider that supplies verifiable fresh
 authentication, including when it is a broker. Missing or invalid `auth_time`
 fails this proof. The same requirement applies to the new OIDC identity.
 Ordinary sign-in keeps its current compatibility requirements. An operator must
-qualify reauthentication before enabling linking; unsupported providers use
-administrator attachment. Native Google sign-in is not automatically qualified.
+verify which authentication method each provider or broker enforces before enabling
+linking. A signed authentication time alone cannot establish that an upstream
+provider required a password or MFA. Use administrator attachment when the
+provider cannot meet the Installation's assurance requirements.
+Native Google sign-in is not automatically qualified.
 [OIDC Core](https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest)
 defines `max_age` and the associated `auth_time` requirement.
 
@@ -128,18 +131,24 @@ sequenceDiagram
   Auth->>Store: Bind verified account and method snapshot
   Auth->>IdP: Fresh OIDC authorization for new identity
   IdP-->>Auth: Code, then verified identity
-  Auth-->>Console: Show account and candidate identity
+  Auth-->>Console: Return account, candidate identity and attempt ID
   Person->>Console: Confirm attachment
-  Console->>Auth: Confirm this attempt
+  Console->>Auth: Confirm with the attempt ID returned with this pair
   Auth->>Store: Recheck proofs and attach atomically
   Store-->>Auth: Commit
   Auth-->>Console: Linked - sign in again
 ```
 
-The confirmation page identifies the existing OCE account and the candidate's
-configured provider and exact subject. Optional signed profile labels are display
-hints only. The person can cancel or restart with a different IdP account. No
-attachment occurs on a callback, a GET request, or without confirmation.
+The confirmation page identifies the existing OCE account, a recognizable provider
+name or issuer, the provider instance ID, and the candidate's exact subject.
+Optional signed profile labels are display hints only. Two tabs can show different
+verified pairs in the same browser. To bind consent to the pair the person saw,
+OCC returns an opaque attempt ID with that pair. The Console retains the ID with
+the displayed pair and includes it in the confirmation request. Before attachment,
+OCC requires the ID to match the locked, browser-bound link record.
+
+The person can cancel or restart with a different IdP account. No attachment
+occurs on a callback, a GET request, or without confirmation.
 
 After commit, clear the browser's OCE session and linking cookies and offer
 **Continue with OIDC**. This starts ordinary sign-in under the newly attached
@@ -276,6 +285,10 @@ do not establish provider reauthentication or Agent chat.
   most one valid mutation and no transfer. Refuse replay, cross-browser/purpose
   substitution, expired attempts/tokens, changed policy, and changed account or
   proof method. Exercise both commit orderings with disable/revoke/detach.
+  Through the Console in two tabs, confirm an outdated pair. Require a conflict,
+  with accounts, methods, versions, sessions, and attachment audits unchanged.
+  The current pair must still succeed exactly once. The confirmation route must
+  also reject missing or altered attempt IDs and replay.
 - **AC-5 — Atomicity and recovery:** Inject audit failure and an actual lost COMMIT
   response through the existing database fault harness. Verify rollback versus
   a complete durable link, no partial grants, and the documented recovery. Check
@@ -292,7 +305,7 @@ do not establish provider reauthentication or Agent chat.
 The [implementation plan](../plans/0034-oidc-account-linking.md) covers configuration/profile/Helm parity, schema and transaction changes,
 HTTP/OpenAPI contracts, Console integration, and AC-1 through AC-6. Update the
 current authentication reference, OIDC guide, authentication flow, database/API
-cheat sheets, and testing guide with implementation. The implemented contract is recorded in the
+cheat sheets, and testing guide with implementation. The current implementation is described in the
 [current account-linking reference](../../docs/reference/authentication/account-linking.md).
 
 The user authorized implementation after RFC submission. Maintainer review of
