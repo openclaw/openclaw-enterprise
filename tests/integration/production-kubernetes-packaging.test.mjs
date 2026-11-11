@@ -3225,6 +3225,30 @@ test(
   },
 );
 
+function assertApiEgressPolicy(objects, name, cidrs, port, message) {
+  const policy = objects.find(
+    ({ kind, metadata }) => kind === "NetworkPolicy" && metadata.name === name,
+  );
+  assert.ok(policy, message);
+  assert.deepEqual(policy.spec, {
+    podSelector: {
+      matchLabels: {
+        "app.kubernetes.io/name": "openclaw-enterprise",
+        "app.kubernetes.io/instance": "oce",
+        "app.kubernetes.io/component": "api",
+      },
+    },
+    policyTypes: ["Egress"],
+    egress: [
+      {
+        to: cidrs.map((cidr) => ({ ipBlock: { cidr } })),
+        ports: [{ protocol: "TCP", port }],
+      },
+    ],
+  });
+  return policy;
+}
+
 test(
   "optional model discovery grants only API HTTPS egress to configured hosts",
   tooling,
@@ -3240,29 +3264,13 @@ test(
         })
       ).stdout,
     );
-    const policy = objects.find(
-      ({ kind, metadata }) => kind === "NetworkPolicy" && metadata.name === name,
+    assertApiEgressPolicy(
+      objects,
+      name,
+      ["198.51.100.25/32", "198.51.100.26/32"],
+      443,
+      "configured discovery destinations must render an egress policy",
     );
-    assert.ok(policy, "configured discovery destinations must render an egress policy");
-    assert.deepEqual(policy.spec, {
-      podSelector: {
-        matchLabels: {
-          "app.kubernetes.io/name": "openclaw-enterprise",
-          "app.kubernetes.io/instance": "oce",
-          "app.kubernetes.io/component": "api",
-        },
-      },
-      policyTypes: ["Egress"],
-      egress: [
-        {
-          to: [
-            { ipBlock: { cidr: "198.51.100.25/32" } },
-            { ipBlock: { cidr: "198.51.100.26/32" } },
-          ],
-          ports: [{ protocol: "TCP", port: 443 }],
-        },
-      ],
-    });
     for (const cidr of [
       "0.0.0.0/0",
       "198.51.100.0/24",
@@ -3294,39 +3302,33 @@ test("MCP plugin discovery has independent API HTTPS egress", tooling, async () 
   };
   const pluginOnly = await resources((await render(pluginValues)).stdout);
   assert.ok(!pluginOnly.some(({ metadata }) => metadata.name === modelName));
-  const policy = pluginOnly.find(
-    ({ kind, metadata }) => kind === "NetworkPolicy" && metadata.name === name,
+  const pluginPolicy = assertApiEgressPolicy(
+    pluginOnly,
+    name,
+    ["203.0.113.15/32", "203.0.113.16/32"],
+    443,
+    "configured MCP hosts must render their own API egress policy",
   );
-  assert.ok(policy, "configured MCP hosts must render their own API egress policy");
-  assert.deepEqual(policy.spec, {
-    podSelector: {
-      matchLabels: {
-        "app.kubernetes.io/name": "openclaw-enterprise",
-        "app.kubernetes.io/instance": "oce",
-        "app.kubernetes.io/component": "api",
-      },
-    },
-    policyTypes: ["Egress"],
-    egress: [
-      {
-        to: [{ ipBlock: { cidr: "203.0.113.15/32" } }, { ipBlock: { cidr: "203.0.113.16/32" } }],
-        ports: [{ protocol: "TCP", port: 443 }],
-      },
-    ],
-  });
 
   // Configuring both lists retains their distinct policies and destinations.
   const modelValues = { "api.modelDiscoveryCidrs[0]": "198.51.100.25/32" };
   const modelOnly = await resources((await render(modelValues)).stdout);
   assert.ok(!modelOnly.some(({ metadata }) => metadata.name === name));
+  const modelPolicy = assertApiEgressPolicy(
+    modelOnly,
+    modelName,
+    ["198.51.100.25/32"],
+    443,
+    "configured model host must render its own API egress policy",
+  );
   const combined = await resources((await render({ ...pluginValues, ...modelValues })).stdout);
   assert.deepEqual(
-    combined.find(({ metadata }) => metadata.name === name),
-    policy,
+    combined.find(({ kind, metadata }) => kind === "NetworkPolicy" && metadata.name === name),
+    pluginPolicy,
   );
   assert.deepEqual(
-    combined.find(({ metadata }) => metadata.name === modelName),
-    modelOnly.find(({ metadata }) => metadata.name === modelName),
+    combined.find(({ kind, metadata }) => kind === "NetworkPolicy" && metadata.name === modelName),
+    modelPolicy,
   );
 
   for (const cidr of ["0.0.0.0/0", "203.0.113.0/24", "mcp.example.invalid"]) {
@@ -3348,26 +3350,13 @@ test("Slack directory proxy grants only API egress to its exact endpoint", tooli
   const objects = await resources(
     (await render({ "api.channelDirectoryProxyUrl": "http://198.51.100.25:3128" })).stdout,
   );
-  const policy = objects.find(
-    ({ kind, metadata }) => kind === "NetworkPolicy" && metadata.name === name,
+  assertApiEgressPolicy(
+    objects,
+    name,
+    ["198.51.100.25/32"],
+    3128,
+    "configured directory proxy must render API egress",
   );
-  assert.ok(policy, "configured directory proxy must render API egress");
-  assert.deepEqual(policy.spec, {
-    podSelector: {
-      matchLabels: {
-        "app.kubernetes.io/name": "openclaw-enterprise",
-        "app.kubernetes.io/instance": "oce",
-        "app.kubernetes.io/component": "api",
-      },
-    },
-    policyTypes: ["Egress"],
-    egress: [
-      {
-        to: [{ ipBlock: { cidr: "198.51.100.25/32" } }],
-        ports: [{ protocol: "TCP", port: 3128 }],
-      },
-    ],
-  });
   const proxyEnvironment = (objects, component) =>
     objects
       .find(
