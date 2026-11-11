@@ -1390,11 +1390,12 @@ test("documentation workflow selects documentation checks and omits product test
     "lint",
     "format:check",
     "openapi:check",
-    "docs:check",
+    "docs:check-length",
     "docs:build",
   ]) {
     assert.match(docs, new RegExp(`\\bpnpm ${command}\\b`));
   }
+  assert.match(docs, /node scripts\/check-specs\.mjs/);
   // Keep the documentation route free of product-test and lane invocations.
   assert.doesNotMatch(
     docs,
@@ -1517,7 +1518,7 @@ test("Suite Audit and Static Checks runs the audit and every check the lanes ski
       "pnpm lint",
       "pnpm format:check",
       "pnpm openapi:check",
-      "pnpm docs:install && pnpm openapi:lint && pnpm exec tsc --project scripts/docs-site/tsconfig.json --pretty false && pnpm docs:check && pnpm docs:build",
+      "pnpm docs:install && pnpm openapi:lint && pnpm exec tsc --project scripts/docs-site/tsconfig.json --pretty false && pnpm docs:check-length && node scripts/check-specs.mjs && pnpm docs:build",
     ],
   );
   // A check moved out of the lanes must still gate CI Required in every mode.
