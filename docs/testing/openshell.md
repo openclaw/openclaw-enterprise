@@ -10,8 +10,7 @@ last_verified: "2026-11-04"
 
 From the repository root, run OpenShell setup and Agent tests, including
 [imported plugins](plugins.md#imported-plugins-on-dedicated-openclaw).
-Setup selects official OpenShell `v0.1.6`. See [images and trust](openshell-oauth.md#prepare-images-and-trust)
-for versions and qualification limits.
+Setup uses official OpenShell `v0.1.6`. See [image versions and qualification limits](openshell-oauth.md#prepare-images-and-trust).
 
 ## Start a reusable development environment
 
@@ -142,6 +141,8 @@ the standalone file. Missing inputs fail selected cases. Installation alone
 cannot prove a Linear tool call.
 
 ## Test setup and cleanup
+
+See [host relay diagnostics](docker.md#verify-host-routing-relay-diagnostics).
 
 Stop the reusable environment before running these tests. Each creates and
 removes its own disposable cluster. Install Docker or Podman, k3d, kubectl,
