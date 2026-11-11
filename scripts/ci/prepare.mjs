@@ -25,6 +25,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.mjs";
 import { loadTestSuites } from "./test-suites.mjs";
 import { isOpenShellLane } from "./openshell-full-integration.ts";
+import { openShellHarnessError, openShellRequiredEnv } from "./openshell-model-inputs.mjs";
 import {
   assertRuntimeArtifactTagAvailable,
   loadRuntimeArtifact,
@@ -1001,34 +1002,19 @@ function assertImmutableOptionalEnvImages(names, env = process.env) {
   }
 }
 
-async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
+async function validateLaneInputsBeforeSideEffects(lane, { file, modelSelectors } = {}) {
   const name = laneName(lane);
   const prepare = lanePrepare(name);
   const effectiveEnv = effectiveLaneEnv(name);
+  const modelEnv = modelSelectors ?? effectiveEnv;
+  const harnessError = openShellHarnessError(name, file, modelEnv);
+  if (harnessError) {
+    throw new Error(harnessError);
+  }
   if (prepare.k3d && !isOpenShellLane(name) && effectiveEnv.OPENCLAW_CI_K3S_IMAGE) {
     assertImmutableImageReference(effectiveEnv.OPENCLAW_CI_K3S_IMAGE, "OPENCLAW_CI_K3S_IMAGE");
   }
-  const openShellGatewayFile = [
-    "tests/integration/namespace-driver-openshell-k3d-real.test.ts",
-    "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
-    "tests/integration/openshell-gateway-tool-policy-real.test.ts",
-    "tests/integration/openshell-refresh-real.test.ts",
-    "tests/integration/openshell-upstream-real.test.ts",
-    "tests/integration/openshell-credentials-real.test.ts",
-    "tests/integration/openshell-withdrawal-real.test.ts",
-  ].includes(file);
-  const openShellApiKey =
-    isOpenShellLane(name) &&
-    ((effectiveEnv.OCC_TEST_OPENSHELL_HARNESS === "openclaw" &&
-      (openShellGatewayFile ||
-        (file === undefined && effectiveEnv.OCC_K3D_HARNESS === "openclaw"))) ||
-      (openShellGatewayFile && Boolean(effectiveEnv.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim())));
-  requireEnv(
-    (prepare.requireEnv ?? []).map((input) =>
-      openShellApiKey && input === "CODEX_ACCESS_TOKEN" ? "OPENAI_API_KEY" : input,
-    ),
-    effectiveEnv,
-  );
+  requireEnv(openShellRequiredEnv(name, file, prepare.requireEnv ?? [], modelEnv), effectiveEnv);
   if (prepare.nodeBaseImage) {
     assertNodeBaseImage(effectiveEnv.NODE_BASE_IMAGE);
   }
@@ -4019,13 +4005,13 @@ async function prepareK3dModelLane(statePath, state, env, options) {
 // (CREATE DATABASE ... TEMPLATE) instead of a copy of the lane template. The worker
 // revision suite copies the database the runner prepared for its file, one copy per test.
 // Defaults remain overridable by a file; env contains preparation-owned outputs.
-async function prepareFile({ lane, file, statePath, template }) {
+async function prepareFile({ lane, file, statePath, template, modelSelectors }) {
   const name = assertLane(lane);
   if (!file) {
     throw new Error("prepareFile requires a file.");
   }
   const relativeFile = toRepositoryRelative(filePath(file));
-  await validateLaneInputsBeforeSideEffects(name, { file: relativeFile });
+  await validateLaneInputsBeforeSideEffects(name, { file: relativeFile, modelSelectors });
   const resolvedStatePath = normalizeStatePath(statePath);
   // A test may prepare databases from its own process while the runner prepares and
   // cleans other files. The lock keeps either side from writing back a stale state.
@@ -4137,6 +4123,7 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     if (
       [
         "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+        "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts",
         "tests/integration/openshell-plugin-install-real.test.ts",
         "tests/integration/openshell-gateway-tool-policy-real.test.ts",
         "tests/integration/openshell-refresh-real.test.ts",

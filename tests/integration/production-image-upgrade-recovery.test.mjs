@@ -4527,11 +4527,17 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     `doctor env NODE_OPTIONS=--max-old-space-size=${heap} node /app/openclaw.mjs doctor --lint --json --severity-min error`;
   const doctorEvents = async (f) =>
     (await f.events()).filter((event) => /^(gateway-memory|doctor) /.test(event));
-  const scriptGatewayMemory = async (f, reads) => {
+  const updateDoctorFixtureState = async (f, fields) => {
     const state = await f.state();
-    state.gatewayFree = reads;
+    Object.assign(state, fields);
     await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
   };
+  const expectUpgradeFailure = (result, message) =>
+    result.then(
+      () => assert.fail(message),
+      (failure) => failure,
+    );
+  const scriptGatewayMemory = (f, reads) => updateDoctorFixtureState(f, { gatewayFree: reads });
 
   // Exit 137 is a kill. Only the gateway container's status, with a restart after the
   // gateway became Ready, shows that the container hit its memory limit.
@@ -4540,9 +4546,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     // Free MiB per read: a low read resets the count of good reads.
     await scriptGatewayMemory(f, ["transient", 700, 300, 700, 640]);
     await f.failNext("doctor-oom");
-    const oom = await f.run().then(
-      () => assert.fail("the upgrade must stop when the gateway is OOM-killed"),
-      (stopped) => stopped,
+    const oom = await expectUpgradeFailure(
+      f.run(),
+      "the upgrade must stop when the gateway is OOM-killed",
     );
     assert.deepEqual(await doctorEvents(f), [
       "gateway-memory transient",
@@ -4562,9 +4568,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     // another reason now: exit 137 again, but no OOM kill. Only the restart after this
     // run's Ready gateway counts; the earlier OOM restart predates it.
     await f.failNext("doctor-killed");
-    const killed = await f.run("--resume").then(
-      () => assert.fail("the upgrade must stop when Doctor is killed"),
-      (stopped) => stopped,
+    const killed = await expectUpgradeFailure(
+      f.run("--resume"),
+      "the upgrade must stop when Doctor is killed",
     );
     assert.match(
       killed.stderr,
@@ -4771,14 +4777,11 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         runs.push(
           t.test(name, async (t) => {
             const f = await fixture(t, { agent: true });
-            const state = await f.state();
-            state.gatewayReady = ready;
-            state.gatewayAfter = after;
-            await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+            await updateDoctorFixtureState(f, { gatewayReady: ready, gatewayAfter: after });
             await f.failNext("doctor-error");
-            const failure = await f.run().then(
-              () => assert.fail("Doctor command failure must stop the upgrade"),
-              (stopped) => stopped,
+            const failure = await expectUpgradeFailure(
+              f.run(),
+              "Doctor command failure must stop the upgrade",
             );
             assert.match(failure.stderr, /OpenClaw Doctor failed \(exit 1\)/);
             if (comparable === "restart") {
@@ -4836,8 +4839,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       evicted.status.reason = "Evicted";
       // On the dogfood cluster the evicted gateway ended with phase Succeeded.
       const ended = pod({ phase: "Succeeded", ready: false });
+      const afterEviction = { revisionPods: [evicted, replacement] };
       const cases = [
-        ["evicted", { revisionPods: [evicted, replacement] }, /was evicted \(phase Failed\)/],
+        ["evicted", afterEviction, /was evicted \(phase Failed\)/],
         [
           "ended",
           { revisionPods: [ended, replacement] },
@@ -4861,12 +4865,10 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         runs.push(
           t.test(name, async (t) => {
             const f = await fixture(t, { agent: true });
-            const state = await f.state();
-            state.afterDoctor = afterDoctor;
-            await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
-            const failure = await f.run().then(
-              () => assert.fail("a gateway changed after Doctor must stop the upgrade"),
-              (stopped) => stopped,
+            await updateDoctorFixtureState(f, { afterDoctor });
+            const failure = await expectUpgradeFailure(
+              f.run(),
+              "a gateway changed after Doctor must stop the upgrade",
             );
             assert.match(
               failure.stderr,
@@ -4890,9 +4892,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       // Resume after the eviction: the ended Pod stays in the API, but the readiness wait
       // ignores it, runs Doctor in the replacement and checks that Pod instead. No new deploy.
       const f = await fixture(t, { agent: true });
-      const state = await f.state();
-      state.afterDoctor = { revisionPods: [evicted, replacement] };
-      await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+      await updateDoctorFixtureState(f, { afterDoctor: afterEviction });
       await assert.rejects(f.run(), /did not stay on the same Ready Pod without restarts/);
       const resumed = await f.run("--resume");
       assert.match(resumed.stdout, /Upgraded runtime image/);
@@ -4912,13 +4912,11 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       // An eviction while Doctor runs kills Doctor (exit 137) without a container restart. The
       // failure must still name the eviction, so it is not read as a Doctor or memory problem.
       const killed = await fixture(t, { agent: true });
-      const killedState = await killed.state();
-      killedState.afterDoctor = { revisionPods: [evicted, replacement] };
-      await writeFile(join(killed.directory, "state.json"), JSON.stringify(killedState));
+      await updateDoctorFixtureState(killed, { afterDoctor: afterEviction });
       await killed.failNext("doctor-evicted");
-      const failure = await killed.run().then(
-        () => assert.fail("a Doctor killed by an eviction must stop the upgrade"),
-        (stopped) => stopped,
+      const failure = await expectUpgradeFailure(
+        killed.run(),
+        "a Doctor killed by an eviction must stop the upgrade",
       );
       assert.match(failure.stderr, /OpenClaw Doctor was killed \(exit 137\)/);
       assert.match(
@@ -4964,19 +4962,19 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
           },
         ],
       });
-      const dedicatedState = await dedicated.state();
-      dedicatedState.revisionPods = [pod(), agentPod()];
-      dedicatedState.afterDoctor = {
-        revisionPods: [
-          pod(),
-          agentPod({ phase: "Failed", ready: false }),
-          agentPod({ name: "agent-2", uid: "agent-2-uid" }),
-        ],
-      };
-      await writeFile(join(dedicated.directory, "state.json"), JSON.stringify(dedicatedState));
-      const agentFailure = await dedicated.run().then(
-        () => assert.fail("an agent Pod evicted during Doctor must stop the upgrade"),
-        (stopped) => stopped,
+      await updateDoctorFixtureState(dedicated, {
+        revisionPods: [pod(), agentPod()],
+        afterDoctor: {
+          revisionPods: [
+            pod(),
+            agentPod({ phase: "Failed", ready: false }),
+            agentPod({ name: "agent-2", uid: "agent-2-uid" }),
+          ],
+        },
+      });
+      const agentFailure = await expectUpgradeFailure(
+        dedicated.run(),
+        "an agent Pod evicted during Doctor must stop the upgrade",
       );
       assert.match(
         agentFailure.stderr,
@@ -5027,9 +5025,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         },
       ],
     });
-    const state = await f.state();
-    state.doctorSpanMs = 500;
-    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    await updateDoctorFixtureState(f, { doctorSpanMs: 500 });
     await f.run();
     assert.deepEqual(
       (await f.events()).filter((event) => /^(gateway-memory|doctor)/.test(event)),
@@ -5072,9 +5068,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     const f = await fixture(t, { agent: true });
     await scriptGatewayMemory(f, ["missing"]);
     await f.failNext("doctor-heap");
-    const failure = await f.run().then(
-      () => assert.fail("the upgrade must stop when Doctor runs out of heap"),
-      (stopped) => stopped,
+    const failure = await expectUpgradeFailure(
+      f.run(),
+      "the upgrade must stop when Doctor runs out of heap",
     );
     assert.match(failure.stderr, /running OpenClaw Doctor without checking its free memory/);
     assert.match(
