@@ -56,22 +56,40 @@ Claude Code reads its admin-managed settings from `/etc/claude-code`. These
 settings carry the endpoint, the credential and the settings in
 [Telemetry and model pins](#telemetry-and-model-pins). OpenClaw's backend scrubs
 `ANTHROPIC_*` and `CLAUDE_CODE_*` variables from the child's environment and
-selects no setting sources, so Claude Code ignores its user settings but always
-reads managed ones. Managed settings outrank every other tier, and the model's
-tools run as the same uid as the gateway. Therefore no process in the gateway
-container can change them:
+selects only user settings. Managed settings outrank every other tier, and so do
+remote managed settings: an API key or a stored sign-in makes a session eligible
+for them, and when the fetch fails Claude Code applies its cached copy from its
+configuration directory (`CLAUDE_CONFIG_DIR`). No supported setting turns that
+cached copy off. The model's tools run as the same uid as the gateway, so no
+process in the gateway container can change either directory:
 
 - The `prepare-claude-code-settings` init container writes only
-  `managed-settings.json` (`0400`) to a memory-backed volume. It is the only
-  container that mounts the volume writable. It gets only the model inputs and
-  the one credential variable, and it has no Agent state mounted.
-- The gateway mounts that directory read-only at `/etc/claude-code`. Because the
+  `managed-settings.json` (`0400`) to a memory-backed volume, and next to it the
+  skeleton of the configuration directory: a `0500` directory that holds only the
+  `projects` mount point. It is the only container that mounts the volume
+  writable. It gets only the model inputs and the one credential variable, and it
+  has no Agent state mounted.
+- The gateway mounts the settings read-only at `/etc/claude-code`. Because the
   directory holds only that file, it has no `managed-settings.d` drop-ins.
-- After the model probe, the gateway checks the mount. It holds the gateway
+- The gateway mounts the skeleton read-only at `/home/node/.claude` and the
+  transcript directory writable inside it (see
+  [Conversation state](#conversation-state)). Every file that can supply remote
+  managed settings or a stored sign-in lives directly in that directory: the
+  remote settings cache and its signature files, `policy-limits.json`,
+  `.credentials.json`, `.claude.json`, `settings.json`, `storage-v2/` and
+  `state/`. None of them can be created. Claude Code tolerates the refused writes
+  of its own state, such as `.claude.json`.
+- After the model probe, the gateway checks both mounts. It holds the gateway
   unready with `UNAVAILABLE` unless all of these are true: its mount table lists
-  the directory as read-only, a write attempt fails, the directory holds only
-  `managed-settings.json`, and the file is exactly the one that the admitted
-  inputs produce.
+  each directory as read-only, write access and a create probe are refused, the
+  settings directory holds only `managed-settings.json` and the configuration
+  directory only a real `projects` directory, and the file is exactly the one
+  that the admitted inputs produce.
+- The gateway then points `CLAUDE_CONFIG_DIR` at the configuration directory and
+  `ANTHROPIC_CONFIG_DIR`, the Anthropic profile store that otherwise lives under
+  the writable home, at `/etc/claude-code`, which holds no profile. It drops the
+  variables that would move a credential or settings store elsewhere, such as
+  `CLAUDE_SECURESTORAGE_CONFIG_DIR` and `ANTHROPIC_PROFILE`.
 
 A binary missing from the image or not at the pinned
 `OCE_CLAUDE_CODE_VERSION` also holds the gateway with `UNAVAILABLE`. Both checks
@@ -104,7 +122,8 @@ OpenTelemetry export off in all cases.
 Claude Code keeps each session's transcript under `$HOME/.claude/projects`, and
 OpenClaw resumes a conversation by its session ID. Compute mounts that directory
 from the Agent's private gateway state claim, so a conversation continues after a
-gateway restart or redeploy. The rest of `$HOME/.claude` stays on the Pod-local
-runtime-state volume. The managed settings that carry the credential exist only in
-the Pod's memory-backed volume, and the init container writes them again when the
-Pod starts. Deleting the Agent deletes the claim and its transcripts.
+gateway restart or redeploy. It is the only writable path under `$HOME/.claude`;
+the rest is the read-only skeleton. The skeleton and the managed settings that
+carry the credential exist only in the Pod's memory-backed volume, and the init
+container writes them again when the Pod starts. Deleting the Agent deletes the
+claim and its transcripts.

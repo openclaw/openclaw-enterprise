@@ -68,10 +68,12 @@ model and embedded execution and maps to the `openclaw` Harness
 (`harnessIdForAgentRuntime`). Compute's `harnessAuthEnvironment` passes
 `OPENCLAW_HARNESS_AGENT_RUNTIME` and `OCE_AGENT_RUNTIME_TELEMETRY` to the gateway.
 The `prepare-claude-code-settings` init container (`CLAUDE_CODE_SETTINGS_INIT_ENTRYPOINT`)
-writes Claude Code's admin-managed settings to a memory volume that the gateway mounts
-read-only at `/etc/claude-code`. After the model probe, `verifyClaudeCodeRuntime` checks
-that mount and the pinned binary; transcripts use the private
-state claim's `claude-projects` subPath. See the [Claude Code runtime](../reference/claude-code-runtime.md).
+writes Claude Code's admin-managed settings and the skeleton of its configuration
+directory to a memory volume. The gateway mounts the settings read-only at
+`/etc/claude-code` and the skeleton read-only at `/home/node/.claude`, so no remote
+settings cache or stored sign-in can be planted. After the model probe,
+`verifyClaudeCodeRuntime` checks both mounts and the pinned binary; transcripts use the
+private state claim's `claude-projects` subPath, the one writable path in the skeleton. See the [Claude Code runtime](../reference/claude-code-runtime.md).
 Missing/ambiguous policies, unsupported IDs and incompatible modes fail closed.
 Compute's `apps/controller/src/drivers/compute/native-gateway-transport.ts:validatePlaintextNativeGateway`
 rejects `gateway.tls.enabled: true` before version creation and preparation:

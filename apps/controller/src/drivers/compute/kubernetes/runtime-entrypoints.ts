@@ -2756,8 +2756,9 @@ function claudeCodeConfigSealed(fs, directory) {
   } catch { return false; }
 }
 // Variables that would move a store Claude Code reads for credentials or managed settings
-// out of the sealed directories. The Pod sets none; the Gateway drops them anyway, so
-// neither readiness nor the turns it spawns can follow one.
+// out of the sealed directories. The Pod sets none and the pinned binary ignores some of
+// them; the Gateway drops them anyway, so neither readiness nor the turns it spawns can
+// follow one, whatever a later pin honours.
 const CLAUDE_CODE_STORE_OVERRIDES = Object.freeze([
   "CLAUDE_SECURESTORAGE_CONFIG_DIR",
   "CLAUDE_CODE_REMOTE_SETTINGS_PATH",
