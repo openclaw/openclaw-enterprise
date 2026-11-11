@@ -144,14 +144,17 @@ test(
         // OpenClaw's own 15 s --probe-timeout covers the whole isolated run, local work
         // included. When the hogs hold that work back long enough, it fires before the
         // cap (main run 40419787603: returned at 105.4 s of a 110 s cap with 66 s of CPU
-        // wait; finding 2673). The wrapper then applies the quarter rule to the CPU wait
-        // the CLI preload read inside that 15 s window, not to the whole run, whose boot
-        // waits even when the provider hangs (finding 2675). The hogs keep the CLI
-        // runnable through its window, so pressure accounting must read starvation;
-        // without it, throttling alone decides, as at the cap.
+        // wait; finding 2673). The wrapper then judges only the 15 s window the CLI
+        // preload sampled, not the whole run, whose boot waits even when the provider
+        // hangs (finding 2675): over a quarter waiting and no 5 s idle stretch is
+        // starvation. The hogs keep the CLI runnable through its window, so pressure
+        // accounting must read starvation; without it, throttling alone decides, as at
+        // the cap.
         assert.ok(cliMs >= 15_000, `the CLI ran its 15 s timeout${detail}`);
         assert.ok(probe.timeoutWindowMs >= 15_000, `the preload read the window${detail}`);
-        const starved = probe.timeoutWindowCpuWaitMs > probe.timeoutWindowMs / 4;
+        const starved =
+          probe.timeoutWindowCpuWaitMs > probe.timeoutWindowMs / 4 &&
+          probe.timeoutWindowIdleMs < 5_000;
         const windowCode = starved ? "MODEL_PROBE_CPU_STARVED" : "MODEL_PROBE_TIMEOUT";
         assert.equal(probe.code, windowCode, `turn timeout before the cap${detail}`);
         assert.ok(

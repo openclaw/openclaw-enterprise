@@ -2291,13 +2291,16 @@ function probeExitFailure({ error, status, signal }) {
 // same holds when OpenClaw's own timer fires first (status "timeout"), but its
 // window is only the last 15 s: Node and OpenClaw boot before it start, and at
 // 500m that boot alone is throttled 6-7 s of a ~24 s hung-provider probe, over a
-// quarter of the whole run. So a CLI timeout is judged on the CPU wait inside
-// its window, sampled by a preload in the CLI: a hung provider leaves the CLI
-// idle there, a starved one waits (finding 2675). Without a window reading it
-// stays MODEL_PROBE_TIMEOUT. The preload (OPENCLAW_PROBE_CPU_WINDOW) samples
-// the cgroup each second on the CLI's main thread with the wrapper's own
-// cpuWaitSample and, at exit, writes the last sample at least 15 s old and the
-// exit sample.
+// quarter of the whole run. So a CLI timeout is judged on its window only, from
+// per-second samples a preload in the CLI takes: it is CPU starvation when over
+// a quarter of the window waited for CPU and no 5 s stretch of it was idle
+// (each second under a tenth waiting). A hung provider leaves the CLI idle for
+// most of the window; its own local work there at the limit still read up to
+// 26% waiting on a remote test VM, so the quarter alone misread 2 of 40 hung
+// probes (finding 2675). Without a window reading it stays MODEL_PROBE_TIMEOUT.
+// The preload (OPENCLAW_PROBE_CPU_WINDOW) samples the cgroup each second on the
+// CLI's main thread with the wrapper's own cpuWaitSample and, at exit, writes
+// the samples from the last one at least 15 s old, then the exit sample.
 // The wait is the larger of the cgroup cpu.pressure delta (throttling and node
 // contention) and the cpu.stat throttled time (throttling only), each used only
 // when both of its samples are valid: on one CI VM pressure read 8x low and hid
@@ -2416,7 +2419,17 @@ const cpuStarved = (elapsedMs, cpuWaitMs) => (cpuWaitMs > elapsedMs / 4 ? "MODEL
 const OPENCLAW_PROBE_TIMEOUT_MS = 15000;
 const OPENCLAW_PROBE_CPU_WINDOW = (file) => "try{if(require(\"node:worker_threads\").isMainThread){const fs=require(\"node:fs\");" + cpuCgroupFile + cpuWaitSample +
   "const a=[cpuWaitSample(fs)];setInterval(()=>a.push(cpuWaitSample(fs)),1000).unref();process.on(\"exit\",()=>{try{const e=cpuWaitSample(fs);fs.writeFileSync(" +
-  JSON.stringify(file) + ",JSON.stringify([a.findLast((s)=>s[0]<=e[0]-" + OPENCLAW_PROBE_TIMEOUT_MS + "),e]))}catch{}})}}catch{}";
+  JSON.stringify(file) + ",JSON.stringify([...a.slice(Math.max(0,a.findLastIndex((s)=>s[0]<=e[0]-" + OPENCLAW_PROBE_TIMEOUT_MS + "))),e]))}catch{}})}}catch{}";
+function cpuWindowFailure(samples) {
+  const window = cpuWaitBetween(samples[0], samples.at(-1));
+  let idleMs = 0, stretchMs = 0;
+  for (let i = 1; i < samples.length; i++) {
+    const step = cpuWaitBetween(samples[i - 1], samples[i]);
+    stretchMs = step.cpuWaitMs <= step.elapsedMs / 10 ? stretchMs + step.elapsedMs : 0;
+    idleMs = Math.max(idleMs, stretchMs);
+  }
+  return { code: idleMs < 5000 ? cpuStarved(window.elapsedMs, window.cpuWaitMs) : "MODEL_PROBE_TIMEOUT", timeoutWindowMs: window.elapsedMs, timeoutWindowCpuWaitMs: window.cpuWaitMs, timeoutWindowIdleMs: idleMs };
+}
 
 function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
   const stageStartedAt = Date.now();
@@ -2480,9 +2493,7 @@ function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
     if (status === "ok") return undefined;
     if (status === "auth") return "AUTHENTICATION_FAILED";
     if (status === "timeout") {
-      let window;
-      try { window = cpuWaitBetween(...JSON.parse(fs.readFileSync(windowPath, "utf8"))); } catch {}
-      return { code: window ? cpuStarved(window.elapsedMs, window.cpuWaitMs) : "MODEL_PROBE_TIMEOUT", timeoutWindowMs: window?.elapsedMs, timeoutWindowCpuWaitMs: window?.cpuWaitMs };
+      try { return cpuWindowFailure(JSON.parse(fs.readFileSync(windowPath, "utf8"))); } catch { return "MODEL_PROBE_TIMEOUT"; }
     }
     return { ...probeFailure("PROBE_STATUS", ["format", "rate_limit", "billing", "unknown", "no_model"].includes(status) ? status : "other"), ...providerErrorSummary(results[0].error) };
   } catch {

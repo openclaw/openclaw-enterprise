@@ -14911,10 +14911,12 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
           variant.includes("waiting for CPU") || variant.includes("throttled") ? 100_000 : 0;
         assert.equal(probeLog.cpuWaitMs, waitMs);
         assert.deepEqual(
-          [probeLog.timeoutWindowMs, probeLog.timeoutWindowCpuWaitMs],
+          [probeLog.timeoutWindowMs, probeLog.timeoutWindowCpuWaitMs, probeLog.timeoutWindowIdleMs],
           !variant.startsWith("provider timeout") || variant.endsWith("without a window reading")
-            ? [undefined, undefined]
-            : [15_000, variant.endsWith("in its window") ? 9_000 : 500],
+            ? [undefined, undefined, undefined]
+            : variant.endsWith("in its window")
+              ? [15_000, 9_000, 0]
+              : [15_000, 500, 15_000],
         );
         // The event records each counter's delta; without pressure accounting PSI has none.
         assert.deepEqual(

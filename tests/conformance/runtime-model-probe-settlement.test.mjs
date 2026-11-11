@@ -468,27 +468,66 @@ test("an OpenClaw probe timeout is classified by CPU wait inside its window (fin
   const starved = 3_600_000_000;
   // Preload samples: [ms, pressure ms, throttled ms, throttled periods ms]; JSON
   // writes an unreadable counter as null.
-  const window = (waitMs) =>
-    JSON.stringify([
-      [1000, 50, 0, 0],
-      [16200, 50 + waitMs, null, null],
-    ]);
+  // The preload's samples, one per second from 1 s: [ms, pressure ms, throttled ms,
+  // throttled periods ms], JSON writing an unreadable counter as null. `waits`
+  // is each second's CPU wait.
+  const window = (waits) =>
+    JSON.stringify(
+      waits.reduce(
+        (samples, waitMs, second) => [
+          ...samples,
+          [2000 + second * 1000, samples.at(-1)[1] + waitMs, null, null],
+        ],
+        [[1000, 50, null, null]],
+      ),
+    );
+  const seconds = (count, waitMs) => Array.from({ length: count }, () => waitMs);
   // The cap is still judged on the whole run.
   assert.equal(classify(cap, starved).code, "MODEL_PROBE_CPU_STARVED");
   assert.equal(classify(cap, 0).code, "MODEL_PROBE_TIMEOUT");
-  // A hung provider: the boot before OpenClaw's timer waited (the whole-run
-  // reading is starved), but the CLI sat idle in its window. Over a quarter of
-  // the 15.2 s window waiting is starvation, whichever timer fired.
-  for (const [wholeRun, windowWaitMs, code] of [
-    [starved, 1000, "MODEL_PROBE_TIMEOUT"],
+  // OpenClaw's own timer: starvation needs over a quarter of the window waiting
+  // and no 5 s stretch idle (each second at most a tenth waiting). The whole-run
+  // reading (here an hour of wait, as a throttled boot reads) never decides it.
+  for (const [name, waits, code, idleMs] of [
+    // A hung provider on a remote test VM: 4.1 s of a 15.9 s window waited, in
+    // the CLI's own work before and after the turn, around an idle turn.
+    [
+      "hung provider",
+      [...seconds(3, 800), ...seconds(10, 0), ...seconds(3, 700)],
+      "MODEL_PROBE_TIMEOUT",
+      10_000,
+    ],
+    ["starved throughout", seconds(16, 600), "MODEL_PROBE_CPU_STARVED", 0],
     // A quarter exactly is not over a quarter.
-    [0, 3800, "MODEL_PROBE_TIMEOUT"],
-    [starved, 9000, "MODEL_PROBE_CPU_STARVED"],
-    [0, 3801, "MODEL_PROBE_CPU_STARVED"],
+    ["a quarter waiting", seconds(16, 250), "MODEL_PROBE_TIMEOUT", 0],
+    ["just over a quarter", seconds(16, 251), "MODEL_PROBE_CPU_STARVED", 0],
+    // A tenth of a second waiting still counts as idle.
+    [
+      "5 s idle",
+      [...seconds(6, 900), ...seconds(5, 100), ...seconds(5, 900)],
+      "MODEL_PROBE_TIMEOUT",
+      5000,
+    ],
+    [
+      "over a tenth waiting each second",
+      [...seconds(6, 900), ...seconds(4, 101), ...seconds(6, 900)],
+      "MODEL_PROBE_CPU_STARVED",
+      0,
+    ],
+    [
+      "4 s idle",
+      [...seconds(6, 900), ...seconds(4, 0), ...seconds(6, 900)],
+      "MODEL_PROBE_CPU_STARVED",
+      4000,
+    ],
   ]) {
-    const probe = classify(openclawTimeout, wholeRun, window(windowWaitMs));
-    assert.equal(probe.code, code);
-    assert.deepEqual([probe.timeoutWindowMs, probe.timeoutWindowCpuWaitMs], [15200, windowWaitMs]);
+    const probe = classify(openclawTimeout, starved, window(waits));
+    assert.equal(probe.code, code, name);
+    assert.deepEqual(
+      [probe.timeoutWindowMs, probe.timeoutWindowCpuWaitMs, probe.timeoutWindowIdleMs],
+      [16_000, waits.reduce((sum, waitMs) => sum + waitMs, 0), idleMs],
+      name,
+    );
   }
   // Without a usable window reading the CLI's timeout stays a timeout.
   for (const reading of [
@@ -507,8 +546,9 @@ test("an OpenClaw probe timeout is classified by CPU wait inside its window (fin
 
 test("the probe CLI preload records the CPU wait of OpenClaw's timeout window", () => {
   // Run the generated preload as the CLI would load it, with a fake clock and
-  // cgroup: on the main thread it samples each second and at exit writes the last
-  // sample at least 15 s old beside the exit sample; worker threads skip it.
+  // cgroup: on the main thread it samples each second and at exit writes the
+  // samples from the last one at least 15 s old, then the exit sample; worker
+  // threads skip it.
   const begin = GATEWAY_RUNTIME_ENTRYPOINT.indexOf("function cpuCgroupFile(");
   const end = GATEWAY_RUNTIME_ENTRYPOINT.indexOf("\nfunction runOpenClawAuthenticationProbe(");
   assert.ok(begin >= 0 && end > begin);
@@ -574,8 +614,9 @@ test("the probe CLI preload records the CPU wait of OpenClaw's timeout window", 
   }
   run.now = 24_500;
   run.exit();
+  // Every sample from the last one at least 15 s before exit, then the exit sample.
   assert.deepEqual(JSON.parse(run.writes.get("/probe/cpu-window.json")), [
-    [9000, 4500, 900, 700],
+    ...Array.from({ length: 16 }, (_, index) => [9000 + index * 1000, 4500, 900, 700]),
     [24_500, 4500, 900, 700],
   ]);
 });
