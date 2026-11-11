@@ -94,6 +94,48 @@ For a failed matrix job, inspect each lane's result artifact to find the failing
 lane. The aggregate reports the parent failure once and requires every selected
 lane's same-source evidence, even when other lanes passed.
 
+### Run a complete local attempt
+
+On Linux, use a fresh private state path and result path to prepare, run and clean
+up one lane with one command:
+
+```sh
+node scripts/ci/run-tests.mjs run <lane> --lifecycle complete \
+  --state <private-state-file> --results <results-file>
+```
+
+Add `--file <manifest-path>` for a focused attempt. The command validates the
+selection before preparation and retains the lane's required inputs and expected
+cases. It does not select images, provide missing credentials, or enable optional
+wire tests. Follow the selected lane's setup requirements first.
+
+The final result includes separate `lifecycle.phases.prepare`, `run` and `cleanup`
+outcomes. It is written after cleanup, or after the command determines that
+cleanup cannot start safely. Passing tests alone do not make the attempt pass.
+The command reserves `<results-file>.lifecycle` and
+`<private-state-file>.lifecycle-owner`; use new paths for another attempt. The
+ordinary test result, when available, remains in the reserved directory's
+`run.json` even if later cleanup fails.
+
+SIGINT, SIGTERM and SIGHUP request deferred cancellation. The command reports the
+request immediately, waits for the current phase, then cleans up without starting
+the next test phase. Cancellation still fails the attempt. Preparation and tests
+share a 30-minute deadline unless `CI_RUNNER_DEADLINE_MS` supplies an absolute Unix
+millisecond deadline. Cleanup has its own `CI_RUNNER_CLEANUP_TIMEOUT_MS` allowance
+(default 120 seconds). This mode does not promise immediate interruption.
+
+A timeout, lost phase result or unconfirmed process termination produces
+`reconciliation-required` and prevents a later cleanup phase. Retain the state,
+confirm the attempt's processes have stopped, then use the existing cleanup
+command below. Do not remove another attempt's resources. SIGKILL or host failure
+can prevent a final result; a missing result is not cleanup evidence.
+
+This mode covers resources recorded by the selected preparation and test owners.
+It does not add installed-image qualification, verify unrelated resource absence,
+or restore host settings changed outside those owners.
+
+### Keep an owned service between file runs
+
 Prepare infrastructure on a disposable host. Keep the private state file until cleanup completes:
 
 ```sh

@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { fork, spawn, spawnSync } from "node:child_process";
 import {
   closeSync,
   constants,
@@ -15,7 +15,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { availableParallelism, cpus, constants as osConstants } from "node:os";
-import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
@@ -43,7 +43,7 @@ function usage() {
     "Usage:",
     "  node scripts/ci/run-tests.mjs audit [--manifest <file>] [--root <dir>]",
     "  node scripts/ci/run-tests.mjs check-selection <lane> --file <manifest-path> [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--file <manifest-path>] [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--file <manifest-path>] [--manifest <file>] [--root <dir>] [--lifecycle complete]",
     "  node scripts/ci/run-tests.mjs aggregate <group> --results-dir <dir> [--needs <json-file>] [--lanes <json-array>] [--release-selection <file>] [--manifest <file>] [--root <dir>]",
   ].join("\n");
 }
@@ -509,6 +509,7 @@ function shouldRemoveInheritedEnv(name) {
     name === "DEBUG" ||
     name === "NODE_TEST_CONTEXT" ||
     name === "NODE_TEST_WORKER_ID" ||
+    name === "OPENCLAW_CI_COMPLETE_PHASE" ||
     name.startsWith("OCC_TEST_") ||
     name.startsWith("OCC_PROBE_") ||
     name.endsWith("_KEEP") ||
@@ -845,6 +846,9 @@ function addLiveGroup(pgid) {
     }
   }
   liveGroups.add(pgid);
+  if (process.env.OPENCLAW_CI_COMPLETE_PHASE === "1" && process.send) {
+    process.send({ type: "ci-lifecycle-group", id: pgid });
+  }
 }
 
 // spawnSync's contract, without blocking the runner while other files run: stdout
@@ -2190,6 +2194,378 @@ async function writeSummary(path, summary) {
   await writeFile(path, `${JSON.stringify(summary, null, 2)}\n`);
 }
 
+// Complete mode owns a fresh attempt. Phase children keep their group leader
+// alive until the parent acknowledges the result, so its final signal cannot
+// target a reused group ID. Ordinary externally managed runs keep their behavior.
+async function completePhaseChild() {
+  if (!process.send || process.env.OPENCLAW_CI_COMPLETE_PHASE !== "1") {
+    throw new Error("A lifecycle phase requires its owning IPC channel.");
+  }
+  const stop = () => process.kill(-process.pid, "SIGKILL");
+  process.once("disconnect", stop);
+  process.once("exit", stop);
+  process.on("message", (message) => {
+    if (message?.type === "ci-lifecycle-ack") {
+      stop();
+    }
+  });
+  const request = await new Promise((resolveRequest) => {
+    process.once("message", resolveRequest);
+  });
+  let exitCode = 1;
+  let uncertain = false;
+  let error;
+  try {
+    const { phase, root, lane, statePath, resultsPath, manifestPath, file } = request;
+    if (phase === "prepare") {
+      const owner = await import(pathToFileURL(join(root, "scripts/ci/prepare.mjs")));
+      await owner.prepareLane({ lane, statePath, file });
+      exitCode = 0;
+    } else if (phase === "cleanup") {
+      const owner = await import(pathToFileURL(join(root, "scripts/ci/cleanup.mjs")));
+      await owner.cleanupState(statePath);
+      exitCode = 0;
+    } else if (phase === "run") {
+      const manifest = normalizeManifest(
+        loadTestSuites(manifestPath, process.env.OCC_CI_SUITE_VIEW),
+        manifestPath,
+      );
+      exitCode = await runLane(root, manifest, lane, statePath, resultsPath, file);
+      uncertain = abandonedSteps > 0;
+    }
+  } catch (caught) {
+    let preparedEnv;
+    try {
+      preparedEnv = JSON.parse(await readFile(request.statePath, "utf8")).env;
+    } catch {
+      // Preparation may fail before it writes state. Generic credential
+      // redaction and inherited values still apply in that case.
+    }
+    error = redactFailure(
+      { message: caught instanceof Error ? caught.message : "Lifecycle phase failed." },
+      failureSecrets([process.env, isObject(preparedEnv) ? preparedEnv : {}]),
+      request.root,
+    );
+    exitCode = 1;
+  }
+  process.send({ type: "ci-lifecycle-result", exitCode, uncertain, error });
+  await new Promise(() => {});
+}
+
+function lifecycleGroupsTerminal(groups) {
+  try {
+    for (const name of readdirSync("/proc")) {
+      if (!/^\d+$/u.test(name)) {
+        continue;
+      }
+      let stat;
+      try {
+        stat = readFileSync(`/proc/${name}/stat`, "utf8");
+      } catch (error) {
+        if (error.code === "ENOENT" || error.code === "ESRCH") {
+          continue;
+        }
+        return false;
+      }
+      const fields = stat
+        .slice(stat.lastIndexOf(")") + 2)
+        .trim()
+        .split(/\s+/u);
+      if (fields.length < 20) {
+        return false;
+      }
+      if (groups.has(Number(fields[2])) && !["Z", "X"].includes(fields[0])) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function lifecyclePhase(request, timeoutMs) {
+  const startedAt = new Date().toISOString();
+  const empty = { status: "not-run", exitCode: null, signal: null, terminal: true, startedAt };
+  if (timeoutMs <= 0) {
+    return { ...empty, reason: "deadline-exhausted", endedAt: new Date().toISOString() };
+  }
+  const groups = new Set();
+  let result;
+  let invalid = false;
+  let timedOut = false;
+  let child;
+  try {
+    child = fork(fileURLToPath(import.meta.url), ["__lifecycle-phase"], {
+      cwd: request.root,
+      env: { ...process.env, OPENCLAW_CI_COMPLETE_PHASE: "1" },
+      detached: true,
+      execArgv: [],
+      stdio: ["ignore", "ignore", "ignore", "ipc"],
+    });
+  } catch {
+    return {
+      ...empty,
+      status: "failed",
+      exitCode: 1,
+      reason: "spawn-failed",
+      endedAt: new Date().toISOString(),
+    };
+  }
+  groups.add(child.pid);
+  let settle;
+  let abandonTimer;
+  const exited = new Promise((resolveExit) => {
+    settle = resolveExit;
+  });
+  const stop = () => {
+    if (child.pid > 1 && child.exitCode === null && child.signalCode === null) {
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch (error) {
+        if (error.code !== "ESRCH") {
+          invalid = true;
+        }
+      }
+    }
+    // Even SIGKILL can wait on uninterruptible kernel work. A missing exit is
+    // unconfirmed termination, never permission to race resource cleanup.
+    abandonTimer ??= setTimeout(() => {
+      invalid = true;
+      if (child.connected) {
+        child.disconnect();
+      }
+      child.unref();
+      settle(null);
+    }, 5_000);
+  };
+  const timer = setTimeout(() => {
+    timedOut = true;
+    stop();
+  }, timeoutMs);
+  child.on("message", (message) => {
+    if (
+      message?.type === "ci-lifecycle-group" &&
+      Number.isInteger(message.id) &&
+      message.id > 1 &&
+      !result
+    ) {
+      groups.add(message.id);
+    } else if (
+      message?.type === "ci-lifecycle-result" &&
+      !result &&
+      Number.isInteger(message.exitCode) &&
+      message.exitCode >= 0 &&
+      typeof message.uncertain === "boolean"
+    ) {
+      result = message;
+      child.send({ type: "ci-lifecycle-ack" }, (error) => {
+        if (error) {
+          invalid = true;
+          stop();
+        }
+      });
+    } else {
+      invalid = true;
+      stop();
+    }
+  });
+  child.on("error", () => {
+    invalid = true;
+    if (child.pid) {
+      stop();
+    } else {
+      settle(null);
+    }
+  });
+  child.once("exit", (_code, signal) => settle(signal));
+  child.send(request, (error) => {
+    if (error) {
+      invalid = true;
+      stop();
+    }
+  });
+  const signal = await exited;
+  clearTimeout(timer);
+  clearTimeout(abandonTimer);
+  // Never signal reported nested IDs: their leaders may already have exited.
+  // Read-only checks also include descendants which outlived their parent.
+  const drainDeadline = Date.now() + 5_000;
+  while (!lifecycleGroupsTerminal(groups) && Date.now() < drainDeadline) {
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+  }
+  const terminal = Boolean(
+    result && !invalid && !timedOut && !result.uncertain && lifecycleGroupsTerminal(groups),
+  );
+  return {
+    status: timedOut ? "timed-out" : terminal && result.exitCode === 0 ? "passed" : "failed",
+    exitCode: result?.exitCode ?? null,
+    signal: result ? null : signal,
+    terminal,
+    ...(result?.error ? { error: result.error } : {}),
+    startedAt,
+    endedAt: new Date().toISOString(),
+  };
+}
+
+async function runCompleteLifecycle(
+  root,
+  manifest,
+  manifestPath,
+  lane,
+  statePath,
+  resultsPath,
+  file,
+) {
+  if (process.platform !== "linux") {
+    throw new Error("Complete lifecycle mode requires Linux process-group verification.");
+  }
+  const source = sourceEvidence(root);
+  const selection = selectLane(manifest, lane, file);
+  const audit = await auditManifest(root, manifest);
+  if (selection.lane) {
+    fileConcurrency(selection.lane, selection.issues);
+  }
+  if (selection.issues.length || audit.issues.length || source.issues.length) {
+    logIssues([...selection.issues, ...audit.issues, ...source.issues]);
+    return 1;
+  }
+  if (statePath === resultsPath) {
+    throw new Error("Lifecycle state and results must use different paths.");
+  }
+  const attempt = `${resultsPath}.lifecycle`;
+  for (const path of [statePath, resultsPath, attempt, `${statePath}.lifecycle-owner`]) {
+    try {
+      await lstat(path);
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        continue;
+      }
+      throw error;
+    }
+    throw new Error("Complete lifecycle mode requires fresh state and result paths.");
+  }
+  await mkdir(dirname(statePath), { recursive: true });
+  await mkdir(dirname(resultsPath), { recursive: true });
+  await mkdir(attempt, { mode: 0o700 });
+  await writeFile(
+    `${statePath}.lifecycle-owner`,
+    JSON.stringify({ resultsPath, sourceSha: source.sha }),
+    { flag: "wx", mode: 0o600 },
+  );
+  const startedAt = new Date().toISOString();
+  const deadline = laneDeadlineMs() ?? Date.now() + 30 * 60_000;
+  const phases = Object.fromEntries(
+    ["prepare", "run", "cleanup"].map((name) => [
+      name,
+      { status: "not-run", exitCode: null, signal: null, terminal: false },
+    ]),
+  );
+  let interrupted = null;
+  let activeDeadline = deadline;
+  let finalizing = false;
+  const interrupt = (signal) => {
+    if (!finalizing && interrupted === null) {
+      interrupted = signal;
+      process.stderr.write(
+        `run-tests: ${signal} received; cancellation pending, waiting up to ${Math.max(0, Math.ceil((activeDeadline - Date.now()) / 1000))}s for the current phase before owned cleanup.\n`,
+      );
+    }
+  };
+  for (const signal of forwardedSignals) {
+    process.on(signal, interrupt);
+  }
+  const phaseRequest = {
+    root,
+    lane,
+    statePath,
+    resultsPath: join(attempt, "run.json"),
+    manifestPath,
+    file,
+  };
+  try {
+    if (!interrupted) {
+      phases.prepare = await lifecyclePhase(
+        { ...phaseRequest, phase: "prepare" },
+        deadline - Date.now(),
+      );
+    }
+    if (!interrupted && phases.prepare.status === "passed") {
+      phases.run = await lifecyclePhase({ ...phaseRequest, phase: "run" }, deadline - Date.now());
+    }
+    const previous = phases.run.status === "not-run" ? phases.prepare : phases.run;
+    if (previous.terminal) {
+      activeDeadline = Date.now() + cleanupAllowanceMs();
+      phases.cleanup = await lifecyclePhase(
+        { ...phaseRequest, phase: "cleanup" },
+        cleanupAllowanceMs(),
+      );
+    }
+    let summary = {
+      version: 1,
+      command: "run",
+      sourceSha: source.sha,
+      lane,
+      scope: file === undefined ? "full" : "focused",
+      startedAt,
+      counts: { passed: 0, failed: 0, skipped: 0, todo: 0, total: 0 },
+      files: [],
+      issues: [],
+    };
+    if (phases.run.terminal) {
+      try {
+        const candidate = JSON.parse(await readFile(phaseRequest.resultsPath, "utf8"));
+        if (
+          candidate.command !== "run" ||
+          candidate.lane !== lane ||
+          candidate.sourceSha !== source.sha ||
+          !Array.isArray(candidate.issues)
+        ) {
+          throw new Error("Invalid run evidence");
+        }
+        summary = candidate;
+      } catch {
+        phases.run.status = "failed";
+        phases.run.exitCode = 1;
+      }
+    }
+    finalizing = true;
+    const uncertain = Object.values(phases).some(
+      (phase) => phase.status !== "not-run" && !phase.terminal,
+    );
+    const passed =
+      !interrupted &&
+      Object.values(phases).every((phase) => phase.status === "passed") &&
+      summary.status === "passed";
+    const exitCode = interrupted ? 128 + osConstants.signals[interrupted] : passed ? 0 : 1;
+    const lifecycle = {
+      status: uncertain ? "reconciliation-required" : passed ? "passed" : "failed",
+      interrupted,
+      phases,
+    };
+    if (!passed) {
+      summary.issues.push(
+        issue(
+          "lifecycle-incomplete",
+          uncertain
+            ? "Phase termination is unconfirmed; retain state for reconciliation."
+            : "Complete lifecycle did not pass.",
+        ),
+      );
+    }
+    await writeFile(
+      resultsPath,
+      `${JSON.stringify({ ...summary, status: passed ? "passed" : "failed", exitCode, endedAt: new Date().toISOString(), lifecycle }, null, 2)}\n`,
+      { flag: "wx", mode: 0o600 },
+    );
+    return exitCode;
+  } finally {
+    for (const signal of forwardedSignals) {
+      process.removeListener(signal, interrupt);
+    }
+  }
+}
+
 async function main() {
   const { command, positionals, options } = parseArgs(process.argv.slice(2));
   const root = resolve(options.root ?? repositoryRoot);
@@ -2198,6 +2574,10 @@ async function main() {
     loadTestSuites(manifestPath, process.env.OCC_CI_SUITE_VIEW),
     manifestPath,
   );
+
+  if (options.lifecycle !== undefined && (command !== "run" || options.lifecycle !== "complete")) {
+    throw new Error("--lifecycle supports only run --lifecycle complete.");
+  }
 
   if (command === "check-selection") {
     if (!positionals[0] || options.file === undefined) {
@@ -2218,6 +2598,17 @@ async function main() {
     const laneName = positionals[0];
     if (!laneName || !options.state || !options.results) {
       throw new Error(`run requires <lane>, --state, and --results\n${usage()}`);
+    }
+    if (options.lifecycle === "complete") {
+      return runCompleteLifecycle(
+        root,
+        manifest,
+        manifestPath,
+        laneName,
+        resolve(root, options.state),
+        resolve(root, options.results),
+        options.file,
+      );
     }
     return runLane(
       root,
@@ -2327,7 +2718,11 @@ function killDescendants() {
 }
 
 try {
-  process.exitCode = await main();
+  if (process.argv[2] === "__lifecycle-phase") {
+    await completePhaseChild();
+  } else {
+    process.exitCode = await main();
+  }
 } catch (error) {
   console.error(error.message);
   process.exitCode = 1;
