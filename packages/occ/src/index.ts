@@ -11487,6 +11487,40 @@ export class OpenClawController {
     return this.read((state) => this.requireInstallationCeiling(state));
   }
 
+  async validateInstallationSandboxNetworkPolicyCeiling(
+    principalId: string,
+    expectedVersion: number,
+    rules: unknown,
+  ): Promise<ConfigurationResult<{ readonly rules: readonly SandboxNetworkGrant[] }>> {
+    const target = { kind: "installation", id: this.installation.id } as const;
+    return this.mutate(async (state) => {
+      await this.holdAuthority(state);
+      await this.authorize(principalId, "administer", target);
+      await state.installations.holdSandboxNetworkPolicyCeiling("shared");
+      await this.authorize(principalId, "administer", target);
+      const previous = await this.requireInstallationCeiling(state);
+      if (previous.managementMode === "startup") {
+        throw new ResourceStateConflictError(
+          "The Installation ceiling is managed by startup configuration.",
+        );
+      }
+      if (previous.version !== expectedVersion) {
+        throw new ResourceStateConflictError(
+          "The Installation ceiling changed. Reload before reviewing.",
+        );
+      }
+      try {
+        validateSandboxNetworkGrants(rules, "/rules");
+        return { success: true, data: { rules: immutableCopy(rules) } };
+      } catch (error) {
+        if (error instanceof ConfigurationValidationError) {
+          return { success: false, error: error.error };
+        }
+        throw error;
+      }
+    });
+  }
+
   async updateInstallationSandboxNetworkPolicyCeiling(
     principalId: string,
     expectedVersion: number,

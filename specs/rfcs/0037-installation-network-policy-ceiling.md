@@ -131,6 +131,12 @@ returns the persisted rules and new version in the standard response envelope.
 Reject malformed or invalid rules with field details and a stale version with a
 conflict. Commit a successful write and its attributable audit event together.
 
+`POST /installation/sandbox-network-policy-ceiling/validate` previews the same
+input through shared validation. It requires the same Installation authority and
+checks current mode and version without changing state. Return a configuration
+result with validated rules or safe field details. Preview success grants no
+authority to a later write; PUT repeats its checks.
+
 The proposed Console entry point is an admin-only **Network policy ceiling**
 section in Settings. Reuse the existing rule editor patterns and shared
 validation; do not expose provider YAML. Show the saved version and explain that

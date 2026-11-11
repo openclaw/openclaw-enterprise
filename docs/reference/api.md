@@ -84,7 +84,7 @@ the paths.
 | [Authentication](#authentication) | 23 operations |
 | [Backends](#backends) | 1 operation |
 | [Connections](#connections) | 15 operations |
-| [Installation](#installation) | 7 operations |
+| [Installation](#installation) | 8 operations |
 | [Namespaces](#namespaces) | 7 operations |
 | [Agents](#agents) | 52 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
@@ -2834,6 +2834,7 @@ Complete a browser connection for the signed-in person who started it
 | [`GET /installation/driver-configurations`](#get-installationdriverconfigurations) | Inspect selected Driver accepted startup values and configuration schemas |
 | [`GET /installation/sandbox-network-policy-ceiling`](#get-installationsandboxnetworkpolicyceiling) | Get the Installation network policy ceiling |
 | [`PUT /installation/sandbox-network-policy-ceiling`](#put-installationsandboxnetworkpolicyceiling) | Update the Installation network policy ceiling |
+| [`POST /installation/sandbox-network-policy-ceiling/validate`](#post-installationsandboxnetworkpolicyceilingvalidate) | Validate proposed Installation network policy ceiling rules |
 | [`GET /observability`](#get-observability) | Get the configured external observability destination |
 
 #### `GET /installation`
@@ -3382,6 +3383,101 @@ Example response
     "updatedAt": "2026-10-01T12:00:00.000Z",
     "updatedBy": "principal-administrator",
     "version": 2
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /installation/sandbox-network-policy-ceiling/validate`
+
+<span id="post-installationsandboxnetworkpolicyceilingvalidate"></span>
+
+Validate proposed Installation network policy ceiling rules
+
+**Operation ID:** `validateInstallationSandboxNetworkPolicyCeiling`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
+| `rules` | `any` | Yes | — |
+
+Example request
+```json
+{
+  "expectedVersion": 1,
+  "rules": [
+    {
+      "binary": "/usr/bin/python3.11",
+      "host": "service.example.com",
+      "id": "approved-service",
+      "ports": [
+        {
+          "from": 443,
+          "to": 443
+        }
+      ]
+    }
+  ]
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object or object` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "data": {
+      "rules": [
+        {
+          "binary": "/usr/bin/python3.11",
+          "host": "service.example.com",
+          "id": "approved-service",
+          "ports": [
+            {
+              "from": 443,
+              "to": 443
+            }
+          ]
+        }
+      ]
+    },
+    "success": true
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -8344,7 +8440,9 @@ Example response
 ```json
 {
   "data": {
-    "data": [],
+    "data": {
+      "additions": []
+    },
     "success": true
   },
   "meta": {

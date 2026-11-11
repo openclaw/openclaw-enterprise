@@ -175,3 +175,8 @@ export const InstallationSandboxNetworkPolicyCeilingUpdateBody = Type.Object(
   },
   { additionalProperties: false },
 );
+
+export const InstallationSandboxNetworkPolicyCeilingValidateBody = Type.Object(
+  { expectedVersion: SandboxPolicyVersion, rules: Type.Unknown() },
+  { additionalProperties: false },
+);

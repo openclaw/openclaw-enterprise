@@ -2665,6 +2665,7 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .form-field textarea,
 .collection-toolbar > input[type="search"],
 .sandbox-policy input[type="search"],
+.sandbox-rule-collection > input[type="search"],
 .sandbox-policy select,
 .repository-discovery input[type="search"],
 .plugin-control select,
@@ -6300,5 +6301,46 @@ html:has(#create-agent-form) {
   }
   .workspace-file-panel .configuration-editor {
     min-height: 300px;
+  }
+}
+
+.network-policy-ceiling > div > .configuration-fields {
+  margin-block: var(--space-4);
+}
+
+.ceiling-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-block: var(--space-4);
+}
+
+.ceiling-actions > .hint {
+  margin-inline-end: auto;
+}
+
+.ceiling-review > details {
+  margin-block: var(--space-4);
+}
+
+.network-policy-ceiling .sandbox-rule-row {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+}
+
+.ceiling-rule-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+@media (max-width: 520px) {
+  .network-policy-ceiling .sandbox-rule-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .network-policy-ceiling .ceiling-rule-actions {
+    grid-column: 1;
+    grid-row: 3;
   }
 }

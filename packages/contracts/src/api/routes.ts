@@ -5,6 +5,7 @@ import {
 import {
   InstallationSandboxNetworkPolicyCeilingResponse,
   InstallationSandboxNetworkPolicyCeilingUpdateBody,
+  InstallationSandboxNetworkPolicyCeilingValidateBody,
   SandboxPolicyParams,
   SandboxPolicyRevisionParams,
   SandboxPolicyResponse,
@@ -399,6 +400,22 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       response: { 200: InstallationSandboxNetworkPolicyCeilingResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "validateInstallationSandboxNetworkPolicyCeiling",
+    method: "POST",
+    path: "/installation/sandbox-network-policy-ceiling/validate",
+    action: "openclaw.installation.sandbox_network_policy_ceiling.validate",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "Validate proposed Installation network policy ceiling rules",
+    tags: ["Installation"],
+    schema: {
+      querystring: EmptyQuery,
+      body: InstallationSandboxNetworkPolicyCeilingValidateBody,
+      response: { 200: ConfigurationValidationResponse, ...createErrors },
     },
   },
   {

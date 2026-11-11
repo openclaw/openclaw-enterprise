@@ -50,6 +50,65 @@ test(
       );
       read = await request("GET");
     }
+    await t.test(
+      "review validates the draft without changing saved rules or audit history",
+      async () => {
+        const before = (await request("GET")).data;
+        const auditCount = async () =>
+          (
+            await pool.query(
+              "SELECT count(*)::integer AS count FROM occ.audit_events WHERE kind = 'mutation' AND resource_id = $1",
+              [controller.installation.id],
+            )
+          ).rows[0].count;
+        const count = await auditCount();
+        const review = await fixture.inject("POST", `${path}/validate`, {
+          expectedVersion: before.version,
+          rules: [rule],
+        });
+        assert.equal(review.statusCode, 200, review.body);
+        assert.deepEqual(review.json().data, { success: true, data: { rules: [rule] } });
+        // These values pass the field shape but fail shared semantic checks.
+        const invalid = await fixture.inject("POST", `${path}/validate`, {
+          expectedVersion: before.version,
+          rules: [
+            {
+              ...rule,
+              binary: "/usr/../bin/python3",
+              host: "bad..example.org",
+              ports: [{ from: 443, to: 80 }],
+            },
+            rule,
+          ],
+        });
+        assert.equal(invalid.statusCode, 200, invalid.body);
+        assert.equal(invalid.json().data.success, false);
+        const fields = invalid
+          .json()
+          .data.error.details.map((detail: { path: string }) => detail.path);
+        for (const field of [
+          "/rules/0/binary",
+          "/rules/0/host",
+          "/rules/0/ports/0/to",
+          "/rules/1/id",
+        ]) {
+          assert.ok(fields.includes(field), field);
+        }
+        const malformed = await fixture.inject("POST", `${path}/validate`, {
+          expectedVersion: before.version,
+          rules: [{ ...rule, ports: [] }],
+        });
+        assert.equal(malformed.statusCode, 200);
+        assert.equal(malformed.json().data.success, false);
+        const stale = await fixture.inject("POST", `${path}/validate`, {
+          expectedVersion: before.version + 1,
+          rules: [rule],
+        });
+        assert.equal(stale.statusCode, 409);
+        assert.deepEqual((await request("GET")).data, before);
+        assert.equal(await auditCount(), count);
+      },
+    );
     const initialVersion = read.data.version;
     const saved = await request("PUT", { expectedVersion: initialVersion, rules: [rule] });
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
@@ -89,6 +148,16 @@ test(
         assert.deepEqual(startup.rules, [rule]);
         await managed.initializeSandboxNetworkPolicyCeiling();
         assert.deepEqual((await request("GET")).data, startup);
+        assert.equal(
+          (
+            await fixture.inject("POST", `${path}/validate`, {
+              expectedVersion: startup.version,
+              rules: [],
+            })
+          ).statusCode,
+          409,
+        );
+
         assert.equal(
           (await request("PUT", { expectedVersion: startup.version, rules: [] })).status,
           409,
@@ -173,6 +242,16 @@ test(
         );
         try {
           assert.equal((await request("GET")).status, 403);
+          assert.equal(
+            (
+              await fixture.inject("POST", `${path}/validate`, {
+                expectedVersion: before.version,
+                rules: [],
+              })
+            ).statusCode,
+            403,
+          );
+
           assert.equal(
             (await request("PUT", { expectedVersion: before.version, rules: [] })).status,
             403,

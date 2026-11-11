@@ -2361,6 +2361,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
+    if (operation.operationId === "validateInstallationSandboxNetworkPolicyCeiling") {
+      const result = await controller.validateInstallationSandboxNetworkPolicyCeiling(
+        context.actorId,
+        body!.expectedVersion as number,
+        body!.rules,
+      );
+      reply.send({ data: result, meta: { requestId: request.id } });
+      return;
+    }
+
     if (
       operation.operationId === "getInstallationSandboxNetworkPolicyCeiling" ||
       operation.operationId === "updateInstallationSandboxNetworkPolicyCeiling"
