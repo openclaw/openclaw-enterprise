@@ -8,6 +8,9 @@ migration commands use the same connection pool factory.
 credentials. Its other mode is `azure-workload-identity`; unknown
 modes fail before opening a pool.
 
+Explicit pool options override URL query parameters. Unspecified values retain
+URL, environment, and client defaults.
+
 | Variable                     | Requirement in Azure workload-identity mode                          |
 | ---------------------------- | -------------------------------------------------------------------- |
 | `OCC_DATABASE_AUTH`          | Set to `azure-workload-identity` in each connecting process.         |
