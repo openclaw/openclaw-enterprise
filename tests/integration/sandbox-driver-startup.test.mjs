@@ -3600,7 +3600,6 @@ test("OpenShell retains the revision provider when Sandbox creation has an unkno
 registerSandboxDriverWorkspaceRenewalCases({
   openShellDriver,
   runtimeSandboxFixture,
-  storedSandbox,
   callCount,
 });
 

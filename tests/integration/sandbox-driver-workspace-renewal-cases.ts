@@ -3,7 +3,6 @@ import test from "node:test";
 import type { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import type {
   OpenShellGatewayClient,
-  OpenShellSandboxCreateRequest,
   OpenShellSandboxResponse,
   OpenShellServiceResponse,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
@@ -45,10 +44,6 @@ type Fixtures = {
     driver: OpenShellSandboxDriver,
     options?: { harnessId?: string },
   ) => RuntimeFixture;
-  storedSandbox: (
-    request: OpenShellSandboxCreateRequest,
-    fields?: Partial<OpenShellSandboxResponse>,
-  ) => OpenShellSandboxResponse;
   callCount: (gatewayClient: Gateway, operation: string) => number;
 };
 
