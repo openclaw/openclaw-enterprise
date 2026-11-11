@@ -50,6 +50,23 @@ esac`,
     const [server] = state.resources;
     assert.equal(server.status, "planned");
     assert.equal(server.port, 0, "discovery did not publish an unverified port");
+    // A retained pending server cannot become a template's port-zero dependency.
+    const file = spawnSync(
+      process.execPath,
+      [
+        "scripts/ci/prepare.mjs",
+        "--lane",
+        "postgres-auth",
+        "--state",
+        statePath,
+        "--file",
+        "tests/integration/native-admin-session-postgres.test.mjs",
+      ],
+      { cwd: repositoryRoot, encoding: "utf8", env, timeout: 30_000 },
+    );
+    assert.equal(file.status, 1);
+    assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")).resources, state.resources);
+    assert.match(file.stderr, /PostgreSQL server is not ready/);
     const cleaned = spawnSync(process.execPath, ["scripts/ci/cleanup.mjs", "--state", statePath], {
       cwd: repositoryRoot,
       encoding: "utf8",

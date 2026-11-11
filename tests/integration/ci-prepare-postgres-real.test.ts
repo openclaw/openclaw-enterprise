@@ -13,7 +13,9 @@ test(
   { skip: process.env.OCC_TEST_CI_POSTGRES_REAL !== "1", timeout: 180_000 },
   async (t) => {
     const root = await mkdtemp(join(tmpdir(), "ci-postgres-real-"));
-    const states = [join(root, "first.json"), join(root, "second.json")];
+    const states: string[] = process.env.OCC_TEST_CI_POSTGRES_STATES
+      ? JSON.parse(process.env.OCC_TEST_CI_POSTGRES_STATES)
+      : [join(root, "first.json"), join(root, "second.json")];
     const projects: string[] = [];
     const env = { ...process.env, GITHUB_ENV: "", GITHUB_OUTPUT: "" };
     const node = (args: string[]) =>

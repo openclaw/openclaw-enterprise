@@ -76,7 +76,11 @@ OCC_TEST_CI_POSTGRES_REAL=1 node --test tests/integration/ci-prepare-postgres-re
 The `postgres` CI lane selects this check and requires it to pass with no skips.
 Default local suites leave it unselected. It needs Docker Compose,
 PostgreSQL image access and installed workspace dependencies. It removes only its own projects and volumes;
-cleanup failures retain the state directory printed in the error.
+cleanup failures retain the state directory printed in the error. In CI, file preparation
+journals both child state paths in the lane state before the test starts. File and
+lane cleanup can therefore recover accepted projects even if the test worker is
+killed. Keep the lane state until cleanup passes. A direct local invocation keeps
+its existing after-hook cleanup and requires the same Docker prerequisites.
 
 ## Subnet pool exhaustion
 

@@ -896,6 +896,19 @@ async function cleanupResource(
       await cleanupLogging(resource, loggingOptions);
       break;
     }
+    case "child-state": {
+      assertResourceOwner(resource, state);
+      assert.match(state.prefix, /^openclaw-ci-[a-z0-9-]+$/);
+      assertString(resource.name, "child state name");
+      const suffix = resource.name.slice(`${state.prefix}-child-`.length);
+      if (!resource.name.startsWith(`${state.prefix}-child-`) || !/^[a-f0-9]{12}$/.test(suffix)) {
+        throw new Error("Refusing an unowned child state path.");
+      }
+      const childPath = join(dirname(statePath), `${resource.name}.json`);
+      assert.notEqual(childPath, statePath, "A child state cannot own its parent.");
+      await cleanupState(childPath);
+      break;
+    }
     case "postgres-database":
       await cleanupDatabase(resource, state);
       break;

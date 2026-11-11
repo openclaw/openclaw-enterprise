@@ -85,26 +85,26 @@ reads bounded metadata; results and diagnostics retain only their preparation's 
 Missing metadata records `unavailable`; image policy is unchanged.
 Extraction journals IDs before removal. Cleanup removes containers and anonymous volumes. Journal and cleanup errors fail preparation; unresolved resources retain receipts.
 
-`scripts/ci/prepare.mjs:ensurePostgresServer` journals the bootstrap directory
-before creation and refuses existing paths. Failed creation retires its record.
-It separately confirms directory creation and exclusive SQL-copy creation in
-state, then makes the public `migrations/init-local.sql` copy container-readable
-and passes its path as `OPENCLAW_CI_POSTGRES_INIT_SQL` without changing the checkout.
+`scripts/ci/prepare.mjs:ensurePostgresServer` journals exclusive bootstrap-directory
+and SQL-copy ownership, refusing existing paths. Failed directory creation retires
+its record. The public `migrations/init-local.sql` copy becomes container-readable;
+`OPENCLAW_CI_POSTGRES_INIT_SQL` selects it without changing checkout permissions.
 
-Docker allocates PostgreSQL's loopback port. Preparation inspects the owned
-container, rejects missing, non-loopback or developer-port `55432` bindings, and
-saves the verified port before connecting. Failed discovery retains pending port
-`0` for cleanup.
+Docker assigns PostgreSQL's loopback port. Preparation inspects its owned container,
+rejects missing, non-loopback and developer-port `55432` mappings, then saves the port
+before connecting. Failed discovery retains pending `0`; file preparation refuses
+unready servers before journaling databases. Mixed fixture lanes publish PostgreSQL
+before k3d probes its API port; image builds still overlap.
 
-`scripts/ci/cleanup.ts:cleanupComposePostgres` checks the directory against the
-state path. Unconfirmed ownership preserves contents and state; confirmed
-directory ownership alone permits only empty-directory removal. After Compose
-teardown it removes confirmed SQL and the empty directory. Unexpected contents
-or teardown failure retain state.
+`scripts/ci/cleanup.ts:cleanupComposePostgres` validates the directory against state.
+Unconfirmed ownership preserves contents/state. Directory confirmation alone permits
+empty-directory removal; confirmed SQL is removed after Compose teardown. Unexpected
+contents or teardown failure retain state. Subnet exhaustion preserves the original
+error and planned resource and prints [owned cleanup](../../testing/postgresql.md#subnet-pool-exhaustion).
 
-If Docker exhausts its subnet pools during Compose startup, preparation preserves
-the error, adds the command to clean up the recorded project, and leaves the
-planned resource for caller cleanup. See [subnet pool recovery](../../testing/postgresql.md#subnet-pool-exhaustion).
+`prepareFile` journals the allocation test's two child states before exposing them.
+`cleanupResource` resolves only owned sibling names and runs canonical child cleanup,
+including after worker death. Failed children retain their parent references.
 
 For hosted repository QA, `scripts/ci/qa-matrix-credentials.mjs` reads the selected
 reviewed registry file only when a repository scenario is selected. It copies

@@ -1708,3 +1708,41 @@ test("bound cleanup refuses changed prepared state before destructive work", asy
   );
   assert.ok((await readFile(statePath, "utf8")).includes("openclaw-ci-bound"));
 });
+
+test("parent cleanup retains failed child journals and rejects paths outside its owner", async (t) => {
+  const root = await fixture(t);
+  const prefix = "openclaw-ci-parent-0123456789ab";
+  const name = `${prefix}-child-0123456789ab`;
+  const statePath = join(root, "state.json");
+  const childPath = join(root, `${name}.json`);
+  const child = {
+    version: 1,
+    repositoryRoot,
+    lane: "postgres-auth",
+    prefix: "openclaw-ci-child-0123456789ab",
+    resources: [{ id: "unknown", kind: "unsupported" }],
+  };
+  const parent = {
+    version: 1,
+    repositoryRoot,
+    lane: "postgres",
+    prefix,
+    resources: [{ id: "child", kind: "child-state", owner: prefix, name }],
+  };
+  await writeState(statePath, parent);
+  await writeState(childPath, child);
+  // A child's refused cleanup must keep the parent reference for recovery.
+  await assert.rejects(cleanupState(statePath), /Unknown cleanup resource kind/);
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), parent);
+  assert.deepEqual(JSON.parse(await readFile(childPath, "utf8")), child);
+  await writeState(childPath, { ...child, resources: [] });
+  await cleanupState(statePath);
+  await assert.rejects(stat(statePath), { code: "ENOENT" });
+  await assert.rejects(stat(childPath), { code: "ENOENT" });
+
+  // A forged path cannot redirect the parent's canonical child cleanup.
+  parent.resources[0].name = `${prefix}-child-../../unrelated`;
+  await writeState(statePath, parent);
+  await assert.rejects(cleanupState(statePath), /unowned child state path/);
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), parent);
+});

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: "2026-11-11"
-last_updated_session: "authoring-run/8a46c797-57e1-4ac7-8fae-a65a81c7975a"
+last_updated_session: "authoring-run/567c3011-a36a-4bfb-b1f1-c2390ca67345"
 ---
 
 # GitHub Actions testing flow
@@ -253,8 +253,8 @@ Windows bounds streams and terminates only the direct child.
 
 `scripts/ci/run-tests.mjs:killDescendants` stops cleanup groups before sweeping descendants.
 `tests/helpers/postgres-worker-revision-fixture.mjs:disposeStep` records timeouts and continues.
-Root hooks allow two seconds for reports, immediately on cleanup failure; skipped hooks have a
-60-second backstop. The runner reports failures; failed resources stay recorded.
+Root hooks allow two seconds for reports (immediate on cleanup failure), with a
+60-second skipped-hook backstop. Failed resources remain recorded.
 
 `scripts/ci/run-tests.mjs:aggregateGroup` checks SHA, ownership, jobs and execution.
 Reused lanes retain separate owners; fresh lanes retain matrix parents.
@@ -286,6 +286,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 15:55: Retain child cleanup custody. (authoring-run/567c3011-a36a-4bfb-b1f1-c2390ca67345 - cbd2ffb5bff1896373bd4a91d0a1636fcd3a40ff)
 
 - 2026-11-11 15:48: Preserve named-test selection. (authoring-run/8a46c797-57e1-4ac7-8fae-a65a81c7975a - 757f3c5eaf042c55e92f0776384fdbb853cd7bc5)
 

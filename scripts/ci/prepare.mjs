@@ -850,6 +850,9 @@ async function createAndMigrateDatabase(
     );
   }
   const server = existingServer ?? (await ensurePostgresServer(statePath, state));
+  if (server.status !== "ready") {
+    throw new Error("PostgreSQL server is not ready; clean up the failed preparation first.");
+  }
   const source =
     template === undefined
       ? await laneTemplateDatabase(statePath, state, server, kind)
@@ -3484,25 +3487,23 @@ async function prepareLane({ lane, statePath, file }) {
     case "k3d-fixture-state":
     case "k3d-fixture-network":
     case "k3d-fixture-plugins": {
-      // PostgreSQL, cluster creation and the fixture build are independent.
-      const [, cluster, built] = await timedPreparation(
-        name,
-        "postgres-cluster-fixture-build",
-        () =>
-          prepareTogether([
-            () =>
-              timedPreparation(name, "postgres-start", () =>
-                ensurePostgresServer(resolvedStatePath, state),
-              ),
-            () =>
-              timedPreparation(name, "k3d-create", () =>
-                ensureK3dCluster(resolvedStatePath, state),
-              ),
-            () =>
-              timedPreparation(name, "fixture-image-build", () =>
-                buildFixtureImage(resolvedStatePath, state),
-              ),
-          ]),
+      // Publish PostgreSQL's daemon-assigned port before k3d probes its fixed API
+      // port. The independent image build can overlap both resource startups.
+      const [cluster, built] = await timedPreparation(name, "postgres-cluster-fixture-build", () =>
+        prepareTogether([
+          async () => {
+            await timedPreparation(name, "postgres-start", () =>
+              ensurePostgresServer(resolvedStatePath, state),
+            );
+            return timedPreparation(name, "k3d-create", () =>
+              ensureK3dCluster(resolvedStatePath, state),
+            );
+          },
+          () =>
+            timedPreparation(name, "fixture-image-build", () =>
+              buildFixtureImage(resolvedStatePath, state),
+            ),
+        ]),
       );
       const fixture = await timedPreparation(name, "fixture-storage-image-import", () =>
         prepareFixtureStorageAndImage(resolvedStatePath, state, cluster, built),
@@ -4011,6 +4012,19 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
       env: { ...env, ...prepared.env },
       cleanup: prepared.cleanup,
     };
+  }
+
+  if (relativeFile === "tests/integration/ci-prepare-postgres-real.test.ts") {
+    // The runner survives a killed test worker. Journal both child state paths
+    // before handing them to the test, so file or lane cleanup can recover them.
+    const children = Array.from({ length: 2 }, () => {
+      const name = `${effectiveState.prefix}-child-${randomSuffix()}`;
+      const resource = addResource(effectiveState, "child-state", { name });
+      resourceIds.push(resource.id);
+      return join(dirname(resolvedStatePath), `${name}.json`);
+    });
+    await writeState(resolvedStatePath, effectiveState);
+    env.OCC_TEST_CI_POSTGRES_STATES = JSON.stringify(children);
   }
 
   if (prepare.postgres && !prepare.selfProvisionedFiles?.includes(relativeFile)) {
