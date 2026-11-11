@@ -200,6 +200,7 @@ type SelectedProvider = OpenShellProviderResponse & {
 
 interface SelectedProviders {
   sandboxId: string;
+  sandboxName: string;
   modelProvider: SelectedProvider;
   gitProvider: SelectedProvider;
 }
@@ -293,6 +294,7 @@ export async function registerMixedGrantProviders({
             // Attach fixture observations to owned copies of immutable Gateway responses.
             selected = {
               sandboxId: sandbox.id,
+              sandboxName: owner.name,
               modelProvider: { ...modelProvider, id: modelProvider.id },
               gitProvider: { ...gitProvider, id: gitProvider.id },
             };

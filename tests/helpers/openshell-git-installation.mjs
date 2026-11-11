@@ -25,6 +25,7 @@ import { localOpenShellGatewayOptions } from "./local-openshell-gateway.mjs";
 import { stopProcess } from "./stop-process.mjs";
 import { collectInstalledWorkerEvents } from "./installed-worker-events.ts";
 import { deployMixedGrantAgent } from "./openshell-mixed-grant-agent.ts";
+import { collectOpenShellModelDenials } from "./openshell-model-denial.ts";
 import {
   mixedGrantSupplier,
   mixedGrantOrigins,
@@ -1330,26 +1331,21 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
       }
     });
   await waitForGateway(forward);
-  const verifySupervisorImage = async ({ sandboxName, sandboxId }) => {
+  const verifySupervisorImage = async ({ sandboxName, sandboxId }, signal = t.signal) => {
     const selected = await gatewayClient.getSandbox(
       { workspace: sandboxNamespace, name: sandboxName },
-      t.signal,
+      signal,
     );
     assert.equal(selected?.id, sandboxId, "the selected Sandbox must retain its identity");
     const resource = JSON.parse(
-      await kube([
-        "get",
-        "sandboxes.agents.x-k8s.io",
-        sandboxName,
-        "-n",
-        sandboxNamespace,
-        "-o",
-        "json",
-      ]),
+      await kube(
+        ["get", "sandboxes.agents.x-k8s.io", sandboxName, "-n", sandboxNamespace, "-o", "json"],
+        { signal },
+      ),
     );
     assert.equal(resource.metadata.labels?.["openshell.ai/sandbox-id"], sandboxId);
     const pods = JSON.parse(
-      await kube(["get", "pods", "-n", sandboxNamespace, "-o", "json"]),
+      await kube(["get", "pods", "-n", sandboxNamespace, "-o", "json"], { signal }),
     ).items;
     const workloads = pods.filter(
       (pod) =>
@@ -1953,6 +1949,26 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
                 auth,
               })),
             };
+          },
+          collectModelDenials: async () => {
+            if (!target || !modelAdmission || !selectedProviders) {
+              return undefined;
+            }
+            const { sandboxId, sandboxName } = selectedProviders;
+            const route = modelAdmission.route;
+            assert.equal(route.method, "POST");
+            assert.ok(typeof route.origin === "string" && typeof route.path === "string");
+            return collectOpenShellModelDenials({
+              gatewayClient,
+              workspace: sandboxNamespace,
+              sandbox: sandboxName,
+              sandboxId,
+              modelEndpoint: new URL(route.path, route.origin).href,
+              startedAt: Date.parse(since),
+              endedAt: Date.now(),
+              readSupervisor: (signal) => verifySupervisorImage({ sandboxName, sandboxId }, signal),
+              signal: t.signal,
+            });
           },
           collectModelApprovals: async () => {
             if (!target || !modelAdmission || !selectedProviders) {

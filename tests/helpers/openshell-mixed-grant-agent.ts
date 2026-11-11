@@ -23,6 +23,7 @@ import type {
 } from "../fixtures/openshell-model-origin.ts";
 import {
   projectInstalledModelApprovals,
+  projectInstalledModelDenials,
   projectInstalledModelOrigin,
 } from "../../scripts/ci/failure-redaction.mjs";
 import { mixedGrantDeploymentCode } from "./openshell-mixed-grant-setup.ts";
@@ -35,6 +36,7 @@ interface MixedGrantFailureCapture {
   collect: () => Promise<unknown>;
   collectModelOrigin?: () => unknown;
   collectModelApprovals?: () => Promise<unknown>;
+  collectModelDenials?: () => Promise<unknown>;
   checkpoint: (event: string, data: Record<string, unknown>) => Promise<void>;
 }
 
@@ -66,13 +68,17 @@ export async function captureMixedGrantFailure(
     } catch {
       modelOrigin = projectInstalledModelOrigin(undefined);
     }
-    const [worker, approvals] = await Promise.allSettled([
+    const [worker, approvals, denials] = await Promise.allSettled([
       Promise.resolve().then(collect),
       Promise.resolve().then(() => observation.collectModelApprovals?.()),
+      Promise.resolve().then(() => observation.collectModelDenials?.()),
     ]);
     const workerEvents = worker.status === "fulfilled" ? worker.value : "unavailable";
     const modelApprovals = projectInstalledModelApprovals(
       approvals.status === "fulfilled" ? approvals.value : undefined,
+    );
+    const modelDenials = projectInstalledModelDenials(
+      denials.status === "fulfilled" ? denials.value : undefined,
     );
     const hashIdentity = (value: string) => createHash("sha256").update(value).digest("hex");
     await checkpoint("mixed-grant-deployment-failed", {
@@ -84,6 +90,7 @@ export async function captureMixedGrantFailure(
       workerEvents,
       modelOrigin,
       modelApprovals,
+      modelDenials,
     });
   } catch {
     // Best-effort evidence cannot hide the original deployment failure.

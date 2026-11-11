@@ -157,6 +157,22 @@ An unrecognized authentication class becomes `unknown`. `modelApprovals` retains
 for approval records that match the selected identity. For both fields, read
 `state` and `truncated` before interpreting the records. An `observed` result
 with no records differs from `unavailable`; a truncated result is incomplete.
+
+`modelDenials` reads the selected Sandbox's log API and checks its immutable
+Supervisor before and after the read. The read and both checks share a
+five-second deadline. It selects entries within the deployment time window.
+Each row contains a scope, a closed reason category, and a count.
+The `model` scope requires an exact HTTPS POST match to the committed model
+endpoint. The `sandbox` scope covers endpointless authority or credential
+failures in the selected Sandbox; it does not identify a model request.
+
+The receipt retains at most 8 rows in total. Each count is at most 2,000, the log
+ring's capacity. A full ring or incomplete result sets `truncated`. An empty
+`observed` result means no retained matching entries; it does not establish that
+no denial occurred. An `unavailable` result is not a zero count. These aggregates
+do not correlate a denial to a request or establish the cause of deployment
+failure. The receipt excludes raw log text, endpoint URLs, and runtime identities.
+
 These fields exclude raw credentials and headers. They help diagnose a failed
 deployment; they do not prove that the Supervisor injected a credential or that
 the seven required acceptance checkpoints passed.

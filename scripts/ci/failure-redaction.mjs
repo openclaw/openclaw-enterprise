@@ -556,3 +556,49 @@ export function projectInstalledModelApprovals(value) {
     requestIdHashes: requestIdHashes.slice(0, 8),
   };
 }
+
+/** Keep only bounded Supervisor denial categories, never source log fields. */
+export function projectInstalledModelDenials(value) {
+  if (!observationRecord(value) || value.state !== "observed" || !Array.isArray(value.events)) {
+    return { state: "unavailable", truncated: false, events: [] };
+  }
+  const sandboxCategories = [
+    "request-authority-mismatch",
+    "credential-endpoint-mismatch",
+    "credential-unavailable",
+    "credential-placement-mismatch",
+  ];
+  const events = value.events.flatMap((event) => {
+    if (
+      !observationRecord(event) ||
+      !Number.isSafeInteger(event.count) ||
+      event.count < 1 ||
+      event.count > 2000
+    ) {
+      return [];
+    }
+    const category = observationChoice(
+      event.category,
+      "policy-deny-rule policy-not-permitted policy-denied request-credential-denied online-authorization-denied middleware-denied middleware-timeout middleware-chain-timeout middleware-failed " +
+        sandboxCategories.join(" "),
+      "other",
+    );
+    const sandboxCategory = sandboxCategories.includes(category);
+    if (
+      (event.scope === "model" && !sandboxCategory) ||
+      (event.scope === "sandbox" && sandboxCategory)
+    ) {
+      return [{ scope: event.scope, category, count: event.count }];
+    }
+    return [];
+  });
+  if (value.events.length > 0 && events.length === 0) {
+    return { state: "unavailable", truncated: false, events: [] };
+  }
+  return {
+    state: "observed",
+    truncated:
+      value.truncated === true || value.events.length > 8 || events.length !== value.events.length,
+    events: events.slice(0, 8),
+  };
+}

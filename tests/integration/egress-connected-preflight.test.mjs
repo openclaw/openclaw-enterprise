@@ -953,3 +953,233 @@ test("mixed-grant terminal capture rejects malformed observations without invent
   await captureMixedGrantFailure(error, { ...observation, target: undefined });
   assert.equal(receipts.length, 5);
 });
+
+test("model denial diagnostics preserve endpoint scope and refuse incomplete identity evidence", async (t) => {
+  const { collectOpenShellModelDenials } = await import("../helpers/openshell-model-denial.ts");
+  const { gitExpiryGateway } = await import("../helpers/openshell-online-git-journey.mjs");
+  const sandboxId = randomUUID();
+  const startedAt = Date.parse("2030-01-01T00:00:00Z");
+  const endpoint = "https://model.example.test:8443/v1/responses";
+  const privateText = "private-denial-" + randomUUID();
+  const identity = { sandboxId, supervisorPodUid: randomUUID(), containerId: randomUUID() };
+  const line = (message, overrides = {}) => ({
+    sandbox_id: sandboxId,
+    event_time: { seconds: startedAt / 1000, nanos: 123000000 },
+    level: "OCSF",
+    target: "ocsf",
+    source: "sandbox",
+    message,
+    fields: {},
+    ...overrides,
+  });
+  // These are serialized d32 OCSF wire shapes, not a running supplier. The real
+  // protobuf codec and production reader decode them before the collector runs.
+  const http = (engine, reason) =>
+    "HTTP:POST [MED] DENIED POST " +
+    endpoint +
+    " [policy:fixture engine:" +
+    engine +
+    "] [" +
+    (engine === "middleware" ? "failed:false transformed:false " : "") +
+    "reason:" +
+    reason +
+    "]";
+  const policy = (reason) =>
+    http("l7", "L7_REQUEST deny POST model.example.test:8443/v1/responses reason=" + reason);
+  const denied = http("middleware", "middleware_denied:oce-model:request_credential_denied");
+  const timeout = http("middleware", "middleware_failed: middleware_timeout").replace(
+    "failed:false",
+    "failed:true",
+  );
+  const valid = [
+    line(policy("POST /v1/responses not permitted by policy")),
+    line(policy("POST /v1/responses not permitted by policy")),
+    line(denied),
+    line(timeout),
+    line(
+      http("middleware", "middleware_failed: " + privateText).replace(
+        "failed:false",
+        "failed:true",
+      ),
+    ),
+    line(http("unknown", privateText)),
+  ];
+  let response = { logs: valid, buffer_total: valid.length };
+  const requests = [];
+  const { client } = await gitExpiryGateway(t, {
+    model: "model",
+    workspace: "workspace",
+    sandbox: "sandbox",
+    revisionId: "revision",
+    deadline: "2030-01-01T00:00:00Z",
+    platformProfile: false,
+    configure(methods) {
+      methods.GetSandboxLogs = (request) => {
+        requests.push(request);
+        return response;
+      };
+    },
+  });
+  const options = {
+    gatewayClient: client,
+    workspace: "workspace",
+    sandbox: "sandbox",
+    sandboxId,
+    modelEndpoint: endpoint,
+    startedAt,
+    endedAt: startedAt + 1000,
+    signal: t.signal,
+    async readSupervisor(signal) {
+      assert.ok(signal instanceof AbortSignal);
+      signal.throwIfAborted();
+      return structuredClone(identity);
+    },
+  };
+  const expected = [
+    { scope: "model", category: "policy-not-permitted", count: 2 },
+    { scope: "model", category: "request-credential-denied", count: 1 },
+    { scope: "model", category: "middleware-timeout", count: 1 },
+    { scope: "model", category: "middleware-failed", count: 1 },
+    { scope: "model", category: "other", count: 1 },
+  ];
+  let result = await collectOpenShellModelDenials(options);
+  assert.deepEqual(result, { state: "observed", truncated: false, events: expected });
+  assert.ok(!JSON.stringify(result).includes(privateText));
+  assert.equal(requests[0].lines, 2000);
+  assert.equal(
+    requests[0].since_time,
+    undefined,
+    "inspect the unfiltered ring before local time selection",
+  );
+
+  // Endpointless authority/credential refusals remain Sandbox diagnostics. They
+  // cannot explain which origin failed, even when their HTTP method is POST.
+  const sandboxEvents = [
+    ["HIGH", "request-authority", "request_authority_mismatch", "request-authority-mismatch"],
+    ["HIGH", "credential-binding", "credential_endpoint_mismatch", "credential-endpoint-mismatch"],
+    ["MED", "credential-binding", "credential_unavailable", "credential-unavailable"],
+    [
+      "HIGH",
+      "credential-binding",
+      "credential_placement_mismatch",
+      "credential-placement-mismatch",
+    ],
+  ];
+  const methodOnly = ([severity, engine, reason]) =>
+    line(
+      "HTTP:POST [" +
+        severity +
+        "] DENIED POST  [policy:fixture engine:" +
+        engine +
+        "] [reason:" +
+        reason +
+        "]",
+    );
+  response = { logs: sandboxEvents.map(methodOnly), buffer_total: 4 };
+  assert.deepEqual(await collectOpenShellModelDenials(options), {
+    state: "observed",
+    truncated: false,
+    events: sandboxEvents.map(([, , , category]) => ({ scope: "sandbox", category, count: 1 })),
+  });
+
+  // Wrong host, port, path, interval, method, source, or authority must never be
+  // promoted into a selected-model denial. Bare tracing has no endpoint join.
+  const excluded = [
+    line(denied.replace("model.example.test", "other.example.test")),
+    line(denied.replace(":8443/", ":9443/")),
+    line(denied.replace("/v1/responses", "/v1/other")),
+    line(denied.replace("/v1/responses", "/v1/responses?private=" + privateText)),
+    line(denied.replaceAll("POST", "GET")),
+    line(denied.replace("DENIED", "ALLOWED")),
+    line(denied, { source: "gateway" }),
+    line(denied, { target: "other" }),
+    line(denied, { fields: { private: privateText } }),
+    line(denied, { event_time: { seconds: startedAt / 1000 - 1, nanos: 0 } }),
+    line(denied, { event_time: { seconds: startedAt / 1000 + 2, nanos: 0 } }),
+    line("Token grant failed before forwarding", {
+      level: "WARN",
+      target: "openshell_supervisor_network::l7::relay",
+      fields: { error: privateText },
+    }),
+    methodOnly(["HIGH", "wrong-engine", "request_authority_mismatch"]),
+  ];
+  response = { logs: excluded, buffer_total: excluded.length };
+  assert.deepEqual(await collectOpenShellModelDenials(options), {
+    state: "observed",
+    truncated: false,
+    events: [],
+  });
+
+  // A delivered suffix is useful but never advertised as a complete ring.
+  response = { logs: valid, buffer_total: valid.length + 1 };
+  assert.deepEqual(await collectOpenShellModelDenials(options), {
+    state: "observed",
+    truncated: true,
+    events: expected,
+  });
+  response = { logs: Array.from({ length: 2000 }, () => line(denied)), buffer_total: 2000 };
+  assert.deepEqual(await collectOpenShellModelDenials(options), {
+    state: "observed",
+    truncated: true,
+    events: [{ scope: "model", category: "request-credential-denied", count: 2000 }],
+  });
+
+  // A verbose failure must still fit the shared diagnostic envelope. Retain
+  // the first eight observed categories and report loss instead of widening it.
+  const many = [
+    ...valid,
+    line(policy("POST /v1/responses blocked by deny rule")),
+    line(policy("request denied by policy")),
+    line(http("middleware", "middleware_denied:other:online_authorization_denied")),
+    line(http("middleware", "middleware_denied:other")),
+    line(
+      http("middleware", "middleware_failed: middleware_chain_timeout").replace(
+        "failed:false",
+        "failed:true",
+      ),
+    ),
+    ...sandboxEvents.map(methodOnly),
+  ];
+  response = { logs: many, buffer_total: many.length };
+  result = await collectOpenShellModelDenials(options);
+  assert.equal(result.state, "observed");
+  assert.equal(result.truncated, true);
+  assert.equal(result.events.length, 8);
+  assert.deepEqual(result.events.slice(0, expected.length), expected);
+
+  for (const logs of [
+    [line(denied, { sandbox_id: randomUUID() })],
+    [line(denied, { event_time: undefined })],
+    [line(denied, { event_time: { seconds: -1, nanos: 0 } })],
+  ]) {
+    response = { logs, buffer_total: logs.length };
+    assert.equal((await collectOpenShellModelDenials(options)).state, "unavailable");
+  }
+  response = { logs: valid, buffer_total: valid.length };
+  let reads = 0;
+  result = await collectOpenShellModelDenials({
+    ...options,
+    async readSupervisor(signal) {
+      signal.throwIfAborted();
+      reads++;
+      return { ...identity, containerId: reads === 1 ? identity.containerId : randomUUID() };
+    },
+  });
+  assert.deepEqual(result, { state: "unavailable", truncated: false, events: [] });
+  assert.equal(reads, 2);
+  assert.equal(
+    (
+      await collectOpenShellModelDenials({
+        ...options,
+        signal: AbortSignal.abort(),
+      })
+    ).state,
+    "unavailable",
+  );
+  response = undefined; // The actual gRPC server returns NOT_FOUND.
+  assert.deepEqual(await collectOpenShellModelDenials(options), {
+    state: "unavailable",
+    truncated: false,
+    events: [],
+  });
+});

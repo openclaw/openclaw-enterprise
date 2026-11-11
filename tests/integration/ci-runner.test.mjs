@@ -1125,6 +1125,78 @@ test("mixed-grant output closes deployment codes and projects before diagnostics
     replayClaimed: 0,
     requestIdHashes: [],
   };
+  const modelDenialsInput = {
+    state: "observed",
+    truncated: false,
+    events: [
+      {
+        scope: "model",
+        category: "policy-deny-rule",
+        count: 2,
+        message: "PRIVATE_DENIAL_MESSAGE_CANARY",
+        url: "PRIVATE_DENIAL_URL_CANARY",
+      },
+      { scope: "model", category: "PRIVATE_CATEGORY_CANARY", count: 3 },
+      ...Array.from({ length: 9 }, () => ({
+        scope: "model",
+        category: "online-authorization-denied",
+        count: 1,
+      })),
+      { scope: "model", category: "middleware-failed", count: 2001 },
+    ],
+    identity: "PRIVATE_DENIAL_IDENTITY_CANARY",
+  };
+  const modelDenials = {
+    state: "observed",
+    truncated: true,
+    events: [
+      { scope: "model", category: "policy-deny-rule", count: 2 },
+      { scope: "model", category: "other", count: 3 },
+      ...Array.from({ length: 6 }, () => ({
+        scope: "model",
+        category: "online-authorization-denied",
+        count: 1,
+      })),
+    ],
+  };
+  const unavailableDenials = { state: "unavailable", truncated: false, events: [] };
+  // Malformed projection inputs cannot invent either a model attribution or
+  // an observed zero. These rows do not represent valid collector output.
+  const projectDenials = (modelDenials) =>
+    projectOpenShellGitRetention({
+      kind: "openshell-git-retention",
+      event: "mixed-grant-deployment-failed",
+      ...identityHashes,
+      registrationStage: "before",
+      workerEvents: "unavailable",
+      modelDenials,
+    }).modelDenials;
+  const invalidDenials = [
+    { category: "policy-denied", count: 1 },
+    { scope: "PRIVATE_SCOPE_CANARY", category: "policy-denied", count: 1 },
+    { scope: "model", category: "credential-unavailable", count: 1 },
+    { scope: "sandbox", category: "policy-denied", count: 1 },
+    { scope: "sandbox", category: "PRIVATE_CATEGORY_CANARY", count: 1 },
+    ...[0, -1, 1.5, 2001, NaN].map((count) => ({
+      scope: "model",
+      category: "policy-denied",
+      count,
+    })),
+  ];
+  for (const invalid of invalidDenials) {
+    assert.deepEqual(projectDenials({ state: "observed", events: [invalid] }), unavailableDenials);
+  }
+  const validDenial = { scope: "sandbox", category: "credential-unavailable", count: 1 };
+  assert.deepEqual(
+    projectDenials({ state: "observed", events: [...invalidDenials, validDenial] }),
+    { state: "observed", truncated: true, events: [validDenial] },
+  );
+  assert.deepEqual(projectDenials({ state: "observed", events: [] }), {
+    state: "observed",
+    truncated: false,
+    events: [],
+  });
+  assert.deepEqual(projectDenials(undefined), unavailableDenials);
   // Maximum-width schema input checks the combined checkpoint budget. This is
   // a size adversary, not a reachable Worker history or a deployment proof.
   const maximum = Number.MAX_SAFE_INTEGER;
@@ -1167,11 +1239,21 @@ test("mixed-grant output closes deployment codes and projects before diagnostics
       replayClaimed: maximum,
       requestIdHashes,
     },
+    modelDenials: {
+      state: "observed",
+      truncated: false,
+      events: Array.from({ length: 32 }, () => ({
+        scope: "sandbox",
+        category: "credential-placement-mismatch",
+        count: 2000,
+      })),
+    },
   });
   assert.ok(bounded);
   assert.equal(bounded.workerEvents.length, 32);
   assert.equal(bounded.modelOrigin.events.length, 8);
   assert.equal(bounded.modelApprovals.requestIdHashes.length, 8);
+  assert.equal(bounded.modelDenials.events.length, 8);
   assert.ok(
     Buffer.byteLength(JSON.stringify(bounded)) <= 16_384,
     "combined diagnostic must fit the existing qualification checkpoint limit",
@@ -1203,6 +1285,7 @@ test("mixed-grant output closes deployment codes and projects before diagnostics
             workerEvents: registrationStage === "before" ? workerEvents : "unavailable",
             modelOrigin: registrationStage === "before" ? modelOrigin : unavailableOrigin,
             modelApprovals: registrationStage === "after" ? modelApprovals : unavailableApprovals,
+            modelDenials: registrationStage === "before" ? modelDenials : unavailableDenials,
           },
         ];
     // Control only external observations. The normal test catch invokes the
@@ -1222,6 +1305,7 @@ export function createOpenShellGitInstallation(t) {
   let reads = 0;
   let originReads = 0;
   let approvalReads = 0;
+  let denialReads = 0;
   let tornDown = false;
   t.after(() => {
     tornDown = true;
@@ -1229,6 +1313,7 @@ export function createOpenShellGitInstallation(t) {
     assert.equal(reads, ${gatewayFailure ? 0 : 1}, "capture must read the selected Worker once");
     assert.equal(originReads, ${gatewayFailure ? 0 : 1}, "capture snapshots the origin once");
     assert.equal(approvalReads, ${gatewayFailure ? 0 : 1}, "capture reads approvals once");
+    assert.equal(denialReads, ${gatewayFailure ? 0 : 1}, "capture reads denials once");
   });
   return {
     deployMixedGrantAgent: async () => { throw original; },
@@ -1240,6 +1325,12 @@ export function createOpenShellGitInstallation(t) {
           originReads++;
           if (${JSON.stringify(registrationStage)} === "after") throw new Error("PRIVATE_ORIGIN_READ_CANARY");
           return ${JSON.stringify(modelOriginInput)};
+        },
+        collectModelDenials: async () => {
+          assert.equal(tornDown, false);
+          denialReads++;
+          if (${JSON.stringify(registrationStage)} === "after") throw new Error("PRIVATE_DENIAL_READ_CANARY");
+          return ${JSON.stringify(modelDenialsInput)};
         },
         collectModelApprovals: async () => {
           assert.equal(tornDown, false);
