@@ -1,5 +1,6 @@
 import type { AuthorityIdentity, ResolvedGrant } from "../../access/backend-contracts.ts";
 import { createHash } from "node:crypto";
+import { createGitHubClientEndpoint } from "./client-endpoint.ts";
 import {
   permissionsForProfile,
   staticTokenCapabilityPolicy,
@@ -42,11 +43,7 @@ export function createGrantResolver({ config, gatewayOrigin }: GrantDependencies
           .digest("hex")}`,
       }),
       client: Object.freeze({
-        gatewayOrigin,
-        gitRemote: `${gatewayOrigin}/${config.repository}.git`,
-        gitUsername: "gateway-session",
-        canonicalApiHost: "github.com",
-        apiHost: new URL(gatewayOrigin).hostname,
+        ...createGitHubClientEndpoint(gatewayOrigin, config.repository),
         repository: config.repository,
         pushRefAllowlist,
       }),
