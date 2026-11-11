@@ -86,6 +86,7 @@ import { listen } from "../helpers/listen.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { createSandboxProviderProfileChecks } from "./sandbox-driver-provider-profiles-cases.ts";
 import { createSandboxCredentialContractChecks } from "./sandbox-driver-credential-contract-cases.ts";
+import { createCredentialGatewayContexts } from "./sandbox-driver-credential-fixture.ts";
 import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
 import {
   registerNetworkAndContainmentCases,
@@ -4344,19 +4345,7 @@ function credentialGatewayOverProviders({
       },
     );
   const driver = driverWith({ toolBinaries });
-  const namespace = { id: "ns_00000000-0000-4000-8000-0000000000aa", name: "placed-tenant" };
-  const signal = new AbortController().signal;
-  const source = (id, namespaceId = namespace.id) => ({
-    id,
-    namespaceId,
-    name: "openai",
-    type: "openai",
-    config: {},
-    secrets: {},
-    ownerCapability: "credential_gateway",
-    driverId: driver.id,
-    state: "ready",
-  });
+  const { source, context, revisionContext } = createCredentialGatewayContexts(driver.id);
   return {
     calls,
     client,
@@ -4367,21 +4356,8 @@ function credentialGatewayOverProviders({
     profiles,
     providers,
     source,
-    context: (id) => ({ namespace, source: source(id), signal }),
-    revisionContext: (sources) => ({
-      namespace,
-      revision: {
-        harness: {
-          id: "codex",
-          version: "1.0.0",
-          mode: "dedicated",
-          overrides: {},
-          configuration: {},
-        },
-      },
-      sources,
-      signal,
-    }),
+    context,
+    revisionContext,
     input: (apiKey = "synthetic-openai-key") => ({
       type: "openai",
       config: {},
