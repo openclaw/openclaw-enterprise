@@ -55,6 +55,20 @@ The first uses a local HTTP fault fixture. The second requires Docker at
 Its gateway, app-server and provider responses are fixtures: it does not prove
 Agent admission, a model call, or Compose orchestration.
 
+## Verify host routing relay diagnostics
+
+If the host routing relay is not observed running, the fixture reports its
+startup command result, container exit state, and redacted log tail before
+cleanup stops and removes the owned container. Each diagnostic command has a
+five-second timeout; each output tail keeps at most eight lines of 256 characters.
+A running-container check alone does not prove that the loopback listener bound.
+
+To check relay startup diagnostics with an existing local runtime image, run
+`OCC_TEST_RUNTIME_IMAGE=<local-image> node --test tests/helpers/workspace-gateway-relay-container.test.mjs`.
+These cases disable container networking and check real process exits, launch
+errors, log redaction, and cleanup. They do not exercise Kubernetes or Gateway
+routing and do not pull images.
+
 ## Verify Codex startup probe recovery
 
 With a running Docker engine and an existing immutable Node 24+ Linux image:
