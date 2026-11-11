@@ -61,7 +61,7 @@ Each lane owns its tests, environment, required inputs and preparation settings.
 `run-tests.mjs:selectLane` validates lane-owned paths before setup. Focused runs
 retain environment and cleanup requirements. File-only runs require all expected
 cases; [named-case runs](../testing/ci/run-lanes.md#run-a-complete-local-attempt)
-require matching cases. `validateLaneEvidence` rejects both for full-lane
+require one case. `validateLaneEvidence` rejects both for full-lane
 aggregation, including one-file lanes.
 
 CI uses the event checkout without external service credentials. `CI Impact` selects coverage independently of `Suite Audit and Static Checks`, which verifies checkout identity and runs in every mode. The [coverage map](../testing/ci/required-checks.md#scenarios) lists ordinary lanes and the separate `runtime-image-fixture`. The workflow owns runner classes; Kubernetes lanes require a NetworkPolicy-enforcing kernel.

@@ -43,8 +43,8 @@ function usage() {
     "Usage:",
     "  node scripts/ci/run-tests.mjs audit [--manifest <file>] [--root <dir>]",
     "  node scripts/ci/run-tests.mjs check-selection <lane> --file <manifest-path> [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--file <manifest-path> [--test-name-pattern <regex-source>]] [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs run <lane> --lifecycle complete --attempt <fresh-directory> [--file <manifest-path> [--test-name-pattern <regex-source>]] [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--file <manifest-path> [--test-name <literal>]] [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.mjs run <lane> --lifecycle complete --attempt <fresh-directory> [--file <manifest-path> [--test-name <literal>]] [--manifest <file>] [--root <dir>]",
     "  node scripts/ci/run-tests.mjs aggregate <group> --results-dir <dir> [--needs <json-file>] [--lanes <json-array>] [--release-selection <file>] [--manifest <file>] [--root <dir>]",
   ].join("\n");
 }
@@ -61,6 +61,11 @@ function parseArgs(argv) {
       continue;
     }
 
+    if (token === "--test-name-pattern" || token.startsWith("--test-name-pattern=")) {
+      throw new Error(
+        "--test-name-pattern is unsupported; use --test-name with one literal case name.",
+      );
+    }
     const key = token.slice(2);
     const value = rest[index + 1];
     if (!value || value.startsWith("--")) {
@@ -1395,11 +1400,10 @@ async function runFile(
   statePath,
   prepareFile,
   setup = (step) => step(),
-  testNamePattern,
+  testName,
 ) {
   const issues = [];
   const relativePath = repoRelativePath(root, file.path);
-  const pattern = testNamePattern === undefined ? undefined : new RegExp(testNamePattern);
   const absolutePath = resolveRepoPath(root, file.path, issues, relativePath);
   const prepared = { env: {}, cleanup: null };
   let cleanupResult = null;
@@ -1539,10 +1543,11 @@ async function runFile(
       const nodeStarted = performance.now();
       timeout = fileTimeout();
       const args = ["--test", "--test-reporter", reporterPath];
-      if (testNamePattern !== undefined) {
-        // Node accepts /source/flags as well as source. Normalize our flag-free
-        // regex source so Node and manifest matching use identical semantics.
-        args.push("--test-name-pattern", pattern.toString());
+      if (testName !== undefined) {
+        // Only the Node child needs a regex. Parent accounting uses the literal
+        // name, and rejects any extra cases selected by Node's ancestry rules.
+        const escaped = testName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        args.push("--test-name-pattern", new RegExp(`^${escaped}$`).toString());
       }
       args.push(absolutePath);
       nodeResult = await runNode(args, {
@@ -1561,11 +1566,10 @@ async function runFile(
 
       const events = parseReporter(nodeResult.stdout, nodeResult.error?.code === "ETIMEDOUT");
       if (
-        testNamePattern !== undefined &&
+        testName !== undefined &&
         events.some(
           (event) =>
             ["test:pass", "test:fail"].includes(event.type) &&
-            event.data?.name !== absolutePath &&
             (event.data?.testType === "suite" || event.data?.nesting > 0),
         )
       ) {
@@ -1574,7 +1578,7 @@ async function runFile(
         issues.push(
           issue(
             "unsupported-test-selection",
-            "--test-name-pattern supports only standalone top-level test cases; run the whole file for suites or subtests",
+            "--test-name supports only standalone top-level test cases; run the whole file for suites or subtests",
             { file: relativePath },
           ),
         );
@@ -1682,10 +1686,22 @@ async function runFile(
   if (
     nodeResult &&
     (tests.length === 0 ||
-      (pattern && !tests.some((testCase) => matchesTopLevelTest(pattern, testCase.name))))
+      (testName !== undefined && !tests.some((testCase) => testCase.name === testName)))
   ) {
     issues.push(
       issue("selected-zero", `selected file produced no test cases: ${relativePath}`, {
+        file: relativePath,
+      }),
+    );
+  }
+
+  if (
+    nodeResult &&
+    testName !== undefined &&
+    (tests.some((testCase) => testCase.name !== testName) || tests.length > 1)
+  ) {
+    issues.push(
+      issue("unexpected-test-selection", "--test-name must execute only one exactly named case", {
         file: relativePath,
       }),
     );
@@ -1772,12 +1788,7 @@ async function runFile(
   };
 }
 
-function matchesTopLevelTest(pattern, name) {
-  // Node checks both the literal name and trimmed ancestry for a top-level case.
-  return pattern.test(name) || pattern.test(name.trim());
-}
-
-function selectLane(manifest, laneName, selectedFile, testNamePattern) {
+function selectLane(manifest, laneName, selectedFile, testName) {
   let lane = manifest.lanes.get(laneName);
   const issues = [...manifest.issues];
 
@@ -1791,18 +1802,15 @@ function selectLane(manifest, laneName, selectedFile, testNamePattern) {
       );
     } else {
       // File-only runs keep every required case. Explicit case selection keeps
-      // matching required names; the child must still report actual passing cases.
-      const pattern = testNamePattern === undefined ? undefined : new RegExp(testNamePattern);
+      // the exact required name; the child must still report that passing case.
       lane = {
         ...lane,
         files: [
-          testNamePattern === undefined
+          testName === undefined
             ? selected
             : {
                 ...selected,
-                expectedTests: selected.expectedTests.filter((name) =>
-                  matchesTopLevelTest(pattern, name),
-                ),
+                expectedTests: selected.expectedTests.filter((name) => name === testName),
               },
         ],
         parallelFiles: lane.parallelFiles.filter((path) => path === selected.path),
@@ -1820,17 +1828,9 @@ function selectLane(manifest, laneName, selectedFile, testNamePattern) {
   return { lane, issues };
 }
 
-async function runLane(
-  root,
-  manifest,
-  laneName,
-  statePath,
-  resultsPath,
-  selectedFile,
-  testNamePattern,
-) {
+async function runLane(root, manifest, laneName, statePath, resultsPath, selectedFile, testName) {
   const source = sourceEvidence(root);
-  const { lane, issues } = selectLane(manifest, laneName, selectedFile, testNamePattern);
+  const { lane, issues } = selectLane(manifest, laneName, selectedFile, testName);
   issues.push(...source.issues);
   const files = [];
   let preservedNodeExitCode = 0;
@@ -1865,7 +1865,7 @@ async function runLane(
         statePath,
         prepareFile,
         setup,
-        testNamePattern,
+        testName,
       );
       result.mode = mode;
       // Round both ends, so start + duration is the rounded end and never passes a
@@ -1925,7 +1925,7 @@ async function runLane(
     sourceSha: source.sha,
     lane: laneName,
     scope: selectedFile === undefined ? "full" : "focused",
-    ...(testNamePattern === undefined ? {} : { testNamePattern }),
+    ...(testName === undefined ? {} : { testName }),
     status,
     exitCode: preservedNodeExitCode || (status === "passed" ? 0 : 1),
     fileConcurrency: concurrency,
@@ -2333,8 +2333,7 @@ async function completePhaseChild() {
   let uncertain = false;
   let error;
   try {
-    const { phase, root, lane, statePath, resultsPath, manifestPath, file, testNamePattern } =
-      request;
+    const { phase, root, lane, statePath, resultsPath, manifestPath, file, testName } = request;
     if (phase === "prepare") {
       const owner = await import(pathToFileURL(join(root, "scripts/ci/prepare.mjs")));
       await owner.prepareLane({ lane, statePath, file });
@@ -2348,7 +2347,7 @@ async function completePhaseChild() {
         loadTestSuites(manifestPath, process.env.OCC_CI_SUITE_VIEW),
         manifestPath,
       );
-      exitCode = await runLane(root, manifest, lane, statePath, resultsPath, file, testNamePattern);
+      exitCode = await runLane(root, manifest, lane, statePath, resultsPath, file, testName);
       uncertain = abandonedSteps > 0;
     }
   } catch {
@@ -2517,20 +2516,12 @@ async function lifecyclePhase(request, timeoutMs) {
   };
 }
 
-async function runCompleteLifecycle(
-  root,
-  manifest,
-  manifestPath,
-  lane,
-  attempt,
-  file,
-  testNamePattern,
-) {
+async function runCompleteLifecycle(root, manifest, manifestPath, lane, attempt, file, testName) {
   if (process.platform !== "linux") {
     throw new Error("Complete lifecycle mode requires Linux process-group verification.");
   }
   const source = sourceEvidence(root);
-  const selection = selectLane(manifest, lane, file, testNamePattern);
+  const selection = selectLane(manifest, lane, file, testName);
   const audit = await auditManifest(root, manifest);
   if (selection.lane) {
     fileConcurrency(selection.lane, selection.issues);
@@ -2609,7 +2600,7 @@ async function runCompleteLifecycle(
     resultsPath: join(attempt, "run.json"),
     manifestPath,
     file,
-    testNamePattern,
+    testName,
   };
   try {
     if (!interrupted) {
@@ -2642,6 +2633,7 @@ async function runCompleteLifecycle(
       sourceSha: source.sha,
       lane,
       scope: file === undefined ? "full" : "focused",
+      ...(testName === undefined ? {} : { testName }),
       startedAt,
       counts: { passed: 0, failed: 0, skipped: 0, todo: 0, total: 0 },
       files: [],
@@ -2654,6 +2646,7 @@ async function runCompleteLifecycle(
           candidate.command !== "run" ||
           candidate.lane !== lane ||
           candidate.sourceSha !== source.sha ||
+          candidate.testName !== testName ||
           !Array.isArray(candidate.issues)
         ) {
           throw new Error("Invalid run evidence");
@@ -2704,29 +2697,21 @@ async function runCompleteLifecycle(
 
 async function main() {
   const { command, positionals, options } = parseArgs(process.argv.slice(2));
-  const testNamePattern = options["test-name-pattern"];
-  if (testNamePattern !== undefined) {
+  const root = resolve(options.root ?? repositoryRoot);
+  const testName = options["test-name"];
+  if (testName !== undefined) {
     if (command !== "run" || options.file === undefined) {
-      throw new Error("--test-name-pattern requires run with --file.");
+      throw new Error("--test-name requires run with --file.");
     }
-    try {
-      if (testNamePattern.length === 0) {
-        throw new Error();
-      }
-      new RegExp(testNamePattern);
-    } catch {
-      throw new Error("--test-name-pattern must be nonempty JavaScript regex source.");
+    // Current registered names fit within 171 UTF-8 bytes. Keep this literal
+    // bounded without evaluating user-supplied regex in the coordinator.
+    if (testName.trim().length === 0 || Buffer.byteLength(testName, "utf8") > 256) {
+      throw new Error("--test-name must be a nonempty literal of at most 256 UTF-8 bytes.");
     }
-    const pattern = new RegExp(testNamePattern);
-    // Node also matches ancestors. Its implicit root has both a name and empty
-    // ancestry; matching either would select every case regardless of its name.
-    if (pattern.test("<root>") || pattern.test("")) {
-      throw new Error(
-        "--test-name-pattern must not match Node's implicit root; use --file alone for all cases.",
-      );
+    if (testName === "<root>" || testName === resolve(root, options.file)) {
+      throw new Error("--test-name cannot select Node's reserved root or file-wrapper name.");
     }
   }
-  const root = resolve(options.root ?? repositoryRoot);
   const manifestPath = resolve(root, options.manifest ?? defaultManifestPath);
   const manifest = normalizeManifest(
     loadTestSuites(manifestPath, process.env.OCC_CI_SUITE_VIEW),
@@ -2775,7 +2760,7 @@ async function main() {
         laneName,
         resolve(root, options.attempt),
         options.file,
-        testNamePattern,
+        testName,
       );
     }
     if (!laneName || !options.state || !options.results) {
@@ -2788,7 +2773,7 @@ async function main() {
       resolve(root, options.state),
       resolve(root, options.results),
       options.file,
-      testNamePattern,
+      testName,
     );
   }
 
