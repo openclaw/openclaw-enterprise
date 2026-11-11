@@ -1308,6 +1308,11 @@ test(
       ),
     );
     const installationPath = join(directory, "installation.yaml");
+    const load = () =>
+      loadInstallationConfiguration({
+        mode: "production",
+        environment: { OCC_CONFIG_PATH: installationPath },
+      });
     const invalid = [
       "192.168.1",
       "2130706433",
@@ -1350,11 +1355,6 @@ test(
         configuration.drivers.compute.configuration.gatewayRouting.hostname = hostname;
       }
       await writeFile(installationPath, JSON.stringify(configuration));
-      const load = () =>
-        loadInstallationConfiguration({
-          mode: "production",
-          environment: { OCC_CONFIG_PATH: installationPath },
-        });
       // Helm --set reads a bare integer or 0x hex as a number. Pass those spellings
       // with --set-string so the chart sees the hostname the Installation stores.
       const numericHostname =
@@ -1426,11 +1426,6 @@ test(
       const configuration = structuredClone(example);
       configuration.drivers.compute.configuration.gatewayRouting.sandbox = { domain };
       await writeFile(installationPath, JSON.stringify(configuration));
-      const load = () =>
-        loadInstallationConfiguration({
-          mode: "production",
-          environment: { OCC_CONFIG_PATH: installationPath },
-        });
       const rendered = () => render({ ...sandboxValues, "gatewayRouting.sandbox.domain": domain });
       if (domain === "192.0.2.1") {
         await assert.rejects(load(), (error) => {
@@ -5493,6 +5488,13 @@ test("default routing refuses missing operator configuration", tooling, async ()
   );
 });
 
+function privateRoutingPodSpec(objects, component) {
+  return objects.find(
+    ({ kind, metadata }) =>
+      kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === component,
+  ).spec.template.spec;
+}
+
 test(
   "private Envoy Gateway routing defaults on with automatic CA and deterministic hostnames",
   tooling,
@@ -5539,14 +5541,8 @@ test(
       ),
     );
 
-    const deployment = (component) =>
-      configured.find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === component,
-      );
-
     for (const component of ["api", "worker"]) {
-      const pod = deployment(component).spec.template.spec;
+      const pod = privateRoutingPodSpec(configured, component);
       const apiKeyVolume = pod.volumes.find(({ name }) => name === "gateway-api-key");
       const caVolume = pod.volumes.find(({ name }) => name === "gateway-ca");
       const apiKeyMount = pod.containers[0].volumeMounts.find(
@@ -5805,14 +5801,8 @@ test(
     const gatewayName = "oce-agent-gateways";
     const gatewayNamespace = "openclaw-system";
     const serviceName = gatewayServiceName(gatewayNamespace, gatewayName);
-    const apiPod = configured.find(
-      ({ kind, metadata }) =>
-        kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === "api",
-    ).spec.template.spec;
-    const workerPod = configured.find(
-      ({ kind, metadata }) =>
-        kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === "worker",
-    ).spec.template.spec;
+    const apiPod = privateRoutingPodSpec(configured, "api");
+    const workerPod = privateRoutingPodSpec(configured, "worker");
 
     assert.deepEqual(apiPod.volumes.find(({ name }) => name === "gateway-ca").secret, {
       secretName: "occ-private-ca",
