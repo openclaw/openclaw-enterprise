@@ -4062,11 +4062,11 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
   });
 
-  test("controller upgrades remove only an explicitly omitted empty cookie override", async (t) => {
+  test("controller upgrades remove only an explicitly omitted retired cookie override", async (t) => {
+    const removals = ["remove empty", "remove aliased empty", "remove nonempty"];
     for (const mode of [
-      "remove empty",
-      "remove aliased empty",
-      "remove nonempty",
+      ...removals,
+      "keep nonempty",
       "change domain",
       "add empty",
       "baseline drift",
@@ -4076,8 +4076,10 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         const baseline = await yamlFile(join(f.directory, "values.json"));
         baseline.agentNativeAdmin = { domain: "agents.example.test" };
         if (mode !== "add empty") {
-          baseline.agentNativeAdmin.sharedCookieDomain =
-            mode === "remove nonempty" ? "example.test" : "";
+          // Earlier dev-up installs wrote the parent of the Console and Agent hosts.
+          baseline.agentNativeAdmin.sharedCookieDomain = mode.endsWith("nonempty")
+            ? "example.test"
+            : "";
         }
         if (mode === "remove aliased empty") {
           baseline.api ??= {};
@@ -4095,7 +4097,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
           await writeFile(join(f.directory, "values.json"), saved);
         }
         const candidate = structuredClone(baseline);
-        delete candidate.agentNativeAdmin.sharedCookieDomain;
+        if (mode !== "keep nonempty") {
+          delete candidate.agentNativeAdmin.sharedCookieDomain;
+        }
         if (mode === "change domain") {
           candidate.agentNativeAdmin.domain = "other.example.test";
         } else if (mode === "add empty") {
@@ -4106,7 +4110,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         }
         const path = join(f.directory, "cookie-candidate.json");
         await writeFile(path, JSON.stringify(candidate), { mode: 0o600 });
-        if (mode === "remove empty" || mode === "remove aliased empty") {
+        if (removals.includes(mode)) {
           // Exercise the normal helper through Helm submission; the retained baseline
           // must remain attributable while the submitted candidate drops the invalid field.
           await f.run("--candidate-values", path);
@@ -4118,10 +4122,13 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
           assert.equal((await f.state()).helmSubmissions, 1);
         } else {
           await assert.rejects(
-            f.run("--candidate-values", path),
+            // Keeping the override is the saved baseline itself, as without candidate values.
+            mode === "keep nonempty" ? f.run() : f.run("--candidate-values", path),
             mode === "baseline drift"
               ? /protected Helm values differ from the live release/
-              : /candidate values change a protected setting/,
+              : mode === "keep nonempty"
+                ? /no longer accepts agentNativeAdmin\.sharedCookieDomain.*omits only that key/
+                : /candidate values change a protected setting/,
           );
           assert.deepEqual(await f.events(), []);
           const state = await f.state();

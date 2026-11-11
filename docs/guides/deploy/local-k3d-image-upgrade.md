@@ -293,6 +293,19 @@ interrupted release. The script changes the protected
 input files as well as the cluster; it saves their previous contents in that
 private evidence directory before cluster mutation.
 
+An installation created by `dev-up` before the chart derived the session cookie
+scope has `agentNativeAdmin.sharedCookieDomain` in `VALUES`, and the chart now
+refuses it. Pass a private candidate copy without only that key:
+
+```bash
+CANDIDATE_ARGS=()
+if yq -e '.agentNativeAdmin | has("sharedCookieDomain")' "$VALUES" >/dev/null; then
+  export CANDIDATE_VALUES='/secure/occ/candidate-values.yaml'
+  (umask 077 && yq 'del(.agentNativeAdmin.sharedCookieDomain)' "$VALUES" > "$CANDIDATE_VALUES")
+  CANDIDATE_ARGS=(--candidate-values "$CANDIDATE_VALUES")
+fi
+```
+
 Choose exactly one invocation below. Both options together perform a combined
 release; omitting one leaves that image selection unchanged.
 
@@ -303,7 +316,7 @@ scripts/upgrade-production-images \
   --namespace "$NAMESPACE" --release "$RELEASE" \
   --values "$VALUES" --installation "$INSTALLATION" \
   --source-revision "$RELEASE_SOURCE_SHA" --evidence-dir "$UPGRADE_EVIDENCE" \
-  --controller-image "$CONTROLLER_IMAGE" "${BROKER_ARGS[@]}"
+  --controller-image "$CONTROLLER_IMAGE" "${BROKER_ARGS[@]}" "${CANDIDATE_ARGS[@]}"
 
 # Runtime only: use a fresh UPGRADE_EVIDENCE for a new release.
 scripts/upgrade-production-images \
@@ -311,7 +324,7 @@ scripts/upgrade-production-images \
   --namespace "$NAMESPACE" --release "$RELEASE" \
   --values "$VALUES" --installation "$INSTALLATION" \
   --source-revision "$RELEASE_SOURCE_SHA" --evidence-dir "$UPGRADE_EVIDENCE" \
-  --runtime-image "$RUNTIME_IMAGE" "${RUNTIME_REPOSITORY_ARGS[@]}"
+  --runtime-image "$RUNTIME_IMAGE" "${RUNTIME_REPOSITORY_ARGS[@]}" "${CANDIDATE_ARGS[@]}"
 
 # Combined: use a fresh UPGRADE_EVIDENCE for a new release.
 scripts/upgrade-production-images \
@@ -320,7 +333,7 @@ scripts/upgrade-production-images \
   --values "$VALUES" --installation "$INSTALLATION" \
   --source-revision "$RELEASE_SOURCE_SHA" --evidence-dir "$UPGRADE_EVIDENCE" \
   --controller-image "$CONTROLLER_IMAGE" --runtime-image "$RUNTIME_IMAGE" \
-  "${BROKER_ARGS[@]}"
+  "${BROKER_ARGS[@]}" "${CANDIDATE_ARGS[@]}"
 ```
 
 The helper stops the API and worker and waits for their Pods to terminate. Helm

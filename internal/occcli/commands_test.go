@@ -2011,57 +2011,95 @@ func TestFirstDeploymentCLICanonicalDecimal(t *testing.T) {
 
 func TestDeployRetainsRequestedOverridesInsteadOfResolvedDefaults(t *testing.T) {
 	base := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
-	var calls []string
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls = append(calls, r.Method+" "+r.URL.Path)
-		w.Header().Set("Content-Type", "application/json")
-		var data any
-		switch r.Method + " " + r.URL.Path {
-		case "GET " + base + "/revisions/" + testRevision1ID:
-			// The old revision inherited a default. Retaining its request must send {},
-			// so an upgrade can resolve the current default instead of inventing an override.
-			data = map[string]any{
+	readable := func(overrides map[string]any) map[string]any {
+		return map[string]any{
+			"id": testRevision1ID, "namespaceId": testNamespaceID, "agentId": testAgentID,
+			"revision": 1, "backendId": nil, "configurationId": "cfg_55555555-5555-4555-8555-555555555555",
+			"configurationKind": "agent", "configurationGeneration": 1, "gatewayManagedMode": false,
+			"configuration": map[string]any{"agents": map[string]any{"defaults": map[string]any{"model": "codex/gpt-5"}}},
+			"harness": map[string]any{"id": "codex", "version": "fixture", "mode": "dedicated", "overrides": overrides,
+				"configuration": map[string]any{"modelProvider": map[string]any{"protocol": "openai-responses", "baseUrl": "https://previous.example.com/v1", "supportsStandaloneWebSearch": false}}},
+			"compute":     map[string]any{"id": "kubernetes", "implementation": "kubernetes"},
+			"harnessAuth": map[string]any{"method": "api_key", "source": map[string]any{"kind": "secret", "namespaceId": testNamespaceID, "id": "sec_44444444-4444-4444-8444-444444444444"}},
+			"createdAt":   "2026-11-06T00:00:00.000Z",
+		}
+	}
+	provider := map[string]any{"modelProvider": map[string]any{"protocol": "openai-responses", "baseUrl": "https://evaluation.example.com/v1"}}
+	for _, test := range []struct {
+		name     string
+		revision map[string]any
+		// body is the deploy request body; nil means none. OCC treats a missing
+		// body as no overrides, and servers older than Harness overrides refuse a body.
+		body   map[string]any
+		notice string
+	}{
+		// The old revision inherited a default. Retaining its request must send no
+		// overrides, so an upgrade resolves the current default instead of inventing one.
+		{name: "inherited default", revision: readable(map[string]any{})},
+		{name: "requested override", revision: readable(provider), body: map[string]any{"harnessOverrides": provider}},
+		{
+			// A revision saved before OCC recorded Harness settings, as OCC returns it
+			// after the upgrade: metadata and a read error, no settings.
+			name: "predates Harness settings",
+			revision: map[string]any{
 				"id": testRevision1ID, "namespaceId": testNamespaceID, "agentId": testAgentID,
-				"revision": 1, "backendId": nil, "configurationId": "cfg_55555555-5555-4555-8555-555555555555",
-				"configurationKind": "agent", "configurationGeneration": 1, "gatewayManagedMode": false,
-				"configuration": map[string]any{"agents": map[string]any{"defaults": map[string]any{"model": "codex/gpt-5"}}},
-				"harness": map[string]any{"id": "codex", "version": "fixture", "mode": "dedicated", "overrides": map[string]any{},
-					"configuration": map[string]any{"modelProvider": map[string]any{"protocol": "openai-responses", "baseUrl": "https://previous.example.com/v1", "supportsStandaloneWebSearch": false}}},
-				"compute":     map[string]any{"id": "kubernetes", "implementation": "kubernetes"},
-				"harnessAuth": map[string]any{"method": "api_key", "source": map[string]any{"kind": "secret", "namespaceId": testNamespaceID, "id": "sec_44444444-4444-4444-8444-444444444444"}},
-				"createdAt":   "2026-11-06T00:00:00.000Z",
-			}
-		case "POST " + base + "/deploy":
-			var body map[string]any
-			if err := json.UnmarshalRead(r.Body, &body); err != nil {
+				"revision": 1, "backendId": nil, "createdAt": "2026-10-20T00:00:00.000Z",
+				"configurationReadError": map[string]any{"code": "SAVED_CONFIGURATION_UNREADABLE", "field": "configuration"},
+			},
+			notice: "notice: revision " + testRevision1ID + " has no readable Harness settings (SAVED_CONFIGURATION_UNREADABLE: configuration), so no Harness overrides are retained; the deployment uses current Installation defaults.\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var calls []string
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls = append(calls, r.Method+" "+r.URL.Path)
+				w.Header().Set("Content-Type", "application/json")
+				var data any
+				switch r.Method + " " + r.URL.Path {
+				case "GET " + base + "/revisions/" + testRevision1ID:
+					data = test.revision
+				case "POST " + base + "/deploy":
+					raw, err := io.ReadAll(r.Body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if test.body == nil {
+						if len(raw) != 0 || r.Header.Get("Content-Type") != "" {
+							t.Errorf("expected no deploy body, got %q (%q)", raw, r.Header.Get("Content-Type"))
+						}
+					} else {
+						var body map[string]any
+						if err := json.Unmarshal(raw, &body); err != nil {
+							t.Fatal(err)
+						}
+						if !reflect.DeepEqual(body, test.body) {
+							t.Errorf("deploy body = %#v, want %#v", body, test.body)
+						}
+					}
+					w.WriteHeader(http.StatusAccepted)
+					data = map[string]any{"id": testRevision2ID, "revision": 2, "agentId": testAgentID, "configurationId": "cfg_55555555-5555-4555-8555-555555555555"}
+				case "GET " + base + "/deployments/" + testRevision2ID:
+					data = map[string]any{"deploymentId": testRevision2ID, "namespaceId": testNamespaceID, "agentId": testAgentID, "status": "queued"}
+				default:
+					t.Errorf("unexpected operation: %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				if err := json.MarshalWrite(w, map[string]any{"data": data, "meta": map[string]any{"requestId": "test"}}); err != nil {
+					t.Fatal(err)
+				}
+			})
+			out, notices, err := runOCCAgainst(t, handler, "--namespace", testNamespaceID, "agent", "deploy", testAgentID, "--retain-harness-overrides", testRevision1ID)
+			if err != nil {
 				t.Fatal(err)
 			}
-			overrides, ok := body["harnessOverrides"].(map[string]any)
-			if !ok || len(overrides) != 0 {
-				t.Errorf("expected retained empty overrides, got %#v", body)
+			if !strings.Contains(out, testRevision2ID) || notices != test.notice {
+				t.Fatalf("wrong deployment receipt: %q %s", notices, out)
 			}
-			w.WriteHeader(http.StatusAccepted)
-			data = map[string]any{"id": testRevision2ID, "revision": 2, "agentId": testAgentID, "configurationId": "cfg_55555555-5555-4555-8555-555555555555"}
-		case "GET " + base + "/deployments/" + testRevision2ID:
-			data = map[string]any{"deploymentId": testRevision2ID, "namespaceId": testNamespaceID, "agentId": testAgentID, "status": "queued"}
-		default:
-			t.Errorf("unexpected operation: %s %s", r.Method, r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		if err := json.MarshalWrite(w, map[string]any{"data": data, "meta": map[string]any{"requestId": "test"}}); err != nil {
-			t.Fatal(err)
-		}
-	})
-	out, notices, err := runOCCAgainst(t, handler, "--namespace", testNamespaceID, "agent", "deploy", testAgentID, "--retain-harness-overrides", testRevision1ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, testRevision2ID) || notices != "" {
-		t.Fatalf("wrong deployment receipt: %s %s", notices, out)
-	}
-	want := []string{"GET " + base + "/revisions/" + testRevision1ID, "POST " + base + "/deploy", "GET " + base + "/deployments/" + testRevision2ID}
-	if !slices.Equal(calls, want) {
-		t.Fatalf("operations = %v", calls)
+			want := []string{"GET " + base + "/revisions/" + testRevision1ID, "POST " + base + "/deploy", "GET " + base + "/deployments/" + testRevision2ID}
+			if !slices.Equal(calls, want) {
+				t.Fatalf("operations = %v", calls)
+			}
+		})
 	}
 }

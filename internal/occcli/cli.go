@@ -816,13 +816,9 @@ func (app *application) agentCommand() *cobra.Command {
 				if !ok {
 					return fmt.Errorf("the selected revision is unavailable")
 				}
-				harness, ok := record["harness"].(map[string]any)
-				if !ok {
-					return fmt.Errorf("the selected revision has no Harness settings")
-				}
-				overrides, ok = harness["overrides"].(map[string]any)
-				if !ok {
-					return fmt.Errorf("the selected revision has no requested Harness overrides")
+				overrides, err = retainedHarnessOverrides(record, command.ErrOrStderr())
+				if err != nil {
+					return err
 				}
 			}
 			revision, err := client.DeployAgent(namespace, args[0], overrides)
@@ -1100,6 +1096,30 @@ func (app *application) agentCommand() *cobra.Command {
 		app.agentPolicyCommand(),
 	)
 	return command
+}
+
+// retainedHarnessOverrides returns the Harness overrides that an exact revision
+// requested. A revision saved before OCC recorded Harness settings requested none,
+// so retaining it deploys with current Installation defaults; OCC returns such a
+// revision with a saved-configuration read error instead of its settings.
+func retainedHarnessOverrides(record map[string]any, notices io.Writer) (map[string]any, error) {
+	harness, ok := record["harness"].(map[string]any)
+	if !ok {
+		readError, unreadable := record["configurationReadError"].(map[string]any)
+		if !unreadable {
+			return nil, fmt.Errorf("the selected revision has no Harness settings")
+		}
+		code, _ := readError["code"].(string)
+		field, _ := readError["field"].(string)
+		revisionID, _ := record["id"].(string)
+		noticef(notices, "notice: revision %s has no readable Harness settings (%s: %s), so no Harness overrides are retained; the deployment uses current Installation defaults.", revisionID, code, field)
+		return map[string]any{}, nil
+	}
+	overrides, ok := harness["overrides"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("the selected revision has no requested Harness overrides")
+	}
+	return overrides, nil
 }
 
 func (app *application) firstDeploymentRecoveryNotice(notices io.Writer, namespace, agentID string, intent occclient.FirstDeploymentIntent, err error, overridesFile string) {
