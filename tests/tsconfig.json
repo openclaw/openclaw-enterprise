@@ -68,6 +68,7 @@
     "../packages/contracts/prepack.ts",
     "../packages/utils/prepack.ts",
     "helpers/temporary-directory.ts",
+    "helpers/configuration-preset-template.ts",
     "helpers/bounded-teardown.ts",
     "helpers/environment.ts",
     "helpers/fake-commands.ts",
