@@ -16482,15 +16482,9 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
     }
   }
 
+  const anotherCompute = { id: "another-driver", implementation: "another-implementation" };
   for (const invalid of [
-    {
-      ...revision,
-      compute: {
-        ...revision.compute,
-        id: "another-driver",
-        implementation: "another-implementation",
-      },
-    },
+    { ...revision, compute: { ...revision.compute, ...anotherCompute } },
     { ...revision, servicePrincipalId: undefined },
     { ...revision, servicePrincipalId: " " },
   ]) {
@@ -16548,30 +16542,94 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
       },
     },
   );
-  const dedicatedNativeConfiguration = createHarnessConfiguration("openclaw", "gpt-5");
-  assert.doesNotThrow(() =>
-    production.validateHarnessAuth(
-      { id: "openclaw", version: "1.0.0", mode: "dedicated" },
-      apiKeyAuth,
-      dedicatedNativeConfiguration,
-    ),
+  assertDedicatedOpenClawCatalog(production);
+  await assertKubernetesOperatorCredentials(production, revision);
+
+  const embeddedRevision = {
+    ...revision,
+    compute: { id: production.id, implementation: production.implementation },
+    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+    harnessAuth: apiKeyAuth,
+    configuration: { ...revision.configuration, agents: { defaults: { model: "openai/gpt-5" } } },
+  };
+  await assertEmbeddedOpenClawConfiguration(production, revision.harness, embeddedRevision);
+
+  const namespace = kubernetesNamespaceName(tenant.id);
+  const agentHash = createHash("sha256").update(revision.agentId).digest("hex");
+  const gateway = production.deployment(
+    `gateway-${agentHash.slice(0, 12)}`,
+    { namespaceId: tenant.id, agentId: revision.agentId },
+    { name: namespace, plane: "execution" },
+    "openclaw-enterprise/gateway-fixture:local",
+    `agent-${agentHash.slice(0, 12)}`,
+    "gateway",
+    {},
+    production.gatewayConfiguration(embeddedRevision).loggingLevel,
+    production.gatewayConfiguration(embeddedRevision),
+    true,
+    revision.servicePrincipalId,
+    preparedAuth(production, namespace, true),
   );
+  const pod = gateway.spec.template.spec;
+  const environment = Object.fromEntries(pod.containers[0].env.map((entry) => [entry.name, entry]));
+
+  // The approved combined Agent workload receives only its own projected identity and model Secret.
+  assert.equal(pod.serviceAccountName, `agent-${agentHash.slice(0, 12)}`);
+  assert.ok(pod.volumes.some(({ name }) => name === "openclaw-service-principal"));
+  assert.deepEqual(environment.OPENAI_API_KEY.valueFrom.secretKeyRef, {
+    name: "occ-model-key",
+    key: "value",
+  });
+  assert.equal(environment.HOME.value, "/home/node");
+  assert.equal(environment.APP_SERVER_TOKEN, undefined);
+  assert.equal(environment.APP_SERVER_URL, undefined);
+
+  const policies = production
+    .agentNetworkPolicies(embeddedRevision, {
+      name: namespace,
+      plane: "execution",
+    })
+    .map(({ resource }) => resource);
+  assert.equal(policies.length, 1);
+  assert.deepEqual(policies[0].spec.podSelector.matchLabels, {
+    "openclaw.dev/namespace": tenant.id,
+    "openclaw.dev/workload-role": "gateway",
+    "openclaw.dev/agent": revision.agentId,
+    "openclaw.dev/network-profile": "broad-egress-v1",
+  });
+  assert.deepEqual(policies[0].spec.policyTypes, ["Egress"]);
+  assert.deepEqual(policies[0].spec.egress[0].ports, [{ protocol: "TCP", port: 443 }]);
+
+  await assert.rejects(
+    driver.retireRevision({ ...revision, compute: { ...anotherCompute } }),
+    /another Compute Driver/i,
+  );
+  await assert.rejects(
+    driver.stopRevision({ ...revision, compute: { ...anotherCompute } }),
+    /another Compute Driver/i,
+  );
+});
+
+function assertDedicatedOpenClawCatalog(production) {
+  const harness = { id: "openclaw", version: "1.0.0", mode: "dedicated" };
+  const nativeConfiguration = createHarnessConfiguration("openclaw", "gpt-5");
+  const withOpenAI = (openai) => ({
+    ...nativeConfiguration,
+    models: { providers: { openai } },
+  });
+  const validate = (configuration) =>
+    production.validateHarnessAuth(harness, apiKeyAuth, configuration);
+  const baseUrlMismatch =
+    "OpenAI model baseUrl must match the resolved Harness modelProvider.baseUrl.";
+
+  assert.doesNotThrow(() => validate(nativeConfiguration));
   assert.throws(
     () =>
-      production.validateHarnessAuth(
-        { id: "openclaw", version: "1.0.0", mode: "dedicated" },
-        apiKeyAuth,
-        {
-          ...dedicatedNativeConfiguration,
-          models: {
-            providers: {
-              openai: {
-                ...dedicatedNativeConfiguration.models.providers.openai,
-                models: [{ id: "gpt-5", contextWindow: 128000, maxTokens: 8192 }],
-              },
-            },
-          },
-        },
+      validate(
+        withOpenAI({
+          ...nativeConfiguration.models.providers.openai,
+          models: [{ id: "gpt-5", contextWindow: 128000, maxTokens: 8192 }],
+        }),
       ),
     {
       name: "ConfigurationHarnessError",
@@ -16582,34 +16640,18 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
   // A Secret grant must not let an Agent editor choose where the raw key is sent.
   assert.throws(
     () =>
-      production.validateHarnessAuth(
-        { id: "openclaw", version: "1.0.0", mode: "dedicated" },
-        apiKeyAuth,
-        {
-          ...dedicatedNativeConfiguration,
-          models: {
-            providers: {
-              openai: {
-                ...dedicatedNativeConfiguration.models.providers.openai,
-                baseUrl: "https://models.example.test/inference/v1",
-                api: "openai-completions",
-              },
-            },
-          },
-        },
+      validate(
+        withOpenAI({
+          ...nativeConfiguration.models.providers.openai,
+          baseUrl: "https://models.example.test/inference/v1",
+          api: "openai-completions",
+        }),
       ),
-    {
-      name: "ConfigurationHarnessError",
-      message: "OpenAI model baseUrl must match the resolved Harness modelProvider.baseUrl.",
-    },
+    { name: "ConfigurationHarnessError", message: baseUrlMismatch },
   );
-  // Each dedicated OpenClaw catalog refusal names the setting the caller fixes (finding 1116);
-  // preparation applies the same rule to the admitted revision.
-  const openaiRow = dedicatedNativeConfiguration.models.providers.openai;
-  const withOpenAI = (openai) => ({
-    ...dedicatedNativeConfiguration,
-    models: { providers: { openai } },
-  });
+
+  // Catalog refusals identify the setting the caller fixes (finding 1116).
+  const openaiRow = nativeConfiguration.models.providers.openai;
   const withEntry = (entry) =>
     withOpenAI({ ...openaiRow, models: [{ ...openaiRow.models[0], ...entry }] });
   for (const [configuration, setting, requirement] of [
@@ -16646,23 +16688,15 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
       "models.providers.openai.models.0.headers",
       "must be unset on Dedicated OpenClaw",
     ],
-    [
-      withEntry({ baseUrl: "not a url" }),
-      "models.providers.openai.models.0.baseUrl",
-      "(or models.providers.openai.baseUrl) must be an HTTPS endpoint on port 443 ending in /v1 without credentials, query, fragment, or wildcard on Dedicated OpenClaw",
-    ],
     ...[
+      "not a url",
       "http://models.example.test/v1",
       "https://models.example.test:8443/v1",
       "https://models.example.test/v1?key=forbidden",
       "https://models.example.test/v1#fragment",
       "https://*.example.test/v1",
       "https://models.example.test/other",
-    ].map((baseUrl) => [
-      withEntry({ baseUrl }),
-      "models.providers.openai.models.0.baseUrl",
-      "(or models.providers.openai.baseUrl) must be an HTTPS endpoint on port 443 ending in /v1 without credentials, query, fragment, or wildcard on Dedicated OpenClaw",
-    ]),
+    ].map((baseUrl) => [withEntry({ baseUrl }), "models.providers.openai.models.0.baseUrl"]),
     [
       withEntry({ reasoning: "yes" }),
       "models.providers.openai.models.0.reasoning",
@@ -16681,11 +16715,11 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
     // Preparation refused this only after a dedicated deployment stopped its predecessors.
     [
       {
-        ...dedicatedNativeConfiguration,
+        ...nativeConfiguration,
         agents: {
-          ...dedicatedNativeConfiguration.agents,
+          ...nativeConfiguration.agents,
           defaults: {
-            ...dedicatedNativeConfiguration.agents.defaults,
+            ...nativeConfiguration.agents.defaults,
             embeddedAgent: { runtimeServer: { url: "ws://127.0.0.1:1" } },
           },
         },
@@ -16695,21 +16729,19 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
     ],
   ]) {
     assert.throws(
-      () =>
-        production.validateHarnessAuth(
-          { id: "openclaw", version: "1.0.0", mode: "dedicated" },
-          apiKeyAuth,
-          configuration,
-        ),
+      () => validate(configuration),
       {
         name: "ConfigurationHarnessError",
         message: setting.endsWith(".baseUrl")
-          ? "OpenAI model baseUrl must match the resolved Harness modelProvider.baseUrl."
+          ? baseUrlMismatch
           : `Configuration setting ${setting} ${requirement}.`,
       },
       setting,
     );
   }
+}
+
+async function assertKubernetesOperatorCredentials(production, revision) {
   const serviceAccountId = "sa_00000000-0000-4000-8000-000000000001";
   const serviceAccount = {
     method: "codex_pat",
@@ -16795,19 +16827,15 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
       /admitted account/i,
     );
   }
-  const embeddedRevision = {
-    ...revision,
-    compute: { id: production.id, implementation: production.implementation },
-    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
-    harnessAuth: apiKeyAuth,
-    configuration: { ...revision.configuration, agents: { defaults: { model: "openai/gpt-5" } } },
-  };
+}
+
+async function assertEmbeddedOpenClawConfiguration(production, dedicatedHarness, embeddedRevision) {
   admitRevisionHarness(production, embeddedRevision);
   // Admission must retain supported model choices without permitting a second credential selector.
   for (const model of ["codex/gpt-5", "openai/gpt-5"]) {
     const configuration = { agents: { defaults: { model } } };
     assert.doesNotThrow(() =>
-      production.validateHarnessAuth(revision.harness, apiKeyAuth, configuration),
+      production.validateHarnessAuth(dedicatedHarness, apiKeyAuth, configuration),
     );
     assert.equal(configuration.agents.defaults.model, model);
   }
@@ -16913,67 +16941,7 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
       /channels require a dedicated Agent workload\./i,
     );
   }
-  const namespace = kubernetesNamespaceName(tenant.id);
-  const agentHash = createHash("sha256").update(revision.agentId).digest("hex");
-  const gateway = production.deployment(
-    `gateway-${agentHash.slice(0, 12)}`,
-    { namespaceId: tenant.id, agentId: revision.agentId },
-    { name: namespace, plane: "execution" },
-    "openclaw-enterprise/gateway-fixture:local",
-    `agent-${agentHash.slice(0, 12)}`,
-    "gateway",
-    {},
-    production.gatewayConfiguration(embeddedRevision).loggingLevel,
-    production.gatewayConfiguration(embeddedRevision),
-    true,
-    revision.servicePrincipalId,
-    preparedAuth(production, namespace, true),
-  );
-  const pod = gateway.spec.template.spec;
-  const environment = Object.fromEntries(pod.containers[0].env.map((entry) => [entry.name, entry]));
-
-  // The approved combined Agent workload receives only its own projected identity and model Secret.
-  assert.equal(pod.serviceAccountName, `agent-${agentHash.slice(0, 12)}`);
-  assert.ok(pod.volumes.some(({ name }) => name === "openclaw-service-principal"));
-  assert.deepEqual(environment.OPENAI_API_KEY.valueFrom.secretKeyRef, {
-    name: "occ-model-key",
-    key: "value",
-  });
-  assert.equal(environment.HOME.value, "/home/node");
-  assert.equal(environment.APP_SERVER_TOKEN, undefined);
-  assert.equal(environment.APP_SERVER_URL, undefined);
-
-  const policies = production
-    .agentNetworkPolicies(embeddedRevision, {
-      name: namespace,
-      plane: "execution",
-    })
-    .map(({ resource }) => resource);
-  assert.equal(policies.length, 1);
-  assert.deepEqual(policies[0].spec.podSelector.matchLabels, {
-    "openclaw.dev/namespace": tenant.id,
-    "openclaw.dev/workload-role": "gateway",
-    "openclaw.dev/agent": revision.agentId,
-    "openclaw.dev/network-profile": "broad-egress-v1",
-  });
-  assert.deepEqual(policies[0].spec.policyTypes, ["Egress"]);
-  assert.deepEqual(policies[0].spec.egress[0].ports, [{ protocol: "TCP", port: 443 }]);
-
-  await assert.rejects(
-    driver.retireRevision({
-      ...revision,
-      compute: { id: "another-driver", implementation: "another-implementation" },
-    }),
-    /another Compute Driver/i,
-  );
-  await assert.rejects(
-    driver.stopRevision({
-      ...revision,
-      compute: { id: "another-driver", implementation: "another-implementation" },
-    }),
-    /another Compute Driver/i,
-  );
-});
+}
 
 // options() shares one resource object across roles; give each role its own.
 function separateResources() {
