@@ -506,6 +506,17 @@ describe("CI preparation", { concurrency }, () => {
             args.slice(5).join(" ") === "up -d --wait",
         );
         assert.notEqual(started, -1, "preparation starts its PostgreSQL server");
+        // k3d must not probe a released API port until Docker has published
+        // PostgreSQL's allocation; otherwise the daemon can take that number.
+        const published = preparation.findIndex(
+          ({ command, args }) =>
+            command === "docker" &&
+            args[0] === "inspect" &&
+            args.includes("{{json .NetworkSettings.Ports}}"),
+        );
+        const clusterStarted = preparation.findIndex(({ command }) => command === "k3d");
+        assert.ok(published > started && clusterStarted > published);
+
         const sql = (entries) =>
           entries.filter(({ command }) => command === "postgres").map(({ args }) => args);
         assert.deepEqual(sql(preparation.slice(0, started)), [], "no SQL before the server");
