@@ -66,12 +66,11 @@ using the job token’s `actions: read` permission.
 Docker Model Runtime requires an artifact ID on producer success. Failure or
 skip selects a standalone build. After download, local import cancellation
 starts three minutes before the lane deadline. Gateway Routing and default
-Production TUI use the same deadline. Full and focused runs wait for the producer,
-build their controller and import the verified runtime into their cluster.
-`integration-main` snapshots the Gateway/Agent pair. The consumer rejects
-incomplete mode, pair or artifact ID before setup. Focused explicit pairs
-skip the producer. Combining an artifact with either Gateway input or a TUI
-upgrade candidate fails before resource allocation.
+Production TUI share that deadline. Full and focused runs wait for the producer
+before controller preparation and runtime import. `integration-main` snapshots
+the Gateway/Agent pair; consumers reject incomplete mode, pair or artifact ID
+before setup. Focused explicit pairs skip the producer. Artifacts cannot accompany
+Gateway inputs or TUI upgrade candidates; conflicts fail before allocation.
 
 `loadRuntimeArtifact` verifies archive, source, run, attempt, platform, OCI index,
 manifest and config digests, and the loaded image. Docker's image ID may equal
@@ -83,35 +82,31 @@ First Agent Smoke checks compressed and uncompressed layer digests with
 `prepareRuntimeArtifactLayout`. Buildx uses the verified layout's platform
 manifest digest to build the trust layer.
 
-The CLI records image ownership before tagging or import in private state under
-`RUNNER_TEMP`, excluded from uploads. Database tests use the limited application
-role with a fresh migrated database per file. Agent revision worker tests use a
-migrated template (`prepareFile({ template })`); failure and Kubernetes database
-names satisfy admission guards.
+Before tagging or import, the CLI records image ownership in private
+`RUNNER_TEMP` state, excluded from uploads. Database tests use the limited
+application role and fresh migrated databases; Agent revision worker tests use
+migrated template copies (`prepareFile({ template })`). Failure and Kubernetes
+database names satisfy admission guards.
 
-Ordinary cluster lanes select an explicit loopback k3d context and digest-pinned
-Kubernetes 1.35 K3s image. After readiness, preparation rejects other server
-versions. OpenShell keeps its separate K3s pin. External images are pulled by
-approved registry digest and exported for the selected platform. Built and
-external images get run-owned references at their imported platform manifest
-digests. Fresh preparation records sources and pins OCI or Docker manifests
-against kubelet garbage collection for the cluster lifetime. Every node must
-report the expected containerd digest and an exact CRI digest-list entry with
-boolean `pinned: true`. Manual and operator imports are outside this retention.
+Ordinary lanes select loopback k3d contexts and digest-pinned Kubernetes 1.35 K3s;
+readiness rejects other server versions. OpenShell keeps its separate K3s pin.
+External images use approved registry digests and the selected platform. All
+images receive run-owned references at their imported platform manifest digests.
+Preparation pins OCI or Docker manifests against kubelet garbage collection.
+Every node must report the expected containerd digest and an exact CRI
+digest-list entry with boolean `pinned: true`. Manual imports are excluded.
 
-Selecting either TUI upgrade candidate requires both candidate and baseline
-controller/runtime digests before resource allocation. Preparation imports all
-four, rejects candidates resolving to their baseline image, and records source
-and imported identities. File preparation checks the same selection and passes
-imported references to tests. Without candidates, preparation builds the
-controller and imports the runtime artifact, or builds the runtime when none is
-selected. Failures still enter cleanup. Cleanup checks k3d inventory before and
-after deletion, then matching Docker containers, networks and volumes. Invalid
-inventory or possible survivors retain cleanup state.
+TUI upgrades require both candidate and baseline controller/runtime digests
+before allocation. Preparation imports all four, rejects candidates resolving to
+their baselines, and records source and imported identities. File preparation
+checks that selection and passes imported references to tests. Otherwise,
+preparation builds the controller and imports the selected runtime artifact or
+builds source. Failures enter cleanup, which checks k3d inventory before and after
+deletion, then matching Docker containers, networks and volumes. Invalid inventory
+or possible survivors retain state.
 
 The retired CLI-only installed repository lane is absent from the manifest:
-`assertLane` rejects it before state or resources are created. Its image and
-seccomp preparation below is unreachable.
+`assertLane` rejects it before allocation; its preparation below is unreachable.
 
 `scripts/ci/prepare.mjs:retainRuntimeProvenance` compares platform-selected host
 and CRI config digests. `scripts/ci/runtime-provenance.mjs:readImageCodexProvenance`
