@@ -580,6 +580,9 @@ export async function verifyOpenShellOwnerSession({
   assert.ok(!terminal.socket.isClosed());
   const replySelector = `.chat-group.assistant [data-message-text="${marker}"]`;
   await first.locator(replySelector).waitFor({ state: "visible" });
+  const sessionKey = JSON.parse(String(terminal.payload)).payload.sessionKey;
+  assert.equal(typeof sessionKey, "string");
+  assert.ok(sessionKey.length > 0);
   const conversation = first.url();
   assert.match(new URL(conversation).pathname, /^\/chat\//);
   assert.equal(sends.length, 1, "one real turn was submitted");
@@ -593,7 +596,14 @@ export async function verifyOpenShellOwnerSession({
   const secondHello = await hello(second, beforeReopen);
   assert.notEqual(secondHello.socket, terminal.socket, "each tab owns its Gateway socket");
   await second.locator(replySelector).waitFor({ state: "visible" });
-  assert.equal(second.url(), conversation, "the second tab reopened the existing conversation");
+  // The UI can add a display-name slug when it resolves the saved URL. Verify
+  // the committed conversation identity, not that mutable presentation text.
+  await second.waitForFunction((key) => {
+    const snapshot = globalThis.openclawControlUi?.snapshot();
+    return snapshot?.routeReady === true && snapshot.sessionKey === key;
+  }, sessionKey);
+  assert.equal(new URL(second.url()).origin, origin);
+  assert.match(new URL(second.url()).pathname, /^\/chat\//);
   // The production native proxy renews every 25 seconds. Keep both exact
   // sockets untouched for two intervals; reconnects cannot satisfy this check.
   await delay(55_000);
