@@ -99,6 +99,129 @@ function run(root, args, env = {}, { timeout } = {}) {
   });
 }
 
+test(
+  "grant wire CLI preserves failures and settles terminal interruptions before cleanup",
+  { skip: process.platform === "win32" && "uses POSIX terminal process groups" },
+  async (t) => {
+    const wireName = "OpenShell inspected Git fetch redeems the active grant and refuses withdrawal";
+    const file = "tests/integration/postgres-openshell-online-git-journey.test.ts";
+    const source = await readFile(join(repositoryRoot, "scripts/ci/openshell-grant-wire.ts"), "utf8");
+    for (const [scenario, code, failure, stages] of [
+      ["success", 0, undefined, ["prepare", "test", "cleanup"]],
+      ["prepare-no-state", 1, "prepare failed", ["prepare"]],
+      ["prepare", 1, "prepare failed", ["prepare", "cleanup"]],
+      ["prepare-and-cleanup", 1, "prepare failed", ["prepare", "cleanup"]],
+      ["test", 1, "test failed", ["prepare", "test", "cleanup"]],
+      ["wire", 1, `wire proof missing or not passed: "${wireName}"`, ["prepare", "test", "cleanup"]],
+      ["cleanup", 1, "cleanup failed", ["prepare", "test", "cleanup"]],
+      ["cleanup-no-state", 1, "cleanup failed", ["prepare", "test", "cleanup"]],
+      ["interrupt-prepare", 130, "SIGINT", ["prepare", "cleanup"]],
+      ["interrupt-test", 143, "SIGTERM", ["prepare", "test", "cleanup"]],
+      ["interrupt-cleanup", 130, "SIGINT", ["prepare", "test", "cleanup"]],
+    ]) {
+      await t.test(scenario, async (t) => {
+        const root = await fixture(t);
+        const cli = join(root, "scripts/ci/openshell-grant-wire.ts");
+        const events = join(root, "events");
+        await writeFile(cli, source);
+        // Safe CI process substitutes exercise the unchanged normal entrypoint only.
+        // No PostgreSQL, wire binary, container, or actual CI helper is executed.
+        const helper = String.raw`
+          import assert from "node:assert/strict";
+          import { appendFileSync, existsSync, unlinkSync, writeFileSync } from "node:fs";
+          import { basename } from "node:path";
+          const scenario = ${JSON.stringify(scenario)};
+          const stage = basename(import.meta.filename, ".mjs").replace("run-tests", "test");
+          const arg = (name) => process.argv[process.argv.indexOf(name) + 1];
+          const state = arg("--state");
+          const event = (value) => appendFileSync(${JSON.stringify(events)}, stage + ":" + value + "\n");
+          for (const key of ["GITHUB_ENV", "OCC_TEST_DATABASE_URL", "PRIVATE_TEST_SECRET"]) {
+            assert.equal(process.env[key], undefined);
+          }
+          event("start");
+          console.error("private-helper-output");
+          if (stage === "prepare" && scenario !== "prepare-no-state") {
+            writeFileSync(state, "owned-substitute-state");
+          }
+          if (stage !== "prepare") {
+            assert.ok(existsSync(state));
+          }
+          if (scenario === "interrupt-" + stage) {
+            const signal = stage === "test" ? "SIGTERM" : "SIGINT";
+            process.kill(-process.ppid, signal);
+            setTimeout(() => process.kill(-process.ppid, signal), 10);
+          }
+          setTimeout(() => {
+            if (stage === "test") {
+              writeFileSync(arg("--results"), JSON.stringify({
+                lane: "postgres-platform", scope: "focused", status: "passed",
+                files: [{ path: ${JSON.stringify(file)}, status: "passed", tests: scenario === "wire" ? [] : [
+                  { name: ${JSON.stringify(wireName)}, status: "passed" },
+                ] }],
+              }));
+            }
+            const cleanupFailure = scenario === "cleanup" || scenario === "prepare-and-cleanup";
+            if (stage === "cleanup" && !cleanupFailure) {
+              unlinkSync(state);
+            }
+            event("settled");
+            process.exit(scenario === stage || scenario === stage + "-no-state" ||
+              scenario === "prepare-and-cleanup" ? 7 : 0);
+          }, 40);
+        `;
+        for (const name of ["prepare", "run-tests", "cleanup"]) {
+          await writeFile(join(root, "scripts/ci", `${name}.mjs`), helper);
+        }
+        const result = spawnSync(process.execPath, [cli], {
+          cwd: root,
+          detached: true,
+          encoding: "utf8",
+          timeout: 10_000,
+          env: {
+            PATH: process.env.PATH,
+            TMPDIR: root,
+            OCC_TEST_OPENSHELL_PLACEHOLDER_WIRE_BINARY: process.execPath,
+            OCC_TEST_DATABASE_URL: "private-env-canary",
+            PRIVATE_TEST_SECRET: "private-env-canary",
+            GITHUB_ENV: join(root, "must-not-write"),
+          },
+        });
+        assert.equal(result.error, undefined);
+        assert.equal(result.signal, null);
+        assert.equal(result.status, code, result.stderr);
+        const output = result.stdout + result.stderr;
+        assert.doesNotMatch(output, /private-helper-output|private-env-canary/);
+        if (failure) {
+          assert.ok(result.stderr.includes(failure), result.stderr);
+        }
+        const cleanupFailure = scenario === "cleanup" || scenario === "prepare-and-cleanup";
+        assert.equal(output.includes("Retry cleanup:"), cleanupFailure);
+        if (cleanupFailure) {
+          assert.match(result.stderr, /cleanup failed/);
+        }
+        const timing = output.match(/prepare_ms=(\d+) test_ms=(\d+) cleanup_ms=(\d+) elapsed_ms=(\d+)/);
+        assert.ok(timing, output);
+        const [prepare, test, cleanup, elapsed] = timing.slice(1).map(Number);
+        for (const [stage, duration] of Object.entries({ prepare, test, cleanup })) {
+          assert.equal(duration > 0, stages.includes(stage));
+        }
+        assert.ok(elapsed >= prepare + test + cleanup - 3);
+        assert.deepEqual(
+          (await readFile(events, "utf8")).trim().split("\n"),
+          stages.flatMap((stage) => [`${stage}:start`, `${stage}:settled`]),
+        );
+        const directories = (await readdir(root)).filter((name) => name.startsWith("oce-grant-wire-"));
+        assert.equal(directories.length, code === 0 ? 0 : 1);
+        if (code !== 0) {
+          const retained = await readdir(join(root, directories[0]));
+          assert.equal(retained.includes("state.json"), cleanupFailure);
+          assert.ok(retained.includes("prepare.log"));
+        }
+      });
+    }
+  },
+);
+
 test("installed Skipper failure summary reads the actual runner result without exposing errors", async (t) => {
   for (const scenario of ["assertion", "rejection", "file failure"]) {
     await t.test(scenario, async (t) => {

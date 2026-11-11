@@ -77,12 +77,20 @@ binary or create an OpenShell cluster. Success requires the case
 to pass, as well as the file and cleanup.
 
 Each run owns a private temporary directory. Cleanup runs after preparation or
-test failure. Successful runs remove their directory; failed runs retain private
-logs and results, plus any state left by failed cleanup. Use the printed cleanup
-command to retry. After an interruption, run `node scripts/ci/cleanup.mjs --state`
-with `state.json` in the printed directory. Keep failure artifacts private: they
-can contain database credentials. Existing database URLs, CI selectors, and
-credential environment variables are not forwarded.
+test failure if state exists. SIGINT and SIGTERM let the current stage settle
+under its existing deadlines, skip tests that have not started, and run cleanup.
+The command then exits with code 130 or 143, respectively. Repeated signals do
+not interrupt teardown. After forced termination, let any remaining child finish
+before manual cleanup with `node scripts/ci/cleanup.mjs --state` and the retained
+`state.json` path.
+
+The command reports the failed stage, names missing wire proof, and prints
+prepare, test, cleanup, and overall elapsed milliseconds. Unstarted stages report
+zero. Successful runs remove their directory; failures and interruptions retain
+private logs and results, plus any state left by failed cleanup. A cleanup retry
+command appears only when cleanup failed and state remains. Keep failure artifacts
+private: they can contain database credentials. Existing database URLs, CI
+selectors, and credential environment variables are not forwarded.
 
 ## Subnet pool exhaustion
 
