@@ -270,6 +270,10 @@ function rows(value: unknown[]): PostgresRow[] {
   });
 }
 
+function existsFromRows(value: unknown[]): boolean {
+  return rows(value)[0]?.present === true;
+}
+
 function text(row: PostgresRow, key: string): string {
   const value = row[key];
   if (typeof value !== "string" || value.length === 0) {
@@ -2170,28 +2174,24 @@ export class PostgresPlatformState implements PlatformStateStore {
         )[0];
         return found === undefined ? undefined : namespaceFromRow(found);
       },
-      hasAgents: async (namespaceId) => {
-        const found = rows(
+      hasAgents: async (namespaceId) =>
+        existsFromRows(
           (
             await client.query(
               "SELECT EXISTS (SELECT 1 FROM occ.agents WHERE namespace_id = $1) AS present",
               [namespaceId],
             )
           ).rows,
-        )[0];
-        return found?.present === true;
-      },
-      hasConfigurations: async (namespaceId) => {
-        const found = rows(
+        ),
+      hasConfigurations: async (namespaceId) =>
+        existsFromRows(
           (
             await client.query(
               "SELECT EXISTS (SELECT 1 FROM occ.configurations WHERE namespace_id = $1) AS present",
               [namespaceId],
             )
           ).rows,
-        )[0];
-        return found?.present === true;
-      },
+        ),
       listConfigurationIds: async (namespaceId) =>
         Object.freeze(
           rows(
@@ -2203,50 +2203,42 @@ export class PostgresPlatformState implements PlatformStateStore {
             ).rows,
           ).map((row) => String(row.id)),
         ),
-      hasPresets: async (namespaceId) => {
-        const found = rows(
+      hasPresets: async (namespaceId) =>
+        existsFromRows(
           (
             await client.query(
               "SELECT EXISTS (SELECT 1 FROM occ.presets WHERE namespace_id = $1) AS present",
               [namespaceId],
             )
           ).rows,
-        )[0];
-        return found?.present === true;
-      },
-      hasServiceAccounts: async (namespaceId) => {
-        const found = rows(
+        ),
+      hasServiceAccounts: async (namespaceId) =>
+        existsFromRows(
           (
             await client.query(
               "SELECT EXISTS (SELECT 1 FROM occ.service_accounts WHERE namespace_id = $1) AS present",
               [namespaceId],
             )
           ).rows,
-        )[0];
-        return found?.present === true;
-      },
-      hasSecrets: async (namespaceId) => {
-        const found = rows(
+        ),
+      hasSecrets: async (namespaceId) =>
+        existsFromRows(
           (
             await client.query(
               "SELECT EXISTS (SELECT 1 FROM occ.secrets WHERE namespace_id = $1) AS present",
               [namespaceId],
             )
           ).rows,
-        )[0];
-        return found?.present === true;
-      },
-      hasCredentialSources: async (namespaceId) => {
-        const found = rows(
+        ),
+      hasCredentialSources: async (namespaceId) =>
+        existsFromRows(
           (
             await client.query(
               "SELECT EXISTS (SELECT 1 FROM occ.credential_sources WHERE namespace_id = $1) AS present",
               [namespaceId],
             )
           ).rows,
-        )[0];
-        return found?.present === true;
-      },
+        ),
       transitionNamespaceStatus: async (namespaceId, expected, next) => {
         await this.requireInitialized(context);
         const expectedStatuses = Array.isArray(expected) ? expected : [expected];

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, watch } from "node:fs";
-import { mkdir, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -856,6 +856,670 @@ test("sibling keeps lane defaults", () => {
   assert.ok(summary.files.every((file) => file.cleanup.status === "passed"));
   await assert.rejects(readFile(statePath, "utf8"), { code: "ENOENT" });
 });
+
+// These programs own a small filesystem resource through the real lifecycle hooks.
+// The runner under test controls phase isolation, ordering, cancellation and cleanup.
+async function lifecycleFixture(
+  t,
+  { failure = null, hold = false, descendant = false, running = false } = {},
+) {
+  let paths;
+  // Register before the temporary directory's removal, so records remain readable
+  // if a failed assertion leaves one of this fixture's processes alive.
+  t.after(async () => {
+    if (!paths) {
+      return;
+    }
+    for (const path of [paths.ready, paths.child]) {
+      const record = JSON.parse(await readFile(path, "utf8").catch(() => "null"));
+      if (record && procStat(record.pid)?.pgid === record.pgid) {
+        try {
+          process.kill(record.pid, "SIGKILL");
+        } catch {
+          // The process finished between the ownership check and signal.
+        }
+      }
+    }
+  });
+  const root = await fixture(t);
+  paths = Object.fromEntries(
+    [
+      "state",
+      "results",
+      "trace",
+      "owned",
+      "ready",
+      "release",
+      "child",
+      "cleanupObservation",
+      "preparedSecret",
+      "cleanupSecret",
+      "cleanupCommand",
+      "engine",
+      "running",
+    ].map((name) => [name, join(root, `${name}.json`)]),
+  );
+  paths.engine = join(root, "engine.mjs");
+  paths.attempt = join(root, "attempt");
+  paths.state = join(paths.attempt, "state.json");
+  paths.results = join(paths.attempt, "result.json");
+  const shared = `const paths = ${JSON.stringify(paths)};`;
+  await writeFile(
+    paths.engine,
+    [
+      `#!${process.execPath}`,
+      'import { readFileSync, writeFileSync } from "node:fs";',
+      shared,
+      "writeFileSync(paths.cleanupCommand, JSON.stringify(process.argv.slice(2)));",
+      'const opaque = readFileSync(paths.cleanupSecret, "utf8");',
+      "process.stdout.write(opaque);",
+      "process.stderr.write(opaque);",
+      "process.exitCode = 7;",
+      "",
+    ].join("\n"),
+    { mode: 0o700 },
+  );
+  await writeFile(
+    join(root, "scripts/ci/prepare.mjs"),
+    [
+      'import { spawn } from "node:child_process";',
+      'import { randomBytes } from "node:crypto";',
+      'import { existsSync, readFileSync } from "node:fs";',
+      'import { appendFile, writeFile } from "node:fs/promises";',
+      shared,
+      'const pgid = (pid) => Number(readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\\) /su, "").split(" ")[2]);',
+      "export async function prepareLane({ statePath }) {",
+      '  await appendFile(paths.trace, "prepare:start\\n");',
+      `  const state = { version: 1, repositoryRoot: ${JSON.stringify(await realpath(repositoryRoot))}, lane: "lifecycle", prefix: "openclaw-ci-lifecycle", resources: [], fixture: "owned" };`,
+      `  if (${JSON.stringify(failure)} === "cleanup") {`,
+      '    const opaque = randomBytes(18).toString("hex");',
+      "    await writeFile(paths.cleanupSecret, opaque);",
+      '    state.resources.push({ id: "fixture-image", kind: "image-tag", owner: state.prefix, name: `localhost/openclaw-ci-image-${opaque}` });',
+      "  }",
+      `  if (${JSON.stringify(failure)} === "prepare") {`,
+      '    state.env = { CI_RUNNER_PREPARED_SECRET: `prepared-${randomBytes(18).toString("hex")}` };',
+      "    await writeFile(paths.preparedSecret, state.env.CI_RUNNER_PREPARED_SECRET);",
+      "  }",
+      "  await writeFile(statePath, JSON.stringify(state));",
+      '  await writeFile(paths.owned, "owned resource");',
+      `  if (${descendant}) {`,
+      '    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], { stdio: "ignore" });',
+      "    await writeFile(paths.child, JSON.stringify({ pid: child.pid, pgid: pgid(child.pid) }));",
+      "    child.unref();",
+      "  }",
+      "  await writeFile(paths.ready, JSON.stringify({ pid: process.pid, pgid: pgid(process.pid) }));",
+      `  while (${hold} && !existsSync(paths.release)) {`,
+      "    await new Promise((resolve) => setTimeout(resolve, 20));",
+      "  }",
+      `  if (${JSON.stringify(failure)} === "prepare") throw Object.assign(new Error([process.env.CI_RUNNER_FIXTURE_CREDENTIAL, state.env.CI_RUNNER_PREPARED_SECRET].join(" ")), { args: ["private-lifecycle-argument"], stdout: "private-lifecycle-stdout", stderr: "private-lifecycle-stderr" });`,
+      '  await appendFile(paths.trace, "prepare:end\\n");',
+      "  return { env: {} };",
+      "}",
+      "export async function prepareFile() { return { env: {} }; }",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(root, "scripts/ci/cleanup.mjs"),
+    [
+      'import { appendFile, readFile, rm, writeFile } from "node:fs/promises";',
+      shared,
+      "export async function cleanupState(statePath) {",
+      '  await appendFile(paths.trace, "cleanup\\n");',
+      `  if (${descendant}) {`,
+      '    const child = JSON.parse(await readFile(paths.child, "utf8"));',
+      '    const stat = await readFile(`/proc/${child.pid}/stat`, "utf8").catch((error) => { if (error.code !== "ENOENT") throw error; return null; });',
+      '    const live = stat !== null && !["Z", "X"].includes(stat.replace(/^.*\\) /su, "").split(" ")[0]);',
+      "    await writeFile(paths.cleanupObservation, JSON.stringify({ live }));",
+      "  }",
+      `  if (${JSON.stringify(failure)} === "cleanup") {`,
+      "    process.env.OCC_DOCKER_BIN = paths.engine;",
+      `    const { cleanupState } = await import(${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/cleanup.mjs")).href)});`,
+      "    return cleanupState(statePath);",
+      "  }",
+      "  await rm(paths.owned);",
+      "  await rm(statePath);",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(root, "tests/integration/lifecycle.test.mjs"),
+    [
+      'import assert from "node:assert/strict";',
+      'import { appendFile, rename, writeFile } from "node:fs/promises";',
+      'import { readFileSync } from "node:fs";',
+      'import test from "node:test";',
+      shared,
+      'test("owned lifecycle resource is usable", async () => {',
+      "  // Private lifecycle IPC routing must not reach test subprocesses.",
+      "  assert.equal(process.env.OPENCLAW_CI_COMPLETE_PHASE, undefined);",
+      '  await appendFile(paths.trace, "run\\n");',
+      `  if (${running}) {`,
+      "    const processes = [];",
+      "    let pid = process.pid;",
+      `    while (pid > 1 && pid !== ${process.pid} && processes.length < 16) {`,
+      '      const fields = readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\\) /su, "").trim().split(/\\s+/u);',
+      "      processes.push({ pid, ppid: Number(fields[1]), pgid: Number(fields[2]), start: fields[19] });",
+      "      pid = Number(fields[1]);",
+      "    }",
+      "    await writeFile(`${paths.running}.partial`, JSON.stringify(processes));",
+      "    await rename(`${paths.running}.partial`, paths.running);",
+      "    await new Promise(() => setInterval(() => {}, 1_000));",
+      "  }",
+      `  assert.notEqual(${JSON.stringify(failure)}, "run", process.env.CI_RUNNER_FIXTURE_CREDENTIAL);`,
+      "});",
+      "",
+    ].join("\n"),
+  );
+  await writeRunnerManifest(
+    root,
+    { lanes: { lifecycle: { files: [{ path: "tests/integration/lifecycle.test.mjs" }] } } },
+    "scripts/ci/test-suites.json",
+  );
+  return {
+    root,
+    ...paths,
+    args: [
+      "run",
+      "lifecycle",
+      "--root",
+      root,
+      "--lifecycle",
+      "complete",
+      "--attempt",
+      paths.attempt,
+    ],
+  };
+}
+
+function lifecycleProcess(pid) {
+  try {
+    const fields = readFileSync(`/proc/${pid}/stat`, "utf8")
+      .replace(/^.*\) /su, "")
+      .trim()
+      .split(/\s+/u);
+    return {
+      pid,
+      state: fields[0],
+      ppid: Number(fields[1]),
+      pgid: Number(fields[2]),
+      start: fields[19],
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function lifecycleProcessLive(record) {
+  const current = lifecycleProcess(record.pid);
+  return current?.start === record.start && !["Z", "X"].includes(current.state);
+}
+
+async function startLifecycleFixture(t, options, env = {}) {
+  let fixture;
+  let child;
+  let exit;
+  let stderr = "";
+  let processes = [];
+  // Reap only observed fixture identities, before temporaryDirectory removes the
+  // evidence. Assertions below check termination before this fallback can run.
+  t.after(async () => {
+    for (const record of processes) {
+      if (lifecycleProcessLive(record)) {
+        try {
+          process.kill(record.pid, "SIGKILL");
+        } catch {
+          // The owned process finished after the identity check.
+        }
+      }
+    }
+    if (child && exit === undefined) {
+      child.kill("SIGKILL");
+      await waitFor(() => exit !== undefined, 2_000);
+    }
+  });
+  fixture = await lifecycleFixture(t, options);
+  child = spawn(process.execPath, [runnerPath, ...fixture.args], {
+    cwd: repositoryRoot,
+    env: runnerEnv(env),
+    detached: true,
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
+  child.on("exit", (code, signal) => (exit = { code, signal }));
+  return {
+    ...fixture,
+    child,
+    exit: () => exit,
+    stderr: () => stderr,
+    remember: (records) => {
+      processes = records;
+    },
+  };
+}
+
+test(
+  "complete lifecycle preserves phase failures and performs owned cleanup",
+  { skip: process.platform !== "linux" && "lifecycle process ownership reads /proc" },
+  async (t) => {
+    for (const failure of [null, "prepare", "run", "cleanup"]) {
+      await t.test(failure === null ? "success" : `${failure} failure`, async (t) => {
+        const fixture = await lifecycleFixture(t, { failure, descendant: failure === null });
+        const result = await runAsync(fixture.root, fixture.args, {}, { timeout: 30_000 });
+        assert.equal(result.error, undefined, result.stderr);
+        assert.equal(result.status, failure === null ? 0 : 1, result.stderr);
+        const artifact = await readFile(fixture.results, "utf8");
+        const summary = JSON.parse(artifact);
+        const phases = summary.lifecycle.phases;
+        assert.equal(phases.prepare.status, failure === "prepare" ? "failed" : "passed");
+        assert.equal(phases.run.status, { prepare: "not-run", run: "failed" }[failure] ?? "passed");
+        assert.equal(phases.cleanup.status, failure === "cleanup" ? "failed" : "passed");
+        assert.equal(phases.prepare.terminal, true);
+        assert.equal(phases.cleanup.terminal, true);
+        assert.equal(summary.lifecycle.interrupted, null);
+        assert.equal(summary.lifecycle.status, failure === null ? "passed" : "failed");
+        assert.doesNotMatch(
+          result.stdout + result.stderr + artifact,
+          /secretauthvalue|private-lifecycle-(?:argument|stdout|stderr)/,
+        );
+        if (failure === "prepare") {
+          // This value did not exist in the parent environment: redaction must
+          // include secrets created by preparation and persisted in state.env.
+          const preparedSecret = await readFile(fixture.preparedSecret, "utf8");
+          assert.equal(
+            (result.stdout + result.stderr + artifact).includes(preparedSecret),
+            false,
+            "prepared state secret escaped into lifecycle diagnostics",
+          );
+        }
+        const expected =
+          failure === "prepare"
+            ? ["prepare:start", "cleanup"]
+            : ["prepare:start", "prepare:end", "run", "cleanup"];
+        assert.deepEqual((await readFile(fixture.trace, "utf8")).trim().split("\n"), expected);
+        if (failure === "cleanup") {
+          const opaque = await readFile(fixture.cleanupSecret, "utf8");
+          assert.equal((result.stdout + result.stderr + artifact).includes(opaque), false);
+          assert.deepEqual(JSON.parse(await readFile(fixture.cleanupCommand, "utf8")), [
+            "image",
+            "rm",
+            "-f",
+            `localhost/openclaw-ci-image-${opaque}`,
+          ]);
+          assert.deepEqual(phases.cleanup.error, { code: "phase-failed" });
+          assert.equal(await readFile(fixture.owned, "utf8"), "owned resource");
+        } else {
+          await assert.rejects(readFile(fixture.owned), { code: "ENOENT" });
+          await assert.rejects(readFile(fixture.state), { code: "ENOENT" });
+        }
+        if (failure !== "prepare") {
+          assert.equal(summary.files.length, 1);
+          assert.equal(summary.counts.failed, failure === "run" ? 1 : 0);
+          assert.equal(summary.counts.passed, failure === "run" ? 0 : 1);
+        }
+        if (failure === null) {
+          assert.equal(summary.lifecycle.status, "passed");
+          // A child surviving preparation must be dead before cleanup touches its resource.
+          assert.deepEqual(JSON.parse(await readFile(fixture.cleanupObservation, "utf8")), {
+            live: false,
+          });
+          const child = JSON.parse(await readFile(fixture.child, "utf8"));
+          assert.deepEqual(unkilled([child.pid], child.pgid), []);
+        }
+      });
+    }
+  },
+);
+
+test(
+  "complete lifecycle drains interrupted preparation before cleanup and never starts tests",
+  { skip: process.platform !== "linux" && "lifecycle process ownership reads /proc" },
+  async (t) => {
+    let fixture;
+    let child;
+    let exit;
+    // Release or stop the owned CLI before the fixture directory is removed.
+    t.after(async () => {
+      if (!child || exit !== undefined) {
+        return;
+      }
+      await writeFile(fixture.release, "release");
+      if (!(await waitFor(() => exit !== undefined, 2_000))) {
+        child.kill("SIGKILL");
+        await waitFor(() => exit !== undefined, 2_000);
+      }
+    });
+    fixture = await lifecycleFixture(t, { hold: true });
+    child = spawn(process.execPath, [runnerPath, ...fixture.args], {
+      cwd: repositoryRoot,
+      env: runnerEnv({ CI_RUNNER_DEADLINE_MS: String(Date.now() + 30_000) }),
+      detached: true,
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
+    child.on("exit", (code, signal) => (exit = { code, signal }));
+    assert.equal(
+      await waitFor(() => {
+        try {
+          return JSON.parse(readFileSync(fixture.ready, "utf8")) !== null;
+        } catch {
+          return false;
+        }
+      }, 15_000),
+      true,
+      stderr,
+    );
+    process.kill(child.pid, "SIGTERM");
+    // Release only after the real CLI acknowledges the signal; an arbitrary sleep
+    // could let preparation finish before the cancellation latch is exercised.
+    assert.equal(await waitFor(() => stderr.includes("SIGTERM"), 5_000), true, stderr);
+    assert.equal(await readFile(fixture.trace, "utf8"), "prepare:start\n");
+    await assert.rejects(readFile(fixture.results), { code: "ENOENT" });
+    await writeFile(fixture.release, "release");
+    assert.ok(await waitFor(() => exit !== undefined, 10_000), stderr);
+    assert.deepEqual(exit, { code: 143, signal: null }, stderr);
+    const summary = JSON.parse(await readFile(fixture.results, "utf8"));
+    assert.equal(summary.lifecycle.interrupted, "SIGTERM");
+    assert.equal(summary.lifecycle.phases.prepare.status, "passed");
+    assert.equal(summary.lifecycle.phases.run.status, "not-run");
+    assert.equal(summary.lifecycle.phases.cleanup.status, "passed");
+    assert.equal(await readFile(fixture.trace, "utf8"), "prepare:start\nprepare:end\ncleanup\n");
+    await assert.rejects(readFile(fixture.owned), { code: "ENOENT" });
+  },
+);
+
+test(
+  "complete lifecycle retains owned state when preparation exceeds its deadline",
+  { skip: process.platform !== "linux" && "lifecycle process ownership reads /proc" },
+  async (t) => {
+    const fixture = await lifecycleFixture(t, { hold: true });
+    const result = await runAsync(
+      fixture.root,
+      fixture.args,
+      { CI_RUNNER_DEADLINE_MS: String(Date.now() + 5_000) },
+      { timeout: 30_000 },
+    );
+    assert.equal(result.error, undefined, result.stderr);
+    assert.equal(result.status, 1, result.stderr);
+    const summary = JSON.parse(await readFile(fixture.results, "utf8"));
+    assert.equal(summary.lifecycle.status, "reconciliation-required");
+    assert.equal(summary.lifecycle.phases.prepare.status, "timed-out");
+    assert.equal(summary.lifecycle.phases.run.status, "not-run");
+    assert.equal(summary.lifecycle.phases.cleanup.status, "not-run");
+    assert.equal(await readFile(fixture.trace, "utf8"), "prepare:start\n");
+    assert.equal(await readFile(fixture.owned, "utf8"), "owned resource");
+    assert.equal(JSON.parse(await readFile(fixture.state, "utf8")).fixture, "owned");
+  },
+);
+
+test(
+  "complete lifecycle refuses invalid attempts and legacy output paths before starting phases",
+  { skip: process.platform !== "linux" && "lifecycle process ownership reads /proc" },
+  async (t) => {
+    for (const scenario of [
+      "existing attempt",
+      "missing selected file",
+      "missing parent",
+      "legacy state",
+      "legacy results",
+      "legacy state/result alias",
+    ]) {
+      await t.test(scenario, async (t) => {
+        const fixture = await lifecycleFixture(t);
+        const sentinel = "state belongs to an earlier owner\n";
+        let args = fixture.args;
+        if (scenario === "existing attempt") {
+          await mkdir(fixture.attempt);
+          await writeFile(fixture.state, sentinel);
+        } else if (scenario === "missing selected file") {
+          await rm(join(fixture.root, "tests/integration/lifecycle.test.mjs"));
+        } else if (scenario === "missing parent") {
+          args = [...args.slice(0, -1), join(fixture.root, "missing", "attempt")];
+        } else if (scenario === "legacy state") {
+          args = [...args, "--state", fixture.state];
+        } else if (scenario === "legacy results") {
+          args = [...args, "--results", fixture.results];
+        } else if (scenario === "legacy state/result alias") {
+          // The former result/ownership-marker collision is rejected as a
+          // legacy configuration before either pathname can be written.
+          args = [
+            ...args,
+            "--state",
+            fixture.state,
+            "--results",
+            `${fixture.state}.lifecycle-owner`,
+          ];
+        }
+        const result = await runAsync(fixture.root, args, {}, { timeout: 30_000 });
+        assert.equal(result.error, undefined, result.stderr);
+        assert.equal(result.status, 1, result.stderr);
+        if (scenario === "existing attempt") {
+          assert.equal(await readFile(fixture.state, "utf8"), sentinel);
+        } else {
+          await assert.rejects(stat(fixture.attempt), { code: "ENOENT" });
+        }
+        if (scenario === "missing parent") {
+          await assert.rejects(stat(join(fixture.root, "missing")), { code: "ENOENT" });
+        }
+        await assert.rejects(readFile(fixture.trace), { code: "ENOENT" });
+        await assert.rejects(readFile(fixture.results), { code: "ENOENT" });
+        await assert.rejects(readFile(fixture.owned), { code: "ENOENT" });
+      });
+    }
+  },
+);
+
+test(
+  "complete lifecycle restricts manifest selection before effects",
+  { skip: process.platform !== "linux" && "lifecycle process ownership reads /proc" },
+  async (t) => {
+    for (const scenario of [
+      "relative override",
+      "absolute override",
+      "symlink override",
+      "canonical symlink alias",
+    ]) {
+      await t.test(scenario, async (t) => {
+        const fixture = await lifecycleFixture(t);
+        const canonical = join(fixture.root, "scripts/ci/test-suites.json");
+        const alternate = JSON.parse(await readFile(canonical, "utf8"));
+        // Both definitions select the same real file, but supply different inputs.
+        // Use normal lane selection (no --file) so an override reaches the run owner.
+        alternate.lanes.lifecycle.env = { CI_RUNNER_MANIFEST_SELECTION: "alternate" };
+        await writeJson(join(fixture.root, "alternate.json"), alternate);
+        await symlink("alternate.json", join(fixture.root, "alternate-link.json"));
+        await symlink("scripts/ci/test-suites.json", join(fixture.root, "canonical-link.json"));
+        const paths = {
+          "relative override": "./scripts/../alternate.json",
+          "absolute override": join(fixture.root, "alternate.json"),
+          "symlink override": "alternate-link.json",
+          "canonical symlink alias": "canonical-link.json",
+        };
+        const result = await runAsync(
+          fixture.root,
+          [...fixture.args, "--manifest", paths[scenario]],
+          {},
+          { timeout: 30_000 },
+        );
+        assert.equal(result.error, undefined, result.stderr);
+        assert.equal(result.status, 1, result.stderr);
+        assert.equal(
+          result.stderr.trim(),
+          "Complete lifecycle requires the canonical scripts/ci/test-suites.json manifest under --root.",
+        );
+        for (const path of [fixture.attempt, fixture.trace, fixture.owned, fixture.results]) {
+          await assert.rejects(stat(path), { code: "ENOENT" });
+        }
+
+        if (scenario === "relative override") {
+          // Externally managed run still accepts the alternate definition and uses
+          // its input, rather than silently substituting the canonical manifest.
+          await writeFile(
+            join(fixture.root, "tests/integration/lifecycle.test.mjs"),
+            [
+              'import assert from "node:assert/strict";',
+              'import test from "node:test";',
+              'test("alternate manifest input", () => assert.equal(process.env.CI_RUNNER_MANIFEST_SELECTION, "alternate"));',
+            ].join("\n"),
+          );
+          const ordinary = run(
+            fixture.root,
+            laneArgs(
+              fixture.root,
+              "lifecycle",
+              "state/ordinary.json",
+              "results/ordinary.json",
+              "alternate.json",
+            ),
+          );
+          assert.equal(ordinary.status, 0, ordinary.stderr);
+          const summary = JSON.parse(
+            await readFile(join(fixture.root, "results/ordinary.json"), "utf8"),
+          );
+          assert.equal(summary.counts.passed, 1);
+        }
+      });
+    }
+    for (const form of ["relative", "absolute"]) {
+      await t.test(`explicit canonical ${form} path`, async (t) => {
+        const fixture = await lifecycleFixture(t);
+        const manifest =
+          form === "relative"
+            ? "./scripts/ci/../ci/test-suites.json"
+            : join(fixture.root, "scripts/ci/test-suites.json");
+        const result = await runAsync(
+          fixture.root,
+          [...fixture.args, "--manifest", manifest],
+          {},
+          { timeout: 30_000 },
+        );
+        assert.equal(result.status, 0, result.stderr);
+        const summary = JSON.parse(await readFile(fixture.results, "utf8"));
+        assert.equal(summary.lifecycle.status, "passed");
+        assert.equal(summary.counts.passed, 1);
+        await assert.rejects(stat(fixture.state), { code: "ENOENT" });
+        await assert.rejects(stat(fixture.owned), { code: "ENOENT" });
+      });
+    }
+  },
+);
+
+test(
+  "complete lifecycle losing an attempt claim cannot run phases or clean its winner",
+  { skip: process.platform !== "linux" && "lifecycle process ownership reads /proc" },
+  async (t) => {
+    const winner = await startLifecycleFixture(t, { hold: true });
+    assert.equal(
+      await waitFor(() => {
+        try {
+          return JSON.parse(readFileSync(winner.ready, "utf8")) !== null;
+        } catch {
+          return false;
+        }
+      }, 15_000),
+      true,
+      winner.stderr(),
+    );
+    const state = await readFile(winner.state, "utf8");
+    assert.equal(JSON.parse(state).version, 1);
+    assert.equal((await stat(winner.attempt)).mode & 0o777, 0o700);
+    const owned = await readFile(winner.owned, "utf8");
+    const sentinelPath = join(winner.attempt, "winner-sentinel");
+    await writeFile(sentinelPath, "belongs to the winning attempt");
+    // Both invocations use the same real atomic claim. The loser observes valid
+    // foreign state but has no authority to invoke its cleanup hook.
+    const loser = await runAsync(winner.root, winner.args, {}, { timeout: 10_000 });
+    assert.equal(loser.error, undefined, loser.stderr);
+    assert.equal(loser.status, 1, loser.stderr);
+    assert.equal(await readFile(winner.state, "utf8"), state);
+    assert.equal(await readFile(winner.owned, "utf8"), owned);
+    assert.equal(await readFile(sentinelPath, "utf8"), "belongs to the winning attempt");
+    assert.equal(await readFile(winner.trace, "utf8"), "prepare:start\n");
+    await assert.rejects(readFile(winner.results), { code: "ENOENT" });
+    await writeFile(winner.release, "release");
+    assert.ok(await waitFor(() => winner.exit() !== undefined, 10_000), winner.stderr());
+    assert.deepEqual(winner.exit(), { code: 0, signal: null }, winner.stderr());
+    assert.equal(
+      await readFile(winner.trace, "utf8"),
+      "prepare:start\nprepare:end\nrun\ncleanup\n",
+    );
+    await assert.rejects(readFile(winner.owned), { code: "ENOENT" });
+  },
+);
+
+test(
+  "complete lifecycle owns detached test groups after deadline or coordinator loss",
+  { skip: process.platform !== "linux" && "lifecycle process ownership reads /proc" },
+  async (t) => {
+    for (const cause of ["deadline", "coordinator disconnect"]) {
+      await t.test(cause, async (t) => {
+        const deadline = Date.now() + (cause === "deadline" ? 10_000 : 30_000);
+        const fixture = await startLifecycleFixture(
+          t,
+          { running: true },
+          {
+            CI_RUNNER_DEADLINE_MS: String(deadline),
+            CI_RUNNER_TEST_TIMEOUT_MS: "60000",
+          },
+        );
+        const records = await waitFor(() => {
+          try {
+            return JSON.parse(readFileSync(fixture.running, "utf8"));
+          } catch {
+            return false;
+          }
+        }, 7_000);
+        assert.ok(Array.isArray(records), fixture.stderr());
+        fixture.remember(records);
+        assert.equal(records.at(-1).pid, fixture.child.pid);
+        assert.equal(records.at(-1).ppid, process.pid);
+        const body = records[0];
+        const anchor = records.find((record) => record.pid === body.pgid);
+        assert.ok(anchor, "the detached Node test group has an observed live owner");
+        const phase = records.find((record) => record.pid === anchor.ppid);
+        assert.ok(phase, "the group owner belongs to the lifecycle run phase");
+        assert.equal(phase.ppid, fixture.child.pid);
+        assert.notEqual(body.pgid, lifecycleProcess(process.pid).pgid);
+        assert.ok(records.every(lifecycleProcessLive), "readiness records live fixture processes");
+        if (cause === "deadline") {
+          // Stop only the phase, leaving its detached Node group live. Its own
+          // timer cannot hide a failure of the outer owner's deadline cleanup.
+          process.kill(phase.pid, "SIGSTOP");
+          assert.equal(
+            await waitFor(() => lifecycleProcess(phase.pid)?.state === "T", 1_000),
+            true,
+          );
+          assert.ok(lifecycleProcessLive(body));
+        } else {
+          // Killing the real coordinator closes IPC naturally; no synthetic
+          // disconnect event or replacement handler supplies the behavior.
+          process.kill(fixture.child.pid, "SIGKILL");
+        }
+        assert.equal(
+          await waitFor(() => records.every((record) => !lifecycleProcessLive(record)), 15_000),
+          true,
+          "owned detached test processes must terminate before fixture teardown",
+        );
+        assert.ok(await waitFor(() => fixture.exit() !== undefined, 2_000), fixture.stderr());
+        assert.equal(await readFile(fixture.trace, "utf8"), "prepare:start\nprepare:end\nrun\n");
+        assert.equal(await readFile(fixture.owned, "utf8"), "owned resource");
+        assert.equal(JSON.parse(await readFile(fixture.state, "utf8")).version, 1);
+        if (cause === "deadline") {
+          assert.deepEqual(fixture.exit(), { code: 1, signal: null }, fixture.stderr());
+          const summary = JSON.parse(await readFile(fixture.results, "utf8"));
+          assert.equal(summary.lifecycle.status, "reconciliation-required");
+          assert.equal(summary.lifecycle.phases.run.status, "timed-out");
+          assert.equal(summary.lifecycle.phases.cleanup.status, "not-run");
+        } else {
+          assert.deepEqual(fixture.exit(), { code: null, signal: "SIGKILL" });
+          await assert.rejects(readFile(fixture.results), { code: "ENOENT" });
+        }
+      });
+    }
+  },
+);
 
 test("run resolves lane documents relative to the manifest and preserves ordered case accounting", async (t) => {
   const root = await fixture(t);

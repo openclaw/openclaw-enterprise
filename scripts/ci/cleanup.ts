@@ -152,6 +152,9 @@ function execFile(
           stdio: ["ignore", "pipe", "pipe", "ipc"],
         })
       : spawn(command, args, { ...spawnOptions, stdio: ["ignore", "pipe", "pipe"] });
+    if (processGroup && process.env.OPENCLAW_CI_COMPLETE_PHASE === "1" && process.send) {
+      process.send({ type: "ci-lifecycle-group", id: child.pid });
+    }
     let commandResult: SupervisorResult | undefined;
     if (processGroup) {
       child.on("message", (result) => {
