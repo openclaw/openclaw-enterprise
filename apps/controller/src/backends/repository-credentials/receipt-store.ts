@@ -3,9 +3,10 @@ import type {
   RepositorySessionAttempt,
   PlatformStateStore,
 } from "@openclaw-enterprise/occ";
-import type {
-  RepositoryCredentialBoundSessionInput,
-  SessionStatus,
+import {
+  hasUnsettledCleanupCounts,
+  type RepositoryCredentialBoundSessionInput,
+  type SessionStatus,
 } from "../../drivers/repo/access/service-contracts.ts";
 import { sameBinding } from "../../drivers/repo/access/grant-identity.ts";
 
@@ -206,10 +207,7 @@ export class RepositoryReceiptStore {
         !attempt ||
         !this.acceptsInput(attempt, input) ||
         status.state !== "DISPOSED" ||
-        status.activeUses !== 0 ||
-        status.cleanup.active !== 0 ||
-        status.cleanup.pending !== 0 ||
-        status.cleanup.uncertain !== 0 ||
+        hasUnsettledCleanupCounts(status) ||
         status.cleanup.auxiliaryPending ||
         !sameBinding(status.binding, input.expectedBinding)
       ) {
