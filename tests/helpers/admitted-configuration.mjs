@@ -12,6 +12,7 @@ const noExecPolicy = (exec) => exec.security === undefined && exec.ask === undef
 // preserves. The inline-program rule reads the exec mode filled by the preceding row.
 export const GATEWAY_SECURITY_DEFAULTS = Object.freeze([
   { path: ["tools", "exec", "applyPatch", "workspaceOnly"], value: true, explicit: false },
+  { path: ["session", "dmScope"], value: "per-account-channel-peer", explicit: "main" },
   { path: ["agents", "defaults", "sandbox", "mode"], value: "off", explicit: "all" },
   { path: ["tools", "exec", "mode"], value: "full", explicit: "ask", admits: noExecPolicy },
   {

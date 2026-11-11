@@ -3,6 +3,9 @@
 // OCE has no Gateway approval screen. Exec therefore defaults to "full" without a separate
 // prompt for each inline program. Preserve explicit exec policies, including the older
 // security/ask pair, which an explicit mode would override.
+// Channel direct messages get a session per account, channel and sender. OpenClaw's "main" scope
+// would put every external sender in the conversation browser chat opens (finding 3191). OCE
+// channels accept named accounts (`channels.slack.accounts`), so the scope includes the account.
 // scripts/first-agent-model.mjs runs this module without installed workspace packages: keep it
 // free of imports and of TypeScript syntax that type stripping cannot erase.
 
@@ -21,6 +24,7 @@ const GATEWAY_SECURITY_DEFAULTS: readonly (readonly [
   (parent: ConfigurationObject) => boolean,
 ])[] = [
   [["tools", "exec", "applyPatch", "workspaceOnly"], true, always],
+  [["session", "dmScope"], "per-account-channel-peer", always],
   [["agents", "defaults", "sandbox", "mode"], "off", always],
   [["tools", "exec", "mode"], "full", noExecPolicy],
   [

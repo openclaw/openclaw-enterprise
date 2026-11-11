@@ -1212,8 +1212,9 @@ test("Agent deployment keeps the display name its Configuration sets", async () 
 });
 
 // Every Compute Driver renders the defaults OCE admits. Embedded and dedicated Gateways
-// keep explicit choices about steering, workspace access, and command approvals.
-test("deployment admission keeps apply_patch in the workspace, the sandbox off, exec runnable and steering to the Configuration", async () => {
+// keep explicit choices about steering, workspace access, direct-message sessions, and command
+// approvals.
+test("deployment admission keeps apply_patch in the workspace, the sandbox off, exec runnable, DMs per sender and steering to the Configuration", async () => {
   const { agent, configuration, controller, namespace } = await fixture();
   const codexValues = {
     agents: {
@@ -1251,9 +1252,11 @@ test("deployment admission keeps apply_patch in the workspace, the sandbox off, 
       tools: { exec: { strictInlineEval: true } },
     },
     // Explicit values reach the Gateway as written; inline programs need no approval in an
-    // explicit mode "full" either.
+    // explicit mode "full" either. An explicit dmScope "main" keeps every channel sender in the
+    // main conversation, as that Configuration asks (finding 3191).
     "explicit looser values": {
       messages: { queue: { allowCollaborativeSteering: true } },
+      session: { dmScope: "main" },
       tools: { exec: { mode: "full", applyPatch: { enabled: true, workspaceOnly: false } } },
     },
     // An explicit steering restriction is kept, and so is an exec
