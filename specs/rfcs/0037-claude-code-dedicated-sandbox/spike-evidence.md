@@ -1,3 +1,7 @@
+---
+rfc: index.md
+---
+
 # RFC-0037 spike evidence
 
 Back to the [proposal](index.md).
