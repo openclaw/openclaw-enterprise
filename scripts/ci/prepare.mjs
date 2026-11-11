@@ -29,7 +29,7 @@ import {
   assertRuntimeArtifactTagAvailable,
   loadRuntimeArtifact,
   runtimeArtifactSelection,
-} from "./runtime-artifact.mjs";
+} from "./runtime-artifact.ts";
 import { cleanupResourceIds, deleteOwnedK3dCluster } from "./cleanup.mjs";
 import { withStateLock } from "./state-lock.ts";
 import { runPostgresAdmin } from "./postgres-admin.mjs";
@@ -51,7 +51,7 @@ import {
   preparationIdentity,
   readImageCodexProvenance,
   readRuntimeProvenance,
-} from "./runtime-provenance.mjs";
+} from "./runtime-provenance.ts";
 import { metricsMonitoringImages } from "./metrics-monitoring-images.mjs";
 import {
   prepareRepositoryCredentials,

@@ -173,7 +173,7 @@
     "tests/integration/ci-prepare-k3d.test.mjs": 7500,
     "tests/integration/ci-prepare.test.mjs": 25900,
     "tests/integration/ci-runner.test.mjs": 17900,
-    "tests/integration/cli-release.test.mjs": 4800,
+    "tests/integration/cli-release.test.ts": 4800,
     "tests/integration/client-address.test.mjs": 100,
     "tests/integration/codex-model-probe.test.mjs": 63100,
     "tests/integration/codex-plugin-startup-reads.test.mjs": 15000,

@@ -1,4 +1,4 @@
-import { preparationIdentity, readRuntimeProvenance } from "./runtime-provenance.mjs";
+import { preparationIdentity, readRuntimeProvenance } from "./runtime-provenance.ts";
 import { randomUUID } from "node:crypto";
 import { fork, spawn, spawnSync } from "node:child_process";
 import {

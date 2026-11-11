@@ -34,7 +34,7 @@
     "tests/integration/development-packaging.test.mjs",
     "tests/integration/container-publication-workflow.test.ts",
     "tests/integration/oidc-ca-trust.test.mjs",
-    "tests/integration/ci-runtime-artifact.test.mjs"
+    "tests/integration/ci-runtime-artifact.test.ts"
   ],
   "files": [
     {
@@ -156,7 +156,7 @@
       ]
     },
     {
-      "path": "tests/integration/ci-runtime-artifact.test.mjs",
+      "path": "tests/integration/ci-runtime-artifact.test.ts",
       "expectedTests": [
         "same-run runtime artifact prepares an owned image and supplies a real OCI build context"
       ]

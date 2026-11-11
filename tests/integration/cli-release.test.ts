@@ -21,10 +21,13 @@ test("CLI release builds four installable platform binaries and rejects changed 
   const output = join(directory, "dist");
   // Builds use the toolchain's normal cache (GOCACHEPROG or the setup-go cache on CI, the user
   // cache locally). A fresh cache recompiled the standard library for four platforms every run.
-  const script = resolve("scripts/ci/cli-release.mjs");
+  const script = resolve("scripts/ci/cli-release.ts");
   execFileSync(process.execPath, [script, "package", output], { cwd: source });
 
-  const { version } = JSON.parse(await readFile("package.json", "utf8"));
+  const manifest: unknown = JSON.parse(await readFile("package.json", "utf8"));
+  assert.ok(manifest !== null && typeof manifest === "object" && "version" in manifest);
+  const version = manifest.version;
+  assert.ok(typeof version === "string");
   const names = [
     `occ-v${version}-darwin-amd64`,
     `occ-v${version}-darwin-arm64`,

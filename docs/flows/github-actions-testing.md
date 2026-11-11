@@ -223,7 +223,7 @@ Each attempt uploads `memory-<artifact-prefix>-<lane>-attempt-<run attempt>`
 (about 1 MiB maximum). Sampler and upload errors do not fail the lane.
 Only live summaries survive runner loss.
 
-For `images-packaging`, `scripts/ci/export-image-reconciliation.mjs` retains
+For `images-packaging`, `scripts/ci/export-image-reconciliation.ts` retains
 prepared controller and runtime tag cleanup records when available.
 Planned records do not prove creation; tags confer no authentication or deletion
 authority. Missing state or empty inventories cannot prove cleanup. The runtime-images

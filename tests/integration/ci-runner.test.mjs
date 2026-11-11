@@ -1,5 +1,5 @@
 import { prepareGatewayRouting } from "../../scripts/ci/routing.mjs";
-import { readRuntimeProvenance } from "../../scripts/ci/runtime-provenance.mjs";
+import { readRuntimeProvenance } from "../../scripts/ci/runtime-provenance.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
