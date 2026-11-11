@@ -75,12 +75,11 @@ as the reason Dedicated OpenClaw is disabled.
    newlines. See [initial contents](../agents.md#initial-contents-at-creation) for limits.
 8. Select **Create Agent** to submit Configuration, Secret references, Agent inputs,
    repositories, and workspace files for supported Dedicated provisioning.
-   A step meter follows the job's reported phases.
-   Create opens the first revision's **Deployment** tab for progress and recovery as soon as
-   it can read the deployment. If Create sees job success first, it opens **Configuration**.
-   If a newer deployment takes over while Create is open, Create offers no retry or link.
-   For a failure on Create, follow the linked version's recovery guidance. After a Stop,
-   deploy again when ready.
+   A step meter follows the job's phases; a refused deployment read says details are
+   unavailable. Create opens the first revision's **Deployment** tab as soon as it can read
+   the deployment. If Create sees job success first, it opens **Configuration**. If a newer deployment takes over, Create offers no retry or link.
+   For a failure, follow the linked version's recovery guidance. After a Stop, deploy
+   again when ready.
    Ordinary creation saves Configuration first and opens a draft on **Open draft**,
    without a workload. After deployment, use the
    [workspace editor](../console.md#edit-workspace-files). Pending inputs have no

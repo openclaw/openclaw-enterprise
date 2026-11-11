@@ -425,6 +425,10 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
     },
   ];
   const bodies: ProvisionAgentBody[] = [];
+  // Work slots by request ID and back: a recovery resend reuses its job's slot, so reads
+  // map by slot, not by position in the recorded bodies.
+  const slotByRequestId = new Map<string, number>();
+  const workRequestIds = new Map<number, string>();
   let provisionPosts = 0;
   await page.route(`**/namespaces/${namespace.id}/agents/provision`, async (route, request) => {
     provisionPosts += 1;
@@ -449,9 +453,14 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
       return;
     }
     const body: ProvisionAgentBody = request.postDataJSON();
-    // Like the API, a known request ID returns its existing job.
-    const work =
-      bodies.findIndex((earlier) => earlier.requestId === body.requestId) + 1 || bodies.length + 1;
+    // Like the API, a known request ID returns its existing job; a new ID takes the next
+    // work slot. Slots map by request ID, so a recovery resend reuses its job's slot.
+    let work = slotByRequestId.get(body.requestId);
+    if (work === undefined) {
+      work = slotByRequestId.size + 1;
+      slotByRequestId.set(body.requestId, work);
+    }
+    workRequestIds.set(work, body.requestId);
     bodies.push(body);
     const url = `/namespaces/${namespace.id}/agents/provision/work_${work}`;
     await route.fulfill(
@@ -492,7 +501,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
       json(
         {
           provisioning: {
-            requestId: admission(bodies, 2).requestId,
+            requestId: workRequestIds.get(2),
             workId: "work_2",
             status: "failed",
             phase: "transport",
@@ -525,9 +534,27 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
     }),
   );
   let work4Reads = 0;
+  // After the API refuses work_2's retry, the job has finished: its next read succeeds.
+  let work2Finished = false;
   await page.route(`**/namespaces/${namespace.id}/agents/provision/work_*`, async (route) => {
     const index = Number(new URL(route.request().url()).pathname.split("_").at(-1));
     const url = `/namespaces/${namespace.id}/agents/provision/work_${index}`;
+    if (index === 2 && work2Finished) {
+      await route.fulfill(
+        json({
+          requestId: workRequestIds.get(2),
+          workId: "work_2",
+          status: "succeeded",
+          phase: "handoff",
+          attemptCount: 2,
+          updatedAt,
+          agentId: agentIds[0],
+          revisionId: "rev_00000000-0000-4000-8000-00000000c0d2",
+          url,
+        }),
+      );
+      return;
+    }
     if (index === 4) {
       work4Reads += 1;
       await route.fulfill(
@@ -541,7 +568,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
               }),
             }
           : json({
-              requestId: admission(bodies, 4).requestId,
+              requestId: workRequestIds.get(4),
               workId: "work_4",
               status: "succeeded",
               phase: "handoff",
@@ -559,7 +586,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
     const { agentId: createdAgentId, ...error } = failure;
     await route.fulfill(
       json({
-        requestId: admission(bodies, index).requestId,
+        requestId: workRequestIds.get(index),
         workId: `work_${index}`,
         status: "failed",
         phase: "accepted",
@@ -635,27 +662,41 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
   assert.equal(await retry.isVisible(), true);
   assert.equal(await page.getByLabel("Agent name").isDisabled(), true);
 
-  // A refused retry ends that job: Create Agent submits a new request ID instead of
-  // replaying the failed job.
+  // A refused retry may hide a finished job, so the admitted identity is preserved: the
+  // form stays locked and Create Agent resends the same request ID, which the API answers
+  // with that job instead of admitting a duplicate.
   await retry.click();
   await page
     .getByText(
-      "The provisioning job can no longer be retried. Select Create Agent to submit a new request.",
+      "The provisioning job can no longer be retried. Select Create Agent to resend the same request ID.",
     )
     .waitFor();
   assert.equal(retries, 2);
   assert.equal(await retry.isVisible(), false);
-  await waitForEnabled(page.getByLabel("Agent name"));
+  assert.equal(await page.getByLabel("Agent name").isDisabled(), true);
+  work2Finished = true;
+  // The resend carries the kept request ID and recovers the finished job.
+  await submitPolled(2);
+  await page.waitForURL(new RegExp(`/agents/${agentIds[0]}\\?`));
+  assert.equal(bodies.length, 3);
+  assert.equal(admission(bodies, 3).requestId, available.requestId);
+
+  // A cancelled job cannot be retried; a fresh form submits a new request ID.
+  await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill("Free again");
+  await page.getByLabel("Authentication method").selectOption("codex_pat");
+  await createModelCredentialSecret(page, "model-secret-value-2");
+  await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
   await submitPolled(3);
   await page
     .getByText(
       "Provisioning was cancelled because the Agent was deleted. Select Create Agent to submit a new request.",
     )
     .waitFor();
-  assert.equal(bodies.length, 3);
-  const cancelled = admission(bodies, 3);
+  assert.equal(bodies.length, 4);
+  const cancelled = admission(bodies, 4);
   assert.notEqual(cancelled.requestId, available.requestId);
-  // A cancelled job cannot be retried either; the next submit uses a new request ID.
   assert.equal(await retry.isVisible(), false);
   await waitForEnabled(page.getByLabel("Agent name"));
   await submitPolled(4);
@@ -666,8 +707,8 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
       /^Outcome unknown after provisioning admission\. Retry resumes the accepted provisioning job, or retries it if it failed\. If the API refuses because the job finished, select Create Agent to resend the same request ID\./,
     )
     .waitFor();
-  assert.equal(bodies.length, 4);
-  const finished = admission(bodies, 4);
+  assert.equal(bodies.length, 5);
+  const finished = admission(bodies, 5);
   assert.notEqual(finished.requestId, cancelled.requestId);
   // After an unknown outcome a refused retry may mean the job succeeded, so the request
   // ID is kept and Create Agent recovers the job instead of starting a new one.
@@ -686,8 +727,8 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
   await waitForEnabled(page.getByRole("button", { name: "Start over" }));
   await submitPolled(4, 2);
   await page.waitForURL(new RegExp(`/agents/${agentIds[2]}\\?`));
-  assert.equal(bodies.length, 5);
-  assert.equal(admission(bodies, 5).requestId, finished.requestId);
+  assert.equal(bodies.length, 6);
+  assert.equal(admission(bodies, 6).requestId, finished.requestId);
 });
 
 test("Dedicated Agent creation shows the API's named reason when a provisioning retry is refused", async (t) => {
@@ -707,9 +748,15 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
     "Secret sec_00000000-0000-4000-8000-00000000dead, which this provisioning request uses, was deleted. Submit a new Agent provisioning request.",
   ];
   const requestIds: string[] = [];
+  // After the API refuses a job's retry, that job has finished: its next read succeeds.
+  const finished = new Set<number>();
   await page.route(`**/namespaces/${namespace.id}/agents/provision`, async (route) => {
     const { requestId }: ProvisionAgentBody = route.request().postDataJSON();
-    const jobs = requestIds.push(requestId);
+    // A recovery resend carries a known ID; only a new ID takes the next work slot.
+    if (!requestIds.includes(requestId)) {
+      requestIds.push(requestId);
+    }
+    const jobs = requestIds.indexOf(requestId) + 1;
     await route.fulfill({
       status: 202,
       contentType: "application/json",
@@ -731,6 +778,27 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
   });
   const routeJob = async (route: Route) => {
     const work = Number(new URL(route.request().url()).pathname.split("/")[5]?.split("_")[1]);
+    if (route.request().method() === "GET" && finished.has(work)) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            requestId: requestIds[work - 1],
+            workId: `work_${work}`,
+            status: "succeeded",
+            phase: "handoff",
+            attemptCount: 1,
+            updatedAt,
+            agentId: `agt_00000000-0000-4000-8000-00000000c0d${work}`,
+            revisionId: `rev_00000000-0000-4000-8000-00000000c0d${work}`,
+            url: jobUrl(work),
+          },
+          meta,
+        }),
+      });
+      return;
+    }
     await route.fulfill(
       route.request().method() === "POST"
         ? {
@@ -788,12 +856,26 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
     await retry.click();
     await page
       .getByText(
-        `${expected} Select Create Agent to submit a new request. Request ID: req_00000000-0000-4000-8000-000000000409`,
+        `${expected} Select Create Agent to resend the same request ID. Request ID: req_00000000-0000-4000-8000-000000000409`,
         { exact: true },
       )
       .waitFor();
     assert.equal(await retry.isVisible(), false);
-    await waitForEnabled(page.getByLabel("Agent name"));
+    // The refused retry preserves the admitted identity: the form stays locked for the
+    // resend, which recovers the finished job instead of admitting a duplicate.
+    assert.equal(await page.getByLabel("Agent name").isDisabled(), true);
+    finished.add(index + 1);
+    await runProvisioningPolls(page, () => create.click(), jobUrl(index + 1), 1);
+    await page.waitForURL(/\/agents\/agt_00000000-0000-4000-8000-00000000c0d/);
+    if (index === 0) {
+      // A fresh form takes the second refusal's job.
+      await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
+      await page.getByRole("button", { name: "Start without Preset" }).click();
+      await page.getByLabel("Agent name").fill("Refused retry again");
+      await page.getByLabel("Authentication method").selectOption("codex_pat");
+      await createModelCredentialSecret(page, "model-secret-value-2");
+      await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
+    }
   }
   assert.equal(requestIds.length, 2);
 });
@@ -1308,7 +1390,11 @@ for (const mode of ["unavailable", "refused"] as const) {
     assert.deepEqual(
       await page.evaluate(() => globalThis.provisioningWrites),
       mode === "refused"
-        ? ["Provisioning request accepted.", "Provisioning queued…", "Provisioning Agent…"]
+        ? [
+            "Provisioning request accepted.",
+            "Provisioning queued…",
+            "Provisioning Agent… Deployment details are unavailable.",
+          ]
         : ["Provisioning request accepted.", "Provisioning queued…", POD_QUOTA_FULL],
     );
   });
@@ -1679,7 +1765,9 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
   assert.deepEqual(await page.evaluate(() => globalThis.provisioningWrites), [
     "Provisioning request accepted.",
     "Provisioning queued…",
-    "Provisioning Agent…",
+    // One label across the retries, carrying the checkpoint the job confirmed; a queued
+    // retry keeps it instead of reverting to the bare wording.
+    "Provisioning Agent… Configuration and Agent created.",
   ]);
 });
 

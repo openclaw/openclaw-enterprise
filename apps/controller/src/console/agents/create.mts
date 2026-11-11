@@ -77,6 +77,7 @@ import {
   namespacePath,
   neutralDeploymentOutcome,
   preAdmissionRefusal,
+  PROVISIONING_DIFFERENT_PLAN,
   readFailure,
   rejectionMessage,
 } from "./list.mjs";
@@ -434,6 +435,20 @@ function provisioningStatusText(status: string) {
   }
 }
 
+// The last pre-deployment checkpoint the job confirmed, appended to the status line. The
+// phase names the last phase the worker completed, so a readable phase confirms that
+// checkpoint exists; a missing, unreadable or admitted phase keeps the generic wording.
+function provisioningCheckpointText(job: ProvisioningJob, started: boolean) {
+  const generic = provisioningStatusText(started ? "running" : job.status);
+  const checkpoint =
+    job.phase === "configuration"
+      ? "Configuration and Agent created."
+      : job.phase === "transport"
+        ? "Runtime credentials created."
+        : null;
+  return checkpoint === null ? generic : `${generic} ${checkpoint}`;
+}
+
 // The server's own sentence for a refused request, unless it is a catch-all answer (finding
 // 1609). Among 5xx answers only a 503 whose code the API sends before admission refuses the
 // request (finding 1635); any other 5xx, including a 503 without such a code, leaves its
@@ -586,11 +601,14 @@ async function waitForProvisioning({
       deploymentRefused = readable === false;
     }
     started ||= current.status === "running";
-    // A refusal also clears detail from the earlier job read, which may predate an access change.
+    // A refusal also clears detail from the earlier job read, which may predate an access
+    // change. The line explains the missing detail and keeps following the job (ask 3): the
+    // job's own wait text is dropped, not the job.
     setText(
       status,
-      (deploymentRefused ? null : jobDeploymentWait(current)) ??
-        provisioningStatusText(started ? "running" : current.status),
+      deploymentRefused
+        ? `${provisioningCheckpointText(current, started)} Deployment details are unavailable.`
+        : (jobDeploymentWait(current) ?? provisioningCheckpointText(current, started)),
     );
     progress.report(current);
     await nextPoll;
@@ -3675,7 +3693,9 @@ function renderAgentForm(
       } else if (terminal?.failed) {
         detail = `${error.message} Select Create Agent to submit a new request.`;
       } else if (retryRefused) {
-        detail = `${retryRefusal} Select Create Agent to submit a new request.`;
+        // The refused retry keeps the admitted identity (the job may have finished), so the
+        // resend recovers it instead of admitting a duplicate.
+        detail = `${retryRefusal} Select Create Agent to resend the same request ID.`;
       } else if (error.status === undefined && error.message) {
         detail = error.message;
       } else if (recovering && error.status === 409) {
@@ -3746,8 +3766,13 @@ function renderAgentForm(
         (requestAdmitted && error.status !== 400 && !admissionNameTaken);
       if (!outcomeUnknown && !terminal?.canRetry) {
         provisioningAttempt = null;
-        if (terminal?.failed || retryRefused) {
-          // The failed job keeps this request ID; an edited form needs a new one.
+        // A refused retry may hide a finished job, so recovery resends the admitted identity:
+        // the API returns that job instead of admitting a duplicate. A failed job keeps its
+        // request ID server-side, so an edited form needs a fresh one; so does a resend the
+        // API refuses as a different plan under the kept identity.
+        const differentPlan =
+          error.status === 409 && error.serverMessage === PROVISIONING_DIFFERENT_PLAN;
+        if (terminal?.failed || differentPlan) {
           provisioningRequestId = createClientRequestId();
           requestAdmitted = false;
         }

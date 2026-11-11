@@ -8,6 +8,17 @@ This record preserves the dated changes to the Agent provisioning flow. See the 
 
 ## Changelog
 
+- 2026-10-29: Keep saved provisioning status readable after repository policy changes. Retry still checks current policy.
+
+- 2026-10-27 01:52: Preserve current provisioning lifecycle while integrating required human scope headers. (authoring-run/7761d6fc-94f3-45f2-96c0-171d284aa937 - d56aaf212)
+- 2026-10-25 16:40: Require human ingress scope headers and preserve current provisioning checks while rebasing. (authoring-run/7761d6fc-94f3-45f2-96c0-171d284aa937 - e1c6288c28b8dcc62926e44ba43f8edd945dfcd1)
+- 2026-11-04 16:38: Explain how Create Agent handles malformed provisioning IDs and error messages. (authoring-run/03df9caf-3a28-496d-bb70-f5b0d838a028 - fe3f13a48d54e3ad3a0dc872f6e5313c783c1ed0)
+
+- 2026-11-03 20:51: Document the selected repository policy during queued provisioning and the ordering of Configuration writes. (authoring-run/e4018630-07e7-4296-a60f-d51180ca700d - 43485a276ad6891f42ba7e0016ba8d0b3f574ae4)
+
+- 2026-10-30 07:41: Omit admission-only Gateway catalog lookup from source-backed provisioning status; retain ownership and grant checks. (authoring-run/6e73ff4f-8905-4066-a81d-d629e40296e7 - 429951edfc002c1c6ef98970696e655e03ba3ec7)
+
+- 2026-10-29 19:27: Use the resolved credential source type for Harness admission. (authoring-run/c2280447-76aa-4fbf-8243-bc452c961d6d - d19e41caf)
 - 2026-10-14: Merge current contracts with native provisioning and retained-workspace preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496)
 
 - 2026-10-15 07:00: A later attempt retries a failed unrecorded-Configuration delete. (fix-1399)

@@ -873,10 +873,10 @@ export const createAgentProvisioningScenarios = {
     },
     provisioningNamesDeploymentWait: true,
     description:
-      "Each status read reports the next completed phase, so the meter advances one step at a time: waiting for the worker, creating the Configuration and Agent, creating runtime credentials, then starting the first deployment. The meter pins in the sticky action bar beside Create Agent, so it stays in view without scrolling; the current step's marker spins and completed steps are marked done. No percentage is shown, because the job reports phases, not fractions.",
+      "Each status read reports the next completed phase, so the meter advances one step at a time: waiting for the worker, creating the Configuration and Agent, creating runtime credentials, then starting the first deployment. The meter pins in the sticky action bar beside Create Agent and the status line carries the last confirmed checkpoint. Once the job hands off its revision and the deployment reads back, Create opens that version's Deployment tab, which owns progress from there. No percentage is shown, because the job reports phases, not fractions.",
     steps: [
       "Click Create Agent. The meter appears with the first step current and the elapsed time counting.",
-      "Watch each later step become current as its phase completes; the deployment step then keeps its throbber while the runtime becomes ready.",
+      "Watch each later step become current as its phase completes; at handoff the page opens the new Agent's Deployment tab.",
     ],
     gap: "Simulated UI proof: the phases and deployment wait are fixture answers, not a real controller or cluster.",
   },

@@ -69,7 +69,7 @@ Secret before source-backed provisioning. [Console recovery](../reference/consol
 reuses confirmed sources and safely retries uncertain registration.
 Installation discovery preserves catalog metadata.
 
-Create Agent sends a stable request ID, inline Configuration, Secret and model-auth references, Agent options, and repository bindings with an explicit access profile. The worker grants Secret access, including Slack. After uncertain admission, Retry sends the same ID and inputs without saving Secrets again.
+Create Agent sends a stable request ID, inline Configuration, Secret and model-auth references, Agent options, and repository bindings with an explicit access profile. The worker grants Secret access, including Slack. After uncertain admission, Retry sends the same ID and inputs without saving Secrets again. A refused retry keeps the admitted identity: Create Agent resends the same request ID, and the API returns that job — finished or not — instead of admitting a duplicate; only a failed job, or a resend the API refuses as a different plan, takes a fresh ID.
 
 For a draft, Console creates the Configuration and Agent, then grants access to selected Slack Secrets. Retry credential access keeps that Agent.
 
@@ -138,17 +138,19 @@ before handoff yields `PROVISIONING_CANCELLED` and says which happened. Status r
 Create Agent (`apps/controller/src/console/agents/create.mts:waitForProvisioning`) polls the job.
 When a pending job names its Agent and first revision, Create gives the deployment read one
 second to finish. If it succeeds, Create stops polling and opens that revision's Deployment tab
-for progress, Stop, and recovery. A 403 or 404 keeps Create on the job with generic status and
-ends deployment checks for this attempt. If the read is unavailable or times out, Create shows
-any wait reported by the job and checks the deployment again on the next poll. A 401 sends the
-caller to sign in again. If Create sees job success before opening Deployment, it opens Configuration.
+for progress, Stop, and recovery. A 403 or 404 keeps Create on the job: the line explains that
+deployment details are unavailable, drops the wait text and ends deployment checks for this
+attempt. If the read is unavailable or times out, Create shows any wait reported by the job and
+rechecks the deployment on the next poll. A 401 sends the caller to sign in again. If Create
+sees job success before opening Deployment, it opens Configuration.
 
-While the job is in flight, the step meter
+The status line carries the last pre-deployment checkpoint the job's `phase` confirms, and
+keeps the generic wording when the phase is missing or unreadable. While the job is in flight, the step meter
 (`apps/controller/src/console/agents/provisioning-progress.mts`) pins in the sticky action bar
-beside Create Agent: one step per reported phase, marked done only when the job's own `phase`
-says it completed, an indeterminate throbber on the current step (static under reduced motion)
-and a silent elapsed line. A failure names its step and the job's safe reason in the bar; the
-form's error line keeps the recovery action.
+beside Create Agent: one step per reported phase, marked done only when that `phase` says it
+completed, an indeterminate throbber on the current step (static under reduced motion) and a
+silent elapsed line. A failure names its step and the job's safe reason in the bar; the form's
+error line keeps the recovery action.
 
 The **Latest visible deployment** summary shows the version's recorded wait, even with Deployment
 details folded. A temporary read failure labels a retained wait as last recorded. A refused read
@@ -156,11 +158,10 @@ clears it.
 
 Admission, status, and retry report the stored client `requestId`.
 If absent or different, Create keeps the original request and any confirmed job.
-`meta.requestId` identifies each HTTP request. Leaving stops polling, not provisioning.
-If Create sees that a newer deployment took over, it explains what happened without a retry
-or a link. The job identifies only the deployment that ended. For a failure, follow the linked
-version's recovery guidance. After a Stop, deploy when ready.
-Reconciliation owns startup and activation; later versions use Deploy.
+Leaving stops polling, not provisioning. If a newer deployment took over, Create explains
+what happened without a retry or a link: the job identifies only the deployment that ended.
+For a failure, follow the linked version's recovery guidance. After a Stop, deploy when
+ready. Reconciliation owns startup and activation; later versions use Deploy.
 
 Console parses each reply in
 `apps/controller/src/console/agents/provisioning-job.mts:provisioningJob` before
@@ -169,8 +170,8 @@ recovery. A malformed present `agentId` or `revisionId` makes even a terminal
 `failed` reply unknown. The form keeps the accepted job URL and original request,
 disables Create, and offers Retry without a recovery link. Retry posts to the same
 job's `/retry`. `packages/occ/src/index.ts:retryAgentProvisioning` refuses a changed
-Agent lifecycle or an existing deployment handoff with `409`. After refusal during
-unknown-outcome recovery, the form enables a resend of the original request ID.
+Agent lifecycle or an existing deployment handoff with `409`; the form then resends the
+original request ID.
 
 With valid IDs, a failure whose message is absent or not a nonempty string stays
 confirmed. `ProvisioningFailure` uses “Provisioning did not complete.” while keeping
@@ -232,22 +233,8 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 - 2026-11-10 23:12: Explain how the deployment summary shows a recorded wait at handoff. (authoring-run/8df1087c-23a7-43b9-8a29-537fd34e2d6e - cdd1e754e36d)
 
 - 2026-11-10 19:32: Explain when Create opens the first deployment and how it follows the job if the deployment read fails. (authoring-run/a1d8ded8-9b07-4489-a86a-3cf43cf3891b - fb0fb0f46331)
-- 2026-11-06 18:20: Add the Create Agent step meter, driven by the polled job's status and phase. (feat/create-agent-progress - a18e07d2c)
 - 2026-11-06 19:35: Pin the Create Agent step meter in the sticky action bar; a failure names its step and reason there, and Retry appears only once the request has ended. (feat/create-agent-progress - f13b519d8)
 - 2026-11-06 18:20: Add the Create Agent step meter, driven by the polled job's status and phase. (feat/create-agent-progress - a18e07d2c)
-
-- 2026-11-04 16:38: Explain how Create Agent handles malformed provisioning IDs and error messages. (authoring-run/03df9caf-3a28-496d-bb70-f5b0d838a028 - fe3f13a48d54e3ad3a0dc872f6e5313c783c1ed0)
-
-- 2026-11-03 20:51: Document the selected repository policy during queued provisioning and the ordering of Configuration writes. (authoring-run/e4018630-07e7-4296-a60f-d51180ca700d - 43485a276ad6891f42ba7e0016ba8d0b3f574ae4)
-
-- 2026-10-30 07:41: Omit admission-only Gateway catalog lookup from source-backed provisioning status; retain ownership and grant checks. (authoring-run/6e73ff4f-8905-4066-a81d-d629e40296e7 - 429951edfc002c1c6ef98970696e655e03ba3ec7)
-
-- 2026-10-29 19:27: Use the resolved credential source type for Harness admission. (authoring-run/c2280447-76aa-4fbf-8243-bc452c961d6d - d19e41caf)
-
-- 2026-10-29: Keep saved provisioning status readable after repository policy changes. Retry still checks current policy.
-
-- 2026-10-27 01:52: Preserve current provisioning lifecycle while integrating required human scope headers. (authoring-run/7761d6fc-94f3-45f2-96c0-171d284aa937 - d56aaf212)
-- 2026-10-25 16:40: Require human ingress scope headers and preserve current provisioning checks while rebasing. (authoring-run/7761d6fc-94f3-45f2-96c0-171d284aa937 - e1c6288c28b8dcc62926e44ba43f8edd945dfcd1)
 
 - 2026-10-25: Name Slack's whole `${NAME}` token reading; move older entries to the history page. (finding 2512)
 - 2026-10-25: Check Configuration rules before channel credentials. (finding 2506)
