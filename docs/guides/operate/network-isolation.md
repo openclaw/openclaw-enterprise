@@ -230,11 +230,15 @@ port.
 
 For the running version, select **Run diagnostics for this version** in the
 Console or call the [deployment diagnostics API](../../reference/agents.md#current-runtime-diagnostics).
-Confirm that it returns Gateway checks for that version. A successful direct
-Pod-proxy read verifies one path. A managed control plane can use a different
-source address for the OCC request. For a configured Slack channel, successful
-configuration, authentication, and connectivity checks verify the connection
-without sending a message.
+Look for the Gateway's Slack configuration check. Even **not set up**
+(`NOT_CONFIGURED` in the API) confirms that the Gateway answered for this
+version. If the only Gateway check is `gateway / runtime-status` with state
+`unknown` and code `UNAVAILABLE`, OCC received no Gateway diagnostics. Retry
+once the selected version is running. A successful direct Pod-proxy read verifies
+one path. A managed control plane can use a different source address for the OCC
+request. For a configured Slack channel, successful configuration,
+authentication, and connectivity checks verify the connection without sending a
+message.
 
 ### Public addresses
 
