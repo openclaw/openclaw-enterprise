@@ -4,6 +4,7 @@ import test from "node:test";
 import pg from "pg";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { waitFor } from "../helpers/wait-for.mjs";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
@@ -277,6 +278,109 @@ test(
           await lease?.close().catch(() => undefined);
           await leasePool.end();
           await restarted().initializeSandboxNetworkPolicyCeiling();
+        }
+      },
+    );
+
+    await t.test(
+      "ceiling saves retain their session authority through a concurrent sign-out",
+      async (sessionTest) => {
+        const applicationName = `ceiling-session-${randomUUID()}`;
+        const authenticated = await createPostgresAgentApp(sessionTest, {
+          label: "ceiling-session",
+          authSecret: "ceiling-session-authority-secret-32-characters",
+          poolOptions: { application_name: applicationName },
+        });
+        const initial = (await authenticated.inject("GET", path)).json().data;
+        const rules = initial.rules.length === 0 ? [rule] : [];
+        const mutationCount = async () =>
+          (
+            await authenticated.pool.query(
+              "SELECT count(*)::integer AS count FROM occ.audit_events WHERE action = 'openclaw.installation.sandbox_network_policy_ceiling.update' AND resource_id = $1",
+              [authenticated.controller.installation.id],
+            )
+          ).rows[0].count;
+        const initialAuditCount = await mutationCount();
+        const blocker = await authenticated.pool.connect();
+        let pendingSave: ReturnType<typeof authenticated.inject> | undefined;
+        let pendingSignOut: ReturnType<typeof authenticated.inject> | undefined;
+        let signOutCompleted = false;
+        try {
+          await blocker.query("BEGIN");
+          const blocking = await blocker.query("SELECT pg_backend_pid() AS pid");
+          await blocker.query(
+            "SELECT pg_advisory_xact_lock(hashtextextended('occ.installation.sandbox-network-policy-ceiling', 0))",
+          );
+          pendingSave = authenticated.inject("PUT", path, {
+            expectedVersion: initial.version,
+            rules,
+          });
+          // Establish that the authenticated write reached its ceiling lock before revocation.
+          const writingPid = await waitFor(
+            "the ceiling save to wait on its owner lock",
+            async () => {
+              const waiting = await authenticated.pool.query(
+                "SELECT pid FROM pg_stat_activity WHERE application_name = $1 AND wait_event_type = 'Lock' AND $2::integer = ANY(pg_blocking_pids(pid)) AND query LIKE '%pg_advisory_xact_lock%'",
+                [applicationName, blocking.rows[0].pid],
+              );
+              return waiting.rows[0]?.pid;
+            },
+          );
+          pendingSignOut = authenticated
+            .inject("POST", "/api/auth/sign-out", {})
+            .then((response) => {
+              signOutCompleted = true;
+              return response;
+            });
+          // A valid authority fence makes sign-out wait on this write's session/account hold.
+          // If revocation commits first instead, the blocked save must publish nothing.
+          const revocationOrder = await waitFor(
+            "sign-out to commit or wait for the authorized write",
+            async () => {
+              if (signOutCompleted) {
+                return "revoked" as const;
+              }
+              const waiting = await authenticated.pool.query(
+                "SELECT 1 FROM pg_stat_activity WHERE application_name = $1 AND wait_event_type = 'Lock' AND $2::integer = ANY(pg_blocking_pids(pid))",
+                [applicationName, writingPid],
+              );
+              return waiting.rowCount === 1 ? ("waiting" as const) : undefined;
+            },
+          );
+          await blocker.query("COMMIT");
+          const [saved, signedOut] = await Promise.all([pendingSave, pendingSignOut]);
+          assert.equal(signedOut.statusCode, 200, signedOut.body);
+          const current = await authenticated.controller.getInstallationSandboxNetworkPolicyCeiling(
+            authenticated.principal.id,
+          );
+          if (revocationOrder === "revoked") {
+            assert.ok(
+              [401, 403].includes(saved.statusCode),
+              "a ceiling save cannot commit after its session revocation has committed",
+            );
+            assert.deepEqual(current, initial);
+            assert.equal(await mutationCount(), initialAuditCount);
+          } else {
+            assert.equal(saved.statusCode, 200, saved.body);
+            assert.equal(current.version, initial.version + 1);
+            assert.deepEqual(current.rules, rules);
+            assert.equal(await mutationCount(), initialAuditCount + 1);
+          }
+          assert.equal((await authenticated.inject("GET", path)).statusCode, 401);
+        } finally {
+          await blocker.query("ROLLBACK");
+          blocker.release();
+          await Promise.allSettled([pendingSave, pendingSignOut]);
+          const current = await authenticated.controller.getInstallationSandboxNetworkPolicyCeiling(
+            authenticated.principal.id,
+          );
+          if (JSON.stringify(current.rules) !== JSON.stringify(initial.rules)) {
+            await authenticated.controller.updateInstallationSandboxNetworkPolicyCeiling(
+              authenticated.principal.id,
+              current.version,
+              initial.rules,
+            );
+          }
         }
       },
     );

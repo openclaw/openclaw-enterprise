@@ -11492,13 +11492,14 @@ export class OpenClawController {
     expectedVersion: number,
     rules: readonly SandboxNetworkGrant[],
   ) {
-    await this.authorize(principalId, "administer", {
-      kind: "installation",
-      id: this.installation.id,
-    });
-    validateSandboxNetworkGrants(rules, "/rules");
+    const target = { kind: "installation", id: this.installation.id } as const;
     return this.mutate(async (state) => {
+      await this.holdAuthority(state);
+      await this.authorize(principalId, "administer", target);
+      validateSandboxNetworkGrants(rules, "/rules");
       await state.installations.holdSandboxNetworkPolicyCeiling("exclusive");
+      // The write retains session/IAM authority through COMMIT and rechecks after this wait.
+      await this.authorize(principalId, "administer", target);
       const previous = await this.requireInstallationCeiling(state);
       if (previous.managementMode === "startup") {
         throw new ResourceStateConflictError(
