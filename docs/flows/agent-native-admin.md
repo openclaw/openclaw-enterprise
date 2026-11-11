@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: 2026-11-10
-last_updated_session: authoring-run/37c71df8-7e9c-4224-bc36-e4091f387620
+updated: 2026-11-11
+last_updated_session: authoring-run/28db5867-56df-4145-a1c5-07be7a7874ee
 ---
 
 # Agent Native Admin UI Flow
@@ -207,7 +207,10 @@ handle, resolves the exact Agent and IAM identity, selects `admin` or `chat`,
 and checks the selected version and native configuration.
 Attributable IAM denials receive one audit attempt, including after the
 five-second admission wait, disconnect or shutdown. Timely HTTP denials await
-that append before returning `403`; append failures or admission timeouts return `503`.
+that append before returning `403`; dependency failures, append failures or admission timeouts return `503`.
+A failed session lookup does not redirect to sign-in. HTTP admission refusals
+record a fixed `nativeAdmissionReason` on the request-correlated `http.completed`
+log, without adding request URLs, cookies, identities or error text.
 
 Without a session, a user-activated top-level HTML GET to `/`, `/chat/main` or
 `/chat/main/<session>`, optionally with a trailing slash, gets a `302` to the
@@ -305,6 +308,8 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 09:26: Distinguish native admission dependency failures and record bounded refusal reasons. (authoring-run/28db5867-56df-4145-a1c5-07be7a7874ee - f0b9c002c0577bcc8854913b0eafa5449bd5fbe3)
 
 - 2026-11-10 08:30: Add named chat and stale-version browser recovery. (authoring-run/37c71df8-7e9c-4224-bc36-e4091f387620 - eef0b3f10d0e0f4ed09fd32086c84628c41f1b93)
 
