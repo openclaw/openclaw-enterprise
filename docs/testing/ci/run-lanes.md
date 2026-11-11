@@ -166,7 +166,9 @@ A lane fails if required cases are missing, skipped, marked TODO, or failed, or 
 
 For a failed matrix job, inspect each lane's result artifact to find the failing
 lane. The aggregate reports the parent failure once and requires every selected
-lane's same-source evidence, even when other lanes passed.
+lane's same-source evidence, even when other lanes passed. If the artifact is
+missing, check the **CI lane first failure** annotation when present. It reports
+the first failed or cancelled action step, or `unavailable` when unknown.
 
 Prepare infrastructure on a disposable host. Keep the private state file until cleanup completes:
 
