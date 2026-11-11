@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-11-10
-last_updated_session: authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1
+updated: 2026-11-11
+last_updated_session: authoring-run/04448580-0c4a-4965-8c27-7f586386c885
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -283,13 +283,14 @@ qualification is incomplete.
 
 `apps/controller/src/drivers/sandbox/openshell-gateway-client.ts:createSandbox`
 
-The client sends identity/spec, Workspace scope and one of 16 `request_id` values:
-the revision UUID, then 15 derived IDs. `REQUEST_OUTCOME_UNCERTAIN`,
-`REQUEST_ID_PAYLOAD_MISMATCH` or `REQUEST_REPLAY_UNAVAILABLE` advances only after
-`getSandbox` finds nothing. Unresolved IDs never expire; completed records expire
-after 24 hours. Names are Workspace-unique. At 1,000 live/unresolved records,
-`RESOURCE_EXHAUSTED` becomes `SANDBOX_ADMISSION_LIMIT_REACHED`: preparation waits
-without spending attempts until its deadline; Namespace work retries.
+Send identity/spec, Workspace scope and `request_id` (revision UUID,
+then 15 derived IDs). Names are Workspace-unique. `REQUEST_OUTCOME_UNCERTAIN`, `REQUEST_ID_PAYLOAD_MISMATCH`
+or `REQUEST_REPLAY_UNAVAILABLE` advances only after `getSandbox` confirms absence.
+Completed records expire after 24 hours. Unresolved IDs persist. At 1,000
+live/unresolved records, `SANDBOX_ADMISSION_LIMIT_REACHED` (`RESOURCE_EXHAUSTED`)
+pauses preparation until its deadline without spending attempts. Namespace work retries.
+
+After replay checks, [Worker diagnostics](../reference/drivers/openshell-sandbox.md#createsandbox-admission-failures) explain refusals without changing admission or retries.
 
 Adoption, including `ALREADY_EXISTS`, requires matching Workspace, labels,
 annotations/spec and a Sandbox that is neither stopped nor deleting. Workspace `sandbox:write`
@@ -433,6 +434,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 06:13: Trace attachment refusals. (authoring-run/04448580-0c4a-4965-8c27-7f586386c885 - fef779767c622b30bab45c7a0a94f16fc04f70ab)
 
 - 2026-11-10 20:33: Wait for the native Gateway node binding and rollout before readiness. (authoring-run/01a1b316-df53-7fc0-b967-6e23527300dc - 5b7ee9438050)
 
