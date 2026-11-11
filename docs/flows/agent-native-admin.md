@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
 updated: 2026-11-11
-last_updated_session: authoring-run/6c64aee6-cdeb-442f-b8bf-936f62eb5bc5
+last_updated_session: authoring-run/c70a6869-705d-495a-85dd-f0c603db8196
 ---
 
 # Agent Native Admin UI Flow
@@ -161,7 +161,7 @@ Compute `id` and `implementation` must match `revision.compute`; changing select
 
 Overlong suffixes refuse native targets after authorization; opt-in fails before persistence.
 
-`deriveNativeAdminHost` hashes scoped Agent identity under the configured domain. `nativeAdminTarget` returns `/`. Unknown, deleted or ambiguous hosts fail closed.
+`deriveNativeAdminHost` hashes scoped Agent identity under the configured domain. `nativeAdminTarget` returns `/`.
 
 `nativeAdminGatewayHttpBase` converts `wss:` to `https:`, preserving authority and Agent path, rejecting userinfo, query or hash. Workspace-file WSS is unchanged.
 
@@ -201,10 +201,20 @@ account or grant. See [session limits](../reference/agent-native-admin.md#host-o
 ### 6. OCC intercepts native-host HTTP requests
 
 `apps/controller/src/http/native-admin.ts:interceptNativeAdminHttp`
+`apps/controller/src/http/native-admin.ts:resolveNativeAdminAgentHost`
 
-The `onRequest` hook prevents Agent origins from exposing controller routes.
-It authenticates the session or handle, resolves the Agent and IAM identity,
-selects `admin` or `chat`, and checks version and configuration.
+The `onRequest` hook keeps ordinary controller routes off subdomains of the
+configured Agent domain, except the Console host. This also applies when native
+access is disabled and the domain is retained.
+
+For proxy admission, OCC authenticates the session or handle and resolves the IAM
+identity. Before Agent-reference lookup, OCC requires a normalized hostname of
+`agent-` followed by exactly 32 lowercase hexadecimal characters, a dot, and the
+exact configured domain. Malformed hostnames fail before lookup or proxying.
+For well-formed keys, the same resolver scans Installation Agent references and
+refuses unknown, deleted or ambiguous hosts. OCC selects `admin` or `chat` and
+checks version and configuration.
+
 Attributable IAM denials get one audit attempt, even after the five-second
 admission wait, disconnect or shutdown. Timely denials await that append before
 returning `403`. Classified dependency failures, append failures and admission
@@ -307,6 +317,8 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 21:13: Describe hostname validation before Agent-reference lookup. (authoring-run/c70a6869-705d-495a-85dd-f0c603db8196 - dfbdd7bfa6ccfba7d3d2e6b28f2770988c0cfc0d)
 
 - 2026-11-11 18:51: Integrate admission classification; retain canonical domain refusal. (authoring-run/6c64aee6-cdeb-442f-b8bf-936f62eb5bc5 - d7f1a5a6196545a406f46a616278c123ab970095)
 

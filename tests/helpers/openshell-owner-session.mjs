@@ -10,11 +10,38 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin-host.mjs";
 import { chromium } from "playwright";
-import { launchTrustingBrowser, publishedJSON } from "./dev-up-keycloak.mjs";
+import { publishedJSON } from "./dev-up-keycloak.mjs";
+import { launchTrustingBrowser, preflightTrustingBrowser } from "./trusted-chromium.ts";
 import { enableInstalledOidcNativeAdmin } from "./native-admin-oidc-k3d.mjs";
 import { submitChatTurnWithAssistantProof, waitForStockUi } from "./native-ui-chat.mjs";
 
 const execute = promisify(execFile);
+
+function ownerBrowserRouting(cluster) {
+  const consoleHost = `console.${cluster}.oce.localhost`;
+  const agentDomain = `agents.${cluster}.oce.localhost`;
+  return {
+    consoleHost,
+    agentDomain,
+    hosts: [
+      { host: consoleHost, address: "127.0.0.1" },
+      { host: `*.${agentDomain}`, address: "127.0.0.1" },
+      { host: "*", address: "~NOTFOUND" },
+    ],
+  };
+}
+
+export async function preflightOpenShellOwnerBrowser(root, cluster) {
+  try {
+    await preflightTrustingBrowser(chromium, root, ownerBrowserRouting(cluster).hosts);
+  } catch (error) {
+    throw new Error(
+      "OpenShell browser preflight failed before dev-up. Check certutil, sandbox support for " +
+        "OCC_TEST_BROWSER_EXECUTABLE, and use a short TMPDIR for Chromium sockets.",
+      { cause: error },
+    );
+  }
+}
 
 export async function verifyOpenShellOwnerSession({
   t,
@@ -25,19 +52,14 @@ export async function verifyOpenShellOwnerSession({
   kubectl,
   environment,
 }) {
-  const consoleHost = `console.${cluster}.oce.localhost`;
+  const { consoleHost, agentDomain, hosts } = ownerBrowserRouting(cluster);
   const consoleOrigin = `https://${consoleHost}:${browserPort}`;
-  const agentDomain = `agents.${cluster}.oce.localhost`;
   const scope = `/namespaces/${namespaceId}`;
   // Install the public CA in the fixture browser's private trust database before
   // startup. Chromium verifies both hostnames and manages the HttpOnly cookies.
   const browser = await launchTrustingBrowser(chromium, dirname(stateDirectory), {
     caFiles: [join(stateDirectory, "browser-ca.crt")],
-    hosts: [
-      { host: consoleHost, address: "127.0.0.1" },
-      { host: "*." + agentDomain, address: "127.0.0.1" },
-      { host: "*", address: "~NOTFOUND" },
-    ],
+    hosts,
   });
   t.after(() => browser.close());
   const origins = new Set([consoleOrigin]);
