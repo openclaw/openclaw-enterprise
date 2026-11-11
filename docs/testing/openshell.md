@@ -152,8 +152,8 @@ Build the local CLI first with `pnpm cli:build`.
 ```sh
 # Kubernetes control plane, including a real first-Agent deployment and browser access checks.
 # Install certutil and sandboxed Chromium as in the Kubernetes testing prerequisites.
-# Select an existing authorized Codex service account and its model.
-CODEX_ACCESS_TOKEN_FILE=/secure/oce/codex-token OCC_TEST_OPENAI_MODEL="$MODEL" \
+# Select an existing authorized public OpenAI API key and an accessible model.
+OPENAI_API_KEY_FILE=/secure/oce/openai-api-key OCC_TEST_OPENAI_MODEL="$MODEL" \
 OCC_TEST_DEV_UP_OPENSHELL_REAL=1 \
   node --test tests/integration/dev-up-openshell-k3d-real.test.mjs
 
@@ -167,6 +167,10 @@ reconciliation, and cleanup. Kubernetes also checks browser access and a model
 reply from a real Agent, using an OIDC protocol fixture. Compose uses a
 synthetic credential without calling a model. Both default to Docker. Set
 `OCC_TEST_DEV_UP_CONTAINER_ENGINE=podman` for Podman.
+
+The Kubernetes browser case accepts `OPENAI_API_KEY` or `OPENAI_API_KEY_FILE`.
+It rejects custom model endpoints and native provider overrides; it does not use
+the Codex PAT credential. Separate PAT cases retain their token requirements.
 
 Set `OCC_TEST_NATIVE_BROWSER_RECEIPT` to a new file in an existing directory to
 retain the successful check's source, image identities, and assertion results.
