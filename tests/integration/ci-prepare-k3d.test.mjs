@@ -283,6 +283,14 @@ for (const scenario of [
       if (args[0] === "cp") {
         assert.equal(args[1], `${containerId}:/opt/oce/runtime/provenance.json`);
         if (scenario === "missing") {
+          // A failed acquisition must not accept valid-looking residual content.
+          const state = await commands.readState();
+          const cluster = state.resources.find((resource) => resource.kind === "k3d-cluster");
+          const extraction = state.resources.find((resource) => resource.kind === "image-file");
+          await writeFile(
+            join(cluster.directory, `${extraction.id}.json`),
+            JSON.stringify(metadata),
+          );
           return "exit 1";
         }
         if (args[2] === "-") {

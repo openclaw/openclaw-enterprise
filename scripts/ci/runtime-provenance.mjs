@@ -100,16 +100,14 @@ export async function readImageCodexProvenance({
       resource,
       persist,
     });
-  } catch (error) {
-    if (!(error instanceof ImageFileReadError)) {
-      errors.push(error);
-    }
-  }
-  if (errors.length === 0) {
     try {
       metadata = codexProvenance(JSON.parse(await readFile(destination, "utf8")), platform);
     } catch {
       // Only content read/parse failures are observational.
+    }
+  } catch (error) {
+    if (!(error instanceof ImageFileReadError)) {
+      errors.push(error);
     }
   }
   const outcomes = await Promise.allSettled([
