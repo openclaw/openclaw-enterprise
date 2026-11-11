@@ -73,9 +73,8 @@ checks Google Workspace for OpenClaw and Linear for Codex.
 | `openshell-linear-read` | No                   | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                                                        |
 | `codex-search-config`   | No                   | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.                                      |
 
-The [QA matrix test](../../../tests/integration/qa-matrix-real.test.mjs) implements
-these selections; [scenario selection](../../../tests/helpers/qa-selection.mjs)
-defines their applicability.
+[QA matrix](../../../tests/integration/qa-matrix-real.test.mjs) and
+[scenario selection](../../../tests/helpers/qa-selection.mjs) own these checks.
 
 ### Scenario details
 
@@ -114,9 +113,8 @@ on its own Ubuntu 24.04 VM, with a Landlock check, Docker daemon, cluster, and
 private state. Jobs are named
 `QA advisory (OpenShell / <test-file-basename>)`.
 
-The selection job reads the files in the
-[OpenShell manifest](../../../scripts/ci/test-suites/openshell.json). Each resulting
-job calls `run-ci-lane` with `lane: openshell` and its selected `test-file`. The
+Each [OpenShell manifest](../../../scripts/ci/test-suites/openshell.json) file gets a
+`run-ci-lane` job with `lane: openshell` and its selected `test-file`. The
 `qa-openshell-compose` label selects only the first row below.
 
 | Test (source)                                                                                       | Coverage                                                                                                                                                                         |
@@ -124,6 +122,7 @@ job calls `run-ci-lane` with `lane: openshell` and its selected `test-file`. The
 | [Compose first Agent](../../../tests/integration/local-first-agent-openshell-real.test.mjs)         | Compose control plane with Kubernetes workloads: Agent deployment and reuse, key replacement denial, native redeployment, retained session/files, and required-worker execution. |
 | [OpenShell installation](../../../tests/integration/dev-up-openshell-k3d-real.test.mjs)             | Pinned OpenShell installation with Kubernetes-only and Compose control planes.                                                                                                   |
 | [Gateway tool policy](../../../tests/integration/openshell-gateway-tool-policy-real.test.ts)        | Gateway model tool restrictions, positive administrator controls, and policy replacement.                                                                                        |
+| [Namespace isolation](../../../tests/integration/namespace-driver-openshell-k3d-real.test.ts)       | Bootstrap gateways and Workspaces before Agents, then run Agents in both Namespaces.                                                                                             |
 | [Credential lifecycle](../../../tests/integration/openshell-credentials-real.test.ts)               | Credential routing, replacement, non-model sources, and absence from Agent material.                                                                                             |
 | [Live credential withdrawal](../../../tests/integration/openshell-withdrawal-real.test.ts)          | Credential update, revocation without restarting the Harness, embedded refusal, and authenticated native policy scopes.                                                          |
 | [Upstream outages](../../../tests/integration/openshell-upstream-real.test.ts)                      | Untrusted model TLS, tool outages, and model provider outages with recovery.                                                                                                     |
@@ -371,8 +370,8 @@ time. Unknown or malformed records and other stdout remain private. Commands wit
 protected output produce no timing artifact.
 
 Artifacts expire after seven days. Each OpenShell job reports `scope: focused`
-because it runs one file; complete advisory OpenShell coverage requires all eleven
-to pass.
+because it runs one file; complete advisory OpenShell coverage requires every
+manifest file to pass.
 
 In `matrix.json`, `scope: full` means both installations and presets with the
 `all` scenarios; advisory QA has narrower coverage. See

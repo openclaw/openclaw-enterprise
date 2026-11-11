@@ -2092,6 +2092,42 @@ assert.equal(commands, 0);
       await readFile(join(repositoryRoot, ".github/workflows/qa-advisory.yml"), "utf8"),
     );
     const selector = workflow.jobs.eligibility.steps.find(({ id }) => id === "selection");
+    // Matrix selection must reach the same narrow leaf invocation and isolated evidence.
+    for (const [name, lane, runner, environment, prefix] of [
+      [
+        "openshell",
+        "openshell",
+        "ubuntu-24.04",
+        "integration-qa-pr",
+        "qa-advisory-${{ matrix.shard }}",
+      ],
+      [
+        "local-installation",
+        "dev-up-k3d",
+        "ubuntu-22.04",
+        undefined,
+        "qa-advisory-local-installation-${{ matrix.shard }}",
+      ],
+      [
+        "qa",
+        "qa-matrix",
+        "blacksmith-8vcpu-ubuntu-2404",
+        "integration-qa-pr",
+        "qa-advisory-${{ matrix.installation }}",
+      ],
+    ]) {
+      const job = workflow.jobs[name];
+      const action = job.steps.find((step) => step.uses === "./.github/actions/run-ci-lane");
+      assert.equal(job["runs-on"], runner);
+      assert.equal(job.environment, environment);
+      assert.equal(job.strategy["fail-fast"], false);
+      assert.equal(action.with.lane, lane);
+      assert.equal(
+        action.with["test-file"],
+        name === "qa" ? "tests/integration/qa-matrix-real.test.mjs" : "${{ matrix.file }}",
+      );
+      assert.equal(action.with["artifact-prefix"], prefix);
+    }
     const root = await fixture(t);
     const source = join(root, "source");
     await mkdir(source);
@@ -2132,7 +2168,9 @@ assert.equal(commands, 0);
           .replaceAll("labels.*.name", "labels.map(({ name }) => name)")
           .replace(/\.([a-zA-Z][\w]*-[\w-]+)/g, '["$1"]'),
         {
-          contains: (list, value) => list.includes(value),
+          // Actions string comparisons, including contains, ignore case.
+          contains: (list, value) =>
+            list.some((entry) => entry.toLowerCase() === value.toLowerCase()),
           format: (text, value) => text.replace("{0}", value),
           fromJSON: JSON.parse,
           ...context,
@@ -2200,6 +2238,15 @@ assert.equal(commands, 0);
     };
     const fullCounts = [manifests["dev-up-k3d"].length, 2, manifests.openshell.length, 1];
     for (const [labels, counts, name = "pull_request"] of [
+      [["Full-QA", model], fullCounts],
+      [
+        ["QA-Keycloak-Installation", "qa-OpenClaw-model-ui"],
+        [1, 1, 0, 0],
+      ],
+      [
+        [keycloak, "QA-KEYCLOAK-INSTALLATION"],
+        [1, 0, 0, 0],
+      ],
       [[keycloak], [1, 0, 0, 0]],
       [[model], [0, 1, 0, 0]],
       [[compose], [0, 0, 1, 0]],
@@ -2230,7 +2277,13 @@ assert.equal(commands, 0);
       assert.equal(evaluate(workflow.jobs.eligibility.if, ctx), true);
       const result = await run(payload, name);
       assert.equal(result.status, 0, result.stderr);
-      ctx.needs = { eligibility: { outputs: result.outputs } };
+      const outputs = Object.fromEntries(
+        Object.entries(workflow.jobs.eligibility.outputs).map(([key, expression]) => [
+          key,
+          evaluate(expression, { ...ctx, steps: { selection: { outputs: result.outputs } } }),
+        ]),
+      );
+      ctx.needs = { eligibility: { outputs } };
       const groups = ["local-installation", "qa", "openshell", "oidc-agent-chat"];
       for (const [index, group] of groups.entries()) {
         const job = workflow.jobs[group];
@@ -2240,9 +2293,30 @@ assert.equal(commands, 0);
           const rows = evaluate(job.strategy.matrix, ctx).include;
           assert.equal(rows.length, counts[index], `${name}/${labels}: ${group} rows`);
           if (group === "qa") {
+            for (const matrix of rows) {
+              const rowContext = { ...ctx, matrix };
+              for (const [variable, expected] of [
+                ["OCC_TEST_QA_INSTALLATION", matrix.installation],
+                ["OCC_TEST_QA_PRESET", matrix.preset],
+                ["OCC_TEST_QA_SCENARIOS", matrix.scenarios],
+                ["OCC_TEST_QA_SOURCE_SHA", matrix.focused ? sha : "working-tree"],
+                ["OCC_TEST_BROWSER_EXECUTABLE", matrix.focused ? "/usr/bin/google-chrome" : ""],
+              ]) {
+                assert.equal(evaluate(job.env[variable], rowContext), expected);
+              }
+              for (const [step, expected] of [
+                ["Materialize focused OpenClaw credentials", matrix.focused],
+                ["Materialize selected QA credentials", !matrix.focused],
+              ]) {
+                assert.equal(
+                  evaluate(job.steps.find(({ name }) => name === step).if, rowContext),
+                  expected,
+                );
+              }
+            }
             assert.deepEqual(
               JSON.parse(JSON.stringify(rows)),
-              labels.includes("full-qa") || name !== "pull_request"
+              labels.some((label) => label.toLowerCase() === "full-qa") || name !== "pull_request"
                 ? ["compose", "kubernetes"].map((installation) => ({
                     installation,
                     preset: "Codex",
@@ -2259,6 +2333,7 @@ assert.equal(commands, 0);
                   ],
             );
           } else {
+            assert.equal(new Set(rows.map(({ shard }) => shard)).size, rows.length);
             const expected = group === "openshell" ? manifests.openshell : manifests["dev-up-k3d"];
             assert.deepEqual(
               rows.map(({ file }) => file),
@@ -2274,7 +2349,7 @@ assert.equal(commands, 0);
         }
       }
       assert.match(result.summary, new RegExp(sha));
-      if (name === "pull_request" && !labels.includes("full-qa")) {
+      if (name === "pull_request" && !labels.some((label) => label.toLowerCase() === "full-qa")) {
         assert.match(result.summary, new RegExp(base));
         assert.match(result.summary, new RegExp(head));
       }
@@ -2328,6 +2403,16 @@ assert.equal(commands, 0);
         "Mismatched source must fail before publishing job selection.",
       );
       assert.deepEqual(result.outputs, {});
+    }
+    // Full selection must reject an empty manifest; intentionally unselected groups stay empty.
+    for (const lane of ["openshell", "dev-up-k3d"]) {
+      const path = join(checkout, manifestDirectory, `${lane}.json`);
+      const original = await readFile(path, "utf8");
+      await writeFile(path, JSON.stringify({ ...JSON.parse(original), files: [] }));
+      const result = await run(event(["full-qa"]));
+      assert.notEqual(result.status, 0, `Full selection must not silently drop ${lane}.`);
+      assert.deepEqual(result.outputs, {});
+      await writeFile(path, original);
     }
     const manifestPath = join(checkout, manifestDirectory, "dev-up-k3d.json");
     const manifest = JSON.parse(await readFile(manifestPath, "utf8"));

@@ -73,12 +73,13 @@ jobs:
           import { basename } from 'node:path';
 
           const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
-          const labels = new Set((event.pull_request?.labels ?? []).map(({ name }) => name));
+          const labels = new Set((event.pull_request?.labels ?? []).map(({ name }) => name.toLowerCase()));
           const full = process.env.GITHUB_EVENT_NAME !== 'pull_request' || labels.has('full-qa');
           const focused = !full;
           const select = (lane, requested) => {
             const files = JSON.parse(readFileSync(`scripts/ci/test-suites/${lane}.json`, 'utf8')).files;
             const paths = requested ?? files.map(({ path }) => path);
+            assert(requested !== undefined || paths.length > 0, 'A full selection requires a nonempty manifest.');
             assert(paths.every((path) => files.filter((file) => file.path === path).length === 1), 'Each selected file must occur once in its manifest.');
             assert.equal(new Set(paths).size, paths.length, 'Selected files must be unique.');
             return paths.map((file) => ({ file, shard: basename(file).replace(/\.test\.(mjs|ts)$/, '') }));
