@@ -80,7 +80,7 @@ test("focused first-Agent preparation leaves installation to Local Setup and ref
     assert.deepEqual(state.resources, []);
     assert.equal(prepared.env.OCC_TEST_DATABASE_URL, undefined);
     assert.equal(prepared.env.OCC_TEST_KUBERNETES_CONTEXT, undefined);
-    assert.equal(prepared.env.OCC_TEST_LOCAL_FIRST_AGENT_REAL, "1");
+    assert.equal(prepared.defaults.OCC_TEST_LOCAL_FIRST_AGENT_REAL, "1");
     await assert.rejects(
       prepareFile({
         lane: "openshell",

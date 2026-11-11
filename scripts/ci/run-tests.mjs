@@ -115,7 +115,11 @@ function envObject(value, path, issues) {
 
   const env = {};
   for (const [name, envValue] of Object.entries(value)) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || typeof envValue !== "string") {
+    if (
+      name === "__proto__" ||
+      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ||
+      typeof envValue !== "string"
+    ) {
       issues.push(issue("invalid-manifest", `${path}.${name} must be a string env value`));
       continue;
     }
@@ -780,7 +784,11 @@ function validatePreparedEnv(value) {
     throw new Error("prepareFile env must be an object");
   }
   for (const [name, envValue] of Object.entries(value)) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || typeof envValue !== "string") {
+    if (
+      name === "__proto__" ||
+      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ||
+      typeof envValue !== "string"
+    ) {
       throw new Error("prepareFile env must contain string env values");
     }
   }
@@ -1350,7 +1358,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   const issues = [];
   const relativePath = repoRelativePath(root, file.path);
   const absolutePath = resolveRepoPath(root, file.path, issues, relativePath);
-  const prepared = { env: {}, cleanup: null };
+  const prepared = { defaults: {}, env: {}, cleanup: null };
   let cleanupResult = null;
 
   if (!absolutePath || !(await exists(absolutePath))) {
@@ -1393,6 +1401,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
             prepareLimitMs(),
           ),
         )) ?? {};
+      prepared.defaults = validatePreparedEnv(result.defaults);
       prepared.env = validatePreparedEnv(result.env);
       prepared.cleanup = result.cleanup ?? null;
       if (prepared.cleanup !== null && typeof prepared.cleanup !== "function") {
@@ -1436,6 +1445,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   const env = mergeEnv(
     baseChildEnv([...requiredEnv, ...lane.optionalEnv, ...file.optionalEnv]),
     lane.env,
+    prepared.defaults,
     file.env,
     prepared.env,
   );
