@@ -542,6 +542,8 @@ PY
       --build-arg "OPENCLAW_SOURCE_SHA256=$openclaw_archive_sha256"
       --build-arg "OPENCLAW_BUILD_TIMESTAMP=$openclaw_build_timestamp"
       --tag "$DEFAULT_RUNTIME_IMAGE" .)
+    # Matches internal/occdev's note for the Kubernetes profiles.
+    echo "dev-up: Building the runtime image. With no build cache, this compiles Node.js from source first: 15-60 minutes or longer, depending on CPUs and memory; later builds reuse the cache." >&2
     if ! engine "${runtime_build_args[@]}"; then
       fail "runtime image" "could not build $DEFAULT_RUNTIME_IMAGE" "${engine_command[@]}" "${runtime_build_args[@]}"
     fi
