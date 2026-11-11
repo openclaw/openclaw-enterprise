@@ -45,23 +45,30 @@ Gateway and Harness credential boundary.
 
 ## Verification
 
-| Criteria | Required proof                                                            | Result                                 |
-| -------- | ------------------------------------------------------------------------- | -------------------------------------- |
-| AC-1     | Private chat and real dedicated model response                            | Observed locally                       |
-| AC-2     | API refusal, Secret scope, allowed and denied network probes              | Partial local proof                    |
-| AC-3     | Git replacement, exclusive polling, and rollback                          | Replacement observed, rollback pending |
-| AC-4     | Native commands through Telegram                                          | Pending                                |
-| AC-5     | Inbound and outbound attachment contents                                  | Pending                                |
-| AC-6     | Known voice phrase, transcript, and response                              | Pending                                |
-| AC-7     | Successive visible response states                                        | Pending                                |
-| AC-8     | Automatic Gateway and supervisor recovery, queued reply, intentional stop | Pending                                |
+| Criteria | Required proof                                                            | Result                                                                          |
+| -------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| AC-1     | Private chat and real dedicated model response                            | Observed locally                                                                |
+| AC-2     | API refusal, Secret scope, allowed and denied network probes              | Partial local proof                                                             |
+| AC-3     | Git replacement, exclusive polling, and rollback                          | Replacement observed, rollback pending                                          |
+| AC-4     | Native commands through Telegram                                          | Help, status, reasoning observed; reset pending                                 |
+| AC-5     | Inbound and outbound attachment contents                                  | Operator confirmed document and image; refusal pending                          |
+| AC-6     | Known voice phrase, transcript, and response                              | Local Russian phrase passed; operator confirmed live voice; failure pending     |
+| AC-7     | Successive visible response states                                        | Operator confirmed progressive Telegram text                                    |
+| AC-8     | Automatic Gateway and supervisor recovery, queued reply, intentional stop | Supervisor 64s, Gateway 36s, stopped 67s observed; queued inbound proof pending |
 
 ## Delivery record
 
 Native private chat and deployment isolation were observed in an operator's
 local installation. Loss of the provider supervisor suspended the Harness and
 prevented Telegram channel startup. A manual deployment recovered the Agent and
-delivered its queued message. This does not establish automatic recovery.
+delivered its queued message. Subsequent fault injection observed automatic
+supervisor recovery in about 64 seconds without a new revision and retained a
+workspace marker. Gateway SIGKILL recovered in about 36 seconds within the same
+Pod. Intentional stop held for 67 seconds; the supported deployment restored the
+Agent. A post-restoration model turn and one native Telegram delivery succeeded.
+The marked inbound message test is not yet confirmed. The disposable-cluster
+recovery test is registered in the QA matrix but has not completed its
+credentialed run.
 
 ## Manual Notes
 

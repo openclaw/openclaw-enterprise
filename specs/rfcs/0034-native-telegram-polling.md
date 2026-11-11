@@ -179,9 +179,25 @@ whole-Pod replacement separately; record the latter's fencing requirement.
 The operator's local installation has demonstrated native private chat, a real
 Codex response, Secret projection isolation, proxy admission and denial, and Git
 reconciliation. The change remains outside the shipped upstream release.
-The observed provider-supervisor failure required a manual deployment.
-Commands, attachments, voice, progressive delivery, automatic failure recovery,
-rollback, and complete denial qualification remain incomplete.
+The first observed provider-supervisor failure required a manual deployment.
+On 2026-11-11, `/help`, `/status`, and model reasoning selection worked through
+the native channel. The operator confirmed document read/return, image
+interpretation, incoming voice transcription with a model reply, and progressive
+text delivery in Telegram. Local Russian transcription also passed in a
+network-disabled container. Codex ordinary replies require native automatic
+delivery rather than completed text sent through the message tool.
+
+Later fault injection observed retained supervisor recovery in about 64 seconds
+and Gateway process recovery in about 36 seconds. The revision stayed unchanged
+and a workspace marker survived. An intentionally stopped Agent stayed stopped
+for 67 seconds. After the supported start operation, a real model turn generated
+a control reply and native Telegram reported one successful delivery.
+
+These observations do not establish complete command or attachment coverage.
+Unsupported inputs, missing transcription, outgoing voice, a marked inbound
+message queued during an outage, rollback, and complete denial qualification
+remain incomplete. The new disposable-cluster recovery scenario is registered;
+its complete credentialed run remains outstanding.
 
 The [implementation plan](../plans/0034-native-telegram-polling.md) owns delivery
 steps and acceptance results. Use an operator-authorized bot for live checks.
