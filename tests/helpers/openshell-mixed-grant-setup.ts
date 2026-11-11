@@ -313,7 +313,18 @@ export async function registerMixedGrantProviders({
   gatewayValues.gatewayConfig["openshell.gateway.provider_assertions"] = rows;
   await upgradeGateway(gatewayValues);
   for (const provider of Object.values(selected)) {
-    provider.profile = await gatewayClient.getProviderProfile(workspace, provider.type, signal);
+    provider.profile = await gatewayClient
+      .getProviderProfile(workspace, provider.type, signal)
+      .catch((error: unknown) => {
+        // This RPC preserves some raw gRPC errors; retain only their bounded status.
+        const code = error instanceof Error && "code" in error ? error.code : undefined;
+        if (typeof code !== "number" || !Number.isInteger(code) || code < 1 || code > 16) {
+          throw error;
+        }
+        throw Object.assign(new Error("OpenShell GetProviderProfile failed."), {
+          requestDiagnostic: { method: "GetProviderProfile", grpcStatus: code },
+        });
+      });
     assert.ok(provider.profile);
   }
   return selected;

@@ -376,12 +376,49 @@ test(
         category = "http";
         httpStatus = error.status;
       }
+      // The Gateway client already strips upstream details from these fields.
+      // Numeric command exit codes are not gRPC statuses and must stay private.
+      let method: string | null = null;
+      let grpcStatus: number | null = null;
+      if (error instanceof Error) {
+        const diagnostic =
+          "requestDiagnostic" in error &&
+          typeof error.requestDiagnostic === "object" &&
+          error.requestDiagnostic !== null
+            ? error.requestDiagnostic
+            : undefined;
+        let status: unknown;
+        if (diagnostic && "grpcStatus" in diagnostic) {
+          status = diagnostic.grpcStatus;
+        } else if ("grpcStatus" in error) {
+          status = error.grpcStatus;
+        }
+        if (typeof status === "number" && Number.isInteger(status) && status >= 1 && status <= 16) {
+          grpcStatus = status;
+        }
+        if (
+          diagnostic &&
+          "method" in diagnostic &&
+          typeof diagnostic.method === "string" &&
+          [
+            "GetWorkspace",
+            "GetSandbox",
+            "GetProvider",
+            "GetProviderProfile",
+            "ExecSandbox",
+          ].includes(diagnostic.method)
+        ) {
+          method = diagnostic.method;
+        }
+      }
       const failure = {
         kind: openShellGitRetentionKind,
         event: "mixed-grant-failure",
         phase,
         category,
         httpStatus,
+        method,
+        grpcStatus,
       };
       emitOpenShellGitRetention(t, failure);
       if (terminalFailure) {
@@ -400,6 +437,7 @@ test(
           "tests/helpers/openshell-model-turn.ts",
           "tests/helpers/local-first-agent-stack.mjs",
           "tests/fixtures/repository-credentials/process.mjs",
+          "apps/controller/src/drivers/sandbox/openshell-gateway-client.ts",
         ];
         // Exclude the complete message, including multiline assertion details.
         // Only fixed source paths and numeric coordinates may leave this catch.
@@ -428,9 +466,11 @@ test(
       }
       const location = locations.length ? locations.join(" -> ") : "location unavailable";
       const status = httpStatus === null ? "" : ` HTTP ${httpStatus}`;
+      const gateway =
+        grpcStatus === null ? "" : `; ${method ?? "Gateway request"} gRPC ${grpcStatus}`;
       // eslint-disable-next-line preserve-caught-error -- Preserve only closed diagnostics; the raw cause may contain credentials.
       throw new Error(
-        `Mixed model and Git grant verification failed (${phase}; ${category}${status}; ${location}).`,
+        `Mixed model and Git grant verification failed (${phase}; ${category}${status}${gateway}; ${location}).`,
       );
     }
   },

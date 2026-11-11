@@ -1028,8 +1028,19 @@ test("mixed-grant output closes deployment codes and projects before diagnostics
   const installationUrl = new URL("../helpers/openshell-git-installation.mjs", import.meta.url)
     .href;
   const realTestUrl = new URL("./openshell-mixed-grant-real.test.ts", import.meta.url).href;
-  for (const code of ["PRIVATE_UPPERCASE_CANARY", "SANDBOX_GATEWAY_UNAUTHORIZED"]) {
+  for (const code of ["PRIVATE_UPPERCASE_CANARY", "SANDBOX_GATEWAY_UNAUTHORIZED", null]) {
     const root = await fixture(t);
+    const gatewayFailure = code === null;
+    const message = gatewayFailure
+      ? "PRIVATE_RPC_MESSAGE_CANARY"
+      : `MIXED_GRANT_DEPLOYMENT_FAILED: ${code}; selected revision failed before provider registration`;
+    const fields = gatewayFailure
+      ? {
+          requestDiagnostic: { method: "GetProviderProfile", grpcStatus: 14 },
+          details: "PRIVATE_RPC_DETAILS_CANARY",
+        }
+      : { code: 14 };
+    const failureSource = `export function createOpenShellGitInstallation() { throw Object.assign(new Error(${JSON.stringify(message)}), ${JSON.stringify(fields)}); }`;
     // Inject only the upstream failure. The real test catch, diagnostic emitter,
     // reporter and retained-result collector all execute unchanged.
     await writeFile(
@@ -1041,14 +1052,14 @@ import { emitOpenShellGitRetention } from ${JSON.stringify(retentionUrl)};
 registerHooks({ load(url, context, nextLoad) {
   if (url === ${JSON.stringify(installationUrl)}) return {
     format: "module", shortCircuit: true,
-    source: 'export function createOpenShellGitInstallation() { throw new Error("MIXED_GRANT_DEPLOYMENT_FAILED: ${code}; selected revision failed before provider registration"); }'
+    source: ${JSON.stringify(failureSource)}
   };
   return nextLoad(url, context);
 }});
 test("closed diagnostic projection", (t) => {
   const common = { kind: "openshell-git-retention", phase: "installation", extra: "PRIVATE_FIELD_CANARY" };
   emitOpenShellGitRetention(t, { ...common, event: "mixed-grant-setup", phase: "verification", operation: "model before Git" });
-  emitOpenShellGitRetention(t, { ...common, event: "mixed-grant-failure", category: "operation", httpStatus: null });
+  emitOpenShellGitRetention(t, { ...common, event: "mixed-grant-failure", category: "operation", httpStatus: null, method: "GetProviderProfile", grpcStatus: 14, details: "PRIVATE_RPC_DETAILS_CANARY" });
   // Existing events still supply the original identity for collector-side hashing.
   emitOpenShellGitRetention(t, { kind: common.kind, event: "mixed-grant-git-fetched", revisionId: "revision-identity", sha: "a".repeat(40), gitIssued: 1, gitRequests: 2 });
 });
@@ -1067,7 +1078,9 @@ await import(${JSON.stringify(realTestUrl)});
     const expectedCode = code === "PRIVATE_UPPERCASE_CANARY" ? "UNKNOWN_DEPLOYMENT_FAILURE" : code;
     assert.ok(
       (direct.stdout + direct.stderr).includes(
-        `MIXED_GRANT_DEPLOYMENT_FAILED: ${expectedCode}; verification phase installation.`,
+        gatewayFailure
+          ? "GetProviderProfile gRPC 14"
+          : `MIXED_GRANT_DEPLOYMENT_FAILED: ${expectedCode}; verification phase installation.`,
       ),
     );
     const result = run(
@@ -1078,7 +1091,7 @@ await import(${JSON.stringify(realTestUrl)});
     const raw = await readFile(join(root, "results/closed.json"), "utf8");
     assert.doesNotMatch(
       direct.stdout + direct.stderr + result.stdout + result.stderr + raw,
-      /PRIVATE_(UPPERCASE|FIELD)_CANARY/,
+      /PRIVATE_(UPPERCASE|FIELD|RPC_MESSAGE|RPC_DETAILS)_CANARY/,
     );
     const receipts = JSON.parse(raw).files[0].measurements;
     assert.deepEqual(receipts, [
@@ -1094,6 +1107,8 @@ await import(${JSON.stringify(realTestUrl)});
         phase: "installation",
         category: "operation",
         httpStatus: null,
+        method: "GetProviderProfile",
+        grpcStatus: 14,
       },
       {
         kind: "openshell-git-retention",
@@ -1107,11 +1122,15 @@ await import(${JSON.stringify(realTestUrl)});
         kind: "openshell-git-retention",
         event: "mixed-grant-failure",
         phase: "installation",
-        category: "deployment",
+        category: gatewayFailure ? "operation" : "deployment",
         httpStatus: null,
+        method: gatewayFailure ? "GetProviderProfile" : null,
+        grpcStatus: gatewayFailure ? 14 : null,
       },
     ]);
-    assert.ok(raw.includes(expectedCode));
+    if (!gatewayFailure) {
+      assert.ok(raw.includes(expectedCode));
+    }
   }
 });
 
@@ -7161,7 +7180,24 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       gitIssued: 1,
     },
   ];
+  const mixedGrantFailures = [
+    { method: null, grpcStatus: null },
+    { method: "GetProviderProfile", grpcStatus: 14 },
+    { method: null, grpcStatus: 14 },
+    { method: "GetWorkspace", grpcStatus: null },
+  ].map((diagnostic) => ({
+    event: "mixed-grant-failure",
+    phase: "deployment",
+    category: "operation",
+    httpStatus: null,
+    ...diagnostic,
+  }));
   const retentionReceipts = [
+    ...mixedGrantFailures.map((receipt) => ({
+      ...receipt,
+      message: forbidden,
+      details: forbidden,
+    })),
     ...mixedGrant.map((receipt) => ({ ...receipt, credential: forbidden, output: forbidden })),
     ...finiteRemoval.map((receipt) => ({ ...receipt, credential: forbidden, output: forbidden })),
     ...withdrawalWitnesses.map((receipt) => ({ ...receipt, error: forbidden, token: forbidden })),
@@ -7274,6 +7310,12 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     { event: "cleanup", outcome: "passed" },
   ].map((value) => ({ kind: retentionKind, ...value, unexpected: forbidden }));
   const invalidRetention = [
+    // Diagnostic metadata must stay closed even when the supplier reports an error.
+    ...[undefined, forbidden, 14].map((method) => ({ ...mixedGrantFailures[0], method })),
+    ...[undefined, 0, 17, 1.5, "14"].map((grpcStatus) => ({
+      ...mixedGrantFailures[0],
+      grpcStatus,
+    })),
     // Each boundary must have a complete receipt. A success-shaped prefix is
     // not evidence of a model turn, Git request, or withdrawal denial.
     ...mixedGrant.flatMap((receipt) =>
@@ -7885,6 +7927,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   assert.deepEqual(
     receipts.filter(({ event }) => event.startsWith("mixed-grant-")),
     [
+      ...mixedGrantFailures.map((receipt) => ({ kind: retentionKind, ...receipt })),
       ...[0, 128].map((exitCode) => ({
         kind: retentionKind,
         event: "mixed-grant-agent-git-tool",

@@ -356,6 +356,24 @@ const policyDenial = {
 };
 const events = {
   "mixed-grant-failure": {
+    method: [
+      "method",
+      choice(
+        null,
+        "GetWorkspace",
+        "GetSandbox",
+        "GetProvider",
+        "GetProviderProfile",
+        "ExecSandbox",
+      ),
+    ],
+    grpcStatus: [
+      "grpcStatus",
+      (value) =>
+        value === null || (Number.isInteger(value) && value >= 1 && value <= 16)
+          ? value
+          : undefined,
+    ],
     phase: ["phase", choice("installation", "deployment", ...openShellVerificationOperations)],
     category: [
       "category",
