@@ -3983,7 +3983,14 @@ if (args[0] === "pull") {
          assert.equal(migration.pathname, application.pathname);
          await prepared.cleanup();`,
         statePath,
-        { ...baseEnv, ...env },
+        {
+          ...baseEnv,
+          ...env,
+          // Main's stock scratch case retains its PAT path; the candidate refresh uses API keys.
+          ...(name === "stock"
+            ? { OPENAI_API_KEY: "", CODEX_ACCESS_TOKEN: "synthetic-fixture-credential" }
+            : {}),
+        },
         10_000,
       );
       assert.equal(result.status, 0, result.stderr);
