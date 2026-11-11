@@ -291,8 +291,9 @@ and model. Explicit flags override inherited and prepared settings. Native helpe
 bootstrap and its selected native test use `OPENAI_API_KEY`, not `CODEX_ACCESS_TOKEN`.
 Full OpenShell lane preparation still requires a token for its dedicated PAT cases.
 The upstream-outage test defaults to `https://api.openai.com/v1`. Custom endpoints
-and native provider files require a focused compatible test; whole-lane preparation
-rejects them before setup.
+require focused upstream, refresh, withdrawal, or Gateway tool-policy tests;
+native provider files require a guided first-Agent test. Whole-lane preparation
+rejects either override before setup.
 
 Both commands use the test-only bridge. `test` requires an authorized
 `OPENAI_API_KEY`; `demo` prompts for one if it is not set. `demo` leaves the

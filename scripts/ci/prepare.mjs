@@ -938,6 +938,12 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
   if (prepare.k3d && !isOpenShellLane(name) && effectiveEnv.OPENCLAW_CI_K3S_IMAGE) {
     assertImmutableImageReference(effectiveEnv.OPENCLAW_CI_K3S_IMAGE, "OPENCLAW_CI_K3S_IMAGE");
   }
+  const openShellApiKeyWorkflowFile = [
+    "tests/integration/openshell-upstream-real.test.ts",
+    "tests/integration/openshell-refresh-real.test.ts",
+    "tests/integration/openshell-withdrawal-real.test.ts",
+    "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+  ].includes(file);
   const openShellGatewayFile = [
     "tests/integration/namespace-driver-openshell-k3d-real.test.ts",
     "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
@@ -956,7 +962,7 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
     }
     const customEndpoint =
       parsedEndpoint && parsedEndpoint.href.replace(/\/$/u, "") !== "https://api.openai.com/v1";
-    if (customEndpoint && !openShellGatewayFile) {
+    if (customEndpoint && !openShellApiKeyWorkflowFile) {
       throw new Error("Custom OpenShell model endpoints require a focused gateway workflow file.");
     }
     if (effectiveEnv.OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE) {
@@ -975,11 +981,7 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
     isOpenShellLane(name) &&
     (name === "openshell-installers" ||
       isOpenShellInstallerFile(file) ||
-      [
-        "tests/integration/openshell-refresh-real.test.ts",
-        "tests/integration/openshell-withdrawal-real.test.ts",
-        "tests/integration/openshell-gateway-tool-policy-real.test.ts",
-      ].includes(file) ||
+      openShellApiKeyWorkflowFile ||
       (effectiveEnv.OCC_TEST_OPENSHELL_HARNESS === "openclaw" &&
         (openShellGatewayFile ||
           (file === undefined && effectiveEnv.OCC_K3D_HARNESS === "openclaw"))) ||

@@ -3640,6 +3640,18 @@ if (args[0] === "pull") {
         error: /Custom native providers require a focused first-Agent file/u,
       },
     );
+    for (const file of [
+      "tests/integration/namespace-driver-openshell-k3d-real.test.ts",
+      "tests/integration/openshell-credentials-real.test.ts",
+      "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+    ]) {
+      cases.push({
+        file,
+        endpoint: "https://custom-model.example.test/v1",
+        pat: true,
+        error: /Custom OpenShell model endpoints require a focused gateway workflow file/u,
+      });
+    }
     for (const file of [undefined, upstream]) {
       cases.push({
         file,
@@ -3681,9 +3693,8 @@ if (args[0] === "pull") {
             OCC_TEST_OPENAI_MODEL: "fixture-model",
             OCC_TEST_OPENSHELL_HARNESS: "codex",
             OCC_TEST_OPENSHELL_MODEL_BASE_URL: value.endpoint ?? "",
-            OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE: value.native
-              ? join(root, "custom-provider.json")
-              : "",
+            OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE:
+              value.native === true ? join(root, "custom-provider.json") : value.native || "",
             OCC_TEST_KUBERNETES_GATEWAY_IMAGE: mutableImage,
           },
           10_000,
