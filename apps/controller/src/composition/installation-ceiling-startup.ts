@@ -50,7 +50,20 @@ export async function acquireInstallationCeilingStartup(
     }
     released = true;
     try {
-      await client.query("SELECT pg_advisory_unlock_all()");
+      // A lost backend has already released its session locks. Querying it during close
+      // would mask an earlier failure; discard it instead. A loss during unlock is the
+      // same outcome, while an unexpected error from a healthy backend stays visible.
+      if (!lost) {
+        try {
+          await client.query("SELECT pg_advisory_unlock_all()");
+        } catch (error) {
+          const connectionLost = lost;
+          lost = true;
+          if (!connectionLost) {
+            throw error;
+          }
+        }
+      }
     } finally {
       client.removeListener?.("error", onError);
       client.release(lost);

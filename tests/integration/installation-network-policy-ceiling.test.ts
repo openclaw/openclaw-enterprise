@@ -353,6 +353,11 @@ test(
             guarded.getInstallationSandboxNetworkPolicyCeiling(principal.id),
             /startup ownership is unavailable/,
           );
+          await assert.doesNotReject(
+            lease.close(),
+            "closing a lost ownership client must discard it without querying it",
+          );
+          await assert.doesNotReject(lease.close(), "ownership cleanup remains idempotent");
         } finally {
           await lease?.close().catch(() => undefined);
           await leasePool.end();

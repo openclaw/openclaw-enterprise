@@ -68,6 +68,7 @@ test("the singleton Namespace HTTP route enforces internal admission and exact I
     },
     { state: new InMemoryPlatformState({ auditSink }) },
   );
+  await controller.initializeSandboxNetworkPolicyCeiling(authFixture.seed.principal.id);
   controller.registerDriver(iam);
   controller.selectDriver("iam", iam.id);
   // Persist both real tenants so authorization is enforced by OCC, not a test-only route filter.
@@ -181,6 +182,7 @@ test("IAM decision reasons must be strings before an installation-admin read", a
     name: "Decision validation",
     createdAt: "2026-08-19T00:00:00.000Z",
   });
+  await controller.initializeSandboxNetworkPolicyCeiling(authFixture.seed.principal.id);
   controller.registerDriver(iam);
   controller.selectDriver("iam", iam.id);
   let protectedReads = 0;

@@ -3233,9 +3233,6 @@ Get the Installation network policy ceiling
 | `401` | The caller did not provide valid credentials. |
 | `403` | The caller is not allowed to perform this operation. |
 | `404` | The requested platform resource was not found. |
-| `409` | The requested operation conflicts with the current resource state. |
-| `413` | The request body exceeds the permitted size. |
-| `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
 | `503` | A required dependency is unavailable. |
 

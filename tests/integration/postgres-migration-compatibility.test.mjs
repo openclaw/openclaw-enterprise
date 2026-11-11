@@ -2880,6 +2880,7 @@ test(
     for (const [prefix, history] of [
       [74, "preHumanAuthenticationResults"],
       [75, "preNativeBrowserAccess"],
+      [76, "preInstallationNetworkPolicyCeiling"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -2891,6 +2892,9 @@ test(
         ok: true,
         history,
       });
+      context.diagnostic(
+        `Upgraded restore prefix ${prefix}: ${catalogDigest(await migrationCatalog(restored.migrator))}`,
+      );
       assert.deepEqual(await runHistoryMigration(restored, "production", "--check"), {
         ok: true,
         history: "completed",

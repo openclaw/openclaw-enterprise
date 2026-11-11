@@ -399,7 +399,7 @@ export const occApiRoutes = [
     tags: ["Installation"],
     schema: {
       querystring: EmptyQuery,
-      response: { 200: InstallationSandboxNetworkPolicyCeilingResponse, ...createErrors },
+      response: { 200: InstallationSandboxNetworkPolicyCeilingResponse, ...readErrors },
     },
   },
   {

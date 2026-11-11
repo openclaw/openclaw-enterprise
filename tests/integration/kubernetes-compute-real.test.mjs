@@ -204,6 +204,15 @@ test(
       authBaseURL,
       nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
     };
+    // Complete the actual API startup owner path before testing worker preflight. A worker
+    // requires the saved ceiling and never seeds it, including in this real-cluster fixture.
+    const initializedApi = await composePostgresDevelopment(developmentConfig, await loadDrivers());
+    try {
+      await initializedApi.ready();
+    } finally {
+      await initializedApi.close();
+    }
+
     // Both supported startup callers must reject old storage before admitting
     // API writes or claiming work, even when running the development profile.
     // Until it is gone, this Namespace fails every single-cluster Compute preflight in
