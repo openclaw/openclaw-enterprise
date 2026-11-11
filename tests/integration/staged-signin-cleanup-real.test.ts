@@ -199,7 +199,7 @@ async function fixture(
         throw error;
       });
       if (state) {
-        assert.ok(cleanupAuthority.identity, "no acknowledged cluster cleanup authority");
+        assert.ok(cleanupAuthority, "no acknowledged cluster cleanup authority");
         assert.equal(
           hash(state),
           cleanupAuthority.stateSha256,
