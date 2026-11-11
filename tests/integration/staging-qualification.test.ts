@@ -24,7 +24,16 @@ test("staging runtime lane preserves the reviewed Codex version in its child", c
 test("staging pair pull binds sealed images and cleans failed pulls", (t) =>
   checkWorkflowCommand(t, true));
 
-async function checkWorkflowCommand(t: TestContext, pairPullOnly = false) {
+for (const change of ["compatible", "controller", "catalog", "runtime"] as const) {
+  test(`staging sign-in preparation checks the current ${change} source pair`, (t) =>
+    checkWorkflowCommand(t, true, change));
+}
+
+async function checkWorkflowCommand(
+  t: TestContext,
+  pairPullOnly = false,
+  signin?: "compatible" | "controller" | "catalog" | "runtime",
+) {
   const directory = await mkdtemp(join(process.cwd(), ".staging-command-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const root = join(directory, "trusted-source");
@@ -49,6 +58,15 @@ async function checkWorkflowCommand(t: TestContext, pairPullOnly = false) {
     );
     return (await git(["rev-parse", "HEAD"], cwd)).stdout.trim();
   };
+  if (signin) {
+    // Use real repository objects so the fixed reader/catalog projection is
+    // checked by the production planner, without replacing Git decisions.
+    await execute("git", ["clone", "--shared", "--quiet", process.cwd(), root]);
+    await git(["checkout", "--quiet", "b30d3def3d6c1751ea8d9a57b70dd3157c385eab"]);
+    await cp("scripts/ci", join(root, "scripts/ci"), { recursive: true });
+    await cp("scripts/upgrade-image-identity.py", join(root, "scripts/upgrade-image-identity.py"));
+    await symlink(resolve("node_modules"), join(root, "node_modules"), "dir");
+  }
   const recipePath = join(root, "deploy/runtime/Dockerfile");
   await mkdir(dirname(recipePath), { recursive: true });
   const recipe = await readFile("deploy/runtime/Dockerfile", "utf8");
@@ -56,8 +74,10 @@ async function checkWorkflowCommand(t: TestContext, pairPullOnly = false) {
   assert.ok(nodeBaseImage);
   // All executable files remain the current trusted implementation. Only the
   // literal Dockerfile has fixture history; none of that history is executed.
-  await symlink(resolve("scripts"), join(root, "scripts"), "dir");
-  await symlink(resolve("tests"), join(root, "tests"), "dir");
+  if (!signin) {
+    await symlink(resolve("scripts"), join(root, "scripts"), "dir");
+    await symlink(resolve("tests"), join(root, "tests"), "dir");
+  }
   await writeFile(
     recipePath,
     recipe.replace("OPENAI_CODEX_VERSION=0.164.0", "OPENAI_CODEX_VERSION=0.160.0"),
@@ -75,8 +95,20 @@ async function checkWorkflowCommand(t: TestContext, pairPullOnly = false) {
   await symlink("missing-recipe", recipePath);
   const symlinkSource = await commit();
   await rm(recipePath);
-  await writeFile(recipePath, recipe);
+  await writeFile(
+    recipePath,
+    signin === "runtime" ? recipe + "\n# Different release recipe\n" : recipe,
+  );
   const source = await commit();
+  if (signin === "runtime") {
+    await writeFile(recipePath, recipe);
+  }
+  if (signin === "controller" || signin === "catalog") {
+    // A changed production tree cannot inherit the reviewed reader contract.
+    const file =
+      signin === "controller" ? "apps/controller/unreviewed.txt" : "migrations/unreviewed.sql";
+    await writeFile(join(root, file), "Unreviewed input\n");
+  }
   const unrelated = (
     await git([
       "-c",
@@ -94,11 +126,15 @@ async function checkWorkflowCommand(t: TestContext, pairPullOnly = false) {
   await git(["update-ref", "refs/remotes/origin/main", workflowSha]);
   // Advance main only on the remote so the runner starts without this commit.
   const remote = join(directory, "official-origin");
-  await git(["clone", "--quiet", "--no-local", root, remote]);
-  await git(["config", "uploadpack.allowFilter", "true"], remote);
-  await writeFile(join(remote, "workflow-marker"), "Main advanced after checkout\n");
-  const newerMain = await commit(remote);
-  const newerTree = (await git(["rev-parse", "HEAD^{tree}"], remote)).stdout.trim();
+  let newerMain = workflowSha;
+  let newerTree = (await git(["rev-parse", "HEAD^{tree}"])).stdout.trim();
+  if (!signin) {
+    await git(["clone", "--quiet", "--no-local", root, remote]);
+    await git(["config", "uploadpack.allowFilter", "true"], remote);
+    await writeFile(join(remote, "workflow-marker"), "Main advanced after checkout\n");
+    newerMain = await commit(remote);
+    newerTree = (await git(["rev-parse", "HEAD^{tree}"], remote)).stdout.trim();
+  }
   const env = {
     ...hostEnv,
     RUNNER_TEMP: directory,
@@ -413,13 +449,9 @@ else:
     // The revision case seals authentic bytes containing the wrong revision,
     // while Docker inspect claims the expected one. Only reading the config
     // blob can distinguish this from a valid publication.
-    for (const scenario of [
-      "valid",
-      "pull-failure",
-      "config-seal",
-      "manifest-seal",
-      "config-revision",
-    ]) {
+    for (const scenario of signin
+      ? ["valid"]
+      : ["valid", "pull-failure", "config-seal", "manifest-seal", "config-revision"]) {
       const previousImages = await Promise.all(
         ["controller", "runtime"].map((name) =>
           pairImage(directory, `${scenario}-previous-${name}`, source),
@@ -469,7 +501,7 @@ else:
           process.execPath,
           [
             "scripts/ci/staging-qualification.ts",
-            "pull-pair",
+            signin ? "prepare-signin" : "pull-pair",
             archiveDirectory,
             candidateDirectory,
           ],
@@ -489,8 +521,47 @@ else:
             },
           },
         );
+      if (signin && signin !== "compatible") {
+        await assert.rejects(
+          pull(),
+          signin === "runtime"
+            ? /Unreviewed historical runtime recipe/
+            : /Unclassified sign-in reader/,
+        );
+        await assert.rejects(readFile(join(directory, "staging-signin-plan.json")), {
+          code: "ENOENT",
+        });
+        assert.deepEqual(
+          (await calls()).flatMap((call) => (call.pairPull ? [call.pairPull] : [])),
+          signin === "runtime" ? [] : references,
+        );
+        return;
+      }
       if (scenario === "valid") {
         await pull();
+        if (signin) {
+          const plan = JSON.parse(
+            await readFile(join(directory, "staging-signin-plan.json"), "utf8"),
+          );
+          assert.equal(plan.fixture, "v3-to-v3");
+          assert.equal(plan.previous.source, source);
+          assert.equal(plan.candidate.source, workflowSha);
+          assert.equal(plan.previous.version, 3);
+          assert.equal(plan.candidate.version, 3);
+          assert.equal(plan.previous.buildInputs, plan.candidate.buildInputs);
+          assert.equal(
+            plan.migrationTree,
+            (
+              await git(["rev-parse", "b30d3def3d6c1751ea8d9a57b70dd3157c385eab:migrations"])
+            ).stdout.trim(),
+          );
+          assert.equal(
+            plan.stagedImagesSha256,
+            createHash("sha256")
+              .update(await readFile(pairPath))
+              .digest("hex"),
+          );
+        }
         const staged = JSON.parse(await readFile(pairPath, "utf8"));
         assert.deepEqual(
           [

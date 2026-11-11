@@ -628,12 +628,11 @@ async function pullPair(previousPath: string, candidatePath: string, directory: 
   return createHash("sha256").update(payload).digest("hex");
 }
 
-// Catalog 0075 exists in both profiles. These public main revisions identify the
-// reviewed production controller inputs; neither a role name nor an image label
-// establishes which reader or writer will serve a request.
+// This main revision binds the current v3 reader and migration catalog. Both
+// releases must retain these production inputs; labels alone cannot establish
+// compatibility. Historical v2-to-v3 qualification needs a separately reviewed pair.
 const signinReferences = [
-  { source: "16e78036e4cc036b13a30d241af74c7d7f0a27d2", version: 2 },
-  { source: "b6a07b787ec9d082f44e8566f69a5db5b3d9b3f6", version: 3 },
+  { source: "b30d3def3d6c1751ea8d9a57b70dd3157c385eab", version: 3 },
 ] as const;
 
 function signinBuildInputs(root: string, revision: string) {
@@ -765,7 +764,7 @@ async function signinPlan(directory: string, producedHash: string | undefined) {
   const catalogManifest = JSON.parse(git(root, ["cat-file", "blob", manifestPath]));
   const plan = {
     kind: "signin-rehearsal-expectations",
-    fixture: previous.version === 2 ? "v2-to-v3" : "v3-to-v3",
+    fixture: "v3-to-v3",
     previous,
     candidate,
     migrationTree,

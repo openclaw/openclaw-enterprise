@@ -134,9 +134,16 @@ After preparation succeeds, the job uploads `staging-pair-images.json` and
 `staging-signin-plan.json`. These files remain available if a later installed
 rehearsal fails. The plan binds the observed images to the intended
 sign-in test: the source inputs must match a reviewed controller reader profile
-and both releases must share its migration tree. A preparatory/activated pair
-and two activated controllers require different receipt behavior. A change to
-the reviewed production inputs requires review of the test expectations.
+and both releases must share its migration tree. The current profile is the v3
+reader and catalog at `b30d3def3d6c1751ea8d9a57b70dd3157c385eab`.
+Both releases must match its production-input projection. A change to those
+inputs requires a new review of the reader behavior and test expectations.
+This admits only releases with that exact projection, not every v3 controller.
+The publisher takes its source from the then-current `main` workflow commit:
+merge the reviewed profile before publishing the pair, and keep both sources
+within that projection. A controller change between publications requires a
+newly reviewed profile and compatible pair. Updating the reference creates no
+images or publication receipts.
 
 These artifacts establish **input preparation only**. Preparing a pair does not start
 the controllers, exercise a callback or rollback, measure availability, or
@@ -162,11 +169,12 @@ support images. It builds the fixture CLI and selects the chart from the trusted
 workflow checkout. The two image generations share a populated database and
 one issuer across replacements.
 
-For a preparatory/activated pair, the case checks five replacements, including
-refusal of incompatible sign-in receipts while they remain live. For two
-compatible activated releases, it checks forward and return replacement with
-live, one-use collection and replay refusal. The job refuses unknown reader
-versions, missing migration evidence, and inconclusive expiry windows.
+For two compatible v3 releases, the case checks forward and return replacement
+with live, one-use collection and replay refusal. The job refuses unreviewed
+production inputs, a different migration catalog, and inconclusive expiry windows.
+Historical v2-to-v3 qualification remains unavailable: the old reader references
+are incompatible with the current runtime profile. This v3-to-v3 rehearsal does
+not establish that historical transition.
 
 Only a passing selected case, complete transition evidence, a normally exited
 runner with no surviving descendants, and confirmed cluster cleanup produce

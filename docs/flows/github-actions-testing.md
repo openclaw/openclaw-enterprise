@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-11
-last_updated_session: authoring-run/c0ca6f34-2aa6-47f9-87c1-e5f3708617f6
+last_updated_session: authoring-run/8a266aca-074d-4db2-a374-624cabc77861
 ---
 
 # GitHub Actions testing flow
@@ -149,12 +149,10 @@ Cluster-wide watches can include sibling namespaces under `fileConcurrency`.
 Failed starts log `Agent namespace activity unavailable`. Each producing lane
 uploads the artifact.
 
-API or worker Deployment readiness can fail before any Agent Pod exists.
-`tests/helpers/kubernetes-real.mjs:waitForDeploymentAvailable` captures logs
-and Pod/event snapshots; the artifact retains the last eight `containerLogs`
-records. Without configured runner capture, it emits a projected test diagnostic.
-Snapshots marked `unavailable` are failed observations; missing records do not
-prove healthy startup.
+Before Agent Pods exist, `tests/helpers/kubernetes-real.mjs:waitForDeploymentAvailable`
+captures Deployment logs and Pod/events, retaining the last eight `containerLogs` records.
+Without runner capture, it emits a projected diagnostic. `unavailable` means a
+failed observation; missing records do not prove healthy startup.
 
 Dedicated Codex preparation and the operator's offline profile generator share
 `scripts/lib/codex-seccomp-profile.mjs:deriveCodexBwrapProfile`. Preparation
@@ -167,10 +165,9 @@ that state is not CI proof; the standalone fallback remains the pinned reviewed
 manual profile. Production node provisioning remains outside CI ownership; see
 [Codex sandbox setup](../guides/deploy/codex-sandbox.md).
 
-`scripts/ci/staging-qualification.ts:pull` verifies release metadata and
-[isolates pull credentials](../release/staging-qualification.md).
-`smoke` runs trusted workflow code against the release images. Results identify
-both commits.
+`scripts/ci/staging-qualification.ts:prepare-signin` binds verified publications
+to the reviewed v3 inputs and catalog; [staging qualification](../release/staging-qualification.md)
+owns credential isolation and historical-pair limits.
 
 ### 3. Execute and account for actual cases
 
@@ -281,6 +278,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 08:11: Bind sign-in rehearsal to the current v3 profile. (authoring-run/8a266aca-074d-4db2-a374-624cabc77861 - 9bf18bf3244b0a0e6f26f5a10263f51ea0b08b3c)
 
 - 2026-11-11 03:43: Guard reuse and fresh fallback. (authoring-run/c0ca6f34-2aa6-47f9-87c1-e5f3708617f6 - 993a38b318c249b00f951bf92c8d136214ec82fd)
 - 2026-11-11 03:28: Explain qualified CI reuse. (authoring-run/1b85588b-87c6-47d0-8c6e-8b78b0030aea - dfd55e679c9c9869ddc786b85f6f9b27a53fb833)
