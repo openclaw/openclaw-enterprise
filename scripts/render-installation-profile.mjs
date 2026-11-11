@@ -1509,6 +1509,11 @@ function buildRendered(profile, parsed, diagnostics) {
       "controlPlane.agentNativeAdminSessionMode host-only-exchange requires OIDC sign-in without Google.",
     );
   }
+  if (controlPlane.google === undefined && agentNativeAdminDomain.length > 214) {
+    diagnostics.errors.push(
+      "controlPlane.agentNativeAdminDomain must not exceed 214 characters, leaving room for the Agent hostname prefix.",
+    );
+  }
   const agentNativeAdmin = {
     enabled: controlPlane.google === undefined,
     domain: agentNativeAdminDomain.toLowerCase(),

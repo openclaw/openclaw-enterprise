@@ -103,6 +103,7 @@ auth:
     egressCidrs: []
 
 agentNativeAdmin:
+  # Agent DNS suffix: at most 214 characters, reserving the per-Agent host prefix.
   enabled: false
   # host-only-exchange is an explicit opt-in for guarded OIDC sign-in.
   sessionMode: shared-cookie

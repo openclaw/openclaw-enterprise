@@ -6,7 +6,11 @@ import {
   hasControlCharacter,
   normalizePushRefAllowlist,
 } from "../../../access/client-contracts.ts";
-import { assertPrivateDirectory, readPrivateFile } from "./private-files.ts";
+import {
+  assertPrivateDirectory,
+  clientSessionFileMaxBytes,
+  readPrivateFile,
+} from "./private-files.ts";
 
 export const repositoryMaterialRoot = "/run/oce/repository-credentials";
 export const repositorySelectionVariable = "OCE_REPOSITORY_SELECTION";
@@ -103,18 +107,11 @@ function clientsAgree(first: ClientFiles["client"], second: ClientFiles["client"
 async function validateMaterialFiles(directory: string, hasPublicCa: boolean): Promise<void> {
   await assertPrivateDirectory(directory);
   await assertPrivateDirectory(join(directory, "gh"));
-  const bounds = new Map([
-    ["bearer", 256],
-    ["client.json", 16 * 1024],
-    ["gitconfig", 16 * 1024],
-    ["gh/hosts.yml", 16 * 1024],
-    ["gh/config.yml", 16 * 1024],
-  ]);
-  if (hasPublicCa) {
-    bounds.set("ca.pem", 64 * 1024);
-  }
   // Validate the complete generation without loading another binding's bearer.
-  for (const [name, maximum] of bounds) {
+  for (const [name, maximum] of Object.entries(clientSessionFileMaxBytes)) {
+    if (name === "ca.pem" && !hasPublicCa) {
+      continue;
+    }
     const stat = await lstat(join(directory, name));
     if (
       !stat.isFile() ||

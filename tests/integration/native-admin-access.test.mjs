@@ -602,6 +602,74 @@ async function issueServiceKeyForNativeAgent(context) {
   return issued.data.key;
 }
 
+// Retained installation settings must not take ordinary Console and API access down.
+test("native admin retained domains preserve controller access and refuse unusable targets", async (t) => {
+  const longest = `${"a.".repeat(99)}oce.example.test`;
+  assert.equal(longest.length, 214);
+  for (const length of [214, 215]) {
+    const domain = `${"a".repeat(length - longest.length)}${longest}`;
+    const context = await createNativeAdminFixture(t, { nativeDomain: domain });
+    const { fixture, namespace, agent } = context;
+    assert.equal(deriveNativeAdminHost("installation", agent, domain).length, length + 39);
+    const ordinary = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+    assert.equal(ordinary.status, 200);
+    const consolePage = await fixture.app.inject({
+      method: "GET",
+      url: "/console/",
+      headers: { host: new URL(publicOrigin).host },
+    });
+    assert.equal(consolePage.statusCode, 200);
+    const status = await nativeStatus(context);
+    assert.equal(status.status, 200);
+    assert.equal(status.data.status, length === 214 ? "available" : "unavailable");
+    if (length === 215) {
+      assert.equal(status.data.host, undefined);
+      assert.equal(status.data.url, undefined);
+      const configurations = `/namespaces/${namespace.id}/configurations`;
+      const config = await fixture.request("POST", configurations, {
+        body: { kind: "agent", values: {} },
+      });
+      assert.equal(config.status, 201);
+      const before = await fixture.request("GET", `${configurations}/${config.data.id}`);
+      const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+        body: {
+          name: "refused-native-opt-in",
+          configurationId: config.data.id,
+          nativeAdmin: true,
+          expectedConfigurationGeneration: config.data.generation,
+        },
+      });
+      assert.equal(created.status, 400, JSON.stringify(created.body));
+      const after = await fixture.request("GET", `${configurations}/${config.data.id}`);
+      assert.deepEqual(after.data, before.data);
+    }
+  }
+  const options = (domain) => ({
+    publicOrigin,
+    authBaseURL,
+    development: { enabled: false },
+    nativeAdmin: { enabled: true, domain },
+    nativeAdminGatewayApiKey: async () => randomUUID(),
+  });
+  // Retained settings still identify disabled native hosts, which must be denied
+  // instead of preventing startup or falling through to ordinary Console routes.
+  const domain = `aaa${longest}`;
+  const disabled = await createConsoleAppFixture(t, {
+    ...options(domain),
+    nativeAdmin: { enabled: false, domain },
+    nativeAdminGatewayApiKey: async () => {
+      assert.fail("disabled native administration must not read the gateway key");
+    },
+  });
+  const denied = await disabled.app.inject({
+    method: "GET",
+    url: "/",
+    headers: { host: `agent-${"a".repeat(32)}.${domain}` },
+  });
+  assert.equal(denied.statusCode, 403);
+  assert.equal(denied.json().error.code, "FORBIDDEN");
+});
+
 test("native admin shared session configuration validates cookie scope and rejects keys", async (t) => {
   const context = await createNativeAdminFixture(t);
   const status = await nativeStatus(context);
