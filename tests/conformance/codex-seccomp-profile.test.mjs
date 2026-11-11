@@ -293,6 +293,11 @@ function probeEvidence(args, stage, exit, entered, detail = "") {
   return `${prefix}START\n${entered ? `${prefix}ENTERED\n` : ""}${detail ? `${detail}\n` : ""}${prefix}END:${stage}:${exit}\n`;
 }
 
+const baselineContainerId = "b".repeat(64);
+const installedContainerId = "c".repeat(64);
+const probePodUid = "8c00ce88-c148-4c3e-a2e8-32c4dbf39c89";
+const probeImageDigest = `sha256:${"a".repeat(64)}`;
+
 // Exercise the real preparation/cleanup path with injected command responses.
 // These ordered API observations are synthetic, not a claimed live Pod transition.
 async function missingProfileFixture(t, observations, options = {}) {
@@ -321,6 +326,7 @@ async function missingProfileFixture(t, observations, options = {}) {
       }
       if (args.includes("delete")) {
         cleanupCalls += 1;
+        options.beforeCleanup?.();
         assert.ok(args.includes("--wait=false"));
         if (options.cleanupError) {
           throw options.cleanupError;
@@ -361,13 +367,15 @@ async function missingProfileFixture(t, observations, options = {}) {
         }
         return {
           stdout: JSON.stringify({
-            metadata: { name },
+            ...applied.get(name),
+            metadata: { name, uid: probePodUid },
             status: {
               containerStatuses: [
                 {
                   name: "probe",
                   ready: true,
-                  containerID: `containerd://${profile ? "installed" : "runtime-default"}`,
+                  imageID: `registry.invalid/runtime@${probeImageDigest}`,
+                  containerID: `containerd://${profile ? installedContainerId : baselineContainerId}`,
                 },
               ],
             },
@@ -399,7 +407,7 @@ async function missingProfileFixture(t, observations, options = {}) {
     }
     if (command === "docker") {
       if (args[0] === "exec" && args[2] === "crictl") {
-        const seccomp = args[4] === "runtime-default" ? runtimeDefaultBaseline : installedProfile;
+        const seccomp = args[4] === baselineContainerId ? runtimeDefaultBaseline : installedProfile;
         return {
           stdout: JSON.stringify({ info: { runtimeSpec: { linux: { seccomp } } } }),
           stderr: "",
@@ -764,6 +772,71 @@ for (const [mode, stage, exit, entered] of [
     await control.assertCleanup();
   });
 }
+
+test("failed installed sandbox probe reports its verified profile and exact context before cleanup", async (t) => {
+  const output = [];
+  const prefix = "OCE_CODEX_SECCOMP_PROBE_FAILURE ";
+  const write = process.stderr.write.bind(process.stderr);
+  t.mock.method(process.stderr, "write", (chunk, ...args) => {
+    if (typeof chunk === "string" && chunk.startsWith(prefix)) {
+      output.push(chunk);
+      return true;
+    }
+    return write(chunk, ...args);
+  });
+  const control = await missingProfileFixture(t, [missingProfileWaiting], {
+    probeExec(args, { baseline }) {
+      throw Object.assign(new Error("probe refused"), {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: "private-probe-stdout",
+        stderr: probeEvidence(
+          args,
+          "SANDBOX",
+          1,
+          false,
+          baseline ? "bwrap namespace denied" : "private-probe-stderr",
+        ),
+      });
+    },
+    beforeCleanup() {
+      assert.equal(output.length, 1, "the failure must reach stderr before Namespace deletion");
+    },
+  });
+  await assert.rejects(control.run, { message: "probe refused" });
+  assert.equal(output.length, 1);
+  assert.doesNotMatch(output[0], /private-probe|OCE_SANDBOX_PROBE_V1/);
+  const report = JSON.parse(output[0].slice(prefix.length));
+  assert.equal(report.mode, "Localhost");
+  assert.equal(report.podUid, probePodUid);
+  assert.equal(report.containerId, installedContainerId);
+  assert.equal(report.node, "k3d-openclaw-k8s-poll-server-0");
+  assert.equal(report.runtimeImageDigest, probeImageDigest);
+  assert.equal(report.observedImageDigest, probeImageDigest);
+  assert.equal(report.profileVerification, "passed");
+  const installed = deriveCodexBwrapProfile(runtimeDefaultBaseline, { codexVersion: "0.164.0" });
+  assert.equal(
+    report.effectiveProfileSha256,
+    createHash("sha256")
+      .update(`${JSON.stringify(installed, null, 2)}\n`)
+      .digest("hex"),
+  );
+  assert.equal(report.expectedCodexVersion, "0.164.0");
+  assert.equal(report.verifiedCodexVersion, "0.164.0");
+  assert.deepEqual(report.probe, { stage: "SANDBOX", exit: 1, entered: false });
+  assert.deepEqual(report.security, {
+    runAsNonRoot: true,
+    runAsUser: 1000,
+    runAsGroup: 1000,
+    allowPrivilegeEscalation: false,
+    readOnlyRootFilesystem: true,
+    dropAllCapabilities: true,
+  });
+  assert.ok(Date.parse(report.startedAt) <= Date.parse(report.finishedAt));
+  assert.match(report.guide, /codex-sandbox\.md#identify-the-restriction$/);
+  await control.assertCleanup();
+});
 
 test("generated negative and positive probes complete the real profile preparation path", async (t) => {
   const control = await missingProfileFixture(t, [missingProfileWaiting], {
