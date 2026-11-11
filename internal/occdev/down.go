@@ -12,7 +12,7 @@ import (
 
 // Down stops the selected Docker stack or the recorded Kubernetes stack.
 // Without a Compute Driver selection it follows the state directory; see
-// Profile.downComputeDriver.
+// chooseDownStack.
 func Down(ctx context.Context, opts Options) error {
 	r := newRunner(opts)
 	profile := resolveProfile(r.env)
@@ -20,15 +20,15 @@ func Down(ctx context.Context, opts Options) error {
 		return err
 	}
 	stateSetting := r.env["OCC_DEVELOPMENT_STATE_DIRECTORY"]
-	choice, err := profile.downComputeDriver(r.env["OCC_DEVELOPMENT_COMPUTE_DRIVER"] != "", len(opts.ComposeArgs) > 0, func() (string, bool, error) {
+	choice, err := chooseDownStack(r.env, len(opts.ComposeArgs) > 0, func() (string, bool, error) {
 		return recordedStateDirectory(stateSetting)
 	})
 	if err != nil {
 		return err
 	}
-	switch choice.ComputeDriver {
+	switch choice.Profile.ComputeDriver {
 	case "docker":
-		if err := profile.CheckDockerCompute(); err != nil {
+		if err := choice.Profile.CheckDockerCompute(); err != nil {
 			return err
 		}
 		// Docker Compute stacks are started by scripts/dev-up with standalone
@@ -174,7 +174,7 @@ func Down(ctx context.Context, opts Options) error {
 		fmt.Fprintf(r.opts.Out, "Stopped Kubernetes development stack %s.\n", state.Cluster)
 		return nil
 	default:
-		return profile.CheckComputeDriver()
+		return choice.Profile.CheckComputeDriver()
 	}
 }
 
