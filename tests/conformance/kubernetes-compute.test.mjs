@@ -7139,14 +7139,8 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
     nodeHeaders.set.some(({ name }) => name === "x-occ-identity"),
     false,
   );
-  for (const header of [
-    "authorization",
-    "cookie",
-    "x-occ-identity",
-    "x-api-key",
-    "x-openclaw-scopes",
-    "tailscale-user-login",
-  ]) {
+  const sharedRemovedHeaders = ["cookie", "x-occ-identity", "x-api-key", "x-openclaw-scopes"];
+  for (const header of ["authorization", ...sharedRemovedHeaders, "tailscale-user-login"]) {
     assert.ok(nodeHeaders.remove.includes(header), `node route must strip ${header}`);
   }
   assert.deepEqual(nodeRoute.spec.rules[1], {
@@ -7187,13 +7181,7 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
   });
   const hookHeaders = hookRoute.filters[1].requestHeaderModifier;
   assert.equal(hookHeaders.remove.includes("authorization"), false);
-  for (const header of [
-    "cookie",
-    "x-occ-identity",
-    "x-api-key",
-    "x-openclaw-scopes",
-    "tailscale-user-login",
-  ]) {
+  for (const header of [...sharedRemovedHeaders, "tailscale-user-login"]) {
     assert.ok(hookHeaders.remove.includes(header), `hook route must strip ${header}`);
   }
   for (const [rule, transferPath] of nodeRoute.spec.rules
@@ -7218,7 +7206,7 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
     });
     const transferHeaders = rule.filters[1].requestHeaderModifier;
     assert.equal(transferHeaders.remove.includes("authorization"), false);
-    for (const header of ["cookie", "x-occ-identity", "x-api-key", "x-openclaw-scopes"]) {
+    for (const header of sharedRemovedHeaders) {
       assert.ok(transferHeaders.remove.includes(header), `transfer route must strip ${header}`);
     }
   }
@@ -7277,23 +7265,33 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
   assert.notEqual(derivedOutputs[0].endpoint, derivedOutputs[2].endpoint);
   assert.notDeepEqual(derivedOutputs[0].hostnames, derivedOutputs[2].hostnames);
 
-  const plainGateway = driver.deployment(
+  function gatewayPodFixture(gatewayDriver, gatewayRevision, gatewayName, gatewayOwnership) {
+    const deployment = gatewayDriver.deployment(
+      gatewayName,
+      gatewayOwnership,
+      { name: namespace, plane: "execution" },
+      "openclaw-enterprise/gateway-fixture:local",
+      gatewayName,
+      "gateway",
+      {},
+      "info",
+      gatewayDriver.gatewayConfiguration(gatewayRevision, undefined, {
+        name: kubernetesNamespaceName(tenant.id),
+        plane: "execution",
+      }),
+    );
+    const pod = deployment.spec.template.spec;
+    return {
+      pod,
+      environment: Object.fromEntries(pod.containers[0].env.map((entry) => [entry.name, entry])),
+    };
+  }
+
+  const { pod: plainPod, environment: plainEnvironment } = gatewayPodFixture(
+    driver,
+    revision,
     name,
     ownership,
-    { name: namespace, plane: "execution" },
-    "openclaw-enterprise/gateway-fixture:local",
-    name,
-    "gateway",
-    {},
-    "info",
-    driver.gatewayConfiguration(revision, undefined, {
-      name: kubernetesNamespaceName(tenant.id),
-      plane: "execution",
-    }),
-  );
-  const plainPod = plainGateway.spec.template.spec;
-  const plainEnvironment = Object.fromEntries(
-    plainPod.containers[0].env.map((entry) => [entry.name, entry]),
   );
   assert.equal(plainEnvironment.OPENCLAW_CONFIG_PATH.value, "/home/node/.openclaw/openclaw.json");
   assert.deepEqual(
@@ -7312,23 +7310,11 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
   );
   const runtimeRevision = routedRevision(runtimeDriver);
   const runtimeName = `gateway-${digest(runtimeRevision.agentId)}`;
-  const runtimeGateway = runtimeDriver.deployment(
+  const { pod: runtimePod, environment: runtimeEnvironment } = gatewayPodFixture(
+    runtimeDriver,
+    runtimeRevision,
     runtimeName,
     { namespaceId: tenant.id, agentId: runtimeRevision.agentId },
-    { name: namespace, plane: "execution" },
-    "openclaw-enterprise/gateway-fixture:local",
-    runtimeName,
-    "gateway",
-    {},
-    "info",
-    runtimeDriver.gatewayConfiguration(runtimeRevision, undefined, {
-      name: kubernetesNamespaceName(tenant.id),
-      plane: "execution",
-    }),
-  );
-  const runtimePod = runtimeGateway.spec.template.spec;
-  const runtimeEnvironment = Object.fromEntries(
-    runtimePod.containers[0].env.map((entry) => [entry.name, entry]),
   );
   assert.equal(runtimeEnvironment.OPENCLAW_CONFIG_PATH.value, "/etc/openclaw/openclaw.json");
   assert.deepEqual(
@@ -7361,23 +7347,11 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
       },
     },
   });
-  const nativeAdminGateway = runtimeDriver.deployment(
+  const { pod: nativeAdminPod, environment: nativeAdminEnvironment } = gatewayPodFixture(
+    runtimeDriver,
+    nativeAdminRevision,
     runtimeName,
     { namespaceId: tenant.id, agentId: nativeAdminRevision.agentId },
-    { name: namespace, plane: "execution" },
-    "openclaw-enterprise/gateway-fixture:local",
-    runtimeName,
-    "gateway",
-    {},
-    "info",
-    runtimeDriver.gatewayConfiguration(nativeAdminRevision, undefined, {
-      name: kubernetesNamespaceName(tenant.id),
-      plane: "execution",
-    }),
-  );
-  const nativeAdminPod = nativeAdminGateway.spec.template.spec;
-  const nativeAdminEnvironment = Object.fromEntries(
-    nativeAdminPod.containers[0].env.map((entry) => [entry.name, entry]),
   );
   assert.equal(
     nativeAdminEnvironment.OPENCLAW_CONFIG_PATH.value,
@@ -7410,24 +7384,11 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
     ...nativeAdminRevision,
     compute: { id: privateRuntimeDriver.id, implementation: privateRuntimeDriver.implementation },
   };
-  const privateNativeAdminGateway = privateRuntimeDriver.deployment(
-    runtimeName,
-    { namespaceId: tenant.id, agentId: privateNativeAdminRevision.agentId },
-    { name: namespace, plane: "execution" },
-    "openclaw-enterprise/gateway-fixture:local",
-    runtimeName,
-    "gateway",
-    {},
-    "info",
-    privateRuntimeDriver.gatewayConfiguration(privateNativeAdminRevision, undefined, {
-      name: kubernetesNamespaceName(tenant.id),
-      plane: "execution",
-    }),
-  );
-  const privateNativeAdminPod = privateNativeAdminGateway.spec.template.spec;
-  const privateNativeAdminEnvironment = Object.fromEntries(
-    privateNativeAdminPod.containers[0].env.map((entry) => [entry.name, entry]),
-  );
+  const { pod: privateNativeAdminPod, environment: privateNativeAdminEnvironment } =
+    gatewayPodFixture(privateRuntimeDriver, privateNativeAdminRevision, runtimeName, {
+      namespaceId: tenant.id,
+      agentId: privateNativeAdminRevision.agentId,
+    });
   assert.equal(
     privateNativeAdminEnvironment.OPENCLAW_CONFIG_PATH.value,
     "/etc/openclaw/openclaw.json",
