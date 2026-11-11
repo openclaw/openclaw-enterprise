@@ -8,6 +8,7 @@ import {
   emitOpenShellGitRetention,
 } from "../../scripts/ci/openshell-git-retention.mjs";
 import { emitOpenShellSetupProgress } from "../../scripts/ci/openshell-progress.mjs";
+import { captureMixedGrantFailure } from "../helpers/openshell-mixed-grant-agent.ts";
 import { mixedGrantDeploymentCode } from "../helpers/openshell-mixed-grant-setup.ts";
 import { FixtureCommandTimeoutError } from "../fixtures/repository-credentials/process.mjs";
 
@@ -29,10 +30,12 @@ test(
   { skip: !selected, timeout: 45 * 60_000 },
   async (t) => {
     let phase = "installation";
+    let installedFixture: Awaited<ReturnType<typeof createOpenShellGitInstallation>> | undefined;
     try {
       // Only the upstream model and Git issuer are controlled. Admission, signed
       // grants, workload execution and withdrawal use the installed platform.
       const fixture = await createOpenShellGitInstallation(t, { mode: "mixed-grant" });
+      installedFixture = fixture;
       assert.ok(fixture.deployMixedGrantAgent);
       phase = "deployment";
       const a = await fixture.deployMixedGrantAgent();
@@ -345,6 +348,7 @@ test(
         gitIssued: 1,
       });
     } catch (error) {
+      await captureMixedGrantFailure(error, installedFixture?.mixedGrantFailureObservation);
       // Raw upstream and workload errors may contain credentials. Recognize the
       // failure shape, then select its code from the platform vocabulary.
       const terminalFailure =

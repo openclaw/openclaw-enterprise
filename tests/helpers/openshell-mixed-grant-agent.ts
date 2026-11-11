@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
@@ -25,6 +25,47 @@ import { mixedGrantDeploymentCode } from "./openshell-mixed-grant-setup.ts";
 import { availablePort } from "./available-port.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { stopProcess } from "./stop-process.mjs";
+
+interface MixedGrantFailureCapture {
+  target: { id: string; namespaceId: string; agentId: string } | undefined;
+  collect: () => Promise<unknown>;
+  checkpoint: (event: string, data: Record<string, unknown>) => Promise<void>;
+}
+
+/** Capture the selected terminal deployment before the test fixture is torn down. */
+export async function captureMixedGrantFailure(
+  error: unknown,
+  observation: MixedGrantFailureCapture | undefined,
+): Promise<void> {
+  if (!observation) {
+    return;
+  }
+  const { target, collect, checkpoint } = observation;
+  const failed =
+    error instanceof Error &&
+    /^MIXED_GRANT_DEPLOYMENT_FAILED: [A-Z][A-Z0-9_]{0,95}; selected revision failed (before|after) provider registration$/u.exec(
+      error.message,
+    );
+  if (!target || !failed) {
+    return;
+  }
+  // Worker outcomes may still say retry; the selected deployment's terminal
+  // failure is the trigger, and observation must not replace that failure.
+  try {
+    const workerEvents = await collect().catch(() => "unavailable");
+    const hashIdentity = (value: string) => createHash("sha256").update(value).digest("hex");
+    await checkpoint("mixed-grant-deployment-failed", {
+      namespaceIdHash: hashIdentity(target.namespaceId),
+      agentIdHash: hashIdentity(target.agentId),
+      revisionIdHash: hashIdentity(target.id),
+      workIdHash: hashIdentity(`agent_revision:${target.id}:reconcile`),
+      registrationStage: failed[1],
+      workerEvents,
+    });
+  } catch {
+    // Best-effort evidence cannot hide the original deployment failure.
+  }
+}
 
 type SelectedProvider = OpenShellProviderResponse & {
   id: string;

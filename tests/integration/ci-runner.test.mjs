@@ -1028,83 +1028,22 @@ test("mixed-grant output closes deployment codes and projects before diagnostics
   const installationUrl = new URL("../helpers/openshell-git-installation.mjs", import.meta.url)
     .href;
   const realTestUrl = new URL("./openshell-mixed-grant-real.test.ts", import.meta.url).href;
+  const collectorUrl = new URL("../helpers/installed-worker-events.mjs", import.meta.url).href;
+  const target = {
+    namespaceId: "PRIVATE_NAMESPACE_CANARY",
+    agentId: "PRIVATE_AGENT_CANARY",
+    id: "PRIVATE_REVISION_CANARY",
+  };
   const identityHashes = Object.fromEntries(
-    ["namespaceId", "agentId", "revisionId", "workId"].map((field) => [
-      `${field}Hash`,
-      createHash("sha256").update(`PRIVATE_WORKER_${field}_CANARY`).digest("hex"),
-    ]),
+    Object.entries({
+      namespaceId: target.namespaceId,
+      agentId: target.agentId,
+      revisionId: target.id,
+      workId: `agent_revision:${target.id}:reconcile`,
+    }).map(([field, value]) => [`${field}Hash`, createHash("sha256").update(value).digest("hex")]),
   );
   const workerEvents = [
-    {
-      event: "preparation",
-      budgetAttempt: 1,
-      step: "prepare_revision",
-      errorClass: "DependencyUnavailableError",
-    },
-    {
-      event: "completion",
-      budgetAttempt: 1,
-      outcome: "retry",
-      code: "DEPENDENCY_UNAVAILABLE",
-      cause: "DependencyUnavailableError",
-      method: "CreateSandbox",
-      grpcStatus: 3,
-      validationCategory: "POLICY_SAFETY",
-      deployPasses: 1,
-    },
-    {
-      event: "completion",
-      budgetAttempt: 2,
-      outcome: "pending",
-      code: "KUBERNETES_API_UNAVAILABLE",
-      dependency: "kubernetes_api",
-      cause: "unavailable",
-      status: 503,
-      deployPasses: 2,
-    },
-  ];
-  const rejectedWorkerValues = {
-    event: "completion",
-    budgetAttempt: 3,
-    outcome: "PRIVATE_WORKER_OUTCOME_CANARY",
-    code: "PRIVATE_WORKER_CODE_CANARY",
-    cause: "PRIVATE_WORKER_CAUSE_CANARY",
-    dependency: "PRIVATE_WORKER_DEPENDENCY_CANARY",
-    method: "PRIVATE_WORKER_METHOD_CANARY",
-    grpcStatus: 17,
-    validationCategory: "PRIVATE_WORKER_CATEGORY_CANARY",
-    status: 700,
-    cleanupCause: "PRIVATE_WORKER_CLEANUP_CANARY",
-    deployPasses: 0,
-  };
-  const deploymentReceipts = [
-    {
-      kind: "openshell-git-retention",
-      event: "mixed-grant-deployment-failed",
-      ...identityHashes,
-      registrationStage: "before",
-      workerEvents: [
-        ...workerEvents,
-        {
-          event: "completion",
-          budgetAttempt: 3,
-          outcome: "other",
-          code: "other",
-          cause: "other",
-          dependency: "other",
-          method: "other",
-          validationCategory: "other",
-          cleanupCause: "other",
-        },
-      ],
-    },
-    {
-      kind: "openshell-git-retention",
-      event: "mixed-grant-deployment-failed",
-      ...identityHashes,
-      registrationStage: "after",
-      workerEvents: "unavailable",
-    },
+    { event: "completion", budgetAttempt: 1, outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" },
   ];
   for (const [code, registrationStage] of [
     ["PRIVATE_UPPERCASE_CANARY", "before"],
@@ -1122,9 +1061,66 @@ test("mixed-grant output closes deployment codes and projects before diagnostics
           details: "PRIVATE_RPC_DETAILS_CANARY",
         }
       : { code: 14 };
-    const failureSource = `export function createOpenShellGitInstallation() { throw Object.assign(new Error(${JSON.stringify(message)}), ${JSON.stringify(fields)}); }`;
-    // Inject only the upstream failure. The real test catch, diagnostic emitter,
-    // reporter and retained-result collector all execute unchanged.
+    const deploymentReceipts = gatewayFailure
+      ? []
+      : [
+          {
+            kind: "openshell-git-retention",
+            event: "mixed-grant-deployment-failed",
+            ...identityHashes,
+            registrationStage,
+            workerEvents: registrationStage === "before" ? workerEvents : "unavailable",
+          },
+        ];
+    // Control only external deployment and Worker observations. The normal test
+    // catch invokes the shared capture, real collector and diagnostic projection.
+    const failureSource = `
+import assert from "node:assert/strict";
+import { collectInstalledWorkerEvents } from ${JSON.stringify(collectorUrl)};
+import { emitOpenShellGitRetention } from ${JSON.stringify(retentionUrl)};
+export function createOpenShellGitInstallation(t) {
+  const original = Object.assign(new Error(${JSON.stringify(message)}), ${JSON.stringify(fields)});
+  const target = ${JSON.stringify(target)};
+  const pod = { metadata: { name: "worker", uid: "worker-uid", labels: { "app.kubernetes.io/component": "worker" } },
+    spec: { containers: [{ name: "worker", image: "controller-selected" }] },
+    status: { containerStatuses: [{ name: "worker", containerID: "container-id", restartCount: 0, state: { running: {} } }] } };
+  let receipts = 0;
+  let reads = 0;
+  let tornDown = false;
+  t.after(() => {
+    tornDown = true;
+    assert.equal(receipts, ${gatewayFailure ? 0 : 1}, "capture must emit exactly once before teardown");
+    assert.equal(reads, ${gatewayFailure ? 0 : 1}, "capture must read the selected Worker once");
+  });
+  return {
+    deployMixedGrantAgent: async () => { throw original; },
+    mixedGrantFailureObservation: {
+        target,
+        collect: () => collectInstalledWorkerEvents({
+          target, controllerNamespace: "controller-namespace", controllerImage: "controller-selected",
+          controllerPods: [pod], since: "2026-01-01T00:00:00.000Z",
+          readControllerPods: async () => { assert.equal(tornDown, false); return [pod]; },
+          kubectl: async (...args) => {
+            assert.equal(tornDown, false);
+            assert.deepEqual(args, ["logs", "worker", "-n", "controller-namespace", "-c", "worker",
+              "--since-time=2026-01-01T00:00:00.000Z", "--limit-bytes=1048576", "--request-timeout=8s"]);
+            reads++;
+            if (${JSON.stringify(registrationStage)} === "after") throw new Error("PRIVATE_LOG_CANARY");
+            const event = { event: "worker.completed", namespaceId: target.namespaceId, agentId: target.agentId,
+              revisionId: target.id, workId: "agent_revision:" + target.id + ":reconcile",
+              operation: "agent_revision.reconcile", attempt: 1, outcome: "retry", code: "DEPENDENCY_UNAVAILABLE",
+              message: "PRIVATE_WORKER_MESSAGE_CANARY", details: "PRIVATE_WORKER_DETAILS_CANARY" };
+            return [JSON.stringify({ ...event, revisionId: "other-revision" }), JSON.stringify(event)].join("\\n");
+          },
+        }),
+        checkpoint: async (event, data) => {
+          assert.equal(tornDown, false);
+          receipts++;
+          emitOpenShellGitRetention(t, { kind: "openshell-git-retention", event, ...data });
+        },
+    },
+  };
+}`;
     await writeFile(
       join(root, path),
       `
@@ -1142,13 +1138,6 @@ test("closed diagnostic projection", (t) => {
   const common = { kind: "openshell-git-retention", phase: "installation", extra: "PRIVATE_FIELD_CANARY" };
   emitOpenShellGitRetention(t, { ...common, event: "mixed-grant-setup", phase: "verification", operation: "model before Git" });
   emitOpenShellGitRetention(t, { ...common, event: "mixed-grant-failure", category: "operation", httpStatus: null, method: "GetProviderProfile", grpcStatus: 14, details: "PRIVATE_RPC_DETAILS_CANARY" });
-  // Installed collection supplies hashes and canonical events. Projection must
-  // remove private fields before direct output and remain stable in the reporter.
-  const identities = ${JSON.stringify(identityHashes)};
-  const privateFields = { message: "PRIVATE_WORKER_MESSAGE_CANARY", stack: "PRIVATE_WORKER_STACK_CANARY", details: { token: "PRIVATE_WORKER_TOKEN_CANARY" }, namespaceId: "PRIVATE_WORKER_NAMESPACE_CANARY", agentId: "PRIVATE_WORKER_AGENT_CANARY", revisionId: "PRIVATE_WORKER_REVISION_CANARY", workId: "PRIVATE_WORKER_WORK_CANARY" };
-  const workerEvents = ${JSON.stringify([...workerEvents, rejectedWorkerValues])}.map((event) => ({ ...event, ...privateFields }));
-  emitOpenShellGitRetention(t, { ...common, ...privateFields, ...identities, event: "mixed-grant-deployment-failed", registrationStage: "before", workerEvents });
-  emitOpenShellGitRetention(t, { ...common, ...privateFields, ...identities, event: "mixed-grant-deployment-failed", registrationStage: "after", workerEvents: "unavailable" });
   // Existing events still supply the original identity for collector-side hashing.
   emitOpenShellGitRetention(t, { kind: common.kind, event: "mixed-grant-git-fetched", revisionId: "revision-identity", sha: "a".repeat(40), gitIssued: 1, gitRequests: 2 });
 });
@@ -1169,11 +1158,12 @@ await import(${JSON.stringify(realTestUrl)});
     );
     assert.equal(direct.status, 1, direct.stderr);
     const expectedCode = code === "PRIVATE_UPPERCASE_CANARY" ? "UNKNOWN_DEPLOYMENT_FAILURE" : code;
-    const expectedMessage = `MIXED_GRANT_DEPLOYMENT_FAILED: ${expectedCode}; selected revision failed ${registrationStage} provider registration; verification phase installation.`;
+    const expectedMessage = `MIXED_GRANT_DEPLOYMENT_FAILED: ${expectedCode}; selected revision failed ${registrationStage} provider registration; verification phase deployment.`;
     assert.ok(
       (direct.stdout + direct.stderr).includes(
         gatewayFailure ? "GetProviderProfile gRPC 14" : expectedMessage,
       ),
+      direct.stdout + direct.stderr,
     );
     const result = run(
       root,
@@ -1192,7 +1182,12 @@ await import(${JSON.stringify(realTestUrl)});
       .map((line) => JSON.parse(line.slice("# openclaw-ci-measurement ".length)))
       .filter((receipt) => receipt.event === "mixed-grant-deployment-failed");
     assert.deepEqual(directReceipts, deploymentReceipts);
-    const receipts = JSON.parse(raw).files[0].measurements;
+    const summary = JSON.parse(raw);
+    const failure = summary.files[0].tests.find(({ name }) => name.startsWith("OpenShell grants"));
+    if (!gatewayFailure) {
+      assert.equal(failure.error.message, expectedMessage);
+    }
+    const receipts = summary.files[0].measurements;
     assert.deepEqual(receipts, [
       {
         kind: "openshell-git-retention",
@@ -1209,7 +1204,6 @@ await import(${JSON.stringify(realTestUrl)});
         method: "GetProviderProfile",
         grpcStatus: 14,
       },
-      ...deploymentReceipts,
       {
         kind: "openshell-git-retention",
         event: "mixed-grant-git-fetched",
@@ -1218,10 +1212,11 @@ await import(${JSON.stringify(realTestUrl)});
         gitIssued: 1,
         gitRequests: 2,
       },
+      ...deploymentReceipts,
       {
         kind: "openshell-git-retention",
         event: "mixed-grant-failure",
-        phase: "installation",
+        phase: "deployment",
         category: gatewayFailure ? "operation" : "deployment",
         httpStatus: null,
         method: gatewayFailure ? "GetProviderProfile" : null,
