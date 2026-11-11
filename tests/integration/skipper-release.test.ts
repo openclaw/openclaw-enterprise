@@ -286,3 +286,96 @@ test("installed Skipper receiver reports failures without exposing response cont
     });
   }
 });
+
+test("installed Skipper failure retention preserves known checkpoints and withholds unknown data", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "skipper-failure-receipt-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const stageOutput = join(directory, "step-output");
+  const scope = {
+    PATH: process.env.PATH,
+    GITHUB_ACTIONS: "true",
+    GITHUB_RUN_ID: "42942462012",
+    GITHUB_RUN_ATTEMPT: "1",
+    GITHUB_SHA: sourceSha,
+    GITHUB_OUTPUT: stageOutput,
+  };
+  const checkpoint = [
+    'import { recordSkipperCheckpoint } from "./scripts/ci/skipper-failure-receipt.ts";',
+    'await recordSkipperCheckpoint("skipper_stage", "selected-test");',
+  ].join("\n");
+  const child = (body: string, timeout = 10_000, output = stageOutput) =>
+    spawnSync(process.execPath, ["--input-type=module", "--eval", checkpoint + "\n" + body], {
+      encoding: "utf8",
+      env: { ...scope, GITHUB_OUTPUT: output },
+      timeout,
+    });
+  const outcome = (path: string, outcome: string, lastStage?: string, installedCleanup?: string) =>
+    spawnSync(process.execPath, ["scripts/ci/skipper-failure-receipt.ts", path], {
+      encoding: "utf8",
+      env: {
+        ...scope,
+        SKIPPER_PROOF_OUTCOME: outcome,
+        SKIPPER_STAGE: lastStage,
+        SKIPPER_INSTALLED_CLEANUP: installedCleanup,
+      },
+    });
+  const readOutputs = async () =>
+    Object.fromEntries(
+      (await readFile(stageOutput, "utf8"))
+        .trim()
+        .split("\n")
+        .map((row) => row.split("=")),
+    );
+
+  const failed = child(
+    'await recordSkipperCheckpoint("skipper_installed_cleanup", "failed"); process.exitCode = 37;',
+  );
+  assert.equal(failed.status, 37);
+  const observed = await readOutputs();
+  const failure = join(directory, "failed.json");
+  assert.equal(
+    outcome(failure, "failure", observed.skipper_stage, observed.skipper_installed_cleanup).status,
+    0,
+  );
+  assert.deepEqual(JSON.parse(await readFile(failure, "utf8")), {
+    version: 1,
+    runId: "42942462012",
+    attempt: "1",
+    sourceSha,
+    outcome: "failed",
+    lastStage: "selected-test",
+    installedCleanup: "failed",
+  });
+  assert.equal(outcome(failure, "failure", "install", "passed").status, 1);
+  assert.equal(JSON.parse(await readFile(failure, "utf8")).lastStage, "selected-test");
+
+  await rm(stageOutput);
+  const timeout = child("setInterval(() => {}, 1_000);", 1_500);
+  assert.equal((timeout.error as NodeJS.ErrnoException | undefined)?.code, "ETIMEDOUT");
+  const partial = await readOutputs();
+  const timed = join(directory, "timeout.json");
+  assert.equal(
+    outcome(timed, "failure", partial.skipper_stage, partial.skipper_installed_cleanup).status,
+    0,
+  );
+  assert.equal(JSON.parse(await readFile(timed, "utf8")).lastStage, "selected-test");
+  assert.equal(JSON.parse(await readFile(timed, "utf8")).installedCleanup, "unknown");
+
+  const missing = child("process.exitCode = 31;", 10_000, join(directory, "absent", "output"));
+  assert.equal(missing.status, 31);
+  const unknown = join(directory, "unknown.json");
+  assert.equal(
+    outcome(unknown, "failure", "stage\nsynthetic-canary", "synthetic-canary").status,
+    0,
+  );
+  const published = await readFile(unknown, "utf8");
+  assert.doesNotMatch(published, /synthetic-canary/);
+  assert.equal(JSON.parse(published).lastStage, "unknown");
+  assert.equal(JSON.parse(published).installedCleanup, "unknown");
+
+  const success = child('await recordSkipperCheckpoint("skipper_installed_cleanup", "passed");');
+  assert.equal(success.status, 0);
+  const withheld = join(directory, "success.json");
+  assert.equal(outcome(withheld, "success", "finish-fixture", "passed").status, 0);
+  await assert.rejects(readFile(withheld), { code: "ENOENT" });
+});

@@ -598,6 +598,7 @@ jobs:
         timeout-minutes: 1
         run: node scripts/ci/first-agent-smoke.mjs release-selection "$RUNNER_TEMP/skipper-release-selection.json"
       - name: Prove native private Git and withdrawal on the same installed Agent
+        id: installed-skipper-proof
         env:
           OCC_DEVELOPMENT_K3S_IMAGE: docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc
         run: |
@@ -605,6 +606,22 @@ jobs:
           OCC_DEVELOPMENT_PREPARED_GIT_HOST_IP="$host" \
             node scripts/qualification/skipper-private-git-fixture.mjs --team-review -- node scripts/ci/skipper-prepared-git-installed.mjs
           echo 'Private Git origin, synthetic issuer and credential inputs removed.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Record sanitized installed Skipper failure
+        id: installed-skipper-failure
+        if: ${{ !cancelled() && steps.installed-skipper-proof.outcome == 'failure' }}
+        env:
+          SKIPPER_PROOF_OUTCOME: ${{ steps.installed-skipper-proof.outcome }}
+          SKIPPER_STAGE: ${{ steps.installed-skipper-proof.outputs.skipper_stage }}
+          SKIPPER_INSTALLED_CLEANUP: ${{ steps.installed-skipper-proof.outputs.skipper_installed_cleanup }}
+        run: node scripts/ci/skipper-failure-receipt.ts "$RUNNER_TEMP/skipper-installed-failure.json"
+      - name: Upload sanitized installed Skipper failure
+        if: ${{ !cancelled() && steps.installed-skipper-failure.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: attempt-${{ github.run_attempt }}-full-failure-skipper-prepared-git-installed
+          path: ${{ runner.temp }}/skipper-installed-failure.json
+          if-no-files-found: error
+          retention-days: 7
       - name: Qualify installed Skipper image selection
         timeout-minutes: 1
         run: node scripts/ci/run-tests.mjs aggregate skipper-prepared-git-installed --release-selection "$RUNNER_TEMP/skipper-release-selection.json" --results-dir "$RUNNER_TEMP/results"
