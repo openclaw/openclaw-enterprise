@@ -13,7 +13,10 @@ import { promisify } from "node:util";
 import { failureSecrets, redactLogLine } from "../../scripts/ci/failure-redaction.mjs";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { verifyOpenShellOwnerSession } from "../helpers/openshell-owner-session.mjs";
+import {
+  preflightOpenShellOwnerBrowser,
+  verifyOpenShellOwnerSession,
+} from "../helpers/openshell-owner-session.mjs";
 import { localOpenShellGatewayOptions } from "../helpers/local-openshell-gateway.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
 import { attachDevUpStartupDisposition } from "../helpers/dev-up-startup-disposition.ts";
@@ -264,6 +267,7 @@ test(
       await rm(root, { recursive: true, force: true });
     });
 
+    await preflightOpenShellOwnerBrowser(root, cluster);
     const result = await startDevelopment(environment);
     assert.match(result.stdout, /Sandbox Driver: openshell/);
     assert.match(result.stdout, /OpenClaw Enterprise development stack is ready/);
