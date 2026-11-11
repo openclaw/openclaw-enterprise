@@ -4,9 +4,11 @@ import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { createServer as createTlsServer } from "node:tls";
 import { fileURLToPath } from "node:url";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import {
@@ -16,9 +18,10 @@ import {
   projectOpenShellGitRetention,
   selectOpenShellGitWithdrawalDenials,
 } from "../../scripts/ci/openshell-git-retention.mjs";
-import { run } from "../fixtures/repository-credentials/process.mjs";
+import { createTlsMaterial, run } from "../fixtures/repository-credentials/process.mjs";
 import { startSkipperPrivateGitOrigin } from "../fixtures/skipper-private-git-origin.mjs";
 import { availablePort } from "./available-port.mjs";
+import { listen } from "./listen.mjs";
 import { localFirstAgentStack, ownFirstAgentWork } from "./local-first-agent-stack.mjs";
 import { localOpenShellGatewayOptions } from "./local-openshell-gateway.mjs";
 import { stopProcess } from "./stop-process.mjs";
@@ -29,11 +32,11 @@ const require = createRequire(new URL("../../apps/controller/package.json", impo
 const { loadYaml } = await import(require.resolve("@kubernetes/client-node"));
 const { Agent, fetch } = require("undici");
 const root = fileURLToPath(new URL("../../", import.meta.url));
-const workerLabels = {
+const controllerLabels = {
   "app.kubernetes.io/name": "openclaw-enterprise",
   "app.kubernetes.io/instance": "openclaw-enterprise",
-  "app.kubernetes.io/component": "worker",
 };
+const workerLabels = { ...controllerLabels, "app.kubernetes.io/component": "worker" };
 const supervisorLabels = {
   "openshell.ai/managed-by": "openshell",
   "openshell.ai/boundary-role": "supervisor",
@@ -266,11 +269,14 @@ async function trustedSupervisor({ command, cleanup, directory, cluster, ca, che
 }
 
 /** Installs the supported model + selected-repository path in its own k3d cluster. */
-export function createOpenShellGitInstallation(t, { witnessIssuedGit = false } = {}) {
-  return ownFirstAgentWork(t)(installOpenShellGit(t, witnessIssuedGit));
+export function createOpenShellGitInstallation(
+  t,
+  { witnessIssuedGit = false, allowStandingApprovals = false } = {},
+) {
+  return ownFirstAgentWork(t)(installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals }));
 }
 
-async function installOpenShellGit(t, witnessIssuedGit) {
+async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals }) {
   const eventually = (description, operation, timeout = 120_000) =>
     waitUntil(description, operation, timeout, t.signal);
   let tearingDown = false;
@@ -366,12 +372,9 @@ async function installOpenShellGit(t, witnessIssuedGit) {
         ...options,
       })
     ).stdout;
-  const kubectl = [
-    "--kubeconfig",
-    join(stack.directory, "kubeconfig"),
-    "--context",
-    `k3d-${state.cluster}`,
-  ];
+  const kubeconfig = join(stack.directory, "kubeconfig");
+  const context = `k3d-${state.cluster}`;
+  const kubectl = ["--kubeconfig", kubeconfig, "--context", context];
   const kube = (args, options) => command("kubectl", [...kubectl, ...args], options);
   const platform = state.platformNamespace;
   const apply = (objects) =>
@@ -380,15 +383,14 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     });
   const helmContext = [
     "--kubeconfig",
-    join(stack.directory, "kubeconfig"),
+    kubeconfig,
     "--kube-context",
-    `k3d-${state.cluster}`,
+    context,
     "--namespace",
     platform,
   ];
-  const admin = JSON.parse(
-    await readFile(join(stack.directory, "initial-admin-service-key.json"), "utf8"),
-  );
+  const serviceKeyFile = join(stack.directory, "initial-admin-service-key.json");
+  const admin = JSON.parse(await readFile(serviceKeyFile, "utf8"));
   const request = createOpenShellGitApi({
     origin: stack.environment.OCC_URL,
     key: admin.data.key,
@@ -514,6 +516,7 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     appId: origin.appId,
     githubInstallationId: origin.installationId,
     maximumDurationSeconds: 600,
+    ...(allowStandingApprovals && { allowStandingApprovals: true }),
     repositories: [
       {
         repositoryRef: origin.repositoryRef,
@@ -524,6 +527,7 @@ async function installOpenShellGit(t, witnessIssuedGit) {
             namespaceId: namespace.id,
             profiles: ["github-repository"],
             permissions: { metadata: "read", contents: "write" },
+            ...(allowStandingApprovals && { allowStandingApproval: true }),
           },
         ],
       },
@@ -638,9 +642,17 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     },
   };
   const installationJSON = JSON.stringify(installation);
-  await apply([
-    privateSecret("occ-installation-startup", { "installation.yaml": installationJSON }),
-  ]);
+  const installationSecret = privateSecret("occ-installation-startup", {
+    "installation.yaml": installationJSON,
+  });
+  if (allowStandingApprovals) {
+    // The production helper verifies that the authenticated API and Helm target
+    // belong to the same Installation before reading the fleet inventory.
+    const { id } = await request("GET", "/installation");
+    assert.equal(typeof id, "string");
+    installationSecret.metadata.annotations = { "openclaw.dev/installation-id": id };
+  }
+  await apply([installationSecret]);
   const values = JSON.parse(await readFile(join(stack.directory, "helm-values.json"), "utf8"));
   values.controlPlane = { ...values.controlPlane, installationChecksum: hash(installationJSON) };
   values.repositoryCredentials = {
@@ -870,6 +882,134 @@ async function installOpenShellGit(t, witnessIssuedGit) {
         !pod.metadata.deletionTimestamp &&
         pod.status.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
     );
+  };
+  const controllerIdentity = async () => {
+    const release = JSON.parse(
+      await command("helm", ["status", "openclaw-enterprise", ...helmContext, "-o", "json"]),
+    );
+    assert.equal(release.info.status, "deployed");
+    assert.ok(Number.isSafeInteger(release.version) && release.version > 0);
+    const labels = selector(controllerLabels);
+    const deployments = JSON.parse(
+      await kube(["get", "deployments", "-n", platform, "-l", labels, "-o", "json"]),
+    );
+    const pods = JSON.parse(
+      await kube(["get", "pods", "-n", platform, "-l", labels, "-o", "json"]),
+    );
+    const componentIdentity = (component) => {
+      const componentLabel = "app.kubernetes.io/component";
+      const selectedDeployments = deployments.items.filter(
+        (deployment) => deployment.metadata.labels[componentLabel] === component,
+      );
+      const selectedPods = pods.items.filter(
+        (pod) =>
+          pod.metadata.labels[componentLabel] === component && !pod.metadata.deletionTimestamp,
+      );
+      assert.equal(selectedDeployments.length, 1, `expected one ${component} Deployment`);
+      assert.equal(selectedPods.length, 1, `expected one serving ${component} Pod`);
+      const [deployment] = selectedDeployments;
+      const [pod] = selectedPods;
+      assert.ok(
+        pod.status.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
+      );
+      const status = [
+        ...(pod.status.initContainerStatuses ?? []),
+        ...(pod.status.containerStatuses ?? []),
+      ].find(({ name }) => name === component);
+      assert.ok(status?.ready && status.state.running && status.containerID && status.imageID);
+      assert.ok(Number.isSafeInteger(status.restartCount));
+      return {
+        deploymentUid: deployment.metadata.uid,
+        generation: deployment.metadata.generation,
+        podUid: pod.metadata.uid,
+        containerId: status.containerID,
+        imageId: status.imageID,
+        restartCount: status.restartCount,
+      };
+    };
+    return {
+      helmRevision: release.version,
+      api: componentIdentity("api"),
+      worker: componentIdentity("worker"),
+    };
+  };
+  const upgradeController = async () => {
+    assert.ok(
+      allowStandingApprovals,
+      "controller upgrade probe requires the annotated Installation",
+    );
+    const scope = { after: (operation) => cleanup.push(operation) };
+    const { key, cert, certFile } = await createTlsMaterial(scope);
+    const target = new URL(stack.environment.OCC_URL);
+    // Terminate TLS on loopback and forward the original HTTP exchange through
+    // the disposable cluster's API proxy. The real CLI authenticates the real API.
+    const server = createTlsServer({ key, cert }, (client) => {
+      const upstream = connect(Number(target.port), target.hostname);
+      client.on("error", () => upstream.destroy());
+      upstream.on("error", () => client.destroy());
+      client.once("close", () => upstream.destroy());
+      client.pipe(upstream).pipe(client);
+    });
+    const port = await listen(scope, server);
+    const installationFile = join(directory, "oce-installation.yaml");
+    await writeFile(installationFile, installationJSON, { mode: 0o600, flag: "wx" });
+    const sourceRevision = (
+      await command("git", ["rev-parse", "--verify", "HEAD^{commit}"])
+    ).trim();
+    // Give the imported image a distinct immutable reference in this cluster.
+    // Selecting it changes the Pod template without needing another source build.
+    const current = values.images.controller;
+    const digest = current.split("@")[1];
+    assert.match(digest, /^sha256:[a-f0-9]{64}$/u);
+    const candidate = `docker.io/library/oce-controller-upgrade-${randomUUID()}@${digest}`;
+    await command("docker", [
+      "exec",
+      `k3d-${state.cluster}-server-0`,
+      "ctr",
+      "-n",
+      "k8s.io",
+      "images",
+      "tag",
+      current,
+      candidate,
+    ]);
+    const before = await controllerIdentity();
+    const output = await run(
+      "scripts/upgrade-production-images",
+      [
+        ...kubectl,
+        "--namespace",
+        platform,
+        "--release",
+        "openclaw-enterprise",
+        "--values",
+        valuesFile,
+        "--installation",
+        installationFile,
+        "--controller-image",
+        candidate,
+        "--source-revision",
+        sourceRevision,
+        "--evidence-dir",
+        join(directory, "controller-upgrade"),
+        "--occ",
+        join(root, "bin", "occ"),
+      ],
+      {
+        cwd: root,
+        env: {
+          ...environment,
+          OCC_URL: `https://127.0.0.1:${port}`,
+          OCC_SERVICE_KEY_FILE: serviceKeyFile,
+          OCC_CA_BUNDLE: certFile,
+        },
+        signal: t.signal,
+        timeout: 120_000,
+        allowFailure: true,
+      },
+    );
+    assert.ok(Number.isInteger(output.code), "upgrade helper did not exit normally");
+    return { ...output, before, after: await controllerIdentity() };
   };
   const durableIdentity = async () => {
     const pods = JSON.parse(
@@ -1296,6 +1436,7 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     waitForExpiry,
     verifySupervisorImage,
     restartWorker,
+    upgradeController,
     checkpoint,
   };
 }
