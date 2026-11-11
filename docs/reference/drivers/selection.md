@@ -17,7 +17,7 @@ images; individual Agents cannot choose their own implementations.
    supplied on those hosts, start with [SSH Compute](ssh-compute.md) instead.
 2. Select the required Configuration, IAM, Compute, and Secret implementations.
    The table below lists each capability and its allowed choices. Omit optional
-   Sandbox, Credential Gateway, ServiceAccount, Plugin, and Repo selections
+   Sandbox, Credential Gateway, ServiceAccount, and Plugin selections
    unless you need them.
 3. Set `OCC_CONFIG_PATH` to the absolute path of that trusted YAML and select
    `NODE_ENV=development` or `NODE_ENV=production` explicitly. Run the API and
@@ -141,12 +141,15 @@ An Installation-scoped [Backend](../backends.md) groups an authenticated
 client with exact related Driver selections. `backend[].drivers` owns
 membership, and composition injects the Backend into the concrete member.
 The generic Driver contract has no Backend identity field. All declared members
-are required and must match the selected registry `(capability, id)`. The bundled ChatGPT Backend requires its selected
-ServiceAccount Driver; the bundled GitHub Backend requires its selected Repo
-Driver; the bundled OpenShell Backend requires both its Sandbox and Credential
-Gateway Drivers, and its Credential Refresh Driver when it declares one. A
+are required and must match the selected registry `(capability, id)`. The bundled
+ChatGPT Backend requires its selected ServiceAccount Driver. The bundled
+OpenShell Backend requires both its Sandbox and Credential Gateway Drivers
+and its Credential Refresh Driver when it declares one. A
 selected Credential Gateway or Credential Refresh Driver must belong to a
 configured Backend. There is no per-Agent Driver selection.
+
+The bundled GitHub Backend requires a matching `repository` selection. See
+[Installation policy and delivery](../repository-credentials.md#installation-policy-and-delivery).
 
 Runtime Backend injection is limited to those bundled Drivers; installed
 packages keep the factory arguments below, and Backend loading or injection into
@@ -302,10 +305,9 @@ Driver package. OCC does not merge package-provided defaults.
 IAM, Compute, Configuration, and Sandbox selections accept only `id`, optional
 `package`, and `configuration`. Omit `package` for a bundled Driver. The
 Secret selection accepts only the bundled Kubernetes implementation. The optional
-Repo selection accepts only the bundled GitHub implementation with its declared
-Backend member, and the optional Credential Gateway selection accepts only the
-bundled OpenShell implementation; none of these selections accepts an installed package. Installed implementation identity is
-`<package-name>@<installed-version>`; bundled identity is intrinsic. Operators
+Credential Gateway selection accepts only the bundled OpenShell implementation.
+Installed implementation identity is `<package-name>@<installed-version>`.
+Bundled identity is intrinsic. Operators
 cannot supply `implementation` or `version`; factory identity and capability
 must match the selection:
 
