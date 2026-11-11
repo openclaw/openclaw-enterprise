@@ -344,10 +344,4 @@ None.
 
 - 2026-11-10 07:15: Admit bounded Codex Git workspace metadata and passive MCP attribution on Responses requests. (authoring-run/13d2e44f-b996-453e-8cbc-db80b8f8e3e2 - f06bf60299ad29444685d70fb2708f3f0558a5ad)
 
-- 2026-11-06 02:38: Refuse historical Git issuance and session renewal while preserving original detach recovery. (authoring-run/96255fab-cb34-45d9-b940-d3055029e29f - 37b81d16bbbb3f0c864fc652060075c06eb4dc52)
-
-- 2026-11-06 02:36: Preserve request-time token resolution and held-probe diagnostics when merging the current flow. (authoring-run/c13df234-5a0d-4e3c-b254-cc806ee046e7 - 585e7ac2c6673611ec29a3c76ca507e61308fa6f)
-
-- 2026-11-06 01:25: Pin credential destinations. (authoring-run/7315b76f-e581-43e4-a73a-06f924640ea0 - 37144f62101a9e99b066f1abbbf75ede787d26dd)
-
 [Protected credential request documentation history](credential-source-egress/history.md) preserves the older dated entries.

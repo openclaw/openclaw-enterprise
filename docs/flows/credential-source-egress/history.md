@@ -8,6 +8,12 @@ This record preserves the dated changes to the protected credential request page
 
 ## Changelog
 
+- 2026-11-06 02:38: Refuse historical Git issuance and session renewal while preserving original detach recovery. (authoring-run/96255fab-cb34-45d9-b940-d3055029e29f - 37b81d16bbbb3f0c864fc652060075c06eb4dc52)
+
+- 2026-11-06 02:36: Preserve request-time token resolution and held-probe diagnostics when merging the current flow. (authoring-run/c13df234-5a0d-4e3c-b254-cc806ee046e7 - 585e7ac2c6673611ec29a3c76ca507e61308fa6f)
+
+- 2026-11-06 01:25: Pin credential destinations. (authoring-run/7315b76f-e581-43e4-a73a-06f924640ea0 - 37144f62101a9e99b066f1abbbf75ede787d26dd)
+
 - 2026-11-05 23:21: Trace request-time token resolution and the permission check before releasing a credential header. (codex/01a19e60-87d0-71d0-8c9a-e3e3b33b1676 - 614169814)
 
 - 2026-11-05 20:36: Trace one-shot Git enrollment probe failures to the worker log. (authoring-run/5e3df28f-4382-449e-a9db-e26d5347994e - b1da9eddd3a594982ce36639610d1e3480a9e1f7)
