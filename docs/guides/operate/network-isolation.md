@@ -274,10 +274,11 @@ kc -n "$TENANT_NAMESPACE" delete pod netcheck-profile-missing netcheck-profile-u
   target Gateway on TCP/18791. Verify the observed source addresses against the
   control-plane inventory. Add verified `/32` or `/128` sources to
   `network.pluginStatusProxySourceCidrs` in the Installation configuration.
-  Read back the reconciled Gateway policy. If you added a temporary rule,
-  remove it after confirming that the reconciled policy admits the verified
-  sources. Rerun deployment diagnostics. Repeat source discovery if
-  control-plane addresses rotate.
+  During planned maintenance, [apply the Installation change](../deploy/production-installation-changes.md)
+  so the API and worker reload it. Then [deploy the affected Agent](../deploy/production-agents.md)
+  so Compute reconciles the Gateway policy. Read back the policy and verify its
+  sources before removing any temporary rule. Run deployment diagnostics for
+  the new version. Repeat source discovery if control-plane addresses rotate.
 - An OpenShell Harness reports `runtime-status` as `unknown`: the provider
   fence prevents Kubernetes Pod-proxy reads of the Harness. Use the separate
   `sandbox` check for the provider's observation.
