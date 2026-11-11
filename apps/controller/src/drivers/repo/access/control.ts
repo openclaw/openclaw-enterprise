@@ -72,6 +72,13 @@ export function createControlAdmission(
     );
     return latestWall;
   };
+  function forget(id: string, record: AdmissionRecord): void {
+    record.cancel();
+    records.delete(id);
+    if (record.sessionId !== undefined) {
+      sessions.delete(record.sessionId);
+    }
+  }
   // `skip` is the admission the calling open handles itself.
   const sweep = (skip?: string) => {
     for (const [id, record] of records) {
@@ -114,11 +121,7 @@ export function createControlAdmission(
         (!record.durable || record.saved) &&
         clock.monotonicNow() >= record.forgetAt
       ) {
-        record.cancel();
-        records.delete(id);
-        if (record.sessionId !== undefined) {
-          sessions.delete(record.sessionId);
-        }
+        forget(id, record);
       }
     }
   };
@@ -130,11 +133,7 @@ export function createControlAdmission(
     } catch {
       return false;
     }
-    record.cancel();
-    records.delete(id);
-    if (record.sessionId !== undefined) {
-      sessions.delete(record.sessionId);
-    }
+    forget(id, record);
     return true;
   };
   const persist = async (id: string, record: AdmissionRecord, status: SessionStatus) => {
