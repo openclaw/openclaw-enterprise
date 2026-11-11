@@ -4,7 +4,8 @@
 // Gateway restart after an unclean stop is in
 // runtime-image-gateway-unclean-restart.test.mjs.
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test, type TestContext } from "node:test";
+import type { ProbeSnapshot } from "../helpers/runtime-image-model-probe.ts";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { imageTestOptions, runDocker, failureTail } from "../helpers/runtime-image-startup.mjs";
 import {
@@ -26,10 +27,33 @@ import {
 // Gateway's 330 seconds: a wrapper that ignores SIGTERM never meets it.
 const promptTerminationMs = 15_000;
 
+type TerminationSnapshot = Pick<
+  ProbeSnapshot,
+  "events" | "phases" | "output" | "running" | "exitCode"
+>;
+type TerminationScenario = {
+  containerName: string;
+  collect: () => Promise<TerminationSnapshot>;
+  exited: (deadline: number) => Promise<number | undefined>;
+};
+type WrapperKind = "codex" | "gateway" | "dedicated-gateway";
+type TerminationOptions = {
+  kind: WrapperKind;
+  mode: "hang" | "reject" | "answer";
+  until: (snapshot: TerminationSnapshot) => boolean;
+  description: string;
+  phase: string;
+};
+
 // Sends SIGTERM as the kubelet does and measures how long the container takes
 // to stop (the scenario follows its exit with `docker wait`). Container exit
 // ends its PID namespace, so no child outlives it.
-async function assertPromptTermination(t, { containerName, collect, exited }, description, phase) {
+async function assertPromptTermination(
+  t: TestContext,
+  { containerName, collect, exited }: TerminationScenario,
+  description: string,
+  phase: string,
+) {
   const budgetMs = promptTerminationMs * imageSmokeTimeoutMultiplier;
   const signalledAt = Date.now();
   await runDocker(["kill", "--signal", "TERM", containerName]);
@@ -66,16 +90,28 @@ async function assertPromptTermination(t, { containerName, collect, exited }, de
 
 // Starts one wrapper, waits for `until`, then sends SIGTERM. `phase` names the
 // measurement: the wrapper kind and the startup phase it was stopped in.
-async function runTerminationScenario(t, { kind, mode, until, description, phase }) {
+async function runTerminationScenario(
+  t: TestContext,
+  { kind, mode, until, description, phase }: TerminationOptions,
+): Promise<{ snapshot: TerminationSnapshot }> {
   return runStartupProbeScenario(t, {
     kind,
     mode,
     until,
-    act: (scenario) => assertPromptTermination(t, scenario, description, `${kind}-${phase}`),
+    cpus: undefined,
+    homeVolume: undefined,
+    podOwner: undefined,
+    stateVolume: undefined,
+    terminatedGatewayNamespace: undefined,
+    act: (scenario: TerminationScenario) =>
+      assertPromptTermination(t, scenario, description, `${kind}-${phase}`),
   });
 }
 
-async function assertWrapperTermination(t, kind) {
+async function assertWrapperTermination(
+  t: TestContext,
+  kind: Exclude<WrapperKind, "dedicated-gateway">,
+) {
   const label = kind === "codex" ? "Codex Harness" : "embedded Gateway";
 
   // SIGTERM while the provider holds the probe's model turn: the wrapper is
@@ -89,7 +125,8 @@ async function assertWrapperTermination(t, kind) {
   });
   await withStartupProbeEvidence(probing, async () => {
     const { events, phases } = probing.snapshot;
-    assert.equal(phaseAt(phases, "model-probe"), undefined, "a terminated probe has no outcome");
+    const modelProbePhase: unknown = phaseAt(phases, "model-probe");
+    assert.equal(modelProbePhase, undefined, "a terminated probe has no outcome");
     assert.equal(events.filter(isModelTurn).length, 1, "termination starts no further attempt");
     assert.equal(events.some(observedValue("ready", true)), false);
   });

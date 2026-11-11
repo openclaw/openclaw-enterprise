@@ -1,7 +1,7 @@
 // Runtime image startup smoke tests split from runtime-image-startup.test.mjs so
 // CI can run the files in parallel lanes: startup model probes and ephemeral
 // native worker reconnect from an expired replayed setup code. SIGTERM during
-// startup is in runtime-image-startup-termination.test.mjs; workspace node
+// startup is in runtime-image-startup-termination.test.ts; workspace node
 // enrollment and the inactive Slack approver startup check are in
 // runtime-image-native-worker.test.mjs.
 import assert from "node:assert/strict";

@@ -22,7 +22,7 @@ import {
   renderProductionChart,
 } from "../helpers/production-chart.mjs";
 import { caAndLeaf } from "../helpers/certificates.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 
 const execute = promisify(execFile);
 const tooling = await chartTooling();

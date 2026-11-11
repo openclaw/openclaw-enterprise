@@ -6,7 +6,7 @@ import { createHumanLogin } from "../../apps/controller/src/auth/human-login.ts"
 import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import { idTokenSigner, rsaSigningKey } from "./id-token.mjs";
 import { jsonChunkDestination } from "./json-lines.mjs";
-import { listen } from "./listen.mjs";
+import { listen } from "./listen.ts";
 import { waitUntil } from "./wait-for.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));

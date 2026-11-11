@@ -23,7 +23,7 @@ import {
 } from "../helpers/kubernetes-compute.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
-import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { jsonChunkDestination } from "../helpers/json-lines.mjs";
 
 type KubernetesSdk = Awaited<ReturnType<typeof createKubernetesClientConfiguration>>["sdk"];
