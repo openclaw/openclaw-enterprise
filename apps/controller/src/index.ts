@@ -1909,6 +1909,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       method: request.method,
       route: request.routeOptions.url ?? "unmatched",
       status: reply.statusCode,
+      nativeAdmissionReason: nativeAdmin.httpAdmissionReason(request),
       ...(durationMs === undefined ? {} : { durationMs: Math.round(durationMs * 1000) / 1000 }),
     });
   });

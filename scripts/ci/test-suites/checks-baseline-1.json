@@ -684,6 +684,7 @@
       "expectedTests": [
         "a confirmed diagnostic grant preserves the actual Driver refusal and redacts the complete receipt",
         "non-PAT refusals and serving PAT Drivers do not trigger diagnostics",
+        "a native fallback mismatch retains only closed provenance from the Harness log window",
         "diagnostic wrong-profile retains the classified failure",
         "diagnostic wrong-reviewer retains the classified failure",
         "diagnostic wrong-approval retains the classified failure",

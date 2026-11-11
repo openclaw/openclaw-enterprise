@@ -876,6 +876,18 @@ preflight_cleanup_error() {
     warn "could not confirm cleanup of ${resource:0:300}: the delete request failed; see preflight-cleanup.err in the evidence directory."
   fi
 }
+# The API may return a replacement Job or Secret. Persist only its identity,
+# never its contents. Empty successful output means absence; malformed or failed reads do not.
+read_preflight_identity() {
+  "${kube[@]}" --request-timeout=10s --namespace "$namespace" get "$1" \
+    --ignore-not-found -o json 2>>"$evidence_dir/preflight-cleanup.err" |
+    jq -cs '
+      if length == 0 then empty
+      elif length == 1 and (.[0].metadata.uid | type == "string" and length > 0)
+      then {metadata: {uid: .[0].metadata.uid}}
+      else error("invalid preflight identity") end
+    ' >"$2" 2>/dev/null
+}
 cleanup_preflight() {
   local entry resource name uri delete_options errors uid deadline remaining child child_name child_uid
   local consumers_stopped=1 cleanup_failed=0
@@ -895,9 +907,14 @@ cleanup_preflight() {
     uri="/apis/batch/v1/namespaces/$namespace/jobs/$name"
     if ! errors=$("${kube[@]}" --request-timeout=15s delete --raw="$uri" -f - \
       <<<"$delete_options" 2>&1 >/dev/null); then
-      preflight_cleanup_error "$resource" "$errors"
-      consumers_stopped=0
-      continue
+      # A prior cleanup may have deleted the original. Re-read instead of
+      # interpreting kubectl's error text; child settlement is still required.
+      if ! read_preflight_identity "$resource" "$evidence_dir/preflight-cleanup-job.json" ||
+        [[ -s "$evidence_dir/preflight-cleanup-job.json" ]]; then
+        preflight_cleanup_error "$resource" "$errors"
+        consumers_stopped=0
+        continue
+      fi
     fi
     child_name= child_uid=
     for child in ${preflight_children[@]+"${preflight_children[@]}"}; do
@@ -956,9 +973,39 @@ cleanup_preflight() {
     # Compare the original UID atomically; leave same-name replacements untouched.
     if ! errors=$("${kube[@]}" --request-timeout=15s delete --raw="$uri" -f - \
       <<<"$delete_options" 2>&1 >/dev/null); then
+      if read_preflight_identity "$resource" "$evidence_dir/preflight-cleanup-dependency.json" &&
+        [[ ! -s "$evidence_dir/preflight-cleanup-dependency.json" ]]; then
+        continue
+      fi
       preflight_cleanup_error "$resource" "$errors"
       cleanup_failed=1
+      continue
     fi
+    # DELETE acceptance is not disappearance: finalizers may retain the object.
+    uid=$(jq -er '.preconditions.uid' <<<"$delete_options") || { cleanup_failed=1; continue; }
+    deadline=$((SECONDS + 30))
+    while true; do
+      if ! read_preflight_identity "$resource" "$evidence_dir/preflight-cleanup-dependency.json"; then
+        warn "could not confirm cleanup of ${resource:0:300}; see preflight-cleanup.err."
+        cleanup_failed=1
+        break
+      fi
+      [[ -s "$evidence_dir/preflight-cleanup-dependency.json" ]] || break
+      if ! jq -e --arg uid "$uid" '.metadata.uid == $uid' \
+        "$evidence_dir/preflight-cleanup-dependency.json" >/dev/null 2>>"$evidence_dir/preflight-cleanup.err"; then
+        printf 'Cannot confirm original identity for %s after deletion.\n' "$resource" >>"$evidence_dir/preflight-cleanup.err"
+        warn "could not confirm cleanup of ${resource:0:300}; original identity could not be verified."
+        cleanup_failed=1
+        break
+      fi
+      if ((SECONDS >= deadline)); then
+        printf 'Timed out deleting %s.\n' "$resource" >>"$evidence_dir/preflight-cleanup.err"
+        warn "could not confirm cleanup of ${resource:0:300}; deletion is still pending."
+        cleanup_failed=1
+        break
+      fi
+      sleep 1
+    done
   done
   preflight_resources=()
   return "$cleanup_failed"
@@ -1051,33 +1098,29 @@ run_preflight_jobs() {
       esac
       sleep 2
     done
-    # The logs API addresses a name, so retain output only while that name still
-    # identifies the validated child before and after the request.
-    if [[ -n "$pod" ]] && ((identity_valid)); then
-      if ! child=$(read_preflight_child "$component" "$job" "$job_uid" "$pod_uid" 30s) || [[ -z "$child" ]]; then
-        message="cannot bind the $component startup preflight logs to the original child Pod; no ${writer_qualifier}OCC writer was stopped."
-      else
-        logs_status=0
-        # Bash drops NUL bytes; reject them before they can change a result marker.
-        logs=$("${kube[@]}" --request-timeout=30s --namespace "$namespace" logs "pod/$pod" --container "$component" \
-          2>"$evidence_dir/preflight-$component-logs.err" |
-          python3 -c 'import sys
+    # The last successful poll supplies the pre-log identity check. No remote
+    # operation intervenes; recheck after the name-based request before retaining logs.
+    if [[ -n "$pod" && -n "$child" ]] && ((identity_valid)); then
+      logs_status=0
+      # Bash drops NUL bytes; reject them before they can change a result marker.
+      logs=$("${kube[@]}" --request-timeout=30s --namespace "$namespace" logs "pod/$pod" --container "$component" \
+        2>"$evidence_dir/preflight-$component-logs.err" |
+        python3 -c 'import sys
 data = sys.stdin.buffer.read()
 if b"\0" in data:
     sys.exit(1)
 sys.stdout.buffer.write(data)') || logs_status=$?
-        if ! child=$(read_preflight_child "$component" "$job" "$job_uid" "$pod_uid" 30s) || [[ -z "$child" ]]; then
-          logs=
-          message="cannot bind the $component startup preflight logs to the original child Pod; discarded unconfirmed output. No ${writer_qualifier}OCC writer was stopped."
-        else
-          printf '%s\n' "$child" >"$evidence_dir/preflight-$component-status.json"
-          printf '%s\n' "$logs" >"$evidence_dir/preflight-$component.log"
-          logs=
-          phase=$(node scripts/upgrade-startup-preflight.mjs phase "$evidence_dir/preflight-$component-status.json" \
-            "$evidence_dir/preflight-$component-job-status.json")
-          if ((logs_status != 0)) && [[ -z "$message" && "$phase" == Succeeded ]]; then
-            message="cannot read the $component startup preflight logs; no ${writer_qualifier}OCC writer was stopped."
-          fi
+      if ! child=$(read_preflight_child "$component" "$job" "$job_uid" "$pod_uid" 30s) || [[ -z "$child" ]]; then
+        logs=
+        message="cannot bind the $component startup preflight logs to the original child Pod; discarded unconfirmed output. No ${writer_qualifier}OCC writer was stopped."
+      else
+        printf '%s\n' "$child" >"$evidence_dir/preflight-$component-status.json"
+        printf '%s\n' "$logs" >"$evidence_dir/preflight-$component.log"
+        logs=
+        phase=$(node scripts/upgrade-startup-preflight.mjs phase "$evidence_dir/preflight-$component-status.json" \
+          "$evidence_dir/preflight-$component-job-status.json")
+        if ((logs_status != 0)) && [[ -z "$message" && "$phase" == Succeeded ]]; then
+          message="cannot read the $component startup preflight logs; no ${writer_qualifier}OCC writer was stopped."
         fi
       fi
     fi

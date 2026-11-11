@@ -1,3 +1,4 @@
+import { AdmissionFailure } from "../../apps/controller/src/admission/admission-verifier.ts";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import net from "node:net";
@@ -512,6 +513,9 @@ async function denialOwner(t, overrides = {}) {
       sharedCookieDomain: "example.com",
       admissionVerifier: {
         async verify() {
+          if (overrides.admissionError) {
+            throw overrides.admissionError;
+          }
           return {
             method: "session",
             decisionId: "dec_1",
@@ -768,17 +772,22 @@ test("native-admin denial ownership retains HTTP audit failure and timeout respo
   try {
     const timely = reply();
     const raw = owner.request();
-    await owner.access.interceptHttp({ headers: raw.headers, url: "/", raw }, timely);
+    const request = { headers: raw.headers, url: "/", raw };
+    await owner.access.interceptHttp(request, timely);
+    assert.equal(owner.access.httpAdmissionReason(request), "denial_audit_failed");
     assert.equal(timely.statusCode, 503);
     assert.equal(timely.body.error.code, "DEPENDENCY_UNAVAILABLE");
     const late = reply();
-    const pending = owner.access.interceptHttp({ headers: raw.headers, url: "/", raw }, late);
+    const lateRequest = { headers: raw.headers, url: "/", raw };
+    const pending = owner.access.interceptHttp(lateRequest, late);
     await settleCallbacks();
     t.mock.timers.tick(5_000);
     await pending;
     assert.equal(late.statusCode, 503);
+    assert.equal(owner.access.httpAdmissionReason(lateRequest), "admission_unavailable");
     admission.reject(owner.denied);
     await settleCallbacks();
+    assert.equal(owner.access.httpAdmissionReason(lateRequest), "admission_unavailable");
     assert.equal(owner.denials().length, 2);
     assert.equal(owner.upstreams.length, 0);
   } finally {
@@ -909,6 +918,40 @@ test("native-admin denial ownership keeps dependency failures distinct from deni
   assert.equal(owner.denials().length, 0);
   assert.equal(owner.upstreams.length, 0);
   await owner.shutdown();
+});
+
+test("native-admin HTTP admission preserves typed refusals and dependency failures", async (t) => {
+  for (const [error, status, reason] of [
+    [new AdmissionFailure(401, "UNAUTHENTICATED", "missing session"), 403, "session_invalid"],
+    [new AdmissionFailure(403, "FORBIDDEN", "scope refused"), 403, "admission_forbidden"],
+    [new Error("session store unavailable"), 503, "dependency_failure"],
+  ]) {
+    await t.test(reason, async (t) => {
+      // The verifier's public failure contract drives the real HTTP admission owner.
+      const owner = await denialOwner(t, { admissionError: error });
+      const raw = owner.request();
+      const request = { headers: raw.headers, url: "/", raw };
+      const reply = {
+        request: { id: "request_test" },
+        header() {
+          return this;
+        },
+        status(code) {
+          this.statusCode = code;
+          return this;
+        },
+        send(body) {
+          this.body = body;
+        },
+      };
+      await owner.access.interceptHttp(request, reply);
+      assert.equal(reply.statusCode, status);
+      assert.equal(owner.access.httpAdmissionReason(request), reason);
+      assert.equal(owner.denials().length, 0, "no attributed IAM operation was attempted");
+      assert.equal(owner.upstreams.length, 0);
+      await owner.shutdown();
+    });
+  }
 });
 
 test("native-admin denial ownership preserves a timely HTTP denial response", async (t) => {

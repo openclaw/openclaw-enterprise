@@ -131,9 +131,16 @@ Raw test output and diagnostics remain private. Failed native operations report 
 If the installed proof fails and the job can continue, look for
 `attempt-<attempt>-full-failure-skipper-prepared-git-installed`, retained for seven
 days. Its single JSON file records the run, attempt, source SHA, failed outcome,
-last recorded stage and installed cleanup status. A missed checkpoint write can
-leave an earlier stage visible. Missing or unrecognized
-checkpoints become `unknown`; they do not establish successful cleanup.
+last recorded stage and installed cleanup status. For `selected-test`, the
+receipt also records the allowlisted `testOperation` and `lastTestCheckpoint`,
+with `unknown` for missing or unrecognized values. After a failed runner, the
+writer uses complete valid ledger rows before the first malformed or non-object
+row. It ignores blank rows and selects the last recognized checkpoint for the
+selected mode, excluding retirement. A missing or unreadable ledger leaves the
+checkpoint `unknown` but preserves a verified operation. Optional failure
+evidence cannot replace the selected-test failure; passing proof still requires
+strict ledger parsing. A missed stage write can leave an earlier stage
+visible. Checkpoints do not establish successful cleanup.
 
 Cleanup `passed` covers registered teardown callbacks, verified cluster and
 network removal, released installation ports and model-directory removal. It

@@ -65,6 +65,13 @@ else
 fi
 ```
 
+The runtime build sizes its Node.js compile to the builder with
+[`NODE_BUILD_JOBS=auto`](../../../deploy/runtime/node/README.md). It reads only
+the build step's own CPU and memory limits; limits set on a parent cgroup are
+invisible to it. On a builder host where a parent cgroup caps CPU or memory,
+add `--build-arg NODE_BUILD_JOBS=<n>` to the runtime `docker buildx build`
+command, sized to those limits.
+
 If a build fails certificate verification when downloading a package behind an HTTPS proxy or from a private package registry, add `--secret "id=build-ca,src=$CA_BUNDLE"` to both `docker buildx build` commands above. Set `CA_BUNDLE` to a PEM file with the public trust roots and the approved proxy or registry CA certificate. Both Dockerfiles mount this file only during the download steps. Keep TLS verification enabled. Image registry TLS uses the builder's own trust configuration.
 
 Before installation, [check each digest](../../testing/docker.md#check-published-images)

@@ -623,6 +623,8 @@ jobs:
         env:
           SKIPPER_PROOF_OUTCOME: ${{ steps.installed-skipper-proof.outcome }}
           SKIPPER_STAGE: ${{ steps.installed-skipper-proof.outputs.skipper_stage }}
+          SKIPPER_TEST_OPERATION: ${{ steps.installed-skipper-proof.outputs.skipper_test_operation }}
+          SKIPPER_LAST_TEST_CHECKPOINT: ${{ steps.installed-skipper-proof.outputs.skipper_last_test_checkpoint }}
           SKIPPER_INSTALLED_CLEANUP: ${{ steps.installed-skipper-proof.outputs.skipper_installed_cleanup }}
         run: node scripts/ci/skipper-failure-receipt.ts "$RUNNER_TEMP/skipper-installed-failure.json"
       - name: Upload sanitized installed Skipper failure

@@ -75,6 +75,7 @@ interface Options {
   tls?: "valid" | "wrong-identity";
   writer?: "throw" | "reject" | "stall";
   approvalPolicies?: unknown;
+  readHarnessLogs?: (since: string, signal: AbortSignal) => Promise<string | undefined>;
 }
 
 function startReply() {
@@ -445,6 +446,9 @@ async function fixture(t: TestContext, options: Options = {}) {
           bearer,
           signal: abort.signal,
           requirePat,
+          ...(options.readHarnessLogs === undefined
+            ? {}
+            : { readHarnessLogs: options.readHarnessLogs }),
           ...(certificate
             ? { rootCertificate: Buffer.from(certificate.cert + (wrongCertificate?.cert ?? "")) }
             : {}),
@@ -516,8 +520,15 @@ function assertNoTurnOrApprovalResponse(requests: Message[][]) {
 }
 
 test("a confirmed diagnostic grant preserves the actual Driver refusal and redacts the complete receipt", async (t) => {
-  const f = await fixture(t);
+  let logReads = 0;
+  const f = await fixture(t, {
+    readHarnessLogs: async () => {
+      logReads++;
+      return "";
+    },
+  });
   await assertRefusal(f);
+  assert.equal(logReads, 0, "an accepted grant must not collect Harness logs");
   assert.deepEqual(receipt(f), {
     revisionId,
     outcome: "accepted",
@@ -574,6 +585,64 @@ test("non-PAT refusals and serving PAT Drivers do not trigger diagnostics", asyn
   assert.equal(serving.attempted.size, 0);
   assertNoTurnOrApprovalResponse(serving.requests);
   await serving.assertClosed();
+});
+
+test("a native fallback mismatch retains only closed provenance from the Harness log window", async (t) => {
+  const warning = {
+    level: "WARN",
+    target: "codex_core::config",
+    fields: {
+      message:
+        "configured value is disallowed by requirements; falling back to required value for permission_profile",
+      requirement_source: `Some(SystemRequirementsToml { file: "/etc/${sensitive}" })`,
+      fallback_value: sensitive,
+      error: bearer,
+    },
+  };
+  const unrelated = JSON.stringify({
+    ...warning,
+    target: "some_other_target",
+    fields: {
+      ...warning.fields,
+      requirement_source: `Some(EnterpriseManaged { id: "${sensitive}", name: "other" })`,
+    },
+  });
+  const composite = JSON.stringify({
+    ...warning,
+    fields: {
+      ...warning.fields,
+      requirement_source: `Some(Composite { sources: [EnterpriseManaged { id: "${sensitive}", name: "private" }] })`,
+    },
+  });
+  const system = JSON.stringify(warning);
+  const malformed = system.slice(0, -1);
+  for (const [name, logs, expected] of [
+    [
+      "observed",
+      [unrelated, composite, system, system, malformed].join("\n"),
+      { outcome: "observed", sourceCategories: ["composite", "system-requirements-file"] },
+    ],
+    ["unobserved", [unrelated, malformed].join("\n"), { outcome: "unobserved" }],
+    ["unavailable", undefined, { outcome: "unavailable" }],
+  ] as const) {
+    await t.test(name, async (t) => {
+      const f = await fixture(t, {
+        scenario: "wrong-legacy-mode",
+        readHarnessLogs: async (since, signal) => {
+          assert.ok(Date.parse(since) <= Date.now());
+          assert.equal(signal.aborted, false);
+          if (logs === undefined) {
+            throw new Error(sensitive);
+          }
+          return logs;
+        },
+      });
+      await assertRefusal(f);
+      assert.deepEqual(receipt(f).permissionProfileFallback, expected);
+      assertNoTurnOrApprovalResponse(f.requests);
+      await f.assertClosed();
+    });
+  }
 });
 
 for (const [scenario, outcome] of [

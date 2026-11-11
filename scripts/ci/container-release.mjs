@@ -40,6 +40,9 @@ export const runtimeImageSmokeTests = Object.freeze([
   "tests/integration/runtime-image-node-state-lock.test.ts",
   "tests/integration/runtime-image-codex-local-plugins.test.ts",
   "tests/integration/sandbox-driver-startup.test.mjs",
+  "tests/integration/sandbox-driver-installation-configuration.test.ts",
+  "tests/integration/sandbox-driver-ipv6-endpoints.test.ts",
+  "tests/integration/sandbox-driver-codex-app-server.test.ts",
   "tests/integration/workspace-files-native.test.mjs",
 ]);
 

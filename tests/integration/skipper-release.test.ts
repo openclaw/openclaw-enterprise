@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { promisify } from "node:util";
+import {
+  readSkipperJourney,
+  recordSkipperTestFailure,
+} from "../../scripts/ci/skipper-failure-receipt.ts";
 import { inGateway } from "../helpers/skipper-prepared-compute.mjs";
 
 const lane = "skipper-prepared-git-installed";
@@ -309,7 +314,13 @@ test("installed Skipper failure retention preserves known checkpoints and withho
       env: { ...scope, GITHUB_OUTPUT: output },
       timeout,
     });
-  const outcome = (path: string, outcome: string, lastStage?: string, installedCleanup?: string) =>
+  const outcome = (
+    path: string,
+    outcome: string,
+    lastStage?: string,
+    installedCleanup?: string,
+    extra: NodeJS.ProcessEnv = {},
+  ) =>
     spawnSync(process.execPath, ["scripts/ci/skipper-failure-receipt.ts", path], {
       encoding: "utf8",
       env: {
@@ -317,6 +328,7 @@ test("installed Skipper failure retention preserves known checkpoints and withho
         SKIPPER_PROOF_OUTCOME: outcome,
         SKIPPER_STAGE: lastStage,
         SKIPPER_INSTALLED_CLEANUP: installedCleanup,
+        ...extra,
       },
     });
   const readOutputs = async () =>
@@ -373,6 +385,8 @@ test("installed Skipper failure retention preserves known checkpoints and withho
     outcome: "failed",
     lastStage: "selected-test",
     installedCleanup: "failed",
+    testOperation: "unknown",
+    lastTestCheckpoint: "unknown",
   });
   assert.equal(outcome(failure, "failure", "install", "passed").status, 1);
   assert.equal(JSON.parse(await readFile(failure, "utf8")).lastStage, "selected-test");
@@ -427,4 +441,154 @@ test("installed Skipper failure retention preserves known checkpoints and withho
   const withheld = join(directory, "success.json");
   assert.equal(outcome(withheld, "success", "finish-fixture", "passed").status, 0);
   await assert.rejects(readFile(withheld), { code: "ENOENT" });
+
+  type Workflow = {
+    jobs: Record<string, { steps: { id?: string; env?: Record<string, string> }[] }>;
+  };
+  const { loadYaml } = createRequire(
+    new URL("../../apps/controller/package.json", import.meta.url),
+  )("@kubernetes/client-node");
+  const workflow: Workflow = loadYaml(
+    await readFile(".github/workflows/full-integration-execution.yml", "utf8"),
+  );
+  const bindings = workflow.jobs[lane]?.steps.find(
+    (step) => step.id === "installed-skipper-failure",
+  )?.env;
+  assert.ok(bindings);
+  const runner = (operation: string) => `{"files":[{
+    "path":"tests/integration/skipper-prepared-git-installed.test.mjs",
+    "tests":[{"status":"failed","error":{"message":"private-canary",
+    "diagnostic":{"kind":"skipper-operation","operation":${JSON.stringify(operation)}}}}]
+  }]}`;
+  const row = (phase: string) => JSON.stringify({ phase, private: "private-canary" }) + "\n";
+  const gateway = row("gateway-chat-refused");
+  const native = row("repository-binding-withdrawn-discovery-released");
+  const team = row("review-feedback-advanced-same-draft");
+  const retired = row("owned-agent-retired-cluster-cleanup-still-required");
+  const ledgerPath = join(directory, "compute-journey.jsonl");
+  const saved = process.env;
+  t.after(() => {
+    process.env = saved;
+  });
+  process.env = { ...saved, GITHUB_ACTIONS: "true", GITHUB_OUTPUT: stageOutput };
+
+  // Execute the owner's actual selected-result block, without installing a cluster or simulating cleanup.
+  const ownerSource = await readFile("scripts/ci/skipper-prepared-git-installed.mjs", "utf8");
+  const selectedBlock = ownerSource.slice(
+    ownerSource.indexOf("  const ledgerPath ="),
+    ownerSource.indexOf("  const summary = await read(privateResult);"),
+  );
+  assert.ok(selectedBlock.includes('assert.fail("selected test runner failed")'));
+  for (const [name, ledger, teamReview, expected] of [
+    ["gateway", gateway + retired, false, "gateway-chat-refused"],
+    ["native", native + retired, false, "repository-binding-withdrawn-discovery-released"],
+    ["truncated", gateway + "  \n" + '{"phase":' + "\n" + native, false, "gateway-chat-refused"],
+    ["array", gateway + "[]\n" + native, false, "gateway-chat-refused"],
+    ["first malformed", "{\n" + gateway, false, "unknown"],
+    ["opposite mode", team + row("private-canary") + retired, false, "unknown"],
+    [
+      "team",
+      team + row("native-commit-confirmed-by-independent-fetch") + retired,
+      true,
+      "review-feedback-advanced-same-draft",
+    ],
+    ["missing", undefined, false, "unknown"],
+    ["unreadable", undefined, false, "unknown"],
+  ] as const) {
+    await t.test(name, async () => {
+      await rm(ledgerPath, { force: true });
+      if (ledger !== undefined) {
+        await writeFile(ledgerPath, ledger);
+      }
+      await writeFile(stageOutput, "");
+      const path = name === "unreadable" ? directory : ledgerPath;
+      const operation = name === "gateway" ? "gateway-chat" : "native-observation";
+      const result = await recordSkipperTestFailure(runner(operation), path, teamReview);
+      assert.equal(result.last, expected);
+      if (["truncated", "array", "first malformed"].includes(name)) {
+        await assert.rejects(
+          readSkipperJourney(path, false),
+          name === "array" ? TypeError : SyntaxError,
+        );
+      }
+      assert.equal(
+        await readFile(stageOutput, "utf8"),
+        `skipper_test_operation=${operation}\nskipper_last_test_checkpoint=${expected}\n`,
+      );
+      if (name === "gateway" || name === "native") {
+        const outputs = await readOutputs();
+        const transported: NodeJS.ProcessEnv = {};
+        // Parse only these transport bindings; unrelated env entries and whitespace are immaterial.
+        for (const key of ["SKIPPER_TEST_OPERATION", "SKIPPER_LAST_TEST_CHECKPOINT"]) {
+          const binding: string | undefined = bindings[key];
+          if (binding === undefined) {
+            continue;
+          }
+          const outputName: string | undefined = binding.match(
+            /^\$\{\{\s*steps\.installed-skipper-proof\.outputs\.(\w+)\s*\}\}$/,
+          )?.[1];
+          assert.ok(outputName, key);
+          transported[key] = outputs[outputName];
+        }
+        const destination = join(directory, name + ".json");
+        assert.equal(
+          outcome(destination, "failure", "selected-test", undefined, transported).status,
+          0,
+        );
+        const published = JSON.parse(await readFile(destination, "utf8"));
+        assert.equal(published.testOperation, operation);
+        assert.equal(published.lastTestCheckpoint, expected);
+        // Damaged optional diagnostics and a truncated tail must still reach the original assertion.
+        const diagnostic = JSON.stringify({
+          phase: expected,
+          httpStatus: 403,
+          category: "private-canary",
+          runtimeSignal: "no-known-signal",
+          modelTurns: null,
+          modelAnswers: null,
+          expectedNonceAnswered: null,
+          tlsErrors: null,
+        });
+        await writeFile(ledgerPath, diagnostic + "\n{\n");
+        const failed = child(`
+          import assert from "node:assert/strict";
+          import { join } from "node:path";
+          import { readSkipperJourney, recordSkipperTestFailure } from "./scripts/ci/skipper-failure-receipt.ts";
+          const directory = ${JSON.stringify(directory)};
+          const env = {};
+          const proof = [];
+          const progress = () => {};
+          const testFailed = true;
+          const resultText = ${JSON.stringify(runner(operation))};
+          ${selectedBlock}
+        `);
+        assert.equal(failed.status, 1);
+        assert.match(failed.stderr, /AssertionError.*selected test runner failed/);
+        assert.doesNotMatch(failed.stderr, /private-canary/);
+      }
+    });
+  }
+  await writeFile(ledgerPath, gateway);
+  for (const resultText of ["{malformed", runner("gateway-chat\nprivate-canary")]) {
+    await writeFile(stageOutput, "");
+    await recordSkipperTestFailure(resultText, ledgerPath, false);
+    assert.deepEqual(await readOutputs(), {
+      skipper_test_operation: "unknown",
+      skipper_last_test_checkpoint: "gateway-chat-refused",
+    });
+  }
+  for (const stage of ["selected-test", "install"]) {
+    const destination = join(directory, stage + "-injected.json");
+    assert.equal(
+      outcome(destination, "failure", stage, undefined, {
+        SKIPPER_TEST_OPERATION: "gateway-chat\nprivate-canary",
+        SKIPPER_LAST_TEST_CHECKPOINT: "gateway-chat-refused\nprivate-canary",
+      }).status,
+      0,
+    );
+    const published = JSON.parse(await readFile(destination, "utf8"));
+    assert.equal(published.testOperation, stage === "selected-test" ? "unknown" : undefined);
+    assert.equal(published.lastTestCheckpoint, stage === "selected-test" ? "unknown" : undefined);
+    assert.doesNotMatch(JSON.stringify(published), /private-canary/);
+  }
 });

@@ -36,35 +36,39 @@ this does not establish drift.
 
 ## Clean up preflight resources
 
-One operator cleans up, retaining any freeze. Unconfirmed cleanup blocks progress. After interruption (`SIGHUP`, `SIGINT`, `SIGTERM`), preserve evidence
-and `.upgrade-lock`. Confirm helper/children stopped and reconcile accepted
-operations before cleanup, retry, restoration or unlocking.
+Keep one operator and any freeze. After interruption (`SIGHUP`, `SIGINT`,
+`SIGTERM`), preserve evidence and `.upgrade-lock`. Confirm helper/children stopped
+and reconcile accepted operations before cleanup, retry, restoration or unlocking.
+Unconfirmed cleanup blocks progress.
 
 `preflight-<slot>-identity.json` records acknowledged `kind`, `name`, `uid`:
 `networkpolicy`/`secret` are dependencies; `api`/`worker`/`migration` are Jobs;
-`-pod` slots identify observed children. Optional policy or interrupted creates can leave fewer records.
-Match kubeconfig digest to `parameters.json`'s `kubeconfigSha256`, and path,
-context, namespace and release to its first four `arguments`. Confirm ownership;
-preserve original records. They establish create identity, not current identity
-or deletion authority.
+`-pod` slots identify observed children. Optional policy or interrupted creates
+can leave fewer records. Match kubeconfig bytes to `parameters.json`'s
+`kubeconfigSha256`, and path, context, namespace and release to its first four
+`arguments`. Preserve original records; they prove create identity, not current
+identity or deletion authority.
 
 Labels `app.kubernetes.io/instance=<release>` and
 `app.kubernetes.io/component=upgrade-preflight` only discover startup candidates.
-Migration Jobs retain the initializer's `component=initialization` label.
-Stop and consult the owner for old helpers without records or missing, changed,
-replaced, conflicting or uncertain evidence. Also stop for refused creates, lost
-acknowledgement, successful creates without usable UIDs, or explicitly failed or uncertain
-identity writes even if a file exists. None permits deletion or replay. Leave replacements alone; reconcile unknown
-outcomes without repeating requests.
-If the original is gone, no deletion remains.
+Migration Jobs retain `component=initialization`.
+Stop and consult the owner for missing, changed, replaced, conflicting or
+uncertain records, refused creates, lost acknowledgements, unusable UIDs, or
+failed/uncertain identity writes—even if a file exists. None permits deletion or
+replay. Leave replacements alone; reconcile unknown outcomes without repeating
+requests.
 
-Authorized manual deletion requires Kubernetes API enforcement of
-`DeleteOptions.preconditions.uid`: delete the original kind, namespace and name
-only if its UID matches the original record. Reading then deleting by name
-cannot prevent replacement. Foreground-delete owned Jobs first and confirm their
-children are gone before deleting the temporary preflight Secret or NetworkPolicy. Missing
-Job acknowledgements require reconciling possible children; labels alone do not
-establish ownership.
+Manual deletion requires API-enforced `DeleteOptions.preconditions.uid` for the
+original kind, namespace and name. Reading then deleting by name cannot prevent
+replacement. Foreground-delete owned Jobs and confirm their children disappear
+before deleting dependencies. Missing Job acknowledgements require reconciling
+possible children; labels alone do not prove ownership.
+
+A failed DELETE permits cleanup only after verified absence; Job-owned and
+recorded children must also be absent. The helper confirms
+Secret and NetworkPolicy disappearance too. Accepted deletion can leave a finalizer
+blocking removal. Cleanup fails immediately on UID change, or when a dependency
+remains past its 30-second polling deadline.
 
 ## Resume an unfinished prepared upgrade
 

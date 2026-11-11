@@ -102,7 +102,69 @@ interface DiagnosticOptions {
   readonly signal: AbortSignal;
   readonly requirePat: boolean;
   readonly rootCertificate?: Buffer;
+  readonly readHarnessLogs?: (since: string, signal: AbortSignal) => Promise<string | undefined>;
   readonly write?: (receipt: unknown) => void | Promise<void>;
+}
+
+const requirementSourceCategories = new Map([
+  ["SystemRequirementsToml", "system-requirements-file"],
+  ["EnterpriseManaged", "enterprise-managed"],
+  ["MdmManagedPreferences", "managed-preferences"],
+  ["LegacyManagedConfigTomlFromFile", "legacy-managed-file"],
+  ["Composite", "composite"],
+]);
+
+async function permissionFallbackObservation(
+  readLogs: NonNullable<DiagnosticOptions["readHarnessLogs"]>,
+  since: string,
+  signal: AbortSignal,
+) {
+  const deadline = AbortSignal.any([signal, AbortSignal.timeout(5_000)]);
+  try {
+    deadline.throwIfAborted();
+    const logs = await readLogs(since, deadline);
+    deadline.throwIfAborted();
+    if (logs === undefined) {
+      return { outcome: "unavailable" };
+    }
+    const categories = new Set<string>();
+    for (const line of logs.split("\n")) {
+      if (!line.includes("falling back to required value for permission_profile")) {
+        continue;
+      }
+      let event;
+      try {
+        event = record(JSON.parse(line));
+      } catch {
+        continue;
+      }
+      const fields = record(event?.fields);
+      if (
+        event?.level !== "WARN" ||
+        event.target !== "codex_core::config" ||
+        fields?.message !==
+          "configured value is disallowed by requirements; falling back to required value for permission_profile"
+      ) {
+        continue;
+      }
+      // Classify only the outer native enum. Nested sources, paths and managed IDs are private.
+      const source = fields.requirement_source;
+      const variant =
+        typeof source === "string"
+          ? /^Some\(([A-Za-z]+) \{ [^\r\n]* \}\)$/u.exec(source)?.[1]
+          : undefined;
+      categories.add(
+        source === "Some(LegacyManagedConfigTomlFromMdm)"
+          ? "legacy-managed-preferences"
+          : (requirementSourceCategories.get(variant ?? "") ?? "unknown"),
+      );
+    }
+    return categories.size > 0
+      ? { outcome: "observed", sourceCategories: [...categories].sort() }
+      : { outcome: "unobserved" };
+  } catch {
+    return { outcome: "unavailable" };
+  }
 }
 
 async function diagnose(options: DiagnosticOptions) {
@@ -143,6 +205,7 @@ async function diagnose(options: DiagnosticOptions) {
   let observing = true;
   let bytes = 0;
   let id = 0;
+  let threadStartTime: string | undefined;
   let pending:
     | {
         id: number;
@@ -259,6 +322,7 @@ async function diagnose(options: DiagnosticOptions) {
       throw new Error("invalid-response");
     }
     // One connection compares the requirements and the grant; it never starts a turn.
+    threadStartTime = new Date().toISOString();
     const granted = await request("thread/start", {
       cwd: options.cwd,
       model: options.model,
@@ -336,6 +400,17 @@ async function diagnose(options: DiagnosticOptions) {
       const limit = setTimeout(() => finish("unconfirmed"), 2_000);
       socket.close(1000);
     });
+  }
+  if (
+    receipt.outcome === "mismatch" &&
+    threadStartTime !== undefined &&
+    options.readHarnessLogs !== undefined
+  ) {
+    receipt.permissionProfileFallback = await permissionFallbackObservation(
+      options.readHarnessLogs,
+      threadStartTime,
+      options.signal,
+    );
   }
   return receipt;
 }

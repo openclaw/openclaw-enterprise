@@ -164,6 +164,23 @@ follow [native image checks](../../release/containers.md#check-native-images-wit
 
 A lane fails if required cases are missing, skipped, marked TODO, or failed, or if cleanup fails. This includes skipped suites and Go tests. Results prove only selected coverage: inspect outcomes, source, cleanup and image digests. Retries have attempt-specific artifacts and replace the current result. Kubernetes preparation failures retain sanitized diagnostics when collection succeeds. Missing state or empty inventory does not prove cleanup.
 
+Shared k3d runtime preparation adds `runtimeProvenance` to lane results and
+Kubernetes diagnostics for the selected Gateway and Agent images. Each record
+lists the observed local image ID and imported platform manifest digest.
+An `available` record confirms their config digests match and includes the image-reported Codex version, binary SHA-256,
+platform and upstream `openclawCommit`; `unavailable` means the metadata or
+image binding could not be verified. This is diagnostic evidence, not release
+qualification or an additional readiness check. The result's `sourceSha` names
+the tested checkout, not an image build revision. Source builds may still have
+no OCE build revision, and the upstream OpenClaw commit is a separate identity.
+No image configuration, credentials or arbitrary provenance fields are uploaded.
+Collection bounds the archive before accepting a single regular metadata file;
+directories, oversized files and unsupported archive records remain unavailable.
+Provenance reads and diagnostic merges require the same lane and preparation.
+The public preparation identity hashes the private resource prefix; stateless
+runs receive a fresh invocation identity. Validated current-run evidence
+survives state cleanup.
+
 For a failed matrix job, inspect each lane's result artifact to find the failing
 lane. The aggregate reports the parent failure once and requires every selected
 lane's same-source evidence, even when other lanes passed. If the artifact is

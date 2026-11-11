@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-11
-last_updated_session: authoring-run/c0ca6f34-2aa6-47f9-87c1-e5f3708617f6
+last_updated_session: authoring-run/59e3fbae-c2ef-496b-ad18-c965758bee04
 ---
 
 # GitHub Actions testing flow
@@ -112,17 +112,17 @@ The application lane gives the native IAM barrier test its own migrated PostgreS
 `runtime-artifact` supplies CI `image-lanes`, Full Integration's `image-lanes-same-sha`
 and Docker Model Runtime, and First Agent Smoke. Aggregates check producer and consumers.
 
-The [run-ci-lane action](../../.github/actions/run-ci-lane/action.yml) prepares, runs, and cleans up lanes and uploads sanitized results. Callers set the commit, environment, credentials, and timeout. Tests stop five minutes early.
+[run-ci-lane](../../.github/actions/run-ci-lane/action.yml) prepares and cleans resources, runs tests, and uploads sanitized results. Callers set source, credentials, environment and timeout; tests stop five minutes early.
 
-PR dependency caches stay within GitHub's PR merge-ref scope; main caches stay main-scoped. Results and credential-bearing state are not caches; protected jobs do not promote PR artifacts.
+Dependency caches stay scoped to GitHub PR merge-refs or main. Results and credential-bearing state are never cached; protected jobs never promote PR artifacts.
 
 ### 2. Prepare resources under the job owner
 
 `scripts/ci/prepare.mjs:main` and `scripts/ci/prepare.mjs:ensureK3dCluster`
 
-[CI resource preparation](github-actions-testing/preparation.md) covers tools, images, clusters, credentials and ownership.
+[Preparation](github-actions-testing/preparation.md) covers tools, images, clusters, credentials and ownership.
 
-For `logging-collector`, `scripts/ci/prepare.mjs:prepareLane` pre-pulls configured
+`scripts/ci/prepare.mjs:prepareLane` pre-pulls `logging-collector`’s configured
 Collector and Node images and the shared Prometheus and Grafana pins.
 `ensureDockerSourceImage` reuses verified local digests or verifies downloads from
 `scripts/ci/image-pull.ts:pullImage` before publishing inputs. Registry 5xx/rate
@@ -135,8 +135,7 @@ Cache credentials stay in preparation.
 
 Kubernetes preparation records host snapshots. Failed reads, bounded
 by time and size, save `<state-file>.diagnostics.json` outside the cluster directory.
-These lanes use `--no-rollback`; workflows own teardown after capture, while
-local callers use the failed state file. Observation failures preserve the original error. `nodeLogExcerpt` orders Docker streams
+These lanes use `--no-rollback`; workflows own teardown after capture; local callers use failed state. Observation failures preserve the original error. `nodeLogExcerpt` orders Docker streams
 and retry summaries by full UTC timestamp precision using locale-independent ASCII comparison ([CI guide](../testing/ci.md)).
 
 `scripts/ci/run-tests.mjs:runFile` watches Compute-managed Pods and namespace
@@ -281,6 +280,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 07:55: Retain selected runtime Codex provenance in CI evidence. (authoring-run/59e3fbae-c2ef-496b-ad18-c965758bee04 - 7fa7a37738bb24b27d9a835e409ea20eafb43cee)
 
 - 2026-11-11 03:43: Guard reuse and fresh fallback. (authoring-run/c0ca6f34-2aa6-47f9-87c1-e5f3708617f6 - 993a38b318c249b00f951bf92c8d136214ec82fd)
 - 2026-11-11 03:28: Explain qualified CI reuse. (authoring-run/1b85588b-87c6-47d0-8c6e-8b78b0030aea - dfd55e679c9c9869ddc786b85f6f9b27a53fb833)
