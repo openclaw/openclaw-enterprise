@@ -1,4 +1,8 @@
 import { workspaceSetupFixture } from "../helpers/kubernetes-workspace-setup.ts";
+import {
+  openShellPolicyOptions,
+  openShellPolicySandbox,
+} from "../helpers/kubernetes-openshell-network-policy.ts";
 import { checkComputeCredentialCatalog } from "../helpers/compute-credential-catalog.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
@@ -19101,29 +19105,9 @@ for (const stopped of [false, true]) {
   test(`retiring the last ${stopped ? "stopped " : ""}OpenShell revision removes every Agent NetworkPolicy it wrote`, async (t) => {
     const tls = await harnessTlsFixture(t);
     const cleanupCalls = [];
-    const driver = new KubernetesComputeDriver(
-      options({
-        runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
-        network: {
-          ...options().network,
-          providerHarness: {
-            namespace: "openshell-system",
-            podLabels: { app: "openshell-gateway" },
-            address: "10.43.0.50",
-            port: 8080,
-          },
-        },
-      }),
-      {
-        sandboxDriver: {
-          id: "sandbox-provider",
-          implementation: "openshell",
-          async provisionHarness() {
-            assert.fail("retirement must not provision a Harness");
-          },
-          async harnessEndpoint() {
-            return { url: "ws://tenant--sandbox.openshell.localhost:8080/" };
-          },
+    const driver = new KubernetesComputeDriver(options(openShellPolicyOptions(options().network)), {
+      sandboxDriver: openShellPolicySandbox(
+        {
           async workspaceNodePeerLabels({ revision: target }) {
             return supervisorPeerLabels(target.id);
           },
@@ -19131,8 +19115,9 @@ for (const stopped of [false, true]) {
             cleanupCalls.push(context.revision.id);
           },
         },
-      },
-    );
+        "retirement must not provision a Harness",
+      ),
+    });
     const revision = routedRevision(driver, {
       id: "revision-openshell-retirement",
       agentId: "agent-openshell-retirement",
@@ -19303,35 +19288,15 @@ test("an OpenShell supervisor reaches only its own Agent's Gateway", async () =>
           "openshell.ai/boundary-role": "supervisor",
         }
       : undefined;
-  const installation = () =>
-    options({
-      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
-      network: {
-        ...options().network,
-        providerHarness: {
-          namespace: "openshell-system",
-          podLabels: { app: "openshell-gateway" },
-          address: "10.43.0.50",
-          port: 8080,
-        },
-      },
-    });
+  const installation = () => options(openShellPolicyOptions(options().network));
   const driver = new KubernetesComputeDriver(installation(), {
-    sandboxDriver: {
-      id: "sandbox-provider",
-      implementation: "openshell",
-      async provisionHarness() {
-        assert.fail("rendering policies must not provision a Harness");
-      },
-      async harnessEndpoint() {
-        return { url: "ws://tenant--sandbox.openshell.localhost:8080/" };
-      },
+    sandboxDriver: openShellPolicySandbox({
       async workspaceNodePeerLabels(context) {
         assert.equal(context.namespace.id, context.revision.namespaceId);
         return peerLabels(context);
       },
       async cleanup() {},
-    },
+    }),
   });
   driver.apiClients = Promise.resolve({ objects: {} });
   const d = routedRevision(driver, {
@@ -19423,17 +19388,9 @@ test("an OpenShell supervisor reaches only its own Agent's Gateway", async () =>
 
   // An OpenShell Driver that cannot name its relay fails closed with a cause.
   const unnamed = new KubernetesComputeDriver(installation(), {
-    sandboxDriver: {
-      id: "sandbox-provider",
-      implementation: "openshell",
-      async provisionHarness() {
-        assert.fail("rendering policies must not provision a Harness");
-      },
-      async harnessEndpoint() {
-        return { url: "ws://tenant--sandbox.openshell.localhost:8080/" };
-      },
+    sandboxDriver: openShellPolicySandbox({
       async cleanup() {},
-    },
+    }),
   });
   assert.throws(
     () => unnamed.agentNetworkPolicies(d, target),
@@ -19450,34 +19407,13 @@ test("activating a revision that leaves OpenShell deletes the Agent policies it 
   const suffix = digest(revision.agentId);
   const policyKey = (name) => `NetworkPolicy:${namespace}:${name}`;
   // Render what the OpenShell predecessor's activation wrote.
-  const openShell = new KubernetesComputeDriver(
-    routedOptions({
-      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
-      network: {
-        providerHarness: {
-          namespace: "openshell-system",
-          podLabels: { app: "openshell-gateway" },
-          address: "10.43.0.50",
-          port: 8080,
-        },
+  const openShell = new KubernetesComputeDriver(routedOptions(openShellPolicyOptions()), {
+    sandboxDriver: openShellPolicySandbox({
+      async workspaceNodePeerLabels({ revision: target }) {
+        return supervisorPeerLabels(target.id);
       },
     }),
-    {
-      sandboxDriver: {
-        id: "sandbox-provider",
-        implementation: "openshell",
-        async provisionHarness() {
-          assert.fail("rendering policies must not provision a Harness");
-        },
-        async harnessEndpoint() {
-          return { url: "ws://tenant--sandbox.openshell.localhost:8080/" };
-        },
-        async workspaceNodePeerLabels({ revision: target }) {
-          return supervisorPeerLabels(target.id);
-        },
-      },
-    },
-  );
+  });
   const predecessor = { ...revision, sandboxDriverId: "sandbox-provider" };
   const pair = [`allow-workspace-node-gateway-${suffix}`, `allow-gateway-workspace-node-${suffix}`];
   // An earlier controller wrote both halves; this one writes only the Gateway ingress.
