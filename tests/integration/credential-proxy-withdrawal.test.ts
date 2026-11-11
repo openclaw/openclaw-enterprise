@@ -2120,7 +2120,11 @@ test(
   },
 );
 
-for (const disabling of ["suppressed refusal", "out-of-order history"] as const) {
+for (const disabling of [
+  "suppressed refusal",
+  "out-of-order history",
+  "noncanonical readiness code",
+] as const) {
   test(
     `current queue transition overrides ${disabling} for model credentials (PostgreSQL)`,
     { ...requiresPostgres, timeout: 30_000 },
@@ -2167,6 +2171,15 @@ for (const disabling of ["suppressed refusal", "out-of-order history"] as const)
           { delayMs: 1, recordEvidence: false },
         );
         assert.equal(await events(), before);
+      } else if (disabling === "noncanonical readiness code") {
+        // Audit normalization must not grant readiness authority to a different queue code.
+        await queue.defer(
+          next,
+          { code: "revision-incomplete" },
+          { delayMs: 1, repeatEvidence: true },
+        );
+        assert.equal(await events(), before + 1);
+        assert.equal((await queue.findWorkAttempt(key))?.code, "REVISION_INCOMPLETE");
       } else {
         await queue.retry(next, { code: "REVISION_INCOMPLETE" });
         // Isolated synthetic negative evidence: a historical success appears later than

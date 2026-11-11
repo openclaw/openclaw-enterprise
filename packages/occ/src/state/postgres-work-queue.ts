@@ -1457,7 +1457,7 @@ export class PostgresWorkQueue {
                AND agent_id IS NOT NULL AND revision_id IS NOT NULL
                AND namespace_target IS NULL AND agent_target IS NULL
                AND idempotency_key = 'agent_revision:' || revision_id || ':reconcile'
-               AND $4::text = 'REVISION_INCOMPLETE' AND $10::text IS NULL
+               AND $14::boolean AND $10::text IS NULL
                AND NOT $13::boolean),
              state = 'queued',
              attempt_count = GREATEST(attempt_count - 1, 0),
@@ -1486,6 +1486,7 @@ export class PostgresWorkQueue {
         options.repeatEvidence ?? false,
         pending.refusal !== undefined && pending.stopYielded === true,
         pending.stopYielded === true,
+        pending.code === "REVISION_INCOMPLETE",
       ],
     );
     if (deferred.rows.length === 0) {

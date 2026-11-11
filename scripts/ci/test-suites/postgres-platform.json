@@ -546,6 +546,7 @@
       "expectedTests": [
         "current queue transition overrides suppressed refusal for model credentials (PostgreSQL)",
         "current queue transition overrides out-of-order history for model credentials (PostgreSQL)",
+        "current queue transition overrides noncanonical readiness code for model credentials (PostgreSQL)",
         "policy reduction preserves another binding then observes deny-all (PostgreSQL)",
         "Git reduction v7 preserves earlier admission meanings and rejects widening",
         "online model requests redeem current material once after durable policy authorization (PostgreSQL)",

@@ -1,7 +1,7 @@
 ---
 created: "2026-11-10"
-updated: "2026-11-11 13:59"
-last_updated_session: authoring-run/cb8e0216-1299-47c5-85f5-480a7a4dc586
+updated: "2026-11-11 14:28"
+last_updated_session: authoring-run/65f55dad-fe22-4033-ba9d-1e73fd0beb87
 ---
 
 # Authorize model credentials per request
@@ -117,7 +117,8 @@ worker-owned Git custody state.
 or the latest inactive candidate with eligible startup work. The candidate must
 have a live claim, or queued work with `readiness_deferred` set on its exact
 revision reconciliation row. The queue sets this private marker in the same SQL
-transition as a plain `REVISION_INCOMPLETE` defer without refusal or stop.
+transition only when the original defer code is exactly `REVISION_INCOMPLETE`,
+without refusal or stop. Audit code normalization does not grant this authority.
 Repeated genuine deferrals set it even when duplicate audit evidence is suppressed.
 All other deferrals, claims, retries, completion, failure and recovery clear it.
 New and preexisting rows default to false; historical audit events cannot grant
@@ -283,6 +284,8 @@ credential and a reused inspected connection.
 None.
 
 ## Changelog
+
+- 2026-11-11 14:28: Require the original canonical defer code for the queued readiness marker. (authoring-run/65f55dad-fe22-4033-ba9d-1e73fd0beb87 - 8517dbd0eec3a4fc3d2349754d9d62fc919226e6)
 
 - 2026-11-11 13:59: Trace pre-effect candidate contention retry in the accompanying correction. (authoring-run/cb8e0216-1299-47c5-85f5-480a7a4dc586 - a54d4aad97c547fd06765232db07f6c7fefd1a0a)
 
