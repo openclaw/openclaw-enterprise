@@ -298,23 +298,23 @@ retain their credential requirements. Use the separate
 [candidate lane](ci/openshell-execution.md#run-the-mixed-grant-candidate-case);
 default pins stay unchanged.
 
-The case requires four outcomes:
+Required outcomes:
 
-- The first model turn uses Gateway-signed authorization while Git credential
-  issuance and Git request counts remain zero.
-- Codex `exec_command` fetches a previously absent, independently published commit
-  and exact content through stock Git, with one credential for the selected
-  repository and permissions.
-- Repository-binding removal makes a second fresh commit fetch fail with an
-  explicit withdrawal or policy denial. Its object remains absent, with no new
-  Git issuance or Git requests.
+- After startup, the first model turn proves fresh successful Gateway-signed
+  redemption for its exact provider and execution. Git issuance and requests stay zero.
+- Codex `exec_command` fetches an independently published, previously absent
+  commit and exact content through stock Git, with one credential scoped to the
+  selected repository and permissions.
+- Binding removal makes a second fresh commit fetch receive explicit withdrawal
+  or policy denial. Its object stays absent.
 - The original Agent revision, Sandbox and session continue the conversation.
   The model origin requires the prior assistant answer in forwarded history;
-  the next prompt supplies only a new marker.
+  the next prompt contains only a new marker.
 
-Tool polling joins the same command without replaying Git. Source checks do not
-establish installed execution. Qualification requires the complete installed case
-and successful cleanup on the selected images.
+From immediately before the withdrawal PATCH through the final model turn,
+Git requests and issuance stay unchanged. Only issuer revocation requests may increase.
+Tool polling never replays Git. Qualification requires the complete installed case
+and successful cleanup on selected images; source checks do not establish installed execution.
 
 ## Controller and broker image compatibility probe
 
@@ -353,19 +353,17 @@ required authorization or inputs fails.
 
 The former direct `repository-credentials-installed` lane has been removed.
 
-Use the maintained [QA matrix](ci/qa-advisory.md) for an authorized installed
-Agent's real Git exact-ref journey. It requires an authorized disposable repository
-and independent provider readback. Verify that the granted branch points to the
-expected commit, that the push outside the granted branch was refused, and that
-credential disposal and cleanup succeeded. Its
-`git-only` grant opens no pull request. A direct container command or ready Pod
-does not prove an Agent model turn.
+Use the [QA matrix](ci/qa-advisory.md) for an authorized installed
+Agent's Git journey, with an authorized disposable repository and independent
+provider readback. Verify the expected commit on the granted branch, refused
+pushes outside that branch, and successful credential disposal and cleanup.
+Its `git-only` grant opens no pull request. A direct container command or ready
+Pod does not prove an Agent model turn.
 
-Separately, use the [installed prepared Git qualification](#verify-prepared-native-git)
-for the real installation with controlled Git and model peers, bound to the selected
-source and image digests. That qualification does not prove live GitHub access;
-QA evidence does not replace its release qualification. Removing the old lane adds
-no new live proof.
+Separately, [installed prepared Git qualification](#verify-prepared-native-git)
+covers a real installation with controlled Git and model peers, bound to selected
+source and image digests. It does not prove live GitHub access; QA evidence
+cannot replace this release qualification.
 
 ## Record each evidence boundary
 

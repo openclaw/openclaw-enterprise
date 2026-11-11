@@ -33,6 +33,29 @@ const require = createRequire(new URL("../../apps/controller/package.json", impo
 const { loadYaml } = await import(require.resolve("@kubernetes/client-node"));
 const { Agent, fetch } = require("undici");
 const root = fileURLToPath(new URL("../../", import.meta.url));
+// Read only the installed authority's existing approval store. No assertion,
+// replay digest, credential value, or database URL leaves the API container.
+const readModelApprovals = `
+import { createPostgresPool } from './packages/occ/src/index.ts';
+const pool = await createPostgresPool(process.env.OCC_DATABASE_URL, {
+  max: 1, connectionTimeoutMillis: 5000, query_timeout: 10000,
+});
+try {
+  const { rows } = await pool.query(
+    'SELECT request_id AS "requestId", recipient_id AS "recipientId", binding_id AS "bindingId",' +
+    ' namespace_id AS "namespaceId", agent_id AS "agentId", revision_id AS "revisionId",' +
+    ' expected_credential_identity AS "credentialIdentity", consumed,' +
+    ' (assertion_replay_key IS NOT NULL) AS "assertionReplayClaimed"' +
+    ' FROM occ.request_credential_approvals' +
+    ' WHERE namespace_id = $1 AND agent_id = $2 AND revision_id = $3',
+    process.argv.slice(1),
+  );
+  process.stdout.write(JSON.stringify(rows));
+} finally {
+  await pool.end();
+}
+`;
+
 const workerLabels = {
   "app.kubernetes.io/name": "openclaw-enterprise",
   "app.kubernetes.io/instance": "openclaw-enterprise",
@@ -1594,6 +1617,26 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
     return Object.assign(fixture, {
       gitScope: mixed.gitScope,
       modelOrigin: mixed.modelOrigin,
+      readModelGrantApprovals: async ({ agentId, revisionId }) => {
+        const rows = JSON.parse(
+          await kube([
+            "exec",
+            "-n",
+            platform,
+            "deployment/openclaw-enterprise-api",
+            "--",
+            "node",
+            "--input-type=module",
+            "-e",
+            readModelApprovals,
+            namespace.id,
+            agentId,
+            revisionId,
+          ]),
+        );
+        assert.ok(Array.isArray(rows), "expected installed model approval records");
+        return rows;
+      },
       deployMixedGrantAgent: () =>
         deployMixedGrantAgent(t, {
           ...fixture,

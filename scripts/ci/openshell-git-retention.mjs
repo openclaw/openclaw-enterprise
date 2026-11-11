@@ -362,6 +362,11 @@ const events = {
   "mixed-grant-model-before-git": {
     revisionIdHash: ["revisionId", identityHash],
     turnIdHash: ["turnId", identityHash],
+    providerIdHash: ["providerId", identityHash],
+    sandboxIdHash: ["sandboxId", identityHash],
+    bindingIdHash: ["bindingId", identityHash],
+    requestIdHash: ["requestId", identityHash],
+    assertionConsumed: ["assertionConsumed", choice(true)],
     gitIssued: ["gitIssued", choice(0)],
   },
   "mixed-grant-git-fetched": {

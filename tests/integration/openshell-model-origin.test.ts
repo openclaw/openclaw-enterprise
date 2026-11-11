@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import test from "node:test";
+import { once } from "node:events";
+import { createServer } from "node:http";
+import { openShellGrantCredentialIdentity } from "../../apps/controller/src/drivers/egress-proxy/openshell-token-grant.ts";
+import { assertOpenShellModelTurn } from "../helpers/openshell-model-turn.ts";
 
 import {
   startOpenShellModelOrigin,
@@ -247,5 +251,176 @@ test(
       completed: true,
       outputMatched: true,
     });
+  },
+);
+
+test(
+  "OpenShell model turn requires a fresh matching Gateway assertion despite a valid upstream bearer",
+  { timeout: 10_000 },
+  async (t) => {
+    type Evidence = NonNullable<Parameters<typeof assertOpenShellModelTurn>[0]["grantEvidence"]>;
+    type Approval = Awaited<ReturnType<Evidence["readApprovals"]>>[number];
+    const expected: Evidence["expected"] = {
+      providerId: randomUUID(),
+      credentialKey: "access_token",
+      sandboxId: randomUUID(),
+      bindingId: randomUUID(),
+      namespaceId: randomUUID(),
+      agentId: randomUUID(),
+      revisionId: randomUUID(),
+    };
+    const approval: Approval = {
+      recipientId: expected.sandboxId,
+      requestId: randomUUID(),
+      bindingId: expected.bindingId,
+      namespaceId: expected.namespaceId,
+      agentId: expected.agentId,
+      revisionId: expected.revisionId,
+      credentialIdentity: openShellGrantCredentialIdentity(expected.providerId, "access_token"),
+      consumed: true,
+      assertionReplayClaimed: true,
+    };
+    const scenarios: {
+      name: string;
+      before: Approval[];
+      after: Approval[];
+      accepted?: boolean;
+    }[] = [
+      { name: "missing", before: [], after: [] },
+      { name: "startup", before: [approval], after: [approval] },
+      {
+        name: "startup-in-flight",
+        before: [{ ...approval, consumed: false, assertionReplayClaimed: false }],
+        after: [approval],
+      },
+      {
+        name: "other-provider",
+        before: [],
+        after: [
+          {
+            ...approval,
+            credentialIdentity: openShellGrantCredentialIdentity(randomUUID(), "access_token"),
+          },
+        ],
+      },
+      { name: "other-execution", before: [], after: [{ ...approval, revisionId: randomUUID() }] },
+      { name: "other-sandbox", before: [], after: [{ ...approval, recipientId: randomUUID() }] },
+      { name: "other-binding", before: [], after: [{ ...approval, bindingId: randomUUID() }] },
+      {
+        name: "unconsumed",
+        before: [],
+        after: [{ ...approval, consumed: false, assertionReplayClaimed: false }],
+      },
+      { name: "fresh", before: [], after: [approval], accepted: true },
+    ];
+    const turns: ModelOriginTurn[] = scenarios.map(({ name }) => ({
+      id: name,
+      harness: "codex",
+      marker: `OCE-MODEL-request-${randomUUID()}`,
+      answer: `OCE-MODEL-answer-${randomUUID()}`,
+    }));
+    const token = randomBytes(32).toString("hex");
+    const gatewayPassword = randomBytes(32).toString("hex");
+    const observations: ModelOriginObservation[] = [];
+    const upstream = await startOpenShellModelOrigin({
+      host: "127.0.0.1",
+      port: 0,
+      model: "fixture-model",
+      bearerDigests: {
+        codex: createHash("sha256").update(token).digest("hex"),
+        openclaw: createHash("sha256").update(randomBytes(32)).digest("hex"),
+      },
+      turns,
+      onObservation: (observation) => observations.push(observation),
+    });
+    t.after(() => upstream.close());
+    const statuses: number[] = [];
+    const adapterFailures: unknown[] = [];
+    // This HTTP adapter tests the proof helper, not the installed Gateway. It
+    // forwards a previously known bearer to the real controlled origin, but
+    // never redeems a grant. Only the installed case reads actual OCC records.
+    const adapter = createServer(async (request, response) => {
+      try {
+        assert.equal(request.url, "/v1/chat/completions");
+        assert.equal(request.headers.authorization, `Bearer ${gatewayPassword}`);
+        const chunks = [];
+        for await (const chunk of request) {
+          chunks.push(chunk);
+        }
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        const result = await fetch(`${upstream.origin}/v1/responses`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ model: "fixture-model", stream: true, input: body.messages }),
+          signal: t.signal,
+        });
+        statuses.push(result.status);
+        assert.equal(result.status, 200);
+        const completed = (await result.text())
+          .split("\n")
+          .filter((line) => line.startsWith("data: "))
+          .map((line) => JSON.parse(line.slice(6)))
+          .find((event) => event.type === "response.completed");
+        const content = completed.response.output[0].content[0].text;
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ choices: [{ message: { role: "assistant", content } }] }));
+      } catch (error) {
+        adapterFailures.push(error);
+        response.writeHead(500);
+        response.end();
+      }
+    });
+    adapter.listen(0, "127.0.0.1");
+    await once(adapter, "listening");
+    t.after(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          adapter.close((error) => (error ? reject(error) : resolve()));
+        }),
+    );
+    const address = adapter.address();
+    assert.ok(address && typeof address !== "string");
+    for (const [index, scenario] of scenarios.entries()) {
+      const turn = turns[index]!;
+      let reads = 0;
+      const run = (): ReturnType<typeof assertOpenShellModelTurn> =>
+        assertOpenShellModelTurn({
+          gatewayUrl: `http://127.0.0.1:${address.port}`,
+          gatewayPassword,
+          sessionKey: `proof-${randomUUID()}`,
+          turn,
+          readOriginTurn: async (id) =>
+            observations.find(
+              (observation): observation is Extract<ModelOriginObservation, { kind: "turn" }> =>
+                observation.kind === "turn" && observation.turnId === id,
+            ),
+          grantEvidence: {
+            expected,
+            readApprovals: async () => (reads++ === 0 ? scenario.before : scenario.after),
+          },
+          forbiddenCredentials: [token],
+          signal: t.signal,
+        });
+      if (scenario.accepted) {
+        const receipt = await run();
+        assert.deepEqual(receipt.grant, {
+          providerId: expected.providerId,
+          sandboxId: expected.sandboxId,
+          bindingId: expected.bindingId,
+          requestId: approval.requestId,
+          assertionConsumed: true,
+        });
+      } else {
+        await assert.rejects(run, /fresh matching consumed Gateway assertion/u, scenario.name);
+      }
+      assert.equal(reads, 2);
+      assert.equal(statuses[index], 200, "the correct upstream bearer really succeeded");
+      assert.ok(
+        observations.some(
+          (observation) => observation.kind === "turn" && observation.turnId === turn.id,
+        ),
+      );
+    }
+    assert.deepEqual(adapterFailures, []);
   },
 );

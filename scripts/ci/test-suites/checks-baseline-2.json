@@ -405,7 +405,8 @@
       "path": "tests/integration/openshell-model-origin.test.ts",
       "expectedTests": [
         "OpenShell model origin requires assistant history for a continued turn",
-        "OpenShell model origin waits for native tool completion and verifies its output"
+        "OpenShell model origin waits for native tool completion and verifies its output",
+        "OpenShell model turn requires a fresh matching Gateway assertion despite a valid upstream bearer"
       ]
     },
     {

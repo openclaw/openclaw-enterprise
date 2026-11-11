@@ -118,12 +118,40 @@ test(
       phase = "model before Git";
       assert.equal((await origin.snapshot()).issued, 0, "admission must not mint a Git credential");
       assert.equal((await origin.gitRequests()).length, 0);
+      const modelRoutes = a.revision.egressPlan?.routes;
+      assert.equal(modelRoutes?.length, 1);
+      const modelRoute = modelRoutes?.[0];
+      assert.ok(modelRoute);
+      assert.equal(modelRoute.binding.grant.kind, "inference");
+      assert.equal(modelRoute.method, "POST");
+      assert.equal(modelRoute.path, "/v1/responses");
+      const readModelGrantApprovals = fixture.readModelGrantApprovals;
+      assert.ok(readModelGrantApprovals);
+      // A correct upstream bearer alone could be left over from startup. Require
+      // this turn to claim a fresh Gateway assertion for its admitted binding.
       const before = await assertOpenShellModelTurn({
         ...a.modelTurnOptions,
         sessionKey,
         turn: a.modelTurns.before,
+        grantEvidence: {
+          expected: {
+            providerId: a.modelProvider.id,
+            credentialKey: "access_token",
+            sandboxId: a.target.sandboxId,
+            bindingId: modelRoute.binding.binding.id,
+            namespaceId: a.revision.namespaceId,
+            agentId: a.agent.id,
+            revisionId: a.revision.id,
+          },
+          readApprovals: () =>
+            readModelGrantApprovals({
+              agentId: a.agent.id,
+              revisionId: a.revision.id,
+            }),
+        },
         signal: t.signal,
       });
+      assert.ok(before.grant);
       assert.equal(before.origin.priorTurnObserved, false);
       assert.equal(before.origin.count, 1);
       await sameExecution();
@@ -136,6 +164,7 @@ test(
       await fixture.checkpoint("mixed-grant-model-before-git", {
         revisionId: a.revision.id,
         turnId: before.turnId,
+        ...before.grant,
         gitIssued: 0,
       });
 
@@ -179,6 +208,10 @@ test(
       });
 
       phase = "Git withdrawal";
+      // Include requests made during withdrawal in the denial accounting.
+      const withdrawn = await origin.snapshot();
+      const requestsBeforeDenial = await origin.gitRequests();
+      assert.equal(withdrawn.issued, 1);
       await fixture.request("PATCH", a.path, {
         configurationId: a.configuration.id,
         repositoryBindings: [],
@@ -186,9 +219,6 @@ test(
       const second = await origin.publishFreshCommit();
       assert.notEqual(second.sha, first.sha);
       await absent(second.sha);
-      const withdrawn = await origin.snapshot();
-      const requestsBeforeDenial = await origin.gitRequests();
-      assert.equal(withdrawn.issued, 1);
       const revocations = (snapshot: { endpoints: Record<string, number> }) =>
         Object.entries(snapshot.endpoints).reduce(
           (count, [endpoint, requests]) => count + (endpoint.startsWith("revoke:") ? requests : 0),

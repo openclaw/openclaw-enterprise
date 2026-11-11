@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { openShellGrantCredentialIdentity } from "../../apps/controller/src/drivers/egress-proxy/openshell-token-grant.ts";
 import type {
   ModelOriginObservation,
   ModelOriginToolTurn,
@@ -8,12 +9,38 @@ import type {
 type ModelTurnReceipt = Extract<ModelOriginObservation, { kind: "turn" }>;
 type ToolTurnReceipt = Extract<ModelOriginObservation, { kind: "tool" }>;
 
+interface ModelGrantApproval {
+  recipientId: string;
+  requestId: string;
+  bindingId: string;
+  namespaceId: string;
+  agentId: string;
+  revisionId: string;
+  credentialIdentity: string | null;
+  consumed: boolean;
+  assertionReplayClaimed: boolean;
+}
+
+interface ModelGrantEvidence {
+  expected: {
+    providerId: string;
+    credentialKey: string;
+    sandboxId: string;
+    bindingId: string;
+    namespaceId: string;
+    agentId: string;
+    revisionId: string;
+  };
+  readApprovals: () => Promise<readonly ModelGrantApproval[]>;
+}
+
 interface OpenShellModelTurnOptions {
   gatewayUrl: string;
   gatewayPassword: string;
   sessionKey: string;
   turn: ModelOriginTurn;
   readOriginTurn: (turnId: string) => Promise<ModelTurnReceipt | undefined>;
+  grantEvidence?: ModelGrantEvidence;
   forbiddenCredentials?: readonly string[];
   signal?: AbortSignal;
 }
@@ -79,6 +106,7 @@ export async function assertOpenShellModelTurn({
   sessionKey,
   turn,
   readOriginTurn,
+  grantEvidence,
   forbiddenCredentials = [],
   signal,
 }: OpenShellModelTurnOptions) {
@@ -89,6 +117,9 @@ export async function assertOpenShellModelTurn({
     true,
     "The installed turn must begin with an unused origin marker.",
   );
+  // Snapshot after startup, immediately before this request. Even an unconsumed
+  // startup approval must not become fresh evidence when it completes later.
+  const baseline = grantEvidence ? await grantEvidence.readApprovals() : undefined;
   const httpStatus = await completeGatewayTurn(
     {
       gatewayUrl,
@@ -126,18 +157,52 @@ export async function assertOpenShellModelTurn({
     count: observed.count,
     priorTurnObserved: observed.priorTurnObserved,
   };
+  let grant;
+  if (grantEvidence && baseline) {
+    const { expected } = grantEvidence;
+    const priorRequests = new Set(baseline.map((approval) => approval.requestId));
+    const credentialIdentity = openShellGrantCredentialIdentity(
+      expected.providerId,
+      expected.credentialKey,
+    );
+    const approvals = await grantEvidence.readApprovals();
+    const consumed = approvals.find(
+      (approval) =>
+        !priorRequests.has(approval.requestId) &&
+        approval.recipientId === expected.sandboxId &&
+        approval.bindingId === expected.bindingId &&
+        approval.namespaceId === expected.namespaceId &&
+        approval.agentId === expected.agentId &&
+        approval.revisionId === expected.revisionId &&
+        approval.credentialIdentity === credentialIdentity &&
+        approval.consumed === true &&
+        approval.assertionReplayClaimed === true,
+    );
+    // Consumption proves the authority accepted this Gateway assertion, not
+    // final material release by itself. The authenticated origin response above
+    // is the separate evidence that the model request obtained its credential.
+    assert.ok(consumed, "The model turn needs a fresh matching consumed Gateway assertion.");
+    grant = {
+      providerId: expected.providerId,
+      sandboxId: expected.sandboxId,
+      bindingId: expected.bindingId,
+      requestId: consumed.requestId,
+      assertionConsumed: true as const,
+    };
+  }
   return {
     sessionKey,
     turnId: turn.id,
     harness: turn.harness,
     httpStatus,
     origin,
+    ...(grant ? { grant } : {}),
   };
 }
 
 interface OpenShellToolTurnOptions extends Omit<
   OpenShellModelTurnOptions,
-  "turn" | "readOriginTurn"
+  "turn" | "readOriginTurn" | "grantEvidence"
 > {
   turn: ModelOriginToolTurn;
   readOriginToolTurn: (turnId: string) => Promise<ToolTurnReceipt | undefined>;
