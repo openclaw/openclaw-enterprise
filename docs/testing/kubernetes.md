@@ -31,8 +31,8 @@ state for `occ dev down`. See [hosted execution](README.md#run-the-hosted-local-
 ## Kubernetes HTTP fixture
 
 Use Kubernetes 1.35+, Docker, k3d, `kubectl`, and a
-[dedicated migrated database](postgresql.md#other-postgresql-suites). Replace `oce`
-throughout if it exists. Default kubeconfig and context remain unchanged.
+[dedicated migrated database](postgresql.md#other-postgresql-suites). Choose another
+cluster name if `oce` exists. Default kubeconfig and context remain unchanged.
 
 ```sh
 mkdir -m 700 -p /tmp/oce-k3d
@@ -48,8 +48,7 @@ docker build --pull=false -t oce-fixture:local tests/fixtures/kubernetes
 k3d image import oce-fixture:local -c oce
 
 docker exec k3d-oce-server-0 ctr -n k8s.io images list -q |
-  grep -Fx 'docker.io/library/oce-fixture:local' || exit 1
-
+  grep -Fx 'docker.io/library/oce-fixture:local' &&
 OCC_TEST_KUBERNETES_KUBECONFIG=/tmp/oce-k3d/kubeconfig \
 OCC_TEST_KUBERNETES_CONTEXT=k3d-oce \
 OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
@@ -62,7 +61,7 @@ OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/opencla
 Run sequentially against this database without skips.
 Missing selectors or database skip cases; partial selectors fail. Coverage:
 API, worker, Driver, RBAC, storage, lifecycle and network isolation.
-Cloud volume detach and node fencing remain unverified.
+Verify cloud volume detach and node fencing separately.
 
 For live OAuth, use [OpenShell OAuth](openshell-oauth.md) and
 [credentialed runtime](openshell.md). Delete only your disposable cluster:
