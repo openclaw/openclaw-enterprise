@@ -63,8 +63,8 @@ wiring and receipts do not authorize requests.
 ### Classification refusal diagnostics
 
 Proposed amendment for [PR #5448](https://github.com/openclaw/openclaw-enterprise/pull/5448).
-Human RFC/Driver contract clearance remains required; implementation in the draft
-does not establish acceptance.
+Submitted with the implementation for review under the repository contribution
+policy.
 
 Operators need to identify a provider rule that refused an authenticated request
 before it became an operation. Extend `CredentialProviderDefinition.classify`
