@@ -6801,6 +6801,7 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
       harnessAuth: serviceAccountHarnessAuth(namespaceB.id, `sa_${randomUUID()}`),
     },
   });
+  assert.equal(missingForeignSource.status, 400);
   assert.deepEqual(missingForeignSource.body.error, foreignSourceAssociation.body.error);
 
   // Namespace-wide Agent authority never substitutes for an exact ServiceAccount binding.
