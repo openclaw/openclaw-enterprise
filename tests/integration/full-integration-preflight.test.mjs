@@ -701,6 +701,8 @@ test("same-SHA reuse waits at most twelve minutes and falls back without delayin
       "utf8",
     ),
   );
+  // The model job reads the artifact output directly; its producer must be a dependency.
+  assert.ok(workflow.jobs["docker-model"].needs.includes("runtime-artifact"));
   for (const lane of ["docker-model", "k3d-model", "gateway-routing", "slack", "openshell"]) {
     assert.equal([workflow.jobs[lane].needs].flat().includes("ci-reuse"), false, lane);
   }
@@ -2250,6 +2252,7 @@ test("OpenShell waits for its protected-input warm export before source builds",
   assert.equal(producer.uses, "./.github/workflows/ci-image-cache.yml");
   assert.equal(producer.with["require-export"], true);
   assert.equal(producer.with["node-base-image"], consumer.env.NODE_BASE_IMAGE);
+  assert.equal(producer.with["node-base-image"], consumer.env.OCC_DEVELOPMENT_NODE_BASE_IMAGE);
   assert.ok(producer.needs.includes("openshell-build-inputs"));
   assert.ok(consumer.needs.includes("openshell-image-cache"));
   assert.equal(warmer.concurrency.group, "ci-image-cache-${{ github.ref }}");
@@ -2269,12 +2272,19 @@ test("OpenShell waits for its protected-input warm export before source builds",
       preflight: { result: "success", outputs: { selected_lane: selection } },
       "openshell-build-inputs": {
         result: "success",
-        outputs: { "node-base-image": "protected-base" },
+        outputs: {
+          "node-base-image": `docker.io/library/node:24-bookworm@sha256:${"a".repeat(64)}`,
+        },
       },
       "openshell-image-cache": { result: "success", outputs: { "source-sha": github.sha } },
     };
-    assert.equal(workflowCondition(producer.with["node-base-image"], { needs }), "protected-base");
-    assert.equal(workflowCondition(consumer.env.NODE_BASE_IMAGE, { needs }), "protected-base");
+    const selectedBase = needs["openshell-build-inputs"].outputs["node-base-image"];
+    assert.equal(workflowCondition(producer.with["node-base-image"], { needs }), selectedBase);
+    assert.equal(workflowCondition(consumer.env.NODE_BASE_IMAGE, { needs }), selectedBase);
+    assert.equal(
+      workflowCondition(consumer.env.OCC_DEVELOPMENT_NODE_BASE_IMAGE, { needs }),
+      selectedBase,
+    );
     const selected = ["all", "openshell"].includes(selection);
     for (const job of [inputs, producer, consumer]) {
       assert.equal(workflowCondition(job.if, { github, needs }), selected);

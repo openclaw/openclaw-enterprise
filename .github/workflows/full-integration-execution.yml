@@ -443,6 +443,7 @@ jobs:
       # The packaged browser has Ubuntu's AppArmor user-namespace permission.
       OCC_TEST_BROWSER_EXECUTABLE: /usr/bin/google-chrome
       NODE_BASE_IMAGE: ${{ needs.openshell-build-inputs.outputs.node-base-image }}
+      OCC_DEVELOPMENT_NODE_BASE_IMAGE: ${{ needs.openshell-build-inputs.outputs.node-base-image }}
       CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}

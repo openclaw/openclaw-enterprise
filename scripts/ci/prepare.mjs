@@ -135,7 +135,14 @@ function parseArgs(argv) {
     if (!arg.startsWith("--")) {
       throw new Error(`Unexpected argument: ${arg}`);
     }
+    if (arg.startsWith("--require-cache-export=")) {
+      throw new Error("--require-cache-export is a flag and takes no value.");
+    }
     const name = arg.slice(2);
+    if (name === "require-cache-export") {
+      args[name] = true;
+      continue;
+    }
     const value = argv[index + 1];
     if (value === undefined || value.startsWith("--")) {
       args[name] = "1";
@@ -4009,13 +4016,18 @@ async function warmImageCache({ statePath, requireCacheExport = false, nodeBaseI
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  if (!args["warm-image-cache"] && (args["require-cache-export"] || args["node-base-image"])) {
+    throw new Error("--require-cache-export and --node-base-image require --warm-image-cache.");
+  }
   if (args["warm-image-cache"]) {
-    if (args.lane || args.file || args["github-env"]) {
-      throw new Error("--warm-image-cache cannot be combined with lane, file or github-env.");
+    if (args.lane || args.file || args["selected-file"] || args["github-env"]) {
+      throw new Error(
+        "--warm-image-cache cannot be combined with lane, file, selected-file or github-env.",
+      );
     }
     await warmImageCache({
       statePath: args.state,
-      requireCacheExport: args["require-cache-export"] === "1",
+      requireCacheExport: args["require-cache-export"] === true,
       nodeBaseImage: args["node-base-image"],
     });
     return;
@@ -4040,7 +4052,14 @@ async function main() {
   process.stdout.write(`${JSON.stringify({ envNames: Object.keys(env).sort() }, null, 2)}\n`);
 }
 
-export { defaultK3sImage, imageCacheLanes, lanesWithoutK3sAddons, prepareFile, prepareLane };
+export {
+  assertNodeBaseImage,
+  defaultK3sImage,
+  imageCacheLanes,
+  lanesWithoutK3sAddons,
+  prepareFile,
+  prepareLane,
+};
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((error) => {

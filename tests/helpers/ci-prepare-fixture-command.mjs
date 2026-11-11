@@ -392,7 +392,7 @@ async function fakeCommand({
       if (role === "controller" && scenario === "controller-cache-export-hung") {
         return hang();
       }
-      if (role === "controller" && scenario === "controller-cache-export-failed") {
+      if (scenario === `${role}-cache-export-failed`) {
         stderr("#52 exporting to GitHub Actions Cache\nERROR: synthetic export failure\n");
         return exit(1);
       }

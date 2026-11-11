@@ -1369,6 +1369,77 @@ process.exit(73);
     });
   }
 
+  test("the strict warmer shell validates before setup and refuses a failed runtime export", async (t) => {
+    const workflow = loadYaml(
+      await readFile(join(repositoryRoot, ".github/workflows/ci-image-cache.yml"), "utf8"),
+    );
+    const steps = workflow.jobs.warm.steps;
+    const validate = steps.find((step) => step.name === "Validate required cache input");
+    const exportStep = steps.find((step) => step.id === "export");
+    const cleanup = steps.find((step) => step.name === "Cleanup");
+    assert.equal(validate.if, "${{ inputs.require-export }}");
+    assert.equal(validate.env.CACHE_NODE_BASE_IMAGE, "${{ inputs.node-base-image }}");
+    assert.ok(
+      steps.indexOf(validate) <
+        steps.findIndex((step) => step.uses?.startsWith("docker/setup-buildx-action@")),
+    );
+    assert.equal(exportStep.env.REQUIRE_CACHE_EXPORT, "${{ inputs.require-export }}");
+    assert.equal(exportStep.env.CACHE_NODE_BASE_IMAGE, "${{ inputs.node-base-image }}");
+    assert.equal(cleanup.if, "always()");
+    const commands = await fixtureImageCommands(
+      t,
+      "runtime-cache-export-failed",
+      "images-packaging",
+      warmCacheEnv,
+    );
+    const root = dirname(commands.statePath);
+    const output = join(root, "output");
+    const selectedBase = `docker.io/library/node:24-bookworm@sha256:${"a".repeat(64)}`;
+    const env = {
+      REQUIRE_CACHE_EXPORT: "true",
+      CACHE_NODE_BASE_IMAGE: selectedBase,
+      GITHUB_SHA: "b".repeat(40),
+      GITHUB_OUTPUT: output,
+    };
+    // Run the checked-in validation and export shell, not a reconstructed invocation.
+    for (const invalid of ["", "node:24-bookworm", selectedBase.replace("node:24-", "node:22-")]) {
+      const result = await commands.runShell(validate.run, {
+        ...env,
+        CACHE_NODE_BASE_IMAGE: invalid,
+      });
+      assert.notEqual(result.status, 0, result.stderr);
+    }
+    await assert.rejects(stat(join(root, "commands.jsonl")), { code: "ENOENT" });
+    assert.equal((await commands.runShell(validate.run, env)).status, 0);
+    const warmed = await commands.runShell(exportStep.run, env);
+    assert.notEqual(warmed.status, 0, warmed.stderr);
+    assert.match(warmed.stderr, /"stage":"runtime-cache-export","outcome":"failed"/);
+    assert.match(warmed.stderr, /"stage":"controller-cache-export","outcome":"exported"/);
+    await assert.rejects(stat(output), { code: "ENOENT" });
+    const calls = await commands.commands();
+    assert.equal(
+      calls.some(({ args }) => args[0] === "tag"),
+      false,
+    );
+    const state = JSON.parse(await readFile(join(root, "state/image-cache-warm.json"), "utf8"));
+    const ownedTags = state.resources
+      .filter(({ kind }) => kind === "image-tag")
+      .map(({ name }) => name)
+      .sort();
+    assert.equal(ownedTags.length, 2);
+    const cleaned = await commands.runShell(cleanup.run, env);
+    assert.equal(cleaned.status, 0, cleaned.stderr);
+    const removed = (await commands.commands())
+      .filter(({ args }) => args[0] === "image" && args[1] === "rm")
+      .map(({ args }) => args.at(-1))
+      .sort();
+    assert.deepEqual(removed, ownedTags);
+    assert.doesNotMatch(
+      warmed.stdout + warmed.stderr + cleaned.stdout + cleaned.stderr,
+      /synthetic-cache-credential/,
+    );
+  });
+
   // The schedule retries a store commit that lost to other jobs' commits (finding 1340).
   test("a scheduled run on main warms the image cache and keeps main's runtime image", async (t) => {
     const commands = await fixtureImageCommands(t, "success", "images-packaging", {
@@ -1426,11 +1497,15 @@ process.exit(73);
         ["--require-cache-export", "--node-base-image", "node:24-bookworm"],
         /NODE_BASE_IMAGE must be an immutable/,
       ],
+      ["Boolean value", {}, ["--require-cache-export", "true"], /Unexpected argument: true/],
+      ["false value", {}, ["--require-cache-export", "false"], /Unexpected argument: false/],
+      ["equals value", {}, ["--require-cache-export=true"], /takes no value/],
+      ["selected file", {}, ["--selected-file", "anything"], /cannot be combined/],
       [
         "lane argument",
         {},
         ["--lane", "images-packaging"],
-        /--warm-image-cache cannot be combined with lane, file or github-env/,
+        /--warm-image-cache cannot be combined with lane, file, selected-file or github-env/,
       ],
       [
         "missing credentials",
@@ -1465,6 +1540,16 @@ process.exit(73);
       assert.doesNotMatch(calls, /"buildx"/, label);
       assert.doesNotMatch(warmed.stdout + warmed.stderr, /synthetic-cache-credential/, label);
     }
+  });
+
+  test("warm-only arguments cannot silently change lane preparation", async (t) => {
+    const commands = await fixtureImageCommands(t, "success", "images-packaging", warmCacheEnv);
+    for (const args of [["--require-cache-export"], ["--node-base-image", nodeBaseImage]]) {
+      const result = await commands.prepare(args);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /require --warm-image-cache/);
+    }
+    await assert.rejects(stat(commands.statePath), { code: "ENOENT" });
   });
 
   test("the image cache warm workflow runs for every change to an image build input", async () => {

@@ -54,10 +54,10 @@ Controller build selection is independent.
 
 `scripts/ci/prepare.mjs:imageBuildArgs` restores read-only caches, including
 `k3d-otel`. `prepareLane` primes selected `sourceBuildFiles`;
-OpenShell lanes share one stack build. Tests inherit builder and epoch,
-not credentials; installers still build source.
+each OpenShell lane builds its stack. Tests inherit builder and epoch,
+not cache credentials; installers still build source.
 `openshell-build-inputs` resolves the `integration-main` controller base for
-`all`/`openshell` producers and consumers. `openshell-image-cache` requires
+`all`/`openshell` builds, including Local Setup. `openshell-image-cache` requires
 caller-source exports and successful cleanup before admission. Strict export
 errors propagate after sibling settlement; standalone exports remain best effort.
 Queued writers remain unordered by commit; mutable caches permit misses.

@@ -93,6 +93,12 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: ${{ env.NODE_VERSION }}
+      - name: Validate required cache input
+        if: ${{ inputs.require-export }}
+        env:
+          CACHE_NODE_BASE_IMAGE: ${{ inputs.node-base-image }}
+        run: |
+          node --input-type=module -e 'import { assertNodeBaseImage } from "./scripts/ci/prepare.mjs"; assertNodeBaseImage(process.env.CACHE_NODE_BASE_IMAGE);'
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Expose image cache credentials
         id: image-cache

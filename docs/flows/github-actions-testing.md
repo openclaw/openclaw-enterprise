@@ -131,7 +131,7 @@ fail immediately. Unpinned Node overrides retain test-owned pulls.
 
 Full Integration requires [compatible cache exports](github-actions-testing/preparation.md)
 before OpenShell source builds. These retain their builder and fixed epoch;
-credentials stay in preparation. Mutable scopes make cache hits best effort.
+cache credentials stay in preparation. Mutable scopes make cache hits best effort.
 
 Kubernetes preparation records host snapshots. Failed reads, bounded
 by time and size, save `<state-file>.diagnostics.json` outside the cluster directory.
