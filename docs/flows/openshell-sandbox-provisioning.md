@@ -98,8 +98,9 @@ graph TD
 `internal/occdev/openshell.go:prepareOpenShell`,
 `internal/occdev/kubernetes.go:writeInstallation`
 
-Node and x64/ARM64 Codex run independently of launcher architecture. Importing
-OCE images first prevents k3s collection.
+Launchers require Landlock, support Node and x64/ARM64 Codex, verify 0.1.6 charts
+and pin Gateway/supervisor/sandbox images. Importing OCE images first
+prevents garbage collection. `writeInstallation` selects curated Codex plugins.
 
 `internal/occdev/openshell_assets.go:downloadVerified` streams archives;
 `internal/occdev/routing_manifest.go` and
@@ -108,6 +109,7 @@ Cancelable downloads retry network/HTTP 408/429/5xx errors: eight 60-second
 attempts starting within 120 seconds. Others fail. Archive retries remove failed
 `0600` files, preserving existing files.
 
+The launcher validates Kubernetes/OpenShell before startup.
 Kubernetes-only: PostgreSQL in `oce-system`, in-cluster authentication,
 [per-Agent HTTPS](../guides/deploy/local-setup.md). Startup records engine/cluster,
 Namespace, checked ports and key path. Compose: PostgreSQL/OCC with k3d.
@@ -119,6 +121,10 @@ precede apply (`Never`); CRI misses retry. Overrides stay unchanged.
 `internal/occdev/openshell_image.go` persists tag/engine-ID intent before creation.
 Return/rollback/`dev down` reconcile independently of clusters/Compose providers;
 incomplete inspection or uncertain/replaced tags retain state.
+
+Before provisioning, `scripts/first-agent.ts:main` and the operator hook
+call `internal/occdev/check.go:Check`. An unavailable controller refuses deployment
+with the same diagnostics.
 
 `internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout`
 reports rollout failures once, preserving rollback errors: Deployment, UID-linked
@@ -439,6 +445,8 @@ model execution.
 - 2026-11-11 21:41: Bind controller preload to node identity. (authoring-run/6d4239da-0b3c-4a1d-baaf-cd0d1b4646a6 - 7a2f352a44c42459a3a33c784199a47d11d98e1e)
 
 - 2026-11-11 21:12: Preload Agent Sandbox locally. (authoring-run/6d4239da-0b3c-4a1d-baaf-cd0d1b4646a6 - dfbdd7bfa6ccfba7d3d2e6b28f2770988c0cfc0d)
+
+- 2026-11-11 16:37: Check the managed controller before local Agent deployment. (authoring-run/8dc2b49c-caf2-4594-9d69-06d1826b336e - 98da01c910)
 
 - 2026-11-11 06:13: Trace attachment refusals. (authoring-run/04448580-0c4a-4965-8c27-7f586386c885 - fef779767c622b30bab45c7a0a94f16fc04f70ab)
 

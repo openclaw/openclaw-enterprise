@@ -2808,6 +2808,77 @@ test("run clears inherited selectors and keep flags while preserving explicit la
   assert.equal(result.status, 0, result.stderr);
 });
 
+test("OpenShell browser runner retains the destination for refusal before Local Setup", async (t) => {
+  const lane = JSON.parse(
+    await readFile(join(repositoryRoot, "scripts/ci/test-suites/openshell.json"), "utf8"),
+  );
+  const file = lane.files.find(
+    ({ path }) => path === "tests/integration/dev-up-openshell-k3d-real.test.mjs",
+  );
+  for (const [name, endpoint] of [
+    ["custom", "https://provider.example.invalid/v1"],
+    ["public", "https://api.openai.com/v1"],
+    ["unset", undefined],
+  ]) {
+    await t.test(name, async (t) => {
+      const root = await fixture(t);
+      // Use the real test and its imports. An absent CLI stops accepted selections
+      // before setup; no fixture replaces the destination guard or runner filtering.
+      await writeFile(join(root, file.path), await readFile(join(repositoryRoot, file.path)));
+      await symlink(
+        join(repositoryRoot, "scripts/ci/failure-redaction.mjs"),
+        join(root, "scripts/ci/failure-redaction.mjs"),
+      );
+      for (const path of ["apps", "node_modules", "tests/helpers"]) {
+        await symlink(join(repositoryRoot, path), join(root, path), "dir");
+      }
+      await symlink(join(repositoryRoot, "package.json"), join(root, "package.json"));
+      await writeRunnerManifest(root, {
+        lanes: {
+          browser: {
+            env: lane.env,
+            requiredEnv: lane.requiredEnv,
+            optionalEnv: lane.optionalEnv,
+            files: [file],
+          },
+        },
+      });
+      const result = run(
+        root,
+        [
+          ...laneArgs(root, "browser", "state/browser.jsonl", "results/browser.json"),
+          "--file",
+          file.path,
+          "--test-name",
+          file.expectedTests[0],
+        ],
+        {
+          CODEX_ACCESS_TOKEN: "synthetic-browser-pat",
+          OPENAI_API_KEY: "synthetic-browser-api-key",
+          OCC_TEST_OPENAI_MODEL: "synthetic-browser-model",
+          OCC_TEST_OPENSHELL_MODEL_BASE_URL: endpoint,
+          OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE: "",
+        },
+      );
+      assert.notEqual(result.status, 0, "The fixture must stop before cluster setup");
+      const summary = JSON.parse(await readFile(join(root, "results/browser.json"), "utf8"));
+      const failure = summary.files[0].tests.find(({ status }) => status === "failed");
+      assert.ok(failure, JSON.stringify(summary));
+      assert.equal(failure.name, file.expectedTests[0]);
+      if (name === "custom") {
+        assert.match(
+          failure.error.message,
+          /The browser Agent requires the public OpenAI endpoint/,
+        );
+        assert.doesNotMatch(failure.error.message, /ENOENT/);
+      } else {
+        assert.match(failure.error.message, /ENOENT.*bin\/occ/);
+        assert.doesNotMatch(failure.error.message, /requires the public OpenAI endpoint/);
+      }
+    });
+  }
+});
+
 test("OpenShell selected files retain API-key selection and require the selected credential", async (t) => {
   const root = await fixture(t);
   const lane = JSON.parse(

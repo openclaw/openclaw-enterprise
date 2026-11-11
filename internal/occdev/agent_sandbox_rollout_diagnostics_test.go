@@ -323,7 +323,7 @@ func TestAgentSandboxRolloutDiagnosticsRejectOwnership(t *testing.T) {
 				objects["replicasets"]["items"] = []any{rs, rs}
 			}
 			writeAgentSandboxFixtures(t, directory, objects)
-			r.captureAgentSandboxRollout(state)
+			r.captureAgentSandboxRollout(context.Background(), state)
 			record := readAgentSandboxRecord(t, output)
 			if len(record.Warnings.Items) != 0 {
 				t.Fatal("accepted event for foreign/spoofed chain")
@@ -423,6 +423,16 @@ func TestAgentSandboxRolloutDiagnosticsCancellation(t *testing.T) {
 	if readAgentSandboxRecord(t, output).Deployment.Status != "ok" {
 		t.Fatal("startup cancellation prevented capture")
 	}
+	// An interactive check must not start fresh subprocesses after cancellation.
+	before, err := os.ReadFile(filepath.Join(directory, "commands.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.captureAgentSandboxRollout(ctx, state)
+	after, err := os.ReadFile(filepath.Join(directory, "commands.log"))
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("cancelled capture started another command: %v", err)
+	}
 	r.env["OCC_TEST_SANDBOX_MODE"] = "hang"
 	started := time.Now()
 	stage := r.agentSandboxRead(ctx, state, "deployment", agentSandboxDeploymentTemplate, 1)
@@ -454,7 +464,7 @@ func TestAgentSandboxRolloutDiagnosticsRecordBound(t *testing.T) {
 	}
 	objects["pods"]["items"] = pods
 	writeAgentSandboxFixtures(t, directory, objects)
-	r.captureAgentSandboxRollout(state)
+	r.captureAgentSandboxRollout(context.Background(), state)
 	if output.String() != "{\"diagnostic\":\"agent-sandbox-rollout\",\"status\":\"overflow\"}\n" {
 		t.Fatal("missing bounded final-record fallback")
 	}
