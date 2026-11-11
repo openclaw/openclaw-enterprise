@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { sha256Hex } from "../../packages/utils/src/hashing.ts";
 import assert from "node:assert/strict";
 import { selectLiveControllerPods } from "./egress-installed-stack.mjs";
-import { collectInstalledWorkerEvents } from "./installed-worker-events.mjs";
+import { collectInstalledWorkerEvents } from "./installed-worker-events.ts";
 import { observeInstalledProtection } from "./egress-installed-agent.mjs";
 import { protectedConfigurationBody, sourceAccessBindingBody } from "./egress-connected-inputs.mjs";
 import {

@@ -22,7 +22,7 @@ import { availablePort } from "./available-port.mjs";
 import { localFirstAgentStack, ownFirstAgentWork } from "./local-first-agent-stack.mjs";
 import { localOpenShellGatewayOptions } from "./local-openshell-gateway.mjs";
 import { stopProcess } from "./stop-process.mjs";
-import { collectInstalledWorkerEvents } from "./installed-worker-events.mjs";
+import { collectInstalledWorkerEvents } from "./installed-worker-events.ts";
 import { deployMixedGrantAgent } from "./openshell-mixed-grant-agent.ts";
 import {
   mixedGrantSupplier,
