@@ -118,6 +118,7 @@ export async function startWorkspaceGatewayRelayContainer(
       await execute(["run", "-d", "--name", relayName, "--label", ownership, ...runArguments], {
         timeout: 120_000,
       });
+      stage = "observation";
       await delay(250, undefined, { signal: abort.signal });
       stage = "ownership";
       containerId = await findOwnedContainer(abort.signal);
@@ -137,7 +138,10 @@ export async function startWorkspaceGatewayRelayContainer(
       launchIndeterminate =
         stage === "run" &&
         Boolean(error.killed || error.signal || error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER");
-      failure = `${stage}: ${commandFailure(error)}`;
+      failure =
+        stage === "observation"
+          ? "observation: cancelled before the running-state check."
+          : `${stage}: ${commandFailure(error)}`;
     }
 
     // A rejected run can still have created a container. Verify the invocation

@@ -308,9 +308,8 @@ test("fixture cleanup owns containers left by a rejected launch", options, async
   await assert.rejects(
     fixture.run(runArguments("/missing-oce-relay-fixture-entrypoint", [])),
     (error) => {
-      assert.match(error.message, /Relay fixture launch failed: exit=/);
+      assert.match(error.message, /^Relay fixture launch failed: exit=\d+ signal=none$/);
       assert.doesNotMatch(error.message, /missing-oce-relay-fixture-entrypoint/);
-      assert.ok(!error.message.includes(image), "raw image arguments must not appear in the error");
       assert.equal(error.cause, undefined);
       return true;
     },
@@ -340,18 +339,27 @@ async function delegatedLaunchTest(t, mode) {
     const abort = new AbortController();
     test("delegated launch", { timeout: 180000, signal: abort.signal }, async (t) => {
       const started = startWorkspaceGatewayRelayContainer(boundedTeardown(t).context, ${JSON.stringify({ containerEngine: wrapper, relayName: `oce-relay-delegated-${randomUUID()}`, runArguments: ["--label", fixture.label, ...runArguments("node", ["-e", "setInterval(() => {}, 1000)"])] })});
-      started.catch(() => {});
+      started.catch((error) => { process.stderr.write(error.message + "\\n"); });
       await waitForRelayFile(${JSON.stringify(launchFiles.ready)});
-      if (${JSON.stringify(mode)} === "cancelled-launch") { abort.abort(); }
-      // Keep the real engine launch pending until cleanup has had time to start.
-      await delay(1000);
-      await writeFile(${JSON.stringify(launchFiles.release)}, "release");
+      if (${JSON.stringify(mode)} === "cancelled-launch") {
+        abort.abort();
+        // Cleanup must join this still-pending launch before reconciling ownership.
+        await delay(1000);
+        await writeFile(${JSON.stringify(launchFiles.release)}, "release");
+      }
       await started;
     });`;
   const output = await runChildTest(source);
+  // In the interrupted case the child has completed its empty ownership lookup
+  // before the delegate may create the late container.
+  if (mode === "interrupted-launch") {
+    await writeFile(launchFiles.release, "release");
+  }
   await waitForRelayFile(launchFiles.finished);
   if (mode === "cancelled-launch") {
     assert.match(output, /testAborted/);
+    assert.match(output, /observation: cancelled before the running-state check/);
+    assert.doesNotMatch(output, /run: exit=ABORT_ERR/);
     assert.equal(
       await fixture.find(),
       undefined,

@@ -18,7 +18,7 @@ export function relayEngine({ engine, mode, partialOutput, launchFiles }) {
     if (args[0] === "run" && launchFiles) {
       // A real delegated subprocess remains in flight while the test cancels
       // setup (or kills this wrapper), then calls the actual engine.
-      const source = `import { delegatedRelayLaunch } from ${JSON.stringify(import.meta.url)}; await delegatedRelayLaunch(${JSON.stringify({ engine, mode, launchFiles, args })});`;
+      const source = `import { delegatedRelayLaunch } from ${JSON.stringify(import.meta.url)}; await delegatedRelayLaunch(${JSON.stringify({ engine, mode, launchFiles, args, wrapperPid: process.pid })});`;
       process.stdout.write(
         execFileSync(process.execPath, ["--input-type=module", "-e", source], {
           encoding: "utf8",
@@ -74,12 +74,16 @@ export async function waitForRelayFile(path) {
   throw new Error("Delegated relay launch did not reach its synchronization point.");
 }
 
-export async function delegatedRelayLaunch({ engine, mode, launchFiles, args }) {
+export async function delegatedRelayLaunch({ engine, mode, launchFiles, args, wrapperPid }) {
   await writeFile(launchFiles.ready, "ready");
-  if (mode === "interrupted-launch") {
-    process.kill(process.ppid, "SIGKILL");
-  }
   try {
+    if (mode === "interrupted-launch") {
+      // Reparenting must never turn this fault into a signal to an adopting runner.
+      if (process.ppid !== wrapperPid) {
+        throw new Error("The intended relay wrapper is no longer the parent.");
+      }
+      process.kill(wrapperPid, "SIGKILL");
+    }
     await waitForRelayFile(launchFiles.release);
     const output = execFileSync(engine, args, {
       encoding: "utf8",
