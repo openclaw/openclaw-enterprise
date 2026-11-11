@@ -186,12 +186,11 @@ owns credential isolation and historical-pair limits.
 with declared inputs restored, `lane.env`, preparation defaults, `file.env`, then
 generated values. Later values win.
 `scripts/ci/prepare.mjs:prepareFile` separates defaults from generated outputs.
-OpenShell credential admission includes declared file-level model selectors:
-`validateLaneInputsBeforeSideEffects` reads the selected manifest entry for direct
-preparation; `runFile` forwards selectors from inputs overlaid by `file.env`.
-A whole-lane admission retains its shared prerequisites. Raw custom-destination
-and provider-file guards still run before setup. Other file values do not alter
-resource preparation; execution retains the precedence above.
+OpenShell admission includes declared file model selectors:
+`validateLaneInputsBeforeSideEffects` reads the selected manifest entry directly;
+`runFile` forwards inputs overlaid by `file.env`. Whole-lane prerequisites and raw
+custom-destination/provider-file guards still apply before setup. Other file values
+do not affect preparation; execution keeps the precedence above.
 
 The reporter retains names, locations, outcomes, failure messages (600 characters) and top frames (240). Redaction removes repository paths, substitutes nonpublic job/child values (8+ characters) with `[env:NAME]`, and masks token/key shapes, URL passwords and `password=` as `[redacted]`. Generated values require a matching shape.
 
