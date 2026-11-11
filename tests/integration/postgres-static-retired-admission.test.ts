@@ -267,6 +267,7 @@ test(
             },
           },
           protectedDriver: owner,
+          namespaceLifecycleBindings: [sandboxNamespaceLifecycleBinding(compute, sandbox, owner)],
           sandboxDriver: sandbox,
           credentialGatewayDriver: gateway,
         },
