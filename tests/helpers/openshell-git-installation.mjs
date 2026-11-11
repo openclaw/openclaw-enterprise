@@ -190,8 +190,8 @@ async function waitUntil(description, operation, timeout, signal) {
   throw new Error(`Timed out waiting for ${description}`);
 }
 
-// Keys remain in this private directory or worker-only Secrets. The image build
-// context below receives only public certificates, never either signing key.
+// Keys remain in this private directory or role-specific Secrets. The image build
+// context below receives only public certificates, never private keys.
 async function certificates(
   command,
   directory,
@@ -267,10 +267,10 @@ async function certificates(
   return {
     ca: await readFile(caFile, "utf8"),
     origin: await issue("origin", ["github.com", "api.github.com", originHost]),
-    authority: await issue("authority", [
-      authorityHost,
-      ...(modelAuthorityHost ? [modelAuthorityHost] : []),
-    ]),
+    authority: await issue("authority", [authorityHost]),
+    ...(modelAuthorityHost && {
+      modelAuthority: await issue("model-authority", [modelAuthorityHost]),
+    }),
     ...(modelHost && { model: await issue("model", [modelHost]) }),
   };
 }
@@ -800,7 +800,13 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
     }),
   ]);
   if (mixed) {
+    // The model authority and Git authority require separate TLS Secrets and keys.
+    assert.ok(tls.modelAuthority);
     await apply([
+      privateSecret("model-authority-tls", {
+        "tls.crt": tls.modelAuthority.cert,
+        "tls.key": tls.modelAuthority.key,
+      }),
       configMap("git-gateway-jwks", { "bundle.json": gatewayGrantBundle(publicKey, keyId) }),
     ]);
   }
@@ -960,7 +966,7 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
     values.egressAuthority = {
       enabled: true,
       port: 9444,
-      tlsSecretName: "git-authority-tls",
+      tlsSecretName: "model-authority-tls",
       issuerSecretName: jwtSecret,
       clients: [peer(platform, gatewayLabels), peer(sandboxNamespace, supervisorLabels)],
       tokenGrant: { enabled: true, port: 9445, bundleConfigMapName: "git-gateway-jwks" },
