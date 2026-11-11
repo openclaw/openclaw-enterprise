@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: "2026-11-11"
-last_updated_session: "authoring-run/e533d196-4ff0-450d-b662-d41ede51e945"
+last_updated_session: "authoring-run/8381f18d-77a3-4a7a-91af-23d1151f2f9e"
 ---
 
 # GitHub Actions testing flow
@@ -63,8 +63,8 @@ graph TD
 
 `loadTestSuites` reads tests, inputs and preparation from `scripts/ci/test-suites.json` and its ordered lane references.
 
-For [complete local attempts](../testing/ci/run-lanes.md#run-a-complete-local-attempt),
-`run-tests.mjs:main` rejects noncanonical paths before reading the manifest or calling `runCompleteLifecycle`.
+For [complete attempts](../testing/ci/run-lanes.md#run-a-complete-local-attempt),
+`run-tests.mjs:main` rejects noncanonical manifests before reading or executing them.
 
 `run-tests.mjs:selectLane` validates focused paths before setup. Focused results
 retain cases, environment and cleanup. `validateLaneEvidence` rejects them for
@@ -208,10 +208,9 @@ Required cases must pass; every skip or TODO fails the lane. There are no counte
 
 `scripts/ci/cleanup.ts:main` and `scripts/ci/run-tests.mjs:main`
 
-`.github/actions/run-ci-lane/action.yml` uploads one sanitized result artifact
-per lane/run; retries replace it. Each attempt also uploads the same result as
-`attempt-<run attempt>-<artifact-prefix>-<lane>` outside aggregate patterns,
-preserving failed cases across `--failed` reruns. Other lanes retain their artifacts.
+`.github/actions/run-ci-lane/action.yml` replaces only the retried lane’s sanitized result.
+Separate `attempt-<run attempt>-<artifact-prefix>-<lane>` artifacts preserve failed
+`--failed` attempts outside aggregation.
 
 `scripts/ci/memory-sampler.sh` samples memory pressure, RSS, process IDs,
 containers and disk every 15 seconds, excluding arguments and environment.
@@ -287,11 +286,15 @@ awaits an approved resource ledger.
 
 ## Changelog
 
+- 2026-11-11 15:36: Require the real PostgreSQL preparation lifecycle in its Docker-capable lane. (authoring-run/8381f18d-77a3-4a7a-91af-23d1151f2f9e - 7dbcfc5ec7a62c35ff3585e965470db8cc8c840b)
+
 - 2026-11-11 14:43: Preserve installed sign-in and complete CI lifecycle paths. (authoring-run/e533d196-4ff0-450d-b662-d41ede51e945 - 21417f21dd22a6410350395ac43a24146a2f8027)
 
 - 2026-11-11 14:02: Document canonical manifest guard. (authoring-run/c4d4109e-2324-46f7-bceb-42e3780475b1 - 6bfff2b8a3a07d91637dac4391affc9dde8e0547)
 
 - 2026-11-11 13:14: Refresh the exact current sign-in profile. (authoring-run/d71f35f5-549c-4312-9000-cc24c8cee1cd - 2b8436a5da1e75427c8aa72523d16b9bdc6d0f35)
+
+- 2026-11-11 09:34: Allocate PostgreSQL ports through Docker and retain discovery cleanup ownership. (authoring-run/24db2a8e-6abc-40a2-9332-103ff02f4d4f - 89e4d8b565e511f0dc4688e6dcaed093659e447a)
 
 - 2026-11-11 08:45: Preserve uncertain cleanup. (authoring-run/2f6528e7-fc71-4854-a473-7c5fd68410cc - b561b6bc134053ea9ff7ab4286c4f2f501a80391)
 
@@ -300,8 +303,6 @@ awaits an approved resource ledger.
 - 2026-11-11 08:17: Carry prepared custody into destructive cleanup. (authoring-run/f3df3f10-664e-40c7-9f31-907e3bcf7ad1 - 6a60e750c83a3508041ef5100a36f7232ed226ea)
 
 - 2026-11-11 08:11: Bind sign-in rehearsal to the current v3 profile. (authoring-run/8a266aca-074d-4db2-a374-624cabc77861 - 9bf18bf3244b0a0e6f26f5a10263f51ea0b08b3c)
-
-- 2026-11-11 09:34: Allocate PostgreSQL ports through Docker and retain discovery cleanup ownership. (authoring-run/24db2a8e-6abc-40a2-9332-103ff02f4d4f - 89e4d8b565e511f0dc4688e6dcaed093659e447a)
 
 - 2026-11-11 07:55: Retain selected runtime Codex provenance in CI evidence. (authoring-run/59e3fbae-c2ef-496b-ad18-c965758bee04 - 7fa7a37738bb24b27d9a835e409ea20eafb43cee)
 

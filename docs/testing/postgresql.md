@@ -70,12 +70,11 @@ To verify allocation, migration, application-role access and cleanup with two
 owned real Docker projects, run:
 
 ```sh
-OCC_TEST_CI_POSTGRES_REAL=1 node --test --test-name-pattern='distinct Docker-assigned' \
-  tests/integration/ci-prepare-postgres.test.ts
+node --test tests/integration/ci-prepare-postgres-real.test.ts
 ```
 
-This opt-in check requires Docker Compose, PostgreSQL image access and the
-installed workspace dependencies. It removes only its own projects and volumes;
+The `postgres` CI lane requires this check with no skips. It needs Docker Compose,
+PostgreSQL image access and installed workspace dependencies. It removes only its own projects and volumes;
 cleanup failures retain the state directory printed in the error.
 
 ## Subnet pool exhaustion
