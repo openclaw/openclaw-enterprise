@@ -506,7 +506,7 @@ export function projectAgentNamespaceActivity(eventsText, podsText, secrets = []
 }
 
 // Tests that follow a container's log write one JSON record per failed wait into
-// this directory (tests/helpers/container-log-capture.mjs); `finish` publishes a
+// this directory (tests/helpers/container-log-capture.ts); `finish` publishes a
 // bounded, redacted projection. Passing tests write nothing.
 export const CONTAINER_LOG_DIRECTORY_VARIABLE = "OPENCLAW_CI_CONTAINER_LOG_DIR";
 // A file keeps its first records (the earliest failure is the likeliest cause);

@@ -79,7 +79,7 @@ import {
   bindReservedPortInProcess,
   reservedPortArgs,
   reservePort,
-} from "../helpers/available-port.mjs";
+} from "../helpers/available-port.ts";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -89,6 +89,7 @@ import { createCredentialGatewayContexts } from "./sandbox-driver-credential-fix
 import { createSandboxHarnessLifecycleChecks } from "./sandbox-driver-harness-lifecycle-cases.ts";
 import { createSandboxCodexHarnessChecks } from "./sandbox-driver-codex-harness-cases.ts";
 import { createCredentialWithdrawalChecks } from "./sandbox-driver-credential-withdrawal-cases.ts";
+import { assertManagedMcpProjection } from "./sandbox-driver-managed-mcp-rules-cases.ts";
 import { createSandboxStartupGuardChecks } from "./sandbox-driver-startup-guard-cases.ts";
 import {
   verifySharedBackendComposition,
@@ -1038,31 +1039,7 @@ test("OpenShell builds managed MCP rules for the declared endpoint and upstream 
   };
   const provider = managedMcpProviderEndpoint(install);
   const network = managedMcpNetwork(install, ["read_inventory"]);
-  assert.deepEqual(provider, {
-    ...endpoint,
-    protocol: "mcp",
-    mcp: { strict_tool_names: true, versions: ["2025-11-25"] },
-    rules: [{ allow: { method: "ping" } }],
-  });
-  assert.equal(network.name, "oce-inventory-mcp");
-  assert.deepEqual(network.binaries, [{ path: install.binaryPath }]);
-  assert.deepEqual(network.endpoints, [
-    {
-      host: endpoint.host,
-      ports: [endpoint.port],
-      path: endpoint.path,
-      protocol: "mcp",
-      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-      mcp: provider.mcp,
-      rules: [
-        { allow: { method: "ping" } },
-        { allow: { method: "initialize" } },
-        { allow: { method: "notifications/initialized" } },
-        { allow: { method: "tools/list" } },
-        { allow: { method: "tools/call", params: { name: { glob: "read_inventory" } } } },
-      ],
-    },
-  ]);
+  assertManagedMcpProjection({ endpoint, install, provider, network });
   const policyWith = (port) => ({
     [network.name]: network,
     other: { endpoints: [{ host: "*.tools.example", ports: [port] }] },
@@ -1537,32 +1514,16 @@ test("OpenShell exposes a native OpenClaw worker's held-failure port when Comput
       getExposedService: () => exposedService,
     });
 
-  // The exposure needs the verifier, and never the raw token, exactly like Codex.
-  for (const [environment, message] of [
-    [[{ name: "APP_SERVER_PORT", value: "18790" }], /requires one literal APP_TOKEN_SHA verifier/],
-    [
-      [
-        { name: "APP_SERVER_PORT", value: "18790" },
-        { name: "APP_TOKEN_SHA", value: "b".repeat(64) },
-        {
-          name: "APP_SERVER_TOKEN",
-          valueFrom: { secretKeyRef: { name: "agent-token", key: "token" } },
-        },
-      ],
-      /cannot receive APP_SERVER_TOKEN/,
-    ],
-  ]) {
-    await assert.rejects(
-      driver.provisionHarness({ ...context, revision, requirements: exposing(environment) }),
-      (error) => {
-        assert.ok(error instanceof SandboxRevisionUnsupportedError, String(error));
-        assert.equal(error.code, "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED");
-        assert.match(error.message, message);
-        return true;
-      },
-    );
-  }
-  assert.equal(requests.length, 0);
+  const { verifyNativeExposureCredentialBoundary } =
+    await import("./sandbox-driver-native-held-failure-cases.ts");
+  await verifyNativeExposureCredentialBoundary({
+    driver,
+    context,
+    revision,
+    exposing,
+    requests,
+    unsupportedError: SandboxRevisionUnsupportedError,
+  });
 
   const exposed = exposing([
     { name: "APP_SERVER_PORT", value: "18790" },
@@ -1941,49 +1902,15 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
   assert.ok(spec.providers.includes(`oce-cs-${"b".repeat(24)}`));
   const runtimeProvider = spec.providers.find((name) => name.startsWith("oce-runtime-"));
   assert.ok(runtimeProvider);
-  assert.deepEqual(gatewayClient.providers.get(runtimeProvider).config, {
-    runtime_json: runtimeManifest,
-    config_toml: codexConfig,
-    node_ca_pem: "-----BEGIN CERTIFICATE-----\npublic-ca\n-----END CERTIFICATE-----\n",
-    node_setup_json: JSON.stringify({
-      url: nodeSetup.url,
-      bootstrapToken: nodeSetup.bootstrapToken,
-      expiresAtMs: nodeSetup.expiresAtMs,
-      tlsFingerprint: nodeSetup.tlsFingerprint,
-    }),
+  const { verifyDedicatedCodexProviderFiles } =
+    await import("./sandbox-driver-dedicated-codex-provider-cases.ts");
+  verifyDedicatedCodexProviderFiles({
+    gatewayClient,
+    runtimeProvider,
+    runtimeManifest,
+    codexConfig,
+    nodeSetup,
   });
-  const providerCreate = gatewayClient.calls.find(([operation]) => operation === "createProvider");
-  assert.deepEqual(providerCreate[1].credentials, {});
-  assert.deepEqual(providerCreate[1].credentialExpirationTimes, {});
-  const runtimeProfile = gatewayClient.profiles.get("oce-codex-runtime").profile;
-  // One annotation identifies the owner and the managed content.
-  assert.deepEqual(Object.keys(runtimeProfile.annotations), ["openclaw.dev/managed-by"]);
-  assert.match(
-    runtimeProfile.annotations["openclaw.dev/managed-by"],
-    /^openclaw-enterprise:[a-f0-9]{64}$/,
-  );
-  assert.deepEqual(runtimeProfile.files, [
-    {
-      path: "runtime.json",
-      content: "{{config.runtime_json}}",
-      environmentVariable: "OPENCLAW_PLUGIN_RUNTIME_MANIFEST",
-    },
-    {
-      path: "config.toml",
-      content: "{{config.config_toml}}",
-      environmentVariable: "OPENCLAW_PLUGIN_CODEX_CONFIG_TOML",
-    },
-    {
-      path: "node-setup.json",
-      content: "{{config.node_setup_json}}",
-      environmentVariable: "OPENCLAW_NODE_SETUP_ENVELOPE",
-    },
-    {
-      path: "node-ca.pem",
-      content: "{{config.node_ca_pem}}",
-      environmentVariable: "OPENCLAW_NODE_CA_PATH",
-    },
-  ]);
   // A wss setup URL keeps TLS end to end to the Gateway route the node's CA pins;
   // OpenShell must not terminate it, so the rule binds only binary, host, and port.
   assert.deepEqual(spec.policy.network_policies["workspace-node-enrollment"], {
@@ -2300,18 +2227,8 @@ test("OpenShell Namespace lifecycle creates, adopts, and deletes its exact opera
   assert.equal(gatewayClient.workspaces.has(context.namespace.name), false);
 });
 
-test("OpenShell operator mode owns workspace chart resources around the Workspace lifecycle", async () => {
-  await verifyOperatorWorkspaceChart(({ gatewayClient, configuration, events }) => {
-    const driver = openShellDriver(gatewayClient, configuration);
-    const context = namespaceContext();
-    context.kubernetes = kubernetesObjectClient(events);
-    return {
-      namespaceName: context.namespace.name,
-      ensureNamespace: () => driver.ensureNamespace(context),
-      cleanup: () => driver.cleanup(context),
-    };
-  });
-});
+test("OpenShell operator mode owns workspace chart resources around the Workspace lifecycle", () =>
+  verifyOperatorWorkspaceChart({ openShellDriver, namespaceContext, kubernetesObjectClient }));
 
 test("OpenShell managed mode fails before mutating Kubernetes or the Gateway", async () => {
   await verifyManagedNamespaceRejectsMutation({
@@ -2798,48 +2715,9 @@ test("stock OpenShell v0.1.5 cannot carry OCE readiness-extension evidence", asy
     options,
   );
   const message = "openshell.v1.ProviderReadinessStatus";
-  const evidence = {
-    state: "PROVIDER_READINESS_STATE_READY",
-    network_instance_id: "network-one",
-    receipt: {
-      provider: "provider-one",
-      workspace: "workspace-one",
-      kind: "PROVIDER_MUTATION_KIND_OBSERVE",
-      desired: { sandbox_id: "sandbox-one", attachment_epoch: "epoch-one" },
-    },
-    observed: {
-      session_id: "session-one",
-      sequence: "1",
-      attachment_epoch: "epoch-one",
-      credentials_installed: true,
-      policy_active: true,
-      launch_environment_installed: true,
-      process_instance_id: "process-one",
-    },
-    observed_time: { seconds: "100" },
-    evaluated_time: { seconds: "101" },
-  };
-  const readinessBytes = product[message].serialize(evidence);
-  assert.deepEqual(product[message].deserialize(readinessBytes), evidence);
-  const stockDecoded = stock[message].deserialize(readinessBytes);
-  assert.equal(stockDecoded.state, evidence.state);
-  assert.equal(stockDecoded.network_instance_id, evidence.network_instance_id);
-  assert.equal(stockDecoded.receipt.provider, evidence.receipt.provider);
-  assert.equal(stockDecoded.receipt.workspace, evidence.receipt.workspace);
-  assert.equal(stockDecoded.receipt.kind, 4, "unknown enum number is not negotiated support");
-  assert.equal(stockDecoded.receipt.desired, undefined);
-  for (const key of ["observed", "observed_time", "evaluated_time"]) {
-    assert.equal(stockDecoded[key], undefined, key);
-  }
-  const received = product[message].deserialize(stock[message].serialize(stockDecoded));
-  assert.equal(received.state, evidence.state);
-  assert.equal(received.network_instance_id, evidence.network_instance_id);
-  assert.equal(received.receipt.provider, evidence.receipt.provider);
-  assert.equal(received.receipt.workspace, evidence.receipt.workspace);
-  assert.equal(received.receipt.desired, undefined);
-  assert.equal(received.observed, undefined);
-  assert.equal(received.observed_time, undefined);
-  assert.equal(received.evaluated_time, undefined);
+  const { verifyStockReadinessEvidence } =
+    await import("./sandbox-driver-stock-readiness-cases.ts");
+  verifyStockReadinessEvidence(product[message], stock[message]);
   const policyStatus = "openshell.v1.GetSandboxPolicyStatusResponse";
   const enforcement = {
     sandbox_id: "sandbox-one",

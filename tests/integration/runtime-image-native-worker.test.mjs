@@ -586,8 +586,8 @@ ${AGENT_WITH_NODE_ENTRYPOINT}`;
       // command. Copy source over argv so this also works with a remote Docker engine.
       const paths = [
         "tests/conformance/workspace-node-supervisor.test.mjs",
-        "tests/helpers/available-port.mjs",
-        "tests/helpers/reuse-port-preload.mjs",
+        "tests/helpers/available-port.ts",
+        "tests/helpers/reuse-port-preload.ts",
         "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
         "apps/controller/src/drivers/compute/kubernetes/codex-plugin-stdio.ts",
         "apps/controller/plugins/marketplace.json",

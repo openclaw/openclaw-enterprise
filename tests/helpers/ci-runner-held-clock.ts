@@ -25,7 +25,7 @@ const realClearTimeout = globalThis.clearTimeout;
 let heldMs = 0;
 let open = false;
 // Timers due past the hold time, waiting for the gates.
-const held = new Set();
+const held = new Set<HeldTimer>();
 
 function now() {
   const real = realNow() - heldMs;
@@ -33,7 +33,13 @@ function now() {
 }
 
 class HeldTimer {
-  constructor(callback, due, args) {
+  callback: CallableFunction;
+  due: number;
+  args: unknown[];
+  refed: boolean;
+  timer: NodeJS.Timeout | undefined;
+
+  constructor(callback: CallableFunction, due: number, args: unknown[]) {
     this.callback = callback;
     this.due = due;
     this.args = args;
@@ -42,7 +48,10 @@ class HeldTimer {
   }
 
   arm() {
-    this.timer = realSetTimeout(() => this.callback(...this.args), Math.max(1, this.due - now()));
+    this.timer = realSetTimeout(
+      () => Reflect.apply(this.callback, this, this.args),
+      Math.max(1, this.due - now()),
+    );
     if (!this.refed) {
       this.timer.unref();
     }
@@ -104,31 +113,37 @@ function updatePoll() {
 
 Date.now = now;
 
-globalThis.setTimeout = function setTimeout(callback, delay, ...args) {
-  if (typeof callback !== "function") {
-    // Node's own setTimeout rejects it at once.
-    return realSetTimeout(callback, delay, ...args);
-  }
-  // Node runs a timer whose delay is not a number from 1 to 2^31 - 1 after 1 ms.
-  const ms = Number(delay);
-  const due = now() + (ms >= 1 && ms <= 2 ** 31 - 1 ? ms : 1);
-  if (open || due <= holdAt) {
-    return realSetTimeout(callback, delay, ...args);
-  }
-  const timer = new HeldTimer(callback, due, args);
-  held.add(timer);
-  updatePoll();
-  return timer;
-};
-
-globalThis.clearTimeout = function clearTimeout(timer) {
-  if (timer instanceof HeldTimer) {
-    held.delete(timer);
-    if (timer.timer !== undefined) {
-      realClearTimeout(timer.timer);
+globalThis.setTimeout = new Proxy(realSetTimeout, {
+  apply(target, thisArg: unknown, parameters: unknown[]) {
+    const [callback, delay, ...args] = parameters;
+    if (typeof callback !== "function") {
+      // Node's own setTimeout rejects it at once.
+      return Reflect.apply(target, thisArg, parameters);
     }
+    // Node runs a timer whose delay is not a number from 1 to 2^31 - 1 after 1 ms.
+    const ms = Number(delay);
+    const due = now() + (ms >= 1 && ms <= 2 ** 31 - 1 ? ms : 1);
+    if (open || due <= holdAt) {
+      return Reflect.apply(target, thisArg, parameters);
+    }
+    const timer = new HeldTimer(callback, due, args);
+    held.add(timer);
     updatePoll();
-    return;
-  }
-  realClearTimeout(timer);
-};
+    return timer;
+  },
+});
+
+globalThis.clearTimeout = new Proxy(realClearTimeout, {
+  apply(target, thisArg: unknown, parameters: unknown[]) {
+    const [timer] = parameters;
+    if (timer instanceof HeldTimer) {
+      held.delete(timer);
+      if (timer.timer !== undefined) {
+        realClearTimeout(timer.timer);
+      }
+      updatePoll();
+      return;
+    }
+    return Reflect.apply(target, thisArg, parameters);
+  },
+});

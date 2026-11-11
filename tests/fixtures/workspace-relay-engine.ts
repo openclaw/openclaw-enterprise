@@ -3,11 +3,25 @@ import { writeFileSync } from "node:fs";
 import { access, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 
+type LaunchFiles = { ready: string; release: string; finished: string };
+type RelayOptions = { engine: string; launchFiles?: LaunchFiles } & (
+  | { mode: "interrupted-logs"; partialOutput: string }
+  | {
+      mode:
+        | "wait-for-exit"
+        | "fail-removal"
+        | "lost-removal-ack"
+        | "cancelled-launch"
+        | "interrupted-launch";
+      partialOutput?: string;
+    }
+);
+
 // Delegate to the real engine. Only the selected CLI boundary is delayed or
 // interrupted; container creation, state, logs and deletion still use Docker.
-export function relayEngine({ engine, mode, partialOutput, launchFiles }) {
+export function relayEngine({ engine, mode, partialOutput, launchFiles }: RelayOptions) {
   const args = process.argv.slice(2);
-  const execute = (command, timeout = 60_000) =>
+  const execute = (command: string[], timeout = 60_000) =>
     execFileSync(engine, command, {
       encoding: "utf8",
       timeout,
@@ -52,20 +66,23 @@ export function relayEngine({ engine, mode, partialOutput, launchFiles }) {
     }
     process.stdout.write(output);
   } catch (error) {
-    process.stdout.write(error.stdout ?? "");
-    process.stderr.write(error.stderr ?? "");
-    process.exitCode = typeof error.status === "number" ? error.status : 1;
+    const stdout = error instanceof Error && "stdout" in error ? error.stdout : undefined;
+    const stderr = error instanceof Error && "stderr" in error ? error.stderr : undefined;
+    const status = error instanceof Error && "status" in error ? error.status : undefined;
+    process.stdout.write(typeof stdout === "string" || stdout instanceof Uint8Array ? stdout : "");
+    process.stderr.write(typeof stderr === "string" || stderr instanceof Uint8Array ? stderr : "");
+    process.exitCode = typeof status === "number" ? status : 1;
   }
 }
 
-export async function waitForRelayFile(path) {
+export async function waitForRelayFile(path: string) {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     try {
       await access(path);
       return;
     } catch (error) {
-      if (error.code !== "ENOENT") {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
         throw error;
       }
     }
@@ -74,7 +91,19 @@ export async function waitForRelayFile(path) {
   throw new Error("Delegated relay launch did not reach its synchronization point.");
 }
 
-export async function delegatedRelayLaunch({ engine, mode, launchFiles, args, wrapperPid }) {
+export async function delegatedRelayLaunch({
+  engine,
+  mode,
+  launchFiles,
+  args,
+  wrapperPid,
+}: {
+  engine: string;
+  mode: RelayOptions["mode"];
+  launchFiles: LaunchFiles;
+  args: string[];
+  wrapperPid: number;
+}) {
   await writeFile(launchFiles.ready, "ready");
   try {
     if (mode === "interrupted-launch") {

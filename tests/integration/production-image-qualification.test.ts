@@ -3,13 +3,14 @@ import { execFile } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { checkBrokerCapability } from "../../scripts/upgrade-repository-image-probe.mjs";
 import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const execute = promisify(execFile);
@@ -21,7 +22,45 @@ const imageIdentityScript = fileURLToPath(
   new URL("../../scripts/upgrade-image-identity.py", import.meta.url),
 );
 
-async function qualify(t, nodes, selector = {}) {
+type QualificationNode = {
+  metadata: {
+    name: string | number;
+    uid: string | number;
+    labels: Record<string, string> | string[];
+  };
+  status: { nodeInfo: { operatingSystem: string; architecture: string } };
+  spec?: { unschedulable: boolean };
+};
+
+function parseJson(value: string): unknown {
+  return JSON.parse(value);
+}
+
+function record(value: unknown): Record<string, unknown> {
+  const parsed = asRecord(value);
+  assert.ok(parsed);
+  return parsed;
+}
+
+function stringField(value: Record<string, unknown>, key: string): string {
+  const field = value[key];
+  assert.ok(typeof field === "string");
+  return field;
+}
+
+function first<T>(values: readonly T[]): T {
+  const value = values[0];
+  assert.ok(value !== undefined);
+  return value;
+}
+
+type QualificationSelector = Record<string, string | null> | string[];
+
+async function qualify(
+  t: TestContext,
+  nodes: QualificationNode[],
+  selector: QualificationSelector = {},
+) {
   const root = await temporaryDirectory(t, "occ-node-platform-");
   const inventory = join(root, "nodes.json");
   const values = join(root, "values.json");
@@ -30,7 +69,11 @@ async function qualify(t, nodes, selector = {}) {
   return execute("python3", [script, inventory, values]);
 }
 
-function node(name, architecture, labels = {}) {
+function node(
+  name: string,
+  architecture: string,
+  labels: Record<string, string> = {},
+): QualificationNode {
   return {
     metadata: {
       name,
@@ -83,7 +126,12 @@ state = {"root": root_digest, "manifest": manifest_digest, "config": config_dige
 print(json.dumps(state))
 `;
   const { stdout } = await execute("python3", ["-c", fixture, root]);
-  const identity = JSON.parse(stdout);
+  const identityRecord = record(parseJson(stdout));
+  const identity = {
+    root: stringField(identityRecord, "root"),
+    manifest: stringField(identityRecord, "manifest"),
+    config: stringField(identityRecord, "config"),
+  };
   await writeCommand(
     root,
     "docker",
@@ -110,7 +158,7 @@ else:
       IMAGE_FIXTURE_ARCHIVE: "image.tar",
     },
   });
-  assert.deepEqual(JSON.parse(result.stdout), {
+  assert.deepEqual(parseJson(result.stdout), {
     image,
     platform: "linux/arm64",
     rootDigest: identity.root,
@@ -180,11 +228,11 @@ test("broker capability qualification requires the supported successful response
   });
   t.after(async () => {
     server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   });
   // Registered after the close hook, so the server closes before its directory goes.
   const socket = join(await socketDirectory(t, "occ-capability-"), "broker.sock");
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(socket, resolve);
   });
@@ -192,12 +240,16 @@ test("broker capability qualification requires the supported successful response
   // A broker that cannot advertise the required protocol must stop preflight. Each
   // reply names the check that refuses it; only the exact not-found body is the
   // "capability missing" incompatibility.
-  const failed = (actual) => ({
+  const failed = (actual: number) => ({
     message: /^broker capability request failed/,
     actual,
     expected: 200,
   });
-  for (const [reply, guard] of [
+  type BrokerFailure =
+    | { message: string | RegExp; actual?: number; expected?: number }
+    | { name: string }
+    | { operator: string; actual: boolean };
+  const replies: Array<[[number, string], BrokerFailure]> = [
     [[404, '{"error":"not-found"}'], { message: "broker durable admission capability is missing" }],
     [[404, '{ "error": "not-found" }'], failed(404)],
     [[401, "{}"], failed(401)],
@@ -213,7 +265,8 @@ test("broker capability qualification requires the supported successful response
       [200, `${" ".repeat(16384)}{"durableAdmissionVersion":1}`],
       { message: "capability response too large" },
     ],
-  ]) {
+  ];
+  for (const [reply, guard] of replies) {
     [status, body] = reply;
     await assert.rejects(checkBrokerCapability(socket), guard);
   }
@@ -226,7 +279,7 @@ test("node qualification includes all selector-matching nodes", async (t) => {
   const result = await qualify(t, [matching, node("other", "arm64", { pool: "other" })], {
     pool: "control",
   });
-  assert.deepEqual(JSON.parse(result.stdout), {
+  assert.deepEqual(parseJson(result.stdout), {
     nodes: [{ name: "matching", uid: "uid-matching", platform: "linux/amd64" }],
     platform: "linux/amd64",
   });
@@ -235,12 +288,12 @@ test("node qualification includes all selector-matching nodes", async (t) => {
 test("node qualification rejects mixed and unverified architectures", async (t) => {
   // The script reports every refusal the same way; each input is refused by one check only.
   const refused = { code: 1, stderr: "eligible control-plane node verification failed\n" };
-  const changed = (name, change) => {
+  const changed = (name: string, change: (value: QualificationNode) => void) => {
     const value = node(name, "amd64");
     change(value);
     return value;
   };
-  for (const [nodes, selector] of [
+  const refusals: Array<[QualificationNode[], QualificationSelector?]> = [
     [[node("a", "amd64"), node("b", "arm64")]],
     [[changed("c", (value) => (value.status.nodeInfo.architecture = "arm64"))]],
     [[node("d", "amd64", { pool: "other" })], { pool: "control" }],
@@ -250,6 +303,7 @@ test("node qualification rejects mixed and unverified architectures", async (t) 
     [
       [
         changed("h", (value) => {
+          assert.ok(!Array.isArray(value.metadata.labels));
           value.metadata.labels["kubernetes.io/os"] = "windows";
           value.status.nodeInfo.operatingSystem = "windows";
         }),
@@ -263,7 +317,8 @@ test("node qualification rejects mixed and unverified architectures", async (t) 
     [[changed("n", (value) => (value.metadata.uid = ""))]],
     [[node("o", "amd64"), changed("p", (value) => (value.metadata.uid = "uid-o"))]],
     [[node("q", "amd64"), changed("q", (value) => (value.metadata.uid = "uid-q2"))]],
-  ]) {
+  ];
+  for (const [nodes, selector] of refusals) {
     await assert.rejects(qualify(t, nodes, selector), refused);
   }
   await assert.rejects(execute("python3", [script]), refused);
@@ -271,7 +326,7 @@ test("node qualification rejects mixed and unverified architectures", async (t) 
 
 test("deployed identity requires the qualified images on a ready, owned worker Pod", async (t) => {
   const root = await temporaryDirectory(t, "occ-deployed-pair-");
-  const digest = (letter) => `sha256:${letter.repeat(64)}`;
+  const digest = (letter: string) => `sha256:${letter.repeat(64)}`;
   const controller = {
     image: `controller@${digest("a")}`,
     platform: "linux/amd64",
@@ -286,15 +341,28 @@ test("deployed identity requires the qualified images on a ready, owned worker P
     manifestDigest: digest("e"),
     configDigest: digest("f"),
   };
+  type OwnerReference = { kind: string; name: string; uid: string | number; controller: boolean };
+  const deploymentMetadata: {
+    name: string;
+    uid: string | number;
+    generation: number;
+    labels: Record<string, string>;
+  } = {
+    name: "worker",
+    uid: "deployment-uid",
+    generation: 3,
+    labels: { "app.kubernetes.io/instance": "oce", "app.kubernetes.io/component": "worker" },
+  };
   const deployment = {
-    metadata: {
-      name: "worker",
-      uid: "deployment-uid",
-      generation: 3,
-      labels: { "app.kubernetes.io/instance": "oce", "app.kubernetes.io/component": "worker" },
-    },
+    metadata: deploymentMetadata,
     spec: { replicas: 1 },
     status: { observedGeneration: 3, replicas: 1, updatedReplicas: 1, availableReplicas: 1 },
+  };
+  const deploymentOwner: OwnerReference = {
+    kind: "Deployment",
+    name: "worker",
+    uid: "deployment-uid",
+    controller: true,
   };
   const replicasets = {
     items: [
@@ -302,14 +370,20 @@ test("deployed identity requires the qualified images on a ready, owned worker P
         metadata: {
           name: "worker-rs",
           uid: "rs-uid",
-          ownerReferences: [
-            { kind: "Deployment", name: "worker", uid: "deployment-uid", controller: true },
-          ],
+          ownerReferences: [deploymentOwner],
         },
       },
     ],
   };
-  const status = (name, imageId) => ({
+  type ContainerStatus = {
+    name: string;
+    imageID: string;
+    containerID: string | number;
+    ready: boolean;
+    restartCount: number;
+    state: { running?: object; waiting?: object };
+  };
+  const status = (name: string, imageId: string): ContainerStatus => ({
     name,
     imageID: `containerd://image@${imageId}`,
     containerID: `containerd://${name}`,
@@ -317,15 +391,26 @@ test("deployed identity requires the qualified images on a ready, owned worker P
     restartCount: 0,
     state: { running: {} },
   });
+  const podMetadata: {
+    name: string | number;
+    uid: string | number;
+    deletionTimestamp?: string;
+    ownerReferences: OwnerReference[];
+  } = {
+    name: "worker-pod",
+    uid: "pod-uid",
+    ownerReferences: [{ kind: "ReplicaSet", name: "worker-rs", uid: "rs-uid", controller: true }],
+  };
+  const initContainer: { name: string; restartPolicy?: string; image: string } = {
+    name: "worker",
+    restartPolicy: "Always",
+    image: controller.image,
+  };
   const pod = {
-    metadata: {
-      name: "worker-pod",
-      uid: "pod-uid",
-      ownerReferences: [{ kind: "ReplicaSet", name: "worker-rs", uid: "rs-uid", controller: true }],
-    },
+    metadata: podMetadata,
     spec: {
       nodeName: "node-a",
-      initContainers: [{ name: "worker", restartPolicy: "Always", image: controller.image }],
+      initContainers: [initContainer],
       containers: [{ name: "repository-credentials", image: broker.image }],
     },
     status: {
@@ -342,24 +427,27 @@ test("deployed identity requires the qualified images on a ready, owned worker P
     nodes: { nodes: [{ name: "node-a", uid: "node-uid", platform: "linux/amd64" }] },
     proof: { controller, broker },
   };
-  const paths = {};
+  type DeploymentFiles = typeof files;
+  const path = (name: string) => join(root, `${name}.json`);
   for (const [name, value] of Object.entries(files)) {
-    paths[name] = join(root, `${name}.json`);
-    await writeFile(paths[name], JSON.stringify(value));
+    await writeFile(path(name), JSON.stringify(value));
   }
   const args = [
     deployedScript,
     "worker",
-    paths.deployment,
-    paths.replicasets,
-    paths.pods,
-    paths.nodes,
-    paths.proof,
+    path("deployment"),
+    path("replicasets"),
+    path("pods"),
+    path("nodes"),
+    path("proof"),
     "oce",
   ];
-  const success = JSON.parse((await execute("python3", args)).stdout);
+  const success = record(parseJson((await execute("python3", args)).stdout));
   assert.equal(success.podUid, "pod-uid");
-  assert.equal(success.controller.imageId, `containerd://image@${controller.manifestDigest}`);
+  assert.equal(
+    record(success.controller).imageId,
+    `containerd://image@${controller.manifestDigest}`,
+  );
 
   // Image mismatches name the container and check; other refusals stay generic.
   // Each case changes one field that only one check refuses.
@@ -368,32 +456,33 @@ test("deployed identity requires the qualified images on a ready, owned worker P
     stdout: "",
     stderr: "deployed controller or broker identity verification failed\n",
   };
-  const pods = (f) => f.pods.items;
-  const worker = (f) => pods(f)[0].status.initContainerStatuses[0];
-  const brokerStatus = (f) => pods(f)[0].status.containerStatuses[0];
+  const pods = (f: DeploymentFiles) => f.pods.items;
+  const selectedPod = (f: DeploymentFiles) => first(pods(f));
+  const worker = (f: DeploymentFiles) => first(selectedPod(f).status.initContainerStatuses);
+  const brokerStatus = (f: DeploymentFiles) => first(selectedPod(f).status.containerStatuses);
   const hostile = "PRIVATE-IMAGE-MARKER\n\u001b[31m";
-  const unknownComponent = (f) => {
+  const unknownComponent = (f: DeploymentFiles) => {
     f.deployment.metadata.labels["app.kubernetes.io/component"] = hostile;
-    pods(f)[0].spec.initContainers = [];
-    pods(f)[0].spec.containers.push({ name: hostile, image: controller.image });
-    pods(f)[0].status.initContainerStatuses = [];
-    pods(f)[0].status.containerStatuses.push(status(hostile, controller.manifestDigest));
+    selectedPod(f).spec.initContainers = [];
+    selectedPod(f).spec.containers.push({ name: hostile, image: controller.image });
+    selectedPod(f).status.initContainerStatuses = [];
+    selectedPod(f).status.containerStatuses.push(status(hostile, controller.manifestDigest));
   };
   const refuses = async (
-    change,
+    change: (files: DeploymentFiles) => void,
     { component = "worker", release = "oce", stderr = refused.stderr } = {},
   ) => {
     const f = structuredClone(files);
     change(f);
     for (const [name, value] of Object.entries(f)) {
-      await writeFile(paths[name], JSON.stringify(value));
+      await writeFile(path(name), JSON.stringify(value));
     }
     const changed = [deployedScript, component, ...args.slice(2, 7), release];
     await assert.rejects(execute("python3", changed), { ...refused, stderr });
   };
   // A ready Pod with a different broker image must not qualify the rollout.
   // Exact stderr also proves hostile evidence cannot leak into diagnostics.
-  await refuses((f) => (pods(f)[0].spec.containers[0].image = hostile), {
+  await refuses((f) => (first(selectedPod(f).spec.containers).image = hostile), {
     stderr: "repository-credentials: Pod declared image reference does not match qualified image\n",
   });
   for (const imageID of [`containerd://${hostile}@${digest("0")}`, hostile]) {
@@ -406,34 +495,34 @@ test("deployed identity requires the qualified images on a ready, owned worker P
     stderr:
       "worker: running CRI image ID does not match any qualified OCI root/manifest/config digest\n",
   });
-  for (const change of [
-    (f) => pods(f)[0].spec.containers.push({ ...pods(f)[0].spec.containers[0] }),
-    (f) => pods(f)[0].status.containerStatuses.push({ ...brokerStatus(f) }),
+  const changes: Array<(files: DeploymentFiles) => void> = [
+    (f) => selectedPod(f).spec.containers.push({ ...first(selectedPod(f).spec.containers) }),
+    (f) => selectedPod(f).status.containerStatuses.push({ ...brokerStatus(f) }),
     (f) => (brokerStatus(f).ready = false),
     (f) => (brokerStatus(f).state = { waiting: {} }),
     (f) => (brokerStatus(f).restartCount = 1.5),
     (f) => (brokerStatus(f).restartCount = -1),
     (f) => (brokerStatus(f).containerID = 5),
     (f) => (brokerStatus(f).containerID = ""),
-    (f) => delete pods(f)[0].spec.initContainers[0].restartPolicy,
+    (f) => delete first(selectedPod(f).spec.initContainers).restartPolicy,
     (f) => {
-      pods(f)[0].spec.initContainers.push({
-        ...pods(f)[0].spec.containers[0],
+      selectedPod(f).spec.initContainers.push({
+        ...first(selectedPod(f).spec.containers),
         restartPolicy: "Always",
       });
-      pods(f)[0].spec.containers = [];
-      pods(f)[0].status.initContainerStatuses.push(brokerStatus(f));
-      pods(f)[0].status.containerStatuses = [];
+      selectedPod(f).spec.containers = [];
+      selectedPod(f).status.initContainerStatuses.push(brokerStatus(f));
+      selectedPod(f).status.containerStatuses = [];
     },
     (f) => (f.deployment.metadata.labels["app.kubernetes.io/instance"] = "other"),
     (f) => (f.deployment.metadata.labels["app.kubernetes.io/component"] = "api"),
     (f) => {
       f.deployment.metadata.uid = 5;
-      f.replicasets.items[0].metadata.ownerReferences[0].uid = 5;
+      first(first(f.replicasets.items).metadata.ownerReferences).uid = 5;
     },
     (f) => {
       f.deployment.metadata.uid = "";
-      f.replicasets.items[0].metadata.ownerReferences[0].uid = "";
+      first(first(f.replicasets.items).metadata.ownerReferences).uid = "";
     },
     (f) => {
       f.deployment.metadata.generation = 3.5;
@@ -448,23 +537,25 @@ test("deployed identity requires the qualified images on a ready, owned worker P
     (f) => (f.deployment.status.replicas = 2),
     (f) => (f.deployment.status.updatedReplicas = 0),
     (f) => (f.deployment.status.availableReplicas = 0),
-    (f) => pods(f).push(structuredClone(pods(f)[0])),
-    (f) => (pods(f)[0].metadata.deletionTimestamp = "2026-01-01T00:00:00Z"),
-    (f) => (pods(f)[0].metadata.uid = 5),
-    (f) => (pods(f)[0].metadata.uid = ""),
-    (f) => (pods(f)[0].metadata.name = 5),
-    (f) => (pods(f)[0].metadata.name = ""),
-    (f) => (pods(f)[0].status.phase = "Pending"),
-    (f) => (pods(f)[0].status.conditions[0].status = "False"),
-    (f) => pods(f)[0].metadata.ownerReferences.push(pods(f)[0].metadata.ownerReferences[0]),
-    (f) => (pods(f)[0].metadata.ownerReferences[0].kind = "StatefulSet"),
-    (f) => (pods(f)[0].metadata.ownerReferences[0].uid = "unrelated-rs"),
-    (f) => f.replicasets.items.push(f.replicasets.items[0]),
-    (f) => (f.replicasets.items[0].metadata.ownerReferences[0].uid = "other-uid"),
-    (f) => (f.replicasets.items[0].metadata.ownerReferences[0].name = "other"),
-    (f) => (pods(f)[0].spec.nodeName = "node-b"),
-    (f) => (f.nodes.nodes[0].platform = "linux/arm64"),
-  ]) {
+    (f) => pods(f).push(structuredClone(selectedPod(f))),
+    (f) => (selectedPod(f).metadata.deletionTimestamp = "2026-01-01T00:00:00Z"),
+    (f) => (selectedPod(f).metadata.uid = 5),
+    (f) => (selectedPod(f).metadata.uid = ""),
+    (f) => (selectedPod(f).metadata.name = 5),
+    (f) => (selectedPod(f).metadata.name = ""),
+    (f) => (selectedPod(f).status.phase = "Pending"),
+    (f) => (first(selectedPod(f).status.conditions).status = "False"),
+    (f) =>
+      selectedPod(f).metadata.ownerReferences.push(first(selectedPod(f).metadata.ownerReferences)),
+    (f) => (first(selectedPod(f).metadata.ownerReferences).kind = "StatefulSet"),
+    (f) => (first(selectedPod(f).metadata.ownerReferences).uid = "unrelated-rs"),
+    (f) => f.replicasets.items.push(first(f.replicasets.items)),
+    (f) => (first(first(f.replicasets.items).metadata.ownerReferences).uid = "other-uid"),
+    (f) => (first(first(f.replicasets.items).metadata.ownerReferences).name = "other"),
+    (f) => (selectedPod(f).spec.nodeName = "node-b"),
+    (f) => (first(f.nodes.nodes).platform = "linux/arm64"),
+  ];
+  for (const change of changes) {
     await refuses(change);
   }
   await refuses(unknownComponent, { component: hostile });

@@ -20,7 +20,7 @@ import { OpenShellPreparedGitProvider } from "../../apps/controller/src/drivers/
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { signedLeaf } from "../helpers/certificates.mjs";
 import { listen } from "../helpers/listen.ts";
-import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
+import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
 import { waitFor } from "../helpers/qa-utils.mjs";
 
 const binding = {

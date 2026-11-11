@@ -22,12 +22,124 @@ const workspaceNodeId = process.env.OCC_TEST_WORKSPACE_NODE_ID;
 const outageExit = process.env.OCC_TEST_GATEWAY_SCENARIO === "peer-outage-exit";
 const staleReplacement = process.env.OCC_TEST_GATEWAY_SCENARIO === "stale-replacement";
 const writableInitialConfig = process.env.OCC_TEST_WRITABLE_INITIAL_CONFIG === "true";
-let initialGateway;
+interface GatewayProcess {
+  pid: number;
+  startTicks: string;
+  token: string | undefined;
+}
+
+interface PeerStatus {
+  revisionId: string | undefined;
+  container: string;
+  startupId: string;
+  podUid: string;
+  phase: string;
+  successfulPluginIds: string[];
+  failures: { pluginId: string; code: string }[];
+}
+
+interface GatewayConfiguration {
+  plugins: {
+    entries: { codex: { config: { codexPlugins: { plugins: { linear: { enabled: boolean } } } } } };
+  };
+  tools: {
+    gatewayPolicy: { allow: string[]; automations?: unknown; actions?: { plugins?: string[] } };
+  };
+  agents?: { defaults?: { modelSelectionScope?: string } };
+  cron?: { triggers?: { enabled?: boolean } };
+  messages?: { responsePrefix?: string };
+}
+
+interface WorkspaceNodeStatus {
+  workspaceNodeId?: string;
+  workspaceNodeFailure?: { code: string };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function requireRecord(value: unknown, label: string): Record<string, unknown> {
+  assert.ok(isRecord(value), `${label} must be an object`);
+  return value;
+}
+
+function optionalRecord(value: unknown, label: string) {
+  return value === undefined ? undefined : requireRecord(value, label);
+}
+
+function isStringList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item: unknown) => typeof item === "string");
+}
+
+function assertGatewayConfiguration(value: unknown): asserts value is GatewayConfiguration {
+  const config = requireRecord(value, "Gateway configuration");
+  const entries = requireRecord(requireRecord(config.plugins, "plugins").entries, "plugin entries");
+  const codex = requireRecord(requireRecord(entries.codex, "Codex entry").config, "Codex config");
+  const plugins = requireRecord(
+    requireRecord(codex.codexPlugins, "Codex plugins").plugins,
+    "plugin settings",
+  );
+  const linearConfig = requireRecord(plugins.linear, "Linear plugin");
+  assert.ok(
+    typeof linearConfig.enabled === "boolean",
+    "Linear plugin enabled state must be boolean",
+  );
+
+  const tools = requireRecord(config.tools, "tools");
+  const policy = requireRecord(tools.gatewayPolicy, "Gateway tool policy");
+  assert.ok(isStringList(policy.allow), "Gateway tool policy allow must be a string array");
+  const actions = optionalRecord(policy.actions, "Gateway tool actions");
+  assert.ok(
+    actions?.plugins === undefined || isStringList(actions.plugins),
+    "plugin actions must be a string array",
+  );
+
+  const agents = optionalRecord(config.agents, "agents");
+  const defaults = optionalRecord(agents?.defaults, "agent defaults");
+  assert.ok(
+    defaults?.modelSelectionScope === undefined || typeof defaults.modelSelectionScope === "string",
+    "model selection scope must be a string",
+  );
+  const cron = optionalRecord(config.cron, "cron");
+  const triggers = optionalRecord(cron?.triggers, "cron triggers");
+  assert.ok(
+    triggers?.enabled === undefined || typeof triggers.enabled === "boolean",
+    "cron enabled state must be boolean",
+  );
+  const messages = optionalRecord(config.messages, "messages");
+  assert.ok(
+    messages?.responsePrefix === undefined || typeof messages.responsePrefix === "string",
+    "response prefix must be a string",
+  );
+}
+
+async function readPluginPhase(response: Response): Promise<string> {
+  const raw: unknown = await response.json();
+  const status = requireRecord(raw, "plugin runtime status");
+  assert.ok(typeof status.phase === "string", "plugin runtime phase must be a string");
+  return status.phase;
+}
+
+function assertWorkspaceNodeStatus(value: unknown): asserts value is WorkspaceNodeStatus {
+  const status = requireRecord(value, "workspace node status");
+  assert.ok(
+    status.workspaceNodeId === undefined || typeof status.workspaceNodeId === "string",
+    "workspace node ID must be a string",
+  );
+  const failure = optionalRecord(status.workspaceNodeFailure, "workspace node failure");
+  assert.ok(
+    !failure || typeof failure.code === "string",
+    "workspace node failure code must be a string",
+  );
+}
+
+let initialGateway: GatewayProcess | undefined;
 let replacementPeerReads = 0;
 let stalePhase = "initial";
-let peer2SwitchedAt;
+let peer2SwitchedAt: number | undefined;
 
-function breadcrumb(phase, value, extra) {
+function breadcrumb(phase: string, value?: number | boolean, extra?: string | boolean) {
   if (
     ![
       "initial-ready",
@@ -45,7 +157,10 @@ function breadcrumb(phase, value, extra) {
   ) {
     return;
   }
-  const record = { event: "stale-peer-diagnostic", phase };
+  const record: Record<string, string | number | boolean | undefined> = {
+    event: "stale-peer-diagnostic",
+    phase,
+  };
   if (phase === "peer2-switch") {
     peer2SwitchedAt = performance.now();
   }
@@ -76,7 +191,7 @@ let trackSamePeerRecovery = false;
 let samePeerOutageResponses = 0;
 let samePeerRecoveryResponses = 0;
 
-let peer = {
+let peer: PeerStatus | undefined = {
   revisionId,
   container: "agent",
   startupId: "harness-startup-1",
@@ -105,41 +220,44 @@ const server = createServer(async (request, response) => {
       breadcrumb("third-request-entry");
       // The verification read follows the replacement's native readiness.
       const processes = await gatewayProcess();
+      const [current] = processes;
+      assert.ok(initialGateway);
       breadcrumb(
         "identity-check",
         processes.length === 1,
         processes.length === 1 &&
-          processes[0].startTicks + processes[0].pid ===
-            initialGateway.startTicks + initialGateway.pid,
+          current !== undefined &&
+          current.startTicks + current.pid === initialGateway.startTicks + initialGateway.pid,
       );
       assert.equal(processes.length, 1);
+      assert.ok(current);
       assert.notEqual(
-        processes[0].startTicks + processes[0].pid,
+        current.startTicks + current.pid,
         initialGateway.startTicks + initialGateway.pid,
       );
-      breadcrumb("credential-check", processes[0].token === appServerToken("harness-startup-2"));
-      assert.equal(processes[0].token, appServerToken("harness-startup-2"));
+      breadcrumb("credential-check", current.token === appServerToken("harness-startup-2"));
+      assert.equal(current.token, appServerToken("harness-startup-2"));
       const native = await fetch(`http://127.0.0.1:${process.env.OPENCLAW_GATEWAY_PORT}/readyz`, {
         signal: AbortSignal.timeout(3_000),
         redirect: "error",
       });
       breadcrumb("native-ready", native.status === 200);
       assert.equal(native.status, 200);
-      const status = await (
+      const phase = await readPluginPhase(
         await fetch(`http://127.0.0.1:${statusPort}/openclaw/plugin-runtime/status`, {
           signal: AbortSignal.timeout(3_000),
           redirect: "error",
-        })
-      ).json();
-      assert.equal(status.phase, "starting");
+        }),
+      );
+      assert.equal(phase, "starting");
       const wrapperReady = await ready();
       breadcrumb("wrapper-ready", wrapperReady);
       assert.equal(wrapperReady, false);
       peer = { ...peer, startupId: "harness-startup-3", podUid: "harness-pod-3" };
       breadcrumb("peer3-switch");
-      await new Promise((resolve, reject) => {
+      await new Promise<void>((resolve, reject) => {
         process.stdout.write(
-          `${JSON.stringify({ phase: "stale-peer-verified", pid: processes[0].pid })}\n`,
+          `${JSON.stringify({ phase: "stale-peer-verified", pid: current.pid })}\n`,
           (error) => (error ? reject(error) : resolve()),
         );
       });
@@ -157,10 +275,14 @@ const server = createServer(async (request, response) => {
     }
   });
 });
-await new Promise((resolve) => server.listen(statusPort, "::1", resolve));
+await new Promise<void>((resolve) => server.listen(statusPort, "::1", resolve));
 
-function appServerToken(startupId) {
-  return createHmac("sha256", process.env.APP_SERVER_TOKEN)
+function appServerToken(startupId: string) {
+  const token = process.env.APP_SERVER_TOKEN;
+  assert.ok(token);
+  assert.ok(tokenDomain);
+  assert.ok(revisionId);
+  return createHmac("sha256", token)
     .update(tokenDomain)
     .update("\0")
     .update(revisionId)
@@ -183,14 +305,14 @@ async function ready() {
 
 // The OpenClaw Gateway process (it retitles itself), its start time and the
 // app-server credential it was started with.
-async function gatewayProcess() {
-  const found = [];
+async function gatewayProcess(): Promise<GatewayProcess[]> {
+  const found: GatewayProcess[] = [];
   for (const pid of await readdir("/proc")) {
     if (!/^\d+$/.test(pid) || Number(pid) === process.pid) {
       continue;
     }
     const argv = (await readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => "")).split("\0");
-    if (argv[0].trim() !== "openclaw-gateway") {
+    if (argv[0]?.trim() !== "openclaw-gateway") {
       continue;
     }
     const procStat = await readFile(`/proc/${pid}/stat`, "utf8").catch(() => undefined);
@@ -202,16 +324,23 @@ async function gatewayProcess() {
       .split("\0")
       .find((entry) => entry.startsWith("APP_SERVER_TOKEN="))
       ?.slice("APP_SERVER_TOKEN=".length);
+    const startTicks = procStat.slice(procStat.lastIndexOf(")") + 2).split(" ")[19];
+    assert.ok(startTicks);
     found.push({
       pid: Number(pid),
-      startTicks: procStat.slice(procStat.lastIndexOf(")") + 2).split(" ")[19],
+      startTicks,
       token,
     });
   }
   return found;
 }
 
-async function waitFor(description, timeoutMs, check, detail = () => "") {
+async function waitFor(
+  description: string,
+  timeoutMs: number,
+  check: () => Promise<boolean>,
+  detail: () => string = () => "",
+) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const result = await check();
@@ -228,10 +357,11 @@ async function waitFor(description, timeoutMs, check, detail = () => "") {
 // RELOAD_NOT_CONFIRMED, which the ack clears. That report can also be stale: the
 // wrapper does not poll during the peer outage below. Any other failure is final.
 const pendingWorkspaceNodeFailures = new Set(["GATEWAY_UNAVAILABLE", "RELOAD_NOT_CONFIRMED"]);
-let lastWorkspaceNodeStatus;
+let lastWorkspaceNodeStatus: WorkspaceNodeStatus | undefined;
 
 async function workspaceNodeAck() {
-  const status = await (await fetch(runtimeStatusUrl)).json();
+  const status: unknown = await (await fetch(runtimeStatusUrl)).json();
+  assertWorkspaceNodeStatus(status);
   lastWorkspaceNodeStatus = status;
   if (status.workspaceNodeId === workspaceNodeId) {
     assert.equal(status.workspaceNodeFailure, undefined, JSON.stringify(status));
@@ -249,7 +379,13 @@ function workspaceNodeDetail() {
   return `: ${JSON.stringify(lastWorkspaceNodeStatus)}`;
 }
 
-function linearEnabled(config) {
+async function readGatewayConfiguration(): Promise<GatewayConfiguration> {
+  const config: unknown = JSON.parse(await readFile(configPath, "utf8"));
+  assertGatewayConfiguration(config);
+  return config;
+}
+
+function linearEnabled(config: GatewayConfiguration) {
   return config.plugins.entries.codex.config.codexPlugins.plugins.linear.enabled;
 }
 
@@ -259,9 +395,10 @@ try {
     breadcrumb("initial-ready");
   }
   const [before] = await gatewayProcess();
+  assert.ok(before);
   initialGateway = before;
   assert.equal(before.token, appServerToken("harness-startup-1"));
-  const initialConfig = JSON.parse(await readFile(configPath, "utf8"));
+  const initialConfig = await readGatewayConfiguration();
   assert.equal(linearEnabled(initialConfig), false);
   assert.equal(initialConfig.tools.gatewayPolicy.allow.includes("sessions"), true);
   assert.equal(initialConfig.tools.gatewayPolicy.allow.includes("plugins"), false);
@@ -274,12 +411,12 @@ try {
     peer = undefined;
     await waitFor("the Gateway to wait for peer status", 30_000, async () => {
       const response = await fetch(`http://127.0.0.1:${statusPort}/openclaw/plugin-runtime/status`);
-      const status = await response.json();
-      return status.phase === "starting" && !(await ready());
+      return (await readPluginPhase(response)) === "starting" && !(await ready());
     });
     const [running] = await gatewayProcess();
+    assert.ok(running);
     assert.equal(running.pid, before.pid);
-    await new Promise((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
       process.stdout.write(
         `${JSON.stringify({ phase: "peer-unready", pid: before.pid })}\n`,
         (error) => (error ? reject(error) : resolve()),
@@ -309,39 +446,40 @@ try {
   trackSamePeerOutage = true;
   peer = undefined;
   await waitFor("the Gateway to become unready during a peer outage", 30_000, async () => {
-    const status = await (
+    const phase = await readPluginPhase(
       await fetch(`http://127.0.0.1:${statusPort}/openclaw/plugin-runtime/status`, {
         signal: AbortSignal.timeout(3_000),
-      })
-    ).json();
-    return status.phase === "starting" && !(await ready());
+      }),
+    );
+    return phase === "starting" && !(await ready());
   });
   let samePeerUnreadySamples = 0;
   await waitFor("the Gateway to stay unready while peer status fails", 30_000, async () => {
-    const status = await (
+    const phase = await readPluginPhase(
       await fetch(`http://127.0.0.1:${statusPort}/openclaw/plugin-runtime/status`, {
         signal: AbortSignal.timeout(3_000),
-      })
-    ).json();
-    assert.equal(status.phase, "starting");
+      }),
+    );
+    assert.equal(phase, "starting");
     assert.equal(await ready(), false);
     samePeerUnreadySamples++;
     return samePeerOutageResponses >= 2 && samePeerUnreadySamples >= 2;
   });
   const duringOutage = await gatewayProcess();
   assert.equal(duringOutage.length, 1);
+  assert.ok(duringOutage[0]);
   assert.equal(duringOutage[0].pid, before.pid);
   assert.equal(duringOutage[0].startTicks, before.startTicks);
   trackSamePeerOutage = false;
   trackSamePeerRecovery = true;
   peer = samePeer;
   await waitFor("the same peer to restore Gateway readiness", 60_000, async () => {
-    const status = await (
+    const phase = await readPluginPhase(
       await fetch(`http://127.0.0.1:${statusPort}/openclaw/plugin-runtime/status`, {
         signal: AbortSignal.timeout(3_000),
-      })
-    ).json();
-    if (status.phase !== "ready") {
+      }),
+    );
+    if (phase !== "ready") {
       return false;
     }
     assert.ok(samePeerRecoveryResponses > 0, "readiness returned before a restored peer response");
@@ -350,16 +488,20 @@ try {
   trackSamePeerRecovery = false;
   const afterOutage = await gatewayProcess();
   assert.equal(afterOutage.length, 1);
+  assert.ok(afterOutage[0]);
   assert.equal(afterOutage[0].pid, before.pid);
   assert.equal(afterOutage[0].startTicks, before.startTicks);
   assert.equal(afterOutage[0].token, before.token);
 
   if (writableInitialConfig) {
-    const edited = JSON.parse(await readFile(configPath, "utf8"));
+    const edited = await readGatewayConfiguration();
     edited.messages = { ...edited.messages, responsePrefix: "Native admin edit" };
     // A native admin can edit ordinary configuration. On respawn, only OCE's
     // admitted revision can approve model tools; local edits cannot widen it.
     edited.tools.gatewayPolicy.allow.push("plugins");
+    assert.ok(edited.tools.gatewayPolicy.actions);
+    assert.ok(edited.agents?.defaults);
+    assert.ok(edited.cron?.triggers);
     edited.tools.gatewayPolicy.actions.plugins = ["list"];
     edited.agents.defaults.modelSelectionScope = "agent";
     edited.cron.triggers.enabled = true;
@@ -378,10 +520,10 @@ try {
     successfulPluginIds: ["codex-plugin:linear@openai-curated-remote"],
     failures: [],
   };
-  const samples = [];
-  let unreadyAt;
-  let readyAgainAt;
-  let after;
+  const samples: { at: number; ready: boolean; pids: number[] }[] = [];
+  let unreadyAt: number | undefined;
+  let readyAgainAt: number | undefined;
+  let after: GatewayProcess | undefined;
   while (readyAgainAt === undefined) {
     assert.ok(Date.now() - changedAt < 240_000, `no respawn: ${JSON.stringify(samples)}`);
     const processes = await gatewayProcess();
@@ -393,23 +535,22 @@ try {
     } else if (unreadyAt !== undefined) {
       // Once readiness dropped, it returns only with the new process serving.
       assert.equal(processes.length, 1, JSON.stringify(samples));
+      assert.ok(processes[0]);
       assert.notEqual(processes[0].startTicks + processes[0].pid, before.startTicks + before.pid);
       readyAgainAt = at;
       after = processes[0];
     }
     await setTimeout(200);
   }
+  assert.ok(after);
   assert.equal(after.token, appServerToken("harness-startup-2"));
-  const recoveredConfig = JSON.parse(await readFile(configPath, "utf8"));
+  const recoveredConfig = await readGatewayConfiguration();
   assert.equal(linearEnabled(recoveredConfig), true);
   assert.deepEqual(recoveredConfig.tools.gatewayPolicy, initialConfig.tools.gatewayPolicy);
-  assert.equal(recoveredConfig.agents.defaults.modelSelectionScope, "session");
-  assert.equal(recoveredConfig.cron.triggers.enabled, false);
+  assert.equal(recoveredConfig.agents?.defaults?.modelSelectionScope, "session");
+  assert.equal(recoveredConfig.cron?.triggers?.enabled, false);
   if (writableInitialConfig) {
-    assert.equal(
-      JSON.parse(await readFile(configPath, "utf8")).messages.responsePrefix,
-      "Native admin edit",
-    );
+    assert.equal((await readGatewayConfiguration()).messages?.responsePrefix, "Native admin edit");
   }
   // The new process loaded the node binding again and acknowledged it itself.
   await waitFor("the respawned workspace node ack", 60_000, workspaceNodeAck, workspaceNodeDetail);
