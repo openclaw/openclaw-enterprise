@@ -31,6 +31,11 @@ Run cleanup after a preparation or test failure too. Preserve the private state
 file until cleanup completes. Do not run another Keycloak lane on the same host.
 
 The focused wrapper runs the same `oidc-agent-chat` scenario as the QA matrix.
+Its preparation omits the dedicated Codex sandbox probe because this journey
+deploys only embedded OpenClaw Agents with `RuntimeDefault` seccomp. Preparing
+the full `gateway-routing` lane still requires the Codex probe for its dedicated
+execution cases. The hosted OIDC job retains a browser recording and screenshot
+of the real model exchange; recording starts after sign-in.
 To reuse an already prepared local environment through the QA entrypoint, keep its
 Kubernetes, database, routing, and Keycloak variables, then run:
 

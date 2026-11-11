@@ -3143,7 +3143,16 @@ async function prepareK3dRuntimeImages(
   }
   // Replace the build tag with its imported digest before publishing the next step's inputs.
   env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE = env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE;
-  if (lanePrepare(state.lane).codexSeccomp && process.env.OCC_K3D_OPENCLAW_SOURCE === undefined) {
+  // This focused journey deploys only embedded OpenClaw Agents. The full lane
+  // still prepares Codex because its other files exercise dedicated execution.
+  const embeddedOidcOnly =
+    state.lane === "gateway-routing" &&
+    state.selectedFile === "tests/integration/oidc-agent-chat-k3d-real.test.ts";
+  if (
+    lanePrepare(state.lane).codexSeccomp &&
+    !embeddedOidcOnly &&
+    process.env.OCC_K3D_OPENCLAW_SOURCE === undefined
+  ) {
     progress(state.lane, "Deriving and installing the dedicated Codex seccomp profile.");
     const seccomp = await prepareCodexSeccompProfile({
       cluster,

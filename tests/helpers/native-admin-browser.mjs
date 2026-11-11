@@ -1638,37 +1638,52 @@ export async function runOidcAgentChatScenario(context) {
     new URL(agentDetailPath({ agent: created.data, revision: deployed.data }), ingress.origin).href,
   );
   const nativePage = await openNativeAdminConsole(operatorPage, status.data.origin, "chat");
-  const initialMarker = `oidc-chat-${randomUUID()}`;
-  let initialReply;
-  try {
-    initialReply = await submitChatTurnWithAssistantProof(
-      nativePage,
-      initialMarker,
-      frames,
-      waitFor,
-    );
-  } catch (error) {
-    await nativePage.screenshot({ path: join(artifacts, "oidc-chat-failure.png"), fullPage: true });
-    throw error;
-  }
-  const lifecycle = await assertChatStreamStopAndResume({
-    page: nativePage,
-    initialReply,
-    initialMarker,
-    receivedFrames: frames,
-    sentFrames,
-    waitFor,
+  // Retain the real browser/model exchange without recording IdP credentials.
+  const recording = await nativePage.screencast.start({
+    path: join(artifacts, "oidc-operator-chat.webm"),
+    size: { width: 1280, height: 720 },
   });
-  context.diagnostic(
-    `OIDC chat: ${lifecycle.deltaCount} incremental model frames, exact-run Stop acknowledged and aborted, same persisted session reconnected and completed another real reply.`,
-  );
-  await assertChatAdministrationDenied(nativePage);
-  const siblingTarget = expectedNativeAdminTarget(topology, ingress.origin, nativeDomain);
-  const probe = await operatorPage.context().newPage();
-  assert.equal((await probe.goto(siblingTarget.origin + "/healthz")).status(), 403);
-  await probe.close();
-  await nativePage.screenshot({ path: join(artifacts, "oidc-operator-chat.png"), fullPage: true });
-  context.diagnostic(
-    "Real Keycloak sign-in enabled ordinary-owner create/deploy and an exact-Agent operator model turn; native HTTP/WS administration and sibling access were denied.",
-  );
+  try {
+    const initialMarker = `oidc-chat-${randomUUID()}`;
+    let initialReply;
+    try {
+      initialReply = await submitChatTurnWithAssistantProof(
+        nativePage,
+        initialMarker,
+        frames,
+        waitFor,
+      );
+    } catch (error) {
+      await nativePage.screenshot({
+        path: join(artifacts, "oidc-chat-failure.png"),
+        fullPage: true,
+      });
+      throw error;
+    }
+    const lifecycle = await assertChatStreamStopAndResume({
+      page: nativePage,
+      initialReply,
+      initialMarker,
+      receivedFrames: frames,
+      sentFrames,
+      waitFor,
+    });
+    context.diagnostic(
+      `OIDC chat: ${lifecycle.deltaCount} incremental model frames, exact-run Stop acknowledged and aborted, same persisted session reconnected and completed another real reply.`,
+    );
+    await assertChatAdministrationDenied(nativePage);
+    const siblingTarget = expectedNativeAdminTarget(topology, ingress.origin, nativeDomain);
+    const probe = await operatorPage.context().newPage();
+    assert.equal((await probe.goto(siblingTarget.origin + "/healthz")).status(), 403);
+    await probe.close();
+    await nativePage.screenshot({
+      path: join(artifacts, "oidc-operator-chat.png"),
+      fullPage: true,
+    });
+    context.diagnostic(
+      "Real Keycloak sign-in enabled ordinary-owner create/deploy and an exact-Agent operator model turn; native HTTP/WS administration and sibling access were denied.",
+    );
+  } finally {
+    await recording.dispose();
+  }
 }
