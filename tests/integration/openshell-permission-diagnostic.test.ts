@@ -520,8 +520,15 @@ function assertNoTurnOrApprovalResponse(requests: Message[][]) {
 }
 
 test("a confirmed diagnostic grant preserves the actual Driver refusal and redacts the complete receipt", async (t) => {
-  const f = await fixture(t);
+  let logReads = 0;
+  const f = await fixture(t, {
+    readHarnessLogs: async () => {
+      logReads++;
+      return "";
+    },
+  });
   await assertRefusal(f);
+  assert.equal(logReads, 0, "an accepted grant must not collect Harness logs");
   assert.deepEqual(receipt(f), {
     revisionId,
     outcome: "accepted",

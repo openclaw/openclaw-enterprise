@@ -20,9 +20,12 @@ matching warning, and `unavailable` means collection could not be completed or
 attributed safely. Composite sources remain composite, and unknown sources remain
 unknown. Raw logs, paths, managed identifiers, policy contents and errors are omitted.
 
-The fixture reads only the `agent` container of one Sandbox-owned Pod matching the
-Namespace, Agent and revision. It checks the Pod UID and container identity before
-and after the read. The log window starts at the diagnostic thread request;
+The fixture reads only the `agent` container of one Pod matching the
+Namespace, Agent and revision. Before and after the read, it verifies that the
+revision's Sandbox controls that Pod by API version, name and UID, and that the
+Sandbox, Pod and container identities are unchanged. Its kubectl processes receive
+only `PATH` and `HOME`; kubeconfig and context are explicit arguments.
+The log window starts at the diagnostic thread request;
 collection has a shared five-second deadline and a 128 KiB limit. Log timestamps preserve the
 millisecond cutoff that kubectl's request reduces to seconds. A warning identifies
 the container and time window, without a per-RPC correlation identifier.
@@ -36,7 +39,8 @@ cleanup two seconds, and output one second. Cancellation preserves an already
 classified Driver failure without changing worker claim-loss handling. Normal
 candidate teardown owns thread cleanup; socket closure does not prove removal.
 
-The [diagnostic](../../tests/helpers/openshell-permission-diagnostic.ts) and
-[installer fixture](../../tests/helpers/openshell-sandbox-workflows.mjs) own this
+The [diagnostic](../../tests/helpers/openshell-permission-diagnostic.ts),
+[Kubernetes fixture](../../tests/helpers/openshell-kubernetes-real.mjs) and
+[installer workflow](../../tests/helpers/openshell-sandbox-workflows.mjs) own this
 collection. Return to [OpenShell coverage](openshell-coverage.md#native-permission-refusals)
 for the suite's other proof boundaries.

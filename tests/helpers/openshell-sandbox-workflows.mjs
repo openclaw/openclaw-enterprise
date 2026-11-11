@@ -237,6 +237,7 @@ const {
   waitFor,
   validateOpenShellPrerequisites,
   readAgentTransportCredentials,
+  readPermissionHarnessLogs,
   waitForOpenShellGateway,
   installOpenShellGateway,
   startOpenShellGatewayPortForward,
@@ -1395,72 +1396,6 @@ function throwOpenShellAbortReason(signal) {
     return;
   }
   throw signal.reason ?? new Error("OpenShell management port-forward operation was aborted.");
-}
-
-async function readPermissionHarnessLogs(namespace, revision, since, signal) {
-  const read = async (...args) =>
-    (
-      await executeFile(
-        "kubectl",
-        fixture.kubectlArguments(["--namespace", namespace, "--request-timeout=5s", ...args]),
-        { signal, killSignal: "SIGKILL", maxBuffer: 256 * 1024 },
-      )
-    ).stdout;
-  const selector = [
-    `openclaw.dev/namespace=${revision.namespaceId}`,
-    `openclaw.dev/agent=${revision.agentId}`,
-    `openclaw.dev/revision=${revision.id}`,
-    "openclaw.dev/workload-role=agent",
-  ].join(",");
-  const harness = async () => {
-    const { items } = JSON.parse(await read("get", "pods", "--selector", selector, "-o", "json"));
-    if (items.length !== 1) {
-      return undefined;
-    }
-    const [pod] = items;
-    const agent = pod.status?.containerStatuses?.find(({ name }) => name === "agent");
-    if (
-      pod.metadata?.deletionTimestamp !== undefined ||
-      !pod.metadata?.ownerReferences?.some(
-        ({ kind, controller }) => kind === "Sandbox" && controller === true,
-      ) ||
-      !pod.metadata?.name ||
-      !pod.metadata.uid ||
-      !agent?.containerID ||
-      !agent.state?.running
-    ) {
-      return undefined;
-    }
-    return { name: pod.metadata.name, uid: pod.metadata.uid, container: agent.containerID };
-  };
-  const before = await harness();
-  if (before === undefined) {
-    return undefined;
-  }
-  const logs = await read(
-    "logs",
-    before.name,
-    "--container=agent",
-    "--timestamps",
-    `--since-time=${since}`,
-    "--limit-bytes=131072",
-  );
-  const after = await harness();
-  if (after?.uid !== before.uid || after.container !== before.container) {
-    return undefined;
-  }
-  // kubectl sends sinceTime at second precision. Preserve the diagnostic's
-  // actual start boundary using the timestamps attached by the container log API.
-  const startedAt = Date.parse(since);
-  return logs
-    .split("\n")
-    .flatMap((line) => {
-      const separator = line.indexOf(" ");
-      return separator !== -1 && Date.parse(line.slice(0, separator)) >= startedAt
-        ? [line.slice(separator + 1)]
-        : [];
-    })
-    .join("\n");
 }
 
 function createIntegrationSandboxDriverFactory(

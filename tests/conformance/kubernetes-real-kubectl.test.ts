@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { AssertionError } from "node:assert";
 import { execFile, type ExecFileException } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { once } from "node:events";
@@ -347,6 +348,149 @@ if (readFileSync(${JSON.stringify(calls)}, "utf8").trim().split("\\n").length <=
   expectStringArrays(kubectlCalls);
   return { ...outcome, kubectlCalls, sleeps, logs };
 }
+
+test("OpenShell permission logs require the exact Sandbox owner and exclude unrelated credentials", async (t) => {
+  const directory = await temporaryDirectory(t, "occ-permission-kubectl-");
+  const statePath = join(directory, "state.json");
+  const callsPath = join(directory, "calls.jsonl");
+  const namespace = "permission-fixture";
+  const revision = { namespaceId: "ns_fixture", agentId: "agt_fixture", id: "rev_fixture" };
+  const sandbox = {
+    apiVersion: "agents.x-k8s.io/v1alpha1",
+    kind: "Sandbox",
+    metadata: {
+      name: "sandbox-fixture",
+      namespace,
+      uid: "sandbox-uid",
+      labels: {
+        "openshell.ai/sandbox-name": `os-${createHash("sha256").update(revision.id).digest("hex").slice(0, 16)}`,
+      },
+    },
+  };
+  const pod = {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: {
+      name: "harness",
+      namespace,
+      uid: "pod-uid",
+      labels: {
+        "openclaw.dev/namespace": revision.namespaceId,
+        "openclaw.dev/agent": revision.agentId,
+        "openclaw.dev/revision": revision.id,
+        "openclaw.dev/workload-role": "agent",
+      },
+      ownerReferences: [
+        {
+          apiVersion: sandbox.apiVersion,
+          kind: "Sandbox",
+          name: sandbox.metadata.name,
+          uid: sandbox.metadata.uid,
+          controller: true,
+        },
+      ],
+    },
+    spec: { containers: [{ name: "agent", image: "fixture" }] },
+    status: {
+      containerStatuses: [
+        {
+          name: "agent",
+          containerID: "containerd://fixture",
+          state: { running: { startedAt: "2026-11-11T05:00:00Z" } },
+        },
+      ],
+    },
+  };
+  // A real child process supplies Kubernetes responses without making the reader's
+  // ownership decisions. This proves fixture behavior, not real kubectl or cluster behavior.
+  await writeCommand(
+    directory,
+    "kubectl",
+    `
+const { appendFileSync, readFileSync, writeFileSync } = process.getBuiltinModule("node:fs");
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify({
+  args,
+  credentialPresent: process.env.OCE_TEST_UNRELATED_CREDENTIAL !== undefined,
+}) + "\\n");
+const state = JSON.parse(readFileSync(${JSON.stringify(statePath)}, "utf8"));
+const verb = args.findIndex((arg) => arg === "get" || arg === "logs");
+if (args[verb] === "logs") {
+  if (state.replaceOnLogs) {
+    state.sandbox.metadata.uid = "replacement-sandbox-uid";
+    writeFileSync(${JSON.stringify(statePath)}, JSON.stringify(state));
+  }
+  process.stdout.write("2026-11-11T05:10:00.100000001Z before cutoff\\n2026-11-11T05:10:00.126000001Z selected container log\\n");
+} else if (args[verb + 1] === "pods") {
+  process.stdout.write(JSON.stringify({ apiVersion: "v1", kind: "PodList", items: [state.pod] }));
+} else if (args[verb + 1] === "sandboxes.agents.x-k8s.io") {
+  process.stdout.write(JSON.stringify({ apiVersion: state.sandbox.apiVersion, kind: "SandboxList", items: [state.sandbox] }));
+} else {
+  throw new Error("Unexpected fixture command");
+}
+`,
+    { interpreter: process.execPath },
+  );
+  const fixture = createOpenShellKubernetesFixture({
+    kubeconfigPath: join(directory, "kubeconfig"),
+    kubernetesContext: "fixture",
+  });
+  await withEnvironment(
+    {
+      PATH: commandPath(directory),
+      OCE_TEST_UNRELATED_CREDENTIAL: "synthetic-unrelated-credential",
+    },
+    async () => {
+      for (const scenario of [
+        "valid",
+        "owner-uid",
+        "owner-name",
+        "owner-api-version",
+        "sandbox-replaced",
+      ]) {
+        const state = {
+          sandbox: structuredClone(sandbox),
+          pod: structuredClone(pod),
+          replaceOnLogs: scenario === "sandbox-replaced",
+        };
+        const [owner] = state.pod.metadata.ownerReferences;
+        assert.ok(owner);
+        // Matching workload labels must not authorize reading another Sandbox's Pod.
+        if (scenario === "owner-uid") {
+          owner.uid = "another-sandbox-uid";
+        }
+        if (scenario === "owner-name") {
+          owner.name = "another-sandbox";
+        }
+        if (scenario === "owner-api-version") {
+          owner.apiVersion = "unrelated.example/v1";
+        }
+        await writeFile(statePath, JSON.stringify(state));
+        await writeFile(callsPath, "");
+        const result = await fixture.readPermissionHarnessLogs(
+          namespace,
+          revision,
+          "2026-11-11T05:10:00.125Z",
+          AbortSignal.timeout(5_000),
+        );
+        assert.equal(result, scenario === "valid" ? "selected container log" : undefined, scenario);
+        const calls: Array<{ args: string[]; credentialPresent: boolean }> =
+          await readJsonLines(callsPath);
+        assert.ok(calls.length > 0, "the reader must invoke the child process");
+        assert.ok(
+          calls.every((call) => !call.credentialPresent),
+          "unrelated credentials must not reach kubectl",
+        );
+        const logCalls = calls.filter((call) => call.args.includes("logs"));
+        assert.equal(logCalls.length, scenario.startsWith("owner-") ? 0 : 1, scenario);
+        for (const call of logCalls) {
+          assert.ok(call.args.includes("--container=agent"));
+          assert.ok(call.args.includes("harness"));
+        }
+      }
+    },
+  );
+});
 
 test("a real-model turn with the client's retry receipt runs again and returns its reply", async (t) => {
   const { turn, error, kubectlCalls, sleeps, logs } = await gatewayTurnWithFakeKubectl(t, 1);
