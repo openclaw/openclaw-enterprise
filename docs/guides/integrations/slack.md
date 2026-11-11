@@ -209,8 +209,11 @@ bot event subscriptions must both permit channel messages:
    save, and deploy a new version. If the running Agent already has this setting
    disabled, changing the Slack event subscriptions does not require another
    Agent deployment.
-4. From an allowed user account, send a new message without an `@mention` in a
-   configured channel where the bot is a member. Confirm that the Agent replies.
+4. From an allowed user account, send a new top-level message without an
+   `@mention` in a configured channel where the bot is a member. Ask the Agent
+   to repeat a short unique phrase and confirm that its reply contains that
+   phrase. Do not use an existing thread where the bot has participated; its
+   implicit mention handling can admit the message even when mentions are required.
 
 ## Enable direct messages (optional)
 
