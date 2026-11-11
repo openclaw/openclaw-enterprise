@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.mjs";
 import { commandPath as executablePath } from "../helpers/compose.mjs";
 import { commandCalls, commandPath } from "../helpers/fake-commands.ts";
-import { commandShim, startCommandServer } from "../helpers/fixture-command-server.mjs";
+import { commandShim, startCommandServer } from "../helpers/fixture-command-server.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { rangeWideningLocale } from "../helpers/utf8-locale.mjs";
 import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
@@ -77,7 +77,7 @@ function stderr(error: unknown): string {
 }
 
 // The stand-in kubectl is a bash shim answered by this test process (see
-// fixture-command-server.mjs), so each call costs a bash start instead of a node start.
+// fixture-command-server.ts), so each call costs a bash start instead of a node start.
 // It appends one JSON line per call to kubectl-state.jsonl, so a file that does not
 // exist means no kubectl call reached the server.
 async function writeFakeKubectl(t: TestContext, directory: string, options: KubectlOptions = {}) {

@@ -36,7 +36,7 @@ import { promisify } from "node:util";
 import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { withoutShellStartup } from "../helpers/environment.ts";
-import { bashString, commandShim, startCommandServer } from "../helpers/fixture-command-server.mjs";
+import { bashString, commandShim, startCommandServer } from "../helpers/fixture-command-server.ts";
 import { listen } from "../helpers/listen.mjs";
 import { runDeployedCapability } from "../helpers/deployed-repository-capability.ts";
 import { dumpYaml, loadYaml, yamlDocuments } from "../helpers/qa-utils.mjs";
@@ -84,7 +84,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
   // This fixture substitutes the external command protocols, not the upgrade script. It
   // records accepted writes independently of the client response. helm, kubectl and occ
   // (and node in pair cases) on the script's PATH are bash scripts answered by the
-  // fixture's command server (tests/helpers/fixture-command-server.mjs), so their logic
+  // fixture's command server (tests/helpers/fixture-command-server.ts), so their logic
   // below runs in the test process: a command costs a bash start instead of a node start.
   // The script still starts every command as a real process, and the fixture state stays
   // in state.json, which a command reads when it starts and cases edit between runs.
@@ -483,7 +483,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     };
   }
 
-  // One command of one fixture. `io` (fixture-command-server.mjs) writes its output and
+  // One command of one fixture. `io` (fixture-command-server.ts) writes its output and
   // ends it; returning without an exit ends it with status 0.
   async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) {
     const stateFile = join(root, "state.json");
