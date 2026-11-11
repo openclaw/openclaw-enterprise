@@ -8,12 +8,39 @@ import test from "node:test";
 import {
   loadRuntimeArtifact,
   prepareRuntimeArtifactLayout,
-} from "../../scripts/ci/runtime-artifact.mjs";
+} from "../../scripts/ci/runtime-artifact.ts";
 import { prepareLane } from "../../scripts/ci/prepare.mjs";
 import { cleanupResourceIds } from "../../scripts/ci/cleanup.mjs";
 
-const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
-const run = (program, args) =>
+function record(value: unknown): Record<string, unknown> {
+  assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
+  return value as Record<string, unknown>;
+}
+
+function firstRecord(value: unknown): Record<string, unknown> {
+  assert.ok(Array.isArray(value));
+  return record(value[0]);
+}
+
+function resourceIds(value: unknown): string[] {
+  const state = record(value);
+  assert.ok(Array.isArray(state.resources));
+  return state.resources.map((resource: unknown) => {
+    const { id } = record(resource);
+    assert.ok(typeof id === "string");
+    return id;
+  });
+}
+
+function artifactDescriptor(value: unknown): { digest: string; mediaType: string } {
+  const entry = record(value);
+  assert.ok(typeof entry.digest === "string");
+  assert.ok(typeof entry.mediaType === "string");
+  return { digest: entry.digest, mediaType: entry.mediaType };
+}
+
+const hash = (bytes: NodeJS.ArrayBufferView) => createHash("sha256").update(bytes).digest("hex");
+const run = (program: string, args: string[]) =>
   execFileSync(program, args, { encoding: "utf8", timeout: 120_000, maxBuffer: 8 * 1024 * 1024 });
 
 test("same-run runtime artifact enforces the OCI metadata limit before conversion", async (t) => {
@@ -24,7 +51,7 @@ test("same-run runtime artifact enforces the OCI metadata limit before conversio
     for (const [key, value] of [
       ["GITHUB_SHA", previousSha],
       ["GITHUB_RUN_ID", previousRun],
-    ]) {
+    ] as const) {
       if (value === undefined) {
         delete process.env[key];
       } else {
@@ -48,7 +75,7 @@ test("same-run runtime artifact enforces the OCI metadata limit before conversio
   for (const [size, expected] of [
     [limit, /Expected one runtime platform/],
     [limit + 1, /Oversized OCI metadata/],
-  ]) {
+  ] as const) {
     await writeFile(join(layout, "index.json"), index.padEnd(size, " "));
     run("tar", ["-cf", archive, "-C", layout, "index.json", "oci-layout"]);
     const archiveSha256 = hash(await readFile(archive));
@@ -89,22 +116,23 @@ test(
     let builderCreated = false;
     const statePath = join(directory, "state.json");
     const savedEnv = { ...process.env };
-    let loaded;
-    let namedContext;
+    const artifacts: {
+      loaded?: Awaited<ReturnType<typeof loadRuntimeArtifact>>;
+      namedContext?: Awaited<ReturnType<typeof prepareRuntimeArtifactLayout>>;
+    } = {};
     t.after(async () => {
-      await loaded?.cleanup();
-      await namedContext?.cleanup();
+      await artifacts.loaded?.cleanup();
+      await artifacts.namedContext?.cleanup();
       if (builderCreated) {
         run("docker", ["buildx", "rm", builder]);
       }
       try {
-        const state = JSON.parse(await readFile(statePath, "utf8"));
         await cleanupResourceIds(
           statePath,
-          state.resources.map((resource) => resource.id),
+          resourceIds(JSON.parse(await readFile(statePath, "utf8"))),
         );
       } catch (error) {
-        if (error.code !== "ENOENT") {
+        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
           throw error;
         }
       } finally {
@@ -153,16 +181,21 @@ test(
     ]);
     run("tar", ["-xf", join(artifact, "runtime.tar"), "-C", layout]);
     const rootBytes = await readFile(join(layout, "index.json"));
-    let descriptor = JSON.parse(rootBytes).manifests[0];
+    let descriptor = artifactDescriptor(
+      firstRecord(record(JSON.parse(rootBytes.toString("utf8"))).manifests),
+    );
     const indexDigest = descriptor.mediaType.endsWith("image.index.v1+json")
       ? descriptor.digest
       : `sha256:${hash(rootBytes)}`;
-    const blob = async (entry) =>
-      JSON.parse(await readFile(join(layout, "blobs/sha256", entry.digest.slice(7)), "utf8"));
+    const blob = async (entry: { digest: string }) =>
+      record(
+        JSON.parse(await readFile(join(layout, "blobs/sha256", entry.digest.slice(7)), "utf8")),
+      );
     if (descriptor.mediaType.endsWith("image.index.v1+json")) {
-      descriptor = (await blob(descriptor)).manifests[0];
+      descriptor = artifactDescriptor(firstRecord((await blob(descriptor)).manifests));
     }
     const manifest = await blob(descriptor);
+    const manifestConfig = artifactDescriptor(manifest.config);
     const selection = {
       directory: artifact,
       archiveSha256: hash(await readFile(join(artifact, "runtime.tar"))),
@@ -170,15 +203,15 @@ test(
       runId: "123456",
       producerAttempt: "1",
     };
+    const { directory: _directory, ...receiptSelection } = selection;
     const receipt = {
       version: 1,
-      ...selection,
+      ...receiptSelection,
       platform: `linux/${process.arch === "x64" ? "amd64" : process.arch}`,
       indexDigest,
       platformManifestDigest: descriptor.digest,
-      configDigest: manifest.config.digest,
+      configDigest: manifestConfig.digest,
     };
-    delete receipt.directory;
     await writeFile(join(artifact, "receipt.json"), JSON.stringify(receipt));
     await assert.rejects(
       loadRuntimeArtifact({ ...selection, tag }, Date.now() - 1),
@@ -206,25 +239,31 @@ setTimeout(() => process.stdout.write(${JSON.stringify(`${sourceSha}\n`)}), 2100
       process.env.PATH = previousPath;
     }
     assert.throws(() => run("docker", ["image", "inspect", tag]), { status: 1 });
-    loaded = await loadRuntimeArtifact({ ...selection, tag }, Date.now() + 60_000);
-    assert.equal(loaded.configDigest, manifest.config.digest);
+    const loaded = await loadRuntimeArtifact({ ...selection, tag }, Date.now() + 60_000);
+    artifacts.loaded = loaded;
+    assert.equal(loaded.configDigest, manifestConfig.digest);
     assert.equal(
-      JSON.parse(run("docker", ["image", "inspect", loaded.reference]))[0].Config.Labels[
-        "org.opencontainers.image.revision"
-      ],
+      record(
+        record(
+          firstRecord(JSON.parse(run("docker", ["image", "inspect", loaded.reference]))).Config,
+        ).Labels,
+      )["org.opencontainers.image.revision"],
       sourceSha,
     );
-    const imported = JSON.parse(run("docker", ["image", "inspect", loaded.reference]))[0];
-    assert.ok(imported.Config.Env.includes("TRANSPORT_PROOF=kept"));
-    assert.deepEqual(imported.Config.Entrypoint, ["/does-not-run"]);
-    assert.deepEqual(imported.Config.Cmd, ["proof"]);
-    assert.equal(imported.Config.User, "1234:5678");
-    assert.equal(imported.Config.WorkingDir, "/workspace");
-    assert.equal(imported.Config.StopSignal, "SIGUSR1");
-    assert.deepEqual(imported.Config.ExposedPorts, { "12345/tcp": {} });
+    const imported = record(
+      firstRecord(JSON.parse(run("docker", ["image", "inspect", loaded.reference]))).Config,
+    );
+    assert.ok(Array.isArray(imported.Env) && imported.Env.includes("TRANSPORT_PROOF=kept"));
+    assert.deepEqual(imported.Entrypoint, ["/does-not-run"]);
+    assert.deepEqual(imported.Cmd, ["proof"]);
+    assert.equal(imported.User, "1234:5678");
+    assert.equal(imported.WorkingDir, "/workspace");
+    assert.equal(imported.StopSignal, "SIGUSR1");
+    assert.deepEqual(imported.ExposedPorts, { "12345/tcp": {} });
     // The named context has its own verified layout and does not need the
     // imported Docker image. Keep both paths covered on the same bytes.
-    namedContext = await prepareRuntimeArtifactLayout(selection, Date.now() + 60_000);
+    const namedContext = await prepareRuntimeArtifactLayout(selection, Date.now() + 60_000);
+    artifacts.namedContext = namedContext;
     assert.equal(namedContext.platformManifestDigest, loaded.platformManifestDigest);
     assert.notEqual(namedContext.layoutDirectory, loaded.layoutDirectory);
     await loaded.cleanup();
@@ -246,16 +285,20 @@ setTimeout(() => process.stdout.write(${JSON.stringify(`${sourceSha}\n`)}), 2100
       context,
     ]);
     assert.equal(
-      JSON.parse(run("docker", ["image", "inspect", derivedTag]))[0].Config.Labels[
-        "org.opencontainers.image.revision"
-      ],
+      record(
+        record(firstRecord(JSON.parse(run("docker", ["image", "inspect", derivedTag]))).Config)
+          .Labels,
+      )["org.opencontainers.image.revision"],
       sourceSha,
     );
     // An existing caller-owned tag must never be replaced, even by a valid
     // artifact from this same run. The original loaded image remains usable.
-    const occupied = JSON.parse(run("docker", ["image", "inspect", derivedTag]))[0].Id;
+    const occupied = firstRecord(JSON.parse(run("docker", ["image", "inspect", derivedTag]))).Id;
     await assert.rejects(loadRuntimeArtifact({ ...selection, tag: derivedTag }), /already exists/);
-    assert.equal(JSON.parse(run("docker", ["image", "inspect", derivedTag]))[0].Id, occupied);
+    assert.equal(
+      firstRecord(JSON.parse(run("docker", ["image", "inspect", derivedTag]))).Id,
+      occupied,
+    );
     // Smoke's Bake path uses a separate BuildKit container, which cannot
     // resolve images solely from the host daemon's local tags.
     run("docker", [
@@ -320,20 +363,22 @@ setTimeout(() => process.stdout.write(${JSON.stringify(`${sourceSha}\n`)}), 2100
       OCC_CI_RUNTIME_ARTIFACT_RUN_ID: selection.runId,
       OCC_CI_RUNTIME_ARTIFACT_ATTEMPT: selection.producerAttempt,
     });
-    const prepared = await prepareLane({ lane: "images-runtime-startup-3", statePath });
-    const preparedTag = prepared.env.OCC_TEST_RUNTIME_IMAGE;
+    const prepared = await prepareLane({
+      cleanupOwner: undefined,
+      file: undefined,
+      lane: "images-runtime-startup-3",
+      statePath,
+    });
+    const preparedTag: unknown = prepared.env.OCC_TEST_RUNTIME_IMAGE;
+    assert.ok(typeof preparedTag === "string");
     assert.equal(
-      JSON.parse(run("docker", ["image", "inspect", preparedTag]))[0].Id,
+      firstRecord(JSON.parse(run("docker", ["image", "inspect", preparedTag]))).Id,
       loaded.reference,
     );
-    const state = JSON.parse(await readFile(statePath, "utf8"));
-    await cleanupResourceIds(
-      statePath,
-      state.resources.map((resource) => resource.id),
-    );
+    await cleanupResourceIds(statePath, resourceIds(JSON.parse(await readFile(statePath, "utf8"))));
     assert.throws(() => run("docker", ["image", "inspect", preparedTag]), { status: 1 });
     assert.equal(
-      JSON.parse(run("docker", ["image", "inspect", tag]))[0].Id,
+      firstRecord(JSON.parse(run("docker", ["image", "inspect", tag]))).Id,
       loaded.reference,
       "Cleanup must preserve the independently owned tag.",
     );
@@ -364,16 +409,17 @@ setTimeout(() => process.stdout.write(${JSON.stringify(`${sourceSha}\n`)}), 2100
     await assert.rejects(loadRuntimeArtifact({ ...selection, tag }), /checksum/);
     await assert.rejects(
       prepareLane({
+        cleanupOwner: undefined,
+        file: undefined,
         lane: "images-runtime-startup-3",
         statePath: join(directory, "rejected-state.json"),
       }),
       /checksum/,
     );
-    const rejected = JSON.parse(await readFile(join(directory, "rejected-state.json"), "utf8"));
-    await cleanupResourceIds(
-      join(directory, "rejected-state.json"),
-      rejected.resources.map((resource) => resource.id),
+    const rejected: unknown = JSON.parse(
+      await readFile(join(directory, "rejected-state.json"), "utf8"),
     );
+    await cleanupResourceIds(join(directory, "rejected-state.json"), resourceIds(rejected));
     await copyFile(original, join(artifact, "runtime.tar"));
     run("tar", ["-rf", join(artifact, "runtime.tar"), "-C", layout, "index.json"]);
     const duplicateHash = hash(await readFile(join(artifact, "runtime.tar")));
@@ -388,15 +434,17 @@ setTimeout(() => process.stdout.write(${JSON.stringify(`${sourceSha}\n`)}), 2100
 
     // Keep all compressed bytes and descriptor checks valid, but make the
     // executable config claim a different uncompressed layer identity.
-    const wrongConfig = await blob(manifest.config);
-    wrongConfig.rootfs.diff_ids[0] = `sha256:${"0".repeat(64)}`;
-    const writeBlob = async (value, mediaType) => {
+    const wrongConfig = await blob(manifestConfig);
+    const wrongRootfs = record(wrongConfig.rootfs);
+    assert.ok(Array.isArray(wrongRootfs.diff_ids));
+    wrongRootfs.diff_ids[0] = `sha256:${"0".repeat(64)}`;
+    const writeBlob = async (value: unknown, mediaType: string) => {
       const bytes = Buffer.from(JSON.stringify(value));
       const digest = hash(bytes);
       await writeFile(join(layout, "blobs/sha256", digest), bytes);
       return { mediaType, digest: `sha256:${digest}`, size: bytes.length };
     };
-    const config = await writeBlob(wrongConfig, manifest.config.mediaType);
+    const config = await writeBlob(wrongConfig, manifestConfig.mediaType);
     const newManifest = await writeBlob({ ...manifest, config }, descriptor.mediaType);
     const index = Buffer.from(JSON.stringify({ schemaVersion: 2, manifests: [newManifest] }));
     await writeFile(join(layout, "index.json"), index);

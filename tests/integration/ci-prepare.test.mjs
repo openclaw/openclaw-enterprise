@@ -40,7 +40,7 @@ import {
   nodeBaseImage,
   spawnResult,
   writeFixtureCommand,
-} from "../helpers/ci-prepare-fixture.mjs";
+} from "../helpers/ci-prepare-fixture.ts";
 import { waitUntil } from "../helpers/wait-for.mjs";
 import { startFakePostgres } from "../helpers/fake-postgres-server.mjs";
 

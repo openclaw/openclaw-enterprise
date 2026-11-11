@@ -83,7 +83,7 @@ scratch Dockerfile and fixed text marker. Repository source and source commit la
 link the image to Enterprise. Docker exports `linux/amd64` OCI bytes without
 copying the checkout, fetching a base image, or receiving registry credentials.
 Skopeo authenticates using the workflow token over stdin and a temporary auth file.
-For the chart marker, `scripts/ci/chart-package.mjs:pushChart` checks Helm's exit
+For the chart marker, `scripts/ci/chart-package.ts:pushChart` checks Helm's exit
 status and reads the pushed digest from stderr before bootstrap checks the remote
 manifest digest. A missing digest or failed push stops the run.
 

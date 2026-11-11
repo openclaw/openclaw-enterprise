@@ -111,7 +111,7 @@ The retired CLI-only installed repository lane is absent from the manifest:
 `assertLane` rejects it before allocation; its preparation below is unreachable.
 
 `scripts/ci/prepare.mjs:retainRuntimeProvenance` compares platform-selected host
-and CRI config digests. `scripts/ci/runtime-provenance.mjs:readImageCodexProvenance`
+and CRI config digests. `scripts/ci/runtime-provenance.ts:readImageCodexProvenance`
 reads bounded metadata; results and diagnostics retain only their preparation's evidence.
 Missing metadata records `unavailable`; image policy is unchanged.
 Extraction journals IDs before removal. Cleanup removes containers and anonymous volumes. Journal and cleanup errors fail preparation; unresolved resources retain receipts.

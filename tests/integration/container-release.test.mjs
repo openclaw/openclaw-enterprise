@@ -19,13 +19,13 @@ import {
   validatePreparedImage,
   verifyGhcr,
 } from "../../scripts/ci/container-release.mjs";
-import { pushChart, writeBootstrapChart } from "../../scripts/ci/chart-package.mjs";
+import { pushChart, writeBootstrapChart } from "../../scripts/ci/chart-package.ts";
 import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 import {
   chartArchiveContent,
   stageReleaseChart,
   validateImageReceipt,
-} from "../../scripts/ci/chart-release.mjs";
+} from "../../scripts/ci/chart-release.ts";
 import { setEnvironment } from "../helpers/environment.ts";
 import { writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";

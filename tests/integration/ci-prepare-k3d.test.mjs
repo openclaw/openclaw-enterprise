@@ -17,7 +17,7 @@ import {
   immutableImage,
   nodeBaseImage,
   writeFixtureCommand,
-} from "../helpers/ci-prepare-fixture.mjs";
+} from "../helpers/ci-prepare-fixture.ts";
 import { eachSettled } from "../helpers/child-processes.mjs";
 import { waitFor, waitUntil, within } from "../helpers/wait-for.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";

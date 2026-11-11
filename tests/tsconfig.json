@@ -83,6 +83,7 @@
     "helpers/bounded-teardown.ts",
     "helpers/environment.ts",
     "helpers/fake-commands.ts",
+    "helpers/ci-prepare-fixture.ts",
     "helpers/ci-runner-fixture.ts",
     "helpers/ci-runner-k3d-fixture.ts",
     "fixtures/ci-runner-k3d-kubectl.ts",

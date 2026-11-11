@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
-import { chartPackage, chartPushParent, pushChart } from "./chart-package.mjs";
+import { chartPackage, chartPushParent, pushChart } from "./chart-package.ts";
 import {
   ghcrPackageName,
   github,
@@ -29,34 +29,82 @@ const versionPattern = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/;
 const integerPattern = /^[1-9][0-9]*$/;
 const helm = process.env.OCC_HELM_BIN ?? "helm";
 
-export function validateImageReceipt(receipt, expected) {
+type NamedReceipt = Record<string, unknown> & { image: string };
+
+type ImageReceipt = NamedReceipt & {
+  image: "controller" | "runtime";
+  destination: string;
+  digest: string;
+};
+
+type ExpectedPublication = {
+  sourceSha: string;
+  runId: string | undefined;
+  attempt: string | undefined;
+  ciRunId: string | undefined;
+  ciAttempt: string | undefined;
+  controllerImage: string | undefined;
+  runtimeImage: string | undefined;
+};
+
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function assertReceiptEntries(receipt: unknown): asserts receipt is [NamedReceipt, NamedReceipt] {
   assert.ok(Array.isArray(receipt) && receipt.length === 2, "Expected two published images.");
-  const sorted = [...receipt].sort((left, right) => left.image.localeCompare(right.image));
+  const entries: unknown[] = receipt;
+  for (const entry of entries) {
+    assert.ok(record(entry));
+    assert.ok(typeof entry.image === "string");
+  }
+}
+
+function assertReceiptImages(
+  images: [NamedReceipt, NamedReceipt],
+  expected: ExpectedPublication,
+): asserts images is [ImageReceipt, ImageReceipt] {
   assert.deepEqual(
-    sorted.map(({ image }) => image),
+    images.map(({ image }) => image),
     ["controller", "runtime"],
     "Expected controller and runtime images once each.",
   );
   assert.match(expected.sourceSha, shaPattern);
-  for (const image of sorted) {
+  for (const image of images) {
     assert.equal(image.sourceSha, expected.sourceSha);
     assert.equal(image.workflowSha, expected.sourceSha);
     assert.equal(String(image.runId), expected.runId);
     assert.equal(String(image.attempt), expected.attempt);
     assert.equal(String(image.ciRunId), expected.ciRunId);
     assert.equal(String(image.ciAttempt), expected.ciAttempt);
-    assert.equal(image.destination, expected[`${image.image}Image`]);
+    assert.equal(
+      image.destination,
+      image.image === "controller" ? expected.controllerImage : expected.runtimeImage,
+    );
     assert.equal(image.tag, `sha-${expected.sourceSha}`);
+    assert.ok(typeof image.digest === "string");
     assert.match(image.digest, digestPattern);
+    assert.ok(typeof image.destination === "string");
   }
+}
+
+export function validateImageReceipt(receipt: unknown, expected: ExpectedPublication) {
+  assertReceiptEntries(receipt);
+  const sorted: [NamedReceipt, NamedReceipt] = [...receipt];
+  sorted.sort((left, right) => left.image.localeCompare(right.image));
+  assertReceiptImages(sorted, expected);
   assert.notEqual(sorted[0].destination, sorted[1].destination);
   return sorted;
 }
 
-export async function stageReleaseChart(directory, { sourceSha, version, images }) {
+export async function stageReleaseChart(
+  directory: string,
+  { sourceSha, version, images }: { sourceSha: string; version: string; images: ImageReceipt[] },
+) {
   assert.match(sourceSha, shaPattern);
   assert.match(version, versionPattern);
-  const packageJson = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+  const packageJson: unknown = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+  assert.ok(record(packageJson));
   assert.equal(packageJson.version, version, "OCE release version must match root package.json.");
   const destination = join(directory, "chart");
   await cp(join(root, "deploy/helm/openclaw-enterprise"), destination, { recursive: true });
@@ -94,17 +142,17 @@ export async function stageReleaseChart(directory, { sourceSha, version, images 
 
 // Helm 3 stamps tar headers when it packages a chart, so retries must compare
 // every packaged file rather than the compressed archive's incidental bytes.
-export async function chartArchiveContent(archive) {
+export async function chartArchiveContent(archive: string) {
   const compressed = await readFile(archive);
   assert.ok(compressed.length <= 16 * 1024 * 1024, "Chart archive is too large.");
   const tar = gunzipSync(compressed, { maxOutputLength: 64 * 1024 * 1024 });
-  const files = new Map();
+  const files = new Map<string, string>();
   const decoder = new TextDecoder("utf-8", { fatal: true });
-  function field(bytes) {
+  function field(bytes: Uint8Array) {
     const end = bytes.indexOf(0);
     return decoder.decode(end < 0 ? bytes : bytes.subarray(0, end));
   }
-  function octal(bytes) {
+  function octal(bytes: Uint8Array) {
     const value = field(bytes).trim();
     assert.match(value, /^[0-7]+$/u, "Invalid chart tar field.");
     return Number.parseInt(value, 8);
@@ -162,7 +210,7 @@ export async function chartArchiveContent(archive) {
   return [...files].sort(([left], [right]) => left.localeCompare(right));
 }
 
-async function verifyReleaseContext(env, packagePath) {
+async function verifyReleaseContext(env: NodeJS.ProcessEnv, packagePath: string) {
   assert.equal(env.PUBLISH, "true");
   assert.equal(env.SOURCE_SHA, env.GITHUB_WORKFLOW_SHA);
   assert.equal(
@@ -172,33 +220,60 @@ async function verifyReleaseContext(env, packagePath) {
   await verifyMainSource(env);
   await verifyCi(env);
   await verifyEnvironment();
-  validatePackage(await github(packagePath), chartPackage, { allowMissingRepository: true });
+  const packageMetadata: unknown = await github(packagePath);
+  validatePackage(packageMetadata, chartPackage, { allowMissingRepository: true });
 }
 
-function helmCommand(args, options = {}) {
+function helmCommand(
+  args: string[],
+  options: Omit<ExecFileSyncOptionsWithStringEncoding, "encoding"> = {},
+) {
   return execFileSync(helm, args, { encoding: "utf8", ...options });
 }
 
-async function publish(directory, env) {
+function hasVersion(entry: unknown, version: string) {
+  assert.ok(record(entry));
+  const metadata = entry.metadata;
+  if (metadata == null) {
+    return false;
+  }
+  assert.ok(record(metadata));
+  const container = metadata.container;
+  if (container == null) {
+    return false;
+  }
+  assert.ok(record(container));
+  const tags = container.tags;
+  if (tags == null) {
+    return false;
+  }
+  assert.ok(typeof tags === "string" || Array.isArray(tags));
+  return tags.includes(version);
+}
+
+async function publish(directory: string, env: NodeJS.ProcessEnv) {
   const packagePath = `orgs/openclaw/packages/container/${encodeURIComponent(ghcrPackageName(chartPackage))}`;
   await verifyReleaseContext(env, packagePath);
   for (const key of ["GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "CI_RUN_ID", "CI_ATTEMPT"]) {
     assert.match(env[key] ?? "", integerPattern);
   }
-  const images = validateImageReceipt(
-    JSON.parse(await readFile(join(directory, "publication.json"), "utf8")),
-    {
-      sourceSha: env.SOURCE_SHA,
-      runId: env.GITHUB_RUN_ID,
-      attempt: env.GITHUB_RUN_ATTEMPT,
-      ciRunId: env.CI_RUN_ID,
-      ciAttempt: env.CI_ATTEMPT,
-      controllerImage: env.GHCR_CONTROLLER_IMAGE,
-      runtimeImage: env.GHCR_RUNTIME_IMAGE,
-    },
+  const imagePublication: unknown = JSON.parse(
+    await readFile(join(directory, "publication.json"), "utf8"),
   );
-  const packageJson = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+  assert.ok(typeof env.SOURCE_SHA === "string");
+  const images = validateImageReceipt(imagePublication, {
+    sourceSha: env.SOURCE_SHA,
+    runId: env.GITHUB_RUN_ID,
+    attempt: env.GITHUB_RUN_ATTEMPT,
+    ciRunId: env.CI_RUN_ID,
+    ciAttempt: env.CI_ATTEMPT,
+    controllerImage: env.GHCR_CONTROLLER_IMAGE,
+    runtimeImage: env.GHCR_RUNTIME_IMAGE,
+  });
+  const packageJson: unknown = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+  assert.ok(record(packageJson));
   const version = packageJson.version;
+  assert.ok(typeof version === "string");
   assert.match(version, versionPattern);
   const temporary = await mkdtemp(join(tmpdir(), "enterprise-chart-release-"));
   const authfile = join(temporary, "auth.json");
@@ -216,6 +291,8 @@ async function publish(directory, env) {
     assert.match(metadata, new RegExp(`^version: ${version.replaceAll(".", "\\.")}$`, "mu"));
     assert.match(metadata, new RegExp(`^appVersion: ${version.replaceAll(".", "\\.")}$`, "mu"));
     skopeoLogin("ghcr.io", authfile, env.GITHUB_ACTOR, env.GH_TOKEN);
+    assert.ok(typeof env.GITHUB_ACTOR === "string");
+    assert.ok(typeof env.GH_TOKEN === "string");
     helmCommand(
       ["registry", "login", "ghcr.io", "--username", env.GITHUB_ACTOR, "--password-stdin"],
       {
@@ -223,10 +300,8 @@ async function publish(directory, env) {
         stdio: ["pipe", "ignore", "pipe"],
       },
     );
-    const chartVersions = await githubPages(`${packagePath}/versions`);
-    const existingCharts = chartVersions.filter((entry) =>
-      entry.metadata?.container?.tags?.includes(version),
-    );
+    const chartVersions: unknown[] = await githubPages(`${packagePath}/versions`, undefined);
+    const existingCharts = chartVersions.filter((entry) => hasVersion(entry, version));
     assert.ok(existingCharts.length <= 1, "Chart version must resolve to one package version.");
     const existingChartDigest = remoteTagDigest(
       chartPackage,
@@ -292,12 +367,12 @@ async function publish(directory, env) {
         image.digest,
       );
     }
-    let pushedChartDigest;
+    let pushedChartDigest: string | undefined;
     if (!existingChartDigest) {
       await verifyReleaseContext(env, packagePath);
-      const refreshed = await githubPages(`${packagePath}/versions`);
+      const refreshed: unknown[] = await githubPages(`${packagePath}/versions`, undefined);
       assert.ok(
-        refreshed.every((entry) => !entry.metadata?.container?.tags?.includes(version)),
+        refreshed.every((entry) => !hasVersion(entry, version)),
         "Chart version appeared before publication.",
       );
       assert.equal(
@@ -347,6 +422,7 @@ async function publish(directory, env) {
       join(directory, "chart-publication.json"),
       `${JSON.stringify(receipt, null, 2)}\n`,
     );
+    assert.ok(typeof env.GITHUB_STEP_SUMMARY === "string");
     await appendFile(
       env.GITHUB_STEP_SUMMARY,
       `\n- OCE ${version} chart: \`${receipt.chart.reference}\`\n- Controller: \`${receipt.controller}\`\n- Runtime: \`${receipt.runtime}\`\n`,
@@ -361,8 +437,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (command !== "publish" || !directory) {
     throw new Error("Expected publish <prepared-directory>.");
   }
-  publish(directory, process.env).catch((error) => {
-    console.error(error.message);
+  publish(directory, process.env).catch((error: unknown) => {
+    console.error(record(error) ? error.message : undefined);
     process.exitCode = 1;
   });
 }
