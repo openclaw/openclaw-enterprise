@@ -1,5 +1,6 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { K3dChildCase } from "../fixtures/ci-runner-k3d-cases.ts";
 import type { K3dKubectlScenario } from "../fixtures/ci-runner-k3d-kubectl.ts";
 import { writeCommand } from "./fake-commands.ts";
@@ -59,20 +60,35 @@ function writeJson(path: string, value: object) {
   return writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-export function writeK3dKubectl(directory: string, scenario: K3dKubectlScenario) {
-  const entry = new URL("../fixtures/ci-runner-k3d-kubectl.ts", import.meta.url).href;
+export async function writeK3dKubectl(directory: string, scenario: K3dKubectlScenario) {
+  await copyFile(
+    new URL("../fixtures/ci-runner-k3d-kubectl.ts", import.meta.url),
+    join(directory, "ci-runner-k3d-kubectl.ts"),
+  );
+  await writeJson(join(directory, "kubectl.scenario.json"), scenario);
   return writeCommand(
     directory,
     "kubectl",
-    `import(${JSON.stringify(entry)}).then(({ runK3dKubectl }) => runK3dKubectl(${JSON.stringify(scenario)}));`,
+    `import { readFileSync } from "node:fs";
+import { runK3dKubectl } from "./ci-runner-k3d-kubectl.ts";
+runK3dKubectl(JSON.parse(readFileSync(new URL("./kubectl.scenario.json", import.meta.url), "utf8")));`,
     { interpreter: process.execPath },
   );
 }
 
-export function writeK3dChildTest(path: string, scenario: K3dChildCase) {
-  const entry = new URL("../fixtures/ci-runner-k3d-cases.ts", import.meta.url).href;
+export async function writeK3dChildTest(path: string, scenario: K3dChildCase) {
+  // The child fixture imports other helpers relative to its repository location.
+  await symlink(
+    fileURLToPath(new URL("../fixtures/ci-runner-k3d-cases.ts", import.meta.url)),
+    `${path}.fixture.ts`,
+  );
+  await writeJson(`${path}.scenario.json`, scenario);
   return writeFile(
     path,
-    `import { registerK3dChildTest } from ${JSON.stringify(entry)};\nawait registerK3dChildTest(${JSON.stringify(scenario)});\n`,
+    `import { readFile } from "node:fs/promises";
+const { registerK3dChildTest } = await import(import.meta.url + ".fixture.ts");
+const scenario = JSON.parse(await readFile(new URL(import.meta.url + ".scenario.json"), "utf8"));
+await registerK3dChildTest(scenario);
+`,
   );
 }
