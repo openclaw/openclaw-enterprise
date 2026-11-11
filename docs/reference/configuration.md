@@ -242,21 +242,12 @@ its metadata names the source generation. Where unset, OCC sets
 `tools.exec.applyPatch.workspaceOnly: true` and `agents.defaults.sandbox.mode: "off"`.
 OCE isolates the Agent and has no Gateway approval screen. Unless `tools.exec`
 sets `security` or `ask`, OCC defaults `tools.exec.mode` to `"full"` and, in that
-mode, `tools.exec.strictInlineEval` to `false`.
-Where unset, OCC also sets `session.dmScope: "per-account-channel-peer"`: each
-channel direct-message sender gets a separate session for each channel account.
-OpenClaw's default `"main"` puts every sender in the main session that browser
-chat opens, and turns on recall across conversations. With the OCE default, that
-recall stays off unless `memory.search.rememberAcrossConversations` turns it on.
-A Configuration that sets `"main"` explicitly keeps OpenClaw's behavior. After
-the next deployment of an Agent that used `"main"` by default, each
-direct-message sender starts a new session; the main session keeps its history.
+mode, `tools.exec.strictInlineEval` to `false`. Where unset, OCC also sets
+[`session.dmScope`](configuration/secrets.md#direct-message-sessions) to
+`"per-account-channel-peer"`.
 Later Configuration updates change no running gateway or existing version
 until the next deployment. Deleting a Configuration still referenced by an Agent
 returns `409`.
-
-Native OpenClaw provider settings in `values.channels` follow the same
-Configuration ownership and immutable Agent deployment lifecycle.
 
 Database constraints require the supported Configuration kind, a positive
 generation, matching Agent ownership, and a valid immutable saved version
