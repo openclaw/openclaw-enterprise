@@ -1,6 +1,6 @@
 # CI resource preparation
 
-Prepare selected resources. [Parent flow](../github-actions-testing.md).
+[Parent flow](../github-actions-testing.md).
 
 ## Execution trace
 
@@ -18,7 +18,7 @@ First Agent Smoke and `run-ci-lane` use `setup-ci-tools` to restore yq and k3d
 downloads outside `PATH`. On Linux, `scripts/ci/setup-tools.sh` selects the
 checked-in platform checksum. `scripts/ci/download-pinned.sh` verifies installed
 or cached bytes in private staging before atomic publication with mode 0755.
-Missing or corrupt entries use pinned downloads; cache outages do not fail setup. Hits do not rewrite the cache.
+Missing or corrupt entries use pinned downloads; cache outages do not fail setup. Hits preserve cached bytes.
 PostgreSQL, image and Kubernetes profiles share OS-, architecture- and
 installer-source-keyed caches. Direct callers can reuse verified installed bytes.
 
