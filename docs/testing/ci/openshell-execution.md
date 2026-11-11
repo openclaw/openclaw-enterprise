@@ -109,6 +109,26 @@ candidate selection, preparation uses the pinned release charts and images.
 A mirror reference with the same released image digest keeps this release path.
 An image with a different digest requires the complete candidate selection.
 
+To check a candidate before starting installation, export all six inputs above
+and run from the OCE checkout with Node.js 24.22.1 (the repository minimum)
+or a newer supported version, Git, Docker, and Helm already available:
+
+```sh
+node scripts/ci/check-openshell-candidate.ts
+```
+
+The command reuses the preparation preflight. It inspects the three local
+immutable images and verifies both charts against the selected Git commit.
+It rejects no selection, release-only image mirrors, incomplete tuples, and
+failed verification with exit code 1. Success prints JSON with `outcome: verified`,
+the source commit, and elapsed milliseconds; failures include a fixed reason
+and timing, without raw error output.
+It creates and removes a private chart snapshot under the system temporary directory.
+`OCC_DOCKER_BIN` and `OCC_HELM_BIN` can select existing executables.
+It does not build, pull, tag, start infrastructure, or install Helm or charts.
+Use the result to choose reuse of matching supplier artifacts. It does not
+validate OCE images or source, independent build provenance, or installed behavior.
+
 ## Interpret timing and proof
 
 OpenShell lifecycle tests print live stage progress with their lane and file:

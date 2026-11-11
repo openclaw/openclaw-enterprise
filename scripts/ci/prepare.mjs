@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-import { fork, spawn } from "node:child_process";
+import { execFile as execFileCallback, fork, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import { createServer, isIPv4 } from "node:net";
 import {
   appendFile,
@@ -43,6 +44,12 @@ import { ownedName, randomSuffix, slug } from "./resource-names.ts";
 import { pullImage } from "./image-pull.ts";
 import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.mjs";
 import { imageInventory, laneImagesResourceKind } from "./lane-images.ts";
+import { imageConfigDigest } from "./image-config-digest.ts";
+import {
+  preparationIdentity,
+  readImageCodexProvenance,
+  readRuntimeProvenance,
+} from "./runtime-provenance.mjs";
 import { metricsMonitoringImages } from "./metrics-monitoring-images.mjs";
 import {
   prepareRepositoryCredentials,
@@ -432,6 +439,9 @@ function execFile(command, args, options = {}) {
           ...spawnOptions,
           stdio: options.stdio ?? [options.input ? "pipe" : "ignore", "pipe", "pipe"],
         });
+    if (processGroup && process.env.OPENCLAW_CI_COMPLETE_PHASE === "1" && process.send) {
+      process.send({ type: "ci-lifecycle-group", id: child.pid });
+    }
     let commandResult;
     let signalError;
     if (processGroup) {
@@ -1803,7 +1813,7 @@ async function ensureK3dCluster(statePath, state) {
         : []),
       // Keep failed fixture containers for diagnostics; registered cleanup
       // owns their deletion after collection, including partial creation.
-      ...(crossNodePluginStatus ? ["--no-rollback"] : []),
+      ...(crossNodePluginStatus || state.lane === "staging-signin" ? ["--no-rollback"] : []),
     ]);
     await k3dStage(state, "k3d-kubeconfig", async () => {
       const kubeconfigData = await execFile(process.env.OPENCLAW_CI_K3D_BIN ?? "k3d", [
@@ -1989,11 +1999,12 @@ function forwardK3dOutput(lane, child) {
   }
 }
 
-// Bound each create. After a timeout, keep diagnostics, delete what the
-// attempt created, and try once more with the same owned name and directory.
-// The final failure leaves the planned resource for registered cleanup.
+// Bound each create. Ordinary lanes discard a timed-out attempt and retry.
+// Staged sign-in has no bound custody yet, so it retains the reservation and
+// requires reconciliation instead of deleting or reusing an uncertain name.
 async function createK3dCluster(statePath, state, resource, args) {
   const k3d = process.env.OPENCLAW_CI_K3D_BIN ?? "k3d";
+  const attempts = state.lane === "staging-signin" ? 1 : k3dCreateAttempts;
   for (let attempt = 1; ; attempt += 1) {
     const timeoutMs = k3dCreateTimeoutsMs[attempt - 1];
     try {
@@ -2011,7 +2022,7 @@ async function createK3dCluster(statePath, state, resource, args) {
       }
       const summary =
         `k3d cluster create ${resource.name} did not finish within ${timeoutMs} ms ` +
-        `(attempt ${attempt} of ${k3dCreateAttempts})`;
+        `(attempt ${attempt} of ${attempts})`;
       progress(state.lane, summary);
       await captureK3dDiagnostics({
         execFile,
@@ -2021,6 +2032,16 @@ async function createK3dCluster(statePath, state, resource, args) {
         failure: summary,
         k3dOutput: error,
       }).catch(() => progress(state.lane, "k3d diagnostics unavailable"));
+      if (state.lane === "staging-signin") {
+        // The receipt is not bound yet. A stopped local process cannot prove
+        // that an accepted daemon operation settled or authorize name deletion.
+        const failure = new Error(
+          `${summary}; unconfirmed creation requires reconciliation; retained state at ${statePath}.`,
+          { cause: error },
+        );
+        failure.k3dDiagnosticsCaptured = true;
+        throw failure;
+      }
       if (attempt >= k3dCreateAttempts) {
         const failure = new Error(
           `${summary}; giving up. Diagnostics are in ${statePath}.diagnostics.json, and ` +
@@ -2879,6 +2900,108 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
   return resource;
 }
 
+async function retainRuntimeProvenance(statePath, state, cluster, image, role) {
+  state.runtimeProvenance ??= {};
+  const record = {
+    imageId: image.hostImageId,
+    manifestDigest: `sha256:${immutableDigest(image.reference)}`,
+    status: "unavailable",
+  };
+  const matching = Object.values(state.runtimeProvenance).find(
+    (other) => other.imageId === record.imageId && other.manifestDigest === record.manifestDigest,
+  );
+  state.runtimeProvenance[role] = matching ? { ...matching } : record;
+  const command = async (_docker, args, options = {}) => {
+    try {
+      return (
+        await promisify(execFileCallback)(process.env.OCC_DOCKER_BIN ?? "docker", args, {
+          timeout: 30_000,
+          maxBuffer: 1024 * 1024,
+          killSignal: "SIGKILL",
+          ...options,
+        })
+      ).stdout;
+    } catch (error) {
+      const failure = new Error("Runtime provenance image command failed.");
+      if (["ENOENT", "EACCES"].includes(error.code)) {
+        failure.code = error.code;
+      }
+      throw failure;
+    }
+  };
+  try {
+    if (matching) {
+      return;
+    }
+    let platform;
+    try {
+      const inspected = JSON.parse(
+        await command("docker", ["image", "inspect", image.hostImageId]),
+      )[0];
+      platform = `${inspected.Os}/${inspected.Architecture}`;
+      const readBlob = async (digest) =>
+        (
+          await k3dNodeImageCheck(
+            cluster.nodes[0],
+            ["ctr", "-n", "k8s.io", "content", "get", digest],
+            "containerd",
+          )
+        ).stdout;
+      const selected = JSON.parse(
+        await command("docker", ["image", "inspect", "--platform", platform, image.hostImageId]),
+      )[0];
+      const config = await imageConfigDigest(selected, readBlob);
+      const imported = JSON.parse(
+        (await k3dNodeImageCheck(cluster.nodes[0], ["crictl", "inspecti", image.reference], "CRI"))
+          .stdout,
+      );
+      if (!/^sha256:[a-f0-9]{64}$/.test(config) || imported.status?.id !== config) {
+        return;
+      }
+    } catch {
+      // An unavailable or mismatched image binding is not a readiness gate.
+      return;
+    }
+    const extraction = addResource(state, "image-file", {
+      name: `${state.prefix}-provenance-${randomSuffix()}`,
+    });
+    const metadata = await readImageCodexProvenance({
+      imageId: image.hostImageId,
+      platform,
+      directory: cluster.directory,
+      resource: extraction,
+      command,
+      persist: () => writeState(statePath, state),
+    });
+    if (metadata) {
+      Object.assign(record, { status: "available", ...metadata });
+    }
+  } finally {
+    await writeState(statePath, state);
+    // Publish before later preparation or test failures can remove the cluster.
+    try {
+      const path = `${statePath}.diagnostics.json`;
+      const preparationId = preparationIdentity(state.prefix);
+      let report = { lane: state.lane, preparationId };
+      try {
+        const previous = JSON.parse(await readFile(path, "utf8"));
+        if (previous.lane === state.lane && previous.preparationId === preparationId) {
+          report = previous;
+        }
+      } catch {
+        /* First diagnostic for this lane. */
+      }
+      report.runtimeProvenance = await readRuntimeProvenance(statePath, {
+        lane: state.lane,
+        preparationId,
+      });
+      await writeFile(path, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
+    } catch {
+      progress(state.lane, "Runtime provenance diagnostics unavailable.");
+    }
+  }
+}
+
 async function prepareK3dRuntimeImages(
   statePath,
   state,
@@ -2942,6 +3065,7 @@ async function prepareK3dRuntimeImages(
   for (const [name, value] of Object.entries(inputs)) {
     const image = await registerImageInK3d(statePath, state, cluster, value, name);
     env[name] = image.reference;
+    await retainRuntimeProvenance(statePath, state, cluster, image, name);
     if (name === "OCC_TEST_KUBERNETES_GATEWAY_IMAGE") {
       // Host relays need the Docker image, not the cluster's imported manifest reference.
       env.OCC_DOCKER_RUNTIME_IMAGE = image.hostImageId;
@@ -3021,6 +3145,18 @@ async function prepareNativeWorkspaceEnvoyImage(state, env) {
   const image = effectiveLaneEnv("images-runtime-startup", env).OCC_TEST_WORKSPACE_ENVOY_IMAGE;
   await ensureDockerSourceImage(state, image, "OCC_TEST_WORKSPACE_ENVOY_IMAGE");
   env.OCC_TEST_WORKSPACE_ENVOY_IMAGE = image;
+}
+
+// The release job owns a fresh state path. Refuse a prior reservation rather
+// than adopting another attempt's resources. Cleanup uses the ordinary CI state.
+export async function prepareStagingSigninCluster(path) {
+  const state = baseState("staging-signin", path);
+  await writeFile(path, JSON.stringify(state) + "\n", { flag: "wx", mode: 0o600 });
+  const cluster = await ensureK3dCluster(path, state);
+  if (cluster.nodes.length !== 1 || cluster.nodes[0] !== `k3d-${cluster.name}-server-0`) {
+    throw new Error("Staging sign-in requires a single owned k3d server.");
+  }
+  return cluster;
 }
 
 /** @param {{ image: string, statePath: string, codexVersion?: string }} options */
@@ -3852,6 +3988,17 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
   if (name === "repository-credentials-container") {
     if (state?.lane !== name) {
       throw new Error("Repository credential images require their own lane state.");
+    }
+    const registeredFile = laneDefinition(name).files.find(({ path }) => path === relativeFile);
+    if (
+      registeredFile &&
+      !registeredFile.requiredEnv?.includes("REPOSITORY_CREDENTIALS_GH_BINARY")
+    ) {
+      return {
+        defaults: laneDefaults(name, { ...state.defaults, ...env }),
+        env,
+        cleanup: null,
+      };
     }
     const prepared = await prepareRepositoryCredentialsFile({
       clientImage: env.REPOSITORY_CREDENTIALS_CLIENT_IMAGE,

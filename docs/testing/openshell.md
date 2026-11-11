@@ -142,6 +142,8 @@ cannot prove a Linear tool call.
 
 ## Test setup and cleanup
 
+See [host relay diagnostics](docker.md#verify-host-routing-relay-diagnostics).
+
 Stop the reusable environment before running these tests. Each creates and
 removes its own disposable cluster. Install Docker or Podman, k3d, kubectl,
 Helm, and the dependencies in the [testing prerequisites](README.md#requirements-and-credentials).

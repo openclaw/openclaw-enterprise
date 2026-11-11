@@ -1,4 +1,5 @@
 import { runOpenShellStage } from "./openshell-stage.mjs";
+import { observeOpenShellPermissionRefusal } from "./openshell-permission-diagnostic.ts";
 import { openShellTurnoverQualification } from "../../scripts/ci/reporter.mjs";
 import {
   openShellGatewayGrpcChannel,
@@ -236,6 +237,7 @@ const {
   waitFor,
   validateOpenShellPrerequisites,
   readAgentTransportCredentials,
+  readPermissionHarnessLogs,
   waitForOpenShellGateway,
   installOpenShellGateway,
   startOpenShellGatewayPortForward,
@@ -1204,17 +1206,13 @@ function bridgeRequirements(context, claimName, subPath) {
   };
 }
 
-function integrationGatewayClient(
-  GrpcOpenShellGatewayClient,
-  endpoint,
-  context,
-  { observeServiceUrl },
-) {
+function integrationGatewayClient(GrpcOpenShellGatewayClient, endpoint, { observeServiceUrl }) {
   const gateway = new GrpcOpenShellGatewayClient({ endpoint });
-  // Only Sandbox creation and service lookup are observed. Every other call, including the
-  // runtime provider-profile setup the Driver performs while provisioning, reaches the real
-  // gateway client unchanged.
   const observed = {
+    async serviceCodexReadinessStatus(serviceUrl, ...args) {
+      observeServiceUrl(serviceUrl);
+      return await gateway.serviceCodexReadinessStatus(serviceUrl, ...args);
+    },
     async createSandbox(request, signal) {
       const created = await gateway.createSandbox(request, signal);
       observeServiceUrl(created.serviceUrls[""]);
@@ -1410,6 +1408,7 @@ function createIntegrationSandboxDriverFactory(
   const gatewayState = new Map();
   const endpointClients = new Map();
   const policyWrites = [];
+  const permissionDiagnostics = new Set();
   let policyWriteBarrier;
   let backendDrivers;
 
@@ -1614,7 +1613,7 @@ function createIntegrationSandboxDriverFactory(
       const gatewayClient =
         context === undefined
           ? clientForEndpoint(endpoint)
-          : integrationGatewayClient(GrpcOpenShellGatewayClient, endpoint, context, {
+          : integrationGatewayClient(GrpcOpenShellGatewayClient, endpoint, {
               enableCompatibilityBridge: enableCompatibilityBridges,
               observeServiceUrl: (serviceUrl) => {
                 harnessServiceUrls.set(context.revision.id, serviceUrl);
@@ -1801,12 +1800,27 @@ function createIntegrationSandboxDriverFactory(
           sandboxServiceAccountName: agentSandboxServiceAccount(context),
           exact: context.requirements.workloadIdentity !== undefined,
         });
-        return await delegate(
-          context.requirements,
-          context.namespace.name,
-          endpoint,
-          context,
-        ).harnessStatus(context);
+        return await observeOpenShellPermissionRefusal(
+          () =>
+            delegate(context.requirements, context.namespace.name, endpoint, context).harnessStatus(
+              context,
+            ),
+          {
+            endpoint,
+            revisionId: context.revision.id,
+            cwd: "/sandbox/enterprise",
+            model: providerModel,
+            attempted: permissionDiagnostics,
+            serviceUrl: () => harnessServiceUrls.get(context.revision.id),
+            bearer: context.transportToken,
+            signal: context.signal,
+            readHarnessLogs: (since, signal) =>
+              readPermissionHarnessLogs(context.namespace.name, context.revision, since, signal),
+            requirePat:
+              context.revision.harnessAuth?.method === "credential_source" &&
+              context.revision.harnessAuth.loginMode === "codex_pat",
+          },
+        );
       },
       // Compute drops a native worker's exposure once its node has enrolled (finding 1657).
       async withdrawHarnessExposure(context) {
@@ -2658,6 +2672,7 @@ async function prepareProductionInstallation(
       request,
       agentPath: `/namespaces/${namespaceId}/agents/${agent.data.id}`,
       revisionId: deployed.data.id,
+      workerEvents: events,
     });
   } catch (error) {
     // These refusals already identify the failing readiness check. No Pod log read is needed.

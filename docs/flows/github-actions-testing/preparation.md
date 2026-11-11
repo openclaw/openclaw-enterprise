@@ -18,8 +18,7 @@ First Agent Smoke and `run-ci-lane` use `setup-ci-tools` to restore yq and k3d
 downloads outside `PATH`. On Linux, `scripts/ci/setup-tools.sh` selects the
 checked-in platform checksum. `scripts/ci/download-pinned.sh` verifies installed
 or cached bytes in private staging before atomic publication with mode 0755.
-Missing or corrupt entries use the pinned downloader; unavailable cache storage
-or service does not fail setup. Verified hits do not rewrite the cache.
+Missing or corrupt entries use pinned downloads; cache outages do not fail setup. Hits do not rewrite the cache.
 PostgreSQL, image and Kubernetes profiles share OS-, architecture- and
 installer-source-keyed caches. Direct callers can reuse verified installed bytes.
 
@@ -31,7 +30,7 @@ Version probes allow 10 seconds plus 5 seconds before forced termination;
 each APT command allows 120 plus 10 seconds, three acquisition retries and
 20-second HTTP/HTTPS timeouts. Sudo is non-interactive. Failed updates prevent
 installation. APT output and failure status are preserved.
-The final version probe must pass.
+The final probe must pass.
 
 `scripts/ci/image-pull.ts:pullImage` logs each failed pull attempt before deciding
 whether to retry, including the final attempt. It reports elapsed time, timeout status and up to eight layer states from captured output tails.
@@ -41,8 +40,7 @@ The First Agent smoke adapter forwards both captured streams to this parser.
 Diagnostic emission is best effort and cannot replace the terminal pull error.
 Docker suppresses numeric progress on non-terminal
 output, so these states provide partial evidence, not the current transfer phase. If no progress matches, the
-summary says so. These diagnostics do not change timeouts, backoff, concurrency, or digest verification.
-They do not establish registry health or stall causes.
+summary says so. Diagnostics change no timeouts, backoff, concurrency or digest verification, and establish neither registry health nor stall causes.
 
 The PR advisory OpenShell job uses Ubuntu 24.04 for Landlock and selects packaged Google Chrome through `OCC_TEST_BROWSER_EXECUTABLE`. The OpenShell manifest lists this optional input so test children receive it. Before image builds, `scripts/ci/setup-tools.sh:install_browser_dependencies` checks a headless sandboxed renderer and logs its version; errors fail setup. The browser inherits only `PATH`, with private `HOME` and `TMPDIR`. Ubuntu’s existing AppArmor profile permits its user namespaces. Without an override, Playwright uses its default headless shell.
 
@@ -62,8 +60,8 @@ alternate sources. Step counts deduplicate IDs; imports count lines.
 Imports do not prove hits; loads may reuse probe work.
 
 Image lanes, First Agent Smoke, Docker Model Runtime, Gateway Routing and
-Production TUI look up artifacts by repository, producer run ID and artifact ID. The lane action
-and CI workflow give `actions/download-artifact` the job token with `actions: read`.
+Production TUI download artifacts by repository, producer run and artifact IDs,
+using the job token’s `actions: read` permission.
 
 Docker Model Runtime requires an artifact ID on producer success. Failure or
 skip selects a standalone build. After download, local import cancellation
@@ -110,6 +108,16 @@ controller and imports the runtime artifact, or builds the runtime when none is
 selected. Failures still enter cleanup. Cleanup checks k3d inventory before and
 after deletion, then matching Docker containers, networks and volumes. Invalid
 inventory or possible survivors retain cleanup state.
+
+The retired CLI-only installed repository lane is absent from the manifest:
+`assertLane` rejects it before state or resources are created. Its image and
+seccomp preparation below is unreachable.
+
+`scripts/ci/prepare.mjs:retainRuntimeProvenance` compares platform-selected host
+and CRI config digests. `scripts/ci/runtime-provenance.mjs:readImageCodexProvenance`
+reads bounded metadata; results and diagnostics retain only their preparation's evidence.
+Missing metadata records `unavailable`; image policy is unchanged.
+Extraction journals IDs before removal. Cleanup removes containers and anonymous volumes. Journal and cleanup errors fail preparation; unresolved resources retain receipts.
 
 Before creating the bootstrap directory beside the state file,
 `scripts/ci/prepare.mjs:ensurePostgresServer` records its absolute path. It refuses

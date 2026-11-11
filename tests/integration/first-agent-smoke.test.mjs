@@ -8,6 +8,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
+import { postgresImage, runtimeNodeBaseImage } from "../../scripts/ci/fixture-support-images.mjs";
 import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
   STOP_PHASE_TIMEOUT_MS,
@@ -18,11 +19,9 @@ import {
   createApi,
   createStepRecorder,
   observeAgentStop,
-  postgresImage,
   providerImageDockerfile,
   providerImageTag,
   publishPostgresImage,
-  runtimeNodeBaseImage,
   smokeBakeDefinition,
   smokeImageEnvironment,
   smokeSlotNames,

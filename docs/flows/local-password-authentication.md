@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: "2026-11-09 16:10"
-last_updated_session: "authoring-run/17c43ed1-f4cd-439d-adb5-d2532f4e7755"
+updated: "2026-11-11 09:25"
+last_updated_session: "authoring-run/020599f2-46fb-4eca-94b0-53f51af3deca"
 ---
 
 # Bootstrap and human authentication flow
@@ -150,6 +150,10 @@ a wrong password writes no unstructured console warning.
 Malformed, duplicated or foreign keys return `401` without revoking or clearing
 sessions. This optional header narrows but never selects a session; the native
 admin proxy strips it upstream.
+
+For `GET /api/auth/session`, `apps/controller/src/auth/index.ts:session` sends the
+Better Auth result without its cookie headers. A late response for an invalid
+session leaves any cookie set by a newer sign-in in place.
 
 When external sign-in is configured, `apps/controller/src/auth/human-login.ts:createHumanLogin`
 provides password, provider, and logout endpoints through a guarded Better Auth adapter.
@@ -353,6 +357,8 @@ Run `tests/integration/` files with `node --test`.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 09:25: Document how a session check preserves a newer browser cookie. (authoring-run/020599f2-46fb-4eca-94b0-53f51af3deca - f0b9c002c0577bcc8854913b0eafa5449bd5fbe3)
 
 - 2026-11-09 16:10: Trace startup policy resolution and the single external identity lookup. (authoring-run/17c43ed1-f4cd-439d-adb5-d2532f4e7755 - 65aa5bd78)
 

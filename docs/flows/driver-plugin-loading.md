@@ -150,8 +150,11 @@ Kubernetes-specific image and projected-credential requirements apply only to
 bundled Kubernetes Compute. SSH preflight verifies local SSH files and probes
 each configured host. Startup enforces the
 [production version-stage contract](../reference/drivers/compute.md#production-revision-stages)
-before returning any production runtime; development can use a four-operation
-Driver, and the worker still fails closed if a required stage becomes unavailable.
+before returning any production runtime. Development requires the five core
+operations: `ensureNamespace`, `deleteNamespace`, `prepareRevision`,
+`stopRevision`, and `retireRevision`. It permits Drivers without
+`activateRevision` and `deactivateRevision`. The worker still fails closed if a
+required stage becomes unavailable.
 
 ### 3. Construct the API-only Backend branch
 

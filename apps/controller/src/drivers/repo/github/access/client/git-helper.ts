@@ -1,6 +1,6 @@
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readClientConfiguration } from "./config.ts";
+import { isClientBearer, readClientConfiguration } from "./config.ts";
 import {
   buildOperatorRepositoryManifest,
   inheritedRepositoryBinding,
@@ -108,7 +108,7 @@ async function run(): Promise<void> {
   try {
     requireCurrentBinding(binding);
     const bearer = bytes.toString("utf8");
-    if (!/^[A-Za-z0-9_-]{32,256}$/.test(bearer)) {
+    if (!isClientBearer(bearer)) {
       throw new Error("invalid-client-bearer");
     }
     process.stdout.write(`username=${binding.client.gitUsername}\npassword=${bearer}\n\n`);
