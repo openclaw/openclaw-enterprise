@@ -895,6 +895,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         }
         object.metadata.uid =
           (state.preflightFault?.target === target && state.preflightFault.uid) || randomUUID();
+        if (fault === "delayed-delete" || fault === "retained-dependency") {
+          object.metadata.finalizers = ["fixture.openclaw.invalid/cleanup"];
+        }
         (state.preflight.created ??= []).push({ kind, name, uid: object.metadata.uid });
         if (fault === "evidence-file" || fault === "evidence-symlink") {
           const destination = join(root, "evidence", "preflight-secret-identity.json");
@@ -1003,16 +1006,43 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         assert.ok(named, "delete must identify a preflight resource");
         const [kind, name] = named.split("/");
         const inventory = state.preflight[collection[kind]];
+        const target =
+          kind === "job.batch"
+            ? inventory[name]?.spec?.template?.spec?.containers?.[0]?.name
+            : kind;
+        const fault = state.preflightFault?.target === target ? state.preflightFault.mode : null;
+        if (fault === "already-absent" || fault === "absent-job-retained-child") {
+          // An independently completed deletion wins before this API request.
+          const originalUid = inventory[name]?.metadata.uid;
+          delete inventory[name];
+          if (fault !== "absent-job-retained-child") {
+            for (const [childName, child] of Object.entries(state.preflight.pods)) {
+              if (child.metadata.ownerReferences.some((owner) => owner.uid === originalUid)) {
+                delete state.preflight.pods[childName];
+              }
+            }
+          }
+          save();
+        }
         // Replacement occurs at DELETE, after all client reads, to model the race.
-        if (
-          state.preflightFault?.mode === "replacement" &&
-          state.preflightFault.target ===
-            inventory[name]?.spec?.template?.spec?.containers?.[0]?.name
-        ) {
-          inventory[name] = {
-            metadata: { name, uid: randomUUID() },
+        const replacement = () => {
+          const marker = `replacement-secret-${randomUUID()}`;
+          const original = structuredClone(inventory[name]);
+          return {
+            ...original,
+            metadata: {
+              ...original.metadata,
+              uid: randomUUID(),
+              annotations: { ...original.metadata.annotations, fixture: marker },
+            },
+            ...(kind === "secret"
+              ? { data: { credential: Buffer.from(marker).toString("base64") } }
+              : {}),
             foreign: true,
           };
+        };
+        if (fault === "replacement") {
+          inventory[name] = replacement();
         }
         const current = inventory[name];
         if (!current) {
@@ -1053,7 +1083,13 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
             }
           }
         }
-        delete inventory[name];
+        if (fault === "replacement-after-delete") {
+          inventory[name] = replacement();
+        } else if (fault === "delayed-delete" || fault === "retained-dependency") {
+          current.metadata.deletionTimestamp = "2026-11-11T00:00:00Z";
+        } else {
+          delete inventory[name];
+        }
         state.preflight.deleted.push(named);
         save();
         out({
@@ -1082,6 +1118,16 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       } else if (resource && (args.includes("get") || args.includes("logs"))) {
         const [kind, name] = resource.split("/");
         const object = state.preflight[collection[kind]][name];
+        if (object?.metadata.deletionTimestamp && state.preflightFault?.mode === "delayed-delete") {
+          const reads = (state.preflight.deletionReads ??= {});
+          reads[resource] = (reads[resource] ?? 0) + 1;
+          if (reads[resource] === 3) {
+            delete state.preflight[collection[kind]][name];
+            save();
+            return io.exit(0);
+          }
+          save();
+        }
         if (!object) {
           if (args.includes("--ignore-not-found")) {
             return io.exit(0);

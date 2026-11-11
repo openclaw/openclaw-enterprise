@@ -876,6 +876,18 @@ preflight_cleanup_error() {
     warn "could not confirm cleanup of ${resource:0:300}: the delete request failed; see preflight-cleanup.err in the evidence directory."
   fi
 }
+# The API may return a replacement Job or Secret. Persist only its identity,
+# never its contents. Empty successful output means absence; malformed or failed reads do not.
+read_preflight_identity() {
+  "${kube[@]}" --request-timeout=10s --namespace "$namespace" get "$1" \
+    --ignore-not-found -o json 2>>"$evidence_dir/preflight-cleanup.err" |
+    jq -cs '
+      if length == 0 then empty
+      elif length == 1 and (.[0].metadata.uid | type == "string" and length > 0)
+      then {metadata: {uid: .[0].metadata.uid}}
+      else error("invalid preflight identity") end
+    ' >"$2" 2>/dev/null
+}
 cleanup_preflight() {
   local entry resource name uri delete_options errors uid deadline remaining child child_name child_uid
   local consumers_stopped=1 cleanup_failed=0
@@ -895,9 +907,14 @@ cleanup_preflight() {
     uri="/apis/batch/v1/namespaces/$namespace/jobs/$name"
     if ! errors=$("${kube[@]}" --request-timeout=15s delete --raw="$uri" -f - \
       <<<"$delete_options" 2>&1 >/dev/null); then
-      preflight_cleanup_error "$resource" "$errors"
-      consumers_stopped=0
-      continue
+      # A prior cleanup may have deleted the original. Re-read instead of
+      # interpreting kubectl's error text; child settlement is still required.
+      if ! read_preflight_identity "$resource" "$evidence_dir/preflight-cleanup-job.json" ||
+        [[ -s "$evidence_dir/preflight-cleanup-job.json" ]]; then
+        preflight_cleanup_error "$resource" "$errors"
+        consumers_stopped=0
+        continue
+      fi
     fi
     child_name= child_uid=
     for child in ${preflight_children[@]+"${preflight_children[@]}"}; do
@@ -956,9 +973,39 @@ cleanup_preflight() {
     # Compare the original UID atomically; leave same-name replacements untouched.
     if ! errors=$("${kube[@]}" --request-timeout=15s delete --raw="$uri" -f - \
       <<<"$delete_options" 2>&1 >/dev/null); then
+      if read_preflight_identity "$resource" "$evidence_dir/preflight-cleanup-dependency.json" &&
+        [[ ! -s "$evidence_dir/preflight-cleanup-dependency.json" ]]; then
+        continue
+      fi
       preflight_cleanup_error "$resource" "$errors"
       cleanup_failed=1
+      continue
     fi
+    # DELETE acceptance is not disappearance: finalizers may retain the object.
+    uid=$(jq -er '.preconditions.uid' <<<"$delete_options") || { cleanup_failed=1; continue; }
+    deadline=$((SECONDS + 30))
+    while true; do
+      if ! read_preflight_identity "$resource" "$evidence_dir/preflight-cleanup-dependency.json"; then
+        warn "could not confirm cleanup of ${resource:0:300}; see preflight-cleanup.err."
+        cleanup_failed=1
+        break
+      fi
+      [[ -s "$evidence_dir/preflight-cleanup-dependency.json" ]] || break
+      if ! jq -e --arg uid "$uid" '.metadata.uid == $uid' \
+        "$evidence_dir/preflight-cleanup-dependency.json" >/dev/null 2>>"$evidence_dir/preflight-cleanup.err"; then
+        printf 'Cannot confirm original identity for %s after deletion.\n' "$resource" >>"$evidence_dir/preflight-cleanup.err"
+        warn "could not confirm cleanup of ${resource:0:300}; original identity could not be verified."
+        cleanup_failed=1
+        break
+      fi
+      if ((SECONDS >= deadline)); then
+        printf 'Timed out deleting %s.\n' "$resource" >>"$evidence_dir/preflight-cleanup.err"
+        warn "could not confirm cleanup of ${resource:0:300}; deletion is still pending."
+        cleanup_failed=1
+        break
+      fi
+      sleep 1
+    done
   done
   preflight_resources=()
   return "$cleanup_failed"
