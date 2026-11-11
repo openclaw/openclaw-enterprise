@@ -20,7 +20,7 @@ import {
 import { eachSettled } from "../helpers/child-processes.mjs";
 import { waitFor, waitUntil, within } from "../helpers/wait-for.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { bashString, startCommandServer } from "../helpers/fixture-command-server.mjs";
+import { bashString, startCommandServer } from "../helpers/fixture-command-server.ts";
 
 test("native container preparation summaries", async (t) => {
   const hostEnv = process.env;

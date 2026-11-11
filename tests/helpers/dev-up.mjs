@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { after } from "node:test";
 
 import { commandPath, composeConfigurationProvider } from "./compose.mjs";
-import { bashString, commandShim, startCommandServer } from "./fixture-command-server.mjs";
+import { bashString, commandShim, startCommandServer } from "./fixture-command-server.ts";
 import { readJsonLines as readJsonLinesFile } from "./json-lines.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 import { withoutShellStartup } from "./environment.ts";
@@ -63,7 +63,7 @@ async function writeExecutable(path, body) {
 
 // The external commands dev-up runs (the container engine, yq, uname, the project's occ,
 // and k3d, kubectl and helm for Kubernetes Compute) are bash scripts answered by the
-// fixture's command server (fixture-command-server.mjs), so their logic below runs in
+// fixture's command server (fixture-command-server.ts), so their logic below runs in
 // the test process: a command costs a bash start instead of a node start. The real CLI,
 // scripts/dev-up and scripts/dev-down still start each one as a process. A command
 // sends the environment variables below.
