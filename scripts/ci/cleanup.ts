@@ -509,7 +509,7 @@ async function cleanupK3dCluster(
 ) {
   assertResourceOwner(resource, state);
   assertOwnedK3dFilesystem(resource);
-  await deleteOwnedK3dCluster(resource, { identity });
+  await deleteOwnedK3dCluster(resource, identity ? { identity } : {});
   await emptyK3dSharedStorage(resource);
   await rm(resource.directory, { recursive: true, force: true });
 }
