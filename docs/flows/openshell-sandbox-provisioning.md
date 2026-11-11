@@ -283,14 +283,11 @@ qualification is incomplete.
 
 `apps/controller/src/drivers/sandbox/openshell-gateway-client.ts:createSandbox`
 
-Send identity/spec, Workspace scope and `request_id` (revision UUID,
-then 15 derived IDs). Names are Workspace-unique. `REQUEST_OUTCOME_UNCERTAIN`, `REQUEST_ID_PAYLOAD_MISMATCH`
-or `REQUEST_REPLAY_UNAVAILABLE` advances only after `getSandbox` confirms absence.
-Completed records expire after 24 hours. Unresolved IDs persist. At 1,000
-live/unresolved records, `SANDBOX_ADMISSION_LIMIT_REACHED` (`RESOURCE_EXHAUSTED`)
-pauses preparation until its deadline without spending attempts. Namespace work retries.
-
-After replay checks, [Worker diagnostics](../reference/drivers/openshell-sandbox.md#createsandbox-admission-failures) explain refusals without changing admission or retries.
+Send Workspace-scoped identity/spec, a unique name and `request_id` (revision UUID, then 15 derived IDs).
+After `REQUEST_OUTCOME_UNCERTAIN`, `REQUEST_ID_PAYLOAD_MISMATCH` or `REQUEST_REPLAY_UNAVAILABLE`,
+advance only if `getSandbox` confirms absence. At 1,000 live/unresolved records, `RESOURCE_EXHAUSTED`
+([`SANDBOX_ADMISSION_LIMIT_REACHED`](../reference/drivers/openshell-sandbox.md#troubleshooting)) defers preparation until its deadline without spending attempts. Namespace work retries.
+After replay, [Worker diagnostics](../reference/drivers/openshell-sandbox.md#createsandbox-admission-failures) only explain refusals.
 
 Adoption, including `ALREADY_EXISTS`, requires matching Workspace, labels,
 annotations/spec and a Sandbox that is neither stopped nor deleting. Workspace `sandbox:write`
