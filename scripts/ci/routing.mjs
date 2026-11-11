@@ -338,7 +338,11 @@ async function applyControllers({ cluster, execFile, certManagerManifest, envoyG
   await rolloutDeployments(cluster, execFile, envoyGateway.namespace, [envoyGateway.deployment]);
 }
 
-export async function prepareGatewayRouting({ cluster, execFile }) {
+export async function prepareGatewayRouting({
+  cluster,
+  execFile,
+  downloadArtifact = downloadPinnedArtifact,
+}) {
   assert.equal(typeof execFile, "function", "prepareGatewayRouting requires an execFile callback.");
   const ownedCluster = assertCluster(cluster);
   // K3s installs the Gateway API CRDs with Traefik, and applyControllers waits for them, so
@@ -353,8 +357,8 @@ export async function prepareGatewayRouting({ cluster, execFile }) {
   await chmod(directory, 0o700);
 
   const [certManagerManifest, envoyGatewayManifest] = await Promise.all([
-    downloadPinnedArtifact({ artifact: certManager, directory }),
-    downloadPinnedArtifact({ artifact: envoyGateway, directory }),
+    downloadArtifact({ artifact: certManager, directory }),
+    downloadArtifact({ artifact: envoyGateway, directory }),
   ]);
   const ca = await createPrivateTestCa({ directory, execFile });
   await applyControllers({
@@ -367,7 +371,6 @@ export async function prepareGatewayRouting({ cluster, execFile }) {
   return {
     env: {
       OCC_TEST_GATEWAY_ROUTING_REAL: "1",
-      OCC_TEST_SLACK_LIVE: "0",
       OCC_TEST_ENVOY_GATEWAY_NAMESPACE: envoyGateway.namespace,
       OCC_TEST_CERT_MANAGER_NAMESPACE: certManager.namespace,
       OCC_TEST_GATEWAY_CA_CERT_PATH: ca.certPath,

@@ -13,6 +13,7 @@ export interface NativeAdminProxyContext {
 export type NativeAdminWebSocketCloseReason =
   | "session_invalid"
   | "session_expired"
+  | "admission_forbidden"
   | "authorization_denied"
   | "agent_unavailable"
   | "revision_changed"

@@ -43,6 +43,7 @@ import {
   createModelProviderFiles,
   writeModelProviderTrust,
 } from "../../tests/helpers/runtime-model-provider.mjs";
+import { postgresImage, runtimeNodeBaseImage } from "./fixture-support-images.mjs";
 import { ensureImage } from "./image-pull.ts";
 import {
   openclawBuildArguments,
@@ -433,10 +434,6 @@ async function recordedDigest(tag) {
   return reference;
 }
 
-// Local Setup's PostgreSQL pin: developmentPostgres in internal/occdev/openshell_k3d.go.
-export const postgresImage =
-  "docker.io/library/postgres:18.6@sha256:86c951e05bf56c93d95d397747fb8820ac76cc3bedb78f43abd83eedbe3666ae";
-
 // The image-pull.ts retry helper over `run`.
 async function pullExecFile(command, args, { timeoutMs }) {
   try {
@@ -763,13 +760,6 @@ export const providerImageDockerfile = [
   "USER node",
   "",
 ].join("\n");
-
-// The runtime image's pinned Node base, which the provider image shares.
-export function runtimeNodeBaseImage(dockerfile) {
-  const image = /^ARG NODE_RUNTIME_BASE_IMAGE=(\S+@sha256:[a-f0-9]{64})$/m.exec(dockerfile)?.[1];
-  assert.ok(image, "deploy/runtime/Dockerfile pins no NODE_RUNTIME_BASE_IMAGE");
-  return image;
-}
 
 // The bake definition for the checkout's images. With `load` (the prepared-Git
 // acceptance, which imports archives) the engine also loads the controller and

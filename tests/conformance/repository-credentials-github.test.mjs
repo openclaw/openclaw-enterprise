@@ -2,7 +2,7 @@ import { prepareProviderScope } from "../../apps/controller/src/drivers/repo/git
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/access/installation-token-response.ts";
-import { parseUnambiguousJson } from "../../apps/controller/src/drivers/repo/access/json-members.ts";
+import { parseUnambiguousJson } from "../../apps/controller/src/drivers/json-members.ts";
 import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/access/material.ts";
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
 import { createCredentialService } from "../fixtures/repository-credentials/service.ts";

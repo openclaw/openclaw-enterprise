@@ -564,6 +564,7 @@ export interface KubernetesComputeDriverOptions {
   readonly runtime?: {
     readonly transportSecretPrefix: string;
     readonly gatewayStorageClassName: string;
+    readonly gatewayStorageSizeGiB?: number;
     readonly nativeOpenClawSessionCapacity?: number;
     readonly nodeSelector?: Readonly<Record<string, string>>;
     readonly gatewayNodeSelector?: Readonly<Record<string, string>>;
@@ -1296,7 +1297,8 @@ const RUNTIME_DIAGNOSTIC_TIMESTAMP =
   /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$/u;
 const RUNTIME_STATE_VOLUME_SIZE = "1Gi";
 const GATEWAY_PRIVATE_STATE_VOLUME = "openclaw-gateway-state";
-const GATEWAY_PRIVATE_STATE_SIZE = "10Gi";
+const DEFAULT_GATEWAY_STORAGE_SIZE_GIB = 10;
+const MAX_GATEWAY_STORAGE_SIZE_GIB = 65536;
 // Harness kinds that can own a workspace node. Naming refuses any other kind,
 // so Agent deletion removes every node Secret preparation can create.
 const WORKSPACE_NODE_HARNESS_IDS: readonly string[] = ["codex", "openclaw"];
@@ -3490,6 +3492,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
         properties: {
           transportSecretPrefix: { type: "string" },
           gatewayStorageClassName: { type: "string", minLength: 1 },
+          gatewayStorageSizeGiB: {
+            type: "integer",
+            minimum: 1,
+            maximum: MAX_GATEWAY_STORAGE_SIZE_GIB,
+          },
           nativeOpenClawSessionCapacity: { type: "integer", minimum: 1, maximum: 1024 },
           nodeSelector: {
             type: "object",
@@ -3889,6 +3896,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 "SQLite-compatible gateway storage class must be a DNS-safe Kubernetes resource name.",
             },
           ]);
+        }
+        const gatewayStorageSizeGiB = options.runtime.gatewayStorageSizeGiB;
+        if (
+          gatewayStorageSizeGiB !== undefined &&
+          (!Number.isSafeInteger(gatewayStorageSizeGiB) ||
+            gatewayStorageSizeGiB < 1 ||
+            gatewayStorageSizeGiB > MAX_GATEWAY_STORAGE_SIZE_GIB)
+        ) {
+          throw configurationConstraintFailure(
+            `Gateway storage size must be an integer between 1 and ${MAX_GATEWAY_STORAGE_SIZE_GIB} GiB.`,
+            "/runtime/gatewayStorageSizeGiB",
+          );
         }
         const nativeOpenClawSessionCapacity = options.runtime.nativeOpenClawSessionCapacity;
         if (
@@ -14884,7 +14903,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           this.options.runtime?.gatewayStorageClassName,
           "SQLite-compatible gateway storage class",
         ),
-        resources: { requests: { storage: GATEWAY_PRIVATE_STATE_SIZE } },
+        resources: {
+          requests: {
+            storage: `${this.options.runtime?.gatewayStorageSizeGiB ?? DEFAULT_GATEWAY_STORAGE_SIZE_GIB}Gi`,
+          },
+        },
       },
     };
   }
@@ -14901,7 +14924,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       claim.metadata.deletionTimestamp !== undefined ||
       accessModes.length !== expectedModes.length ||
       accessModes.some((mode, index) => mode !== expectedModes[index]) ||
-      requests?.storage !== expectedRequests?.storage ||
+      typeof requests?.storage !== "string" ||
+      typeof expectedRequests?.storage !== "string" ||
+      compareResourceQuantities(requests.storage, expectedRequests.storage) !== 0 ||
       (claim.spec?.volumeMode ?? "Filesystem") !== (desired.spec?.volumeMode ?? "Filesystem") ||
       (desired.spec?.storageClassName !== undefined &&
         claim.spec?.storageClassName !== desired.spec.storageClassName)
