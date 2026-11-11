@@ -9,7 +9,7 @@ import type {
 import { SandboxGatewayUnauthorizedError } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { openShellWorkspaceChartResources } from "../fixtures/openshell-workspace-chart.mjs";
-import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import { loadInstallationFile } from "../helpers/installation-file.ts";
 import type { buildSandboxInstallation } from "./sandbox-driver-startup-installation-fixture.ts";
 import {
   completeWorkspaceRevision,
@@ -483,6 +483,85 @@ export function createSandboxStartupGuardChecks({
       });
       await loadInstallationFile(t, accepted);
     },
+    async refusesInvalidAgentResourceOverrides(t: TestContext) {
+      const override = {
+        namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+        agentId: "agt_00000000-0000-4000-8000-000000000003",
+        requests: { cpu: "88" },
+        limits: { cpu: "90" },
+      };
+      const path = "/kubernetes/agentResourceOverrides";
+      for (const [field, value] of [
+        ["namespaceId", `${override.namespaceId} `],
+        ["agentId", "agent-display-name"],
+      ] as const) {
+        await t.test(`refuses a malformed ${field}`, async (scopeTest) => {
+          await rejectsAtStartup(
+            scopeTest,
+            (c) => {
+              Reflect.set(sandboxOf(c).kubernetes, "agentResourceOverrides", [
+                { ...override, [field]: value },
+              ]);
+            },
+            structuralRefusal(`${path}/0/${field}`, "pattern", "INVALID_FORMAT"),
+          );
+        });
+      }
+      await rejectsAtStartup(
+        t,
+        (c) => {
+          Reflect.set(sandboxOf(c).kubernetes, "agentResourceOverrides", [override, override]);
+        },
+        invalidValue(`${path}/1`, "An Agent can have only one resource override."),
+      );
+      await rejectsAtStartup(
+        t,
+        (c) => {
+          Reflect.set(sandboxOf(c).kubernetes, "agentResourceOverrides", [
+            { ...override, requests: { cpu: "-1" } },
+          ]);
+        },
+        invalidValue(
+          `${path}/0/requests`,
+          "Each value must be a quoted, non-negative Kubernetes quantity, such as 500m or 1Gi.",
+        ),
+      );
+      await rejectsAtStartup(
+        t,
+        (c) => {
+          const kubernetes = sandboxOf(c).kubernetes;
+          Object.assign(kubernetes, {
+            agentResources: { requests: { cpu: "1" }, limits: { cpu: "4" } },
+          });
+          Reflect.set(kubernetes, "agentResourceOverrides", [{ ...override, limits: {} }]);
+        },
+        [
+          {
+            path: `${path}/0/requests`,
+            code: "INVALID_RANGE",
+            message: "The cpu request (88) cannot exceed its limit (4).",
+          },
+        ],
+      );
+      await rejectsAtStartup(
+        t,
+        (c) => {
+          Reflect.set(sandboxOf(c).kubernetes, "agentResourceOverrides", [
+            { ...override, limits: { "ephemeral-storage": "2Gi" } },
+          ]);
+        },
+        structuralRefusal(`${path}/0/limits`, "additionalProperties", "UNKNOWN_FIELD"),
+      );
+      await rejectsAtStartup(
+        t,
+        (c) => {
+          Reflect.set(sandboxOf(c).kubernetes, "agentResourceOverrides", [
+            { ...override, runtimeClassName: "bad/Name" },
+          ]);
+        },
+        invalidValue(`${path}/0/runtimeClassName`, "Use a Kubernetes RuntimeClass resource name."),
+      );
+    },
     async refusesUnsupportedEndpointProtocols(t: TestContext) {
       const unknown =
         "Use tcp, rest, websocket, graphql or sql, or omit protocol; OpenShell needs rules for json-rpc and mcp, which this setting cannot express.";
@@ -604,6 +683,28 @@ export function createSandboxStartupGuardChecks({
       });
       Object.assign(sandboxOf(accepted), { sandboxNamePrefix: "ab" });
       await loadInstallationFile(t, accepted);
+    },
+    async refusesNonObjectNetworkPolicyIngress(t: TestContext) {
+      for (const list of ["operatorWorkspaceResources", "networkPolicyResources"]) {
+        for (const rule of [null, "allow"]) {
+          await rejectsAtStartup(
+            t,
+            (c) =>
+              Object.assign(sandboxOf(c).gateway, {
+                [list]: [
+                  {
+                    apiVersion: "networking.k8s.io/v1",
+                    kind: "NetworkPolicy",
+                    metadata: { name: "sandbox-ingress" },
+                    spec: { podSelector: {}, ingress: [rule] },
+                  },
+                ],
+              }),
+            // Both lists are write-only, so the detail names the list, not the item.
+            invalidValue(`/gateway/${list}`, "Write each NetworkPolicy ingress rule as an object."),
+          );
+        }
+      }
     },
     async refusesUnsentKubernetesFields(t: TestContext) {
       const policy = (spec: object) => ({

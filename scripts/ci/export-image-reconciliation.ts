@@ -12,11 +12,15 @@ const cleanupResourceKinds = new Set([
   "image-tag",
 ]);
 
-async function readState(path) {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+async function readState(path: string): Promise<unknown> {
   try {
     return JSON.parse(await readFile(path, "utf8"));
   } catch (error) {
-    if (error.code === "ENOENT") {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return undefined;
     }
     throw error;
@@ -36,19 +40,18 @@ async function main() {
     throw new Error("Expected a state path, output directory, and valid CI run and attempt.");
   }
   const state = await readState(resolve(stateArgument));
-  const images = [];
-  const imageIds = new Set();
-  const imageRoles = new Set();
-  let tagBase;
+  const images: { id: string; name: string; status: "planned" | "ready" }[] = [];
+  const imageIds = new Set<string>();
+  const imageRoles = new Set<string>();
+  let tagBase: string | undefined;
   if (state !== undefined) {
     if (
-      state === null ||
-      typeof state !== "object" ||
-      Array.isArray(state) ||
+      !isRecord(state) ||
       state.version !== 1 ||
       state.lane !== "images-packaging" ||
-      state.ciRun?.id !== id ||
-      state.ciRun?.attempt !== attempt ||
+      !isRecord(state.ciRun) ||
+      state.ciRun.id !== id ||
+      state.ciRun.attempt !== attempt ||
       !Array.isArray(state.resources) ||
       typeof state.prefix !== "string" ||
       !/^openclaw-ci-[a-z0-9-]+$/.test(state.prefix) ||
@@ -61,8 +64,9 @@ async function main() {
       .digest("hex")
       .slice(0, 17);
     const tagPrefix = `localhost/openclaw-ci-image-${label}-`;
-    for (const resource of state.resources) {
-      if (resource === null || typeof resource !== "object" || Array.isArray(resource)) {
+    const resources: unknown[] = state.resources;
+    for (const resource of resources) {
+      if (!isRecord(resource)) {
         throw new Error("Image CI resource is invalid.");
       }
       if (typeof resource.kind !== "string" || !cleanupResourceKinds.has(resource.kind)) {
@@ -71,19 +75,19 @@ async function main() {
       if (resource.kind !== "image-tag") {
         continue;
       }
-      const tagParts =
-        typeof resource.name === "string" && resource.name.startsWith(tagPrefix)
-          ? /^([a-f0-9]{12})\/(controller|runtime):local$/.exec(
-              resource.name.slice(tagPrefix.length),
-            )
-          : null;
+      const name = typeof resource.name === "string" ? resource.name : "";
+      const tagParts = name.startsWith(tagPrefix)
+        ? /^([a-f0-9]{12})\/(controller|runtime):local$/.exec(name.slice(tagPrefix.length))
+        : null;
       // Unique roles also reject duplicate names under this canonical tag grammar.
       if (
         resource.owner !== state.prefix ||
         typeof resource.id !== "string" ||
         !/^image-tag-[a-f0-9]{12}$/.test(resource.id) ||
-        !["planned", "ready"].includes(resource.status) ||
+        (resource.status !== "planned" && resource.status !== "ready") ||
         !tagParts ||
+        !tagParts[1] ||
+        !tagParts[2] ||
         imageRoles.has(tagParts[2]) ||
         (tagBase !== undefined && tagBase !== tagParts[1]) ||
         imageIds.has(resource.id) ||
@@ -94,7 +98,7 @@ async function main() {
       imageIds.add(resource.id);
       imageRoles.add(tagParts[2]);
       tagBase = tagParts[1];
-      images.push({ id: resource.id, name: resource.name, status: resource.status });
+      images.push({ id: resource.id, name, status: resource.status });
     }
   }
   const output = resolve(outputArgument);
@@ -106,7 +110,9 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  process.stderr.write(`Image reconciliation export failed: ${error.name}\n`);
+main().catch((error: unknown) => {
+  process.stderr.write(
+    `Image reconciliation export failed: ${error instanceof Error ? error.name : undefined}\n`,
+  );
   process.exitCode = 1;
 });

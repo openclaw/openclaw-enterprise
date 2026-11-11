@@ -2,7 +2,16 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { appendFile, chmod, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  chmod,
+  mkdir,
+  readdir,
+  readFile,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { createRequire } from "node:module";
 import { connect, createServer } from "node:net";
 import { availableParallelism } from "node:os";
@@ -18,7 +27,7 @@ import { defaultK3sImage, prepareLane, prepareFile } from "../../scripts/ci/prep
 import { withStateLock } from "../../scripts/ci/state-lock.ts";
 import { readJsonLines } from "../helpers/json-lines.mjs";
 import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import {
   assertStderrMatch,
   fixture,
@@ -31,7 +40,7 @@ import {
   nodeBaseImage,
   spawnResult,
   writeFixtureCommand,
-} from "../helpers/ci-prepare-fixture.mjs";
+} from "../helpers/ci-prepare-fixture.ts";
 import { waitUntil } from "../helpers/wait-for.mjs";
 import { startFakePostgres } from "../helpers/fake-postgres-server.mjs";
 
@@ -497,6 +506,17 @@ describe("CI preparation", { concurrency }, () => {
             args.slice(5).join(" ") === "up -d --wait",
         );
         assert.notEqual(started, -1, "preparation starts its PostgreSQL server");
+        // k3d must not probe a released API port until Docker has published
+        // PostgreSQL's allocation; otherwise the daemon can take that number.
+        const published = preparation.findIndex(
+          ({ command, args }) =>
+            command === "docker" &&
+            args[0] === "inspect" &&
+            args.includes("{{json .NetworkSettings.Ports}}"),
+        );
+        const clusterStarted = preparation.findIndex(({ command }) => command === "k3d");
+        assert.ok(published > started && clusterStarted > published);
+
         const sql = (entries) =>
           entries.filter(({ command }) => command === "postgres").map(({ args }) => args);
         assert.deepEqual(sql(preparation.slice(0, started)), [], "no SQL before the server");
@@ -1143,13 +1163,18 @@ process.exit(73);
     });
   }
 
+  const warmCacheEnv = {
+    GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",
+    ...imageCacheEnv,
+    GITHUB_REF: "refs/heads/main",
+    GITHUB_EVENT_NAME: "push",
+    GITHUB_RUN_ID: "123",
+    GITHUB_RUN_ATTEMPT: "1",
+  };
+
   async function runWarmImageCache(t, scenario, { env = {}, args = [] } = {}) {
     const commands = await fixtureImageCommands(t, scenario, "images-packaging", {
-      ...imageCacheEnv,
-      GITHUB_REF: "refs/heads/main",
-      GITHUB_EVENT_NAME: "push",
-      GITHUB_RUN_ID: "123",
-      GITHUB_RUN_ATTEMPT: "1",
+      ...warmCacheEnv,
       ...env,
     });
     return { commands, warmed: await commands.warmImageCache(args) };
@@ -1321,6 +1346,115 @@ process.exit(73);
     });
   }
 
+  for (const scenario of [
+    "success",
+    "controller-cache-export-failed",
+    "controller-cache-export-hung",
+  ]) {
+    test(`required warm exports settle before admission and cleanup: ${scenario}`, async (t) => {
+      const commands = await fixtureImageCommands(t, scenario, "images-packaging", {
+        ...warmCacheEnv,
+        OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS: "5000",
+        OPENCLAW_CI_COMMAND_KILL_GRACE_MS: "500",
+      });
+      const selectedBase = `docker.io/library/node:24-bookworm@sha256:${"a".repeat(64)}`;
+      const warmed = await commands.warmImageCache([
+        "--require-cache-export",
+        "--node-base-image",
+        selectedBase,
+      ]);
+      assert.equal(warmed.status === 0, scenario === "success", warmed.stderr);
+      // Even a failed controller export settles its sibling before the owner returns.
+      assert.match(warmed.stderr, /"stage":"runtime-cache-export","outcome":"exported"/);
+      const calls = await commands.commands();
+      const controller = calls.find(
+        ({ args }) => args.includes("--load") && args.includes("runtime"),
+      );
+      assert.ok(controller.args.includes(`NODE_BASE_IMAGE=${selectedBase}`));
+      if (scenario !== "success") {
+        const outcome = scenario.endsWith("hung") ? "timed-out" : "failed";
+        assert.match(
+          warmed.stderr,
+          new RegExp(`"stage":"controller-cache-export","outcome":"${outcome}"`),
+        );
+        assert.doesNotMatch(warmed.stderr, /"stage":"runtime-image-kept"/);
+      }
+      assert.doesNotMatch(warmed.stdout + warmed.stderr, /synthetic-cache-credential/);
+      await commands.cleanupSuccessfully();
+    });
+  }
+
+  test("the strict warmer shell validates before setup and refuses a failed runtime export", async (t) => {
+    const workflow = loadYaml(
+      await readFile(join(repositoryRoot, ".github/workflows/ci-image-cache.yml"), "utf8"),
+    );
+    const steps = workflow.jobs.warm.steps;
+    const validate = steps.find((step) => step.name === "Validate required cache input");
+    const exportStep = steps.find((step) => step.id === "export");
+    const cleanup = steps.find((step) => step.name === "Cleanup");
+    assert.equal(validate.if, "${{ inputs.require-export }}");
+    assert.equal(validate.env.CACHE_NODE_BASE_IMAGE, "${{ inputs.node-base-image }}");
+    assert.ok(
+      steps.indexOf(validate) <
+        steps.findIndex((step) => step.uses?.startsWith("docker/setup-buildx-action@")),
+    );
+    assert.equal(exportStep.env.REQUIRE_CACHE_EXPORT, "${{ inputs.require-export }}");
+    assert.equal(exportStep.env.CACHE_NODE_BASE_IMAGE, "${{ inputs.node-base-image }}");
+    assert.equal(cleanup.if, "always()");
+    const commands = await fixtureImageCommands(
+      t,
+      "runtime-cache-export-failed",
+      "images-packaging",
+      warmCacheEnv,
+    );
+    const root = dirname(commands.statePath);
+    const output = join(root, "output");
+    const selectedBase = `docker.io/library/node:24-bookworm@sha256:${"a".repeat(64)}`;
+    const env = {
+      REQUIRE_CACHE_EXPORT: "true",
+      CACHE_NODE_BASE_IMAGE: selectedBase,
+      GITHUB_SHA: "b".repeat(40),
+      GITHUB_OUTPUT: output,
+    };
+    // Run the checked-in validation and export shell, not a reconstructed invocation.
+    for (const invalid of ["", "node:24-bookworm", selectedBase.replace("node:24-", "node:22-")]) {
+      const result = await commands.runShell(validate.run, {
+        ...env,
+        CACHE_NODE_BASE_IMAGE: invalid,
+      });
+      assert.notEqual(result.status, 0, result.stderr);
+    }
+    await assert.rejects(stat(join(root, "commands.jsonl")), { code: "ENOENT" });
+    assert.equal((await commands.runShell(validate.run, env)).status, 0);
+    const warmed = await commands.runShell(exportStep.run, env);
+    assert.notEqual(warmed.status, 0, warmed.stderr);
+    assert.match(warmed.stderr, /"stage":"runtime-cache-export","outcome":"failed"/);
+    assert.match(warmed.stderr, /"stage":"controller-cache-export","outcome":"exported"/);
+    await assert.rejects(stat(output), { code: "ENOENT" });
+    const calls = await commands.commands();
+    assert.equal(
+      calls.some(({ args }) => args[0] === "tag"),
+      false,
+    );
+    const state = JSON.parse(await readFile(join(root, "state/image-cache-warm.json"), "utf8"));
+    const ownedTags = state.resources
+      .filter(({ kind }) => kind === "image-tag")
+      .map(({ name }) => name)
+      .sort();
+    assert.equal(ownedTags.length, 2);
+    const cleaned = await commands.runShell(cleanup.run, env);
+    assert.equal(cleaned.status, 0, cleaned.stderr);
+    const removed = (await commands.commands())
+      .filter(({ args }) => args[0] === "image" && args[1] === "rm")
+      .map(({ args }) => args.at(-1))
+      .sort();
+    assert.deepEqual(removed, ownedTags);
+    assert.doesNotMatch(
+      warmed.stdout + warmed.stderr + cleaned.stdout + cleaned.stderr,
+      /synthetic-cache-credential/,
+    );
+  });
+
   // The schedule retries a store commit that lost to other jobs' commits (finding 1340).
   test("a scheduled run on main warms the image cache and keeps main's runtime image", async (t) => {
     const { commands, warmed } = await runWarmImageCache(t, "success", {
@@ -1358,10 +1492,33 @@ process.exit(73);
         /Only a push, schedule or dispatch on main may warm the image cache/,
       ],
       [
+        "required export without protected base",
+        {},
+        ["--require-cache-export"],
+        /NODE_BASE_IMAGE must be an immutable/,
+      ],
+      [
+        "required export outside canonical repository",
+        { GITHUB_REPOSITORY: "other/repository" },
+        ["--require-cache-export", "--node-base-image", packagingNodeBaseImage],
+        /Required cache exports run only in the canonical repository/,
+      ],
+      [
+        "required export with mutable base",
+        {},
+        ["--require-cache-export", "--node-base-image", "node:24-bookworm"],
+        /NODE_BASE_IMAGE must be an immutable/,
+      ],
+      ["Boolean value", {}, ["--require-cache-export", "true"], /Unexpected argument: true/],
+      ["false value", {}, ["--require-cache-export", "false"], /Unexpected argument: false/],
+      ["equals value", {}, ["--require-cache-export=true"], /takes no value/],
+      ["selected file", {}, ["--selected-file", "anything"], /cannot be combined/],
+      ["empty selected file", {}, ["--selected-file", ""], /cannot be combined/],
+      [
         "lane argument",
         {},
         ["--lane", "images-packaging"],
-        /--warm-image-cache takes only --state/,
+        /--warm-image-cache cannot be combined with lane, file, selected-file or github-env/,
       ],
       [
         "missing credentials",
@@ -1392,6 +1549,20 @@ process.exit(73);
       assert.doesNotMatch(calls, /"buildx"/, label);
       assert.doesNotMatch(warmed.stdout + warmed.stderr, /synthetic-cache-credential/, label);
     }
+  });
+
+  test("warm-only arguments cannot silently change lane preparation", async (t) => {
+    const commands = await fixtureImageCommands(t, "success", "images-packaging", warmCacheEnv);
+    for (const args of [
+      ["--require-cache-export"],
+      ["--node-base-image", nodeBaseImage],
+      ["--node-base-image", ""],
+    ]) {
+      const result = await commands.prepare(args);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /require --warm-image-cache/);
+    }
+    await assert.rejects(stat(commands.statePath), { code: "ENOENT" });
   });
 
   test("the image cache warm workflow runs for every change to an image build input", async () => {
@@ -3637,7 +3808,47 @@ if (args[0] === "pull") {
     }
   });
 
-  test("runtime artifact selection rejects unsupported lanes before preparation", async (t) => {
+  test("Kubernetes runtime consumers reject a foreign artifact without a source-build fallback", async (t) => {
+    for (const lane of ["gateway-routing", "production-tui"]) {
+      const commands = await fixtureImageCommands(t, "artifact-import", lane, {
+        NODE_BASE_IMAGE: packagingNodeBaseImage,
+        OPENAI_API_KEY: "synthetic-model-key",
+        OCC_TEST_OPENAI_MODEL: "synthetic-model",
+        OCC_TEST_PRODUCTION_POSTGRES_IMAGE: immutableImage,
+        OCC_TEST_PRODUCTION_NODE_IMAGE: nodeBaseImage,
+        OCC_CI_RUNTIME_ARTIFACT_DIRECTORY: "/missing-foreign-artifact",
+        OCC_CI_RUNTIME_ARTIFACT_SHA256: "a".repeat(64),
+        OCC_CI_RUNTIME_ARTIFACT_SOURCE_SHA: "a".repeat(40),
+        OCC_CI_RUNTIME_ARTIFACT_RUN_ID: "123456",
+        OCC_CI_RUNTIME_ARTIFACT_ATTEMPT: "1",
+      });
+      // Real Git identifies this checkout; Docker, PostgreSQL and k3d are command
+      // fixtures. This proves fail-closed orchestration, not image or model execution.
+      await symlink("/usr/bin/git", join(dirname(commands.statePath), "bin", "git"));
+      const prepared = await commands.prepare();
+      assert.equal(prepared.status, 1, lane);
+      assertStderrMatch(prepared.stderr, /Runtime artifact source differs from checkout/, lane);
+      const calls = await commands.commands();
+      assert.equal(
+        calls.some(
+          ({ args }) =>
+            (args[0] === "build" || (args[0] === "buildx" && args[1] === "build")) &&
+            args.includes(join(repositoryRoot, "deploy/runtime/Dockerfile")),
+        ),
+        false,
+      );
+      const state = await commands.readState();
+      assert.ok(
+        state.resources.some(
+          ({ kind, name }) => kind === "image-tag" && name.endsWith("/runtime:local"),
+        ),
+      );
+      await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
+      await commands.cleanupSuccessfully();
+    }
+  });
+
+  test("runtime artifact selection rejects unsupported lanes and conflicting images before preparation", async (t) => {
     const root = await fixture(t);
     const commandLog = join(root, "commands.log");
     const commandGuard = join(root, "must-not-run");
@@ -3646,11 +3857,26 @@ if (args[0] === "pull") {
       `#!${process.execPath}\nimport { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(commandLog)}, "called\\n");\nprocess.exit(97);\n`,
       { mode: 0o700 },
     );
-    // These lanes share build caches, but cannot consume a runtime artifact.
-    // A complete selection must be refused before state or source builds exist.
-    for (const [lane, file] of [
+    // Unsupported lanes and conflicting image selections must be refused
+    // before state or source builds exist.
+    for (const [lane, file, variable] of [
       ["dev-up-k3d", "tests/integration/dev-up-k3d-real.test.mjs"],
       ["qa-matrix", "tests/integration/qa-matrix-real.test.mjs"],
+      ...["OCC_TEST_KUBERNETES_GATEWAY_IMAGE", "OCC_TEST_KUBERNETES_AGENT_IMAGE"].map(
+        (variable) => [
+          "gateway-routing",
+          "tests/integration/harness-topology-k3d-routing-real.test.mjs",
+          variable,
+        ],
+      ),
+      ...[
+        "OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE",
+        "OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE",
+      ].map((variable) => [
+        "production-tui",
+        "tests/integration/production-tui-k3d-real.test.mjs",
+        variable,
+      ]),
     ]) {
       const statePath = join(root, `${lane}.json`);
       const result = await spawnResult(
@@ -3666,6 +3892,7 @@ if (args[0] === "pull") {
             OCC_DOCKER_BIN: commandGuard,
             OPENCLAW_CI_K3D_BIN: commandGuard,
             OCC_KUBECTL_BIN: commandGuard,
+            ...(variable ? { [variable]: immutableImage } : {}),
             OCC_CI_RUNTIME_ARTIFACT_DIRECTORY: join(root, "missing-artifact"),
             OCC_CI_RUNTIME_ARTIFACT_SHA256: "a".repeat(64),
             OCC_CI_RUNTIME_ARTIFACT_SOURCE_SHA: "a".repeat(40),
@@ -3677,7 +3904,9 @@ if (args[0] === "pull") {
       assert.equal(result.status, 1, lane);
       assertStderrMatch(
         result.stderr,
-        /Runtime artifacts are supported only by Docker Model Runtime and the ordinary image lanes/,
+        variable
+          ? /A runtime artifact cannot be combined with selected Gateway or TUI upgrade images/
+          : /Runtime artifacts are supported only by Docker Model Runtime, Gateway Routing, Production TUI and the ordinary image lanes/,
         lane,
       );
       await assert.rejects(() => stat(statePath), { code: "ENOENT" });

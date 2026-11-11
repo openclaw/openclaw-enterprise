@@ -8,6 +8,8 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { resolveConfiguredHarnessId } from "../../packages/occ/src/index.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import type { OpenClawConfigurationDocument } from "../../packages/contracts/src/index.ts";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import { codexGatewayModelConfiguration } from "../../apps/controller/src/drivers/compute/codex-model-configuration.ts";
 import { OPENSHELL_CODEX_APP_SERVER_POLICY } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -20,6 +22,26 @@ import {
   runGatewaySmoke,
   assertGatewayLogEntry,
 } from "../helpers/runtime-image-startup.mjs";
+
+function requiredRecord(value: unknown): Record<string, unknown> {
+  const record = asRecord(value);
+  assert.ok(record, "expected an object");
+  return record;
+}
+
+function codexAppServer(configuration: OpenClawConfigurationDocument): Record<string, unknown> {
+  const plugins = requiredRecord(configuration.plugins);
+  const entries = requiredRecord(plugins.entries);
+  const codex = requiredRecord(entries.codex);
+  const config = requiredRecord(codex.config);
+  return requiredRecord(config.appServer);
+}
+
+function lastOutputRecord(stdout: string): Record<string, unknown> {
+  const line = stdout.trim().split("\n").at(-1);
+  assert.ok(line, "expected fixture output");
+  return requiredRecord(JSON.parse(line));
+}
 
 // Codex Gateway cases on the real runtime image, split from
 // runtime-image-startup.test.mjs by measured case durations so CI runs them
@@ -38,20 +60,24 @@ describe("runtime image Gateway workspace", { concurrency: 3 }, () => {
       // the binding volume is empty and file-transfer is not allowed yet.
       const gatewayWorkspace = "/home/node/gateway-workspace";
       const admitted = createAdmittedRuntimeImageConfiguration("codex");
+      const agents = requiredRecord(admitted.agents);
+      const models = requiredRecord(admitted.models);
+      const providers = requiredRecord(models.providers);
       const configuration = {
         ...admitted,
         agents: {
-          ...admitted.agents,
-          defaults: { ...admitted.agents?.defaults, workspace: gatewayWorkspace },
+          ...agents,
+          defaults: { ...requiredRecord(agents.defaults), workspace: gatewayWorkspace },
         },
+        models,
       };
       // An owner's codex row with a reachable transport and request overrides, which
       // would let OpenClaw's built-in runtime reach a model from the Gateway.
-      const codexProvider = configuration.models.providers.codex;
+      const codexProvider = requiredRecord(providers.codex);
       configuration.models = {
         ...configuration.models,
         providers: {
-          ...configuration.models.providers,
+          ...providers,
           codex: {
             ...codexProvider,
             baseUrl: "https://model.example.test/v1",
@@ -98,9 +124,9 @@ describe("runtime image Gateway workspace", { concurrency: 3 }, () => {
         ],
         { timeout: 300_000 * imageSmokeTimeoutMultiplier },
       );
-      const result = JSON.parse(stdout.trim().split("\n").at(-1));
+      const result = lastOutputRecord(stdout);
       assert.equal(result.sameProcesses, true);
-      assert.equal(result.fileTransferAfter.state, "active");
+      assert.equal(requiredRecord(result.fileTransferAfter).state, "active");
       assert.equal(result.readBefore, "served by the Gateway host");
       assert.equal(result.readAfter, "served by the workspace node");
       const inspect = await runDocker([
@@ -111,22 +137,31 @@ describe("runtime image Gateway workspace", { concurrency: 3 }, () => {
       ]);
       assert.equal(inspect.stdout.trim(), "true 0");
       const logs = await runDocker(["logs", containerName]);
-      const entries = jsonLogEntries(`${logs.stdout}\n${logs.stderr}`);
+      const entries: readonly unknown[] = jsonLogEntries(`${logs.stdout}\n${logs.stderr}`);
       assertGatewayLogEntry(
         entries,
-        (entry) =>
-          entry.event === "runtime.startup_phase" &&
-          entry.phase === "workspace-node" &&
-          entry.outcome === "ok",
+        (value: unknown) => {
+          const entry = asRecord(value);
+          return (
+            entry?.event === "runtime.startup_phase" &&
+            entry.phase === "workspace-node" &&
+            entry.outcome === "ok"
+          );
+        },
         "the wrapper's workspace-node ack",
       );
       // OpenClaw applied the plugins.* change in place (and replaced the Codex
       // plugin runtime with it); nothing restarted the Gateway.
       assertGatewayLogEntry(
         entries,
-        (entry) =>
-          entry.subsystem === "gateway/reload" &&
-          /^config hot reload applied \(.*plugins\.entries\.file-transfer/.test(entry.message),
+        (value: unknown) => {
+          const entry = asRecord(value);
+          return (
+            entry?.subsystem === "gateway/reload" &&
+            typeof entry.message === "string" &&
+            /^config hot reload applied \(.*plugins\.entries\.file-transfer/.test(entry.message)
+          );
+        },
         "OpenClaw's hot reload of file-transfer",
       );
       const output = `${logs.stdout}\n${logs.stderr}`;
@@ -203,34 +238,42 @@ describe("runtime image Gateway workspace", { concurrency: 3 }, () => {
         object: "vendor/organization/object-child",
         fallback: "codex/child-fallback",
       };
-      const ref = (name) => `codex/${nativeIds[name]}`;
-      const source = createHarnessConfiguration("codex", nativeIds.parent);
-      source.agents.ownership = "explicit";
-      source.agents.defaults.systemAgent = { agentId: "main" };
-      source.agents.defaults.models = Object.fromEntries(
-        Object.keys(nativeIds).map((name) => [
-          ref(name),
-          {
-            agentRuntime: { id: "codex" },
-            ...(name === "parent" ? { alias: "codex" } : {}),
-          },
-        ]),
-      );
-      source.agents.defaults.subagents = { model: ref("main") };
-      source.agents.entries = {
+      const ref = (name: keyof typeof nativeIds) => `codex/${nativeIds[name]}`;
+      const base = createHarnessConfiguration("codex", nativeIds.parent);
+      const entries = {
         main: {},
         string: { subagents: { model: ref("string") } },
         object: { subagents: { model: { primary: ref("object"), fallbacks: [ref("fallback")] } } },
         alias: { subagents: { model: "codex" } },
       };
-      for (const [id, entry] of Object.entries(source.agents.entries)) {
-        entry.workspace = `/home/node/workspace/${id}`;
-      }
-      source.gateway.tools = { allow: ["sessions_spawn"] };
-      source.tools = {
-        codeMode: false,
-        toolSearch: false,
-        allow: ["sessions_spawn"],
+      const source = {
+        ...base,
+        agents: {
+          ...base.agents,
+          ownership: "explicit",
+          defaults: {
+            ...base.agents.defaults,
+            systemAgent: { agentId: "main" },
+            models: Object.fromEntries(
+              Object.entries(nativeIds).map(([name, id]) => [
+                `codex/${id}`,
+                {
+                  agentRuntime: { id: "codex" },
+                  ...(name === "parent" ? { alias: "codex" } : {}),
+                },
+              ]),
+            ),
+            subagents: { model: ref("main") },
+          },
+          entries: Object.fromEntries(
+            Object.entries(entries).map(([id, entry]) => [
+              id,
+              { ...entry, workspace: `/home/node/workspace/${id}` },
+            ]),
+          ),
+        },
+        gateway: { ...base.gateway, tools: { allow: ["sessions_spawn"] } },
+        tools: { codeMode: false, toolSearch: false, allow: ["sessions_spawn"] },
       };
       const admitted = admitLoggingConfiguration(source, "info");
       assert.equal(resolveConfiguredHarnessId(admitted), "codex");
@@ -243,8 +286,7 @@ describe("runtime image Gateway workspace", { concurrency: 3 }, () => {
       // The Gateway prepares each Agent's writable local workspace, then the
       // plugin maps its native cwd to the provider-owned Harness filesystem.
       const remoteWorkspaceRoot = "/sandbox/enterprise";
-      configuration.plugins.entries.codex.config.appServer.remoteWorkspaceRoot =
-        remoteWorkspaceRoot;
+      codexAppServer(configuration).remoteWorkspaceRoot = remoteWorkspaceRoot;
 
       // Keep the real packaged Gateway and Codex plugin; replace only the native peer
       // at its authenticated WebSocket boundary. The network-none container cannot
@@ -259,12 +301,12 @@ describe("runtime image Gateway workspace", { concurrency: 3 }, () => {
         "utf8",
       );
       const { commit } = await readOpenclawSource();
-      const cases = ["main", "string", "object", "alias"].map((agentId) => ({
+      const cases = (["main", "string", "object", "alias"] as const).map((agentId) => ({
         agentId,
         model: nativeIds[agentId === "alias" ? "parent" : agentId],
         cwd: remoteWorkspaceRoot,
       }));
-      let stdout;
+      let stdout: string;
       try {
         ({ stdout } = await runDocker(
           [
@@ -284,15 +326,19 @@ describe("runtime image Gateway workspace", { concurrency: 3 }, () => {
           { timeout: 480_000 * imageSmokeTimeoutMultiplier },
         ));
       } catch (error) {
-        const logs = await runDocker(["logs", containerName]).catch((cause) => cause);
+        const logs = await runDocker(["logs", containerName]).catch(
+          (cause: unknown) => asRecord(cause) ?? {},
+        );
         t.diagnostic(commandOutput(logs));
         throw error;
       }
-      const result = JSON.parse(stdout.trim().split("\n").at(-1));
+      const result = lastOutputRecord(stdout);
       t.diagnostic(JSON.stringify(result));
       assert.equal(result.commit, commit);
+      assert.ok(Array.isArray(result.observed));
+      const observed = result.observed.map(requiredRecord);
       assert.deepEqual(
-        result.observed.map(({ agentId, modelProvider, model, cwd }) => ({
+        observed.map(({ agentId, modelProvider, model, cwd }) => ({
           agentId,
           modelProvider,
           model,
@@ -301,7 +347,10 @@ describe("runtime image Gateway workspace", { concurrency: 3 }, () => {
         cases.map((scenario) => ({ ...scenario, modelProvider: "openai-compatible" })),
       );
       assert.ok(
-        result.observed.every(({ childSessionKey }) => childSessionKey.includes(":subagent:")),
+        observed.every(
+          ({ childSessionKey }) =>
+            typeof childSessionKey === "string" && childSessionKey.includes(":subagent:"),
+        ),
       );
     },
   );
@@ -316,7 +365,7 @@ describe("runtime image Gateway workspace", { concurrency: 3 }, () => {
         admitLoggingConfiguration(createHarnessConfiguration("codex", "gpt-5.6-luna"), "info"),
         { baseUrl: "https://models.example.test/v1", modelProvider: "openai-compatible" },
       );
-      Object.assign(configuration.plugins.entries.codex.config.appServer, {
+      Object.assign(codexAppServer(configuration), {
         ...OPENSHELL_CODEX_APP_SERVER_POLICY,
         approvalPolicy: "on-request",
         remoteWorkspaceRoot: "/sandbox/enterprise",
@@ -334,7 +383,7 @@ describe("runtime image Gateway workspace", { concurrency: 3 }, () => {
       // A single command without shell separators: the approval bridge can bind it, so it
       // must reach a reviewer (compound bash -c payloads are refused before review).
       const command = "/bin/bash -c 'touch /etc/oce-approval-probe'";
-      let stdout;
+      let stdout: string;
       try {
         ({ stdout } = await runDocker(
           [
@@ -352,11 +401,13 @@ describe("runtime image Gateway workspace", { concurrency: 3 }, () => {
           { timeout: 240_000 * imageSmokeTimeoutMultiplier },
         ));
       } catch (error) {
-        const logs = await runDocker(["logs", containerName]).catch((cause) => cause);
+        const logs = await runDocker(["logs", containerName]).catch(
+          (cause: unknown) => asRecord(cause) ?? {},
+        );
         t.diagnostic(commandOutput(logs));
         throw error;
       }
-      const result = JSON.parse(stdout.trim().split("\n").at(-1));
+      const result = lastOutputRecord(stdout);
       t.diagnostic(JSON.stringify(result));
       assert.equal(result.commit, commit);
       // The Gateway asks Codex for full access with the user reviewer, so Codex sends the
@@ -370,14 +421,18 @@ describe("runtime image Gateway workspace", { concurrency: 3 }, () => {
       // The reviewer saw the exact command and allowed it once, and Codex got that verdict.
       // Before the fix, the write-scoped run's wait failed with "missing scope:
       // operator.approvals", so the peer got "decline" even after the reviewer allowed it.
+      assert.ok(Array.isArray(result.events));
+      const events = result.events.map(requiredRecord);
       assert.deepEqual(
-        result.events.map(({ event, pluginId, decision }) => ({ event, pluginId, decision })),
+        events.map(({ event, pluginId, decision }) => ({ event, pluginId, decision })),
         [
           { event: "plugin.approval.requested", pluginId: "codex", decision: undefined },
           { event: "plugin.approval.resolved", pluginId: "codex", decision: "allow-once" },
         ],
       );
-      assert.match(result.events[0].description, /touch \/etc\/oce-approval-probe/u);
+      const description = events[0]?.description;
+      assert.ok(typeof description === "string");
+      assert.match(description, /touch \/etc\/oce-approval-probe/u);
       assert.deepEqual(result.peerAnswer, { decision: "accept" });
       assert.equal(result.runStatus, "ok");
     },

@@ -6,7 +6,7 @@ import { join } from "node:path";
 export const chartPackage = "ghcr.io/openclaw/charts/openclaw-enterprise";
 export const chartPushParent = "oci://ghcr.io/openclaw/charts";
 
-export function pushChart(archive, parent) {
+export function pushChart(archive: string, parent: string) {
   const result = spawnSync(process.env.OCC_HELM_BIN ?? "helm", ["push", archive, parent], {
     encoding: "utf8",
     maxBuffer: 1024 * 1024,
@@ -20,7 +20,7 @@ export function pushChart(archive, parent) {
   return digest;
 }
 
-export async function writeBootstrapChart(directory, version) {
+export async function writeBootstrapChart(directory: string, version: string) {
   assert.match(version, /^0\.0\.0-bootstrap\.[1-9][0-9]*\.[1-9][0-9]*$/);
   await mkdir(join(directory, "templates"), { recursive: true });
   await writeFile(

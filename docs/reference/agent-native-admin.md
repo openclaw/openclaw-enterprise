@@ -42,8 +42,7 @@ API callers set `nativeAdmin: true` on `POST /namespaces/:namespaceId/agents`
 and supply `expectedConfigurationGeneration`. In addition to ordinary Agent
 creation permissions, this requires `update` on the selected Configuration,
 which must not be referenced by any Agent. OCC checks the generation, prepares
-the Configuration, and creates the Agent in one transaction. Deploy the Agent
-through the normal workflow after creation.
+the Configuration, and creates the Agent atomically. Deploy normally afterward.
 
 Supported guided provisioning accepts `nativeAdmin: true` on
 `POST /namespaces/:namespaceId/agents/provision` and prepares the initial
@@ -57,6 +56,8 @@ and unrelated settings. Conflicting authentication modes, unsupported auth field
 disabled device authentication, and host-header origin fallback are refused.
 Guided-provisioning retries retain the Agent identity and prepared Configuration.
 Browser preparation does not change the creator's Agent permissions.
+
+[Native domain recovery](../guides/deploy/native-admin-domain-recovery.md).
 
 ## Requirements
 

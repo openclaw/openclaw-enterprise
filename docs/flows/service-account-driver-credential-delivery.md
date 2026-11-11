@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-11-04
-last_updated_session: authoring-run/390095eb-01a9-4e24-b609-791b49f19f81
+updated: 2026-11-11
+last_updated_session: authoring-run/18242737-895e-484c-a1a9-29c2cd289d43
 ---
 
 # Service Account Driver Credential Delivery Flow
@@ -114,11 +114,23 @@ force is ignored and revocation runs.
 
 `OpenClawController.createServiceAccountCredential` authorizes account `update`
 before `ChatGPTServiceAccountDriver.createCredential` issues a Codex-scoped
-token. `KubernetesComputeDriver.storeServiceAccountCredential` stores it in one
-account-owned control-plane Secret. The private Backend binding retains workspace
-metadata. The private credential ID, internal
-credential reference, and audit changes commit together;
-confirmed failures compensate created provider and Kubernetes resources.
+token and registers one rollback callback. The callback first confirms revocation
+of that exact provider credential, then removes only the account-owned Secret
+whose token and credential ID both match. Unconfirmed revocation leaves the
+Secret available for recovery. The callback runs after PostgreSQL releases the
+account lock, so deletion uses uid and resourceVersion preconditions to protect
+a later issuance.
+
+`KubernetesComputeDriver.storeServiceAccountCredential` stores the token in one
+account-owned control-plane Secret. If the create reply is lost, an exact
+readback of ownership, token, credential ID, uid, and resourceVersion confirms
+the stored state without repeating or deleting the Secret. An absent or
+mismatched object leaves the create failure in force; an unreadable or
+unidentified object remains an unknown outcome. The Driver owns compensation
+after either storage failure or a later known transaction failure.
+
+The private Backend binding retains workspace metadata. The private credential
+ID, internal credential reference, and audit changes commit together.
 The Secret also records the provider credential ID. A crash or an unknown
 COMMIT that failed runs no compensation, so before issuing, and when deleting an
 account with no recorded credential, the Driver reads the Secret through
@@ -194,6 +206,13 @@ Refresh, rotation, and automated reconciliation remain deferred.
   oversized declared responses. The same suite checks that an oversized
   chunked body is cancelled at its byte limit. These cases do not prove live
   provider accounts or model execution.
+- Run the focused `postgres-platform` CI selection for
+  `tests/integration/postgres-service-account-compensation.test.ts` with the
+  [PostgreSQL prerequisites](../testing/postgresql.md). It exercises the real
+  Controller HTTP routes, PostgreSQL transactions, ChatGPT Backend, and
+  Kubernetes Compute through owned loopback TLS fixtures. It covers retained
+  recovery receipts, exact deletion, account-lock races, and unknown COMMIT
+  outcomes. This component proof does not qualify a live provider or cluster.
 - Verify the provider account, private credential ID, exact-account Secret,
   Codex-only projection for that Agent revision, and genuine model response. For ownership,
   compensation, and ambiguous commits, see the [service-account guide](../reference/service-accounts.md)
@@ -215,6 +234,7 @@ Refresh, rotation, and automated reconciliation remain deferred.
 
 ## Changelog
 
+- 2026-11-11 02:28: Confirm exact Secret readback and revoke provider credentials before deleting failed-issuance recovery receipts. (authoring-run/18242737-895e-484c-a1a9-29c2cd289d43 - 7fed115af7b57060bba5c6e276ad4cf316b9b58d)
 - 2026-11-04 09:42: Remove the retired hosted Provider Account test from verification instructions; retain service-account implementation coverage. (authoring-run/390095eb-01a9-4e24-b609-791b49f19f81 - e2311f4d2250874d622ab12c2fe8588a076bd19b)
 - 2026-10-15 05:30: Issuance and account deletion reclaim the token Secret and provider credential of an issuance that never committed. (fix-1397, finding 1397)
 - 2026-10-14 18:44: Cancel oversized chunked ChatGPT Admin API responses while reading, before complete buffering. (issue-2411 - 1dae0cc9b76f034f5ca8e1ff500c9b545aa44501)

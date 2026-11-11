@@ -12,15 +12,49 @@ const hash = /^[a-f0-9]{64}$/;
 const commit = /^[a-f0-9]{40}$/;
 const version =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
-const roles = ["OCC_TEST_KUBERNETES_GATEWAY_IMAGE", "OCC_TEST_KUBERNETES_AGENT_IMAGE"];
+type RuntimeRole = "OCC_TEST_KUBERNETES_GATEWAY_IMAGE" | "OCC_TEST_KUBERNETES_AGENT_IMAGE";
+type CodexProvenance = {
+  platform: "linux/amd64" | "linux/arm64";
+  openclawCommit: string;
+  codex: { version: string; binarySha256: string };
+};
+type RuntimeProvenance = { imageId: string; manifestDigest: string } & (
+  ({ status: "available" } & CodexProvenance) | { status: "unavailable" }
+);
+type ImageResource = {
+  id: string;
+  name: string;
+  removed?: boolean;
+  containerId?: string;
+  ownershipToken?: string;
+  creationAcknowledged?: boolean;
+};
+type ImageCommand = (
+  executable: string,
+  args: string[],
+  options?: { signal?: AbortSignal; timeout?: number; encoding?: "buffer"; maxBuffer?: number },
+) => Promise<string | Buffer>;
+
+const roles: RuntimeRole[] = [
+  "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+  "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
 
 // Only image-owned build metadata crosses into uploaded evidence. In particular,
 // do not copy arbitrary provenance fields, image configuration, or error output.
-export function codexProvenance(metadata, platform) {
-  const codex = metadata?.codex;
+export function codexProvenance(metadata: unknown, platform: unknown): CodexProvenance | undefined {
+  if (!isRecord(metadata)) {
+    return undefined;
+  }
+  const codex = metadata.codex;
   if (
-    !["linux/amd64", "linux/arm64"].includes(platform) ||
-    codex?.architecture !== platform.slice(6) ||
+    (platform !== "linux/amd64" && platform !== "linux/arm64") ||
+    !isRecord(codex) ||
+    codex.architecture !== platform.slice(6) ||
     typeof codex.version !== "string" ||
     codex.version.length > 96 ||
     !version.test(codex.version) ||
@@ -39,18 +73,22 @@ export function codexProvenance(metadata, platform) {
 }
 
 // Publish an opaque attempt identity; the private prefix remains a resource owner.
-export function preparationIdentity(prefix) {
+export function preparationIdentity(prefix: unknown): string | undefined {
   return typeof prefix === "string" && prefix.length > 0
     ? createHash("sha256").update(prefix).digest("hex")
     : undefined;
 }
 
-export async function readRuntimeProvenance(statePath, { lane, preparationId }) {
-  let records;
+export async function readRuntimeProvenance(
+  statePath: string,
+  { lane, preparationId }: { lane: string; preparationId: string | undefined },
+): Promise<Partial<Record<RuntimeRole, RuntimeProvenance>> | undefined> {
+  let records: unknown;
   try {
-    const state = JSON.parse(await readFile(statePath, "utf8"));
+    const state: unknown = JSON.parse(await readFile(statePath, "utf8"));
     if (
       typeof preparationId !== "string" ||
+      !isRecord(state) ||
       state.lane !== lane ||
       preparationIdentity(state.prefix) !== preparationId
     ) {
@@ -60,11 +98,11 @@ export async function readRuntimeProvenance(statePath, { lane, preparationId }) 
   } catch {
     return undefined;
   }
-  const projected = {};
+  const projected: Partial<Record<RuntimeRole, RuntimeProvenance>> = {};
   for (const role of roles) {
-    const record = records?.[role];
+    const record = isRecord(records) ? records[role] : undefined;
     if (
-      !record ||
+      !isRecord(record) ||
       typeof record.imageId !== "string" ||
       typeof record.manifestDigest !== "string" ||
       !digest.test(record.imageId) ||
@@ -77,7 +115,7 @@ export async function readRuntimeProvenance(statePath, { lane, preparationId }) 
       {
         commit: record.openclawCommit,
         codex: {
-          ...record.codex,
+          ...(isRecord(record.codex) ? record.codex : {}),
           architecture: typeof record.platform === "string" ? record.platform.slice(6) : undefined,
         },
       },
@@ -100,10 +138,17 @@ export async function readImageCodexProvenance({
   resource,
   command,
   persist,
-}) {
+}: {
+  imageId: string;
+  platform: string;
+  directory: string;
+  resource: ImageResource;
+  command: ImageCommand;
+  persist: () => Promise<void>;
+}): Promise<CodexProvenance | undefined> {
   const destination = join(directory, `${resource.id}.json`);
-  let metadata;
-  const errors = [];
+  let metadata: CodexProvenance | undefined;
+  const errors: unknown[] = [];
   try {
     await extractImageFile({
       command,
@@ -130,9 +175,12 @@ export async function readImageCodexProvenance({
     removeImageFileContainer({ command, resource, persist }),
     rm(destination, { force: true }),
   ]);
-  errors.push(
-    ...outcomes.filter((outcome) => outcome.status === "rejected").map((outcome) => outcome.reason),
-  );
+  for (const outcome of outcomes) {
+    if (outcome.status === "rejected") {
+      const reason: unknown = outcome.reason;
+      errors.push(reason);
+    }
+  }
   if (errors.length) {
     throw new AggregateError(errors, "Runtime provenance cleanup failed");
   }

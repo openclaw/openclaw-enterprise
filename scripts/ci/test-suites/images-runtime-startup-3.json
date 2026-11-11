@@ -5,7 +5,7 @@
   },
   "fileConcurrency": 4,
   "parallelFiles": [
-    "tests/integration/runtime-image-model-probe.test.mjs",
+    "tests/integration/runtime-image-model-probe.test.ts",
     "tests/integration/runtime-image-native-worker.test.mjs",
     "tests/integration/runtime-image-node-state-permissions.test.ts",
     "tests/integration/runtime-image-node-state-lock.test.ts",
@@ -16,7 +16,7 @@
   ],
   "files": [
     {
-      "path": "tests/integration/runtime-image-model-probe.test.mjs",
+      "path": "tests/integration/runtime-image-model-probe.test.ts",
       "expectedTests": [
         "runtime image embedded Gateway settles its model probe under CPU contention"
       ]

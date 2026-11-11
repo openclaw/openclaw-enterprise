@@ -50,7 +50,7 @@ import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { bindRole, grantRole, restrict } from "../helpers/iam-grants.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
-import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import { loadInstallationFile } from "../helpers/installation-file.ts";
 import {
   assertWriteAuthorizationDenial,
   partialWrite,

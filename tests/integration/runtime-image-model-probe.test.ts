@@ -13,20 +13,20 @@ import {
   imageTestOptions,
   observed,
   phaseAt,
+  probeLogRecords,
   runDocker,
   runEmbeddedGatewayProbe,
   runtimeFailure,
-} from "../helpers/runtime-image-model-probe.mjs";
-import { jsonLines } from "../helpers/json-lines.mjs";
+} from "../helpers/runtime-image-model-probe.ts";
 
 // The embedded Gateway's startup model probe on the real runtime image under CPU
-// contention (setup: tests/helpers/runtime-image-model-probe.mjs). Its other
+// contention (setup: tests/helpers/runtime-image-model-probe.ts). Its other
 // outcomes run in the model probe outcomes file, in another lane, because this
 // case alone takes 110-230 s.
 
 // Ends the CPU hogs inside the Gateway container. The marker is split so this
 // program's own command line does not match it.
-function stopProbeCpuHogs(containerName) {
+function stopProbeCpuHogs(containerName: string) {
   const program = String.raw`
 const fs = require("node:fs");
 const marker = "openclaw-cpu-" + "hog-started";
@@ -45,8 +45,8 @@ test(
   "runtime image embedded Gateway settles its model probe under CPU contention",
   { ...imageTestOptions, timeout: 900_000 },
   async (t) => {
-    let hogs;
-    let released;
+    let hogs: Promise<void[]> | undefined;
+    let released: ReturnType<typeof stopProbeCpuHogs> | undefined;
     const stress = { requested: 0, started: 0, settled: 0, rejected: 0 };
     const run = await runEmbeddedGatewayProbe(t, {
       mode: "answer",
@@ -93,15 +93,15 @@ test(
     const { events, phases, output } = run.snapshot;
     const detail = `\n${output}\n${JSON.stringify(events)}`;
     // CI keeps only a failed assertion's location: each cause fails on its own line.
-    const probe = jsonLines(output, { lenient: true }).find(
-      ({ event }) => event === "openclaw.model_probe",
-    );
+    const probe = probeLogRecords(output).find(({ event }) => event === "openclaw.model_probe");
     // The wrapper's stage log times the probe CLI from spawn to return. The cap kills the
     // CLI only after capMs; a return before that is the CLI's own result.
-    const stageMs = (name) =>
-      jsonLines(output, { lenient: true }).find(
+    const stageMs = (name: string) => {
+      const elapsedMs = probeLogRecords(output).find(
         ({ event, stage }) => event === "openclaw.model_probe_stage" && stage === name,
       )?.elapsedMs;
+      return typeof elapsedMs === "number" ? elapsedMs : Number.NaN;
+    };
     const cliMs = stageMs("returned") - stageMs("spawn");
     recordModelProbeMeasurement(t, "gateway-500m-contended", run);
     try {
@@ -109,6 +109,7 @@ test(
       assert.ok(probe, `the wrapper logged its probe${detail}`);
       assert.equal(probe.capMs, 110_000, `cap from the 500m cgroup limit${detail}`);
       assert.notEqual(probe.cpuWaitMs, null, `the cgroup reported CPU waiting${detail}`);
+      assert.ok(typeof probe.cpuWaitMs === "number", detail);
       assert.ok(probe.cpuWaitMs > 0, `the hogs made the probe wait for CPU${detail}`);
       assert.ok(Number.isFinite(cliMs), `the wrapper logged spawn and return${detail}`);
       if (probe.code === "READY") {
@@ -130,6 +131,7 @@ test(
         // misses waiting while other containers hold the node's CPUs, and read 0.22-0.34 of
         // the elapsed time across 50 runs on 10-27. Either code is then the rule's answer, and
         // a starved probe can still reach its model turn just before the cap (finding 2675).
+        assert.ok(typeof probe.elapsedMs === "number", detail);
         const starved = probe.cpuWaitMs > probe.elapsedMs / 4;
         const capCode = starved ? "MODEL_PROBE_CPU_STARVED" : "MODEL_PROBE_TIMEOUT";
         assert.equal(probe.code, capCode, detail);
@@ -151,6 +153,9 @@ test(
         // accounting must read starvation; without it, throttling alone decides, as at
         // the cap.
         assert.ok(cliMs >= 15_000, `the CLI ran its 15 s timeout${detail}`);
+        assert.ok(typeof probe.timeoutWindowMs === "number", detail);
+        assert.ok(typeof probe.timeoutWindowCpuWaitMs === "number", detail);
+        assert.ok(typeof probe.timeoutWindowIdleMs === "number", detail);
         assert.ok(probe.timeoutWindowMs >= 15_000, `the preload read the window${detail}`);
         const starved =
           probe.timeoutWindowCpuWaitMs > probe.timeoutWindowMs / 4 &&
@@ -169,7 +174,11 @@ test(
         `CPU-contended probe at --cpus ${constrainedGatewayCpuLimit}: ${JSON.stringify(probe)}`,
       );
     } catch (error) {
-      error.openclawCiDiagnostic = modelProbeDiagnostic(run.snapshot, stress, "classification");
+      if (error instanceof Error) {
+        Object.assign(error, {
+          openclawCiDiagnostic: modelProbeDiagnostic(run.snapshot, stress, "classification"),
+        });
+      }
       throw error;
     }
     await runDocker(["rm", "-f", run.containerName]).catch(() => {});

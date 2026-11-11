@@ -51,7 +51,7 @@ import {
   readOpenclawSource,
 } from "../lib/openclaw-source.mjs";
 import { compareEvents, eventObservedTime } from "./kubernetes-event-time.ts";
-import { prepareRuntimeArtifactLayout, runtimeArtifactSelection } from "./runtime-artifact.mjs";
+import { prepareRuntimeArtifactLayout, runtimeArtifactSelection } from "./runtime-artifact.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const occ = join(root, "bin", "occ");

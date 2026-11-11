@@ -27,6 +27,11 @@ import {
   goToolEnvironment,
   renderExecutionChart,
 } from "../helpers/production-chart.mjs";
+import {
+  collectorVolumeLimitCases,
+  quantityRefusals,
+  resourceNameAndSignRefusals,
+} from "../helpers/production-chart-quantity-cases.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const execute = promisify(execFile);
@@ -1303,6 +1308,11 @@ test(
       ),
     );
     const installationPath = join(directory, "installation.yaml");
+    const load = () =>
+      loadInstallationConfiguration({
+        mode: "production",
+        environment: { OCC_CONFIG_PATH: installationPath },
+      });
     const invalid = [
       "192.168.1",
       "2130706433",
@@ -1345,11 +1355,6 @@ test(
         configuration.drivers.compute.configuration.gatewayRouting.hostname = hostname;
       }
       await writeFile(installationPath, JSON.stringify(configuration));
-      const load = () =>
-        loadInstallationConfiguration({
-          mode: "production",
-          environment: { OCC_CONFIG_PATH: installationPath },
-        });
       // Helm --set reads a bare integer or 0x hex as a number. Pass those spellings
       // with --set-string so the chart sees the hostname the Installation stores.
       const numericHostname =
@@ -1421,11 +1426,6 @@ test(
       const configuration = structuredClone(example);
       configuration.drivers.compute.configuration.gatewayRouting.sandbox = { domain };
       await writeFile(installationPath, JSON.stringify(configuration));
-      const load = () =>
-        loadInstallationConfiguration({
-          mode: "production",
-          environment: { OCC_CONFIG_PATH: installationPath },
-        });
       const rendered = () => render({ ...sandboxValues, "gatewayRouting.sandbox.domain": domain });
       if (domain === "192.0.2.1") {
         await assert.rejects(load(), (error) => {
@@ -1644,12 +1644,7 @@ test("production settings coexist in fresh and upgrade chart renders", tooling, 
       initializer.spec.template.metadata.annotations?.["openclaw.dev/upgrade-attempt"],
       isUpgrade ? settings["installation.upgradeAttemptId"] : undefined,
     );
-    const deployment = (component) =>
-      objects.find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === component,
-      );
-    const api = deployment("api").spec.template.spec.containers[0];
+    const api = deploymentPodSpec(objects, "api").containers[0];
     assert.equal(api.image, controllerImage);
     assert.deepEqual(
       api.env.find(({ name }) => name === "OCC_CHANNEL_DIRECTORY_PROXY_URL"),
@@ -1659,7 +1654,7 @@ test("production settings coexist in fresh and upgrade chart renders", tooling, 
       api.env.find(({ name }) => name === "OCC_AGENT_NATIVE_ADMIN_ENABLED"),
       { name: "OCC_AGENT_NATIVE_ADMIN_ENABLED", value: "true" },
     );
-    const broker = deployment("worker").spec.template.spec.containers.find(
+    const broker = deploymentPodSpec(objects, "worker").containers.find(
       ({ name }) => name === "repository-credentials",
     );
     assert.deepEqual(broker.args, [
@@ -1782,14 +1777,9 @@ test(
   async () => {
     const { stdout } = await render(agentNativeAdminValues);
     const objects = await resources(stdout);
-    const deployment = (component) =>
-      objects.find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === component,
-      );
 
-    const apiEnvironment = deployment("api").spec.template.spec.containers[0].env;
-    const workerEnvironment = deployment("worker").spec.template.spec.containers[0].env;
+    const apiEnvironment = deploymentPodSpec(objects, "api").containers[0].env;
+    const workerEnvironment = deploymentPodSpec(objects, "worker").containers[0].env;
     assert.deepEqual(
       apiEnvironment.filter(({ name }) => name.startsWith("OCC_AGENT_NATIVE_ADMIN_")),
       [
@@ -1807,13 +1797,26 @@ test(
     assert.ok(objects.some(({ kind }) => kind === "Gateway"));
     assert.ok(objects.some(({ kind }) => kind === "EnvoyProxy"));
 
-    const disabledObjects = await resources((await render()).stdout);
-    const disabledDeployment = (component) =>
-      disabledObjects.find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === component,
+    const longest = `${"a.".repeat(99)}example.invalid`;
+    // Keep the whole suffix at 214 while preserving the fixture cookie parent.
+    const boundary = `a${longest}`;
+    assert.equal(boundary.length, 214);
+    assert.match(
+      (await render({ ...agentNativeAdminValues, "agentNativeAdmin.domain": boundary })).stdout,
+      new RegExp(`value: "${boundary.replaceAll(".", "\\.")}"`),
+    );
+    for (const length of [215, 217, 253]) {
+      await assert.rejects(
+        render({
+          ...agentNativeAdminValues,
+          "agentNativeAdmin.domain": `${"a".repeat(length - boundary.length)}${boundary}`,
+        }),
+        /agentNativeAdmin.domain must not exceed 214 characters/,
       );
-    const disabledApiEnvironment = disabledDeployment("api").spec.template.spec.containers[0].env;
+    }
+
+    const disabledObjects = await resources((await render()).stdout);
+    const disabledApiEnvironment = deploymentPodSpec(disabledObjects, "api").containers[0].env;
     assert.deepEqual(
       disabledApiEnvironment.filter(({ name }) => name.startsWith("OCC_AGENT_NATIVE_ADMIN_")),
       [
@@ -1833,11 +1836,7 @@ test(
       objects.find(
         ({ kind, metadata }) => kind === "ClusterRole" && metadata.name.endsWith(suffix),
       );
-    const apiEnvironment = (objects) =>
-      objects.find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === "api",
-      ).spec.template.spec.containers[0].env;
+    const apiEnvironment = (objects) => deploymentPodSpec(objects, "api").containers[0].env;
     const hasLogRules = (rules) =>
       rules.some(({ resources = [] }) => resources.includes("pods/log")) ||
       rules.some(({ resources = [] }) => resources.includes("events"));
@@ -2834,12 +2833,9 @@ test("the chart validates scalar and literal repository backend IDs", tooling, a
         )
       ).stdout,
     );
-    const broker = objects
-      .find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === "worker",
-      )
-      .spec.template.spec.containers.find(({ name }) => name === "repository-credentials");
+    const broker = deploymentPodSpec(objects, "worker").containers.find(
+      ({ name }) => name === "repository-credentials",
+    );
     assert.equal(
       broker.args[broker.args.indexOf("--backend-id") + 1],
       argument,
@@ -5470,6 +5466,13 @@ test("default routing refuses missing operator configuration", tooling, async ()
   );
 });
 
+function deploymentPodSpec(objects, component) {
+  return objects.find(
+    ({ kind, metadata }) =>
+      kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === component,
+  ).spec.template.spec;
+}
+
 test(
   "private Envoy Gateway routing defaults on with automatic CA and deterministic hostnames",
   tooling,
@@ -5516,14 +5519,8 @@ test(
       ),
     );
 
-    const deployment = (component) =>
-      configured.find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === component,
-      );
-
     for (const component of ["api", "worker"]) {
-      const pod = deployment(component).spec.template.spec;
+      const pod = deploymentPodSpec(configured, component);
       const apiKeyVolume = pod.volumes.find(({ name }) => name === "gateway-api-key");
       const caVolume = pod.volumes.find(({ name }) => name === "gateway-ca");
       const apiKeyMount = pod.containers[0].volumeMounts.find(
@@ -5782,14 +5779,8 @@ test(
     const gatewayName = "oce-agent-gateways";
     const gatewayNamespace = "openclaw-system";
     const serviceName = gatewayServiceName(gatewayNamespace, gatewayName);
-    const apiPod = configured.find(
-      ({ kind, metadata }) =>
-        kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === "api",
-    ).spec.template.spec;
-    const workerPod = configured.find(
-      ({ kind, metadata }) =>
-        kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === "worker",
-    ).spec.template.spec;
+    const apiPod = deploymentPodSpec(configured, "api");
+    const workerPod = deploymentPodSpec(configured, "worker");
 
     assert.deepEqual(apiPod.volumes.find(({ name }) => name === "gateway-ca").secret, {
       secretName: "occ-private-ca",
@@ -6042,60 +6033,10 @@ test("Collector exporter ports preserve decimal meaning in Kubernetes YAML", too
   );
 });
 
-const collectorValues = {
-  "logging.collector.enabled": "true",
-  "logging.collector.image":
-    "docker.io/otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc",
-  "logging.collector.configSecretName": "occ-otel-collector-config",
-  "logging.collector.envSecretName": "occ-otel-collector-exporter",
-  "logging.collector.exporter.cidr": "203.0.113.10/32",
-};
-
 // Kubernetes refuses these at apply, after other objects of the release changed (finding 2337).
 test("Helm refuses unknown resource names and negative quantities", tooling, async () => {
-  const values = { ...collectorValues, ...slackProxyValues };
-  for (const [field, value, message] of [
-    ["resources.limits.cpu", "-1", "resources.limits.cpu must not be negative"],
-    ["resources.requests.cpu", "-.5m", "resources.requests.cpu must not be negative"],
-    // The quantity check trims the value, so the sign check does too.
-    ["resources.requests.cpu", " -1", "resources.requests.cpu must not be negative"],
-    [
-      "slackProxy.resources.requests.memory",
-      "-64Mi",
-      "slackProxy.resources.requests.memory must not be negative",
-    ],
-    [
-      "logging.collector.state.sizeLimit",
-      "-1Mi",
-      "logging.collector.state.sizeLimit must not be negative",
-    ],
-    [
-      "logging.collector.tmp.sizeLimit",
-      "-1",
-      "logging.collector.tmp.sizeLimit must not be negative",
-    ],
-    [
-      "resources.limits.gpu",
-      "1",
-      "resources.limits.gpu names a resource Kubernetes does not accept",
-    ],
-    [
-      "logging.collector.resources.requests.requests\\.example\\.com/gpu",
-      "1",
-      "requests.example.com/gpu names a resource",
-    ],
-    [
-      "slackProxy.resources.limits.hugepages-huge",
-      "4Mi",
-      "slackProxy.resources.limits.hugepages-huge names a resource",
-    ],
-    // The name after the domain prefix holds at most 63 characters.
-    [
-      `resources.limits.example\\.com/${"g".repeat(64)}`,
-      "1",
-      `resources.limits.example.com/${"g".repeat(64)} names a resource`,
-    ],
-  ]) {
+  const values = { ...productionCollectorValues, ...slackProxyValues };
+  for (const [field, value, message] of resourceNameAndSignRefusals) {
     await assert.rejects(render({ ...values, [field]: value }), (error) => {
       assert.ok(error.stderr.includes(message), `${field}: ${error.stderr}`);
       return true;
@@ -6125,15 +6066,10 @@ test("Helm refuses unknown resource names and negative quantities", tooling, asy
 });
 
 test("Helm rejects obvious malformed quantity syntax", tooling, async () => {
-  const collector = collectorValues;
+  const collector = productionCollectorValues;
   for (const isUpgrade of [false, true]) {
     const options = { isUpgrade };
-    for (const [field, value] of [
-      ["logging.collector.state.sizeLimit", "foo"],
-      ["logging.collector.tmp.sizeLimit", "10MiB"],
-      ["resources.requests.cpu", "foo"],
-      ["logging.collector.resources.limits.memory", "10MiB"],
-    ]) {
+    for (const [field, value] of quantityRefusals["--set"].syntax) {
       await assert.rejects(render({ ...collector, [field]: value }, options), (error) => {
         assert.ok(error.stderr.includes(`${field} must be a Kubernetes quantity`));
         return true;
@@ -6161,22 +6097,10 @@ test("Helm rejects obvious malformed quantity syntax", tooling, async () => {
     assert.equal(api.spec.template.spec.containers[0].resources.limits.cpu, 1);
 
     // Decimal E is exa; uppercase K is not a suffix. Exponent and binary forms stay.
-    await assert.rejects(
-      render({ "resources.requests.memory": "1K" }, options),
-      /resources\.requests\.memory must be a Kubernetes quantity/,
-    );
-    await assert.rejects(
-      render({ ...collector, "logging.collector.resources.requests.memory": "1K" }, options),
-      /logging\.collector\.resources\.requests\.memory must be a Kubernetes quantity/,
-    );
-    await assert.rejects(
-      render({ ...collector, "logging.collector.state.sizeLimit": "1K" }, options),
-      /logging\.collector\.state\.sizeLimit must be a Kubernetes quantity/,
-    );
-    await assert.rejects(
-      render({ "resources.requests.memory": "1KI" }, options),
-      /resources\.requests\.memory must be a Kubernetes quantity/,
-    );
+    for (const [field, value, diagnostic, base] of quantityRefusals["--set"].uppercaseSuffix) {
+      const values = base === "collector" ? collector : {};
+      await assert.rejects(render({ ...values, [field]: value }, options), diagnostic);
+    }
     const accepted = await render(
       {
         ...collector,
@@ -6203,18 +6127,9 @@ test("Helm rejects obvious malformed quantity syntax", tooling, async () => {
     assert.match(preserved.stdout, /cpu: 1Ki/);
 
     // UnmarshalJSON trims spaces on the raw JSON text. Escaped tabs stay rejected.
-    await assert.rejects(
-      render({}, { ...options, strings: { "resources.requests.cpu": "  foo " } }),
-      /resources\.requests\.cpu must be a Kubernetes quantity/,
-    );
-    await assert.rejects(
-      render({}, { ...options, strings: { "resources.requests.memory": " 1K " } }),
-      /resources\.requests\.memory must be a Kubernetes quantity/,
-    );
-    await assert.rejects(
-      render({}, { ...options, strings: { "resources.requests.memory": "\t64Mi" } }),
-      /resources\.requests\.memory must be a Kubernetes quantity/,
-    );
+    for (const [field, value, diagnostic] of quantityRefusals["--set-string"]) {
+      await assert.rejects(render({}, { ...options, strings: { [field]: value } }), diagnostic);
+    }
     const padded = await render(collector, {
       ...options,
       strings: {
@@ -6256,52 +6171,24 @@ test("Helm rejects obvious malformed quantity syntax", tooling, async () => {
     assert.match(withDigit.stdout, /memory: 1Pi/);
 
     // sizeLimit is optional. Null clears the chart default and must stay YAML null on install and upgrade.
-    const clearedLimits = await render(
-      {
-        ...collector,
-        "logging.collector.state.sizeLimit": "null",
-        "logging.collector.tmp.sizeLimit": "null",
-      },
-      options,
-    );
-    const clearedVolumes = (await resources(clearedLimits.stdout)).find(
-      (object) =>
-        object.kind === "DaemonSet" && object.metadata?.name === "openclaw-enterprise-collector",
-    ).spec.template.spec.volumes;
-    assert.equal(
-      clearedVolumes.find((volume) => volume.name === "collector-state").emptyDir.sizeLimit,
-      null,
-    );
-    assert.equal(
-      clearedVolumes.find((volume) => volume.name === "collector-tmp").emptyDir.sizeLimit,
-      null,
-    );
-    const stateCleared = await resources(
-      (await render({ ...collector, "logging.collector.state.sizeLimit": "null" }, options)).stdout,
-    );
-    const stateVolumes = stateCleared.find((object) => object.kind === "DaemonSet").spec.template
-      .spec.volumes;
-    assert.equal(
-      stateVolumes.find((volume) => volume.name === "collector-state").emptyDir.sizeLimit,
-      null,
-    );
-    assert.equal(
-      stateVolumes.find((volume) => volume.name === "collector-tmp").emptyDir.sizeLimit,
-      "64Mi",
-    );
-    const tmpCleared = await resources(
-      (await render({ ...collector, "logging.collector.tmp.sizeLimit": "null" }, options)).stdout,
-    );
-    const tmpVolumes = tmpCleared.find((object) => object.kind === "DaemonSet").spec.template.spec
-      .volumes;
-    assert.equal(
-      tmpVolumes.find((volume) => volume.name === "collector-state").emptyDir.sizeLimit,
-      "128Mi",
-    );
-    assert.equal(
-      tmpVolumes.find((volume) => volume.name === "collector-tmp").emptyDir.sizeLimit,
-      null,
-    );
+    for (const { overrides, expectedState, expectedTmp } of collectorVolumeLimitCases) {
+      const objects = await resources(
+        (await render({ ...collector, ...overrides }, options)).stdout,
+      );
+      const collectorDaemonSet = objects.find(
+        (object) =>
+          object.kind === "DaemonSet" && object.metadata?.name === "openclaw-enterprise-collector",
+      );
+      const volumes = collectorDaemonSet.spec.template.spec.volumes;
+      assert.equal(
+        volumes.find((volume) => volume.name === "collector-state").emptyDir.sizeLimit,
+        expectedState,
+      );
+      assert.equal(
+        volumes.find((volume) => volume.name === "collector-tmp").emptyDir.sizeLimit,
+        expectedTmp,
+      );
+    }
     await assert.rejects(
       render(
         {

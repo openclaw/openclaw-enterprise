@@ -7,7 +7,11 @@ import {
   normalizePushRefAllowlist,
 } from "../../../access/client-contracts.ts";
 import type { RepositoryCredentialSessionResult } from "../../../access/service-contracts.ts";
-import { assertPrivateDirectory, readPrivateFile } from "./private-files.ts";
+import {
+  assertPrivateDirectory,
+  clientSessionFileMaxBytes,
+  readPrivateFile,
+} from "./private-files.ts";
 
 export interface ClientFiles {
   readonly sessionId: string;
@@ -29,7 +33,10 @@ export async function requireGhMaterial(
   configuration: ClientFiles,
   directory: string,
 ): Promise<void> {
-  const credential = await readPrivateFile(join(directory, "bearer"), 256);
+  const credential = await readPrivateFile(
+    join(directory, "bearer"),
+    clientSessionFileMaxBytes.bearer,
+  );
   let hosts: Buffer | undefined;
   let expected: Buffer | undefined;
   try {
@@ -37,7 +44,10 @@ export async function requireGhMaterial(
     if (!isClientBearer(bearer)) {
       throw new Error("invalid-client-gh-material");
     }
-    hosts = await readPrivateFile(join(directory, "gh", "hosts.yml"), 16 * 1024);
+    hosts = await readPrivateFile(
+      join(directory, "gh", "hosts.yml"),
+      clientSessionFileMaxBytes["gh/hosts.yml"],
+    );
     expected = Buffer.from(ghHosts(configuration.client, bearer));
     if (!hosts.equals(expected)) {
       throw new Error("invalid-client-gh-material");
@@ -82,7 +92,7 @@ export function encodeRepositoryCredentialSessionFiles(
     !isClientBearer(opened.bearer) ||
     !/^[A-Za-z0-9_-]{1,128}$/.test(opened.session.sessionId) ||
     !Number.isFinite(opened.session.deadlineWallMs) ||
-    (publicCa && publicCa.byteLength > 64 * 1024)
+    (publicCa && publicCa.byteLength > clientSessionFileMaxBytes["ca.pem"])
   ) {
     throw new Error("invalid-client-configuration");
   }
@@ -94,7 +104,7 @@ export function encodeRepositoryCredentialSessionFiles(
   };
   const clientJson = JSON.stringify(files) + "\n";
   // Apply the existing reader limit to the complete document, not individual rules.
-  if (Buffer.byteLength(clientJson) > 16 * 1024) {
+  if (Buffer.byteLength(clientJson) > clientSessionFileMaxBytes["client.json"]) {
     throw new Error("client-configuration-too-large");
   }
   return {
@@ -172,7 +182,12 @@ export async function writeClientConfiguration(
 
 export async function readClientConfiguration(directory: string): Promise<ClientFiles> {
   const value = JSON.parse(
-    (await readPrivateFile(join(resolve(directory), "client.json"), 16 * 1024)).toString("utf8"),
+    (
+      await readPrivateFile(
+        join(resolve(directory), "client.json"),
+        clientSessionFileMaxBytes["client.json"],
+      )
+    ).toString("utf8"),
   ) as ClientFiles;
   validateClient(value.client);
   if (

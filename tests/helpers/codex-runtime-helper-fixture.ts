@@ -105,6 +105,38 @@ type CodexRequest = {
 };
 
 type CodexRequestHandler = (method: string, params: unknown, id: unknown) => unknown;
+
+export function codexRequestDispatcher(
+  responses: Readonly<Record<string, (params: unknown, id: unknown) => unknown>>,
+): CodexRequestHandler {
+  return (method, params, id) => {
+    const respond =
+      typeof method === "string" && Object.hasOwn(responses, method)
+        ? responses[method]
+        : undefined;
+    if (respond === undefined) {
+      throw new Error(`unexpected request ${method}`);
+    }
+    return respond(params, id);
+  };
+}
+
+export function codexApiKeyDisabledResponses() {
+  const disabledConfig = {
+    config: {
+      features: { apps: false, plugins: false, remote_plugin: false },
+      apps: { _default: { enabled: false } },
+      plugins: { _default: { enabled: false } },
+    },
+    origins: {},
+  };
+  return {
+    initialize: () => ({ serverInfo: { name: "codex", version: "0.149.0" } }),
+    "config/read": () => disabledConfig,
+    "config/batchWrite": () => ({ status: "ok", version: "test-config-1" }),
+  };
+}
+
 type WebSocketListener = (event: unknown) => void;
 type TimerCallback = (...args: unknown[]) => void;
 

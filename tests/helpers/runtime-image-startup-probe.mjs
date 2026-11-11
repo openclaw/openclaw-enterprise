@@ -1,5 +1,5 @@
 // The startup model probe scenario shared by runtime-image-startup-probe.test.mjs,
-// runtime-image-startup-termination.test.mjs and the Gateway restart cases
+// runtime-image-startup-termination.test.ts and the Gateway restart cases
 // (runtime-image-gateway-restart.mjs), which CI runs side by side in Image Runtime
 // Startup 2 and 1: one runtime wrapper started with the container command the
 // Compute driver renders, beside a stand-in model provider sidecar.

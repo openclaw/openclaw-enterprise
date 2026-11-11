@@ -154,8 +154,12 @@ proof does not exercise this failure upload.
 
 Checkout image-build failures identify each failed role (controller or runtime), exit code, known error code or signal, killed flag, elapsed time and configured budget. Process fields come only from Docker command failures; journal and pre-dispatch failures leave them `unknown`. Accessor-backed fields also stay `unknown`. A signal or elapsed time alone does not prove a timeout. The [build helper](../../../tests/helpers/dev-up-model-provider.mjs) preserves original errors for local inspection but excludes their command arguments and output from CI summaries.
 
-The `openshell` dispatch runs two OpenShell lanes on separate VMs. Each runs
-its assigned files serially, and the aggregate requires both results. QA Advisory uses
+The `openshell` dispatch runs two OpenShell lanes on separate VMs. Before either
+starts, the protected environment resolves their controller base image and the
+shared cache warmer exports both image caches from the selected commit. A failed
+export or cleanup blocks the lanes. Their source builds still run; another export,
+eviction, or import failure can cause a cache miss. Each lane runs its assigned
+files serially, and the aggregate requires both results. QA Advisory uses
 [parallel per-file runners](qa-advisory.md#openshell-file-coverage).
 Use the [shared cleanup procedure](run-lanes.md#results-and-cleanup) for local runs.
 
