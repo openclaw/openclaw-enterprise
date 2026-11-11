@@ -133,13 +133,16 @@ If the installed proof fails and the job can continue, look for
 days. Its single JSON file records the run, attempt, source SHA, failed outcome,
 last recorded stage and installed cleanup status. For `selected-test`, the
 receipt also records the allowlisted `testOperation` and `lastTestCheckpoint`,
-with `unknown` for missing or unrecognized values. After a failed runner, the
-writer uses complete valid ledger rows before the first malformed or non-object
-row. It ignores blank rows and selects the last recognized checkpoint for the
-selected mode, excluding retirement. A missing or unreadable ledger leaves the
-checkpoint `unknown` but preserves a verified operation. Optional failure
-evidence cannot replace the selected-test failure; passing proof still requires
-strict ledger parsing. A missed stage write can leave an earlier stage
+with `unknown` for missing or unrecognized values. For a selected structured
+Gateway chat refusal, the receipt includes `gatewayChatPhase` when it can identify
+ordinary chat before private Git (`before-private-git`), a native Git turn
+(`native-git`), or ordinary chat after Git withdrawal (`after-withdrawal`).
+After a failed runner, the writer uses complete valid ledger rows before the
+first malformed or non-object row. It ignores blank rows and selects the last
+recognized checkpoint for the selected mode, excluding retirement. A missing
+or unreadable ledger leaves the checkpoint `unknown` but preserves a verified
+operation. Optional failure evidence cannot replace the selected-test failure;
+passing proof still requires strict ledger parsing. A missed stage write can leave an earlier stage
 visible. Checkpoints do not establish successful cleanup.
 
 Cleanup `passed` covers registered teardown callbacks, verified cluster and

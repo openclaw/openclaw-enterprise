@@ -1,6 +1,7 @@
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 
 import {
+  skipperGatewayChatPhases,
   skipperOperations,
   skipperOperationDiagnostic,
   skipperSelectedFailure,
@@ -22,6 +23,7 @@ const cleanups = ["passed", "failed", "unknown"] as const;
 type Checkpoint =
   | ["skipper_test_operation", (typeof skipperOperations)[number] | "unknown"]
   | ["skipper_last_test_checkpoint", string]
+  | ["skipper_gateway_chat_phase", (typeof skipperGatewayChatPhases)[number]]
   | ["skipper_stage", (typeof stages)[number]]
   | ["skipper_installed_cleanup", (typeof cleanups)[number]];
 
@@ -64,14 +66,20 @@ export async function recordSkipperTestFailure(
   teamReview: boolean,
 ) {
   let operation: (typeof skipperOperations)[number] | "unknown" = "unknown";
+  let gatewayChatPhase: (typeof skipperGatewayChatPhases)[number] | undefined;
   try {
-    operation =
-      skipperOperationDiagnostic(skipperSelectedFailure(resultText).error.diagnostic)?.operation ??
-      "unknown";
+    const diagnostic = skipperOperationDiagnostic(
+      skipperSelectedFailure(resultText).error.diagnostic,
+    );
+    operation = diagnostic?.operation ?? "unknown";
+    gatewayChatPhase = diagnostic?.gatewayChatPhase;
   } catch {
     // Missing or malformed runner evidence does not establish an operation.
   }
   await recordSkipperCheckpoint("skipper_test_operation", operation);
+  if (gatewayChatPhase) {
+    await recordSkipperCheckpoint("skipper_gateway_chat_phase", gatewayChatPhase);
+  }
   const entries = await readSkipperJourney(ledgerPath, true);
   const known = skipperTestCheckpoints(teamReview);
   const last =
@@ -106,6 +114,10 @@ if (import.meta.main && process.env.SKIPPER_PROOF_OUTCOME === "failure") {
     process.exitCode = 1;
   } else {
     const lastStage = selected(stages, process.env.SKIPPER_STAGE);
+    const testOperation = selected(skipperOperations, process.env.SKIPPER_TEST_OPERATION);
+    const gatewayChatPhase = skipperGatewayChatPhases.find(
+      (phase) => phase === process.env.SKIPPER_GATEWAY_CHAT_PHASE,
+    );
     const receipt = {
       version: 1,
       runId,
@@ -115,7 +127,8 @@ if (import.meta.main && process.env.SKIPPER_PROOF_OUTCOME === "failure") {
       lastStage,
       ...(lastStage === "selected-test"
         ? {
-            testOperation: selected(skipperOperations, process.env.SKIPPER_TEST_OPERATION),
+            testOperation,
+            ...(testOperation === "gateway-chat" && gatewayChatPhase ? { gatewayChatPhase } : {}),
             lastTestCheckpoint: selected(
               [...skipperTestCheckpoints(false), ...skipperTestCheckpoints(true)],
               process.env.SKIPPER_LAST_TEST_CHECKPOINT,

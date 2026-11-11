@@ -1,6 +1,7 @@
 import type { Clock, RepositoryBackend, RepositoryBackendFactory } from "./backend-contracts.ts";
 import type { ServiceConfig } from "./service-contracts.ts";
 import { createCustody } from "./custody.ts";
+import { sameBinding } from "./grant-identity.ts";
 import { createLifecycle } from "./lifecycle.ts";
 import type { LifecycleOwner } from "./lifecycle.ts";
 import { createProviderQueue } from "./provider-queue.ts";
@@ -43,11 +44,7 @@ export function developmentSessionConstructor(
         clock,
       });
       const binding = snapshotBinding(driver.binding);
-      if (
-        binding.providerInstanceId !== admission.binding.providerInstanceId ||
-        binding.repositoryId !== admission.binding.repositoryId ||
-        binding.grantId !== admission.binding.grantId
-      ) {
+      if (!sameBinding(binding, admission.binding)) {
         throw new Error("DRIVER_BINDING_MISMATCH");
       }
     } catch (error) {
