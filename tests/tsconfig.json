@@ -36,6 +36,7 @@
     "integration/occ-api-injected-fixture.ts",
     "integration/postgres-agent-provisioning-configuration-resend-cases.ts",
     "integration/postgres-agent-provisioning-fixture.ts",
+    "integration/postgres-agent-provisioning-refusal-cases.ts",
     "integration/postgres-agent-provisioning-transport-fixture.ts",
     "integration/sandbox-workspace-gateway-fixture.ts",
     "integration/sandbox-driver-codex-harness-cases.ts",
