@@ -461,11 +461,40 @@ jobs:
           artifact-prefix: full-results
           job-timeout-minutes: 50
 
-  openshell:
-    name: OpenShell (${{ matrix.lane }})
+  openshell-build-inputs:
+    name: OpenShell Build Inputs
     runs-on: ubuntu-24.04
     needs: preflight
     if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'openshell') }}
+    permissions: {}
+    environment: integration-main
+    timeout-minutes: 5
+    outputs:
+      node-base-image: ${{ steps.inputs.outputs.node-base-image }}
+    steps:
+      - name: Resolve the protected controller base
+        id: inputs
+        env:
+          NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+        run: |
+          # Full image validation belongs to the warmer, before it builds anything.
+          [[ -n "$NODE_BASE_IMAGE" && "$NODE_BASE_IMAGE" != *$'\n'* && "$NODE_BASE_IMAGE" != *$'\r'* ]]
+          echo "node-base-image=$NODE_BASE_IMAGE" >> "$GITHUB_OUTPUT"
+
+  openshell-image-cache:
+    name: OpenShell Image Cache
+    needs: [preflight, openshell-build-inputs]
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'openshell') && needs.openshell-build-inputs.result == 'success' }}
+    uses: ./.github/workflows/ci-image-cache.yml
+    with:
+      require-export: true
+      node-base-image: ${{ needs.openshell-build-inputs.outputs.node-base-image }}
+
+  openshell:
+    name: OpenShell (${{ matrix.lane }})
+    runs-on: ubuntu-24.04
+    needs: [preflight, openshell-build-inputs, openshell-image-cache]
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'openshell') && needs.openshell-image-cache.result == 'success' && needs.openshell-image-cache.outputs.source-sha == github.sha }}
     timeout-minutes: 150
     environment: integration-main
     strategy:
@@ -475,7 +504,8 @@ jobs:
     env:
       # The packaged browser has Ubuntu's AppArmor user-namespace permission.
       OCC_TEST_BROWSER_EXECUTABLE: /usr/bin/google-chrome
-      NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+      NODE_BASE_IMAGE: ${{ needs.openshell-build-inputs.outputs.node-base-image }}
+      OCC_DEVELOPMENT_NODE_BASE_IMAGE: ${{ needs.openshell-build-inputs.outputs.node-base-image }}
       CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}

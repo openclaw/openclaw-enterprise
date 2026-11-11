@@ -901,6 +901,9 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       }
       throw error;
     }
+    if (nativeAdminDomain.length > 214) {
+      return { status: "unavailable" };
+    }
     const { agent, revision, successor, mode } = selection;
     const target = nativeAdminTarget({
       publicOrigin,

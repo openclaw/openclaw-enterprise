@@ -3,8 +3,8 @@ name: CI Image Cache
 # Writes main's BuildKit cache for the controller and runtime images that the CI
 # image lanes restore; it is the only writer. This run starts on every image
 # input change (and on a schedule, from main's newest commit) and is never
-# cancelled once started, and runs queue in order, so the newest commit's export
-# lands last.
+# cancelled once started. Queued runs wait for the writer; their source commits
+# need not be chronological.
 # GitHub scopes cache writes to the run's ref: pull_request runs read main's
 # entries but write only their own merge ref.
 on:
@@ -46,15 +46,27 @@ on:
   schedule:
     - cron: "7,27,47 * * * *"
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      require-export:
+        type: boolean
+        default: false
+      node-base-image:
+        type: string
+        default: ""
+    outputs:
+      source-sha:
+        description: Processed source; required exports fail the job if either export fails.
+        value: ${{ jobs.warm.outputs.source-sha }}
 
 permissions:
   contents: read
 
-# One export at a time, never cancelled; a newer push or scheduled run replaces
-# only the pending run, which the Actions list then shows as cancelled.
+# One writer at a time; timer runs must not replace a waiting prerequisite.
 concurrency:
   group: ci-image-cache-${{ github.ref }}
   cancel-in-progress: false
+  queue: max
 
 env:
   CI: "1"
@@ -63,7 +75,9 @@ env:
 jobs:
   warm:
     name: Warm Image Cache
-    if: ${{ github.ref == 'refs/heads/main' }}
+    if: ${{ github.ref == 'refs/heads/main' && (!inputs.require-export || github.repository == 'openclaw/openclaw-enterprise') }}
+    outputs:
+      source-sha: ${{ steps.export.outputs.source-sha }}
     # The image lanes' runner, so the cache is written where they read it.
     runs-on: blacksmith-8vcpu-ubuntu-2404
     # Runtime source builds have 180 min, controller builds 20 min; each
@@ -79,6 +93,12 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: ${{ env.NODE_VERSION }}
+      - name: Validate required cache input
+        if: ${{ inputs.require-export }}
+        env:
+          CACHE_NODE_BASE_IMAGE: ${{ inputs.node-base-image }}
+        run: |
+          node --input-type=module -e 'import { assertNodeBaseImage } from "./scripts/ci/prepare.mjs"; assertNodeBaseImage(process.env.CACHE_NODE_BASE_IMAGE);'
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Expose image cache credentials
         id: image-cache
@@ -103,11 +123,20 @@ jobs:
             core.setOutput('token', token);
             core.setOutput('url', url);
       - name: Build images and export their cache
+        id: export
         env:
           OCC_CI_IMAGE_CACHE: "1"
+          REQUIRE_CACHE_EXPORT: ${{ inputs.require-export }}
+          CACHE_NODE_BASE_IMAGE: ${{ inputs.node-base-image }}
           ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
           ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
-        run: node scripts/ci/prepare.mjs --warm-image-cache --state "$RUNNER_TEMP/state/image-cache-warm.json"
+        run: |
+          args=()
+          if [[ "$REQUIRE_CACHE_EXPORT" == "true" ]]; then
+            args+=(--require-cache-export --node-base-image "$CACHE_NODE_BASE_IMAGE")
+          fi
+          node scripts/ci/prepare.mjs --warm-image-cache --state "$RUNNER_TEMP/state/image-cache-warm.json" "${args[@]}"
+          echo "source-sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
       - name: Cleanup
         if: always()
         run: node scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/state/image-cache-warm.json"
