@@ -508,7 +508,6 @@ done
 
 # The cleanup path consumes original identity evidence only. It never prepares or
 # resumes an upgrade and needs no OCC credential or candidate image inputs.
-source scripts/lib/upgrade-preflight-cleanup.sh
 if ((cleanup_only)); then
   ((cleanup_conflicting_args == 0)) || die "--cleanup-preflight accepts only target and evidence arguments plus its two attestations." 2
   ((previous_process_settled && evidence_unrestored)) ||
@@ -547,6 +546,7 @@ if ((cleanup_only)); then
   # Do not rerun cleanup in an EXIT trap: a signal may leave a remote operation
   # outstanding. A subsequent invocation requires the same settlement attestation.
   cleanup_status=0
+  source scripts/lib/upgrade-preflight-cleanup.sh
   cleanup_preflight || cleanup_status=1
   ((unknown_count == 0)) || cleanup_status=1
   jq --argjson complete "$([[ $cleanup_status == 0 ]] && echo true || echo false)" \
@@ -952,6 +952,7 @@ finally:
 PYTHON
     die "preflight create acknowledged, but local identity evidence could not be confirmed; no OCC writer was stopped."
 }
+source scripts/lib/upgrade-preflight-cleanup.sh
 trap 'cleanup_preflight || true; rmdir "$upgrade_evidence_dir/.upgrade-lock" 2>/dev/null || true' EXIT
 
 # Read the current Job and validate the child against its original controller and UID.

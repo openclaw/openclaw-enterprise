@@ -385,7 +385,8 @@ export function registerDispatchRestoreTests(
       assert.equal((await f.state()).dispatches, 1);
       await rmdir(join(f.evidence, ".upgrade-lock"));
       const calls = f.commands.length;
-      await assert.rejects(f.run("--resume"), /dispatch journal is locked/);
+      // Removing the marker does not release the live helper's directory lock.
+      await assert.rejects(f.run("--resume"), /evidence directory is locked/);
       assert.equal(f.commands.length, calls);
       assert.equal((await f.state()).dispatches, 1);
     } finally {
