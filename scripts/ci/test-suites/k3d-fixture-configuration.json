@@ -40,6 +40,15 @@
         "installation prerequisites report Job quota headroom, address drift and unreadable resources",
         "first install retains exact attempt evidence after a lost client"
       ]
+    },
+    {
+      "path": "tests/integration/kubernetes-private-secret-create-real.test.ts",
+      "expectedTests": [
+        "real Kubernetes API enforces Installation-private create compensation and authorization"
+      ]
     }
-  ]
+  ],
+  "serialFiles": {
+    "tests/integration/kubernetes-private-secret-create-real.test.ts": "Owns a fresh PostgreSQL Installation and an isolated namespace while interposing on the real Kubernetes SDK in its test process."
+  }
 }
