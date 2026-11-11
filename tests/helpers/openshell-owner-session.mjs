@@ -164,17 +164,19 @@ export async function verifyOpenShellOwnerSession({
     modelEnvironment.OPENCLAW_FIRST_AGENT_MODEL,
     "Set OCC_TEST_OPENAI_MODEL for the selected account",
   );
-  await execute(
-    process.execPath,
-    [
-      fileURLToPath(new URL("../../scripts/first-agent.mjs", import.meta.url)),
-      name,
-      "--harness",
-      "codex",
-      "--control-ui",
-    ],
-    { env: modelEnvironment, timeout: 600_000, maxBuffer: 1024 * 1024 },
-  );
+  const runFirstAgent = () =>
+    execute(
+      process.execPath,
+      [
+        fileURLToPath(new URL("../../scripts/first-agent.mjs", import.meta.url)),
+        name,
+        "--harness",
+        "codex",
+        "--control-ui",
+      ],
+      { env: modelEnvironment, timeout: 600_000, maxBuffer: 1024 * 1024 },
+    );
+  await runFirstAgent();
   const agents = (await api("GET", scope + "/agents")).filter((a) => a.name === name);
   assert.equal(agents.length, 1, "the helper created one Agent in its own default Namespace");
   const agent = agents[0];
@@ -207,6 +209,18 @@ export async function verifyOpenShellOwnerSession({
   const access = await api("GET", agentPath + "/native-admin");
   assert.equal(access.origin, origin);
   assert.equal(access.status, "available");
+  // A second invocation must recognize the current saved template and frozen
+  // revision, complete its real model check, and leave their configuration intact.
+  const configurationPath = scope + "/configurations/" + agent.configurationId;
+  const beforeRepeat = await api("GET", configurationPath);
+  await runFirstAgent();
+  const repeatedAgents = (await api("GET", scope + "/agents")).filter((a) => a.name === name);
+  assert.equal(repeatedAgents.length, 1);
+  assert.equal(repeatedAgents[0].id, agent.id);
+  assert.equal(repeatedAgents[0].activeRevisionId, rev.id);
+  const afterRepeat = await api("GET", configurationPath);
+  assert.equal(afterRepeat.generation, beforeRepeat.generation);
+  assert.deepEqual(afterRepeat.values, beforeRepeat.values);
   const instructions = await api("GET", agentPath + "/workspace/files/AGENTS.md");
   assert.ok(instructions.content.trim(), "fresh workspace has its real bootstrap instructions");
   const { stdout: pods } = await execute(
@@ -588,6 +602,9 @@ export async function verifyOpenShellOwnerSession({
   assert.ok(!terminal.socket.isClosed());
   const replySelector = `.chat-group.assistant [data-message-text="${marker}"]`;
   await first.locator(replySelector).waitFor({ state: "visible" });
+  const sessionKey = JSON.parse(String(terminal.payload)).payload.sessionKey;
+  assert.equal(typeof sessionKey, "string");
+  assert.ok(sessionKey.length > 0);
   const conversation = first.url();
   assert.match(new URL(conversation).pathname, /^\/chat\//);
   assert.equal(sends.length, 1, "one real turn was submitted");
@@ -601,7 +618,14 @@ export async function verifyOpenShellOwnerSession({
   const secondHello = await hello(second, beforeReopen);
   assert.notEqual(secondHello.socket, terminal.socket, "each tab owns its Gateway socket");
   await second.locator(replySelector).waitFor({ state: "visible" });
-  assert.equal(second.url(), conversation, "the second tab reopened the existing conversation");
+  // The UI can add a display-name slug when it resolves the saved URL. Verify
+  // the committed conversation identity, not that mutable presentation text.
+  await second.waitForFunction((key) => {
+    const snapshot = globalThis.openclawControlUi?.snapshot();
+    return snapshot?.routeReady === true && snapshot.sessionKey === key;
+  }, sessionKey);
+  assert.equal(new URL(second.url()).origin, origin);
+  assert.match(new URL(second.url()).pathname, /^\/chat\//);
   // The production native proxy renews every 25 seconds. Keep both exact
   // sockets untouched for two intervals; reconnects cannot satisfy this check.
   await delay(55_000);
