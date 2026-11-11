@@ -1455,7 +1455,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     if (mapped.code === "DEPENDENCY_UNAVAILABLE") {
       return "agent_unavailable";
     }
-    if (mapped.code === "FORBIDDEN") {
+    if (mapped.code === "FORBIDDEN" || mapped.code === "NOT_FOUND") {
       return options.nativeAdmin?.enabled === true ? "authorization_denied" : "disabled";
     }
     return "dependency_failure";

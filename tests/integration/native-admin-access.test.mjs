@@ -1165,10 +1165,10 @@ test("native admin proxy resolves a host only to the live Agent it names", async
   const installationId = fixture.controller.installation.id;
   // The installation administrator's session administers every Agent, so each refusal below
   // comes from host resolution, not from IAM.
-  const proxied = (namespaceId, agentId) => {
+  const proxied = (namespaceId, agentId, cookie = context.session.cookie) => {
     const origin = nativeOriginForAgent(installationId, namespaceId, agentId);
     return injectJson(fixture, "GET", "/settings/profile", {
-      headers: { host: new URL(origin).host, origin, cookie: context.session.cookie },
+      headers: { host: new URL(origin).host, origin, cookie },
     });
   };
 
@@ -1197,13 +1197,43 @@ test("native admin proxy resolves a host only to the live Agent it names", async
   assert.notEqual(otherHost.statusCode, 200, otherHost.body);
   assert.equal(upstream.requests.length, 1, "no refused host may reach a native gateway");
 
-  // A deleted Agent's host names nothing.
+  const chat = await createAgentPermissionSession(context, "deleting-agent-chat", {
+    agent: ["operate"],
+  });
+  const beforeDeletion = await proxied(namespace.id, agent.id, chat.cookie);
+  assert.equal(beforeDeletion.statusCode, 200, beforeDeletion.body);
   const deleted = await fixture.request("DELETE", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.equal(deleted.status, 202);
-  assert.equal(await state.completeAgentDeletion(namespace.id, agent.id), true);
+  const { response: deleting, denials: deletingDenials } = await denialsDuring(
+    fixture.auditSink,
+    () => proxied(namespace.id, agent.id, chat.cookie),
+  );
+
+  // Commit real deletion after the real host lookup, before admission's exact Agent read.
+  // The wrapper changes only ordering: no lookup result or failure is invented.
+  const resolve = fixture.controller.resolveAgentReference.bind(fixture.controller);
+  const lookup = t.mock.method(fixture.controller, "resolveAgentReference", async (...args) => {
+    const selected = await resolve(...args);
+    assert.equal(selected?.id, agent.id);
+    assert.equal(await state.completeAgentDeletion(namespace.id, agent.id), true);
+    return selected;
+  });
+  let racing;
+  try {
+    racing = await denialsDuring(fixture.auditSink, () => proxied(namespace.id, agent.id));
+  } finally {
+    lookup.mock.restore();
+  }
   const afterDeletion = await proxied(namespace.id, agent.id);
-  assert.equal(afterDeletion.statusCode, 403, afterDeletion.body);
-  assert.equal(upstream.requests.length, 1);
+  assert.deepEqual(
+    [deleting.statusCode, racing.response.statusCode, afterDeletion.statusCode],
+    [403, 403, 403],
+    "deleting and deleted Agents are refusals, not temporary dependency outages",
+  );
+  assert.deepEqual(racing.response.json().error, afterDeletion.json().error);
+  assert.deepEqual(deletingDenials, []);
+  assert.deepEqual(racing.denials, [], "deletion does not invent an attributable IAM denial");
+  assert.equal(upstream.requests.length, 2);
 });
 
 test("native admin status decodes only the revisions it uses", async (t) => {
