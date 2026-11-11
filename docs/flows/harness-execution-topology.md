@@ -387,5 +387,4 @@ removal. See the [storage contract](../reference/drivers/kubernetes-compute/stor
 
 - 2026-10-23 17:15: Correct forced-termination recovery. (Codex/01a1558e-c27f-7bc0-a403-af59e9364ddf)
 
-
 [Harness execution topology documentation history](harness-execution-topology/history.md) preserves the older dated entries.
