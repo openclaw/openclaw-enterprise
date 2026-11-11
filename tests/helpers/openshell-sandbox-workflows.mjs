@@ -1,4 +1,5 @@
 import { runOpenShellStage } from "./openshell-stage.mjs";
+import { withOpenShellPermissionDiagnostic } from "./openshell-permission-diagnostic.ts";
 import { openShellTurnoverQualification } from "../../scripts/ci/reporter.mjs";
 import {
   openShellGatewayGrpcChannel,
@@ -1208,12 +1209,16 @@ function integrationGatewayClient(
   GrpcOpenShellGatewayClient,
   endpoint,
   context,
-  { observeServiceUrl },
+  { observeServiceUrl, permissionDiagnostics },
 ) {
-  const gateway = new GrpcOpenShellGatewayClient({ endpoint });
-  // Only Sandbox creation and service lookup are observed. Every other call, including the
-  // runtime provider-profile setup the Driver performs while provisioning, reaches the real
-  // gateway client unchanged.
+  const gateway = withOpenShellPermissionDiagnostic(new GrpcOpenShellGatewayClient({ endpoint }), {
+    endpoint,
+    revisionId: context.revision.id,
+    cwd: "/sandbox/enterprise",
+    model: providerModel,
+    attempted: permissionDiagnostics,
+  });
+  // Preserve the real provider setup and readiness result while retaining failed native-policy evidence.
   const observed = {
     async createSandbox(request, signal) {
       const created = await gateway.createSandbox(request, signal);
@@ -1410,6 +1415,7 @@ function createIntegrationSandboxDriverFactory(
   const gatewayState = new Map();
   const endpointClients = new Map();
   const policyWrites = [];
+  const permissionDiagnostics = new Set();
   let policyWriteBarrier;
   let backendDrivers;
 
@@ -1616,6 +1622,7 @@ function createIntegrationSandboxDriverFactory(
           ? clientForEndpoint(endpoint)
           : integrationGatewayClient(GrpcOpenShellGatewayClient, endpoint, context, {
               enableCompatibilityBridge: enableCompatibilityBridges,
+              permissionDiagnostics,
               observeServiceUrl: (serviceUrl) => {
                 harnessServiceUrls.set(context.revision.id, serviceUrl);
               },

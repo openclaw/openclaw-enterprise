@@ -99,6 +99,21 @@ are `incomplete`. These observations use synchronized host and container clocks.
 They do not prove that a particular workspace read was pending or retried, and
 ordinary refresh success alone is not evidence of read recovery.
 
+## Native permission refusals
+
+When the Codex PAT fixture reports incompatible permission requirements, it
+collects one native permission diagnostic per revision before the worker stops
+the candidate. Through the same OpenShell exposure, one connection reads the
+requirements and authentication status, then requests `:danger-full-access`
+with user review. The receipt contains permission booleans, the effective
+sandbox and reviewer, and fixed failure/cleanup classifications. It excludes
+credentials, account details, instructions, thread contents, and peer error text.
+The diagnostic sends no model turn or approval response; ordinary runtime
+startup still performs its authentication probe. Requests have a ten-second
+deadline plus at most two seconds for socket cleanup. The original readiness
+refusal remains a failure even if the profile is granted. Normal fixture
+teardown removes the disposable candidate and its diagnostic thread.
+
 ## Agent network policy
 
 The policy scenario uses the production HTTP admission path, PostgreSQL worker,

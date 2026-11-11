@@ -122,6 +122,7 @@
     "tests/integration/managed-plugin-request-authority.test.ts",
     "tests/integration/egress-stock-online-git-authority.test.mjs",
     "tests/integration/harness-egress-probe-diagnostics.test.ts",
+    "tests/integration/openshell-permission-diagnostic.test.ts",
     "tests/conformance/openshell-prepared-git-provider.test.mjs",
     "tests/conformance/openshell-git-runtime.test.mjs",
     "tests/conformance/openshell-git-denial.test.mjs",
@@ -676,6 +677,19 @@
         "Git preparation refuses broad or noncanonical workspace trust before provider writes",
         "Git preparation refuses missing admission or plan identity before gateway calls",
         "a fresh Git route uses the execution ID admitted before gateway reads"
+      ]
+    },
+    {
+      "path": "tests/integration/openshell-permission-diagnostic.test.ts",
+      "expectedTests": [
+        "a native grant is diagnostic evidence and never overrides the real readiness refusal",
+        "non-PAT refusals and healthy PAT readiness do not create diagnostic threads",
+        "diagnostic rpc-refused preserves refusal and closes its connection",
+        "diagnostic unexpected-request preserves refusal and closes its connection",
+        "diagnostic cancelled preserves refusal and closes its connection",
+        "diagnostic timeout preserves refusal and closes its connection",
+        "diagnostic TLS verifies the control endpoint while routing to the advertised service host",
+        "an unavailable diagnostic output destination cannot replace the readiness refusal"
       ]
     },
     {
