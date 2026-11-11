@@ -439,6 +439,9 @@ function execFile(command, args, options = {}) {
           ...spawnOptions,
           stdio: options.stdio ?? [options.input ? "pipe" : "ignore", "pipe", "pipe"],
         });
+    if (processGroup && process.env.OPENCLAW_CI_COMPLETE_PHASE === "1" && process.send) {
+      process.send({ type: "ci-lifecycle-group", id: child.pid });
+    }
     let commandResult;
     let signalError;
     if (processGroup) {

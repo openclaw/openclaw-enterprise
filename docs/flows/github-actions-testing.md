@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-11
-last_updated_session: authoring-run/59e3fbae-c2ef-496b-ad18-c965758bee04
+last_updated_session: authoring-run/c4d4109e-2324-46f7-bceb-42e3780475b1
 ---
 
 # GitHub Actions testing flow
@@ -61,18 +61,22 @@ graph TD
 `scripts/ci/full-integration-preflight.mjs:validateFullIntegrationPreflight`, and
 `scripts/ci/test-suites.mjs:loadTestSuites`
 
-`loadTestSuites` assembles `scripts/ci/test-suites.json` and ordered
-`scripts/ci/test-suites/<lane>.json` references. Lanes own tests, inputs and preparation.
+`loadTestSuites` reads tests, inputs and preparation from `scripts/ci/test-suites.json` and its ordered lane references.
+
+For [complete local attempts](../testing/ci/run-lanes.md#run-a-complete-local-attempt),
+`run-tests.mjs:main` rejects noncanonical paths before reading the manifest or calling `runCompleteLifecycle`.
 
 `run-tests.mjs:selectLane` validates focused paths before setup. Focused results
-retain cases, environment and cleanup but cannot satisfy full-lane aggregation,
-including one-file lanes (`validateLaneEvidence`).
+retain cases, environment and cleanup. `validateLaneEvidence` rejects them for
+full-lane aggregation, including one-file lanes.
 
-`CI Impact` selects coverage; `Suite Audit and Static Checks` verifies checkout identity in every mode. Ordinary CI uses the event checkout without external service credentials. The [coverage map](../testing/ci/required-checks.md#scenarios) lists lanes and `runtime-image-fixture`. Workflows select runners; Kubernetes requires a NetworkPolicy-enforcing kernel.
+`CI Impact` selects coverage; `Suite Audit and Static Checks` verifies checkout identity.
+[Ordinary CI](../testing/ci/required-checks.md#scenarios) uses the event checkout without external service credentials.
+Workflows select runners. Kubernetes requires NetworkPolicy enforcement in the kernel.
 
-Pull requests compare the verified merge with its first parent using that parent’s
-policy; the second parent must match the event head. Canonical main pushes use `before` policy
-for the complete `before`→verified `after` diff. Missing history,
+Pull requests compare the verified merge to its first parent using that parent’s policy.
+The second parent must match the event head. Main pushes use `before` policy for the
+`before`→verified `after` diff. Missing history,
 forced pushes, and older policies retain full CI.
 Decoding preserves leading UTF-8 BOMs.
 `scripts/ci/impact.mjs:documentationPath` admits allowlisted Markdown, `docs/docs.json`
@@ -83,12 +87,13 @@ Registered test changes may include docs and their own lane-manifest entries. CI
 the owning lanes from either tree, adds `checks-baseline-2` for TypeScript, and uses
 `checks-baseline-1` if only the fixture job would run. Test-only main pushes, other changes, and remaining event types select full CI. Missing policy or unverifiable source selects full or fails closed.
 
-`CI Required` rechecks the mode and selected lanes. Impact, the combined static-checks job, and selected lanes must
-succeed; other jobs must be skipped. Full and tests modes aggregate results from the same
-source. Docs mode produces no test artifacts. The impact summary reports mode, fixed reason and accepted lanes, excluding paths and
-raw output. Selector errors fail the job; missing evidence is unavailable.
+`CI Required` rechecks the mode and lane selection. Impact, static checks and selected lanes must succeed.
+Other jobs must be skipped. Full and tests modes aggregate same-source results. Docs mode emits no test artifacts.
+The impact summary gives the mode, fixed reason and accepted lanes. It omits paths and raw output.
+Selector errors fail the job. Missing evidence is unavailable.
 
-For full-mode PRs, `affected-packages` verifies the checkout and reports dependents; it does not select tests or gate CI. Base-loaded policy cannot prevent PR changes to the workflow itself.
+`affected-packages` verifies full-mode PR checkouts and reports dependents without
+selecting tests or gating CI. Base-loaded policy cannot prevent PR workflow changes.
 
 Advisory `.github/workflows/qa-advisory.yml:eligibility` selects fixed scopes,
 excluding empty groups. Focused jobs verify SHA and ordered PR parents. QA
@@ -107,7 +112,7 @@ QA awaits Slack despite failure; cancellation stops it. Selected results are req
 
 PostgreSQL migration and application suites own separate servers; each Kubernetes fixture lane owns a separate cluster and PostgreSQL server. Before creating k3d nodes that share the runner kernel, the shared action enables bridge netfilter; missing filtering fails setup rather than leaving Pod network policies unenforced. The repository credential platform lane uses Blacksmith for full-image HTTP, PostgreSQL, Unix-control and credential-material proof; NetworkPolicy enforcement remains the fixture lanes' responsibility. State and cleanup stay on each runner; within a lane, `scripts/ci/run-tests.mjs:runLane` runs files sequentially except audited `parallelFiles`.
 
-The application lane gives the native IAM barrier test its own migrated PostgreSQL database; only that test receives its application and migrator connection details, which the CLI keeps out of `GITHUB_ENV`. Its unregistered supplier stays in that disposable database. This fixture does not establish production writer participation in the barrier.
+Only the native IAM barrier test receives its migrated PostgreSQL database and both application and migrator connection details. The CLI excludes them from `GITHUB_ENV`. The unregistered supplier stays in this disposable database. Production writers still require separate barrier verification.
 
 `runtime-artifact` supplies CI `image-lanes`, Full Integration's `image-lanes-same-sha`
 and Docker Model Runtime, and First Agent Smoke. Aggregates check producer and consumers.
@@ -280,6 +285,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 14:02: Document canonical manifest guard. (authoring-run/c4d4109e-2324-46f7-bceb-42e3780475b1 - 6bfff2b8a3a07d91637dac4391affc9dde8e0547)
 
 - 2026-11-11 07:55: Retain selected runtime Codex provenance in CI evidence. (authoring-run/59e3fbae-c2ef-496b-ad18-c965758bee04 - 7fa7a37738bb24b27d9a835e409ea20eafb43cee)
 
