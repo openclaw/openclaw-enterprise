@@ -29,6 +29,7 @@
     "openshell": "./test-suites/openshell.json",
     "openshell-linear": "./test-suites/openshell-linear.json",
     "openshell-oauth": "./test-suites/openshell-oauth.json",
+    "staged-signin-cleanup": "./test-suites/staged-signin-cleanup.json",
     "helper-timeout": "./test-suites/helper-timeout.json",
     "logging-collector": "./test-suites/logging-collector.json",
     "k3d-otel": "./test-suites/k3d-otel.json",

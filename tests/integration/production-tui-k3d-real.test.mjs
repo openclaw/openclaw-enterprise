@@ -7,6 +7,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, writeFile, rm } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { match } from "ts-pattern";
 import { fileURLToPath } from "node:url";
 import { ownPortForward } from "../helpers/port-forward-cleanup.ts";
 import { availablePort } from "../helpers/available-port.mjs";
@@ -56,13 +57,22 @@ const protectedTuiSelection = {
 };
 
 test(
-  signinSelected
-    ? "Owned P/A sign-in receipts survive only the admitted controller transitions"
-    : onlineSelected
-      ? "An incumbent production Helm Installation serves while the candidate migrates PostgreSQL"
-      : returnSelected
-      ? "A populated production Helm Installation retains the acknowledged write after controller return"
-      : "Helm production installation supports interactive TUI and revision cutover",
+  match({ signinSelected, onlineSelected, returnSelected })
+    .with(
+      { signinSelected: true },
+      () => "Owned P/A sign-in receipts survive only the admitted controller transitions",
+    )
+    .with(
+      { onlineSelected: true },
+      () =>
+        "An incumbent production Helm Installation serves while the candidate migrates PostgreSQL",
+    )
+    .with(
+      { returnSelected: true },
+      () =>
+        "A populated production Helm Installation retains the acknowledged write after controller return",
+    )
+    .otherwise(() => "Helm production installation supports interactive TUI and revision cutover"),
   {
     skip:
       selected || rehearsalSelected

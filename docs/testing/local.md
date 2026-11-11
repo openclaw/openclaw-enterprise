@@ -83,6 +83,36 @@ default to loopback and an ephemeral port; select the disposable network's bind
 address and port explicitly for a packaged fixture. The caller owns stopping the
 server and removing its material.
 
+## Staged sign-in cleanup
+
+On an isolated Linux Docker host with Node.js 24, k3d, kubectl, Python 3 and the
+repository's installed dependencies, select the real cleanup fixture:
+
+```sh
+OCC_TEST_STAGED_SIGNIN_CLEANUP_REAL=1 node --test --test-concurrency=1 tests/integration/staged-signin-cleanup-real.test.mjs
+```
+
+The equivalent explicit CI lane is `staged-signin-cleanup`; it is not part of
+the default PR or full-integration groups. All three cases must pass without
+skips. Set `OCC_TEST_STAGED_SIGNIN_CLEANUP_ARTIFACT_DIR` to a fresh directory to
+retain source identity, observed resource identities, refusal output, assertion
+outcomes and final cleanup status.
+
+Prepare the digest-pinned K3s image selected by `scripts/ci/prepare.mjs` and
+k3d's support images before execution. Allow capacity for one disposable
+single-server cluster and one small volume consumer at a time. The host must
+expose its local Docker socket and the server's PID/cgroup identity. The fixture
+uses private kubeconfigs and loopback API ports; it preserves the default
+kubeconfig and unrelated resources. No controller/runtime build, model
+credential or published release pair is needed.
+
+The unchanged cleanup CLI must remove the owned resources after a settled
+failed case, and refuse both a replaced cluster and a newly shared volume.
+Assertions inspect those effects before the fixture's separate final cleanup.
+The runner, release and settlement inputs are synthetic; this proves real
+Docker/k3d cleanup effects, not GitHub admission, image publication, child
+settlement or installed sign-in. A failed settled case never qualifies a release.
+
 ## Packaged-driver integration
 
 `tests/integration/driver-plugin-installation.test.ts` installs precompiled
