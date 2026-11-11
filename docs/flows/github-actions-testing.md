@@ -1,26 +1,28 @@
 ---
 created: 2026-09-04
-updated: 2026-11-04
-last_updated_session: authoring-run/14bcb9d6-2d4c-449d-8bbc-b64e3ef7e632
+updated: 2026-11-11
+last_updated_session: authoring-run/c0ca6f34-2aa6-47f9-87c1-e5f3708617f6
 ---
 
 # GitHub Actions testing flow
 
 ## Overview
 
-The [ordinary CI lanes](../testing/ci/required-checks.md) reject missing or skipped coverage. Docs-only runs execute Suite Audit and Static Checks. Neither proves credentialed integrations.
+[Ordinary CI lanes](../testing/ci/required-checks.md) reject missing or skipped coverage. Docs-only runs execute Suite Audit and Static Checks. Neither proves credentialed integrations.
 
 ## Entry Points
 
 - `.github/workflows/ci.yml:jobs`: PR, main push, merge-group and manual checks on ephemeral runners.
 - `.github/workflows/qa-advisory.yml:jobs`: 6-hourly QA on `main`, and post-merge QA when `QA_ADVISORY_ON_PUSH` is `true`; trusted pull requests select [full or focused advisory QA](../testing/ci/qa-advisory.md).
-- `.github/workflows/full-integration.yml:jobs`: automatic main pushes and approved manual main integrations, pinned to `github.sha`.
+- `.github/workflows/full-integration.yml:jobs`: scheduled and approved manual main integrations, pinned to `github.sha`.
 
 ## Flow
 
 ```mermaid
 graph TD
   A["PR or other CI event"] --> S["Select impact mode"]
+  A --> AQ["Select advisory scope"]
+  AQ -->|eligible; focused source verified| AJ["Selected advisory jobs: setup, tests, cleanup, results"]
   A --> N["Suite Audit and Static Checks: every mode"]
   S -->|full PR| Q["Report affected packages (advisory)"]
   S -->|full or tests| B["All ordinary or selected CI lanes"]
@@ -36,11 +38,15 @@ graph TD
   G -->|full or tests| L["Aggregate same-source lane results"]
   G -->|docs| M["Documentation coverage result"]
   L --> R["Full CI coverage result"]
-  C["Integration dispatch or exact cutover push"] --> P["Source and environment preflight"]
-  P -->|eligible source and environment| E["Protected test jobs"]
-  P -->|all or dev-up-k3d| U["Credential-free installation job"]
+  C["Scheduled tick or approved manual dispatch"] --> P["Source and environment preflight"]
+  P -->|scheduled tick skips admission| D["Finish without suite jobs"]
+  P -->|eligible| V["Acquire execution lock and revalidate"]
+  V -->|scheduled recheck skips admission| D
+  V -->|eligible| E["Protected test jobs"]
+  V -->|all or dev-up-k3d| U["Credential-free installation job"]
   U --> T
   P -->|missing protection| X["Failed check"]
+  V -->|missing protection| X
   E --> T["Owned preparation, tests, cleanup and aggregation"]
 ```
 
@@ -51,61 +57,60 @@ graph TD
 ### 1. Select one source commit and coverage group
 
 `.github/workflows/ci.yml:jobs`, `.github/workflows/full-integration.yml:jobs`,
+`.github/workflows/full-integration-execution.yml:jobs`,
 `scripts/ci/full-integration-preflight.mjs:validateFullIntegrationPreflight`, and
 `scripts/ci/test-suites.mjs:loadTestSuites`
 
-`loadTestSuites` assembles `scripts/ci/test-suites.json` and its ordered
-`scripts/ci/test-suites/<lane>.json` references for runners and preparation.
-Each lane owns its tests, environment, required inputs and preparation settings.
+`loadTestSuites` assembles `scripts/ci/test-suites.json` and ordered
+`scripts/ci/test-suites/<lane>.json` references. Lanes own tests, inputs and preparation.
 
-For focused proof, `run-tests.mjs:selectLane` requires an exact file path from the
-selected lane. The composite action calls `check-selection` before tool setup or
-preparation. `runLane` uses the same selector and retains the file's expected
-cases, environment and cleanup. Results carry `scope: focused`;
-`validateLaneEvidence` rejects them for full-lane aggregation, even for a one-file lane.
+`run-tests.mjs:selectLane` validates focused paths before setup. Focused results
+retain cases, environment and cleanup but cannot satisfy full-lane aggregation,
+including one-file lanes (`validateLaneEvidence`).
 
-CI uses the event checkout without external service credentials. `CI Impact` starts independently of `Suite Audit and Static Checks`, which verifies checkout identity and runs the [documented checks](../testing/ci/required-checks.md#scenarios) in every mode. Docs mode skips test lanes. The [coverage map](../testing/ci/required-checks.md#scenarios) lists matrix jobs and the separate `runtime-image-fixture`; tests mode runs only selected lanes. Image startup parts 1 and 2, PostgreSQL Application and the `checks-baseline` and `checks-browser` parts use `blacksmith-32vcpu-ubuntu-2404` for its 8 CPUs, k3d fixture and observability for its NetworkPolicy-enforcing kernel; `runtime-image-fixture` uses `ubuntu-22.04`. Other jobs use `blacksmith-16vcpu-ubuntu-2404`.
+`CI Impact` selects coverage; `Suite Audit and Static Checks` verifies checkout identity in every mode. Ordinary CI uses the event checkout without external service credentials. The [coverage map](../testing/ci/required-checks.md#scenarios) lists lanes and `runtime-image-fixture`. Workflows select runners; Kubernetes requires a NetworkPolicy-enforcing kernel.
 
-The selector verifies that the tested merge has the event head as its second parent. It
-compares that tree with its first parent, the current base, using policy from the base.
-Git path decoding preserves a leading UTF-8 BOM. Only a nonempty set of allowlisted
-regular Markdown changes selects docs mode; generated API references, including Markdown
-under `docs/reference/api/`, require full CI for `openapi:check`.
+Pull requests compare the verified merge with its first parent using that parent’s
+policy; the second parent must match the event head. Canonical main pushes use `before` policy
+for the complete `before`→verified `after` diff. Missing history,
+forced pushes, and older policies retain full CI.
+Decoding preserves leading UTF-8 BOMs.
+`scripts/ci/impact.mjs:documentationPath` admits allowlisted Markdown, `docs/docs.json`
+and `specs/rfcs/**/*.png`. Generated API references, other images, executables and
+symlinks require full CI.
 
 Registered test changes may include docs and their own lane-manifest entries. CI runs
 the owning lanes from either tree, adds `checks-baseline-2` for TypeScript, and uses
-`checks-baseline-1` if only the fixture job would run. Other changes and non-PR events
-select full CI. Missing policy or unverifiable source selects full or fails closed.
+`checks-baseline-1` if only the fixture job would run. Test-only main pushes, other changes, and remaining event types select full CI. Missing policy or unverifiable source selects full or fails closed.
 
 `CI Required` rechecks the mode and selected lanes. Impact, the combined static-checks job, and selected lanes must
 succeed; other jobs must be skipped. Full and tests modes aggregate results from the same
-source. Docs mode produces no test artifacts. The impact summary shows mode, fixed reason
-and accepted lanes; it omits paths and raw output. Selector errors fail the job, and missing
-evidence is reported as unavailable.
+source. Docs mode produces no test artifacts. The impact summary reports mode, fixed reason and accepted lanes, excluding paths and
+raw output. Selector errors fail the job; missing evidence is unavailable.
 
-For full-mode PRs, `affected-packages` verifies merge identity and checkout cleanliness, then reports workspace dependents. This advisory neither selects tests nor gates `CI Required`.
+For full-mode PRs, `affected-packages` verifies the checkout and reports dependents; it does not select tests or gate CI. Base-loaded policy cannot prevent PR changes to the workflow itself.
 
-A PR can change the workflow loaded from its merge checkout despite base-loaded
-policy. Separately trusted enforcement is a deployment decision, not an
-established source property.
+Advisory `.github/workflows/qa-advisory.yml:eligibility` selects fixed scopes,
+excluding empty groups. Focused jobs verify SHA and ordered PR parents. QA
+materializes only its selected credential; see
+[inputs and evidence](../testing/ci/qa-advisory.md#trigger).
 
-Full Integration checks out `github.sha`. Main pushes select `all`. Manual main
-dispatches require secret-free `integration-main-approval`. Preflight checks
-the team rule, dispatcher ID, triggering login and environment policy.
+Full Integration pins `github.sha`; [scheduled admission](../testing/ci/full-integration.md#trigger)
+rechecks main, cadence and receipts under lock.
+Manual dispatch checks dispatcher, team and environment separately.
+Slack serializes channel/app access; installation and Skipper Git serialize per branch. Retries need [approved dispatch](../testing/ci/configuration.md#environments).
 
-Main pushes share a queue. Each dispatch waits separately for approval.
-Slack Live serializes access to its channel and app. Local Kubernetes Installation
-and installed Skipper Git each serialize per branch across pushes and dispatches.
-All three queues retain waiting jobs. Test jobs verify repository, main branch
-and event. Push retries use the original commit. Manual retries require a fresh
-approved dispatch. See [approval setup](../testing/ci/configuration.md#environments).
-
-`all` selects every suite. QA waits for Slack even after failure. Cancellation
-stops QA. Aggregation requires the selected results.
+For first-attempt `all`, `scripts/ci/full-integration-reuse.mjs:validateResults`
+requires completed execution. Preflight supplies fresh fallback; successful reuse
+plans select retained artifacts and omit their lanes. Optional reuse failure is nonfatal.
+QA awaits Slack despite failure; cancellation stops it. Selected results are required.
 
 PostgreSQL migration and application suites own separate servers; each Kubernetes fixture lane owns a separate cluster and PostgreSQL server. Before creating k3d nodes that share the runner kernel, the shared action enables bridge netfilter; missing filtering fails setup rather than leaving Pod network policies unenforced. The repository credential platform lane uses Blacksmith for full-image HTTP, PostgreSQL, Unix-control and credential-material proof; NetworkPolicy enforcement remains the fixture lanes' responsibility. State and cleanup stay on each runner; within a lane, `scripts/ci/run-tests.mjs:runLane` runs files sequentially except audited `parallelFiles`.
 
 The application lane gives the native IAM barrier test its own migrated PostgreSQL database; only that test receives its application and migrator connection details, which the CLI keeps out of `GITHUB_ENV`. Its unregistered supplier stays in that disposable database. This fixture does not establish production writer participation in the barrier.
+
+`runtime-artifact` supplies CI `image-lanes`, Full Integration's `image-lanes-same-sha`
+and Docker Model Runtime, and First Agent Smoke. Aggregates check producer and consumers.
 
 The [run-ci-lane action](../../.github/actions/run-ci-lane/action.yml) prepares, runs, and cleans up lanes and uploads sanitized results. Callers set the commit, environment, credentials, and timeout. Tests stop five minutes early.
 
@@ -115,11 +120,18 @@ PR dependency caches stay within GitHub's PR merge-ref scope; main caches stay m
 
 `scripts/ci/prepare.mjs:main` and `scripts/ci/prepare.mjs:ensureK3dCluster`
 
-[CI resource preparation](github-actions-testing/preparation.md) traces tool setup, image and cluster preparation, protected credentials, and resource ownership. Continue below when preparation has produced the lane state.
+[CI resource preparation](github-actions-testing/preparation.md) covers tools, images, clusters, credentials and ownership.
 
-For `logging-collector`, `scripts/ci/prepare.mjs:prepareLane` pre-pulls the pinned Collector, Node, Prometheus and Grafana images before publishing lane inputs. The metrics test and preparation share the digests in `scripts/ci/metrics-monitoring-images.mjs:metricsMonitoringImages`. `scripts/ci/prepare.mjs:ensureDockerSourceImage` reuses a verified local repository digest or pulls through `scripts/ci/image-pull.ts:pullImage`, then verifies that digest before tests start containers. Registry 5xx and rate limits retry within the shared pull budget; missing manifests and authorization refusals fail preparation immediately. Explicit unpinned Node overrides keep the existing test-owned pull behavior.
+For `logging-collector`, `scripts/ci/prepare.mjs:prepareLane` pre-pulls configured
+Collector and Node images and the shared Prometheus and Grafana pins.
+`ensureDockerSourceImage` reuses verified local digests or verifies downloads from
+`scripts/ci/image-pull.ts:pullImage` before publishing inputs. Registry 5xx/rate
+limits retry within the shared budget; missing manifests/authorization refusals
+fail immediately. Unpinned Node overrides retain test-owned pulls.
 
-`scripts/ci/prepare.mjs:imageBuildArgs` restores scoped BuildKit caches for hosted image jobs. Only the [CI Image Cache workflow](../../.github/workflows/ci-image-cache.yml) calls `warmImageCache` to export the shared controller/runtime cache. Images load into the job's Docker engine; cache credentials stay in preparation.
+`scripts/ci/prepare.mjs:imageBuildArgs` restores scoped BuildKit caches for hosted image jobs. Only the [CI Image Cache workflow](../../.github/workflows/ci-image-cache.yml) calls `warmImageCache` to export the shared controller/runtime cache. Full OpenShell lanes retain this builder and `SOURCE_DATE_EPOCH=0` through
+[source-build tests](../testing/ci/openshell-execution.md#hosted-preparation).
+Cache credentials stay in preparation.
 
 Kubernetes preparation records host snapshots. Failed reads, bounded
 by time and size, save `<state-file>.diagnostics.json` outside the cluster directory.
@@ -127,17 +139,22 @@ These lanes use `--no-rollback`; workflows own teardown after capture, while
 local callers use the failed state file. Observation failures preserve the original error. `nodeLogExcerpt` orders Docker streams
 and retry summaries by full UTC timestamp precision using locale-independent ASCII comparison ([CI guide](../testing/ci.md)).
 
-Tests delete Agent namespaces and their events before file exit. While each file
-runs, `scripts/ci/run-tests.mjs:runFile` watches Compute-managed Pods and events
-in ready k3d clusters; `scripts/ci/k3d-diagnostics.mjs:projectAgentNamespaceActivity`
-appends Pod transitions and those namespaces' events to the report under
-`agentNamespaces` on pass or failure. Each file retains at most 200 Pod and 200
-event records, and the report retains 40 files. Messages are redacted and
-truncated, and Pod specs dropped. Each file streams raw watches to its own files
-in the cluster directory and removes them when done. Watches are cluster-wide, so
-under `fileConcurrency` a record can include a sibling's namespaces. A failed
-start logs `Agent namespace activity unavailable`. Each lane that writes the
-artifact uploads it.
+`scripts/ci/run-tests.mjs:runFile` watches Compute-managed Pods and namespace
+events in ready k3d clusters before tests delete them. On pass or failure,
+`scripts/ci/k3d-diagnostics.mjs:projectAgentNamespaceActivity` records
+`agentNamespaces`: up to 200 Pod and 200 event records per file and cluster, retaining 40
+entries. Messages are redacted and truncated; Pod specs are omitted. Raw watches
+use separate files in the cluster directory and are removed on completion.
+Cluster-wide watches can include sibling namespaces under `fileConcurrency`.
+Failed starts log `Agent namespace activity unavailable`. Each producing lane
+uploads the artifact.
+
+API or worker Deployment readiness can fail before any Agent Pod exists.
+`tests/helpers/kubernetes-real.mjs:waitForDeploymentAvailable` captures logs
+and Pod/event snapshots; the artifact retains the last eight `containerLogs`
+records. Without configured runner capture, it emits a projected test diagnostic.
+Snapshots marked `unavailable` are failed observations; missing records do not
+prove healthy startup.
 
 Dedicated Codex preparation and the operator's offline profile generator share
 `scripts/lib/codex-seccomp-profile.mjs:deriveCodexBwrapProfile`. Preparation
@@ -159,7 +176,25 @@ both commits.
 
 `scripts/ci/run-tests.mjs:main`, `scripts/ci/reporter.mjs:jsonLinesReporter` and `scripts/ci/failure-redaction.mjs:redactFailure`
 
-The runner discovers active test files and verifies one lane assignment per file. Different prerequisites require separate files. It invokes whole files with invocation-scoped environment inputs. A custom Node reporter publishes case names, locations and outcomes, excluding arbitrary output. The runner also keeps each failure's error message (at most 600 characters) and top stack frame (240), with the repository path stripped, every nonpublic environment value of eight or more characters (from the job and from the test process) replaced by `[env:NAME]`, and common token, key, URL-password and `password=`-style values replaced by `[redacted]`; the runner prints the same line per failed case to the job log. Values a test generates at run time are redacted only when they match those shapes. Controller HTTP assertion diagnostics can also retain numeric actual and expected status codes, an allowlisted OCC error code, and the upstream ChatGPT operation and status when available. Denied-traffic failures retain only an allowlisted traffic category, without target addresses or response data. Plugin-status fixture failures retain an allowlisted readiness or rollout stage. Rollout diagnostics include allowed Pod phases, readiness and scheduling flags, container restart counts and exit codes, and allowlisted reasons. These structured diagnostics exclude response bodies, credentials, and identities.
+`scripts/ci/run-tests.mjs:normalizeFile` validates `file.env`.
+`runFile` merges, per child: filtered inherited values
+with declared inputs restored, `lane.env`, preparation defaults, `file.env`, then
+generated values. Later values win.
+`scripts/ci/prepare.mjs:prepareFile` separates re-resolved defaults from generated outputs. `file.env` affects neither preflight nor resource preparation. Keep differing prerequisites in separate files.
+
+The reporter records case names, locations and outcomes. Results and logs retain failure messages (600 characters) and top frames (240). Redaction removes repository paths, replaces nonpublic job/child environment values (8+ characters) with `[env:NAME]`, and masks token/key shapes, URL passwords and `password=` values as `[redacted]`; generated values require a matching shape.
+
+HTTP diagnostics retain numeric actual/expected statuses, allowlisted OCC codes and available ChatGPT operation/status. Denied traffic retains an allowlisted category and plugin failures an allowlisted readiness/rollout stage. Rollouts retain allowed Pod phases, readiness/scheduling flags, restart counts, exit codes and allowlisted reasons.
+
+`skipper-release.ts:runSkipperOperation` projects captured Skipper errors. After
+failed installed proof, the workflow invokes `skipper-failure-receipt.ts` to publish
+the wrapper's [checkpoints](../testing/ci/full-integration.md#results-and-limits).
+
+`scripts/ci/openshell-progress.mjs:emitOpenShellProgress` emits fixed lifecycle
+categories; `run-tests.mjs:runNode` adds lane/file labels. Installation ordinals
+and millisecond offsets enter [file receipts](../testing/ci/openshell-execution.md#interpret-timing-and-proof),
+not live logs. Readers bound partial records; parent byte limits apply first.
+Markers and separators stay out of failure tails. Timing and case accounting remain separate.
 
 Required cases must pass; every skip or TODO fails the lane. There are no counterpart-skip lists or CI name filters. Synthetic file-wrapper success, missing output, zero cases, or interruption without final reporter output cannot establish coverage. Lane results retain failure, timeout and cleanup outcomes.
 
@@ -167,7 +202,7 @@ Required cases must pass; every skip or TODO fails the lane. There are no counte
 
 ### 4. Clean up and report results
 
-`scripts/ci/cleanup.mjs:main` and `scripts/ci/run-tests.mjs:main`
+`scripts/ci/cleanup.ts:main` and `scripts/ci/run-tests.mjs:main`
 
 `.github/actions/run-ci-lane/action.yml` uploads one sanitized result artifact
 per lane and run. A retry replaces that lane's artifact, preventing aggregation
@@ -175,13 +210,15 @@ of a stale result; other lanes retain theirs. Each attempt also uploads the same
 file as `attempt-<run attempt>-<artifact-prefix>-<lane>`, which no aggregate
 pattern matches, so a failed attempt's cases survive a `--failed` rerun.
 
-The `k3d-fixture-configuration` lane runs `scripts/ci/memory-sampler.sh`
-beside tests to diagnose runner loss. Every 15 seconds it samples available and container memory, memory pressure,
-root disk and top process RSS by name, excluding arguments and environment. Minute
-summaries reach the job log; failed or cancelled lanes print the last samples.
-Each attempt uploads at most about 1 MiB as
-`memory-<artifact-prefix>-<lane>-attempt-<run attempt>`. Sampler and upload errors
-do not fail the lane; only logged summaries survive runner loss.
+`scripts/ci/memory-sampler.sh` samples memory pressure, RSS, process IDs,
+containers and disk every 15 seconds, excluding arguments and environment.
+`k3d-fixture-configuration` samples during tests and logs live summaries for
+runner-loss diagnosis. Runtime startup and browser lanes sample from before
+preparation through cleanup, then print summaries.
+
+Each attempt uploads `memory-<artifact-prefix>-<lane>-attempt-<run attempt>`
+(about 1 MiB maximum). Sampler and upload errors do not fail the lane.
+Only live summaries survive runner loss.
 
 For `images-packaging`, `scripts/ci/export-image-reconciliation.mjs` attempts to
 retain attempt-specific cleanup records for prepared controller and runtime tags.
@@ -194,57 +231,41 @@ prevent retention.
 Fixture bootstrap diagnostics upload separately as `diagnostics-<artifact-prefix>-<lane>-attempt-<N>`.
 They survive cluster/private-state cleanup but cannot satisfy required test results.
 
-`tests/helpers/local-first-agent-native.mjs:nativeWorkerPlacementObservation`
-classifies public placement errors and projects environment/tunnel states, node
-connection and capability counts, and exact workspace-node matches. The expected
-node comes from the selected revision's Gateway Pod. Failure reads use
-`sessions.describe`, `environments.status` and `node.list` share a five-second
-budget; failed refreshes retain a labeled fallback observation.
-`reporter.mjs:nativeFirstAgentProofDiagnostic` validates the fixed categories,
-booleans and counters again. Raw errors and identifiers do not enter the record.
-Public RPCs do not expose workspace-binding readiness or restoration; a workspace
-reference does not prove either state.
+Per-file cleanup releases its database; job cleanup removes owned resources. Deleting the
+owned k3d cluster removes Collector RBAC and Namespace. Logging cleanup removes its Docker
+backend and JSONL/config directory without Kubernetes. Cleanup errors fail the check except
+for [hosted QA image warnings](github-actions-testing/preparation.md). Private state stays
+on its original runner and path. User databases, contexts, unrelated containers and other
+image references remain untouched.
 
-Per-file cleanup releases its database; job cleanup removes state-owned resources.
-Deleting an owned `k3d-cluster` removes its Collector Namespace and RBAC. Logging
-cleanup removes its Docker backend and JSONL/config directory even without
-Kubernetes. Cleanup failure fails the check except for
-[hosted QA image warnings](github-actions-testing/preparation.md). Private
-state stays on its runner host and path; user databases, contexts, unrelated
-containers and other image references remain outside that ownership.
+`scripts/ci/cleanup.ts:execFile` awaits exit and drained output. On POSIX,
+`scripts/ci/cleanup-command.ts` kills its group on caller IPC closure, including caller SIGKILL.
+Completion drains output, kills grouped descendants and returns command status.
+At [timeout](../testing/ci/configuration.md#runner-overrides), TERM then KILL still apply after
+direct-child exit. Escaped groups are unsignaled; retained streams close after grace.
+Windows bounds streams and terminates only the direct child.
 
-`scripts/ci/cleanup.mjs:execFile` waits for exit and drained output.
-On POSIX, `scripts/ci/cleanup-command.mjs` leads each group. Caller exit,
-including SIGKILL or `process.exit()`, closes its private IPC channel;
-the supervisor kills its group. Completion drains output, kills grouped
-descendants, and returns command status.
-At its [deadline](../testing/ci/configuration.md#runner-overrides), TERM then KILL
-bound the group despite direct-child exit. Escaped groups receive no signals;
-retained streams close after another grace. Windows provides direct-child
-termination and stream bounds, without this supervisor.
+`scripts/ci/run-tests.mjs:killDescendants` stops cleanup groups before sweeping descendants.
+`tests/helpers/postgres-worker-revision-fixture.mjs:disposeStep` records timeouts and continues.
+Root hooks allow two seconds for reports, immediately on cleanup failure; skipped hooks have a
+60-second backstop. The runner reports failures; failed resources stay recorded.
 
-`scripts/ci/run-tests.mjs:killDescendants` stops active cleanup groups before
-sweeping descendants and exiting after abandoned work.
-`tests/helpers/postgres-worker-revision-fixture.mjs:disposeStep` records named
-timeouts and continues disposal. Root hooks allow two seconds for reports before
-exit; cleanup failure arms that grace immediately. A 60-second backstop covers
-skipped hooks. The parent runner accounts for failures. Failed resources stay in state; cleanup continues.
-
-`CI Required` checks jobs even after failures. Full-mode aggregation verifies
-matching commit SHAs, success, required evidence and cleanup; the runner
-validates cases. Docs mode checks documentation, audit and skipped test jobs
-without aggregation, proving only those checks. Full Integration accounts for
-its selected `full` group or lane. `ssh-host` stays outside automatic groups until
-an operator prepares its [disposable host](../testing/ssh.md#ssh-raw-hosts).
-Abrupt runner loss can prevent teardown and loses private `RUNNER_TEMP` state.
-External reconciliation awaits an approved resource ledger.
+`scripts/ci/run-tests.mjs:aggregateGroup` checks SHA, ownership, jobs and execution.
+Reused lanes retain separate owners; fresh lanes retain matrix parents.
+`scripts/ci/cleanup.ts:main` records final cleanup; missing state cannot clear failure.
+Installed Skipper records its own. [Execution evidence](../testing/ci/full-integration.md#results-and-limits)
+requires every lane's required cleanup to pass. Later delivery failures
+keep checks red; missing artifacts cannot qualify.
+`ssh-host` needs a [disposable host](../testing/ssh.md#ssh-raw-hosts).
+Runner loss can prevent teardown and erase private `RUNNER_TEMP` state; external reconciliation
+awaits an approved resource ledger.
 
 ## Debugging and Verification
 
 - `node scripts/ci/run-tests.mjs audit` checks the actual checkout inventory against the suite map.
 - `node --test tests/integration/ci-runner.test.mjs` exercises the runner with real child Node processes and controlled pass/fail/skip cases.
-- Reproduce the sanitized result's failing file, name and location with approved prerequisites. The named aggregate bounds coverage.
-- On local Docker Desktop or equivalent VM-backed Docker hosts, run one Kubernetes lane at a time when disk or network pressure has caused measured instability. GitHub Actions still runs the configured matrix; this local guidance is for reproducible operator runs.
+- Reproduce the reported case with approved prerequisites. The named aggregate bounds coverage.
+- After measured disk or network instability on local VM-backed Docker hosts, run Kubernetes lanes sequentially. GitHub Actions retains its configured matrix.
 - Missing protected environments, tools, images or credentials are setup failures. Configure the approved resource; do not mark its required test skipped or replace it with a fixture.
 - Retain sanitized results for seven days; exclude private state and credentials from uploads. Recover local teardown using run-owned state on its original host and path.
 
@@ -261,7 +282,56 @@ External reconciliation awaits an approved resource ledger.
 
 ## Changelog
 
+- 2026-11-11 03:43: Guard reuse and fresh fallback. (authoring-run/c0ca6f34-2aa6-47f9-87c1-e5f3708617f6 - 993a38b318c249b00f951bf92c8d136214ec82fd)
+- 2026-11-11 03:28: Explain qualified CI reuse. (authoring-run/1b85588b-87c6-47d0-8c6e-8b78b0030aea - dfd55e679c9c9869ddc786b85f6f9b27a53fb833)
+
+- 2026-11-11 02:49: Trace installed failure receipts. (authoring-run/ca550d16-3b1c-4ed9-9ec7-d10efbb6baf9 - 2f93d2d9a4e452c79813467b4fbe0f9218410835)
+
+- 2026-11-11 02:22: Persist defaults separately. (authoring-run/468c8b0e-17e2-4d4e-988e-f00f3434ccfa - 52faf13e94dab59c20c80b161169c1d32429da36)
+
+- 2026-11-11 02:08: Trace per-file environment precedence and preparation boundaries. (authoring-run/3950ed4c-e0a8-42f9-8fc0-6b5fa60d7d3a - 08c7419aea802667090483843a386071c13e9050)
+
+- 2026-11-11 01:21: Include the OTEL lane in sanitized image-cache observations. (authoring-run/d63d3aa5-5c9c-493a-b4ea-51a1d64e9454 - 60289cbf3d6995ed46960ddb32402e52bf5efad7)
+
+- 2026-11-11 00:08: Select focused advisory jobs and verify their PR merge identity. (authoring-run/bf3df73c-1de0-42d0-b8e4-1326f775739f - 90cee90b34bf20c96538423778a652e55ff02eb4)
+
+- 2026-11-10 19:00: Classify RFC PNG illustrations as documentation. (authoring-run/320d719f-dd4a-44fd-968c-59c377d1a5bc - b3f542cdf738ffcbc4c351e7c9123228ae76a415)
+
+- 2026-11-10 18:32: Preserve safe Installed Skipper operation details for asynchronous failures. (authoring-run/0336b456-2d89-4535-9e04-eeb36c2970d9 - b4528e53458339a1df59473f068142675b1982a5)
+
+- 2026-11-10 17:37: Admit eligible Full Integration work before acquiring its execution lock. (authoring-run/9f72faf1-4740-48d3-8519-5d38e749b961 - c6541831756ae40d0485d16d8f0ffeab9851372d)
+
+- 2026-11-10 16:48: Consolidate native proof diagnostics and clarify observation limits. (authoring-run/62ff26b1-e2b9-4035-a938-e86a07a423b7 - faf4426fba16f164353970c5eaebd4b6b41b60f4)
+
+- 2026-11-10 16:26: Reconcile installation receipts and cleanup coverage. (authoring-run/b99ad0c3-5ba1-40a6-8719-e0216a7c49a8 - 9641a352044b81f1f00afc40870ba54cccdefa75)
+
+- 2026-11-10 16:05: Preserve cleanup failures across missing-state retries. (authoring-run/9259c9bd-8e96-4172-ba73-d945dedd0c0e - ef14f2ab13e47d703fd4bddac3c1862de65b0092)
+
+- 2026-11-10 16:02: Document installation receipt retention. (authoring-run/a06db5de-e6ec-40b7-811e-7f04ff14b7e2 - 242eed4481d16c13227383acd8b58c4d8757ae1f)
+
+- 2026-11-10 15:47: Require final lane cleanup evidence for execution coverage. (authoring-run/8af45432-2706-4ed9-aafd-7750cfea1905 - 60dba17cf36b796aee257e61499803b5dacc5a8c)
+
+- 2026-11-10 13:06: Admit navigation in docs-only CI. (authoring-run/3fcf2723-e440-4ce4-8994-00066241bc2b - 554857e441d9348adfac651bd382c17ffef67c8d)
+
+- 2026-11-10 12:53: Trace cache observations. (authoring-run/9ff30b3c-1145-4acb-9fa3-8a4eb3a5e594 - dd7a47c0e1d7428068bdc79d311ceb07fbea767f)
+
+- 2026-11-10 10:38: Reconcile builder reuse and live progress documentation. (authoring-run/d839dc55-f4be-4689-85a1-3ab9527ad4c4 - 280ae7e6db4b38b68bd76bd7aefdd7d874d28bbd)
+
+- 2026-11-10 10:19: Trace portable, bounded OpenShell progress through the reporter and runner. (authoring-run/d839dc55-f4be-4689-85a1-3ab9527ad4c4 - 1af8c3c4f21c6fe1c8b36ef9545e9e4754e74de6)
+
+- 2026-11-10 10:07: Preserve the builder and epoch for full OpenShell source-build tests. (authoring-run/0c79fd33-2fb7-4114-a408-f08f34d1048d - ce80e6a6b254add076625a1087d098327370672c)
+
+- 2026-11-10 09:09: Document qualified registry-tool reuse and APT setup deadlines in the preparation flow. (authoring-run/dc4064e9-3291-42b3-aaf2-9c36fb81f1a6 - 49e3f601c762f94c8d7b97f594c4a342986d68bd)
+
+- 2026-11-08 08:28: Preserve matrix failure attribution alongside admitted CI reuse. (authoring-run/7219e3b9-3091-4a5b-8712-c543ff5f0c68 - 006cf6288913ff8eb56d0fbc2283885bd551ecc9)
+
+- 2026-11-08 16:09: Reuse admitted same-source ordinary CI results before fresh Full Integration execution. (authoring-run/d394120a-859d-45f1-ba62-9bf9dd9b66c1 - 832dbfca29eca2dd3cb98bd9dd5d803d9100911e)
+
+- 2026-11-08 16:02: Select documentation-only main pushes from verified before-tree policy. (authoring-run/bafcfe3a-329e-4d07-8f36-f178b64e37d0 - ca3ad3c4f3ec8ec5660ec2909bd4673adf78ff90)
+
 - 2026-11-04 12:10: Isolate the Codex Git proof queue without Slack. (authoring-run/14bcb9d6-2d4c-449d-8bbc-b64e3ef7e632 - aa60a72115e342ec020d1083fb5e30c139202c84)
+
+- 2026-11-06 09:03: Validate lane identity before attributing outcomes from matrix results. (authoring-run/acefb857-8e57-4f00-b7f5-ed9224944d88 - 048b2cd25cc59087bcb2551fce03a39eef023340)
 
 - 2026-11-04 10:07: Consolidate Full Integration policy and bound the cutover proof routes. (authoring-run/79147f32-199a-48ad-9b7e-fbdf94bf9d60 - 2628dba73edd44e4980711129e48fb7842828019)
 
@@ -284,9 +354,5 @@ External reconciliation awaits an approved resource ledger.
 - 2026-10-14 14:04: Scope PAT authentication and OpenShell prerequisites. (authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f - 96a2b79fa)
 
 - 2026-10-14 16:37: Document hosted QA image cleanup. (authoring-run/0733d076-37af-4fd5-ade5-869487072f47 - 1c406aef)
-
-- 2026-10-14 10:19: Retain cleanup ownership. (authoring-run/ee448fbe-3e0a-40d4-b7d1-3f122d3e5f1b - 10f34280f56dc2375f48df9d2161024520a35882)
-
-- 2026-10-14 09:44: Document command-group termination, pipes with shutdown deadlines, and abandoned runner and fixture handoffs in the accompanying fix. (authoring-run/6dec0b67-a5cd-4a9e-82dc-7609f956b115 - 47d5b8cc901e225e51227a905ee688c69c8ea729)
 
 [GitHub Actions testing documentation history](github-actions-testing/history.md) preserves the older dated entries.

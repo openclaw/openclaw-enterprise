@@ -242,24 +242,26 @@ cluster or model runtime and supplies no installation receipt.
 ## Select the prepared connected lane
 
 Run [the installed test](../../tests/integration/agent-openshell-static-egress-k3d-real.test.mjs)
-with the `egress-connected` CLI lane. CI, GitHub dispatch and the generic `openshell`
-HTTP fixture do not run it. This retained lane is for existing qualified
-installations. It requires a prepared, authenticated controller, worker and supplier gateway. Missing selected inputs fail; a discovery skip proves nothing.
+with manual `egress-connected`, outside CI/GitHub dispatch and generic `openshell`
+fixtures. Existing qualified installations require authenticated controllers and
+a supplier gateway. Missing inputs fail; discovery skips prove nothing.
 
 Use a ready Namespace with one placement in disposable loopback k3d, enforcing
-NetworkPolicies and the [normal OpenShell launch prerequisites](openshell.md).
-[Migrate a dedicated](postgresql.md) `openclaw_k8s_*` database, then run the controller
-and observer as `occ_app`. The test compares the database Installation with the controller's.
+NetworkPolicies and the [OpenShell prerequisites](openshell.md).
+[Migrate](postgresql.md) a dedicated `openclaw_k8s_*` database; run controller and observer as
+`occ_app` with matching Installations.
 
-The protected product and supplier source must agree on physical namespace
-mapping, loaded-enforcement receipt readiness, finite Responses protection and
-zero automatic retries, including the startup authentication probe. Build and
-select the corresponding immutable images before running. This test cannot
-qualify a checkout that lacks those contracts or a legacy gateway-copy setup.
+Select immutable product and supplier images agreeing on physical namespace
+mapping, loaded-enforcement readiness, finite Responses protection and zero
+automatic retries, including the startup probe. Missing contracts and legacy
+gateway-copy setups cannot qualify.
 
-Set `OCC_TEST_EGRESS_CONNECTED_INPUTS` to an absolute path to a private JSON file.
-The [input validator](../../tests/helpers/egress-connected-inputs.mjs) defines its
-exact contract:
+Bind supplier source implementing [custody events](../../tests/helpers/egress-supplier-custody-transitions.mjs)
+to its image receipt. Reject missing producer code; source presence,
+enforcement capabilities and native replies cannot prove installed delivery.
+
+Set `OCC_TEST_EGRESS_CONNECTED_INPUTS` to an absolute private JSON path.
+The [validator](../../tests/helpers/egress-connected-inputs.mjs) rejects missing inputs:
 
 | Input                                                                                                | Required preparation                                                                                                                                                                                                                         |
 | ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -311,9 +313,9 @@ The test creates resources through public APIs, deploys through the real worker,
 reads its persisted installation, and checks the authenticated supplier receipt.
 It uses the packaged Codex app-server caller from the Agent Gateway Pod. It
 explicitly adopts its fresh unbound source with `adoption: "live"` and
-`authorityScope: "execution"`. The origin observes seventeen requests: one
-normal startup probe, fifteen measured Codex sends (including six hostile
-responses and recovery), and one managed request from an ordinary sibling.
+`authorityScope: "execution"`. The origin observes the startup probe, measured
+Codex sends (including hostile responses and recovery), and a managed request
+from an ordinary sibling.
 For that sibling and the direct TCP probe, the operator uses the supplier's
 authenticated [workload launch path](./protected-repository-custody.md) so both
 inherit the installed connection mediation. Kubernetes exec remains suitable for
@@ -328,10 +330,15 @@ checks that the synthetic provider credential is absent from the ordinary Agent
 and running Codex process environments, observed responses, bounded logs,
 diagnostics, audit, Pod specs and ConfigMaps.
 
-Retain `.build/egress-connected/runtime-<uuid>/` for atomic phase checkpoints, resource
-IDs and bounded observations, without raw requests or credentials. Each controller
-attempt starts with an operation ID and unknown outcome. A response does not establish
-the effect. Failures retain the phase and source location.
+Retain `.build/egress-connected/runtime-<uuid>/`. `apiOperations` records operation
+IDs, phases, HTTP statuses, allowlisted error codes (`UNKNOWN` otherwise), and
+canonical request IDs checked for known credentials. Bodies, messages and other
+headers are excluded. Interrupted or undecodable responses remain `unknown`.
+Cleanup preserves earlier entries and requires its own successful checkpoint.
+`lastApi` identifies the latest attempt.
+`failure.custody` retains bounded read/ring counts, fixed failure categories and
+known transition labels without payloads/IDs. Failed reads preserve prior ring/sequence.
+Missing events are not `no_permit`.
 The deployed checkpoint identifies the public owner capability of the source selected
 by the admitted Harness, while sender evidence independently shows protected sends.
 

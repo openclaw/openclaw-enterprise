@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import test from "node:test";
 import {
@@ -40,8 +40,16 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
     result.stdout.includes(
       `OCC_DEVELOPMENT_COMPUTE_DRIVER=docker OCC_DEVELOPMENT_CONTAINER_ENGINE=docker ${fixture.occCli} dev down`,
     ),
+    result.stdout,
   );
   assert.ok(result.stdout.includes("API URL: http://127.0.0.1:3000"));
+  // The ready text names the profile, which cannot deploy Agents (finding 3165).
+  assert.ok(
+    result.stdout.includes(
+      "Control plane: Compose\nCompute Driver: Docker (control-plane preview; it cannot deploy Agents)",
+    ),
+    result.stdout,
+  );
   assert.ok(result.stdout.includes(`Installation ID: ${matchingInstallationId}`));
   assert.ok(result.stdout.includes(`Service key file: ${keyOutput}`));
   assert.ok(result.stdout.includes(`OCC_SERVICE_KEY_FILE=${keyOutput.replaceAll(" ", "\\ ")}`));
@@ -59,6 +67,11 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
     await readFile(new URL("../../deploy/runtime/openclaw-source.json", import.meta.url), "utf8"),
   );
   const runtimeBuild = dockerLogs.find((entry) => entry.args[0] === "build");
+  // A missing runtime tag means a first build, which compiles Node.js with no build cache.
+  assert.match(
+    result.stderr,
+    /dev-up: Building the runtime image\. With no build cache, this compiles Node\.js/,
+  );
   assert.deepEqual(runtimeBuild?.args, [
     "build",
     "-f",
@@ -107,7 +120,7 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
   }
 
   // The CLI's client behavior is covered against the real Fastify API in
-  // service-api-keys.test.mjs; this fixture isolates dev-up's CLI invocation.
+  // service-api-keys.test.ts; this fixture isolates dev-up's CLI invocation.
   const occLogs = await readJsonLines(fixture.occLog);
   assert.deepEqual(occLogs, [{ args: ["installation", "get", "--output", "json"] }]);
   assert.doesNotMatch(JSON.stringify(occLogs), new RegExp(serviceKey));
@@ -123,6 +136,11 @@ test("dev-up starts Docker without Compose options on Bash 3.2", async (t) => {
   assert.equal(result.status, 0, result.stderr ?? result.error?.message ?? "dev-up did not exit");
   assert.match(result.stdout, /OpenClaw Enterprise development stack is ready/);
   assert.match(result.stdout, /Container engine: Docker/);
+  assert.match(
+    result.stdout,
+    /Browser console: https:\/\/console\.occ-docker-[a-f0-9]+\.oce\.localhost:8443\/console\//,
+  );
+  assert.match(result.stdout, /Browser CA certificate: .*browser-ca\.crt/);
 });
 
 test("dev-up refuses an invalid source identity before building or starting Compose", async (t) => {
@@ -157,6 +175,7 @@ test("dev-up preserves a selected custom runtime image and skips the quickstart 
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /API URL: http:\/\/127\.0\.0\.1:4137/);
+  assert.doesNotMatch(result.stderr, /Building the runtime image/);
   const dockerLogs = await readJsonLines(fixture.dockerLog);
   assert.ok(
     dockerLogs.some((entry) => entry.args.join(" ") === "image inspect custom-runtime:local"),
@@ -220,6 +239,77 @@ test("dev-up rejects a public controller port rendered by real Compose", async (
     dockerLogs.some((entry) => entry.args[0] === "compose" && entry.args.includes("up")),
     false,
   );
+});
+
+async function ownedKeyDirectories(fixture) {
+  // TMPDIR is the fixture directory, so dev-up creates its key directories here.
+  return (await readdir(fixture.directory)).filter((name) =>
+    name.startsWith("openclaw-dev-up-key."),
+  );
+}
+
+test("Compose shutdown keeps copied service keys and leaves Namespace networks to Docker Compute", async (t) => {
+  const fixture = await createFixture(t);
+  const options = composeOptions(fixture);
+  const started = await runDevUp(["--", ...options], fixture.env);
+  assert.equal(started.status, 0, started.stderr);
+  const [created] = await ownedKeyDirectories(fixture);
+  const key = join(fixture.directory, created, "initial-admin-service-key.json");
+  assert.ok(started.stdout.includes(`Service key file: ${key}`), started.stdout);
+  const copy = await readFile(key, "utf8");
+  assert.match(copy, new RegExp(serviceKey));
+
+  // Older launchers shared one list across all projects in this checkout.
+  const [browser] = (await readdir(fixture.directory)).filter((name) =>
+    name.startsWith("occ-docker-"),
+  );
+  const record = join(fixture.directory, browser, "dev-up-key-directories");
+  await assert.rejects(stat(record), { code: "ENOENT" });
+  const other = join(fixture.directory, "openclaw-dev-up-key.other");
+  await mkdir(other, { mode: 0o700 });
+  const otherKey = join(other, "initial-admin-service-key.json");
+  await writeFile(otherKey, "other project", { mode: 0o600 });
+  const entries = `${join(fixture.directory, created)}\n${other}\n`;
+  await writeFile(record, entries, { mode: 0o600 });
+
+  const before = (await readJsonLines(fixture.dockerLog)).length;
+  const stopped = await runCommand(fixture.cli, ["dev", "down", "--volumes", "--", ...options], {
+    cwd: fixture.fixtureRepository,
+    env: fixture.env,
+  });
+  assert.equal(stopped.status, 0, stopped.stderr);
+  const calls = (await readJsonLines(fixture.dockerLog)).slice(before).map(({ args }) => args);
+  assert.deepEqual(
+    calls.filter((args) => args.includes("down")),
+    [
+      [
+        "compose",
+        ...options,
+        "-f",
+        join(fixture.fixtureRepository, "compose.native-admin.yaml"),
+        "down",
+        "--volumes",
+      ],
+    ],
+  );
+  assert.deepEqual(
+    calls.filter((args) => args[0] === "network" || args.includes("psql")),
+    [],
+  );
+  assert.equal(await readFile(key, "utf8"), copy);
+  assert.equal(await readFile(otherKey, "utf8"), "other project");
+  assert.equal(await readFile(record, "utf8"), entries);
+});
+
+test("a failed dev-up removes the empty service key directory it created", async (t) => {
+  const fixture = await createFixture(t, { scenario: "bootstrap-failed" });
+
+  // Startup fails before the key copy, so its key directory is still empty.
+  const result = await runDevUp(["--", ...composeOptions(fixture)], fixture.env);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /startup failed: bootstrap exited with 1/);
+  assert.deepEqual(await ownedKeyDirectories(fixture), []);
 });
 
 test("dev-up refuses an existing key destination before invoking Compose", async (t) => {
@@ -581,6 +671,8 @@ test("dev-up honors Podman Compose file selection from the environment and expli
       assert.deepEqual(cleanup?.args, [
         ...expected.slice(0, -1),
         "compose.podman.yaml",
+        "-f",
+        join(explicit.fixtureRepository, "compose.native-admin.yaml"),
         "down",
         "--volumes",
       ]);
@@ -807,6 +899,26 @@ test("dev-up rejects an unsupported development selector before startup", async 
   );
 });
 
+test("dev-up refuses Keycloak sign-in for the Docker profile before startup", async (t) => {
+  const fixture = await createFixture(t);
+  const keyOutput = join(fixture.directory, "keycloak-docker-service-key.json");
+
+  // The Docker startup script does not read OCC_DEVELOPMENT_SIGN_IN, so its profile check
+  // must refuse it, as occ dev up does, instead of starting a stack without sign-in.
+  const result = await runDevUp(["--key-output", keyOutput, "--", ...composeOptions(fixture)], {
+    ...fixture.env,
+    OCC_DEVELOPMENT_SIGN_IN: "keycloak",
+  });
+
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(
+    result.stderr,
+    /OCC_DEVELOPMENT_SIGN_IN=keycloak requires OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes and OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes/,
+  );
+  assert.equal((await readJsonLines(fixture.dockerLog)).length, 0);
+  await assert.rejects(stat(keyOutput), { code: "ENOENT" });
+});
+
 test("dev-up routes Kubernetes Compute through the unified entry point", async (t) => {
   const fixture = await createFixture(t);
   const result = await runDevUp(["--help"], {
@@ -818,14 +930,39 @@ test("dev-up routes Kubernetes Compute through the unified entry point", async (
   assert.match(result.stdout, /occ dev up/);
 });
 
-test("development entry points default to the Compose profile", async (t) => {
+test("development entry points default to the Kubernetes-only profile", async (t) => {
   const fixture = await createFixture(t);
   const env = { ...fixture.env };
   delete env.OCC_DEVELOPMENT_COMPUTE_DRIVER;
   delete env.OCC_DEVELOPMENT_CONTROL_PLANE;
   delete env.OCC_DEVELOPMENT_SANDBOX_DRIVER;
+  env.OCC_DEVELOPMENT_STATE_DIRECTORY = join(fixture.directory, "default-state");
 
-  // Both entry points must start the same Compose profile when no selector is set.
+  // With no selector set, both entry points must choose the same Kubernetes-only
+  // profile. Only that profile refuses Compose options, before any mutation; the
+  // Docker profile would start Compose with them.
+  for (const result of [
+    await runDevUp(["--", "--env-file", fixture.emptyEnv], env),
+    await runCommand(fixture.cli, ["dev", "up", "--", "--env-file", fixture.emptyEnv], {
+      cwd: fixture.fixtureRepository,
+      env,
+    }),
+  ]) {
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Kubernetes-only profile does not accept Compose options/);
+  }
+  await assert.rejects(stat(env.OCC_DEVELOPMENT_STATE_DIRECTORY), { code: "ENOENT" });
+  assert.equal((await readJsonLines(fixture.dockerLog)).length, 0);
+});
+
+test("explicit Docker Compute keeps the Compose profile through both entry points", async (t) => {
+  const fixture = await createFixture(t);
+  const env = { ...fixture.env, OCC_DEVELOPMENT_COMPUTE_DRIVER: "docker" };
+  delete env.OCC_DEVELOPMENT_CONTROL_PLANE;
+  delete env.OCC_DEVELOPMENT_SANDBOX_DRIVER;
+
+  // Docker Compute without a control-plane selection must still resolve the
+  // Compose control plane, not the Kubernetes default, in both entry points.
   const options = composeOptions(fixture);
   const script = await runDevUp(
     ["--key-output", join(fixture.directory, "script-key.json"), "--", ...options],
@@ -869,17 +1006,23 @@ test("explicit Kubernetes-only profile rejects Compose options before mutation",
   assert.equal((await readJsonLines(fixture.dockerLog)).length, 0);
 });
 
-test("development cleanup defaults to the Compose profile", async (t) => {
+test("development cleanup without selectors stops Docker when no state is recorded", async (t) => {
   const fixture = await createFixture(t);
   await prepareLifecycleCommands(fixture);
   delete fixture.env.OCC_DEVELOPMENT_COMPUTE_DRIVER;
   delete fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE;
   delete fixture.env.OCC_DEVELOPMENT_SANDBOX_DRIVER;
+  const directory = fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
 
-  // Cleanup without selectors must target Compose, not a Kubernetes state directory.
+  // Only an absent state directory sends an unselected cleanup to Compose.
   const result = await runDevDown(fixture.env);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Stopped Docker-compatible development stack/);
+  assert.ok(
+    result.stdout.includes(
+      `Stopped Docker-compatible development stack (no recorded Kubernetes development state in ${directory}).`,
+    ),
+    result.stdout,
+  );
   const commands = await readJsonLines(fixture.env.SAFETY_LOG);
   assert.ok(commands.some((entry) => entry.command === "docker" && entry.args.includes("down")));
   assert.equal(
@@ -888,18 +1031,72 @@ test("development cleanup defaults to the Compose profile", async (t) => {
   );
 });
 
-test("development cleanup rejects a Kubernetes control plane without Kubernetes Compute", async (t) => {
+test("development cleanup without selectors refuses an unusable state directory", async (t) => {
+  const fixture = await createFixture(t);
+  await prepareLifecycleCommands(fixture);
+  delete fixture.env.OCC_DEVELOPMENT_COMPUTE_DRIVER;
+  delete fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE;
+  delete fixture.env.OCC_DEVELOPMENT_SANDBOX_DRIVER;
+  const directory = fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
+  await mkdir(directory, { mode: 0o700 });
+  await writeFile(join(directory, "state.json"), "{", { mode: 0o600 });
+
+  // A present but invalid record must not fall back to stopping a Compose stack.
+  const result = await runDevDown(fixture.env);
+  assert.notEqual(result.status, 0);
+  assert.ok(
+    result.stderr.includes(
+      `development state directory ${directory} exists but is not usable Kubernetes development state`,
+    ),
+    result.stderr,
+  );
+  assert.match(result.stderr, /occ dev down stopped nothing/);
+  assert.equal(await readFile(join(directory, "state.json"), "utf8"), "{");
+  const commands = await readJsonLines(fixture.env.SAFETY_LOG);
+  assert.equal(
+    commands.some((entry) => entry.args.includes("down") || entry.command === "k3d"),
+    false,
+  );
+});
+
+test("development cleanup with Compose options keeps the Docker profile", async (t) => {
+  const fixture = await createFixture(t);
+  await prepareLifecycleCommands(fixture);
+  delete fixture.env.OCC_DEVELOPMENT_COMPUTE_DRIVER;
+  delete fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE;
+  delete fixture.env.OCC_DEVELOPMENT_SANDBOX_DRIVER;
+  // Even a present state directory does not redirect explicit Compose options.
+  await mkdir(fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY, { mode: 0o700 });
+
+  const result = await runCommand(fixture.cli, ["dev", "down", "--", ...composeOptions(fixture)], {
+    cwd: fixture.fixtureRepository,
+    env: fixture.env,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^Stopped Docker-compatible development stack\.$/m);
+  const commands = await readJsonLines(fixture.env.SAFETY_LOG);
+  assert.ok(commands.some((entry) => entry.command === "docker" && entry.args.includes("down")));
+  assert.equal(
+    commands.some((entry) => entry.command === "k3d"),
+    false,
+  );
+});
+
+test("development cleanup treats a Kubernetes control plane without a Compute selection as Kubernetes", async (t) => {
   const fixture = await createFixture(t);
   await prepareLifecycleCommands(fixture);
   delete fixture.env.OCC_DEVELOPMENT_COMPUTE_DRIVER;
   fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "kubernetes";
 
-  // A mismatched selector must not stop an unrelated default Compose stack.
+  // The Kubernetes control plane only runs on Kubernetes Compute, so it must
+  // never stop an unrelated Compose stack; without recorded state it stops nothing.
   const result = await runDevDown(fixture.env);
   assert.notEqual(result.status, 0);
-  assert.match(
+  assert.ok(
+    result.stderr.includes(
+      `no recorded Kubernetes development state in ${fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY}`,
+    ),
     result.stderr,
-    /OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes requires Kubernetes Compute/,
   );
   const commands = await readJsonLines(fixture.env.SAFETY_LOG);
   assert.equal(
@@ -909,7 +1106,7 @@ test("development cleanup rejects a Kubernetes control plane without Kubernetes 
 });
 
 for (const driver of ["docker", "kubernetes"]) {
-  for (const service of ["controller", "postgres"]) {
+  for (const service of ["controller", "postgres", "browser-proxy"]) {
     test(`${driver} dev-up rejects host networking for ${service} before startup`, async (t) => {
       const fixture = await createFixture(t);
       await prepareLifecycleCommands(fixture);
@@ -930,7 +1127,10 @@ for (const driver of ["docker", "kubernetes"]) {
       assert.notEqual(result.status, 0);
       assert.match(
         result.stderr,
-        new RegExp(`Compose ${service} must use the development network`),
+        // The final browser overlay restores its network, so Compose itself rejects host mode.
+        service === "browser-proxy" && driver === "docker"
+          ? /Docker Compose config failed/
+          : new RegExp(`Compose ${service} must use the development network`),
       );
       await assert.rejects(stat(fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY), { code: "ENOENT" });
       const commands = await readJsonLines(fixture.env.SAFETY_LOG);
@@ -949,6 +1149,7 @@ for (const driver of ["docker", "kubernetes"]) {
   for (const [service, port, label] of [
     ["controller", 3000, "controller"],
     ["postgres", 5432, "PostgreSQL"],
+    ["browser-proxy", 8443, "browser-proxy"],
   ]) {
     for (const [mapping, publication, error] of [
       ["public", `"0.0.0.0:39000:${port}"`, "must publish only on loopback"],

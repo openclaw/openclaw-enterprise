@@ -1,4 +1,4 @@
-import { hasControlCharacter } from "../../drivers/repo/credentials/client-contracts.ts";
+import { isRepositoryCredentialIdentity } from "../../drivers/repo/access/grant-identity.ts";
 
 /** Identical private JSON primitives; each boundary owns its failure diagnostic. */
 export function createStatusWirePrimitives(invalid: () => never) {
@@ -16,12 +16,7 @@ export function createStatusWirePrimitives(invalid: () => never) {
   }
 
   function identity(value: unknown): string {
-    if (
-      typeof value !== "string" ||
-      value.length === 0 ||
-      Buffer.byteLength(value) > 512 ||
-      hasControlCharacter(value)
-    ) {
+    if (!isRepositoryCredentialIdentity(value)) {
       return invalid();
     }
     return value;
@@ -34,5 +29,27 @@ export function createStatusWirePrimitives(invalid: () => never) {
     return value;
   }
 
-  return { object, identity, counter };
+  function parseCleanup(value: unknown) {
+    const parsed = object(value, [
+      "active",
+      "pending",
+      "revoked",
+      "expired",
+      "uncertain",
+      "auxiliaryPending",
+    ]);
+    if (typeof parsed.auxiliaryPending !== "boolean") {
+      return invalid();
+    }
+    return {
+      active: counter(parsed.active),
+      pending: counter(parsed.pending),
+      revoked: counter(parsed.revoked),
+      expired: counter(parsed.expired),
+      uncertain: counter(parsed.uncertain),
+      auxiliaryPending: parsed.auxiliaryPending,
+    };
+  }
+
+  return { object, identity, counter, parseCleanup };
 }

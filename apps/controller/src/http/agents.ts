@@ -2,6 +2,8 @@ import {
   WORKSPACE_DEFAULTS_ID,
   harnessAuthBindingFromSnapshot,
   normalizeInitialWorkspaceFiles,
+  type Agent,
+  type OpenClawConfigurationDocument,
   type AgentRead,
   type AgentRevisionRead,
   type AgentRuntimeCredentialsBody,
@@ -14,6 +16,7 @@ import {
   restrictionsRemovedWithAgent,
   type AgentProvisioningProgress,
   type CreateAgentInput,
+  type DeployAgentInput,
   type HarnessResolver,
   type ProvisionAgentInput,
   type UpdateAgentInput,
@@ -189,6 +192,24 @@ function validateWorkspaceSetup(
 // Closed Fastify body schemas admit these input fields. Handlers supply route scope
 // after spreading the body; omitted fields and explicit null stay distinct.
 export function createAgentHandlers(options: AgentHandlerOptions) {
+  function prepareBrowserAccess(
+    agent: Pick<Agent, "id" | "namespaceId">,
+    values: Readonly<OpenClawConfigurationDocument>,
+  ): Readonly<OpenClawConfigurationDocument> {
+    if (!options.nativeAdmin?.enabled || !options.nativeAdmin.domain || !options.publicOrigin) {
+      throw failure(
+        400,
+        "INVALID_REQUEST",
+        "Agent browser access is not enabled on this Installation.",
+      );
+    }
+    return prepareNativeAdminConfiguration(values, {
+      agent,
+      installationId: options.installationId,
+      publicOrigin: options.publicOrigin,
+      domain: options.nativeAdmin.domain,
+    });
+  }
   return {
     listRepositoryOptions,
     listAgentRepositoryOptions: listRepositoryOptions,
@@ -261,25 +282,7 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
         nativeAdmin === true
           ? {
               key: "native-admin",
-              prepare: (agent, values) => {
-                if (
-                  !options.nativeAdmin?.enabled ||
-                  !options.nativeAdmin.domain ||
-                  !options.publicOrigin
-                ) {
-                  throw failure(
-                    400,
-                    "INVALID_REQUEST",
-                    "Native admin UI access is not enabled on this Installation.",
-                  );
-                }
-                return prepareNativeAdminConfiguration(values, {
-                  agent,
-                  installationId: options.installationId,
-                  publicOrigin: options.publicOrigin,
-                  domain: options.nativeAdmin.domain,
-                });
-              },
+              prepare: prepareBrowserAccess,
             }
           : undefined,
       );
@@ -289,15 +292,47 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       reply.status(202).send({ data: result, meta: { requestId: request.id } });
     },
     async createAgent({ controller, context, request, reply, body, namespaceId, mutationEvent }) {
-      const input = body as Omit<CreateAgentInput, "namespaceId">;
+      const { nativeAdmin, expectedConfigurationGeneration, ...input } = body as Omit<
+        CreateAgentInput,
+        "namespaceId"
+      > & {
+        nativeAdmin?: boolean;
+        expectedConfigurationGeneration?: number;
+      };
+      if (nativeAdmin === true && expectedConfigurationGeneration === undefined) {
+        throw failure(
+          400,
+          "INVALID_REQUEST",
+          "Browser access setup requires expectedConfigurationGeneration.",
+        );
+      }
       validateWorkspaceSetup(input);
       const agent = await controller.transact(async (unit) => {
         const created = await controller.createAgent(
           context.actorId,
           { ...input, namespaceId },
           options.resolveHarness,
+          nativeAdmin === true
+            ? {
+                expectedGeneration: expectedConfigurationGeneration!,
+                prepare: prepareBrowserAccess,
+              }
+            : undefined,
         );
-        await unit.audit.append(mutationEvent({ kind: "agent", id: created.id, namespaceId }));
+        await unit.audit.append(
+          mutationEvent(
+            { kind: "agent", id: created.id, namespaceId },
+            nativeAdmin === true
+              ? {
+                  browserAccess: true,
+                  preparedConfiguration: {
+                    id: input.configurationId,
+                    previousGeneration: expectedConfigurationGeneration,
+                  },
+                }
+              : undefined,
+          ),
+        );
         return clientAgent(created);
       });
       reply.status(201).send({ data: agent, meta: { requestId: request.id } });
@@ -494,7 +529,11 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       try {
         const receipt = await controller.deployAgentFirst(
           context.actorId,
-          { namespaceId, agentId: params.agentId! },
+          {
+            namespaceId,
+            agentId: params.agentId!,
+            harnessOverrides: (request.body as FirstDeploymentIntent).harnessOverrides,
+          },
           request.body as FirstDeploymentIntent,
           options.resolveHarness,
           (admitted) =>
@@ -520,10 +559,19 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       params,
       namespaceId,
     }) {
+      let harnessOverrides: DeployAgentInput["harnessOverrides"];
+      const query = request.query as { harnessOverrides?: string };
+      if (query.harnessOverrides !== undefined) {
+        try {
+          harnessOverrides = JSON.parse(query.harnessOverrides);
+        } catch {
+          throw failure(400, "INVALID_REQUEST", "Harness overrides must be JSON.");
+        }
+      }
       reply.header("cache-control", "no-store");
       const receipt = await controller.recoverAgentFirstDeployment(
         context.actorId,
-        { namespaceId, agentId: params.agentId! },
+        { namespaceId, agentId: params.agentId!, harnessOverrides },
         {
           key: params.key!,
           expectedConfigurationId: params.expectedConfigurationId!,
@@ -537,7 +585,11 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       try {
         const admitted = await controller.deployAgentWithAuthorization(
           context.actorId,
-          { namespaceId, agentId },
+          {
+            namespaceId,
+            agentId,
+            harnessOverrides: (request.body as DeployAgentInput | undefined)?.harnessOverrides,
+          },
           options.resolveHarness,
           (admitted) =>
             mutationEvent(

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Page } from "playwright";
-import type { GitHubRepositoryRegistration } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+import type { GitHubRepositoryRegistration } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import type { RepositoryOptionListResponse } from "../../packages/contracts/src/api/resources.ts";
 import { login, newPage, repositoryCheckbox } from "./console-agents-browser-helpers.ts";
 import { createRepositoryLaunchFixture } from "./console-agents-test-support.ts";

@@ -19,7 +19,12 @@ URLs skip cases, so check the test results for skips.
 The application lane prepares isolated databases and removes its resources on
 exit. Its PostgreSQL server is disposable, so preparation turns off `fsync`,
 `synchronous_commit` and `full_page_writes` there; keep no data in it. Each run
-needs its own state file. With Docker Compose available, run:
+needs its own state file. Preparation stages a container-readable copy of the public
+bootstrap SQL, so restrictive checkout permissions do not need changing. Cleanup
+removes this copy with the disposable server; unexpected files in its directory
+are preserved and reported as a cleanup failure. If directory or SQL creation was
+not durably confirmed, cleanup preserves any unconfirmed contents and state.
+Inspect their ownership before manual removal; a competing process may own the directory. With Docker Compose available, run:
 
 ```sh
 (
@@ -54,20 +59,49 @@ retain the state if cleanup fails. The `postgres`, `postgres-platform`, and
 `postgres-auth` lanes use the same prepare, run, and cleanup pattern; see
 [CI lanes](ci/full-integration.md#scenarios).
 
+## Subnet pool exhaustion
+
+If Compose reports `all predefined address pools have been fully subnetted`,
+Docker could not allocate a subnet for the project network. Stop the run if it
+is still active. If its cleanup did not finish, run the printed command from the
+original checkout:
+
+```sh
+node scripts/ci/cleanup.mjs --state /printed/run/directory/state.json
+```
+
+Cleanup uses the recorded Compose project, port, and bootstrap file. It tears
+down the project's containers, network, and disposable volume, even after partial
+startup. Keep the state and bootstrap directory if cleanup fails. Retry cleanup
+after resolving the error. `pnpm db:down` stops the development project and
+retains its volume.
+
+On a shared Docker host, ask the administrator to coordinate teardown with
+each project's owner. An empty bridge can still belong to a project with stopped
+containers and a named volume. Avoid global pruning and changes to shared
+daemon address pools. If capacity remains exhausted, ask for an isolated Docker
+host and start with a fresh run directory.
+
 <a id="postgresql"></a>
 
 ## Other PostgreSQL suites
 
-Use Docker Compose and fresh database names. The bootstrap suite needs a
-separate, migrated database with no Installation. It creates an Installation;
-do not rerun it against a previous bootstrap database. If a name exists,
-choose another name instead of dropping it.
+Run `pnpm db:up` from one checkout and reuse its PostgreSQL service on port 55432
+for standalone tests. Run the Compose setup commands from that checkout and
+create fresh disposable databases on the shared development server. Use the
+isolated workflow above for version-worker tests and full CI lanes.
+
+The bootstrap test creates an Installation. Give it a fresh migrated database
+with no Installation. The [Kubernetes HTTP fixture](kubernetes.md#kubernetes-http-fixture)
+uses `openclaw_k8s_local`. If a test database name is already in use, choose a
+new name in both setup and the test URL. Keep the `openclaw_k8s_` prefix for the
+Kubernetes fixture.
 
 ```sh
 pnpm db:up
 (
 set -eu
-for test_database in openclaw_test_local openclaw_bootstrap_local openclaw_k8s_local; do
+for test_database in openclaw_test_local openclaw_bootstrap_local openclaw_singleton_local openclaw_k8s_local; do
   docker compose -f compose.postgres.yaml exec -T postgres psql -v ON_ERROR_STOP=1 -U postgres -d postgres \
     -c "CREATE DATABASE $test_database"
   docker compose -f compose.postgres.yaml exec -T postgres psql -v ON_ERROR_STOP=1 -U postgres -d "$test_database" \
@@ -79,10 +113,11 @@ done
 
 ```sh
 OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_test_local \
+  node --test --test-concurrency=1 tests/integration/postgres-platform-state.test.mjs
 OCC_PRODUCTION_WIREUP_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_bootstrap_local \
-  node --test --test-concurrency=1 tests/integration/postgres-platform-state.test.mjs \
-  tests/integration/postgres-production-wireup.test.mjs \
-  tests/integration/compute-singleton-worker-postgres.test.mjs
+  node --test --test-concurrency=1 tests/integration/postgres-production-wireup.test.mjs
+OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_singleton_local \
+  node --test --test-concurrency=1 tests/integration/compute-singleton-worker-postgres.test.mjs
 ```
 
 The bootstrap test uses passive Compute and test Drivers: it does not prove a
@@ -91,17 +126,17 @@ live gateway. Four optional Configuration cases also require
 Broad `pnpm test`, `pnpm test:integration`, and `pnpm test:postgres` include
 version-worker tests and therefore require prepared ownership.
 
-## GitHub human sign-in
+## OIDC human sign-in
 
 With a fresh migrated `OCC_TEST_DATABASE_URL` and the
 [Playwright browser](local.md#console-browser-checks), run:
 
 ```sh
-node --test tests/integration/postgres-github-sign-in.test.mjs
+node --test tests/integration/postgres-oidc-sign-in.test.mjs
 ```
 
 The database case skips without the URL and fails without the browser. Provider
-responses are fixtures; a pass does not prove live GitHub registration or HTTPS
+responses are fixtures; a pass does not prove live IdP registration or HTTPS
 cookies. Password and other provider scenarios are in the `postgres-auth` lane.
 
 ## PostgreSQL test environment
@@ -150,6 +185,68 @@ only lowercase letters, digits, and underscores, and contain at most 50
 characters. The test reads the container's administrator password with `docker inspect`,
 connects through the selected port, and drops only databases it created.
 See [migration recovery](../reference/settings/operations.md#migration-history).
+
+### Released controller compatibility
+
+Select two already-loaded, digest-pinned controller images to test their real
+API and worker in two independent disposable databases. Use the PostgreSQL fixture
+selectors above, then set these four image inputs:
+
+```sh
+OCC_TEST_RELEASED_CONTROLLER_IMAGE="$RELEASED_IMAGE" \
+OCC_TEST_RELEASED_CONTROLLER_REVISION="$RELEASED_COMMIT" \
+OCC_TEST_CANDIDATE_CONTROLLER_IMAGE="$CANDIDATE_IMAGE" \
+OCC_TEST_CANDIDATE_CONTROLLER_REVISION="$CANDIDATE_COMMIT" \
+  node --test --test-name-pattern='Released controller remains usable' \
+  tests/integration/postgres-migration-compatibility.test.mjs
+```
+
+For native runner receipts, use the prepare/run/cleanup pattern above with lane
+`postgres`. Prepare the lane without `--file`, then supply the same four inputs
+to `node scripts/ci/run-tests.mjs run postgres` with
+`--file tests/integration/postgres-migration-compatibility.test.mjs`.
+This runs the whole migration file, including both selected compatibility cases.
+Require both selected cases to pass and inspect `releasedController` and `candidateController`
+in the file result's `imageDigests`; passing ordinary migration cases alone does
+not qualify the pair. The selectors are optional and inherited only by this file.
+
+Each image must carry its matching `org.opencontainers.image.revision` label.
+The cases never pull images. They are registered only when at least one image or
+revision input is supplied; partial selection fails. With no inputs, ordinary
+PostgreSQL CI runs its existing cases without an extra skipped test and does not
+qualify released-image compatibility. A failed case means the image pair is not
+qualified, even when the other case passes.
+
+The released image bootstraps and migrates a fresh database with its canonical
+commands. Its real Fastify app, password authentication, Native IAM and worker
+perform namespace reads and writes while the candidate migrator runs, then
+repeat after process restart. The candidate starts a saved connection through
+its API. Both controllers must list the same persisted source ID. The released
+worker must still settle namespace work, including after another restart. The candidate migrator
+then checks the final history without changing it. A failed read is failed
+compatibility; there is no option to accept incompatibility. Use the same
+candidate image for both roles as a positive harness control.
+
+A second case tests configured IAM policy activation independently of saved
+connections. It keeps the same administrator session reading the same Namespace
+before migration and after SQL completes, then starts the candidate with the
+[Default users policy](../reference/authorization.md). The candidate writes its
+configured Installation Group binding through the startup controller method,
+before serving requests.
+Both versions must still authorize the administrator, and a newly provisioned
+member must read the configured Namespace and be denied in another Namespace.
+The released controller must also restart and authorize the same read. The case
+records each phase and reports `qualified: true` only after every assertion and
+controller cleanup succeeds. A refused old read or startup is a compatibility
+failure, not an acceptable outcome. Run only this case with
+`--test-name-pattern='Released controller remains usable after configured IAM activation'`.
+
+This is database/API compatibility proof with passive Compute and Secret test
+Drivers. It does not run the production server entry point, Helm rollout,
+Agent workloads, external OAuth exchange or model turns. Candidate images must
+support both the saved-connection APIs and configured IAM startup policy exercised
+by these cases. Each case removes its containers and database on completion,
+including assertion failure.
 
 ## Azure workload-identity connections
 

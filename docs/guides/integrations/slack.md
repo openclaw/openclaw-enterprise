@@ -13,6 +13,9 @@ go to the Agent's gateway; model credentials are configured separately.
   to receive channel mentions and [`chat:write`](https://docs.slack.dev/reference/scopes/chat.write/)
   to send replies. [Reinstall the Slack app](https://docs.slack.dev/app-management/distribution/#when-is-a-reinstall-required)
   if you add bot scopes to an existing installation.
+- Use one Slack app, with its own app-level and bot tokens, for each Agent.
+  Slack can deliver an event to any active Socket Mode connection for that app.
+  If Agents share an app, the intended Agent can miss the event.
 - Invite the app's bot to the channel. Your Installation operator must allow
   the gateway's Slack network traffic and provide a runtime image that includes
   the native Slack plugin.
@@ -196,6 +199,8 @@ bot. To enable one-to-one messages:
   the gateway connected to Slack, the bot has joined the configured channel,
   and the channel ID is correct. Then send an explicit mention. Ask the
   operator to check gateway network access if it cannot connect.
+- **Some messages never reach the Agent:** check whether another Agent connects
+  to the same Slack app. Give each Agent its own app and use that app's tokens.
 - **Channel messages work but direct messages do not:** check the
   `message.im` subscription, the installed bot token's `im:history` scope,
   and whether the sender's Slack user ID is allowed by the native `allowFrom`

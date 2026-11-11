@@ -1,7 +1,7 @@
 ---
 created: 2026-09-18
-updated: "2026-10-22"
-last_updated_session: "authoring-run/1a8f6b59-50b6-4282-a383-5f45e22aa461"
+updated: "2026-10-29"
+last_updated_session: "authoring-run/7a1b294d-61aa-4317-8c28-9089af17c0ae"
 ---
 
 # Repository credential configuration flow
@@ -68,6 +68,13 @@ Service name, release, namespace, and Backend ID. Certificate issuance uses that
 hostname as its DNS SAN, so the chart-rendered origin remains the input for TLS
 material, startup, and later Agent session material. The helper does not derive
 a second hostname policy; Helm validation owns the supported Service settings.
+
+The chart escapes each literal dollar in the Backend ID for Kubernetes argument
+expansion. The origin helper removes that single escape layer when reporting the
+logical ID. Projected service configuration and registry values retain the
+original ID, which must match the broker process argument exactly. This keeps
+valid IDs such as `github-$$` and `github-$(BACKEND)` literal without depending on
+the Pod environment.
 
 Helm always renders an explicit worker Deployment strategy. Disabled installs use
 the Kubernetes default RollingUpdate values, `maxSurge: "25%"` and
@@ -173,6 +180,8 @@ startup validation, not live GitHub behavior or platform integration.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 20:25: Preserve literal Backend IDs across Helm arguments, Kubernetes expansion, and origin-helper output. (authoring-run/7a1b294d-61aa-4317-8c28-9089af17c0ae - d0e4bc99805dbb4f2afa04d82489c987a35a9a5d)
 
 - 2026-10-16 19:18: Record prepared-only registry rejection on the request-time App backend. (authoring-run/1a8f6b59-50b6-4282-a383-5f45e22aa461 - 6c8adb9779d6819a4d4794c8754d7b6017aba89a)
 

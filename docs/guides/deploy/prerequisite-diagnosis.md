@@ -1,7 +1,7 @@
 # Diagnose Kubernetes installation prerequisites
 
 Before installing OCE, run the read-only prerequisite check from a matching
-checkout with Node.js 24, `kubectl`, and your trusted kubeconfig. Prepare the target
+checkout with Node.js satisfying `engines.node` in the selected release checkout's `package.json`, `kubectl`, and your trusted kubeconfig. Prepare the target
 namespace and prerequisite controllers through your infrastructure workflow first.
 The command does not create resources, update policies, change your current
 context, or run commands inside Pods.

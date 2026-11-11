@@ -12,8 +12,8 @@ import {
   consoleOrigin as origin,
   currentSession,
   fakeGoogle,
-  githubSignIn,
-  githubUpgradeSettings,
+  oidcSignIn,
+  oidcUpgradeSettings,
   googleSignIn,
   googleUpgradeSettings,
   loginDenialCount,
@@ -21,7 +21,8 @@ import {
   readAccount,
   sessionCookieName,
   signedInHeaders,
-  startFakeGitHub,
+  fakeOidc,
+  fixtureOidcIssuer,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { injectLocalhost } from "../helpers/inject-json.mjs";
@@ -36,8 +37,8 @@ const secrets = {
   "occ-auth/secret": "google-sign-in-auth-test-secret-at-least-32-bytes",
   "occ-google-login/client-id": googleClientId,
   "occ-google-login/client-secret": googleClientSecret,
-  "occ-github-login/client-id": "google-suite-github-client-id",
-  "occ-github-login/client-secret": "google-suite-github-client-secret",
+  "occ-oidc-login/client-id": "google-suite-oidc-client-id",
+  "occ-oidc-login/client-secret": "google-suite-oidc-client-secret",
 };
 // The production slow lane with shorter floors (250 ms doubling to a 500 ms cap instead of
 // 1 s doubling to 8 s), as in postgres-password-sign-in-limit. This suite spends password
@@ -47,14 +48,15 @@ const secrets = {
 const slowLane = { floorMs: 250, maxFloorMs: 500 };
 
 const googleProviderId = providerInstanceId("google", { clientId: googleClientId });
-const githubProviderId = providerInstanceId("github", {
-  clientId: "google-suite-github-client-id",
+const oidcProviderId = providerInstanceId("oidc", {
+  issuer: fixtureOidcIssuer.issuer,
+  clientId: "google-suite-oidc-client-id",
 });
 const memberSubject = "110000000000000000001";
 const strangerSubject = "110000000000000000002";
 const disabledSubject = "110000000000000000003";
 const bothSubject = "110000000000000000004";
-const bothGithubSubject = "9500004";
+const bothOidcSubject = "9500004";
 
 // The Google provider fixture replaces only Google's token and key endpoints. State,
 // audit, IAM, Better Auth, the guarded human-login profile and Fastify are production code.
@@ -70,8 +72,8 @@ test(
         email: "google-recovery@example.test",
         password: "google-member-password",
         secrets,
-        // The GitHub-and-Google subtest starts GitHub; until then no GitHub stand-in runs.
-        github: false,
+        // The OIDC-and-Google subtest starts OIDC; until then no OIDC stand-in runs.
+        oidc: false,
       },
     );
     const google = fakeGoogle(t, {
@@ -147,7 +149,6 @@ test(
       async () => {
         const providers = await app.inject({ url: "/api/auth/providers" });
         assert.deepEqual(providers.json().data, {
-          github: false,
           google: true,
           oidc: false,
           password: true,
@@ -160,12 +161,12 @@ test(
         const recovery = await app.inject({ url: "/api/auth/recovery", headers: adminHeaders });
         assert.equal(recovery.statusCode, 200, recovery.body);
         assert.equal(recovery.json().data.userId, admin.id);
-        // GitHub stays unconfigured on a Google-only install.
-        const githubStart = await injectLocalhost(app, "POST", "/api/auth/providers/github/start", {
+        // OIDC stays unconfigured on a Google-only install.
+        const oidcStart = await injectLocalhost(app, "POST", "/api/auth/providers/oidc/start", {
           remoteAddress: address(),
           headers: { origin },
         });
-        assert.equal(githubStart.statusCode, 403, githubStart.body);
+        assert.equal(oidcStart.statusCode, 403, oidcStart.body);
         // The controller's fixed endpoints are the ones Google's discovery document names.
         const start = await startGoogle();
         assert.equal(start.statusCode, 200, start.body);
@@ -213,19 +214,22 @@ test(
 
       const signIn = await assertGoogleSignIn(memberSubject, member.id);
       const setCookies = [signIn.callback.headers["set-cookie"]].flat();
-      assert.ok(
-        setCookies.some(
-          (cookie) =>
-            cookie.startsWith(`${sessionCookieName}=`) &&
-            /; Secure/i.test(cookie) &&
-            /; HttpOnly/i.test(cookie) &&
-            /; Path=\//i.test(cookie) &&
-            !/; Domain=/i.test(cookie),
-        ),
-        "the session cookie is a host-only __Host- cookie",
+      // Only an issued session proves shared scope; a cookie clearance cannot satisfy it.
+      const sessionCookies = setCookies.filter((cookie) =>
+        cookie.startsWith(`${sessionCookieName}=`),
       );
+      assert.equal(sessionCookies.length, 1);
+      const sessionCookie = sessionCookies[0];
+      assert.match(sessionCookie, /^__Secure-openclaw_occ_shared\.session_token=[^;]+;/);
+      assert.doesNotMatch(sessionCookie, /; Max-Age=0(?:;|$)/i);
+      assert.match(sessionCookie, /; Domain=oce\.example\.internal(?:;|$)/i);
+      assert.match(sessionCookie, /; Secure(?:;|$)/i);
+      assert.match(sessionCookie, /; HttpOnly(?:;|$)/i);
+      assert.match(sessionCookie, /; Path=\/(?:;|$)/i);
+      assert.match(sessionCookie, /; SameSite=Lax(?:;|$)/i);
       const receipt = setCookies.find((cookie) => cookie.startsWith("__Host-occ_login_receipt="));
       assert.ok(receipt, "the callback issues a __Host- receipt");
+      assert.doesNotMatch(receipt, /; Domain=/i);
       const token = google.tokens.at(-1);
       assert.equal(token.redirect_uri, `${origin}/api/auth/providers/google/callback`);
       assert.equal(token.grant_type, "authorization_code");
@@ -409,22 +413,28 @@ test(
       );
     });
 
-    await t.test("GitHub and Google together both sign in with distinct provider ids", async () => {
+    await t.test("OIDC and Google together both sign in with distinct provider ids", async () => {
       await app.close();
       app = undefined;
-      await startFakeGitHub(t);
+      const oidc = fakeOidc(t, {
+        clientId: secrets["occ-oidc-login/client-id"],
+        clientSecret: secrets["occ-oidc-login/client-secret"],
+      });
       app = await composeApp(
         {
-          ...githubUpgradeSettings(admin.id),
+          ...oidcUpgradeSettings(admin.id),
           ...googleUpgradeSettings(admin.id, [hostedDomain]),
         },
         { passwordSlowLaneFloors: slowLane },
       );
       adminHeaders = await signedInHeaders(app, origin, admin, address());
       assert.deepEqual((await app.inject({ url: "/api/auth/providers" })).json().data, {
-        github: true,
+        oidc: true,
         google: true,
-        oidc: false,
+        oidcSignIn: {
+          label: "single sign-on",
+          authorizationUrl: fixtureOidcIssuer.authorizationUrl,
+        },
         password: true,
         sessionBinding: true,
       });
@@ -435,9 +445,15 @@ test(
         "account-disabled",
       );
       await attach(both.id, "google", bothSubject);
-      await attach(both.id, "github", bothGithubSubject);
+      await attach(both.id, "oidc", bothOidcSubject);
       await assertGoogleSignIn(bothSubject, both.id);
-      const { callback } = await githubSignIn(app, origin, bothGithubSubject, address());
+      const { callback } = await oidcSignIn(
+        app,
+        origin,
+        oidc,
+        { subject: String(bothOidcSubject) },
+        address(),
+      );
       await assertConsoleSignIn(app, callback, both.id);
       const methods = (
         await pool.query(
@@ -447,14 +463,14 @@ test(
         )
       ).rows;
       assert.deepEqual(methods, [
-        { provider_id: githubProviderId, account_id: bothGithubSubject },
         { provider_id: googleProviderId, account_id: bothSubject },
+        { provider_id: oidcProviderId, account_id: bothOidcSubject },
       ]);
-      assert.notEqual(githubProviderId, googleProviderId);
-      // A Google subject never signs in through GitHub, nor the reverse.
-      const crossed = await githubSignIn(app, origin, "9500099", address());
-      assert.equal(crossed.callback.headers.location, "/console/?authError=github");
-      await assertGoogleRefused({ subject: bothGithubSubject }, "GitHub subject at Google");
+      assert.notEqual(oidcProviderId, googleProviderId);
+      // A Google subject never signs in through OIDC, nor the reverse.
+      const crossed = await oidcSignIn(app, origin, oidc, { subject: "9500099" }, address());
+      assert.equal(crossed.callback.headers.location, "/console/?authError=oidc");
+      await assertGoogleRefused({ subject: bothOidcSubject }, "OIDC subject at Google");
       const recovery = await app.inject({ url: "/api/auth/recovery", headers: adminHeaders });
       assert.equal(recovery.json().data.userId, admin.id);
     });

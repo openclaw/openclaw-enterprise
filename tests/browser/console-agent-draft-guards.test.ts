@@ -1953,9 +1953,8 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
     assert.deepEqual(pathRequests(requests, "POST", `${path}/deploy`), []);
   }
 
-  // Unknown answer: the first Secret answer fails, so Deploy stays enabled and the API decides.
-  // Its 403 names the grant and the Secret, which the operator may read (finding 2594); the
-  // answer, read again, names the Secret by name.
+  // An unavailable permission summary leaves the decision to actual deployment admission.
+  // Its 403 refreshes the summary and names the missing grant without creating a revision.
   {
     const { page } = await newPage(t, fixture);
     let failed = false;
@@ -1967,18 +1966,20 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
       failed = true;
       await route.abort();
     });
-    await login(page, fixture, url, operator.credentials);
-    await page.getByRole("heading", { name: "Operator Secret Agent" }).waitFor();
-    const deploy = page.getByRole("button", { name: "Deploy new version" });
-    await waitForEnabled(deploy);
+    const requests = apiRequests(page, fixture.origin);
     const refused = page.waitForResponse(
       (response) =>
         response.url() === `${fixture.origin}${path}/deploy` &&
         response.request().method() === "POST",
     );
+    await login(page, fixture, url, operator.credentials);
+    await page.getByRole("heading", { name: "Operator Secret Agent" }).waitFor();
+    const deploy = page.getByRole("button", { name: "Deploy new version" });
+    await waitForEnabled(deploy);
     await deploy.click();
     const response = await refused;
     assert.equal(response.status(), 403);
+    assert.equal(pathRequests(requests, "POST", `${path}/deploy`).length, 1);
     assert.equal(
       record(record(await response.json()).error).message,
       callerDenied("Secret operate", `Secret ${modelSecret.id}`),
@@ -1986,14 +1987,38 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
     const alert = page.getByRole("alert").filter({ hasText: reason });
     await alert.waitFor();
     assert.equal(await alert.textContent(), reason);
-    // The alert says it once, and Deploy stays disabled until a grant is read.
     assert.equal(await page.getByText(reason).count(), 1);
+
+    // Keyboard users can return to Deploy and get the same refusal as its description.
     assert.equal(await deploy.isDisabled(), true);
+    const alertId = await alert.getAttribute("id");
+    assert.ok(alertId);
+    assert.equal(await deploy.getAttribute("aria-describedby"), alertId);
+    assert.equal(await deploy.evaluate((button) => button.tabIndex), 0);
+    await deploy.focus();
+    assert.equal(await hasFocus(deploy), true);
+    assert.equal(await focusedDescription(page), reason);
+
+    // A grant takes effect when the same open draft rechecks its permissions on refocus.
+    await settlePageRequests(page);
+    grantSecretOperate(fixture, namespace.id, operator.principal, [modelSecret.id]);
+    const rechecked = responseTo(page, "GET", `${fixture.origin}${path}/permissions/secrets`);
+    await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+    const summary = await rechecked;
+    assert.equal(summary.status(), 200, "Secret permissions GET status");
+    assert.deepEqual(record(await summary.json()).data, {
+      operateDenied: [],
+      unreadableOperateDenied: 0,
+    });
+    await expectNoText(page, reason, async () => {
+      await waitForEnabled(deploy);
+      await settlePageRequests(page);
+    });
+    assert.equal(pathRequests(requests, "POST", `${path}/deploy`).length, 1);
   }
 
   // With Secret operate on the model Secret, the gate never holds less than the API allows: the
   // same operator deploys.
-  grantSecretOperate(fixture, namespace.id, operator.principal, [modelSecret.id]);
   {
     const { page } = await newPage(t, fixture);
     await login(page, fixture, url, operator.credentials);

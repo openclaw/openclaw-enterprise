@@ -1,3 +1,6 @@
+import { openShellNamespaceObjects } from "./openshell-workspace-protocol.mjs";
+import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
+import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID, createHash, X509Certificate } from "node:crypto";
@@ -8,6 +11,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
+import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { createConsoleFixtureRevisions } from "./console-fixture-revisions.ts";
 import { fileConsoleApp as createFileConsoleApp } from "./console-file-app.ts";
 
@@ -60,12 +64,13 @@ function computeDriver({
   credentialGatewayDriver,
   resolveSandboxNamespace = async (namespace) => ({
     ...namespace,
-    name: `console-${namespace.id}`,
+    name: kubernetesNamespaceName(namespace.id),
   }),
   // OCC applies the bundled Kubernetes Compute's own save rules (channel credentials only from
   // Secret bindings, finding 2319) only under its implementation, such as `kubernetes-local`.
   implementation = "test-memory-lifecycle",
 } = {}) {
+  const namespaceObjects = openShellNamespaceObjects();
   const driver = createTestKubernetesComputeDriver("console-compute", {
     gatewayRuntime: true,
     ...(modelProvider === undefined ? {} : { modelProvider }),
@@ -97,6 +102,16 @@ function computeDriver({
     },
     // The same fixture placement is shared by source management and the Sandbox.
     resolveSandboxNamespace,
+    async resolveSandboxNamespaceContext(namespace, signal) {
+      return {
+        namespace: await resolveSandboxNamespace(namespace),
+        kubernetes: namespaceObjects,
+        signal,
+      };
+    },
+    async checkNamespaceDeletion(namespace) {
+      return { namespaceId: namespace.id, deletionAllowed: true };
+    },
     async prepareRevision(revision) {
       return {
         namespaceId: revision.namespaceId,
@@ -116,6 +131,31 @@ function authSecretName(agentName) {
   return Array.from(`Auth ${agentName}`).slice(0, NAME_MAX_CHARACTERS).join("").trimEnd();
 }
 
+// Playwright route.fetch uses Node's TLS client, separately from Chromium.
+// Keep each live fixture's exact certificate trusted until that fixture closes.
+let originalNodeCertificates;
+const nodeFixtureCertificates = new Map();
+function trustNodeFixtureCertificate(cert) {
+  const pem = cert.toString();
+  originalNodeCertificates ??= getCACertificates("default");
+  nodeFixtureCertificates.set(pem, (nodeFixtureCertificates.get(pem) ?? 0) + 1);
+  const update = () =>
+    setDefaultCACertificates([...originalNodeCertificates, ...nodeFixtureCertificates.keys()]);
+  update();
+  return () => {
+    const remaining = nodeFixtureCertificates.get(pem) - 1;
+    if (remaining === 0) {
+      nodeFixtureCertificates.delete(pem);
+    } else {
+      nodeFixtureCertificates.set(pem, remaining);
+    }
+    update();
+    if (nodeFixtureCertificates.size === 0) {
+      originalNodeCertificates = undefined;
+    }
+  };
+}
+
 function spkiHash(cert) {
   return createHash("sha256")
     .update(new X509Certificate(cert).publicKey.export({ type: "spki", format: "der" }))
@@ -131,7 +171,7 @@ export function chromiumTrustArg(certs) {
  * A TLS ingress on 127.0.0.1:`port` that forwards every request to the HTTP listener on
  * 127.0.0.1:`upstreamPort`, as a production ingress would. `tls` ({ key, cert }, PEM) is the
  * leaf to serve; without it a one-day self-signed leaf for `originHost` is made with openssl.
- * Returns the leaf, the Chromium flag that trusts it, and close().
+ * Returns the leaf and close().
  */
 export async function startHttpsIngress({
   port,
@@ -160,7 +200,9 @@ export async function startHttpsIngress({
           "-out",
           certPath,
           "-subj",
-          `/CN=${originHost}`,
+          // Concurrent self-signed roots need distinct subjects. OpenSSL otherwise
+          // selects one of the same-subject/key certificates and rejects the others.
+          `/CN=${originHost}/OU=${randomUUID()}`,
           "-addext",
           `subjectAltName=DNS:${originHost}`,
         ],
@@ -183,18 +225,24 @@ export async function startHttpsIngress({
         headers: incoming.headers,
       },
       (response) => {
+        response.on("error", (error) => outgoing.destroy(error));
         outgoing.writeHead(response.statusCode, response.headers);
         response.pipe(outgoing);
       },
     );
-    upstream.on("error", () => outgoing.writeHead(502).end());
+    // Preserve deliberate connection-loss cases through the fixture TLS hop.
+    upstream.on("error", (error) => outgoing.destroy(error));
+    outgoing.on("close", () => {
+      if (!outgoing.writableFinished) {
+        upstream.destroy();
+      }
+    });
     incoming.pipe(upstream);
   });
   ingress.listen({ port, host: "127.0.0.1", reusePort });
   await once(ingress, "listening");
   return {
     cert,
-    browserArg: chromiumTrustArg([cert]),
     async close() {
       ingress.closeAllConnections();
       await new Promise((resolve, reject) =>
@@ -228,7 +276,7 @@ export function fileConsoleApp(options = {}) {
  * Keep object-typed wrappers and keyed options extracted with Parameters compatible.
  * @param {import("./console-file-app.ts").CleanupRegistrar} t
  * @template {object | Record<string, unknown>} [Options=object]
- * @param {Options & {auditSink?: InMemoryAuditSink}} [options]
+ * @param {Options & {auditSink?: InMemoryAuditSink, https?: boolean, ingressTLS?: {key: Buffer, cert: Buffer}}} [options]
  */
 export async function createConsoleAppFixture(t, options = {}) {
   const auditSink = options.auditSink ?? new InMemoryAuditSink();
@@ -242,13 +290,14 @@ export async function createConsoleAppFixture(t, options = {}) {
   const appPort = await reservePort();
   t.after(appPort.release);
   const port = appPort.port;
-  const originHost = options.originHost ?? "127.0.0.1";
-  const browserReservation = options.https === true ? await reservePort() : null;
+  const originHost = options.originHost ?? "console.oce.localhost";
+  const https = options.https !== false;
+  const browserReservation = https ? await reservePort() : null;
   if (browserReservation !== null) {
     t.after(browserReservation.release);
   }
   const browserPort = browserReservation?.port ?? port;
-  const origin = `${options.https === true ? "https" : "http"}://${originHost}:${browserPort}`;
+  const origin = `${https ? "https" : "http"}://${originHost}:${browserPort}`;
   const browserArgs = [];
   const transportOrigin = `http://127.0.0.1:${port}`;
   const { rawRequest, fetchThroughLoopback } = createConsoleFixtureTransport(
@@ -272,14 +321,9 @@ export async function createConsoleAppFixture(t, options = {}) {
     installationId,
     mode: authMode,
     baseURL: authBaseURL,
+    agentDomain: options.nativeAdmin?.domain ?? `agents.${new URL(authBaseURL).hostname}`,
     secret: `console-test-secret-${randomUUID()}-${randomUUID()}`,
     memoryDatabase,
-    ...(options.authCookieDomain === undefined
-      ? {}
-      : { sharedCookieDomain: options.authCookieDomain }),
-    ...(options.authSecureCookies === undefined
-      ? {}
-      : { secureCookies: options.authSecureCookies }),
   });
   const credentials = {
     email: `console-admin-${randomUUID()}@example.com`,
@@ -403,7 +447,14 @@ export async function createConsoleAppFixture(t, options = {}) {
     auth,
     iamDriver,
     auditSink,
-    development: { enabled: true, installationId, ...options.development },
+    development: {
+      enabled: true,
+      installationId,
+      ...(options.development?.enabled === false
+        ? {}
+        : { browserOrigin: new URL(authBaseURL).origin }),
+      ...options.development,
+    },
     computeDriver:
       options.computeDriver ??
       computeDriver({
@@ -438,6 +489,11 @@ export async function createConsoleAppFixture(t, options = {}) {
     createController(installation) {
       controller = new OpenClawController(installation, {
         state: platformState,
+        namespaceLifecycleBindings:
+          options.namespaceLifecycleBindings ??
+          (options.sandboxDriver?.ensureNamespace === undefined
+            ? []
+            : [sandboxNamespaceLifecycleBinding(appOptions.computeDriver, options.sandboxDriver)]),
         ...(authorizeWith === undefined ? {} : { authorize: authorizeWith(iamDriver) }),
         preparedTokens: options.preparedTokens,
         ...(options.pluginSourceReader === undefined
@@ -523,17 +579,20 @@ export async function createConsoleAppFixture(t, options = {}) {
   t.after(close);
   const fixtureResponse = createFixtureResponse(app.getSchemas());
 
-  if (options.https === true) {
+  if (https) {
     // Exercise browser Secure/Domain cookies through a real TLS ingress to the HTTP API.
     const ingress = await startHttpsIngress({
+      tls: options.ingressTLS,
       port: browserPort,
       upstreamPort: port,
       originHost,
       reusePort: browserReservation.reusePort,
     });
     await browserReservation.release();
-    cleanupBeforeAppClose.push(ingress.close);
-    browserArgs.push(ingress.browserArg);
+    cleanupBeforeAppClose.push(ingress.close, trustNodeFixtureCertificate(ingress.cert));
+    if (options.ingressTLS === undefined) {
+      browserArgs.push(chromiumTrustArg([ingress.cert]));
+    }
   }
 
   function parseJson(result) {
@@ -860,6 +919,7 @@ export async function createConsoleAppFixture(t, options = {}) {
   }
 
   return {
+    principal: seed.principal,
     origin,
     browserArgs,
     credentials,
@@ -872,6 +932,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     iamDriver,
     withIamOutage,
     rawRequest,
+    fetch: fetchThroughLoopback,
     request,
     fixtureResponse,
     signIn,

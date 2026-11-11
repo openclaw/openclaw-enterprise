@@ -304,7 +304,7 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
     configurationKind: "agent",
     configurationGeneration: 1,
     configuration: { model: "gpt-test", temperature: "0", tool: "lookup" },
-    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated", overrides: {}, configuration: {} },
     compute: { id: "compute-test", implementation: "deterministic-fake" },
     harnessAuth: {
       method: "codex_pat",
@@ -414,7 +414,13 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
     temperature: "0",
     tool: "lookup",
   });
-  assert.deepEqual(admitted.harness, { id: "codex", version: "1.0.0", mode: "dedicated" });
+  assert.deepEqual(admitted.harness, {
+    id: "codex",
+    version: "1.0.0",
+    mode: "dedicated",
+    overrides: {},
+    configuration: {},
+  });
   assert.deepEqual(admitted.compute, {
     id: "compute-test",
     implementation: "deterministic-fake",
@@ -691,7 +697,7 @@ test("every check and code a Compute driver builds itself is recorded as built",
   const found = (check, code, diagnostic) =>
     records.some(
       (record) =>
-        record.path === "compute/kubernetes/index.ts" &&
+        record.path.startsWith("compute/kubernetes/") &&
         record.check === check &&
         record.code === code &&
         record.diagnostic === diagnostic,
