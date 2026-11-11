@@ -1142,7 +1142,7 @@ export interface PlatformOperationReadRepository {
 }
 
 export interface PlatformOperationRepository extends PlatformOperationReadRepository {
-  /** Hold exact startup work before locking its Agent; busy work fails closed. */
+  /** Hold exact candidate work without waiting; busy work throws before credential effects. */
   lockRequestCredentialWork(owner: RepositoryRevisionOwner): Promise<boolean>;
   /** Read work and latest unfiltered attempt together, while its work lock is held. */
   requestCredentialCandidateEligible(owner: RepositoryRevisionOwner): Promise<boolean>;

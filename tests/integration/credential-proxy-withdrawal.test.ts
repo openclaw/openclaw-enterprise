@@ -2291,3 +2291,256 @@ test(
     assert.equal((await queue.findWork(key))?.state, "queued");
   },
 );
+
+test(
+  "candidate credential request survives benign work contention (PostgreSQL)",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    const fixture = await requestCredentialFixture(t, { activateRevision: false });
+    const { f, revision, exchange, request, grant } = fixture;
+    const key = `agent_revision:${revision.id}:reconcile`;
+    const claim = await claimIsolatedWork(f.pool, { workId: key });
+    assert.ok(claim);
+    const contender = await f.pool.connect();
+    const pause = fixture.pauseCandidateAttempt();
+    try {
+      await contender.query("BEGIN");
+      await contender.query("SET LOCAL lock_timeout = '2s'");
+      assert.ok(await new PostgresWorkQueue(contender).heartbeat(claim));
+      const input = request();
+      const signal = AbortSignal.timeout(15_000);
+      const approving = exchange.authorizeRequestCredential(input, signal);
+      await pause.reached;
+      // The worker may acquire its owners after heartbeat, while the request backs
+      // off. A retained Namespace lock would deadlock this real worker lock order.
+      await contender.query("SELECT id FROM occ.namespaces WHERE id=$1 FOR UPDATE", [
+        f.namespace.id,
+      ]);
+      await contender.query("SELECT id FROM occ.agents WHERE id=$1 FOR UPDATE", [f.agent.id]);
+      const denials = await f.pool.query(
+        "SELECT id FROM occ.audit_events WHERE details->>'requestId'=$1 AND kind='authorization_denial'",
+        [input.requestId],
+      );
+      assert.equal(denials.rowCount, 0, "busy work is not withdrawn");
+      assert.equal(
+        (
+          await f.pool.query(
+            "SELECT request_id FROM occ.request_credential_approvals WHERE request_id=$1",
+            [input.requestId],
+          )
+        ).rowCount,
+        0,
+      );
+      await contender.query("COMMIT");
+      pause.release();
+      assert.equal(await approving, "credential");
+      assert.equal(
+        (await exchange.resolveRequestCredential(grant(input), signal))?.value,
+        "synthetic-key-initial",
+      );
+      assert.equal(await exchange.resolveRequestCredential(grant(input), signal), undefined);
+    } finally {
+      pause.release();
+      await contender.query("ROLLBACK");
+      contender.release();
+    }
+  },
+);
+
+for (const phase of ["authorization", "consumed approval", "final release"] as const) {
+  for (const outcome of [
+    "benign",
+    "terminal",
+    "superseded",
+    "withdrawn",
+    "aborted",
+    "expired",
+    "rotated",
+    "installation changed",
+  ] as const) {
+    test(
+      `candidate work contention during ${phase}: ${outcome} (PostgreSQL)`,
+      { ...requiresPostgres, timeout: 30_000 },
+      async (t) => {
+        const fixture = await requestCredentialFixture(t, { activateRevision: false });
+        const { f, revision, exchange, request, grant } = fixture;
+        const key = `agent_revision:${revision.id}:reconcile`;
+        const claim = await claimIsolatedWork(f.pool, { workId: key });
+        assert.ok(claim);
+        const input = {
+          ...request(),
+          ...(outcome === "expired" && { deadlineAt: new Date(Date.now() + 1500).toISOString() }),
+        };
+        const controller = new AbortController();
+        const signal = AbortSignal.any([controller.signal, t.signal]);
+        if (phase !== "authorization") {
+          assert.equal(await exchange.authorizeRequestCredential(input, signal), "credential");
+        }
+        // On final release, preserve both original outside-lock material observations.
+        // Stage contention only after the second read has captured the original value.
+        const materialPause = phase === "final release" ? fixture.pauseMaterialRead(1) : undefined;
+        let operation = materialPause
+          ? exchange.resolveRequestCredential(grant(input), signal)
+          : undefined;
+        if (materialPause) {
+          await materialPause.reached;
+        }
+        const pause = fixture.pauseCandidateAttempt();
+        const contender = await f.pool.connect();
+        try {
+          await contender.query("BEGIN");
+          await contender.query("SET LOCAL lock_timeout = '2s'");
+          const queue = new PostgresWorkQueue(contender);
+          assert.ok(await queue.heartbeat(claim));
+          operation ??=
+            phase === "authorization"
+              ? exchange.authorizeRequestCredential(input, signal)
+              : exchange.resolveRequestCredential(grant(input), signal);
+          materialPause?.release();
+          await Promise.race([
+            pause.reached,
+            operation.then(() => {
+              throw new Error("request settled before observing contention");
+            }),
+          ]);
+          // The complete policy transaction has rolled back. The worker can now
+          // acquire owners in its real work -> Namespace -> Agent order.
+          await contender.query("SAVEPOINT owner_lock_proof");
+          await contender.query("SELECT id FROM occ.namespaces WHERE id=$1 FOR UPDATE", [
+            f.namespace.id,
+          ]);
+          await contender.query("SELECT id FROM occ.agents WHERE id=$1 FOR UPDATE", [f.agent.id]);
+          const denials = () =>
+            f.pool.query(
+              "SELECT details->>'code' AS code, details->>'phase' AS phase FROM occ.audit_events WHERE details->>'requestId'=$1 AND kind='authorization_denial'",
+              [input.requestId],
+            );
+          assert.deepEqual(
+            (await denials()).rows,
+            [],
+            "contention cannot invent withdrawal evidence",
+          );
+          const approvals = () =>
+            f.pool.query(
+              "SELECT consumed FROM occ.request_credential_approvals WHERE request_id=$1",
+              [input.requestId],
+            );
+          assert.deepEqual(
+            (await approvals()).rows,
+            phase === "authorization" ? [] : [{ consumed: true }],
+          );
+          // Release just the owner-lock proof, retaining the real heartbeat lock.
+          await contender.query("ROLLBACK TO SAVEPOINT owner_lock_proof");
+          const reads = f.secretReads;
+          if (outcome === "aborted" || outcome === "expired") {
+            if (outcome === "aborted") {
+              controller.abort();
+            }
+            pause.release();
+            // The request's real absolute deadline/abort ends the wait while work
+            // is still locked. Neither a restarted budget nor a commit releases it.
+            assert.equal(await operation, undefined);
+            if (outcome === "expired") {
+              assert.ok(
+                Date.now() >= Date.parse(input.deadlineAt) - 50,
+                "busy work must wait for the original deadline, allowing timer rounding",
+              );
+            }
+            assert.deepEqual((await denials()).rows, []);
+            assert.equal(f.secretReads, reads);
+          } else {
+            if (outcome === "terminal") {
+              await queue.fail(claim, { code: "CONVERGENCE_DEADLINE_EXCEEDED" });
+            }
+            await contender.query("COMMIT");
+            if (outcome === "superseded") {
+              await f.deployAgent(f.namespace.id, f.agent.id);
+            } else if (outcome === "withdrawn") {
+              await f.activateRevision(f.namespace.id, f.agent.id, revision.id);
+              const result = await f.request(
+                "POST",
+                `/namespaces/${f.namespace.id}/agents/${f.agent.id}/credential-sources/${f.source.id}/withdraw`,
+              );
+              assert.equal(result.status, 202);
+            } else if (outcome === "rotated") {
+              const result = await f.request(
+                "PATCH",
+                `/namespaces/${f.namespace.id}/secrets/${f.secret.id}`,
+                { body: { value: "synthetic-key-replacement" } },
+              );
+              assert.equal(result.status, 200);
+            } else if (outcome === "installation changed") {
+              fixture.setInstallation({
+                ...fixture.installation,
+                enforcement: { ...fixture.installation.enforcement, policyHash: "b".repeat(64) },
+              });
+            }
+            pause.release();
+            const result = await operation;
+            const allowed =
+              outcome === "benign" || (outcome === "rotated" && phase !== "final release");
+            let expected: string | undefined;
+            if (allowed) {
+              expected =
+                outcome === "rotated" ? "synthetic-key-replacement" : "synthetic-key-initial";
+              if (phase === "authorization") {
+                expected = "credential";
+              }
+            }
+            assert.equal(typeof result === "object" ? result?.value : result, expected);
+            if (!allowed && outcome !== "installation changed") {
+              assert.equal((await denials()).rowCount, 1);
+            }
+          }
+          const expectedApprovals = [];
+          if (phase !== "authorization") {
+            expectedApprovals.push({ consumed: true });
+          } else if (outcome === "benign" || outcome === "rotated") {
+            expectedApprovals.push({ consumed: false });
+          }
+          assert.deepEqual((await approvals()).rows, expectedApprovals);
+          if (phase !== "authorization") {
+            assert.equal(
+              await exchange.resolveRequestCredential(grant(input), AbortSignal.timeout(2000)),
+              undefined,
+              "consumption is never replayed",
+            );
+          }
+        } finally {
+          materialPause?.release();
+          pause.release();
+          await contender.query("ROLLBACK");
+          contender.release();
+          await operation;
+        }
+      },
+    );
+  }
+}
+
+test(
+  "active model authorization ignores busy candidate work (PostgreSQL)",
+  { ...requiresPostgres, timeout: 30_000 },
+  async (t) => {
+    const { f, revision, request, exchange, grant } = await requestCredentialFixture(t);
+    const claim = await claimIsolatedWork(f.pool, {
+      workId: `agent_revision:${revision.id}:reconcile`,
+    });
+    assert.ok(claim);
+    const contender = await f.pool.connect();
+    try {
+      await contender.query("BEGIN");
+      assert.ok(await new PostgresWorkQueue(contender).heartbeat(claim));
+      const input = request();
+      const signal = AbortSignal.timeout(2000);
+      assert.equal(await exchange.authorizeRequestCredential(input, signal), "credential");
+      assert.equal(
+        (await exchange.resolveRequestCredential(grant(input), signal))?.value,
+        "synthetic-key-initial",
+      );
+    } finally {
+      await contender.query("ROLLBACK");
+      contender.release();
+    }
+  },
+);

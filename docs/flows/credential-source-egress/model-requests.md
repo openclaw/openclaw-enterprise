@@ -1,7 +1,7 @@
 ---
 created: "2026-11-10"
-updated: "2026-11-11 13:54"
-last_updated_session: authoring-run/fdb3d41f-3e11-4868-9533-14761f65d83e
+updated: "2026-11-11 13:59"
+last_updated_session: authoring-run/cb8e0216-1299-47c5-85f5-480a7a4dc586
 ---
 
 # Authorize model credentials per request
@@ -123,8 +123,17 @@ Repeated deferrals can reuse the last success; its timestamp need not equal the
 work update timestamp.
 
 `packages/occ/src/state/postgres-work-queue.ts:lockRequestCredentialWork` holds
-the exact work row before OCC locks the Agent. It skips busy work rather than
-waiting on a worker that can lock work before Agent. A separate statement,
+the exact work row with `FOR SHARE NOWAIT`, only for the latest inactive candidate,
+after OCC locks IAM configuration, Namespace and Agent. Active revisions do not
+access work. Only SQLSTATE `55P03` from this keys-only lock statement raises
+`RequestCredentialWorkBusyError`, before material access or approval insertion.
+State rolls back the entire policy transaction and releases its client before
+`checkRequestCredential` waits up to 25 ms. The next attempt repeats preliminary
+owner, Namespace, revision, installation, plan and Native IAM resolution, and
+live installation verification, before opening a fresh Read Committed transaction.
+Every attempt uses the original signal and absolute deadline. Contention alone
+creates no withdrawal audit. Other errors retain their fail-closed handling.
+A separate statement,
 `requestCredentialCandidateEligible`, reads work and the latest unfiltered
 attempt together after the lock. This sees any transition committed during lock
 acquisition, with its matching audit evidence. OCC retains this fence through
@@ -132,6 +141,13 @@ approval or release, and rechecks database lease time before each. Redemption
 runs the same policy checks again. Namespace, source, IAM configuration and Agent
 locks retain the existing withdrawal and ownership fences. Memory state has no
 executing work and cannot establish candidate startup authority.
+
+Retries cover only this pre-effect policy check. They do not repeat approval
+consumption, peer verification, material acquisition or an uncertain approval
+commit. Final release retains the resolver's original source and material
+observations and approval lifetime; rotation cannot replace them during a retry.
+Each conflict costs one rolled-back transaction, another preliminary read and
+live verification, plus the wait. No policy or work lock is held during that wait.
 
 OCC stores a nonsecret approval in PostgreSQL, correlated with recipient,
 request ID, binding, execution, Driver, policy digest and deadline. It stores no
@@ -265,6 +281,8 @@ credential and a reused inspected connection.
 None.
 
 ## Changelog
+
+- 2026-11-11 13:59: Trace pre-effect candidate contention retry in the accompanying correction. (authoring-run/cb8e0216-1299-47c5-85f5-480a7a4dc586 - a54d4aad97c547fd06765232db07f6c7fefd1a0a)
 
 - 2026-11-11 13:54: Trace candidate readiness deferral eligibility and work fencing in the accompanying fix. (authoring-run/fdb3d41f-3e11-4868-9533-14761f65d83e - 1aafd288a6bd957fdba23d0f09d96dd1da396a47)
 

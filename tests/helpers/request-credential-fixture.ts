@@ -344,6 +344,40 @@ export async function requestCredentialFixture(
     grant,
     restartController,
     principalId,
+    pauseCandidateAttempt() {
+      const reached = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const policyState = state;
+      assert.ok(policyState instanceof PostgresPlatformState);
+      const original = policyState.transactReadCommitted.bind(policyState);
+      let pending = true;
+      policyState.transactReadCommitted = async (work) => {
+        let attempted = false;
+        try {
+          return await original((unit) =>
+            work({
+              ...unit,
+              operations: {
+                ...unit.operations,
+                async lockRequestCredentialWork(...args) {
+                  attempted = true;
+                  return unit.operations.lockRequestCredentialWork(...args);
+                },
+              },
+            }),
+          );
+        } finally {
+          // Observe the real outcome only after State committed or rolled back and
+          // released its client. Do not replace the queue result or database error.
+          if (pending && attempted) {
+            pending = false;
+            reached.resolve();
+            await release.promise;
+          }
+        }
+      };
+      return { reached: reached.promise, release: release.resolve };
+    },
     pauseNextApprovalCommit() {
       const reached = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();

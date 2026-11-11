@@ -1,7 +1,11 @@
 import { repositoryRemovalWorkKey, repositoryRetirementWorkKey } from "../repository-withdrawal.ts";
 import { isNonEmptyString, isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 import { createHash, randomUUID } from "node:crypto";
-import { ResourceConflictError, ScopeViolationError } from "../errors.ts";
+import {
+  RequestCredentialWorkBusyError,
+  ResourceConflictError,
+  ScopeViolationError,
+} from "../errors.ts";
 import {
   CREDENTIAL_WITHDRAWAL_TARGET,
   nonempty,
@@ -1186,16 +1190,25 @@ export class PostgresWorkQueue {
 
   /** Namespace is already held; never wait here on a worker holding work before Agent. */
   async lockRequestCredentialWork(owner: RepositoryRevisionOwner): Promise<boolean> {
-    const locked = await this.client.query(
-      `SELECT idempotency_key FROM occ.controller_work AS work
+    try {
+      const locked = await this.client.query(
+        `SELECT idempotency_key FROM occ.controller_work AS work
        WHERE work.idempotency_key = 'agent_revision:' || $3::text || ':reconcile'
          AND work.namespace_id = $1 AND work.agent_id = $2 AND work.revision_id = $3
          AND work.work_kind = 'lifecycle' AND work.namespace_target IS NULL
          AND work.agent_target IS NULL
-       FOR SHARE OF work SKIP LOCKED`,
-      [owner.namespaceId, owner.agentId, owner.revisionId],
-    );
-    return locked.rows.length === 1;
+       FOR SHARE OF work NOWAIT`,
+        [owner.namespaceId, owner.agentId, owner.revisionId],
+      );
+      return locked.rows.length === 1;
+    } catch (error) {
+      // Only this exact, pre-effect lock statement can request a policy retry.
+      // Throw through State so the entire transaction releases its owner locks.
+      if (error instanceof Error && "code" in error && error.code === "55P03") {
+        throw new RequestCredentialWorkBusyError();
+      }
+      throw error;
+    }
   }
 
   /**
