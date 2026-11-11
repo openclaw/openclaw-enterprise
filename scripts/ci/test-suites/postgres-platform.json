@@ -228,6 +228,7 @@
         "lost PostgreSQL COMMIT acknowledgment preserves a committed issuance without replay",
         "withheld PostgreSQL COMMIT is reconciled before an explicit recovery request",
         "parser and exact-account IAM refusals precede provider and Secret effects",
+        "revoked exact-account authority cannot recover a retained credential",
         "force deletion keeps configured-provider and no-provider behavior separate"
       ]
     },

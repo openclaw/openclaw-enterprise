@@ -1527,6 +1527,113 @@ test(
   },
 );
 test(
+  "revoked exact-account authority cannot recover a retained credential",
+  requiresPostgres,
+  async () => {
+    const a = await account("revoked-authority");
+    const iam = "/namespaces/" + live.namespaceId + "/iam";
+    const principal = await request("POST", iam + "/service-principals", "{}");
+    expect(principal, 201);
+    const principalId = textField(data(principal), "id");
+    const keyReply = await request(
+      "POST",
+      "/api/auth/service-keys",
+      JSON.stringify({
+        servicePrincipalId: principalId,
+        namespaceId: live.namespaceId,
+        name: "Retained credential recovery",
+      }),
+    );
+    expect(keyReply, 201);
+    const key = textField(data(keyReply), "key");
+    const role = await request(
+      "POST",
+      iam + "/roles",
+      JSON.stringify({
+        name: "Exact credential issuer " + randomUUID().slice(0, 8),
+        permissions: [{ action: "update", resourceKind: "service_account" }],
+      }),
+    );
+    expect(role, 201);
+    const grant = await request(
+      "POST",
+      iam + "/access-bindings",
+      JSON.stringify({
+        subjectKind: "identity",
+        subjectId: principalId,
+        roleId: textField(data(role), "id"),
+        resourceKind: "service_account",
+        resourceId: a.id,
+      }),
+    );
+    expect(grant, 201);
+
+    // The real audit rollback leaves one recoverable credential outside PostgreSQL.
+    armAudit(a);
+    live.deleteModes.set(a.externalId, "503");
+    const auditBefore = live.auditConsumed;
+    expect(await issue(a, { key }), 503, "DEPENDENCY_UNAVAILABLE");
+    assert.equal(live.auditConsumed, auditBefore + 1, "real audit collision consumed");
+    await noBinding(a);
+    const old = credentialFor(a);
+    retained(a, old);
+    assert.equal(providerEvents(a).length, 1);
+    const receipt = structuredClone(durableSecret(a.id));
+
+    // Revocation goes through the same IAM owner as an administrator's policy edit.
+    expect(await request("DELETE", iam + "/access-bindings/" + textField(data(grant), "id")), 204);
+    live.deleteModes.delete(a.externalId);
+    const deniedStart = live.events.length;
+    expect(await issue(a, { key }), 403, "FORBIDDEN");
+    assert.equal(
+      live.events
+        .slice(deniedStart)
+        .filter(
+          (x) =>
+            x.operation.startsWith("credential-") ||
+            x.operation === "account-post" ||
+            x.operation === "account-delete" ||
+            x.operation === "secret-post" ||
+            x.operation === "secret-delete",
+        ).length,
+      0,
+      "lost authority cannot mutate either credential owner",
+    );
+    await noBinding(a);
+    assert.ok(
+      JSON.stringify(durableSecret(a.id)) === JSON.stringify(receipt),
+      "the exact retained receipt must stay unchanged without disclosing its token",
+    );
+    retained(a, old);
+    assert.equal(providerEvents(a).length, 1, "denied recovery cannot issue a replacement");
+
+    // A currently authorized caller must retire the exact old credential before replacement.
+    const recoveryStart = live.events.length;
+    expect(await issue(a), 201);
+    order(a, old, recoveryStart);
+    const recovery = live.events.slice(recoveryStart);
+    const removed = recovery.findIndex(
+      (x) =>
+        x.operation === "secret-delete" && x.id === secretName(a.id) && x.outcome === "applied",
+    );
+    const created = recovery.findIndex(
+      (x) => x.operation === "credential-post" && x.id.startsWith(a.externalId + "/"),
+    );
+    assert.ok(created > removed, "replacement issuance follows exact receipt removal");
+    assert.equal(
+      providerEvents(a, "credential-delete").filter((x) => x.outcome === "confirmed").length,
+      1,
+    );
+    assert.equal(providerEvents(a).length, 2);
+    assert.equal(live.credentials.has(old.id), false);
+    const replacement = credentialFor(a);
+    assert.notEqual(replacement.id, old.id);
+    assert.equal((await binding(a))?.external_credential_id, replacement.id);
+    assert.equal(secret(a.id)?.metadata.annotations?.[annotation], replacement.id);
+    retained(a, replacement);
+  },
+);
+test(
   "force deletion keeps configured-provider and no-provider behavior separate",
   requiresPostgres,
   async () => {
