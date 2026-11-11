@@ -221,7 +221,8 @@ The value is a nonempty literal name of at most 256 UTF-8 bytes. Missing `--file
 names outside that range, `<root>`, and the selected file's absolute path fail
 before preparation. For names beginning with `--`, use
 `--test-name='--dry-run preserves state'`. Both forms select literal names;
-repeated selectors use the last value. A bare `--test-name` still needs a value.
+the runner rejects a second selector before preparation or attempt creation.
+A bare `--test-name` still needs a value.
 The runner rejects `--test-name-pattern`.
 
 The name must exactly match one required case in the selected file’s manifest.

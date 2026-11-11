@@ -1333,6 +1333,12 @@ test(
       "missing name value",
       "name followed by option",
       "empty equals name",
+      "duplicate separate then equals",
+      "duplicate equals then separate",
+      "duplicate separate",
+      "duplicate equals",
+      "duplicate empty then separate",
+      "duplicate empty then equals",
       "unregistered name",
       "empty name",
       "overlong name",
@@ -1363,6 +1369,33 @@ test(
           args = [...args, "--test-name", "--file", "tests/integration/lifecycle.test.mjs"];
         } else if (scenario === "empty equals name") {
           args = [...args, "--file", "tests/integration/lifecycle.test.mjs", "--test-name="];
+        } else if (scenario.startsWith("duplicate ")) {
+          const name = "owned lifecycle resource is usable";
+          await writeRunnerManifest(
+            fixture.root,
+            {
+              lanes: {
+                lifecycle: {
+                  files: [{ path: "tests/integration/lifecycle.test.mjs", expectedTests: [name] }],
+                },
+              },
+            },
+            "scripts/ci/test-suites.json",
+          );
+          const selectors = {
+            "duplicate separate then equals": ["--test-name", name, `--test-name=${name}`],
+            "duplicate equals then separate": [`--test-name=${name}`, "--test-name", name],
+            "duplicate separate": ["--test-name", name, "--test-name", name],
+            "duplicate equals": [`--test-name=${name}`, `--test-name=${name}`],
+            "duplicate empty then separate": ["--test-name=", "--test-name", name],
+            "duplicate empty then equals": ["--test-name=", `--test-name=${name}`],
+          };
+          args = [
+            ...args,
+            "--file",
+            "tests/integration/lifecycle.test.mjs",
+            ...selectors[scenario],
+          ];
         } else if (scenario === "unregistered name") {
           args = [
             ...args,
@@ -1426,6 +1459,10 @@ test(
         const result = await runAsync(fixture.root, args, {}, { timeout: 30_000 });
         assert.equal(result.error, undefined, result.stderr);
         assert.equal(result.status, 1, result.stderr);
+        if (scenario.startsWith("duplicate ")) {
+          // Reject during parsing, before preparation or creation of an owned attempt.
+          assert.match(result.stderr, /--test-name may only be specified once/);
+        }
         if (scenario === "existing attempt") {
           assert.equal(await readFile(fixture.state, "utf8"), sentinel);
         } else {
@@ -1957,7 +1994,7 @@ test("focused runs retain case enforcement and cleanup but cannot complete a ful
 
   // Regex metacharacters are literal. A 256-byte UTF-8 name is accepted, and
   // the manifest and reported name must both match exactly.
-  for (const name of ["--dry-run preserves state", "literal [case].* /i", "é".repeat(128)]) {
+  for (const name of ["--dry-run=preserves state", "literal [case].* /i", "é".repeat(128)]) {
     await writeSingleLaneManifest(
       root,
       "single",
@@ -1970,27 +2007,20 @@ test("focused runs retain case enforcement and cleanup but cannot complete a ful
       test(${JSON.stringify(name)}, () => {});
       test("unselected required case", () => { throw new Error("unselected case executed"); });\n`,
     );
-    // Both spellings share the CLI's last-value-wins rule. A leading switch-like
-    // name needs the equals form; the throwing sibling proves it stays a literal.
-    const selectors = name.startsWith("--")
-      ? [
-          [`--test-name=${name}`],
-          ["--test-name", "unselected required case", `--test-name=${name}`],
-        ]
-      : [["--test-name=unselected required case", "--test-name", name]];
-    for (const selector of selectors) {
-      const result = run(root, [...args("single"), ...selector]);
-      assert.equal(result.status, 0, result.stderr);
-      const evidence = JSON.parse(await readFile(join(root, "results/single.json"), "utf8"));
-      assert.equal(evidence.scope, "focused");
-      assert.equal(evidence.testName, name);
-      assert.deepEqual(evidence.counts, { passed: 1, failed: 0, skipped: 0, todo: 0, total: 1 });
-      assert.deepEqual(
-        evidence.files[0].tests.map(({ name }) => name),
-        [name],
-      );
-      assert.equal(evidence.files[0].cleanup.status, "passed");
-    }
+    // A leading switch-like name needs the equals form; the throwing sibling
+    // proves that exactly the selected literal reaches the child.
+    const selector = name.startsWith("--") ? [`--test-name=${name}`] : ["--test-name", name];
+    const result = run(root, [...args("single"), ...selector]);
+    assert.equal(result.status, 0, result.stderr);
+    const evidence = JSON.parse(await readFile(join(root, "results/single.json"), "utf8"));
+    assert.equal(evidence.scope, "focused");
+    assert.equal(evidence.testName, name);
+    assert.deepEqual(evidence.counts, { passed: 1, failed: 0, skipped: 0, todo: 0, total: 1 });
+    assert.deepEqual(
+      evidence.files[0].tests.map(({ name }) => name),
+      [name],
+    );
+    assert.equal(evidence.files[0].cleanup.status, "passed");
   }
 
   // Restore the file-only lanes for their unchanged missing-case contract.

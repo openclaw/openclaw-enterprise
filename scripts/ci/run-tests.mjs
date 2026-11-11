@@ -76,6 +76,12 @@ function parseArgs(argv) {
         "--test-name-pattern is unsupported; use --test-name with one literal case name.",
       );
     }
+    if (
+      (token === "--test-name" || token.startsWith("--test-name=")) &&
+      Object.hasOwn(options, "test-name")
+    ) {
+      throw new Error("--test-name may only be specified once.");
+    }
     if (token.startsWith("--test-name=")) {
       options["test-name"] = token.slice("--test-name=".length);
       continue;

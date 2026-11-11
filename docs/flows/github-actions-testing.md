@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-11
-last_updated_session: authoring-run/1a3acd94-9a0a-4d58-96dd-d1b9d950ad2f
+last_updated_session: authoring-run/7fc256ee-2c7b-4428-a4ed-922ba0a80647
 ---
 
 # GitHub Actions testing flow
@@ -63,14 +63,12 @@ graph TD
 
 `loadTestSuites` reads ordered lanes from `scripts/ci/test-suites.json`.
 
-For [complete attempts](../testing/ci/run-lanes.md#run-a-complete-local-attempt),
-`run-tests.mjs:main` rejects noncanonical manifests before `runCompleteLifecycle`.
+`run-tests.mjs:main` rejects noncanonical manifests before [complete attempts](../testing/ci/run-lanes.md#run-a-complete-local-attempt).
 
-`run-tests.mjs:parseArgs` accepts `--test-name=<literal>` for leading `--`; the last selector wins.
-`selectLane` validates focused files and required names. `runFile` sends an escaped, anchored pattern only to the Node child,
-requiring one exact passing standalone case. Environment and cleanup remain.
-Results retain focus and name on preparation failure; `validateLaneEvidence` rejects full-lane aggregation.
-See [named-case limits](../testing/ci/run-lanes.md#run-a-complete-local-attempt).
+`run-tests.mjs:parseArgs` accepts leading `--` through `--test-name=<literal>`.
+Repeated selectors fail before preparation or attempt creation, even after empty values.
+`selectLane` validates files and names. `runFile` requires one exact passing standalone case using an escaped, anchored pattern sent only to the Node child.
+Preparation failures retain focus/name; `validateLaneEvidence` rejects full-lane aggregation.
 
 `CI Impact` selects coverage; static checks verify checkout identity.
 [Ordinary CI](../testing/ci/required-checks.md#scenarios) uses the event checkout without external service credentials.
@@ -287,6 +285,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 15:11: Reject duplicates. (authoring-run/7fc256ee-2c7b-4428-a4ed-922ba0a80647 - c1ba324a307f4d2a19580aa6f52892c8f78e49d6)
 
 - 2026-11-11 14:56: Document selectors. (authoring-run/1a3acd94-9a0a-4d58-96dd-d1b9d950ad2f - eabd39734b504fd15a5732055aab25833daa4d14)
 
