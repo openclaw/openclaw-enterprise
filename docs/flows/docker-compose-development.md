@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-11-04
-last_updated_session: authoring-run/4dc828f0-0acc-4001-b6e2-3f57824db925
+updated: 2026-11-10
+last_updated_session: authoring-run/a9d9f372-a4a3-4832-9356-328d27967ab2
 ---
 
 # Compose development flow
@@ -20,6 +20,14 @@ Compose-backed profiles perform host preflight, select Docker Engine or Podman,
 prepare runtime images, start Compose, and wait for PostgreSQL migration,
 Installation bootstrap, API health, and worker readiness. The Kubernetes-only
 profile performs the equivalent readiness checks inside its owned cluster.
+All profiles prepare HTTPS Console and Agent DNS hosts and use the existing
+loopback TLS proxy, even when Agent native access is disabled. Session cookie
+scope is derived from those hosts; no cookie-domain setting is accepted.
+For Docker Compute, `scripts/dev-up` calls the hidden CLI adapter backed by
+`internal/occdev/docker_browser.go:DockerBrowserEnvironment`. It reuses the
+existing TLS generator and retains private per-checkout certificates under the
+system temporary directory across stop/start. The launcher prints the Console
+URL and CA certificate path. `occ dev down` reloads the same proxy settings.
 Startup proves authenticated Installation access with a protected local
 bootstrap service key; it does not create an Agent or prove model execution.
 
@@ -42,15 +50,21 @@ selected Kubernetes Compute Driver and the
 
 The Kubernetes profile additionally uses `compose.kubernetes.yaml`,
 `internal/occdev`, k3d, and kubectl. `./bin/occ dev down` owns profile cleanup;
-`scripts/dev-down` dispatches to it. The local Kubernetes development guide
-owns the operator procedure and destructive cleanup boundary.
+`scripts/dev-down` dispatches to it. Without a Compute Driver selection,
+`internal/occdev/profile.go:downComputeDriver` sends cleanup to the stack
+recorded in the state directory, and to Docker only when that directory is
+absent or Compose options follow `--`; it refuses another checkout's stack.
+The local Kubernetes development guide owns the operator procedure and
+destructive cleanup boundary.
 
 ## Flow
 
 ```mermaid
 graph TD
-  A["./bin/occ dev up"] --> Guard{"Development settings valid?"}
-  Guard -->|No| Refuse["Refuse before startup"]
+  A["./bin/occ dev up"] --> Checkout{"Valid checkout markers<br/>and LF module?"}
+  Checkout -->|No| Refuse["Refuse before startup"]
+  Checkout -->|Yes| Guard{"Development settings valid?"}
+  Guard -->|No| Refuse
   Guard -->|Yes| Profile{"Compute profile"}
   Profile -->|Docker| B["Preflight host tools, resolve Podman machine connection,<br/>and inspect Compose config"]
   Profile -->|Kubernetes| KPre["Pin local engine endpoint<br/>and reject existing resources"]
@@ -110,6 +124,14 @@ graph TD
 `internal/occcli/dev.go:developmentCommand`,
 `internal/occdev/egress_k3d.go:CheckDevelopmentProfile`, `scripts/dev-up`
 
+`internal/occcli/dev.go:developmentRepository` selects the nearest enclosing
+checkout with an OCE module declaration and a regular `compose.yaml` file,
+including a symlink to one. An absent Compose marker allows the ancestor search
+to continue. A present marker that is not a regular file or cannot be resolved
+stops both `up` and `down` with its exact path before profile dispatch. CRLF in
+`go.mod` also stops both commands with an LF repair error. These invalid markers
+cannot fall through to an outer checkout and target its stack or volumes.
+
 Before Compute dispatch, the CLI checks protected-egress, database, and host-gateway
 selectors through the existing development validators. Direct Docker script startup
 calls the same check through `occ dev check-profile` before temporary-state creation
@@ -133,6 +155,9 @@ traces API authorization, queued controller operations, tenant network ownership
 Agent authentication and exact resource removal.
 The Driver rejects Docker API responses above 4 MiB from either a declared
 content length or the bytes received before buffering the complete body.
+For in-flight aborts, `DockerComputeDriver.request` preserves the error and adds
+[request diagnostics](../reference/drivers/docker-compute.md#troubleshooting)
+to its message. Preflight cancellation remains unchanged.
 
 ### 3. Clean up Docker or Podman Compose
 
@@ -180,6 +205,8 @@ the registry attachment for `occ dev down` to detach. Kubernetes-only uses its
 owned k3d network; Compose uses its exact recorded Compose network and selects
 only a runtime image with the current checkout label. Both detach after imports
 and on rollback, including recovery after interrupted startup.
+State rewrites set mode `0600` before writing so recovery can read
+`state.json` under a restrictive umask.
 For Kubernetes-only OpenShell, runtime import follows PostgreSQL/repository imports
 in their existing concurrent branch. OpenShell asset preparation follows those
 imports while network probes finish. This installs the Agent Sandbox controller
@@ -318,6 +345,12 @@ describes accepted selectors.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 22:18: Identify in-flight Docker request aborts while preserving caller cancellation and cleanup. (authoring-run/a9d9f372-a4a3-4832-9356-328d27967ab2 - ee73157fdf2982a8e0eab3dcb22d8ff9cf87fbd0)
+
+- 2026-11-08 05:18: Reject invalid or unresolvable Compose markers before development dispatch. (authoring-run/2c3fb5d2-955a-471d-a236-332a4bdb34c2 - 2b6201f1bd74549ffb38bfa910d00b49e6ebc07c)
+
+- 2026-11-06 20:03: Refuse a nearest CRLF checkout before startup or cleanup can select an outer stack. (authoring-run/b63d4772-19f9-4e46-8f8e-bd52bd2ea26f - 7cc3f1b9f2b372bf6da57a980d03eeebf8256506)
 
 - 2026-11-04 20:46: Overlap selected-image setup while retaining joined readiness and rollback gates. (authoring-run/4dc828f0-0acc-4001-b6e2-3f57824db925 - 7951de4edf7abadc02725484771bcd6207ed9b9d)
 

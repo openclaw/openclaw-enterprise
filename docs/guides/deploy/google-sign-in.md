@@ -1,23 +1,22 @@
 # Enable Google sign-in
 
-Google sign-in is an optional second identity provider next to
-[GitHub sign-in](production-installation.md#enable-github-browser-sign-in). Email and
+Google sign-in can run alone or alongside [generic OIDC](oidc-sign-in.md). Email and
 password stay the default. An Installation administrator attaches a person's Google
 identity to an existing OpenClaw Enterprise (OCE) account; that person can then sign in
 with Google or with the account password. Google sign-in creates no account, performs
 no signup, and never matches accounts by email address.
 
 Google uses the same guarded
-[single-controller profile](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
-as GitHub: the exact `Origin` checks, PKCE (`S256`), one-use state, the host-only
+[single-controller profile](../../reference/authentication/external-sign-in.md#external-sign-in-profile)
+as OIDC: the exact `Origin` checks, PKCE (`S256`), one-use state, the host-only
 `__Host-` browser-binding cookie, the keyed admission limiter, the eight-hour session
 rules, and the `attemptId`, login receipt, and one-use result exchange. Password
 fallback, account disablement, detach, and the recovery account work unchanged. You can
-enable Google alone or together with GitHub.
+enable Google alone or together with OIDC.
 
 ## Requirements
 
-- Everything the [GitHub profile](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
+- Everything the [external sign-in profile](../../reference/authentication/external-sign-in.md#external-sign-in-profile)
   requires: one serving controller, PostgreSQL State, native IAM, one canonical HTTPS
   Console origin, and `agentNativeAdmin.enabled: false`.
 - A controller image that includes Google sign-in: a
@@ -49,7 +48,7 @@ endpoints as fixed values. It does not fetch the discovery document at runtime.
 ## Configure the chart
 
 Create a dedicated Secret. It must differ from every other Secret the chart reads,
-including `auth.github.secretName`:
+including `auth.oidc.secretName`:
 
 ```bash
 kubectl -n openclaw-system create secret generic occ-google-login \
@@ -73,10 +72,10 @@ agentNativeAdmin:
   enabled: false
 ```
 
-`auth.recoveryUserId` is required whenever GitHub or Google is enabled, including a
+`auth.recoveryUserId` is required whenever OIDC or Google is enabled, including a
 Google-only install. It names an existing local password administrator; read it as that
 administrator from `data.user.id` of `GET /api/auth/session`. The chart passes it as
-`OCC_AUTH_GITHUB_RECOVERY_USER_ID`, which designates the recovery account for either
+`OCC_AUTH_RECOVERY_USER_ID`, which designates the recovery account for either
 provider. Rendering fails on incomplete Google values, a shared Secret, an HTTP base URL,
 native administration, an invalid CIDR, or an allowed domain that is not a DNS name. It
 also fails when `allowedDomains` is set without `auth.google.enabled`.
@@ -90,12 +89,12 @@ proxy rather than static CIDRs.
 The API reads these variables; see
 [production settings](../../reference/settings/production.md#google-sign-in):
 
-| Variable                           | Source                                                    |
-| ---------------------------------- | --------------------------------------------------------- |
-| `OCC_AUTH_GOOGLE_CLIENT_ID`        | `auth.google` Secret key `clientIdKey`                    |
-| `OCC_AUTH_GOOGLE_CLIENT_SECRET`    | `auth.google` Secret key `clientSecretKey`                |
-| `OCC_AUTH_GOOGLE_ALLOWED_DOMAINS`  | `auth.google.allowedDomains`, comma-joined when non-empty |
-| `OCC_AUTH_GITHUB_RECOVERY_USER_ID` | `auth.recoveryUserId`                                     |
+| Variable                          | Source                                                    |
+| --------------------------------- | --------------------------------------------------------- |
+| `OCC_AUTH_GOOGLE_CLIENT_ID`       | `auth.google` Secret key `clientIdKey`                    |
+| `OCC_AUTH_GOOGLE_CLIENT_SECRET`   | `auth.google` Secret key `clientSecretKey`                |
+| `OCC_AUTH_GOOGLE_ALLOWED_DOMAINS` | `auth.google.allowedDomains`, comma-joined when non-empty |
+| `OCC_AUTH_RECOVERY_USER_ID`       | `auth.recoveryUserId`                                     |
 
 ## Restrict hosted domains
 
@@ -108,11 +107,11 @@ email address itself is never used for identity or authorization.
 ## Enable it
 
 Enable Google during the same stopped maintenance as the
-[GitHub procedure](production-installation.md#enable-github-browser-sign-in): verify
+[external sign-in procedure](production-installation.md#enable-external-browser-sign-in): verify
 password recovery, create the Secret, set the values above, close ingress, stop
 identity writers, run `helm upgrade`, and verify through
 [restricted access](auth-maintenance.md#close-ingress-and-use-restricted-access) before
-reopening ingress. If the guarded profile is already active through GitHub, adding
+reopening ingress. If the guarded profile is already active through OIDC, adding
 Google needs no new activation, but still use one serving controller and stopped
 writers for the upgrade.
 
@@ -162,7 +161,7 @@ when Google is not configured, the version is stale, the account is disabled, or
 account holds the subject ("The external identity is already assigned."). Attachment
 advances the account version and ends the account's existing sessions. The account read then lists a method whose `providerId` starts with
 `google:`. Detach it with
-`POST /api/auth/accounts/:userId/methods/:methodId/detach`, as for GitHub. Detaching ends
+`POST /api/auth/accounts/:userId/methods/:methodId/detach`, as for OIDC. Detaching ends
 every session of the account, password sessions included; the password keeps working for
 new sign-ins.
 
@@ -179,7 +178,7 @@ A Google outage, blocked egress, or rejected ID token fails that sign-in closed 
 returns the browser to `/console/?authError=google`; password sign-in is unaffected. An
 outage adds `authReason=provider-unavailable`, and the Console says Google sign-in is
 unavailable right now.
-Google start and callback share GitHub's admission budget, so enabling both does not
+Google start and callback share the OIDC admission budget, so enabling both does not
 raise the external sign-in limits.
 
 ## Related

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { exerciseHarnessOverrides } from "../helpers/harness-overrides.ts";
+import type { AgentRevision } from "../../packages/contracts/src/index.ts";
 import type { PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -9,7 +11,7 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 // runtime-credential provisioning; these cases make no cluster or model-execution claim.
 for (const harness of ["codex", "openclaw"] as const) {
   for (const configured of [false, true]) {
-    test(`${harness} deployment ${configured ? "binds the shared provider" : "retains native defaults"} and refuses destination changes on recovery`, async (t) => {
+    test(`${harness} deployment ${configured ? "binds the shared provider" : "retains native defaults"} and preserves its destination across default changes`, async (t) => {
       const modelProvider = {
         protocol: "openai-responses" as const,
         baseUrl: "https://models.example.test/v1",
@@ -37,18 +39,32 @@ for (const harness of ["codex", "openclaw"] as const) {
       const agent = await f.createAgent(namespace.id, "shared-provider-agent", configuration, {
         executionMode: harness === "codex" ? "dedicated" : "embedded",
       });
+      const refused = await f.request(
+        "POST",
+        `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+        {
+          body: { harnessOverrides: { modelProvider } },
+        },
+      );
+      assert.equal(refused.status, 400);
+      assert.match(refused.body.error.message, /source-backed OpenAI API-key/);
       const deployed = await f.deployAgent(namespace.id, agent.id);
-      const revision = await f.controller.transact((unit: PlatformUnitOfWork) =>
-        unit.revisions.findRevision(namespace.id, agent.id, deployed.id),
+      const revision: Readonly<AgentRevision> | undefined = await f.controller.transact(
+        (unit: PlatformUnitOfWork) =>
+          unit.revisions.findRevision(namespace.id, agent.id, deployed.id),
       );
       assert.ok(revision);
-      if (configured) {
-        assert.match(revision.compute.admission ?? "", /^model-provider:v1:[a-f0-9]{64}:/);
-      } else {
-        assert.equal(revision.compute.admission, undefined);
-      }
+      assert.match(revision.compute.admission ?? "", /^model-provider:v1:[a-f0-9]{64}:/);
+      assert.deepEqual(revision.harness.overrides, {});
+      assert.deepEqual(revision.harness.configuration, {
+        modelProvider: {
+          protocol: "openai-responses",
+          baseUrl: configured ? modelProvider.baseUrl : "https://api.openai.com/v1",
+          supportsStandaloneWebSearch: false,
+        },
+      });
       assert.equal(revision.harness.id, harness);
-      // An operator change must fail before a replay can contact Kubernetes or deliver a key.
+      // Recomputing the admission with changed defaults must preserve the saved fingerprint.
       for (const replacement of [
         ...(configured ? [undefined] : []),
         { ...modelProvider, baseUrl: "https://other.example.test/v1" },
@@ -57,12 +73,22 @@ for (const harness of ["codex", "openclaw"] as const) {
           gatewayRuntime: true,
           ...(replacement === undefined ? {} : { modelProvider: replacement }),
         });
+        assert.equal(changed.admitRevision(revision), revision.compute.admission);
+        const { configuration: _settings, ...missingSettings } = revision.harness;
         await assert.rejects(
-          changed.prepareRevision(revision),
-          /model provider (?:changed|admission)/,
+          // Deliberately corrupt saved state to verify refusal before any delivery.
+          changed.prepareRevision({
+            ...revision,
+            harness: missingSettings,
+          } as unknown as AgentRevision),
+          /Harness settings/,
         );
       }
       assert.equal(revision.compute.admission, computeDriver.admitRevision?.(revision));
     });
   }
 }
+
+test("ordinary deployment admits concurrent source-authorized destinations and isolates first-deployment intent", async (t) => {
+  await exerciseHarnessOverrides(t);
+});

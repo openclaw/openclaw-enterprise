@@ -3,8 +3,12 @@
 Rebuild Storybook before inspecting these stories. They render production console
 components with simulated API state; they do not prove persistence or enforcement.
 
-- **Pages/Settings → Account:** inspect the selected Installation Driver schema.
-  No startup value or API mutation control is exposed.
+- **Pages/Settings → Account** and **Pages/Settings → Nested Driver values:**
+  Before expanding a Driver, check that its collapsed summary shows the Driver
+  ID, contribution key and a separate **Implementation** label. Switch from
+  **Fields** to **JSON** and back. Confirm the same labels stay visible and the
+  group stays collapsed. Expand it to inspect the values and switch views again
+  to confirm it stays open.
 - **Pages/Agent detail → Policy denials and reviewed network additions:** use
   **Add Network rules**, fill the schema fields, add a port range, then select
   **Review changes**. Preview does not change the saved version. Compare **Save**

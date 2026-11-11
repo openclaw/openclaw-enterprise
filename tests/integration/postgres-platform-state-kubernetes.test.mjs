@@ -40,6 +40,12 @@ const revisionSummary = (revision, deploymentStatus) => ({
   deploymentStatus,
   deploymentErrorCode: null,
 });
+// Compute admission is private in HTTP responses. Check its durable format separately,
+// while retaining the exact API-visible Driver identity in the complete snapshot assertion.
+const persistedCompute = (spec, selection) => {
+  assert.match(spec.compute.admission, /^model-provider:v1:[a-f0-9]{64}:$/);
+  return { ...selection, admission: spec.compute.admission };
+};
 const activatedStatuses = (listed) => {
   const statuses = listed.map((item) => item.deploymentStatus);
   for (const status of statuses) {
@@ -317,7 +323,19 @@ stateCase(
       source: first.data.harnessAuth.source,
     });
     assert.deepEqual(revision.configuration, admitted(servedAs(firstValues, first.data.name)));
-    assert.deepEqual(revision.harness, { id: "openclaw", version: "1.0.0", mode: "embedded" });
+    assert.deepEqual(revision.harness, {
+      id: "openclaw",
+      version: "1.0.0",
+      mode: "embedded",
+      overrides: {},
+      configuration: {
+        modelProvider: {
+          protocol: "openai-responses",
+          baseUrl: "https://api.openai.com/v1",
+          supportsStandaloneWebSearch: false,
+        },
+      },
+    });
     assert.deepEqual(revision.compute, {
       id: "compute-kubernetes",
       implementation: "occ/kubernetes",
@@ -386,7 +404,7 @@ stateCase(
         secretDriverId: "secret-kubernetes",
       },
       harness: revision.harness,
-      compute: revision.compute,
+      compute: persistedCompute(persistedRevision.rows[0].admitted_spec, revision.compute),
       execution_admission: { version: 2, mode: "unprotected" },
     });
     assert.equal(persistedRevision.rows[0].active_revision_id, revision.id);
@@ -484,7 +502,19 @@ stateCase(
     );
     assert.equal(deployment.status, 202);
     const revision = deployment.data;
-    assert.deepEqual(revision.harness, { id: "openclaw", version: "1.0.0", mode: "embedded" });
+    assert.deepEqual(revision.harness, {
+      id: "openclaw",
+      version: "1.0.0",
+      mode: "embedded",
+      overrides: {},
+      configuration: {
+        modelProvider: {
+          protocol: "openai-responses",
+          baseUrl: "https://api.openai.com/v1",
+          supportsStandaloneWebSearch: false,
+        },
+      },
+    });
     assert.deepEqual(revision.compute, {
       id: "compute-kubernetes",
       implementation: "occ/kubernetes",
@@ -754,7 +784,19 @@ stateCase(
       firstRevision.configuration,
       admitted(servedAs(persistedConfigValues, primary.name)),
     );
-    assert.deepEqual(firstRevision.harness, { id: "openclaw", version: "1.0.0", mode: "embedded" });
+    assert.deepEqual(firstRevision.harness, {
+      id: "openclaw",
+      version: "1.0.0",
+      mode: "embedded",
+      overrides: {},
+      configuration: {
+        modelProvider: {
+          protocol: "openai-responses",
+          baseUrl: "https://api.openai.com/v1",
+          supportsStandaloneWebSearch: false,
+        },
+      },
+    });
     assert.deepEqual(firstRevision.compute, {
       id: "compute-kubernetes",
       implementation: "occ/kubernetes",
@@ -870,7 +912,7 @@ stateCase(
         secretDriverId: "secret-kubernetes",
       },
       harness: firstRevision.harness,
-      compute: firstRevision.compute,
+      compute: persistedCompute(persistedRevisions.rows[0].admitted_spec, firstRevision.compute),
       execution_admission: { version: 2, mode: "unprotected" },
     });
     assert.deepEqual(persistedRevisions.rows[1].admitted_spec, {
@@ -884,9 +926,14 @@ stateCase(
         secretDriverId: "secret-kubernetes",
       },
       harness: secondRevision.harness,
-      compute: secondRevision.compute,
+      compute: persistedCompute(persistedRevisions.rows[1].admitted_spec, secondRevision.compute),
       execution_admission: { version: 2, mode: "unprotected" },
     });
+    assert.equal(
+      persistedRevisions.rows[0].admitted_spec.compute.admission,
+      persistedRevisions.rows[1].admitted_spec.compute.admission,
+      "unchanged saved provider settings retain their admission across draft revisions",
+    );
     assert.equal(
       persistedRevisions.rows[0].service_principal_id,
       persistedRevisions.rows[1].service_principal_id,

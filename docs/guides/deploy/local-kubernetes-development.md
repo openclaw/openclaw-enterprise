@@ -5,7 +5,7 @@ Kubernetes-only profile runs PostgreSQL, the OpenClaw Control Plane (OCC), and A
 
 ## Start the profile
 
-[Install Linux tools](local-kubernetes-tools.md): Node.js 24.22.1+, repository-pinned pnpm, the Go version from `go.mod`, k3d,
+[Install Linux tools](local-kubernetes-tools.md): Node.js satisfying `engines.node` in `package.json`, repository-pinned pnpm, the Go version from `go.mod`, k3d,
 kubectl, Helm, and Docker or Podman. Kubernetes-only mode uses the engine for
 k3d and images, not OCE services.
 
@@ -153,6 +153,8 @@ for console and Agent hosts, and prints the browser CA path.
 `OCC_DEVELOPMENT_BROWSER_PORT` must differ from Compose and k3d API ports.
 Skip manual hybrid routing.
 
+Runtime changes need [explicit source verification](../../../deploy/runtime/README.md#verify-runtime-source).
+
 First startup requires [node registry access](../operate/troubleshooting.md#local-agent-sandbox-controller-image-pull-fails).
 For reviewed local charts and manifests, set
 `OCC_DEVELOPMENT_OPENSHELL_HELM_CHART`,
@@ -262,9 +264,7 @@ Verify directory search and gateway Socket Mode using the
 
 ## Verify the local boundary
 
-Startup prints the API, kubeconfig, HTTPS Console URL and public browser CA. See [Local Setup](../quickstart.md#open-the-platform-console), the [shared session boundary](../../reference/agent-native-admin.md#shared-session-boundary) and [OpenShell browser access](local-setup.md).
-
-Use the printed paths with other tools:
+Use the printed API and kubeconfig paths:
 
 ```bash
 export KUBECONFIG="<Kubeconfig path printed by scripts/dev-up>"
@@ -297,8 +297,7 @@ must authenticate through a [credential source](../../reference/credential-sourc
 to register a key and bind it to an Agent, follow
 [Use a credential source on the local OpenShell profile](openshell-credential-sources.md).
 
-The profile also selects the curated Codex Plugin Driver for managed Codex
-plugin selections. See [Agent plugins](../../reference/agent-plugins.md).
+The profile supports [managed Codex plugins](../../reference/agent-plugins.md).
 
 The Kubernetes-only OpenShell Gateway requires TLS, mTLS and authentication.
 Static-inference enforcement is separate and off by default; it is not required
@@ -362,6 +361,10 @@ backing directory. Nothing here backs up Agent workspaces. Long-lived demos need
 a durable private state directory, not `/tmp`.
 
 ## Rebuild after a source edit
+
+Controller builds record Git `HEAD`; read it with **Debug mode** in Console
+Settings. See [controller image builds](../../contributing/local-development.md#build-a-controller-image)
+for standalone builds and source metadata limits.
 
 The environment registers immutable image digests, so running containers do not
 pick up source edits. Recreate it after controller, runtime, migration, Helm, or

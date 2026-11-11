@@ -456,6 +456,15 @@ test("a failed model probe keeps its closed-vocabulary cause, never other cause 
         providerErrorCode: "no_organization",
         providerErrorType: "invalid_request_error",
       }),
+      // An OpenClaw timeout keeps the CPU reading of its window (finding 2675); the raw
+      // samples never pass, and the Codex probe has no window.
+      probe("openclaw.model_probe", undefined, {
+        timeoutWindowMs: 15_400,
+        timeoutWindowCpuWaitMs: 4_200,
+        timeoutWindowIdleMs: 2_000,
+        timeoutWindowSamples: [[1, 2, 3, 4]],
+      }),
+      probe("codex.model_probe", undefined, { timeoutWindowMs: 15_400 }),
       // Off-vocabulary details, unknown kinds and extra keys drop the cause, never the line.
       probe("openclaw.model_probe", { kind: "PROBE_STATUS", detail: "sk-live-abc" }),
       probe("openclaw.model_probe", { kind: "PROVIDER_TEXT" }),
@@ -498,6 +507,12 @@ test("a failed model probe keeps its closed-vocabulary cause, never other cause 
       providerErrorCode: "no_organization",
       providerErrorType: "invalid_request_error",
       cleanupError: "ENOTEMPTY",
+    }),
+    fields("codex.model_probe"),
+    fields("openclaw.model_probe", {
+      timeoutWindowMs: 15_400,
+      timeoutWindowCpuWaitMs: 4_200,
+      timeoutWindowIdleMs: 2_000,
     }),
     fields("codex.model_probe"),
     fields("openclaw.model_probe"),
@@ -2382,6 +2397,39 @@ test("runtime log cursor preserves an observed BEGIN on uncertain initial and le
       );
     }
   }
+});
+
+test("known node-host plain-text lines carry a level so a level floor can drop them", () => {
+  const stream = { source: "agent", pod: "agent-0", container: "agent" };
+  const { records } = sanitizeRuntimeLogChunk({
+    stream,
+    truncated: false,
+    lines: [
+      "node host gateway connect failed: connect ECONNREFUSED 10.0.0.1:18789",
+      "node host gateway closed (1006): ",
+      "node host gateway connected: wss://gateway.example.invalid/node",
+      "[node-host] advertised commands: dir.list, file.stat",
+      "node host gateway permanently rejected connection (proxy_attribution_required): x; exiting",
+      "node host gateway reconnect paused after 5 failed attempts",
+      "node host gateway endpoint persistence failed: EACCES",
+      "[node-host] unexpected diagnostic: boom",
+      "some other plain line",
+    ].map((raw, index) => ({ time: lineTime(index + 1), raw })),
+  });
+  assert.deepEqual(
+    records.map(({ kind, level }) => `${kind} ${level}`),
+    [
+      "text warn",
+      "text warn",
+      "text info",
+      "text info",
+      "text error",
+      "text error",
+      "text error",
+      "text unknown",
+      "text unknown",
+    ],
+  );
 });
 
 const lineRecords = (page) => page.records.filter(({ type }) => type === "line");

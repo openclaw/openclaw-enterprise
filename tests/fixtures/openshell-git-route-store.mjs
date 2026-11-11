@@ -37,7 +37,7 @@ export function routeStore() {
         blocked: undefined,
       });
     },
-    async adopt(revisionId, workerInstance, disposition) {
+    async adopt(revisionId, workerInstance) {
       calls.adopt += 1;
       store.check();
       const row = rows.get(revisionId);
@@ -47,9 +47,7 @@ export function routeStore() {
       if (row.blocked === undefined) {
         row.fence += 1;
         row.workerInstance = workerInstance;
-        if (disposition === "close-preview") {
-          row.blocked = "worker_replaced";
-        }
+        row.blocked = "worker_replaced";
       }
       return structuredClone(row);
     },

@@ -68,11 +68,8 @@ func developmentSignIn(env map[string]string) (string, error) {
 	default:
 		return "", fmt.Errorf("OCC_DEVELOPMENT_SIGN_IN must be keycloak or unset")
 	}
-	if env["OCC_DEVELOPMENT_COMPUTE_DRIVER"] != "kubernetes" || env["OCC_DEVELOPMENT_CONTROL_PLANE"] != "kubernetes" {
-		return "", fmt.Errorf("OCC_DEVELOPMENT_SIGN_IN=keycloak requires OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes and OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes: only the Kubernetes-only profile installs the gateway routing and HTTPS Console that OIDC sign-in needs")
-	}
-	if sandbox := env["OCC_DEVELOPMENT_SANDBOX_DRIVER"]; sandbox != "" && sandbox != "none" {
-		return "", fmt.Errorf("OCC_DEVELOPMENT_SIGN_IN=keycloak requires OCC_DEVELOPMENT_SANDBOX_DRIVER=none: the %s sandbox profile installs no gateway routing or HTTPS Console", sandbox)
+	if err := resolveProfile(env).checkKeycloakSignIn(); err != nil {
+		return "", err
 	}
 	return value, nil
 }
@@ -728,9 +725,9 @@ func developmentKeycloakEgressCIDRs(data []byte) ([]string, error) {
 
 // developmentKeycloakSignInValues derives the second Helm pass from the first:
 // OIDC sign-in against the development Keycloak, the bootstrap administrator as
-// the recovery account, and passwords for that account only. OIDC supports
-// host-only cookies only, so the chart requires native Agent administration,
-// and its shared cookie domain, to be off. Every key is an existing chart value.
+// the recovery account, and passwords for that account only. It preserves native
+// Agent administration and the hosts used to derive the shared session cookie scope.
+// Every key is an existing chart value.
 func developmentKeycloakSignInValues(first []byte, cluster, recoveryUserID string, service []byte) ([]byte, error) {
 	if !developmentRecoveryUserID.MatchString(recoveryUserID) {
 		return nil, fmt.Errorf("the development administrator's user ID is not a valid auth.recoveryUserId")
@@ -763,7 +760,6 @@ func developmentKeycloakSignInValues(first []byte, cluster, recoveryUserID strin
 		"displayName":      developmentKeycloakSignInName,
 		"egressCidrs":      cidrs,
 	}
-	values["agentNativeAdmin"] = map[string]any{"enabled": false}
 	return json.Marshal(values)
 }
 

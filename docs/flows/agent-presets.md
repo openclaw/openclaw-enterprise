@@ -88,7 +88,7 @@ rendering copy the native policy of the [standard Codex artifact](../../deploy/p
 the deployed Codex plugin enforces it. `loadBundledPresetVersions` also loads every shipped version
 listed in `deploy/presets/archive/versions.json`, whether or not defaults are
 enabled, into `ControllerOptions.bundledPresetVersions`. A conformance test in
-`tests/conformance/presets.test.mjs` fails when a bundled file changes without
+`tests/conformance/presets.test.ts` fails when a bundled file changes without
 its previous version archived there.
 
 `packages/occ/src/index.ts:OpenClawController.initializeDefaultPresets`
@@ -172,7 +172,7 @@ Secret metadata, validates the original template, then substitutes the selected
 reference in a temporary copy. Changing mode discards tokens; stale catalog
 responses cannot replace a later selection.
 The user then selects **Use Preset**. The shared
-[`renderPresetTemplate`](../../packages/contracts/src/preset-variables.mjs)
+[`renderPresetTemplate`](../../packages/contracts/src/preset-variables.mts)
 walks JSON once, rejects missing or mistyped inputs and duplicate rendered native
 keys, and preserves runtime placeholders and unresolved SecretRefs.
 
@@ -290,7 +290,7 @@ or an immutable saved version.
 - Chooser errors identify variable or form-field problems before any save. Save errors
   come from existing Configuration or Agent admission; retain request and saved
   Configuration IDs when investigating partial or uncertain outcomes.
-- [Controller integration coverage](../../tests/integration/presets-controller.test.mjs)
+- [Controller integration coverage](../../tests/integration/presets-controller.test.ts)
   exercises the HTTP workflow, admission, isolation, and copy independence.
   [PostgreSQL coverage](../../tests/integration/postgres-presets.test.mjs) exercises
   persistence; [browser coverage](../../tests/browser/console-agent-presets.test.ts)

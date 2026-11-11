@@ -13,7 +13,7 @@ import {
   embeddedGatewayRecoveryPreamble,
 } from "../../apps/controller/src/drivers/compute/embedded-gateway-owner.ts";
 import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
-import { changeSignal, followContainer } from "./docker-follow.mjs";
+import { changeSignal, followContainer } from "./docker-follow.ts";
 import {
   COMPUTE_AGENT_RUNTIME_ENTRYPOINT as AGENT_RUNTIME_ENTRYPOINT,
   gatewayRuntimeEntrypoint,
@@ -21,7 +21,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { createModelProbeCertificates } from "./runtime-model-probe-certificates.mjs";
-import { modelProbeDiagnostic } from "./runtime-model-probe-observation.mjs";
+import { modelProbeDiagnostic } from "./runtime-model-probe-observation.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 import {
   execute,
