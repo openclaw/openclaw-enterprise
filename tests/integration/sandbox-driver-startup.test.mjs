@@ -6176,6 +6176,7 @@ async function orphanedNativePreparation() {
   configuration.kubernetes.userNamespaces = false;
   const driver = openShellDriver(gateway, configuration);
   const fixture = runtimeSandboxFixture(driver, { harnessId: "openclaw" });
+  fixture.revision = completeWorkspaceRevision(fixture.revision, fixture.requirements);
   // Revision cleanup confirms an absent Sandbox through the Workspace ensureNamespace created.
   const { name, id } = fixture.context.namespace;
   gateway.workspaces.set(name, ownedWorkspace(name, id));
@@ -6258,16 +6259,7 @@ test("OpenShell native preparation exits cleanly on SIGTERM after readiness", as
 });
 
 registerSandboxDriverPreparerCleanupCases({
-  orphanedNativePreparation: async () => {
-    const fixture = await orphanedNativePreparation();
-    return {
-      ...fixture,
-      context: {
-        ...fixture.context,
-        revision: completeWorkspaceRevision(fixture.context.revision, fixture.requirements),
-      },
-    };
-  },
+  orphanedNativePreparation,
   labelSelectorLabels,
 });
 
