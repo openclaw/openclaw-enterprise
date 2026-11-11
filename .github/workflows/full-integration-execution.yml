@@ -146,7 +146,7 @@ jobs:
     name: Same-SHA ${{ matrix.title }}
     # Match ordinary CI's physical capacities. Keep Blacksmith for the
     # k3d kernel and PostgreSQL Authentication's Chromium sandbox.
-    runs-on: ${{ (startsWith(matrix.lane, 'checks-browser') || (startsWith(matrix.lane, 'k3d-fixture-') && matrix.lane != 'k3d-fixture-network' && matrix.lane != 'k3d-fixture-plugins' && matrix.lane != 'k3d-fixture-configuration') || startsWith(matrix.lane, 'images-runtime-startup') || matrix.lane == 'postgres-application' || startsWith(matrix.lane, 'checks-baseline-')) && 'blacksmith-8vcpu-ubuntu-2404' || matrix.lane == 'k3d-observability-demo' && 'ubuntu-22.04' || (matrix.lane == 'postgres-auth' || matrix.lane == 'k3d-fixture-network' || matrix.lane == 'k3d-fixture-plugins' || matrix.lane == 'k3d-fixture-configuration' || matrix.lane == 'images-packaging' || matrix.lane == 'k3d-observability') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    runs-on: ${{ (startsWith(matrix.lane, 'checks-browser') || (startsWith(matrix.lane, 'k3d-fixture-') && matrix.lane != 'k3d-fixture-network' && matrix.lane != 'k3d-fixture-plugins' && matrix.lane != 'k3d-fixture-configuration') || startsWith(matrix.lane, 'images-runtime-startup') || matrix.lane == 'postgres-application' || startsWith(matrix.lane, 'checks-baseline-')) && 'blacksmith-8vcpu-ubuntu-2404' || (matrix.lane == 'postgres-auth' || matrix.lane == 'k3d-fixture-network' || matrix.lane == 'k3d-fixture-plugins' || matrix.lane == 'k3d-fixture-configuration' || matrix.lane == 'images-packaging' || matrix.lane == 'k3d-observability' || matrix.lane == 'k3d-observability-demo') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     needs: [preflight, ci-reuse]
     if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.preflight.result == 'success' && (needs.preflight.outputs.run_all == 'true') }}
     timeout-minutes: ${{ matrix.timeout }}
@@ -158,6 +158,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
+          # Sign-in profile tests compare real historical controller/catalog inputs.
+          fetch-depth: ${{ matrix.lane == 'checks-baseline-2' && '0' || '1' }}
           persist-credentials: false
       - uses: ./.github/actions/run-ci-lane
         with:
@@ -623,6 +625,9 @@ jobs:
         env:
           SKIPPER_PROOF_OUTCOME: ${{ steps.installed-skipper-proof.outcome }}
           SKIPPER_STAGE: ${{ steps.installed-skipper-proof.outputs.skipper_stage }}
+          SKIPPER_TEST_OPERATION: ${{ steps.installed-skipper-proof.outputs.skipper_test_operation }}
+          SKIPPER_GATEWAY_CHAT_PHASE: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_chat_phase }}
+          SKIPPER_LAST_TEST_CHECKPOINT: ${{ steps.installed-skipper-proof.outputs.skipper_last_test_checkpoint }}
           SKIPPER_INSTALLED_CLEANUP: ${{ steps.installed-skipper-proof.outputs.skipper_installed_cleanup }}
         run: node scripts/ci/skipper-failure-receipt.ts "$RUNNER_TEMP/skipper-installed-failure.json"
       - name: Upload sanitized installed Skipper failure

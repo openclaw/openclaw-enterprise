@@ -14,6 +14,7 @@
     "tests/integration/sandbox-driver-startup.test.mjs",
     "tests/integration/sandbox-driver-installation-configuration.test.ts",
     "tests/integration/sandbox-driver-ipv6-endpoints.test.ts",
+    "tests/integration/sandbox-driver-codex-app-server.test.ts",
     "tests/integration/runtime-image-codex-readiness.test.ts"
   ],
   "files": [
@@ -87,6 +88,13 @@
         "startup rejects the removed per-Sandbox OpenShell ServiceAccount mode",
         "startup rejects an invalid OpenShell gateway readiness wait",
         "shipped startup names a rejected OpenShell policy without logging its name"
+      ]
+    },
+    {
+      "path": "tests/integration/sandbox-driver-codex-app-server.test.ts",
+      "expectedTests": [
+        "OpenShell pins the Codex sandbox and approval reviewer while preserving other app-server settings",
+        "OpenShell drops the Codex network proxy so it cannot replace full access"
       ]
     },
     {

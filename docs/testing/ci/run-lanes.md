@@ -187,6 +187,70 @@ lane's same-source evidence, even when other lanes passed. If the artifact is
 missing, check the **CI lane first failure** annotation when present. It reports
 the first failed or cancelled action step, or `unavailable` when unknown.
 
+### Run a complete local attempt
+
+On Linux, give the runner one fresh private attempt directory to prepare, run and
+clean up a lane with one command. Its parent directory must already exist, belong
+to the runner's user, and deny group and other write access:
+
+```sh
+node scripts/ci/run-tests.mjs run checks-baseline-1 --lifecycle complete \
+  --attempt "$HOME/oce-profile-wire-attempt-1" \
+  --file tests/conformance/openshell-provider-profile-wire.test.ts
+```
+
+Choose an unused attempt name. This example runs one existing wire-conformance
+file without preparing services. Omit `--file` to run the whole selected lane.
+The command validates the selection before preparation and retains the lane's
+required inputs and expected cases. It does not select images, provide missing credentials, or enable optional
+wire tests. Follow the selected lane's setup requirements first.
+
+Complete mode uses only `<root>/scripts/ci/test-suites.json`, where `--root`
+selects the checkout and defaults to the runner's checkout. You can omit
+`--manifest` or explicitly supply that canonical path. Relative manifest paths
+resolve from the selected root; normalized relative and absolute paths must equal
+the canonical pathname. Symlink aliases are rejected. A different manifest fails
+before the runner creates an attempt or starts any phase, so selection,
+preparation and execution use the same definitions. Ordinary externally managed
+`run --state ... --results ...` still accepts alternate manifests.
+
+Complete mode rejects `--state` and `--results`. It creates the attempt directory
+exclusively with mode `0700`, then owns `state.json`, `run.json` and `result.json`
+inside it. Do not write into an active attempt or reuse its directory. A competing
+invocation that cannot claim the directory starts no phase and cleans nothing.
+
+The final `result.json` includes separate `lifecycle.phases.prepare`, `run` and
+`cleanup` outcomes. It is written after cleanup, or after the command determines
+that cleanup cannot start safely. Passing tests alone do not make the attempt
+pass. The ordinary test result, when available, remains in `run.json` even if later
+cleanup fails. Phase exceptions use closed failure codes; command arguments and
+output are not copied into phase errors.
+
+SIGINT, SIGTERM and SIGHUP request deferred cancellation. The command reports the
+request immediately, waits for the current phase, then cleans up without starting
+the next test phase. Cancellation still fails the attempt. Preparation and tests
+share a 30-minute deadline unless `CI_RUNNER_DEADLINE_MS` supplies an absolute Unix
+millisecond deadline. Cleanup has its own `CI_RUNNER_CLEANUP_TIMEOUT_MS` allowance
+(default 120 seconds). This mode does not promise immediate interruption.
+
+A timeout, lost phase result or unconfirmed process termination produces
+`reconciliation-required` and prevents a later cleanup phase. Command owners stop
+their process groups when their phase loses its parent. Retain the attempt,
+confirm its processes have stopped, then use the existing cleanup command below
+with its `state.json`. Do not remove another attempt's resources. SIGKILL or host
+failure can prevent a final result; a missing result is not cleanup evidence.
+
+The [runner](../../../scripts/ci/run-tests.mjs) starts each phase through a private IPC channel.
+[Preparation](../../../scripts/ci/prepare.mjs) and
+[cleanup](../../../scripts/ci/cleanup.ts) report their owned command groups.
+The runner checks that these groups have stopped before it starts cleanup.
+
+This mode covers resources recorded by the selected preparation and test owners.
+It does not add installed-image qualification, verify unrelated resource absence,
+or restore host settings changed outside those owners.
+
+### Keep an owned service between file runs
+
 Prepare infrastructure on a disposable host. Keep the private state file until cleanup completes:
 
 ```sh

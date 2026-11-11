@@ -42,6 +42,7 @@ export const runtimeImageSmokeTests = Object.freeze([
   "tests/integration/sandbox-driver-startup.test.mjs",
   "tests/integration/sandbox-driver-installation-configuration.test.ts",
   "tests/integration/sandbox-driver-ipv6-endpoints.test.ts",
+  "tests/integration/sandbox-driver-codex-app-server.test.ts",
   "tests/integration/workspace-files-native.test.mjs",
 ]);
 

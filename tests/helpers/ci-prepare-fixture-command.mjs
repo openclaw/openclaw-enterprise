@@ -820,12 +820,17 @@ async function fakeCommand({
       } else {
         assert.deepEqual(args.slice(5, 10), ["--servers", "1", "--agents", "0", "--api-port"]);
         assert.match(args[10], /^127\.0\.0\.1:\d+$/);
-        assert.deepEqual(args.slice(11), [
+        const options = [
           "--kubeconfig-update-default=false",
           "--kubeconfig-switch-context=false",
           "--no-lb",
           ...addonArgs,
-        ]);
+        ];
+        assert.ok(
+          equals(args.slice(11), options) ||
+            (env.CI_FIXTURE_LANE === "staging-signin" &&
+              equals(args.slice(11), [...options, "--no-rollback"])),
+        );
       }
       state.cluster = args[2];
       state.agents = Number(args[args.indexOf("--agents") + 1]);

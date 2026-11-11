@@ -541,6 +541,10 @@ function remaining([jobPath, jobUid, podsPath, childPath, childUid]) {
   const job = jobText ? JSON.parse(jobText) : undefined;
   const childText = readFileSync(childPath, "utf8").trim();
   const pod = childText ? JSON.parse(childText) : undefined;
+  // A present replacement is not an absence receipt for the saved consumer.
+  if ((job && job.metadata?.uid !== jobUid) || (pod && pod.metadata?.uid !== childUid)) {
+    fail("startup preflight consumer identity changed during cleanup.");
+  }
   return String(
     Boolean(
       job?.metadata?.uid === jobUid ||

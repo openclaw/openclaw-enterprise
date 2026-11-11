@@ -106,12 +106,15 @@ not require Origin, and an invalid key never falls back to a session cookie.
 Human-session Namespace IAM writes retain assigning authority through their transaction; see
 [Sharing commit guarantees](authorization.md#manage-namespace-policy).
 
-The `sessionKey` names the current session, stays stable across reads, and changes
-on each sign-in. It cannot authenticate; the token stays in its HttpOnly cookie.
-Sending it back as `x-occ-session-key` narrows a request to that session: a
-foreign, malformed, or duplicated key returns `401`, and such a sign-out neither
-revokes nor clears the cookie. Without the header, requests are unchanged. Console
-pins each tab's key this way.
+The `sessionKey` identifies the session, stays stable across reads,
+and changes at sign-in. It cannot authenticate; the token stays in its HttpOnly
+cookie. Console pins each
+tab's requests with `x-occ-session-key`. Foreign, malformed, or duplicated keys
+return `401`; rejected sign-out preserves sessions and cookies. Omitting the
+header leaves requests unchanged.
+
+Session inspection never sets cookies; late old-session responses cannot clear
+newer sign-in cookies.
 
 Password-only sign-out confirms session deletion before clearing its cookie. A
 storage failure returns `503 DEPENDENCY_UNAVAILABLE` without clearing the cookie;

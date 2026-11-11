@@ -202,45 +202,26 @@ test(
       await writeFile(path, body);
       return path;
     };
-    await assert.rejects(
-      render(
-        {},
-        {
-          valuesFiles: [
-            await writeValues(
-              "yes.yaml",
-              "api:\n  consoleTheme:\n    configMapName: yes\n    checksum: rev\n",
-            ),
-          ],
-        },
-      ),
-      /api\.consoleTheme\.configMapName must be a string/,
-    );
-    await assert.rejects(
-      render(
-        {},
-        {
-          valuesFiles: [
-            await writeValues("no.yaml", "api:\n  consoleTheme:\n    configMapName: no\n"),
-          ],
-        },
-      ),
-      /api\.consoleTheme\.configMapName must be a string/,
-    );
-    await assert.rejects(
-      render(
-        {},
-        {
-          valuesFiles: [
-            await writeValues(
-              "checksum.yaml",
-              'api:\n  consoleTheme:\n    configMapName: "console-branding"\n    checksum: yes\n',
-            ),
-          ],
-        },
-      ),
-      /api\.consoleTheme\.checksum must be a string/,
-    );
+    for (const [name, body, refusal] of [
+      [
+        "yes.yaml",
+        "api:\n  consoleTheme:\n    configMapName: yes\n    checksum: rev\n",
+        /api\.consoleTheme\.configMapName must be a string/,
+      ],
+      [
+        "no.yaml",
+        "api:\n  consoleTheme:\n    configMapName: no\n",
+        /api\.consoleTheme\.configMapName must be a string/,
+      ],
+      [
+        "checksum.yaml",
+        'api:\n  consoleTheme:\n    configMapName: "console-branding"\n    checksum: yes\n',
+        /api\.consoleTheme\.checksum must be a string/,
+      ],
+    ]) {
+      const path = await writeValues(name, body);
+      await assert.rejects(render({}, { valuesFiles: [path] }), refusal);
+    }
     const quoted = await writeValues(
       "quoted.yaml",
       'api:\n  consoleTheme:\n    configMapName: "no"\n    checksum: "rev"\n',
@@ -1469,64 +1450,8 @@ test(
   },
 );
 
-test("Helm refuses a Gateway name Compute refuses", tooling, async () => {
-  await assert.rejects(
-    execute(
-      helm,
-      [
-        "template",
-        "oce",
-        "deploy/helm/openclaw-enterprise",
-        "--namespace",
-        "openclaw-system",
-        "--values",
-        "deploy/examples/production/values.yaml",
-        "--set",
-        "gatewayRouting.gatewayName=Bad_Name",
-      ],
-      { cwd: repository, env: goToolEnvironment() },
-    ),
-    /gatewayRouting\.gatewayName must be a DNS-safe Kubernetes resource name/,
-  );
-  await assert.rejects(
-    execute(
-      helm,
-      [
-        "template",
-        "oce",
-        "deploy/helm/openclaw-enterprise",
-        "--namespace",
-        "openclaw-system",
-        "--values",
-        "deploy/examples/production/values.yaml",
-        "--set-string",
-        "gatewayRouting.gatewayName= oce-agent-gateways ",
-      ],
-      { cwd: repository, env: goToolEnvironment() },
-    ),
-    /gatewayRouting\.gatewayName must be a DNS-safe Kubernetes resource name/,
-  );
-  const sixtyFour = "a".repeat(64);
-  await assert.rejects(
-    execute(
-      helm,
-      [
-        "template",
-        "oce",
-        "deploy/helm/openclaw-enterprise",
-        "--namespace",
-        "openclaw-system",
-        "--values",
-        "deploy/examples/production/values.yaml",
-        "--set-string",
-        `gatewayRouting.gatewayName=${sixtyFour}`,
-      ],
-      { cwd: repository, env: goToolEnvironment() },
-    ),
-    /gatewayRouting\.gatewayName must be a DNS-safe Kubernetes resource name/,
-  );
-  const sixtyThree = "a".repeat(63);
-  const { stdout } = await execute(
+function renderProductionValuesExample(extraArgs, options = {}) {
+  return execute(
     helm,
     [
       "template",
@@ -1536,10 +1461,27 @@ test("Helm refuses a Gateway name Compute refuses", tooling, async () => {
       "openclaw-system",
       "--values",
       "deploy/examples/production/values.yaml",
-      "--set-string",
-      `gatewayRouting.gatewayName=${sixtyThree}`,
+      ...extraArgs,
     ],
-    { cwd: repository, env: goToolEnvironment(), maxBuffer: 2_000_000 },
+    { cwd: repository, env: goToolEnvironment(), ...options },
+  );
+}
+
+test("Helm refuses a Gateway name Compute refuses", tooling, async () => {
+  for (const [flag, gatewayName] of [
+    ["--set", "Bad_Name"],
+    ["--set-string", " oce-agent-gateways "],
+    ["--set-string", "a".repeat(64)],
+  ]) {
+    await assert.rejects(
+      renderProductionValuesExample([flag, `gatewayRouting.gatewayName=${gatewayName}`]),
+      /gatewayRouting\.gatewayName must be a DNS-safe Kubernetes resource name/,
+    );
+  }
+  const sixtyThree = "a".repeat(63);
+  const { stdout } = await renderProductionValuesExample(
+    ["--set-string", `gatewayRouting.gatewayName=${sixtyThree}`],
+    { maxBuffer: 2_000_000 },
   );
   const gateway = (await resources(stdout)).find((object) => object.kind === "Gateway");
   assert.equal(gateway?.metadata.name, sixtyThree);
@@ -1581,19 +1523,7 @@ test(
 );
 
 test("production Helm values example renders the backendless default chart", tooling, async () => {
-  const { stdout } = await execute(
-    helm,
-    [
-      "template",
-      "oce",
-      "deploy/helm/openclaw-enterprise",
-      "--namespace",
-      "openclaw-system",
-      "--values",
-      "deploy/examples/production/values.yaml",
-    ],
-    { cwd: repository, env: goToolEnvironment(), maxBuffer: 2_000_000 },
-  );
+  const { stdout } = await renderProductionValuesExample([], { maxBuffer: 2_000_000 });
   const objects = await resources(stdout);
   const selected = (kind, component) =>
     objects.find(
@@ -3295,6 +3225,30 @@ test(
   },
 );
 
+function assertApiEgressPolicy(objects, name, cidrs, port, message) {
+  const policy = objects.find(
+    ({ kind, metadata }) => kind === "NetworkPolicy" && metadata.name === name,
+  );
+  assert.ok(policy, message);
+  assert.deepEqual(policy.spec, {
+    podSelector: {
+      matchLabels: {
+        "app.kubernetes.io/name": "openclaw-enterprise",
+        "app.kubernetes.io/instance": "oce",
+        "app.kubernetes.io/component": "api",
+      },
+    },
+    policyTypes: ["Egress"],
+    egress: [
+      {
+        to: cidrs.map((cidr) => ({ ipBlock: { cidr } })),
+        ports: [{ protocol: "TCP", port }],
+      },
+    ],
+  });
+  return policy;
+}
+
 test(
   "optional model discovery grants only API HTTPS egress to configured hosts",
   tooling,
@@ -3310,29 +3264,13 @@ test(
         })
       ).stdout,
     );
-    const policy = objects.find(
-      ({ kind, metadata }) => kind === "NetworkPolicy" && metadata.name === name,
+    assertApiEgressPolicy(
+      objects,
+      name,
+      ["198.51.100.25/32", "198.51.100.26/32"],
+      443,
+      "configured discovery destinations must render an egress policy",
     );
-    assert.ok(policy, "configured discovery destinations must render an egress policy");
-    assert.deepEqual(policy.spec, {
-      podSelector: {
-        matchLabels: {
-          "app.kubernetes.io/name": "openclaw-enterprise",
-          "app.kubernetes.io/instance": "oce",
-          "app.kubernetes.io/component": "api",
-        },
-      },
-      policyTypes: ["Egress"],
-      egress: [
-        {
-          to: [
-            { ipBlock: { cidr: "198.51.100.25/32" } },
-            { ipBlock: { cidr: "198.51.100.26/32" } },
-          ],
-          ports: [{ protocol: "TCP", port: 443 }],
-        },
-      ],
-    });
     for (const cidr of [
       "0.0.0.0/0",
       "198.51.100.0/24",
@@ -3364,39 +3302,33 @@ test("MCP plugin discovery has independent API HTTPS egress", tooling, async () 
   };
   const pluginOnly = await resources((await render(pluginValues)).stdout);
   assert.ok(!pluginOnly.some(({ metadata }) => metadata.name === modelName));
-  const policy = pluginOnly.find(
-    ({ kind, metadata }) => kind === "NetworkPolicy" && metadata.name === name,
+  const pluginPolicy = assertApiEgressPolicy(
+    pluginOnly,
+    name,
+    ["203.0.113.15/32", "203.0.113.16/32"],
+    443,
+    "configured MCP hosts must render their own API egress policy",
   );
-  assert.ok(policy, "configured MCP hosts must render their own API egress policy");
-  assert.deepEqual(policy.spec, {
-    podSelector: {
-      matchLabels: {
-        "app.kubernetes.io/name": "openclaw-enterprise",
-        "app.kubernetes.io/instance": "oce",
-        "app.kubernetes.io/component": "api",
-      },
-    },
-    policyTypes: ["Egress"],
-    egress: [
-      {
-        to: [{ ipBlock: { cidr: "203.0.113.15/32" } }, { ipBlock: { cidr: "203.0.113.16/32" } }],
-        ports: [{ protocol: "TCP", port: 443 }],
-      },
-    ],
-  });
 
   // Configuring both lists retains their distinct policies and destinations.
   const modelValues = { "api.modelDiscoveryCidrs[0]": "198.51.100.25/32" };
   const modelOnly = await resources((await render(modelValues)).stdout);
   assert.ok(!modelOnly.some(({ metadata }) => metadata.name === name));
+  const modelPolicy = assertApiEgressPolicy(
+    modelOnly,
+    modelName,
+    ["198.51.100.25/32"],
+    443,
+    "configured model host must render its own API egress policy",
+  );
   const combined = await resources((await render({ ...pluginValues, ...modelValues })).stdout);
   assert.deepEqual(
-    combined.find(({ metadata }) => metadata.name === name),
-    policy,
+    combined.find(({ kind, metadata }) => kind === "NetworkPolicy" && metadata.name === name),
+    pluginPolicy,
   );
   assert.deepEqual(
-    combined.find(({ metadata }) => metadata.name === modelName),
-    modelOnly.find(({ metadata }) => metadata.name === modelName),
+    combined.find(({ kind, metadata }) => kind === "NetworkPolicy" && metadata.name === modelName),
+    modelPolicy,
   );
 
   for (const cidr of ["0.0.0.0/0", "203.0.113.0/24", "mcp.example.invalid"]) {
@@ -3418,26 +3350,13 @@ test("Slack directory proxy grants only API egress to its exact endpoint", tooli
   const objects = await resources(
     (await render({ "api.channelDirectoryProxyUrl": "http://198.51.100.25:3128" })).stdout,
   );
-  const policy = objects.find(
-    ({ kind, metadata }) => kind === "NetworkPolicy" && metadata.name === name,
+  assertApiEgressPolicy(
+    objects,
+    name,
+    ["198.51.100.25/32"],
+    3128,
+    "configured directory proxy must render API egress",
   );
-  assert.ok(policy, "configured directory proxy must render API egress");
-  assert.deepEqual(policy.spec, {
-    podSelector: {
-      matchLabels: {
-        "app.kubernetes.io/name": "openclaw-enterprise",
-        "app.kubernetes.io/instance": "oce",
-        "app.kubernetes.io/component": "api",
-      },
-    },
-    policyTypes: ["Egress"],
-    egress: [
-      {
-        to: [{ ipBlock: { cidr: "198.51.100.25/32" } }],
-        ports: [{ protocol: "TCP", port: 3128 }],
-      },
-    ],
-  });
   const proxyEnvironment = (objects, component) =>
     objects
       .find(
@@ -4774,38 +4693,41 @@ test(
   },
 );
 
+const externalGatewayCaValues = {
+  ...externalGatewayRoutingValues,
+  "gatewayRouting.issuerRef.kind": "ClusterIssuer",
+  "gatewayRouting.issuerRef.group": "cert-manager.io",
+  "gatewayRouting.caSecretName": "occ-private-ca",
+  "gatewayRouting.caSecretKey": "ca.crt",
+};
+const gatewayRootSecret = rootSecretName("openclaw-system", "oce-agent-gateways");
+const gatewayCertificateSecretCollisions = [
+  [gatewayRoutingValues, "oce-agent-gateways-tls", "gatewayRouting.tlsSecretName"],
+  [gatewayRoutingValues, gatewayRootSecret, "the generated Gateway root CA"],
+  [externalGatewayCaValues, "occ-private-ca", "gatewayRouting.caSecretName"],
+];
+
+function dedicatedSecretRefusal(setting, secret, holder) {
+  const message = `${setting} must name a dedicated Secret; ${secret} is also ${holder}`;
+  return ({ code, stderr }) => code !== 0 && stderr.includes(message);
+}
+
 test(
   "the chart refuses sign-in Secrets that share a Gateway certificate Secret",
   tooling,
   async () => {
     // cert-manager writes the generated Gateway TLS and root CA Secrets and would overwrite a
     // sign-in Secret sharing either name (finding 1046).
-    const gatewayRoot = `occ-gateway-${createHash("sha256").update("openclaw-system/oce-agent-gateways").digest("hex").slice(0, 12)}-root`;
-    const externalCa = {
-      ...externalGatewayRoutingValues,
-      "gatewayRouting.issuerRef.kind": "ClusterIssuer",
-      "gatewayRouting.issuerRef.group": "cert-manager.io",
-      "gatewayRouting.caSecretName": "occ-private-ca",
-      "gatewayRouting.caSecretKey": "ca.crt",
-    };
-    for (const [routing, secret, role] of [
-      [gatewayRoutingValues, "oce-agent-gateways-tls", "gatewayRouting.tlsSecretName"],
-      [gatewayRoutingValues, gatewayRoot, "the generated Gateway root CA"],
-      [externalCa, "occ-private-ca", "gatewayRouting.caSecretName"],
-    ]) {
+    for (const [routing, secret, role] of gatewayCertificateSecretCollisions) {
       await assert.rejects(
         render({ ...routing, ...googleLoginValues, "auth.google.secretName": secret }),
-        ({ code, stderr }) =>
-          code !== 0 &&
-          stderr.includes(
-            `auth.google.secretName must name a dedicated Secret; ${secret} is also ${role}`,
-          ),
+        dedicatedSecretRefusal("auth.google.secretName", secret, role),
         secret,
       );
       // Without gateway routing those names are free.
       await render({ ...googleLoginValues, "auth.google.secretName": secret });
     }
-    await render({ ...externalCa, ...googleLoginValues });
+    await render({ ...externalGatewayCaValues, ...googleLoginValues });
   },
 );
 
@@ -4815,37 +4737,20 @@ test(
   async () => {
     // Finding 1054: the collector's Secrets join the dedicated-Secret table, so cert-manager
     // cannot overwrite a collector config named like a Gateway certificate Secret.
-    const gatewayRoot = `occ-gateway-${createHash("sha256").update("openclaw-system/oce-agent-gateways").digest("hex").slice(0, 12)}-root`;
-    const externalCa = {
-      ...externalGatewayRoutingValues,
-      "gatewayRouting.issuerRef.kind": "ClusterIssuer",
-      "gatewayRouting.issuerRef.group": "cert-manager.io",
-      "gatewayRouting.caSecretName": "occ-private-ca",
-      "gatewayRouting.caSecretKey": "ca.crt",
-    };
     for (const [feature, secret, role] of [
       [{}, "occ-installation-startup", "installation.secretName"],
       [{}, "occ-database", "database.secretName"],
       [{}, "occ-auth", "auth.secretName"],
-      [gatewayRoutingValues, "oce-agent-gateways-tls", "gatewayRouting.tlsSecretName"],
-      [gatewayRoutingValues, gatewayRoot, "the generated Gateway root CA"],
-      [externalCa, "occ-private-ca", "gatewayRouting.caSecretName"],
+      ...gatewayCertificateSecretCollisions,
       [databaseCaValues, "occ-rds-ca", "database.caSecretName"],
       [sandboxValues, "preview-wildcard", "gatewayRouting.sandbox.tlsSecretName"],
       [chatgptValues, "occ-chatgpt-admin", "backend.chatgpt.secretName"],
     ]) {
       for (const key of ["configSecretName", "envSecretName"]) {
+        const setting = `logging.collector.${key}`;
         await assert.rejects(
-          render({
-            ...productionCollectorValues,
-            ...feature,
-            [`logging.collector.${key}`]: secret,
-          }),
-          ({ code, stderr }) =>
-            code !== 0 &&
-            stderr.includes(
-              `logging.collector.${key} must name a dedicated Secret; ${secret} is also ${role}`,
-            ),
+          render({ ...productionCollectorValues, ...feature, [setting]: secret }),
+          dedicatedSecretRefusal(setting, secret, role),
           `${key} = ${secret}`,
         );
       }
@@ -4924,9 +4829,7 @@ test(
     ]) {
       await assert.rejects(
         render({ ...base, [setting]: secret }),
-        ({ code, stderr }) =>
-          code !== 0 &&
-          stderr.includes(`${setting} must name a dedicated Secret; ${secret} is also ${other}`),
+        dedicatedSecretRefusal(setting, secret, other),
         `${setting} = ${secret}`,
       );
       // The same values with distinct names render.
@@ -4939,11 +4842,7 @@ test("the chart lets the public CA settings share one trust bundle Secret", tool
   // Finding 1059: each CA setting mounts only its selected key of public trust data, so one
   // trust bundle Secret may serve all of them. Private and cert-manager Secrets stay dedicated.
   const base = {
-    ...externalGatewayRoutingValues,
-    "gatewayRouting.issuerRef.kind": "ClusterIssuer",
-    "gatewayRouting.issuerRef.group": "cert-manager.io",
-    "gatewayRouting.caSecretName": "occ-private-ca",
-    "gatewayRouting.caSecretKey": "ca.crt",
+    ...externalGatewayCaValues,
     ...databaseCaValues,
     ...repositoryCredentialValues,
   };
@@ -4995,20 +4894,17 @@ test("the chart lets the public CA settings share one trust bundle Secret", tool
     const [refused, holder] = message.split(" / ");
     await assert.rejects(
       render({ ...base, ...shared, [setting]: secret }),
-      ({ code, stderr }) =>
-        code !== 0 &&
-        stderr.includes(`${refused} must name a dedicated Secret; ${secret} is also ${holder}`),
+      dedicatedSecretRefusal(refused, secret, holder),
       `${setting} = ${secret}`,
     );
   }
   // An external issuer creates no root CA Secret, so its generated name is free.
-  const gatewayRoot = `occ-gateway-${createHash("sha256").update("openclaw-system/oce-agent-gateways").digest("hex").slice(0, 12)}-root`;
-  await render({ ...base, ...googleLoginValues, "auth.google.secretName": gatewayRoot });
+  await render({ ...base, ...googleLoginValues, "auth.google.secretName": gatewayRootSecret });
   await assert.rejects(
     render({
       ...gatewayRoutingValues,
       ...googleLoginValues,
-      "auth.google.secretName": gatewayRoot,
+      "auth.google.secretName": gatewayRootSecret,
     }),
     /auth\.google\.secretName must name a dedicated Secret; \S+ is also the generated Gateway root CA/,
   );

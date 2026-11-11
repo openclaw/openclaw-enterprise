@@ -20,7 +20,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest, FastifySchema } fro
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Socket } from "node:net";
-import type { AdmittedCaller } from "../admission/admission-verifier.ts";
+import { AdmissionFailure, type AdmittedCaller } from "../admission/admission-verifier.ts";
 import { hostnameMatchesSharedCookieDomain, type ControllerAuth } from "../auth/index.ts";
 import {
   proxyNativeAdminWebSocket,
@@ -472,6 +472,10 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
   }
 
   const nativeAdminSockets = new Set<Socket>();
+  const httpAdmissionReasons = new WeakMap<
+    FastifyRequest,
+    NativeAdminWebSocketCloseReason | "admission_unavailable" | "denial_audit_failed"
+  >();
   const nativeAdminPendingWork = new Set<Promise<unknown>>();
   let nativeAdminShuttingDown = false;
   // Status polls, proxied requests and WebSocket lease renewals all re-check ownership, and a
@@ -1451,7 +1455,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     if (mapped.code === "DEPENDENCY_UNAVAILABLE") {
       return "agent_unavailable";
     }
-    if (mapped.code === "FORBIDDEN") {
+    if (mapped.code === "FORBIDDEN" || mapped.code === "NOT_FOUND") {
       return options.nativeAdmin?.enabled === true ? "authorization_denied" : "disabled";
     }
     return "dependency_failure";
@@ -1505,8 +1509,16 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
           headers: request.headers,
         });
       }
-    } catch {
-      return nativeAdminProxyDenial(exchangeMode ? "dependency_failure" : "session_invalid");
+    } catch (error) {
+      if (!exchangeMode && error instanceof AdmissionFailure) {
+        if (error.status === 401) {
+          return nativeAdminProxyDenial("session_invalid");
+        }
+        if (error.status === 403) {
+          return nativeAdminProxyDenial("admission_forbidden");
+        }
+      }
+      return nativeAdminProxyDenial("dependency_failure");
     }
     if (
       admitted.method !== "session" ||
@@ -1627,7 +1639,13 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     const operation = startNativeAdminAdmission(request.raw, hostname, "http");
     const admission = await boundedNativeAdminAdmission(operation.result);
     if (!isNativeAdminProxyResolution(admission)) {
-      if (admission !== undefined && !(await operation.audit)) {
+      httpAdmissionReasons.set(request, admission?.reason ?? "admission_unavailable");
+      if (admission === undefined || admission.reason === "dependency_failure") {
+        canonicalFailure(reply, dependencyUnavailable());
+        return true;
+      }
+      if (!(await operation.audit)) {
+        httpAdmissionReasons.set(request, "denial_audit_failed");
         canonicalFailure(reply, dependencyUnavailable());
         return true;
       }
@@ -1702,15 +1720,13 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       // platform identity had no grant checked and gets the generic text (finding 2589).
       canonicalFailure(
         reply,
-        admission === undefined
-          ? dependencyUnavailable()
-          : failure(
-              403,
-              "FORBIDDEN",
-              admission.reason === "authorization_denied" && admission.unprovisioned !== true
-                ? NATIVE_ADMIN_DENIAL
-                : GENERIC_DENIAL,
-            ),
+        failure(
+          403,
+          "FORBIDDEN",
+          admission.reason === "authorization_denied" && admission.unprovisioned !== true
+            ? NATIVE_ADMIN_DENIAL
+            : GENERIC_DENIAL,
+        ),
       );
       return true;
     }
@@ -1857,6 +1873,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
   });
   return {
     interceptHttp: interceptNativeAdminHttp,
+    httpAdmissionReason: (request: FastifyRequest) => httpAdmissionReasons.get(request),
     status: getNativeAdminStatus,
     resolveReturn: resolveNativeAdminReturn,
     launch,

@@ -1165,6 +1165,44 @@ registerHooks({
     return text.trim().split("\n").map(Number);
   }
 
+  test("staged sign-in preparation retains unacknowledged creation without rollback or retry", async (t) => {
+    // Exercise the real staging producer and an actual timed-out child. The
+    // command server models external k3d/Docker responses, not live resources.
+    const commands = await fixtureImageCommands(t, "cluster-create-hangs-once", "staging-signin", {
+      OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS: "3000",
+    });
+    const result = await commands.prepareStagingSignin();
+    assert.equal(result.error, undefined, "the producer must settle before the test watchdog");
+    assert.equal(result.status, 1, "an unacknowledged creation cannot be retried as successful");
+    assertStderrMatch(result.stderr, /unconfirmed creation.*reconciliation/u);
+    const calls = await commands.commands();
+    const creates = calls.filter(
+      ({ command, args }) => command === "k3d" && args[0] === "cluster" && args[1] === "create",
+    );
+    assert.equal(creates.length, 1);
+    assert.ok(
+      creates[0].args.includes("--no-rollback"),
+      "k3d itself must preserve unacknowledged resources",
+    );
+    assert.ok(
+      !calls.some(
+        ({ command, args }) =>
+          (command === "k3d" && args[0] === "cluster" && args[1] === "delete") ||
+          (command === "docker" && args.includes("rm")),
+      ),
+      "no deletion authority exists before a receipt",
+    );
+    const state = await commands.readState();
+    const clusters = state.resources.filter(({ kind }) => kind === "k3d-cluster");
+    assert.equal(clusters.length, 1);
+    assert.equal(clusters[0].status, "planned");
+    for (const pid of await hungK3dProcesses(commands)) {
+      assert.equal(processRunning(pid), false, `local child ${pid} must have settled`);
+    }
+    // The fixture directory is removed by its own hook; no modeled resource
+    // deletion is invoked and this test does not establish daemon settlement.
+  });
+
   test("k3d preparation times out a hung cluster create, discards it and retries once", async (t) => {
     const commands = await fixtureImageCommands(t, "cluster-create-hangs-once", undefined, {
       OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS: "5000",

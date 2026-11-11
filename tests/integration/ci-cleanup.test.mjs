@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+import { cleanupState, deleteOwnedK3dCluster } from "../../scripts/ci/cleanup.mjs";
 import { restoreLaneImages } from "../../scripts/ci/lane-images.ts";
 import { postgresSuperuserPassword, runPostgresAdmin } from "../../scripts/ci/postgres-admin.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.ts";
@@ -1553,4 +1554,157 @@ else if (args[1] !== 'rm') { process.exit(99); }
       assert.doesNotMatch(calls, /"rm"/);
     }
   }
+});
+
+// The engine changes ownership after the caller's custody observation. The
+// destructive owner must use that observation instead of resolving the name again.
+test("bound k3d cleanup refuses a replacement before deleting its resources", async () => {
+  const name = "openclaw-k8s-bound-abc123def456";
+  const identity = {
+    cluster: name,
+    serverID: "1".repeat(64),
+    networkID: "2".repeat(64),
+    volumes: [{ name: `k3d-${name}-images`, createdAt: "2026-11-11T00:00:00Z" }],
+  };
+  let replacementDeleted = false;
+  const run = async (command, args) => {
+    if (command === "k3d") {
+      if (args[1] === "delete") {
+        replacementDeleted = true;
+        return { stdout: "" };
+      }
+      return { stdout: JSON.stringify(replacementDeleted ? [] : [{ name }]) };
+    }
+    if (args[0] === "ps" && args.includes("--no-trunc")) {
+      return { stdout: "3".repeat(64) + "\n" };
+    }
+    return { stdout: "" };
+  };
+  await assert.rejects(
+    deleteOwnedK3dCluster({ name }, { execFile: run, identity }),
+    /bound k3d server identity/,
+  );
+  assert.equal(replacementDeleted, false, "replacement must survive the owner's refusal");
+});
+
+// This protocol fixture models Docker responses, not live Docker effects. The
+// real staged-cleanup cases cover the latter through the supported cleanup CLI.
+for (const scenario of ["owned", "replaced-network", "shared-volume", "late-volume-consumer"]) {
+  test(`bound k3d cleanup preserves destructive authority: ${scenario}`, async () => {
+    const name = "openclaw-k8s-bound-abc123def456";
+    const identity = {
+      cluster: name,
+      serverID: "1".repeat(64),
+      networkID: "2".repeat(64),
+      volumes: [{ name: `k3d-${name}-images`, createdAt: "2026-11-11T00:00:00Z" }],
+    };
+    const removed = [];
+    let serverPresent = true;
+    let networkPresent = true;
+    let volumePresent = true;
+    const run = async (command, args) => {
+      assert.equal(command, "docker", "bound cleanup must not resolve a cluster name through k3d");
+      const [kind, action] = args;
+      if (kind === "ps") {
+        const volume = args.some((arg) => arg.startsWith("volume="));
+        const shared =
+          scenario === "shared-volume" || (scenario === "late-volume-consumer" && !serverPresent);
+        return {
+          stdout: [serverPresent ? identity.serverID : "", volume && shared ? "3".repeat(64) : ""]
+            .filter(Boolean)
+            .join("\n"),
+        };
+      }
+      if (kind === "network" && action === "ls") {
+        // Real k3d networks have no k3d.cluster label; names are used only
+        // for the final absence observation, never as deletion authority.
+        return { stdout: networkPresent && !args.includes("--filter") ? `k3d-${name}` : "" };
+      }
+      if (kind === "network" && action === "inspect") {
+        return {
+          stdout: args.includes("{{.Name}}")
+            ? `k3d-${name}`
+            : JSON.stringify({ [identity.serverID]: {} }),
+        };
+      }
+      if (kind === "container" && action === "inspect") {
+        if (args.includes("{{json .NetworkSettings.Networks}}")) {
+          return {
+            stdout: JSON.stringify({
+              [`k3d-${name}`]: {
+                NetworkID: scenario === "replaced-network" ? "4".repeat(64) : identity.networkID,
+              },
+            }),
+          };
+        }
+        return { stdout: identity.volumes[0].name };
+      }
+      if (kind === "volume" && action === "inspect") {
+        return {
+          stdout: JSON.stringify({
+            Name: identity.volumes[0].name,
+            CreatedAt: identity.volumes[0].createdAt,
+            Driver: "local",
+            Scope: "local",
+          }),
+        };
+      }
+      if (kind === "rm") {
+        assert.deepEqual(args, ["rm", "-f", identity.serverID]);
+        serverPresent = false;
+        removed.push("server");
+        return { stdout: identity.serverID };
+      }
+      if (kind === "network" && action === "rm") {
+        assert.equal(args[2], identity.networkID);
+        networkPresent = false;
+        removed.push("network");
+        return { stdout: identity.networkID };
+      }
+      if (kind === "volume" && action === "rm") {
+        assert.deepEqual(args, ["volume", "rm", identity.volumes[0].name]);
+        volumePresent = false;
+        removed.push("volume");
+        return { stdout: identity.volumes[0].name };
+      }
+      if (kind === "volume" && action === "ls") {
+        return { stdout: volumePresent ? identity.volumes[0].name : "" };
+      }
+      throw new Error(`Unexpected Docker operation: ${args.join(" ")}`);
+    };
+    const operation = deleteOwnedK3dCluster({ name }, { execFile: run, identity });
+    if (scenario === "owned") {
+      await operation;
+      assert.deepEqual(removed, ["server", "network", "volume"]);
+    } else {
+      await assert.rejects(
+        operation,
+        scenario === "replaced-network" ? /network identity/ : /volume is shared/,
+      );
+      assert.deepEqual(removed, scenario === "late-volume-consumer" ? ["server", "network"] : []);
+      assert.equal(volumePresent, true, "shared resource must survive refusal");
+    }
+  });
+}
+
+test("bound cleanup refuses changed prepared state before destructive work", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state.json");
+  await writeFile(
+    statePath,
+    JSON.stringify({ version: 1, repositoryRoot, prefix: "openclaw-ci-bound", resources: [] }),
+  );
+  await assert.rejects(
+    cleanupState(statePath, {
+      expectedStateSha256: "0".repeat(64),
+      k3dIdentity: {
+        cluster: "openclaw-k8s-bound",
+        serverID: "1".repeat(64),
+        networkID: "2".repeat(64),
+        volumes: [],
+      },
+    }),
+    /cleanup state changed after preparation/,
+  );
+  assert.ok((await readFile(statePath, "utf8")).includes("openclaw-ci-bound"));
 });
