@@ -1237,6 +1237,44 @@ test("Responses follow-up replays assistant text with empty provider metadata", 
   assert.equal(f.providerRequests.length, sends, "unsupported metadata cannot send");
 });
 
+test("Responses admits bounded native agent messages", async (t) => {
+  const f = await staticEgressFixture(t);
+  const check = responseChecks(f);
+  const message = {
+    type: "agent_message",
+    id: "amsg_fixture",
+    author: "/root",
+    recipient: "/root/worker",
+    content: [{ type: "input_text", text: "Synthetic task" }],
+  };
+  const encrypted = { type: "encrypted_content", encrypted_content: "synthetic-ciphertext" };
+  const requestWith = (item) => ({ ...wire.request, input: [...wire.request.input, item] });
+
+  for (const content of [message.content, [...message.content, encrypted]]) {
+    const request = requestWith({ ...message, content });
+    await check.events(responseEvents(), false, "native agent input completes", true, request);
+    assert.deepEqual(f.providerRequests.at(-1).body, request);
+  }
+
+  const reads = f.secretReads;
+  const sends = f.providerRequests.length;
+  for (const item of [
+    { ...message, author: "https://example.invalid/agent" },
+    { ...message, recipient: "/other/worker" },
+    { ...message, recipient: "/root/../other" },
+    { ...message, tools: [{ type: "web_search" }] },
+    { ...message, content: [] },
+    { ...message, content: [encrypted] },
+    { ...message, content: [...message.content, encrypted, encrypted] },
+    { ...message, content: [{ type: "input_image", image_url: "https://example.invalid/image" }] },
+    { ...message, content: [...message.content, { ...encrypted, encrypted_content: {} }] },
+  ]) {
+    assert.ok((await f.resolve(f.capture(requestWith(item)))).refused);
+  }
+  assert.equal(f.secretReads, reads, "unsupported agent messages cannot read credentials");
+  assert.equal(f.providerRequests.length, sends, "unsupported agent messages cannot send");
+});
+
 test("selected Codex Responses wire admits local tools and finite SSE while rejecting remote tools and unprotected events", async (t) => {
   const f = await staticEgressFixture(t);
   // Sanitized packaged 0.163.0-alpha.2 request and synthetic response consumed by that
