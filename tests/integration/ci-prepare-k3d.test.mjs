@@ -814,6 +814,28 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       });
       const commands = await fixtureImageCommands(t, "success", "k3d-fixture-network");
       pidFile = join(dirname(commands.statePath), "cancelled-build-pids");
+      // Cancellation can arrive after the real helper registers the cluster but
+      // before the external create is accepted. Hold that boundary deterministically.
+      let createStarted;
+      const createPending = new Promise((resolve) => {
+        createStarted = resolve;
+      });
+      const k3d = join(dirname(commands.statePath), "bin", "k3d.mjs");
+      const originalK3d = `${k3d}.original`;
+      await rename(k3d, originalK3d);
+      const clusterServer = await startCommandServer({
+        forwardedEnv: [],
+        handle: ({ args, io }) => {
+          if (args[0] === "cluster" && args[1] === "create") {
+            createStarted();
+            io.exitAfter(124, 15000);
+          } else {
+            io.script(`exec ${bashString(originalK3d)} ${args.map(bashString).join(" ")}`);
+          }
+        },
+      });
+      t.after(() => clusterServer.close());
+      await writeFixtureCommand(k3d, "k3d", clusterServer);
       await interceptFixtureDocker(t, commands, (args) => {
         if (args[0] === "build" && args.at(-1).endsWith("/tests/fixtures/kubernetes")) {
           const descendant = `
@@ -848,6 +870,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       );
       assert.equal(pids.length, 2);
       assert.ok(pids.every(processRunning));
+      await within(createPending, "planned cluster create boundary", 5000);
       cli.kill("SIGINT");
       const result = await within(preparation, "SIGINT preparation cancellation", 5000);
       assert.equal(result.error, undefined);
@@ -862,6 +885,12 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       const state = await commands.readState();
       assert.equal(state.env, undefined);
       assert.equal(state.resources.find(({ kind }) => kind === "image-tag").status, "planned");
+      assert.equal(state.resources.find(({ kind }) => kind === "k3d-cluster").status, "planned");
+      assert.ok(
+        !(await commands.commands()).some(
+          ({ command, args }) => command === "k3d" && args[0] === "cluster" && args[1] === "create",
+        ),
+      );
       await assert.rejects(stat(commands.githubEnv), { code: "ENOENT" });
       await commands.cleanupSuccessfully();
     },
