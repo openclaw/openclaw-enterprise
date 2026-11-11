@@ -7,15 +7,15 @@ import { protectedText, redactedQaTail } from "./qa-secrets.mjs";
 
 /** Run the real OpenShell workflow against explicitly prepared, disposable infrastructure. */
 export async function verifyQaSandboxPolicy(artifacts, scenario = "network-policy") {
+  const scratch = scenario === "scratch-volume";
+  const usesApiKey = scenario === "namespace-lifecycle" || scratch;
   // Namespace readiness is proved first, then native OpenClaw Agents complete real model turns.
-  const token =
-    scenario === "namespace-lifecycle"
-      ? undefined
-      : await protectedText(process.env.OCC_TEST_QA_CODEX_TOKEN_FILE, "Codex credential");
-  const namespaceCredential =
-    scenario === "namespace-lifecycle"
-      ? await protectedText(process.env.OCC_TEST_QA_OPENAI_KEY_FILE, "model credential")
-      : undefined;
+  const token = usesApiKey
+    ? undefined
+    : await protectedText(process.env.OCC_TEST_QA_CODEX_TOKEN_FILE, "Codex credential");
+  const namespaceCredential = usesApiKey
+    ? await protectedText(process.env.OCC_TEST_QA_OPENAI_KEY_FILE, "model credential")
+    : undefined;
   const envFile = process.env.OCC_TEST_QA_SANDBOX_ENV;
   assert.ok(envFile, "OCC_TEST_QA_SANDBOX_ENV must select the prepared OpenShell file environment");
   const env = {
@@ -28,10 +28,11 @@ export async function verifyQaSandboxPolicy(artifacts, scenario = "network-polic
       : {
           OPENAI_API_KEY: namespaceCredential,
           OCC_TEST_OPENAI_MODEL: process.env.OCC_TEST_QA_OPENAI_MODEL,
-          OCC_TEST_OPENSHELL_HARNESS: "openclaw",
+          OCC_TEST_OPENSHELL_HARNESS: scratch ? "codex" : "openclaw",
+          ...(scratch ? { OCC_TEST_OPENSHELL_MODEL_BASE_URL: "https://api.openai.com/v1" } : {}),
         }),
     OCC_TEST_OPENSHELL_K3D_REAL: "1",
-    OCC_TEST_OPENSHELL_SCENARIO: scenario === "namespace-lifecycle" ? "full" : scenario,
+    OCC_TEST_OPENSHELL_SCENARIO: usesApiKey ? "full" : scenario,
     OCC_TEST_NAMESPACE_OPENSHELL_REAL: scenario === "namespace-lifecycle" ? "1" : "0",
   };
   // This is a separate test process, not a recursive run inside the matrix worker.
@@ -43,9 +44,13 @@ export async function verifyQaSandboxPolicy(artifacts, scenario = "network-polic
     ...(scenario === "plugin-install"
       ? ["--test-name-pattern=^OpenShell installs selected Codex plugins"]
       : []),
-    scenario === "namespace-lifecycle"
-      ? "tests/integration/namespace-driver-openshell-k3d-real.test.ts"
-      : "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+    ...(scratch
+      ? ["tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts"]
+      : [
+          scenario === "namespace-lifecycle"
+            ? "tests/integration/namespace-driver-openshell-k3d-real.test.ts"
+            : "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+        ]),
   ];
   let output;
   let failed = false;
@@ -79,7 +84,12 @@ export async function verifyQaSandboxPolicy(artifacts, scenario = "network-polic
   const evidence = resolve(artifacts, `${scenario}-runtime.log`);
   await writeFile(evidence, text, { mode: 0o600 });
   assert.equal(failed, false, `OpenShell workflow failed; see ${evidence}`);
-  if (scenario === "namespace-lifecycle") {
+  if (scratch) {
+    assert.match(
+      text,
+      /ok 1 - OpenShell mounts the admitted operator scratch PVC through the Agent workflow/,
+    );
+  } else if (scenario === "namespace-lifecycle") {
     assert.match(
       text,
       /ok 1 - bootstrap reconciles OpenShell gateways and Workspaces before any Agent/,
@@ -99,6 +109,13 @@ export async function verifyQaSandboxPolicy(artifacts, scenario = "network-polic
       evidence,
       outcome:
         "real Namespace gateways and Workspaces before Agents, followed by Agent deployment and model turns",
+    };
+  }
+  if (scratch) {
+    return {
+      evidence,
+      outcome:
+        "real admitted scratch and durable workspace writes, with missing and replaced PVC refusal",
     };
   }
   return {

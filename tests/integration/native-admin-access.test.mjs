@@ -661,13 +661,19 @@ test("native admin retained domains preserve controller access and refuse unusab
       assert.fail("disabled native administration must not read the gateway key");
     },
   });
-  const denied = await disabled.app.inject({
-    method: "GET",
-    url: "/",
-    headers: { host: `agent-${"a".repeat(32)}.${domain}` },
-  });
-  assert.equal(denied.statusCode, 403);
-  assert.equal(denied.json().error.code, "FORBIDDEN");
+  for (const host of [
+    `agent-${"a".repeat(32)}.${domain}`,
+    `agent-invalid.${domain}`,
+    `agent-${"a".repeat(32)}.other.${domain}`,
+  ]) {
+    const denied = await disabled.app.inject({
+      method: "GET",
+      url: "/console/",
+      headers: { host },
+    });
+    assert.equal(denied.statusCode, 403);
+    assert.equal(denied.json().error.code, "FORBIDDEN");
+  }
 });
 
 test("native admin shared session configuration validates cookie scope and rejects keys", async (t) => {
@@ -1240,9 +1246,52 @@ test("native admin proxy resolves a host only to the live Agent it names", async
     });
   };
 
-  const own = await proxied(namespace.id, agent.id);
-  assert.equal(own.statusCode, 200, own.body);
-  assert.equal(upstream.requests.length, 1);
+  const resolveReference = fixture.controller.resolveAgentReference.bind(fixture.controller);
+  const shapeLookups = t.mock.method(fixture.controller, "resolveAgentReference", (...args) =>
+    resolveReference(...args),
+  );
+  try {
+    const own = await proxied(namespace.id, agent.id);
+    assert.equal(own.statusCode, 200, own.body);
+    assert.equal(upstream.requests.length, 1);
+    assert.equal(shapeLookups.mock.callCount(), 1, "a valid host uses the real reference lookup");
+
+    const account = await fixture.createAccountWithPolicy("native-host-no-access", () => {});
+    const limited = await fixture.signIn(account.credentials);
+    const unknown = await proxied(namespace.id, `agt_${randomUUID()}`, limited.cookie);
+    const inaccessible = await proxied(namespace.id, agent.id, limited.cookie);
+    assert.equal(unknown.statusCode, 403, unknown.body);
+    assert.equal(inaccessible.statusCode, 403, inaccessible.body);
+    assert.deepEqual(unknown.json().error, inaccessible.json().error);
+    assert.equal(shapeLookups.mock.callCount(), 3, "well-formed hosts retain the real lookup");
+
+    const key = deriveNativeAdminHost(installationId, agent, nativeDomain)
+      .split(".", 1)[0]
+      .slice(6);
+    for (const malformedHost of [
+      `agent-.${nativeDomain}`,
+      `agent-${key.slice(1)}.${nativeDomain}`,
+      `agent-${key}0.${nativeDomain}`,
+      `agent-${"g".repeat(32)}.${nativeDomain}`,
+      `agent-${key}.other.${nativeDomain}`,
+    ]) {
+      const before = shapeLookups.mock.callCount();
+      const denied = await injectJson(fixture, "GET", "/console/", {
+        headers: { host: malformedHost, cookie: limited.cookie },
+      });
+      assert.equal(denied.statusCode, 403, denied.body);
+      assert.equal(denied.json().error.code, "FORBIDDEN");
+      assert.equal(denied.headers.location, undefined);
+      assert.equal(
+        shapeLookups.mock.callCount() - before,
+        0,
+        `malformed native hosts must not enumerate Agent references: ${malformedHost}`,
+      );
+      assert.equal(upstream.requests.length, 1, "a malformed host must not reach a native gateway");
+    }
+  } finally {
+    shapeLookups.mock.restore();
+  }
 
   const other = await fixture.createNamespace("Native admin other", { ready: true });
   const otherAgent = await fixture.createAgent(

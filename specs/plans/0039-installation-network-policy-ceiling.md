@@ -1,13 +1,13 @@
 ---
-rfc: ../rfcs/0038-installation-network-policy-ceiling.md
+rfc: ../rfcs/0039-installation-network-policy-ceiling.md
 ---
 
 # Implementation plan: Manage the Installation network policy ceiling
 
-- **ID:** RFC-0038
+- **ID:** RFC-0039
 - **Delivery status:** In progress
 - **Owner:** russellb
-- **Authority:** [RFC-0038](../rfcs/0038-installation-network-policy-ceiling.md)
+- **Authority:** [RFC-0039](../rfcs/0039-installation-network-policy-ceiling.md)
 - **Source baseline:** `6bf16386658e8b1f81a7f90a04ccd0697c23805c`
 
 ## Outcome and scope
@@ -158,10 +158,11 @@ and [runtime flow](../../docs/flows/agent-sandbox-policy.md).
 Automatic approval review rejected the final shared autoreview launch because it
 would send private source and supporting context to the configured Codex review
 service without explicit approval for that destination. Approval is requested;
-no final shared report exists. Publish the implementation as a draft while this
-review and required proof remain pending. Main at `f51ca631c` merged without
-conflicts. Later, main assigned RFC-0037 to OIDC enrollment claims, so this
-proposal and its primary plan moved to RFC-0038. Published history is preserved; migration 0077 remains unique.
+no final shared report exists. The author requested ready-for-review status;
+outstanding proof and review still block merge. Main at `f51ca631c` merged
+without conflicts. Later, main assigned RFC-0037 to OIDC enrollment claims
+and RFC-0038 to operator scratch storage. This proposal and its primary plan
+now use RFC-0039. Published history is preserved; migration 0077 is unchanged.
 
 No Driver contract or default runtime image changed. Real runtime qualification,
 reviewable native media attachments and final CI remain delivery requirements.
