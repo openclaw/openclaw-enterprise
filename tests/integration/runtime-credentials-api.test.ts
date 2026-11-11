@@ -611,6 +611,7 @@ test("Kubernetes diagnostics distinguish a starting Gateway from a denied Pod pr
   const failures = new Map<string, 403 | 503>();
   const startupUnavailable = Promise.withResolvers<void>();
   let unavailableStatusPath: string | undefined = undefined;
+  let diagnosticsRefusalsServed = 0;
   const server = createServer({ key, cert }, async (request, response) => {
     if (request.method !== "GET" || request.headers.authorization !== `Bearer ${token}`) {
       response.writeHead(403).end();
@@ -625,6 +626,9 @@ test("Kubernetes diagnostics distinguish a starting Gateway from a denied Pod pr
     if (diagnosticsStatus !== undefined) {
       if (diagnosticsStatus === 403) {
         await startupUnavailable.promise;
+        response.once("finish", () => {
+          diagnosticsRefusalsServed += 1;
+        });
       }
       response.writeHead(diagnosticsStatus, headers).end(
         JSON.stringify({
@@ -776,6 +780,8 @@ test("Kubernetes diagnostics distinguish a starting Gateway from a denied Pod pr
   failures.set(diagnosticsPath, 403);
   proxyReads.length = 0;
   const denied = fixture.fixtureResponse(await diagnose(), 503, ErrorResponse, "denied Pod proxy");
+  // A request timeout can produce the same public category; require the intended refusal.
+  assert.equal(diagnosticsRefusalsServed, 1);
   assert.deepEqual(
     proxyReads.filter((path) => path === diagnosticsPath),
     [diagnosticsPath],
