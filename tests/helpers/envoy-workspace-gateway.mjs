@@ -6,6 +6,7 @@ import dns from "node:dns";
 import { connect } from "node:net";
 import { basename } from "node:path";
 import { connect as connectTls } from "node:tls";
+import { withBoundedTeardown } from "./bounded-teardown.ts";
 import { availablePort } from "./available-port.mjs";
 import { startWorkspaceGatewayRelayContainer } from "./workspace-gateway-relay-container.mjs";
 import { request as requestHttps } from "node:https";
@@ -207,10 +208,11 @@ async function waitForWorkspaceGatewayTls(hostname, port, waitFor) {
 }
 
 export async function startWorkspaceGatewayHostRelay(
-  context,
+  testContext,
   workspaceGateway,
   { kubectl, resources, waitFor, startPortForwardTarget, gatewayImage },
 ) {
+  const context = withBoundedTeardown(testContext, { label: "Workspace Gateway cleanup" });
   const containerEngine = process.env.OCC_DOCKER_BIN ?? "docker";
   // Docker Desktop and Podman Machine host networking stays in their Linux VM.
   // Publish to macOS loopback and use the engine's host alias for the port-forward.
@@ -312,7 +314,7 @@ export async function startWorkspaceGatewayHostRelay(
   const forwardedPort = Number(new URL(forwarding.url).port);
   const relayName = `oce-openshell-routing-${hash(randomUUID())}`;
   // Bind/startup failure must still close the forwarding process and owned relay.
-  context.after(() => forwarding.stop().catch(() => undefined));
+  context.after(() => forwarding.stop());
   const relayProgram = [
     'const net = require("node:net");',
     "const targetPort = Number(process.argv[1]);",
@@ -364,10 +366,11 @@ export async function startWorkspaceGatewayHostRelay(
 }
 
 export async function createEnvoyWorkspaceGatewayPlan(
-  context,
+  testContext,
   { platformNamespace, sandboxPreview = false },
   helpers,
 ) {
+  const context = withBoundedTeardown(testContext, { label: "Workspace Gateway cleanup" });
   let apiKey = randomBytes(32).toString("base64url");
   const apiKeySecretName = `oce-gateway-api-key-${hash(platformNamespace)}`;
 
@@ -419,15 +422,13 @@ export async function createEnvoyWorkspaceGatewayPlan(
   // would block until the platform Namespace's Gateway is gone. That Namespace may be deleted
   // after this cleanup (finding 1711): request the deletion and let the finalizer complete it.
   context.after(async () => {
-    await helpers
-      .kubectl(
-        "delete",
-        "gatewayclass",
-        gatewayClassName,
-        "--ignore-not-found=true",
-        "--wait=false",
-      )
-      .catch(() => undefined);
+    await helpers.kubectl(
+      "delete",
+      "gatewayclass",
+      gatewayClassName,
+      "--ignore-not-found=true",
+      "--wait=false",
+    );
   });
   const gatewayRoutingManifests = await renderGatewayRoutingManifests({
     releaseNamespace: platformNamespace,
@@ -698,7 +699,7 @@ function registerRenderedExternalCleanup(context, manifests, platformNamespace, 
         "--namespace",
         object.namespace,
         "--ignore-not-found=true",
-      ).catch(() => undefined);
+      );
     });
   }
 }
