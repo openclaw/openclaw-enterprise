@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
 updated: 2026-11-11
-last_updated_session: authoring-run/34b5633f-b4b7-4b67-98ff-d5b3c3ab1a6b
+last_updated_session: authoring-run/1e3b3e18-4b6f-4cdb-b1a6-c99b3336bb19
 ---
 
 # Agent Workspace Files Flow
@@ -129,16 +129,16 @@ atomically replace only absent, stock, or already-submitted content. The runner
 reruns setup for `BOOTSTRAP.md`, verifies results, and atomically writes
 `.oce-workspace-setup.json`.
 
-Matching markers skip replay; incomplete writes retry the same checks.
-Missing or mismatched markers after recorded completion block startup, preserving
-later edits. Errors omit document contents.
+Matching markers skip replay; incomplete writes revalidate. After recorded
+completion, missing/mismatched markers block startup, preserving edits.
+Kubernetes initializer logs can include allowlisted codes such as `EROFS`.
+Temporary-directory cleanup preserves an earlier setup error.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:safeRuntimeFailureObservation`
-reports refusals (exit 2) as `WORKSPACE_SETUP_REFUSED`; OpenShell raises
-`SandboxWorkspaceSetupRefusedError`. Kubernetes retries other failures
-(`WORKSPACE_SETUP_RETRYING`). OpenShell reports only RPC status or setup
-exit/timeout. Docker retries failed setup; preparation never stops a running one
-and stays unready meanwhile. `checkedAt` records termination/observation time.
+reports exit 2 as `WORKSPACE_SETUP_REFUSED`; other failures retry
+(`WORKSPACE_SETUP_RETRYING`). OpenShell raises `SandboxWorkspaceSetupRefusedError` on refusal,
+reporting RPC status or exit/timeout only. Docker retries failures without
+interrupting setup, staying unready. `checkedAt` records termination/observation time.
 
 ### 3. Activation clears staged contents and keeps completion metadata
 
@@ -343,10 +343,9 @@ replays it. Cleanup closes the native client.
 
 ## Debugging and Verification
 
-- For setup failure, check Agent revision and work status, the selected Driver's
-  support, native release, defaults identity and durable workspace placement.
-  Do not delete a completion marker to force a replay; missing initialized
-  storage needs operator recovery, not the creation payload.
+- Check revision/work status, Driver support, native release/defaults
+  identity and durable workspace placement. Missing initialized storage needs
+  operator recovery, not creation payload replay or completion-marker deletion.
 - A stale `workspaceDefaultsId` rejects creation with `409 RESOURCE_CONFLICT`;
   reload the Console create form and resubmit. Creation
   does not prove runtime initialization; verify the selected version and live content.
@@ -377,6 +376,8 @@ replays it. Cleanup closes the native client.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 23:39: Preserve safe initializer error codes and earlier setup errors. (authoring-run/1e3b3e18-4b6f-4cdb-b1a6-c99b3336bb19 - 707390bb16f132b70addcf3079a81bf493387712)
 
 - 2026-11-11 09:02: Retain native effort capabilities without request overrides. (authoring-run/34b5633f-b4b7-4b67-98ff-d5b3c3ab1a6b - 9f30b1e6b9f6552865d47fedd6d0b82729bf70fb)
 
