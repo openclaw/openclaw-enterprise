@@ -1812,20 +1812,28 @@ test("finite v5 Git expiry refuses resolver substitution and never replays an un
       }
       return result;
     };
-    const negative: string[] = [];
-    assert.equal(
-      await subtractExpiredOpenShellGit(
-        expiry,
-        saved,
-        client,
-        { ...owner, workload: async () => "replacement-pods" },
-        t.signal,
-        async () => assert.fail("replacement launch must fail before profile validation"),
-        (outcome, check) => negative.push(outcome + ":" + check),
-      ),
-      "retire-runtime",
-    );
-    assert.deepEqual(negative, ["retire-runtime:original-launch-and-pods"]);
+    if (fault === "replacement Pod") {
+      const negative: unknown[] = [];
+      assert.equal(
+        await subtractExpiredOpenShellGit(
+          expiry,
+          saved,
+          client,
+          { ...owner, workload: async () => undefined },
+          t.signal,
+          async () => assert.fail("unconfirmed launch must fail before profile validation"),
+          (outcome, check, failure) => negative.push({ outcome, check, failure }),
+        ),
+        "retire-runtime",
+      );
+      assert.deepEqual(negative, [
+        {
+          outcome: "retire-runtime",
+          check: "original-launch-and-pods",
+          failure: "launch_workload_unconfirmed",
+        },
+      ]);
+    }
     assert.equal(intents, 0);
     assert.equal(sends, 0);
     const cleanup = (runtime = f.runtime, observer = owner) => {
@@ -1952,14 +1960,13 @@ test("finite v5 Git expiry refuses resolver substitution and never replays an un
       assert.equal(confirmations, [first, second, third].filter((v) => v === "withdrawn").length);
     } else {
       const event = events.at(-1)!;
-      assert.equal(
-        event.failure,
-        ["Sandbox moved before send", "string conflict code", "unimplemented detach"].includes(
-          fault,
-        )
-          ? "failed"
-          : "unconfirmed",
-      );
+      const terminalFailures: Record<string, string> = {
+        "replacement Pod": "launch_fingerprint_mismatch",
+        "Sandbox moved before send": "failed",
+        "string conflict code": "failed",
+        "unimplemented detach": "failed",
+      };
+      assert.equal(event.failure, terminalFailures[fault] ?? "unconfirmed");
       assert.equal(
         event.grpcStatus,
         ({ "Sandbox moved before send": 10, "unimplemented detach": 12 } as Record<string, number>)[
