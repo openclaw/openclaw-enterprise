@@ -13,7 +13,10 @@ import { promisify } from "node:util";
 import { failureSecrets, redactLogLine } from "../../scripts/ci/failure-redaction.mjs";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { verifyOpenShellOwnerSession } from "../helpers/openshell-owner-session.mjs";
+import {
+  assertOpenShellOwnerModelSelection,
+  verifyOpenShellOwnerSession,
+} from "../helpers/openshell-owner-session.mjs";
 import { localOpenShellGatewayOptions } from "../helpers/local-openshell-gateway.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
 import { attachDevUpStartupDisposition } from "../helpers/dev-up-startup-disposition.ts";
@@ -209,6 +212,7 @@ test(
     timeout: 1_200_000,
   },
   async (t) => {
+    assertOpenShellOwnerModelSelection(process.env);
     await access(occ);
     // LocalSetup requires a canonical parent; macOS temporary roots may be symlinks.
     const root = await mkdtemp(join(await realpath(tmpdir()), "oce-dev-up-openshell-real-"));
