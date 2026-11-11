@@ -8240,6 +8240,138 @@ test("a failed local setup reports only paired outcomes", async (t) => {
   assert.match(diagnostics, /ordinary setup diagnostic survives/);
 });
 
+test("first-Agent startup preserves bounded redacted stderr and the original failure", async (t) => {
+  const actionable =
+    "failed to create network: Pool overlaps with other one on this address space\n";
+  const sensitive =
+    "environment value: invented-fixture-input\n" +
+    "AUTHORIZATION: Bearer private-header-value\n" +
+    "password: {\n  value: 'private-nested-value'\n}\n" +
+    "-----BEGIN PRIVATE KEY-----\nprivate-key-body\n-----END PRIVATE KEY-----\n";
+  const cases = [
+    ["short", actionable + "unterminated actionable detail\n" + sensitive],
+    ["large", actionable + "x".repeat(40_000) + "private-cut-tail"],
+    ["success", actionable + sensitive],
+    ["object", actionable + 'authorization: {\n  value: "opaque-object-canary"\n}\n'],
+    ["yaml", actionable + "password: |\n  opaque-block-canary\n"],
+    [
+      "display boundary",
+      actionable.padEnd(1_950, "x") + '\nauthorization: {\n value: "opaque-object-canary"\n}\n',
+    ],
+    [
+      "capture boundary",
+      actionable.padEnd(16_340, "x") + '\nauthorization: {\n value: "opaque-object-canary"\n}\n',
+    ],
+    ["unicode", actionable.padEnd(1_999, "x") + "😀" + "tail"],
+  ];
+  for (const [scenario, stderr] of cases) {
+    await t.test(scenario, async (t) => {
+      const root = await fixture(t);
+      const resultsPath = join(root, "results/startup-stderr.json");
+      await writeFirstAgentCliFixture(
+        root,
+        `
+import { writeSync, writeFileSync } from "node:fs";
+if (process.argv[3] === "down") writeFileSync(new URL("../cleanup.txt", import.meta.url), "done");
+if (process.argv[3] === "up") {
+  process.stdout.write("stdout-must-stay-private");
+  const stderr = ${JSON.stringify(stderr)};
+  // Independent writes may be coalesced by the pipe; both must be consumed.
+  writeSync(2, stderr.slice(0, 90));
+  writeSync(2, stderr.slice(90));
+  process.exitCode = ${scenario === "success" ? 0 : 23};
+}
+`,
+      );
+      await writeSingleFileRunnerLane(
+        root,
+        "measure",
+        "tests/integration/startup-stderr.test.mjs",
+        `
+import { writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import net from "node:net";
+import test from "node:test";
+// The CLI fixture does not use ports; preserve the real child/error/cleanup path.
+net.createServer = () => ({ once() {}, listen(_address, ready) { ready(); }, address() { return { port: 3000 }; }, close(done) { done(); } });
+syncBuiltinESMExports();
+const { localFirstAgentStack } = await import("../helpers/local-first-agent-stack.mjs");
+test("startup", async (t) => {
+  process.env.OCC_TEST_LOCAL_FIRST_AGENT_REAL = "1";
+  process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE = "compose";
+  process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "none";
+  process.env.OPENAI_API_KEY = "invented-fixture-input";
+  delete process.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
+  delete process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE;
+  try {
+    await localFirstAgentStack(t);
+  } catch (error) {
+    // Observe the actual helper rejection before any reporter can redact it.
+    writeFileSync(new URL("../../helper-error.json", import.meta.url), JSON.stringify(error.message));
+    throw error;
+  }
+});
+`,
+      );
+      if (scenario === "success") {
+        // TAP keeps passing-test chatter, unlike the canonical runner's summary.
+        const directEnv = runnerEnv();
+        delete directEnv.NODE_TEST_CONTEXT;
+        delete directEnv.NODE_TEST_WORKER_ID;
+        const direct = spawnSync(
+          process.execPath,
+          [
+            "--test",
+            "--test-reporter=tap",
+            join(root, "tests/integration/startup-stderr.test.mjs"),
+          ],
+          { encoding: "utf8", env: directEnv },
+        );
+        assert.equal(direct.status, 0, direct.stderr);
+        assert.match(direct.stdout, /^ok \d+ - startup$/m);
+        assert.doesNotMatch(
+          direct.stdout + direct.stderr,
+          /Pool overlaps|private|invented-fixture-input/,
+        );
+      }
+      const result = run(
+        root,
+        laneArgs(root, "measure", "state/startup-stderr.jsonl", resultsPath),
+      );
+      assert.equal(result.status, scenario === "success" ? 0 : 1, result.stderr);
+      assert.equal(await readFile(join(root, "cleanup.txt"), "utf8"), "done");
+      const privateValues =
+        /stdout-must-stay-private|private-header-value|invented-fixture-input|private-nested-value|private-key-body|private-cut-tail|opaque-object-canary|opaque-block-canary/;
+      assert.doesNotMatch(
+        result.stdout + result.stderr + (await readFile(resultsPath, "utf8")),
+        privateValues,
+      );
+      if (scenario === "success") {
+        return;
+      }
+      const diagnostics = JSON.parse(
+        await readFile(join(root, "state/startup-stderr.jsonl.diagnostics.json"), "utf8"),
+      );
+      assert.doesNotMatch(JSON.stringify(diagnostics), privateValues);
+      const message = diagnostics.failures[0].tests.find(({ name }) => name === "startup").message;
+      const helperMessage = JSON.parse(await readFile(join(root, "helper-error.json"), "utf8"));
+      for (const text of [message, helperMessage]) {
+        assert.match(text, /Start Local Setup exited with status 23/);
+        assert.match(text, /Pool overlaps with other one on this address space/);
+        assert.doesNotMatch(text, privateValues);
+        assert.ok(text.isWellFormed(), "diagnostic cutoff must preserve Unicode characters");
+        assert.ok(text.length < 2_500, "the individual error must be bounded");
+      }
+      if (scenario === "short") {
+        assert.match(helperMessage, /unterminated actionable detail/);
+      }
+      if (["large", "capture boundary", "unicode"].includes(scenario)) {
+        assert.match(helperMessage, /stderr truncated/);
+      }
+    });
+  }
+});
+
 test("startup observations require one terminal record from a failed dev-up", async (t) => {
   const root = await fixture(t);
   const legacyRecord =
@@ -8996,34 +9128,25 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   };
   // These records exercise the same consistency decision used by the real observer.
   // Contradiction stays incomplete even when each field is well-typed.
-  const conflictingSettings = {
-    ...turnContinuity,
-    settingsConsistent: false,
+  const incompleteTurnover = (base, overrides) => ({
+    ...base,
+    ...overrides,
     qualification: "incomplete",
-  };
-  const unchangedProvider = {
-    ...turnContinuity,
+  });
+  const conflictingSettings = incompleteTurnover(turnContinuity, { settingsConsistent: false });
+  const unchangedProvider = incompleteTurnover(turnContinuity, {
     providerEnvAfterSha256: turnContinuity.providerEnvBeforeSha256,
-    qualification: "incomplete",
-  };
-  const missingTurnoverEvent = {
-    ...unexercisedTurnover,
+  });
+  const missingTurnoverEvent = incompleteTurnover(unexercisedTurnover, {
     providerEnvAfterSha256: "e".repeat(64),
-    qualification: "incomplete",
-  };
-  const changedGateway = { ...turnContinuity, stableRuntime: false, qualification: "incomplete" };
-  const earlyRelay = {
-    ...turnContinuity,
-    staleTunnelAtMs: 1_799_999_999_999,
-    qualification: "incomplete",
-  };
-  const lateTurnover = {
-    ...turnContinuity,
-    turnoverAtMs: 1_800_000_010_001,
-    qualification: "incomplete",
-  };
-  await writeFile(
-    join(root, "tests/integration/measurements.test.mjs"),
+  });
+  const changedGateway = incompleteTurnover(turnContinuity, { stableRuntime: false });
+  const earlyRelay = incompleteTurnover(turnContinuity, { staleTunnelAtMs: 1_799_999_999_999 });
+  const lateTurnover = incompleteTurnover(turnContinuity, { turnoverAtMs: 1_800_000_010_001 });
+  await writeSingleFileRunnerLane(
+    root,
+    "measure",
+    "tests/integration/measurements.test.mjs",
     [
       'import test from "node:test";',
       `import { runOpenShellStage } from ${JSON.stringify(new URL("../helpers/openshell-stage.mjs", import.meta.url).href)};`,
@@ -9280,12 +9403,6 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       "});",
       "",
     ].join("\n"),
-  );
-  await writeSingleLaneManifest(
-    root,
-    "measure",
-    [{ path: "tests/integration/measurements.test.mjs" }],
-    { ci: ["measure"] },
   );
 
   const result = run(root, laneArgs(root, "measure", "state/measurements.jsonl", resultsPath));
