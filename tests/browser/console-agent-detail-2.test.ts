@@ -47,7 +47,7 @@ import {
   nativeAdminValues,
 } from "./console-agents-test-support.ts";
 import { STOP_REQUESTED, VERSION_READ_DENIED_HEADING } from "../helpers/refusal-text.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
 import {
   registerDeletionAndNavigationCases,
   registerSettingsRefocusAndTabsCases,
@@ -63,6 +63,12 @@ function assertRecord(
     `${description} must be an object`,
   );
 }
+
+// The native admin panel's text for an Agent whose Configuration never turned on browser chat.
+const BROWSER_CHAT_OFF_EDITOR =
+  "Browser chat is off for this Agent. To turn it on, add the browser chat settings to its draft Configuration, then deploy it.";
+const BROWSER_CHAT_OFF_READER =
+  "Browser chat is off for this Agent. Ask someone who can edit its Configuration to turn on browser chat, then deploy it.";
 
 // The Console Browser lane runs the two Agent detail test files in parallel.
 
@@ -195,6 +201,8 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   const initialAccess: unknown = initialNativeAccess.data;
   assertRecord(initialAccess, "Initial native admin access");
   assert.equal(initialAccess.status, "unsupported");
+  // The Configuration never turned on the browser UI (Create Agent's browser chat opt-in).
+  assert.equal(initialAccess.reason, "not-enabled");
   assert.ok(typeof initialAccess.origin === "string", "Native admin origin must be a string");
   assert.equal(new URL(initialAccess.origin).protocol, "https:");
   const detail = () =>
@@ -202,15 +210,28 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   await page.goto(detail().href);
   await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
   await page.locator(".native-admin-access").waitFor();
-  await page
-    .getByText(
-      "Browser access is not supported by this Agent’s current version. Ask someone who can edit its Configuration to check browser access and Compute support, then deploy a supported version.",
-    )
-    .waitFor();
+  // Finding 3168: the administrator who can edit this Agent is told that browser chat is off
+  // and where its settings are, not to ask someone else.
+  await page.getByText(BROWSER_CHAT_OFF_EDITOR).waitFor();
+  const accessCard = page.locator(".native-admin-access");
+  assert.equal(
+    await accessCard.getByRole("link", { name: "Browser chat settings" }).getAttribute("href"),
+    "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/guides/deploy/native-admin.md#configure-each-agent",
+  );
+  await accessCard.getByRole("link", { name: "Open draft" }).waitFor();
   assert.equal(
     await page.getByRole("link", { name: "Open Agent UI", exact: true }).isVisible(),
     false,
   );
+  // A caller who may not save the Configuration is told to ask someone who can.
+  const configurationLocked = restrict(fixture.policy, "update", "configuration", {
+    namespaceId: namespace.id,
+    resourceId: agent.configurationId,
+  });
+  await page.reload();
+  await page.getByText(BROWSER_CHAT_OFF_READER).waitFor();
+  assert.equal(await accessCard.getByRole("link", { name: "Browser chat settings" }).count(), 0);
+  liftRestriction(fixture.policy, configurationLocked);
 
   restrict(fixture.policy, "administer", "agent", {
     namespaceId: namespace.id,
@@ -397,11 +418,7 @@ test("Agent detail rereads native admin access once when a pending deployment ac
   deploymentStatus = "succeeded";
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
   await expectDeploymentOutcome(page, "Completed", { folded: false });
-  await card
-    .getByText(
-      "Browser access is not supported by this Agent’s current version. Ask someone who can edit its Configuration to check browser access and Compute support, then deploy a supported version.",
-    )
-    .waitFor();
+  await card.getByText(BROWSER_CHAT_OFF_EDITOR).waitFor();
   assert.equal(pathRequests(requests, "GET", nativeAdminPath).length, 2);
 
   // Access is reread only when the serving version changes: Refresh deployment rereads the

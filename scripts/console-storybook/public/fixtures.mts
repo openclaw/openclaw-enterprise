@@ -67,6 +67,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     nativeAdmin?: string;
     nativeAdminSessionMode?: "host-only-exchange";
     nativeAdminMode?: "admin" | "chat";
+    nativeAdminReason?: "not-enabled" | "configuration" | "compute";
     nativeAdminUrl?: string;
     harness?: unknown;
     runtimeImages?: unknown;
@@ -893,6 +894,7 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
               ? { sessionMode: scenario.nativeAdminSessionMode }
               : {}),
             mode: scenario.nativeAdminMode ?? "admin",
+            ...(scenario.nativeAdminReason ? { reason: scenario.nativeAdminReason } : {}),
             url:
               (id === lifecycle.seedAgent().id ? scenario.nativeAdminUrl : undefined) ??
               "/storybook-fixtures/native-admin.html",

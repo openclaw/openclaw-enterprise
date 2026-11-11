@@ -26110,6 +26110,10 @@
                         "host": { "type": "string" },
                         "mode": { "enum": ["admin", "chat"], "type": "string" },
                         "origin": { "format": "uri", "type": "string" },
+                        "reason": {
+                          "enum": ["not-enabled", "configuration", "compute"],
+                          "type": "string"
+                        },
                         "sessionMode": {
                           "enum": ["shared-cookie", "host-only-exchange"],
                           "type": "string"

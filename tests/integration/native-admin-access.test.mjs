@@ -390,6 +390,8 @@ test("native browser status selects exact Agent authority and reports lifecycle 
   try {
     const unsupported = await nativeStatus(context, { session: operatorSession });
     assert.equal(unsupported.data.status, "unsupported");
+    // The Configuration is complete; the Compute Driver gives no chat endpoint (finding 3168).
+    assert.equal(unsupported.data.reason, "compute");
     assert.equal(unsupported.data.mode, "chat");
   } finally {
     driver.getGatewayChatEndpoint = chatEndpoint;
