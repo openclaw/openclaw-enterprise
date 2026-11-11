@@ -202,7 +202,14 @@ test("full coverage receipts require real case evidence and retain approved same
     "OCC_TEST_OPENAI_MODEL",
   ]);
   for (const file of full.lanes["openshell-policy"].files) {
-    assert.ok(file.requiredEnv.includes("CODEX_ACCESS_TOKEN"));
+    assert.equal(
+      file.requiredEnv.includes("CODEX_ACCESS_TOKEN"),
+      ![
+        "tests/integration/openshell-refresh-real.test.ts",
+        "tests/integration/openshell-withdrawal-real.test.ts",
+        "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+      ].includes(file.path),
+    );
   }
   const skipperLane = "skipper-prepared-git-installed";
   const skipperFiles = full.lanes[skipperLane].files;

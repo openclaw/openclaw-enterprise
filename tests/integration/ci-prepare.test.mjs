@@ -3615,7 +3615,7 @@ if (args[0] === "pull") {
       cases.push(
         {
           lane,
-          endpoint: true,
+          endpoint: "https://custom-model.example.test/v1",
           pat: true,
           error: /Custom OpenShell model endpoints require a focused gateway workflow file/u,
         },
@@ -3628,10 +3628,10 @@ if (args[0] === "pull") {
       );
     }
     cases.push(
-      { file: upstream, endpoint: true },
+      { file: upstream, endpoint: "https://custom-model.example.test/v1" },
       {
         file: guided[0],
-        endpoint: true,
+        endpoint: "https://custom-model.example.test/v1",
         error: /Custom OpenShell model endpoints require a focused gateway workflow file/u,
       },
       {
@@ -3640,6 +3640,13 @@ if (args[0] === "pull") {
         error: /Custom native providers require a focused first-Agent file/u,
       },
     );
+    for (const file of [undefined, upstream]) {
+      cases.push({
+        file,
+        endpoint: "malformed-private-endpoint",
+        error: /The OpenShell model endpoint must be a valid absolute URL/u,
+      });
+    }
     for (const file of guided) {
       cases.push(
         { file, native: true, error: /Missing required CI input\(s\): CODEX_ACCESS_TOKEN/u },
@@ -3673,9 +3680,7 @@ if (args[0] === "pull") {
             CODEX_ACCESS_TOKEN: value.pat ? "synthetic-separate-codex-token" : "",
             OCC_TEST_OPENAI_MODEL: "fixture-model",
             OCC_TEST_OPENSHELL_HARNESS: "codex",
-            OCC_TEST_OPENSHELL_MODEL_BASE_URL: value.endpoint
-              ? "https://custom-model.example.test/v1"
-              : "",
+            OCC_TEST_OPENSHELL_MODEL_BASE_URL: value.endpoint ?? "",
             OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE: value.native
               ? join(root, "custom-provider.json")
               : "",
@@ -3685,6 +3690,7 @@ if (args[0] === "pull") {
         );
         assert.equal(result.status, 1);
         assert.match(result.stderr, value.error ?? /must be an immutable image@sha256 reference/u);
+        assert.doesNotMatch(result.stdout + result.stderr, /malformed-private-endpoint/u);
         await assert.rejects(stat(statePath), { code: "ENOENT" });
       });
     }

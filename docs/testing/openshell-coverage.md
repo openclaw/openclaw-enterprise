@@ -14,9 +14,9 @@ Unless a section says otherwise, the checks run in the default Codex scenario.
 ## Gateway tool policy
 
 The dedicated Agent policy scenario uses the existing production deployment owner
-for either `OCC_TEST_OPENSHELL_HARNESS=openclaw` or `codex`. With an explicit
-`OCC_TEST_OPENSHELL_MODEL_BASE_URL`, both use `OPENAI_API_KEY`; the full lane still
-requires `CODEX_ACCESS_TOKEN` for its other owners.
+for either `OCC_TEST_OPENSHELL_HARNESS=openclaw` or `codex`. Both use
+`OPENAI_API_KEY`; the full lane still requires `CODEX_ACCESS_TOKEN` for its
+PAT-specific owners.
 
 The scenario deploys the first revision with Gateway managed mode off so a human
 administrator can run the command-job control. The dedicated model tool policy

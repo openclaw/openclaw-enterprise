@@ -950,8 +950,12 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
   // Custom keys must not reach sibling tests that register the public provider.
   if (isOpenShellLane(name)) {
     const endpoint = effectiveEnv.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim();
+    const parsedEndpoint = endpoint ? URL.parse(endpoint) : null;
+    if (endpoint && !parsedEndpoint) {
+      throw new Error("The OpenShell model endpoint must be a valid absolute URL.");
+    }
     const customEndpoint =
-      endpoint && new URL(endpoint).href.replace(/\/$/u, "") !== "https://api.openai.com/v1";
+      parsedEndpoint && parsedEndpoint.href.replace(/\/$/u, "") !== "https://api.openai.com/v1";
     if (customEndpoint && !openShellGatewayFile) {
       throw new Error("Custom OpenShell model endpoints require a focused gateway workflow file.");
     }

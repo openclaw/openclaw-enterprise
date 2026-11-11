@@ -19,7 +19,7 @@ const execute = promisify(execFile);
 export function assertOpenShellOwnerModelSelection(environment) {
   const endpoint = environment.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim();
   assert.ok(
-    !endpoint || new URL(endpoint).href.replace(/\/$/u, "") === "https://api.openai.com/v1",
+    !endpoint || URL.parse(endpoint)?.href.replace(/\/$/u, "") === "https://api.openai.com/v1",
     "The browser Agent requires the public OpenAI endpoint",
   );
   assert.ok(

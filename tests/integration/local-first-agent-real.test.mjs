@@ -1156,7 +1156,7 @@ test(
     if (selectedSandboxDriver === "openshell") {
       const endpoint = process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim();
       assert.ok(
-        !endpoint || new URL(endpoint).href.replace(/\/$/u, "") === "https://api.openai.com/v1",
+        !endpoint || URL.parse(endpoint)?.href.replace(/\/$/u, "") === "https://api.openai.com/v1",
         "The first-Agent installer requires the public OpenAI endpoint",
       );
     }

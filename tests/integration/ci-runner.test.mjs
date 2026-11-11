@@ -2584,6 +2584,26 @@ for (const workflow of apiKeyWorkflows) {
     });
     assert.equal(discovery.status, 0, discovery.stdout + discovery.stderr);
     assert.match(discovery.stdout, /skipped 1/u);
+    // A native provider file belongs to the guided installer. Reject it before
+    // defaulting a foreign provider's key to the public API endpoint.
+    for (const endpoint of ["", "https://custom-model.example.test/v1"]) {
+      const result = spawnSync(process.execPath, ["--test", file], {
+        encoding: "utf8",
+        env: {
+          ...baseEnv,
+          OCC_TEST_OPENSHELL_K3D_REAL: "1",
+          OPENAI_API_KEY: "synthetic-custom-provider-key",
+          OCC_TEST_OPENSHELL_MODEL_BASE_URL: endpoint,
+          OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE: "synthetic-provider-file",
+        },
+      });
+      assert.equal(result.status, 1);
+      assert.match(
+        result.stdout + result.stderr,
+        /The API-key workflow does not accept native provider overrides/u,
+      );
+      assert.doesNotMatch(result.stdout + result.stderr, /synthetic-provider-file/u);
+    }
     for (const endpoint of ["", "   "]) {
       for (const credential of ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"]) {
         // Real wrapper import stops at existing prerequisites before any Helm,
@@ -2616,7 +2636,11 @@ test("custom native providers require a separate Codex credential before Local S
   const file = join(repositoryRoot, "tests/integration/local-first-agent-openshell-real.test.mjs");
   for (const custom of [false, true]) {
     for (const pat of [false, true]) {
-      for (const endpoint of [false, true]) {
+      for (const endpoint of [
+        "",
+        "https://custom-model.example.test/v1",
+        "malformed-private-endpoint",
+      ]) {
         const result = spawnSync(
           process.execPath,
           [
@@ -2631,9 +2655,7 @@ test("custom native providers require a separate Codex credential before Local S
               HOME: process.env.HOME,
               OCC_TEST_LOCAL_FIRST_AGENT_REAL: "1",
               OPENAI_API_KEY: "synthetic-model-credential",
-              OCC_TEST_OPENSHELL_MODEL_BASE_URL: endpoint
-                ? "https://custom-model.example.test/v1"
-                : "",
+              OCC_TEST_OPENSHELL_MODEL_BASE_URL: endpoint,
               ...(pat ? { CODEX_ACCESS_TOKEN: "synthetic-codex-credential" } : {}),
               ...(custom
                 ? { OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE: join(root, "provider.json") }
@@ -2652,6 +2674,7 @@ test("custom native providers require a separate Codex credential before Local S
           expected = /CODEX_ACCESS_TOKEN is required for the first invocation/u;
         }
         assert.match(result.stdout + result.stderr, expected);
+        assert.doesNotMatch(result.stdout + result.stderr, /malformed-private-endpoint/u);
       }
     }
   }
@@ -2659,9 +2682,10 @@ test("custom native providers require a separate Codex credential before Local S
 
 test("the public browser installer rejects custom providers before setup", async (t) => {
   const root = await fixture(t);
-  for (const marker of [
-    "OCC_TEST_OPENSHELL_MODEL_BASE_URL",
-    "OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE",
+  for (const [marker, value] of [
+    ["OCC_TEST_OPENSHELL_MODEL_BASE_URL", "https://custom-model.example.test/v1"],
+    ["OCC_TEST_OPENSHELL_MODEL_BASE_URL", "malformed-private-endpoint"],
+    ["OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE", join(root, "provider.json")],
   ]) {
     const result = spawnSync(
       process.execPath,
@@ -2675,9 +2699,7 @@ test("the public browser installer rejects custom providers before setup", async
           TMPDIR: root,
           OCC_TEST_DEV_UP_OPENSHELL_REAL: "1",
           OPENAI_API_KEY: "synthetic-custom-provider-key",
-          [marker]: marker.endsWith("BASE_URL")
-            ? "https://custom-model.example.test/v1"
-            : join(root, "provider.json"),
+          [marker]: value,
         },
       },
     );
@@ -2688,6 +2710,7 @@ test("the public browser installer rejects custom providers before setup", async
         ? /The browser Agent requires the public OpenAI endpoint/u
         : /The browser Agent does not accept native provider overrides/u,
     );
+    assert.doesNotMatch(result.stdout + result.stderr, /malformed-private-endpoint/u);
   }
 });
 
