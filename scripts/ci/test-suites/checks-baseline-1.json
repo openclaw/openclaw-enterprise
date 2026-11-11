@@ -494,7 +494,10 @@
         "cancelling Kubernetes startup during readiness rolls back its owned resources",
         "launcher case recovery follows real Go rollback after node-dns-refused",
         "dev-down from a fresh shell stops the recorded Kubernetes stack",
-        "dev-down from a fresh shell in another checkout refuses the recorded Kubernetes stack"
+        "dev-down from a fresh shell in another checkout refuses the recorded Kubernetes stack",
+        "Kubernetes-only dev-up names a Docker stack holding its API port before creating anything",
+        "Kubernetes-only dev-up removes its state after a cluster create that k3d rolled back",
+        "Kubernetes-only dev-up names the explicit cleanup command when rollback is incomplete"
       ]
     },
     {
@@ -512,7 +515,11 @@
         "development cleanup without selectors stops Docker when no state is recorded",
         "development cleanup without selectors refuses an unusable state directory",
         "development cleanup with Compose options keeps the Docker profile",
-        "development cleanup treats a Kubernetes control plane without a Compute selection as Kubernetes"
+        "development cleanup treats a Kubernetes control plane without a Compute selection as Kubernetes",
+        "dev-up refuses Keycloak sign-in for the Docker profile before startup",
+        "dev-down removes the service key directory dev-up created and keeps a chosen key output",
+        "dev-down --volumes removes the Installation's Docker Compute Namespace networks",
+        "a failed dev-up removes the empty service key directory it created"
       ]
     },
     {

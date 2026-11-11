@@ -168,8 +168,11 @@ the host connection. An unavailable engine or invalid socket fails cleanup.
 
 Compose removes its project containers and network. Named database,
 Configuration, and bootstrap volumes remain unless `--volumes` is explicit.
-Agent-owned containers and Namespace networks remain the responsibility of
-their platform deletion workflows; follow [safe development shutdown](../guides/deploy/local-operations.md#stop-development-safely).
+Down also removes the service-key directory `scripts/dev-up` created. With
+`--volumes`, it first reads the Installation's Namespace IDs from its running
+database, then removes the idle Docker Compute networks labelled for those
+Namespaces. Agent-owned containers remain the responsibility of their platform
+deletion workflows; follow [safe development shutdown](../guides/deploy/local-operations.md#stop-development-safely).
 
 ### 4. Start and clean up Kubernetes development
 
