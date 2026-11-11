@@ -151,10 +151,12 @@ admission remains in `apps/controller/src/index.ts`.
 
 `ResourceConflictError` becomes only `status: "stopped"` for an authorized stopped Agent without a selected version, or for an operator whose Agent is stopping. `NoActiveAgentRevisionError` for a running Agent awaiting activation returns `unavailable`. Other dependencies, including IAM/State outages, remain `503` before gateway routing.
 
-With a selected version, OCC derives its native target. An administrator viewing a non-running Agent with a selected version receives `stopped` with host/origin; a newer exclusive replacement returns `unavailable` after its shared predecessor
-record reaches `stopping`. During `pre-stop`, the selected version retains normal
-native access and current authorization checks. Legacy replacements with no
-record keep the earlier refusal behavior. Unsupported trusted-proxy auth, machine admin grants/device auto-approval, `controlUi.enabled`, exact `allowedOrigins`, or host-header/device-auth settings return `unsupported` with the target.
+Non-running Agents return
+`stopped` with host/origin. Exclusive replacements return `unavailable` past the
+[shared stop boundary](../reference/agents/planned-replacement.md); pre-stop reauthorizes. Legacy replacements retain refusal behavior.
+Unsupported trusted-proxy auth, machine admin grants/device auto-approval,
+`controlUi.enabled`, exact `allowedOrigins`, or host-header/device-auth settings
+return `unsupported` with the target.
 
 Compute `id` and `implementation` must match `revision.compute`; changing selection does not migrate versions. A mismatch raises `503 DEPENDENCY_UNAVAILABLE` before endpoint/key/transport. Chat selects `getGatewayChatEndpoint`, administration selects `getGatewayEndpoint`. Missing or unclean private `wss:` endpoints return `unsupported`; chat never falls back to administration. Only `available` carries `gatewayBase`, omitted from browser responses by `nativeAdminAvailabilityData`.
 
@@ -309,7 +311,7 @@ admin Configuration remains Pod-local.
 
 ## Changelog
 
-- 2026-11-11 01:50: Share the persisted predecessor stop boundary across replacement, maintenance and native access. (authoring-run/01a17edc-73a7-74a3-86e5-aa8c53bfb1b9)
+- 2026-11-11 01:50: Share the predecessor stop boundary. (authoring-run/01a17edc-73a7-74a3-86e5-aa8c53bfb1b9)
 
 - 2026-11-10 08:30: Add named chat and stale-version browser recovery. (authoring-run/37c71df8-7e9c-4224-bc36-e4091f387620 - eef0b3f10d0e0f4ed09fd32086c84628c41f1b93)
 

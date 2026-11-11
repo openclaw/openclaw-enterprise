@@ -92,11 +92,7 @@ The response reports:
 | `unavailable` | No selected version, or an exclusive replacement has crossed its stop boundary.                                 |
 | `available`   | The caller may open the returned `url` for the selected version.                                                |
 
-An admitted exclusive replacement keeps native access to its selected predecessor
-while the shared Agent record is `pre-stop`. Once the worker commits `stopping`,
-access becomes unavailable even if replacement fails. Current permission and
-version checks still apply. Replacements with no such record retain the earlier
-refusal behavior.
+Native access remains authorized during [pre-stop](agents/planned-replacement.md).
 
 A stopped Agent without a selected version returns only `status: "stopped"`, including before first deployment and after completed stop reconciliation. Otherwise, stopped results include target fields. A desired-running Agent without a selected version returns `unavailable` in the success envelope. Dependency outages, including IAM, return `503 DEPENDENCY_UNAVAILABLE`. Malformed requests, IAM denials and missing sessions use the protected-route error envelope.
 

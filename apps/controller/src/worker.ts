@@ -4727,15 +4727,10 @@ export class ControllerWorker {
         this.compute.requiresStoppedPredecessors?.(revision) === true
           ? await this.heldRuntimeSuccessor(revision)
           : undefined;
-      const replacement =
-        agent.activeRevisionId === revision.id
-          ? await this.state.read((view) =>
-              view.agents.findPredecessorReplacement(revision.namespaceId, revision.agentId),
-            )
-          : undefined;
-      const servingBeforeStop =
-        replacement?.predecessorRevisionId === revision.id && replacement.phase === "pre-stop";
-      const supersededBy = servingBeforeStop ? undefined : (successor ?? heldSuccessor);
+      // Pre-stop access does not authorize re-preparing the old runtime with a
+      // changed Installation. Safe maintenance during a wait needs Driver-owned
+      // immutable runtime inputs; preserve existing supersession until then.
+      const supersededBy = successor ?? heldSuccessor;
       if (supersededBy !== undefined) {
         // A refusal decided after this check (lost repository authority, a Secret or
         // credential-source problem, a refused observation) may still wait on its candidate's

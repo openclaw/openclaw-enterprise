@@ -285,17 +285,9 @@ and `REPOSITORY_GIT_ROUTE_PENDING` without a runtime failure, the worker can
 record the selection. The original work stays queued until that revision is ready;
 only then does the worker activate it, retire its predecessor, and complete the work.
 
-Exclusive admission records the selected predecessor as `pre-stop` on the
-Agent. Its maintenance and native access continue until the worker commits
-`stopping` under the live claim, before closing credentials or invoking stop.
-That fact cannot move backwards for the same predecessor. Legacy replacements
-without a record keep the existing supersession behavior.
-
-Exclusive replacement then closes earlier credential sessions and stops each
-earlier revision, including failed candidates, before preparation. A failed stop blocks
-the successor. Older work and maintenance cannot recreate the stopped execution.
-Compute must confirm resource release and preserve workspace data on repeated
-stops. This policy permits downtime. Recover by deploying a newer revision.
+Exclusive replacement crosses the [shared stop boundary](../agents/planned-replacement.md)
+before closing credentials and stopping predecessors. Failed stop blocks preparation.
+Repeated stops must preserve workspace data; stopped revisions cannot be recreated.
 
 ### SandboxDriver coordination
 

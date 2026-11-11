@@ -148,7 +148,7 @@ async function enqueueMaintenance(fixture, owner, revision) {
 }
 
 revisionTest(
-  "the shared stop boundary keeps serving maintenance alive until stop commits",
+  "a pre-stop record does not reprepare the predecessor with changed Driver configuration",
   async (fixture) => {
     const owner = await fixture.agent("pre-stop-maintenance", { executionMode: "dedicated" });
     const driver = countingExclusiveCompute(fixture);
@@ -178,7 +178,11 @@ revisionTest(
     const maintenance = await enqueueMaintenance(fixture, owner, first);
     await fixture.start(driver.compute);
     await fixture.work(maintenance, "succeeded");
-    assert.equal(driver.preparations(first), before + 1);
+    assert.equal(
+      driver.preparations(first),
+      before,
+      "maintenance must not roll the old runtime forward before stop",
+    );
     assert.equal(driver.count(first), 0);
 
     await fixture.stop();
@@ -189,11 +193,7 @@ revisionTest(
     const laterMaintenance = await enqueueMaintenance(fixture, owner, first);
     await fixture.start(driver.compute);
     await fixture.work(laterMaintenance, "succeeded");
-    assert.equal(
-      driver.preparations(first),
-      before + 1,
-      "maintenance must not recreate stopped work",
-    );
+    assert.equal(driver.preparations(first), before, "maintenance must not recreate stopped work");
   },
 );
 

@@ -1837,6 +1837,9 @@ const legacyExecutionAdmission = { version: 2, mode: "unprotected" };
 function upgradedCanonicalData(data) {
   return {
     ...data,
+    agents: data.agents.map(({ value }) => ({
+      value: { ...value, predecessor_replacement: value.predecessor_replacement ?? null },
+    })),
     agent_revisions: data.agent_revisions.map(({ value }) => ({
       value: {
         ...value,

@@ -69,8 +69,12 @@ default runtime pin is not advanced before the candidate runtime is qualified.
 
 - Shared stop-boundary slice: 15 native-access tests passed; PostgreSQL migration
   qualification passed ten fresh, upgrade and restore paths. All 40 PostgreSQL
-  worker cases passed; an isolated baseline copy failed the new maintenance case
-  as expected, without modifying the working source. Review also found and fixed
+  worker cases passed. Integration review then found that allowing ordinary
+  predecessor maintenance could apply changed Installation images before stop.
+  That permission was removed: the real worker regression failed before the
+  correction and passed afterward, alongside legacy adoption and stop ordering
+  (three targeted cases). Safe maintenance remains part of the Driver integration.
+  Review also found and fixed
   legacy adoption incorrectly reopening a stopped predecessor. Its real admission
   and worker regression failed before the fix and passed after it; all 15 native
   access tests passed again. This slice does not yet enable completion waiting.

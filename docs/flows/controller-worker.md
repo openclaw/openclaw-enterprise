@@ -158,11 +158,10 @@ Revocation and denial fail permanently before Compute. Selected versions enter
 finalization or maintenance. Older versions end superseded, also once the newest,
 without Git, has a held runtime failure. Under
 [exclusive replacement](../reference/drivers/compute.md#production-revision-stages),
-admission records `pre-stop` on the Agent for its selected predecessor. That
-predecessor keeps maintenance until the worker records `stopping`, before
-credential closure or stop effects. Later admissions cannot reopen that boundary
-for the same predecessor, even after candidate failure; a superseded inactive version stops itself, its
-drain yielding as `SUPERSEDED_STOP_YIELDED`. Recovery uses a new version.
+the [shared stop boundary](../reference/agents/planned-replacement.md) controls
+native access and predecessor maintenance. Later admissions cannot reopen a
+stopped predecessor. Superseded inactive versions stop with
+`SUPERSEDED_STOP_YIELDED`; recovery deploys a new version.
 
 Agent-stop work rechecks current exact-Agent `operate`; superseded desired state
 completes without shutdown.
@@ -188,16 +187,10 @@ a pending observation defers convergence.
 When Compute's `requiresStoppedPredecessors` capability is set,
 `apps/controller/src/worker.ts:ControllerWorker.prepareRevision` performs
 [exclusive replacement](../reference/drivers/compute.md#production-revision-stages):
-it loads earlier snapshots, including failed candidates. Under the live Work
-claim and Namespace/Agent locks, it commits `stopping` for the selected predecessor
-in `agents.predecessor_replacement`, then closes credential sessions and stops
-the earlier revisions; a release failure prevents preparation. Their
-drains yield like a stopped Agent's (`PREDECESSOR_STOP_YIELDED`); failing,
-superseded or stopped work first finishes that stop. The dispatch guard keeps
-maintenance from recreating a predecessor after `stopping`. Native administration
-reads the same fact, so admitting a candidate alone does not disconnect the
-serving version. A legacy replacement without this record keeps the previous
-supersession behavior. This boundary adds no completion wait by itself.
+under the live claim, it commits the stop boundary, closes credentials and stops
+earlier revisions, including failed candidates. Stop failure blocks preparation.
+Drains yield `PREDECESSOR_STOP_YIELDED`; failing, superseded and stopped Work must
+finish that stop. Maintenance cannot recreate a stopped predecessor.
 
 The worker validates Compute's startup plugin warning codes and selection keys
 against the immutable version; the
@@ -430,7 +423,7 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 ## Changelog
 
-- 2026-11-11 01:50: Share the persisted predecessor stop boundary across replacement, maintenance and native access. (authoring-run/01a17edc-73a7-74a3-86e5-aa8c53bfb1b9)
+- 2026-11-11 01:50: Share the predecessor stop boundary. (authoring-run/01a17edc-73a7-74a3-86e5-aa8c53bfb1b9)
 
 - 2026-11-10 16:32: Preserve safe partial Namespace teardown. (authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1 - dde53dee8)
 
