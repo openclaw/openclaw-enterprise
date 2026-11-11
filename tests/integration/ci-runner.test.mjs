@@ -6170,6 +6170,17 @@ waitingTest("a runner timeout while no test was running says so", async (t) => {
 // These fixtures hang forever, and their intervals keep the runner alive unless it gives up.
 const hangForever = "new Promise(() => setInterval(() => {}, 1_000))";
 
+async function writeHungAndLaterLane(root, lane) {
+  const files = [
+    { path: "tests/integration/hung.test.mjs" },
+    { path: "tests/integration/later.test.mjs" },
+  ];
+  for (const { path } of files) {
+    await writeFile(join(root, path), 'import test from "node:test";\ntest("runs", () => {});\n');
+  }
+  await writeSingleLaneManifest(root, lane, files, { ci: [lane] });
+}
+
 waitingTest(
   "run gives up on a preparation still running at the lane deadline and names it",
   async (t) => {
@@ -6190,18 +6201,7 @@ waitingTest(
         "",
       ].join("\n"),
     );
-    for (const name of ["hung", "later"]) {
-      await writeFile(
-        join(root, `tests/integration/${name}.test.mjs`),
-        'import test from "node:test";\ntest("runs", () => {});\n',
-      );
-    }
-    await writeSingleLaneManifest(
-      root,
-      "prepare",
-      [{ path: "tests/integration/hung.test.mjs" }, { path: "tests/integration/later.test.mjs" }],
-      { ci: ["prepare"] },
-    );
+    await writeHungAndLaterLane(root, "prepare");
 
     // The runner's clock stands still from the start until the preparation has started, so the
     // deadline comes three seconds after that however long the host takes to get there.
@@ -6326,18 +6326,7 @@ waitingTest(
         "",
       ].join("\n"),
     );
-    for (const name of ["hung", "later"]) {
-      await writeFile(
-        join(root, `tests/integration/${name}.test.mjs`),
-        'import test from "node:test";\ntest("runs", () => {});\n',
-      );
-    }
-    await writeSingleLaneManifest(
-      root,
-      "cleanup",
-      [{ path: "tests/integration/hung.test.mjs" }, { path: "tests/integration/later.test.mjs" }],
-      { ci: ["cleanup"] },
-    );
+    await writeHungAndLaterLane(root, "cleanup");
 
     // The runner's clock stands still from the start until the command and its descendant are on
     // record, so the cleanup's allowance ends two seconds after that however long the host takes
