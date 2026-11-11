@@ -231,6 +231,7 @@ async function certificates(
       `subjectAltName=${hosts.map((host) => `DNS:${host}`).join(",")}\nextendedKeyUsage=serverAuth\n`,
       { mode: 0o600 },
     );
+    // DNS identity stays in SAN; the descriptive CN avoids OpenSSL's 64-byte limit.
     await command("openssl", [
       "req",
       "-new",
@@ -238,7 +239,7 @@ async function certificates(
       "rsa:2048",
       "-nodes",
       "-subj",
-      `/CN=${hosts[0]}`,
+      `/CN=OCE fixture ${name}`,
       "-keyout",
       key,
       "-out",
