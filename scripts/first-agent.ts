@@ -484,6 +484,10 @@ async function loadLocalInstallation(harness: Harness, controlUi: boolean) {
     },
     origin,
     kubectl,
+    checkProvisioning: () =>
+      run(join(root, "bin", "occ"), ["dev", "check"], {
+        env: { ...environment, OCC_DEVELOPMENT_STATE_DIRECTORY: directory },
+      }),
     database,
     sandboxDriver: state.sandboxDriver,
     nativeAdmin,
@@ -952,11 +956,14 @@ async function main(options: Options) {
     }
     throw error;
   }
-  if (local.sandboxDriver === "openshell") {
+  let provisioningChecked = false;
+  async function checkProvisioning() {
+    if (local.sandboxDriver !== "openshell" || provisioningChecked) {
+      return;
+    }
     progress("Checking the managed Agent Sandbox controller before deploying...");
-    await run(join(root, "bin", "occ"), ["dev", "check"], {
-      env: { ...process.env, OCC_DEVELOPMENT_STATE_DIRECTORY: local.directory },
-    });
+    await local.checkProvisioning();
+    provisioningChecked = true;
   }
   const api = createFirstAgentApi(local);
   const installation = await objectResponse(api, "id", "GET", "/installation");
@@ -1029,6 +1036,10 @@ async function main(options: Options) {
       (process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY_FILE)
     ) {
       throw new Error("Select only one model authentication method.");
+    }
+    // A repeat turn on an existing revision does not need the provisioning controller.
+    if (!record.agentId || options.replaceKey) {
+      await checkProvisioning();
     }
     if (!existing) {
       await save(record);
@@ -1272,6 +1283,7 @@ async function main(options: Options) {
           `${base}/configurations/${record.configurationId}`,
         );
         assertManagedConfiguration(beforeDeploy, record, expectedConfiguration);
+        await checkProvisioning();
         progress("Deploying the Agent to local Kubernetes...");
         const revision = await objectResponse(api, "configuration", "POST", `${agentPath}/deploy`);
         assertManagedRevision(revision, record, expectedConfiguration);

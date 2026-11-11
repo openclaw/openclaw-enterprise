@@ -392,12 +392,36 @@ test(
         ],
         { env: environment, timeout: 30_000 },
       );
+    const scaleController = (replicas) =>
+      execute("kubectl", [...kubectl, "scale", ...controllerArgs, `--replicas=${replicas}`], {
+        env: environment,
+        timeout: 30_000,
+      });
     try {
+      // Remove the old ready Pod first: a normal rolling update can retain it
+      // while the replacement fails, which would not reproduce a controller outage.
+      await scaleController(0);
+      await execute(
+        "kubectl",
+        [
+          ...kubectl,
+          "wait",
+          "--for=delete",
+          "pod",
+          "-n",
+          "agent-sandbox-system",
+          "-l",
+          "app=agent-sandbox-controller",
+          "--timeout=30s",
+        ],
+        { env: environment, timeout: 35_000 },
+      );
       await patchController({
         name: original.name,
         image: `registry.invalid/missing-controller:${suffix}`,
         imagePullPolicy: "Never",
       });
+      await scaleController(controller.spec.replicas);
       const deadline = Date.now() + 30_000;
       let imageUnavailable = false;
       while (Date.now() < deadline && !imageUnavailable) {
@@ -462,6 +486,7 @@ test(
         image: original.image,
         imagePullPolicy: original.imagePullPolicy,
       });
+      await scaleController(controller.spec.replicas);
       await execute(
         "kubectl",
         [...kubectl, "rollout", "status", ...controllerArgs, "--timeout=120s"],

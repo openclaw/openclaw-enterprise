@@ -114,7 +114,7 @@ are terminal. Archive retries remove failed `0600` files, preserving existing fi
 authentication, `oce-system`, imported PostgreSQL and [per-Agent HTTPS](../guides/deploy/local-setup.md).
 The launcher records engine, cluster, Namespace, ports and key path.
 
-Before creation, `scripts/first-agent.ts:main` and the operator hook
+Before provisioning, `scripts/first-agent.ts:main` and the operator hook
 call `internal/occdev/check.go:Check`. An unavailable controller refuses deployment
 with the same diagnostics.
 

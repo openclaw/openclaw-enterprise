@@ -448,10 +448,37 @@ async function k3dFixture(t, sandboxDriver = "none", handleRequest) {
     { mode: 0o600 },
   );
   const context = "k3d-occ-dev-first-agent-test";
+  await writeFile(
+    join(directory, "kubeconfig"),
+    JSON.stringify({
+      "current-context": context,
+      contexts: [{ name: context, context: { cluster: context } }],
+      clusters: [{ name: context, cluster: { server: "https://127.0.0.1:6443" } }],
+    }),
+    { mode: 0o600 },
+  );
   await writeCommand(
     join(directory, "tools"),
     "kubectl",
-    `case "$*" in
+    `if test -n "$OPENAI_API_KEY$OPENAI_API_KEY_FILE$CODEX_ACCESS_TOKEN$CODEX_ACCESS_TOKEN_FILE"; then
+  echo "Model credentials reached kubectl" >&2; exit 72
+fi
+case "$*" in
+  "rollout status "*) test "$FIRST_AGENT_TEST_CONTROLLER_UNAVAILABLE" != 1 ;;
+  *" get deployment "*) printf '%s' '${JSON.stringify({
+    items: [
+      {
+        kind: "Deployment",
+        name: "agent-sandbox-controller",
+        namespace: "agent-sandbox-system",
+        uid: "00000000-0000-4000-8000-000000000002",
+        selectorApp: "agent-sandbox-controller",
+        selectorLabels: 1,
+        readyReplicas: 1,
+        availableReplicas: 1,
+      },
+    ],
+  })}' ;;
   *" config view "*) printf '%s' '${JSON.stringify({
     "current-context": context,
     clusters: [{ cluster: { server: "https://127.0.0.1:6443" } }],
@@ -504,6 +531,10 @@ test("first-Agent deployment failure advice follows the reported cause", async (
       let configuration;
       let agent;
       let revision;
+      let source;
+      let role;
+      let binding;
+      let transportConfigured = false;
       let deploymentReads = 0;
       const unexpected = [];
       // Run the real helper and HTTP client against supported API envelopes. The
@@ -532,17 +563,24 @@ test("first-Agent deployment failure advice follows the reported cause", async (
               data = { id: namespaceId, status: "ready" };
               break;
             case `GET ${base}/agents`:
+              data = agent ? [agent] : [];
+              break;
             case `GET ${base}/credential-sources`:
+              data = source ? [source] : [];
+              break;
             case `GET ${base}/iam/roles`:
+              data = role ? [role] : [];
+              break;
             case `GET ${base}/iam/access-bindings`:
-              data = [];
+              data = binding ? [binding] : [];
               break;
             case `GET ${base}/secrets/${secret.id}`:
               data = secret;
               break;
             case `POST ${base}/credential-sources`:
               status = 201;
-              data = { ...body, id: `cs_${suffix}`, state: "ready" };
+              source = { ...body, id: `cs_${suffix}`, state: "ready" };
+              data = source;
               break;
             case `POST ${base}/configurations`:
               status = 201;
@@ -575,17 +613,20 @@ test("first-Agent deployment failure advice follows the reported cause", async (
               break;
             case `POST ${base}/iam/roles`:
               status = 201;
-              data = { ...body, id: "role_test" };
+              role = { ...body, id: "role_test" };
+              data = role;
               break;
             case `POST ${base}/iam/access-bindings`:
               status = 201;
-              data = { ...body, id: "binding_test" };
+              binding = { ...body, id: "binding_test" };
+              data = binding;
               break;
             case `GET ${agentPath}/runtime-credentials`:
-              data = { transportConfigured: false };
+              data = { transportConfigured };
               break;
             case `POST ${agentPath}/runtime-credentials`:
-              data = { transportConfigured: true };
+              transportConfigured = true;
+              data = { transportConfigured };
               break;
             case `GET ${agentPath}/revisions?limit=1`:
               data = revision ? [{ id: revision.id }] : [];
@@ -621,6 +662,9 @@ test("first-Agent deployment failure advice follows the reported cause", async (
               data = revision;
               break;
             }
+            case `GET ${agentPath}/revisions/${revisionId}`:
+              data = revision;
+              break;
             case `GET ${agentPath}/deployments/${revisionId}`:
               deploymentReads++;
               data = {
@@ -683,6 +727,9 @@ test("first-Agent deployment failure advice follows the reported cause", async (
       ]) {
         delete env[key];
       }
+      // The saved Secret is reused; parent model credentials must never reach kubectl.
+      env.CODEX_ACCESS_TOKEN = "synthetic-parent-model-token";
+      env.CODEX_ACCESS_TOKEN_FILE = join(directory, "unused-model-token");
       const output = await runFirstAgentAsync(env, "--harness", "codex");
       assert.match(output, new RegExp(`The Agent deployment failed \\(${code}\\)`));
       assert.doesNotMatch(output, /private-provider-message/);
@@ -701,6 +748,16 @@ test("first-Agent deployment failure advice follows the reported cause", async (
         }
       }
       assert.equal(deploymentReads, 1, "terminal failure stops polling immediately");
+      // A later controller outage must not hide the saved revision's own failure.
+      // This is the repeat path; it reads the existing deployment without provisioning.
+      const repeated = await runFirstAgentAsync(
+        { ...env, FIRST_AGENT_TEST_CONTROLLER_UNAVAILABLE: "1" },
+        "--harness",
+        "codex",
+      );
+      assert.ok(repeated.includes(`The Agent deployment failed (${code})`), repeated);
+      assert.doesNotMatch(repeated, /Checking the managed Agent Sandbox controller/);
+      assert.equal(deploymentReads, 2);
       assert.deepEqual(unexpected, [], "no runtime or model request follows failed deployment");
       await assert.rejects(readFile(engineLog), { code: "ENOENT" });
     });

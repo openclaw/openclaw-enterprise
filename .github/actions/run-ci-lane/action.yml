@@ -289,7 +289,7 @@ runs:
       run: pnpm typecheck
     - name: Build Go CLI for development installation proof
       id: build-go-cli
-      if: inputs.lane == 'dev-up-k3d' || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || inputs.lane == 'qa-matrix'
+      if: inputs.lane == 'checks-baseline-2' || inputs.lane == 'dev-up-k3d' || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || inputs.lane == 'qa-matrix'
       shell: bash
       run: pnpm cli:build
     - name: Precompile controller route schemas

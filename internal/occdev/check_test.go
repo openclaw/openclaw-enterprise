@@ -16,6 +16,7 @@ import (
 func TestCheckRecordedProvisioningDependency(t *testing.T) {
 	for _, tc := range []struct{ name, sandbox, server, context, replicas, want string }{
 		{"ready", "openshell", "https://127.0.0.1:6443", "k3d-occ-dev-owned", "1", ""},
+		{"rollout failure", "openshell", "https://127.0.0.1:6443", "k3d-occ-dev-owned", "1", "controller is unavailable"},
 		{"zero replicas", "openshell", "https://127.0.0.1:6443", "k3d-occ-dev-owned", "0", "no verified ready replica"},
 		{"foreign endpoint", "openshell", "https://example.test:6443", "k3d-occ-dev-owned", "1", "HTTPS loopback"},
 		{"foreign context", "openshell", "https://127.0.0.1:6443", "other", "1", "context does not match"},
@@ -43,7 +44,7 @@ func TestCheckRecordedProvisioningDependency(t *testing.T) {
 			body := `#!/bin/sh
 printf '%s\n' "$*" >> "$CHECK_CALLS"
 case "$*" in
- 'rollout status '*) exit 0 ;;
+ 'rollout status '*) if [ "$CHECK_ROLLOUT_FAILURE" = 1 ]; then printf '%s\n' 'synthetic-kubeconfig-credential' >&2; exit 1; fi; exit 0 ;;
  *' get deployment '*) printf '%s\n' '{"items":[{"kind":"Deployment","name":"agent-sandbox-controller","namespace":"agent-sandbox-system","uid":"11111111-1111-1111-1111-111111111111","selectorApp":"agent-sandbox-controller","selectorLabels":1,"readyReplicas":` + tc.replicas + `,"availableReplicas":` + tc.replicas + `}]}' ;;
  *) printf '%s\n' '{"items":[]}' ;;
 esac
@@ -53,6 +54,10 @@ esac
 			}
 			t.Setenv("PATH", tools+string(os.PathListSeparator)+os.Getenv("PATH"))
 			t.Setenv("CHECK_CALLS", log)
+			t.Setenv("CHECK_ROLLOUT_FAILURE", "0")
+			if tc.name == "rollout failure" {
+				t.Setenv("CHECK_ROLLOUT_FAILURE", "1")
+			}
 			t.Setenv("OCC_DEVELOPMENT_STATE_DIRECTORY", state.directory)
 			t.Setenv("OCC_DEVELOPMENT_COMPUTE_DRIVER", "")
 			var output, diagnostics bytes.Buffer
@@ -63,6 +68,9 @@ esac
 				}
 			} else if err != nil {
 				t.Fatal(err)
+			}
+			if strings.Contains(output.String()+diagnostics.String(), "synthetic-kubeconfig-credential") {
+				t.Fatal("raw kubectl output disclosed credential-bearing configuration")
 			}
 			calls, _ := os.ReadFile(log)
 			if tc.sandbox == "none" || strings.HasPrefix(tc.name, "foreign") {

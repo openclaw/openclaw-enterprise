@@ -48,9 +48,15 @@ func Check(ctx context.Context, opts Options) error {
 	// A failed dependency must not consume the first-Agent activation deadline.
 	checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	err = r.run(checkCtx, "kubectl", "rollout", "status", "deployment/"+agentSandboxName,
+	// kubectl config errors may include credentials. Emit only the bounded,
+	// structured diagnostic below, never this subprocess's raw output.
+	command := r.command(checkCtx, "kubectl", "rollout", "status", "deployment/"+agentSandboxName,
 		"--namespace", agentSandboxNamespace, "--timeout=10s", "--request-timeout=10s",
 		"--kubeconfig", kubeconfig, "--context", "k3d-"+state.Cluster)
+	command.WaitDelay = 200 * time.Millisecond
+	started := time.Now()
+	err = command.Run()
+	r.commandTiming("kubectl", command.Args[1:], started, err)
 	if err == nil {
 		observed := r.agentSandboxRead(checkCtx, state, "deployment", agentSandboxDeploymentTemplate, 1)
 		// A scaled-to-zero Deployment can have a completed rollout without a
