@@ -201,6 +201,7 @@
     {
       "path": "tests/integration/openshell-git-retention-real.test.ts",
       "expectedTests": [
+        "OpenShell standing Git remains available when a controller-only upgrade refuses worker replacement",
         "OpenShell retains its runtime after Git expiry and worker restart",
         "OpenShell isolates Git withdrawal before worker replacement and retains denial afterward"
       ]
