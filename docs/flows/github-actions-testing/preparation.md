@@ -48,8 +48,8 @@ The PR advisory OpenShell job uses Ubuntu 24.04 for Landlock and selects package
 
 For lanes declaring both optional immutable image inputs,
 `scripts/ci/prepare.mjs:validateLaneInputsBeforeSideEffects` rejects partial
-Gateway/Agent pairs before creating state. `prepareK3dRuntimeImages` builds the
-runtime when both are absent; selected pairs retain their immutable references.
+Gateway/Agent pairs before creating state. `prepareK3dRuntimeImages` imports the
+selected artifact or builds source when both are absent; selected pairs retain their immutable references.
 Controller build selection is independent.
 
 `scripts/ci/prepare.mjs:imageBuildArgs` restores read-only caches, including
@@ -70,8 +70,8 @@ skip selects a standalone build. After download, local import cancellation
 starts three minutes before the lane deadline. Gateway Routing and default
 Production TUI use the same deadline. Full and focused runs wait for the producer,
 build their controller and import the verified runtime into their cluster.
-An `integration-main` job snapshots the Gateway/Agent pair before producer
-selection. Explicit pairs omit the artifact selection and focused Gateway runs
+`integration-main` snapshots the Gateway/Agent pair. The consumer rejects
+incomplete mode, pair or artifact outputs before setup. Focused explicit pairs
 skip the producer. Combining an artifact with either Gateway input or a TUI
 upgrade candidate fails before resource allocation.
 

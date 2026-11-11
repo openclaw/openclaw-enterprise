@@ -3178,6 +3178,28 @@ test("full aggregate attributes lane coverage to its matrix and producer jobs", 
         .replace(/\.([a-z][a-z0-9]*(?:-[a-z0-9]+)+)/g, '["$1"]'),
       values,
     );
+  const runGuard = (job, values) => {
+    const guard = job.steps.find((step) => step.env?.RUNTIME_ARTIFACT_ID !== undefined);
+    if (guard.if && !evaluate(guard.if, values)) {
+      // A skipped guard permits the following lane action.
+      return { status: 0 };
+    }
+    const imageEnv = Object.fromEntries(
+      ["OCC_TEST_KUBERNETES_GATEWAY_IMAGE", "OCC_TEST_KUBERNETES_AGENT_IMAGE"]
+        .filter((name) => job.env[name] !== undefined)
+        .map((name) => [name, evaluate(job.env[name], values) ?? ""]),
+    );
+    const guardEnv = Object.fromEntries(
+      Object.entries(guard.env).map(([name, expression]) => [
+        name,
+        evaluate(expression, values) ?? "",
+      ]),
+    );
+    return spawnSync("bash", ["-e", "-c", guard.run], {
+      env: { ...process.env, ...imageEnv, ...guardEnv },
+      encoding: "utf8",
+    });
+  };
   // Focused consumers need the same producer as full runs; unrelated focused
   // lanes must not pay for an unused native runtime build.
   for (const lane of [
@@ -3214,16 +3236,10 @@ test("full aggregate attributes lane coverage to its matrix and producer jobs", 
       inputs.map(([, expression]) => evaluate(expression, context(lane))),
       ["123", "digest", "source", "456", "1"],
     );
-    const guard = job.steps.find(
-      (step) => step.name === "Verify successful runtime producer has an artifact",
-    );
     for (const id of ["", "123"]) {
-      assert.equal(
-        spawnSync("bash", ["-e", "-c", guard.run], {
-          env: { ...process.env, RUNTIME_ARTIFACT_ID: id },
-        }).status,
-        id ? 0 : 1,
-      );
+      const values = context(lane);
+      values.needs["runtime-artifact"].outputs["artifact-id"] = id;
+      assert.equal(runGuard(job, values).status, id ? 0 : 1);
     }
   }
   // Environment-level image settings are resolved once on their own runner.
@@ -3283,13 +3299,56 @@ test("full aggregate attributes lane coverage to its matrix and producer jobs", 
       const job = workflow.jobs["gateway-routing"];
       assert.equal(evaluate(job.env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE, values), gateway);
       assert.equal(evaluate(job.env.OCC_TEST_KUBERNETES_AGENT_IMAGE, values), agent);
-      const guard = job.steps.find(
-        (step) => step.name === "Verify successful runtime producer has an artifact",
-      );
-      assert.equal(evaluate(guard.if, values), !gateway && !agent);
+      if (gateway && agent) {
+        assert.equal(runGuard(job, values).status, 0);
+      }
       const inputs = job.steps.find((step) => step.uses === "./.github/actions/run-ci-lane").with;
       assert.equal(evaluate(inputs["runtime-artifact-id"], values), gateway || agent ? "" : "123");
     }
+  }
+  // Actions can suppress individual job outputs while reporting selector
+  // success. Exercise received snapshots through the shipped mappings and guard;
+  // neither missing mode nor missing refs may silently select a source build.
+  for (const [label, snapshot, producer, id, expected] of [
+    ["artifact", { "use-runtime-artifact": "true" }, "success", "123", 0],
+    [
+      "explicit",
+      { "use-runtime-artifact": "false", "gateway-image": "gateway", "agent-image": "agent" },
+      "skipped",
+      "",
+      0,
+    ],
+    ["missing mode", {}, "success", "123", 1],
+    ["unknown mode", { "use-runtime-artifact": "unknown" }, "success", "123", 1],
+    ["both refs omitted", { "use-runtime-artifact": "false" }, "skipped", "", 1],
+    [
+      "gateway omitted",
+      { "use-runtime-artifact": "false", "agent-image": "agent" },
+      "skipped",
+      "",
+      1,
+    ],
+    [
+      "agent omitted",
+      { "use-runtime-artifact": "false", "gateway-image": "gateway" },
+      "skipped",
+      "",
+      1,
+    ],
+    ["artifact omitted", { "use-runtime-artifact": "true" }, "success", "", 1],
+    [
+      "conflicting ref",
+      { "use-runtime-artifact": "true", "gateway-image": "gateway" },
+      "success",
+      "123",
+      1,
+    ],
+  ]) {
+    const values = context("all", producer, snapshot);
+    values.needs["runtime-artifact"].outputs["artifact-id"] = id;
+    const job = workflow.jobs["gateway-routing"];
+    assert.equal(evaluate(job.if, values), true, label);
+    assert.equal(runGuard(job, values).status, expected, label);
   }
   // This workflow uses !cancelled(), which disables GitHub's implicit success()
   // guard. A failed producer must therefore be rejected explicitly.

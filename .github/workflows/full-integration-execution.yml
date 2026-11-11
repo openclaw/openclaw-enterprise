@@ -355,11 +355,26 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Verify successful runtime producer has an artifact
-        if: needs.gateway-image-selection.outputs.use-runtime-artifact == 'true'
+      - name: Verify Gateway runtime selection
         env:
+          RUNTIME_ARTIFACT_MODE: ${{ needs.gateway-image-selection.outputs.use-runtime-artifact }}
           RUNTIME_ARTIFACT_ID: ${{ needs.runtime-artifact.outputs.artifact-id }}
-        run: test -n "$RUNTIME_ARTIFACT_ID"
+        run: |
+          case "$RUNTIME_ARTIFACT_MODE" in
+            true)
+              test -z "$OCC_TEST_KUBERNETES_GATEWAY_IMAGE"
+              test -z "$OCC_TEST_KUBERNETES_AGENT_IMAGE"
+              test -n "$RUNTIME_ARTIFACT_ID"
+              ;;
+            false)
+              test -n "$OCC_TEST_KUBERNETES_GATEWAY_IMAGE"
+              test -n "$OCC_TEST_KUBERNETES_AGENT_IMAGE"
+              ;;
+            *)
+              echo "::error::Missing or invalid Gateway runtime selection."
+              exit 1
+              ;;
+          esac
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: gateway-routing

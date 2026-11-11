@@ -2902,10 +2902,17 @@ async function prepareK3dRuntimeImages(
     ]
       .filter(Boolean)
       .join(", ");
-    progress(
-      state.lane,
-      `Building the current ${images} image${needsController && needsRuntime ? "s" : ""}.`,
-    );
+    if (runtimeArtifact) {
+      progress(
+        state.lane,
+        `Loading the shared gateway and Codex runtime artifact${needsController ? " and preparing the current controller image" : ""}.`,
+      );
+    } else {
+      progress(
+        state.lane,
+        `Building the current ${images} image${needsController && needsRuntime ? "s" : ""}.`,
+      );
+    }
     const built = await buildRuntimeImages(statePath, state, {
       controller: needsController,
       runtime: needsRuntime,

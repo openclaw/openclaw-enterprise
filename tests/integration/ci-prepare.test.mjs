@@ -3684,7 +3684,11 @@ if (args[0] === "pull") {
       assertStderrMatch(prepared.stderr, /Runtime artifact source differs from checkout/, lane);
       const calls = await commands.commands();
       assert.equal(
-        calls.some(({ args }) => args[0] === "buildx"),
+        calls.some(
+          ({ args }) =>
+            (args[0] === "build" || (args[0] === "buildx" && args[1] === "build")) &&
+            args.includes(join(repositoryRoot, "deploy/runtime/Dockerfile")),
+        ),
         false,
       );
       const state = await commands.readState();
