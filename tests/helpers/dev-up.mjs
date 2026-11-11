@@ -552,6 +552,19 @@ function lifecycleCommand(fake, invocation, io) {
       exit(1);
     } else if (
       args[0] === "ps" &&
+      args[1] === "--format" &&
+      scenario === "docker-stack-holds-api-port"
+    ) {
+      // The default Docker-compatible stack's controller still publishes the API port.
+      output(
+        [
+          "openclaw-enterprise-development-controller-1",
+          `127.0.0.1:${env.OPENCLAW_DEV_PORT}->3000/tcp`,
+          "com.docker.compose.project=openclaw-enterprise-development,com.docker.compose.service=controller",
+        ].join("\t"),
+      );
+    } else if (
+      args[0] === "ps" &&
       state.compose &&
       args.includes("label=com.docker.compose.service=browser-proxy")
     ) {
@@ -649,6 +662,15 @@ function lifecycleCommand(fake, invocation, io) {
     if (args[0] === "cluster" && args[1] === "list") {
       output(JSON.stringify(state.clusters.map((name) => ({ name }))));
     } else if (args[0] === "cluster" && args[1] === "create") {
+      if (scenario === "cluster-create-rolled-back") {
+        // k3d's own rollback after a port clash: nothing of the cluster remains.
+        return fail(
+          "ERRO[0009] Failed Cluster Start: Failed to start server k3d-" +
+            args[2] +
+            "-serverlb: Bind for 127.0.0.1:3000 failed: port is already allocated\n" +
+            "FATA[0009] Cluster creation FAILED, all changes have been rolled back!",
+        );
+      }
       state.clusters.push(args[2]);
       save();
       if (scenario === "cluster-create-failed") {
