@@ -1379,7 +1379,7 @@ child.on("exit", () => process.exit(0));
         }
         await waitUntil(
           "both catalog processes to stop",
-          () => Object.values(pids).every(catalogProcessStopped),
+          () => Object.values(pids).every((pid) => catalogProcessStopped(pid)),
           { timeoutMs: 5_000, intervalMs: 50 },
         );
       });
@@ -1452,11 +1452,16 @@ test(
   async (t) => {
     const directory = await temporaryDirectory(t, "oce-codex-catalog-gone-");
     const executable = join(directory, "codex.mjs");
+    const requestFile = join(directory, "request.json");
     await writeFile(
       executable,
       `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
-createInterface({ input: process.stdin }).once("line", () => process.exit(0));
+createInterface({ input: process.stdin }).once("line", (line) => {
+  writeFileSync(${JSON.stringify(requestFile)}, JSON.stringify({ pid: process.pid, request: JSON.parse(line) }));
+  process.exit(0);
+});
 `,
     );
     await chmod(executable, 0o755);
@@ -1465,12 +1470,28 @@ createInterface({ input: process.stdin }).once("line", () => process.exit(0));
       "../../apps/controller/src/drivers/plugin/index.ts",
     );
     const script = `
+      import assert from "node:assert/strict";
+      import { readFileSync } from "node:fs";
       import { CodexPluginDriver } from ${JSON.stringify(driverModule)};
       const driver = new CodexPluginDriver({
         codexExecutable: ${JSON.stringify(executable)},
         codexHome: ${JSON.stringify(directory)},
         requestTimeoutMs: 5_000,
       });
+      // Observe real OS signals without replacing their outcomes. This subprocess
+      // owns the wrapper, so other tests cannot see it.
+      const kill = process.kill.bind(process);
+      const groupSignals = [];
+      process.kill = (pid, signal) => {
+        try {
+          const result = kill(pid, signal);
+          if (pid < 0) groupSignals.push({ pid, signal, code: null });
+          return result;
+        } catch (error) {
+          if (pid < 0) groupSignals.push({ pid, signal, code: error.code });
+          throw error;
+        }
+      };
       const listed = driver.listCatalog({
         namespace: { id: "ns_plugin", name: "Plugin conformance", status: "ready", createdAt: "2026-09-08T00:00:00.000Z" },
         agent: { id: "agent_plugin", namespaceId: "ns_plugin", name: "Plugin agent", configurationId: "cfg_plugin", executionMode: "dedicated", servicePrincipalId: "sp_plugin", createdAt: "2026-09-08T00:00:00.000Z" },
@@ -1478,7 +1499,15 @@ createInterface({ input: process.stdin }).once("line", () => process.exit(0));
         configuration: {},
         signal: new AbortController().signal,
       });
-      await listed.catch(() => undefined);
+      await assert.rejects(listed, {
+        name: "NotImplementedError",
+        message: "Codex plugin catalog discovery exited before responding with status 0.",
+      });
+      const consumed = JSON.parse(readFileSync(${JSON.stringify(requestFile)}, "utf8"));
+      assert.equal(consumed.request.method, "initialize");
+      assert.ok(consumed.request.id);
+      assert.deepEqual(groupSignals, [{ pid: -consumed.pid, signal: "SIGTERM", code: "ESRCH" }]);
+      process.kill = kill;
       process.stdout.write(String(Date.now()));
     `;
     const started = Date.now();
