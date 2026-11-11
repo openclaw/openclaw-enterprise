@@ -49,6 +49,7 @@
     "helpers/bounded-teardown.ts",
     "helpers/environment.ts",
     "helpers/fake-commands.ts",
+    "helpers/fixture-command-server.ts",
     "helpers/node-test-summary.ts",
     "helpers/image-smoke-timeout.ts",
     "helpers/runtime-model-probe-observation.ts",
