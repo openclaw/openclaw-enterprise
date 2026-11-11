@@ -1,7 +1,7 @@
 ---
 created: "2026-11-10"
-updated: 2026-11-10
-last_updated_session: authoring-run/35058d66-8c8f-4762-ab31-00d58e56de3e
+updated: "2026-11-11 13:54"
+last_updated_session: authoring-run/fdb3d41f-3e11-4868-9533-14761f65d83e
 ---
 
 # Authorize model credentials per request
@@ -112,6 +112,26 @@ admission/configuration metadata, including `provider_env_revision`. Changes
 confined to that aggregate epoch can preserve this witness; a mixed observation
 cannot. Model provider/profile and full policy changes remain checked. Missing or changed retained evidence refuses. The API does not recompute
 worker-owned Git custody state.
+
+`packages/occ/src/index.ts:checkRequestCredential` accepts the active revision,
+or the latest inactive candidate with eligible startup work. The candidate must
+have a live claim, or queued work whose latest exact-work attempt has outcome
+`success` and code `REVISION_INCOMPLETE`. A later failure overrides earlier
+readiness evidence, even with the same code. Expired claims, recovered failures,
+missing or ambiguous evidence, and terminal candidate work refuse access.
+Repeated deferrals can reuse the last success; its timestamp need not equal the
+work update timestamp.
+
+`packages/occ/src/state/postgres-work-queue.ts:lockRequestCredentialWork` holds
+the exact work row before OCC locks the Agent. It skips busy work rather than
+waiting on a worker that can lock work before Agent. A separate statement,
+`requestCredentialCandidateEligible`, reads work and the latest unfiltered
+attempt together after the lock. This sees any transition committed during lock
+acquisition, with its matching audit evidence. OCC retains this fence through
+approval or release, and rechecks database lease time before each. Redemption
+runs the same policy checks again. Namespace, source, IAM configuration and Agent
+locks retain the existing withdrawal and ownership fences. Memory state has no
+executing work and cannot establish candidate startup authority.
 
 OCC stores a nonsecret approval in PostgreSQL, correlated with recipient,
 request ID, binding, execution, Driver, policy digest and deadline. It stores no
@@ -245,6 +265,8 @@ credential and a reused inspected connection.
 None.
 
 ## Changelog
+
+- 2026-11-11 13:54: Trace candidate readiness deferral eligibility and work fencing in the accompanying fix. (authoring-run/fdb3d41f-3e11-4868-9533-14761f65d83e - 1aafd288a6bd957fdba23d0f09d96dd1da396a47)
 
 - 2026-11-10 13:08: Trace optional online Git withdrawal and observation of the original model execution. (authoring-run/35058d66-8c8f-4762-ab31-00d58e56de3e - e6093eef7ab860968e5e185ca14c8f0b6c2bc5ca)
 

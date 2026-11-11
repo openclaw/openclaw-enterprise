@@ -1142,6 +1142,10 @@ export interface PlatformOperationReadRepository {
 }
 
 export interface PlatformOperationRepository extends PlatformOperationReadRepository {
+  /** Hold exact startup work before locking its Agent; busy work fails closed. */
+  lockRequestCredentialWork(owner: RepositoryRevisionOwner): Promise<boolean>;
+  /** Read work and latest unfiltered attempt together, while its work lock is held. */
+  requestCredentialCandidateEligible(owner: RepositoryRevisionOwner): Promise<boolean>;
   append(operation: PlatformOperation): Promise<void>;
   /**
    * Requeue the exact deleting Agent's terminal teardown initiated by
@@ -4368,6 +4372,9 @@ function repositories(
       retryFailedAgentDeletion: async () => false,
       retryFailedNamespaceDeletion: async () => false,
       expediteCredentialWithdrawalWork: async () => false,
+      // This adapter never executes queued work, so it cannot establish startup authority.
+      lockRequestCredentialWork: async () => false,
+      requestCredentialCandidateEligible: async () => false,
       findWorkAttempt: async () => undefined,
       hasRepositoryExecutionRedeployRequired: async () => false,
       // Recorded work never executes here, so every recorded withdrawal stays outstanding.

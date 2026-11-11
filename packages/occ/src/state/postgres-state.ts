@@ -1802,6 +1802,8 @@ export class PostgresPlatformState implements PlatformStateStore {
       "recoverStale",
       "findWork",
       "findWorkAttempt",
+      "lockRequestCredentialWork",
+      "requestCredentialCandidateEligible",
       "hasRepositoryExecutionRedeployRequired",
       "repositoryExpiryState",
       "latestRevisionMaintenanceKey",
@@ -5578,6 +5580,14 @@ export class PostgresPlatformState implements PlatformStateStore {
         findWork: async (idempotencyKey) => {
           await this.requireInitialized(context);
           return queue.findWork(idempotencyKey);
+        },
+        lockRequestCredentialWork: async (owner) => {
+          await this.requireInitialized(context);
+          return queue.lockRequestCredentialWork(owner);
+        },
+        requestCredentialCandidateEligible: async (owner) => {
+          await this.requireInitialized(context);
+          return queue.requestCredentialCandidateEligible(owner);
         },
         findWorkAttempt: async (idempotencyKey) => {
           await this.requireInitialized(context);

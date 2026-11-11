@@ -7929,6 +7929,8 @@ export class OpenClawController {
       // configuration writer's lock order and retain its shared fence through release.
       await state.installations.holdIAMConfiguration("shared");
       const currentNamespace = await this.lockNamespace(state, namespaceId);
+      const candidateOwner = { namespaceId, agentId, revisionId };
+      const workHeld = await state.operations.lockRequestCredentialWork(candidateOwner);
       const agent = await state.agents.lockAgent(namespaceId, agentId);
       if (
         signal.aborted ||
@@ -7944,11 +7946,11 @@ export class OpenClawController {
       }
       if (agent.activeRevisionId !== revisionId) {
         const latest = (await state.revisions.listRevisionMetadata(namespaceId, agentId)).at(-1);
-        const work = await state.operations.findWork(`agent_revision:${revisionId}:reconcile`);
+
         if (
           latest?.id !== revisionId ||
-          !work ||
-          controllerWorkDeploymentStatus(work, this.clock()) !== "running"
+          !workHeld ||
+          !(await state.operations.requestCredentialCandidateEligible(candidateOwner))
         ) {
           return refuse("withdrawn");
         }
@@ -8059,6 +8061,12 @@ export class OpenClawController {
       if (!decision.allowed) {
         return refuse("unauthorized");
       }
+      const candidateCurrent = () =>
+        agent.activeRevisionId === revisionId ||
+        state.operations.requestCredentialCandidateEligible(candidateOwner);
+      if (!(await candidateCurrent())) {
+        return refuse("withdrawn");
+      }
       if (release) {
         // updateSecret holds this Namespace lock through the backend write. Reuse the
         // current unit for metadata so concurrent releases cannot exhaust the pool.
@@ -8094,6 +8102,9 @@ export class OpenClawController {
         provider.normalizeGrant !== normalizeGrant
       ) {
         return refuse("stale_configuration");
+      }
+      if (!(await candidateCurrent())) {
+        return refuse("withdrawn");
       }
       if ("http" in request) {
         const inserted = await state.requestCredentialApprovals.insert(

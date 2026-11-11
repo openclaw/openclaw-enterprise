@@ -34,6 +34,7 @@ import { postgresApp } from "./postgres-egress-app.mjs";
 export async function requestCredentialFixture(
   t: TestContext,
   configuration: {
+    activateRevision?: boolean;
     credentialProxyCapacity?: Partial<CredentialProxyCapacity>;
     poolOptions?: { options: string };
     bindExchange?: CredentialProxyDriver["bindExchange"];
@@ -246,7 +247,9 @@ export async function requestCredentialFixture(
     },
   };
   await state.transact((unit) => unit.credentialSources.recordEgressInstallation(live!));
-  await f.activateRevision(f.namespace.id, f.agent.id, revision.id);
+  if (configuration.activateRevision !== false) {
+    await f.activateRevision(f.namespace.id, f.agent.id, revision.id);
+  }
   const transport = {
     async verify() {
       return undefined;

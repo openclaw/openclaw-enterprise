@@ -744,6 +744,13 @@ const insertEvidenceCteSql = (filter = "", reasonCode = "$4::text", details = "'
     WHERE true ${filter}
     RETURNING id
   )`;
+// Bind evidence to immutable work ownership, not merely a revision's visible progress.
+const WORK_ATTEMPT_PREDICATE = `event.namespace_id = work.namespace_id AND event.actor_id = work.actor_id
+         AND event.resource_kind = 'agent_revision' AND event.resource_id = work.revision_id
+         AND event.kind = 'mutation' AND event.action = 'reconcile'
+         AND event.details->>'workId' = work.idempotency_key
+         AND event.occurred_at >= work.created_at`;
+
 const INSERT_EVIDENCE_CTE_SQL = insertEvidenceCteSql();
 const INSERT_EVIDENCE_SQL = `${INSERT_EVIDENCE_CTE_SQL}
   SELECT transitioned.* FROM transitioned`;
@@ -1177,6 +1184,51 @@ export class PostgresWorkQueue {
     return count;
   }
 
+  /** Namespace is already held; never wait here on a worker holding work before Agent. */
+  async lockRequestCredentialWork(owner: RepositoryRevisionOwner): Promise<boolean> {
+    const locked = await this.client.query(
+      `SELECT idempotency_key FROM occ.controller_work AS work
+       WHERE work.idempotency_key = 'agent_revision:' || $3::text || ':reconcile'
+         AND work.namespace_id = $1 AND work.agent_id = $2 AND work.revision_id = $3
+         AND work.work_kind = 'lifecycle' AND work.namespace_target IS NULL
+         AND work.agent_target IS NULL
+       FOR SHARE OF work SKIP LOCKED`,
+      [owner.namespaceId, owner.agentId, owner.revisionId],
+    );
+    return locked.rows.length === 1;
+  }
+
+  /**
+   * Call after locking work. A fresh statement snapshot sees the audit committed with its
+   * last transition even if that transition finished during the preceding locking read.
+   * Keep the lock through authorization/release; recheck database lease time before either.
+   */
+  async requestCredentialCandidateEligible(owner: RepositoryRevisionOwner): Promise<boolean> {
+    const found = await this.client.query(
+      `SELECT 1 FROM occ.controller_work AS work
+       LEFT JOIN LATERAL (
+         SELECT event.outcome, event.details,
+           count(*) OVER (PARTITION BY event.occurred_at) AS simultaneous
+         FROM occ.audit_events AS event
+         WHERE ${WORK_ATTEMPT_PREDICATE}
+         ORDER BY event.occurred_at DESC, event.id DESC LIMIT 1
+       ) AS attempt ON true
+       WHERE work.idempotency_key = 'agent_revision:' || $3::text || ':reconcile'
+         AND work.namespace_id = $1 AND work.agent_id = $2 AND work.revision_id = $3
+         AND work.work_kind = 'lifecycle' AND work.namespace_target IS NULL
+         AND work.agent_target IS NULL
+         AND (
+           (work.state = 'claimed' AND work.lease_expires_at > clock_timestamp()) OR
+           (work.state = 'queued' AND attempt.outcome = 'success'
+             AND attempt.details->>'reasonCode' = 'REVISION_INCOMPLETE'
+             AND NOT (attempt.details ? 'refusal') AND NOT (attempt.details ? 'final')
+             AND attempt.simultaneous = 1)
+         )`,
+      [owner.namespaceId, owner.agentId, owner.revisionId],
+    );
+    return found.rows.length === 1;
+  }
+
   async findWork(idempotencyKey: string): Promise<ControllerWork | undefined> {
     const found = await this.client.query(
       `SELECT *, state = 'claimed' AND lease_expires_at > clock_timestamp() AS lease_active
@@ -1260,11 +1312,7 @@ export class PostgresWorkQueue {
          event.details->>'refusal' AS refusal
        FROM occ.controller_work AS work
        JOIN occ.audit_events AS event
-         ON event.namespace_id = work.namespace_id AND event.actor_id = work.actor_id
-         AND event.resource_kind = 'agent_revision' AND event.resource_id = work.revision_id
-         AND event.kind = 'mutation' AND event.action = 'reconcile'
-         AND event.details->>'workId' = work.idempotency_key
-         AND event.occurred_at >= work.created_at
+         ON ${WORK_ATTEMPT_PREDICATE}
          AND ($2::text[] IS NULL OR event.details->>'reasonCode' = ANY($2::text[]))
        WHERE work.idempotency_key = $1
        ORDER BY event.occurred_at DESC, event.id DESC LIMIT 1`,
@@ -1295,11 +1343,7 @@ export class PostgresWorkQueue {
          event.details->>'stopYielded' AS stop_yielded
        FROM occ.controller_work AS work
        JOIN occ.audit_events AS event
-         ON event.namespace_id = work.namespace_id AND event.actor_id = work.actor_id
-         AND event.resource_kind = 'agent_revision' AND event.resource_id = work.revision_id
-         AND event.kind = 'mutation' AND event.action = 'reconcile'
-         AND event.details->>'workId' = work.idempotency_key
-         AND event.occurred_at >= work.created_at
+         ON ${WORK_ATTEMPT_PREDICATE}
        WHERE work.idempotency_key = $1
        ORDER BY event.occurred_at DESC, event.id DESC LIMIT 64`,
       [nonempty(idempotencyKey, "Controller work idempotency key")],
