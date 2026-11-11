@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-10
-last_updated_session: authoring-run/098bcc8c-9e1b-4318-aff3-06c464edb33e
+last_updated_session: authoring-run/50874573-f481-4b68-a77f-07f75f066719
 ---
 
 # Protected credential request flow
@@ -94,24 +94,27 @@ a Git-only Proxy, and Installation limits. Preparation repeats both Git refusals
 [Protected repository Git](../reference/drivers/selection.md#select-a-protected-sender)
 uses a separate worker binding and requires proof of the recipient before release.
 
-Compute passes Credential Proxy wiring to Sandbox provisioning. Protected sources
-require admission, API-key login, an exact plan source-key match and no Gateway
-attachment; they receive no Gateway authentication environment. Gateway-owned sources
-require their exact attachment. The egress Driver compares the Sandbox's complete
-prepared source policy and protected routes with the plan. Authenticated
-`LoadedPolicyObservationV1` binds source and effective policies to the Sandbox,
-instance, policy version, configuration/environment revisions and capabilities.
-Installation and revalidation enforce the
-[V1 contract](../reference/credential-sources/protected-inference.md#loaded-enforcement),
-including its exact name-only rule exception. Missing evidence, widening or a changed
-fence refuses; legacy observations cannot substitute. The gateway compares unknown
-fields too. The local fingerprint covers both hashes and full policies, but is neither
-a canonical supplier hash nor supervisor attestation.
+Compute passes Credential Proxy wiring to Sandbox. Protected sources require
+admission, API-key login and an exact source-key match. Only Gateway-owned sources
+receive their exact Gateway attachment and authentication environment.
+`apps/controller/src/drivers/egress-proxy/openshell.ts:openShellEgressConfiguration`
+emits `/**` on inference routes so any verified executable in the admitted
+execution can reach the model endpoint through credential middleware.
+The egress Driver compares the full prepared policy against the plan, including
+the explicit matcher.
 
-For protected provider Harnesses, Compute sets `OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID`
-from the admitted revision. The helper requires a match with the manifest's enrollment
-revision before opening the authenticated listener on the service port. Compute withholds its private status
-revision, port, container name and Pod UID. The provider receives only the transport verifier.
+Authenticated [V1 evidence](../reference/credential-sources/protected-inference.md#loaded-enforcement)
+binds both policies to the Sandbox, instance, policy version, configuration and
+environment revisions, and capabilities. The gateway compares unknown fields.
+Installation and revalidation accept only the exact name-only rule exception.
+Missing, legacy, widened or changed evidence refuses. The local comparison
+fingerprint covers both policies and hashes.
+
+For protected provider Harnesses, Compute sets
+`OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID` from admission. The helper matches it
+to the manifest before opening the authenticated service listener.
+The provider receives only the verifier. Compute withholds the private status
+revision, port, container name and Pod UID.
 
 The Harness waits before its first model probe. Compute awaits installation commit, rechecks evidence
 and calls the Sandbox Driver. The Driver verifies the Sandbox and service and reads
@@ -333,6 +336,8 @@ caller independently.
 None.
 
 ## Changelog
+
+- 2026-11-10 14:47: Encode whole-execution inference in managed OpenShell policy. (authoring-run/50874573-f481-4b68-a77f-07f75f066719 - 98a139592e6808a64aa886d240153ff403608a70)
 
 - 2026-11-10 08:22: Accept empty metadata on replayed assistant output text. (authoring-run/098bcc8c-9e1b-4318-aff3-06c464edb33e - 33c820f6daf4ba6a1559680911ab2d509ee4a131)
 
