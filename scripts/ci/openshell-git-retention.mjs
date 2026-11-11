@@ -638,15 +638,6 @@ export function projectOpenShellGitRetention(value) {
   ) {
     return undefined;
   }
-  // Old producers omitted both RPC fields; partial or explicitly invalid pairs
-  // must still pass through the strict field validators below.
-  if (
-    value.event === "mixed-grant-failure" &&
-    !Object.hasOwn(value, "method") &&
-    !Object.hasOwn(value, "grpcStatus")
-  ) {
-    value = { ...value, method: null, grpcStatus: null };
-  }
   let fields = events[value.event];
   if (value.event === "mixed-grant-withdrawal-denied") {
     // Each denial boundary requires its own evidence; neither raw worker logs
