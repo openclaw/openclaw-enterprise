@@ -106,6 +106,7 @@ export async function createQaBrowser(f, { themed }) {
   }
   const browser = await chromium.launchPersistentContext(join(f.directory, "browser-profile"), {
     headless: true,
+    chromiumSandbox: true,
     ...(process.env.OCC_TEST_BROWSER_EXECUTABLE
       ? { executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE }
       : {}),
