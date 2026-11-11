@@ -251,6 +251,13 @@ owns recovery. Native provisioning requires Sandbox; expired unpaired setup awai
   OpenClaw's built-in runtime with
   `/model <ref> --runtime openclaw` runs in the Gateway with no reachable model,
   and Codex never hands that runtime a turn.
+  Model rows retain an authored, nonempty `compat.supportedReasoningEfforts`
+  list only when every entry is a native effort (`minimal`, `low`, `medium`,
+  `high`, `xhigh`, `max`, or `ultra`). The existing `reasoning` and
+  `thinkingLevelMap` metadata stays with the row. Other `compat` fields,
+  including `thinkingLevels`, are removed: the pinned native adapter treats
+  them as request overrides that can select the built-in runtime. This filter
+  preserves declared capabilities; it does not infer capabilities for a model.
 - At startup Gateway emits `runtime.gateway_settings_overridden` naming, never
   valuing, replaced or dropped settings. `occ agent logs` exposes names; the
   Collector exports only the [event](common-logging.md#7-collector-exports-only-operational-classes).

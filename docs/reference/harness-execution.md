@@ -206,6 +206,15 @@ With no model selected, that refusal names `agents.defaults.model` or an
 `agents.entries` model to set.
 Codex accepts its native `codex` provider, or `openai` with the
 Codex plugin explicitly enabled for WebSocket app-server transport.
+
+For a dedicated Codex model, supply reasoning capabilities only when verified
+for the selected native runtime and model. The Gateway preserves `reasoning`,
+`thinkingLevelMap`, and a nonempty `compat.supportedReasoningEfforts` list
+containing only `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`.
+It drops other `compat` fields, including `thinkingLevels`, to prevent native
+turns from falling back to the Gateway-local runtime. This does not discover
+capabilities or set a default effort; absent metadata remains absent.
+
 An embedded or dedicated Gateway cannot start when an active plugin's startup
 secret input reads an unset variable: Codex `appServer.authToken` or
 `appServer.headers`, or Google `webSearch.headers`. Kubernetes sets the

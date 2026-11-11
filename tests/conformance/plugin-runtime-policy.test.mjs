@@ -1166,7 +1166,15 @@ test("a workspace-node Gateway keeps owner Codex tool excludes, pins the codex p
             baseUrl: "https://other.example.test/v1",
             headers: { "x-model": "b" },
             params: { temperature: 0 },
-            compat: { supportsTools: false },
+            reasoning: true,
+            thinkingLevelMap: { off: "low", minimal: "low" },
+            compat: {
+              supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+              supportsTools: false,
+              thinkingLevels: ["low", "medium", "high", "xhigh", "max", "ultra"],
+              headers: { "x-route": "forbidden" },
+              baseUrl: "https://forbidden.example.test/v1",
+            },
           },
         ],
       },
@@ -1247,7 +1255,18 @@ test("a workspace-node Gateway keeps owner Codex tool excludes, pins the codex p
     providers: {
       Codex: {
         maxTokens: 4096,
-        models: [{ id: "gpt-test", name: "gpt-test", contextWindow: 200000 }],
+        models: [
+          {
+            id: "gpt-test",
+            name: "gpt-test",
+            contextWindow: 200000,
+            reasoning: true,
+            thinkingLevelMap: { off: "low", minimal: "low" },
+            compat: {
+              supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+            },
+          },
+        ],
         baseUrl: "http://127.0.0.1:9",
         api: "openai-responses",
       },
@@ -1259,6 +1278,30 @@ test("a workspace-node Gateway keeps owner Codex tool excludes, pins the codex p
       anthropic: ownerConfig.models.providers.anthropic,
     },
   });
+  // An invalid/empty native effort list must not introduce a compat override,
+  // and another row must not acquire the first row's capability metadata.
+  for (const efforts of [[], ["off"], ["high", "unknown"], [1], "high"]) {
+    const config = codexGatewayConfig();
+    config.models = {
+      providers: {
+        codex: {
+          models: [
+            { id: "invalid", compat: { supportedReasoningEfforts: efforts } },
+            { id: "plain" },
+          ],
+        },
+      },
+    };
+    const result = await runOpenClawRuntimeHelper(undefined, [], {
+      baseConfig: config,
+      env: { APP_SERVER_URL: "ws://harness.example.test:18790" },
+      workspaceNodeId: "enrolled-node",
+      console: { error() {} },
+    });
+    const saved = JSON.parse(result.files.get("/home/node/.openclaw/openclaw.json"));
+    assert.deepEqual(saved.models.providers.codex.models, [{ id: "invalid" }, { id: "plain" }]);
+    assert.equal(saved.models.providers.codex.baseUrl, "http://127.0.0.1:9");
+  }
   // An openai row that names no transport keeps OpenClaw's default (no credential
   // in the Gateway) so Codex keeps owning its account's models; overrides still go.
   // APP_SERVER_URL marks a Codex Gateway, so the pin holds without the plugin entry.
