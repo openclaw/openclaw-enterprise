@@ -471,7 +471,7 @@ test("native browser status selects exact Agent authority and reports lifecycle 
   assert.equal(restored.data.activeRevisionId, pending.id);
 });
 
-test("native admin status is unavailable while a newer revision replaces the active workload", async (t) => {
+test("native admin stays available before the shared stop boundary, then becomes unavailable", async (t) => {
   // Without exclusive replacement the active revision keeps serving during a redeploy.
   const shared = await createNativeAdminFixture(t);
   await shared.fixture.deployAgent(shared.namespace.id, shared.agent.id);
@@ -483,9 +483,18 @@ test("native admin status is unavailable while a newer revision replaces the act
   const context = await createNativeAdminFixture(t, { exclusiveReplacement: true });
   const available = await nativeStatus(context);
   assert.equal(available.data.status, "available");
-  // The worker stops the active revision before the newer one starts; if that one fails,
-  // the old revision stays recorded as active with nothing serving.
   const replacement = await context.fixture.deployAgent(context.namespace.id, context.agent.id);
+  const waiting = await nativeStatus(context);
+  assert.equal(waiting.data.status, "available");
+  assert.equal(waiting.data.activeRevisionId, context.revision.id);
+  await context.fixture.controller.transact((state) =>
+    state.agents.recordPredecessorReplacement(context.namespace.id, context.agent.id, {
+      predecessorRevisionId: context.revision.id,
+      candidateRevisionId: replacement.id,
+      phase: "stopping",
+    }),
+  );
+  // A stopped predecessor stays unavailable even if a newer candidate fails.
   const replacing = await nativeStatus(context);
   assert.equal(replacing.status, 200);
   assert.deepEqual(replacing.data, { status: "unavailable" });
@@ -495,15 +504,18 @@ test("native admin status is unavailable while a newer revision replaces the act
   );
   assert.equal(agent.data.activeRevisionId, context.revision.id);
 
+  const nextReplacement = await context.fixture.deployAgent(context.namespace.id, context.agent.id);
+  assert.deepEqual((await nativeStatus(context)).data, { status: "unavailable" });
+
   await context.fixture.activateRevision(
     context.namespace.id,
     context.agent.id,
-    replacement.id,
+    nextReplacement.id,
     context.revision.id,
   );
   const restored = await nativeStatus(context);
   assert.equal(restored.data.status, "available");
-  assert.equal(restored.data.activeRevisionId, replacement.id);
+  assert.equal(restored.data.activeRevisionId, nextReplacement.id);
 });
 
 test("native browser disabled status still requires exact Agent authority", async (t) => {

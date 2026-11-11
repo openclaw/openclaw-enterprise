@@ -618,6 +618,7 @@ export {
   InMemoryPlatformState,
   type AgentReadRepository,
   type AgentRepository,
+  type PredecessorReplacement,
   type AgentRevisionReadRepository,
   type AgentRevisionRepository,
   type InMemoryPlatformStateOptions,
@@ -1262,6 +1263,7 @@ export interface ActiveAgentRevisionSelection {
   readonly revision: Readonly<AgentRevision>;
   /** Administering reads only: the newest admitted revision after the active one, if any. */
   readonly successor?: Readonly<AgentRevision>;
+  readonly servingBeforeStop?: boolean;
 }
 
 export type ReconciliationOperation = PlatformOperation;
@@ -6463,10 +6465,13 @@ export class OpenClawController {
         newest === undefined
           ? undefined
           : await state.revisions.findRevision(namespace.id, agent.id, newest.id);
+      const replacement = await state.agents.findPredecessorReplacement(namespace.id, agent.id);
       const selection = Object.freeze({
         agent,
         revision,
         ...(successor === undefined ? {} : { successor }),
+        servingBeforeStop:
+          replacement?.predecessorRevisionId === revision.id && replacement.phase === "pre-stop",
       });
       const mode = action === "administer" ? "admin" : "chat";
       return browserAccess ? { ...selection, mode } : selection;
@@ -13752,6 +13757,16 @@ export class OpenClawController {
         }),
         first?.digest,
       );
+      if (
+        lockedAgent.activeRevisionId &&
+        compute.requiresStoppedPredecessors?.(revision) === true
+      ) {
+        await state.agents.recordPredecessorReplacement(namespace.id, lockedAgent.id, {
+          predecessorRevisionId: lockedAgent.activeRevisionId,
+          candidateRevisionId: revision.id,
+          phase: "pre-stop",
+        });
+      }
       const running = await state.agents.transitionAgentDesiredRuntimeState(
         namespace.id,
         lockedAgent.id,

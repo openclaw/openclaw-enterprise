@@ -89,8 +89,14 @@ The response reports:
 | `disabled`    | The Installation has not enabled native admin UI access.                                                        |
 | `stopped`     | The Agent is not in desired running state.                                                                      |
 | `unsupported` | The selected Compute Driver, selected version, or native configuration does not support native admin UI access. |
-| `unavailable` | No version is serving yet: the Agent has no selected version, or a newer version is replacing it.               |
+| `unavailable` | No selected version, or an exclusive replacement has crossed its stop boundary.                                 |
 | `available`   | The caller may open the returned `url` for the selected version.                                                |
+
+An admitted exclusive replacement keeps native access to its selected predecessor
+while the shared Agent record is `pre-stop`. Once the worker commits `stopping`,
+access becomes unavailable even if replacement fails. Current permission and
+version checks still apply. Replacements with no such record retain the earlier
+refusal behavior.
 
 A stopped Agent without a selected version returns only `status: "stopped"`, including before first deployment and after completed stop reconciliation. Otherwise, stopped results include target fields. A desired-running Agent without a selected version returns `unavailable` in the success envelope. Dependency outages, including IAM, return `503 DEPENDENCY_UNAVAILABLE`. Malformed requests, IAM denials and missing sessions use the protected-route error envelope.
 

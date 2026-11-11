@@ -2170,6 +2170,31 @@ export class ControllerWorker {
       if (previous === undefined) {
         continue;
       }
+      await this.state.transactWithQueue(async (unit, queue) => {
+        const agent = await this.lockClaimAgent(unit, claim);
+        if ((await queue.heartbeat(claim)) === undefined) {
+          throw new WorkClaimLostError();
+        }
+        if (agent?.activeRevisionId !== previous.id || claim.revisionId === undefined) {
+          return;
+        }
+        const operation = await unit.agents.findPredecessorReplacement(
+          previous.namespaceId,
+          previous.agentId,
+        );
+        if (
+          operation?.predecessorRevisionId === previous.id &&
+          operation.phase === "pre-stop" &&
+          operation.candidateRevisionId !== claim.revisionId
+        ) {
+          throw new WorkClaimLostError();
+        }
+        await unit.agents.recordPredecessorReplacement(previous.namespaceId, previous.agentId, {
+          predecessorRevisionId: previous.id,
+          candidateRevisionId: claim.revisionId,
+          phase: "stopping",
+        });
+      }, this.queueOptions);
       await this.closeRevisionCredentials(claim, previous);
       if (drain === "wait") {
         await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(previous));
@@ -4702,7 +4727,15 @@ export class ControllerWorker {
         this.compute.requiresStoppedPredecessors?.(revision) === true
           ? await this.heldRuntimeSuccessor(revision)
           : undefined;
-      const supersededBy = successor ?? heldSuccessor;
+      const replacement =
+        agent.activeRevisionId === revision.id
+          ? await this.state.read((view) =>
+              view.agents.findPredecessorReplacement(revision.namespaceId, revision.agentId),
+            )
+          : undefined;
+      const servingBeforeStop =
+        replacement?.predecessorRevisionId === revision.id && replacement.phase === "pre-stop";
+      const supersededBy = servingBeforeStop ? undefined : (successor ?? heldSuccessor);
       if (supersededBy !== undefined) {
         // A refusal decided after this check (lost repository authority, a Secret or
         // credential-source problem, a refused observation) may still wait on its candidate's

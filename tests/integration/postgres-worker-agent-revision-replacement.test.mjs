@@ -66,6 +66,18 @@ revisionTest(
         };
       },
       async stopRevision(revision) {
+        const active = await fixture.currentAgent(owner);
+        if (active.activeRevisionId === revision.id) {
+          const replacement = await fixture.state.read((view) =>
+            view.agents.findPredecessorReplacement(revision.namespaceId, revision.agentId),
+          );
+          assert.equal(replacement?.predecessorRevisionId, revision.id);
+          assert.equal(
+            replacement?.phase,
+            "stopping",
+            "stop intent must survive a worker restart before any external stop effect",
+          );
+        }
         if (rejectStop && running.has(revision.id)) {
           rejectStop = false;
           stopFailures += 1;
@@ -132,6 +144,56 @@ async function enqueueMaintenance(fixture, owner, revision) {
   );
   return maintenance;
 }
+
+revisionTest(
+  "the shared stop boundary keeps serving maintenance alive until stop commits",
+  async (fixture) => {
+    const owner = await fixture.agent("pre-stop-maintenance", { executionMode: "dedicated" });
+    const driver = countingExclusiveCompute(fixture);
+    await fixture.start(driver.compute);
+    const first = await fixture.revision(owner, 1);
+    await fixture.work(first, "succeeded");
+    await fixture.stop();
+    const candidate = await fixture.revision(owner, 2);
+    // Keep the successor's Work out of the maintenance pass. Admission itself is
+    // exercised by native-admin-access; this test isolates the real worker boundary.
+    await fixture.observerPool.query(
+      "UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 hour' WHERE idempotency_key = $1",
+      [candidate.idempotencyKey],
+    );
+    const record = (phase) =>
+      fixture.state.transact(async (unit) => {
+        await unit.namespaces.lockNamespace(fixture.namespace.id);
+        await unit.agents.lockAgent(fixture.namespace.id, owner.id);
+        return unit.agents.recordPredecessorReplacement(fixture.namespace.id, owner.id, {
+          predecessorRevisionId: first.id,
+          candidateRevisionId: candidate.id,
+          phase,
+        });
+      });
+    const pending = await record("pre-stop");
+    const before = driver.preparations(first);
+    const maintenance = await enqueueMaintenance(fixture, owner, first);
+    await fixture.start(driver.compute);
+    await fixture.work(maintenance, "succeeded");
+    assert.equal(driver.preparations(first), before + 1);
+    assert.equal(driver.count(first), 0);
+
+    await fixture.stop();
+    const stopping = await record("stopping");
+    assert.equal(stopping.startedAt, pending.startedAt);
+    assert.ok(stopping.stoppingAt);
+    assert.deepEqual(await record("pre-stop"), stopping, "a retry must not reopen committed stop");
+    const laterMaintenance = await enqueueMaintenance(fixture, owner, first);
+    await fixture.start(driver.compute);
+    await fixture.work(laterMaintenance, "succeeded");
+    assert.equal(
+      driver.preparations(first),
+      before + 1,
+      "maintenance must not recreate stopped work",
+    );
+  },
+);
 
 revisionTest(
   "exclusive replacement stops each predecessor once across pending passes and maintenance",
