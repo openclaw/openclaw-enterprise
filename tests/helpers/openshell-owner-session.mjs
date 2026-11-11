@@ -16,6 +16,18 @@ import { submitChatTurnWithAssistantProof, waitForStockUi } from "./native-ui-ch
 
 const execute = promisify(execFile);
 
+export function assertOpenShellOwnerModelSelection(environment) {
+  const endpoint = environment.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim();
+  assert.ok(
+    !endpoint || new URL(endpoint).href.replace(/\/$/u, "") === "https://api.openai.com/v1",
+    "The browser Agent requires the public OpenAI endpoint",
+  );
+  assert.ok(
+    !environment.OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE,
+    "The browser Agent does not accept native provider overrides",
+  );
+}
+
 export async function verifyOpenShellOwnerSession({
   t,
   cluster,
@@ -25,6 +37,7 @@ export async function verifyOpenShellOwnerSession({
   kubectl,
   environment,
 }) {
+  assertOpenShellOwnerModelSelection(environment);
   const consoleHost = `console.${cluster}.oce.localhost`;
   const consoleOrigin = `https://${consoleHost}:${browserPort}`;
   const agentDomain = `agents.${cluster}.oce.localhost`;

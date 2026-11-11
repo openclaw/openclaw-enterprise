@@ -2612,37 +2612,78 @@ test("custom native providers require a separate Codex credential before Local S
   const file = join(repositoryRoot, "tests/integration/local-first-agent-openshell-real.test.mjs");
   for (const custom of [false, true]) {
     for (const pat of [false, true]) {
-      const result = spawnSync(
-        process.execPath,
-        [
-          "--test",
-          "--test-name-pattern=^a local Kubernetes installer can deploy and reuse an Agent",
-          file,
-        ],
-        {
-          encoding: "utf8",
-          env: {
-            PATH: process.env.PATH,
-            HOME: process.env.HOME,
-            OCC_TEST_LOCAL_FIRST_AGENT_REAL: "1",
-            OPENAI_API_KEY: "synthetic-model-credential",
-            ...(pat ? { CODEX_ACCESS_TOKEN: "synthetic-codex-credential" } : {}),
-            ...(custom
-              ? { OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE: join(root, "provider.json") }
-              : {}),
-            // Stop after credential admission, before provisioning a stack.
-            OCC_DEVELOPMENT_STATE_DIRECTORY: join(root, "absent-state"),
+      for (const endpoint of [false, true]) {
+        const result = spawnSync(
+          process.execPath,
+          [
+            "--test",
+            "--test-name-pattern=^a local Kubernetes installer can deploy and reuse an Agent",
+            file,
+          ],
+          {
+            encoding: "utf8",
+            env: {
+              PATH: process.env.PATH,
+              HOME: process.env.HOME,
+              OCC_TEST_LOCAL_FIRST_AGENT_REAL: "1",
+              OPENAI_API_KEY: "synthetic-model-credential",
+              OCC_TEST_OPENSHELL_MODEL_BASE_URL: endpoint
+                ? "https://custom-model.example.test/v1"
+                : "",
+              ...(pat ? { CODEX_ACCESS_TOKEN: "synthetic-codex-credential" } : {}),
+              ...(custom
+                ? { OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE: join(root, "provider.json") }
+                : {}),
+              // Stop after credential admission, before provisioning a stack.
+              OCC_DEVELOPMENT_STATE_DIRECTORY: join(root, "absent-state"),
+            },
           },
-        },
-      );
-      assert.equal(result.status, 1);
-      assert.match(
-        result.stdout + result.stderr,
-        custom && !pat
-          ? /CODEX_ACCESS_TOKEN is required for the first invocation/u
-          : /OCC_DEVELOPMENT_STATE_DIRECTORY must select valid Kubernetes Local Setup state/u,
-      );
+        );
+        assert.equal(result.status, 1);
+        let expected =
+          /OCC_DEVELOPMENT_STATE_DIRECTORY must select valid Kubernetes Local Setup state/u;
+        if (endpoint) {
+          expected = /The first-Agent installer requires the public OpenAI endpoint/u;
+        } else if (custom && !pat) {
+          expected = /CODEX_ACCESS_TOKEN is required for the first invocation/u;
+        }
+        assert.match(result.stdout + result.stderr, expected);
+      }
     }
+  }
+});
+
+test("the public browser installer rejects custom providers before setup", async (t) => {
+  const root = await fixture(t);
+  for (const marker of [
+    "OCC_TEST_OPENSHELL_MODEL_BASE_URL",
+    "OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE",
+  ]) {
+    const result = spawnSync(
+      process.execPath,
+      ["--test", join(repositoryRoot, "tests/integration/dev-up-openshell-k3d-real.test.mjs")],
+      {
+        encoding: "utf8",
+        env: {
+          // Even a regressed check cannot find container tools in this fixture.
+          PATH: root,
+          HOME: root,
+          TMPDIR: root,
+          OCC_TEST_DEV_UP_OPENSHELL_REAL: "1",
+          OPENAI_API_KEY: "synthetic-custom-provider-key",
+          [marker]: marker.endsWith("BASE_URL")
+            ? "https://custom-model.example.test/v1"
+            : join(root, "provider.json"),
+        },
+      },
+    );
+    assert.equal(result.status, 1);
+    assert.match(
+      result.stdout + result.stderr,
+      marker.endsWith("BASE_URL")
+        ? /The browser Agent requires the public OpenAI endpoint/u
+        : /The browser Agent does not accept native provider overrides/u,
+    );
   }
 });
 

@@ -3603,6 +3603,93 @@ if (args[0] === "pull") {
     }
   });
 
+  test("OpenShell preparation binds custom credentials to a focused destination before effects", async (t) => {
+    const root = await fixture(t);
+    const upstream = "tests/integration/openshell-upstream-real.test.ts";
+    const guided = [
+      "tests/integration/local-first-agent-openshell-real.test.mjs",
+      "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
+    ];
+    const cases = [];
+    for (const lane of ["openshell", "openshell-installers", "openshell-policy"]) {
+      cases.push(
+        {
+          lane,
+          endpoint: true,
+          pat: true,
+          error: /Custom OpenShell model endpoints require a focused gateway workflow file/u,
+        },
+        {
+          lane,
+          native: true,
+          pat: true,
+          error: /Custom native providers require a focused first-Agent file/u,
+        },
+      );
+    }
+    cases.push(
+      { file: upstream, endpoint: true },
+      {
+        file: guided[0],
+        endpoint: true,
+        error: /Custom OpenShell model endpoints require a focused gateway workflow file/u,
+      },
+      {
+        file: upstream,
+        native: true,
+        error: /Custom native providers require a focused first-Agent file/u,
+      },
+    );
+    for (const file of guided) {
+      cases.push(
+        { file, native: true, error: /Missing required CI input\(s\): CODEX_ACCESS_TOKEN/u },
+        { file, native: "   ", error: /Missing required CI input\(s\): CODEX_ACCESS_TOKEN/u },
+        { file, native: true, pat: true },
+        {
+          file,
+          native: true,
+          pat: true,
+          noKey: true,
+          error: /Missing required CI input\(s\): OPENAI_API_KEY/u,
+        },
+      );
+    }
+    for (const [index, value] of cases.entries()) {
+      await t.test(`selection ${index}`, async () => {
+        const lane = value.lane ?? "openshell";
+        const statePath = join(root, `bound-credential-${index}.json`);
+        // Distinct synthetic destinations cannot share a key across whole-lane
+        // siblings. Valid focused inputs stop at the immutable-image gate.
+        const result = await runProgram(
+          `const { prepareLane } = await import(process.argv[1]);
+         await prepareLane({ lane: ${JSON.stringify(lane)}, statePath: process.argv[2], file: ${JSON.stringify(value.file)} });`,
+          statePath,
+          {
+            ...process.env,
+            GITHUB_ENV: "",
+            GITHUB_OUTPUT: "",
+            OCC_CI_SUITE_VIEW: lane === "openshell" ? "default" : "full-integration",
+            OPENAI_API_KEY: value.noKey ? "" : "synthetic-custom-provider-key",
+            CODEX_ACCESS_TOKEN: value.pat ? "synthetic-separate-codex-token" : "",
+            OCC_TEST_OPENAI_MODEL: "fixture-model",
+            OCC_TEST_OPENSHELL_HARNESS: "codex",
+            OCC_TEST_OPENSHELL_MODEL_BASE_URL: value.endpoint
+              ? "https://custom-model.example.test/v1"
+              : "",
+            OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE: value.native
+              ? join(root, "custom-provider.json")
+              : "",
+            OCC_TEST_KUBERNETES_GATEWAY_IMAGE: mutableImage,
+          },
+          10_000,
+        );
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, value.error ?? /must be an immutable image@sha256 reference/u);
+        await assert.rejects(stat(statePath), { code: "ENOENT" });
+      });
+    }
+  });
+
   test("OpenShell preparation requires the selected owner's credential before side effects", async (t) => {
     const root = await fixture(t);
     const owner = "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs";

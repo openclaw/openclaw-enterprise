@@ -947,6 +947,26 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
     "tests/integration/openshell-credentials-real.test.ts",
     "tests/integration/openshell-withdrawal-real.test.ts",
   ].includes(file);
+  // Custom keys must not reach sibling tests that register the public provider.
+  if (isOpenShellLane(name)) {
+    const endpoint = effectiveEnv.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim();
+    const customEndpoint =
+      endpoint && new URL(endpoint).href.replace(/\/$/u, "") !== "https://api.openai.com/v1";
+    if (customEndpoint && !openShellGatewayFile) {
+      throw new Error("Custom OpenShell model endpoints require a focused gateway workflow file.");
+    }
+    if (effectiveEnv.OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE) {
+      if (
+        ![
+          "tests/integration/local-first-agent-openshell-real.test.mjs",
+          "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
+        ].includes(file)
+      ) {
+        throw new Error("Custom native providers require a focused first-Agent file.");
+      }
+      requireEnv(["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"], effectiveEnv);
+    }
+  }
   const openShellApiKey =
     isOpenShellLane(name) &&
     (name === "openshell-installers" ||

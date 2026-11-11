@@ -290,7 +290,9 @@ its namespace. Both `test` and `demo` accept these flags. Without flags,
 and model. Explicit flags override inherited and prepared settings. Native helper
 bootstrap and its selected native test use `OPENAI_API_KEY`, not `CODEX_ACCESS_TOKEN`.
 Full OpenShell lane preparation still requires a token for its dedicated PAT cases.
-The upstream-outage test defaults to `https://api.openai.com/v1` and uses the API key.
+The upstream-outage test defaults to `https://api.openai.com/v1`. Custom endpoints
+and native provider files require a focused compatible test; whole-lane preparation
+rejects them before setup.
 
 Both commands use the test-only bridge. `test` requires an authorized
 `OPENAI_API_KEY`; `demo` prompts for one if it is not set. `demo` leaves the
@@ -336,16 +338,16 @@ Codex and native Agents concurrently with separate `openai` sources using
 and production Drivers without the k3d helper's compatibility bridge. Both
 operations drain before shared denial checks and teardown.
 
-To exercise an OpenAI-compatible service, set
+For a custom service, set
 `OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE` to a private JSON file containing
-`baseUrl`, `api` (`openai-responses` or `openai-completions`), and a `models` array
-with explicit native model metadata. The first model ID selects the native Agent's
-model; it can differ from the Codex starter model. Supply that service's key as
+`baseUrl`, `api` (`openai-responses` or `openai-completions`), and native `models`
+metadata. The first model selects the native Agent and can differ from Codex.
+Supply that service's key as
 `OPENAI_API_KEY`; this custom-provider case requires a separate
 `CODEX_ACCESS_TOKEN` and `codex-pat` source for Codex.
 Configure the Installation `runtime.modelProvider` with that URL and API first.
-The native source authorizes the same destination. The same provisioning,
-model-and-exec, and retained-session redeployment assertions run with this input;
+The native source authorizes that destination. Provisioning, model-and-exec,
+and retained-session assertions still run;
 changing only the embedded QA preset does not exercise this path.
 
 The case edits `USER.md` through the workspace API, verifies its marker through
