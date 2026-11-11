@@ -34,7 +34,6 @@ import {
   hasControlCharacter,
   isNonEmptyString,
   numericErrorStatus,
-  readCappedBody,
   publicCaBundle,
   sha256Hex,
   splitModelRef,
@@ -66,9 +65,7 @@ import type {
   DiscoveryV1Api,
   KubernetesObject,
   KubernetesObjectApi,
-  ConfigurationOptions,
   NetworkingV1Api,
-  ResponseContext,
   VersionApi,
   V1ConfigMap,
   V1EnvVar,
@@ -162,6 +159,7 @@ import {
   CredentialWithdrawalRefusedError,
   DEDICATED_OPENCLAW_SANDBOX_REQUIRED,
   DependencyUnavailableError,
+  RuntimeDiagnosticsTransportError,
   SandboxRepositoryRecipientUnverifiedError,
   imageReferenceProblem,
   keyedSettingPath,
@@ -184,7 +182,6 @@ import {
 import {
   createKubernetesClientConfiguration,
   KubernetesApiUnavailableError,
-  nonRedirectingHttpLibrary,
 } from "../../kubernetes/client.ts";
 import {
   HARNESS_WORKSPACE,
@@ -346,8 +343,19 @@ import {
   repositoryNativeConfiguration,
 } from "./repository-native-configuration.ts";
 import { harnessWorkspacePreparationScript } from "./harness-workspace-preparation.ts";
+import {
+  PLUGIN_RUNTIME_STATUS_PATH,
+  PLUGIN_RUNTIME_STATUS_PORT,
+  RUNTIME_DIAGNOSTICS_PATH,
+  RUNTIME_IMAGE_PATH,
+  RUNTIME_STATUS_PATH,
+  readPrivateStatusProxy,
+  type PrivateStatusPath,
+} from "./private-status-proxy.ts";
+import { collectDeploymentChecks } from "./deployment-diagnostics.ts";
 
 export { harnessWorkspacePreparationScript } from "./harness-workspace-preparation.ts";
+export { PLUGIN_RUNTIME_STATUS_PORT } from "./private-status-proxy.ts";
 
 type KubernetesRecord = Record<string, unknown>;
 type ManagedResourceKind =
@@ -1194,10 +1202,6 @@ const HARNESS_TRUST_VOLUME = "harness-trust";
 const HARNESS_TRUST_DIRECTORY = "/etc/openclaw-harness-trust";
 const HARNESS_TRUST_FILE = "ca-bundle.pem";
 const PLUGIN_RUNTIME_VOLUME = "openclaw-plugin-runtime";
-export const PLUGIN_RUNTIME_STATUS_PORT = 18_791;
-const PLUGIN_RUNTIME_STATUS_PATH = "/openclaw/plugin-runtime/status";
-const RUNTIME_STATUS_PATH = "/openclaw/runtime/status";
-const RUNTIME_DIAGNOSTICS_PATH = "/openclaw/runtime/diagnostics";
 const COMPUTE_PRIVATE_STATUS_ENVIRONMENT = new Set([
   "OPENCLAW_AGENT_REVISION_ID",
   "OPENCLAW_RUNTIME_STATUS_CONTAINER",
@@ -1301,84 +1305,6 @@ const SERVICE_ACCOUNT_CREDENTIAL_ID_ANNOTATION = "openclaw.dev/provider-credenti
 const SERVICE_ACCOUNT_CREDENTIAL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const CODEX_ACCESS_TOKEN = "CODEX_ACCESS_TOKEN";
 const MAX_RUNTIME_CREDENTIAL_BYTES = 65_536;
-const MAX_RUNTIME_STATUS_RESPONSE_BYTES = 65_536;
-
-class RuntimeStatusOversized extends Error {}
-class RuntimeStatusRedirected extends Error {}
-
-/**
- * undici's refusal of an interim answer the request never asked for: a `100 Continue`
- * ("bad response") or a `101` without an upgrade request ("bad upgrade"). The peer chose that
- * answer, so unlike a dropped or reset connection, a retry gets the same one (finding 1355).
- * The texts are undici's (`lib/dispatcher/client-h1.js` `onHeadersComplete`, undici 8.11.2):
- * recheck them when undici changes, or these answers fall back to the generic retry.
- */
-function unsolicitedInterimResponse(error: unknown): boolean {
-  let current = error;
-  for (let depth = 0; depth < 4 && current instanceof Error; depth += 1) {
-    if (
-      (current as { readonly code?: unknown }).code === "UND_ERR_SOCKET" &&
-      (current.message === "bad response" || current.message === "bad upgrade")
-    ) {
-      return true;
-    }
-    current = current.cause;
-  }
-  return false;
-}
-
-/**
- * Reads a Pod proxy response up to the status limit instead of buffering all of it.
- * Error bodies are capped too: the client reads them unbounded for its exception.
- */
-async function limitRuntimeStatusBody(response: ResponseContext): Promise<ResponseContext> {
-  const stream = response.body.stream();
-  if (response.httpStatusCode >= 300 && response.httpStatusCode <= 399) {
-    // The status is already decisive; do not wait for an untrusted redirect body.
-    try {
-      if (stream !== null) {
-        void stream.cancel().catch(() => {});
-      }
-    } catch {
-      // A cancellation failure must not make this redirect retryable.
-    }
-    throw new RuntimeStatusRedirected();
-  }
-  if (stream !== null) {
-    let bytes = await readCappedBody(stream, MAX_RUNTIME_STATUS_RESPONSE_BYTES);
-    if (bytes === undefined) {
-      // An error answer is judged by its status code (404/503 read as not serving), not its body.
-      if (response.httpStatusCode < 200 || response.httpStatusCode > 299) {
-        bytes = Buffer.alloc(0);
-      } else {
-        throw new RuntimeStatusOversized();
-      }
-    }
-    response.body = {
-      text: async () => new TextDecoder().decode(bytes),
-      binary: async () => bytes,
-      stream: () => null,
-    };
-  }
-  return response;
-}
-
-let runtimeStatusRequestOptions: Promise<ConfigurationOptions> | undefined;
-
-function runtimeStatusOptions(): Promise<ConfigurationOptions> {
-  runtimeStatusRequestOptions ??= import("@kubernetes/client-node").then((sdk) => ({
-    // The shared clients already refuse redirects; the Pod-written read does not rely on that.
-    httpApi: nonRedirectingHttpLibrary(sdk),
-    middleware: [
-      {
-        pre: (request) => new sdk.Observable(Promise.resolve(request)),
-        post: (response) => new sdk.Observable(limitRuntimeStatusBody(response)),
-      },
-    ],
-    middlewareMergeStrategy: "append",
-  }));
-  return runtimeStatusRequestOptions;
-}
 const RUNTIME_STATUS_IDENTIFIER = /^[A-Za-z0-9._~:@-]{1,64}$/u;
 const RUNTIME_DIAGNOSTIC_TIMESTAMP =
   /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$/u;
@@ -5067,43 +4993,21 @@ export class KubernetesComputeDriver implements ComputeDriver {
           { namespaceId: revision.namespaceId },
           external,
         );
-        const reports = await Promise.all(
-          this.runtimeStatusContainers(revision).map(async (container) => {
-            const [checks, heldFailure] = await Promise.all([
-              this.runtimeDiagnosticChecks(revision, namespace, container),
-              this.heldRuntimeFailureCheck(revision, namespace, container),
-            ]);
-            return {
-              heldFailure,
-              checks: checks ?? [
-                {
-                  component: container,
-                  check: "runtime-status",
-                  state: "unknown",
-                  checkedAt: null,
-                  code: "UNAVAILABLE",
-                } satisfies RuntimeDiagnosticCheck,
-              ],
-            };
-          }),
-        );
-        // Held startup failures lead, so the check cap never drops them.
-        return {
-          revisionId: revision.id,
-          observedAt: new Date().toISOString(),
-          checks: [
-            ...reports.flatMap(({ heldFailure }) =>
-              heldFailure === undefined ? [] : [heldFailure],
-            ),
-            ...reports.flatMap(({ checks }) => checks),
-          ].slice(0, 32),
-        };
+        const checks = await collectDeploymentChecks({
+          containers: this.runtimeStatusContainers(revision),
+          deadline,
+          ownerSignal,
+          readChecks: (container) => this.runtimeDiagnosticChecks(revision, namespace, container),
+          readHeldFailure: (container) =>
+            this.heldRuntimeFailureCheck(revision, namespace, container),
+        });
+        return { revisionId: revision.id, observedAt: new Date().toISOString(), checks };
       });
     } catch (error) {
       if (ownerSignal?.aborted) {
         throw ownerSignal.reason;
       }
-      if (deadline.aborted) {
+      if (deadline.aborted && !(error instanceof RuntimeDiagnosticsTransportError)) {
         throw new DependencyUnavailableError("Runtime diagnostics timed out.");
       }
       throw error;
@@ -6238,7 +6142,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         pods.length === 0
           ? undefined
           : await withComputeAbortSignal(metadataSignal, () =>
-              this.privateStatusReadback(revision, namespace, role, "/openclaw/runtime/image"),
+              this.privateStatusReadback(revision, namespace, role, RUNTIME_IMAGE_PATH),
             ).catch(() => undefined);
       for (const pod of pods) {
         const metadata = asRecord(pod.metadata)!;
@@ -11015,62 +10919,49 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return this.validRuntimeDiagnosticChecks(readback.status, revision, container, readback.podUid);
   }
 
-  // A runtime holding a startup failure (for example an unusable Gateway peer
-  // configuration record) still answers diagnostics, but only with channel
-  // checks it could not run. The held failure is on the status path, so it is
-  // reported first as a failed check named after the startup step. A status
-  // read that fails or returns invalid data adds nothing; the diagnostics read
-  // alone decides the rest of the observation.
+  // The status endpoint carries startup failure evidence while the runtime holds startup.
   private async heldRuntimeFailureCheck(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
     container: "agent" | "gateway",
   ): Promise<RuntimeDiagnosticCheck | undefined> {
-    const ownerSignal = currentComputeAbortSignal();
-    try {
-      const readback = await this.privateStatusReadback(
-        revision,
-        namespace,
-        container,
-        RUNTIME_STATUS_PATH,
-      );
-      if (readback === undefined) {
-        return undefined;
-      }
-      const failure = this.cachedRuntimeFailureEvidence(
-        readback.status,
-        revision,
-        container,
-        readback.podUid,
-      );
-      if (failure === undefined) {
-        return undefined;
-      }
-      // OCC accepts only millisecond UTC timestamps; anything else adds nothing.
-      const checkedAt = new Date(failure.checkedAt).toISOString();
-      if (!RUNTIME_DIAGNOSTIC_TIMESTAMP.test(checkedAt)) {
-        return undefined;
-      }
-      return {
-        component: failure.component,
-        check: failure.check,
-        state: "failed",
-        checkedAt,
-        code: failure.code,
-      };
-    } catch {
-      if (ownerSignal?.aborted) {
-        throw ownerSignal.reason;
-      }
+    const readback = await this.privateStatusReadback(
+      revision,
+      namespace,
+      container,
+      RUNTIME_STATUS_PATH,
+    );
+    if (readback === undefined) {
       return undefined;
     }
+    const failure = this.cachedRuntimeFailureEvidence(
+      readback.status,
+      revision,
+      container,
+      readback.podUid,
+    );
+    if (failure === undefined) {
+      return undefined;
+    }
+    // OCC accepts only millisecond UTC timestamps; anything else adds nothing.
+    const checkedAt = new Date(failure.checkedAt).toISOString();
+    if (!RUNTIME_DIAGNOSTIC_TIMESTAMP.test(checkedAt)) {
+      return undefined;
+    }
+    return {
+      component: failure.component,
+      check: failure.check,
+      state: "failed",
+      checkedAt,
+      code: failure.code,
+    };
   }
 
   private async privateStatusReadback(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
     container: "agent" | "gateway",
-    path: string,
+    path: PrivateStatusPath,
   ): Promise<PrivateStatusReadback | undefined> {
     // A provider-fenced Harness admits only its Gateway's transport (the status proxy
     // policy selects ordinary Pods, and the provider's own fence denies the API server),
@@ -11108,60 +10999,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const containerId = this.podContainerId(pod, container);
     const clients = await this.clients(namespace.plane);
-    // 404/503 mean the status port is not serving yet: an answer, not an outage to retry.
-    const notServing = Symbol("not serving");
-    const oversized = Symbol("oversized");
-    const redirected = Symbol("redirected");
-    const interim = Symbol("interim");
-    const options = await runtimeStatusOptions();
-    const raw = await this.request(async () => {
-      try {
-        return await clients.core.connectGetNamespacedPodProxyWithPath(
-          {
-            name: `${podName}:${PLUGIN_RUNTIME_STATUS_PORT}`,
-            namespace: namespace.name,
-            path: path.slice(1),
-          },
-          options,
-        );
-      } catch (error) {
-        // An oversized 2xx is not retried: the next read would be just as large.
-        if (error instanceof RuntimeStatusOversized) {
-          return oversized;
-        }
-        if (error instanceof RuntimeStatusRedirected) {
-          return redirected;
-        }
-        if (unsolicitedInterimResponse(error)) {
-          return interim;
-        }
-        if (numericErrorStatus(error) === 404 || numericErrorStatus(error) === 503) {
-          return notServing;
-        }
-        // The client never follows a redirect (finding 1347). Any 3xx here was written by the
-        // Pod: the status is unreadable, and a retry would get the same answer.
-        const status = numericErrorStatus(error);
-        if (status !== undefined && status >= 300 && status <= 399) {
-          return redirected;
-        }
-        throw error;
-      }
-    });
-    if (raw === notServing) {
+    const response = await readPrivateStatusProxy(
+      clients.core,
+      (operation) => this.request(operation),
+      { namespace: namespace.name, podName, container, path },
+    );
+    if (response === undefined) {
       return undefined;
     }
-    if (raw === oversized) {
-      throw new DependencyUnavailableError("Runtime status returned oversized data.");
-    }
-    if (raw === redirected) {
-      throw new DependencyUnavailableError("Runtime status answered with a redirect.");
-    }
-    if (raw === interim) {
-      throw new DependencyUnavailableError(
-        "Runtime status answered with an unrequested 1xx status.",
-      );
-    }
-    const parsed = this.boundedRuntimeStatusResponse(raw);
     const latestPods = (await this.revisionPods(revision, namespace, container)).filter(
       (candidate) => asRecord(candidate.metadata)?.deletionTimestamp === undefined,
     );
@@ -11174,38 +11019,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
       latestMetadata?.name !== podName ||
       latestMetadata.uid !== podUid ||
       latestMetadata.deletionTimestamp !== undefined ||
-      ((containerId !== undefined || latestContainerId !== undefined) &&
-        latestContainerId !== containerId)
+      latestContainerId !== containerId
     ) {
       return undefined;
     }
-    return { status: parsed, podUid, containerId };
-  }
-
-  private boundedRuntimeStatusResponse(value: unknown): unknown {
-    if (typeof value === "string") {
-      if (Buffer.byteLength(value, "utf8") > MAX_RUNTIME_STATUS_RESPONSE_BYTES) {
-        throw new DependencyUnavailableError("Runtime status returned oversized data.");
-      }
-      try {
-        return JSON.parse(value);
-      } catch {
-        throw new DependencyUnavailableError("Runtime status returned invalid data.");
-      }
-    }
-    let serialized: string | undefined;
-    try {
-      serialized = JSON.stringify(value);
-    } catch {
-      throw new DependencyUnavailableError("Runtime status returned invalid data.");
-    }
-    if (
-      serialized === undefined ||
-      Buffer.byteLength(serialized, "utf8") > MAX_RUNTIME_STATUS_RESPONSE_BYTES
-    ) {
-      throw new DependencyUnavailableError("Runtime status returned oversized data.");
-    }
-    return value;
+    return { status: response.body, podUid, containerId };
   }
 
   private validRuntimeDiagnosticChecks(

@@ -210,10 +210,11 @@ test("the OpenShell installation wait surfaces terminal deployment refusals on t
   const waitOnce = (description, read) => waitFor(description, read, { timeoutMs: 0 });
   const refusalCode = "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE";
   const privateDetail = "private requirements detail";
-  const activate = (deployment, activeRevisionId = null) =>
+  const activate = (deployment, activeRevisionId = null, workerEvents = []) =>
     waitForOpenShellRevisionActivation(waitOnce, {
       agentPath,
       revisionId,
+      workerEvents,
       request: async (method, path) => {
         assert.equal(method, "GET");
         if (path === agentPath) {
@@ -235,6 +236,27 @@ test("the OpenShell installation wait surfaces terminal deployment refusals on t
     activate({ status: "failed", error: { code: privateDetail, message: privateDetail } }),
     { message: `OpenShell revision ${revisionId} deployment failed.` },
   );
+  const completed = {
+    event: "worker.completed",
+    revisionId,
+    code: refusalCode,
+    failure: "sandbox-mode-denied_reviewer-denied",
+  };
+  for (const [events, reason] of [
+    [[completed], completed.failure],
+    [[{ ...completed, revisionId: "different" }], undefined],
+    [[{ ...completed, code: "OTHER" }], undefined],
+    [[{ ...completed, event: "worker.error" }], undefined],
+    [[{ ...completed, failure: `named-profile-denied_${privateDetail}` }], undefined],
+  ]) {
+    await assert.rejects(
+      activate({ status: "failed", error: { code: refusalCode } }, null, events),
+      {
+        code: refusalCode,
+        message: `OpenShell revision ${revisionId} deployment failed (${refusalCode}${reason ? `: ${reason}` : ""}).`,
+      },
+    );
+  }
   const nextAttemptAt = "2026-11-10T11:00:00.000Z";
   for (const [status, lastAttempt] of [
     ["queued", null],

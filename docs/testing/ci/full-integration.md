@@ -31,8 +31,9 @@ has its own schedule.
 
 ## Scenarios
 
-Scheduled and manual dispatches run the selected lanes fresh. Dispatch Preflight
-checks environment policy; Full Integration Aggregate requires selected results.
+First-attempt scheduled and manual `all` runs can [reuse qualified CI results](#results-and-limits).
+Other selected lanes run fresh. Dispatch Preflight checks environment policy;
+Full Integration Aggregate requires selected results.
 QA waits for Slack to finish, including after Slack failure.
 Some lanes are also selected by [CI](required-checks.md) or
 [QA Advisory](qa-advisory.md); those pages own automatic selection rules.
@@ -127,6 +128,20 @@ empty issue lists and each file's exercised status, exit code, and signal for
 coverage validation. Focused or incomplete results carry no full-coverage proof.
 Raw test output and diagnostics remain private. Failed native operations report a known operation label and, when available, a bounded exit code or allowlisted signal/error code. These log fields do not prove that the installed journey passed.
 
+If the installed proof fails and the job can continue, look for
+`attempt-<attempt>-full-failure-skipper-prepared-git-installed`, retained for seven
+days. Its single JSON file records the run, attempt, source SHA, failed outcome,
+last recorded stage and installed cleanup status. A missed checkpoint write can
+leave an earlier stage visible. Missing or unrecognized
+checkpoints become `unknown`; they do not establish successful cleanup.
+
+Cleanup `passed` covers registered teardown callbacks, verified cluster and
+network removal, released installation ports and model-directory removal. It
+excludes the private work directory and the outer Git fixture's teardown. This
+failure receipt is separate from success aggregation and cannot qualify images.
+Cancellation, runner loss or job timeout can prevent its publication. A passing
+proof does not exercise this failure upload.
+
 Checkout image-build failures identify each failed role (controller or runtime), exit code, known error code or signal, killed flag, elapsed time and configured budget. Process fields come only from Docker command failures; journal and pre-dispatch failures leave them `unknown`. Accessor-backed fields also stay `unknown`. A signal or elapsed time alone does not prove a timeout. The [build helper](../../../tests/helpers/dev-up-model-provider.mjs) preserves original errors for local inspection but excludes their command arguments and output from CI summaries.
 
 The `openshell` dispatch runs two OpenShell lanes on separate VMs. Each runs
@@ -134,9 +149,19 @@ its assigned files serially, and the aggregate requires both results. QA Advisor
 [parallel per-file runners](qa-advisory.md#openshell-file-coverage).
 Use the [shared cleanup procedure](run-lanes.md#results-and-cleanup) for local runs.
 
-Scheduled and manual runs plan fresh ordinary CI lanes. Earlier main-push
-runs could reuse qualified results from ordinary CI for the exact source SHA.
-The aggregate validates either source against the same case and cleanup rules.
+First-attempt scheduled and manual `all` runs can reuse eligible ordinary CI
+lanes from a successful push CI run on official `main` at the exact source SHA.
+Discovery waits at most 12 minutes. Required producer jobs must pass, and
+current-attempt artifacts must contain complete case and cleanup evidence.
+Validated results must be published as `full-ci-reused-results` before their lanes
+are omitted from fresh execution. Ineligible lanes and unavailable, invalid or
+unpublished results fall back to fresh runs. Preflight supplies the full matrix
+if the optional reuse job fails or times out before completing its plan; that
+failure alone does not fail the workflow. Aggregation reads
+retained results only for a successful plan; abandoned uploads cannot replace
+fresh evidence. The aggregate applies the same
+case and cleanup rules to both sources; reuse is not independent execution.
+Hosted discovery, publication and final reuse accounting remain unverified.
 
 ## Files
 

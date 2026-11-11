@@ -175,6 +175,14 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
   }
 }
 
+/** A failed private runtime diagnostics transport read, without supplier details. */
+export class RuntimeDiagnosticsTransportError extends DependencyUnavailableError {
+  constructor() {
+    super("The private Gateway diagnostics transport is unavailable.");
+    this.name = "RuntimeDiagnosticsTransportError";
+  }
+}
+
 /**
  * Persisted platform state that its reader cannot decode, such as an invalid row. It fails closed
  * like any unavailable dependency, but unlike an outage it does not recover by itself, so a caller

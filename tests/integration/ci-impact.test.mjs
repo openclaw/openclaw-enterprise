@@ -1390,11 +1390,12 @@ test("documentation workflow selects documentation checks and omits product test
     "lint",
     "format:check",
     "openapi:check",
-    "docs:check",
+    "docs:check-length",
     "docs:build",
   ]) {
     assert.match(docs, new RegExp(`\\bpnpm ${command}\\b`));
   }
+  assert.match(docs, /node scripts\/check-specs\.mjs/);
   // Keep the documentation route free of product-test and lane invocations.
   assert.doesNotMatch(
     docs,
@@ -1471,7 +1472,6 @@ test("full-integration preserves qualified runners for kernel, sandbox, and imag
       : runner;
   };
   const ciRunners = new Map(laneTable().map((row) => [row.lane, row.runner]));
-  assert.equal(job.strategy.matrix.include, "${{ fromJSON(needs.ci-reuse.outputs.matrix) }}");
   const lanes = JSON.parse(read("scripts/ci/full-integration-lanes.json")).map(
     (entry) => entry.lane,
   );
@@ -1517,7 +1517,7 @@ test("Suite Audit and Static Checks runs the audit and every check the lanes ski
       "pnpm lint",
       "pnpm format:check",
       "pnpm openapi:check",
-      "pnpm docs:install && pnpm openapi:lint && pnpm exec tsc --project scripts/docs-site/tsconfig.json --pretty false && pnpm docs:check && pnpm docs:build",
+      "pnpm docs:install && pnpm openapi:lint && pnpm exec tsc --project scripts/docs-site/tsconfig.json --pretty false && pnpm docs:check-length && node scripts/check-specs.mjs && pnpm docs:build",
     ],
   );
   // A check moved out of the lanes must still gate CI Required in every mode.
@@ -1656,6 +1656,7 @@ test("failed lane summary preserves the first unsuccessful step", (t) => {
       env: { PATH: process.env.PATH, GITHUB_STEP_SUMMARY: output, ...env },
     });
     assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, `::notice title=CI lane first failure::${first}\n`);
     const receipt = readFileSync(output, "utf8");
     assert.equal(
       receipt,

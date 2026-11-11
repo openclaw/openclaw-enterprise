@@ -136,6 +136,20 @@ const sandboxValues = {
   "gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
     "public-ingress",
 };
+const gatewaySandboxValues = {
+  ...gatewayRoutingValues,
+  "gatewayRouting.sandbox.enabled": "true",
+  "gatewayRouting.sandbox.domain": "previews.example.test",
+  "gatewayRouting.sandbox.tlsSecretName": "preview-wildcard",
+  "gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+    "public-ingress",
+};
+const sandboxPeerValidationValues = {
+  ...gatewayRoutingValues,
+  "gatewayRouting.sandbox.enabled": "true",
+  "gatewayRouting.sandbox.domain": "sandbox.example.test",
+  "gatewayRouting.sandbox.tlsSecretName": "sandbox-tls",
+};
 const googleLoginValues = {
   "auth.google.enabled": "true",
   "auth.recoveryUserId": "Xk3u9pQ2rT7vW1yZ",
@@ -731,14 +745,6 @@ test(
   async (t) => {
     const directory = await temporaryDirectory(t, "oce-routing-ports-");
     const valuesFile = join(directory, "ports.yaml");
-    const routingValues = {
-      ...gatewayRoutingValues,
-      "gatewayRouting.sandbox.enabled": "true",
-      "gatewayRouting.sandbox.domain": "previews.example.test",
-      "gatewayRouting.sandbox.tlsSecretName": "preview-wildcard",
-      "gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
-        "public-ingress",
-    };
     // Values files preserve numeric scalars; --set passes a fractional value as a string.
     for (const [key, value] of [
       ["tenantGatewayPort", 8080.5],
@@ -750,7 +756,7 @@ test(
         : `  ${key}: ${value}\n`;
       await writeFile(valuesFile, `gatewayRouting:\n${field}`);
       await assert.rejects(
-        render(routingValues, { valuesFiles: [valuesFile] }),
+        render(gatewaySandboxValues, { valuesFiles: [valuesFile] }),
         ({ code, stderr }) => code !== 0 && stderr.includes(`gatewayRouting.${key}`),
         key,
       );
@@ -760,7 +766,7 @@ test(
       "gatewayRouting:\n  tenantGatewayPort: 8081\n  envoyHttpsTargetPort: 10444\n  sandbox:\n    listenerPort: 8444\n",
     );
     const rendered = await resources(
-      (await render(routingValues, { valuesFiles: [valuesFile] })).stdout,
+      (await render(gatewaySandboxValues, { valuesFiles: [valuesFile] })).stdout,
     );
     assert.equal(
       rendered
@@ -838,14 +844,6 @@ test(
   "the chart refuses tenant Gateway ports Compute refuses for the runtime status port",
   tooling,
   async () => {
-    const sandboxValues = {
-      ...gatewayRoutingValues,
-      "gatewayRouting.sandbox.enabled": "true",
-      "gatewayRouting.sandbox.domain": "previews.example.test",
-      "gatewayRouting.sandbox.tlsSecretName": "preview-wildcard",
-      "gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
-        "public-ingress",
-    };
     const compute = (gatewayPort, sandbox) => {
       const options = conformanceKubernetesOptions({
         gatewayTrustedProxyCidrs: ["10.0.0.0/8"],
@@ -891,7 +889,7 @@ test(
     ]) {
       const row = JSON.stringify({ gatewayPort, sandbox });
       const chartValues = {
-        ...(sandbox ? sandboxValues : gatewayRoutingValues),
+        ...(sandbox ? gatewaySandboxValues : gatewayRoutingValues),
         "gatewayRouting.tenantGatewayPort": String(gatewayPort),
       };
       if (refused) {
@@ -3594,12 +3592,7 @@ test(
 // Kubernetes validates NetworkPolicy peers only when Helm applies them, after earlier objects
 // of the upgrade have changed, so the chart refuses a peer the API server would (finding 2336).
 test("NetworkPolicy peers from values are refused before install", tooling, async (t) => {
-  const sandbox = {
-    ...gatewayRoutingValues,
-    "gatewayRouting.sandbox.enabled": "true",
-    "gatewayRouting.sandbox.domain": "sandbox.example.test",
-    "gatewayRouting.sandbox.tlsSecretName": "sandbox-tls",
-  };
+  const sandbox = sandboxPeerValidationValues;
   const peer = "gatewayRouting.sandbox.ingressPeers[0]";
   const selectorPeer = {
     [`${peer}.namespaceSelector.matchLabels.team`]: "public",
@@ -4738,12 +4731,7 @@ test(
   tooling,
   async () => {
     // Finding 1048: the dedicated-Secret rule covers every Secret an enabled feature reads.
-    const sandbox = {
-      ...gatewayRoutingValues,
-      ...Object.fromEntries(
-        Object.entries(sandboxValues).filter(([key]) => key.startsWith("gatewayRouting.sandbox.")),
-      ),
-    };
+    const sandbox = gatewaySandboxValues;
     for (const [base, setting, secret, other] of [
       [
         { ...databaseCaValues, ...googleLoginValues },
@@ -5858,10 +5846,7 @@ test("production peer matchLabels keep the native Kubernetes map contract", tool
     "logging.collector.metrics.scraperPodLabels.app": "prometheus",
   };
   const sandbox = {
-    ...gatewayRoutingValues,
-    "gatewayRouting.sandbox.enabled": "true",
-    "gatewayRouting.sandbox.domain": "sandbox.example.test",
-    "gatewayRouting.sandbox.tlsSecretName": "sandbox-tls",
+    ...sandboxPeerValidationValues,
     "gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels.team": "public",
     "gatewayRouting.sandbox.ingressPeers[0].podSelector.matchLabels.app": "edge",
   };
@@ -5935,9 +5920,6 @@ test("production peer matchLabels keep the native Kubernetes map contract", tool
   await render({ "metrics.scraperNamespaceLabels": "false", "metrics.scraperPodLabels": "false" });
   const directory = await temporaryDirectory(t, "occ-peer-labels-");
   const path = join(directory, "values.json");
-  const sandboxOptions = Object.fromEntries(
-    Object.entries(sandbox).filter(([key]) => !key.includes("ingressPeers")),
-  );
   for (const shape of [null, {}]) {
     await writeFile(
       path,
@@ -5954,7 +5936,7 @@ test("production peer matchLabels keep the native Kubernetes map contract", tool
         },
       }),
     );
-    await render(sandboxOptions, { valuesFiles: [path] });
+    await render(sandboxPeerValidationValues, { valuesFiles: [path] });
   }
 });
 

@@ -160,14 +160,16 @@ json_fields() {
   done
 }
 
-# Prints OCC's refusal from a failed `occ agent deploy`'s stderr FILE and
-# succeeds only when OCC answered with a 4xx error code (occ prints
-# "OCC operation failed (HTTP 4xx): CODE: message") or refused the service key.
-# OCC admits a deploy in one transaction, so such a refusal saved no revision.
-# Anything else, such as a lost connection, a timeout, HTTP 408 or a 5xx, leaves
-# the outcome unknown. occ prints its error once, as its last output, on a line
-# that starts with "Error: ". Only that line is read: when stderr has any other
-# such line, for example inside a notice or OCC's message, the outcome is unknown.
+# Prints the refusal from a failed `occ agent deploy`'s stderr FILE and succeeds
+# only when OCC answered with a 4xx error code (occ prints "OCC operation failed
+# (HTTP 4xx): CODE: message"), OCC refused the service key, or occ refused to send
+# the deploy request because it could not establish the selected revision's
+# Harness overrides. OCC admits a deploy in one transaction, so none of these
+# saved a revision. Anything else, such as a lost connection, a timeout, HTTP 408
+# or a 5xx, leaves the outcome unknown. occ prints its error once, as its last
+# output, on a line that starts with "Error: ". Only that line is read: when
+# stderr has any other such line, for example inside a notice or OCC's message,
+# the outcome is unknown.
 deploy_refusal() {
   python3 - "$1" <<'PYTHON'
 import re, sys
@@ -179,13 +181,32 @@ errors = [index for index, line in enumerate(lines) if line.startswith("Error: "
 if len(errors) != 1:
     sys.exit(1)
 index = errors[0]
-pattern = re.compile(r"Error: (OCC operation failed \(HTTP 4(?!08)[0-9]{2}\): [A-Z][A-Z0-9_]*: |OCC rejected the service key )")
+pattern = re.compile(
+    r"Error: (OCC operation failed \(HTTP 4(?!08)[0-9]{2}\): [A-Z][A-Z0-9_]*: |OCC rejected the service key "
+    # occ's refusals for --retain-harness-overrides, before the deploy request.
+    r"|the selected revision (is unavailable|has no Harness settings|has no requested Harness overrides)$"
+    r"|revision rev_[0-9a-f-]+ has unreadable saved settings \([A-Z_]+: [A-Za-z]+\) and )"
+)
 if not pattern.match(lines[index]):
     sys.exit(1)
 # occ indents the rejected fields' JSON details under its message.
 details = [detail.strip() for detail in lines[index + 1 : index + 4] if detail.startswith("  ")]
 refusal = " ".join([lines[index].removeprefix("Error: ")] + details)
 print(re.sub(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]", "?", refusal)[:600])
+PYTHON
+}
+
+# Prints the "notice: " lines from an `occ agent deploy`'s stderr FILE, without
+# that prefix and with control characters replaced, so the run output shows them.
+deploy_notices() {
+  python3 - "$1" <<'PYTHON'
+import re, sys
+try:
+    lines = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
+except OSError:
+    sys.exit(0)
+for line in [line for line in lines if line.startswith("notice: ")][:5]:
+    print(re.sub(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]", "?", line.removeprefix("notice: "))[:600])
 PYTHON
 }
 
@@ -1593,15 +1614,23 @@ matches_yaml "${candidate_installation}.requested" "${candidate_installation}.re
 values_guard='del(.api.channelDirectoryProxyUrl, .installation.secretName, .database.upgradeMigration) | if .database == {} then del(.database) else . end | if .api == {} then del(.api) else . end | if .installation == {} then del(.installation) else . end'
 project_yaml "$evidence_dir/before-values.yaml" "$values_guard" "$evidence_dir/values-guard.json"
 project_yaml "${candidate_values}.requested" "$values_guard" "$evidence_dir/candidate-values-guard.json"
+# The chart refuses the retired agentNativeAdmin.sharedCookieDomain whatever its
+# value and derives the cookie scope from auth.baseUrl and agentNativeAdmin.domain.
+# Earlier charts checked or rendered the override only when native admin was
+# enabled, and then required it to contain both hosts, so the derived scope
+# equals it or is narrower. A candidate may omit it; nothing else changes.
 # Compare resolved values so YAML aliases have the same meaning as ordinary scalars.
 if jq -e --slurpfile candidate "$evidence_dir/candidate-values-guard.json" '
-  .agentNativeAdmin.sharedCookieDomain == "" and
-  ($candidate[0].agentNativeAdmin | has("sharedCookieDomain") | not)
+  (.agentNativeAdmin | type == "object" and has("sharedCookieDomain")) and
+  ($candidate[0].agentNativeAdmin | type == "object" and (has("sharedCookieDomain") | not))
 ' "$evidence_dir/values-guard.json" >/dev/null; then
   project_yaml "$evidence_dir/before-values.yaml" "$values_guard | del(.agentNativeAdmin.sharedCookieDomain)" "$evidence_dir/values-guard.json"
 fi
 cmp -s "$evidence_dir/values-guard.json" "$evidence_dir/candidate-values-guard.json" ||
-  die "candidate values change a protected setting; only database.upgradeMigration, api.channelDirectoryProxyUrl or a validated immutable Installation Secret reference may change; an empty agentNativeAdmin.sharedCookieDomain may be removed."
+  die "candidate values change a protected setting; only database.upgradeMigration, api.channelDirectoryProxyUrl or a validated immutable Installation Secret reference may change; the retired agentNativeAdmin.sharedCookieDomain may be removed."
+jq -e '.agentNativeAdmin | type == "object" and has("sharedCookieDomain") | not' \
+  "$evidence_dir/candidate-values-guard.json" >/dev/null ||
+  die "the chart no longer accepts agentNativeAdmin.sharedCookieDomain; it derives the session cookie scope from auth.baseUrl and agentNativeAdmin.domain. Pass --candidate-values with a private copy of the values that omits only that key. No cluster changes were made."
 project_yaml "$evidence_dir/before-installation.yaml" '.' "$evidence_dir/installation-guard.json"
 project_yaml "${candidate_installation}.requested" '.' "$evidence_dir/candidate-installation-guard.json"
 if ! cmp -s "$evidence_dir/installation-guard.json" "$evidence_dir/candidate-installation-guard.json"; then
@@ -2312,6 +2341,7 @@ if [[ -n "$runtime_image" ]] && ((target_count > 0)); then
 
   refused=()
   key_refused=()
+  not_sent=()
   unknown=()
   for index in "${!pids[@]}"; do
     json_fields "${ready[index]}" namespace_id=namespaceId agent_id=agentId
@@ -2319,6 +2349,9 @@ if [[ -n "$runtime_image" ]] && ((target_count > 0)); then
     attempt=${attempts[index]}
     status=0
     wait "${pids[index]}" || status=$?
+    while IFS= read -r notice; do
+      warn "Agent $agent_id in Namespace $namespace_id: $notice"
+    done < <(deploy_notices "$attempt/error")
     if ((status == 0)) && revision=$(read_dispatch_response "$attempt/response" '.id'); then
       dispatch_state accept "$targets" "$namespace_id" "$agent_id" "$revision"
       mv "$attempt/error" "$prefix.error"
@@ -2345,8 +2378,10 @@ if [[ -n "$runtime_image" ]] && ((target_count > 0)); then
       unknown+=("  - $agent")
     elif [[ "$refusal" == "OCC rejected the service key "* ]]; then
       key_refused+=("  - $agent")
-    else
+    elif [[ "$refusal" == "OCC operation failed "* ]]; then
       refused+=("  - $agent: $refusal")
+    else
+      not_sent+=("  - $agent: $refusal")
     fi
   done
   if ((${#key_refused[@]})); then
@@ -2359,9 +2394,14 @@ The key is invalid, expired or revoked; the Agents are not at fault. Ask an Inst
 $(printf '%s\n' "${refused[@]}")
 Correct what each refusal names, such as a Configuration setting the new release refuses, then repeat this command with --resume and the same evidence directory. The resume deploys each refused Agent once; do not deploy it yourself. The refusals are in dispatch/*.rejected."
   fi
+  if ((${#not_sent[@]})); then
+    warn "occ sent no deployment request for ${#not_sent[@]} recorded Agent(s), so OCC saved no revision for them:
+$(printf '%s\n' "${not_sent[@]}")
+occ could not establish the Harness overrides that each Agent's active revision requested. Correct what each error names, then repeat this command with --resume and the same evidence directory. The resume deploys each of these Agents once; do not deploy it yourself. The errors are in dispatch/*.rejected."
+  fi
   ((${#unknown[@]} == 0)) || die "at least one Agent deployment outcome is unknown; inspect $evidence_dir/dispatch and reconcile it before resuming:
 $(printf '%s\n' "${unknown[@]}")"
-  if ((${#key_refused[@]} || ${#refused[@]})); then
+  if ((${#key_refused[@]} || ${#refused[@]} || ${#not_sent[@]})); then
     exit 1
   fi
 fi

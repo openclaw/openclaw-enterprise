@@ -36,7 +36,7 @@ import { promisify } from "node:util";
 import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { withoutShellStartup } from "../helpers/environment.ts";
-import { bashString, commandShim, startCommandServer } from "../helpers/fixture-command-server.mjs";
+import { bashString, commandShim, startCommandServer } from "../helpers/fixture-command-server.ts";
 import { listen } from "../helpers/listen.mjs";
 import { runDeployedCapability } from "../helpers/deployed-repository-capability.ts";
 import { dumpYaml, loadYaml, yamlDocuments } from "../helpers/qa-utils.mjs";
@@ -50,6 +50,10 @@ import {
   continuityRevision,
 } from "../helpers/production-upgrade-continuity-fixture.ts";
 import { registerDispatchRestoreTests } from "../helpers/production-upgrade-dispatch-restore.ts";
+import {
+  registerRetainedFleetPreflightTests,
+  restartInventory,
+} from "../helpers/production-upgrade-retained-fleet-preflight.ts";
 
 // Every case owns its command server, state, and evidence directory. Two sibling
 // cases can overlap while the existing nested groups keep their own limits.
@@ -84,7 +88,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
   // This fixture substitutes the external command protocols, not the upgrade script. It
   // records accepted writes independently of the client response. helm, kubectl and occ
   // (and node in pair cases) on the script's PATH are bash scripts answered by the
-  // fixture's command server (tests/helpers/fixture-command-server.mjs), so their logic
+  // fixture's command server (tests/helpers/fixture-command-server.ts), so their logic
   // below runs in the test process: a command costs a bash start instead of a node start.
   // The script still starts every command as a real process, and the fixture state stays
   // in state.json, which a command reads when it starts and cases edit between runs.
@@ -483,7 +487,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     };
   }
 
-  // One command of one fixture. `io` (fixture-command-server.mjs) writes its output and
+  // One command of one fixture. `io` (fixture-command-server.ts) writes its output and
   // ends it; returning without an exit ends it with status 0.
   async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) {
     const stateFile = join(root, "state.json");
@@ -1744,6 +1748,11 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
           log(`agent-deploy-failed ${agentId}`);
           return fail(1, failure);
         }
+        // occ prints notices on stderr, for example when the revision has no Harness
+        // overrides to retain; the helper must show them in its run output.
+        if (state.deployNotices?.[agentId]) {
+          io.stderr(state.deployNotices[agentId] + "\n");
+        }
         const { id, status } = state.nextDeployment ?? { id: "rev_new", status: "succeeded" };
         delete state.nextDeployment;
         if (status === "succeeded") {
@@ -2337,407 +2346,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     return fixture(t, { controllerOnly: true, continuity });
   }
 
-  // Run the actual upgrade shell with independent command responses and real JSON tools.
-  // This protects refusal before quiescence; it does not prove a live cluster upgrade.
-  test("controller-only upgrades refuse incompatible active Harness snapshots before writes", async (t) => {
-    const snapshot = {
-      id: "rev_old",
-      namespaceId: "ns_test",
-      agentId: "agt_test",
-      configuration: { privateSetting: "tenant-native-value" },
-      harness: { id: "codex", version: "1", mode: "dedicated", overrides: {}, configuration: {} },
-    };
-    for (const [name, response, readFailure = false] of [
-      [
-        "missing settings",
-        { ...snapshot, harness: { id: "codex", version: "1", mode: "dedicated" } },
-      ],
-      ["null settings", { ...snapshot, harness: { ...snapshot.harness, configuration: null } }],
-      ["array overrides", { ...snapshot, harness: { ...snapshot.harness, overrides: [] } }],
-      ["wrong revision", { ...snapshot, id: "rev_other" }],
-      [
-        "unreadable snapshot",
-        {
-          id: snapshot.id,
-          namespaceId: snapshot.namespaceId,
-          agentId: snapshot.agentId,
-          configurationReadError: { code: "SAVED_CONFIGURATION_UNREADABLE", field: "plugins" },
-        },
-      ],
-      ["denied read", "denied"],
-      ["empty snapshot output", ""],
-      ["malformed snapshot output", "{"],
-      ["failed read after valid output", snapshot, true],
-      ["duplicate snapshots", `${JSON.stringify(snapshot)}\n${JSON.stringify(snapshot)}`],
-      [
-        "invalid snapshot followed by valid snapshot",
-        `${JSON.stringify({ ...snapshot, id: "rev_other" })}\n${JSON.stringify(snapshot)}`,
-      ],
-    ]) {
-      await t.test(name, async (t) => {
-        const f = await fixture(t, {
-          agent: true,
-          controllerOnly: true,
-          activeRevisionResponse: response,
-        });
-        if (readFailure) {
-          await f.failNext("revision-read-failure");
-        }
-        await assert.rejects(
-          f.run(),
-          readFailure || response === "denied"
-            ? /cannot read active revision/u
-            : /missing or unreadable saved Harness settings/u,
-        );
-        assert.deepEqual(await f.events(), ["revision-read rev_old"]);
-        const state = await f.state();
-        assert.equal(state.version, 1);
-        assert.equal(state.api, 1);
-        assert.equal(state.worker, 1);
-        assert.equal(state.dispatches, 0);
-        assert.deepEqual(state.preflight?.created ?? [], []);
-        const inventoryFiles = await readdir(join(f.evidence, "inventory"));
-        if (readFailure) {
-          assert.deepEqual(
-            inventoryFiles.filter((file) => file.endsWith(".json")),
-            ["deployment-inventory.json", "restart-preflight.json"],
-          );
-        }
-        for (const file of inventoryFiles) {
-          assert.doesNotMatch(
-            await readFile(join(f.evidence, "inventory", file), "utf8"),
-            /tenant-native-value/u,
-          );
-        }
-      });
-    }
-    const agent = {
-      id: "agt_valid",
-      status: "active",
-      desiredRuntimeState: "stopped",
-      executionMode: "dedicated",
-      activeRevisionId: "rev_old",
-      deploymentInProgress: false,
-    };
-    const namespace = { id: "ns_test", status: "ready", agents: [agent] };
-    // One valid row must not hide another row whose state cannot be classified.
-    for (const [name, field, value] of [
-      ["missing deployment state", "deploymentInProgress", undefined],
-      ["null deployment state", "deploymentInProgress", null],
-      ["nonboolean deployment state", "deploymentInProgress", "false"],
-      ["missing desired runtime state", "desiredRuntimeState", undefined],
-      ["unknown desired runtime state", "desiredRuntimeState", "unknown"],
-      ["missing Agent status", "status", undefined],
-      ["missing Agent ID", "id", undefined],
-      ["unknown execution mode", "executionMode", "unknown"],
-      ["null active revision", "activeRevisionId", null],
-    ]) {
-      await t.test(name, async (t) => {
-        const invalid = {
-          ...agent,
-          id: "agt_test",
-          desiredRuntimeState: "running",
-          [field]: value,
-        };
-        const f = await fixture(t, {
-          controllerOnly: true,
-          inventoryNamespaces: [{ ...namespace, agents: [invalid, agent] }],
-        });
-        await assert.rejects(f.run(), /deployment inventory/u);
-        assert.deepEqual(await f.events(), []);
-        const state = await f.state();
-        assert.deepEqual(state.preflight?.created ?? [], []);
-        assert.equal(state.version, 1);
-        assert.equal(state.api, 1);
-        assert.equal(state.worker, 1);
-        assert.equal(state.dispatches, 0);
-      });
-    }
-    for (const [name, namespaces] of [
-      ["missing Namespaces", undefined],
-      ["nonarray Namespaces", {}],
-      ["missing Agents", [{ ...namespace, agents: undefined }]],
-      ["missing Namespace ID", [{ ...namespace, id: undefined }]],
-      ["unknown Namespace status", [{ ...namespace, status: "unknown" }]],
-    ]) {
-      await t.test(name, async (t) => {
-        // The same common inventory gate protects runtime upgrades as well.
-        const f = await fixture(t, {
-          inventoryResponses: [{ installationId: "ins_test", namespaces }],
-        });
-        await assert.rejects(f.run(), /deployment inventory/u);
-        assert.deepEqual(await f.events(), []);
-        const state = await f.state();
-        assert.deepEqual(state.preflight?.created ?? [], []);
-        assert.equal(state.version, 1);
-        assert.equal(state.api, 1);
-        assert.equal(state.worker, 1);
-        assert.equal(state.dispatches, 0);
-      });
-    }
-    await t.test(
-      "pending deployment refuses before reading an about-to-change snapshot",
-      async (t) => {
-        const f = await fixture(t, {
-          controllerOnly: true,
-          inventoryNamespaces: [
-            {
-              id: "ns_test",
-              status: "ready",
-              agents: [
-                {
-                  id: "agt_test",
-                  status: "active",
-                  desiredRuntimeState: "running",
-                  executionMode: "dedicated",
-                  activeRevisionId: "rev_old",
-                  deploymentInProgress: true,
-                },
-              ],
-            },
-          ],
-        });
-        await assert.rejects(f.run(), /nonterminal Agent work/u);
-        assert.deepEqual(await f.events(), []);
-        const state = await f.state();
-        assert.equal(state.version, 1);
-        assert.equal(state.api, 1);
-        assert.equal(state.worker, 1);
-        assert.equal(state.dispatches, 0);
-        assert.deepEqual(state.preflight?.created ?? [], []);
-      },
-    );
-    await t.test("a stopped Agent may omit its active revision", async (t) => {
-      const { activeRevisionId, ...stopped } = agent;
-      const f = await fixture(t, {
-        controllerOnly: true,
-        inventoryNamespaces: [{ ...namespace, agents: [stopped] }],
-      });
-      await f.run();
-      assert.ok(existsSync(join(f.evidence, "completed")));
-      assert.equal(
-        (await f.events()).some((event) => event.startsWith("revision-read")),
-        false,
-      );
-    });
-    await t.test("valid snapshot preserves controller-only behavior", async (t) => {
-      const f = await fixture(t, {
-        agent: true,
-        controllerOnly: true,
-        activeRevisionResponse: snapshot,
-      });
-      await f.run();
-      assert.equal((await f.state()).dispatches, 0);
-      assert.ok(existsSync(join(f.evidence, "completed")));
-      assert.equal((await f.events())[0], "revision-read rev_old");
-      const files = await readdir(join(f.evidence, "inventory"));
-      const summaries = files.filter(
-        (file) =>
-          file.endsWith(".json") &&
-          ![
-            "deployment-inventory.json",
-            "restart-preflight.json",
-            "before-stop.json",
-            "before-stop-selection.json",
-          ].includes(file),
-      );
-      assert.equal(summaries.length, 1);
-      assert.deepEqual(
-        JSON.parse(await readFile(join(f.evidence, "inventory", summaries[0]), "utf8")),
-        {
-          namespaceId: "ns_test",
-          agentId: "agt_test",
-          revisionId: "rev_old",
-          savedHarnessSettings: "readable",
-        },
-      );
-    });
-  });
-
-  function restartInventory(
-    repositoryWorkerRestart = "reverification-supported",
-    revision = "rev_old",
-  ) {
-    return {
-      installationId: "ins_test",
-      namespaces: [
-        {
-          id: "ns_test",
-          status: "ready",
-          agents: [
-            {
-              id: "agt_test",
-              status: "active",
-              desiredRuntimeState: "running",
-              executionMode: "embedded",
-              activeRevisionId: revision,
-              deploymentInProgress: false,
-              ...(repositoryWorkerRestart === "missing" ? {} : { repositoryWorkerRestart }),
-            },
-          ],
-        },
-      ],
-    };
-  }
-
-  // These cases exercise the shipped shell and real jq against external command
-  // responses. Driver integration separately proves the server's assessment.
-  test("repository restart preflight refuses unsafe or incomplete retained fleets before writes", async (t) => {
-    for (const [name, response, expected] of [
-      ...["original-worker-required", "unknown", "missing", "future-value"].map((disposition) => [
-        disposition,
-        restartInventory(disposition),
-        /Namespace "ns_test", Agent "agt_test", revision "rev_old": (original-worker-required|unknown)/u,
-      ]),
-      ["denied", "denied", /cannot read the complete deployment inventory/u],
-      ["empty output", "", /inventory is incomplete/u],
-      [
-        "multiple documents",
-        JSON.stringify(restartInventory()) + "\n" + JSON.stringify(restartInventory()),
-        /inventory is incomplete/u,
-      ],
-      // A later valid document must not hide an earlier ownership mismatch.
-      [
-        "invalid inventory followed by valid inventory",
-        JSON.stringify({ installationId: "ins_other", namespaces: [] }) +
-          "\n" +
-          JSON.stringify(restartInventory()),
-        /inventory is incomplete/u,
-      ],
-    ]) {
-      await t.test(name, async (t) => {
-        const f = await fixture(t, { controllerOnly: true, inventoryResponses: [response] });
-        await assert.rejects(f.run(), expected);
-        assert.deepEqual(await f.events(), []);
-        const state = await f.state();
-        assert.deepEqual(state.preflight?.created ?? [], []);
-        assert.equal(state.api, 1);
-        assert.equal(state.worker, 1);
-        assert.equal(state.version, 1);
-        assert.equal(state.dispatches, 0);
-      });
-    }
-  });
-
-  test("repository restart preflight refreshes selections immediately before stopping writers", async (t) => {
-    for (const [name, initial, fresh] of [
-      [
-        "new revision",
-        restartInventory(),
-        restartInventory("reverification-supported", "rev_changed"),
-      ],
-      ["changed assessment", restartInventory(), restartInventory("not-applicable")],
-      ["new Agent", { installationId: "ins_test", namespaces: [] }, restartInventory()],
-      ["lost access", restartInventory(), "denied"],
-    ]) {
-      await t.test(name, async (t) => {
-        const f = await fixture(t, {
-          controllerOnly: true,
-          inventoryResponses: [initial, fresh],
-        });
-        await assert.rejects(
-          f.run(),
-          /inventory selections or repository restart assessments changed|cannot read the complete deployment inventory/u,
-        );
-        const state = await f.state();
-        assert.equal(state.inventoryReadCount, 2);
-        assert.equal(state.api, 1);
-        assert.equal(state.worker, 1);
-        assert.equal(state.version, 1);
-        assert.equal(state.dispatches, 0);
-        assert.equal(
-          (await f.events()).some((event) => event.startsWith("scale-")),
-          false,
-        );
-      });
-    }
-  });
-
-  test("repository restart preflight permits positively assessed or empty fleets without deploying", async (t) => {
-    for (const [name, inventory] of [
-      ["supported", restartInventory()],
-      ["no repository access", restartInventory("not-applicable")],
-      ["empty", { installationId: "ins_test", namespaces: [] }],
-    ]) {
-      await t.test(name, async (t) => {
-        const f = await fixture(t, {
-          controllerOnly: true,
-          inventoryResponses: [inventory, inventory],
-        });
-        await f.run();
-        const state = await f.state();
-        assert.equal(state.inventoryReadCount, 2);
-        assert.equal(state.dispatches, 0);
-        assert.equal(state.version, 2);
-        assert.equal((await f.events()).filter((event) => event.startsWith("scale-")).length, 2);
-      });
-    }
-  });
-
-  test("repository restart preflight resumes prospectively only while the worker still runs", async (t) => {
-    await t.test(
-      "stopped API must be available for fresh inventory before the remaining stop",
-      async (t) => {
-        const inventory = restartInventory();
-        const f = await fixture(t, {
-          controllerOnly: true,
-          inventoryRequiresApi: true,
-          inventoryResponses: [
-            inventory,
-            inventory,
-            inventory,
-            restartInventory("original-worker-required"),
-            inventory,
-          ],
-        });
-        await f.failNext("fail-scale-worker");
-        await assert.rejects(f.run(), injectedFault);
-        assert.deepEqual(
-          (await f.events()).filter((event) => event.startsWith("scale-")),
-          ["scale-api"],
-        );
-        await assert.rejects(f.run("--resume"), /Restore access to the existing API/u);
-        assert.equal((await f.state()).api, 0);
-        assert.equal((await f.state()).worker, 1);
-        assert.equal((await f.state()).version, 1);
-        assert.equal((await f.state()).dispatches, 0);
-        // Once the operator restores the old API, an unsafe fresh assessment still
-        // refuses. Earlier positive evidence cannot authorize the remaining stop.
-        const state = await f.state();
-        state.api = 1;
-        await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
-        await assert.rejects(f.run("--resume"), /original-worker-required/u);
-        assert.equal((await f.state()).api, 1);
-        await f.run("--resume");
-        assert.equal((await f.state()).dispatches, 0);
-        assert.equal((await f.events()).filter((event) => event === "scale-worker").length, 1);
-      },
-    );
-    await t.test(
-      "after stopping both writers recovery does not replay stops or reread inventory",
-      async (t) => {
-        const inventory = restartInventory();
-        const f = await fixture(t, {
-          controllerOnly: true,
-          candidates: true,
-          inventoryResponses: [inventory, inventory, "denied"],
-        });
-        await f.failNext("lost-secret-response");
-        await assert.rejects(f.run(), injectedFault);
-        const count = (await f.state()).inventoryReadCount;
-        assert.equal((await f.state()).worker, 0);
-        assert.equal(existsSync(join(f.evidence, "helm-started")), false);
-        await f.run("--resume");
-        const [retry] = (await readdir(f.evidence)).filter((name) =>
-          name.startsWith("migration-preflight-resume."),
-        );
-        assert.ok(existsSync(join(f.evidence, retry, "migration-preflight-passed")));
-        assert.equal((await f.state()).inventoryReadCount, count);
-        assert.equal((await f.events()).filter((event) => event.startsWith("scale-")).length, 2);
-        assert.equal((await f.state()).dispatches, 0);
-      },
-    );
-  });
+  registerRetainedFleetPreflightTests(fixture, injectedFault);
 
   // Existing controller-only semantics intentionally remain unchanged unless selected.
   test("Agent continuity is opt-in; controller recovery alone can complete after Agent loss", async (t) => {
@@ -4062,11 +3671,11 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
   });
 
-  test("controller upgrades remove only an explicitly omitted empty cookie override", async (t) => {
+  test("controller upgrades remove only an explicitly omitted retired cookie override", async (t) => {
+    const removals = ["remove empty", "remove aliased empty", "remove nonempty"];
     for (const mode of [
-      "remove empty",
-      "remove aliased empty",
-      "remove nonempty",
+      ...removals,
+      "keep nonempty",
       "change domain",
       "add empty",
       "baseline drift",
@@ -4076,8 +3685,10 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         const baseline = await yamlFile(join(f.directory, "values.json"));
         baseline.agentNativeAdmin = { domain: "agents.example.test" };
         if (mode !== "add empty") {
-          baseline.agentNativeAdmin.sharedCookieDomain =
-            mode === "remove nonempty" ? "example.test" : "";
+          // Earlier dev-up installs wrote the parent of the Console and Agent hosts.
+          baseline.agentNativeAdmin.sharedCookieDomain = mode.endsWith("nonempty")
+            ? "example.test"
+            : "";
         }
         if (mode === "remove aliased empty") {
           baseline.api ??= {};
@@ -4095,7 +3706,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
           await writeFile(join(f.directory, "values.json"), saved);
         }
         const candidate = structuredClone(baseline);
-        delete candidate.agentNativeAdmin.sharedCookieDomain;
+        if (mode !== "keep nonempty") {
+          delete candidate.agentNativeAdmin.sharedCookieDomain;
+        }
         if (mode === "change domain") {
           candidate.agentNativeAdmin.domain = "other.example.test";
         } else if (mode === "add empty") {
@@ -4106,7 +3719,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         }
         const path = join(f.directory, "cookie-candidate.json");
         await writeFile(path, JSON.stringify(candidate), { mode: 0o600 });
-        if (mode === "remove empty" || mode === "remove aliased empty") {
+        if (removals.includes(mode)) {
           // Exercise the normal helper through Helm submission; the retained baseline
           // must remain attributable while the submitted candidate drops the invalid field.
           await f.run("--candidate-values", path);
@@ -4118,10 +3731,13 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
           assert.equal((await f.state()).helmSubmissions, 1);
         } else {
           await assert.rejects(
-            f.run("--candidate-values", path),
+            // Keeping the override is the saved baseline itself, as without candidate values.
+            mode === "keep nonempty" ? f.run() : f.run("--candidate-values", path),
             mode === "baseline drift"
               ? /protected Helm values differ from the live release/
-              : /candidate values change a protected setting/,
+              : mode === "keep nonempty"
+                ? /no longer accepts agentNativeAdmin\.sharedCookieDomain.*omits only that key/
+                : /candidate values change a protected setting/,
           );
           assert.deepEqual(await f.events(), []);
           const state = await f.state();
@@ -4647,11 +4263,15 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
   // no revision: the helper names the Agent and the refusal, and --resume deploys it
   // again. A 408 or 5xx answer, like a lost response, leaves the outcome unknown, and so
   // does stderr with a second "Error: " line, here inside OCC's message. A refused service
-  // key is the helper's own credential failing, not an Agent refusal. Each case deploys two
-  // Agents; OCC accepts agt_ok, which is neither named nor deployed again on resume.
+  // key is the helper's own credential failing, not an Agent refusal. occ refuses before the
+  // deploy request when it cannot establish the requested Harness overrides, which also saves
+  // no revision. Each case deploys two Agents; OCC accepts agt_ok, which is neither named nor
+  // deployed again on resume.
   const refusedField =
     "Configuration setting tools.gatewayPolicy.actions.sessions must use reviewed task actions.";
-  for (const { name, error, refusal, keyRefused = false } of [
+  const unknownOverrides =
+    "revision rev_5f34f0b3-e660-4106-88a9-fa4df634398d has unreadable saved settings (SAVED_CONFIGURATION_UNREADABLE: harnessAuth) and the Agent's revision list has no Harness summary for it, so its requested Harness overrides are unknown; pass them with --harness-overrides instead";
+  for (const { name, error, refusal, keyRefused = false, notSent = false } of [
     {
       name: "HTTP 400",
       // occ indents the rejected field's details under the message; a control character
@@ -4668,6 +4288,12 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       refusal:
         "OCC rejected the service key in /keys/upgrade.json: it is invalid, expired or revoked. Ask an Installation administrator for a new key.",
       keyRefused: true,
+    },
+    {
+      name: "occ's refusal before the deploy request",
+      error: `Error: ${unknownOverrides}`,
+      refusal: unknownOverrides,
+      notSent: true,
     },
     {
       name: "HTTP 408",
@@ -4687,9 +4313,11 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
   ]) {
     const outcome = keyRefused
       ? "a service-key failure"
-      : refusal
-        ? "refused and redeployed on resume"
-        : "an unknown outcome";
+      : notSent
+        ? "not sent and redeployed on resume"
+        : refusal
+          ? "refused and redeployed on resume"
+          : "an unknown outcome";
     test(`an Agent deploy answered with ${name} is ${outcome}`, async (t) => {
       const agent = (id) => ({
         id,
@@ -4733,11 +4361,17 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
               '  - Agent agt_test "Mail triage" in Namespace ns_test',
               "The key is invalid, expired or revoked; the Agents are not at fault. Ask an Installation administrator for a new key, point OCC_SERVICE_KEY_FILE at it, then repeat this command with --resume and the same evidence directory. The resume deploys these Agents once.",
             ]
-          : [
-              "upgrade-production-images: OCC refused to deploy 1 recorded Agent(s) with the new release and saved no revision for them:",
-              `  - Agent agt_test "Mail triage" in Namespace ns_test: ${refusal}`,
-              "Correct what each refusal names, such as a Configuration setting the new release refuses, then repeat this command with --resume and the same evidence directory. The resume deploys each refused Agent once; do not deploy it yourself. The refusals are in dispatch/*.rejected.",
-            ],
+          : notSent
+            ? [
+                "upgrade-production-images: occ sent no deployment request for 1 recorded Agent(s), so OCC saved no revision for them:",
+                `  - Agent agt_test "Mail triage" in Namespace ns_test: ${refusal}`,
+                "occ could not establish the Harness overrides that each Agent's active revision requested. Correct what each error names, then repeat this command with --resume and the same evidence directory. The resume deploys each of these Agents once; do not deploy it yourself. The errors are in dispatch/*.rejected.",
+              ]
+            : [
+                "upgrade-production-images: OCC refused to deploy 1 recorded Agent(s) with the new release and saved no revision for them:",
+                `  - Agent agt_test "Mail triage" in Namespace ns_test: ${refusal}`,
+                "Correct what each refusal names, such as a Configuration setting the new release refuses, then repeat this command with --resume and the same evidence directory. The resume deploys each refused Agent once; do not deploy it yourself. The refusals are in dispatch/*.rejected.",
+              ],
       );
       assert.equal(await readFile(prefix + ".rejected", "utf8"), refusal + "\n");
       assert.equal(existsSync(prefix + ".intent"), false);
@@ -4750,6 +4384,29 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       );
     });
   }
+
+  // occ's notices about an accepted deploy, such as a revision with no Harness overrides to
+  // retain, must reach the operator in the run output and not only the evidence directory.
+  // A control character in a notice must not reach the terminal.
+  test("an accepted Agent deploy shows occ's notices in the run output", async (t) => {
+    const f = await fixture(t, { agent: true });
+    const notice =
+      "revision rev_old has unreadable saved settings (SAVED_CONFIGURATION_UNREADABLE: configuration) and records no Harness overrides, so none are retained; the deployment uses current Installation defaults.";
+    const state = await f.state();
+    state.deployNotices = { agt_test: `notice: ${notice}\u001b[2J` };
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    const result = await f.run();
+    assert.ok(
+      result.stderr
+        .split("\n")
+        .includes(`upgrade-production-images: Agent agt_test in Namespace ns_test: ${notice}?[2J`),
+      result.stderr,
+    );
+    assert.equal(
+      await readFile(join(f.evidence, "dispatch/ns_test--agt_test.error"), "utf8"),
+      `notice: ${notice}\u001b[2J\n`,
+    );
+  });
 
   // Doctor shares the serving gateway container's memory limit, and an out-of-memory
   // kill there stops the gateway too (finding 2697). Doctor, with a 384 MiB heap cap,

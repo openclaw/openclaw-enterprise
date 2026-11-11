@@ -1,7 +1,7 @@
 ---
 created: 2026-08-19
-updated: 2026-11-04
-last_updated_session: authoring-run/8886e590-0aa5-4c8a-8665-2e58d1c639cc
+updated: 2026-11-10
+last_updated_session: authoring-run/1321c9af-ae4c-4a8f-bf46-69a02bbb2a8d
 ---
 
 # Configuration Driver and Agent Revision Flow
@@ -138,13 +138,13 @@ root-object JSON document; omitted or unknown kinds and malformed request
 shapes fail with `400`. Updates require the complete replacement `values`
 document and accept optional `secretBindings` and `expectedGeneration`, refusing
 a stale one under the row lock with an `/expectedGeneration` `409` detail.
-On the bundled Kubernetes Compute, writes refuse an enabled channel's unbound
-credential reference, or a Slack token SecretRef the Slack Channel Driver cannot
-read, with deployment's rule (`requireChannelSecretBindings`).
-`kind`, `generation`, and ownership are server-owned. OCC preserves nested values
-and SecretRefs unchanged. Malformed,
-generation-mismatched, or ownership-invalid persisted ConfigMaps fail with
-`503`.
+On Kubernetes Compute, `requireChannelSecretBindings` rejects enabled channels'
+unbound credential references and Slack token SecretRefs unreadable by the Slack
+Channel Driver. `kind`, `generation`, and ownership remain server-owned. OCC
+preserves values and SecretRefs. [Preset admission](agent-presets.md) defers
+renderer-located whole-string Gateway-password variables; Configuration writes
+and deployment require concrete references. Malformed, generation-mismatched,
+or ownership-invalid ConfigMaps fail with `503`.
 Authorization denial fails with `403`, a missing exact resource with `404`, an
 Agent dependency conflict with `409`, and unavailable IAM or storage with
 `503`. OCC separately authorizes `operate` on each Secret
@@ -233,6 +233,8 @@ its optional integration is skipped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 23:35: Trace Preset Gateway-password placeholder admission and final concrete validation. (authoring-run/1321c9af-ae4c-4a8f-bf46-69a02bbb2a8d - 60cf8f904c39918ddd5b23a42fa2d7591c2eb193)
 
 - 2026-11-04 08:08: Distinguish network dial failures and invalid receipts in CLI recovery hints. (authoring-run/8886e590-0aa5-4c8a-8665-2e58d1c639cc - 8c2a1e4a)
 

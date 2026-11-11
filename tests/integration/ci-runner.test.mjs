@@ -2,16 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, watch } from "node:fs";
-import {
-  chmod,
-  mkdir,
-  readdir,
-  readFile,
-  realpath,
-  rm,
-  symlink,
-  writeFile,
-} from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -24,6 +15,11 @@ import {
   skipperFailureSummary,
 } from "../../scripts/ci/skipper-release.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import {
+  prepareK3dDiagnosticsRun,
+  writeK3dChildTest,
+  writeK3dKubectl,
+} from "../helpers/ci-runner-k3d-fixture.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   collectNativeWorkerFailure,
@@ -744,6 +740,78 @@ test(
     assert.doesNotMatch(samples + stdout + stderr, /secretauthvalue|--test|\/proc\/|\/bin\//);
   },
 );
+
+test("runner applies file environment over real preparation defaults without replacing generated values", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state/lane.json");
+  const resultsPath = join(root, "results/file-env.json");
+  const first = "tests/integration/first.test.mjs";
+  const second = "tests/integration/second.test.mjs";
+  const laneName = "checks-baseline-2";
+  const lane = JSON.parse(
+    await readFile(join(repositoryRoot, "scripts/ci/test-suites/checks-baseline-2.json"), "utf8"),
+  );
+  // Use the real no-infrastructure preparer, including its persisted lane state.
+  await writeFile(
+    join(root, "scripts/ci/prepare.mjs"),
+    `import { prepareLane, prepareFile } from ${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.mjs")).href)};
+await prepareLane({ lane: ${JSON.stringify(laneName)}, statePath: ${JSON.stringify(statePath)} });
+export { prepareFile };
+`,
+  );
+  await writeFile(
+    join(root, first),
+    `import assert from "node:assert/strict";
+import test from "node:test";
+test("opt-in case runs", { skip: process.env.OCC_TEST_NAMESPACE_OPENSHELL_REAL !== "1" }, () => {
+  assert.equal(process.env.OCC_TEST_FILE_ONLY, "configured");
+  assert.equal(process.env.NODE_OPTIONS, "--max-old-space-size=2048");
+  assert.equal(process.env.OPENCLAW_ENTERPRISE_CI_STATE, ${JSON.stringify(statePath)});
+});
+`,
+  );
+  await writeFile(
+    join(root, second),
+    `import assert from "node:assert/strict";
+import test from "node:test";
+test("sibling keeps lane defaults", () => {
+  assert.equal(process.env.OCC_TEST_NAMESPACE_OPENSHELL_REAL, undefined);
+  assert.equal(process.env.OCC_TEST_FILE_ONLY, undefined);
+  assert.equal(process.env.NODE_OPTIONS, ${JSON.stringify(lane.env.NODE_OPTIONS)});
+  assert.equal(process.env.OPENCLAW_ENTERPRISE_CI_STATE, ${JSON.stringify(statePath)});
+});
+`,
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    groups: { ci: [laneName] },
+    lanes: {
+      [laneName]: {
+        env: lane.env,
+        files: [
+          {
+            path: first,
+            expectedTests: ["opt-in case runs"],
+            env: {
+              OCC_TEST_NAMESPACE_OPENSHELL_REAL: "1",
+              OCC_TEST_FILE_ONLY: "configured",
+              NODE_OPTIONS: "--max-old-space-size=2048",
+              OPENCLAW_ENTERPRISE_CI_STATE: "must-not-replace-prepared-state",
+            },
+          },
+          { path: second, expectedTests: ["sibling keeps lane defaults"] },
+        ],
+      },
+    },
+  });
+
+  const result = run(root, laneArgs(root, laneName, statePath, resultsPath));
+  assert.equal(result.status, 0, result.stderr);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  assert.deepEqual(summary.counts, { passed: 2, failed: 0, skipped: 0, todo: 0, total: 2 });
+  assert.ok(summary.files.every((file) => file.cleanup.status === "passed"));
+  await assert.rejects(readFile(statePath, "utf8"), { code: "ENOENT" });
+});
 
 test("run resolves lane documents relative to the manifest and preserves ordered case accounting", async (t) => {
   const root = await fixture(t);
@@ -5455,6 +5523,51 @@ waitingTest(
   },
 );
 
+test("invalid prepared defaults keep bounded cleanup and its failure without starting a child", async (t) => {
+  const root = await fixture(t);
+  const files = ["clean", "failed-cleanup"].map((name) => `tests/integration/${name}.test.mjs`);
+  for (const file of files) {
+    await writeFile(join(root, file), 'throw new Error("child must not start");\n');
+  }
+  await writeSingleLaneManifest(
+    root,
+    "invalid-defaults",
+    files.map((path) => ({ path })),
+    { ci: ["invalid-defaults"] },
+  );
+  await writeFile(
+    join(root, "scripts/ci/prepare.mjs"),
+    `
+import { writeFile, rm } from "node:fs/promises";
+export async function prepareFile({ file }) {
+  const name = file.path.endsWith("failed-cleanup.test.mjs") ? "failed-cleanup" : "clean";
+  const owned = new URL("../../" + name, import.meta.url);
+  await writeFile(owned, "owned resource");
+  return { defaults: { FLAG: 1 }, cleanup: async () => {
+    await rm(owned);
+    if (name === "failed-cleanup") throw new Error("cleanup failure");
+  } };
+}
+`,
+  );
+  const result = run(
+    root,
+    laneArgs(root, "invalid-defaults", "state/lane.json", "results/defaults.json"),
+  );
+  assert.equal(result.status, 1);
+  const summary = JSON.parse(await readFile(join(root, "results/defaults.json"), "utf8"));
+  assert.deepEqual(
+    summary.files.map((file) => file.cleanup?.status),
+    ["passed", "failed"],
+  );
+  assert.equal(summary.issues.filter(({ code }) => code === "prepare-failed").length, 2);
+  assert.equal(summary.issues.filter(({ code }) => code === "cleanup-failed").length, 1);
+  assert.ok(summary.files.every((file) => file.nodeExitCode === null && file.tests.length === 0));
+  for (const name of ["clean", "failed-cleanup"]) {
+    await assert.rejects(readFile(join(root, name)), { code: "ENOENT" });
+  }
+});
+
 test("run records a preparation failure's redacted message in the diagnostics report", async (t) => {
   const root = await fixture(t);
   const resultsPath = join(root, "results/prepare.json");
@@ -5466,10 +5579,10 @@ test("run records a preparation failure's redacted message in the diagnostics re
       "export async function prepareFile({ file, statePath }) {",
       "  if (file.path.endsWith('broken.test.mjs')) {",
       "    // The lane state's env holds prepared values the job env never had.",
-      "    await writeFile(statePath, JSON.stringify({ env: { OCC_TEST_STATE_IMAGE: 'stateonlyopaque-image-ref' } }));",
+      "    await writeFile(statePath, JSON.stringify({ env: { OCC_TEST_STATE_IMAGE: 'stateonlyopaque-image-ref' }, defaults: { OCC_TEST_SELECTED_IMAGE: 'selectedopaque-image-ref' } }));",
       `    const pullUrl = ${JSON.stringify(syntheticCredentialUrl({ username: "user", password: "hunter2pass", host: "registry.example", pathname: "/x" }))};`,
       "    const error = new Error(",
-      "      `image import failed for ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL} stateonlyopaque-image-ref\\nAuthorization: Bearer abcdefghijklmnop0123\\npull ${pullUrl}`,",
+      "      `image import failed for ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL} stateonlyopaque-image-ref selectedopaque-image-ref\\nAuthorization: Bearer abcdefghijklmnop0123\\npull ${pullUrl}`,",
       "    );",
       "    error.stderr = 'child output secretauthvalue-stderr';",
       "    throw error;",
@@ -5500,7 +5613,10 @@ test("run records a preparation failure's redacted message in the diagnostics re
   const prepareIssue = summary.issues.find((entry) => entry.code === "prepare-failed");
   assert.deepEqual(prepareIssue.error, { name: "Error" });
   const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
-  assert.doesNotMatch(text, /secretauthvalue|abcdefghijklmnop0123|hunter2pass|stateonlyopaque/);
+  assert.doesNotMatch(
+    text,
+    /secretauthvalue|abcdefghijklmnop0123|hunter2pass|stateonlyopaque|selectedopaque/,
+  );
   const report = JSON.parse(text);
   assert.equal(report.failures.length, 1);
   const [record] = report.failures;
@@ -5509,33 +5625,18 @@ test("run records a preparation failure's redacted message in the diagnostics re
   assert.equal(record.error.name, "Error");
   assert.equal(
     record.error.message,
-    "image import failed for [env:CI_RUNNER_FIXTURE_CREDENTIAL] [env:OCC_TEST_STATE_IMAGE]\n[redacted credential-bearing line]\n[redacted credential-bearing line]",
+    "image import failed for [env:CI_RUNNER_FIXTURE_CREDENTIAL] [env:OCC_TEST_STATE_IMAGE] [env:OCC_TEST_SELECTED_IMAGE]\n[redacted credential-bearing line]\n[redacted credential-bearing line]",
   );
   assert.match(record.error.stack, /^at prepareFile \(.*scripts\/ci\/prepare\.mjs:7:\d+\)/);
 });
 
 test("run keeps bounded Agent namespace activity from passing k3d files, alone and side by side", async (t) => {
   const root = await fixture(t);
-  const clusterDirectory = join(root, "cluster");
-  await mkdir(clusterDirectory);
-  const statePath = join(root, "state/k3d.json");
-  const resultsPath = join(root, "results/k3d.json");
-  await writeJson(statePath, {
-    lane: "k3d-lane",
-    resources: [
-      {
-        kind: "k3d-cluster",
-        status: "ready",
-        name: "owned-cluster",
-        directory: clusterDirectory,
-        kubeconfig: join(clusterDirectory, "kubeconfig"),
-        context: "k3d-owned-cluster",
-      },
-    ],
-  });
+  const { clusterDirectory, statePath, resultsPath, args } = await prepareK3dDiagnosticsRun(root, [
+    { path: "tests/integration/agent.test.mjs", expectedTests: ["agent file passes"] },
+  ]);
   // This kubectl stand-in serves the raw watch streams a live API server would
   // send while the test file creates and deletes its Agent namespace.
-  const kubectl = join(root, "kubectl");
   const pod = (ready, type) => ({
     type,
     object: {
@@ -5603,99 +5704,25 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
     event("occ-agent-a", "e3", "Failed", "bearer do-not-publish-event"),
     event("kube-system", "e4", "Started", "unrelated system event"),
   ];
-  await writeFile(
-    kubectl,
-    [
-      `#!${process.execPath}`,
-      "const query = process.argv.at(-1);",
-      `const lines = query.startsWith("/api/v1/pods?") ? ${JSON.stringify(pods)} : ${JSON.stringify(events)};`,
-      "for (const line of lines) process.stdout.write(JSON.stringify(line) + '\\n');",
-      'process.stdout.write(\'{"type":"MODIFIED","object":\');',
-      // A live watch runs until stopped; a stranded one exits on its own after a minute.
-      "setTimeout(() => {}, 60_000);",
-      "",
-    ].join("\n"),
-  );
-  await chmod(kubectl, 0o755);
-  const captureBarrierDirectory = join(root, "state");
-  const watchAwareTest = ({ name, id }) =>
-    [
-      'import { readdir, readFile, writeFile } from "node:fs/promises";',
-      'import { join } from "node:path";',
-      'import test from "node:test";',
-      'import { setTimeout as delay } from "node:timers/promises";',
-      `const clusterDirectory = ${JSON.stringify(clusterDirectory)};`,
-      `const captureBarrierDirectory = ${JSON.stringify(captureBarrierDirectory)};`,
-      "const expectedCaptures = Number(process.env.CI_RUNNER_TEST_EXPECTED_CAPTURES ?? 1);",
-      'const barrier = process.env.CI_RUNNER_TEST_CAPTURE_BARRIER ?? "single";',
-      "const markerPrefix = `capture-ready-${barrier}-`;",
-      `test(${JSON.stringify(name)}, async () => {`,
-      "  if (!process.env.OPENCLAW_CI_CONTAINER_LOG_DIR) return;",
-      "  let watchReady = false;",
-      "  for (let attempt = 0; attempt < 200; attempt += 1) {",
-      "    const names = await readdir(clusterDirectory);",
-      "    const streams = await Promise.all(",
-      '      names.filter((entry) => entry.startsWith("agent-activity-")).map(async (entry) => ({',
-      "        name: entry,",
-      '        lines: (await readFile(join(clusterDirectory, entry), "utf8").catch((error) =>',
-      '          error?.code === "ENOENT" ? "" : Promise.reject(error),',
-      '        )).split("\\n").filter(Boolean).length,',
-      "      })),",
-      "    );",
-      '    const podStreams = streams.filter(({ name: entry }) => entry.endsWith("-pods.ndjson"));',
-      '    const eventStreams = streams.filter(({ name: entry }) => entry.endsWith("-events.ndjson"));',
-      `    const podsReady = podStreams.length > 0 && podStreams.every(({ lines }) => lines >= ${pods.length});`,
-      `    const eventsReady = eventStreams.length > 0 && eventStreams.every(({ lines }) => lines >= ${events.length});`,
-      "    if (podStreams.length === expectedCaptures && eventStreams.length === expectedCaptures && podsReady && eventsReady) {",
-      "      watchReady = true;",
-      "      break;",
-      "    }",
-      "    await delay(10);",
-      "  }",
-      '  if (!watchReady) throw new Error("timed out waiting for Agent namespace watch output");',
-      `  await writeFile(join(captureBarrierDirectory, \`\${markerPrefix}${id}\`), "ready");`,
-      "  for (let attempt = 0; attempt < 200; attempt += 1) {",
-      "    const acknowledgements = (await readdir(captureBarrierDirectory)).filter((entry) => entry.startsWith(markerPrefix));",
-      "    if (acknowledgements.length === expectedCaptures) return;",
-      "    await delay(10);",
-      "  }",
-      '  throw new Error("timed out waiting for concurrent capture acknowledgements");',
-      "});",
-      "",
-    ].join("\n");
-  await writeFile(
-    join(root, "tests/integration/agent.test.mjs"),
-    watchAwareTest({ name: "agent file passes", id: "agent" }),
-  );
-  await writeJson(join(root, "scripts/ci/k3d-lane.json"), {
-    files: [{ path: "tests/integration/agent.test.mjs", expectedTests: ["agent file passes"] }],
-  });
-  await writeJson(join(root, "scripts/ci/suites.json"), {
-    version: 1,
-    lanes: { "k3d-lane": "./k3d-lane.json" },
-    groups: {},
+  const kubectl = await writeK3dKubectl(root, { kind: "watch", pods, events });
+  const watchCase = {
+    kind: "watch",
+    clusterDirectory,
+    captureBarrierDirectory: join(root, "state"),
+    podRecords: pods.length,
+    eventRecords: events.length,
+  };
+  await writeK3dChildTest(join(root, "tests/integration/agent.test.mjs"), {
+    ...watchCase,
+    name: "agent file passes",
+    id: "agent",
   });
 
-  const result = run(
-    root,
-    [
-      "run",
-      "k3d-lane",
-      "--manifest",
-      join(root, "scripts/ci/suites.json"),
-      "--root",
-      root,
-      "--state",
-      statePath,
-      "--results",
-      resultsPath,
-    ],
-    {
-      OCC_KUBECTL_BIN: kubectl,
-      CI_RUNNER_TEST_CAPTURE_BARRIER: "single",
-      CI_RUNNER_TEST_EXPECTED_CAPTURES: "1",
-    },
-  );
+  const result = run(root, args, {
+    OCC_KUBECTL_BIN: kubectl,
+    CI_RUNNER_TEST_CAPTURE_BARRIER: "single",
+    CI_RUNNER_TEST_EXPECTED_CAPTURES: "1",
+  });
 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(await readFile(resultsPath, "utf8")).status, "passed");
@@ -5743,10 +5770,11 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
 
   // Two files sharing the runner under fileConcurrency watch the same cluster at once. Each
   // keeps its own watch streams, so neither truncates nor deletes the other's capture.
-  await writeFile(
-    join(root, "tests/integration/agent-sibling.test.mjs"),
-    watchAwareTest({ name: "sibling file passes", id: "sibling" }),
-  );
+  await writeK3dChildTest(join(root, "tests/integration/agent-sibling.test.mjs"), {
+    ...watchCase,
+    name: "sibling file passes",
+    id: "sibling",
+  });
   const pairFiles = [
     "tests/integration/agent.test.mjs",
     "tests/integration/agent-sibling.test.mjs",
@@ -5946,6 +5974,30 @@ test("audit fails when a referenced lane cannot be loaded", async (t) => {
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /ENOENT.*missing-lane\.json/);
   assert.equal(missing.stdout, "");
+});
+
+test("audit rejects prototype keys instead of silently dropping file environment", async (t) => {
+  const root = await fixture(t);
+  await writeFile(join(root, "tests/integration/env.test.mjs"), "import 'node:test';\n");
+  const result = await auditManifest(root, {
+    lanes: {
+      baseline: {
+        files: [
+          {
+            path: "tests/integration/env.test.mjs",
+            env: JSON.parse('{"__proto__":"configured"}'),
+          },
+        ],
+      },
+    },
+  });
+  assert.equal(result.status, 1);
+  const summary = JSON.parse(result.stdout);
+  assert.deepEqual(
+    summary.issues.map(({ code }) => code),
+    ["invalid-manifest"],
+  );
+  assert.match(summary.issues[0].message, /files\.0\.env\.__proto__/);
 });
 
 test("audit rejects obsolete manifest selectors", async (t) => {
@@ -8565,23 +8617,6 @@ for (const scenario of [
 
 test("run publishes a failed wait's followed container log, redacted, beside Agent activity", async (t) => {
   const root = await fixture(t);
-  const clusterDirectory = join(root, "cluster");
-  await mkdir(clusterDirectory);
-  const statePath = join(root, "state/k3d.json");
-  const resultsPath = join(root, "results/k3d.json");
-  await writeJson(statePath, {
-    lane: "k3d-lane",
-    resources: [
-      {
-        kind: "k3d-cluster",
-        status: "ready",
-        name: "owned-cluster",
-        directory: clusterDirectory,
-        kubeconfig: join(clusterDirectory, "kubeconfig"),
-        context: "k3d-owned-cluster",
-      },
-    ],
-  });
   const pod = {
     metadata: {
       namespace: "occ-agent-a",
@@ -8632,97 +8667,22 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
   // the test helper's log follow and snapshots; the log ends after a slow exit.
   const bin = join(root, "bin");
   await mkdir(bin);
-  const kubectl = join(bin, "kubectl");
-  await writeFile(
-    kubectl,
+  const kubectl = await writeK3dKubectl(bin, { kind: "stop", pod, events, logLines });
+  await writeK3dChildTest(join(root, "tests/integration/stop.test.mjs"), { kind: "stop" });
+  await writeK3dChildTest(join(root, "tests/integration/pass.test.mjs"), { kind: "passing" });
+
+  const { clusterDirectory, statePath, args } = await prepareK3dDiagnosticsRun(
+    root,
     [
-      `#!${process.execPath}`,
-      "const args = process.argv.slice(2);",
-      'if (args.includes("logs")) {',
-      `  process.stdout.write(${JSON.stringify(`${logLines.join("\n")}\n`)});`,
-      "  process.stdout.write(`2026-10-08T07:43:53.6Z child value ${process.env.OCC_TEST_CHILD_ONLY}\\n`);",
-      // Split one structured record across actual pipe writes; neither fragment may persist.
-      '  process.stdout.write(\'2026-10-08T07:43:53.7Z OCSF-JSON {"detail":"private-structured-split\');',
-      "  setTimeout(() => process.stdout.write('-tail\"}\\n'), 100);",
-      "  process.stderr.write('follow note\\nGET https://api Authorization: Bearer do-not-publish-verbose');",
-      "  setTimeout(() => process.stdout.write('2026-10-08T07:44:22.0Z [gateway] exit 0'), 300);",
-      '} else if (args.includes("get") && args.includes("pods")) {',
-      `  process.stdout.write(JSON.stringify({ items: [${JSON.stringify(pod)}] }));`,
-      '} else if (args.includes("get") && args.includes("events")) {',
-      `  process.stdout.write(JSON.stringify({ items: ${JSON.stringify(events)} }));`,
-      "} else {",
-      "  setTimeout(() => {}, 60_000);",
-      "}",
-      "",
-    ].join("\n"),
-  );
-  await chmod(kubectl, 0o755);
-  const helper = join(repositoryRoot, "tests/helpers/container-log-capture.mjs");
-  await writeFile(
-    join(root, "tests/integration/stop.test.mjs"),
-    [
-      'import test from "node:test";',
-      `import { followContainerLog } from ${JSON.stringify(helper)};`,
-      "let snapshots = 0;",
-      'test("gateway stop is confirmed", async (t) => {',
-      "  const log = followContainerLog({",
-      '    args: ["logs", "--follow", "--timestamps"],',
-      "    env: process.env,",
-      '    target: { namespace: "occ-agent-a", pod: "gateway-0", container: "gateway" },',
-      "    snapshot: async () => {",
-      '      if (process.env.SNAPSHOT_FAILS_AFTER === String(++snapshots)) throw new Error("read failed");',
-      '      const read = async (kind) => JSON.parse((await import("node:child_process"))',
-      '        .execFileSync("kubectl", ["get", kind, "-o", "json"], { encoding: "utf8" })).items;',
-      '      return { pods: await read("pods"), events: await read("events") };',
-      "    },",
-      "  });",
-      "  try {",
-      '    process.env.SNAPSHOT_FAILS_AFTER = "2";',
-      '    await log.attachOnFailure(t, "passing wait", async () => "settled");',
-      '    log.mark("stop requested");',
-      '    await log.attachOnFailure(t, "terminal response wait", async () => {',
-      '      throw new Error("timed out");',
-      "    });",
-      "  } finally {",
-      "    await log.stop();",
-      "  }",
-      "});",
-      "",
-    ].join("\n"),
-  );
-  await writeFile(
-    join(root, "tests/integration/pass.test.mjs"),
-    'import test from "node:test";\ntest("passes", () => {});\n',
-  );
-  await writeJson(join(root, "scripts/ci/k3d-lane.json"), {
-    env: { OCC_TEST_CHILD_ONLY: childSecret },
-    files: [
       { path: "tests/integration/stop.test.mjs", expectedTests: ["gateway stop is confirmed"] },
       { path: "tests/integration/pass.test.mjs", expectedTests: ["passes"] },
     ],
-  });
-  await writeJson(join(root, "scripts/ci/suites.json"), {
-    version: 1,
-    lanes: { "k3d-lane": "./k3d-lane.json" },
-    groups: {},
-  });
-
-  const result = run(
-    root,
-    [
-      "run",
-      "k3d-lane",
-      "--manifest",
-      join(root, "scripts/ci/suites.json"),
-      "--root",
-      root,
-      "--state",
-      statePath,
-      "--results",
-      resultsPath,
-    ],
-    { OCC_KUBECTL_BIN: kubectl, PATH: `${bin}:${process.env.PATH}` },
+    { OCC_TEST_CHILD_ONLY: childSecret },
   );
+  const result = run(root, args, {
+    OCC_KUBECTL_BIN: kubectl,
+    PATH: `${bin}:${process.env.PATH}`,
+  });
 
   assert.equal(result.status, 1, result.stderr);
   const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
@@ -8796,27 +8756,13 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
 for (const earlyLogExit of [false, true]) {
   test(`run retains controller readiness evidence before its fixture namespace is deleted (early log exit: ${earlyLogExit})`, async (t) => {
     const root = await fixture(t);
-    const clusterDirectory = join(root, "cluster");
     const bin = join(root, "bin");
-    await mkdir(clusterDirectory);
     await mkdir(bin);
-    const statePath = join(root, "state/k3d.json");
-    const resultsPath = join(root, "results/k3d.json");
     const deleted = join(root, "namespace-deleted");
     const calls = join(root, "kubectl-calls.jsonl");
-    await writeJson(statePath, {
-      lane: "k3d-lane",
-      resources: [
-        {
-          kind: "k3d-cluster",
-          status: "ready",
-          name: "owned-cluster",
-          directory: clusterDirectory,
-          kubeconfig: join(clusterDirectory, "kubeconfig"),
-          context: "k3d-owned-cluster",
-        },
-      ],
-    });
+    const { clusterDirectory, statePath, args } = await prepareK3dDiagnosticsRun(root, [
+      { path: "tests/integration/startup.test.mjs", expectedTests: ["controller startup fails"] },
+    ]);
     // These are the controller fixture's real labels, without Compute's managed-by label.
     // The Agent watch sees no Pod; only the startup wait's capture can retain this failure.
     const labels = {
@@ -8854,94 +8800,30 @@ for (const earlyLogExit of [false, true]) {
         eventValue,
       ].join("\n"),
     };
-    const kubectl = join(bin, "kubectl");
-    await writeFile(
-      kubectl,
-      [
-        `#!${process.execPath}`,
-        'const fs = require("node:fs");',
-        'const path = require("node:path");',
-        "const args = process.argv.slice(2);",
-        `const root = ${JSON.stringify(root)};`,
-        `fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + "\\n");`,
-        'const deployment = args.find((arg) => arg.startsWith("deployment/"));',
-        'const ready = deployment && path.join(root, deployment.replace("/", "-") + ".ready");',
-        'if (args.includes("logs")) {',
-        `  if (${earlyLogExit} && args.includes("--follow=true")) {`,
-        '    fs.writeFileSync(ready, "ready");',
-        '    process.stderr.write("container is waiting to start: ContainerCreating");',
-        "    process.exit(1);",
-        "  }",
-        '  process.stdout.write("startup: configured role still has bindings\\nAuthorization: Bearer private-header\\n");',
-        '  fs.writeFileSync(ready, "ready");',
-        '  if (args.includes("--follow=true")) setTimeout(() => {}, 60000);',
-        '} else if (args.includes("wait")) {',
-        "  const deadline = Date.now() + 5000;",
-        "  const check = () => {",
-        "    if (!fs.existsSync(ready) && Date.now() < deadline) return setTimeout(check, 10);",
-        '    if (deployment === "deployment/healthy") return process.exit(0);',
-        '    process.stderr.write("error: timed out waiting for the condition on deployments/openclaw-enterprise-api\\n");',
-        "    process.exit(1);",
-        "  };",
-        "  check();",
-        '} else if (args.includes("--raw")) {',
-        "  setTimeout(() => {}, 60000);",
-        "} else {",
-        `  if (fs.existsSync(${JSON.stringify(deleted)}) || (${earlyLogExit} && args.includes("events"))) process.exit(1);`,
-        `  const items = args.includes("pods") ? [${JSON.stringify(pod)}] : [${JSON.stringify(event)}];`,
-        "  process.stdout.write(JSON.stringify({ items }));",
-        "}",
-      ].join("\n"),
-    );
-    await chmod(kubectl, 0o755);
-    const helper = join(repositoryRoot, "tests/helpers/kubernetes-real.mjs");
-    await writeFile(
-      join(root, "tests/integration/startup.test.mjs"),
-      [
-        'import test from "node:test";',
-        'import { rm, writeFile } from "node:fs/promises";',
-        `import { waitForDeploymentAvailable } from ${JSON.stringify(helper)};`,
-        'test("controller startup fails", async (t) => {',
-        `  await rm(${JSON.stringify(join(root, "deployment-healthy.ready"))}, { force: true });`,
-        `  await rm(${JSON.stringify(join(root, "deployment-openclaw-enterprise-api.ready"))}, { force: true });`,
-        `  t.after(() => writeFile(${JSON.stringify(deleted)}, "deleted"));`,
-        `  const selection = { kubeconfigPath: ${JSON.stringify(join(clusterDirectory, "kubeconfig"))}, kubernetesContext: "k3d-owned-cluster" };`,
-        `  const target = { namespace: ${JSON.stringify(namespace)}, container: "api", labels: ${JSON.stringify(labels)} };`,
-        '  await waitForDeploymentAvailable(t, selection, { ...target, deployment: "healthy" });',
-        '  await waitForDeploymentAvailable(t, selection, { ...target, deployment: "openclaw-enterprise-api" });',
-        "});",
-      ].join("\n"),
-    );
-    await writeJson(join(root, "scripts/ci/k3d-lane.json"), {
-      files: [
-        { path: "tests/integration/startup.test.mjs", expectedTests: ["controller startup fails"] },
-      ],
-    });
-    await writeJson(join(root, "scripts/ci/suites.json"), {
-      version: 1,
-      lanes: { "k3d-lane": "./k3d-lane.json" },
-      groups: {},
-    });
-    const result = run(
+    const kubectl = await writeK3dKubectl(bin, {
+      kind: "startup",
       root,
-      [
-        "run",
-        "k3d-lane",
-        "--manifest",
-        join(root, "scripts/ci/suites.json"),
-        "--root",
-        root,
-        "--state",
-        statePath,
-        "--results",
-        resultsPath,
-      ],
-      {
-        OCC_KUBECTL_BIN: kubectl,
-        PATH: `${bin}:${process.env.PATH}`,
-        OCC_TEST_EVENT_VALUE: eventValue,
+      calls,
+      deleted,
+      earlyLogExit,
+      pod,
+      event,
+    });
+    await writeK3dChildTest(join(root, "tests/integration/startup.test.mjs"), {
+      kind: "startup",
+      root,
+      deleted,
+      selection: {
+        kubeconfigPath: join(clusterDirectory, "kubeconfig"),
+        kubernetesContext: "k3d-owned-cluster",
       },
-    );
+      target: { namespace, container: "api", labels },
+    });
+    const result = run(root, args, {
+      OCC_KUBECTL_BIN: kubectl,
+      PATH: `${bin}:${process.env.PATH}`,
+      OCC_TEST_EVENT_VALUE: eventValue,
+    });
     assert.equal(result.status, 1, result.stderr);
     assert.match(
       result.stderr,

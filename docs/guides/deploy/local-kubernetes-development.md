@@ -45,13 +45,10 @@ Startup resolves the engine's host API socket. Do not export
 `DOCKER_HOST` or `CONTAINER_HOST` from the path `podman info` reports: on a
 machine-backed installation that path exists only inside the virtual machine.
 
-Build the CLI and start the Kubernetes profile:
+Build the CLI and start the Kubernetes-only profile, which needs no selection:
 
 ```bash
 go build -trimpath -o bin/occ ./cmd/occ
-export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
-export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
-export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
 ./scripts/dev-up
 ```
 
@@ -74,6 +71,13 @@ Recreate the installation after runtime, kernel, or image changes.
 To enable GitHub repository credentials during a fresh start, prepare the
 [approved local repository inputs](local-repository-credentials.md#prepare-the-approved-inputs)
 before running the launcher.
+
+### Select another profile
+
+Set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` for
+[Compose OCC](#run-occ-in-compose-with-kubernetes-compute), or
+`OCC_DEVELOPMENT_COMPUTE_DRIVER=docker` for the Docker Compute preview, which
+cannot deploy Agents. See the [profile table](../../reference/cli/local-development.md#select-a-profile).
 
 ### Sign in through Keycloak
 
@@ -109,8 +113,7 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
 ```
 
 Expect `Control plane: Compose` and `Compute Driver: Kubernetes`. PostgreSQL,
-OCC, and its worker run in Compose; Agents run in k3d. Keep these exports for
-cleanup. This profile includes both default Presets, the Codex Plugin Driver,
+OCC, and its worker run in Compose; Agents run in k3d. This profile includes both default Presets, the Codex Plugin Driver,
 and the same Codex seccomp preparation, but not the Kubernetes-only browser
 endpoint, private workspace routing, or repository service. Dedicated Codex
 requires [hybrid private routing](local-compose-kubernetes.md), configured
@@ -126,8 +129,6 @@ For OpenShell, use the owned launcher:
 
 ```bash
 go build -trimpath -o bin/occ ./cmd/occ
-export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
-export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 ./scripts/dev-up
 ```
@@ -165,8 +166,7 @@ To test a candidate release, [select its OpenShell images by digest](local-opens
 For additional binary and endpoint rules, see [startup network policy](local-sandbox-network-policy.md).
 
 Set `OCC_DEVELOPMENT_CONTAINER_ENGINE=podman` or `docker` to select the host
-engine. Kubernetes-only startup rejects Compose arguments. Keep profile exports
-for cleanup; otherwise startup defaults to Compose with Docker Compute.
+engine. Kubernetes-only startup rejects Compose arguments.
 
 Startup prints the private [state directory](../../reference/settings/development.md#required-development-controller-environment)
 containing kubeconfig and credentials. Its default is `openclaw-development`
