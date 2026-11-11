@@ -105,9 +105,26 @@ export function nativeAdminConfigurationSupported(
   );
 }
 
-/** Whether the Configuration turns on the browser UI at all; the native admin opt-in sets it. */
-export function nativeAdminControlUiEnabled(revision: Readonly<AgentRevision>): boolean {
-  return asRecord(asRecord(revision.configuration.gateway)?.controlUi)?.enabled === true;
+/**
+ * Whether the Configuration has turned on browser chat for this Agent at all, correct or not.
+ * The opt-in turns on Control UI and adds the Agent's origin and trusted-proxy auth. Control UI
+ * with neither, as the default Preset's loopback-only port-forward access, is not the opt-in.
+ */
+export function nativeAdminBrowserChatTurnedOn(
+  revision: Readonly<AgentRevision>,
+  origin: string,
+): boolean {
+  const gateway = asRecord(revision.configuration.gateway);
+  const ui = asRecord(gateway?.controlUi);
+  const auth = asRecord(gateway?.auth);
+  if (ui?.enabled !== true) {
+    return false;
+  }
+  return (
+    (Array.isArray(ui.allowedOrigins) && ui.allowedOrigins.includes(origin)) ||
+    auth?.mode === "trusted-proxy" ||
+    asRecord(auth?.trustedProxy) !== undefined
+  );
 }
 
 /** Prepare the explicit opt-in before provisioning saves the initial Configuration. */

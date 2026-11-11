@@ -5,6 +5,7 @@ import { once } from "node:events";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import test from "node:test";
 
+import defaultCodexPreset from "../../deploy/presets/default-codex.json" with { type: "json" };
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import {
@@ -473,15 +474,31 @@ test("native browser status selects exact Agent authority and reports lifecycle 
   assert.equal(restored.data.activeRevisionId, pending.id);
 });
 
-// Finding 3168: an unsupported status names its cause, so the console can say what to change.
-// The browser UI never turned on is not-enabled; any other refused native setting is
-// configuration. Both Agents are deployed and running.
+// What Create Agent saves from the shipped default Preset (Console `configurationTemplate`):
+// its gateway, with Control UI on for loopback port-forward origins only, and the selected
+// model. `nativeOrigin` is added to the allowed origins when given.
+function defaultPresetConfiguration(nativeOrigin) {
+  const { gateway } = structuredClone(defaultCodexPreset.template.configuration.values);
+  if (nativeOrigin !== undefined) {
+    gateway.controlUi.allowedOrigins.push(nativeOrigin);
+  }
+  return { ...createHarnessConfiguration("openclaw", "gpt-4.1"), gateway };
+}
+
+// Findings 3168 and 3189: an unsupported status names its cause, so the console can say what to
+// change. A Configuration without the browser chat opt-in is not-enabled: Control UI off, or on
+// without this Agent's origin and trusted-proxy auth. A browser chat setup that refuses for
+// another reason is configuration. All Agents are deployed and running.
 test("native browser status names why a Configuration is unsupported", async (t) => {
   const context = await createNativeAdminFixture(t);
   for (const [name, configure, reason] of [
     ["Browser chat off", () => createHarnessConfiguration("openclaw", "gpt-4.1"), "not-enabled"],
+    // Create Agent from the default Preset with Enable browser chat unchecked (finding 3189).
+    ["Default Preset", () => defaultPresetConfiguration(), "not-enabled"],
     // Browser chat is on, but its allowed origin is the console, not this Agent.
     ["Other origin", () => nativeAdminHarnessConfiguration(publicOrigin), "configuration"],
+    // This Agent's origin is allowed, but the gateway keeps password auth.
+    ["Password auth", defaultPresetConfiguration, "configuration"],
   ]) {
     const { agent } = await createLiveNativeAgent(context.fixture, context.namespace, name, {
       configure,
