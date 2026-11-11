@@ -7,6 +7,8 @@ import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { createOccLogger, resemblesCredential } from "../../apps/controller/src/logging.ts";
+import { redactLogLine, redactOutputLine } from "../../scripts/ci/failure-redaction.mjs";
 import {
   k3sImage,
   kubectlVersion,
@@ -23,6 +25,9 @@ import {
   openShellSettingsChange,
   observeSandboxProbe,
   summarizeWorkerEvents,
+  createOpenShellWorkerLogEmitter,
+  workerDiagnosticLines,
+  rethrowOpenShellFailure,
 } from "../helpers/k3d-failure-diagnostics.mjs";
 import { listen } from "../helpers/listen.ts";
 import {
@@ -36,6 +41,9 @@ import {
 } from "../helpers/openshell-kubernetes-real.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { createEnvoyWorkspaceGatewayPlan } from "../helpers/envoy-workspace-gateway.mjs";
+import { selfSigned } from "../helpers/certificates.mjs";
+import { recordTeardown } from "../conformance/kubernetes-teardown-cases.ts";
 
 async function fixture(t, prefix = "ci-openshell-test") {
   const root = await temporaryDirectory(t, `${prefix}-`);
@@ -104,6 +112,206 @@ function ownedCluster(root, name = "openclaw-k8s-openshell-test") {
     context: `k3d-${name}`,
   };
 }
+
+test("OpenShell worker sinks omit response text and share both credential checks", () => {
+  const lines = [];
+  const emit = createOpenShellWorkerLogEmitter(
+    createOccLogger({
+      component: "openshell-test-worker",
+      destination: { write: (line) => lines.push(JSON.parse(line)) },
+    }),
+  );
+  const token = "ghs_" + "a_b".repeat(6);
+  assert.equal(resemblesCredential(token), true);
+  assert.equal(redactLogLine(token, [], 160), token, "CI redaction alone misses this shape");
+  const event = {
+    event: "worker.compute-prepare-failed",
+    revisionId: "rev_test",
+    code: "KUBERNETES_API_REJECTED",
+    step: "gateway_deployment",
+    status: 422,
+    errorClass: "KubernetesApiError",
+    validationCategory: "PVC_ADMISSION_LABELS",
+    reason: "PrivateResponseWord",
+    message: "private response text",
+    cause: token,
+  };
+  emit(event);
+  emit({ event: "worker.completed", code: "AUTHORIZATION_DENIED" });
+  emit({ event: "worker.error", code: "DEPENDENCY_UNAVAILABLE", cleanupCause: token });
+  emit({ event: "worker.health", message: "private health text" });
+  assert.equal(lines.length, 3, "health stays at the suppressed debug level");
+  const { time: _time, ...first } = lines[0];
+  assert.deepEqual(first, {
+    severity: "ERROR",
+    service: "openshell-test-worker",
+    event: event.event,
+    revisionId: event.revisionId,
+    code: event.code,
+    step: event.step,
+    status: event.status,
+    errorClass: event.errorClass,
+    validationCategory: event.validationCategory,
+  });
+  assert.equal(lines[2].severity, "ERROR");
+  assert.equal(lines[2].cleanupCause, undefined);
+  assert.equal(lines[1].code, "ACCESS_DENIED");
+  assert.equal(redactOutputLine(JSON.stringify(lines[1]), [], "", 1000), JSON.stringify(lines[1]));
+  const summaries = summarizeWorkerEvents(
+    [
+      event,
+      {
+        event: "worker.completed",
+        code: "AUTHORIZATION_DENIED",
+        cleanupCause: token,
+      },
+    ],
+    "rev_test",
+  );
+  assert.equal(summaries[0].cause, undefined);
+  assert.equal(summaries[0].validationCategory, event.validationCategory);
+  assert.equal(
+    summaries[1].code,
+    "AUTHORIZATION_DENIED",
+    "returned evidence retains the exact fixed code",
+  );
+  assert.equal(summaries[1].cleanupCause, undefined);
+  assert.match(workerDiagnosticLines({ events: summaries }).at(-1), /PVC_ADMISSION_LABELS/);
+});
+
+test("OpenShell persisted queue records survive the reporter's per-line limit", () => {
+  const revisionId = "rev_10000000-0000-4000-8000-000000000003";
+  const queue = Array.from({ length: 8 }, (_, index) => ({
+    operation: "agent_revision.reconcile",
+    revisionId: revisionId.slice(0, -1) + index,
+    state: "queued",
+    attempt: index,
+    completed: false,
+  }));
+  const lines = workerDiagnosticLines({
+    operation: "agent_revision.reconcile",
+    revisionId,
+    persisted: { activeRevisionId: revisionId, revision: { revisionId, revisionNumber: 2 }, queue },
+    events: [{ event: "worker.completed", code: "AUTHORIZATION_DENIED" }],
+  });
+  assert.equal(lines.length, 10);
+  assert.deepEqual(
+    lines.slice(1, 9).map((line) => JSON.parse(line.slice(line.indexOf("{")))),
+    queue,
+  );
+  for (const line of lines) {
+    assert.ok(line.length <= 1000);
+    assert.equal(redactOutputLine(line, [], "", 1000), line);
+    assert.doesNotThrow(() => JSON.parse(line.slice(line.indexOf("{"))));
+  }
+  assert.match(lines.at(-1), /ACCESS_DENIED/);
+});
+
+test("OpenShell activation diagnostics share one deadline and preserve the original failure", async () => {
+  const original = new Error("activation failed");
+  await assert.rejects(
+    rethrowOpenShellFailure(original, () => {
+      throw new Error("diagnostic output failed");
+    }),
+    (error) => error === original,
+  );
+  let release;
+  const read = new Promise((resolve) => {
+    release = resolve;
+  });
+  let complete;
+  const completed = new Promise((resolve) => {
+    complete = resolve;
+  });
+  let lateLines;
+  await assert.rejects(
+    rethrowOpenShellFailure(
+      original,
+      async () => {
+        await read;
+        lateLines = workerDiagnosticLines({ events: [] });
+        complete();
+      },
+      { timeoutMs: 20 },
+    ),
+    (error) => error === original,
+  );
+  release();
+  await completed;
+  assert.deepEqual(
+    lateLines,
+    [],
+    "a read finishing after the shared deadline cannot emit late evidence",
+  );
+});
+
+test("OpenShell Envoy cleanup reports rejected deletes and continues remaining cleanup", async (t) => {
+  const directory = await fixture(t);
+  const certificate = await selfSigned(directory);
+  await withEnvironment(
+    {
+      OCC_TEST_GATEWAY_CA_CERT_PATH: certificate.certPath,
+      OCC_TEST_GATEWAY_CA_KEY_PATH: certificate.keyPath,
+    },
+    async () => {
+      for (const refused of ["gatewayclass", "networkpolicy"]) {
+        const outcomes = [];
+        const attempted = [];
+        const { testContext, teardown } = recordTeardown({
+          onOutcome: (outcome) => outcomes.push(outcome),
+        });
+        teardown.context.after(() => attempted.push("remaining cleanup"));
+        // Run the real plan and its Helm rendering. Only cluster I/O is substituted;
+        // the regression concerns the actual registered cleanup's rejected command.
+        await createEnvoyWorkspaceGatewayPlan(
+          teardown.context,
+          { platformNamespace: "cleanup-fixture" },
+          {
+            applyManifest: async () => {},
+            waitFor: async (_description, read) => {
+              assert.ok(await read());
+            },
+            resource: async (kind) => {
+              if (kind === "secret") {
+                return { data: { "tls.crt": certificate.cert } };
+              }
+              return {
+                status: {
+                  conditions: ["Ready", "Accepted", "Programmed"].map((type) => ({
+                    type,
+                    status: "True",
+                  })),
+                  listeners: [
+                    { name: "https", conditions: [{ type: "Accepted", status: "True" }] },
+                  ],
+                },
+              };
+            },
+            kubectl: async (...args) => {
+              if (args[0] === "get") {
+                return JSON.stringify({ items: [{ spec: { podCIDR: "10.42.0.0/24" } }] });
+              }
+              assert.equal(args[0], "delete");
+              assert.ok(args.includes("--ignore-not-found=true"));
+              if (args[1] === "gatewayclass") {
+                assert.ok(args.includes("--wait=false"));
+              }
+              attempted.push(args[1]);
+              if (args[1] === refused) {
+                throw new Error("fixture delete rejected");
+              }
+              return "";
+            },
+          },
+        );
+        await assert.rejects(testContext.hooks[0](), /fixture delete rejected/);
+        assert.ok(attempted.includes(refused));
+        assert.equal(attempted.at(-1), "remaining cleanup");
+        assert.deepEqual(outcomes, ["failed"]);
+      }
+    },
+  );
+});
 
 test("OpenShell turnover accepts established relay failures, not connection admission denials", () => {
   const domain = "gateway.fixture.svc.cluster.local";
@@ -264,18 +472,25 @@ test("the OpenShell installation wait surfaces terminal deployment refusals on t
   const waitOnce = (description, read) => waitFor(description, read, { timeoutMs: 0 });
   const refusalCode = "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE";
   const privateDetail = "private requirements detail";
-  const activate = (deployment, activeRevisionId = null, workerEvents = []) =>
+  const activate = (
+    deployment,
+    activeRevisionId = null,
+    workerEvents = [],
+    checkDeploymentBeforeActivation = false,
+    deploymentStatus = 200,
+  ) =>
     waitForOpenShellRevisionActivation(waitOnce, {
       agentPath,
       revisionId,
       workerEvents,
+      checkDeploymentBeforeActivation,
       request: async (method, path) => {
         assert.equal(method, "GET");
         if (path === agentPath) {
           return { status: 200, data: { activeRevisionId } };
         }
         assert.equal(path, `${agentPath}/deployments/${revisionId}`);
-        return { status: 200, data: deployment };
+        return { status: deploymentStatus, data: deployment };
       },
     });
 
@@ -331,6 +546,26 @@ test("the OpenShell installation wait surfaces terminal deployment refusals on t
   assert.deepEqual(await activate({ status: "succeeded", error: null }, revisionId), {
     activeRevisionId: revisionId,
   });
+  // Replacement reconciliation can fail after publishing the active pointer.
+  await assert.rejects(
+    activate({ status: "failed", error: { code: refusalCode } }, revisionId, [], true),
+    {
+      code: refusalCode,
+      message: `OpenShell revision ${revisionId} deployment failed (${refusalCode}).`,
+    },
+  );
+  await assert.rejects(activate(undefined, revisionId, [], true, 503), {
+    name: "AssertionError",
+    message: /OpenShell deployment status read failed/,
+  });
+  assert.deepEqual(await activate({ status: "succeeded" }, revisionId, [], true), {
+    activeRevisionId: revisionId,
+  });
+  assert.deepEqual(
+    await activate(undefined, revisionId, [], false, 503),
+    { activeRevisionId: revisionId },
+    "initial activation keeps its existing pointer-first behavior",
+  );
 });
 
 // Finding 1846: the worker can claim the work again between reads. The status is read only once

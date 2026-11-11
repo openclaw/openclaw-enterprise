@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { isDeepStrictEqual } from "node:util";
+import { createWorkerLogEmitter, resemblesCredential } from "../../apps/controller/src/logging.ts";
 import {
   isCredentialLine,
   maskPrivateKeyLines,
@@ -7,7 +8,11 @@ import {
   redactLogLine,
 } from "../../scripts/ci/failure-redaction.mjs";
 import { compareEvents, eventObservedTime } from "../../scripts/ci/kubernetes-event-time.ts";
-import { diagnosticDeadlinePassed, diagnosticRequestTimeout } from "./kubernetes-real.mjs";
+import {
+  diagnosticDeadlinePassed,
+  diagnosticRequestTimeout,
+  withinDiagnosticDeadline,
+} from "./kubernetes-real.mjs";
 
 // Failure evidence for k3d tests whose own error says too little. Everything here is
 // redacted before it is clipped: a value cut in half could no longer be matched.
@@ -44,12 +49,49 @@ function summarizeWorkerEvent(event) {
         ([key, value]) =>
           (typeof value === "string" &&
             /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u.test(value) &&
-            !isCredentialLine(value) &&
-            redactLogLine(value, [], 160) === value) ||
+            !resemblesCredential(value) &&
+            ((key === "code" && value === "AUTHORIZATION_DENIED") ||
+              (!isCredentialLine(value) && redactLogLine(value, [], 160) === value))) ||
           (typeof value === "number" && Number.isSafeInteger(value)) ||
           (key === "candidatePreparationReached" && typeof value === "boolean"),
       ),
   );
+}
+
+// The reporter drops whole lines naming authorization. Preserve the exact code in
+// returned evidence, but render this one fixed worker classification without that keyword.
+function workerEventForOutput(event) {
+  return event.code === "AUTHORIZATION_DENIED" ? { ...event, code: "ACCESS_DENIED" } : event;
+}
+
+export function createOpenShellWorkerLogEmitter(logger) {
+  const emit = createWorkerLogEmitter(logger);
+  return (event) => emit(workerEventForOutput(summarizeWorkerEvent(event)));
+}
+
+export function workerDiagnosticLines({ operation, revisionId, persisted, events }) {
+  if (diagnosticDeadlinePassed()) {
+    return [];
+  }
+  const { queue = [], ...state } = persisted ?? {};
+  return [
+    `OpenShell worker completion diagnostic: ${JSON.stringify({ operation, revisionId, persisted: state })}`,
+    ...queue.map((row) => `OpenShell worker queue: ${JSON.stringify(row)}`),
+    ...[...events]
+      .reverse()
+      .map((event) => `OpenShell worker event: ${JSON.stringify(workerEventForOutput(event))}`),
+  ];
+}
+
+// Both activation catches share one budget and always preserve the original failure,
+// including when collecting, formatting, or writing diagnostics itself fails.
+export async function rethrowOpenShellFailure(error, diagnose, options) {
+  try {
+    await withinDiagnosticDeadline(diagnose, options);
+  } catch {
+    // Evidence is best effort; it must not replace the failure being diagnosed.
+  }
+  throw error;
 }
 
 // Identical events collapse into one entry with a count and their first and last receipt

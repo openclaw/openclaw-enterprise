@@ -312,7 +312,7 @@ export async function startWorkspaceGatewayHostRelay(
   const forwardedPort = Number(new URL(forwarding.url).port);
   const relayName = `oce-openshell-routing-${hash(randomUUID())}`;
   // Bind/startup failure must still close the forwarding process and owned relay.
-  context.after(() => forwarding.stop().catch(() => undefined));
+  context.after(() => forwarding.stop());
   const relayProgram = [
     'const net = require("node:net");',
     "const targetPort = Number(process.argv[1]);",
@@ -419,15 +419,13 @@ export async function createEnvoyWorkspaceGatewayPlan(
   // would block until the platform Namespace's Gateway is gone. That Namespace may be deleted
   // after this cleanup (finding 1711): request the deletion and let the finalizer complete it.
   context.after(async () => {
-    await helpers
-      .kubectl(
-        "delete",
-        "gatewayclass",
-        gatewayClassName,
-        "--ignore-not-found=true",
-        "--wait=false",
-      )
-      .catch(() => undefined);
+    await helpers.kubectl(
+      "delete",
+      "gatewayclass",
+      gatewayClassName,
+      "--ignore-not-found=true",
+      "--wait=false",
+    );
   });
   const gatewayRoutingManifests = await renderGatewayRoutingManifests({
     releaseNamespace: platformNamespace,
@@ -698,7 +696,7 @@ function registerRenderedExternalCleanup(context, manifests, platformNamespace, 
         "--namespace",
         object.namespace,
         "--ignore-not-found=true",
-      ).catch(() => undefined);
+      );
     });
   }
 }

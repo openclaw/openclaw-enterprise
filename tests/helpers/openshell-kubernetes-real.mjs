@@ -200,12 +200,12 @@ export class OpenShellDeploymentFailedError extends Error {
 
 export function waitForOpenShellRevisionActivation(
   waitFor,
-  { request, agentPath, revisionId, workerEvents = [] },
+  { request, agentPath, revisionId, workerEvents = [], checkDeploymentBeforeActivation = false },
 ) {
   return waitFor(`OpenShell revision ${revisionId} activation`, async () => {
     const observed = await request("GET", agentPath);
     assert.equal(observed.status, 200, "OpenShell Agent status read failed.");
-    if (observed.data.activeRevisionId === revisionId) {
+    if (observed.data.activeRevisionId === revisionId && !checkDeploymentBeforeActivation) {
       return observed.data;
     }
     const deployment = await request("GET", `${agentPath}/deployments/${revisionId}`);
@@ -217,7 +217,7 @@ export function waitForOpenShellRevisionActivation(
         workerEvents,
       );
     }
-    return undefined;
+    return observed.data.activeRevisionId === revisionId ? observed.data : undefined;
   });
 }
 
