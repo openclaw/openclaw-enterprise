@@ -71,7 +71,7 @@ starts three minutes before the lane deadline. Gateway Routing and default
 Production TUI use the same deadline. Full and focused runs wait for the producer,
 build their controller and import the verified runtime into their cluster.
 `integration-main` snapshots the Gateway/Agent pair. The consumer rejects
-incomplete mode, pair or artifact outputs before setup. Focused explicit pairs
+incomplete mode, pair or artifact ID before setup. Focused explicit pairs
 skip the producer. Combining an artifact with either Gateway input or a TUI
 upgrade candidate fails before resource allocation.
 
