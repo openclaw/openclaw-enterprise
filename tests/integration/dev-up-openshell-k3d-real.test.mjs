@@ -18,6 +18,7 @@ import {
   preflightOpenShellOwnerBrowser,
   verifyOpenShellOwnerSession,
 } from "../helpers/openshell-owner-session.mjs";
+import { firstAgentComposeImages } from "../helpers/local-first-agent-stack.mjs";
 import { localOpenShellGatewayOptions } from "../helpers/local-openshell-gateway.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
 import { attachDevUpStartupDisposition } from "../helpers/dev-up-startup-disposition.ts";
@@ -35,9 +36,9 @@ const devDown = join(repository, "scripts", "dev-down");
 const selected = process.env.OCC_TEST_DEV_UP_OPENSHELL_REAL === "1";
 const composeSelected = process.env.OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL === "1";
 
-async function startDevelopment(environment) {
+async function startDevelopment(environment, args = []) {
   try {
-    return await execute(devUp, [], {
+    return await execute(devUp, args, {
       cwd: repository,
       env: environment,
       timeout: 1_100_000,
@@ -954,7 +955,41 @@ test(
       await rm(root, { recursive: true, force: true });
     });
 
-    const result = await startDevelopment(environment);
+    const startupArguments = [];
+    const controllerImage = environment.OCC_TEST_DEV_UP_COMPOSE_CONTROLLER_IMAGE;
+    if (controllerImage) {
+      assert.equal(environment.OCC_DEVELOPMENT_CONTAINER_ENGINE, "docker");
+      const runtimeImage = environment.OCC_KUBERNETES_RUNTIME_IMAGE;
+      assert.match(runtimeImage ?? "", /@sha256:[a-f0-9]{64}$/);
+      const override = firstAgentComposeImages(controllerImage);
+      const { stdout: revision } = await execute("git", ["rev-parse", "HEAD"], {
+        cwd: repository,
+        timeout: 10_000,
+      });
+      // Prepared images replace builds only; they must still represent this checkout.
+      for (const image of [controllerImage, runtimeImage]) {
+        const { stdout: imageRevision } = await execute(
+          "docker",
+          [
+            "image",
+            "inspect",
+            "--format",
+            '{{ index .Config.Labels "org.opencontainers.image.revision" }}',
+            image,
+          ],
+          { env: environment, timeout: 30_000, maxBuffer: 1024 * 1024 },
+        );
+        assert.equal(imageRevision.trim(), revision.trim(), `Prepared image source: ${image}`);
+      }
+      const imageFile = join(root, "controller-images.yaml");
+      await writeFile(imageFile, override, { mode: 0o600, flag: "wx" });
+      startupArguments.push("--", "-f", imageFile);
+      t.diagnostic(
+        "Prepared controller/runtime images selected; OCE image builds are not covered.",
+      );
+    }
+
+    const result = await startDevelopment(environment, startupArguments);
     assert.match(result.stdout, /Control plane: Compose/);
     assert.match(result.stdout, /Sandbox Driver: openshell/);
 
@@ -987,6 +1022,18 @@ test(
       assert.equal((await stat(join(stateDirectory, path))).mode & 0o077, 0);
     }
     const compose = loadYaml(await readFile(join(stateDirectory, "compose.yaml"), "utf8"));
+    if (controllerImage) {
+      for (const name of [
+        "migrate",
+        "bootstrap",
+        "controller",
+        "worker-kubernetes",
+        "browser-proxy",
+      ]) {
+        assert.equal(compose.services[name].image, controllerImage);
+        assert.equal(compose.services[name].build, undefined);
+      }
+    }
     for (const serviceName of ["controller", "worker-kubernetes"]) {
       const service = compose.services[serviceName];
       assert.equal(

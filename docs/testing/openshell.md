@@ -8,8 +8,7 @@ last_verified: "2026-11-04"
 
 ## Overview
 
-Run setup and real Agent execution tests from the repository root. Setup selects
-official OpenShell `v0.1.6`. See [images and trust](openshell-oauth.md#prepare-images-and-trust)
+Use official OpenShell `v0.1.6` from the repository root. See [images and trust](openshell-oauth.md#prepare-images-and-trust)
 for versions and qualification limits.
 
 ## Start a reusable development environment
@@ -27,22 +26,19 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 ./scripts/dev-up
 ```
 
-Keep the state directory and environment variables for later commands. Use one
-directory per checkout. The launcher prints its API URL, kubeconfig, context,
-and service-key file. The default kubeconfig and context stay unchanged.
-Set `OCC_DEVELOPMENT_CONTAINER_ENGINE=docker` or `podman` if selection is ambiguous.
+Keep one state directory per checkout and retain its environment. The launcher
+prints the API URL, kubeconfig, context, and service-key file; default Kubernetes
+configuration stays unchanged. Set `OCC_DEVELOPMENT_CONTAINER_ENGINE=docker` or `podman` if selection is ambiguous.
 
-To stop even a partially started environment, run:
+Stop, including after partial startup:
 
 ```sh
 ./scripts/dev-down
 ```
 
-This deletes only the owned cluster and its database. For a Compose control
-plane, set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup: an unset
-control plane follows the Compute Driver, so
-`OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell`
-alone starts Kubernetes-only.
+This deletes only the owned cluster and database. For Compose, set
+`OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup; otherwise the control
+plane follows the Compute Driver, selecting Kubernetes here.
 
 ## Finite repository removal
 
@@ -144,10 +140,9 @@ cannot prove a Linear tool call.
 
 See [host relay diagnostics](docker.md#verify-host-routing-relay-diagnostics).
 
-Stop the reusable environment before running these tests. Each creates and
-removes its own disposable cluster. Install Docker or Podman, k3d, kubectl,
-Helm, and the dependencies in the [testing prerequisites](README.md#requirements-and-credentials).
-Build the local CLI first with `pnpm cli:build`.
+Stop the reusable environment. Tests own disposable clusters. Install
+Docker or Podman, k3d, kubectl, Helm, and the [testing prerequisites](README.md#requirements-and-credentials);
+run `pnpm cli:build` first.
 
 ```sh
 # Kubernetes control plane, including a real first-Agent deployment and browser access checks.
@@ -162,18 +157,26 @@ OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL=1 \
   node --test tests/integration/dev-up-openshell-k3d-real.test.mjs
 ```
 
-Each command selects one case and skips the other. Both check setup, Workspace
-reconciliation, and cleanup. Kubernetes also checks browser access and a model
-reply from a real Agent, using an OIDC protocol fixture. Compose uses a
-synthetic credential without calling a model. Both default to Docker. Set
+Each command selects one case, skipping the other. Both check setup, Workspace
+reconciliation, and cleanup. Kubernetes adds browser access and a real Agent
+reply using an OIDC fixture; Compose uses a synthetic credential without model
+calls. Default: Docker; set
 `OCC_TEST_DEV_UP_CONTAINER_ENGINE=podman` for Podman.
 
-Set `OCC_TEST_NATIVE_BROWSER_RECEIPT` to a new file in an existing directory to
-retain the successful check's source, image identities, and assertion results.
-The test refuses overwrites and prints a temporary receipt path by default.
-OpenShell CI uploads only this JSON as `native-browser-receipt-*` for seven days,
-including successful runs. It excludes cookies, OAuth exchanges, model text, and
-browser media. [Console visual review](../contributing/console-storybook.md#appearance-review)
+For prepared Docker Compose images, set `OCC_TEST_DEV_UP_COMPOSE_CONTROLLER_IMAGE`
+to an immutable development-controller reference under
+`127.0.0.1:<port>/openclaw-ci-first-images-<id>/controller`, and
+`OCC_KUBERNETES_RUNTIME_IMAGE` to an immutable runtime reference. Both must be
+locally inspectable, built from this checkout, and labeled with its revision.
+Retain provenance; never relabel older images. The extra Compose file replaces
+all five services' builds, excluding build coverage but preserving assertions.
+Unset the selector for source builds.
+
+Set `OCC_TEST_NATIVE_BROWSER_RECEIPT` to a new file in an existing directory for
+source, image identities, and assertion results; otherwise a temporary path is
+printed. Overwrites are refused. CI retains this JSON as
+`native-browser-receipt-*` for seven days, including successes, without cookies,
+OAuth exchanges, model text, or browser media. [Console visual review](../contributing/console-storybook.md#appearance-review)
 separately requires screenshots and video. This check records no video.
 
 ## OpenShell Sandbox
