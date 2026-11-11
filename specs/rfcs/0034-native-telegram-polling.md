@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Partially implemented
 author: uggy-ug
 ---
 
@@ -8,6 +8,9 @@ author: uggy-ug
 
 - **ID:** RFC-0034
 - **Created:** 2026-11-10
+- **Last updated:** 2026-11-11
+- **RFC PR:** [#5289](https://github.com/openclaw/openclaw-enterprise/pull/5289)
+- **Implementation plan:** [Telegram primary-channel qualification](../plans/0034-native-telegram-polling.md)
 
 ## Summary
 
@@ -16,6 +19,9 @@ dedicated Agent managed by Kubernetes Compute. The Agent's Gateway polls
 Telegram and handles messages, commands, and replies. The Gateway receives
 the bot token through an existing Secret binding and reaches Telegram
 through a proxy that accepts connections only to `api.telegram.org:443`.
+Qualify Telegram as a primary channel through native commands, document and
+image exchange, voice-message transcription, progressive replies, and recovery
+after a Gateway or dedicated Harness failure.
 
 ## Motivation
 
@@ -29,10 +35,12 @@ that channel, deliver its credentials, and restrict its network access.
 
 ## Scope
 
-Start with one bot per Agent and Telegram long polling in private chats. An
+Support one bot per Agent and Telegram long polling in private chats. An
 operator chooses the allowed Telegram user IDs. The same Agent keeps its
 dedicated Harness and model authentication. This proposal does not qualify
 group chats, webhooks, multiple bot accounts per Agent, or embedded execution.
+These boundaries do not qualify all features of another OpenClaw version.
+Record the bundled source pin and verify each required capability against that pin.
 
 ## Proposal
 
@@ -77,6 +85,51 @@ the bridge before starting native polling. For rollback, stop the native
 poller before restarting the bridge. Telegram retains the existing bot chat;
 the bridge's Agent session and the native Telegram session can differ.
 
+### Commands, media, and progressive delivery
+
+Use the bundled Telegram plugin for native commands, reply routing, attachments,
+and streaming. Command registration alone does not establish command execution.
+Verify the result in the Telegram client and correlate it with the Gateway's
+native session and the dedicated Harness turn where model execution is required.
+
+Inbound documents and images must reach the consuming Harness through the existing
+workspace/file-transfer path. Check the contents with an independently chosen
+marker. Outbound attachments must be retrievable in Telegram with matching
+contents. Report unsupported formats and limits to the user.
+
+Voice messages require an explicit transcription backend using OpenClaw's native
+media configuration. Keep model credentials in their authorized consumer.
+Do not copy ChatGPT OAuth material into the Gateway to provide transcription.
+Prefer an available local transcription backend when it preserves the existing
+runtime and network boundaries. A remote backend requires its own scoped
+credential and approved destination. Verify both transcription and the Agent's
+response using a known spoken phrase.
+
+A progressive reply must visibly change before the terminal response. Verify
+the final content and the absence of an additional duplicate final message.
+An ordinary reply delivered at completion does not qualify streaming.
+
+### Failure and recovery
+
+Kubernetes Compute owns Gateway and Harness health observation and delegates
+provider-owned recovery to the selected Sandbox Driver. Reuse the Agent revision
+lifecycle and existing exact ownership checks. A Git reconciler may request
+reconciliation through supported APIs. It must not rewrite provider-owned runtime
+objects or deploy replacements for an intentionally stopped Agent.
+
+Keep Telegram ingestion independent of optional remote skill discovery.
+While the Harness is unavailable, preserve admitted inbound work in the native
+durable queue and expose the unavailable execution state. Once execution
+recovers, resume pending work without starting a second poller. Preserve the
+Agent's workspace, sessions, channel token binding, and Harness authentication.
+
+Recover an unavailable provider supervisor through the provider's supported
+lifecycle. Use bounded retries and one recovery attempt at a time for the exact
+Agent revision. An authentication refusal requires actionable operator status
+instead of repeated replacement deployments. If recovery cannot succeed, retain
+the failure and pending work for inspection. Measure detection and recovery time
+in the installed environment.
+
 ## Acceptance Criteria
 
 - **AC-1 — Native chat:** On Kubernetes with an enforcing network policy and
@@ -92,17 +145,43 @@ the bridge's Agent session and the native Telegram session can differ.
   connections fail and the proxy rejects other hosts and IP addresses.
 - **AC-3 — Replacement and rollback:** Change the Configuration through
   the same Git reconciler and verify that the replacement Gateway resumes
-  receiving Telegram messages without concurrent pollers. Rehearse bridge
-  cutover and rollback with the test bot before moving an existing bot.
+  receiving Telegram messages without concurrent pollers. Rehearse cutover
+  and rollback with a test bot, or an operator-authorized existing bot.
+- **AC-4 — Commands:** From the allowed Telegram account, execute a native
+  help command, inspect model/session status, and start a new session.
+  Verify observable command results and isolation between the earlier and
+  new session. Verify refusal for an unauthorized account.
+- **AC-5 — Attachments:** Send a text document and a known image from the
+  Telegram client. Verify that the real Agent reads their contents. Ask
+  the Agent to return a file and verify the downloaded contents. Exercise
+  one refused or unsupported attachment and its visible result.
+- **AC-6 — Voice:** Send a Telegram voice message with an independently
+  chosen spoken phrase. Verify the transcript and a correct model response.
+  Exercise unavailable transcription and verify an actionable response.
+  Record whether outgoing voice is configured and qualified separately.
+- **AC-7 — Streaming:** Send a prompt that produces a sufficiently long
+  response. Observe at least two successive content states in Telegram
+  before completion. Check terminal content, formatting, and duplicate delivery.
+- **AC-8 — Recovery:** During native polling, interrupt the Gateway and,
+  separately, the dedicated provider supervisor. Send a uniquely marked
+  message during the outage. Verify automatic recovery, delivery of the
+  pending message, preserved context, and one terminal reply. Record recovery
+  times. Check that an intentionally stopped Agent stays stopped.
 
 ## Delivery and verification
 
-Connect the Compute admission and proxy profile to the existing Gateway
-configuration and Secret binding flow. Then qualify the dedicated Agent
-workflow against Telegram on a disposable installation with an enforcing
-network policy. Use a separate bot on Docker Desktop for the operator
-workflow. Source inspection supports the proposed integration; the
-acceptance criteria have not run.
+The operator's local installation has demonstrated native private chat, a real
+Codex response, Secret projection isolation, proxy admission and denial, and Git
+reconciliation. The change remains outside the shipped upstream release.
+The observed provider-supervisor failure required a manual deployment.
+Commands, attachments, voice, progressive delivery, automatic failure recovery,
+rollback, and complete denial qualification remain incomplete.
+
+The [implementation plan](../plans/0034-native-telegram-polling.md) owns delivery
+steps and acceptance results. Use an operator-authorized bot for live checks.
+Keep credentials, private chats, local paths, and user IDs outside public evidence.
+Register real-runtime scenarios in the existing QA matrix and retain failure
+evidence. Complete the criteria before declaring the primary channel qualified.
 
 ## Rationale and alternatives
 
