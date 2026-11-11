@@ -702,11 +702,7 @@ test("same-SHA reuse waits at most twelve minutes and falls back without delayin
     ),
   );
   for (const lane of ["docker-model", "k3d-model", "gateway-routing", "slack", "openshell"]) {
-    assert.deepEqual(
-      workflow.jobs[lane].needs,
-      lane === "docker-model" ? ["preflight", "runtime-artifact"] : "preflight",
-      lane,
-    );
+    assert.equal([workflow.jobs[lane].needs].flat().includes("ci-reuse"), false, lane);
   }
 });
 
@@ -2227,10 +2223,92 @@ function workflowCondition(expression, context) {
   return runInNewContext(
     expression
       .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
-      .replace(/\b(needs|steps)\.([a-z][a-z0-9-]*)/g, '$1["$2"]'),
+      .replace(/\b(needs|steps)\.([a-z][a-z0-9-]*)/g, '$1["$2"]')
+      .replace(/\.([a-z][a-z0-9]*-[a-z0-9-]+)/g, '["$1"]'),
     { cancelled: () => false, ...context },
   );
 }
+
+test("OpenShell waits for its protected-input warm export before source builds", async (t) => {
+  const { loadYaml } = createRequire(
+    new URL("../../apps/controller/package.json", import.meta.url),
+  )("@kubernetes/client-node");
+  const execution = loadYaml(
+    await readFile(
+      new URL("../../.github/workflows/full-integration-execution.yml", import.meta.url),
+      "utf8",
+    ),
+  );
+  const warmer = loadYaml(
+    await readFile(new URL("../../.github/workflows/ci-image-cache.yml", import.meta.url), "utf8"),
+  );
+  const inputs = execution.jobs["openshell-build-inputs"];
+  const producer = execution.jobs["openshell-image-cache"];
+  const consumer = execution.jobs.openshell;
+  assert.equal(inputs.environment, "integration-main");
+  assert.deepEqual(inputs.permissions, {});
+  assert.equal(producer.uses, "./.github/workflows/ci-image-cache.yml");
+  assert.equal(producer.with["require-export"], true);
+  assert.equal(producer.with["node-base-image"], consumer.env.NODE_BASE_IMAGE);
+  assert.ok(producer.needs.includes("openshell-build-inputs"));
+  assert.ok(consumer.needs.includes("openshell-image-cache"));
+  assert.equal(warmer.concurrency.group, "ci-image-cache-${{ github.ref }}");
+  assert.equal(warmer.concurrency.queue, "max");
+  assert.equal(warmer.concurrency["cancel-in-progress"], false);
+  assert.equal(warmer.on.workflow_call.inputs["require-export"].default, false);
+  const github = {
+    repository: mainRun.GITHUB_REPOSITORY,
+    ref: mainRun.GITHUB_REF,
+    ref_type: "branch",
+    run_attempt: "1",
+    event_name: "workflow_dispatch",
+    sha: "a".repeat(40),
+  };
+  for (const selection of ["all", "openshell", "gateway-routing", "skip"]) {
+    const needs = {
+      preflight: { result: "success", outputs: { selected_lane: selection } },
+      "openshell-build-inputs": {
+        result: "success",
+        outputs: { "node-base-image": "protected-base" },
+      },
+      "openshell-image-cache": { result: "success", outputs: { "source-sha": github.sha } },
+    };
+    assert.equal(workflowCondition(producer.with["node-base-image"], { needs }), "protected-base");
+    assert.equal(workflowCondition(consumer.env.NODE_BASE_IMAGE, { needs }), "protected-base");
+    const selected = ["all", "openshell"].includes(selection);
+    for (const job of [inputs, producer, consumer]) {
+      assert.equal(workflowCondition(job.if, { github, needs }), selected);
+    }
+    for (const result of ["failure", "cancelled", "skipped"]) {
+      needs["openshell-image-cache"].result = result;
+      assert.equal(workflowCondition(consumer.if, { github, needs }), false);
+    }
+    needs["openshell-image-cache"] = {
+      result: "success",
+      outputs: { "source-sha": "b".repeat(40) },
+    };
+    assert.equal(workflowCondition(consumer.if, { github, needs }), false);
+    needs["openshell-build-inputs"].result = "failure";
+    assert.equal(workflowCondition(producer.if, { github, needs }), false);
+  }
+  // The actual resolver must not publish a missing or multiline environment value.
+  const dir = await temporaryDirectory(t, "openshell-warm-inputs-");
+  const output = join(dir, "output");
+  const script = inputs.steps[0].run;
+  for (const value of ["", "image\nother=value", "image\rother=value"]) {
+    const result = spawnSync("bash", ["-e", "-c", script], {
+      env: { PATH: process.env.PATH, NODE_BASE_IMAGE: value, GITHUB_OUTPUT: output },
+    });
+    assert.notEqual(result.status, 0);
+  }
+  assert.equal(
+    spawnSync("bash", ["-e", "-c", script], {
+      env: { PATH: process.env.PATH, NODE_BASE_IMAGE: "protected-base", GITHUB_OUTPUT: output },
+    }).status,
+    0,
+  );
+  assert.equal(await readFile(output, "utf8"), "node-base-image=protected-base\n");
+});
 
 test("workflow gates scheduled and approved manual attempts before starting lanes", async () => {
   const { loadYaml } = createRequire(
@@ -2259,6 +2337,7 @@ test("workflow gates scheduled and approved manual attempts before starting lane
   for (const [name, job] of jobs) {
     for (const event_name of ["schedule", "workflow_dispatch"]) {
       const github = {
+        sha: "a".repeat(40),
         repository: mainRun.GITHUB_REPOSITORY,
         ref: mainRun.GITHUB_REF,
         ref_type: "branch",
@@ -2276,6 +2355,8 @@ test("workflow gates scheduled and approved manual attempts before starting lane
         },
         slack: { result: "success" },
         "runtime-artifact": { result: "success" },
+        "openshell-build-inputs": { result: "success" },
+        "openshell-image-cache": { result: "success", outputs: { "source-sha": "a".repeat(40) } },
       };
       const inputs = { lane: needs.preflight.outputs.selected_lane };
       assert.equal(

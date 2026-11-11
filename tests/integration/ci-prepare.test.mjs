@@ -1147,6 +1147,7 @@ process.exit(73);
   }
 
   const warmCacheEnv = {
+    GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",
     ...imageCacheEnv,
     GITHUB_REF: "refs/heads/main",
     GITHUB_EVENT_NAME: "push",
@@ -1330,6 +1331,44 @@ process.exit(73);
     });
   }
 
+  for (const scenario of [
+    "success",
+    "controller-cache-export-failed",
+    "controller-cache-export-hung",
+  ]) {
+    test(`required warm exports settle before admission and cleanup: ${scenario}`, async (t) => {
+      const commands = await fixtureImageCommands(t, scenario, "images-packaging", {
+        ...warmCacheEnv,
+        OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS: "5000",
+        OPENCLAW_CI_COMMAND_KILL_GRACE_MS: "500",
+      });
+      const selectedBase = `docker.io/library/node:24-bookworm@sha256:${"a".repeat(64)}`;
+      const warmed = await commands.warmImageCache([
+        "--require-cache-export",
+        "--node-base-image",
+        selectedBase,
+      ]);
+      assert.equal(warmed.status === 0, scenario === "success", warmed.stderr);
+      // Even a failed controller export settles its sibling before the owner returns.
+      assert.match(warmed.stderr, /"stage":"runtime-cache-export","outcome":"exported"/);
+      const calls = await commands.commands();
+      const controller = calls.find(
+        ({ args }) => args.includes("--load") && args.includes("runtime"),
+      );
+      assert.ok(controller.args.includes(`NODE_BASE_IMAGE=${selectedBase}`));
+      if (scenario !== "success") {
+        const outcome = scenario.endsWith("hung") ? "timed-out" : "failed";
+        assert.match(
+          warmed.stderr,
+          new RegExp(`"stage":"controller-cache-export","outcome":"${outcome}"`),
+        );
+        assert.doesNotMatch(warmed.stderr, /"stage":"runtime-image-kept"/);
+      }
+      assert.doesNotMatch(warmed.stdout + warmed.stderr, /synthetic-cache-credential/);
+      await commands.cleanupSuccessfully();
+    });
+  }
+
   // The schedule retries a store commit that lost to other jobs' commits (finding 1340).
   test("a scheduled run on main warms the image cache and keeps main's runtime image", async (t) => {
     const commands = await fixtureImageCommands(t, "success", "images-packaging", {
@@ -1370,10 +1409,28 @@ process.exit(73);
         /Only a push, schedule or dispatch on main may warm the image cache/,
       ],
       [
+        "required export without protected base",
+        {},
+        ["--require-cache-export"],
+        /NODE_BASE_IMAGE must be an immutable/,
+      ],
+      [
+        "required export outside canonical repository",
+        { GITHUB_REPOSITORY: "other/repository" },
+        ["--require-cache-export", "--node-base-image", packagingNodeBaseImage],
+        /Required cache exports run only in the canonical repository/,
+      ],
+      [
+        "required export with mutable base",
+        {},
+        ["--require-cache-export", "--node-base-image", "node:24-bookworm"],
+        /NODE_BASE_IMAGE must be an immutable/,
+      ],
+      [
         "lane argument",
         {},
         ["--lane", "images-packaging"],
-        /--warm-image-cache takes only --state/,
+        /--warm-image-cache cannot be combined with lane, file or github-env/,
       ],
       [
         "missing credentials",
