@@ -2945,7 +2945,6 @@ async function retainRuntimeProvenance(statePath, state, cluster, image, role) {
     const extraction = addResource(state, "image-file", {
       name: `${state.prefix}-provenance-${randomSuffix()}`,
     });
-    await writeState(statePath, state);
     const metadata = await readImageCodexProvenance({
       imageId: image.hostImageId,
       platform,

@@ -17,7 +17,11 @@ for (const phase of [
   "no default command",
 ]) {
   let name = `OpenShell image extraction removes its Docker container after ${phase} cancellation`;
-  if (phase === "replaced create") {
+  if (phase === "create") {
+    name = "OpenShell image extraction reconciles lost create and removal replies";
+  } else if (phase === "unsettled create") {
+    name = "OpenShell image extraction removes a renamed container after delayed creation";
+  } else if (phase === "replaced create") {
     name = "OpenShell image extraction preserves a replacement after losing the create reply";
   } else if (phase === "no default command") {
     name = "OpenShell image extraction works without an image default command";
@@ -88,6 +92,11 @@ for (const phase of [
           signal: controller.signal,
           ...options,
         });
+        if (args[0] === "rm" && phase === "create") {
+          // Docker removed the authenticated container, but its reply was lost.
+          // A later cleanup must settle the known ID's absence despite both lost replies.
+          throw new Error("Removal reply lost");
+        }
         if (args[0] === "create") {
           container = result.stdout.trim();
           if (phase === "replaced create") {
@@ -110,7 +119,7 @@ for (const phase of [
       let expected: RegExp | { name: string } = { name: "AbortError" };
       if (phase === "copy" || phase === "renamed copy") {
         expected = /command cancelled/;
-      } else if (phase === "replaced create") {
+      } else if (phase === "create" || phase === "replaced create") {
         expected = /Image extraction and container cleanup failed/;
       }
       const extraction = extractOpenShellImageFile({
@@ -140,6 +149,7 @@ for (const phase of [
         // This models delayed completion to prove retained cleanup ownership;
         // it does not claim to reproduce Docker daemon scheduling.
         container = (await run("docker", pendingCreate, { env })).stdout.trim();
+        await run("docker", ["rename", container, `oce-renamed-${container}`], { env });
         for (const operation of cleanup) {
           await operation();
         }

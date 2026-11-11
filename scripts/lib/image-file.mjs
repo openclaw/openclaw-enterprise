@@ -50,6 +50,13 @@ export async function removeImageFileContainer({ command, resource, final = true
       return command("docker", args, { ...options, timeout: Math.max(1, deadline - Date.now()) });
     };
     try {
+      if (resource.containerId === undefined) {
+        assert.ok(
+          typeof resource.ownershipToken === "string" &&
+            /^[a-f0-9-]{36}$/.test(resource.ownershipToken),
+          "Invalid image extraction ownership token",
+        );
+      }
       while (true) {
         let container = (
           await run([
@@ -62,8 +69,11 @@ export async function removeImageFileContainer({ command, resource, final = true
           ])
         ).trim();
         if (!container && resource.containerId !== undefined) {
-          // Docker names can change. The acknowledged ID remains our resource.
-          assert.match(resource.containerId, /^[a-f0-9]{64}$/);
+          // Docker names can change. The established ID remains our resource.
+          assert.ok(
+            typeof resource.containerId === "string" && /^[a-f0-9]{64}$/.test(resource.containerId),
+            "Invalid image extraction container identity",
+          );
           container = (
             await run([
               "ps",
@@ -75,13 +85,27 @@ export async function removeImageFileContainer({ command, resource, final = true
             ])
           ).trim();
         }
+        if (!container && resource.containerId === undefined) {
+          container = (
+            await run([
+              "ps",
+              "--all",
+              "--quiet",
+              "--no-trunc",
+              "--filter",
+              `label=${ownershipLabel}=${resource.ownershipToken}`,
+            ])
+          ).trim();
+        }
         if (container) {
-          assert.match(container, /^[a-f0-9]{64}$/);
+          assert.ok(
+            /^[a-f0-9]{64}$/.test(container),
+            "Invalid image extraction container inventory",
+          );
           if (resource.containerId !== undefined && resource.containerId !== container) {
             throw new Error(`Image extraction container changed identity: ${resource.name}`);
           }
           if (resource.containerId === undefined) {
-            assert.match(resource.ownershipToken ?? "", /^[a-f0-9-]{36}$/);
             const token = (
               await run([
                 "container",
@@ -100,7 +124,7 @@ export async function removeImageFileContainer({ command, resource, final = true
           resource.removed = true;
           return;
         }
-        if (resource.creationAcknowledged === true) {
+        if (resource.creationAcknowledged === true || resource.containerId !== undefined) {
           resource.removed = true;
           return;
         }
@@ -157,7 +181,7 @@ export async function extractImageFile({
       ])
     ).trim();
     resource.creationAcknowledged = true;
-    assert.match(container, /^[a-f0-9]{64}$/);
+    assert.ok(/^[a-f0-9]{64}$/.test(container), "Invalid image extraction create response");
     resource.containerId = container;
     await persist();
     try {

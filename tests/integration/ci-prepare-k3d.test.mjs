@@ -110,6 +110,7 @@ for (const scenario of [
   "oversized",
   "different-image",
   "cleanup-failed",
+  "invalid-inventory",
   "cleanup-failed-once",
   "receipt-write-failed",
   "replaced-container",
@@ -169,6 +170,7 @@ for (const scenario of [
     let containerPresent = false;
     const cleanupFailure = [
       "cleanup-failed",
+      "invalid-inventory",
       "cleanup-failed-once",
       "receipt-write-failed",
       "replaced-container",
@@ -176,6 +178,7 @@ for (const scenario of [
     ].includes(scenario);
     const retainedContainer = [
       "cleanup-failed",
+      "invalid-inventory",
       "replaced-container",
       "lost-reply-replaced",
     ].includes(scenario);
@@ -304,6 +307,9 @@ for (const scenario of [
           await rm(commands.statePath, { recursive: true });
           await rename(`${commands.statePath}.backup`, commands.statePath);
           brokenReceipt = false;
+        }
+        if (scenario === "invalid-inventory" && !allowRemoval) {
+          return `printf '%s' ${bashString(canary)}; exit 0`;
         }
         const observedId =
           scenario === "replaced-container" && !allowRemoval ? "e".repeat(64) : containerId;
