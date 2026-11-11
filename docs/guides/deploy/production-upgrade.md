@@ -156,9 +156,8 @@ These copies may change the
 and select the [curated Codex PluginDriver](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
 An explicit candidate may also wrap an existing single `drivers.plugin`
 registration in a one-element array, preserving its `id` and `configuration`.
-Remove the retired `agentNativeAdmin.sharedCookieDomain` whatever its value; the chart refuses it.
-Keep `auth.baseUrl` and `agentNativeAdmin.domain` unchanged: they determine the cookie scope,
-which equals the old value or is narrower.
+Remove retired `agentNativeAdmin.sharedCookieDomain` whatever its value; keep
+`auth.baseUrl` and `agentNativeAdmin.domain`, which determine cookie scope, unchanged.
 The helper does not convert the baseline automatically. Other configuration changes are unsupported.
 Review image, draft and credential compatibility before maintenance; startup
 preflight does not prove external access.

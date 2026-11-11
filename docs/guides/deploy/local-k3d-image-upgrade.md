@@ -16,12 +16,9 @@ after the production installation sequence is complete.
 
 `./scripts/k3d` has **no upgrade command**. Its interactive demo is a disposable
 test harness, not a persistent Helm installation: it uses loopback HTTP and
-creates its own topology. The production upgrade script cannot directly upgrade
-that demo. Its normal Ctrl-C shutdown removes demo resources and port-forwards;
-restarting creates fresh demo resources while reusing prepared infrastructure and
-images. `reset` deletes its test Namespaces and replaces its database; `down`
-removes its cluster and PostgreSQL resources. Do not use these commands to
-upgrade or preserve a demo. See the [demo lifecycle](../../testing/kubernetes.md#develop-with-local-containers-and-k3d).
+creates its own topology. The production upgrade script cannot upgrade
+that demo. Ctrl-C, `reset` and `down` remove or replace its resources; never use
+them to upgrade or preserve one. See the [demo lifecycle](../../testing/kubernetes.md#develop-with-local-containers-and-k3d).
 
 ## Prepare the existing installation
 
@@ -293,16 +290,14 @@ interrupted release. The script changes the protected
 input files as well as the cluster; it saves their previous contents in that
 private evidence directory before cluster mutation.
 
-An installation created by `dev-up` before the chart derived the session cookie
-scope has `agentNativeAdmin.sharedCookieDomain` in `VALUES`, and the chart now
-refuses it. Pass a private candidate copy without only that key:
+Older `dev-up` installations set the retired `agentNativeAdmin.sharedCookieDomain`,
+which the chart refuses; pass a copy without it:
 
 ```bash
 CANDIDATE_ARGS=()
 if yq -e '.agentNativeAdmin | has("sharedCookieDomain")' "$VALUES" >/dev/null; then
-  export CANDIDATE_VALUES='/secure/occ/candidate-values.yaml'
-  (umask 077 && yq 'del(.agentNativeAdmin.sharedCookieDomain)' "$VALUES" > "$CANDIDATE_VALUES")
-  CANDIDATE_ARGS=(--candidate-values "$CANDIDATE_VALUES")
+  yq 'del(.agentNativeAdmin.sharedCookieDomain)' "$VALUES" > /secure/occ/candidate-values.yaml
+  CANDIDATE_ARGS=(--candidate-values /secure/occ/candidate-values.yaml)
 fi
 ```
 
