@@ -60,6 +60,11 @@ func kubernetesOnlyOpenShellState(t *testing.T) *developmentState {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Match LocalSetup state permissions independently of the test runner umask.
+	directory := t.TempDir()
+	if err := os.Chmod(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
 	return &developmentState{
 		Version:           3,
 		Repository:        repository,
@@ -71,7 +76,7 @@ func kubernetesOnlyOpenShellState(t *testing.T) *developmentState {
 		BrowserPort:       8443,
 		Cluster:           "occ-dev-owned",
 		ContainerEngine:   "docker",
-		directory:         t.TempDir(),
+		directory:         directory,
 	}
 }
 
