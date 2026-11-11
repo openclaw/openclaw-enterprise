@@ -1,5 +1,18 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test, type TestContext, type TestOptions } from "node:test";
+import type {
+  ClientRequest,
+  IncomingMessage,
+  OutgoingHttpHeaders,
+  ServerResponse,
+} from "node:http";
+import type { TLSSocket } from "node:tls";
+import type { ServiceLimits } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
+import type {
+  AgentHandlerOptions,
+  RefusalRecord,
+} from "../../apps/controller/src/drivers/repo/access/transport/agent.ts";
+import type { callControl as CallControl } from "../../apps/controller/src/drivers/repo/github/access/client/operator.ts";
 import { createHash } from "node:crypto";
 import { createServer, request } from "node:https";
 import { connect } from "node:net";
@@ -26,8 +39,14 @@ const uploadOnly = [{ method: "POST", path: upload }];
 const completed = (bytes = 4) => ({ kind: "completed", status: 200, bytes, complete: true });
 // The peer controls only application bytes and when it reads or writes them.
 // The listener, route policy, credential ownership and TLS sender are production code.
-async function startTransport(t, onRequest, limits = {}, { log } = {}) {
-  const { resources, clock, tls, config, github } = await startTokenServiceScope(t, {
+async function startTransport(
+  t: TestContext,
+  onRequest: (incoming: IncomingMessage, outgoing: ServerResponse) => void,
+  limits: Partial<ServiceLimits> = {},
+  { log }: { log?: AgentHandlerOptions["log"] } = {},
+) {
+  const options = {
+    github: true,
     clock: "system",
     // One exchange slot makes leaked reservations visible to the following request.
     limits: {
@@ -40,8 +59,16 @@ async function startTransport(t, onRequest, limits = {}, { log } = {}) {
       gitFetchStallMs: limits.stallMs ?? 5000,
       ...limits,
     },
-  });
-  const received = [];
+  };
+  const scope = await startTokenServiceScope(t, options);
+  const { resources, tls, github } = scope;
+  assert.ok(github);
+  const config: unknown = scope.config;
+  assert.ok(config && typeof config === "object" && "gateway" in config);
+  assert.ok(config.gateway && typeof config.gateway === "object");
+  assert.ok("publicOrigin" in config.gateway && typeof config.gateway.publicOrigin === "string");
+  assert.ok("controlSocket" in config.gateway && typeof config.gateway.controlSocket === "string");
+  const received: { method: string | undefined; path: string | undefined }[] = [];
   const upstream = createServer(tls, (incoming, outgoing) => {
     incoming.on("error", () => {});
     if (!github.authorize(incoming.headers.authorization)) {
@@ -53,23 +80,30 @@ async function startTransport(t, onRequest, limits = {}, { log } = {}) {
   });
   const origin = await listen(resources, upstream);
   const trustedOrigins = new Set([origin]);
-  const logs = [];
-  const { service, listeners } = await startStaticTokenService(resources, {
+  const logs: RefusalRecord[] = [];
+  const started = await startStaticTokenService(resources, {
     config,
-    clock,
+    clock: scope.clock,
     tls,
     github,
     gitOrigin: origin,
     // Pass the caller's original set so production owns the security-relevant copy.
     trustedUpstreamOrigins: trustedOrigins,
-    log: log ?? ((record) => logs.push(record)),
+    log: log ?? ((record: RefusalRecord) => logs.push(record)),
   });
+  const { service } = started;
+  const listeners: unknown = started.listeners;
+  assert.ok(listeners && typeof listeners === "object" && "address" in listeners);
+  assert.ok(
+    listeners.address && typeof listeners.address === "object" && "port" in listeners.address,
+  );
+  assert.ok(typeof listeners.address.port === "number");
   const opened = service.open({ durationSeconds: 300, profile: "git-write" });
   return {
-    config,
+    config: config as { gateway: { publicOrigin: string; controlSocket: string } },
     tls,
     service,
-    listeners,
+    listeners: listeners as { address: { port: number } },
     opened,
     github,
     received,
@@ -79,8 +113,24 @@ async function startTransport(t, onRequest, limits = {}, { log } = {}) {
   };
 }
 
+type TransportFixture = Awaited<ReturnType<typeof startTransport>>;
+type RequestOptions = {
+  method?: string;
+  path?: string;
+  headers?: Record<string, string | number | readonly string[] | undefined>;
+  opened?: TransportFixture["opened"];
+  socket?: TLSSocket;
+  onResponse?: (response: IncomingMessage) => void;
+};
+type RequestResult = {
+  kind: "completed" | "closed" | "timeout";
+  status: number | undefined;
+  bytes: number;
+  complete: boolean;
+};
+
 function startRequest(
-  fixture,
+  fixture: TransportFixture,
   {
     method = "GET",
     path = discovery,
@@ -88,14 +138,13 @@ function startRequest(
     opened = fixture.opened,
     socket,
     onResponse,
-  } = {},
+  }: RequestOptions = {},
 ) {
-  let incoming;
+  let incoming: IncomingMessage | undefined;
   let bytes = 0;
-  let timer;
   const hash = createHash("sha256");
-  const { promise: result, resolve } = Promise.withResolvers();
-  const finish = (kind) => {
+  const { promise: result, resolve } = Promise.withResolvers<RequestResult>();
+  const finish = (kind: RequestResult["kind"]) => {
     clearTimeout(timer);
     resolve({ kind, status: incoming?.statusCode, bytes, complete: incoming?.complete ?? false });
   };
@@ -117,7 +166,7 @@ function startRequest(
     },
     (response) => {
       incoming = response;
-      response.on("data", (chunk) => {
+      response.on("data", (chunk: Buffer) => {
         bytes += chunk.length;
         hash.update(chunk);
       });
@@ -133,7 +182,7 @@ function startRequest(
   );
   const closed = new Promise((resolveClose) => outgoing.once("close", resolveClose));
   outgoing.on("error", () => finish("closed"));
-  timer = setTimeout(() => {
+  const timer = setTimeout(() => {
     finish("timeout");
     outgoing.destroy();
   }, 8000);
@@ -146,7 +195,11 @@ function startRequest(
   return { outgoing, result, digest: () => hash.digest("hex") };
 }
 
-function startUpload(fixture, headers, options) {
+function startUpload(
+  fixture: TransportFixture,
+  headers: OutgoingHttpHeaders,
+  options?: RequestOptions,
+) {
   return startRequest(fixture, {
     ...options,
     method: "POST",
@@ -155,32 +208,43 @@ function startUpload(fixture, headers, options) {
   });
 }
 
-async function readDiscovery(fixture, options) {
+async function readDiscovery(fixture: TransportFixture, options?: RequestOptions) {
   const client = startRequest(fixture, options);
   client.outgoing.end();
   return client.result;
 }
 
-function released(fixture, opened = fixture.opened) {
-  return eventually(() => fixture.service.status(opened.session.sessionId).activeUses === 0);
+function sessionStatus(fixture: TransportFixture, sessionId: string) {
+  const status = fixture.service.status(sessionId);
+  assert.ok(status);
+  return status;
 }
 
-function assertRefused(result) {
+function released(fixture: TransportFixture, opened = fixture.opened) {
+  return eventually(() => sessionStatus(fixture, opened.session.sessionId).activeUses === 0);
+}
+
+function assertRefused(result: RequestResult) {
   assert.equal(result.kind, "completed");
   assert.equal(result.status, 503);
   assert.equal(result.complete, true);
   assert.ok(result.bytes > 0 && result.bytes <= 256);
 }
 
-async function closeSession(fixture, sessionId) {
-  const { callControl } = await appModule("drivers/repo/github/access/client/operator");
-  return callControl(fixture.config.gateway.controlSocket, {
+async function closeSession(fixture: TransportFixture, sessionId: string) {
+  const module: unknown = await appModule("drivers/repo/github/access/client/operator");
+  assert.ok(module && typeof module === "object" && "callControl" in module);
+  assert.equal(typeof module.callControl, "function");
+  const callControl = module.callControl as typeof CallControl;
+  const response = await callControl(fixture.config.gateway.controlSocket, {
     method: "POST",
     path: `/v1/sessions/${sessionId}/close`,
   });
+  assert.ok("state" in response);
+  return response;
 }
 
-function connectTlsClient(fixture) {
+function connectTlsClient(fixture: TransportFixture) {
   const socket = connectTls({
     host: "127.0.0.1",
     port: fixture.listeners.address.port,
@@ -190,7 +254,7 @@ function connectTlsClient(fixture) {
   socket.once("secureConnect", () => (state.secure = true));
   // Capacity rejection can surface as either an error or a clean close.
   socket.on("error", () => {});
-  const closed = new Promise((resolve) =>
+  const closed = new Promise<void>((resolve) =>
     socket.once("close", () => {
       state.closed = true;
       resolve();
@@ -215,13 +279,13 @@ const producerQuietMs = 200;
 
 // `consumerHolding` says whether the paused consumer already holds the exchange: a
 // quiet window before that proves nothing about the consumer, so it is not a stall.
-function writePayload(outgoing, consumerHolding = () => true) {
+function writePayload(outgoing: ClientRequest | ServerResponse, consumerHolding = () => true) {
   let producedBytes = 0;
   let refusals = 0;
-  let quiet;
+  let quiet: NodeJS.Timeout | undefined;
   let stopped = false;
   const hash = createHash("sha256");
-  const { promise: stalled, resolve, reject } = Promise.withResolvers();
+  const { promise: stalled, resolve, reject } = Promise.withResolvers<number>();
   // Callers may await this only after other setup; keep an early failure attributable.
   stalled.catch(() => {});
   const stop = () => {
@@ -229,7 +293,7 @@ function writePayload(outgoing, consumerHolding = () => true) {
     clearTimeout(quiet);
     outgoing.off("drain", write);
   };
-  const settle = (refusal) => {
+  const settle = (refusal: number) => {
     // Timers run before I/O callbacks: let a drain the socket already reported run first.
     setImmediate(() => {
       if (stopped || refusal !== refusals) {
@@ -242,7 +306,7 @@ function writePayload(outgoing, consumerHolding = () => true) {
     });
   };
   // The quiet window starts only once the consumer is seen holding the exchange.
-  const awaitQuiet = (refusal) => {
+  const awaitQuiet = (refusal: number) => {
     quiet = consumerHolding()
       ? setTimeout(() => settle(refusal), producerQuietMs)
       : setTimeout(() => awaitQuiet(refusal), 10);
@@ -275,7 +339,8 @@ function writePayload(outgoing, consumerHolding = () => true) {
 // event loop: with three or more, CPU starvation (4 copies on one CPU) broke the
 // producer quiet windows and the 150 ms header deadline.
 describe("repository credential transport bounds", { concurrency: 2 }, () => {
-  const bounded = (name, fn, options) => test(name, { timeout: 15000, ...options }, fn);
+  const bounded = (name: string, fn: (t: TestContext) => Promise<void>, options?: TestOptions) =>
+    test(name, { timeout: 15000, ...options }, fn);
 
   bounded("listener header deadlines stop unauthenticated peers", async (t) => {
     const fixture = await startTransport(
@@ -308,7 +373,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
         const socket = scenario.open();
         let closed = false;
         socket.on("error", () => {});
-        const close = new Promise((resolve) =>
+        const close = new Promise<void>((resolve) =>
           socket.once("close", () => {
             closed = true;
             resolve();
@@ -394,8 +459,10 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
       const result = await readDiscovery(fixture, {
         headers: { host: "localhost", authorization },
       });
-      assert.equal(result.status, 400, authorization.split(" ")[0]);
-      assert.deepEqual(fixture.logs.splice(0), [refused], authorization.split(" ")[0]);
+      const [scheme] = authorization.split(" ");
+      assert.ok(scheme);
+      assert.equal(result.status, 400, scheme);
+      assert.deepEqual(fixture.logs.splice(0), [refused], scheme);
     }
     const repeated = await readDiscovery(fixture, { headers: { authorization: [basic, basic] } });
     assert.equal(repeated.status, 400);
@@ -406,7 +473,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
   bounded(
     "occupied per-session and total exchange limits refuse excess traffic and recover",
     async (t) => {
-      const heldResponses = [];
+      const heldResponses: ServerResponse[] = [];
       const fixture = await startTransport(
         t,
         (incoming, outgoing) => {
@@ -429,11 +496,16 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
         startRequest(fixture, {
           opened,
           onResponse: (incoming) =>
-            incoming.on("data", (chunk) => (delivered[index] += chunk.length)),
+            incoming.on("data", (chunk: Buffer) => {
+              assert.ok(delivered[index] !== undefined);
+              delivered[index] += chunk.length;
+            }),
         }),
       );
+      const [firstClient, secondClient] = heldClients;
+      assert.ok(firstClient && secondClient);
       const eightZeros = createHash("sha256").update("00000000").digest("hex");
-      heldClients[0].outgoing.end();
+      firstClient.outgoing.end();
       await eventually(() => delivered[0] === 4);
 
       // One total slot is still free: this refusal belongs to the session bound. Its log
@@ -448,19 +520,19 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
           sessionId: first.session.sessionId,
         },
       ]);
-      assert.equal(fixture.service.status(first.session.sessionId).activeUses, 1);
+      assert.equal(sessionStatus(fixture, first.session.sessionId).activeUses, 1);
       assert.equal(fixture.github.issuesOfTokens.length, 0);
       assert.equal(fixture.received.length, 1);
 
       // An independent session can occupy the other slot while the first stays live.
-      heldClients[1].outgoing.end();
+      secondClient.outgoing.end();
       await eventually(() => delivered[1] === 4);
-      assert.equal(fixture.service.status(second.session.sessionId).activeUses, 1);
+      assert.equal(sessionStatus(fixture, second.session.sessionId).activeUses, 1);
       assert.equal(fixture.github.issuesOfTokens.length, 0);
       assert.equal(fixture.received.length, 2);
 
       assertRefused(await readDiscovery(fixture, { opened: third }));
-      assert.equal(fixture.service.status(third.session.sessionId).activeUses, 0);
+      assert.equal(sessionStatus(fixture, third.session.sessionId).activeUses, 0);
       assert.equal(fixture.github.issuesOfTokens.length, 0);
       assert.equal(fixture.received.length, 2);
 
@@ -470,11 +542,12 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
       }
       await eventually(() => delivered.every((bytes) => bytes === 8));
       for (const opened of [first, second]) {
-        assert.equal(fixture.service.status(opened.session.sessionId).activeUses, 1);
+        assert.equal(sessionStatus(fixture, opened.session.sessionId).activeUses, 1);
       }
+      assert.ok(heldResponses[0]);
       heldResponses[0].end();
-      assert.deepEqual(await heldClients[0].result, completed(8));
-      assert.equal(heldClients[0].digest(), eightZeros);
+      assert.deepEqual(await firstClient.result, completed(8));
+      assert.equal(firstClient.digest(), eightZeros);
       await released(fixture, first);
 
       // Both previously denied callers recover while the second stream still owns a slot.
@@ -484,10 +557,11 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
       }
       assert.equal(fixture.github.issuesOfTokens.length, 0);
       assert.equal(fixture.received.length, 4);
-      assert.equal(fixture.service.status(second.session.sessionId).activeUses, 1);
+      assert.equal(sessionStatus(fixture, second.session.sessionId).activeUses, 1);
+      assert.ok(heldResponses[1]);
       heldResponses[1].end();
-      assert.deepEqual(await heldClients[1].result, completed(8));
-      assert.equal(heldClients[1].digest(), eightZeros);
+      assert.deepEqual(await secondClient.result, completed(8));
+      assert.equal(secondClient.digest(), eightZeros);
       await released(fixture, second);
     },
   );
@@ -511,7 +585,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
       await eventually(() => excess.closed, { timeoutMs: 1000 });
       assert.equal(excess.secure, false);
       assert.equal(admitted.closed, false);
-      assert.equal(fixture.service.status(fixture.opened.session.sessionId).activeUses, 0);
+      assert.equal(sessionStatus(fixture, fixture.opened.session.sessionId).activeUses, 0);
       assert.equal(fixture.github.issuesOfTokens.length, 0);
       assert.equal(fixture.received.length, 0);
 
@@ -549,7 +623,13 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
     });
     client.outgoing.end();
     assert.equal((await client.result).status, 503);
-    assert.equal(fixture.github.trace.filter((entry) => entry.target === target).length, 0);
+    assert.equal(
+      fixture.github.trace.filter((entry: unknown) => {
+        assert.ok(entry !== null && typeof entry === "object" && "target" in entry);
+        return entry.target === target;
+      }).length,
+      0,
+    );
     assert.equal((await readDiscovery(fixture)).status, 200);
     assert.deepEqual(fixture.received, discoveryOnly);
   });
@@ -576,7 +656,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
       const fixture = await startTransport(
         t,
         (incoming, outgoing) => {
-          incoming.on("data", (chunk) => (receivedBytes += chunk.length));
+          incoming.on("data", (chunk: Buffer) => (receivedBytes += chunk.length));
           incoming.once("end", () => outgoing.writeHead(200, uploadReplyHeaders).end("0000"));
         },
         { gitFetchInputBytes: inputLimit },
@@ -622,8 +702,8 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
         ].join("\r\n"),
       );
       let answer = "";
-      let answeredAt;
-      client.socket.on("data", (chunk) => {
+      let answeredAt: number | undefined;
+      client.socket.on("data", (chunk: Buffer) => {
         answer += chunk.toString("latin1");
         answeredAt ??= Date.now();
       });
@@ -642,6 +722,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
       assert.match(answer, /^HTTP\/1\.1 413 /);
       assert.match(answer, /"limit-exceeded"/);
       // The answer arrived at once; the connection stayed only for the linger bound.
+      assert.ok(answeredAt !== undefined);
       const lingered = Date.now() - answeredAt;
       assert.ok(lingered >= 500 && lingered < 4000, `lingered ${lingered} ms`);
       // Only the discovery request reached upstream; the refused upload never did.
@@ -658,7 +739,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
     const fixture = await startTransport(
       t,
       (incoming, outgoing) => {
-        incoming.on("data", (chunk) => (receivedBytes += chunk.length));
+        incoming.on("data", (chunk: Buffer) => (receivedBytes += chunk.length));
         incoming.once("close", () => {
           if (!incoming.complete) {
             incompleteRequestClosed = true;
@@ -687,7 +768,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
     await eventually(
       () =>
         incompleteRequestClosed &&
-        fixture.service.status(fixture.opened.session.sessionId).activeUses === 0,
+        sessionStatus(fixture, fixture.opened.session.sessionId).activeUses === 0,
     );
     assert.ok(receivedBytes < inputLimit);
     assert.deepEqual(fixture.received, uploadOnly);
@@ -712,16 +793,16 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
           }
         });
       });
-      const chunks = [];
+      const chunks: Buffer[] = [];
       const client = startRequest(fixture, {
-        onResponse: (incoming) => incoming.on("data", (chunk) => chunks.push(chunk)),
+        onResponse: (incoming) => incoming.on("data", (chunk: Buffer) => chunks.push(chunk)),
       });
       client.outgoing.end();
       const result = await client.result;
       assert.equal(result.kind, "completed");
       assert.equal(result.status, 502);
       assert.equal(result.complete, true);
-      assert.deepEqual(JSON.parse(Buffer.concat(chunks)), {
+      assert.deepEqual(JSON.parse(Buffer.concat(chunks).toString()), {
         error: { code: "exchange-uncertain" },
       });
       await released(fixture);
@@ -763,15 +844,15 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
         },
         { gitResponseBytes: responseLimit },
       );
-      const chunks = [];
+      const chunks: Buffer[] = [];
       assert.deepEqual(
         await readDiscovery(fixture, {
-          onResponse: (incoming) => incoming.on("data", (chunk) => chunks.push(chunk)),
+          onResponse: (incoming) => incoming.on("data", (chunk: Buffer) => chunks.push(chunk)),
         }),
         scenario.expected,
       );
       if (scenario.expected.status === 502) {
-        assert.deepEqual(JSON.parse(Buffer.concat(chunks)), {
+        assert.deepEqual(JSON.parse(Buffer.concat(chunks).toString()), {
           error: { code: "exchange-uncertain" },
         });
       }
@@ -781,7 +862,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
   }
 
   bounded("a chunked response overflow truncates the exchange without replay", async (t) => {
-    let upstreamResponse;
+    let upstreamResponse: ServerResponse | undefined;
     const fixture = await startTransport(
       t,
       (incoming, outgoing) => {
@@ -794,12 +875,13 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
     );
     let delivered = 0;
     const client = startRequest(fixture, {
-      onResponse: (incoming) => incoming.on("data", (chunk) => (delivered += chunk.length)),
+      onResponse: (incoming) => incoming.on("data", (chunk: Buffer) => (delivered += chunk.length)),
     });
     client.outgoing.end();
     await eventually(() => delivered === 2048);
     // The client has a successful prefix, so an overflow must terminate that
     // exchange rather than append a service error or retry it as a new request.
+    assert.ok(upstreamResponse);
     upstreamResponse.end(Buffer.alloc(2049, 42));
     assert.deepEqual(await client.result, {
       kind: "closed",
@@ -822,7 +904,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
           const fixture = await startTransport(
             t,
             (incoming, outgoing) => {
-              incoming.on("data", (chunk) => (receivedBytes += chunk.length));
+              incoming.on("data", (chunk: Buffer) => (receivedBytes += chunk.length));
               incoming.once("end", () => outgoing.writeHead(200, uploadReplyHeaders).end("0000"));
             },
             { exchangeMs: 3000, headerMs: 1000, firstHeaderMs: 200, stallMs: 1000 },
@@ -846,7 +928,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
       );
 
       const missing = t.test("missing final headers release the completed upload", async (t) => {
-        let inputFinishedAt;
+        let inputFinishedAt: number | undefined;
         const fixture = await startTransport(
           t,
           (incoming, outgoing) => {
@@ -864,6 +946,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
         await eventually(() => inputFinishedAt !== undefined);
         assert.equal((await client.result).kind, "closed");
         // This must be the first-header deadline, before the longer stall/total bounds.
+        assert.ok(inputFinishedAt !== undefined);
         assert.ok(performance.now() - inputFinishedAt < 1500);
         await released(fixture);
         assert.equal((await readDiscovery(fixture)).status, 200);
@@ -912,7 +995,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
   bounded(
     "a paused upstream bounds upload producer progress and resumes without data loss",
     async (t) => {
-      let upstreamRequest;
+      let upstreamRequest: IncomingMessage | undefined;
       let receivedBytes = 0;
       const hash = createHash("sha256");
       const fixture = await startTransport(
@@ -920,7 +1003,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
         (incoming, outgoing) => {
           upstreamRequest = incoming;
           incoming.pause();
-          incoming.on("data", (chunk) => {
+          incoming.on("data", (chunk: Buffer) => {
             receivedBytes += chunk.length;
             hash.update(chunk);
           });
@@ -935,6 +1018,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
       const pausedBytes = await producer.stalled;
       t.diagnostic(`Upload producer stalled at ${pausedBytes} bytes before upstream resumed.`);
       assert.equal(receivedBytes, 0);
+      assert.ok(upstreamRequest);
       upstreamRequest.resume();
       assert.deepEqual(await client.result, completed());
       assert.equal(producer.producedBytes(), pausedBytes);
@@ -947,13 +1031,13 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
   bounded(
     "a paused client bounds response producer progress and resumes without data loss",
     async (t) => {
-      let producer;
+      let producer: ReturnType<typeof writePayload> | undefined;
       const fixture = await startTransport(t, (incoming, outgoing) => {
         incoming.resume();
         outgoing.writeHead(200, replyHeaders);
         producer = writePayload(outgoing, () => incomingResponse !== undefined);
       });
-      let incomingResponse;
+      let incomingResponse: IncomingMessage | undefined;
       const client = startRequest(fixture, {
         onResponse(incoming) {
           incoming.pause();
@@ -962,8 +1046,10 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
       });
       client.outgoing.end();
       await eventually(() => incomingResponse !== undefined);
+      assert.ok(producer);
       const pausedBytes = await producer.stalled;
       t.diagnostic(`Response producer stalled at ${pausedBytes} bytes before client resumed.`);
+      assert.ok(incomingResponse);
       incomingResponse.resume();
       assert.deepEqual(await client.result, completed(pausedBytes));
       assert.equal(producer.producedBytes(), pausedBytes);
@@ -995,20 +1081,21 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
         });
         let delivered = 0;
         const client = startRequest(fixture, {
-          onResponse: (incoming) => incoming.on("data", (chunk) => (delivered += chunk.length)),
+          onResponse: (incoming) =>
+            incoming.on("data", (chunk: Buffer) => (delivered += chunk.length)),
         });
         client.outgoing.end();
         // Consume the complete input before closing. With no response headers,
         // revocation must still abort where an upstream failure could report 502.
         await eventually(() => (responseStarted ? delivered === 4 : inputReceived));
         const sessionId = fixture.opened.session.sessionId;
-        assert.equal(fixture.service.status(sessionId).activeUses, 1);
+        assert.equal(sessionStatus(fixture, sessionId).activeUses, 1);
         const closed = await closeSession(fixture, sessionId);
         assert.equal(closed.state, "CLOSED");
         // Closure must cancel active I/O before the independent five-second stall
         // timer could do so; eventual timeout is not proof of session cancellation.
         await eventually(
-          () => upstreamCancelled && fixture.service.status(sessionId).state === "DISPOSED",
+          () => upstreamCancelled && sessionStatus(fixture, sessionId).state === "DISPOSED",
           { timeoutMs: 1000 },
         );
         assert.deepEqual(await client.result, {
@@ -1017,7 +1104,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
           bytes: responseStarted ? 4 : 0,
           complete: false,
         });
-        const status = fixture.service.status(sessionId);
+        const status = sessionStatus(fixture, sessionId);
         assert.equal(status.activeUses, 0);
         assert.deepEqual(status.cleanup, {
           active: 0,

@@ -9,6 +9,7 @@ import { testPool } from "../helpers/postgres-database.mjs";
 
 test("secret-driver-startup constructs the bundled KubernetesSecretDriver from Installation YAML", async (t) => {
   const drivers = await loadInstallationFile(t, installation());
+  assert.ok(drivers);
 
   const { definition, ...selection } = drivers.installation.drivers.secret;
   assert.equal(definition, KubernetesSecretDriver);
@@ -36,22 +37,24 @@ test("secret-driver-startup constructs the bundled KubernetesSecretDriver from I
 
 test("secret-driver-startup requires one bundled SecretDriver selection and validates its configuration", async (t) => {
   const missing = installation();
-  delete missing.drivers.secret;
+  Reflect.deleteProperty(missing.drivers, "secret");
   await assert.rejects(loadInstallationFile(t, missing), /drivers\.secret/);
 
   const packageSelection = installation();
-  packageSelection.drivers.secret.package = "@example/secret-driver";
+  Object.assign(packageSelection.drivers.secret, { package: "@example/secret-driver" });
   await assert.rejects(
     loadInstallationFile(t, packageSelection),
     /drivers\.secret contains unsupported option package/,
   );
 
   const invalid = installation();
-  invalid.drivers.secret.configuration.authentication = {
-    mode: "kubeconfig",
-    kubeconfigPath: "relative",
-    context: "default",
-  };
+  Object.assign(invalid.drivers.secret.configuration, {
+    authentication: {
+      mode: "kubeconfig",
+      kubeconfigPath: "relative",
+      context: "default",
+    },
+  });
   await assert.rejects(loadInstallationFile(t, invalid), (error) => {
     assert.ok(error instanceof ConfigurationValidationError);
     assert.deepEqual(error.error.details, [

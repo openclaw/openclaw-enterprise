@@ -32,6 +32,7 @@ import type {
 } from "../../packages/contracts/src/api/resources.ts";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/workspace-defaults.mjs";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
@@ -1123,7 +1124,8 @@ test("Dedicated Agent creation opens the Agent's deployment at handoff", async (
   const agent = await fixture.createAgent(namespace.id, "Handed off Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   const work = provisioningJob(namespace.id, "work_handoff");
-  const { page } = await newPage(t, fixture);
+  const viewport = { width: 390, height: 844 };
+  const { page } = await newPage(t, fixture, { context: { viewport } });
   await routeDedicatedProvisioning(page, fixture, namespace);
   const handoff = {
     agentId: agent.id,
@@ -1143,32 +1145,38 @@ test("Dedicated Agent creation opens the Agent's deployment at handoff", async (
   });
   // A first deployment this caller may read, waiting on a full Pod quota; the test API has
   // no Compute and would answer 503, which the form treats as "ask again at the next poll".
-  await page.route(
-    `**/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`,
-    (route) =>
-      route.fulfill({
-        json: {
-          data: {
-            deploymentId: revision.id,
-            namespaceId: namespace.id,
-            agentId: agent.id,
-            status: "queued",
-            error: null,
-            warnings: [],
-            // A wait the operator must act on, which the Deployment tab must show them.
-            progress: {
-              lastAttempt: {
-                at: new Date().toISOString(),
-                code: "NAMESPACE_POD_QUOTA_EXCEEDED",
-                message: POD_QUOTA_FULL,
-              },
-              nextAttemptAt: new Date().toISOString(),
+  const deploymentPath = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`;
+  let deploymentReadError: 403 | 503 | undefined;
+  await page.route(`**${deploymentPath}`, (route) => {
+    if (deploymentReadError === 403) {
+      return route.fulfill(apiErrorResponse(403, "FORBIDDEN", GENERIC_DENIAL));
+    }
+    if (deploymentReadError === 503) {
+      return route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Service unavailable."));
+    }
+    return route.fulfill({
+      json: {
+        data: {
+          deploymentId: revision.id,
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          status: "queued",
+          error: null,
+          warnings: [],
+          // A wait the operator must act on, which the Deployment tab must show them.
+          progress: {
+            lastAttempt: {
+              at: new Date().toISOString(),
+              code: "NAMESPACE_POD_QUOTA_EXCEEDED",
+              message: POD_QUOTA_FULL,
             },
+            nextAttemptAt: new Date().toISOString(),
           },
-          meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
         },
-      }),
-  );
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+      },
+    });
+  });
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
@@ -1186,11 +1194,53 @@ test("Dedicated Agent creation opens the Agent's deployment at handoff", async (
   assert.equal(location.searchParams.get("tab"), "deployment");
   await page.getByRole("heading", { name: "Handed off Agent" }).waitFor();
   await page.getByRole("tab", { name: "Deployment", selected: true }).waitFor();
-  // The operator sees the wait they must act on where the form sent them.
-  await page.getByText(POD_QUOTA_FULL).first().waitFor();
-  // Another poll interval passes on the Agent page without reading the job again.
-  await page.clock.runFor(2_000);
+  const deployment = page
+    .getByRole("region", { name: "Agent state at a glance", exact: true })
+    .getByText("Latest visible deployment", { exact: true })
+    .locator("..");
+  const quota = deployment.getByText(POD_QUOTA_FULL, { exact: true });
+  await quota.waitFor();
+  await deployment.getByText("v1", { exact: true }).waitFor();
+  // The operator can read the entire remedy on arrival at phone width.
+  const bounds = await quota.boundingBox();
+  assert.ok(bounds && bounds.y >= 0 && bounds.y + bounds.height <= viewport.height);
+  assert.equal(await quota.getAttribute("data-tone"), null);
+  const activity = page.getByRole("region", { name: "Deployment activity", exact: true });
+  const details = activity.locator("details");
+  await details.waitFor();
+  const disclosure = details.getByText("Deployment details", { exact: true });
+  if ((await details.getAttribute("open")) !== null) {
+    await disclosure.click();
+  }
+  // Folding the details leaves the summary as the only visible copy of the wait.
+  await quota.waitFor();
+  assert.equal(await activity.getByText(POD_QUOTA_FULL).filter({ visible: true }).count(), 0);
   await waitForIdleFetches(page);
+
+  // An unavailable status keeps a marked last-known wait. A refusal clears it.
+  for (const status of [503, 403] as const) {
+    deploymentReadError = status;
+    const [response] = await Promise.all([
+      page.waitForResponse(
+        (reply) => reply.request().method() === "GET" && reply.url().endsWith(deploymentPath),
+      ),
+      page.clock.runFor(DEPLOYMENT_POLL_MS),
+    ]);
+    assert.equal(response.status(), status);
+    if (status === 503) {
+      await deployment
+        .getByText(`Update delayed. Last recorded: ${POD_QUOTA_FULL}`, { exact: true })
+        .waitFor();
+      assert.equal(await details.getAttribute("open"), null);
+    }
+  }
+  await waitForIdleFetches(page);
+  await deployment
+    .getByText("Recorded deployment status could not be read.", { exact: true })
+    .waitFor();
+  assert.equal(await deployment.getByText(POD_QUOTA_FULL).count(), 0);
+  assert.equal(await activity.getByText(POD_QUOTA_FULL).count(), 0);
+  // The Agent page follows its deployment throughout, using no more job reads.
   assert.equal(served.reads, observations.length);
   assert.equal(await settledFetches(page, work.url), observations.length);
 });

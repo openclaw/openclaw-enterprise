@@ -671,6 +671,7 @@ export {
   unreadablePluginSecretInput,
   unsubstitutedReference,
   wholeEnvironmentReferenceName,
+  workspaceNodeGatewayPasswordProblem,
 } from "./environment-references.ts";
 export type { SecretInputReference } from "./environment-references.ts";
 export {

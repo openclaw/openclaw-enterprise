@@ -87,19 +87,10 @@ func exclusiveWrite(path string, data []byte, mode os.FileMode) (result error) {
 	return closeErr
 }
 func stateDirectory(raw, repository string, existing bool) (string, error) {
-	if raw == "" {
-		// System temporary directories may contain aliases, such as /var on macOS.
-		// Resolve the helper-selected default once; explicit paths remain canonical.
-		temporary, err := filepath.EvalSymlinks(os.TempDir())
-		if err != nil {
-			return "", err
-		}
-		raw = filepath.Join(temporary, "openclaw-development")
+	path, err := stateDirectoryPath(raw)
+	if err != nil {
+		return "", err
 	}
-	if !filepath.IsAbs(raw) {
-		return "", fmt.Errorf("state directory must be absolute")
-	}
-	path := filepath.Clean(raw)
 	home, _ := os.UserHomeDir()
 	if path == "/" || path == "/tmp" || path == filepath.Clean(os.TempDir()) || path == repository || path == home {
 		return "", fmt.Errorf("refusing unsafe state directory: %s", path)
@@ -121,6 +112,40 @@ func stateDirectory(raw, repository string, existing bool) (string, error) {
 		}
 	}
 	return path, nil
+}
+
+// stateDirectoryPath returns the selected state directory, or the default
+// under the system temporary directory, without checking what is there.
+func stateDirectoryPath(raw string) (string, error) {
+	if raw == "" {
+		// System temporary directories may contain aliases, such as /var on macOS.
+		// Resolve the helper-selected default once; explicit paths remain canonical.
+		temporary, err := filepath.EvalSymlinks(os.TempDir())
+		if err != nil {
+			return "", err
+		}
+		raw = filepath.Join(temporary, "openclaw-development")
+	}
+	if !filepath.IsAbs(raw) {
+		return "", fmt.Errorf("state directory must be absolute")
+	}
+	return filepath.Clean(raw), nil
+}
+
+// recordedStateDirectory reports whether the selected development state
+// directory exists. Only a definite absence reports false; any other failure
+// to inspect it is an error that names the directory.
+func recordedStateDirectory(raw string) (string, bool, error) {
+	path, err := stateDirectoryPath(raw)
+	if err != nil {
+		return "", false, err
+	}
+	if _, err := os.Lstat(path); os.IsNotExist(err) {
+		return path, false, nil
+	} else if err != nil {
+		return path, false, fmt.Errorf("cannot inspect development state directory %s: %w", path, err)
+	}
+	return path, true, nil
 }
 func validateKeyOutput(path string) error {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {

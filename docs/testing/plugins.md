@@ -15,7 +15,7 @@ Run Agent plugin tests for API, Driver, persistence, and runtime behavior from t
 | Coverage                 | Command                                                                                                                                                                          |
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | API and contracts        | `pnpm test:conformance` and `node --test tests/integration/occ-api.test.mjs`                                                                                                     |
-| Driver and startup       | `node --test tests/conformance/plugin-driver.test.mjs tests/integration/plugin-driver-startup.test.mjs`                                                                          |
+| Driver and startup       | `node --test tests/conformance/plugin-driver.test.mjs tests/integration/plugin-driver-startup.test.ts`                                                                           |
 | Compute boundaries       | `node --test tests/conformance/plugin-compute.test.mjs tests/conformance/ssh-compute.test.mjs`                                                                                   |
 | Persistence and recovery | Run the prepared `postgres-application` and `postgres-platform` lanes using the [PostgreSQL procedure](postgresql.md#revision-worker-tests); each lane needs its own state file. |
 

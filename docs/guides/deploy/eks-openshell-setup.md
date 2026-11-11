@@ -45,6 +45,19 @@ Install the [EBS CSI driver](https://docs.aws.amazon.com/eks/latest/userguide/eb
 
 Create encrypted `encrypted-gp3` RWO filesystem storage with `WaitForFirstConsumer` for Gateway and bootstrap claims. Configure a default StorageClass that supports dedicated Agents’ `40Gi` RWO claims and UID/GID 1000; review other workloads before changing the default. Keep eligible capacity in the claim’s availability zone. Replacement stops the predecessor before disk reattachment, so allow downtime. Validate storage failover and node fencing separately. See the [storage contract](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage).
 
+Before binding a PersistentVolume to an existing EBS volume, check the
+[tag conditions of the CSI controller's selected IAM policy](https://docs.aws.amazon.com/eks/latest/best-practices/identity-and-access-management.html#iam-permissions-recommendations-when-using-the-amazon-ebs-csi-driver)
+for both the volume and the target node. For
+`AmazonEBSCSIDriverEKSClusterScopedPolicy`, the volume's
+`ebs.csi.aws.com/cluster-name` tag must match the principal's `eks-cluster-name`
+tag. For `AmazonEBSCSIDriverPolicyV2`, a new manually created volume needs
+`ebs.csi.aws.com/cluster=true`.
+
+A `Bound` claim confirms PV binding. For attachment timeouts, match the
+`VolumeAttachment` to the PV and node. If the attachment status or Pod events
+only show a timeout, check the leader EBS CSI controller's `ebs-plugin` logs
+for the volume and time of the failed attach.
+
 ### Enable Console workspace files
 
 Private gateway routing is enabled by default. Prepare its controllers, CRDs, GatewayClass and service-key Secret before installing OCC; the Helm chart does not install these prerequisites.
@@ -93,6 +106,16 @@ kubectl version
 kubectl get nodes -L oce-role
 kubectl get storageclass encrypted-gp3
 ```
+
+If either node group lacks Ready workers, ask the infrastructure owner to inspect
+that group's health issues and provisioning events using
+[AWS's node troubleshooting guide](https://docs.aws.amazon.com/eks/latest/userguide/troubleshooting.html).
+An offered instance type does not guarantee launch capacity:
+[`InsufficientInstanceCapacity`](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/troubleshooting-launch.html#troubleshooting-launch-capacity)
+means AWS cannot currently fulfill the launch. Keep retries and rollback in the
+owning infrastructure workflow. After a failed replacement, verify the previous
+group's health, template and scaling, and cleanup of attempted resources before
+retrying. Preserve the volume-zone constraints above.
 
 Confirm the account and role, then test Kubernetes TLS from the operator host. Successive connections through shared NAT can use different public IP addresses. For a public API allowlist change, authorize only the exact stable egress addresses or CIDRs listed for that host in the authoritative NAT inventory. A single observed IP address cannot establish or justify a broader prefix. Preserve existing allowlist entries, public and private endpoint settings, and AWS and Kubernetes authentication.
 

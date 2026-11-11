@@ -5,7 +5,10 @@ import { mkdtemp, mkdir, readFile, rm, writeFile, copyFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { loadRuntimeArtifact } from "../../scripts/ci/runtime-artifact.mjs";
+import {
+  loadRuntimeArtifact,
+  prepareRuntimeArtifactLayout,
+} from "../../scripts/ci/runtime-artifact.mjs";
 import { prepareLane } from "../../scripts/ci/prepare.mjs";
 import { cleanupResourceIds } from "../../scripts/ci/cleanup.mjs";
 
@@ -87,8 +90,10 @@ test(
     const statePath = join(directory, "state.json");
     const savedEnv = { ...process.env };
     let loaded;
+    let namedContext;
     t.after(async () => {
       await loaded?.cleanup();
+      await namedContext?.cleanup();
       if (builderCreated) {
         run("docker", ["buildx", "rm", builder]);
       }
@@ -217,8 +222,12 @@ setTimeout(() => process.stdout.write(${JSON.stringify(`${sourceSha}\n`)}), 2100
     assert.equal(imported.Config.WorkingDir, "/workspace");
     assert.equal(imported.Config.StopSignal, "SIGUSR1");
     assert.deepEqual(imported.Config.ExposedPorts, { "12345/tcp": {} });
-    // The separate BuildKit builder receives the verified OCI layout as a named
-    // base; this proves that host Docker tag visibility is not required.
+    // The named context has its own verified layout and does not need the
+    // imported Docker image. Keep both paths covered on the same bytes.
+    namedContext = await prepareRuntimeArtifactLayout(selection, Date.now() + 60_000);
+    assert.equal(namedContext.platformManifestDigest, loaded.platformManifestDigest);
+    assert.notEqual(namedContext.layoutDirectory, loaded.layoutDirectory);
+    await loaded.cleanup();
     await writeFile(
       join(context, "Dockerfile.derived"),
       "FROM runtime-base\nCOPY payload /derived\nCOPY --from=runtime-base /payload /from-base\n",
@@ -228,7 +237,7 @@ setTimeout(() => process.stdout.write(${JSON.stringify(`${sourceSha}\n`)}), 2100
       "build",
       "--provenance=false",
       "--build-context",
-      `runtime-base=oci-layout://${loaded.layoutDirectory}@${loaded.platformManifestDigest}`,
+      `runtime-base=oci-layout://${namedContext.layoutDirectory}@${namedContext.platformManifestDigest}`,
       "--load",
       "-t",
       derivedTag,
@@ -269,7 +278,7 @@ setTimeout(() => process.stdout.write(${JSON.stringify(`${sourceSha}\n`)}), 2100
             context,
             dockerfile: "Dockerfile.derived",
             contexts: {
-              "runtime-base": `oci-layout://${loaded.layoutDirectory}@${loaded.platformManifestDigest}`,
+              "runtime-base": `oci-layout://${namedContext.layoutDirectory}@${namedContext.platformManifestDigest}`,
             },
             output: ["type=docker"],
             tags: [bakeTag],
@@ -283,7 +292,7 @@ setTimeout(() => process.stdout.write(${JSON.stringify(`${sourceSha}\n`)}), 2100
       "--builder",
       builder,
       `--allow=fs.read=${context}`,
-      `--allow=fs.read=${loaded.layoutDirectory}`,
+      `--allow=fs.read=${namedContext.layoutDirectory}`,
       "-f",
       bakeFile,
       "proof",
@@ -375,6 +384,45 @@ setTimeout(() => process.stdout.write(${JSON.stringify(`${sourceSha}\n`)}), 2100
     await assert.rejects(
       loadRuntimeArtifact({ ...selection, archiveSha256: duplicateHash, tag }),
       /Duplicate OCI archive member/,
+    );
+
+    // Keep all compressed bytes and descriptor checks valid, but make the
+    // executable config claim a different uncompressed layer identity.
+    const wrongConfig = await blob(manifest.config);
+    wrongConfig.rootfs.diff_ids[0] = `sha256:${"0".repeat(64)}`;
+    const writeBlob = async (value, mediaType) => {
+      const bytes = Buffer.from(JSON.stringify(value));
+      const digest = hash(bytes);
+      await writeFile(join(layout, "blobs/sha256", digest), bytes);
+      return { mediaType, digest: `sha256:${digest}`, size: bytes.length };
+    };
+    const config = await writeBlob(wrongConfig, manifest.config.mediaType);
+    const newManifest = await writeBlob({ ...manifest, config }, descriptor.mediaType);
+    const index = Buffer.from(JSON.stringify({ schemaVersion: 2, manifests: [newManifest] }));
+    await writeFile(join(layout, "index.json"), index);
+    run("tar", [
+      "-cf",
+      join(artifact, "runtime.tar"),
+      "-C",
+      layout,
+      "oci-layout",
+      "index.json",
+      "blobs",
+    ]);
+    const archiveSha256 = hash(await readFile(join(artifact, "runtime.tar")));
+    await writeFile(
+      join(artifact, "receipt.json"),
+      JSON.stringify({
+        ...receipt,
+        archiveSha256,
+        indexDigest: `sha256:${hash(index)}`,
+        platformManifestDigest: newManifest.digest,
+        configDigest: config.digest,
+      }),
+    );
+    await assert.rejects(
+      prepareRuntimeArtifactLayout({ ...selection, archiveSha256 }),
+      /OCI layer diff ID mismatch/,
     );
   },
 );

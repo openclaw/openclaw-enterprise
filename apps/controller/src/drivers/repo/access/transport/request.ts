@@ -1,23 +1,16 @@
 import type { IncomingMessage } from "node:http";
 import type { Denied, RequestHead } from "../backend-contracts.ts";
+import { TRANSPORT_HEADER_NAMES } from "./transport-header-names.ts";
 
 const NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const VALUE = /^[\x20-\x7e]*$/;
 const REMOVED = new Set([
+  ...TRANSPORT_HEADER_NAMES,
   "authorization",
-  "proxy-authorization",
   "cookie",
   "host",
-  "connection",
-  "keep-alive",
-  "proxy-connection",
   "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade",
   "expect",
-  "content-length",
-  "content-encoding",
 ]);
 export type HeadInspection =
   | (Denied & Readonly<{ authorization?: string }>)

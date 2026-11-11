@@ -50,11 +50,7 @@ import {
   readOpenclawSource,
 } from "../lib/openclaw-source.mjs";
 import { compareEvents, eventObservedTime } from "./kubernetes-event-time.ts";
-import {
-  assertRuntimeArtifactTagAvailable,
-  loadRuntimeArtifact,
-  runtimeArtifactSelection,
-} from "./runtime-artifact.mjs";
+import { prepareRuntimeArtifactLayout, runtimeArtifactSelection } from "./runtime-artifact.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const occ = join(root, "bin", "occ");
@@ -124,8 +120,13 @@ function log(message) {
   process.stdout.write(`[first-agent-smoke] ${message}\n`);
 }
 
-export function run(command, args, { env = process.env, input, timeout = 5 * minute, label } = {}) {
+export function run(
+  command,
+  args,
+  { env = process.env, input, timeout = 5 * minute, label, signal: abortSignal } = {},
+) {
   return new Promise((resolveRun, reject) => {
+    abortSignal?.throwIfAborted();
     const child = spawn(command, args, { cwd: root, env, stdio: ["pipe", "pipe", "pipe"] });
     const stdout = [];
     const stderr = [];
@@ -143,13 +144,23 @@ export function run(command, args, { env = process.env, input, timeout = 5 * min
     child.stderr.on("data", stream(process.stderr, stderr));
     child.stdin.on("error", () => {});
     child.stdin.end(input);
-    const timer = setTimeout(() => child.kill("SIGKILL"), timeout);
-    child.once("error", (error) => {
+    const stop = () => child.kill("SIGKILL");
+    const timer = setTimeout(stop, timeout);
+    abortSignal?.addEventListener("abort", stop, { once: true });
+    const cleanup = () => {
       clearTimeout(timer);
+      abortSignal?.removeEventListener("abort", stop);
+    };
+    child.once("error", (error) => {
+      cleanup();
       reject(error);
     });
     child.once("close", (code, signal) => {
-      clearTimeout(timer);
+      cleanup();
+      if (abortSignal?.aborted) {
+        reject(abortSignal.reason);
+        return;
+      }
       const result = {
         code,
         signal,
@@ -631,17 +642,13 @@ async function buildImages({ preparedGit = false } = {}) {
   const context = join(workDirectory, "runtime-trust");
   await writeModelProviderTrust({ context, caPath: join(modelDirectory, "ca.pem") });
   const driver = await builderDriver();
-  const artifactTag = `localhost/oce-smoke/runtime-artifact:${randomUUID()}`;
-  if (selection) {
-    assertRuntimeArtifactTagAvailable(artifactTag);
-  }
   let runtimeArtifact;
   let settled;
   const failures = [];
   try {
     if (selection) {
       runtimeArtifact = await step("verified runtime artifact", () =>
-        loadRuntimeArtifact({ ...selection, tag: artifactTag }),
+        prepareRuntimeArtifactLayout(selection),
       );
     }
     // Both finish before cleanup, so neither keeps using the artifact unseen.
@@ -676,22 +683,10 @@ async function buildImages({ preparedGit = false } = {}) {
   } catch (error) {
     failures.push(error);
   } finally {
-    if (selection) {
-      const cleanup = await Promise.allSettled([
-        run("docker", ["image", "rm", artifactTag]).catch((error) => {
-          // A refused load may never create the owned tag.
-          if (
-            error.result?.code !== 1 ||
-            !/No such (?:image|object):/.test(error.result?.stderr ?? "")
-          ) {
-            throw error;
-          }
-        }),
-        runtimeArtifact?.cleanup(),
-      ]);
-      failures.push(
-        ...cleanup.filter(({ status }) => status === "rejected").map(({ reason }) => reason),
-      );
+    try {
+      await runtimeArtifact?.cleanup();
+    } catch (error) {
+      failures.push(error);
     }
   }
   if (failures.length === 1) {
@@ -1092,24 +1087,31 @@ const clusterName = slotNames.cluster;
 const watchLog = join(workDirectory, "cluster-watch.log");
 
 // `occ dev up` deletes its cluster when a step fails, so record what the
-// cluster looked like while it was being installed. The returned stop function
-// wakes an idle wait without another capture; one already running finishes.
-// `finalCapture` takes one last snapshot, for a failed setup.
-export function watchCluster() {
-  const kubeconfig = join(workDirectory, "watch-kubeconfig");
+// cluster looked like while it was being installed. On success, stop and reap
+// any optional capture. On failure, preserve its output and take a final snapshot.
+export function watchCluster({ directory = workDirectory, intervalMs = 30_000 } = {}) {
+  const kubeconfig = join(directory, "watch-kubeconfig");
+  const captureLog = join(directory, "cluster-watch.log");
   const wake = new AbortController();
+  const stopCapture = new AbortController();
   let finalCapture = false;
-  const record = async (label, command, args) => {
+  const capture = async (signal) => {
+    const runCapture = (command, args, options) => run(command, args, { ...options, signal });
+    const record = async (label, command, args) => {
+      try {
+        const { stdout } = await runCapture(command, args, { timeout: minute });
+        await appendFile(captureLog, `----- ${new Date().toISOString()} ${label}\n${stdout}\n`);
+      } catch (error) {
+        if (!signal?.aborted) {
+          await appendFile(
+            captureLog,
+            `----- ${label} unavailable: ${error.message.slice(0, 300)}\n`,
+          );
+        }
+      }
+    };
     try {
-      const { stdout } = await run(command, args, { timeout: minute });
-      await appendFile(watchLog, `----- ${new Date().toISOString()} ${label}\n${stdout}\n`);
-    } catch (error) {
-      await appendFile(watchLog, `----- ${label} unavailable: ${error.message.slice(0, 300)}\n`);
-    }
-  };
-  const capture = async () => {
-    try {
-      const { stdout } = await run("k3d", ["kubeconfig", "get", clusterName], {
+      const { stdout } = await runCapture("k3d", ["kubeconfig", "get", clusterName], {
         timeout: minute,
       });
       await writeFile(kubeconfig, stdout, { mode: 0o600 });
@@ -1134,7 +1136,7 @@ export function watchCluster() {
       'jsonpath={range .items[*].status.conditions[*]}{.type}={.status} {.message}{"\\n"}{end}{.items[*].spec.taints}',
     ]);
     try {
-      const { stdout } = await run("kubectl", [...k, "get", "pods", "-A", "-o", "json"]);
+      const { stdout } = await runCapture("kubectl", [...k, "get", "pods", "-A", "-o", "json"]);
       for (const pod of JSON.parse(stdout).items) {
         const ready = pod.status?.conditions?.some(
           ({ type, status }) => type === "Ready" && status === "True",
@@ -1168,11 +1170,11 @@ export function watchCluster() {
   const loop = (async () => {
     while (!wake.signal.aborted) {
       try {
-        await delay(30_000, undefined, { signal: wake.signal });
+        await delay(intervalMs, undefined, { signal: wake.signal });
       } catch {
         break;
       }
-      await capture();
+      await capture(stopCapture.signal);
     }
     if (finalCapture) {
       await capture();
@@ -1181,6 +1183,9 @@ export function watchCluster() {
   return async ({ finalCapture: final = false } = {}) => {
     finalCapture = final;
     wake.abort();
+    if (!final) {
+      stopCapture.abort();
+    }
     await loop;
   };
 }

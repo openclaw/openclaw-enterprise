@@ -2,6 +2,7 @@ import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readClientConfiguration } from "./config.ts";
 import {
+  buildOperatorRepositoryManifest,
   inheritedRepositoryBinding,
   readRuntimeRepositoryManifest,
   requireCurrentBinding,
@@ -97,16 +98,10 @@ async function run(): Promise<void> {
     );
   } else {
     const configuration = await readClientConfiguration(directory);
-    const single: RuntimeRepositoryBinding = {
-      repositoryRef: "operator",
-      sessionId: configuration.sessionId,
-      deadlineWallMs: configuration.deadlineWallMs,
-      directory: resolve(directory),
-      materialDirectory: resolve(directory),
-      client: configuration.client,
-      configuration,
-    };
-    binding = selectGitCredential({ generation: "", bindings: [single] }, fields);
+    binding = selectGitCredential(
+      buildOperatorRepositoryManifest(directory, configuration),
+      fields,
+    );
   }
   requireCurrentBinding(binding);
   const bytes = await readPrivateFile(join(binding.directory, "bearer"), 256);

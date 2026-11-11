@@ -1,3 +1,10 @@
+import { isAbsolute, resolve } from "node:path";
+
+/** Check a Unix socket path's lexical form and UTF-8 byte limit. */
+export function isCanonicalUnixSocketPath(path: string): boolean {
+  return isAbsolute(path) && resolve(path) === path && Buffer.byteLength(path) <= 103;
+}
+
 export interface RepositoryCredentialClientConfiguration {
   readonly gatewayOrigin: string;
   readonly gitRemote: string;

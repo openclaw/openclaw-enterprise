@@ -2455,10 +2455,8 @@ test("OCC Fastify serves singleton, Namespace, Configuration, and Agent resource
 });
 
 test("Namespace IAM routes manage exact Role and AccessBinding policy through the selected Driver", async () => {
-  const fixture = await createInjectedFixture();
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
+  const controller = await configuredController();
+  const { fixture } = controller;
   await bootstrap(controller);
 
   const namespace = await createNamespace(controller, "iam-policy");
@@ -2598,12 +2596,10 @@ test("Namespace IAM routes manage exact Role and AccessBinding policy through th
 });
 
 test("Namespace IAM routes bind existing humans to the exact Namespace and Agent", async () => {
-  const fixture = await createInjectedFixture();
+  const controller = await configuredController();
+  const { fixture } = controller;
   const member = await fixture.createAuthPrincipal("assigned-member");
   fixture.state.identities.push(member.principal);
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "human-iam");
   const foreign = await createNamespace(controller, "foreign-human-iam");
@@ -2733,12 +2729,10 @@ test("credential withdrawal routes authorize the Agent, not the credential sourc
 });
 
 test("Namespace IAM refuses bindings whose Role cannot apply to the target", async () => {
-  const fixture = await createInjectedFixture();
+  const controller = await configuredController();
+  const { fixture } = controller;
   const member = await fixture.createAuthPrincipal("inapplicable-role-member");
   fixture.state.identities.push(member.principal);
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "inapplicable-role");
   const agent = await createAgent(controller, namespace.id, "inapplicable-role-agent");
@@ -3210,10 +3204,8 @@ test("Secret values with an unpaired surrogate are refused as an invalid value",
 });
 
 test("Namespace IAM routes bind humans enrolled after bootstrap through the live resolver", async () => {
-  const fixture = await createInjectedFixture();
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
+  const controller = await configuredController();
+  const { fixture } = controller;
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "late-enrolled-iam");
   const foreign = await createNamespace(controller, "late-enrolled-foreign");
@@ -3276,12 +3268,10 @@ test("Namespace IAM routes bind humans enrolled after bootstrap through the live
 });
 
 test("access removed by deleting its target or Namespace is audited and leaves no policy behind", async () => {
-  const fixture = await createInjectedFixture();
+  const controller = await configuredController();
+  const { fixture } = controller;
   const member = await fixture.createAuthPrincipal("side-effect-member");
   fixture.state.identities.push(member.principal);
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "side-effect-access");
   await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
@@ -3561,12 +3551,10 @@ test("Create Agent's preflight refuses what Configuration and Agent create would
 });
 
 test("Namespace IAM reports invalid policy input as 400 with the field and refuses inert Permissions", async () => {
-  const fixture = await createInjectedFixture();
+  const controller = await configuredController();
+  const { fixture } = controller;
   const member = await fixture.createAuthPrincipal("policy-validation-member");
   fixture.state.identities.push(member.principal);
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "policy-validation");
   const other = await createNamespace(controller, "policy-validation-other");

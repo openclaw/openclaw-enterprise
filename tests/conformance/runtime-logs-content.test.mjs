@@ -456,6 +456,15 @@ test("a failed model probe keeps its closed-vocabulary cause, never other cause 
         providerErrorCode: "no_organization",
         providerErrorType: "invalid_request_error",
       }),
+      // An OpenClaw timeout keeps the CPU reading of its window (finding 2675); the raw
+      // samples never pass, and the Codex probe has no window.
+      probe("openclaw.model_probe", undefined, {
+        timeoutWindowMs: 15_400,
+        timeoutWindowCpuWaitMs: 4_200,
+        timeoutWindowIdleMs: 2_000,
+        timeoutWindowSamples: [[1, 2, 3, 4]],
+      }),
+      probe("codex.model_probe", undefined, { timeoutWindowMs: 15_400 }),
       // Off-vocabulary details, unknown kinds and extra keys drop the cause, never the line.
       probe("openclaw.model_probe", { kind: "PROBE_STATUS", detail: "sk-live-abc" }),
       probe("openclaw.model_probe", { kind: "PROVIDER_TEXT" }),
@@ -498,6 +507,12 @@ test("a failed model probe keeps its closed-vocabulary cause, never other cause 
       providerErrorCode: "no_organization",
       providerErrorType: "invalid_request_error",
       cleanupError: "ENOTEMPTY",
+    }),
+    fields("codex.model_probe"),
+    fields("openclaw.model_probe", {
+      timeoutWindowMs: 15_400,
+      timeoutWindowCpuWaitMs: 4_200,
+      timeoutWindowIdleMs: 2_000,
     }),
     fields("codex.model_probe"),
     fields("openclaw.model_probe"),

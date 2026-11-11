@@ -8,14 +8,13 @@ last_updated_session: authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e
 
 ## Overview
 
-OCC validates selections against the Harness catalog and freezes the Driver and policy at deployment. A Namespace administrator [publishes packages](../../apps/controller/src/drivers/plugin/import-package.ts). Agent owners select releases by digest. [OpenShell](../../apps/controller/src/drivers/sandbox/openshell-managed-mcp-policy.ts) enforces the bound MCP account and selected tools.
+OCC checks the Harness catalog and snapshots Driver and policy at deployment. A Namespace administrator [publishes packages](../../apps/controller/src/drivers/plugin/import-package.ts). Agent owners select releases by digest. [OpenShell](../../apps/controller/src/drivers/sandbox/openshell-managed-mcp-policy.ts) enforces the bound MCP account and selected tools.
 
 ## Entry Points
 
 `apps/controller/src/index.ts:createFastifyApp`
 
-- Trigger: Agent create/update with `plugins`, then deployment.
-- Requires Agent permission, valid selections and a compatible PluginDriver.
+- Create or update `Agent.plugins`, then deploy. This requires Agent permission and a compatible PluginDriver.
 - Source: [HTTP handlers](../../apps/controller/src/index.ts),
   [OpenClawController](../../packages/occ/src/index.ts), and
   [bundled PluginDrivers](../../apps/controller/src/drivers/plugin/index.ts).
@@ -136,10 +135,10 @@ Read capabilities from `GET /installation` or `GET .../plugins/capabilities`
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-OCC snapshots the Configuration, Driver and selections. Before cutover the worker checks the pinned Driver against the Harness. Gateway and worker each verify their assets from Compute’s package descriptors.
+OCC snapshots Configuration, Driver and selections. Before cutover the worker checks Driver/Harness compatibility. Gateway and worker verify assets against Compute’s package descriptors.
 
-- **CLI packages.** The Gateway loads skills. The Harness runs the pinned executable. The guard checks operation and credential restrictions before injection.
-- **Hosted MCP packages.** An account lets the worker advertise selected tools. The Gateway grants same-node execution per turn. Calls requiring Gateway hooks or another node return structured results or policy denials through the Gateway to Code Mode. The credential driver attaches the source. Sandbox supplies its placeholder and scopes worker and script requests. OpenShell enforces exact tool names and rejects overlapping routes.
+- **CLI packages.** Gateway loads skills. Harness runs the pinned executable. The guard checks operation and credential restrictions before injection.
+- **Hosted MCP packages.** The worker advertises the account’s selected tools. Gateway grants same-node execution per turn. Calls requiring Gateway hooks or another node return results or denials through Gateway to Code Mode. The credential driver attaches the source. Sandbox supplies its placeholder and scopes worker and script requests. OpenShell enforces tool names and rejects overlapping routes.
 - **Native runtime plugins.** Startup installs packages and verifies tool policy.
 
 Withdrawal removes credential injection. Recovery preserves other attachments.
@@ -335,14 +334,15 @@ shutdown, or permanent failure latch exists. Warnings describe deployment comple
 
 ## Debugging and Verification
 
-The OpenClaw model probe's CPU-based deadline cannot exceed 600 seconds. CPU wait is the larger PSI or throttled
-delta; throttled time is capped by throttled periods. Missing, nonfinite or reset samples give no delta and cannot
-establish starvation.
+OpenClaw caps the model probe deadline at 600 seconds. It caps throttled time by throttled periods, then
+takes the larger of that time and PSI wait. Missing, nonfinite or reset samples cannot establish starvation. A timeout requires
+over 25% CPU wait in its final 15 s and no idle 5 s interval to qualify as starved
+(`timeoutWindowMs`, `timeoutWindowCpuWaitMs`, `timeoutWindowIdleMs`).
 
-- Compare `Agent.plugins`, the revision snapshot and deployment status. Startup verifies catalog membership, package ownership, authentication and native configuration.
-- Check `PLUGIN_INSTALL_FAILED` or `PLUGIN_AUTH_REQUIRED` for the affected `pluginId`. Verify its runtime and Gateway entries are disabled. Keep credentials out of logs.
-- SSH Compute rejects plugin selections and default approvers before host effects. Use compatible Kubernetes Compute or clear both.
-- Verify a plugin call in a normal Agent turn, then remove the selection, redeploy and check behavior on that Agent and a second Agent.
+- Compare `Agent.plugins`, the revision snapshot and deployment status. Invalid policy leaves desired state unchanged. Startup verifies catalog membership, ownership, authentication and native configuration.
+- For `PLUGIN_INSTALL_FAILED` or `PLUGIN_AUTH_REQUIRED`, check that both runtime and Gateway disable the deployment’s `pluginId`. Keep credentials out of logs.
+- SSH Compute refuses plugin maps and default approvers before host effects. Use compatible Kubernetes or clear both.
+- Verify a model-chosen plugin call. Remove it, redeploy and check both the target and an unaffected Agent.
 
 ## Related docs
 

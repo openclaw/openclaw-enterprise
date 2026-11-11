@@ -7834,6 +7834,21 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     "--recovery-reviewed",
   ];
 
+  async function interruptedUpgradeWithCompletedHook(t, initializationResources) {
+    const f = await fixture(t, { recoveryHooks: true, initializationResources });
+    await f.failNext("lost-helm-response");
+    await assert.rejects(f.run(), injectedFault);
+    const state = await completedHookInPendingRelease(f);
+    return { f, state };
+  }
+
+  async function assertRecoveryRefusedBeforeRollback(f, state, refusal) {
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    await assert.rejects(f.run(...recoverHelm), refusal);
+    assert.equal((await f.state()).rollbackSubmissions, undefined);
+    assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+  }
+
   // Clearing this proxy is an allowed candidate-values change. Stock Helm can
   // leave its old NetworkPolicy behind when interrupted before ordinary updates.
   async function interruptedProxyRemoval(t, selectedProxy = "") {
@@ -8111,10 +8126,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
   });
 
   test("recovery refuses stale hooks, wrong Pod ownership and changed execution without submitting Helm", async (t) => {
-    const f = await fixture(t, { recoveryHooks: true });
-    await f.failNext("lost-helm-response");
-    await assert.rejects(f.run(), injectedFault);
-    const original = await completedHookInPendingRelease(f);
+    const { f, state: original } = await interruptedUpgradeWithCompletedHook(t);
     for (const [name, change, refusal] of [
       [
         "stale nonce",
@@ -8157,10 +8169,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       await t.test(name, async () => {
         const state = structuredClone(original);
         change(state);
-        await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
-        await assert.rejects(f.run(...recoverHelm), refusal);
-        assert.equal((await f.state()).rollbackSubmissions, undefined);
-        assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+        await assertRecoveryRefusedBeforeRollback(f, state, refusal);
       });
     }
   });
@@ -8282,10 +8291,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
   });
 
   test("recovery rejects admission-added execution settings even when absent from the candidate", async (t) => {
-    const f = await fixture(t, { recoveryHooks: true });
-    await f.failNext("lost-helm-response");
-    await assert.rejects(f.run(), injectedFault);
-    const original = await completedHookInPendingRelease(f);
+    const { f, state: original } = await interruptedUpgradeWithCompletedHook(t);
     for (const [field, value] of [
       ["lifecycle", { postStart: { exec: { command: ["unreviewed"] } } }],
       ["env", [{ name: "NODE_OPTIONS", value: "--require=/unreviewed.js" }]],
@@ -8308,19 +8314,13 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
             },
           ];
         }
-        await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
-        await assert.rejects(f.run(...recoverHelm), /Pod identity/);
-        assert.equal((await f.state()).rollbackSubmissions, undefined);
-        assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+        await assertRecoveryRefusedBeforeRollback(f, state, /Pod identity/);
       });
     }
   });
 
   test("an unacknowledged same-candidate rollback cannot be replayed or silently adopted", async (t) => {
-    const f = await fixture(t, { recoveryHooks: true });
-    await f.failNext("lost-helm-response");
-    await assert.rejects(f.run(), injectedFault);
-    await completedHookInPendingRelease(f);
+    const { f } = await interruptedUpgradeWithCompletedHook(t);
     await f.failNext("lost-rollback-response");
     await assert.rejects(f.run(...recoverHelm), /outcome is unresolved/);
     // The controlled server accepted recovery, but the helper did not acknowledge
@@ -8401,10 +8401,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
   });
 
   test("recovery refuses a container override of the inherited initializer identity", async (t) => {
-    const f = await fixture(t, { recoveryHooks: true });
-    await f.failNext("lost-helm-response");
-    await assert.rejects(f.run(), injectedFault);
-    const original = await completedHookInPendingRelease(f);
+    const { f, state: original } = await interruptedUpgradeWithCompletedHook(t);
     // Admission may leave the Job intact and override identity only on its Pod.
     for (const placement of ["initContainers", "containers"]) {
       for (const [key, value] of [
@@ -8415,26 +8412,17 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         await t.test(`${placement} ${key}`, async () => {
           const state = structuredClone(original);
           state.recoveryPod.spec[placement][0].securityContext[key] = value;
-          await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
-          await assert.rejects(f.run(...recoverHelm), /Pod identity/);
-          assert.equal((await f.state()).rollbackSubmissions, undefined);
-          assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+          await assertRecoveryRefusedBeforeRollback(f, state, /Pod identity/);
         });
       }
     }
   });
 
   test("recovery compares initializer resource quantities by value and refuses changed limits", async (t) => {
-    const f = await fixture(t, {
-      recoveryHooks: true,
-      initializationResources: {
-        requests: { cpu: "0.1", memory: "128Mi" },
-        limits: { cpu: "0.5", memory: "1.5Gi" },
-      },
+    const { f, state: original } = await interruptedUpgradeWithCompletedHook(t, {
+      requests: { cpu: "0.1", memory: "128Mi" },
+      limits: { cpu: "0.5", memory: "1.5Gi" },
     });
-    await f.failNext("lost-helm-response");
-    await assert.rejects(f.run(), injectedFault);
-    const original = await completedHookInPendingRelease(f);
     // Kubernetes serializes equivalent fixed-point quantities canonically on
     // the Job and Pod; the stored Helm manifest retains the original spelling.
     for (const spec of [
@@ -8452,10 +8440,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     ]) {
       const changed = structuredClone(original);
       changed.recoveryPod.spec[placement][0].resources[section][resource] = value;
-      await writeFile(join(f.directory, "state.json"), JSON.stringify(changed));
-      await assert.rejects(f.run(...recoverHelm), /Pod identity/);
-      assert.equal((await f.state()).rollbackSubmissions, undefined);
-      assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+      await assertRecoveryRefusedBeforeRollback(f, changed, /Pod identity/);
     }
     await writeFile(join(f.directory, "state.json"), JSON.stringify(original));
     await f.run(...recoverHelm);
@@ -8466,10 +8451,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
   test("recovery refuses admission changes to Pod and container security settings", async (t) => {
     for (const change of ["Pod sysctls", "container seccomp", "init capabilities"]) {
       await t.test(change, async (subtest) => {
-        const f = await fixture(subtest, { recoveryHooks: true });
-        await f.failNext("lost-helm-response");
-        await assert.rejects(f.run(), injectedFault);
-        const state = await completedHookInPendingRelease(f);
+        const { f, state } = await interruptedUpgradeWithCompletedHook(subtest);
         // Admission can preserve every requested field while adding privileges or
         // overriding a profile inherited from the Pod onto one container.
         const spec = state.recoveryPod.spec;
@@ -8482,10 +8464,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         } else {
           spec.initContainers[0].securityContext.capabilities.add = ["NET_ADMIN"];
         }
-        await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
-        await assert.rejects(f.run(...recoverHelm), /Pod identity/);
-        assert.equal((await f.state()).rollbackSubmissions, undefined);
-        assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+        await assertRecoveryRefusedBeforeRollback(f, state, /Pod identity/);
       });
     }
   });
