@@ -79,6 +79,7 @@ export class RequestFailure extends Error {
   readonly status: number;
   readonly code: string;
   readonly details?: readonly ErrorDetail[];
+  registrationRetryAfterSeconds?: number;
   remainingResources?: readonly {
     kind: string;
     count: number;
@@ -181,9 +182,15 @@ export function responseHeaders(reply: FastifyReply, requestId: string): void {
 
 export function canonicalFailure(reply: FastifyReply, error: RequestFailure): void {
   responseHeaders(reply, reply.request.id);
+  if (error.registrationRetryAfterSeconds !== undefined) {
+    reply.header("retry-after", String(error.registrationRetryAfterSeconds));
+  }
   reply.status(error.status).send({
     error: {
       code: error.code,
+      ...(error.registrationRetryAfterSeconds === undefined
+        ? {}
+        : { reason: "credential_registration_pending" }),
       // Some messages come from Drivers or name submitted values; none may break the cap.
       message: capped(error.message),
       ...(error.details === undefined ? {} : { details: error.details }),
@@ -911,7 +918,11 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   if (error instanceof RetryLaterError) {
     // A fixed message naming the wait or the restart; raised only after the caller's grant and
     // lookup (finding 2536).
-    return failure(503, "DEPENDENCY_UNAVAILABLE", error.message);
+    const result = failure(503, "DEPENDENCY_UNAVAILABLE", error.message);
+    if (error.retryAfterSeconds !== undefined) {
+      result.registrationRetryAfterSeconds = error.retryAfterSeconds;
+    }
+    return result;
   }
   if (isDependencyUnavailable(error)) {
     return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
