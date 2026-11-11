@@ -2649,59 +2649,72 @@ for (const workflow of apiKeyWorkflows) {
   });
 }
 
-for (const focused of [false, true]) {
-  test(`the Namespace runner rejects a custom model destination before setup (focused: ${focused})`, async (t) => {
-    const root = await fixture(t);
-    const suites = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
-    const lane = suites.lanes.openshell;
-    const file = lane.files.find(({ path }) =>
-      path.endsWith("/namespace-driver-openshell-k3d-real.test.ts"),
-    );
-    const statePath = join(root, "state/namespace.json");
-    const resultsPath = join(root, "results/namespace.json");
-    await writeRunnerManifest(root, { lanes: { openshell: { ...lane, files: [file] } } });
-    await writeFile(
-      join(root, "scripts/ci/prepare.mjs"),
-      `export { prepareFile } from ${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.mjs")).href)};`,
-    );
-    // Preserve real metadata and preparation. Only the unstarted model child is
-    // inert; a regression still stops at the immutable-image gate before setup.
-    await writeFile(join(root, file.path), 'throw new Error("unexpected-model-child");');
-    const env = Object.fromEntries(
-      [...lane.requiredEnv, ...file.requiredEnv].map((name) => [name, "synthetic-prerequisite"]),
-    );
-    const result = run(
-      root,
-      [
-        ...laneArgs(root, "openshell", statePath, resultsPath),
-        ...(focused ? ["--file", file.path] : []),
-      ],
-      {
-        ...env,
-        OPENAI_API_KEY: "synthetic-custom-provider-key",
-        CODEX_ACCESS_TOKEN: "synthetic-separate-codex-token",
-        OCC_TEST_OPENSHELL_MODEL_BASE_URL: "https://custom-model.example.test/v1",
-        OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE: "",
-        OCC_CI_SUITE_VIEW: "default",
-      },
-    );
-    assert.equal(result.status, 1);
-    const summary = JSON.parse(await readFile(resultsPath, "utf8"));
-    assert.ok(summary.issues.some(({ code }) => code === "prepare-failed"));
-    assert.equal(summary.files[0].nodeExitCode, null);
-    assert.deepEqual(summary.files[0].tests, []);
-    const diagnostics = await readFile(`${statePath}.diagnostics.json`, "utf8");
-    assert.match(
-      diagnostics,
-      /Custom OpenShell model endpoints require a focused gateway workflow file/u,
-    );
-    assert.doesNotMatch(
-      diagnostics + result.stdout + result.stderr,
-      /unexpected-model-child|synthetic-custom-provider-key/u,
-    );
-    await assert.rejects(stat(statePath), { code: "ENOENT" });
-  });
+for (const selection of [
+  { name: "declared", error: /must be an immutable image@sha256 reference/u },
+  {
+    name: "inherited Codex",
+    harness: "codex",
+    error: /must be an immutable image@sha256 reference/u,
+  },
+  {
+    name: "custom destination",
+    endpoint: "https://custom-model.example.test/v1",
+    error: /Custom OpenShell model endpoints require a focused gateway workflow file/u,
+  },
+]) {
+  for (const focused of [false, true]) {
+    test(`the Namespace runner selects file model inputs before setup (${selection.name}, focused: ${focused})`, async (t) => {
+      const root = await fixture(t);
+      const suites = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
+      const lane = suites.lanes.openshell;
+      const file = lane.files.find(({ path }) =>
+        path.endsWith("/namespace-driver-openshell-k3d-real.test.ts"),
+      );
+      const statePath = join(root, "state/namespace.json");
+      const resultsPath = join(root, "results/namespace.json");
+      await writeRunnerManifest(root, { lanes: { openshell: { ...lane, files: [file] } } });
+      await writeFile(
+        join(root, "scripts/ci/prepare.mjs"),
+        `export { prepareFile } from ${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.mjs")).href)};`,
+      );
+      // Preserve real metadata and preparation. Only the unstarted model child is
+      // inert; a regression still stops at the immutable-image gate before setup.
+      await writeFile(join(root, file.path), 'throw new Error("unexpected-model-child");');
+      const env = Object.fromEntries(
+        [...lane.requiredEnv, ...file.requiredEnv].map((name) => [name, "synthetic-prerequisite"]),
+      );
+      const result = run(
+        root,
+        [
+          ...laneArgs(root, "openshell", statePath, resultsPath),
+          ...(focused ? ["--file", file.path] : []),
+        ],
+        {
+          ...env,
+          OPENAI_API_KEY: "synthetic-custom-provider-key",
+          CODEX_ACCESS_TOKEN: "",
+          OCC_TEST_OPENSHELL_MODEL_BASE_URL: selection.endpoint ?? "",
+          OCC_TEST_OPENSHELL_HARNESS: selection.harness ?? "",
+          OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE: "",
+          OCC_CI_SUITE_VIEW: "default",
+        },
+      );
+      assert.equal(result.status, 1);
+      const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+      assert.ok(summary.issues.some(({ code }) => code === "prepare-failed"));
+      assert.equal(summary.files[0].nodeExitCode, null);
+      assert.deepEqual(summary.files[0].tests, []);
+      const diagnostics = await readFile(`${statePath}.diagnostics.json`, "utf8");
+      assert.match(diagnostics, selection.error);
+      assert.doesNotMatch(
+        diagnostics + result.stdout + result.stderr,
+        /unexpected-model-child|synthetic-custom-provider-key/u,
+      );
+      await assert.rejects(stat(statePath), { code: "ENOENT" });
+    });
+  }
 }
+
 test("custom native providers require a separate Codex credential before Local Setup", async (t) => {
   const root = await fixture(t);
   const file = join(repositoryRoot, "tests/integration/local-first-agent-openshell-real.test.mjs");

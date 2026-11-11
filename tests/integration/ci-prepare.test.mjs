@@ -3801,6 +3801,21 @@ if (args[0] === "pull") {
         { harness: "codex", endpoint: true, credentials: ["OPENAI_API_KEY"], file },
       );
     }
+    // Namespace declares OpenClaw itself; both preparers must honor that declaration
+    // even when an inherited selector asks for Codex. No PAT is needed by its child.
+    for (const prepareLane of [false, true]) {
+      for (const harness of [undefined, "codex"]) {
+        for (const credentials of [["OPENAI_API_KEY"], ["CODEX_ACCESS_TOKEN"]]) {
+          cases.push({
+            file: "tests/integration/namespace-driver-openshell-k3d-real.test.ts",
+            prepareLane,
+            harness,
+            credentials,
+            ...(credentials.includes("OPENAI_API_KEY") ? {} : { missing: "OPENAI_API_KEY" }),
+          });
+        }
+      }
+    }
     // The new finite-Git installer still consumes a PAT; joining the installer
     // lane must not make its file-level preparation accept an API key alone.
     for (const credentials of [["OPENAI_API_KEY"], ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"]]) {

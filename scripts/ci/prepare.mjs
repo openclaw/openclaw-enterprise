@@ -1006,7 +1006,10 @@ async function validateLaneInputsBeforeSideEffects(lane, { file, modelSelectors 
   const name = laneName(lane);
   const prepare = lanePrepare(name);
   const effectiveEnv = effectiveLaneEnv(name);
-  const modelEnv = modelSelectors ?? effectiveEnv;
+  const modelEnv = modelSelectors ?? {
+    ...effectiveEnv,
+    ...laneDefinition(name).files?.find((entry) => entry.path === file)?.env,
+  };
   const harnessError = openShellHarnessError(name, file, modelEnv);
   if (harnessError) {
     throw new Error(harnessError);
