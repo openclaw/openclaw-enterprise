@@ -175,7 +175,13 @@ function predecessorReplacementFromJson(
     typeof record.startedAt !== "string" ||
     !Number.isFinite(Date.parse(record.startedAt)) ||
     (record.phase === "stopping" &&
-      (typeof record.stoppingAt !== "string" || !Number.isFinite(Date.parse(record.stoppingAt))))
+      (typeof record.stoppingAt !== "string" || !Number.isFinite(Date.parse(record.stoppingAt)))) ||
+    (record.completionStartedAt !== undefined &&
+      (typeof record.completionStartedAt !== "string" ||
+        !Number.isFinite(Date.parse(record.completionStartedAt)))) ||
+    (record.executionIdentity !== undefined &&
+      (typeof record.executionIdentity !== "string" ||
+        !/^[\x21-\x7e]{1,256}$/.test(record.executionIdentity)))
   ) {
     throw new PersistedStateInvalidError("Persisted predecessor replacement is invalid.");
   }
@@ -185,6 +191,12 @@ function predecessorReplacementFromJson(
     phase: record.phase,
     startedAt: record.startedAt,
     ...(typeof record.stoppingAt === "string" ? { stoppingAt: record.stoppingAt } : {}),
+    ...(typeof record.completionStartedAt === "string"
+      ? { completionStartedAt: record.completionStartedAt }
+      : {}),
+    ...(typeof record.executionIdentity === "string"
+      ? { executionIdentity: record.executionIdentity }
+      : {}),
   });
 }
 
@@ -3556,6 +3568,13 @@ export class PostgresPlatformState implements PlatformStateStore {
         return predecessorReplacementFromJson(row?.predecessor_replacement);
       },
       recordPredecessorReplacement: async (namespaceId, agentId, input) => {
+        if (
+          input.executionIdentity !== undefined &&
+          (typeof input.executionIdentity !== "string" ||
+            !/^[\x21-\x7e]{1,256}$/.test(input.executionIdentity))
+        ) {
+          throw new ScopeViolationError("The predecessor execution identity is invalid.");
+        }
         const row = rows(
           (
             await client.query(
@@ -3567,7 +3586,21 @@ export class PostgresPlatformState implements PlatformStateStore {
                ELSE jsonb_build_object('predecessorRevisionId', $3::text, 'candidateRevisionId', $4::text,
                  'phase', $5::text, 'startedAt', clock_timestamp()) ||
                  CASE WHEN $5 = 'stopping' THEN jsonb_build_object('stoppingAt', clock_timestamp()) ELSE '{}'::jsonb END
-             END
+             END ||
+             CASE WHEN $6::boolean AND $5 = 'pre-stop'
+               AND NOT (COALESCE(a.predecessor_replacement->>'predecessorRevisionId' = $3, false)
+                 AND a.predecessor_replacement->>'phase' = 'stopping')
+               THEN jsonb_build_object('completionStartedAt',
+                 CASE WHEN a.predecessor_replacement->>'predecessorRevisionId' = $3
+                   THEN COALESCE(a.predecessor_replacement->'completionStartedAt', to_jsonb(clock_timestamp()))
+                   ELSE to_jsonb(clock_timestamp()) END)
+               ELSE '{}'::jsonb END ||
+             CASE WHEN $7::text IS NOT NULL
+               THEN jsonb_build_object('executionIdentity',
+                 CASE WHEN a.predecessor_replacement->>'predecessorRevisionId' = $3
+                   THEN COALESCE(a.predecessor_replacement->'executionIdentity', to_jsonb($7::text))
+                   ELSE to_jsonb($7::text) END)
+               ELSE '{}'::jsonb END
            FROM occ.namespaces n, occ.agent_revisions p, occ.agent_revisions c
            WHERE a.namespace_id = $1 AND a.id = $2 AND a.active_revision_id = $3
              AND n.id = a.namespace_id AND n.deleted_at IS NULL
@@ -3581,6 +3614,8 @@ export class PostgresPlatformState implements PlatformStateStore {
                 input.predecessorRevisionId,
                 input.candidateRevisionId,
                 input.phase,
+                input.beginCompletion === true,
+                input.executionIdentity ?? null,
               ],
             )
           ).rows,

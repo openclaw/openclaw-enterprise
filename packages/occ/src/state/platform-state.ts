@@ -238,6 +238,8 @@ export interface AgentRepository extends AgentReadRepository {
       readonly predecessorRevisionId: string;
       readonly candidateRevisionId: string;
       readonly phase: "pre-stop" | "stopping";
+      readonly beginCompletion?: true;
+      readonly executionIdentity?: string;
     },
   ): Promise<Readonly<PredecessorReplacement> | undefined>;
   createAgent(
@@ -304,6 +306,8 @@ export interface PredecessorReplacement {
   readonly phase: "pre-stop" | "stopping";
   readonly startedAt: string;
   readonly stoppingAt?: string;
+  readonly completionStartedAt?: string;
+  readonly executionIdentity?: string;
 }
 
 export interface AgentRevisionReadRepository {
@@ -3411,6 +3415,13 @@ function repositories(
         ? undefined
         : snapshot.predecessorReplacements.get(agentKey(namespaceId, agentId)),
     recordPredecessorReplacement: async (namespaceId, agentId, input) => {
+      if (
+        input.executionIdentity !== undefined &&
+        (typeof input.executionIdentity !== "string" ||
+          !/^[\x21-\x7e]{1,256}$/.test(input.executionIdentity))
+      ) {
+        throw new ScopeViolationError("The predecessor execution identity is invalid.");
+      }
       const agent = await agents.findAgent(namespaceId, agentId);
       if (!agent || agent.activeRevisionId !== input.predecessorRevisionId) {
         return undefined;
@@ -3426,10 +3437,21 @@ function repositories(
       const previous =
         current?.predecessorRevisionId === input.predecessorRevisionId ? current : undefined;
       const now = new Date().toISOString();
+      const completionStartedAt =
+        previous?.completionStartedAt ??
+        (input.beginCompletion === true &&
+        input.phase === "pre-stop" &&
+        previous?.phase !== "stopping"
+          ? now
+          : undefined);
+      const executionIdentity = previous?.executionIdentity ?? input.executionIdentity;
       const saved = immutableCopy({
-        ...input,
+        predecessorRevisionId: input.predecessorRevisionId,
+        candidateRevisionId: input.candidateRevisionId,
         phase: previous?.phase === "stopping" ? "stopping" : input.phase,
         startedAt: previous?.startedAt ?? now,
+        ...(completionStartedAt === undefined ? {} : { completionStartedAt }),
+        ...(executionIdentity === undefined ? {} : { executionIdentity }),
         ...(previous?.stoppingAt
           ? { stoppingAt: previous.stoppingAt }
           : input.phase === "stopping"

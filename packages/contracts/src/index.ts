@@ -1523,6 +1523,8 @@ export type {
 export type {
   RepositoryWorkerRestartDisposition,
   ComputeDriver,
+  PredecessorCompletionContext,
+  PredecessorCompletionResult,
   ComputeRevisionContext,
   WorkloadLaunchContext,
   ComputeLifecycleHooks,

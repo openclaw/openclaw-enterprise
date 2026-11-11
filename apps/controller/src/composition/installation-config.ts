@@ -1,3 +1,4 @@
+import { createGatewayPredecessorCompletion } from "../gateway/predecessor-completion.ts";
 import { sandboxNamespaceLifecycleBinding } from "./namespace-lifecycle.ts";
 import type { NamespaceLifecycleBinding } from "@openclaw-enterprise/occ";
 import {
@@ -1580,6 +1581,11 @@ export async function loadInstallationConfiguration(options: {
           : { preparedRepositoryIngress: true }),
         preprovisionedNamespace,
         nodeEnrollment: createGatewayNodeEnrollment(() =>
+          readWorkspaceFilesApiKey(
+            nonempty(environment.OCC_GATEWAY_API_KEY_PATH, "OCC_GATEWAY_API_KEY_PATH"),
+          ),
+        ),
+        predecessorCompletion: createGatewayPredecessorCompletion(() =>
           readWorkspaceFilesApiKey(
             nonempty(environment.OCC_GATEWAY_API_KEY_PATH, "OCC_GATEWAY_API_KEY_PATH"),
           ),

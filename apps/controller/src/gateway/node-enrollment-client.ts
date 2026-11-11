@@ -280,7 +280,7 @@ async function isConnected(
   return node.deviceTokenAuthenticated;
 }
 
-async function withGateway<T>(
+export async function withGateway<T>(
   url: string,
   readApiKey: () => Promise<string>,
   ownerSignal: AbortSignal,

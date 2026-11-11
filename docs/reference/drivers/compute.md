@@ -45,6 +45,8 @@ kind: reference/driver
   - [`activateRevision`](#method-activate-revision)
   - [`deactivateRevision`](#method-deactivate-revision)
   - [`requiresStoppedPredecessors`](#method-requires-stopped-predecessors)
+  - [`canWaitForPredecessorCompletion`](#method-can-wait-for-predecessor-completion)
+  - [`waitForPredecessorCompletion`](#method-wait-for-predecessor-completion)
   - [`describePrepareRevisionFailure`](#method-describe-prepare-revision-failure)
   - [`getGatewayEndpoint`](#method-get-gateway-endpoint)
   - [`getGatewayChatEndpoint`](#method-get-gateway-chat-endpoint)
@@ -123,6 +125,8 @@ gateway routing. A paired [Sandbox Driver](sandbox.md) can provision Harnesses.
 | <a id="method-snapshot-runtime-inputs"></a>`snapshotRuntimeInputs`                                                   | Optional    | Capture bounded private launch inputs after admission; omission preserves legacy behavior. These facts are not execution authority.                                                                                                                                                                                                                       |
 | <a id="method-activate-revision"></a>`activateRevision`, <a id="method-deactivate-revision"></a>`deactivateRevision` | Optional    | Switch traffic to a ready revision or withdraw an unpublished candidate. Production startup checks for both. A Driver selecting `beforeCommit` must also implement activation in development.                                                                                                                                                             |
 | <a id="method-requires-stopped-predecessors"></a>`requiresStoppedPredecessors`                                       | Optional    | Return `true` to stop older revisions before preparing a replacement. Otherwise the previous route can serve during preparation.                                                                                                                                                                                                                          |
+| <a id="method-can-wait-for-predecessor-completion"></a>`canWaitForPredecessorCompletion`                             | Optional    | Qualify compatible image updates.                                                                                                                                                                                                                                                                                                                         |
+| <a id="method-wait-for-predecessor-completion"></a>`waitForPredecessorCompletion`                                    | Optional    | Renew completion using the worker's deadline, identity and stopping callback.                                                                                                                                                                                                                                                                             |
 | <a id="method-describe-prepare-revision-failure"></a>`describePrepareRevisionFailure`                                | Optional    | Supply safe diagnostic fields for a rejected preparation. The worker validates the fields and excludes raw provider errors.                                                                                                                                                                                                                               |
 | <a id="method-get-gateway-endpoint"></a>`getGatewayEndpoint`                                                         | Optional    | Private WSS address for workspace-file access and native administration, or `undefined`.                                                                                                                                                                                                                                                                  |
 | <a id="method-get-gateway-chat-endpoint"></a>`getGatewayChatEndpoint`                                                | Optional    | Revision's WSS chat endpoint and equivalent HTTPS UI. Enforce [`operator.sessions.write`](../agent-native-admin.md#native-authority-and-drift) across HTTP, WebSocket, and device grants. Omission/`undefined` means unsupported; never fall back to `getGatewayEndpoint`.                                                                                |
@@ -287,9 +291,8 @@ and `REPOSITORY_GIT_ROUTE_PENDING` without a runtime failure, the worker can
 record the selection. The original work stays queued until that revision is ready;
 only then does the worker activate it, retire its predecessor, and complete the work.
 
-Exclusive replacement crosses the [shared stop boundary](../agents/planned-replacement.md)
-before closing credentials and stopping predecessors. Failed stop blocks preparation.
-Repeated stops must preserve workspace data; stopped revisions cannot be recreated.
+See [planned replacement](../agents/planned-replacement.md) for completion waiting,
+credential closure and predecessor stops.
 
 ### SandboxDriver coordination
 

@@ -54,6 +54,16 @@ for (const harness of ["codex", "openclaw"] as const) {
           unit.revisions.findRevision(namespace.id, agent.id, deployed.id),
       );
       assert.ok(revision);
+      if (harness === "codex") {
+        assert.match(revision.compute.runtimeInputs ?? "", /^planned-runtime:v1:/);
+        assert.equal(
+          computeDriver.snapshotRuntimeInputs?.(revision),
+          revision.compute.runtimeInputs,
+          "stored admission must retain its compatibility fingerprint",
+        );
+      } else {
+        assert.equal(revision.compute.runtimeInputs, undefined);
+      }
       assert.match(revision.compute.admission ?? "", /^model-provider:v1:[a-f0-9]{64}:/);
       assert.deepEqual(revision.harness.overrides, {});
       assert.deepEqual(revision.harness.configuration, {

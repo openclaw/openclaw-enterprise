@@ -1,3 +1,4 @@
+import type { PredecessorReplacement } from "@openclaw-enterprise/occ";
 import type { NamespaceLifecycleEvidence } from "@openclaw-enterprise/occ";
 import { reduceCredentialPolicy } from "@openclaw-enterprise/occ";
 import {
@@ -141,6 +142,8 @@ import type { OccMetrics, WorkKind, WorkOutcome } from "./metrics/index.ts";
 import {
   isStopYieldedCode,
   PredecessorStopYieldedError,
+  PredecessorCompletionWaitingError,
+  PLANNED_COMPLETION_WAIT_MS,
   type StopYieldedCode,
   StopYields,
   SupersededStopYieldedError,
@@ -1259,6 +1262,7 @@ export class ControllerWorker {
   private stopYieldedThisPass = false;
   /** Each claim's work creation instant on this process's monotonic clock; see `workAgeMs`. */
   private readonly workOrigins = new WeakMap<ClaimedWork, number>();
+  private readonly completionWaits = new WeakMap<ClaimedWork, Readonly<PredecessorReplacement>>();
 
   constructor(options: ControllerWorkerOptions) {
     this.metrics = options.metrics;
@@ -1675,6 +1679,18 @@ export class ControllerWorker {
       throw new Error(`The worker has no claim time for work ${claim.idempotencyKey}.`);
     }
     return Math.max(0, performance.now() - origin);
+  }
+
+  private revisionConvergenceAgeMs(claim: ClaimedWork): number {
+    const age = this.workAgeMs(claim);
+    const wait = this.completionWaits.get(claim);
+    if (wait?.completionStartedAt === undefined || wait.candidateRevisionId !== claim.revisionId) {
+      return age;
+    }
+    const created = claim.createdAt.getTime();
+    const end = wait.stoppingAt === undefined ? created + age : Date.parse(wait.stoppingAt);
+    const overlap = Math.max(0, end - Math.max(created, Date.parse(wait.completionStartedAt)));
+    return Math.max(0, age - Math.min(PLANNED_COMPLETION_WAIT_MS, overlap));
   }
 
   /** Report loop progress without ever delaying the loop; see `onProgress`. */
@@ -2120,6 +2136,21 @@ export class ControllerWorker {
     this.stoppedPredecessors.delete(revision.id);
     let earlier: readonly Readonly<AgentRevisionMetadata>[] = [];
     if (this.compute.requiresStoppedPredecessors?.(revision) === true) {
+      const predecessor = await this.state.read(async (view) => {
+        const owner = await view.agents.findAgent(revision.namespaceId, revision.agentId);
+        return owner?.activeRevisionId === undefined || owner.activeRevisionId === revision.id
+          ? undefined
+          : view.revisions.findRevision(
+              revision.namespaceId,
+              revision.agentId,
+              owner.activeRevisionId,
+            );
+      });
+      if (predecessor !== undefined && predecessor.revision < revision.revision) {
+        // A waiting pass never starts a stop sweep or prepares the candidate.
+        await this.waitForPlannedCompletion(claim, predecessor, revision);
+        await this.recordPredecessorStop(claim, predecessor);
+      }
       earlier = await this.state.read(async (view) =>
         (await view.revisions.listRevisionMetadata(revision.namespaceId, revision.agentId)).filter(
           (candidate) => candidate.revision < revision.revision,
@@ -2170,31 +2201,7 @@ export class ControllerWorker {
       if (previous === undefined) {
         continue;
       }
-      await this.state.transactWithQueue(async (unit, queue) => {
-        const agent = await this.lockClaimAgent(unit, claim);
-        if ((await queue.heartbeat(claim)) === undefined) {
-          throw new WorkClaimLostError();
-        }
-        if (agent?.activeRevisionId !== previous.id || claim.revisionId === undefined) {
-          return;
-        }
-        const operation = await unit.agents.findPredecessorReplacement(
-          previous.namespaceId,
-          previous.agentId,
-        );
-        if (
-          operation?.predecessorRevisionId === previous.id &&
-          operation.phase === "pre-stop" &&
-          operation.candidateRevisionId !== claim.revisionId
-        ) {
-          throw new WorkClaimLostError();
-        }
-        await unit.agents.recordPredecessorReplacement(previous.namespaceId, previous.agentId, {
-          predecessorRevisionId: previous.id,
-          candidateRevisionId: claim.revisionId,
-          phase: "stopping",
-        });
-      }, this.queueOptions);
+      await this.recordPredecessorStop(claim, previous);
       await this.closeRevisionCredentials(claim, previous);
       if (drain === "wait") {
         await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(previous));
@@ -2212,6 +2219,152 @@ export class ControllerWorker {
         record === undefined ? this.leaseDurationMs : record.restopAfterMs * 2,
       );
     }
+  }
+
+  private async recordCompletionWait(
+    claim: ClaimedWork,
+    previous: Readonly<AgentRevision>,
+    candidate: Readonly<AgentRevision>,
+    executionIdentity?: string,
+  ): Promise<Readonly<PredecessorReplacement> | undefined> {
+    const saved = await this.state.transactWithQueue(async (unit, queue) => {
+      const agent = await this.lockClaimAgent(unit, claim);
+      if ((await queue.heartbeat(claim)) === undefined) {
+        throw new WorkClaimLostError();
+      }
+      const current = await unit.agents.findPredecessorReplacement(
+        previous.namespaceId,
+        previous.agentId,
+      );
+      if (
+        agent?.activeRevisionId !== previous.id ||
+        agent.desiredRuntimeState !== "running" ||
+        current?.predecessorRevisionId !== previous.id ||
+        current.phase !== "pre-stop" ||
+        current.candidateRevisionId !== candidate.id
+      ) {
+        return undefined;
+      }
+      return unit.agents.recordPredecessorReplacement(previous.namespaceId, previous.agentId, {
+        predecessorRevisionId: previous.id,
+        candidateRevisionId: candidate.id,
+        phase: "pre-stop",
+        beginCompletion: true,
+        ...(executionIdentity === undefined ? {} : { executionIdentity }),
+      });
+    }, this.queueOptions);
+    if (saved !== undefined) {
+      this.completionWaits.set(claim, saved);
+    }
+    return saved;
+  }
+
+  private async waitForPlannedCompletion(
+    claim: ClaimedWork,
+    previous: Readonly<AgentRevision>,
+    candidate: Readonly<AgentRevision>,
+  ): Promise<void> {
+    const report = (outcome: string) =>
+      this.emit({
+        event: "worker.predecessor_completion",
+        ...workLogFields(claim),
+        predecessorRevisionId: previous.id,
+        outcome,
+      });
+    if (
+      !this.compute.waitForPredecessorCompletion ||
+      this.compute.canWaitForPredecessorCompletion?.(previous, candidate) !== true
+    ) {
+      const known = this.completionWaits.get(claim);
+      if (known?.predecessorRevisionId === previous.id && known.phase === "pre-stop") {
+        report("unsupported");
+      }
+      return;
+    }
+    const operation = await this.recordCompletionWait(claim, previous, candidate);
+    if (operation?.completionStartedAt === undefined) {
+      return;
+    }
+    const deadlineAtMs = Date.parse(operation.completionStartedAt) + PLANNED_COMPLETION_WAIT_MS;
+    const expired = () => claim.createdAt.getTime() + this.workAgeMs(claim) >= deadlineAtMs;
+    if (expired()) {
+      report("deadline-exhausted");
+      return;
+    }
+    let outcome;
+    try {
+      outcome = await this.withClaimHeartbeat(claim, () =>
+        this.compute.waitForPredecessorCompletion!(previous, {
+          deadlineAtMs,
+          ...(operation.executionIdentity === undefined
+            ? {}
+            : { expectedExecutionIdentity: operation.executionIdentity }),
+          recordExecutionIdentity: async (identity) =>
+            (await this.recordCompletionWait(claim, previous, candidate, identity))
+              ?.executionIdentity === identity,
+          commitStopping: async (identity) => {
+            if ((await this.recordPredecessorStop(claim, previous, identity)) === undefined) {
+              throw new WorkClaimLostError();
+            }
+          },
+        }),
+      );
+    } catch (error) {
+      if (error instanceof WorkClaimLostError) {
+        throw error;
+      }
+      if (expired()) {
+        report("deadline-exhausted");
+        return;
+      }
+      if (revisionDependencyFailure(error) !== undefined) {
+        throw new PredecessorCompletionWaitingError();
+      }
+      throw error;
+    }
+    if (outcome === "waiting") {
+      throw new PredecessorCompletionWaitingError();
+    }
+    report(outcome);
+  }
+
+  private async recordPredecessorStop(
+    claim: ClaimedWork,
+    previous: Readonly<AgentRevision>,
+    executionIdentity?: string,
+  ): Promise<Readonly<PredecessorReplacement> | undefined> {
+    const saved = await this.state.transactWithQueue(async (unit, queue) => {
+      const agent = await this.lockClaimAgent(unit, claim);
+      if ((await queue.heartbeat(claim)) === undefined) {
+        throw new WorkClaimLostError();
+      }
+      if (agent?.activeRevisionId !== previous.id || claim.revisionId === undefined) {
+        return;
+      }
+      const operation = await unit.agents.findPredecessorReplacement(
+        previous.namespaceId,
+        previous.agentId,
+      );
+      if (
+        operation?.predecessorRevisionId === previous.id &&
+        operation.phase === "pre-stop" &&
+        operation.candidateRevisionId !== claim.revisionId
+      ) {
+        throw new WorkClaimLostError();
+      }
+      if (executionIdentity !== undefined && operation?.executionIdentity !== executionIdentity) {
+        throw new WorkClaimLostError();
+      }
+      return unit.agents.recordPredecessorReplacement(previous.namespaceId, previous.agentId, {
+        predecessorRevisionId: previous.id,
+        candidateRevisionId: claim.revisionId,
+        phase: "stopping",
+      });
+    }, this.queueOptions);
+    if (saved !== undefined) {
+      this.completionWaits.set(claim, saved);
+    }
+    return saved;
   }
 
   /** Whether this process stopped the revision within its record's re-stop interval. */
@@ -2981,7 +3134,7 @@ export class ControllerWorker {
    */
   private stopYieldingDrain(claim: ClaimedWork, revision: Readonly<AgentRevision>): Promise<void> {
     return this.withClaimHeartbeat(claim, () =>
-      stopWithDrainYield(this.workAgeMs(claim), this.convergenceTimeoutMs, () =>
+      stopWithDrainYield(this.revisionConvergenceAgeMs(claim), this.convergenceTimeoutMs, () =>
         this.compute.stopRevision(revision),
       ),
     );
@@ -4515,9 +4668,16 @@ export class ControllerWorker {
                 claim.agentId!,
                 agent.activeRevisionId,
               );
-        return { namespace, agent, revision, previous };
+        const replacement = await view.agents.findPredecessorReplacement(
+          claim.namespaceId,
+          claim.agentId!,
+        );
+        return { namespace, agent, revision, previous, replacement };
       });
-      const { namespace, agent, revision, previous } = resources;
+      const { namespace, agent, revision, previous, replacement } = resources;
+      if (replacement !== undefined) {
+        this.completionWaits.set(claim, replacement);
+      }
       claimAgent = agent;
       if (namespace === undefined || agent === undefined || revision === undefined) {
         await this.finalizeRevision(claim, {
@@ -4626,7 +4786,7 @@ export class ControllerWorker {
       // instead stops it and publishes the deadline.
       if (this.refusalWait !== undefined && REDECIDED_REFUSAL_CODES.has(this.refusalWait.refusal)) {
         this.refusalWait =
-          this.workAgeMs(claim) >= this.convergenceTimeoutMs
+          this.revisionConvergenceAgeMs(claim) >= this.convergenceTimeoutMs
             ? { ...this.refusalWait, refusal: "CONVERGENCE_DEADLINE_EXCEEDED" }
             : undefined;
       }
@@ -4699,6 +4859,19 @@ export class ControllerWorker {
               const later = (
                 await view.revisions.listRevisionMetadata(revision.namespaceId, revision.agentId)
               ).filter((candidate) => candidate.revision > revision.revision);
+              // During completion, the recorded candidate may have replaced an earlier
+              // successor. Keep the original runtime's maintenance attached to that wait.
+              if (
+                replacement?.phase === "pre-stop" &&
+                replacement.predecessorRevisionId === revision.id
+              ) {
+                const current = later.findIndex(
+                  (candidate) => candidate.id === replacement.candidateRevisionId,
+                );
+                if (current > 0) {
+                  later.unshift(...later.splice(current, 1));
+                }
+              }
               for (const listed of later) {
                 const candidate = await view.revisions.findRevision(
                   listed.namespaceId,
@@ -4727,10 +4900,16 @@ export class ControllerWorker {
         this.compute.requiresStoppedPredecessors?.(revision) === true
           ? await this.heldRuntimeSuccessor(revision)
           : undefined;
-      // Pre-stop access does not authorize re-preparing the old runtime with a
-      // changed Installation. Safe maintenance during a wait needs Driver-owned
-      // immutable runtime inputs; preserve existing supersession until then.
-      const supersededBy = successor ?? heldSuccessor;
+      // Retain ordinary authorization and credential supervision only when the Driver
+      // proves that maintenance preserves the admitted runtime and launch contract.
+      const completionMaintenance =
+        successor !== undefined &&
+        agent.activeRevisionId === revision.id &&
+        replacement?.predecessorRevisionId === revision.id &&
+        replacement.phase === "pre-stop" &&
+        replacement.candidateRevisionId === successor.id &&
+        this.compute.canWaitForPredecessorCompletion?.(revision, successor) === true;
+      const supersededBy = completionMaintenance ? undefined : (successor ?? heldSuccessor);
       if (supersededBy !== undefined) {
         // A refusal decided after this check (lost repository authority, a Secret or
         // credential-source problem, a refused observation) may still wait on its candidate's
@@ -6221,7 +6400,7 @@ export class ControllerWorker {
       result.refusedCandidate === undefined &&
       result.rejectedExecutionWithdrawal !== "pending" &&
       !isStopYieldedCode(result.code) &&
-      this.workAgeMs(claim) >= this.convergenceTimeoutMs;
+      this.revisionConvergenceAgeMs(claim) >= this.convergenceTimeoutMs;
     // Runtime entrypoints publish a runtime failure only after their own retries
     // end, and then hold the container unready until an explicit restart that
     // nothing performs: no liveness probe or controller restarts it. Waiting for
@@ -7588,7 +7767,8 @@ export class ControllerWorker {
     result: DispatchResult,
   ): Promise<void> {
     const expired =
-      result.outcome === "pending" && this.workAgeMs(claim) >= this.convergenceTimeoutMs;
+      result.outcome === "pending" &&
+      this.revisionConvergenceAgeMs(claim) >= this.convergenceTimeoutMs;
     const resolved: DispatchResult = expired
       ? { ...result, outcome: "permanent", code: "CONVERGENCE_DEADLINE_EXCEEDED" }
       : result;

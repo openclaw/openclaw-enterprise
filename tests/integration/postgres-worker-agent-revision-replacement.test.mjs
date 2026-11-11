@@ -1501,3 +1501,181 @@ revisionTest(
     assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, newer.id);
   },
 );
+
+async function recordPlannedReplacement(fixture, owner, previous, candidate) {
+  return fixture.state.transact(async (unit) => {
+    await unit.namespaces.lockNamespace(fixture.namespace.id);
+    await unit.agents.lockAgent(fixture.namespace.id, owner.id);
+    return unit.agents.recordPredecessorReplacement(fixture.namespace.id, owner.id, {
+      predecessorRevisionId: previous.id,
+      candidateRevisionId: candidate.id,
+      phase: "pre-stop",
+    });
+  });
+}
+
+revisionTest(
+  "planned completion preserves work and maintenance while idle Agents advance, across retry and candidate replacement",
+  async (fixture) => {
+    const owner = await fixture.agent("completion-busy", { executionMode: "dedicated" });
+    const idle = await fixture.agent("completion-idle", { executionMode: "dedicated" });
+    let completed = false;
+    let candidateReady = false;
+    let candidateId;
+    const driver = countingExclusiveCompute(fixture, {
+      ready: (revision) => revision.id !== candidateId || candidateReady,
+    });
+    const deadlines = [];
+    const events = [];
+    driver.compute.canWaitForPredecessorCompletion = () => true;
+    driver.compute.waitForPredecessorCompletion = async (_previous, context) => {
+      deadlines.push(context.deadlineAtMs);
+      assert.ok(await context.recordExecutionIdentity("executor-original"));
+      assert.equal(await context.recordExecutionIdentity("different-execution"), false);
+      if (!completed) {
+        return "waiting";
+      }
+      await context.commitStopping("executor-original");
+      return "ready";
+    };
+    await fixture.start(driver.compute, { emit: (event) => events.push(event) });
+    const first = await fixture.revision(owner, 1);
+    await fixture.work(first, "succeeded");
+    await fixture.stop();
+    const second = await fixture.revision(owner, 2);
+    await recordPlannedReplacement(fixture, owner, first, second);
+    await fixture.start(driver.compute, { emit: (event) => events.push(event) });
+    await waitFor(
+      "completion waiting",
+      () => events.some((event) => event.code === "PREDECESSOR_COMPLETION_WAITING") || undefined,
+    );
+    const originalDeadline = deadlines[0];
+    const idleRevision = await fixture.revision(idle, 1);
+    await fixture.work(idleRevision, "succeeded");
+    const beforeMaintenance = driver.preparations(first);
+    await fixture.work(await enqueueMaintenance(fixture, owner, first), "succeeded");
+    assert.ok(driver.preparations(first) > beforeMaintenance);
+    assert.equal(driver.count(first), 0);
+    assert.equal(driver.preparations(second), 0);
+    await fixture.stop();
+    const third = await fixture.revision(owner, 3);
+    candidateId = third.id;
+    const kept = await recordPlannedReplacement(fixture, owner, first, third);
+    assert.equal(Date.parse(kept.completionStartedAt) + 30 * 60_000, originalDeadline);
+    const observationsBeforeRestart = deadlines.length;
+    await fixture.start(driver.compute, {
+      convergenceTimeoutMs: 1000,
+      emit: (event) => events.push(event),
+    });
+    await waitFor(
+      "resumed completion observation",
+      () => deadlines.length > observationsBeforeRestart || undefined,
+    );
+    const preparationsBeforeChurnMaintenance = driver.preparations(first);
+    await fixture.work(await enqueueMaintenance(fixture, owner, first), "succeeded");
+    assert.ok(
+      driver.preparations(first) > preparationsBeforeChurnMaintenance,
+      "candidate churn must preserve predecessor maintenance",
+    );
+    // Spend longer in completion than the ordinary convergence budget.
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    assert.equal(driver.count(first), 0);
+    completed = true;
+    await waitForWorkPass(
+      "candidate preparation after completion",
+      fixture,
+      third,
+      () => driver.preparations(third) > 0 || undefined,
+    );
+    assert.equal(
+      new Set(deadlines).size,
+      1,
+      "retry, restart and candidate churn cannot extend the cutoff",
+    );
+    assert.ok(driver.count(first) > 0);
+    assert.equal(driver.preparations(second), 0);
+    assert.notEqual((await fixture.currentAgent(owner)).activeRevisionId, third.id);
+    candidateReady = true;
+    await waitForWorkStateDue(fixture, third, "succeeded");
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, third.id);
+  },
+);
+
+revisionTest(
+  "an expired planned-completion cutoff forces the shared stop before preparing the successor",
+  async (fixture) => {
+    const owner = await fixture.agent("completion-expired", { executionMode: "dedicated" });
+    const driver = countingExclusiveCompute(fixture);
+    const events = [];
+    let observations = 0;
+    driver.compute.canWaitForPredecessorCompletion = () => true;
+    driver.compute.waitForPredecessorCompletion = async (_previous, context) => {
+      observations += 1;
+      assert.ok(await context.recordExecutionIdentity("executor-busy"));
+      return "waiting";
+    };
+    await fixture.start(driver.compute);
+    const first = await fixture.revision(owner, 1);
+    await fixture.work(first, "succeeded");
+    await fixture.stop();
+    const candidate = await fixture.revision(owner, 2);
+    await recordPlannedReplacement(fixture, owner, first, candidate);
+    await fixture.start(driver.compute, { emit: (event) => events.push(event) });
+    await waitFor(
+      "busy predecessor lease",
+      () => events.some((event) => event.code === "PREDECESSOR_COMPLETION_WAITING") || undefined,
+    );
+    await fixture.stop();
+    await fixture.observerPool.query(
+      `UPDATE occ.agents SET predecessor_replacement = predecessor_replacement ||
+       jsonb_build_object('completionStartedAt', clock_timestamp() - interval '31 minutes',
+                         'startedAt', clock_timestamp() - interval '31 minutes')
+     WHERE namespace_id = $1 AND id = $2`,
+      [fixture.namespace.id, owner.id],
+    );
+    const before = observations;
+    await fixture.start(driver.compute, { emit: (event) => events.push(event) });
+    await waitForWorkStateDue(fixture, candidate, "succeeded");
+    assert.equal(observations, before, "expiry must not renew or restart the wait");
+    assert.ok(driver.count(first) > 0);
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, candidate.id);
+    assert.ok(
+      events.some(
+        (event) =>
+          event.event === "worker.predecessor_completion" && event.outcome === "deadline-exhausted",
+      ),
+    );
+    assert.equal(
+      events.some(
+        (event) => event.event === "worker.predecessor_completion" && event.outcome === "ready",
+      ),
+      false,
+    );
+  },
+);
+
+revisionTest(
+  "explicit Stop preempts planned completion without preparing the candidate",
+  async (fixture) => {
+    const owner = await fixture.agent("completion-stop", { executionMode: "dedicated" });
+    const driver = countingExclusiveCompute(fixture);
+    const events = [];
+    driver.compute.canWaitForPredecessorCompletion = () => true;
+    driver.compute.waitForPredecessorCompletion = async () => "waiting";
+    await fixture.start(driver.compute);
+    const first = await fixture.revision(owner, 1);
+    await fixture.work(first, "succeeded");
+    await fixture.stop();
+    const candidate = await fixture.revision(owner, 2);
+    await recordPlannedReplacement(fixture, owner, first, candidate);
+    await fixture.start(driver.compute, { emit: (event) => events.push(event) });
+    await waitFor(
+      "completion waiting before Stop",
+      () => events.some((event) => event.code === "PREDECESSOR_COMPLETION_WAITING") || undefined,
+    );
+    const stop = await fixture.requestStop(owner);
+    await waitForWorkStateDue(fixture, stop, "succeeded");
+    assert.ok(driver.count(first) > 0);
+    assert.equal(driver.preparations(candidate), 0);
+  },
+);

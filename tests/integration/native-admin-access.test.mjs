@@ -487,6 +487,21 @@ test("native admin stays available before the shared stop boundary, then becomes
   const waiting = await nativeStatus(context);
   assert.equal(waiting.data.status, "available");
   assert.equal(waiting.data.activeRevisionId, context.revision.id);
+  const remember = (executionIdentity) =>
+    context.fixture.controller.transact((state) =>
+      state.agents.recordPredecessorReplacement(context.namespace.id, context.agent.id, {
+        predecessorRevisionId: context.revision.id,
+        candidateRevisionId: replacement.id,
+        phase: "pre-stop",
+        beginCompletion: true,
+        executionIdentity,
+      }),
+    );
+  const firstWait = await remember("original-execution");
+  const differentExecution = await remember("other-execution");
+  assert.ok(firstWait.completionStartedAt);
+  assert.equal(differentExecution.completionStartedAt, firstWait.completionStartedAt);
+  assert.equal(differentExecution.executionIdentity, "original-execution");
   await context.fixture.controller.transact((state) =>
     state.agents.recordPredecessorReplacement(context.namespace.id, context.agent.id, {
       predecessorRevisionId: context.revision.id,

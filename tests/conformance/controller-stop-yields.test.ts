@@ -474,3 +474,12 @@ test("a job before handoff or finished reports no deployment wait", () => {
     );
   }
 });
+
+test("completion renewals remain due during other drains without producing a log each poll", () => {
+  const { now, read } = clock();
+  const yields = new StopYields(read);
+  assert.equal(yields.yielded("completion", "PREDECESSOR_COMPLETION_WAITING"), 1);
+  assert.deepEqual(yields.waiting("gateway-drain"), []);
+  now.value += 5_000;
+  assert.equal(yields.yielded("completion", "PREDECESSOR_COMPLETION_WAITING"), undefined);
+});
