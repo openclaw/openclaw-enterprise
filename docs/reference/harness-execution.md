@@ -206,8 +206,9 @@ app-server transport.
 
 Dedicated Codex preserves authored `reasoning`, `thinkingLevelMap`, and nonempty
 `compat.supportedReasoningEfforts` containing only `minimal`, `low`, `medium`,
-`high`, `xhigh`, `max`, or `ultra`. Verify capabilities against the selected runtime/model. Other `compat` fields, including `thinkingLevels`, are dropped;
-capabilities and default efforts are not inferred.
+`high`, `xhigh`, `max`, or `ultra`. Verify against the selected runtime/model.
+Other `compat` fields, including `thinkingLevels`, are dropped.
+No capabilities are inferred.
 
 An embedded or dedicated Gateway cannot start when an active plugin's startup
 secret input reads an unset variable: Codex `appServer.authToken` or
