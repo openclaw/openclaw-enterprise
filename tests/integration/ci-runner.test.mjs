@@ -2572,40 +2572,44 @@ test("run records a sanitized file failure after all reported cases pass", async
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
 });
 
-test("upstream discovery is opt-in and enabled cases require an API key", () => {
-  const baseEnv = { PATH: process.env.PATH, HOME: process.env.HOME };
-  const file = join(repositoryRoot, "tests/integration/openshell-upstream-real.test.ts");
-  const discovery = spawnSync(process.execPath, ["--test", file], {
-    env: baseEnv,
-    encoding: "utf8",
-  });
-  assert.equal(discovery.status, 0, discovery.stdout + discovery.stderr);
-  assert.match(discovery.stdout, /skipped 1/u);
-  for (const endpoint of ["", "   "]) {
-    for (const credential of ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"]) {
-      // Real wrapper import stops at existing prerequisites before any Helm,
-      // Kubernetes or model operation. A blank override must not select a PAT.
-      const result = spawnSync(process.execPath, ["--test", file], {
-        encoding: "utf8",
-        env: {
-          ...baseEnv,
-          OCC_TEST_OPENSHELL_K3D_REAL: "1",
-          OCC_TEST_OPENSHELL_HARNESS: "codex",
-          OCC_TEST_OPENAI_MODEL: "fixture-model",
-          OCC_TEST_OPENSHELL_MODEL_BASE_URL: endpoint,
-          [credential]: "synthetic-model-credential",
-        },
-      });
-      assert.equal(result.status, 1);
-      assert.match(
-        result.stdout + result.stderr,
-        credential === "OPENAI_API_KEY"
-          ? /OCC_TEST_OPENSHELL_HELM must point/u
-          : /The selected Harness requires OPENAI_API_KEY/u,
-      );
+const apiKeyWorkflows = ["upstream", "refresh", "withdrawal", "gateway-tool-policy"];
+
+for (const workflow of apiKeyWorkflows) {
+  test(`OpenShell ${workflow} discovery is opt-in and enabled cases require an API key`, () => {
+    const baseEnv = { PATH: process.env.PATH, HOME: process.env.HOME };
+    const file = join(repositoryRoot, `tests/integration/openshell-${workflow}-real.test.ts`);
+    const discovery = spawnSync(process.execPath, ["--test", file], {
+      env: baseEnv,
+      encoding: "utf8",
+    });
+    assert.equal(discovery.status, 0, discovery.stdout + discovery.stderr);
+    assert.match(discovery.stdout, /skipped 1/u);
+    for (const endpoint of ["", "   "]) {
+      for (const credential of ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"]) {
+        // Real wrapper import stops at existing prerequisites before any Helm,
+        // Kubernetes or model operation. A blank override must not select a PAT.
+        const result = spawnSync(process.execPath, ["--test", file], {
+          encoding: "utf8",
+          env: {
+            ...baseEnv,
+            OCC_TEST_OPENSHELL_K3D_REAL: "1",
+            OCC_TEST_OPENSHELL_HARNESS: "codex",
+            OCC_TEST_OPENAI_MODEL: "fixture-model",
+            OCC_TEST_OPENSHELL_MODEL_BASE_URL: endpoint,
+            [credential]: "synthetic-model-credential",
+          },
+        });
+        assert.equal(result.status, 1);
+        assert.match(
+          result.stdout + result.stderr,
+          credential === "OPENAI_API_KEY"
+            ? /OCC_TEST_OPENSHELL_HELM must point/u
+            : /The selected Harness requires OPENAI_API_KEY/u,
+        );
+      }
     }
-  }
-});
+  });
+}
 
 test("custom native providers require a separate Codex credential before Local Setup", async (t) => {
   const root = await fixture(t);
@@ -2687,41 +2691,46 @@ test("the public browser installer rejects custom providers before setup", async
   }
 });
 
-test("the upstream runner preserves the selected provider URL with its API key", async (t) => {
-  const root = await fixture(t);
-  const suites = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
-  const lane = suites.lanes.openshell;
-  const file = lane.files.find(({ path }) => path.endsWith("/openshell-upstream-real.test.ts"));
-  const resultsPath = join(root, "results/upstream.json");
-  const endpoint = "https://model-provider.example.test/v1";
-  // Keep canonical input metadata; only replace the model test body. The actual
-  // runner must deliver the selected endpoint and key together to its child.
-  await writeRunnerManifest(root, { lanes: { openshell: lane } });
-  await writeFile(
-    join(root, file.path),
-    `import assert from "node:assert/strict"; import test from "node:test";
+for (const workflow of apiKeyWorkflows) {
+  test(`the ${workflow} runner preserves the selected provider URL with its API key`, async (t) => {
+    const root = await fixture(t);
+    const suites = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
+    const lane = suites.lanes.openshell;
+    const file = lane.files.find(({ path }) =>
+      path.endsWith(`/openshell-${workflow}-real.test.ts`),
+    );
+    const resultsPath = join(root, "results/provider.json");
+    const endpoint = "https://model-provider.example.test/v1";
+    // Keep canonical input metadata; only replace the model test body. The actual
+    // runner must deliver the selected endpoint and key together to its child.
+    await writeRunnerManifest(root, { lanes: { openshell: lane } });
+    await writeFile(
+      join(root, file.path),
+      `import assert from "node:assert/strict"; import test from "node:test";
     test(${JSON.stringify(file.expectedTests[0])}, () => {
       assert.equal(process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL, ${JSON.stringify(endpoint)});
       assert.equal(process.env.OPENAI_API_KEY, "synthetic-provider-key");
     });`,
-  );
-  const env = Object.fromEntries(
-    [...lane.requiredEnv, ...file.requiredEnv].map((name) => [name, "synthetic-prerequisite"]),
-  );
-  const result = run(
-    root,
-    [...laneArgs(root, "openshell", "state/upstream.json", resultsPath), "--file", file.path],
-    {
-      ...env,
-      OPENAI_API_KEY: "synthetic-provider-key",
-      OCC_TEST_OPENSHELL_MODEL_BASE_URL: endpoint,
-      OCC_CI_SUITE_VIEW: "default",
-    },
-  );
-  assert.equal(result.status, 0, result.stderr);
-  const receipt = JSON.parse(await readFile(resultsPath, "utf8"));
-  assert.equal(receipt.files[0].tests[0].status, "passed");
-});
+    );
+    const env = Object.fromEntries(
+      [...lane.requiredEnv, ...file.requiredEnv].map((name) => [name, "synthetic-prerequisite"]),
+    );
+    const result = run(
+      root,
+      [...laneArgs(root, "openshell", "state/provider.json", resultsPath), "--file", file.path],
+      {
+        ...env,
+        OPENAI_API_KEY: "synthetic-provider-key",
+        CODEX_ACCESS_TOKEN: "",
+        OCC_TEST_OPENSHELL_MODEL_BASE_URL: endpoint,
+        OCC_CI_SUITE_VIEW: "default",
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const receipt = JSON.parse(await readFile(resultsPath, "utf8"));
+    assert.equal(receipt.files[0].tests[0].status, "passed");
+  });
+}
 
 test("run fails missing expected tests, skipped expected tests, skips, todos, and missing required env", async (t) => {
   const root = await fixture(t);

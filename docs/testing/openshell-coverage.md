@@ -54,9 +54,11 @@ Harness-local configuration, credentials and process protection remain separate 
 Both modes compose the `openshell` Backend with the Sandbox and Credential
 Gateway Drivers. Through the production API they register a `codex-pat` source
 from `CODEX_ACCESS_TOKEN` for Codex, or an `openai` source from `OPENAI_API_KEY`
-for native OpenClaw and custom model endpoints. They check its live
+for native OpenClaw and API-key workflows. They check its live
 `ready` status, and bind the Agent with `credential_source`. The Agent service
 principal receives `operate` on the source only, not on the Secret.
+
+The refresh, withdrawal, and Gateway tool-policy files select the API-key endpoint before loading their shared workflow. They retain the native Codex Harness and their lifecycle and policy checks. Credential-route, Sandbox-policy, and curated-plugin files retain PAT coverage.
 
 The default Codex scenario uses the production Driver path. Compute sends only
 `APP_TOKEN_SHA`; OpenShell supplies `runtime.json`, `config.toml`, and the

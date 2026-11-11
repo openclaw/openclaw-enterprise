@@ -3746,12 +3746,7 @@ if (args[0] === "pull") {
       },
     ];
     // Each split owner must retain the credential admission gate before any resource is created.
-    for (const file of [
-      "tests/integration/openshell-gateway-tool-policy-real.test.ts",
-      "tests/integration/openshell-credentials-real.test.ts",
-      "tests/integration/openshell-withdrawal-real.test.ts",
-      "tests/integration/openshell-refresh-real.test.ts",
-    ]) {
+    for (const file of ["tests/integration/openshell-credentials-real.test.ts"]) {
       cases.push(
         { harness: "codex", credentials: ["OPENAI_API_KEY"], file, missing: "CODEX_ACCESS_TOKEN" },
         {
@@ -3764,13 +3759,16 @@ if (args[0] === "pull") {
         { harness: "codex", endpoint: true, credentials: ["OPENAI_API_KEY"], file },
       );
     }
-    // General installers use API keys even when an unrelated managed PAT is present.
+    // Generic workflows use API keys even when an unrelated managed PAT is present.
     // PAT-only input must fail before the preparer creates a state file or any resources.
     for (const file of [
       "tests/integration/openshell-upstream-real.test.ts",
       "tests/integration/local-first-agent-openshell-real.test.mjs",
       "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
       "tests/integration/dev-up-openshell-k3d-real.test.mjs",
+      "tests/integration/openshell-refresh-real.test.ts",
+      "tests/integration/openshell-withdrawal-real.test.ts",
+      "tests/integration/openshell-gateway-tool-policy-real.test.ts",
     ]) {
       cases.push(
         { harness: "codex", credentials: ["OPENAI_API_KEY"], file },
@@ -3827,7 +3825,7 @@ if (args[0] === "pull") {
     const file = "tests/integration/openshell-refresh-real.test.ts";
     const sourceRevision = "a".repeat(40);
     const baseEnv = {
-      CODEX_ACCESS_TOKEN: "synthetic-fixture-credential",
+      OPENAI_API_KEY: "synthetic-fixture-credential",
       OCC_TEST_OPENAI_MODEL: "fixture-model",
       OCC_HELM_BIN: join(root, "must-not-run-helm"),
       OCC_DOCKER_BIN: join(root, "must-not-run-docker"),

@@ -971,6 +971,11 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
     isOpenShellLane(name) &&
     (name === "openshell-installers" ||
       isOpenShellInstallerFile(file) ||
+      [
+        "tests/integration/openshell-refresh-real.test.ts",
+        "tests/integration/openshell-withdrawal-real.test.ts",
+        "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+      ].includes(file) ||
       (effectiveEnv.OCC_TEST_OPENSHELL_HARNESS === "openclaw" &&
         (openShellGatewayFile ||
           (file === undefined && effectiveEnv.OCC_K3D_HARNESS === "openclaw"))) ||

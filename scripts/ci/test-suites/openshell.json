@@ -37,7 +37,6 @@
       "path": "tests/integration/openshell-refresh-real.test.ts",
       "expectedTests": ["OpenShell gateway recovery preserves OAuth refresh and revocation"],
       "requiredEnv": [
-        "CODEX_ACCESS_TOKEN",
         "OCC_TEST_KUBERNETES_KUBECONFIG",
         "OCC_TEST_KUBERNETES_CONTEXT",
         "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
@@ -49,13 +48,13 @@
         "OCC_TEST_OPENSHELL_HELM_CHART",
         "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
         "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
-      ]
+      ],
+      "optionalEnv": ["OCC_TEST_OPENSHELL_MODEL_BASE_URL"]
     },
     {
       "path": "tests/integration/openshell-withdrawal-real.test.ts",
       "expectedTests": ["OpenShell credential withdrawal revokes live model access"],
       "requiredEnv": [
-        "CODEX_ACCESS_TOKEN",
         "OCC_TEST_KUBERNETES_KUBECONFIG",
         "OCC_TEST_KUBERNETES_CONTEXT",
         "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
@@ -67,7 +66,8 @@
         "OCC_TEST_OPENSHELL_HELM_CHART",
         "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
         "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
-      ]
+      ],
+      "optionalEnv": ["OCC_TEST_OPENSHELL_MODEL_BASE_URL"]
     },
     {
       "path": "tests/integration/openshell-credentials-real.test.ts",
@@ -125,7 +125,6 @@
         "OpenShell dedicated Agents enforce Gateway tool policy during normal work"
       ],
       "requiredEnv": [
-        "CODEX_ACCESS_TOKEN",
         "OCC_TEST_KUBERNETES_KUBECONFIG",
         "OCC_TEST_KUBERNETES_CONTEXT",
         "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
@@ -137,7 +136,8 @@
         "OCC_TEST_OPENSHELL_HELM_CHART",
         "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
         "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
-      ]
+      ],
+      "optionalEnv": ["OCC_TEST_OPENSHELL_MODEL_BASE_URL"]
     },
     {
       "path": "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
