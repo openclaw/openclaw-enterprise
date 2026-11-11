@@ -15,6 +15,13 @@ import {
 } from "./sandbox-policy.ts";
 import { Type } from "typebox";
 import {
+  AgentManagementAdoptionBody,
+  AgentManagementReleaseBody,
+  AgentManagementResponse,
+  AgentManagementApplyBody,
+  NamespaceIdentityResponse,
+} from "./external-management.ts";
+import {
   ConnectionStartResponse,
   SavedConnectionListResponse,
   StartNamespaceConnectionBody,
@@ -179,6 +186,91 @@ const runtimeReadErrors = {
 } as const;
 
 export const occApiRoutes = [
+  {
+    operationId: "getNamespaceIdentity",
+    method: "GET",
+    path: "/namespaces/:namespaceId/identity",
+    action: "openclaw.namespaces.identity.read",
+    iamAction: "read",
+    resourceKind: "namespace",
+    authorizationTarget: "namespace",
+    summary:
+      "Identify the Installation owning one authorized Namespace without Installation-wide access",
+    tags: ["Namespaces"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      response: { 200: NamespaceIdentityResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "applyAgentManagement",
+    method: "POST",
+    path: "/namespaces/:namespaceId/agents/:agentId/management/apply",
+    action: "openclaw.agents.management.apply",
+    iamAction: "update",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary:
+      "Apply an externally owned Agent configuration once through its normal deployment lifecycle",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      body: AgentManagementApplyBody,
+      response: { 200: AgentManagementResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "getAgentManagement",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/management",
+    action: "openclaw.agents.management.read",
+    iamAction: "read",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Inspect external ownership and the exact Agent adoption snapshot",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      response: { 200: AgentManagementResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "adoptAgentManagement",
+    method: "PUT",
+    path: "/namespaces/:namespaceId/agents/:agentId/management",
+    action: "openclaw.agents.management.adopt",
+    iamAction: "administer",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Acquire external ownership of an exact reviewed Agent without deploying",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      body: AgentManagementAdoptionBody,
+      response: { 200: AgentManagementResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "releaseAgentManagement",
+    method: "DELETE",
+    path: "/namespaces/:namespaceId/agents/:agentId/management",
+    action: "openclaw.agents.management.release",
+    iamAction: "administer",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Release exact external ownership and retain the Agent and its version tombstone",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      body: AgentManagementReleaseBody,
+      response: { 200: AgentManagementResponse, ...createErrors },
+    },
+  },
   {
     operationId: "startAgentDeviceAuthorization",
     method: "POST",

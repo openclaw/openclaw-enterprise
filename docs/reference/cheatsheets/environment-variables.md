@@ -176,3 +176,13 @@ Collector or local Docker log forwarding. See [Observability](../../guides/obser
 - `OCC_DOCKER_LOGGING_ADDRESS` — Docker Compute log destination; local override default: `127.0.0.1:24224`.
 - `OCE_WORKER_OBSERVATIONS_FILE` — Exact private JSONL input read by the worker termination Collector; required. See [Worker termination observations](../../guides/observability/worker-terminations.md).
 - `OCE_WORKER_STATE_DIR` — Private persistent directory for worker termination Collector offsets and export queue; required. See [Worker termination observations](../../guides/observability/worker-terminations.md).
+
+## Optional Kubernetes Operator
+
+- `OCE_OPERATOR_NAMESPACE` — Required Kubernetes namespace containing the four CR kinds.
+- `OCE_OPERATOR_CLUSTER_ID` — Required stable administrator-owned source identity.
+- `OCE_OPERATOR_IDENTITY` — Optional leader identity; the chart uses Pod UID, otherwise a random UUID.
+- `OCE_OPERATOR_LEASE_NAME` — Optional leader Lease name; the chart uses its release name.
+
+These variables belong to `apps/operator`, not the API or worker. See
+[Operator configuration](../kubernetes-agent-operator.md).

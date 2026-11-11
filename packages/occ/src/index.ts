@@ -139,6 +139,12 @@ import {
   sandboxNetworkGrantsWithinCeiling,
 } from "@openclaw-enterprise/contracts";
 import { AsyncLocalStorage } from "node:async_hooks";
+import type {
+  AgentManagementAdoption,
+  AgentManagementRelease,
+  AgentManagementApply,
+} from "@openclaw-enterprise/contracts";
+import { agentAdoptionFingerprint, managementInputFingerprint } from "./external-management.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -2303,6 +2309,12 @@ export class OpenClawController {
   private readonly transactionContext = new AsyncLocalStorage<PlatformUnitOfWork>();
   private readonly authorityFence = new AsyncLocalStorage<AuthorityFence>();
   private readonly provisioningContext = new AsyncLocalStorage<ClaimedWork>();
+  private readonly externalManagementContext = new AsyncLocalStorage<{
+    readonly principalId: string;
+    readonly sourceId: string;
+    readonly agentId: string;
+    readonly prepared?: PreparedDeploymentChannels;
+  }>();
   private readonly mutationRollbacks = new AsyncLocalStorage<(() => Promise<void>)[]>();
   private readonly shouldRecordOperations: boolean;
   private readonly nativeWorkers: NativeWorkerSupportSource | undefined;
@@ -13148,6 +13160,7 @@ export class OpenClawController {
           >
         >
       | undefined,
+    candidate?: Readonly<Configuration>,
   ): Promise<PreparedDeploymentChannels> {
     if (metadata?.kind !== "agent") {
       throw new ScopeViolationError("The Agent Configuration is unavailable.");
@@ -13156,10 +13169,12 @@ export class OpenClawController {
     const agentId = input.agentId;
     const configurationId = metadata.id;
     const configurationDriver = this.configurationDriver();
-    const configuration = this.exactConfiguration(
-      await this.driverOperation(() => configurationDriver.read(metadata)),
-      metadata,
-    );
+    const configuration =
+      candidate ??
+      this.exactConfiguration(
+        await this.driverOperation(() => configurationDriver.read(metadata)),
+        metadata,
+      );
     // Before the Channel Driver, which reads only an env SecretRef and answers any other channel
     // credential form with its generic binding refusal: the bundled Kubernetes channel rule, then
     // the Configuration Driver's rules, in save's order (finding 2520). Deployment applies them
@@ -13227,7 +13242,7 @@ export class OpenClawController {
     if (!isNonEmptyString(input.agentId)) {
       throw new ScopeViolationError("The exact Agent identity is missing.");
     }
-    if (first === undefined) {
+    if (first === undefined && this.externalManagementContext.getStore()?.prepared === undefined) {
       await this.validateDeploymentChannels(principalId, input);
     }
     this.namespaceIdentity(input.namespaceId);
@@ -13256,7 +13271,10 @@ export class OpenClawController {
       if (!lockedAgent) {
         throw new ScopeViolationError("The Agent does not belong to the exact Namespace.");
       }
-      let prepared: PreparedDeploymentChannels | undefined;
+      let prepared = this.externalManagementContext.getStore()?.prepared;
+      if (prepared !== undefined) {
+        this.assertPreparedDeploymentDrivers(prepared);
+      }
       if (first !== undefined) {
         authorization = await this.authorizeFirstDeploymentReceipt(
           principalId,
@@ -14046,6 +14064,339 @@ export class OpenClawController {
     return revision;
   }
 
+  async getAgentManagement(principalId: string, namespaceId: string, agentId: string) {
+    await this.authorize(principalId, "read", { kind: "agent", id: agentId, namespaceId });
+    const agent = await this.read((state) => state.agents.findAgent(namespaceId, agentId));
+    if (agent === undefined) {
+      throw new ScopeViolationError("The Agent does not belong to the exact Namespace.");
+    }
+    const configuration = await this.getConfiguration(
+      principalId,
+      namespaceId,
+      agent.configurationId,
+    );
+    const management = agent.externalManagement;
+    return Object.freeze({
+      management:
+        management === undefined
+          ? null
+          : {
+              sourceId: management.sourceId,
+              principalId: management.principalId,
+              version: management.version,
+              suspended: management.suspended,
+              released: management.released,
+              ...(management.request?.revisionId === undefined
+                ? {}
+                : { requestedRevisionId: management.request.revisionId }),
+            },
+      adoption: {
+        configurationId: configuration.id,
+        configurationGeneration: configuration.generation,
+        ...(agent.activeRevisionId === undefined
+          ? {}
+          : { activeRevisionId: agent.activeRevisionId }),
+        fingerprint: agentAdoptionFingerprint(agent, configuration),
+      },
+    });
+  }
+
+  async adoptAgentManagement(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    input: AgentManagementAdoption,
+  ) {
+    return this.mutate(async (state) => {
+      await this.authorize(principalId, "administer", { kind: "agent", id: agentId, namespaceId });
+      await this.lockNamespace(state, namespaceId);
+      await this.authorize(principalId, "administer", { kind: "agent", id: agentId, namespaceId });
+      const agent = await state.agents.lockAgent(namespaceId, agentId);
+      if (agent === undefined || agent.status !== "active") {
+        throw new ScopeViolationError("The active Agent does not belong to the exact Namespace.");
+      }
+      const owner = agent.externalManagement;
+      // A lost response is recovered by the same authenticated source, without another mutation.
+      if (owner !== undefined && !owner.released) {
+        if (owner.principalId === principalId && owner.sourceId === input.sourceId) {
+          return this.getAgentManagement(principalId, namespaceId, agentId);
+        }
+        throw new ResourceStateConflictError("The Agent already has an external owner.");
+      }
+      if (input.expectedManagementVersion !== (owner?.version ?? 0)) {
+        throw new ResourceStateConflictError("External management version changed.");
+      }
+      if (
+        agent.configurationId !== input.expectedConfigurationId ||
+        agent.activeRevisionId !== input.expectedActiveRevisionId
+      ) {
+        throw new ResourceStateConflictError("The reviewed Agent changed before adoption.");
+      }
+      await this.authorize(principalId, "update", {
+        kind: "configuration",
+        id: agent.configurationId,
+        namespaceId,
+      });
+      const metadata = await state.configurations.lockConfiguration(
+        namespaceId,
+        agent.configurationId,
+      );
+      if (metadata?.generation !== input.expectedConfigurationGeneration) {
+        throw new ConfigurationGenerationConflictError();
+      }
+      const configuration = await this.getConfiguration(
+        principalId,
+        namespaceId,
+        agent.configurationId,
+      );
+      if (agentAdoptionFingerprint(agent, configuration) !== input.expectedFingerprint) {
+        throw new ResourceStateConflictError(
+          "The reviewed Agent settings changed before adoption.",
+        );
+      }
+      if (
+        (await state.agents.listAgents(namespaceId)).some(
+          (other) => other.id !== agentId && other.configurationId === agent.configurationId,
+        )
+      ) {
+        throw new ResourceStateConflictError(
+          "An externally managed Agent needs its own Configuration.",
+        );
+      }
+      await state.agents.setExternalManagement(namespaceId, agentId, {
+        principalId,
+        sourceId: input.sourceId,
+        version: (owner?.version ?? 0) + 1,
+        suspended: false,
+        released: false,
+      });
+      return this.getAgentManagement(principalId, namespaceId, agentId);
+    });
+  }
+
+  async releaseAgentManagement(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    input: AgentManagementRelease,
+  ) {
+    return this.mutate(async (state) => {
+      await this.authorize(principalId, "administer", { kind: "agent", id: agentId, namespaceId });
+      await this.lockNamespace(state, namespaceId);
+      await this.authorize(principalId, "administer", { kind: "agent", id: agentId, namespaceId });
+      const agent = await state.agents.lockAgent(namespaceId, agentId);
+      const owner = agent?.externalManagement;
+      if (owner === undefined || owner.sourceId !== input.sourceId) {
+        throw new ResourceStateConflictError("The exact external owner is unavailable.");
+      }
+      if (owner.released && owner.version === input.expectedVersion + 1) {
+        return this.getAgentManagement(principalId, namespaceId, agentId);
+      }
+      if (owner.version !== input.expectedVersion) {
+        throw new ResourceStateConflictError("External management version changed.");
+      }
+      // Keep the version as a tombstone: a delayed adoption cannot reacquire released ownership.
+      await state.agents.setExternalManagement(namespaceId, agentId, {
+        ...owner,
+        released: true,
+        version: owner.version + 1,
+      });
+      return this.getAgentManagement(principalId, namespaceId, agentId);
+    });
+  }
+
+  async applyAgentManagement(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    requestedInput: AgentManagementApply,
+    resolveHarness: HarnessResolver,
+    auditEvent?: AuditEvent,
+  ) {
+    const input = immutableCopy(requestedInput);
+    await this.authorize(principalId, "update", { kind: "agent", id: agentId, namespaceId });
+    const before = await this.read((state) => state.agents.findAgent(namespaceId, agentId));
+    if (before === undefined) {
+      throw new ScopeViolationError("The Agent does not belong to the exact Namespace.");
+    }
+    const current = await this.getConfiguration(principalId, namespaceId, before.configurationId);
+    const fingerprint = managementInputFingerprint({
+      ...input,
+      expectedVersion: undefined,
+      requestKey: undefined,
+    });
+    const owner = before.externalManagement;
+    if (
+      owner === undefined ||
+      owner.released ||
+      owner.principalId !== principalId ||
+      owner.sourceId !== input.sourceId
+    ) {
+      throw new ResourceStateConflictError("The exact external owner is unavailable.");
+    }
+    if (owner.request?.key === input.requestKey) {
+      if (owner.request.fingerprint !== fingerprint) {
+        throw new ResourceStateConflictError("An apply request key cannot name different input.");
+      }
+      return this.getAgentManagement(principalId, namespaceId, agentId);
+    }
+    if (owner.suspended || owner.version !== input.expectedVersion) {
+      throw new ResourceStateConflictError(
+        "External management is suspended or its version changed.",
+      );
+    }
+    if (owner.request !== undefined && owner.request.sourceGeneration > input.sourceGeneration) {
+      throw new ResourceStateConflictError(
+        "An older source generation cannot replace accepted desired state.",
+      );
+    }
+    const secretBindings = input.configuration.secretBindings ?? {};
+    const configurationChanged =
+      !isDeepStrictEqual(current.values, input.configuration.values) ||
+      !isDeepStrictEqual(current.secretBindings ?? {}, secretBindings);
+    const authenticationChanged =
+      input.harnessAuth !== undefined && !isDeepStrictEqual(before.harnessAuth, input.harnessAuth);
+    const retry = input.retryNonce !== undefined && input.retryNonce !== owner.request?.retryNonce;
+    const deploy =
+      input.desiredRuntimeState === "running" &&
+      (configurationChanged ||
+        authenticationChanged ||
+        before.desiredRuntimeState !== "running" ||
+        before.activeRevisionId === undefined ||
+        input.forceDeployment === true ||
+        retry);
+    const { secretBindings: _currentBindings, ...currentDocument } = current;
+    const candidate: Readonly<Configuration> = {
+      ...currentDocument,
+      values: frozenValues(input.configuration.values),
+      generation: current.generation + (configurationChanged ? 1 : 0),
+      ...(Object.keys(secretBindings).length === 0 ? {} : { secretBindings }),
+    };
+    // Channel checks can perform provider I/O. Complete them before opening the write transaction.
+    const prepared = deploy
+      ? await this.prepareDeploymentChannels(
+          principalId,
+          { namespaceId, agentId },
+          candidate,
+          candidate,
+        )
+      : undefined;
+    const snapshot = agentAdoptionFingerprint(before, current);
+    return this.externalManagementContext.run(
+      {
+        principalId,
+        sourceId: input.sourceId,
+        agentId,
+        ...(prepared === undefined ? {} : { prepared }),
+      },
+      () =>
+        this.mutate(async (state) => {
+          await this.lockNamespace(state, namespaceId);
+          await this.authorize(principalId, "update", { kind: "agent", id: agentId, namespaceId });
+          const locked = await state.agents.lockAgent(namespaceId, agentId);
+          if (locked === undefined) {
+            throw new ScopeViolationError("The Agent does not belong to the exact Namespace.");
+          }
+          if (locked.status !== "active") {
+            throw new AgentDeletingError();
+          }
+          const fresh = locked.externalManagement;
+          if (
+            fresh?.request?.key === input.requestKey &&
+            fresh.request.fingerprint === fingerprint
+          ) {
+            return this.getAgentManagement(principalId, namespaceId, agentId);
+          }
+          if (
+            fresh === undefined ||
+            fresh.released ||
+            fresh.suspended ||
+            fresh.version !== input.expectedVersion ||
+            fresh.principalId !== principalId ||
+            fresh.sourceId !== input.sourceId
+          ) {
+            throw new ResourceStateConflictError("External management changed before apply.");
+          }
+          if (
+            fresh.request !== undefined &&
+            fresh.request.sourceGeneration > input.sourceGeneration
+          ) {
+            throw new ResourceStateConflictError(
+              "An older source generation cannot replace accepted desired state.",
+            );
+          }
+          const configuration = await this.getConfiguration(
+            principalId,
+            namespaceId,
+            locked.configurationId,
+          );
+          if (agentAdoptionFingerprint(locked, configuration) !== snapshot) {
+            throw new ResourceStateConflictError("Agent settings changed after apply preparation.");
+          }
+          if (configurationChanged) {
+            await this.updateConfiguration(principalId, {
+              namespaceId,
+              configurationId: current.id,
+              expectedGeneration: current.generation,
+              values: candidate.values,
+              secretBindings,
+            });
+          }
+          if (authenticationChanged) {
+            await this.updateAgent(
+              principalId,
+              { namespaceId, agentId, harnessAuth: input.harnessAuth! },
+              resolveHarness,
+            );
+          }
+          let revisionId = locked.activeRevisionId;
+          if (deploy) {
+            revisionId = (
+              await this.deployAgent(principalId, { namespaceId, agentId }, resolveHarness)
+            ).id;
+          } else if (
+            input.desiredRuntimeState === "stopped" &&
+            locked.desiredRuntimeState !== "stopped"
+          ) {
+            await this.stopAgent(principalId, namespaceId, agentId);
+          }
+          await state.agents.setExternalManagement(namespaceId, agentId, {
+            ...fresh,
+            version: fresh.version + 1,
+            request: {
+              sourceGeneration: input.sourceGeneration,
+              key: input.requestKey,
+              fingerprint,
+              ...(input.retryNonce === undefined ? {} : { retryNonce: input.retryNonce }),
+              ...(revisionId === undefined ? {} : { revisionId }),
+            },
+          });
+          if (auditEvent !== undefined) {
+            await state.audit.append(auditEvent);
+          }
+          return this.getAgentManagement(principalId, namespaceId, agentId);
+        }),
+    );
+  }
+
+  private guardExternalManagement(agent: Readonly<Agent>): void {
+    const owner = agent.externalManagement;
+    if (owner === undefined || owner.released) {
+      return;
+    }
+    const context = this.externalManagementContext.getStore();
+    if (
+      owner.suspended ||
+      context?.sourceId !== owner.sourceId ||
+      context.principalId !== owner.principalId ||
+      context.agentId !== agent.id
+    ) {
+      throw new ResourceStateConflictError(
+        "Agent settings are externally managed. Change the declared source or release external management.",
+      );
+    }
+  }
+
   async stopAgent(
     principalId: string,
     namespaceId: string,
@@ -14072,6 +14423,17 @@ export class OpenClawController {
       }
       if (agent.status === "deleting") {
         return agent;
+      }
+      if (
+        agent.externalManagement !== undefined &&
+        !agent.externalManagement.released &&
+        this.externalManagementContext.getStore() === undefined
+      ) {
+        await state.agents.setExternalManagement(namespaceId, agentId, {
+          ...agent.externalManagement,
+          suspended: true,
+          version: agent.externalManagement.version + 1,
+        });
       }
       await state.provisioning.cancelByAgent(namespaceId, agentId, {
         code: "PROVISIONING_CANCELLED",
@@ -15611,6 +15973,10 @@ export class OpenClawController {
     agentId: string,
     handoff = false,
   ): Promise<void> {
+    const managedAgent = await state.agents.findAgent(namespaceId, agentId);
+    if (managedAgent !== undefined) {
+      this.guardExternalManagement(managedAgent);
+    }
     const record = await state.provisioning.findByAgent(namespaceId, agentId);
     if (record === undefined || record.revisionId !== undefined) {
       return;
@@ -15686,6 +16052,13 @@ export class OpenClawController {
     configurationId: string,
     readOnly = false,
   ): Promise<void> {
+    if (!readOnly) {
+      for (const agent of await state.agents.listAgents(namespaceId)) {
+        if (agent.configurationId === configurationId) {
+          this.guardExternalManagement(agent);
+        }
+      }
+    }
     const record = await state.provisioning.findByConfiguration(namespaceId, configurationId);
     if (
       record !== undefined &&

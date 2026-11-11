@@ -1,5 +1,6 @@
 packages:
   - apps/controller
+  - apps/operator
   - packages/utils
   - packages/contracts
   - packages/occ

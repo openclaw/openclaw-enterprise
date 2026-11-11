@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Partially implemented
 author: uggy-ug
 ---
 
@@ -92,6 +92,14 @@ Kubernetes RBAC, automate human OAuth consent, or declare all platform resources
 CRDs for Roles, Backends, shared Configurations, and Installation Drivers are
 outside this delivery. Installation values remain Helm-managed. Native Telegram
 support is a separate runtime prerequisite, not a capability this Operator adds.
+
+The initial alpha is narrower: it references existing Namespace/Secret resources,
+adopts a reviewed existing dedicated Agent, applies settings with durable receipts
+and releases ownership on Retain. New resource creation, Secret import/rotation
+and Delete cleanup remain proposed. The [current branch contract](../../docs/reference/kubernetes-agent-operator.md)
+and [delivery plan](../plans/0037-kubernetes-agent-operator.md) separate that subset
+from the full acceptance criteria. API, PostgreSQL and scoped Kubernetes SDK
+checks do not establish Argo or genuine Telegram delivery.
 
 ## Proposed Kubernetes API
 

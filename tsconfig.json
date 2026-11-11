@@ -18,6 +18,9 @@
     },
     {
       "path": "./apps/controller"
+    },
+    {
+      "path": "./apps/operator"
     }
   ],
   "exclude": ["legacy", "legacy/**", "node_modules", "**/node_modules", "**/dist"]

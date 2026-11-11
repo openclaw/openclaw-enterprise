@@ -1,4 +1,12 @@
 import type { Static } from "typebox";
+
+export type {
+  AgentExternalManagement,
+  AgentManagementAdoption,
+  AgentManagementRelease,
+  AgentManagementApply,
+} from "./external-management.ts";
+import type { AgentExternalManagement } from "./external-management.ts";
 import type { HarnessAuthBindingSchema } from "./api/common.ts";
 import type {
   ComputeAgentProvisioningCapabilities,
@@ -1039,6 +1047,7 @@ export type AgentDesiredRuntimeState = "running" | "stopped";
  */
 export type AgentStatus = "active" | "deleting";
 export interface Agent extends Scope {
+  readonly externalManagement?: AgentExternalManagement;
   readonly sandboxPolicyEditing?: boolean;
   readonly id: string;
   readonly namespaceId: string;

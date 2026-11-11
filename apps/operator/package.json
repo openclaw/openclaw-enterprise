@@ -1,0 +1,18 @@
+{
+  "name": "@openclaw-enterprise/operator",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "scripts": {
+    "build": "tsc --build tsconfig.json --pretty false"
+  },
+  "dependencies": {
+    "@kubernetes/client-node": "2.0.1",
+    "@openclaw-enterprise/contracts": "workspace:*"
+  }
+}

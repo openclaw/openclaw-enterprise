@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 const scenarioPresets = {
+  "external-management": ["OpenClaw", "Codex"],
   "namespace-lifecycle": ["OpenClaw"],
   "oidc-agent-chat": ["OpenClaw"],
   "sandbox-policy": ["Codex"],

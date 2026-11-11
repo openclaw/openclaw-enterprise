@@ -154,6 +154,7 @@ export function bindPlatformUnitOfWork(
       "lockAgent",
       "updateConfiguration",
       "setSandboxPolicyEditing",
+      "setExternalManagement",
       "compareAndSetActiveRevision",
       "compareAndClearActiveRevision",
       "transitionAgentDesiredRuntimeState",

@@ -165,3 +165,11 @@ bindings can still be listed or deleted. Groups and Restrictions cannot be
 managed through this API.
 
 Per-Agent policy editing configuration requires Installation and exact-Agent `administer`. See [policy authority](../sandbox-policies.md#authority-and-admission).
+
+## External Agent management
+
+Management read requires exact Agent and Configuration read. Adoption/release
+require Agent administer; adoption also requires Configuration update. Apply
+requires Agent update and ordinary permissions for its Configuration, deployment
+and credential effects. Namespace identity needs Namespace read only. No Operator
+permission bypass is added. See [the current contract](../kubernetes-agent-operator.md#access-and-setup).

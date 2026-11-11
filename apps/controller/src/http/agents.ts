@@ -8,6 +8,9 @@ import {
   type AgentRevisionRead,
   type AgentRuntimeCredentialsBody,
   type FirstDeploymentIntent,
+  type AgentManagementAdoption,
+  type AgentManagementRelease,
+  type AgentManagementApply,
 } from "@openclaw-enterprise/contracts";
 import {
   accessBindingsRemovedWithAgent,
@@ -41,7 +44,8 @@ interface AgentHandlerOptions {
 
 function clientAgent(agent: Readonly<AgentRead>): Record<string, unknown> {
   if ("configurationReadError" in agent) {
-    return { ...agent };
+    const { externalManagement: _management, ...publicAgent } = agent;
+    return publicAgent;
   }
   return {
     sandboxPolicyEditing: agent.sandboxPolicyEditing === true,
@@ -211,6 +215,105 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
     });
   }
   return {
+    async applyAgentManagement({
+      controller,
+      context,
+      namespaceId,
+      params,
+      body,
+      request,
+      reply,
+      mutationEvent,
+    }) {
+      const input = body as unknown as AgentManagementApply & { readonly nativeAdmin?: boolean };
+      const prepared =
+        input.nativeAdmin === true
+          ? {
+              ...input,
+              configuration: {
+                ...input.configuration,
+                values: prepareBrowserAccess(
+                  { id: params.agentId!, namespaceId },
+                  input.configuration.values,
+                ),
+              },
+            }
+          : input;
+      const data = await controller.applyAgentManagement(
+        context.actorId,
+        namespaceId,
+        params.agentId!,
+        prepared,
+        options.resolveHarness,
+        mutationEvent(
+          { kind: "agent", namespaceId, id: params.agentId! },
+          { sourceId: input.sourceId, sourceGeneration: input.sourceGeneration },
+        ),
+      );
+      reply.send({ data, meta: { requestId: request.id } });
+    },
+    async getAgentManagement({ controller, context, namespaceId, params, request, reply }) {
+      const data = await controller.getAgentManagement(
+        context.actorId,
+        namespaceId,
+        params.agentId!,
+      );
+      reply.header("cache-control", "no-store").send({ data, meta: { requestId: request.id } });
+    },
+    async adoptAgentManagement({
+      controller,
+      context,
+      namespaceId,
+      params,
+      body,
+      request,
+      reply,
+      mutationEvent,
+    }) {
+      const data = await controller.transact(async (unit) => {
+        const result = await controller.adoptAgentManagement(
+          context.actorId,
+          namespaceId,
+          params.agentId!,
+          body as unknown as AgentManagementAdoption,
+        );
+        await unit.audit.append(
+          mutationEvent(
+            { kind: "agent", namespaceId, id: params.agentId! },
+            { sourceId: (body as unknown as AgentManagementAdoption).sourceId },
+          ),
+        );
+        return result;
+      });
+      reply.send({ data, meta: { requestId: request.id } });
+    },
+    async releaseAgentManagement({
+      controller,
+      context,
+      namespaceId,
+      params,
+      body,
+      request,
+      reply,
+      mutationEvent,
+    }) {
+      const data = await controller.transact(async (unit) => {
+        const result = await controller.releaseAgentManagement(
+          context.actorId,
+          namespaceId,
+          params.agentId!,
+          body as unknown as AgentManagementRelease,
+        );
+        await unit.audit.append(
+          mutationEvent(
+            { kind: "agent", namespaceId, id: params.agentId! },
+            { sourceId: (body as unknown as AgentManagementRelease).sourceId },
+          ),
+        );
+        return result;
+      });
+      reply.send({ data, meta: { requestId: request.id } });
+    },
     listRepositoryOptions,
     listAgentRepositoryOptions: listRepositoryOptions,
     async listAgentStandingApprovals({ controller, context, namespaceId, params, request, reply }) {

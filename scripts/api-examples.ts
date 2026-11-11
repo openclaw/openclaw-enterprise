@@ -304,6 +304,23 @@ export const parameterExamples = {
 };
 
 export const requestExamples = {
+  adoptAgentManagement: {
+    sourceId: "example-controller/resource-uid",
+    expectedConfigurationId: configurationId,
+    expectedConfigurationGeneration: 1,
+    expectedActiveRevisionId: revisionId,
+    expectedFingerprint: "a".repeat(64),
+    expectedManagementVersion: 0,
+  },
+  releaseAgentManagement: { sourceId: "example-controller/resource-uid", expectedVersion: 1 },
+  applyAgentManagement: {
+    sourceGeneration: 2,
+    sourceId: "example-controller/resource-uid",
+    expectedVersion: 1,
+    requestKey: "desired-generation-2",
+    desiredRuntimeState: "stopped",
+    configuration: { values: {} },
+  },
   launchAgentNativeAdmin: {},
   confirmAgentNativeAdmin: { intentId: uuid, challenge: "c".repeat(43) },
   startNamespaceConnection: { connectionTemplateId },
@@ -422,6 +439,61 @@ export const requestExamples = {
 
 // Values below are data members. The generator adds the common meta envelope.
 export const responseExamples = {
+  getNamespaceIdentity: { installationId: id("ins"), namespaceId },
+  getAgentManagement: {
+    management: null,
+    adoption: {
+      configurationId,
+      configurationGeneration: 1,
+      activeRevisionId: revisionId,
+      fingerprint: "a".repeat(64),
+    },
+  },
+  adoptAgentManagement: {
+    management: {
+      sourceId: "example-controller/resource-uid",
+      principalId: "example-automation",
+      version: 1,
+      suspended: false,
+      released: false,
+    },
+    adoption: {
+      configurationId,
+      configurationGeneration: 1,
+      activeRevisionId: revisionId,
+      fingerprint: "a".repeat(64),
+    },
+  },
+  releaseAgentManagement: {
+    management: {
+      sourceId: "example-controller/resource-uid",
+      principalId: "example-automation",
+      version: 2,
+      suspended: false,
+      released: true,
+    },
+    adoption: {
+      configurationId,
+      configurationGeneration: 1,
+      activeRevisionId: revisionId,
+      fingerprint: "a".repeat(64),
+    },
+  },
+  applyAgentManagement: {
+    management: {
+      sourceId: "example-controller/resource-uid",
+      principalId: "example-automation",
+      version: 2,
+      suspended: false,
+      released: false,
+    },
+    adoption: {
+      configurationId,
+      configurationGeneration: 2,
+      activeRevisionId: revisionId,
+      fingerprint: "a".repeat(64),
+    },
+  },
   listUsableConnectionTemplates: [connectionTemplate],
   listNamespaceConnections: [savedAccount],
   startNamespaceConnection: {

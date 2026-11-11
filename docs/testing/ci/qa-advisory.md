@@ -55,6 +55,8 @@ manual advisory run.
 
 ## Scenarios
 
+QA `external-management` checks [ownership and apply](../kubernetes-agent-operator.md).
+
 The [QA matrix](../../../scripts/ci/test-suites/qa-matrix.json) creates separate
 Agents on disposable control planes with Kubernetes compute, preserving existing
 clusters and kubeconfig. Both Plugin catalogs stay enabled across presets; setup

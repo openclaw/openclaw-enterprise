@@ -226,6 +226,11 @@ export interface AgentReadRepository {
 }
 
 export interface AgentRepository extends AgentReadRepository {
+  setExternalManagement(
+    namespaceId: string,
+    agentId: string,
+    management: Agent["externalManagement"],
+  ): Promise<Readonly<Agent> | undefined>;
   createAgent(
     agent: Omit<Agent, "gatewayManagedMode"> & { readonly gatewayManagedMode?: boolean },
   ): Promise<Readonly<Agent>>;
@@ -3376,6 +3381,30 @@ function repositories(
   };
 
   const agents: AgentRepository = {
+    setExternalManagement: async (namespaceId, agentId, management) => {
+      const current = snapshot.agents.get(agentKey(namespaceId, agentId));
+      if (current === undefined) {
+        return undefined;
+      }
+      if (
+        management !== undefined &&
+        Array.from(snapshot.agents.values()).some(
+          (other) =>
+            other.id !== agentId &&
+            other.externalManagement?.sourceId === management.sourceId &&
+            other.externalManagement.principalId === management.principalId,
+        )
+      ) {
+        throw new ResourceStateConflictError("External management identity is already bound.");
+      }
+      const { externalManagement: _previous, ...rest } = current;
+      const saved = immutableCopy({
+        ...rest,
+        ...(management === undefined ? {} : { externalManagement: management }),
+      });
+      snapshot.agents.set(agentKey(namespaceId, agentId), saved);
+      return saved;
+    },
     findAgentForBrowsing: async (namespaceId, agentId) => agents.findAgent(namespaceId, agentId),
     listAgentsForBrowsing: async (namespaceId) => agents.listAgents(namespaceId),
     findAgent: async (namespaceId, agentId) => {

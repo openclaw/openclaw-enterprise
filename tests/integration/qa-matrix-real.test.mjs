@@ -234,6 +234,16 @@ test(
                 }
                 const scenarios = [
                   [
+                    "external-management",
+                    async (agent, step) => {
+                      const { verifyQaExternalManagement } =
+                        await import("../helpers/qa-external-management.mjs");
+                      await step("adopt, apply once, observe real revision/model and release", () =>
+                        verifyQaExternalManagement(f, agent),
+                      );
+                    },
+                  ],
+                  [
                     "console-secrets",
                     async (agent, step) => {
                       await step(

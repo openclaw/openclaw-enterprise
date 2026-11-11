@@ -90,7 +90,7 @@ jobs:
           if (full) {
             openshellFiles = undefined;
             installationFiles = process.env.GITHUB_EVENT_NAME === 'push' ? [] : undefined;
-            qa.push(...['compose', 'kubernetes'].map((installation) => ({ installation, preset: 'Codex', scenarios: 'console-secrets', focused: false })));
+            qa.push(...['compose', 'kubernetes'].map((installation) => ({ installation, preset: 'Codex', scenarios: 'console-secrets,external-management', focused: false })));
           } else {
             if (labels.has('qa-openshell-compose')) {
               openshellFiles.push('tests/integration/local-first-agent-openshell-real.test.mjs');

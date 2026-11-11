@@ -1,0 +1,6 @@
+apiVersion: v2
+name: openclaw-enterprise-operator
+description: Namespace-scoped Kubernetes reconciliation through the OpenClaw Enterprise API
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

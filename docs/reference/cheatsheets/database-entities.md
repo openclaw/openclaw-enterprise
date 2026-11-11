@@ -62,6 +62,10 @@ Stores Agent drafts, their desired runtime state, and the selected version refer
 - `status`
 - `created_at`
 
+`external_management` stores the authenticated external owner, version,
+suspension/release tombstone and private last-apply receipt. PostgreSQL constrains
+its shape and unique principal/source pair. See [Agent management](../kubernetes-agent-operator.md#adoption-and-apply).
+
 ### `sandbox_policies`
 
 Stores one Agent-owned desired network policy with versioned application evidence.

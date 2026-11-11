@@ -6,7 +6,8 @@
     "OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS"
   ],
   "env": {
-    "OCC_TEST_KUBERNETES_CONFIGURATION": "1"
+    "OCC_TEST_KUBERNETES_CONFIGURATION": "1",
+    "OCC_TEST_KUBERNETES_OPERATOR": "1"
   },
   "prepare": {
     "postgres": true,
@@ -18,7 +19,8 @@
   "parallelFiles": [
     "tests/integration/kubernetes-compute-real.test.mjs",
     "tests/integration/kubernetes-plugin-status-real.test.mjs",
-    "tests/integration/installation-handoff-k3d-real.test.ts"
+    "tests/integration/installation-handoff-k3d-real.test.ts",
+    "tests/integration/operator-kubernetes-real.test.ts"
   ],
   "files": [
     {
@@ -52,6 +54,9 @@
         "staged sign-in refuses a replacement cluster",
         "staged sign-in refuses a newly shared volume"
       ]
+    },
+    {
+      "path": "tests/integration/operator-kubernetes-real.test.ts"
     }
   ],
   "serialFiles": {

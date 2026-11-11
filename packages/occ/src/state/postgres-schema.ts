@@ -1,5 +1,6 @@
 import type { CredentialPolicyReductionState } from "./platform-state.ts";
 import type {
+  AgentExternalManagement,
   InitialWorkspaceFiles,
   ProtectedEgressSource,
   EgressInstallation,
@@ -269,6 +270,7 @@ export const agents = occSchema.table(
     executionMode: text("execution_mode").$type<HarnessExecutionMode>().notNull(),
     gatewayManagedMode: boolean("gateway_managed_mode").notNull().default(true),
     sandboxPolicyEditing: boolean("sandbox_policy_editing").notNull().default(false),
+    externalManagement: jsonb("external_management").$type<AgentExternalManagement>(),
     plugins: jsonb("plugins").$type<PluginDesiredState>(),
     pluginDriver: jsonb("plugin_driver").$type<PluginDriverIdentity>(),
     pluginApprovers: jsonb("plugin_approvers").$type<PluginApprovers>(),
@@ -296,6 +298,54 @@ export const agents = occSchema.table(
   },
   (table): PgTableExtraConfigValue[] => [
     unique("agents_namespace_id_id_unique").on(table.namespaceId, table.id),
+    check(
+      "agents_external_management_valid",
+      sql.raw(`
+  external_management IS NULL OR (
+    jsonb_typeof(external_management) = 'object'
+    AND external_management ?& ARRAY['sourceId','principalId','version','suspended','released']
+    AND (external_management - 'sourceId' - 'principalId' - 'version' - 'suspended' - 'released' - 'request') = '{}'::jsonb
+    AND jsonb_typeof(external_management->'sourceId') = 'string'
+    AND char_length(external_management->>'sourceId') BETWEEN 1 AND 512
+    AND external_management->>'sourceId' ~ '^[A-Za-z0-9][A-Za-z0-9._:/~-]*$'
+    AND jsonb_typeof(external_management->'principalId') = 'string'
+    AND char_length(external_management->>'principalId') BETWEEN 1 AND 256
+    AND jsonb_typeof(external_management->'version') = 'number'
+    AND external_management->>'version' ~ '^[1-9][0-9]{0,15}$'
+    AND external_management->'version' <= '9007199254740991'::jsonb
+    AND jsonb_typeof(external_management->'suspended') = 'boolean'
+    AND jsonb_typeof(external_management->'released') = 'boolean'
+    AND (
+      NOT (external_management ? 'request') OR (
+        jsonb_typeof(external_management->'request') = 'object'
+        AND (external_management->'request') ?& ARRAY['key','fingerprint','sourceGeneration']
+        AND ((external_management->'request') - 'key' - 'fingerprint' - 'revisionId' - 'sourceGeneration' - 'retryNonce') = '{}'::jsonb
+        AND jsonb_typeof(external_management #> '{request,sourceGeneration}') = 'number'
+        AND external_management #>> '{request,sourceGeneration}' ~ '^[1-9][0-9]{0,15}$'
+        AND external_management #> '{request,sourceGeneration}' <= '9007199254740991'::jsonb
+        AND (NOT ((external_management->'request') ? 'retryNonce') OR (
+          jsonb_typeof(external_management #> '{request,retryNonce}') = 'string'
+          AND char_length(external_management #>> '{request,retryNonce}') BETWEEN 1 AND 128
+        ))
+        AND jsonb_typeof(external_management #> '{request,key}') = 'string'
+        AND char_length(external_management #>> '{request,key}') BETWEEN 1 AND 128
+        AND jsonb_typeof(external_management #> '{request,fingerprint}') = 'string'
+        AND external_management #>> '{request,fingerprint}' ~ '^[a-f0-9]{64}$'
+        AND (NOT ((external_management->'request') ? 'revisionId') OR (
+          jsonb_typeof(external_management #> '{request,revisionId}') = 'string'
+          AND external_management #>> '{request,revisionId}' ~ '^rev_[a-f0-9-]{36}$'
+        ))
+      )
+    )
+  )
+`),
+    ),
+    uniqueIndex("agents_external_management_owner_unique")
+      .on(
+        sql`${table.externalManagement}->>'principalId'`,
+        sql`${table.externalManagement}->>'sourceId'`,
+      )
+      .where(sql`${table.externalManagement} IS NOT NULL`),
     unique("agents_namespace_id_name_unique").on(table.namespaceId, table.name),
     unique("agents_namespace_id_id_service_principal_id_unique").on(
       table.namespaceId,

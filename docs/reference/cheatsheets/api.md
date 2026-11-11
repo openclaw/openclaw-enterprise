@@ -78,6 +78,7 @@
 - [`getNamespace`](../api.md#get-namespacesnamespaceid): Get an exact Installation-owned Namespace.
 - [`getNamespaceAgentCapabilities`](../api.md#get-namespacesnamespaceidagentcapabilities): Report the Installation capabilities that Agent creation in this Namespace needs, for a caller who may create Agents there.
 - [`getNamespaceCallerPermissions`](../api.md#get-namespacesnamespaceidpermissions): Report advisory primary IAM permissions on a readable Namespace, not authorization for a later operation.
+- [`getNamespaceIdentity`](../api.md#get-namespacesnamespaceididentity): Identify the Installation owning one authorized Namespace without Installation-wide access.
 - [`getNamespaceSecretPermissions`](../api.md#get-namespacesnamespaceidpermissionssecrets): Report the readable Secrets that the caller may not bind to a new Agent, not authorization for a later operation.
 - [`createNamespace`](../api.md#post-namespaces): Create an Installation-owned Namespace.
 - [`deleteNamespace`](../api.md#delete-namespacesnamespaceid): Begin or retry deletion of an empty Installation-owned Namespace.
@@ -94,6 +95,7 @@
 - [`getAgentCallerPermissions`](../api.md#get-namespacesnamespaceidagentsagentidpermissions): Report advisory primary IAM permissions on a readable Agent, not authorization for a later operation.
 - [`getAgentCredentialWithdrawal`](../api.md#get-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdrawal): Get the withdrawal state of a credential source for an Agent.
 - [`getAgentHarnessStatus`](../api.md#get-namespacesnamespaceidagentsagentidharnessstatus): Read the Sandbox Driver's record of a running Agent's dedicated Harness Sandbox.
+- [`getAgentManagement`](../api.md#get-namespacesnamespaceidagentsagentidmanagement): Inspect external ownership and the exact Agent adoption snapshot.
 - [`getAgentProvisioning`](../api.md#get-namespacesnamespaceidagentsprovisionworkid): Get first-time provisioning status for one exact work item.
 - [`getAgentRuntimeImages`](../api.md#get-namespacesnamespaceidagentsagentidruntimeimages): Read observed images and source commits for an Agent's active runtime.
 - [`getAgentSandboxPolicy`](../api.md#get-namespacesnamespaceidagentsagentidsandboxpolicyfacet): Read one Agent sandbox policy and delegation ceiling.
@@ -104,9 +106,11 @@
 - [`resolveAgentNativeAdminReturn`](../api.md#get-nativeadminreturnagentkey): Resolve an authorized Agent from a copied native chat link.
 - [`createAgent`](../api.md#post-namespacesnamespaceidagents): Create a Namespace-owned Agent.
 - [`provisionAgent`](../api.md#post-namespacesnamespaceidagentsprovision): Create a new Agent and queue first-time provisioning.
+- [`adoptAgentManagement`](../api.md#put-namespacesnamespaceidagentsagentidmanagement): Acquire external ownership of an exact reviewed Agent without deploying.
 - [`TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing`](../api.md#patch-namespacesnamespaceidagentsagentidsandboxpolicyfacetediting): Temporarily enable or disable future policy edits for one Agent.
 - [`updateAgent`](../api.md#patch-namespacesnamespaceidagentsagentid): Replace an exact Namespace-owned Agent's editable draft.
 - [`updateAgentSandboxPolicy`](../api.md#put-namespacesnamespaceidagentsagentidsandboxpolicyfacet): Replace one Agent network policy additions.
+- [`applyAgentManagement`](../api.md#post-namespacesnamespaceidagentsagentidmanagementapply): Apply an externally owned Agent configuration once through its normal deployment lifecycle.
 - [`applyAgentSandboxPolicy`](../api.md#post-namespacesnamespaceidagentsagentidsandboxpolicyfacetapply): Apply the saved policy to the running Agent revision.
 - [`confirmAgentNativeAdmin`](../api.md#post-namespacesnamespaceidagentsagentidnativeadminconfirm): Confirm a native Agent browser challenge.
 - [`deployAgent`](../api.md#post-namespacesnamespaceidagentsagentiddeploy): Save an Agent revision from the Agent's saved settings.
@@ -132,6 +136,7 @@
 - [`cancelAgentDeviceAuthorization`](../api.md#delete-namespacesnamespaceidagentsdeviceauthorizationssecretid): Experimental: Discard a local device login without upstream revocation.
 - [`cancelSavedAgentDeviceAuthorization`](../api.md#delete-namespacesnamespaceidagentsagentiddeviceauthorizationssecretid): Experimental: Discard a local device login without upstream revocation.
 - [`deleteAgent`](../api.md#delete-namespacesnamespaceidagentsagentid): Begin or retry deletion of the requested Agent and its Agent revisions.
+- [`releaseAgentManagement`](../api.md#delete-namespacesnamespaceidagentsagentidmanagement): Release exact external ownership and retain the Agent and its version tombstone.
 
 ### Agent deployments
 

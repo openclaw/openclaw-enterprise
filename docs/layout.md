@@ -8,7 +8,7 @@ and [Contributing](../CONTRIBUTING.md) for setup and contribution workflow.
 ## Workspace boundaries
 
 The root [pnpm workspace](../pnpm-workspace.yaml) explicitly selects
-`apps/controller` and five packages: `utils`,
+`apps/controller`, `apps/operator` and five packages: `utils`,
 `contracts`, `occ`, `iam`, and `audit`. [TypeScript project references](../tsconfig.json) select the same
 projects. Adding a directory does not enroll it in the workspace: intentional
 workspace changes must also update these declarations and the
@@ -37,6 +37,12 @@ formatting helpers.
 Within `internal/occdev/`, `openshell_assets.go` owns local OpenShell chart and
 manifest selection, verified downloads, and source extraction. `openshell.go`
 owns their deployment, workspace resource rendering, and image import.
+
+The optional `apps/operator` workspace owns Kubernetes custom-resource watches,
+leader election and OCC HTTP reconciliation. It imports public contracts, not
+OCC repositories or runtime Driver internals. Its opt-in Helm chart and generated
+CRDs live in `deploy/helm/openclaw-enterprise-operator/`; `apps/operator/src/crds.ts`
+is the schema source. See the [Operator flow](flows/kubernetes-agent-operator.md).
 
 ## Source ownership
 

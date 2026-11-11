@@ -110,6 +110,12 @@ and metrics integrations have their own [operational contracts](guides/observabi
 
 ## Control Plane
 
+The optional [Kubernetes Agent Operator](reference/kubernetes-agent-operator.md)
+adds reviewed adoption and updates of existing dedicated Agents through the
+same authorized API. Git/Kubernetes own declarations; OCC retains resource,
+work and runtime ownership. First-time CR provisioning and Secret import are
+not implemented in this alpha.
+
 The API serves the console and authorized resource operations. An independent
 worker claims operations from the queue and calls the selected Drivers. PostgreSQL stores
 platform state, IAM policy, controller work, and audit evidence.
@@ -134,13 +140,14 @@ starting the API and worker. Only the initializer mounts bootstrap credential
 output. See [startup](flows/platform-startup.md) and
 [bootstrap recovery](guides/deploy/service-keys.md#recover-an-incomplete-bootstrap).
 
-| Component            | Responsibility                                                |
-| -------------------- | ------------------------------------------------------------- |
-| `apps/controller`    | API, console, admission, composition, and worker entrypoints. |
-| `packages/contracts` | Resource models, Driver interfaces, and API schemas.          |
-| `packages/occ`       | Resource ownership, lifecycle, persistence, and work queue.   |
-| `packages/iam`       | Identity lookup and authorization.                            |
-| `packages/audit`     | Audit events and sensitive-value sanitization.                |
+| Component            | Responsibility                                                                                |
+| -------------------- | --------------------------------------------------------------------------------------------- |
+| `apps/controller`    | API, console, admission, composition, and worker entrypoints.                                 |
+| `apps/operator`      | Optional namespace-scoped alpha CR reconciler; uses OCC HTTP operations, not runtime Drivers. |
+| `packages/contracts` | Resource models, Driver interfaces, and API schemas.                                          |
+| `packages/occ`       | Resource ownership, lifecycle, persistence, and work queue.                                   |
+| `packages/iam`       | Identity lookup and authorization.                                                            |
+| `packages/audit`     | Audit events and sensitive-value sanitization.                                                |
 
 [Repository layout](layout.md) owns directory placement and package boundaries.
 

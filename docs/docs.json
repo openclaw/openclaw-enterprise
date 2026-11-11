@@ -812,6 +812,15 @@
                     "label": "OIDC Operations"
                   }
                 ]
+              },
+              {
+                "group": "GitOps",
+                "pages": [
+                  {
+                    "page": "guides/kubernetes-agent-gitops",
+                    "label": "Argo CD Agents"
+                  }
+                ]
               }
             ],
             "hidden": [
@@ -890,6 +899,15 @@
                   {
                     "page": "guides/http-api-agent",
                     "label": "Create an Agent"
+                  }
+                ]
+              },
+              {
+                "group": "Declarative Management",
+                "pages": [
+                  {
+                    "page": "reference/kubernetes-agent-operator",
+                    "label": "Kubernetes Operator"
                   }
                 ]
               }
@@ -1307,7 +1325,9 @@
               "flows/credential-source-egress",
               "reference/sandbox-policies",
               "guides/topics/agent-sandbox-policy",
-              "flows/agent-sandbox-policy"
+              "flows/agent-sandbox-policy",
+              "flows/kubernetes-agent-operator",
+              "testing/kubernetes-agent-operator"
             ]
           }
         ]

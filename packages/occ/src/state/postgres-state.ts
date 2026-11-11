@@ -454,6 +454,11 @@ function agentMetadataFromRow(row: PostgresRow): Readonly<AgentMetadata> {
     namespaceId: text(row, "namespace_id"),
     name: text(row, "name"),
     configurationId: text(row, "configuration_id"),
+    ...(row.external_management == null
+      ? {}
+      : {
+          externalManagement: row.external_management as NonNullable<Agent["externalManagement"]>,
+        }),
     backendId: row.backend_id === null ? null : text(row, "backend_id"),
     executionMode: text(row, "execution_mode") as Agent["executionMode"],
     gatewayManagedMode: boolean(row, "gateway_managed_mode"),
@@ -3378,7 +3383,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           await client.query(
             `SELECT a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
                     a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
-                    a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode
+                    a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode, a.external_management
              FROM occ.agents AS a
              JOIN occ.namespaces AS n ON n.id = a.namespace_id AND n.deleted_at IS NULL
              WHERE a.namespace_id = $1 AND a.id = $2${lock ? " FOR UPDATE OF a" : ""}`,
@@ -3458,7 +3463,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           await client.query(
             `SELECT a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
                       a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
-                      a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode
+                      a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode, a.external_management
                FROM occ.agents AS a
                JOIN occ.namespaces AS n ON n.id = a.namespace_id AND n.deleted_at IS NULL
                WHERE a.namespace_id = $1 ORDER BY a.created_at, a.id`,
@@ -3502,6 +3507,25 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
     };
     const agents: AgentRepository = {
+      setExternalManagement: async (namespaceId, agentId, management) => {
+        try {
+          await client.query(
+            "UPDATE occ.agents SET external_management = $3 WHERE namespace_id = $1 AND id = $2",
+            [namespaceId, agentId, management === undefined ? null : JSON.stringify(management)],
+          );
+        } catch (error) {
+          if (
+            error instanceof DatabaseError &&
+            error.code === "23505" &&
+            error.constraint === "agents_external_management_owner_unique"
+          ) {
+            throw new ResourceStateConflictError("External management identity is already bound.");
+          }
+          throw error;
+        }
+        const row = await findAgentRow(namespaceId, agentId);
+        return row === undefined ? undefined : agentFromRow(row);
+      },
       setSandboxPolicyEditing: async (namespaceId, agentId, enabled) => {
         await client.query(
           "UPDATE occ.agents SET sandbox_policy_editing = $3 WHERE namespace_id = $1 AND id = $2",
@@ -3690,7 +3714,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                  AND n.id = a.namespace_id AND n.deleted_at IS NULL
                  RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
                           a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
-                          a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode`,
+                          a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode, a.external_management`,
               [
                 namespaceId,
                 agentId,
@@ -3743,7 +3767,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                   AND n.id = a.namespace_id AND n.deleted_at IS NULL
                   RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
                           a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
-                          a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode`,
+                          a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode, a.external_management`,
               [namespaceId, agentId, expectedRevisionId ?? null, candidateRevisionId],
             )
           ).rows,
@@ -3760,7 +3784,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                  AND n.id = a.namespace_id AND n.deleted_at IS NULL
                 RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
                          a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
-                         a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode`,
+                         a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode, a.external_management`,
               [namespaceId, agentId, expectedRevisionId],
             )
           ).rows,
@@ -3779,7 +3803,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                  AND n.id = a.namespace_id AND n.deleted_at IS NULL
                 RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
                          a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
-                         a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode`,
+                         a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode, a.external_management`,
               [namespaceId, agentId, expectedStates, next],
             )
           ).rows,
@@ -3801,7 +3825,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                  AND n.id = a.namespace_id AND n.deleted_at IS NULL
                RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
                          a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
-                         a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode`,
+                         a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode, a.external_management`,
               [namespaceId, agentId, expectedStatuses, next],
             )
           ).rows,

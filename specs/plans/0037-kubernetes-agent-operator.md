@@ -5,9 +5,9 @@ rfc: ../rfcs/0037-kubernetes-agent-operator.md
 # Implementation plan: Deploy Agents through Argo CD
 
 - **ID:** RFC-0037
-- **Delivery status:** Planned
+- **Delivery status:** In progress
 - **Authority:** [Kubernetes Agent Operator proposal](../rfcs/0037-kubernetes-agent-operator.md)
-- **Source baseline:** `61b0fb0`
+- **Source baseline:** `72884ff`
 
 ## Outcome and scope
 
@@ -15,8 +15,9 @@ After administrator bootstrap, a user commits supported custom resources and
 Argo CD creates, updates, observes and prunes the corresponding Enterprise
 resources. No local sync runner is part of this path. Deliver the RFC's
 [acceptance criteria](../rfcs/0037-kubernetes-agent-operator.md#acceptance-criteria)
-through the regular Agent workflow. This document plans work; no Operator or
-CRD has been implemented, installed, or tested.
+through the regular Agent workflow. The alpha implementation covers existing-resource references, reviewed Agent
+adoption, versioned apply and Retain release. Creation, Secret import/rotation
+and Delete cleanup remain unimplemented.
 
 Human OAuth consent, Installation-selected Drivers, credential creation outside
 approved imports, and general IAM provisioning remain separate prerequisites.
@@ -99,7 +100,9 @@ the prior desired state and reconciler for a reviewed ownership release rollback
 
 ## Required verification
 
-All rows are **not run**. Document checks on this proposal are not product proof.
+The table lists the full target proof, not completed acceptance. API, PostgreSQL
+and scoped Kubernetes SDK cases have passed locally; full Argo/runtime proof
+remains pending. Document checks are not product proof.
 Use [enterprise-testing](../../.agents/skills/enterprise-testing/SKILL.md) and
 [test-audit](../../.agents/skills/test-audit/SKILL.md) when implementing tests.
 Register TypeScript integration tests in the CI lane that actually runs them.
@@ -130,9 +133,18 @@ Keep credentials private and remove only the test-owned resources.
 
 ## Delivery record
 
-Design draft prepared. Public submission, implementation and the selected live
-Agent adoption are now authorized. Record actual publication, runtime changes
-and verification below as they occur; authorization is not delivery evidence.
+Public draft [PR #5500](https://github.com/openclaw/openclaw-enterprise/pull/5500)
+submitted by `uggy-ug` before implementation. The first alpha adds the four CRDs,
+namespace-scoped Operator/chart, exact-ID adoption, exclusive management,
+versioned apply receipts, emergency-stop suspension and Retain release. See the
+[current contract](../../docs/reference/kubernetes-agent-operator.md).
+
+Local proof: three production API/IAM cases, one PostgreSQL API/persistence case
+and one real Kubernetes SDK/Lease/TLS/identity case passed without skips. A
+populated backup upgrade preserved Agent/revision/Namespace counts; fresh and
+logical-restore catalog differences were measured. Live adoption and Git polling
+are not yet verified. Required image checks, independent review and maintainer
+feedback remain merge requirements.
 
 The RFC exceeds the 1,500-word review threshold and stays below the 2,500-word
 limit. It remains one document because ownership, credential handling and

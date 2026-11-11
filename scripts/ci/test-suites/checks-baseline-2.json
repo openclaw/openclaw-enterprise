@@ -133,7 +133,8 @@
     "tests/integration/signin-network-probe.test.ts",
     "tests/integration/port-forward-cleanup.test.ts",
     "tests/integration/staged-signin-proof.test.ts",
-    "tests/integration/shared-session-cookie.test.ts"
+    "tests/integration/shared-session-cookie.test.ts",
+    "tests/integration/external-agent-management.test.ts"
   ],
   "serialFiles": {
     "tests/conformance/postgres-auth-binding.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read",
@@ -722,6 +723,9 @@
     },
     {
       "path": "tests/integration/shared-session-cookie.test.ts"
+    },
+    {
+      "path": "tests/integration/external-agent-management.test.ts"
     }
   ]
 }

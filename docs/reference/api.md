@@ -85,8 +85,8 @@ the paths.
 | [Backends](#backends) | 1 operation |
 | [Connections](#connections) | 15 operations |
 | [Installation](#installation) | 5 operations |
-| [Namespaces](#namespaces) | 7 operations |
-| [Agents](#agents) | 52 operations |
+| [Namespaces](#namespaces) | 8 operations |
+| [Agents](#agents) | 56 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
@@ -3264,6 +3264,7 @@ Example response
 | [`DELETE /namespaces/{namespaceId}`](#delete-namespacesnamespaceid) | Begin or retry deletion of an empty Installation-owned Namespace |
 | [`GET /namespaces/{namespaceId}`](#get-namespacesnamespaceid) | Get an exact Installation-owned Namespace |
 | [`GET /namespaces/{namespaceId}/agent-capabilities`](#get-namespacesnamespaceidagentcapabilities) | Report the Installation capabilities that Agent creation in this Namespace needs, for a caller who may create Agents there |
+| [`GET /namespaces/{namespaceId}/identity`](#get-namespacesnamespaceididentity) | Identify the Installation owning one authorized Namespace without Installation-wide access |
 | [`GET /namespaces/{namespaceId}/permissions`](#get-namespacesnamespaceidpermissions) | Report advisory primary IAM permissions on a readable Namespace, not authorization for a later operation |
 | [`GET /namespaces/{namespaceId}/permissions/secrets`](#get-namespacesnamespaceidpermissionssecrets) | Report the readable Secrets that the caller may not bind to a new Agent, not authorization for a later operation |
 
@@ -3663,6 +3664,61 @@ Example response
 }
 ```
 
+#### `GET /namespaces/{namespaceId}/identity`
+
+<span id="get-namespacesnamespaceididentity"></span>
+
+Identify the Installation owning one authorized Namespace without Installation-wide access
+
+**Operation ID:** `getNamespaceIdentity`
+
+**Permissions:** Requires read permission on the requested Namespace.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `read` | `namespace` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.installationId` | `string` | Yes | pattern: `^ins_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "installationId": "ins_123e4567-e89b-42d3-a456-426614174000",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `GET /namespaces/{namespaceId}/permissions`
 
 <span id="get-namespacesnamespaceidpermissions"></span>
@@ -3816,6 +3872,10 @@ Example response
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}/poll`](#post-namespacesnamespaceidagentsagentiddeviceauthorizationssecretidpoll) | Experimental: Complete device login without returning credential material |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/driver-configurations`](#get-namespacesnamespaceidagentsagentiddriverconfigurations) | Discover authorized Agent Driver configuration contributions |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/harness-status`](#get-namespacesnamespaceidagentsagentidharnessstatus) | Read the Sandbox Driver's record of a running Agent's dedicated Harness Sandbox |
+| [`DELETE /namespaces/{namespaceId}/agents/{agentId}/management`](#delete-namespacesnamespaceidagentsagentidmanagement) | Release exact external ownership and retain the Agent and its version tombstone |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/management`](#get-namespacesnamespaceidagentsagentidmanagement) | Inspect external ownership and the exact Agent adoption snapshot |
+| [`PUT /namespaces/{namespaceId}/agents/{agentId}/management`](#put-namespacesnamespaceidagentsagentidmanagement) | Acquire external ownership of an exact reviewed Agent without deploying |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/management/apply`](#post-namespacesnamespaceidagentsagentidmanagementapply) | Apply an externally owned Agent configuration once through its normal deployment lifecycle |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/native-admin`](#get-namespacesnamespaceidagentsagentidnativeadmin) | Resolve native admin UI launch availability for one Agent |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/native-admin/confirm`](#post-namespacesnamespaceidagentsagentidnativeadminconfirm) | Confirm a native Agent browser challenge |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/native-admin/launch`](#post-namespacesnamespaceidagentsagentidnativeadminlaunch) | Create a browser-bound native Agent launch |
@@ -6435,6 +6495,374 @@ Example response
 {
   "data": {
     "status": "unobserved"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `DELETE /namespaces/{namespaceId}/agents/{agentId}/management`
+
+<span id="delete-namespacesnamespaceidagentsagentidmanagement"></span>
+
+Release exact external ownership and retain the Agent and its version tombstone
+
+**Operation ID:** `releaseAgentManagement`
+
+**Permissions:** Requires administer permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 9007199254740991 |
+| `sourceId` | `string` | Yes | pattern: `^[A-Za-z0-9][A-Za-z0-9._:/~-]{0,511}$` |
+
+Example request
+```json
+{
+  "expectedVersion": 1,
+  "sourceId": "example-controller/resource-uid"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.adoption` | `object` | Yes | — |
+| `data.adoption.activeRevisionId` | `string` | No | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.adoption.configurationGeneration` | `integer` | Yes | minimum: 1; maximum: 9007199254740991 |
+| `data.adoption.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.adoption.fingerprint` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.management` | `null or object` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "adoption": {
+      "activeRevisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+      "configurationGeneration": 1,
+      "configurationId": "cfg_123e4567-e89b-42d3-a456-426614174000",
+      "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "management": {
+      "principalId": "example-automation",
+      "released": true,
+      "sourceId": "example-controller/resource-uid",
+      "suspended": false,
+      "version": 2
+    }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/management`
+
+<span id="get-namespacesnamespaceidagentsagentidmanagement"></span>
+
+Inspect external ownership and the exact Agent adoption snapshot
+
+**Operation ID:** `getAgentManagement`
+
+**Permissions:** Requires read permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `read` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.adoption` | `object` | Yes | — |
+| `data.adoption.activeRevisionId` | `string` | No | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.adoption.configurationGeneration` | `integer` | Yes | minimum: 1; maximum: 9007199254740991 |
+| `data.adoption.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.adoption.fingerprint` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.management` | `null or object` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "adoption": {
+      "activeRevisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+      "configurationGeneration": 1,
+      "configurationId": "cfg_123e4567-e89b-42d3-a456-426614174000",
+      "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "management": null
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `PUT /namespaces/{namespaceId}/agents/{agentId}/management`
+
+<span id="put-namespacesnamespaceidagentsagentidmanagement"></span>
+
+Acquire external ownership of an exact reviewed Agent without deploying
+
+**Operation ID:** `adoptAgentManagement`
+
+**Permissions:** Requires administer permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `expectedActiveRevisionId` | `string` | No | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `expectedConfigurationGeneration` | `integer` | Yes | minimum: 1; maximum: 9007199254740991 |
+| `expectedConfigurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `expectedFingerprint` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `expectedManagementVersion` | `integer` | Yes | minimum: 0; maximum: 9007199254740991 |
+| `sourceId` | `string` | Yes | pattern: `^[A-Za-z0-9][A-Za-z0-9._:/~-]{0,511}$` |
+
+Example request
+```json
+{
+  "expectedActiveRevisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+  "expectedConfigurationGeneration": 1,
+  "expectedConfigurationId": "cfg_123e4567-e89b-42d3-a456-426614174000",
+  "expectedFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "expectedManagementVersion": 0,
+  "sourceId": "example-controller/resource-uid"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.adoption` | `object` | Yes | — |
+| `data.adoption.activeRevisionId` | `string` | No | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.adoption.configurationGeneration` | `integer` | Yes | minimum: 1; maximum: 9007199254740991 |
+| `data.adoption.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.adoption.fingerprint` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.management` | `null or object` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "adoption": {
+      "activeRevisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+      "configurationGeneration": 1,
+      "configurationId": "cfg_123e4567-e89b-42d3-a456-426614174000",
+      "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "management": {
+      "principalId": "example-automation",
+      "released": false,
+      "sourceId": "example-controller/resource-uid",
+      "suspended": false,
+      "version": 1
+    }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /namespaces/{namespaceId}/agents/{agentId}/management/apply`
+
+<span id="post-namespacesnamespaceidagentsagentidmanagementapply"></span>
+
+Apply an externally owned Agent configuration once through its normal deployment lifecycle
+
+**Operation ID:** `applyAgentManagement`
+
+**Permissions:** Requires update permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `update` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `configuration` | `object` | Yes | — |
+| `configuration.secretBindings` | `object<string, object>` | No | Optional Secret binding map. Keys are destination environment variable names; at most 64 bindings are accepted. Each value must contain `source.kind`, `source.namespaceId`, and `source.id`, and may contain `delivery.type: "env"`. Admission rejects reserved or process-control destinations such as `OPENCLAW_*`, `CODEX_*`, `OPENAI_*`, `ANTHROPIC_*`, `OCC_*`, `KUBERNETES_*`, `PATH`, `HOME`, and proxy variables. Model authentication belongs to Agent.harnessAuth. |
+| `configuration.values` | `object<string, SafeJsonValue>` | Yes | A native OpenClaw configuration document. |
+| `desiredRuntimeState` | `"running" or "stopped"` | Yes | — |
+| `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 9007199254740991 |
+| `forceDeployment` | `boolean` | No | — |
+| `harnessAuth` | `object or object or object or object` | No | — |
+| `nativeAdmin` | `boolean` | No | — |
+| `requestKey` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9._~-]+$` |
+| `retryNonce` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9._~-]+$` |
+| `sourceGeneration` | `integer` | Yes | minimum: 1; maximum: 9007199254740991 |
+| `sourceId` | `string` | Yes | pattern: `^[A-Za-z0-9][A-Za-z0-9._:/~-]{0,511}$` |
+
+Example request
+```json
+{
+  "configuration": {
+    "values": {}
+  },
+  "desiredRuntimeState": "stopped",
+  "expectedVersion": 1,
+  "requestKey": "desired-generation-2",
+  "sourceGeneration": 2,
+  "sourceId": "example-controller/resource-uid"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.adoption` | `object` | Yes | — |
+| `data.adoption.activeRevisionId` | `string` | No | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.adoption.configurationGeneration` | `integer` | Yes | minimum: 1; maximum: 9007199254740991 |
+| `data.adoption.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.adoption.fingerprint` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.management` | `null or object` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "adoption": {
+      "activeRevisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+      "configurationGeneration": 2,
+      "configurationId": "cfg_123e4567-e89b-42d3-a456-426614174000",
+      "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "management": {
+      "principalId": "example-automation",
+      "released": false,
+      "sourceId": "example-controller/resource-uid",
+      "suspended": false,
+      "version": 2
+    }
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"

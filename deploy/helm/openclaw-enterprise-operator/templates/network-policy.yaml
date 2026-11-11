@@ -1,0 +1,58 @@
+{{- if or (empty .Values.networkPolicy.kubernetesApiCidrs) (and (empty .Values.networkPolicy.enterpriseCidrs) (or (empty .Values.networkPolicy.enterpriseNamespace) (empty .Values.networkPolicy.enterprisePodLabels))) }}
+{{- fail "Set exact Kubernetes API and Enterprise destination CIDRs; broad egress is not a default" }}
+{{- end }}
+{{- range concat .Values.networkPolicy.kubernetesApiCidrs .Values.networkPolicy.enterpriseCidrs }}
+{{- if not (regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}/32$|^[0-9a-fA-F:]+/128$" .) }}
+{{- fail "Operator CIDR egress entries must select one IPv4 /32 or IPv6 /128 endpoint" }}
+{{- end }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Release.Name }}
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        {{- range .Values.networkPolicy.kubernetesApiCidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        {{- range .Values.networkPolicy.kubernetesApiPorts }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    - to:
+        {{- if .Values.networkPolicy.enterpriseNamespace }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.enterpriseNamespace | quote }}
+          podSelector:
+            matchLabels: {{ .Values.networkPolicy.enterprisePodLabels | toJson }}
+        {{- end }}
+        {{- range .Values.networkPolicy.enterpriseCidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        {{- range .Values.networkPolicy.enterprisePorts }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}

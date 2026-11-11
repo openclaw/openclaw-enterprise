@@ -11,6 +11,9 @@ importers:
       '@eslint/js':
         specifier: 10.0.1
         version: 10.0.1(eslint@10.13.0)
+      '@kubernetes/client-node':
+        specifier: 2.0.1
+        version: 2.0.1
       '@stylistic/eslint-plugin':
         specifier: 5.10.0
         version: 5.10.0(eslint@10.13.0)
@@ -131,6 +134,15 @@ importers:
       undici:
         specifier: 8.12.3
         version: 8.12.3
+
+  apps/operator:
+    dependencies:
+      '@kubernetes/client-node':
+        specifier: 2.0.1
+        version: 2.0.1
+      '@openclaw-enterprise/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
 
   packages/audit:
     dependencies:

@@ -1,0 +1,342 @@
+{
+  "apiVersion": "apiextensions.k8s.io/v1",
+  "kind": "CustomResourceDefinition",
+  "metadata": {
+    "name": "oceagents.enterprise.openclaw.ai"
+  },
+  "spec": {
+    "group": "enterprise.openclaw.ai",
+    "scope": "Namespaced",
+    "names": {
+      "kind": "OCEAgent",
+      "singular": "oceagent",
+      "plural": "oceagents"
+    },
+    "versions": [
+      {
+        "name": "v1alpha1",
+        "served": true,
+        "storage": true,
+        "subresources": {
+          "status": {}
+        },
+        "additionalPrinterColumns": [
+          {
+            "name": "Ready",
+            "type": "string",
+            "jsonPath": ".status.conditions[?(@.type==\"Ready\")].status"
+          },
+          {
+            "name": "Revision",
+            "type": "string",
+            "jsonPath": ".status.activeRevisionId"
+          },
+          {
+            "name": "Age",
+            "type": "date",
+            "jsonPath": ".metadata.creationTimestamp"
+          }
+        ],
+        "schema": {
+          "openAPIV3Schema": {
+            "type": "object",
+            "required": [
+              "spec"
+            ],
+            "properties": {
+              "apiVersion": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "metadata": {
+                "type": "object"
+              },
+              "spec": {
+                "type": "object",
+                "required": [
+                  "namespaceRef",
+                  "executionMode",
+                  "configuration",
+                  "harnessAuth"
+                ],
+                "x-kubernetes-validations": [
+                  {
+                    "rule": "has(self.adopt) == has(oldSelf.adopt)",
+                    "message": "Agent adoption mode is immutable"
+                  }
+                ],
+                "properties": {
+                  "namespaceRef": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 253,
+                    "x-kubernetes-validations": [
+                      {
+                        "rule": "self == oldSelf",
+                        "message": "Reference is immutable"
+                      }
+                    ]
+                  },
+                  "executionMode": {
+                    "type": "string",
+                    "enum": [
+                      "dedicated"
+                    ]
+                  },
+                  "desiredState": {
+                    "type": "string",
+                    "enum": [
+                      "running",
+                      "stopped"
+                    ],
+                    "default": "running"
+                  },
+                  "nativeAdmin": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "configuration": {
+                    "type": "object",
+                    "required": [
+                      "values"
+                    ],
+                    "properties": {
+                      "values": {
+                        "type": "object",
+                        "x-kubernetes-preserve-unknown-fields": true
+                      },
+                      "secretBindings": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "object",
+                          "required": [
+                            "secretRef",
+                            "delivery"
+                          ],
+                          "properties": {
+                            "secretRef": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 253
+                            },
+                            "delivery": {
+                              "type": "object",
+                              "required": [
+                                "type"
+                              ],
+                              "properties": {
+                                "type": {
+                                  "type": "string",
+                                  "enum": [
+                                    "env"
+                                  ]
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "harnessAuth": {
+                    "type": "object",
+                    "required": [
+                      "method"
+                    ],
+                    "properties": {
+                      "method": {
+                        "type": "string",
+                        "enum": [
+                          "credential_source",
+                          "api_key",
+                          "codex_pat"
+                        ]
+                      },
+                      "sourceId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "secretRef": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 253
+                      }
+                    },
+                    "x-kubernetes-validations": [
+                      {
+                        "rule": "self.method == 'credential_source' ? (has(self.sourceId) && !has(self.secretRef)) : (has(self.secretRef) && !has(self.sourceId))",
+                        "message": "Select a credential source ID or a Secret reference for the method"
+                      }
+                    ]
+                  },
+                  "adopt": {
+                    "type": "object",
+                    "required": [
+                      "agentId",
+                      "configurationId",
+                      "configurationGeneration",
+                      "fingerprint",
+                      "managementVersion"
+                    ],
+                    "properties": {
+                      "agentId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "configurationId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "configurationGeneration": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 1
+                      },
+                      "activeRevisionId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "fingerprint": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      "managementVersion": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                      }
+                    },
+                    "x-kubernetes-validations": [
+                      {
+                        "rule": "self == oldSelf",
+                        "message": "Reference is immutable"
+                      }
+                    ]
+                  },
+                  "retryNonce": {
+                    "type": "string",
+                    "maxLength": 128
+                  },
+                  "deletionPolicy": {
+                    "type": "string",
+                    "enum": [
+                      "Retain",
+                      "Delete"
+                    ],
+                    "default": "Retain"
+                  }
+                }
+              },
+              "status": {
+                "type": "object",
+                "properties": {
+                  "observedGeneration": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 0
+                  },
+                  "namespaceId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "secretId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "agentId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "configurationId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "activeRevisionId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "operationId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "managementVersion": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 1
+                  },
+                  "lastObservedTime": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "conditions": {
+                    "type": "array",
+                    "x-kubernetes-list-type": "map",
+                    "x-kubernetes-list-map-keys": [
+                      "type"
+                    ],
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "type",
+                        "status",
+                        "reason",
+                        "message",
+                        "lastTransitionTime",
+                        "observedGeneration"
+                      ],
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 253
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "True",
+                            "False",
+                            "Unknown"
+                          ]
+                        },
+                        "reason": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 253
+                        },
+                        "message": {
+                          "type": "string",
+                          "maxLength": 1024
+                        },
+                        "lastTransitionTime": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "observedGeneration": {
+                          "type": "integer",
+                          "format": "int64",
+                          "minimum": 0
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  }
+}

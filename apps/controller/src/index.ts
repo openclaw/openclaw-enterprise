@@ -2424,6 +2424,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (!namespaceId) {
       throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
     }
+    if (operation.operationId === "getNamespaceIdentity") {
+      await controller.getNamespace(context.actorId, namespaceId);
+      reply.send({ data: { installationId, namespaceId }, meta: { requestId: request.id } });
+      return;
+    }
     if (operation.operationId === "getNamespace") {
       reply.send({
         data: await controller.getNamespace(context.actorId, namespaceId),
