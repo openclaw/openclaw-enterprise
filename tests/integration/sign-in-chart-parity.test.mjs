@@ -1633,12 +1633,59 @@ test(
     assert.deepEqual(humanLoginConfiguration(environment).oidc.enrollment, {
       admission: { groupsClaim: "groups", anyOf: ["example:engineering"] },
       additionalScopes: ["groups"],
-      createAccount: { enabled: true, role: { id: "role_config_member", scope: "all" } },
+      createAccount: {
+        enabled: true,
+        role: { id: "role_config_member", scope: "all" },
+        requireVerifiedEmail: true,
+      },
       groupIds: ["group_config_members"],
     });
     assert.ok(
       !deploymentEnv(objects, "worker").some(({ name }) => name === "OCC_AUTH_OIDC_ENROLLMENT"),
     );
+    for (const requireVerifiedEmail of [true, false]) {
+      const rendered = await render(
+        oidcUpgradeValues(recoveryUserId, fixtureOidcIssuer, {
+          "enrollment.admission.groupsClaim": "groups",
+          "enrollment.admission.anyOf[0]": "members",
+          "enrollment.createAccount.enabled": "true",
+          "enrollment.createAccount.role.id": "role_config_member",
+          "enrollment.createAccount.role.scope": "all",
+          "enrollment.createAccount.requireVerifiedEmail": String(requireVerifiedEmail),
+        }),
+      );
+      const configured = humanLoginConfiguration(
+        resolveSecrets(signInSettings(deploymentEnv(rendered, "api"))),
+      );
+      assert.equal(
+        configured.oidc.enrollment.createAccount.requireVerifiedEmail,
+        requireVerifiedEmail,
+      );
+    }
+    assert.match(
+      await refusal(
+        oidcUpgradeValues(recoveryUserId, fixtureOidcIssuer, {
+          "enrollment.admission.groupsClaim": "groups",
+          "enrollment.admission.anyOf[0]": "members",
+          "enrollment.createAccount.requireVerifiedEmail": "sometimes",
+        }),
+      ),
+      /requireVerifiedEmail must be a boolean/,
+    );
+    for (const requireVerifiedEmail of [null, "true", 0, [], {}]) {
+      assert.throws(
+        () =>
+          humanLoginConfiguration({
+            ...environment,
+            OCC_AUTH_OIDC_ENROLLMENT: JSON.stringify({
+              admission: { groupsClaim: "groups", anyOf: ["members"] },
+              createAccount: { enabled: true, role: null, requireVerifiedEmail },
+            }),
+          }),
+        /requireVerifiedEmail must be a boolean/,
+      );
+    }
+
     assert.match(await refusal({ "auth.github.enabled": "false" }), /auth.github was removed/);
     assert.match(
       await refusal({ "auth.oidc.enrollment.admission.groupsClaim": "groups" }),

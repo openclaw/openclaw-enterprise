@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Implemented
 author: kevinlin-openai
 ---
 
@@ -8,6 +8,7 @@ author: kevinlin-openai
 
 - **ID:** RFC-0037
 - **Created:** 2026-11-11
+- **RFC and implementation PR:** [#5523](https://github.com/openclaw/openclaw-enterprise/pull/5523)
 - **Related:** [RFC-0032](0032-oidc-account-enrollment.md), [current enrollment reference](../../docs/reference/authentication/team-enrollment.md)
 
 ## Summary
@@ -75,6 +76,22 @@ Update Helm and installation-profile schemas, the owning reference, setup guide,
 and source-backed flow. Extend existing PostgreSQL and real OIDC workflow tests.
 Report exact results and any missing real IdP, database, runtime, or video proof
 in the implementation PR; implementation is not evidence of qualification.
+
+### Verification record
+
+The implementation passes 17 PostgreSQL enrollment checks, 11 PostgreSQL OIDC
+sign-in checks, and two Helm/profile configuration checks. The controlled real
+Keycloak 26.7.5 matrix passes 23 checks against PostgreSQL 18.6, including
+IdP-emitted false and absent verification. These results cover AC-1, AC-2 and
+AC-4. A 22-second browser recording shows first-login creation and returning SSO
+with absent verification and an explicit no-grant policy.
+
+AC-3 remains incomplete: the updated supported Agent workflow is registered in
+the existing `oidc-agent-chat` QA scenario, but local qualification lacks a
+prepared Kubernetes/model environment. The host Keycloak port is occupied by
+an unrelated service; the real-IdP matrix used an isolated container network.
+Neither that matrix nor the recording establishes Agent deployment or a model
+response. The PR tracks hosted qualification and attachment links.
 
 ## Rationale and alternatives
 

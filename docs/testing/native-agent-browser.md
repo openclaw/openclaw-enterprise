@@ -2,9 +2,9 @@
 
 Use the `gateway-routing` lane to check browser chat through OCC, Kubernetes
 routing, and the real OpenClaw runtime. The `oidc-agent-chat` QA scenario adds
-Keycloak sign-in and signed admission claims to that path. It uses manually
-created Default users with explicitly attached identities; automatic account
-creation is covered separately by the PostgreSQL enrollment integration.
+Keycloak sign-in and signed admission claims to that path. It creates Default users through first-login enrollment and verifies that
+returning login reuses the account. The PostgreSQL and Keycloak enrollment tests
+cover the broader admission and email-policy matrix.
 
 ## Run the combined OIDC journey
 
@@ -49,7 +49,7 @@ Keycloak state variable.
 ## What the test exercises
 
 The browser signs in at the real Keycloak server, returns through the OCC
-callback, verifies the original account ID, and opens an Agent with the resulting
+callback, creates the account, verifies that a returning login reuses its ID, and opens an Agent with the resulting
 shared session. A disposable IdP Group supplies the signed admission claim. The journey
 checks chat with `agent:operate`, administration denial, and a real model
 response. Related native browser cases cover administrator access, Agent
@@ -63,8 +63,7 @@ Keycloak/Gateway CA bundle, and provider egress rule. The provider secret is not
 mounted in workers or Agents; model credentials remain Agent-owned.
 
 This is real in-cluster API, provider, browser, and runtime proof. It is not a
-Helm-installed production deployment or a proof of automatic enrollment, Git,
-or OpenShell. A selected case that skips, lacks prerequisites, or cannot finish
+Helm-installed production deployment or a proof of Git or OpenShell. A selected case that skips, lacks prerequisites, or cannot finish
 a model turn is not a pass. Inspect the test result and captured browser/runtime
 evidence before reporting success.
 

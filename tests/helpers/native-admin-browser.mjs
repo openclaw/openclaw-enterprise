@@ -1464,7 +1464,10 @@ export async function runOidcAgentChatScenario(context) {
     workspaceGateway: true,
     oidc: {
       issuer,
-      enrollment: { admission: { groupsClaim: "groups", anyOf: [groupName] } },
+      enrollment: {
+        admission: { groupsClaim: "groups", anyOf: [groupName] },
+        createAccount: { enabled: true, role: null },
+      },
       clientId,
       clientSecret,
       caCert,
@@ -1490,29 +1493,6 @@ export async function runOidcAgentChatScenario(context) {
   const browser = await launchBrowser(context, ingress);
   const namespacePath = `/namespaces/${topology.agent.namespaceId}`;
   const policyPath = `${namespacePath}/iam`;
-  // The supported account API enrolls both people in the configured Default
-  // user group, which permits creation in this fresh default Namespace.
-  const enroll = async (username, subject) => {
-    const account = await topology.adminRequest("POST", "/api/auth/accounts", {
-      email: `${username}@example.test`,
-      password: randomUUID() + randomUUID(),
-    });
-    assert.equal(account.status, 201, JSON.stringify(account.error));
-    const current = await topology.adminRequest("GET", `/api/auth/accounts/${account.data.id}`);
-    assert.equal(current.status, 200);
-    const attached = await topology.adminRequest(
-      "POST",
-      `/api/auth/accounts/${account.data.id}/providers/oidc`,
-      {
-        subject,
-        expectedVersion: current.data.version,
-      },
-    );
-    assert.equal(attached.status, 200, JSON.stringify(attached.error));
-    return account.data;
-  };
-  const alice = await enroll("alice", "6f1c1e9a-3d4b-4c55-9a2e-0a11ce000001");
-  const carol = await enroll("carol", "6f1c1e9a-3d4b-4c55-9a2e-0ca201000002");
   const role = async (name, permissions) => {
     const result = await topology.adminRequest("POST", `${policyPath}/roles`, {
       name,
@@ -1531,11 +1511,6 @@ export async function runOidcAgentChatScenario(context) {
     });
     assert.equal(result.status, 201, JSON.stringify(result.error));
   };
-  const secretRole = await role("Use selected model", [
-    { action: "operate", resourceKind: "secret" },
-  ]);
-  await bind(alice, secretRole, "secret", topology.secretApi.model.ref.id);
-
   const signIn = async (username) => {
     const browserContext = await browser.newContext();
     context.after(() => browserContext.close());
@@ -1571,9 +1546,27 @@ export async function runOidcAgentChatScenario(context) {
       },
       { method, path, body },
     );
+  // Real OIDC first login creates both accounts and applies the configured
+  // Default user Group. No account creation or attachment API seeds these identities.
   const ownerPage = await signIn("alice");
   const ownerRequest = requestFor(ownerPage);
-  assert.equal((await ownerRequest("GET", "/api/auth/session")).data.user.id, alice.id);
+  const aliceSession = (await ownerRequest("GET", "/api/auth/session")).data;
+  const alice = (await topology.adminRequest("GET", `/api/auth/accounts/${aliceSession.user.id}`))
+    .data;
+  const firstOperatorPage = await signIn("carol");
+  const carolSession = (await requestFor(firstOperatorPage)("GET", "/api/auth/session")).data;
+  const carol = (await topology.adminRequest("GET", `/api/auth/accounts/${carolSession.user.id}`))
+    .data;
+  const returningOwnerPage = await signIn("alice");
+  assert.equal(
+    (await requestFor(returningOwnerPage)("GET", "/api/auth/session")).data.user.id,
+    alice.id,
+  );
+  const secretRole = await role("Use selected model", [
+    { action: "operate", resourceKind: "secret" },
+  ]);
+  await bind(alice, secretRole, "secret", topology.secretApi.model.ref.id);
+
   assert.equal((await ownerRequest("GET", "/installation")).status, 403);
   const capabilities = await ownerRequest("GET", `${namespacePath}/agent-capabilities`);
   assert.equal(capabilities.status, 200);

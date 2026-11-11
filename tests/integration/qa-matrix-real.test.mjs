@@ -70,7 +70,7 @@ test(
       await stage(
         context,
         "kubernetes/OpenClaw",
-        "OIDC sign-in, owner setup, real chat and administrative denial",
+        "OIDC enrollment, returning sign-in, owner setup, real chat and administrative denial",
         () => runOidcAgentChatScenario(context),
         "oidc-agent-chat",
       );
