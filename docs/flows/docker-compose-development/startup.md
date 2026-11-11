@@ -251,8 +251,7 @@ snapshot, unaffected by later `.env` edits.
 With `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`, Compute enters
 `internal/occdev/openshell_k3d.go:upK3d` before Compose rendering and uses the
 engine only for k3d and images. Without OpenShell, the Installation selects the
-bundled Presets and Codex Plugin Driver and copies bootstrap credentials into
-private state.
+bundled Presets and Codex Plugin Driver and copies bootstrap credentials privately.
 
 `internal/occdev/repository_k3d.go` validates selected inputs and waits for
 authenticated bootstrap and Namespace readiness. It binds the server-assigned
@@ -261,9 +260,8 @@ inputs, and upgrades Helm with the Repo Driver and worker sidecar. Discovery mus
 match approved references and profiles; it proves no model turn, native sandbox,
 or Git operation. See [required inputs](../../guides/deploy/local-repository-credentials.md#prepare-the-approved-inputs).
 
-`OCC_DEVELOPMENT_CONTROL_PLANE` defaults to `compose` with Docker Compute and to
-`kubernetes` with Kubernetes Compute; unsupported values fail
-before resource creation. The
+`OCC_DEVELOPMENT_CONTROL_PLANE` defaults to `compose` for Docker Compute, else
+`kubernetes`; unsupported values fail before resource creation. The
 [OpenShell provisioning flow](../openshell-sandbox-provisioning.md#0-create-the-development-control-plane)
 owns both OpenShell control-plane sequences.
 
@@ -280,12 +278,12 @@ after creating PostgreSQL. For OpenShell,
 `internal/occdev/gateway_k3d.go:installDevelopmentRoutingControllers` starts after
 kubeconfig setup, alongside runtime import and OpenShell installation. Both finish
 before routing resolves PostgreSQL’s address and starts OCC. Failure cancels and
-drains siblings before rollback. Cold builds and Podman install routing after runtime preparation.
+drains siblings before rollback. Cold builds and Podman install routing afterward.
 
-Both concurrently install cert-manager and Envoy, verifying checksums, established CRDs and rollout before GatewayClass acceptance or routing
+Both concurrently install cert-manager and Envoy, verifying checksums, CRDs and rollout before GatewayClass acceptance or routing
 configuration. Envoy waits for k3s-owned Gateway API CRDs.
 Without OpenShell, `OCC_DEVELOPMENT_K3S_IMAGE` selects the node
-image; its default `+v1.35` resolves the latest K3s 1.35 patch. An explicit
+image; its default `+v1.35` resolves the latest 1.35 patch. An explicit
 image skips lookup. OpenShell uses its pinned image in both control-plane modes.
 Cluster creation binds the API to loopback and preserves the default kubeconfig
 and current context.
