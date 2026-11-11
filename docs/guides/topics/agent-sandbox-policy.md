@@ -82,6 +82,35 @@ it and name the grant. After a timeout or unconfirmed
 application, refresh and inspect the recorded state before another explicit
 request; do not assume the provider rejected the change.
 
+## Manage Installation network limits
+
+An Installation administrator can open **Settings → Network policy ceiling** to
+change which network additions Agents may request. The ceiling grants no access
+by itself. Saving it does not revoke access from running Agents; future Agent
+policy admission and pending applications use the saved limits.
+
+1. Read the current rules and version. Add or edit a rule with its full executable
+   path, hostname, and ports, or remove a rule.
+2. Select **Review changes** and inspect the complete proposal. Removing rules or
+   clearing the ceiling reduces future delegation; check the warning before saving.
+3. Save and wait for the confirmed version. A later Agent policy change still
+   requires its usual permissions and explicit save, deploy, or application.
+
+If another administrator saved first, reload the current version and review your
+draft against it. Validation, permission, and network failures retain your draft.
+After an uncertain save, read the current ceiling before deciding whether another
+save is needed; do not automatically repeat the request. A permission denial needs
+an Installation administrator to restore access.
+
+**Managed by startup configuration** makes this editor read-only. The operator
+must update the startup ceiling and stop existing API replicas before starting
+them with the changed rules or mode. Running Agent access remains unchanged.
+To restore Console editing,
+turn off `sandboxNetworkPolicyCeilingOverwriteOnStartup`; the saved rules remain.
+Restarting with only a different seed does not replace them. See the
+[ceiling reference](../../reference/sandbox-policies.md#installation-ceiling)
+for the configuration contract.
+
 ## CLI
 
 Use the same Namespace and authenticated OCC context as other Agent commands:

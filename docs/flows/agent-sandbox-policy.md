@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-10-29"
-last_updated_session: "01a1891d-5b6b-7071-b482-793a9dd01044"
+updated: "2026-11-11"
+last_updated_session: "01a1cb1a-b03e-7380-9b34-1a7470a05f64"
 ---
 
 # Agent sandbox policy flow
@@ -15,16 +15,21 @@ This trace describes the implemented source; runtime proof has separate limits.
 
 ## Entry Points
 
-- Trigger: the console Policy denials tab or `occ agent policy` commands.
+- Trigger: API startup, the Console Settings ceiling editor, the Agent Policy denials tab, or `occ agent policy` commands.
 - Source: `apps/controller/src/http/sandbox-policy.ts:sandboxPolicyHandlers` and
   `packages/occ/src/index.ts:updateAgentSandboxPolicy` / `applyAgentSandboxPolicy`.
-- Assumptions: a ready Namespace, active Agent, exact grants, enabled editing for
-  mutations, and an Installation ceiling shared by API and worker.
+- Assumptions: Settings needs Installation `administer`. Agent mutations need a
+  ready Namespace, active Agent, exact grants and enabled editing.
 
 ## Flow
 
 ```mermaid
 graph TD
+  Start["Trusted API startup"] --> Init["Seed or replace<br/>persisted ceiling"]
+  Admin["Installation administrator"] --> Edit["Authorize and compare<br/>version and mode"]
+  Edit --> Limits["Save ceiling and audit<br/>in one transaction"]
+  Init --> Limits
+  Limits --> Preview
   U["User opens Agent settings"] --> Cfg["Discover authorized<br/>owner-bound schemas"]
   Cfg --> Draft["Edit local additions"]
   Draft --> Preview["Preview draft<br/>without writes"]
@@ -43,6 +48,35 @@ graph TD
 The solid arrows trace source paths, not a claim that all providers are verified.
 
 ## Execution Trace
+
+### 0. Initialize and manage the Installation ceiling
+
+`apps/controller/src/composition/installation-ceiling-startup.ts:acquireInstallationCeilingStartup`
+holds an API session lease. Matching startup settings allow replicas; conflicts
+refuse startup. Stop replicas before changing mode or startup-managed rules.
+Console seeds have no runtime authority. Operations check the lease; shutdown
+releases it. Restart after lease loss.
+
+`packages/occ/src/index.ts:initializeSandboxNetworkPolicyCeiling` takes the
+exclusive ceiling lock, seeds version 1 once, or applies startup replacement.
+Initialization commits bootstrap attribution with the record; workers never seed state.
+
+`apps/controller/src/console/network-policy-ceiling.mts:renderNetworkPolicyCeiling`
+retains drafts and requires server preview before an explicit save.
+
+`apps/controller/src/http/sandbox-policy.ts:sandboxPolicyHandlers` dispatches the
+Installation read, preview and save endpoints. Each requires exact-Installation `administer`.
+`updateInstallationSandboxNetworkPolicyCeiling` fences caller authority, authorizes
+and validates grants, locks the ceiling exclusively, rechecks authorization, mode
+and version, and commits rules with audit. Preview shares the guard and validator
+without writes.
+It invokes no Sandbox Driver or Agent reconciliation.
+
+`packages/occ/src/state/postgres-state.ts` persists the record; memory mirrors it.
+Admission and worker application take a shared ceiling lock before Namespace and
+Agent locks, so admission after a committed update reads the new rules. Missing
+or invalid state fails explicitly. See the
+[ceiling contract](../reference/sandbox-policies.md#installation-ceiling).
 
 ### 1. Admit and persist desired additions
 
@@ -64,8 +98,8 @@ availability. The registry never selects a Driver from submitted additions.
 current editing flag, expected version, and pending application, then runs shared
 schema/semantic validation, the Driver contribution (which can only narrow it), and
 current ceiling/provider admission. An empty or reversed port range is never inside
-the ceiling. It returns a configuration result without entering a mutation
-transaction. Schema and semantic refusals carry safe `error.details`; stale or
+the ceiling. It returns a configuration result from the shared-lock transaction without
+writing policy or work. Schema and semantic refusals carry safe `error.details`; stale or
 unauthorized requests retain their resource errors. Every later mutation repeats
 these checks. Ceiling refusal keeps its Installation-delegation cause; unsupported
 wildcard/range refusal names the Driver capability limit. Both retain field details.
@@ -74,7 +108,8 @@ records as escaped JSON and omits records with Unicode control characters, so
 CLI callers retain the same field and cause without terminal controls.
 
 `packages/occ/src/index.ts:updateAgentSandboxPolicy` independently authorizes
-Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
+Agent `manage_policy` and SandboxPolicy `update`, holds the shared ceiling lock,
+then locks the Namespace and Agent,
 and checks editing, expected version, pending work, complete ceiling coverage,
 and registry-resolved Driver admission. The saved additions come from the
 admitted snapshot. While the active or next revision runs under protected
@@ -182,14 +217,13 @@ metadata disables prefilling. An incomplete existing draft must be corrected
 before staging more grants. `ruleList` searches and pages explicit rules five at
 a time; row controls edit or remove local additions.
 
-`console/agents/sandbox-policy.mts:renderPolicy` places policy status and suggestions
-above the log. It shows three suggestions initially and expands the remaining
-candidates on request, independently of mutation authority. `openNetworkLimits`
-uses the policy view's ceiling in a separate read-only dialog. Defaults and
-version details stay in the main-page disclosure. The Network policy card also enables or disables Agent policy editing
-through the separately authorized editing operation. Mutation feedback appears in
-the card while the dialog is closed; a failed policy read retains its error and
-read recovery action. `renderEditor` manages rules without an editing toggle and
+`console/agents/sandbox-policy.mts:renderPolicy` shows status, suggestions, and
+read recovery above the log, independently of mutation authority.
+`openNetworkLimits` displays the persisted ceiling in a read-only dialog.
+A separately authorized operation changes Agent policy editing. Mutation feedback
+and policy-read failures remain visible while the editor is closed. See the
+[Console workflow](../guides/topics/agent-sandbox-policy.md) for its controls.
+`renderEditor` manages rules without an editing toggle and
 keeps proposed rules local until preview. Its footer compares the draft with saved
 additions, including removals and restored values, to offer review, application,
 or Done. Saving a confirmed response closes the dialog and clears the completed
@@ -257,6 +291,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-11 12:25: Trace persistent Installation ceiling initialization, saves, and admission. (01a1cb1a-b03e-7380-9b34-1a7470a05f64 - 6bf16386658e8b1f81a7f90a04ccd0697c23805c)
 
 - 2026-10-29 12:37: Link Installation inspection to its startup projection owner. (01a1891d-5b6b-7071-b482-793a9dd01044 - 32b59e204e)
 

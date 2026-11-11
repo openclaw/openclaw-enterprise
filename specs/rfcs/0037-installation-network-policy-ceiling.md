@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Partially implemented
 author: russellb
 ---
 
@@ -182,12 +182,12 @@ deployed or applied through its normal workflow.
 
 ## Delivery and verification
 
-Implementation is not started. Write a separate implementation plan after review
-submission. Cover persistence and initialization, owner API, every admission
-caller, worker rechecks, Console behavior, and current reference/guide/flow updates.
-Keep proposed behavior out of current feature references until implemented.
-Any Driver contract changes discovered during planning require a submitted RFC
-that explicitly covers them before code changes.
+The owner API, PostgreSQL persistence, startup ownership, worker rechecks, and
+Console editor are implemented in [PR #4920](https://github.com/openclaw/openclaw-enterprise/pull/4920).
+The [implementation plan](../plans/0037-installation-network-policy-ceiling.md)
+records verification and remaining delivery requirements. Current behavior is
+specified in [Sandbox policies](../../docs/reference/sandbox-policies.md#installation-ceiling).
+The decision remains Proposed; implementation does not establish acceptance.
 
 Required proof includes:
 
@@ -214,8 +214,8 @@ Required proof includes:
   an interaction video; publish reviewable attachments when a PR exists. Label
   simulated UI evidence separately from runtime proof.
 
-This RFC receives documentation checks only. No implementation, browser, or
-runtime acceptance is claimed by the proposal.
+The proposal itself does not establish runtime acceptance. The implementation
+plan distinguishes source, PostgreSQL, browser, and real runtime evidence.
 
 ## Rationale and alternatives
 

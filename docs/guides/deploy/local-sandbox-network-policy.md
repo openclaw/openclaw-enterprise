@@ -76,6 +76,10 @@ This input requires Kubernetes Compute and a Sandbox Driver. It is validated
 before resources are created and saved into the shared Installation startup
 configuration as `sandboxNetworkPolicyCeiling`. It grants no access and does not
 enable Agent editing. Defaults and ceiling files may be supplied together.
-Recreate Local Setup to change either operator input. See
+The ceiling initializes persistent state once; later Local Setup restarts preserve
+its saved value. Use **Settings → Network policy ceiling** for administrator
+changes. Recreate Local Setup to change Sandbox defaults, or use the explicit
+[startup overwrite mode](../../reference/sandbox-policies.md#installation-ceiling)
+when startup configuration must own the ceiling. See
 [per-Agent policies](../../reference/sandbox-policies.md) and the
 [console/CLI workflow](../topics/agent-sandbox-policy.md).

@@ -67,7 +67,7 @@ for authentication modes and TLS requirements.
 
 - `OCC_DATABASE_URL` — Application-role URL for the API, worker, and bootstrap.
 - `OCC_MIGRATION_DATABASE_URL` — Separate migrator-role URL for migrations and `pnpm auth:maintain`; never use it for the API or worker.
-- `OCC_DATABASE_POOL_MAX` — API pool size; client default: `10`.
+- `OCC_DATABASE_POOL_MAX` — API pool size, at least `2`; client default: `10`. One connection holds ceiling startup ownership.
 - `OCC_DATABASE_AUTH` — `password` (default) or `azure-workload-identity`.
 - `AZURE_TENANT_ID` — Workload identity tenant; required in Azure mode.
 - `AZURE_CLIENT_ID` — Workload identity client; required in Azure mode.

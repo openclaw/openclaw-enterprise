@@ -53,12 +53,53 @@ disabling it stays allowed. When the Installation selects no Sandbox Driver,
 validate, save and apply return the same 409 right after authorization. Policy GET
 then returns `capability: null` and the cause in `unavailableReason`.
 
-The trusted startup field `sandboxNetworkPolicyCeiling` bounds additions in both
-the API and worker. Each entry has `id`, an exact absolute `binary` path, a DNS
-`host`, and `ports` containing inclusive `{from,to}` ranges. Defaults grant
-access; the ceiling grants no access. An absent or empty ceiling delegates no
-additions. A changed ceiling governs future admission and pending application;
-it does not revoke already running access automatically.
+## Installation ceiling
+
+The Installation stores one versioned network policy ceiling in PostgreSQL.
+Preview, save, application admission, and deployment admission use its current
+rules. Pending worker applications recheck them before provider effects. The
+ceiling grants no access by itself; an empty ceiling permits no additions.
+Changes do not revoke running access or replace Sandbox Driver defaults.
+
+`GET` and `PUT /installation/sandbox-network-policy-ceiling` require `administer`
+on the server-selected Installation. The read returns `installationId`, `version`,
+`rules`, `managementMode`, `updatedAt`, and `updatedBy` in the standard data
+envelope. PUT takes `{ expectedVersion, rules }`. A stale version or a write in
+`startup` mode returns a conflict. Successful changes and attributable audit
+evidence commit together.
+
+`POST /installation/sandbox-network-policy-ceiling/validate` takes the same fields
+with a draft `rules` value. It requires the same authority and checks mode,
+version, and shared rule validation without saving. The data envelope contains
+`{ success: true, data: { rules } }` or
+`{ success: false, error: { details } }`. Preview success grants no authority to
+PUT, which repeats its checks.
+
+Ordinary Agent policy reads expose the rules through their existing Agent and
+SandboxPolicy permissions, without update attribution.
+
+Trusted startup configuration seeds version 1 once from
+`sandboxNetworkPolicyCeiling`. An omitted seed initializes an empty list.
+Subsequent starts preserve saved rules, including an explicitly empty list;
+a different seed produces a diagnostic, without replacing them. Missing,
+unreadable, or invalid state causes dependent operations to fail explicitly.
+Workers refuse startup until the API has initialized the ceiling. They never
+initialize it or fall back to their startup configuration.
+
+Set `sandboxNetworkPolicyCeilingOverwriteOnStartup: true` to manage rules from
+startup configuration. This mode requires an explicit ceiling; `[]` clears it.
+Startup replaces the rules before policy operations are admitted and sets
+`managementMode: startup`. Manual API and Console edits are refused. Identical
+rules and mode preserve the version. Turning the option off restores `console`
+mode and preserves the last rules. Rule or mode changes advance the version.
+Each PostgreSQL API instance reserves one pool connection for startup ownership;
+`OCC_DATABASE_POOL_MAX` must be at least `2`. API instances must use consistent
+startup settings; conflicting live settings are refused. Stop existing API
+replicas before changing the management mode or startup-managed rules. See the [operator workflow](../guides/topics/agent-sandbox-policy.md#manage-installation-network-limits).
+
+Each rule has `id`, an exact absolute `binary` path, a DNS `host`, and `ports`
+containing inclusive `{from,to}` ranges. For example, this startup seed permits
+future requests for one service:
 
 ```yaml
 sandboxNetworkPolicyCeiling:
