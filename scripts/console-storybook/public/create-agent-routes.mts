@@ -32,6 +32,8 @@ type ProvisioningJob = Pick<AgentProvisioningStatusWire, "workId" | "status" | "
 
 type CreateScenario = {
   provisioningCancelledByStop?: boolean;
+  // The job fails before it hands off a revision, so its failure stays retryable.
+  provisioningFailsBeforeDeployment?: boolean;
   provisionedDeploymentStopped?: boolean;
   provisionedDeploymentStatus?: AgentDeploymentStatusWire["status"];
   provisionedDeploymentAttempt?: Omit<
@@ -40,6 +42,9 @@ type CreateScenario = {
   >;
   provisionedDeploymentError?: AgentDeploymentStatusWire["error"];
   provisioningStatus?: AgentProvisioningStatusWire["status"];
+  // The completed phase each status read reports, in order (the last one repeats). Defaults to
+  // configuration on the first read and handoff after it, as before.
+  provisioningPhases?: readonly AgentProvisioningStatusWire["phase"][];
   malformedProvisioningReply?: "revision-id" | "error-message";
   provisioningNamesDeploymentWait?: boolean;
 };
@@ -216,9 +221,11 @@ export function createAgentRoutes(scenario: CreateScenario, dependencies: Create
         files.set(`${saved.id}/${filename}`, content);
       }
       // A Stop before the first revision cancels provisioning; the stopped Agent keeps its name.
-      const revision = scenario.provisioningCancelledByStop
-        ? null
-        : snapshot(saved, nextId("rev"), 1);
+      // A failure before handoff keeps the job retryable: no revision exists to recover.
+      const revision =
+        scenario.provisioningCancelledByStop || scenario.provisioningFailsBeforeDeployment
+          ? null
+          : snapshot(saved, nextId("rev"), 1);
       if (scenario.provisionedDeploymentStopped || scenario.provisioningCancelledByStop) {
         saved.desiredRuntimeState = "stopped";
       }
@@ -321,12 +328,22 @@ export function createAgentRoutes(scenario: CreateScenario, dependencies: Create
                   : "succeeded"
                 : "running";
         }
+        // Production records the Configuration and Agent during the configuration phase and
+        // the revision only at handoff; the fixture follows the same lifecycle so the meter
+        // walks each step instead of jumping to the deployment on an early revision.
+        const phase = scenario.provisioningPhases
+          ? (scenario.provisioningPhases[
+              Math.min(current.reads - 1, scenario.provisioningPhases.length - 1)
+            ] ?? "handoff")
+          : current.reads > 1
+            ? "handoff"
+            : "configuration";
         return response({
           provisioning: {
             requestId: current.requestId,
             workId: current.workId,
             status: current.status,
-            phase: current.reads > 1 ? "handoff" : "configuration",
+            phase,
             attemptCount: 1,
             updatedAt: createdAt,
             url: current.url,
@@ -337,28 +354,35 @@ export function createAgentRoutes(scenario: CreateScenario, dependencies: Create
                         code: "PROVISIONING_CANCELLED",
                         message: "Provisioning was cancelled because the Agent was stopped.",
                       }
-                    : scenario.provisionedDeploymentStopped
+                    : scenario.provisioningFailsBeforeDeployment
                       ? {
-                          code: "REVISION_STOPPED",
-                          message: "The Agent was stopped before its first deployment finished.",
+                          code: "PROVISIONING_DEPENDENCY_UNAVAILABLE",
+                          message: "Agent provisioning could not complete.",
                         }
-                      : (scenario.provisionedDeploymentError ?? {
-                          code:
-                            scenario.provisionedDeploymentStatus === "failed"
-                              ? "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED"
-                              : "PROVISIONING_FAILED",
-                          message:
-                            scenario.provisionedDeploymentStatus === "failed"
-                              ? deploymentFailureMessages.bootstrap
-                              : "The worker could not finish provisioning.",
-                        }),
+                      : scenario.provisionedDeploymentStopped
+                        ? {
+                            code: "REVISION_STOPPED",
+                            message: "The Agent was stopped before its first deployment finished.",
+                          }
+                        : (scenario.provisionedDeploymentError ?? {
+                            code:
+                              scenario.provisionedDeploymentStatus === "failed"
+                                ? "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED"
+                                : "PROVISIONING_FAILED",
+                            message:
+                              scenario.provisionedDeploymentStatus === "failed"
+                                ? deploymentFailureMessages.bootstrap
+                                : "The worker could not finish provisioning.",
+                          }),
                 }
               : {}),
             ...(current.status === "succeeded" || current.reads > 1
               ? {
                   configurationId: current.configurationId,
                   agentId: current.agentId,
-                  revisionId: current.revisionId,
+                  ...(phase === "handoff" || current.status === "succeeded"
+                    ? { revisionId: current.revisionId }
+                    : {}),
                 }
               : {}),
             // Corrupt only the outgoing terminal reply; stored deployment details stay valid.

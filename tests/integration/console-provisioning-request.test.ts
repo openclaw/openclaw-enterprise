@@ -18,11 +18,17 @@ test("the Console distinguishes the stored provisioning request from the HTTP re
   };
   const requestId = `req_${crypto.randomUUID()}`;
   const job = { ...legacy, requestId };
+  // The step meter consumes the reported phase; the projection keeps it when it is readable.
   assert.deepEqual(provisioningJob({ provisioning: job }, path, requestId), {
     url,
     status: "queued",
+    phase: "admitted",
   });
-  assert.deepEqual(provisioningJob(job, path, requestId, url), { url, status: "queued" });
+  assert.deepEqual(provisioningJob(job, path, requestId, url), {
+    url,
+    status: "queued",
+    phase: "admitted",
+  });
 
   for (const response of [
     { provisioning: legacy, meta: { requestId } },
