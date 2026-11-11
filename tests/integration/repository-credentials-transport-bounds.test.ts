@@ -15,7 +15,7 @@ import type {
 import type { callControl as CallControl } from "../../apps/controller/src/drivers/repo/github/access/client/operator.ts";
 import { createHash } from "node:crypto";
 import { createServer, request } from "node:https";
-import { connect } from "node:net";
+import { connect, createServer as createTcpServer } from "node:net";
 import { connect as connectTls } from "node:tls";
 import { setTimeout as delay } from "node:timers/promises";
 import { gzipSync } from "node:zlib";
@@ -439,21 +439,17 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
     await released(fixture);
   });
 
-  // Finding 3169: when the provider refuses the connect, as a stale egress allowlist
-  // (repositoryCredentials.upstreamCidrs) does, the Agent still receives a bare 503, but the
-  // operator line names the host, the address it resolved to and the socket error, so it does
-  // not read as a broker outage. The line never carries the session credential or a path.
-  bounded("a refused provider connect names the upstream host, address and error", async (t) => {
-    const fixture = await startTransport(t, (incoming, outgoing) => {
-      incoming.resume();
-      outgoing.writeHead(200, replyHeaders).end("0000");
-    });
+  // Finding 3169: when the provider refuses or drops the connect, as a stale egress allowlist
+  // (repositoryCredentials.upstreamCidrs) does, the Agent still receives no provider answer,
+  // but the operator line names the host, the addresses it resolved to and the socket error,
+  // so it does not read as a broker outage. The line never carries the credential or a path.
+  async function stopUpstream(fixture: TransportFixture) {
     const [origin] = fixture.trustedOrigins;
     assert.ok(origin);
-    const port = Number(new URL(origin).port);
-    // Stop the upstream listener: its port now refuses TCP connects.
     await new Promise<void>((resolve) => fixture.upstream.close(() => resolve()));
-    assertRefused(await readDiscovery(fixture));
+    return Number(new URL(origin).port);
+  }
+  function assertConnectFailureLogged(fixture: TransportFixture, port: number, error: string) {
     assert.deepEqual(fixture.logs, [
       {
         event: "repository-credentials.denied",
@@ -461,12 +457,41 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
         reasonCode: "unavailable",
         reason: "not_dispatched",
         operation: "git-discovery",
-        upstreamConnect: { host: "127.0.0.1", address: "127.0.0.1", port, error: "ECONNREFUSED" },
+        upstreamConnect: { host: "127.0.0.1", addresses: ["127.0.0.1"], port, error },
         sessionId: fixture.opened.session.sessionId,
       },
     ]);
     assert.ok(!JSON.stringify(fixture.logs).includes(fixture.opened.bearer));
     assert.equal(fixture.received.length, 0);
+  }
+  const answer = (incoming: IncomingMessage, outgoing: ServerResponse) => {
+    incoming.resume();
+    outgoing.writeHead(200, replyHeaders).end("0000");
+  };
+
+  bounded("a refused provider connect names the upstream host, address and error", async (t) => {
+    const fixture = await startTransport(t, answer);
+    // Stop the upstream listener: its port now refuses TCP connects.
+    const port = await stopUpstream(fixture);
+    assertRefused(await readDiscovery(fixture));
+    assertConnectFailureLogged(fixture, port, "ECONNREFUSED");
+    await released(fixture);
+  });
+
+  bounded("a provider that never answers TLS is logged as a connect timeout", async (t) => {
+    const fixture = await startTransport(t, answer, { connectMs: 300 });
+    const port = await stopUpstream(fixture);
+    // Accept TCP on the same port and never answer the TLS handshake, as a dropped connect.
+    let accepted = 0;
+    const silent = createTcpServer((socket) => {
+      socket.on("error", () => {});
+      accepted++;
+    });
+    await listen(fixture.resources, silent, port);
+    const result = await readDiscovery(fixture);
+    assert.notEqual(result.status, 200);
+    assertConnectFailureLogged(fixture, port, "connect-timeout");
+    assert.equal(accepted, 1);
     await released(fixture);
   });
 

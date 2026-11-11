@@ -23,17 +23,19 @@ export interface DispatchGate {
 }
 /**
  * The provider connection that failed before TLS was established, for operator logs only
- * (finding 3169): the upstream host, the address it resolved to when known, the port, and the
- * socket or TLS error code. It never carries a credential, URL path, ref or request body.
+ * (finding 3169): the upstream host, the addresses it resolved to when known (or the one TCP
+ * connected to), the port, and the socket or TLS error code. It never carries a credential,
+ * URL path, ref or request body.
  */
 export type UpstreamConnectFailure = Readonly<{
   host: string;
-  address?: string;
+  addresses?: readonly string[];
   port: number;
   error: string;
 }>;
 export type ExchangeOutcome =
-  | OperationReceipt
+  // A draft create settled as not sent names the failed connect for the operator log only.
+  | (OperationReceipt & Readonly<{ upstreamConnect?: UpstreamConnectFailure }>)
   | Readonly<{ kind: "completed"; status: number }>
   | Readonly<{
       kind: "not-dispatched" | "possibly-dispatched";

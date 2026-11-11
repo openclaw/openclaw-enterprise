@@ -337,7 +337,7 @@ export function createAgentHandler(
         if (recorded?.error === "operation_conflict") {
           report(outcome.status, "operation_conflict", "operation_conflict");
         } else if (recorded?.error === "not-submitted") {
-          report(outcome.status, "not-submitted", "not_dispatched");
+          report(outcome.status, "not-submitted", "not_dispatched", outcome.upstreamConnect);
         }
         response.writeHead(outcome.status, {
           "content-type": "application/json",

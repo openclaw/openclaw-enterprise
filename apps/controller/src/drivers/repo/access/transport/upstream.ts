@@ -1,6 +1,5 @@
 import { request as httpsRequest } from "node:https";
 import type { ClientRequest, IncomingMessage, ServerResponse } from "node:http";
-import { isIP } from "node:net";
 import type { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
@@ -28,6 +27,25 @@ export interface UpstreamSenderOptions {
 function connectErrorCode(error: unknown): string {
   const code = (error as { code?: unknown } | null)?.code;
   return typeof code === "string" && /^[A-Z][A-Z0-9_]{1,63}$/.test(code) ? code : "unknown";
+}
+
+const ipv4Literal =
+  /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
+// A resolved or connected address for the operator log, only if it is a plain IP literal.
+// Node supplies it; this file has no node:net capability, so it is checked here, not by isIP.
+function ipLiteral(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > 45) {
+    return undefined;
+  }
+  if (ipv4Literal.test(value)) {
+    return value;
+  }
+  // Only hex digits, colons and dots remain, so the URL parser sees an IPv6 literal or fails.
+  return value.includes(":") &&
+    /^[0-9A-Fa-f:.]+$/.test(value) &&
+    URL.canParse(`https://[${value}]/`)
+    ? value
+    : undefined;
 }
 
 /** One sender owns exactly one exchange; it never retries an upstream request. */
@@ -87,15 +105,24 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
     // the operator log names this instead of a bare not_dispatched (finding 3169).
     const hostname = origin.hostname.replace(/^\[|\]$/g, "");
     const port = Number(origin.port || 443);
-    let resolvedAddress = isIP(hostname) ? hostname : undefined;
+    // Every address the host resolved to, in order: a dual-stack host tries each before the
+    // connect fails. Once TCP connects, only that address matters.
+    let addresses: string[] = [];
+    const noteAddress = (value: unknown) => {
+      const address = ipLiteral(value);
+      if (address !== undefined && !addresses.includes(address) && addresses.length < 16) {
+        addresses.push(address);
+      }
+    };
+    noteAddress(hostname);
     let tlsEstablished = false;
     let connectFailure: UpstreamConnectFailure | undefined;
-    const failConnect = (error: string, address = resolvedAddress) => {
+    const failConnect = (error: string) => {
       // A local cancel (client gone, deadline) is not a provider connect failure.
       if (!tlsEstablished && !failed && connectFailure === undefined) {
         connectFailure = {
           host: hostname,
-          ...(address === undefined ? {} : { address }),
+          ...(addresses.length === 0 ? {} : { addresses: [...addresses] }),
           port,
           error,
         };
@@ -170,11 +197,8 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
           },
         );
         req.once("error", (cause) => {
-          const address = (cause as { address?: unknown }).address;
-          failConnect(
-            connectErrorCode(cause),
-            typeof address === "string" && isIP(address) ? address : resolvedAddress,
-          );
+          noteAddress((cause as { address?: unknown } | null)?.address);
+          failConnect(connectErrorCode(cause));
           const error = new Error("upstream-failed");
           rejectResponse(error);
           tlsFailed(error);
@@ -184,13 +208,17 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
           resolveSocket();
         });
         req.once("socket", (socket) => {
-          socket.once("lookup", (error: Error | null, address: unknown) => {
-            if (!error && typeof address === "string") {
-              resolvedAddress = address;
+          // Node emits one lookup event per resolved address.
+          socket.on("lookup", (error: Error | null, address: unknown) => {
+            if (!error) {
+              noteAddress(address);
             }
           });
           socket.once("connect", () => {
-            resolvedAddress = socket.remoteAddress ?? resolvedAddress;
+            const connected = ipLiteral(socket.remoteAddress);
+            if (connected !== undefined) {
+              addresses = [connected];
+            }
           });
           socket.once("secureConnect", () => {
             tlsEstablished = true;
@@ -353,7 +381,13 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
       if (privateRequest.settle) {
         stopUpstream();
         if (!settling) {
-          return await privateRequest.settle(dispatched ? "outcome_unknown" : "not-submitted");
+          const receipt = await privateRequest.settle(
+            dispatched ? "outcome_unknown" : "not-submitted",
+          );
+          // The receipt body is what the Agent receives; the connect failure is for the log only.
+          return !dispatched && connectFailure !== undefined
+            ? { ...receipt, upstreamConnect: connectFailure }
+            : receipt;
         }
         // A commit may already have happened. Only a same-operation receipt lookup can resolve it.
       }
