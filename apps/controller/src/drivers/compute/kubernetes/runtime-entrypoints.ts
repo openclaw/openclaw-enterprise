@@ -2325,7 +2325,7 @@ ${AUTH_PROBE_FAILURE_HELPER}
 function probeOpenClawAuthenticationFailure() {
   const fs = require("node:fs");
   const [quota, period] = cpuCgroupFile(fs, "cpu.max").split(" ");
-  const capMs = Math.min(600000, 20000 + Math.ceil(45000 / Math.min(1, quota / period || 1)));
+  const capMs = Math.min(600000, OPENCLAW_PROBE_TIMEOUT_MS + 5000 + Math.ceil(45000 / Math.min(1, quota / period || 1)));
   const before = cpuWaitSample(fs);
   const cleanup = {};
   let code = runOpenClawAuthenticationProbe(fs, capMs, cleanup), cause, provider;

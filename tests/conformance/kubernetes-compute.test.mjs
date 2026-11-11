@@ -15022,7 +15022,8 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
             files.get("/isolated-probe/cpu-window.cjs"),
             /\/isolated-probe\/cpu-window\.json/,
           );
-          // 15 s model turn, 5 s slack, and 45 CPU-seconds at the 500m limit.
+          // OpenClaw's 15 s probe timeout (its whole isolated run), 5 s slack, and
+          // 45 CPU-seconds at the 500m limit.
           assert.equal(probeCall.timeout, 110_000);
           assert.equal(probeCall.environment.NODE_EXTRA_CA_CERTS, "/run/openshell/ca.crt");
           assert.equal(probeCall.environment.SSL_CERT_FILE, "/run/openshell/ca-bundle.crt");
