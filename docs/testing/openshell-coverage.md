@@ -6,10 +6,10 @@ last_verified: "2026-11-04"
 
 # What the OpenShell Sandbox suite proves
 
-These checks share [OpenShell workflow fixtures](../../tests/helpers/openshell-sandbox-workflows.mjs)
-and run through the separate files listed in [advisory coverage](ci/qa-advisory.md#openshell-file-coverage).
-Prepare and run the suite as described in [OpenShell tests](openshell.md#openshell-sandbox).
-Unless a section says otherwise, the checks run in the default Codex scenario.
+Use [OpenShell tests](openshell.md#openshell-sandbox) to run the files in
+[advisory coverage](ci/qa-advisory.md#openshell-file-coverage). They share
+[workflow fixtures](../../tests/helpers/openshell-sandbox-workflows.mjs).
+Unless stated otherwise, checks use the default Codex scenario.
 
 ## Gateway tool policy
 
