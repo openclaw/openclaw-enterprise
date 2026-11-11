@@ -120,28 +120,28 @@ test(
       const port = await current.start();
       assert.equal(port, current.boundPort());
       assert.equal(current.server.address().address, "127.0.0.1");
-      assert.deepEqual(current.patches, [
-        [
-          "patch",
-          "service",
-          "envoy-service",
-          "--namespace",
-          "envoy-test",
-          "--type=json",
-          "--patch",
-          JSON.stringify([
-            {
-              op: "add",
-              path: "/spec/ports/-",
-              value: {
-                name: "oce-host-relay",
-                protocol: "TCP",
-                port,
-                targetPort: 10443,
-              },
-            },
-          ]),
-        ],
+      assert.equal(current.patches.length, 1);
+      const [patch] = current.patches;
+      assert.deepEqual(patch.slice(0, -1), [
+        "patch",
+        "service",
+        "envoy-service",
+        "--namespace",
+        "envoy-test",
+        "--type=json",
+        "--patch",
+      ]);
+      assert.deepEqual(JSON.parse(patch.at(-1)), [
+        {
+          op: "add",
+          path: "/spec/ports/-",
+          value: {
+            name: "oce-host-relay",
+            protocol: "TCP",
+            port,
+            targetPort: 10443,
+          },
+        },
       ]);
       routes.push({ ...current, hostname, port });
     }

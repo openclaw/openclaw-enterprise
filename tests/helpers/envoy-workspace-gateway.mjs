@@ -212,6 +212,13 @@ export async function startWorkspaceGatewayHostRelay(
   { kubectl, resources, waitFor, startPortForwardTarget, gatewayImage },
 ) {
   const usesContainerVm = process.platform === "darwin";
+  const dockerRuntimeImage = process.env.OCC_DOCKER_RUNTIME_IMAGE ?? "";
+  if (usesContainerVm) {
+    assert.ok(
+      dockerRuntimeImage,
+      "OCC_DOCKER_RUNTIME_IMAGE is required for the loopback-only Gateway routing relay.",
+    );
+  }
   const gatewayHostname = nonempty(workspaceGateway.routing.hostname, "Gateway hostname");
   const services = await resources(
     "services",
@@ -303,11 +310,6 @@ export async function startWorkspaceGatewayHostRelay(
     const containerEngine = process.env.OCC_DOCKER_BIN ?? "docker";
     const relayHost =
       basename(containerEngine) === "podman" ? "host.containers.internal" : "host.docker.internal";
-    const dockerRuntimeImage = process.env.OCC_DOCKER_RUNTIME_IMAGE;
-    assert.ok(
-      dockerRuntimeImage,
-      "OCC_DOCKER_RUNTIME_IMAGE is required for the loopback-only Gateway routing relay.",
-    );
     const relayName = `oce-openshell-routing-${hash(randomUUID())}`;
     const relayProgram = [
       'const net = require("node:net");',
