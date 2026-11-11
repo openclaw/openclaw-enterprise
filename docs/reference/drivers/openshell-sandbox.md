@@ -343,19 +343,12 @@ becomes `RUNTIME_LOGS_SANDBOX_NOT_FOUND`. See
 
 ## Troubleshooting
 
-Errors include:
-
-- `drivers.sandbox requires the bundled Kubernetes Compute Driver.`
-- `The bundled OpenShell drivers.sandbox requires a backend entry with type openshell.`
-- `OpenShell gateway option endpoint belongs to the openshell Backend or is unsupported.`
-  Move the connection settings to the Backend.
-- `The Harness requires a credential attachment that this OpenShell Backend did not issue.`
-- `The Sandbox did not apply a required credential attachment.` Check the
-  provider's status in OpenShell.
-- `OpenShell gateway Service is unavailable.`
-- `OpenShell gateway Pod is not ready.`
-- `OpenShell SandboxDriver supports only dedicated Codex or OpenClaw Harness revisions.`
-  Deployment status reports `SANDBOX_HARNESS_UNSUPPORTED`.
+- Startup requires bundled Kubernetes Compute and an OpenShell Backend. Configure
+  the Gateway endpoint on the Backend.
+- For a credential attachment failure, verify that the selected Backend issued
+  the attachment and check its provider status in OpenShell.
+- For an unavailable Gateway, check Service and Pod readiness.
+- For `SANDBOX_HARNESS_UNSUPPORTED`, select dedicated Codex or OpenClaw.
 - `OpenShell refused <method>: ... limit of 1000 durable request admissions ...`
   reports `SANDBOX_ADMISSION_LIMIT_REACHED`. Completed records expire after 24
   hours; unsuccessful ones have no reset API: inspect the Gateway database
@@ -363,14 +356,13 @@ Errors include:
 - `OpenShell dedicated Harness exposure requires one literal APP_TOKEN_SHA verifier.`
   Malformed deployment or raw app-server token.
 - `Codex plugin preparation failed before native WebSocket startup.`
-  Check that the selected plugin is available to the bound Codex account and its
-  app is connected. Correct the selection or account access, then deploy again.
+  Verify plugin availability for the bound Codex account and connect its app.
+  Correct the selection or access, then redeploy.
   See [plugin installation](openshell-sandbox/harness-providers.md#codex-plugin-installation).
-- A Sandbox that starts without serving the Codex app-server can report
-  `Provider environment is unavailable or changed during preparation`. Confirm
-  `/sandbox/.openclaw-runtime/home/.codex` is writable and no PVC mounts are
-  below `/sandbox/.openclaw-runtime`; a Landlock write grant does not
-  override Unix ownership on the image layer.
+- `Provider environment is unavailable or changed during preparation` with no
+  Codex app-server: verify Unix write access to `/sandbox/.openclaw-runtime/home/.codex`
+  and exclude PVC mounts below `/sandbox/.openclaw-runtime`. Landlock grants
+  cannot override image ownership.
 
 ### Private CAs for Gateway peers
 
@@ -387,21 +379,33 @@ Include the public `ca.crt` in the Secret named by `server.tls.certSecretName`. 
 
 ### Gateway identity and removal
 
-For `SANDBOX_GATEWAY_UNAUTHORIZED` during stop, deletion, or credential withdrawal, check `sandbox-gateway-identity`. Missing Workspace roles fail immediately: restore the role, or redeploy to recreate an externally removed Workspace. For authentication failures, check the controller token file and Gateway signing-key refresh. Workers retry transient failures within their attempt budget. Restore access before retrying.
+During stop, deletion, or credential withdrawal, check `sandbox-gateway-identity`
+for `SANDBOX_GATEWAY_UNAUTHORIZED`. Missing Workspace roles fail immediately.
+Restore the role or redeploy an externally removed Workspace. For authentication
+failures, check the controller token file and Gateway signing-key refresh.
+Workers retry transient failures within their attempt budget.
 
-OpenShell can return `NOT_FOUND` for a resource hidden from the caller. To
-confirm absence, the Driver reads the Workspace with the controller's identity
-and reads the resource again. If a delete returns `NOT_FOUND` immediately after
-a read found the target, removal is unconfirmed (`SANDBOX_DELETION_UNCONFIRMED`).
-The worker logs `worker.harness-exposure-withdrawal-unconfirmed` during the
-exposure sweep and retries.
+OpenShell can hide resources with `NOT_FOUND`. To confirm absence, the Driver
+reads the Workspace as the controller and rereads the resource. A delete that
+returns `NOT_FOUND` immediately after a successful read raises
+`SANDBOX_DELETION_UNCONFIRMED`. The exposure sweep logs
+`worker.harness-exposure-withdrawal-unconfirmed` and retries.
 
-For Namespace setup or cleanup, `PERMISSION_DENIED` or `UNAUTHENTICATED`
-raises `SandboxNamespaceRefusedError`. The Namespace lifecycle adapter classifies
-the failure as permanent. The worker records the setup refusal code as its reason. Check
-gateway identity and Workspace access before retrying. Worker diagnostics
-report the method, gRPC status, and validation category without provider text or
-request values.
+During Namespace setup or cleanup, the lifecycle adapter treats
+`SandboxNamespaceRefusedError` (`PERMISSION_DENIED` or `UNAUTHENTICATED`) as
+permanent. The worker records the setup refusal code. Restore gateway identity
+and Workspace access before retrying. Diagnostics include the method, gRPC
+status and validation category, and omit provider text and request values.
+
+### CreateSandbox admission failures
+
+For `CreateSandbox`, `worker.completed` reports `grpcStatus` and
+`validationCategory` without resource names or supplier text.
+
+- **9, `PVC_ADMISSION_LABELS`**: Check admission labels on the namespaced PersistentVolumeClaim.
+- **9, `CLASS_ADMISSION_LABELS`**: Check RuntimeClass or PriorityClass admission labels. For either refusal, use an approved resource or obtain owner approval before relabeling.
+- **13, `RESOURCE_METADATA_FORBIDDEN`**: Kubernetes denied a metadata read (HTTP 403). Verify the Gateway ServiceAccount's read permission for the claim or cluster-scoped class.
+- **`UNKNOWN`**: The status alone does not identify the cause. Inspect the request configuration and Gateway diagnostics.
 
 ## Related documentation
 

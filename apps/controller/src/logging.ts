@@ -309,6 +309,9 @@ function safeScalar(key: string, value: unknown): string | number | boolean | un
   if (key === "validationCategory") {
     return value === "POLICY_SAFETY" ||
       value === "POLICY_MIDDLEWARE_VALIDATION" ||
+      value === "PVC_ADMISSION_LABELS" ||
+      value === "CLASS_ADMISSION_LABELS" ||
+      value === "RESOURCE_METADATA_FORBIDDEN" ||
       value === "UNKNOWN"
       ? value
       : undefined;
