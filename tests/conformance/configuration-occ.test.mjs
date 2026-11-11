@@ -1686,7 +1686,7 @@ test("the Claude Code agent runtime resolves to the OpenClaw Harness on anthropi
     assert.throws(
       () => resolveConfiguredHarnessId(claudeCode(model)),
       new ConfigurationHarnessError(
-        "The Claude Code agent runtime requires the native anthropic model provider.",
+        `Configuration setting agents.defaults.models["${model}"].agentRuntime.id selects claude-cli for a model outside the anthropic provider: select an anthropic/<model> model, or set it to openclaw.`,
       ),
     );
   }

@@ -419,7 +419,7 @@ export const dedicatedOpenClawSandboxRefusal = (codexRuns) =>
 // agents.defaults.models["openai/gpt-4.1"] or models.providers.openai.models[0]; `parent` is
 // agents.defaults.models or agents.entries.<id>.models.
 export const runtimeIdUnsupported = (policy) =>
-  `Configuration setting ${policy}.agentRuntime.id must be openclaw or codex.`;
+  `Configuration setting ${policy}.agentRuntime.id must be openclaw, codex or claude-cli.`;
 // `offer` lists only values deployment then accepts: "openclaw", "openclaw or codex" where Codex
 // runs the model ("codex" alone for a dedicated Agent on an Installation that cannot run
 // dedicated OpenClaw, finding 3036; "openclaw" alone for an embedded Agent where the Installation
