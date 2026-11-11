@@ -175,7 +175,10 @@ repeat the command with `--resume`. The resume deploys each refused Agent once,
 so do not deploy it yourself. A 408 or 5xx answer stays an unknown dispatch.
 When OCC rejects the command's own service key, the command says so and lists
 the Agents it did not deploy; get a new key, point `OCC_SERVICE_KEY_FILE` at it,
-and resume.
+and resume. When `occ` cannot establish the Harness overrides that an Agent's
+active revision requested, it sends no request. The command lists that Agent
+with the `occ` error and stops in the same way. The run output also shows each
+`occ` notice about a deployment.
 
 ## Correct a Doctor failure
 

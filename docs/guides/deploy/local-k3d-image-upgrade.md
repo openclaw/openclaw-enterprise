@@ -290,13 +290,13 @@ interrupted release. The script changes the protected
 input files as well as the cluster; it saves their previous contents in that
 private evidence directory before cluster mutation.
 
-Older `dev-up` installations set the retired `agentNativeAdmin.sharedCookieDomain`,
+Older `dev-up` installations set `agentNativeAdmin.sharedCookieDomain`,
 which the chart refuses; pass a copy without it:
 
 ```bash
 CANDIDATE_ARGS=()
-if yq -e '.agentNativeAdmin | has("sharedCookieDomain")' "$VALUES" >/dev/null; then
-  yq 'del(.agentNativeAdmin.sharedCookieDomain)' "$VALUES" > /secure/occ/candidate-values.yaml
+if [[ "$(yq '.agentNativeAdmin | has("sharedCookieDomain")' "$VALUES")" == true ]]; then
+  (umask 077; yq 'del(.agentNativeAdmin.sharedCookieDomain)' "$VALUES" > /secure/occ/candidate-values.yaml)
   CANDIDATE_ARGS=(--candidate-values /secure/occ/candidate-values.yaml)
 fi
 ```

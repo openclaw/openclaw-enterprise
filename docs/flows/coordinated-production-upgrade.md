@@ -279,6 +279,8 @@ through that check, dispatch and completion.
 
 Flush intent before dispatch; unresolved intents block sends.
 The journal retains accepted revisions, definite refusals and superseded receipts.
+Definite refusals are OCC 4xx answers other than 408 and `occ` refusals to send
+when it cannot establish the retained Harness overrides.
 Resume may retry refusals; replacements must name the current failed revision.
 Unknown outcomes or stale journals require
 [recovery](../guides/deploy/production-upgrade-recovery.md).
