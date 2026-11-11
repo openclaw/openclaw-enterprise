@@ -95,7 +95,7 @@ function parseArgs(argv) {
     index += 1;
   }
 
-  if (!["audit", "check-selection", "run", "aggregate"].includes(command)) {
+  if (!["audit", "check-selection", "run", "aggregate", "prepared-signin"].includes(command)) {
     throw new Error(usage());
   }
 
@@ -1565,17 +1565,20 @@ async function runFile(root, lane, file, statePath, prepareFile, setup, preparat
   let case2Phase;
   try {
     if (issues.length === 0) {
-      agentActivity = await startAgentNamespaceCapture({
-        statePath,
-        lane: lane.name,
-        file: relativePath,
-        preparationId,
-      }).catch(() => {
-        console.error(
-          `[run:${lane.name}] Agent namespace activity unavailable for ${relativePath}`,
-        );
-        return undefined;
-      });
+      // An externally prepared release case has no diagnostic collection state.
+      agentActivity =
+        statePath &&
+        (await startAgentNamespaceCapture({
+          statePath,
+          lane: lane.name,
+          file: relativePath,
+          preparationId,
+        }).catch(() => {
+          console.error(
+            `[run:${lane.name}] Agent namespace activity unavailable for ${relativePath}`,
+          );
+          return undefined;
+        }));
       // The capture names a private directory for the file's container log records.
       Object.assign(env, agentActivity?.env);
       delete env[case2PhaseEnv];
@@ -1839,7 +1842,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup, preparat
   const status = nodeExitCode === 0 && issues.length === 0 ? "passed" : "failed";
   // A file the runner timeout stopped always gets a record, even with nothing captured.
   const timedOut = nodeResult?.error?.code === "ETIMEDOUT";
-  if (status === "failed" && (details !== undefined || timedOut)) {
+  if (statePath && status === "failed" && (details !== undefined || timedOut)) {
     await recordFailure(
       setup,
       statePath,
@@ -2873,6 +2876,15 @@ async function runCompleteLifecycle(root, manifest, manifestPath, lane, attempt,
 
 async function main() {
   const { command, positionals, options } = parseArgs(process.argv.slice(2));
+  if (command === "prepared-signin") {
+    if (positionals.length || Object.keys(options).length) {
+      throw new Error(
+        "prepared-signin accepts no file, command, preparation or manifest overrides",
+      );
+    }
+    const { runPreparedSigninCase } = await import("./prepared-signin-case.mjs");
+    return runPreparedSigninCase(repositoryRoot, runFile);
+  }
   const root = resolve(options.root ?? repositoryRoot);
   const testName = options["test-name"];
   if (testName !== undefined) {
