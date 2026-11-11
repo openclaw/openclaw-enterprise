@@ -424,7 +424,16 @@ function protectedProgress(snapshot = {}) {
 }
 
 function protectedFailure(progress, reason) {
-  return new Error(`Protected startup ${reason}: ${JSON.stringify(protectedProgress(progress))}`);
+  // Bound emitted history without truncating the snapshot used by test assertions.
+  // Four recent entries retain the terminal observation even after repeated polls.
+  const phases = progress.phases ?? [];
+  const events = progress.events ?? [];
+  const diagnostic = {
+    ...protectedProgress({ ...progress, phases: phases.slice(-4), events: events.slice(-4) }),
+    phaseCount: phases.length,
+    eventCount: events.length,
+  };
+  return new Error(`Protected startup ${reason}: ${JSON.stringify(diagnostic)}`);
 }
 
 export async function runStartupProbeScenario(t, options) {

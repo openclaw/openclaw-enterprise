@@ -250,7 +250,8 @@ test(
   async (t) => {
     // Exercise the real assertion emission boundary with hostile diagnostic fields.
     // This is a diagnostic control, not a substitute for either runtime case below.
-    const canary = "synthetic-diagnostic-canary";
+    const canary = "synthetic-diagnostic-canary".repeat(1_000);
+    const observationCount = 10_000;
     let diagnostic;
     try {
       await withStartupProbeEvidence(
@@ -258,8 +259,20 @@ test(
           protected: true,
           snapshot: {
             output: canary,
-            phases: [{ phase: canary, outcome: canary }],
+            phases: [
+              ...Array.from({ length: observationCount }, () => ({
+                phase: canary,
+                outcome: canary,
+              })),
+              { phase: "model-probe", outcome: "failed", sinceStartMs: 123 },
+            ],
             events: [
+              ...Array.from({ length: observationCount }, () => ({
+                event: canary,
+                message: canary,
+              })),
+              { event: "wire", method: canary, target: canary },
+              { event: "origin", auth: canary, harness: canary, kind: canary },
               {
                 event: "transport",
                 status: 401,
@@ -269,8 +282,6 @@ test(
                   message: canary,
                 },
               },
-              { event: "wire", method: canary, target: canary },
-              { event: "origin", auth: canary, harness: canary, kind: canary },
             ],
           },
         },
@@ -283,13 +294,31 @@ test(
     }
     if (
       !diagnostic ||
-      String(diagnostic.stack).includes(canary) ||
+      String(diagnostic.stack).includes("synthetic-diagnostic-canary") ||
+      Buffer.byteLength(diagnostic.message, "utf8") >= 4 * 1024 ||
       !diagnostic.message.includes("AUTHENTICATION_FAILED") ||
       !diagnostic.message.includes('"status":401')
     ) {
       throw new Error("Protected diagnostic control failed");
     }
-    t.diagnostic("Protected diagnostic canary suppressed; supported failure and status retained.");
+    const summary = JSON.parse(diagnostic.message.split("assertion failed: ")[1]);
+    assert.equal(summary.stage, "assertion");
+    assert.equal(summary.phaseCount, observationCount + 1);
+    assert.equal(summary.eventCount, observationCount + 3);
+    assert.ok(summary.phases.length <= 4);
+    assert.ok(summary.events.length <= 4);
+    assert.deepEqual(summary.phases.at(-1), {
+      phase: "model-probe",
+      outcome: "failed",
+      sinceStartMs: 123,
+    });
+    assert.equal(summary.events.at(-1).event, "transport");
+    assert.equal(summary.events.at(-1).status, 401);
+    assert.deepEqual(summary.events.at(-1).failure, {
+      check: "model-probe",
+      code: "AUTHENTICATION_FAILED",
+    });
+    t.diagnostic("Protected diagnostic canary suppressed; bounded terminal failure retained.");
     for (const accepted of [true, false]) {
       await t.test(accepted ? "origin key" : "uninjected placeholder", async (subtest) => {
         const run = await runStartupProbeScenario(subtest, {
