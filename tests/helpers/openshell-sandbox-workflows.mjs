@@ -8435,17 +8435,21 @@ async function assertImportedNativeMcp(context, topology, provider) {
       },
     );
   }
-  // Native OpenClaw can expose a deferred MCP tool through dispatch_action by its catalog ID.
-  // Both forms require the exact invocation's result and an authenticated provider-side receipt.
-  function callsMcpTool(call, name) {
-    const target = call.name === "dispatch_action" ? call.arguments?.id : call.name;
-    return typeof target === "string" && target.endsWith(name);
+  function callSelectedMcpTool(name) {
+    // A deferred MCP action is invoked through dispatch_action with its catalog ID.
+    return turn(
+      `Invoke the configured MCP tool ${name} with {} using the tool-call interface. ` +
+        `If it is available directly, call it. Otherwise use tool_search with query "${name}", ` +
+        `select the MCP result whose mcp.toolName is "${name}", and call dispatch_action ` +
+        "with its exact returned id and args: {}. Return the tool result.",
+      (call) => {
+        const target = call.name === "dispatch_action" ? call.arguments?.id : call.name;
+        return typeof target === "string" && target.endsWith(name);
+      },
+      (text) => text.includes(provider.marker),
+    );
   }
-  await turn(
-    "Use the configured MCP get_allowed tool. Return its result.",
-    (call) => callsMcpTool(call, "get_allowed"),
-    (text) => text.includes(provider.marker),
-  );
+  await callSelectedMcpTool("get_allowed");
   assert.ok(
     (await provider.receipts()).some(
       (entry) => entry.name === "get_allowed" && entry.authenticated,
@@ -8546,11 +8550,7 @@ async function assertImportedNativeMcp(context, topology, provider) {
   }
   await assertProviders(cutover, true);
   client = await connectGatewayOperator(context, topology, "http://127.0.0.1");
-  await turn(
-    "Use the configured MCP get_denied tool. Return its result.",
-    (call) => callsMcpTool(call, "get_denied"),
-    (text) => text.includes(provider.marker),
-  );
+  await callSelectedMcpTool("get_denied");
   assert.ok(
     (await provider.receipts()).some((entry) => entry.name === "get_denied" && entry.authenticated),
   );
