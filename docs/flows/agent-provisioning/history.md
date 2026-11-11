@@ -8,6 +8,8 @@ This record preserves the dated changes to the Agent provisioning flow. See the 
 
 ## Changelog
 
+- 2026-10-25: Name Slack's whole `${NAME}` token reading; move older entries to the history page. (finding 2512)
+- 2026-10-25: Check Configuration rules before channel credentials. (finding 2506)
 - 2026-10-29: Keep saved provisioning status readable after repository policy changes. Retry still checks current policy.
 
 - 2026-10-27 01:52: Preserve current provisioning lifecycle while integrating required human scope headers. (authoring-run/7761d6fc-94f3-45f2-96c0-171d284aa937 - d56aaf212)
