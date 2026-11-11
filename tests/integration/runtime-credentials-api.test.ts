@@ -51,7 +51,7 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.t
 import { createReadyComputeDriver, registerAndSelectDrivers } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { selfSigned } from "../helpers/certificates.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { reservePort } from "../helpers/available-port.mjs";

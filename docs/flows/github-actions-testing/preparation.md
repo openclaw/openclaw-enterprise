@@ -1,6 +1,6 @@
 # CI resource preparation
 
-Prepare selected resources. [Parent flow](../github-actions-testing.md).
+[Parent flow](../github-actions-testing.md).
 
 ## Execution trace
 
@@ -18,7 +18,7 @@ First Agent Smoke and `run-ci-lane` use `setup-ci-tools` to restore yq and k3d
 downloads outside `PATH`. On Linux, `scripts/ci/setup-tools.sh` selects the
 checked-in platform checksum. `scripts/ci/download-pinned.sh` verifies installed
 or cached bytes in private staging before atomic publication with mode 0755.
-Missing or corrupt entries use pinned downloads; cache outages do not fail setup. Hits do not rewrite the cache.
+Missing or corrupt entries use pinned downloads; cache outages do not fail setup. Hits preserve cached bytes.
 PostgreSQL, image and Kubernetes profiles share OS-, architecture- and
 installer-source-keyed caches. Direct callers can reuse verified installed bytes.
 
@@ -111,29 +111,34 @@ The retired CLI-only installed repository lane is absent from the manifest:
 `assertLane` rejects it before allocation; its preparation below is unreachable.
 
 `scripts/ci/prepare.mjs:retainRuntimeProvenance` compares platform-selected host
-and CRI config digests. `scripts/ci/runtime-provenance.mjs:readImageCodexProvenance`
+and CRI config digests. `scripts/ci/runtime-provenance.ts:readImageCodexProvenance`
 reads bounded metadata; results and diagnostics retain only their preparation's evidence.
 Missing metadata records `unavailable`; image policy is unchanged.
 Extraction journals IDs before removal. Cleanup removes containers and anonymous volumes. Journal and cleanup errors fail preparation; unresolved resources retain receipts.
 
-Before creating the bootstrap directory beside the state file,
-`scripts/ci/prepare.mjs:ensurePostgresServer` records its absolute path. It refuses
-an existing directory and retires the planned record if directory creation fails.
-It confirms directory creation, then exclusively creates a private copy of
-`migrations/init-local.sql` and confirms its creation in state. It makes the public
-SQL readable by the container user and passes it to Compose as
-`OPENCLAW_CI_POSTGRES_INIT_SQL`. The checkout is unchanged.
+`scripts/ci/prepare.mjs:ensurePostgresServer` journals exclusive bootstrap-directory
+and SQL-copy ownership. It refuses existing paths and retires failed directory
+records. Its container-readable `migrations/init-local.sql` copy is selected by
+`OPENCLAW_CI_POSTGRES_INIT_SQL`.
 
-`scripts/ci/cleanup.ts:cleanupComposePostgres` checks the exact directory path
-against the opened state file. Without directory confirmation, it preserves any
-directory at that path and retains state. Without SQL confirmation, it removes
-only an empty confirmed directory. After Compose teardown, it removes the
-confirmed SQL file and its empty directory. Unexpected contents or failed
-teardown retain cleanup state.
+Docker assigns the loopback port. Preparation rejects missing, non-loopback and
+`55432` mappings before connecting. Failed discovery retains pending `0` and
+prevents database preparation. Mixed fixture lanes start PostgreSQL before k3d.
+Model lanes start k3d first and attach PostgreSQL before port discovery: Docker
+can reassign automatic ports on attachment. Tests retain that attachment;
+reverse-order cleanup removes PostgreSQL first.
 
-If Docker exhausts its subnet pools during Compose startup, preparation preserves
-the error, adds the command to clean up the recorded project, and leaves the
-planned resource for caller cleanup. See [subnet pool recovery](../../testing/postgresql.md#subnet-pool-exhaustion).
+`scripts/ci/cleanup.ts:cleanupComposePostgres` validates the directory against state.
+Unconfirmed ownership preserves contents/state. Directory confirmation alone permits
+empty-directory removal; confirmed SQL is removed after Compose teardown. Unexpected
+contents or teardown failure retain state. Subnet exhaustion preserves the original
+error and planned resource and prints [owned cleanup](../../testing/postgresql.md#subnet-pool-exhaustion).
+
+`prepareFile` registers child identities.
+`prepareLane` atomically publishes complete journals without replacement. Cleanup opens regular files,
+verifying identity, lane and path. Tests require fresh registered children.
+Worker death remains recoverable; mismatches, symlinks and failures preserve
+journals and parent references.
 
 For hosted repository QA, `scripts/ci/qa-matrix-credentials.mjs` reads the selected
 reviewed registry file only when a repository scenario is selected. It copies

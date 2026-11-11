@@ -210,6 +210,14 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- $oidcCa := default dict $oidc -}}
 {{- if and (hasKey $oidcCa "enrollment") (not $oidcCa.enabled) -}}{{- fail "auth.oidc.enrollment requires auth.oidc.enabled: true" -}}{{- end -}}
+{{- if hasKey $oidcCa "enrollment" -}}
+{{- if not (kindIs "map" $oidcCa.enrollment) -}}{{- fail "auth.oidc.enrollment must be an object" -}}{{- end -}}
+{{- if hasKey $oidcCa.enrollment "createAccount" -}}
+{{- $create := $oidcCa.enrollment.createAccount -}}
+{{- if not (kindIs "map" $create) -}}{{- fail "auth.oidc.enrollment.createAccount must be an object" -}}{{- end -}}
+{{- if and (hasKey $create "requireVerifiedEmail") (not (kindIs "bool" $create.requireVerifiedEmail)) -}}{{- fail "auth.oidc.enrollment.createAccount.requireVerifiedEmail must be a boolean" -}}{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- range $key := list "caSecretName" "caSecretKey" -}}
 {{- if hasKey $oidcCa $key -}}{{- include "openclaw.requireString" (dict "label" (printf "auth.oidc.%s" $key) "value" (index $oidcCa $key)) -}}{{- end -}}
 {{- end -}}

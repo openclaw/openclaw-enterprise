@@ -15,6 +15,7 @@ import { openShellProviderName } from "../../apps/controller/src/backends/opensh
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import {
   assertOpenShellOwnerModelSelection,
+  preflightOpenShellOwnerBrowser,
   verifyOpenShellOwnerSession,
 } from "../helpers/openshell-owner-session.mjs";
 import { localOpenShellGatewayOptions } from "../helpers/local-openshell-gateway.mjs";
@@ -268,6 +269,7 @@ test(
       await rm(root, { recursive: true, force: true });
     });
 
+    await preflightOpenShellOwnerBrowser(root, cluster);
     const result = await startDevelopment(environment);
     assert.match(result.stdout, /Sandbox Driver: openshell/);
     assert.match(result.stdout, /OpenClaw Enterprise development stack is ready/);

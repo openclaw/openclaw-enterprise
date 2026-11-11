@@ -4,6 +4,10 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type {
+  OpenClawConfigurationDocument,
+  OpenClawConfigurationValue,
+} from "../../packages/contracts/src/index.ts";
 import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { cpuScaledImageTimeoutMs } from "../helpers/image-smoke-timeout.mjs";
@@ -21,6 +25,30 @@ const selected = image !== undefined || envoyImage !== undefined;
 const options = selected
   ? { timeout: cpuScaledImageTimeoutMs(180_000) }
   : { skip: "Set OCC_TEST_RUNTIME_IMAGE and OCC_TEST_WORKSPACE_ENVOY_IMAGE to prepared images." };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function configurationRecord(
+  value: OpenClawConfigurationValue | undefined,
+): OpenClawConfigurationDocument {
+  assert.ok(isRecord(value), "Expected a configuration object.");
+  return value;
+}
+
+function networkSubnet(output: string): string {
+  const networks: unknown = JSON.parse(output);
+  assert.ok(Array.isArray(networks));
+  const network: unknown = networks[0];
+  assert.ok(isRecord(network));
+  assert.ok(isRecord(network.IPAM));
+  assert.ok(Array.isArray(network.IPAM.Config));
+  const subnet: unknown = network.IPAM.Config[0];
+  assert.ok(isRecord(subnet));
+  assert.ok(typeof subnet.Subnet === "string");
+  return subnet.Subnet;
+}
 
 function envoyConfiguration() {
   return {
@@ -130,7 +158,7 @@ test(
     const network = `${owner}-network`;
     const native = `${owner}-gateway`;
     const envoy = `${owner}-envoy`;
-    const containers = new Set();
+    const containers = new Set<string>();
     t.after(async () => {
       for (const name of containers) {
         await runDocker(["rm", "--force", "--volumes", name]);
@@ -139,7 +167,7 @@ test(
       await rm(directory, { recursive: true, force: true });
     });
     await runDocker(["network", "create", "--label", `oce.workspace-proof=${owner}`, network]);
-    const [networkDetails] = JSON.parse((await runDocker(["network", "inspect", network])).stdout);
+    const subnet = networkSubnet((await runDocker(["network", "inspect", network])).stdout);
     await execute("openssl", [
       "req",
       "-x509",
@@ -160,7 +188,7 @@ test(
     // The host directory stays private; only these owned leaf files enter containers.
     await chmod(join(directory, "key.pem"), 0o644);
     await writeFile(join(directory, "envoy.json"), JSON.stringify(envoyConfiguration()));
-    const mounts = (files, target) =>
+    const mounts = (files: readonly string[], target: string) =>
       files.flatMap((file) => [
         "--mount",
         `type=bind,src=${join(directory, file)},dst=${target}/${file},readonly`,
@@ -214,15 +242,17 @@ test(
       },
     ];
     for (const [index, roster] of cases.entries()) {
-      const configuration = structuredClone(createAdmittedRuntimeImageConfiguration("openclaw"));
+      const configuration = {
+        ...structuredClone(createAdmittedRuntimeImageConfiguration("openclaw")),
+      };
       // Background memory indexing is separate from the file API's no-turn guarantee.
       configuration.memory = { search: { enabled: false } };
       const { explicitAgentId, ...agents } = roster;
-      configuration.agents = { ...configuration.agents, ...agents };
+      configuration.agents = { ...configurationRecord(configuration.agents), ...agents };
       configuration.gateway = {
-        ...configuration.gateway,
+        ...configurationRecord(configuration.gateway),
         bind: "lan",
-        trustedProxies: [networkDetails.IPAM.Config[0].Subnet],
+        trustedProxies: [subnet],
         allowRealIpFallback: true,
         auth: {
           mode: "trusted-proxy",
@@ -240,8 +270,16 @@ test(
           },
         },
       };
-      configuration.models.providers.openai.baseUrl = "http://127.0.0.1:18880/v1";
-      configuration.models.providers.openai.apiKey = randomUUID();
+      const models = configurationRecord(configuration.models);
+      const providers = configurationRecord(models.providers);
+      const openai = configurationRecord(providers.openai);
+      configuration.models = {
+        ...models,
+        providers: {
+          ...providers,
+          openai: { ...openai, baseUrl: "http://127.0.0.1:18880/v1", apiKey: randomUUID() },
+        },
+      };
       await writeFile(join(directory, "config.json"), JSON.stringify(configuration));
       await writeFile(join(directory, "api-key"), "proof-admin", { mode: 0o600 });
       const provider = `let modelCalls=0;require("node:http").createServer((q,r)=>{if(q.method==="POST")modelCalls++;r.end(JSON.stringify(q.url==="/counter"?{modelCalls}:{data:[]}));}).listen(18880,"127.0.0.1");\n`;
@@ -314,6 +352,7 @@ test(
           },
         );
         const content = `Owned native workspace ${index}: exact text.\n`;
+        assert.ok(child.child.stdin);
         child.child.stdin.end(
           JSON.stringify({ agents: configuration.agents, explicitAgentId, content }),
         );

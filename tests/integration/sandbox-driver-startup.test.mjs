@@ -68,7 +68,7 @@ import {
   ScopeViolationError,
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
-import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import { loadInstallationFile } from "../helpers/installation-file.ts";
 import {
   WORKSPACE_DEFAULTS,
   WORKSPACE_DEFAULTS_ID,
@@ -81,7 +81,7 @@ import {
   reservePort,
 } from "../helpers/available-port.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { createSandboxProviderProfileChecks } from "./sandbox-driver-provider-profiles-cases.ts";
 import { createSandboxCredentialContractChecks } from "./sandbox-driver-credential-contract-cases.ts";
@@ -99,6 +99,7 @@ import {
   verifyOperatorPolicyDrift,
   verifyOperatorAliasesRejected,
   prepareStockWorkspaceChart,
+  verifyProtectedGatewayAdmission,
 } from "./sandbox-driver-startup-composition-cases.ts";
 import {
   verifySandboxAdoptionRefusals,
@@ -118,6 +119,16 @@ import {
   verifyRevisionProviderRetention,
   verifyForeignSandboxAnnotations,
 } from "./sandbox-driver-revision-observation-cases.ts";
+import {
+  verifyInitialWorkspaceAdmission,
+  verifyMainWorkspaceMount,
+} from "./sandbox-driver-workspace-admission-cases.ts";
+import { verifyOperatorWorkspaceChart } from "./sandbox-driver-operator-chart-case.ts";
+import {
+  verifyProtectedStartupRefusals,
+  verifyProtectedChartListenerRefusals,
+} from "./sandbox-driver-protected-startup-guard-cases.ts";
+import { callCount, storedSandbox } from "./sandbox-driver-gateway-response-fixture.ts";
 import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
 import {
   buildEndpointInstallation,
@@ -273,20 +284,6 @@ function ownedWorkspace(name, namespaceId) {
   return { name, labels, phase: "WORKSPACE_PHASE_ACTIVE" };
 }
 
-/** The gateway's record of a created Sandbox, serving its Harness at a per-Sandbox URL. */
-function storedSandbox(request, fields = {}) {
-  const url = `http://${request.workspace}--${request.name}.openshell.test/`;
-  return {
-    name: request.name,
-    workspace: request.workspace,
-    labels: request.labels,
-    annotations: request.annotations,
-    spec: request.spec,
-    serviceUrls: { "": url },
-    ...fields,
-  };
-}
-
 /** A live Sandbox record by name, as GetSandbox reports one without its Harness service. */
 function sandboxRecord(name, workspace) {
   return storedSandbox(
@@ -302,18 +299,9 @@ function harnessService(sandbox, name, url) {
     : { sandbox, name, targetPort: 8080, authorizationMode: 2, advertisedUrl: url, url };
 }
 
-function callCount(gatewayClient, operation) {
-  return gatewayClient.calls.filter(([called]) => called === operation).length;
-}
-
 const structuralRefusal = (path, keyword, code = "INVALID_VALUE") => [
   ...makeStructuralRefusal(path, keyword, code),
 ];
-
-/** An installation whose OpenShell Backend dials `endpoint` over a declared NetworkPolicy. */
-function endpointInstallation(endpoint) {
-  return buildEndpointInstallation(endpoint);
-}
 
 function namespaceContext(name = "oce-123456789012345") {
   return {
@@ -741,116 +729,35 @@ test("OpenShell refuses dedicated OpenClaw on settings its workspace preparation
 });
 
 test("OpenShell pins an explicit main Agent workspace to the Sandbox data mount", () => {
-  const driver = openShellDriver(workspaceGatewayClient());
-  const harness = { id: "openclaw", version: "1.0.0", mode: "dedicated" };
-  const configuration = {
-    agents: {
-      defaults: { model: "openai/gpt-5", workspace: "/home/node/.openclaw/workspace" },
-      entries: {
-        main: { model: "openai/gpt-5", workspace: "/home/node/elsewhere" },
-        helper: { workspace: "/sandbox/enterprise/helper" },
-      },
-    },
-  };
-  const configured = driver.configureAgent(configuration, harness);
-  assert.deepEqual(configured.agents, {
-    defaults: { model: "openai/gpt-5", workspace: "/sandbox/enterprise" },
-    entries: {
-      main: { model: "openai/gpt-5", workspace: "/sandbox/enterprise" },
-      helper: { workspace: "/sandbox/enterprise/helper" },
+  verifyMainWorkspaceMount({
+    driver: openShellDriver(workspaceGatewayClient()),
+    readGatewayWorkspace: (configured, harness) => {
+      const compute = createKubernetesComputeDriver(
+        conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["127.0.0.1/32"] }),
+      );
+      return compute.gatewayConfiguration({
+        id: "rev_00000000-0000-4000-8000-000000000001",
+        namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+        agentId: "agt_00000000-0000-4000-8000-000000000001",
+        revision: 1,
+        configurationId: "cfg_main_workspace",
+        configurationKind: "agent",
+        configurationGeneration: 1,
+        configuration: {
+          ...configured,
+          logging: { level: "info", consoleLevel: "info", consoleStyle: "json" },
+          diagnostics: { otel: { logs: false } },
+        },
+        harness,
+      }).workspace;
     },
   });
-  assert.equal(configuration.agents.entries.main.workspace, "/home/node/elsewhere");
-  // Status reads rerun the hook on stored work, so pinning must be idempotent.
-  assert.deepEqual(driver.configureAgent(configured, harness), configured);
-  // OpenClaw resolves entry keys case-insensitively, and an entry without a path is pinned too.
-  assert.deepEqual(
-    driver.configureAgent({ agents: { entries: { Main: {} } } }, harness).agents.entries,
-    { Main: { workspace: "/sandbox/enterprise" } },
-  );
-  assert.throws(
-    () => driver.configureAgent({ agents: { entries: { main: "/home/node/elsewhere" } } }, harness),
-    /OpenShell main Agent entry/,
-  );
-
-  // The setup snapshot retains the admitted Harness mount. Compute separately
-  // projects a local logical workspace into a dedicated Codex Gateway's ConfigMap.
-  const compute = createKubernetesComputeDriver(
-    conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["127.0.0.1/32"] }),
-  );
-  assert.equal(
-    compute.gatewayConfiguration({
-      id: "rev_00000000-0000-4000-8000-000000000001",
-      namespaceId: "ns_00000000-0000-4000-8000-000000000001",
-      agentId: "agt_00000000-0000-4000-8000-000000000001",
-      revision: 1,
-      configurationId: "cfg_main_workspace",
-      configurationKind: "agent",
-      configurationGeneration: 1,
-      configuration: {
-        ...configured,
-        logging: { level: "info", consoleLevel: "info", consoleStyle: "json" },
-        diagnostics: { otel: { logs: false } },
-      },
-      harness,
-    }).workspace,
-    "/sandbox/enterprise",
-  );
 });
 
 test("OpenShell admits initial files only for its projected main workspace", () => {
   const options = sandboxInstallation().drivers.sandbox.configuration;
   options.kubernetes.sandboxDataMount.mountPath = "/sandbox/custom-workspace";
-  const driver = openShellDriver(workspaceGatewayClient(), options);
-  for (const id of ["codex", "openclaw"]) {
-    const harness = { id, version: "1.0.0", mode: "dedicated" };
-    // OCC projects configuration before admission; both Harnesses must use the same
-    // operator-selected mount as the private initializer, even with omitted settings.
-    const configured = driver.configureAgent({}, harness);
-    assert.equal(configured.agents.defaults.workspace, "/sandbox/custom-workspace");
-    assert.doesNotThrow(() => driver.validateWorkspaceSetup(harness, configured));
-    const explicit = driver.configureAgent(
-      { agents: { entries: { Main: { workspace: "/home/node/elsewhere" } } } },
-      harness,
-    );
-    assert.equal(explicit.agents.entries.Main.workspace, "/sandbox/custom-workspace");
-    assert.doesNotThrow(() => driver.validateWorkspaceSetup(harness, explicit));
-    // Admission must still refuse a snapshot that does not use the initialized mount,
-    // or a roster whose other Agent cannot consume the four main-Agent setup files.
-    assert.throws(
-      () =>
-        driver.validateWorkspaceSetup(harness, {
-          agents: { defaults: { workspace: "/sandbox/other" } },
-        }),
-      /agents.defaults.workspace.*must be \/sandbox\/custom-workspace/,
-    );
-    assert.throws(
-      () =>
-        driver.validateWorkspaceSetup(
-          harness,
-          driver.configureAgent(
-            {
-              agents: { entries: { main: {}, helper: {} } },
-            },
-            harness,
-          ),
-        ),
-      /agents.entries.*must hold only main/,
-    );
-    // A snapshot the hook never projected names the managed workspace, which is not the mount.
-    assert.throws(
-      () => driver.validateWorkspaceSetup(harness, {}),
-      /agents.defaults.workspace.*must be \/sandbox\/custom-workspace/,
-    );
-    assert.throws(
-      () => driver.validateWorkspaceSetup({ ...harness, mode: "embedded" }, configured),
-      /require a dedicated/,
-    );
-    assert.throws(
-      () => driver.validateWorkspaceSetup({ ...harness, id: "other" }, configured),
-      /require a dedicated Codex or OpenClaw Harness/,
-    );
-  }
+  verifyInitialWorkspaceAdmission(openShellDriver(workspaceGatewayClient(), options));
 });
 
 const negotiatedGoogleGuard = () => ({
@@ -2112,6 +2019,61 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
   assert.equal(gatewayClient.profiles.has("oce-codex-runtime"), false);
 });
 
+test("OpenShell keeps scratch separate from its durable data mount", async () => {
+  const scratch = {
+    claimName: "operator-scratch",
+    subPath: "scratch",
+    mountPath: "/sandbox/scratch",
+    readOnly: false,
+  };
+  for (const dataMount of [
+    { claimName: scratch.claimName, subPath: scratch.subPath },
+    { mountPath: "/sandbox/scratch" },
+    { mountPath: "/sandbox/scratch/workspace" },
+    { mountPath: "/sandbox/enterprise/.." },
+    { mountPath: "/sandbox/enterprise/../scratch" },
+    {},
+  ]) {
+    const gateway = workspaceGatewayClient();
+    const requests = [];
+    gateway.createSandbox = async (request) => {
+      requests.push(request);
+      return storedSandbox(request);
+    };
+    const options = sandboxInstallation().drivers.sandbox.configuration;
+    Object.assign(options.kubernetes.sandboxDataMount, dataMount);
+    const driver = openShellDriver(gateway, options);
+    const { context, revision, requirements } = runtimeSandboxFixture(driver);
+    requirements.workspaceMounts.push(scratch);
+    const provision = () => driver.provisionHarness({ ...context, revision, requirements });
+    if (Object.keys(dataMount).length > 0) {
+      await assert.rejects(
+        provision(),
+        /sandboxDataMount must preserve durable storage separately/,
+      );
+      assert.equal(requests.length, 0, "invalid storage must not reach Sandbox creation");
+      continue;
+    }
+    await provision();
+    const { spec } = requests[0];
+    const kubernetes = spec.template.driver_config.fields.kubernetes.structValue.fields;
+    const mounts =
+      kubernetes.containers.structValue.fields.agent.structValue.fields.volume_mounts.listValue.values.map(
+        ({ structValue: { fields } }) => fields,
+      );
+    const durable = mounts.find(
+      ({ mount_path }) => mount_path.stringValue === "/sandbox/enterprise",
+    );
+    const selected = mounts.find(({ mount_path }) => mount_path.stringValue === scratch.mountPath);
+    assert.ok(durable);
+    assert.ok(selected);
+    assert.notEqual(selected.name.stringValue, durable.name.stringValue);
+    assert.equal(selected.sub_path.stringValue, scratch.subPath);
+    assert.equal(selected.read_only.boolValue, false);
+    assert.equal(spec.environment.OPENCLAW_WORKSPACE_DIR, "/sandbox/enterprise");
+  }
+});
+
 test("OpenShell holds withdrawn Codex authentication after a Harness restart", async (t) => {
   await codexHarnessChecks.holdWithdrawnCodexAuthentication(t);
 });
@@ -2394,34 +2356,16 @@ test("OpenShell Namespace lifecycle creates, adopts, and deletes its exact opera
 });
 
 test("OpenShell operator mode owns workspace chart resources around the Workspace lifecycle", async () => {
-  const events = [];
-  const configuration = sandboxInstallation().drivers.sandbox.configuration;
-  configuration.gateway.operatorWorkspaceResources = [
-    { apiVersion: "v1", kind: "ServiceAccount", metadata: { name: "openshell-sandbox" } },
-  ];
-  const gatewayClient = workspaceGatewayClient([], events);
-  const driver = openShellDriver(gatewayClient, configuration);
-  const context = namespaceContext();
-  context.kubernetes = kubernetesObjectClient(events);
-
-  // The Gateway must not observe a Workspace until its operator-mode RBAC and
-  // ServiceAccount resources have converged in the Compute-owned namespace.
-  await driver.ensureNamespace(context);
-  assert.deepEqual(events, [
-    ["kubernetes", "patch", "ServiceAccount", "openshell-sandbox", context.namespace.name],
-    ["gateway", "health"],
-    ["gateway", "getWorkspace", context.namespace.name],
-    ["gateway", "createWorkspace", context.namespace.name],
-  ]);
-
-  events.length = 0;
-  await driver.cleanup(context);
-  assert.deepEqual(events, [
-    ["gateway", "getWorkspace", context.namespace.name],
-    ["gateway", "deleteWorkspace", context.namespace.name],
-    ["gateway", "getWorkspace", context.namespace.name],
-    ["kubernetes", "delete", "ServiceAccount", "openshell-sandbox", context.namespace.name],
-  ]);
+  await verifyOperatorWorkspaceChart(({ gatewayClient, configuration, events }) => {
+    const driver = openShellDriver(gatewayClient, configuration);
+    const context = namespaceContext();
+    context.kubernetes = kubernetesObjectClient(events);
+    return {
+      namespaceName: context.namespace.name,
+      ensureNamespace: () => driver.ensureNamespace(context),
+      cleanup: () => driver.cleanup(context),
+    };
+  });
 });
 
 test("OpenShell managed mode fails before mutating Kubernetes or the Gateway", async () => {
@@ -2519,77 +2463,7 @@ test("startup refuses unknown OpenShell settings and invalid Agent resource quan
 });
 
 test("startup refuses invalid or conflicting exact-Agent resource overrides", async (t) => {
-  const override = {
-    namespaceId: "ns_00000000-0000-4000-8000-000000000001",
-    agentId: "agt_00000000-0000-4000-8000-000000000003",
-    requests: { cpu: "88" },
-    limits: { cpu: "90" },
-  };
-  const path = "/kubernetes/agentResourceOverrides";
-  for (const [field, value] of [
-    ["namespaceId", `${override.namespaceId} `],
-    ["agentId", "agent-display-name"],
-  ]) {
-    await t.test(`refuses a malformed ${field}`, async (scopeTest) => {
-      await rejectsAtStartup(
-        scopeTest,
-        (c) => {
-          sandboxOf(c).kubernetes.agentResourceOverrides = [{ ...override, [field]: value }];
-        },
-        structuralRefusal(`${path}/0/${field}`, "pattern", "INVALID_FORMAT"),
-      );
-    });
-  }
-  await rejectsAtStartup(
-    t,
-    (c) => {
-      sandboxOf(c).kubernetes.agentResourceOverrides = [override, override];
-    },
-    invalidValue(`${path}/1`, "An Agent can have only one resource override."),
-  );
-  await rejectsAtStartup(
-    t,
-    (c) => {
-      sandboxOf(c).kubernetes.agentResourceOverrides = [{ ...override, requests: { cpu: "-1" } }];
-    },
-    invalidValue(
-      `${path}/0/requests`,
-      "Each value must be a quoted, non-negative Kubernetes quantity, such as 500m or 1Gi.",
-    ),
-  );
-  await rejectsAtStartup(
-    t,
-    (c) => {
-      const kubernetes = sandboxOf(c).kubernetes;
-      kubernetes.agentResources = { requests: { cpu: "1" }, limits: { cpu: "4" } };
-      kubernetes.agentResourceOverrides = [{ ...override, limits: {} }];
-    },
-    [
-      {
-        path: `${path}/0/requests`,
-        code: "INVALID_RANGE",
-        message: "The cpu request (88) cannot exceed its limit (4).",
-      },
-    ],
-  );
-  await rejectsAtStartup(
-    t,
-    (c) => {
-      sandboxOf(c).kubernetes.agentResourceOverrides = [
-        { ...override, limits: { "ephemeral-storage": "2Gi" } },
-      ];
-    },
-    structuralRefusal(`${path}/0/limits`, "additionalProperties", "UNKNOWN_FIELD"),
-  );
-  await rejectsAtStartup(
-    t,
-    (c) => {
-      sandboxOf(c).kubernetes.agentResourceOverrides = [
-        { ...override, runtimeClassName: "bad/Name" },
-      ];
-    },
-    invalidValue(`${path}/0/runtimeClassName`, "Use a Kubernetes RuntimeClass resource name."),
-  );
+  await sandboxStartupGuardChecks().refusesInvalidAgentResourceOverrides(t);
 });
 
 // The Gateway refuses these protocols at CreateSandbox (finding 2335): unknown names, L7
@@ -2609,24 +2483,7 @@ test("startup refuses OpenShell settings its schema leaves open", async (t) => {
 // A non-object ingress rule cannot be mapped for the client; startup names the field instead of
 // the apply failing later.
 test("startup refuses NetworkPolicy ingress rules that are not objects", async (t) => {
-  for (const list of ["operatorWorkspaceResources", "networkPolicyResources"]) {
-    for (const rule of [null, "allow"]) {
-      await rejectsAtStartup(
-        t,
-        (c) =>
-          (sandboxOf(c).gateway[list] = [
-            {
-              apiVersion: "networking.k8s.io/v1",
-              kind: "NetworkPolicy",
-              metadata: { name: "sandbox-ingress" },
-              spec: { podSelector: {}, ingress: [rule] },
-            },
-          ]),
-        // Both lists are write-only, so the detail names the list, not the item.
-        invalidValue(`/gateway/${list}`, "Write each NetworkPolicy ingress rule as an object."),
-      );
-    }
-  }
+  await sandboxStartupGuardChecks().refusesNonObjectNetworkPolicyIngress(t);
 });
 
 /**
@@ -2977,7 +2834,7 @@ test("OpenShell startup admits exactly the endpoints both consumers can parse an
     service: (endpoint) =>
       serviceTarget({ endpoint, requestTimeoutMs: 1000 }, "http://service.example.test/"),
   };
-  await verifyEndpointAdmission(t, endpointInstallation, consumers);
+  await verifyEndpointAdmission(t, buildEndpointInstallation, consumers);
 });
 
 // These codecs test the stock/product boundary, not installed supervisor capabilities.
@@ -3236,11 +3093,15 @@ test("OpenShell refuses repository provision and enrollment before any gateway o
 // These cases invoke the production Driver over controlled Kubernetes/Gateway
 // transports. They prove cleanup selection, fencing and completion ordering, not
 // Kubernetes garbage collection, filesystem isolation, or live Pod termination.
-async function orphanedNativePreparation() {
+async function orphanedNativePreparation({
+  scratch = false,
+  dataMountPath = "/sandbox/enterprise",
+} = {}) {
   const gateway = workspaceGatewayClient();
   gateway.deleteSandbox = async () => gateway.calls.push(["deleteSandbox"]);
   const configuration = sandboxInstallation().drivers.sandbox.configuration;
   configuration.kubernetes.userNamespaces = false;
+  configuration.kubernetes.sandboxDataMount.mountPath = dataMountPath;
   const driver = openShellDriver(gateway, configuration);
   const fixture = runtimeSandboxFixture(driver, { harnessId: "openclaw" });
   fixture.revision = completeWorkspaceRevision(fixture.revision, fixture.requirements);
@@ -3248,6 +3109,14 @@ async function orphanedNativePreparation() {
   const { name, id } = fixture.context.namespace;
   gateway.workspaces.set(name, ownedWorkspace(name, id));
   const { revision, requirements, prepared } = fixture;
+  if (scratch) {
+    requirements.workspaceMounts.push({
+      claimName: "operator-scratch",
+      subPath: "scratch",
+      mountPath: "/sandbox/scratch",
+      readOnly: false,
+    });
+  }
   const api = fixture.context.kubernetes;
   const create = api.create;
   // The API stored the real manifest, but the response never reached the Driver.
@@ -3270,19 +3139,7 @@ async function orphanedNativePreparation() {
   return { driver, gateway, api, resource, deployment, context, requirements };
 }
 
-test("OpenShell native preparation exits cleanly on SIGTERM after readiness", async (t) => {
-  // Capture the production manifest through the existing transport fixture, then
-  // execute its preparation process. Live Pod deletion is proved separately.
-  const { deployment } = await orphanedNativePreparation();
-  const container = deployment.spec.template.spec.containers[0];
-  const directory = await temporaryDirectory(t, "openshell-preparation-stop-");
-  for (const mount of container.volumeMounts) {
-    await mkdir(join(directory, mount.mountPath), { recursive: true });
-  }
-  // Only relocate mount paths; keep the generated preparation and signal code.
-  const program = container.command[2]
-    .replaceAll("/workspace-preparation", join(directory, "workspace-preparation"))
-    .replaceAll("/preparation-status", join(directory, "preparation-status"));
+async function runNativePreparation(t, program, directory) {
   const child = spawn(process.execPath, ["-e", program], {
     cwd: directory,
     env: { PATH: dirname(process.execPath) },
@@ -3323,6 +3180,110 @@ test("OpenShell native preparation exits cleanly on SIGTERM after readiness", as
   child.kill("SIGTERM");
   assert.deepEqual(await exited, { code: 0, signal: null });
   assert.equal(await readFile(marker, "utf8"), "ready");
+}
+
+test("OpenShell native preparation exits cleanly on SIGTERM after readiness", async (t) => {
+  // Capture the production manifest through the existing transport fixture, then
+  // execute its preparation process. Live Pod deletion is proved separately.
+  const { deployment } = await orphanedNativePreparation({ scratch: true });
+  const spec = deployment.spec.template.spec;
+  const container = spec.containers[0];
+  const directory = await temporaryDirectory(t, "openshell-preparation-stop-");
+  for (const mount of container.volumeMounts) {
+    await mkdir(join(directory, mount.mountPath), { recursive: true });
+  }
+  const claimRoot = (claimName) => {
+    const volume = spec.volumes.find(
+      (entry) => entry.persistentVolumeClaim?.claimName === claimName,
+    );
+    assert.ok(volume);
+    return join(
+      directory,
+      container.volumeMounts.find(({ name }) => name === volume.name).mountPath,
+    );
+  };
+  const scratchRoot = claimRoot("operator-scratch");
+  // fsGroup-backed volumes commonly inherit setgid; a new private child must
+  // still become 0700 without changing pre-existing operator state.
+  await chmod(scratchRoot, 0o2770);
+  const workspaceRoot = claimRoot("harness-workspace-codex");
+  // Only OCE's durable workspace participates in legacy directory migration.
+  // An operator may own this identically named sibling on the separate scratch PVC.
+  const sibling = join(scratchRoot, ".scratch.kubelet-created");
+  await mkdir(sibling, { mode: 0o750 });
+  await writeFile(join(sibling, "operator-data"), "keep operator data");
+  const siblingBefore = await stat(sibling);
+  const legacyWorkspace = join(workspaceRoot, ".workspace.kubelet-created");
+  await mkdir(legacyWorkspace);
+  await writeFile(join(legacyWorkspace, "notes.md"), "keep durable workspace");
+  // Only relocate mount paths; keep the generated preparation and signal code.
+  const program = container.command[2]
+    .replaceAll("/workspace-preparation", join(directory, "workspace-preparation"))
+    .replaceAll("/preparation-status", join(directory, "preparation-status"));
+  await runNativePreparation(t, program, directory);
+  assert.equal(await readFile(join(sibling, "operator-data"), "utf8"), "keep operator data");
+  const siblingAfter = await stat(sibling);
+  assert.equal(siblingAfter.ino, siblingBefore.ino);
+  assert.equal(siblingAfter.mode, siblingBefore.mode);
+  assert.equal(siblingAfter.uid, siblingBefore.uid);
+  const initialized = await stat(join(scratchRoot, "scratch"));
+  assert.equal(initialized.mode & 0o7777, 0o700);
+  assert.equal(initialized.uid, process.getuid());
+  await assert.rejects(stat(join(scratchRoot, "scratch", "operator-data")), { code: "ENOENT" });
+  assert.equal(
+    await readFile(join(workspaceRoot, "workspace", "notes.md"), "utf8"),
+    "keep durable workspace",
+  );
+  await assert.rejects(stat(legacyWorkspace), { code: "ENOENT" });
+  assert.equal((await stat(scratchRoot)).mode & 0o7777, 0o2770);
+
+  // Only a newly created scratch child may have its inherited setgid cleared.
+  // An incompatible existing directory must fail without silently repairing it.
+  const scratchDirectory = join(scratchRoot, "scratch");
+  await chmod(scratchDirectory, 0o750);
+  await writeFile(join(scratchDirectory, "retained"), "existing scratch data");
+  const refused = spawnSync(process.execPath, ["-e", program], {
+    cwd: directory,
+    env: { PATH: dirname(process.execPath) },
+    encoding: "utf8",
+    timeout: 2000,
+  });
+  assert.equal(refused.status, 1, refused.stderr);
+  assert.match(refused.stderr, /Private workspace preparation did not complete/);
+  assert.equal((await stat(scratchDirectory)).mode & 0o7777, 0o750);
+  assert.equal(await readFile(join(scratchDirectory, "retained"), "utf8"), "existing scratch data");
+  assert.equal(await readFile(join(sibling, "operator-data"), "utf8"), "keep operator data");
+});
+
+test("OpenShell preserves legacy workspace recovery when its data mount uses the scratch path", async (t) => {
+  const { deployment } = await orphanedNativePreparation({ dataMountPath: "/sandbox/scratch" });
+  const spec = deployment.spec.template.spec;
+  const container = spec.containers[0];
+  const directory = await temporaryDirectory(t, "openshell-workspace-path-");
+  for (const mount of container.volumeMounts) {
+    await mkdir(join(directory, mount.mountPath), { recursive: true });
+  }
+  const volume = spec.volumes.find(
+    ({ persistentVolumeClaim }) => persistentVolumeClaim?.claimName === "harness-workspace-codex",
+  );
+  const root = join(
+    directory,
+    container.volumeMounts.find(({ name }) => name === volume.name).mountPath,
+  );
+  // This is the existing durable claim: its configured destination does not
+  // turn it into operator scratch or remove normal legacy workspace recovery.
+  const saved = join(root, ".workspace.kubelet-created");
+  await mkdir(saved);
+  await writeFile(join(saved, "notes.md"), "durable workspace data");
+  const program = container.command[2]
+    .replaceAll("/workspace-preparation", join(directory, "workspace-preparation"))
+    .replaceAll("/preparation-status", join(directory, "preparation-status"));
+  await runNativePreparation(t, program, directory);
+  assert.equal(
+    await readFile(join(root, "workspace", "notes.md"), "utf8"),
+    "durable workspace data",
+  );
+  await assert.rejects(stat(saved), { code: "ENOENT" });
 });
 
 registerSandboxDriverPreparerCleanupCases({
@@ -3924,65 +3885,22 @@ test(
     // A native broker peer left in Compute after a switch to protected Git would make every
     // stop, retire and delete list repository material Secrets the chart no longer lets the
     // worker list (finding 2212). Startup, and so the chart's upgrade check, refuses it.
-    const brokerPeer = structuredClone(configuration);
-    brokerPeer.drivers.compute.configuration.network.repositoryCredentials = {
-      namespace: "openclaw-system",
-      podLabels: { "app.kubernetes.io/component": "worker" },
-      port: 8443,
-    };
-    await assert.rejects(
-      loadInstallationFile(t, brokerPeer, { createOpenShellBackend: () => backendFor(gateway) }),
-      /drivers\.compute\.configuration\.network\.repositoryCredentials requires repository\.nativeSender/,
-    );
-    // Each unmet repository.openShell requirement names its own field in the startup log and
-    // the upgrade check, never its value (finding 2216): one message used to cover all of them.
-    const unprepared = structuredClone(configuration);
-    delete unprepared.repository.preparedGitHub;
-    // A plaintext, unauthenticated gateway the Backend admits only behind a NetworkPolicy.
-    unprepared.backend[0].configuration = {
-      endpoint: "http://sentinel-5b9d.example.test:8080",
-      auth: { mode: "unauthenticated" },
-      insecureTransport: "network-policy",
-    };
-    await assert.rejects(
-      loadInstallationFile(t, unprepared, { createOpenShellBackend: () => backendFor(gateway) }),
-      (error) => {
-        const failure = formatStartupConfigurationFailure(error);
-        const prefix = "DRIVER_CONFIGURATION_INVALID: ";
-        assert.ok(failure?.startsWith(prefix), String(error));
-        assert.deepEqual(
-          JSON.parse(failure.slice(prefix.length)).map(({ path, code }) => [path, code]),
-          [
-            ["/repository/preparedGitHub", "REQUIRED"],
-            ["/backend/0/configuration/endpoint", "INVALID_VALUE"],
-            ["/backend/0/configuration/auth/mode", "INVALID_VALUE"],
-          ],
-          failure,
-        );
-        assert.ok(!failure.includes("sentinel-5b9d"), failure);
-        return true;
-      },
+    await verifyProtectedStartupRefusals(
+      configuration,
+      (candidate) =>
+        loadInstallationFile(t, candidate, { createOpenShellBackend: () => backendFor(gateway) }),
+      formatStartupConfigurationFailure,
     );
     // The chart routes openshellGit.port to the worker Pod's address, so a worker listener on
     // loopback, on another port, or without the chart listener is refused at startup and in the
     // upgrade check, not at the first Git request (finding 2213). This test binds the listener
     // on loopback itself, so its own load declares no chart listener.
-    for (const [declared, message] of [
-      [String(port), /repository\.openShell\.authority\.host is 127\.0\.0\.1, but the chart's/],
-      [
-        String(port + 1),
-        /repository\.openShell\.authority\.port is \d+, but Helm openshellGit\.port is \d+\./,
-      ],
-      ["disabled", /but Helm openshellGit\.enabled is false/],
-    ]) {
-      await assert.rejects(
-        loadInstallationFile(t, configuration, {
-          createOpenShellBackend: () => backendFor(gateway),
-          environment: { OCC_OPENSHELL_GIT_PORT: declared, OCC_EGRESS_AUTHORITY_PORT: "disabled" },
-        }),
-        { name: "ChartListenerMismatchError", code: "CHART_LISTENER_MISMATCH", message },
-      );
-    }
+    await verifyProtectedChartListenerRefusals(port, (declared) =>
+      loadInstallationFile(t, configuration, {
+        createOpenShellBackend: () => backendFor(gateway),
+        environment: { OCC_OPENSHELL_GIT_PORT: declared, OCC_EGRESS_AUTHORITY_PORT: "disabled" },
+      }),
+    );
     const protectedGit = await loadInstallationFile(t, configuration, {
       createOpenShellBackend: () => backendFor(gateway),
     });
@@ -3993,30 +3911,18 @@ test(
     assert.equal(protectedGit.nativeRepositorySender, undefined);
     assert.equal(protectedGit.egressAuthority, undefined);
     // Release labels do not qualify the sender; runtime proof still gates material.
-    repositoryGatewayVersion = "unknown";
-    for (const profile of ["repository_git", "github_repository"]) {
-      assert.deepEqual(
-        await protectedGit.proxyDriver.sourceControl.assertAvailable(t.signal, profile),
-        {
-          profile,
-          authorization: "online-request",
-        },
-      );
-    }
-
-    repositoryGatewayVersion = "0.1.5";
-    protectedGit.computeDriver.validateRepositoryCredentials(
-      { id: "codex", mode: "dedicated" },
-      protectedGit.sandboxDriver.id,
-    );
-    assert.throws(
-      () =>
+    await verifyProtectedGatewayAdmission({
+      signal: t.signal,
+      setGatewayVersion: (version) => {
+        repositoryGatewayVersion = version;
+      },
+      sourceControl: protectedGit.proxyDriver.sourceControl,
+      validateRepositoryCredentials: (harness) =>
         protectedGit.computeDriver.validateRepositoryCredentials(
-          { id: "openclaw", mode: "embedded" },
+          harness,
           protectedGit.sandboxDriver.id,
         ),
-      { message: /[Rr]epository credentials require/ },
-    );
+    });
     const { context, revision, requirements } = runtimeSandboxFixture(protectedGit.sandboxDriver);
     // Revision execution starts in an existing, owned Workspace. Its deletion must remain observable.
     gateway.workspaces.set(openShellWorkspaceName(context.namespace), {

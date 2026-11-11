@@ -17,7 +17,7 @@ import {
   immutableImage,
   nodeBaseImage,
   writeFixtureCommand,
-} from "../helpers/ci-prepare-fixture.mjs";
+} from "../helpers/ci-prepare-fixture.ts";
 import { eachSettled } from "../helpers/child-processes.mjs";
 import { waitFor, waitUntil, within } from "../helpers/wait-for.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
@@ -814,6 +814,25 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       });
       const commands = await fixtureImageCommands(t, "success", "k3d-fixture-network");
       pidFile = join(dirname(commands.statePath), "cancelled-build-pids");
+      // Cancellation can arrive after the real helper registers the cluster but
+      // before the external create is accepted. Hold that boundary deterministically.
+      let createStarted = false;
+      const k3d = join(dirname(commands.statePath), "bin", "k3d.mjs");
+      const originalK3d = `${k3d}.original`;
+      await rename(k3d, originalK3d);
+      const clusterServer = await startCommandServer({
+        forwardedEnv: [],
+        handle: ({ args, io }) => {
+          if (args[0] === "cluster" && args[1] === "create") {
+            createStarted = true;
+            io.exitAfter(124, 60000);
+          } else {
+            io.script(`exec ${bashString(originalK3d)} ${args.map(bashString).join(" ")}`);
+          }
+        },
+      });
+      t.after(() => clusterServer.close());
+      await writeFixtureCommand(k3d, "k3d", clusterServer);
       await interceptFixtureDocker(t, commands, (args) => {
         if (args[0] === "build" && args.at(-1).endsWith("/tests/fixtures/kubernetes")) {
           const descendant = `
@@ -821,7 +840,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
           const fs = require("node:fs");
           fs.writeFileSync(${JSON.stringify(`${pidFile}.tmp`)}, JSON.stringify([process.ppid, process.pid]));
           fs.renameSync(${JSON.stringify(`${pidFile}.tmp`)}, ${JSON.stringify(pidFile)});
-          setTimeout(() => {}, 15000);
+          setTimeout(() => {}, 60000);
         `;
           const program = `
           require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}], { stdio: "inherit" });
@@ -839,12 +858,15 @@ describe("CI k3d preparation", { concurrency: true }, () => {
         },
       });
       const pids = await waitFor(
-        "build descendant signal handler",
+        "cluster create and build descendant signal handler",
         async () => {
+          if (!createStarted) {
+            return undefined;
+          }
           const text = await readFile(pidFile, "utf8").catch(() => undefined);
           return text === undefined ? undefined : JSON.parse(text);
         },
-        5000,
+        30000,
       );
       assert.equal(pids.length, 2);
       assert.ok(pids.every(processRunning));
@@ -862,6 +884,12 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       const state = await commands.readState();
       assert.equal(state.env, undefined);
       assert.equal(state.resources.find(({ kind }) => kind === "image-tag").status, "planned");
+      assert.equal(state.resources.find(({ kind }) => kind === "k3d-cluster").status, "planned");
+      assert.ok(
+        !(await commands.commands()).some(
+          ({ command, args }) => command === "k3d" && args[0] === "cluster" && args[1] === "create",
+        ),
+      );
       await assert.rejects(stat(commands.githubEnv), { code: "ENOENT" });
       await commands.cleanupSuccessfully();
     },

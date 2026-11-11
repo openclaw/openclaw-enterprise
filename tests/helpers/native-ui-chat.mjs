@@ -197,7 +197,13 @@ export async function assertChatStreamStopAndResume({
   assert.deepEqual(JSON.parse(textFromFrame(reconnected)).payload.auth.scopes, [
     "operator.sessions.write",
   ]);
-  await page
+  // The stock transcript virtualizes older replies and reloads at the newest
+  // message. Reveal the beginning through the focused scroll surface before
+  // asserting that the earlier assistant reply survived the reconnect.
+  const transcript = page.getByRole("log");
+  await transcript.locator(".chat-bubble").first().waitFor({ timeout: 60_000 });
+  await transcript.press("ControlOrMeta+Home");
+  await transcript
     .locator(".chat-bubble")
     .getByText(initialMarker, { exact: true })
     .waitFor({ timeout: 60_000 });

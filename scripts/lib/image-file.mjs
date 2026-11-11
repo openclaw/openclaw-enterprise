@@ -156,10 +156,10 @@ export async function extractImageFile({
   command,
   cleanup,
   image,
-  platform = undefined,
+  platform = /** @type {string | undefined} */ (undefined),
   filename,
   destination,
-  maxBytes = undefined,
+  maxBytes = /** @type {number | undefined} */ (undefined),
   resource = { name: `oce-git-extract-${randomUUID()}` },
   persist = async () => {},
 }) {

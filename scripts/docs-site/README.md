@@ -12,8 +12,9 @@ from the repository root.
   revision `34bdf6d0321dffff0cc343ee48aa4c051547f70e`. The publisher mirror matched
   the current product parser at implementation time.
 - `vendor/docs-markdown.mjs` retains the shared parser, heading IDs and aliases,
-  frontmatter handling, and Markdown component support. Enterprise also emits GitHub-style heading aliases
-  through the pinned `github-slugger`, preserving existing API deep links.
+  frontmatter handling, and Markdown component support. Enterprise makes the pinned
+  `github-slugger` slug the canonical heading ID and keeps the parser's ID as an alias,
+  preserving existing deep links.
 - `vendor/mdx-ish.mjs` retains the publisher's component renderer, code highlighting,
   and Mermaid source markup. Its shared-parser import points to the sibling copy.
 - The MIT notice is retained in `vendor/LICENSE.openclaw`. The JetBrains Mono OFL notice accompanies

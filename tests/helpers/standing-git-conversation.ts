@@ -10,7 +10,7 @@ import { text } from "node:stream/consumers";
 import type { TestContext } from "node:test";
 import { reservePort, reservedPortArgs } from "./available-port.mjs";
 import { harnessTlsFixture } from "./harness-tls.mjs";
-import { listen } from "./listen.mjs";
+import { listen } from "./listen.ts";
 import { waitFor } from "./wait-for.mjs";
 import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { HARNESS_EGRESS_ENROLLMENT_PATH } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";

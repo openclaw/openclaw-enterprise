@@ -50,7 +50,7 @@ import { createInstallationDriverConfiguration } from "../helpers/installation-d
 import { routedRevision } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 
 // Every field the OpenShell Git runtime emits reaches the worker log (finding 2244).
 afterEach(() => assert.deepEqual(takeUnloggedRuntimeFields(), []));

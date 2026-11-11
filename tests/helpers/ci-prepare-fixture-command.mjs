@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { defaultK3sImage, lanesWithoutK3sAddons } from "../../scripts/ci/prepare.mjs";
@@ -12,12 +13,11 @@ import { commandShim as fixtureCommandShim, startCommandServer } from "./fixture
 // and pipes; only the scenario logic below runs in the test process. A command sends
 // the environment variables below. The fixture directory the scenarios write to is the
 // server's, never the client's. `compose up` starts a fake PostgreSQL server
-// (fake-postgres-server.mjs) for the port preparation publishes, where its administrative
+// (fake-postgres-server.mjs) for the port the fixture reports, where its administrative
 // SQL arrives (scripts/ci/postgres-admin.mjs); each query is logged as a "postgres"
 // command whose args are the database and the query. `compose down` stops it. The fake
-// listens on that port's Unix socket in OPENCLAW_CI_POSTGRES_SOCKET_DIR: the TCP port
-// preparation reserved and released can meanwhile be held by any process's connection
-// (its TIME_WAIT blocks a listener), which made 6 of 20 parallel runs fail.
+// listens on that port's Unix socket in OPENCLAW_CI_POSTGRES_SOCKET_DIR. These command
+// fixtures exercise orchestration and SQL sequencing, not Docker port allocation.
 export const forwardedEnv = [
   "CI_FIXTURE_SCENARIO",
   "OCC_POSTGRES_PORT",
@@ -119,11 +119,20 @@ async function fakeCommand({
       [["volume", "ls"], "{{.Name}}"],
     ]) {
       if (equals(args.slice(0, list.length), list)) {
-        assert.ok(state.clusterDeleted, "cluster inventory is checked after deletion");
         assert.ok(
-          ["label=k3d.cluster=" + state.cluster, "name=k3d-" + state.cluster].includes(
-            args[list.length + 1],
-          ),
+          !state.cluster || state.clusterDeleted,
+          "cluster inventory is checked after deletion",
+        );
+        // A cancelled preparation can own a planned cluster that was never created.
+        // Keep exact ownership checks even when the fake has no live cluster name.
+        const cluster =
+          state.cluster ??
+          JSON.parse(readFileSync(join(root, "state.json"), "utf8")).resources.find(
+            ({ kind }) => kind === "k3d-cluster",
+          )?.name;
+        assert.ok(cluster, "cleanup must own a recorded cluster");
+        assert.ok(
+          ["label=k3d.cluster=" + cluster, "name=k3d-" + cluster].includes(args[list.length + 1]),
         );
         assert.deepEqual(args.slice(list.length), [
           "--filter",
@@ -238,8 +247,8 @@ async function fakeCommand({
     if (args[0] === "compose" && args[1] === "-f" && args[3] === "-p") {
       assert.match(args[4], /^openclaw_ci_pg_/);
       if (equals(args.slice(5), ["up", "-d", "--wait"])) {
-        const port = Number(env.OCC_POSTGRES_PORT);
-        assert.ok(Number.isSafeInteger(port) && port > 0 && port !== 55432);
+        assert.equal(env.OCC_POSTGRES_PORT, "0");
+        const port = 45000 + postgresServers.size;
         assert.ok(env.OPENCLAW_CI_POSTGRES_SOCKET_DIR, "the fixture sets the socket directory");
         postgresServers.set(
           args[4],
@@ -257,11 +266,43 @@ async function fakeCommand({
         );
         return finish();
       }
+      if (equals(args.slice(5), ["ps", "-q", "postgres"])) {
+        assert.ok(postgresServers.has(args[4]));
+        return finish(createHash("sha256").update(args[4]).digest("hex") + "\n");
+      }
       if (equals(args.slice(5), ["down", "--volumes", "--remove-orphans"])) {
         await postgresServers.get(args[4])?.close();
         postgresServers.delete(args[4]);
         return finish();
       }
+    }
+    if (
+      equals(args, [
+        "inspect",
+        "--format",
+        "{{json .NetworkSettings.Networks}}",
+        `k3d-${state.cluster}-server-0`,
+      ])
+    ) {
+      return finish(JSON.stringify({ [`k3d-${state.cluster}`]: {} }));
+    }
+    if (equals(args.slice(0, 3), ["network", "connect", `k3d-${state.cluster}`])) {
+      assert.ok(
+        [...postgresServers.keys()].some(
+          (project) => createHash("sha256").update(project).digest("hex") === args[3],
+        ),
+      );
+      return finish();
+    }
+    if (equals(args.slice(0, 3), ["inspect", "--format", "{{json .NetworkSettings.Ports}}"])) {
+      const [, server] =
+        [...postgresServers].find(
+          ([project]) => createHash("sha256").update(project).digest("hex") === args[3],
+        ) ?? [];
+      assert.ok(server);
+      return finish(
+        JSON.stringify({ "5432/tcp": [{ HostIp: "127.0.0.1", HostPort: String(server.port) }] }),
+      );
     }
     if (
       (scenario === "cache-progress" ||
@@ -859,7 +900,9 @@ async function fakeCommand({
       return finish("apiVersion: v1\n");
     }
     if (equals(args, ["cluster", "list", "-o", "json"])) {
-      return finish(JSON.stringify(state.clusterDeleted ? [] : [{ name: state.cluster }]));
+      return finish(
+        JSON.stringify(!state.cluster || state.clusterDeleted ? [] : [{ name: state.cluster }]),
+      );
     }
     if (equals(args, ["cluster", "delete", state.cluster])) {
       state.clusterDeleted = true;
