@@ -109,9 +109,10 @@ kubeconfig and unrelated resources. No controller/runtime build, model
 credential or published release pair is needed.
 
 The cases share a fifteen-minute admission deadline and stop creating resources
-after a failure. The unchanged preparer runs in a child with a four-minute test budget, which
-can truncate a slow retry. After hooks stop further stages and await the body
-before cleanup. Final cleanup has a
+after a failure. The preparer runs in a child with a four-minute test budget.
+Staged creation disables rollback and retains unacknowledged resources after a
+timeout instead of deleting by name or retrying. After hooks stop further stages
+and await the body before cleanup. Final cleanup has a
 separate three-minute budget. A hard-killed runner can prevent those hooks;
 retained private state is diagnostic, and the outer lane does not automatically
 recover it. This suite does not prove recovery from arbitrary runner termination.

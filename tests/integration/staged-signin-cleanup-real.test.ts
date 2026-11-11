@@ -269,8 +269,8 @@ async function fixture(
   });
   await assertLocalRehearsalDaemon(command);
   const beforeVolumes = new Set(lines(await command("docker", ["volume", "ls", "-q"])));
-  // Run the unchanged producer in its own bounded process. This test budget
-  // may truncate a slow retry; that is uncertain failure, never cleanup proof.
+  // Run the producer in its own bounded process. This test budget may stop
+  // unacknowledged work; that is uncertain failure, never cleanup proof.
   assert.ok(remaining() >= 4 * 60_000, "insufficient proof budget for another cluster");
   requiresReconciliation = true;
   const prepared = await command(

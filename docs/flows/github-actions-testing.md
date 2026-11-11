@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: "2026-11-11"
-last_updated_session: "authoring-run/f3df3f10-664e-40c7-9f31-907e3bcf7ad1"
+last_updated_session: "authoring-run/43e450db-975c-4b32-b88b-ed179d4d50f0"
 ---
 
 # GitHub Actions testing flow
@@ -135,9 +135,11 @@ Cache credentials stay in preparation.
 
 Kubernetes preparation records host snapshots. Failed reads, bounded
 by time and size, save `<state-file>.diagnostics.json` outside the cluster directory.
-These lanes use `--no-rollback`; workflows own teardown after capture, while
-local callers use the failed state file. Observation failures preserve the original error. `nodeLogExcerpt` orders Docker streams
-and retry summaries by full UTC timestamp precision using locale-independent ASCII comparison ([CI guide](../testing/ci.md)).
+Fixture lanes use `--no-rollback` and registered teardown. Staged sign-in also
+disables rollback, but unacknowledged creation requires reconciliation instead of
+name-based deletion/retry. Observation failures preserve the original error.
+`nodeLogExcerpt` orders streams and retry summaries by UTC timestamp and ASCII
+comparison ([CI guide](../testing/ci.md)).
 
 `scripts/ci/run-tests.mjs:runFile` watches Compute-managed Pods and namespace
 events in ready k3d clusters before tests delete them. On pass or failure,
@@ -262,8 +264,8 @@ awaits an approved resource ledger.
 - `node scripts/ci/run-tests.mjs audit` checks the actual checkout inventory against the suite map.
 - `node --test tests/integration/ci-runner.test.mjs` exercises the runner with real child Node processes and controlled pass/fail/skip cases.
 - Reproduce the reported case with approved prerequisites. The named aggregate bounds coverage.
-- After measured disk or network instability on local VM-backed Docker hosts, run Kubernetes lanes sequentially. GitHub Actions retains its configured matrix.
-- Missing protected environments, tools, images or credentials are setup failures. Configure the approved resource; do not mark its required test skipped or replace it with a fixture.
+- After measured local VM disk/network instability, serialize Kubernetes lanes; GitHub Actions keeps its matrix.
+- Missing prerequisites fail setup; supply approved resources without skipping required tests or substituting fixtures.
 - Retain sanitized results for seven days; exclude private state and credentials from uploads. Recover local teardown using run-owned state on its original host and path.
 
 ## Related docs
@@ -278,6 +280,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 08:39: Retain unacknowledged staging resources. (authoring-run/43e450db-975c-4b32-b88b-ed179d4d50f0 - 16478e96645985bd7501e149a19dbbd784500501)
 
 - 2026-11-11 08:17: Carry prepared custody into destructive cleanup. (authoring-run/f3df3f10-664e-40c7-9f31-907e3bcf7ad1 - 6a60e750c83a3508041ef5100a36f7232ed226ea)
 

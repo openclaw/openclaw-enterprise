@@ -177,6 +177,17 @@ export async function fixtureImageCommands(
     statePath,
     githubEnv,
     prepare: (args = [], options) => run("prepare.mjs", [...prepareArgs, ...args], options),
+    prepareStagingSignin: () =>
+      spawnResult(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          'import { prepareStagingSigninCluster } from "./scripts/ci/prepare.mjs"; await prepareStagingSigninCluster(process.argv[1]);',
+          statePath,
+        ],
+        { env },
+      ),
     warmImageCache: (args = []) =>
       run("prepare.mjs", ["--warm-image-cache", "--state", statePath, ...args]),
     prepareFile: (file) =>

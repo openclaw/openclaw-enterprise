@@ -1801,7 +1801,7 @@ async function ensureK3dCluster(statePath, state) {
         : []),
       // Keep failed fixture containers for diagnostics; registered cleanup
       // owns their deletion after collection, including partial creation.
-      ...(crossNodePluginStatus ? ["--no-rollback"] : []),
+      ...(crossNodePluginStatus || state.lane === "staging-signin" ? ["--no-rollback"] : []),
     ]);
     await k3dStage(state, "k3d-kubeconfig", async () => {
       const kubeconfigData = await execFile(process.env.OPENCLAW_CI_K3D_BIN ?? "k3d", [
@@ -1987,11 +1987,12 @@ function forwardK3dOutput(lane, child) {
   }
 }
 
-// Bound each create. After a timeout, keep diagnostics, delete what the
-// attempt created, and try once more with the same owned name and directory.
-// The final failure leaves the planned resource for registered cleanup.
+// Bound each create. Ordinary lanes discard a timed-out attempt and retry.
+// Staged sign-in has no bound custody yet, so it retains the reservation and
+// requires reconciliation instead of deleting or reusing an uncertain name.
 async function createK3dCluster(statePath, state, resource, args) {
   const k3d = process.env.OPENCLAW_CI_K3D_BIN ?? "k3d";
+  const attempts = state.lane === "staging-signin" ? 1 : k3dCreateAttempts;
   for (let attempt = 1; ; attempt += 1) {
     const timeoutMs = k3dCreateTimeoutsMs[attempt - 1];
     try {
@@ -2009,7 +2010,7 @@ async function createK3dCluster(statePath, state, resource, args) {
       }
       const summary =
         `k3d cluster create ${resource.name} did not finish within ${timeoutMs} ms ` +
-        `(attempt ${attempt} of ${k3dCreateAttempts})`;
+        `(attempt ${attempt} of ${attempts})`;
       progress(state.lane, summary);
       await captureK3dDiagnostics({
         execFile,
@@ -2019,6 +2020,16 @@ async function createK3dCluster(statePath, state, resource, args) {
         failure: summary,
         k3dOutput: error,
       }).catch(() => progress(state.lane, "k3d diagnostics unavailable"));
+      if (state.lane === "staging-signin") {
+        // The receipt is not bound yet. A stopped local process cannot prove
+        // that an accepted daemon operation settled or authorize name deletion.
+        const failure = new Error(
+          `${summary}; unconfirmed creation requires reconciliation; retained state at ${statePath}.`,
+          { cause: error },
+        );
+        failure.k3dDiagnosticsCaptured = true;
+        throw failure;
+      }
       if (attempt >= k3dCreateAttempts) {
         const failure = new Error(
           `${summary}; giving up. Diagnostics are in ${statePath}.diagnostics.json, and ` +
