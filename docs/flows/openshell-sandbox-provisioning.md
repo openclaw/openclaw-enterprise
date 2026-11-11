@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-11
-last_updated_session: authoring-run/04448580-0c4a-4965-8c27-7f586386c885
+last_updated_session: authoring-run/6d4239da-0b3c-4a1d-baaf-cd0d1b4646a6
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -98,24 +98,27 @@ graph TD
 `internal/occdev/openshell.go:prepareOpenShell`,
 `internal/occdev/kubernetes.go:writeInstallation`
 
-Both `openshell` launchers require Landlock, support Node and x64/ARM64 Codex
-independently of launcher architecture, verify 0.1.6 charts and pin
-Gateway/supervisor/sandbox images. Importing OCE images first prevents k3s garbage
-collection. `writeInstallation` selects curated Codex plugins; the selected
-Credential Gateway supplies credentials.
+Launchers require Landlock, verify 0.1.6 charts and pin OpenShell images. Node
+and x64/ARM64 Codex run independently of launcher architecture. Importing OCE
+images first prevents k3s collection. `writeInstallation` selects curated Codex
+plugins; Credential Gateway supplies credentials.
 
 `internal/occdev/openshell_assets.go:downloadVerified` streams archives;
 `internal/occdev/routing_manifest.go` and CI's
 `scripts/ci/routing.mjs:downloadPinnedArtifact` fetch manifests (32 MiB maximum).
-Transient network errors and HTTP 408/429/5xx allow eight 60-second attempts,
-starting within 120 seconds. Local downloads honor cancellation. Other errors
-are terminal. Archive retries remove failed `0600` files, preserving existing files.
+Cancelable downloads retry transient network/HTTP 408/429/5xx errors: eight
+60-second attempts starting within 120 seconds. Other errors fail.
+Archive retries remove failed `0600` files, preserving existing files.
 
-`dev-up` validates Kubernetes/OpenShell before `occ dev up`.
-`OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only: in-cluster
+`dev-up` validates Kubernetes/OpenShell. Kubernetes-only uses in-cluster
 authentication, `oce-system`, imported PostgreSQL and [per-Agent HTTPS](../guides/deploy/local-setup.md).
-The launcher checks port collisions, recording engine, cluster, Namespace, ports
-and key path. Compose runs PostgreSQL/OCC with a k3d worker.
+Startup checks port collisions and records engine, cluster, Namespace, ports and
+key path. Compose runs PostgreSQL/OCC with k3d.
+
+`prepareOpenShell` and CI's `scripts/ci/openshell.mjs:installAgentSandbox`
+import Agent Sandbox before applying its local manifest with the imported digest
+and `imagePullPolicy: Never`. Import failure stops startup; explicit manifests
+stay unchanged.
 
 On rollout failure, `prepareOpenShell` calls
 `internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout`
@@ -432,6 +435,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 21:12: Preload Agent Sandbox locally. (authoring-run/6d4239da-0b3c-4a1d-baaf-cd0d1b4646a6 - dfbdd7bfa6ccfba7d3d2e6b28f2770988c0cfc0d)
 
 - 2026-11-11 06:13: Trace attachment refusals. (authoring-run/04448580-0c4a-4965-8c27-7f586386c885 - fef779767c622b30bab45c7a0a94f16fc04f70ab)
 

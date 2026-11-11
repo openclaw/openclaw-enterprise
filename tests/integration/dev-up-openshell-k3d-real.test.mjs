@@ -106,6 +106,37 @@ async function waitForNamespaceReady(environment, apiPort, stateDirectory, names
   throw new Error(`OCC Namespace ${namespaceId} did not become ready.`);
 }
 
+async function verifyPreloadedAgentSandbox(kubectl, environment) {
+  // Read the running Pod: manifest preparation alone cannot prove it started
+  // from the imported image without fetching layers from the registry.
+  const { stdout } = await execute(
+    "kubectl",
+    [
+      ...kubectl,
+      "get",
+      "pods",
+      "-n",
+      "agent-sandbox-system",
+      "-l",
+      "app=agent-sandbox-controller",
+      "-o",
+      "json",
+    ],
+    { cwd: repository, env: environment, maxBuffer: 4 * 1024 * 1024 },
+  );
+  const { items } = JSON.parse(stdout);
+  assert.equal(items.length, 1, "Agent Sandbox must have one controller Pod");
+  const pod = items[0];
+  const container = pod.spec.containers.find(({ name }) => name === "agent-sandbox-controller");
+  assert.equal(container.imagePullPolicy, "Never");
+  assert.match(container.image, /@sha256:[a-f0-9]{64}$/);
+  assert.equal(
+    pod.status.containerStatuses.find(({ name }) => name === container.name).ready,
+    true,
+    "Agent Sandbox must run successfully from its imported image",
+  );
+}
+
 async function runGatewayProbe({
   directory,
   kubectl,
@@ -283,6 +314,7 @@ test(
       "--context",
       `k3d-${cluster}`,
     ];
+    await verifyPreloadedAgentSandbox(kubectl, environment);
     const { stdout: helmList } = await execute(
       "helm",
       [
@@ -835,6 +867,7 @@ test(
       "--context",
       `k3d-${cluster}`,
     ];
+    await verifyPreloadedAgentSandbox(kubectl, environment);
     const envoySelector =
       "app.kubernetes.io/component=proxy,app.kubernetes.io/managed-by=envoy-gateway," +
       "gateway.envoyproxy.io/owning-gateway-namespace=oce-system," +

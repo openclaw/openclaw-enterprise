@@ -117,12 +117,15 @@ command exits before starting again.
 
 ## Local Agent Sandbox controller image pull fails
 
-Inspect controller Pod events in `agent-sandbox-system` with the
-[startup kubeconfig and context](#local-startup-stalls-on-cert-manager).
-`ImagePullBackOff` with resets from `cdn.registry.k8s.io` indicates failed image
-delivery. Verify node access to registry and redirected blob hosts. Local manifest
-overrides do not preload images. Use a [verified image cache](../deploy/local-openshell-images.md#preload-the-agent-sandbox-controller-from-a-verified-cache),
-or restore registry connectivity. Preserve image versions and TLS verification.
+Default startup imports the pinned controller before applying its manifest.
+Check registry access and the import error; changing Pod pull
+policy cannot fix preload failures.
+
+For explicit manifests, inspect Pod events using the
+[startup kubeconfig](#local-startup-stalls-on-cert-manager).
+`ImagePullBackOff` with `cdn.registry.k8s.io` resets indicates failed node delivery.
+Restore connectivity or use a [verified cache](../deploy/local-openshell-images.md#preload-the-agent-sandbox-controller-from-a-verified-cache).
+Keep image versions, TLS verification and network policies.
 
 ## Local Codex sandbox check fails
 

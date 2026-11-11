@@ -125,7 +125,7 @@ If the K3s channel lookup fails or times out, follow
 
 ### Start the OpenShell fail-closed profile
 
-For OpenShell, use the owned launcher:
+Start OpenShell:
 
 ```bash
 go build -trimpath -o bin/occ ./cmd/occ
@@ -133,17 +133,19 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 ./scripts/dev-up
 ```
 
-The CLI creates one k3d cluster with pinned OpenShell `v0.1.6`, Agent
-Sandbox, cert-manager, and Envoy Gateway assets and digest-resolved images.
-PostgreSQL, the central OpenShell Gateway, and OCE run in `oce-system`; the
-Agent Sandbox controller stays in `agent-sandbox-system`. Tenant Workspaces,
-Sandboxes, and Agent Pods use separate OCC-owned `oce-*` Namespaces. Startup
-exposes a loopback-only proxy, waits for bootstrap Namespace/Workspace readiness,
-and writes kubeconfig and the administrator service key to private state.
+The CLI creates one k3d cluster with pinned OpenShell `v0.1.6`, Agent Sandbox,
+cert-manager, and Envoy Gateway assets. PostgreSQL, the central OpenShell Gateway,
+and OCE run in `oce-system`; Agent Sandbox runs in `agent-sandbox-system`.
+Tenant Workspaces, Sandboxes, and Agent Pods use OCC-owned `oce-*` Namespaces.
+Startup exposes a loopback proxy, waits for Namespace/Workspace readiness,
+and privately writes kubeconfig and its administrator service key.
 
-If Agent Sandbox rollout fails, startup tries to report controller status, image
-IDs, and Warning reasons before rollback. It includes only these diagnostic
-fields; it omits messages, environment values, and logs.
+Agent Sandbox is imported from the host cache (or pulled
+there first), so its node does not fetch image layers. Custom manifests retain
+their image and pull policy.
+
+Before rollback, Agent Sandbox diagnostics report controller status, image IDs,
+and Warning reasons, excluding messages, environment values, and logs.
 
 Set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` to run PostgreSQL, OCC, and its
 Kubernetes worker in Compose. Startup installs private Envoy routing in k3d,
@@ -156,7 +158,7 @@ Skip manual hybrid routing.
 
 Runtime changes need [explicit source verification](../../../deploy/runtime/README.md#verify-runtime-source).
 
-First startup requires [node registry access](../operate/troubleshooting.md#local-agent-sandbox-controller-image-pull-fails).
+Image preparation requires [host registry access](../operate/troubleshooting.md#local-agent-sandbox-controller-image-pull-fails).
 For reviewed local charts and manifests, set
 `OCC_DEVELOPMENT_OPENSHELL_HELM_CHART`,
 `OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART`, and
@@ -168,7 +170,7 @@ For additional binary and endpoint rules, see [startup network policy](local-san
 Set `OCC_DEVELOPMENT_CONTAINER_ENGINE=podman` or `docker` to select the host
 engine. Kubernetes-only startup rejects Compose arguments.
 
-Startup prints the private [state directory](../../reference/settings/development.md#required-development-controller-environment)
+Startup prints its private [state directory](../../reference/settings/development.md#required-development-controller-environment)
 containing kubeconfig and credentials. Its default is `openclaw-development`
 under the temporary directory (macOS: `/private/var/folders/<id>/T`). Set absolute
 `OCC_DEVELOPMENT_STATE_DIRECTORY` for startup and cleanup to override it; parent
@@ -181,7 +183,7 @@ report removal errors alongside write errors.
 Startup refuses existing state or clusters. For source edits,
 [rebuild services](#rebuild-after-a-source-edit); cleanup discards the Installation.
 State stays mode `0700`; generated mounts are container-readable but inaccessible
-to other host users. The helper preserves the default kubeconfig and context.
+to other host users. The default kubeconfig and context stay unchanged.
 
 For separate stacks, select distinct state directories, cluster names, bridge
 subnets and published ports. Compose also needs a distinct `OCC_POSTGRES_PORT`;

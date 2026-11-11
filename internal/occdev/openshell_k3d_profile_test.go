@@ -1238,3 +1238,46 @@ func TestKubernetesOnlyPostgresReadinessUsesSelectedDatabaseOverLoopback(t *test
 		})
 	}
 }
+
+func TestAgentSandboxControllerManifestPreservesOtherResources(t *testing.T) {
+	const before = "# release metadata\napiVersion: v1\nkind: Namespace\nmetadata:\n  name: agent-sandbox-system\n---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: agent-sandbox-controller\nspec:\n  template:\n    spec:\n      containers:\n      - name: agent-sandbox-controller\n        image: registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2\n        args: [--leader-elect=true]\n      - name: other\n        image: example.invalid/other:v1\n---\n# CRD schemas and other documents must survive byte-for-byte.\nkind: CustomResourceDefinition\n"
+	image := "docker.io/openclaw-development/controller@sha256:" + strings.Repeat("a", 64)
+	actual, err := agentSandboxControllerManifest([]byte(before), image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const original = "        image: registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2\n"
+	changed := "        image: " + image + "\n        imagePullPolicy: Never\n"
+	if strings.Count(string(actual), changed) != 1 || strings.Replace(string(actual), changed, original, 1) != before {
+		t.Fatalf("controller preparation changed unrelated manifest content: %s", actual)
+	}
+	for _, invalid := range []string{
+		strings.Replace(before, original, "        image: example.invalid/changed:v2\n", 1),
+		before + before,
+	} {
+		if _, err := agentSandboxControllerManifest([]byte(invalid), image); err == nil {
+			t.Fatal("changed or ambiguous pinned controller must be rejected")
+		}
+	}
+}
+
+func TestAgentSandboxPreloadPreservesExplicitManifest(t *testing.T) {
+	state := kubernetesOnlyOpenShellState(t)
+	manifest := filepath.Join(t.TempDir(), "custom.yaml")
+	const original = "operator-owned manifest and pull policy\n"
+	if err := os.WriteFile(manifest, []byte(original), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// No engine command may run for an explicitly selected manifest.
+	t.Setenv("PATH", t.TempDir())
+	r := newRunner(Options{Repository: state.Repository})
+	r.env["OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST"] = manifest
+	actual, err := r.preloadAgentSandboxController(context.Background(), state, state.directory, manifest)
+	if err != nil || actual != manifest {
+		t.Fatalf("explicit manifest changed: %s, %v", actual, err)
+	}
+	data, err := os.ReadFile(manifest)
+	if err != nil || string(data) != original {
+		t.Fatalf("explicit manifest bytes changed: %s, %v", data, err)
+	}
+}

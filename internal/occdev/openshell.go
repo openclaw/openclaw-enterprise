@@ -192,6 +192,11 @@ func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, 
 	if err != nil {
 		return nil, err
 	}
+	advance("openshell-agent-sandbox-image")
+	manifest, err = r.preloadAgentSandboxController(ctx, state, root, manifest)
+	if err != nil {
+		return nil, err
+	}
 	advance("openshell-runtime-class")
 	runtimeClass := filepath.Join(root, "runtime-class.yaml")
 	if err := exclusiveWrite(runtimeClass, []byte(strings.Join([]string{

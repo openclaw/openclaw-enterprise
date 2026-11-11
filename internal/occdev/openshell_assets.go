@@ -17,11 +17,12 @@ import (
 )
 
 const (
-	openShellVersion           = "0.1.6"
-	openShellSourceSHA256      = "e7bce772f5837a4ffc29fb51a49381eec3d4771a9f015c75b06d4f66deb109d2"
-	agentSandboxManifestSHA256 = "230ee446d6035f631577e1c6b857f6973a8f09a0a853675d3cc34ebfe47abd6b"
-	openShellSourceArchiveURL  = "https://github.com/NVIDIA/OpenShell/archive/refs/tags/v" + openShellVersion + ".tar.gz"
-	agentSandboxManifestURL    = "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v0.5.2/sandbox.yaml"
+	agentSandboxControllerImage = "registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2@sha256:dbbad861e6c2cc0df1f7ec37dd0e2827b3d2bc051eb45855e01f94e697440403"
+	openShellVersion            = "0.1.6"
+	openShellSourceSHA256       = "e7bce772f5837a4ffc29fb51a49381eec3d4771a9f015c75b06d4f66deb109d2"
+	agentSandboxManifestSHA256  = "230ee446d6035f631577e1c6b857f6973a8f09a0a853675d3cc34ebfe47abd6b"
+	openShellSourceArchiveURL   = "https://github.com/NVIDIA/OpenShell/archive/refs/tags/v" + openShellVersion + ".tar.gz"
+	agentSandboxManifestURL     = "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v0.5.2/sandbox.yaml"
 )
 
 func (r *runner) openShellCharts(ctx context.Context, root string) (string, string, error) {
@@ -105,6 +106,45 @@ func (r *runner) agentSandboxManifest(ctx context.Context, root string) (string,
 		return "", failure, err
 	}
 	return path, "", nil
+}
+
+// Only the checksum-verified default manifest is rewritten. An explicit manifest
+// retains its operator-selected image and pull policy.
+func (r *runner) preloadAgentSandboxController(ctx context.Context, state *developmentState, root, manifest string) (string, error) {
+	if r.env["OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST"] != "" {
+		return manifest, nil
+	}
+	data, err := os.ReadFile(manifest)
+	if err != nil {
+		return "", err
+	}
+	// Reject a changed manifest shape before importing an image.
+	if _, err := agentSandboxControllerManifest(data, agentSandboxControllerImage); err != nil {
+		return "", err
+	}
+	image, err := r.importOpenShellImage(ctx, state, root, "agent-sandbox-controller", agentSandboxControllerImage, false)
+	if err != nil {
+		return "", err
+	}
+	data, err = agentSandboxControllerManifest(data, image)
+	if err != nil {
+		return "", err
+	}
+	local := filepath.Join(root, "agent-sandbox-local.yaml")
+	if err := exclusiveWrite(local, data, 0600); err != nil {
+		return "", err
+	}
+	return local, nil
+}
+
+func agentSandboxControllerManifest(data []byte, image string) ([]byte, error) {
+	// This exact block belongs to the pinned release, not an arbitrary YAML input.
+	const controller = "      - name: agent-sandbox-controller\n        image: registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2\n"
+	if strings.Count(string(data), controller) != 1 {
+		return nil, fmt.Errorf("pinned Agent Sandbox manifest must contain exactly one expected controller image")
+	}
+	local := "      - name: agent-sandbox-controller\n        image: " + image + "\n        imagePullPolicy: Never\n"
+	return []byte(strings.Replace(string(data), controller, local, 1)), nil
 }
 
 func downloadVerifiedManifest(ctx context.Context, log io.Writer, url, destination, expected string) (manifestFailure, error) {

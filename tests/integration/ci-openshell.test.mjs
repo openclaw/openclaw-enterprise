@@ -15,6 +15,7 @@ import {
   selectKubectlAsset,
   validateOpenShellSelection,
 } from "../../scripts/ci/openshell.mjs";
+import { preloadAgentSandboxController } from "../../scripts/ci/agent-sandbox.ts";
 import { withEnvironment } from "../helpers/environment.ts";
 import { commandCalls, prependPath, writeCommand } from "../helpers/fake-commands.ts";
 import {
@@ -1759,4 +1760,81 @@ test("prepareOpenShell fails before downloads when the k3d node lacks the select
       cluster.context,
     ]);
   }
+});
+
+// This exercises manifest preparation and its image-registration boundary, not a cluster.
+test("Agent Sandbox preparation uses the imported image and preserves unrelated manifest bytes", async (t) => {
+  const directory = await fixture(t);
+  const manifest = join(directory, "sandbox.yaml");
+  const source = [
+    "# upstream namespace",
+    "apiVersion: v1",
+    "kind: Namespace",
+    "metadata:",
+    "  name: agent-sandbox-system",
+    "---",
+    "apiVersion: apps/v1",
+    "kind: Deployment",
+    "metadata:",
+    "  name: agent-sandbox-controller",
+    "spec:",
+    "  template:",
+    "    spec:",
+    "      containers:",
+    "      - name: agent-sandbox-controller",
+    "        image: registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2",
+    "        args: [--leader-elect=true]",
+    "      - name: unrelated",
+    "        image: example.invalid/other:v1",
+    "---",
+    "# schemas and remaining resources stay unchanged",
+    "kind: CustomResourceDefinition",
+    "",
+  ].join("\n");
+  await writeFile(manifest, source);
+  const imported = `localhost/owned/controller@sha256:${"a".repeat(64)}`;
+  const output = await preloadAgentSandboxController(manifest, async (image) => {
+    assert.equal(
+      image,
+      "registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2@sha256:dbbad861e6c2cc0df1f7ec37dd0e2827b3d2bc051eb45855e01f94e697440403",
+    );
+    await assert.rejects(readFile(join(directory, "agent-sandbox-local.yaml")), { code: "ENOENT" });
+    return imported;
+  });
+  const prepared = await readFile(output, "utf8");
+  const replacement = `        image: ${imported}\n        imagePullPolicy: Never\n`;
+  assert.equal(prepared.split(replacement).length, 2);
+  assert.equal(
+    prepared.replace(
+      replacement,
+      "        image: registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2\n",
+    ),
+    source,
+  );
+  assert.equal(await readFile(manifest, "utf8"), source);
+});
+
+test("Agent Sandbox preparation rejects changed manifests and failed imports before producing deployment input", async (t) => {
+  const directory = await fixture(t);
+  const manifest = join(directory, "sandbox.yaml");
+  const controller =
+    "      - name: agent-sandbox-controller\n        image: registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2\n";
+  for (const invalid of ["kind: Namespace\n", controller + controller]) {
+    await writeFile(manifest, invalid);
+    await assert.rejects(
+      preloadAgentSandboxController(manifest, async () =>
+        assert.fail("invalid manifest must not import an image"),
+      ),
+      /exactly one expected controller image/,
+    );
+  }
+  await writeFile(manifest, controller);
+  const failure = new Error("image import failed");
+  await assert.rejects(
+    preloadAgentSandboxController(manifest, async () => {
+      throw failure;
+    }),
+    (error) => error === failure,
+  );
+  await assert.rejects(readFile(join(directory, "agent-sandbox-local.yaml")), { code: "ENOENT" });
 });
