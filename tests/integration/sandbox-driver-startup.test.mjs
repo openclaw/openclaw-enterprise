@@ -71,7 +71,6 @@ import {
   ScopeViolationError,
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
-import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
 import { loadInstallationFile } from "../helpers/installation-file.mjs";
 import {
   WORKSPACE_DEFAULTS,
@@ -88,6 +87,18 @@ import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
+import {
+  registerNetworkAndContainmentCases,
+  registerProcessAndFilesystemCases,
+  registerResourceAndReadinessCases,
+} from "./sandbox-driver-installation-configuration-cases.ts";
+import {
+  buildSandboxInstallation,
+  buildEndpointInstallation,
+  makeStructuralRefusal,
+  assertStartupRefusal,
+} from "./sandbox-driver-installation-fixture.ts";
+import { verifyEndpointAdmission } from "./sandbox-driver-endpoint-admission-case.ts";
 import { verifySandboxDriverHarnessObservation } from "./sandbox-driver-harness-observation-cases.ts";
 import { registerSandboxDriverIpv6EndpointCases } from "./sandbox-driver-ipv6-endpoint-cases.ts";
 import { registerSandboxDriverNamespaceGatewayCleanupCases } from "./sandbox-driver-namespace-gateway-cleanup-cases.ts";
@@ -103,53 +114,7 @@ const { KubernetesObjectApi } = controllerRequire("@kubernetes/client-node");
 const { ObjectSerializer } = controllerRequire("@kubernetes/client-node/dist/serializer.js");
 
 function sandboxInstallation() {
-  const configuration = installation();
-  configuration.drivers.compute.configuration.servicePrincipalCredentials = { mode: "disabled" };
-  configuration.backend = [
-    {
-      id: "openshell",
-      type: "openshell",
-      configuration: {
-        serviceName: "openshell-gateway",
-        port: 50051,
-        insecureTransport: "network-policy",
-      },
-      drivers: { sandbox: "openshell-sandbox", credential_gateway: "openshell-credentials" },
-    },
-  ];
-  configuration.drivers.credential_gateway = {
-    id: "openshell-credentials",
-    configuration: { binaries: ["/app/bin/model-client"] },
-  };
-  configuration.drivers.sandbox = {
-    id: "openshell-sandbox",
-    configuration: {
-      gateway: {
-        workspaceMode: "operator",
-      },
-      kubernetes: {
-        runtimeClassName: "openshell-sandbox",
-        userNamespaces: false,
-        serviceAccount: { mode: "gatewayConfigured" },
-        sandboxDataMount: {
-          subPath: "workspace",
-          mountPath: "/sandbox/enterprise",
-          readOnly: false,
-        },
-      },
-      policy: {
-        process: { runAsUser: "1000", runAsGroup: "1000" },
-        networkPolicies: [
-          {
-            name: "model-egress",
-            endpoints: [{ host: "api.openai.com", ports: [443] }],
-            binaries: [{ path: "/app/bin/model-client" }],
-          },
-        ],
-      },
-    },
-  };
-  return configuration;
+  return buildSandboxInstallation();
 }
 
 function backendFor(gatewayClient) {
@@ -255,29 +220,19 @@ function codexPlugin(appServer) {
 }
 
 const structuralRefusal = (path, keyword, code = "INVALID_VALUE") => [
-  { path, code, message: `Configuration does not satisfy ${keyword}.` },
+  ...makeStructuralRefusal(path, keyword, code),
 ];
 
 /** Startup refuses the installation `change` makes to a fresh `base()` with `expected`. */
 async function rejectsAtStartup(t, change, expected, base = sandboxInstallation) {
   const configuration = base();
   change(configuration);
-  if (expected instanceof RegExp) {
-    await assert.rejects(loadInstallationFile(t, configuration), expected);
-    return;
-  }
-  await assert.rejects(loadInstallationFile(t, configuration), (error) => {
-    assert.ok(error instanceof SharedConfigurationValidationError);
-    assert.deepEqual(error.error.details, expected);
-    return true;
-  });
+  await assertStartupRefusal(t, configuration, expected);
 }
 
 /** An installation whose OpenShell Backend dials `endpoint` over a declared NetworkPolicy. */
 function endpointInstallation(endpoint) {
-  const configuration = sandboxInstallation();
-  configuration.backend[0].configuration = { endpoint, insecureTransport: "network-policy" };
-  return configuration;
+  return buildEndpointInstallation(endpoint);
 }
 
 function namespaceContext(name = "oce-123456789012345") {
@@ -4018,19 +3973,19 @@ const LANDLOCK = structuralRefusal("/policy/landlockCompatibility", "const");
 
 const sandboxOf = (c) => c.drivers.sandbox.configuration;
 const policiesOf = (c) => sandboxOf(c).policy.networkPolicies;
-const endpointOf = (c) => policiesOf(c)[0].endpoints[0];
+const firstPolicyOf = (c) => policiesOf(c)[0];
+const endpointOf = (c) => firstPolicyOf(c).endpoints[0];
 const readinessWait = {
   serviceName: "openshell-gateway",
   podSelector: { "app.kubernetes.io/name": "openshell" },
 };
 
-test("startup rejects OpenShell network values outside the v0.1 protocol enums", (t) =>
-  rejectsAtStartup(t, (c) => (endpointOf(c).tls = "inspect"), TLS_MODE));
-
-test("startup refuses OpenShell filesystem modes that can weaken containment", async (t) => {
-  for (const mode of ["best_effort", "hard-requirement"]) {
-    await rejectsAtStartup(t, (c) => (sandboxOf(c).policy.landlockCompatibility = mode), LANDLOCK);
-  }
+registerNetworkAndContainmentCases({
+  rejectsAtStartup,
+  sandboxOf,
+  endpointOf,
+  TLS_MODE,
+  LANDLOCK,
 });
 
 // The gateway refuses these in CreateSandbox, which runs only after a dedicated deploy has
@@ -4041,108 +3996,15 @@ const IDENTITY =
 const FILESYSTEM_PATH =
   "Use an absolute path that is not the filesystem root and has no .. segment.";
 
-test("startup refuses OpenShell process identities the gateway refuses", async (t) => {
-  for (const [field, value] of [
-    ["runAsUser", "root"],
-    ["runAsUser", "0"],
-    ["runAsGroup", "users"],
-    ["runAsGroup", "4294967295"],
-    ["runAsUser", "-1"],
-  ]) {
-    await rejectsAtStartup(
-      t,
-      (c) => (sandboxOf(c).policy.process[field] = value),
-      invalidValue(`/policy/process/${field}`, IDENTITY),
-    );
-  }
-  const required = (path) => [
-    { path, code: "REQUIRED", message: "This configuration field is required." },
-  ];
-  await rejectsAtStartup(
-    t,
-    (c) => delete sandboxOf(c).policy.process.runAsGroup,
-    required("/policy/process/runAsGroup"),
-  );
-  await rejectsAtStartup(t, (c) => delete sandboxOf(c).policy.process, required("/policy/process"));
-  // Control: the gateway's own name, the top of its numeric range, and the spellings its
-  // u32 parser also accepts load.
-  for (const value of ["sandbox", "4294967294", "+5", "007"]) {
-    const configuration = sandboxInstallation();
-    sandboxOf(configuration).policy.process = { runAsUser: value, runAsGroup: value };
-    await loadInstallationFile(t, configuration);
-  }
-});
-
-test("startup refuses OpenShell filesystem paths before any Sandbox is created", async (t) => {
-  for (const [filesystem, field] of [
-    [{ readOnly: ["usr"] }, "readOnly/0"],
-    [{ readWrite: ["/tmp", "/"] }, "readWrite/1"],
-    [{ readWrite: ["//"] }, "readWrite/0"],
-    [{ readOnly: ["/usr/../etc"] }, "readOnly/0"],
-    [{ readOnly: ["/usr/.."] }, "readOnly/0"],
-    [{ readOnly: ["/usr\0/etc"] }, "readOnly/0"],
-  ]) {
-    await rejectsAtStartup(
-      t,
-      (c) => (sandboxOf(c).policy.filesystem = filesystem),
-      invalidValue(`/policy/filesystem/${field}`, FILESYSTEM_PATH),
-    );
-  }
-  // A read-only data mount cannot be granted read-write.
-  await rejectsAtStartup(
-    t,
-    (c) => {
-      sandboxOf(c).kubernetes.sandboxDataMount.readOnly = true;
-      sandboxOf(c).policy.filesystem = { readWrite: ["/tmp", "/sandbox/enterprise"] };
-    },
-    invalidValue(
-      "/policy/filesystem/readWrite/1",
-      "The Sandbox data mount is read-only; remove it from readWrite.",
-    ),
-  );
-  // Every refused setting is named at once, not only the first.
-  await rejectsAtStartup(
-    t,
-    (c) => {
-      sandboxOf(c).policy.process.runAsUser = "root";
-      sandboxOf(c).policy.filesystem = { readOnly: ["usr"] };
-    },
-    [
-      ...invalidValue("/policy/process/runAsUser", IDENTITY),
-      ...invalidValue("/policy/filesystem/readOnly/0", FILESYSTEM_PATH),
-    ],
-  );
-  // Control: a writable data mount may be listed in readWrite.
-  const writable = sandboxInstallation();
-  sandboxOf(writable).policy.filesystem = { readWrite: ["/sandbox/enterprise"] };
-  await loadInstallationFile(t, writable);
-  await rejectsAtStartup(
-    t,
-    (c) => (sandboxOf(c).policy.filesystem = { includeWorkdir: "no" }),
-    structuralRefusal("/policy/filesystem/includeWorkdir", "type", "INVALID_TYPE"),
-  );
-  await rejectsAtStartup(
-    t,
-    (c) => (sandboxOf(c).policy.filesystem = { readwrite: ["/data"] }),
-    structuralRefusal("/policy/filesystem", "additionalProperties", "UNKNOWN_FIELD"),
-  );
-});
-
-// A quoted "false" reached the Gateway as user_namespaces=true, and an endpoint without ports
-// started and failed every CreateSandbox (findings 2355, 2354).
-test("startup refuses a non-boolean userNamespaces and an endpoint without ports", async (t) => {
-  for (const userNamespaces of ["false", 0, null]) {
-    await rejectsAtStartup(
-      t,
-      (c) => (sandboxOf(c).kubernetes.userNamespaces = userNamespaces),
-      structuralRefusal("/kubernetes/userNamespaces", "type", "INVALID_TYPE"),
-    );
-  }
-  await rejectsAtStartup(
-    t,
-    (c) => (sandboxOf(c).policy.networkPolicies[0].endpoints[0].ports = []),
-    structuralRefusal("/policy/networkPolicies/0/endpoints/0/ports", "minItems"),
-  );
+registerProcessAndFilesystemCases({
+  sandboxInstallation,
+  rejectsAtStartup,
+  structuralRefusal,
+  sandboxOf,
+  endpointOf,
+  invalidValue,
+  IDENTITY,
+  FILESYSTEM_PATH,
 });
 
 // Typos in these objects were ignored, and the Gateway refused Agent resources it cannot
@@ -4387,172 +4249,16 @@ test("startup refuses NetworkPolicy ingress rules that are not objects", async (
   }
 });
 
-test("startup refuses OpenShell Agent resources that are not objects", async (t) => {
-  for (const [field, value] of [
-    ["requests", "1"],
-    ["limits", ["x"]],
-  ]) {
-    await rejectsAtStartup(
-      t,
-      (c) => (sandboxOf(c).kubernetes.agentResources = { [field]: value }),
-      structuralRefusal(`/kubernetes/agentResources/${field}`, "type", "INVALID_TYPE"),
-    );
-  }
-});
-
-test("startup rejects OpenShell network policies without binary identities", (t) =>
-  rejectsAtStartup(
-    t,
-    (c) => (policiesOf(c)[0].binaries = []),
-    structuralRefusal("/policy/networkPolicies/0/binaries", "minItems"),
-  ));
-
-test("startup rejects duplicate OpenShell network policy names", async (t) => {
-  for (const [name, expected] of [
-    [
-      "model-egress",
-      [
-        {
-          path: "/policy/networkPolicies/1/name",
-          code: "INVALID_VALUE",
-          message: "Network policy names must be unique.",
-        },
-      ],
-    ],
-    [
-      "workspace-node-enrollment",
-      [
-        {
-          path: "/policy/networkPolicies/1/name",
-          code: "INVALID_VALUE",
-          message: "This policy name is reserved for platform networking.",
-        },
-      ],
-    ],
-  ]) {
-    await rejectsAtStartup(t, (c) => policiesOf(c).push({ ...policiesOf(c)[0], name }), expected);
-  }
-});
-
-test("startup rejects inherited OpenShell network enum property names", async (t) => {
-  for (const [field, value] of [
-    ["tls", "toString"],
-    ["enforcement", "constructor"],
-    ["access", "__proto__"],
-  ]) {
-    await rejectsAtStartup(
-      t,
-      (c) => (endpointOf(c)[field] = value),
-      structuralRefusal(`/policy/networkPolicies/0/endpoints/0/${field}`, "enum"),
-    );
-  }
-});
-
-test("startup rejects the deprecated OpenShell passthrough spelling", (t) =>
-  rejectsAtStartup(t, (c) => (endpointOf(c).tls = "passthrough"), TLS_MODE));
-
-test("startup rejects the removed per-Sandbox OpenShell ServiceAccount mode", (t) =>
-  rejectsAtStartup(
-    t,
-    (c) => (sandboxOf(c).kubernetes.serviceAccount.mode = "driverConfig"),
-    structuralRefusal("/kubernetes/serviceAccount/mode", "const"),
-  ));
-
-test("startup rejects an invalid OpenShell gateway readiness wait", async (t) => {
-  for (const [readiness, expected] of [
-    [
-      { ...readinessWait, timeoutMs: 0 },
-      structuralRefusal("/gateway/readiness/timeoutMs", "minimum"),
-    ],
-    // A Node.js timer fires a longer delay after 1 ms, so the wait would poll back to back.
-    [
-      { ...readinessWait, timeoutMs: 1_000, pollIntervalMs: 2_147_483_648 },
-      structuralRefusal("/gateway/readiness/pollIntervalMs", "maximum"),
-    ],
-    [
-      { ...readinessWait },
-      [
-        {
-          path: "/gateway/readiness/timeoutMs",
-          code: "REQUIRED",
-          message: "This configuration field is required.",
-        },
-      ],
-    ],
-  ]) {
-    await rejectsAtStartup(t, (c) => (sandboxOf(c).gateway.readiness = readiness), expected);
-  }
-});
-
-test("shipped startup names a rejected OpenShell policy without logging its name", async (t) => {
-  const directory = await temporaryDirectory(t, "occ-policy-name-");
-  const template = sandboxInstallation().drivers.sandbox.configuration.policy.networkPolicies[0];
-  const planted = "planted-policy-token";
-
-  function start(policies) {
-    const configuration = sandboxInstallation();
-    configuration.drivers.sandbox.configuration.policy.networkPolicies = policies;
-    const path = join(directory, "installation.yaml");
-    return writeFile(path, JSON.stringify(configuration), "utf8").then(() =>
-      spawnSync(process.execPath, ["apps/controller/src/server.mjs"], {
-        cwd: process.cwd(),
-        env: {
-          PATH: process.env.PATH,
-          NODE_ENV: "development",
-          OCC_HOST: "127.0.0.1",
-          OCC_PORT: "18081",
-          OCC_AUTH_BASE_URL: "https://console.oce.localhost",
-          OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.localhost",
-          OCC_CONFIG_PATH: path,
-        },
-        encoding: "utf8",
-        timeout: 20_000,
-      }),
-    );
-  }
-
-  function diagnostic(server) {
-    assert.equal(server.status, 1, server.stderr);
-    const event = server.stderr
-      .split("\n")
-      .filter((line) => line.startsWith("{"))
-      .map((line) => JSON.parse(line))
-      .find((line) => line.event === "startup-error");
-    assert.ok(event, server.stderr);
-    return event;
-  }
-
-  const duplicate = await start([
-    { ...template, name: planted },
-    { ...template, name: planted },
-  ]);
-  const duplicateEvent = diagnostic(duplicate);
-  assert.equal(duplicateEvent.code, "DRIVER_CONFIGURATION_INVALID");
-  assert.deepEqual(duplicateEvent.details, [
-    {
-      path: "/policy/networkPolicies/1/name",
-      code: "INVALID_VALUE",
-      message: "Network policy names must be unique.",
-    },
-  ]);
-  assert.equal(duplicateEvent.reason, undefined);
-  assert.equal(`${duplicate.stdout}${duplicate.stderr}`.includes(planted), false);
-
-  const reserved = await start([
-    { ...template, name: "model-egress" },
-    { ...template, name: "workspace-node-enrollment" },
-  ]);
-  const reservedEvent = diagnostic(reserved);
-  assert.equal(reservedEvent.code, "DRIVER_CONFIGURATION_INVALID");
-  assert.deepEqual(reservedEvent.details, [
-    {
-      path: "/policy/networkPolicies/1/name",
-      code: "INVALID_VALUE",
-      message: "This policy name is reserved for platform networking.",
-    },
-  ]);
-  assert.equal(reservedEvent.reason, undefined);
-  assert.equal(`${reserved.stdout}${reserved.stderr}`.includes("workspace-node-enrollment"), false);
+registerResourceAndReadinessCases({
+  sandboxInstallation,
+  rejectsAtStartup,
+  structuralRefusal,
+  sandboxOf,
+  policiesOf,
+  firstPolicyOf,
+  endpointOf,
+  TLS_MODE,
+  readinessWait,
 });
 
 /**
@@ -5505,88 +5211,7 @@ test("OpenShell startup admits exactly the endpoints both consumers can parse an
     service: (endpoint) =>
       serviceTarget({ endpoint, requestTimeoutMs: 1000 }, "http://service.example.test/"),
   };
-  const throws = (parse, endpoint) => {
-    try {
-      parse(endpoint);
-      return false;
-    } catch {
-      return true;
-    }
-  };
-  // [form, admitted]: one row per shape, each spelled bare, http:// and https:// where it applies.
-  const rows = [
-    ["gateway.example.test:8080", true],
-    ["gateway.example.test:1", true],
-    ["gateway.example.test:65535", true],
-    ["gateway.example.test:080", true],
-    ["127.0.0.1:8080", true],
-    ["192.168.1.1:8080", true],
-    ["http://192.168.1.1:8080", true],
-    ["[::1]:8080", true],
-    ["gateway.example.test:0", false],
-    ["gateway.example.test:00", false],
-    ["gateway.example.test:65536", false],
-    ["gateway.example.test:99999", false],
-    ["1.2.3.999:8080", false],
-    ["gate%way.example.test:8080", false],
-    ["[::1]:0", false],
-    ["[::1]:65536", false],
-    ["gateway.example.test?x:8080", false],
-    ["user@gateway.example.test:8080", false],
-    // An empty userinfo hides a colon before the host.
-    [":@gateway.example.test:8080", false],
-    ["http://gateway.example.test", true],
-    ["http://gateway.example.test:8080", true],
-    ["http://[::1]:8080", true],
-    ["http://gateway.example.test:0", false],
-    ["http://gateway.example.test:65536", false],
-    ["http://1.2.3.999:8080", false],
-    ["http://gate%way.example.test:8080", false],
-    // An origin carries no path.
-    ["http://gateway.example.test:8080/grpc", false],
-    ["https://gateway.example.test", true],
-    ["https://gateway.example.test:8443", true],
-    ["https://[::1]:8443", true],
-    ["https://gateway.example.test:0", false],
-    ["https://gateway.example.test:65536", false],
-    ["https://1.2.3.999:8443", false],
-  ];
-  const failing = (endpoint) =>
-    Object.entries(consumers)
-      .filter(([, parse]) => throws(parse, endpoint))
-      .map(([name]) => name);
-  for (const [endpoint, admitted] of rows) {
-    const configuration = endpointInstallation(endpoint);
-    const failedConsumers = failing(endpoint);
-    if (admitted) {
-      await loadInstallationFile(t, configuration);
-      assert.deepEqual(failedConsumers, [], `${endpoint}: admitted but a consumer throws`);
-    } else {
-      await assert.rejects(
-        loadInstallationFile(t, configuration),
-        /configuration\.endpoint must be host:port or an http or https origin, with a port from 1 to 65535/,
-        endpoint,
-      );
-    }
-    // Startup never admits what either consumer would throw on at first use.
-    if (failedConsumers.length > 0) {
-      assert.equal(admitted, false, `${endpoint}: ${failedConsumers.join(", ")} throws`);
-    }
-  }
-  for (const endpoint of [
-    "http://192.168.1:8080",
-    "192.168.1:8080",
-    "2130706433:8080",
-    "http://0177.0.0.1:8080",
-    "http://127.1:8080",
-  ]) {
-    await assert.rejects(
-      loadInstallationFile(t, endpointInstallation(endpoint)),
-      /configuration\.endpoint IPv4 host must be four decimal octets from 0 to 255 with no leading zeros/,
-      endpoint,
-    );
-    assert.deepEqual(failing(endpoint).sort(), ["grpc", "service"], endpoint);
-  }
+  await verifyEndpointAdmission(t, endpointInstallation, consumers);
 });
 
 // These codecs test the stock/product boundary, not installed supervisor capabilities.
