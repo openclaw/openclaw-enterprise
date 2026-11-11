@@ -197,6 +197,10 @@ test("startup composes both OpenShell members from one Backend for static source
     async serviceWebSocketHandshake() {
       return true;
     },
+    async serviceCodexReadinessStatus(_url, _bearer, requirePat) {
+      assert.equal(requirePat, false);
+      return "serving";
+    },
     async getSandboxProviderStatus(workspace, name, provider, signal, receipt) {
       calls.push(["status", workspace, name, provider, receipt]);
       return {
@@ -271,6 +275,7 @@ test("startup composes both OpenShell members from one Backend for static source
     {
       ...installationControllerOptions(loaded.installation),
       state: admissionState,
+      namespaceLifecycleBindings: loaded.namespaceLifecycleBindings,
       createId(kind) {
         if (kind === "namespace") {
           return tenant.id;

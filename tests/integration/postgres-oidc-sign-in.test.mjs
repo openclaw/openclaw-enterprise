@@ -13,8 +13,6 @@ import {
   fakeGoogle,
   fakeOidc,
   fixtureOidcIssuer,
-  githubSignIn,
-  githubUpgradeSettings,
   googleSignIn,
   googleUpgradeSettings,
   loginDenialCount,
@@ -24,7 +22,6 @@ import {
   passwordSignIn,
   readAccount,
   signedInHeaders,
-  startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { injectLocalhost } from "../helpers/inject-json.mjs";
@@ -42,8 +39,6 @@ const secrets = {
   "occ-oidc-login/client-secret": clientSecret,
   "occ-google-login/client-id": googleClientId,
   "occ-google-login/client-secret": "oidc-suite-google-client-secret",
-  "occ-github-login/client-id": "oidc-suite-github-client-id",
-  "occ-github-login/client-secret": "oidc-suite-github-client-secret",
 };
 const instance = (issuer) => providerInstanceId("oidc", { issuer: issuer.issuer, clientId });
 const oidcProviderId = instance(fixtureOidcIssuer);
@@ -57,7 +52,6 @@ const strangerSubject = "auth0|6500000000000000000000a2";
 const disabledSubject = "auth0|6500000000000000000000a3";
 const bothSubject = "auth0|6500000000000000000000a4";
 const bothGoogleSubject = "110000000000000000044";
-const bothGithubSubject = "9600004";
 
 const recoveryOnly = (settings) =>
   Object.freeze({ ...settings, OCC_AUTH_PASSWORD_SIGN_IN: "recovery-only" });
@@ -79,7 +73,6 @@ test(
         password: "oidc-member-password",
         secrets,
         // The side-by-side subtest starts GitHub; until then no GitHub stand-in runs.
-        github: false,
       },
     );
     const idp = fakeOidc(t, { clientId, clientSecret });
@@ -142,7 +135,6 @@ test(
           [member.id, disabled.id, both.id, stranded.id].sort(),
         );
         assert.deepEqual((await app.inject({ url: "/api/auth/providers" })).json().data, {
-          github: false,
           google: false,
           oidc: true,
           oidcSignIn: { label: "Acme SSO", authorizationUrl: fixtureOidcIssuer.authorizationUrl },
@@ -156,7 +148,7 @@ test(
         // Ordinary passwords are refused; the recovery account's still signs in.
         assert.equal((await passwordSignIn(app, origin, member, address())).statusCode, 401);
         adminHeaders = await signedInHeaders(app, origin, admin, address());
-        for (const provider of ["github", "google"]) {
+        for (const provider of ["google"]) {
           const start = await startSignIn(provider);
           assert.equal(start.statusCode, 403, `${provider} stays unconfigured`);
         }
@@ -198,7 +190,26 @@ test(
 
       const signIn = await assertSignIn(memberSubject, member.id);
       const setCookies = [signIn.callback.headers["set-cookie"]].flat();
-      assert.ok(setCookies.some((cookie) => cookie.startsWith("__Host-occ_login_receipt=")));
+      const sessionCookie = setCookies.find(
+        (cookie) =>
+          cookie.startsWith("__Secure-openclaw_occ_shared.session_token=") &&
+          !/Max-Age=0(?:;|$)/i.test(cookie),
+      );
+      assert.ok(sessionCookie, "OIDC issues the shared OCE session cookie");
+      assert.match(sessionCookie, /; Domain=oce\.example\.internal(?:;|$)/i);
+      // Provider bindings and device hints stay on the Console origin, never Agent hosts.
+      const startCookies = [signIn.start.headers["set-cookie"]].flat();
+      for (const [cookies, name] of [
+        [startCookies, "__Host-occ_login_attempt"],
+        [setCookies, "__Host-occ_login_receipt"],
+        [setCookies, "__Host-occ_known_device"],
+      ]) {
+        const cookie = cookies.find(
+          (value) => value.startsWith(`${name}=`) && !/Max-Age=0(?:;|$)/i.test(value),
+        );
+        assert.ok(cookie, name);
+        assert.doesNotMatch(cookie, /; Domain=/i);
+      }
       const exchanged = await injectLocalhost(app, "POST", "/api/auth/providers/oidc/result", {
         remoteAddress: address(),
         session: { cookie: signIn.cookie, origin },
@@ -311,6 +322,7 @@ test(
       assert.deepEqual(refusals.at(-1).details, {
         provider: "oidc",
         userId: disabled.id,
+        subject: disabledSubject,
         attemptId,
       });
     });
@@ -361,155 +373,130 @@ test(
       await assertSignIn(memberSubject, member.id);
     });
 
-    await t.test(
-      "GitHub, Google and OIDC sign in side by side with distinct instances",
-      async () => {
-        await app.close();
-        app = undefined;
-        idp.issuer = fixtureOidcIssuer;
-        idp.tokenAuth = "client_secret_post";
-        await startFakeGitHub(t);
-        const google = fakeGoogle(t, {
-          clientId: googleClientId,
-          clientSecret: "oidc-suite-google-client-secret",
-        });
-        app = await composeApp({
-          ...githubUpgradeSettings(admin.id),
-          ...googleUpgradeSettings(admin.id),
-          ...oidcUpgradeSettings(admin.id),
-        });
-        adminHeaders = await signedInHeaders(app, origin, admin, address());
-        const discovery = (await app.inject({ url: "/api/auth/providers" })).json().data;
-        assert.deepEqual(
-          [discovery.github, discovery.google, discovery.oidc, discovery.password],
-          [true, true, true, true],
-        );
-        for (const [subject, provider] of [
-          [bothSubject, "oidc"],
-          [bothGoogleSubject, "google"],
-          [bothGithubSubject, "github"],
-        ]) {
-          const attached = await attach(both.id, subject, provider);
-          assert.equal(attached.statusCode, 200, attached.body);
+    await t.test("Google and OIDC sign in side by side with distinct instances", async () => {
+      await app.close();
+      app = undefined;
+      idp.issuer = fixtureOidcIssuer;
+      idp.tokenAuth = "client_secret_post";
+      const google = fakeGoogle(t, {
+        clientId: googleClientId,
+        clientSecret: "oidc-suite-google-client-secret",
+      });
+      app = await composeApp({
+        ...googleUpgradeSettings(admin.id),
+        ...oidcUpgradeSettings(admin.id),
+      });
+      adminHeaders = await signedInHeaders(app, origin, admin, address());
+      const discovery = (await app.inject({ url: "/api/auth/providers" })).json().data;
+      assert.deepEqual([discovery.google, discovery.oidc, discovery.password], [true, true, true]);
+      for (const [subject, provider] of [
+        [bothSubject, "oidc"],
+        [bothGoogleSubject, "google"],
+      ]) {
+        const attached = await attach(both.id, subject, provider);
+        assert.equal(attached.statusCode, 200, attached.body);
+      }
+      const viaOidc = await assertSignIn(bothSubject, both.id);
+      const viaGoogle = await googleSignIn(
+        app,
+        origin,
+        google,
+        { subject: bothGoogleSubject },
+        address(),
+      );
+      assert.equal(viaGoogle.callback.headers.location, "/console/", viaGoogle.callback.body);
+      for (const [provider, signIn] of [
+        ["oidc", viaOidc],
+        ["google", viaGoogle],
+      ]) {
+        const cookie = cookieHeaderFromSetCookie(signIn.callback.headers["set-cookie"]);
+        const confirm = (name, headers = {}, payload = { attemptId: signIn.attemptId }) =>
+          injectLocalhost(app, "POST", `/api/auth/providers/${name}/result`, {
+            remoteAddress: address(),
+            headers: { origin, cookie, ...headers },
+            body: payload,
+          });
+        // All providers are configured and the session/attempt are valid. Only
+        // the callback's provider may exchange this receipt, without consuming
+        // it on a refusal and denying the correct route its subsequent exchange.
+        for (const other of ["google", "oidc"].filter((name) => name !== provider)) {
+          const refused = await confirm(other);
+          assert.equal(refused.statusCode, 401, `${provider} receipt at ${other}: ${refused.body}`);
+          assert.equal(refused.headers["set-cookie"], undefined, "refusal preserves the receipt");
         }
-        const viaOidc = await assertSignIn(bothSubject, both.id);
-        const viaGoogle = await googleSignIn(
-          app,
-          origin,
-          google,
-          { subject: bothGoogleSubject },
-          address(),
+        assert.equal(
+          (await confirm(provider, { origin: "https://other.example.test" })).statusCode,
+          403,
         );
-        assert.equal(viaGoogle.callback.headers.location, "/console/", viaGoogle.callback.body);
-        const viaGithub = await githubSignIn(app, origin, bothGithubSubject, address());
-        assert.equal(viaGithub.callback.headers.location, "/console/", viaGithub.callback.body);
-        for (const [provider, signIn] of [
-          ["oidc", viaOidc],
-          ["google", viaGoogle],
-          ["github", viaGithub],
-        ]) {
-          const cookie = cookieHeaderFromSetCookie(signIn.callback.headers["set-cookie"]);
-          const confirm = (name, headers = {}, payload = { attemptId: signIn.attemptId }) =>
-            injectLocalhost(app, "POST", `/api/auth/providers/${name}/result`, {
-              remoteAddress: address(),
-              headers: { origin, cookie, ...headers },
-              body: payload,
-            });
-          // All providers are configured and the session/attempt are valid. Only
-          // the callback's provider may exchange this receipt, without consuming
-          // it on a refusal and denying the correct route its subsequent exchange.
-          for (const other of ["github", "google", "oidc"].filter((name) => name !== provider)) {
-            const refused = await confirm(other);
-            assert.equal(
-              refused.statusCode,
-              401,
-              `${provider} receipt at ${other}: ${refused.body}`,
-            );
-            assert.equal(refused.headers["set-cookie"], undefined, "refusal preserves the receipt");
-          }
-          assert.equal(
-            (await confirm(provider, { origin: "https://other.example.test" })).statusCode,
-            403,
-          );
-          assert.equal(
-            (await confirm(provider, {}, { attemptId: "x".repeat(43) })).statusCode,
-            401,
-          );
+        assert.equal((await confirm(provider, {}, { attemptId: "x".repeat(43) })).statusCode, 401);
 
-          const receipt = cookie
-            .split("; ")
-            .find((part) => part.startsWith("__Host-occ_login_receipt="))
-            .slice("__Host-occ_login_receipt=".length);
-          const [encoded] = receipt.split(".");
-          const fields = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
-          const receiptCookie = (value) =>
-            cookie.replace(
-              `__Host-occ_login_receipt=${receipt}`,
-              `__Host-occ_login_receipt=${value}`,
-            );
-          // Correctly authenticated legacy or mismatched fields must still fail.
-          // These deliberately malformed inputs isolate validation from MAC failure.
-          const signed = (value) => {
-            const payload = Buffer.from(JSON.stringify(value)).toString("base64url");
-            const signature = createHmac("sha256", authSecret)
-              .update(`occ-login-receipt\0${payload}`)
-              .digest("base64url");
-            return `${payload}.${signature}`;
-          };
-          for (const invalid of [
-            { s: fields.s, a: fields.a, e: fields.e },
-            { ...fields, v: 1 },
-            { ...fields, p: "" },
-            { ...fields, p: null },
-            { ...fields, p: `${provider}:${"0".repeat(64)}` },
-            { ...fields, e: Date.now() - 1 },
-          ]) {
-            assert.equal(
-              (await confirm(provider, { cookie: receiptCookie(signed(invalid)) })).statusCode,
-              401,
-            );
-          }
-          const tampered = `${encoded}.${"x".repeat(43)}`;
+        const receipt = cookie
+          .split("; ")
+          .find((part) => part.startsWith("__Host-occ_login_receipt="))
+          .slice("__Host-occ_login_receipt=".length);
+        const [encoded] = receipt.split(".");
+        const fields = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+        const receiptCookie = (value) =>
+          cookie.replace(
+            `__Host-occ_login_receipt=${receipt}`,
+            `__Host-occ_login_receipt=${value}`,
+          );
+        // Correctly authenticated legacy or mismatched fields must still fail.
+        // These deliberately malformed inputs isolate validation from MAC failure.
+        const signed = (value) => {
+          const payload = Buffer.from(JSON.stringify(value)).toString("base64url");
+          const signature = createHmac("sha256", authSecret)
+            .update(`occ-login-receipt\0${payload}`)
+            .digest("base64url");
+          return `${payload}.${signature}`;
+        };
+        for (const invalid of [
+          { s: fields.s, a: fields.a, e: fields.e },
+          { ...fields, v: 1 },
+          { ...fields, p: "" },
+          { ...fields, p: null },
+          { ...fields, p: `${provider}:${"0".repeat(64)}` },
+          { ...fields, e: Date.now() - 1 },
+        ]) {
           assert.equal(
-            (await confirm(provider, { cookie: receiptCookie(tampered) })).statusCode,
+            (await confirm(provider, { cookie: receiptCookie(signed(invalid)) })).statusCode,
             401,
           );
-          // A valid receipt cannot use a different live cookie session either.
-          assert.equal(
-            (
-              await confirm(provider, {
-                cookie: `${adminHeaders.cookie}; __Host-occ_login_receipt=${receipt}`,
-              })
-            ).statusCode,
-            401,
-          );
-          const exchanged = await confirm(provider);
-          assert.equal(exchanged.statusCode, 200, exchanged.body);
-          assert.equal(
-            exchanged.json().data.sessionKey,
-            (await currentSession(app, cookie)).sessionKey,
-          );
-          assert.equal((await confirm(provider)).statusCode, 401, "a receipt exchanges only once");
         }
-        const methods = (
-          await pool.query(
-            `SELECT provider_id FROM occ.account
-             WHERE user_id = $1 AND identity_only ORDER BY provider_id`,
-            [both.id],
-          )
-        ).rows.map(({ provider_id: providerId }) => providerId.split(":")[0]);
-        assert.deepEqual(methods, ["github", "google", "oidc"]);
-        // An OIDC subject never signs in through Google, nor the reverse.
-        const crossed = await googleSignIn(
-          app,
-          origin,
-          google,
-          { subject: bothSubject },
-          address(),
+        const tampered = `${encoded}.${"x".repeat(43)}`;
+        assert.equal(
+          (await confirm(provider, { cookie: receiptCookie(tampered) })).statusCode,
+          401,
         );
-        assert.equal(crossed.callback.headers.location, "/console/?authError=google");
-        await assertRefused({ subject: bothGoogleSubject }, "Google subject at OIDC");
-      },
-    );
+        // A valid receipt cannot use a different live cookie session either.
+        assert.equal(
+          (
+            await confirm(provider, {
+              cookie: `${adminHeaders.cookie}; __Host-occ_login_receipt=${receipt}`,
+            })
+          ).statusCode,
+          401,
+        );
+        const exchanged = await confirm(provider);
+        assert.equal(exchanged.statusCode, 200, exchanged.body);
+        assert.equal(
+          exchanged.json().data.sessionKey,
+          (await currentSession(app, cookie)).sessionKey,
+        );
+        assert.equal((await confirm(provider)).statusCode, 401, "a receipt exchanges only once");
+      }
+      const methods = (
+        await pool.query(
+          `SELECT provider_id FROM occ.account
+             WHERE user_id = $1 AND identity_only ORDER BY provider_id`,
+          [both.id],
+        )
+      ).rows.map(({ provider_id: providerId }) => providerId.split(":")[0]);
+      assert.deepEqual(methods, ["google", "oidc"]);
+      // An OIDC subject never signs in through Google, nor the reverse.
+      const crossed = await googleSignIn(app, origin, google, { subject: bothSubject }, address());
+      assert.equal(crossed.callback.headers.location, "/console/?authError=google");
+      await assertRefused({ subject: bothGoogleSubject }, "Google subject at OIDC");
+    });
   },
 );

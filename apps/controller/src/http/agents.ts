@@ -2,6 +2,8 @@ import {
   WORKSPACE_DEFAULTS_ID,
   harnessAuthBindingFromSnapshot,
   normalizeInitialWorkspaceFiles,
+  type Agent,
+  type OpenClawConfigurationDocument,
   type AgentRead,
   type AgentRevisionRead,
   type AgentRuntimeCredentialsBody,
@@ -190,6 +192,31 @@ function validateWorkspaceSetup(
 // Closed Fastify body schemas admit these input fields. Handlers supply route scope
 // after spreading the body; omitted fields and explicit null stay distinct.
 export function createAgentHandlers(options: AgentHandlerOptions) {
+  function prepareBrowserAccess(
+    agent: Pick<Agent, "id" | "namespaceId">,
+    values: Readonly<OpenClawConfigurationDocument>,
+  ): Readonly<OpenClawConfigurationDocument> {
+    if (!options.nativeAdmin?.enabled || !options.nativeAdmin.domain || !options.publicOrigin) {
+      throw failure(
+        400,
+        "INVALID_REQUEST",
+        "Agent browser access is not enabled on this Installation.",
+      );
+    }
+    if (options.nativeAdmin.domain.length > 214) {
+      throw failure(
+        400,
+        "INVALID_REQUEST",
+        "Native admin Agent domain must not exceed 214 characters.",
+      );
+    }
+    return prepareNativeAdminConfiguration(values, {
+      agent,
+      installationId: options.installationId,
+      publicOrigin: options.publicOrigin,
+      domain: options.nativeAdmin.domain,
+    });
+  }
   return {
     listRepositoryOptions,
     listAgentRepositoryOptions: listRepositoryOptions,
@@ -262,25 +289,7 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
         nativeAdmin === true
           ? {
               key: "native-admin",
-              prepare: (agent, values) => {
-                if (
-                  !options.nativeAdmin?.enabled ||
-                  !options.nativeAdmin.domain ||
-                  !options.publicOrigin
-                ) {
-                  throw failure(
-                    400,
-                    "INVALID_REQUEST",
-                    "Native admin UI access is not enabled on this Installation.",
-                  );
-                }
-                return prepareNativeAdminConfiguration(values, {
-                  agent,
-                  installationId: options.installationId,
-                  publicOrigin: options.publicOrigin,
-                  domain: options.nativeAdmin.domain,
-                });
-              },
+              prepare: prepareBrowserAccess,
             }
           : undefined,
       );
@@ -290,15 +299,47 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       reply.status(202).send({ data: result, meta: { requestId: request.id } });
     },
     async createAgent({ controller, context, request, reply, body, namespaceId, mutationEvent }) {
-      const input = body as Omit<CreateAgentInput, "namespaceId">;
+      const { nativeAdmin, expectedConfigurationGeneration, ...input } = body as Omit<
+        CreateAgentInput,
+        "namespaceId"
+      > & {
+        nativeAdmin?: boolean;
+        expectedConfigurationGeneration?: number;
+      };
+      if (nativeAdmin === true && expectedConfigurationGeneration === undefined) {
+        throw failure(
+          400,
+          "INVALID_REQUEST",
+          "Browser access setup requires expectedConfigurationGeneration.",
+        );
+      }
       validateWorkspaceSetup(input);
       const agent = await controller.transact(async (unit) => {
         const created = await controller.createAgent(
           context.actorId,
           { ...input, namespaceId },
           options.resolveHarness,
+          nativeAdmin === true
+            ? {
+                expectedGeneration: expectedConfigurationGeneration!,
+                prepare: prepareBrowserAccess,
+              }
+            : undefined,
         );
-        await unit.audit.append(mutationEvent({ kind: "agent", id: created.id, namespaceId }));
+        await unit.audit.append(
+          mutationEvent(
+            { kind: "agent", id: created.id, namespaceId },
+            nativeAdmin === true
+              ? {
+                  browserAccess: true,
+                  preparedConfiguration: {
+                    id: input.configurationId,
+                    previousGeneration: expectedConfigurationGeneration,
+                  },
+                }
+              : undefined,
+          ),
+        );
         return clientAgent(created);
       });
       reply.status(201).send({ data: agent, meta: { requestId: request.id } });

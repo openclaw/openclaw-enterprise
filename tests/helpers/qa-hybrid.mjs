@@ -165,7 +165,8 @@ export async function prepareHybridInstallation(f) {
   await resolveComposeControllerImage(f);
   const composePath = join(f.stateDirectory, "compose.yaml");
   const compose = loadYaml(await readFile(composePath, "utf8"));
-  f.consoleUrl = f.apiUrl;
+  f.consoleUrl = compose.services.controller.environment.OCC_AUTH_BASE_URL;
+  f.browserCA = join(f.stateDirectory, "browser-ca.crt");
   f.credentials = {
     email: compose.services.bootstrap.environment.OPENCLAW_DEV_EMAIL,
     password: compose.services.bootstrap.environment.OPENCLAW_DEV_PASSWORD,
@@ -227,7 +228,7 @@ export async function prepareHybridInstallation(f) {
   const compute = f.configuration.drivers.compute.configuration;
   const values = {
     images: { controller: f.controllerChartImage },
-    auth: { baseUrl: f.apiUrl },
+    auth: { baseUrl: f.consoleUrl },
     bootstrap: { adminEmail: f.credentials.email, password: { claimName: "bootstrap-password" } },
     api: {
       clients: [
@@ -236,7 +237,10 @@ export async function prepareHybridInstallation(f) {
     },
     database: { cidrs: [`${await serviceIp("postgres")}/32`] },
     cluster: { cidrs: [`${nodeIp}/32`], port: 6443 },
-    agentNativeAdmin: { enabled: false },
+    agentNativeAdmin: {
+      enabled: false,
+      domain: compose.services.controller.environment.OCC_AGENT_NATIVE_ADMIN_DOMAIN,
+    },
     gatewayRouting: {
       enabled: true,
       gatewayClassName: "eg",

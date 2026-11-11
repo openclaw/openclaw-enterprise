@@ -197,7 +197,7 @@ their existing Harness-owned runtime topology.
 
 ## Debugging and Verification
 
-- Run `node --test tests/integration/driver-plugin-installation.test.mjs` for
+- Run `node --test tests/integration/driver-plugin-installation.test.ts` for
   real installed IAM, Compute, and Configuration packages; production admission;
   IAM allow/deny evidence; Configuration CRUD; and OCC provisioning of an
   evidence file in a per-run temporary directory.

@@ -70,29 +70,42 @@ before the upgrade.
 ## Record images and Kubernetes state
 
 ```bash
-"${kube[@]}" get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{range .status.initContainerStatuses[*]} {.name}={.imageID}{end}{range .status.containerStatuses[*]} {.name}={.imageID}{end}{"\n"}{end}' \
-  >"$BASELINE/pod-images.txt"
-"${kube[@]}" get namespaces -o json |
-  jq -S '[.items[] | {name: .metadata.name, labels: .metadata.labels}]' >"$BASELINE/namespaces.json"
-for kind in rolebindings networkpolicies services; do
-  "${kube[@]}" get "$kind" -A -o json |
-    jq -S '[.items[] | {namespace: .metadata.namespace, name: .metadata.name, roleRef, subjects, spec}]' \
-      >"$BASELINE/$kind.json"
-done
-"${kube[@]}" get storageclasses -o json |
-  jq -S '[.items[] | {name: .metadata.name, provisioner, reclaimPolicy, volumeBindingMode,
-    allowVolumeExpansion, parameters,
-    default: .metadata.annotations["storageclass.kubernetes.io/is-default-class"]}]' \
-    >"$BASELINE/storageclasses.json"
-"${kube[@]}" get pvc -A -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name,UID:.metadata.uid,VOLUME:.spec.volumeName' \
-  >"$BASELINE/pvcs.txt"
-# Only with private Agent routing (Gateway API resources):
+(
+  set -uo pipefail
+  "${kube[@]}" get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{range .status.initContainerStatuses[*]} {.name}={.imageID}{end}{range .status.containerStatuses[*]} {.name}={.imageID}{end}{"\n"}{end}' \
+    >"$BASELINE/pod-images.txt" || exit
+  "${kube[@]}" get namespaces -o json |
+    jq -S '[.items[] | {name: .metadata.name, labels: .metadata.labels}]' >"$BASELINE/namespaces.json" || exit
+  for kind in rolebindings networkpolicies services; do
+    "${kube[@]}" get "$kind" -A -o json |
+      jq -S '[.items[] | {namespace: .metadata.namespace, name: .metadata.name, roleRef, subjects, spec}]' \
+        >"$BASELINE/$kind.json" || exit
+  done
+  "${kube[@]}" get storageclasses -o json |
+    jq -S '[.items[] | {name: .metadata.name, provisioner, reclaimPolicy, volumeBindingMode,
+      allowVolumeExpansion, parameters,
+      default: .metadata.annotations["storageclass.kubernetes.io/is-default-class"]}]' \
+      >"$BASELINE/storageclasses.json" || exit
+  "${kube[@]}" get pvc -A -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name,UID:.metadata.uid,VOLUME:.spec.volumeName' \
+    | cat >"$BASELINE/pvcs.txt" || exit
+)
+```
+
+Check the exit status immediately. If it is nonzero, discard the incomplete
+capture. Resolve the failure, then repeat the setup and capture in a fresh
+baseline directory. Only for private Agent routing, also require the following
+read to succeed before using the baseline:
+
+```bash
 "${kube[@]}" get gateways,httproutes -A -o yaml >"$BASELINE/gateway-api.yaml"
 ```
 
 `pod-images.txt` records the digest each container actually runs, which the
-configured image reference alone does not prove. The PVC UIDs must be unchanged
-after the upgrade: a new UID means the volume and its Agent data were replaced.
+configured image reference alone does not prove. The PVC UIDs must remain unchanged
+after the upgrade. A changed UID identifies a different claim object; it does
+not by itself establish whether the backing volume or Agent data changed. Stop
+and reconcile the claim, volume identity and workspace checks against the
+baseline before continuing.
 
 ## Record the OCC inventory
 
@@ -103,7 +116,7 @@ On controllers that support it, record the installation-wide deployment inventor
 ```
 
 Require this read to succeed. It requires Installation `administer` and read
-access to each Namespace and Agent. For a running Agent with a selected revision
+access to each Namespace and Agent. For an active, desired-running Agent with a selected revision
 and no deployment in progress, it also checks Agent `deploy` and revision read
 access. An authorization or connection failure does not mean the endpoint is
 unavailable on that release.
@@ -113,7 +126,7 @@ IDs, desired states and selected revisions from an independent inventory held by
 the resource or database owner. Include stopped Agents. Compare those records
 with the lists below before changing production. If an ID or state is missing
 or the expected inventory is unknown, stop. This fallback does not replace the
-deployment inventory required by the image helper for a runtime upgrade.
+deployment inventory required by the image helper for every upgrade.
 
 For either release, collect the remaining records in Bash:
 
@@ -366,8 +379,9 @@ can contain Secrets.
     --kubeconfig /secure/occ/kubeconfig --kube-context '<reviewed-context>' \
     --namespace openclaw-system >"$comparison/installed.yaml" 2>"$comparison/helm.err"
   test -s "$comparison/installed.yaml"
-  test -s "$UPGRADE_EVIDENCE/rendered.yaml"
-  diff -u "$comparison/installed.yaml" "$UPGRADE_EVIDENCE/rendered.yaml" \
+  attempt="$UPGRADE_EVIDENCE/helm-attempts/$(jq -er .nonce "$UPGRADE_EVIDENCE/prepared-helm-attempt.json")"
+  test -s "$attempt/rendered.yaml"
+  diff -u "$comparison/installed.yaml" "$attempt/rendered.yaml" \
     >"$comparison/manifest.diff" || test "$?" -eq 1
   printf 'Review the private comparison in %s\n' "$comparison"
 )
@@ -375,7 +389,8 @@ can contain Secrets.
 
 Stop if the comparison cannot run. Use the diff to locate changes, then check
 the required objects and fields in both files. Account for intended changes
-such as the selected image digests. Review `server-dry-run.txt` for Helm's
+such as image digests and the upgrade-attempt UUID. Review the attempt's
+`server-dry-run.txt` for Helm's
 upgrade-mode output and hooks. Helm history omits later live patches. Check
 affected objects against the [live Kubernetes records](#record-images-and-kubernetes-state)
 as well. Read the live object for any required field that the baseline does

@@ -100,7 +100,7 @@ test("prepared startup accepts TLS without an App key or provider calls and reje
   const { loadConfiguration } =
     await import("../../apps/controller/src/composition/repository-credentials/config.ts");
   const { createSystemClock } =
-    await import("../../apps/controller/src/drivers/repo/credentials/clock.ts");
+    await import("../../apps/controller/src/drivers/repo/access/clock.ts");
   const loaded = await loadConfiguration(file, createSystemClock());
   try {
     assert.equal(loaded.repositoryDescriptions, undefined);
@@ -358,7 +358,7 @@ test("production deployment inputs never name the development token authority", 
 
 test("service admission bounds are finite and retain an explicit long-task policy", async () => {
   const { validateServiceConfig } =
-    await import("../../apps/controller/src/drivers/repo/credentials/configuration.ts");
+    await import("../../apps/controller/src/drivers/repo/access/configuration.ts");
   const input = {
     gateway: {
       publicOrigin: "https://credentials.example",

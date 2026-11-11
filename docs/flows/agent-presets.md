@@ -88,7 +88,7 @@ rendering copy the native policy of the [standard Codex artifact](../../deploy/p
 the deployed Codex plugin enforces it. `loadBundledPresetVersions` also loads every shipped version
 listed in `deploy/presets/archive/versions.json`, whether or not defaults are
 enabled, into `ControllerOptions.bundledPresetVersions`. A conformance test in
-`tests/conformance/presets.test.mjs` fails when a bundled file changes without
+`tests/conformance/presets.test.ts` fails when a bundled file changes without
 its previous version archived there.
 
 `packages/occ/src/index.ts:OpenClawController.initializeDefaultPresets`
@@ -290,7 +290,7 @@ or an immutable saved version.
 - Chooser errors identify variable or form-field problems before any save. Save errors
   come from existing Configuration or Agent admission; retain request and saved
   Configuration IDs when investigating partial or uncertain outcomes.
-- [Controller integration coverage](../../tests/integration/presets-controller.test.mjs)
+- [Controller integration coverage](../../tests/integration/presets-controller.test.ts)
   exercises the HTTP workflow, admission, isolation, and copy independence.
   [PostgreSQL coverage](../../tests/integration/postgres-presets.test.mjs) exercises
   persistence; [browser coverage](../../tests/browser/console-agent-presets.test.ts)

@@ -114,7 +114,8 @@ for how the host connection and worker socket are handled.
 
 This preserves PostgreSQL, Configuration, and bootstrap-key volumes. Use
 `--volumes` only to delete the local Installation. First account for any Agent
-containers and tenant networks owned by Docker Compute.
+containers owned by Docker Compute; down then removes the Installation's idle
+Namespace networks.
 
 A Kubernetes profile's `Cleanup` command instead deletes its k3d cluster,
 database, Agents, and volumes; see [stop and clean up](local-kubernetes-development.md#stop-and-clean-up).

@@ -12,7 +12,6 @@ import {
 import {
   clientAddressConfiguration,
   createControllerAuth,
-  githubLoginConfiguration,
   humanLoginConfiguration,
   resolveClientAddress,
 } from "../../apps/controller/src/auth/index.ts";
@@ -34,8 +33,6 @@ import {
 } from "../helpers/sign-in-chart.mjs";
 import {
   defaultInstallSettings,
-  githubUpgradeSettings,
-  githubUpgradeValues,
   fixtureOidcIssuer,
   googleUpgradeSettings,
   googleUpgradeValues,
@@ -47,19 +44,12 @@ const tooling = await chartTooling();
 const recoveryUserId = "Pq7rS2tU9vW4xY1z";
 const secrets = {
   "occ-auth/secret": "chart-parity-auth-secret-at-least-32-characters",
-  "occ-github-login/client-id": "chart-parity-client-id",
-  "occ-github-login/client-secret": "chart-parity-client-secret",
   "occ-google-login/client-id": "chart-parity-google-client-id.apps.googleusercontent.com",
   "occ-google-login/client-secret": "chart-parity-google-client-secret",
   "occ-oidc-login/client-id": "chart-parity-oidc-client-id",
   "occ-oidc-login/client-secret": "chart-parity-oidc-client-secret",
 };
-// What the API parses from the rendered GitHub and Google sign-in settings.
-const githubParsed = {
-  clientId: secrets["occ-github-login/client-id"],
-  clientSecret: secrets["occ-github-login/client-secret"],
-  recoveryUserId,
-};
+// What the API parses from the rendered Google sign-in settings.
 const googleParsed = {
   clientId: secrets["occ-google-login/client-id"],
   clientSecret: secrets["occ-google-login/client-secret"],
@@ -175,6 +165,7 @@ function jobEnvironment(baseUrl) {
     OCC_DATABASE_URL: unreachableDatabase,
     OCC_AUTH_SECRET: secrets["occ-auth/secret"],
     OCC_AUTH_BASE_URL: baseUrl,
+    OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.example.internal",
     OCC_BOOTSTRAP_ADMIN_EMAIL: "admin@oce.example.internal",
   };
 }
@@ -243,7 +234,7 @@ async function startsUp(environment, label) {
 const loginEgress = (objects) =>
   objects
     .filter(({ kind }) => kind === "NetworkPolicy")
-    .map(({ metadata }) => /-api-(github|google|oidc)-login-egress$/.exec(metadata.name)?.[1])
+    .map(({ metadata }) => /-api-(google|oidc)-login-egress$/.exec(metadata.name)?.[1])
     .filter(Boolean)
     .sort();
 
@@ -290,7 +281,6 @@ function acceptsEach(cases) {
   );
 }
 
-const githubOn = { "auth.github.enabled": "true", "auth.recoveryUserId": recoveryUserId };
 const googleOn = { "auth.google.enabled": "true", "auth.recoveryUserId": recoveryUserId };
 
 // Treat mapped spellings as IPv4 before interpreting their prefix. The /1 examples
@@ -329,35 +319,6 @@ const trustedProxyCidrs = {
   ],
 };
 
-// A GitHub allowlist entry the chart and the API both refuse, with or without GitHub sign-in.
-const githubLists = {
-  allowedOrgs: {
-    variable: "OCC_AUTH_GITHUB_ALLOWED_ORGS",
-    chart: /auth\.github\.allowedOrgs requires GitHub organization logins/,
-    parser:
-      /OCC_AUTH_GITHUB_ALLOWED_ORGS must be a comma-separated list of GitHub organization logins/,
-  },
-  allowedTeams: {
-    variable: "OCC_AUTH_GITHUB_ALLOWED_TEAMS",
-    chart: /auth\.github\.allowedTeams requires org\/team-slug entries/,
-    parser:
-      /OCC_AUTH_GITHUB_ALLOWED_TEAMS must be a comma-separated list of org\/team-slug entries/,
-  },
-};
-function githubListEntry(name, list, value, { signIn = false } = {}) {
-  const { variable, chart, parser } = githubLists[list];
-  const values = { [`auth.github.${list}[0]`]: value };
-  return {
-    name,
-    values: signIn ? { ...githubUpgradeValues(recoveryUserId), ...values } : values,
-    chart,
-    ...(signIn ? { base: "github" } : {}),
-    env: { [variable]: value },
-    parser,
-  };
-}
-
-// The parsers accept both; composition refuses the combination before any database work.
 const withNativeAdmin = (provider, values) => ({
   name: `${provider} with shared-cookie native administration`,
   values,
@@ -367,7 +328,6 @@ const withNativeAdmin = (provider, values) => ({
   env: {
     OCC_AGENT_NATIVE_ADMIN_ENABLED: "true",
     OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.example.internal",
-    OCC_AUTH_COOKIE_DOMAIN: "oce.example.internal",
   },
 });
 
@@ -431,93 +391,28 @@ const invalid = [
     parser: /aws trusted proxy preset reads x-forwarded-for/,
   },
   {
-    name: "GitHub without a recovery user",
-    values: { "auth.github.enabled": "true", "agentNativeAdmin.enabled": "false" },
-    chart: /auth\.github\.enabled requires auth\.recoveryUserId/,
-    base: "github",
-    env: { OCC_AUTH_GITHUB_RECOVERY_USER_ID: undefined },
-    parser: /requires client ID, client secret and recovery user ID/,
-  },
-  {
-    name: "a recovery user without GitHub, Google or OIDC",
+    name: "a recovery user without Google or OIDC",
     values: { "auth.recoveryUserId": recoveryUserId },
-    chart:
-      /auth\.recoveryUserId requires auth\.github\.enabled, auth\.google\.enabled or auth\.oidc\.enabled/,
-    env: { OCC_AUTH_GITHUB_RECOVERY_USER_ID: recoveryUserId },
+    chart: /auth\.recoveryUserId requires auth\.google\.enabled or auth\.oidc\.enabled/,
+    env: { OCC_AUTH_RECOVERY_USER_ID: recoveryUserId },
     parser: /requires client ID, client secret and recovery user ID/,
   },
-  withNativeAdmin("GitHub", githubOn),
   {
     name: "recovery-only password sign-in without an external provider",
     values: { "auth.passwordSignIn": "recovery-only" },
     chart:
-      /auth\.passwordSignIn: recovery-only requires auth\.github\.enabled, auth\.google\.enabled or auth\.oidc\.enabled/,
+      /auth\.passwordSignIn: recovery-only requires auth\.google\.enabled or auth\.oidc\.enabled/,
     env: { OCC_AUTH_PASSWORD_SIGN_IN: "recovery-only" },
-    parser: /OCC_AUTH_PASSWORD_SIGN_IN=recovery-only requires GitHub, Google or OIDC sign-in/,
+    parser: /OCC_AUTH_PASSWORD_SIGN_IN=recovery-only requires Google or OIDC sign-in/,
   },
   {
     name: "an unknown password sign-in policy",
-    values: { ...githubUpgradeValues(recoveryUserId), "auth.passwordSignIn": "none" },
+    values: { ...googleUpgradeValues(recoveryUserId), "auth.passwordSignIn": "none" },
     chart: /auth\.passwordSignIn must be all or recovery-only/,
-    base: "github",
+    base: "google",
     env: { OCC_AUTH_PASSWORD_SIGN_IN: "none" },
     parser: /OCC_AUTH_PASSWORD_SIGN_IN must be all or recovery-only/,
   },
-  ...[
-    ["an organization login padded by U+0085", "allowedOrgs", "\u0085acme"],
-    // Go's lower maps U+0130 to i; JavaScript's toLowerCase maps it to i and U+0307.
-    ["an organization login spelled with U+0130", "allowedOrgs", "\u0130bm"],
-    ["a team slug spelled with U+0130", "allowedTeams", "acme/\u0130nfra"],
-    ["an allowed organization that is not a login", "allowedOrgs", "acme/platform"],
-    ["a team slug padded by U+0085", "allowedTeams", "\u0085acme/platform"],
-    ["an allowed team without its organization", "allowedTeams", "platform"],
-  ].map(([name, list, value]) =>
-    githubListEntry(`GitHub with ${name}`, list, value, { signIn: true }),
-  ),
-  {
-    name: "GitHub with more than ten allowlist entries",
-    values: {
-      ...githubUpgradeValues(recoveryUserId),
-      ...Object.fromEntries(
-        Array.from({ length: 11 }, (_, index) => [
-          `auth.github.allowedOrgs[${index}]`,
-          `org${index}`,
-        ]),
-      ),
-    },
-    chart:
-      /auth\.github\.allowedOrgs and auth\.github\.allowedTeams list at most 10 entries together/,
-    base: "github",
-    env: {
-      OCC_AUTH_GITHUB_ALLOWED_ORGS: Array.from({ length: 11 }, (_, index) => `org${index}`).join(
-        ",",
-      ),
-    },
-    parser: /list at most 10 entries together/,
-  },
-  // An allowlist without its provider is refused, never dropped: an operator who sets one
-  // expects it to limit sign-in. Entries are checked first, as the API does.
-  ...[
-    ["organization", "auth.github.allowedOrgs[0]", "OCC_AUTH_GITHUB_ALLOWED_ORGS", "acme"],
-    ["team", "auth.github.allowedTeams[0]", "OCC_AUTH_GITHUB_ALLOWED_TEAMS", "acme/platform"],
-  ].map(([kind, key, variable, value]) => ({
-    name: `an allowed GitHub ${kind} without GitHub sign-in`,
-    values: { [key]: value },
-    chart:
-      /auth\.github\.allowedOrgs and auth\.github\.allowedTeams require auth\.github\.enabled: true/,
-    env: { [variable]: value },
-    parser: /requires client ID, client secret and recovery user ID/,
-  })),
-  githubListEntry(
-    "an allowed GitHub organization that is not a login, without GitHub sign-in",
-    "allowedOrgs",
-    "acme/platform",
-  ),
-  githubListEntry(
-    "an allowed GitHub team without its organization, without GitHub sign-in",
-    "allowedTeams",
-    "platform",
-  ),
   {
     name: "an allowed Google domain without Google sign-in",
     values: { "auth.google.allowedDomains[0]": "example.com" },
@@ -530,7 +425,7 @@ const invalid = [
     values: { "auth.google.enabled": "true", "agentNativeAdmin.enabled": "false" },
     chart: /auth\.google\.enabled requires auth\.recoveryUserId/,
     base: "google",
-    env: { OCC_AUTH_GITHUB_RECOVERY_USER_ID: undefined },
+    env: { OCC_AUTH_RECOVERY_USER_ID: undefined },
     parser: /Google sign-in requires client ID, client secret and recovery user ID/,
   },
   withNativeAdmin("Google", googleOn),
@@ -551,7 +446,7 @@ const invalid = [
     values: { ...oidcUpgradeValues(""), "auth.recoveryUserId": "" },
     chart: /auth\.oidc\.enabled requires auth\.recoveryUserId/,
     base: "oidc",
-    env: { OCC_AUTH_GITHUB_RECOVERY_USER_ID: undefined },
+    env: { OCC_AUTH_RECOVERY_USER_ID: undefined },
     parser: /OIDC sign-in requires its provider settings and a recovery user ID/,
   },
   {
@@ -618,13 +513,8 @@ const invalid = [
     env: { OCC_AUTH_OIDC_DISPLAY_NAME: displayName },
     parser: /OCC_AUTH_OIDC_DISPLAY_NAME must be 1 to 40 printable characters/,
   })),
-  withNativeAdmin("OIDC", {
-    ...oidcUpgradeValues(recoveryUserId),
-    "agentNativeAdmin.enabled": "true",
-  }),
 ];
 const baseSettings = {
-  github: githubUpgradeSettings(recoveryUserId),
   google: googleUpgradeSettings(recoveryUserId),
   oidc: oidcUpgradeSettings(recoveryUserId),
 };
@@ -662,33 +552,33 @@ const emptyEgress = (provider) =>
     `auth\\.${provider}\\.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set \\[\\] in a values file or with --set-json,`,
   );
 
-describe("sign-in chart parity", { concurrency: true }, () => {
-  after(() => rm(directory, { recursive: true, force: true }));
+after(() => rm(directory, { recursive: true, force: true }));
 
+describe("sign-in chart parity", { concurrency: true }, () => {
   test(
-    "the API accepts exactly the sign-in settings the chart renders for every proxy preset, with and without GitHub",
+    "the API accepts exactly the sign-in settings the chart renders for every proxy preset, with and without Google",
     tooling,
     async () => {
       const cases = Object.entries(presets).flatMap(([preset, proxy]) =>
-        [false, true].map((githubEnabled) => ({ preset, proxy, githubEnabled })),
+        [false, true].map((googleEnabled) => ({ preset, proxy, googleEnabled })),
       );
       await settle(
-        cases.map(async ({ preset, proxy, githubEnabled }) => {
-          const label = `${preset}, GitHub ${githubEnabled ? "on" : "off"}`;
+        cases.map(async ({ preset, proxy, googleEnabled }) => {
+          const label = `${preset}, Google ${googleEnabled ? "on" : "off"}`;
           // Reuse these renders to cover the example install's egress and Secret
           // placement: only the API receives sign-in and trusted-proxy settings.
           const environment = await renders(
             label,
-            { ...proxy.values, ...(githubEnabled ? githubUpgradeValues(recoveryUserId) : {}) },
+            { ...proxy.values, ...(googleEnabled ? googleUpgradeValues(recoveryUserId) : {}) },
             {
-              ...(githubEnabled ? githubUpgradeSettings(recoveryUserId) : defaultInstallSettings),
+              ...(googleEnabled ? googleUpgradeSettings(recoveryUserId) : defaultInstallSettings),
               ...proxy.env,
             },
-            githubEnabled ? ["github"] : [],
+            googleEnabled ? ["google"] : [],
           );
           assert.deepEqual(
-            githubLoginConfiguration(environment),
-            githubEnabled ? githubParsed : undefined,
+            humanLoginConfiguration(environment).google,
+            googleEnabled ? googleParsed : undefined,
             label,
           );
           const clientAddress = clientAddressConfiguration(environment);
@@ -715,102 +605,23 @@ describe("sign-in chart parity", { concurrency: true }, () => {
     },
   );
 
-  test("the API accepts exactly the GitHub allowlist the chart renders", tooling, async () => {
-    const environment = await renders(
-      "GitHub allowlist",
-      {
-        ...githubUpgradeValues(recoveryUserId),
-        "auth.github.allowedOrgs[0]": "Acme",
-        "auth.github.allowedOrgs[1]": "acme-labs",
-        "auth.github.allowedTeams[0]": "other/platform_team",
-      },
-      {
-        ...githubUpgradeSettings(recoveryUserId),
-        OCC_AUTH_GITHUB_ALLOWED_ORGS: "Acme,acme-labs",
-        OCC_AUTH_GITHUB_ALLOWED_TEAMS: "other/platform_team",
-      },
-      ["github"],
-    );
-    assert.deepEqual(githubLoginConfiguration(environment), {
-      ...githubParsed,
-      allowedOrgs: ["acme", "acme-labs"],
-      allowedTeams: ["other/platform_team"],
-    });
-  });
-
-  test("automatic enrollment renders only with an explicit team allowlist", tooling, async () => {
-    const values = {
-      ...githubUpgradeValues(recoveryUserId),
-      "auth.github.allowedTeams[0]": "acme/platform",
-      "auth.github.autoEnrollGroupId": "team.platform",
-    };
-    const environment = await renders(
-      "GitHub automatic enrollment",
-      values,
-      {
-        ...githubUpgradeSettings(recoveryUserId),
-        OCC_AUTH_GITHUB_ALLOWED_TEAMS: "acme/platform",
-        OCC_AUTH_GITHUB_AUTO_ENROLL_GROUP_ID: "team.platform",
-      },
-      ["github"],
-    );
-    assert.equal(githubLoginConfiguration(environment).autoEnrollGroupId, "team.platform");
-    const blankGroup = "\uFEFF ";
-    assert.match(
-      await refusal({ ...values, "auth.github.autoEnrollGroupId": blankGroup }),
-      /valid Group ID/,
-    );
-    assert.throws(
-      () =>
-        githubLoginConfiguration({
-          ...environment,
-          OCC_AUTH_GITHUB_AUTO_ENROLL_GROUP_ID: blankGroup,
-        }),
-      /valid Group ID/,
-    );
-    for (const overrides of [
-      { "auth.github.allowedTeams[0]": "" },
-      { "auth.github.allowedOrgs[0]": "acme" },
-    ]) {
-      const result = await refusal({ ...values, ...overrides });
-      assert.match(result, /allowedTeams|allowedOrgs/);
-    }
-    assert.throws(
-      () => githubLoginConfiguration({ ...environment, OCC_AUTH_GITHUB_ALLOWED_TEAMS: "" }),
-      /allowed teams/,
-    );
-    assert.throws(
-      () => githubLoginConfiguration({ ...environment, OCC_AUTH_GITHUB_ALLOWED_ORGS: "acme" }),
-      /allowed teams/,
-    );
-  });
-
   test(
     "the API accepts sign-in values padded by U+FEFF, which Go trim keeps",
     tooling,
     async () => {
       // Go's TrimSpace keeps U+FEFF, so the chart used to refuse these. JavaScript's trim drops
       // it, and the chart now uses that trim. The rendered env keeps the character.
-      const org = "\uFEFFacme";
-      const team = "\uFEFFacme/platform";
       const domain = "\uFEFFexample.com";
       const displayName = "\uFEFFContinue";
       const objects = await render({
-        ...githubUpgradeValues(recoveryUserId),
         ...googleUpgradeValues(recoveryUserId),
         ...oidcUpgradeValues(recoveryUserId, fixtureOidcIssuer, { displayName }),
-        "auth.github.allowedOrgs[0]": org,
-        "auth.github.allowedTeams[0]": team,
         "auth.google.allowedDomains[0]": domain,
       });
       const rendered = signInSettings(deploymentEnv(objects, "api"));
-      assert.equal(rendered.OCC_AUTH_GITHUB_ALLOWED_ORGS, org);
-      assert.equal(rendered.OCC_AUTH_GITHUB_ALLOWED_TEAMS, team);
       assert.equal(rendered.OCC_AUTH_GOOGLE_ALLOWED_DOMAINS, domain);
       assert.equal(rendered.OCC_AUTH_OIDC_DISPLAY_NAME, displayName);
       const parsed = humanLoginConfiguration(resolveSecrets(rendered));
-      assert.deepEqual(parsed.github.allowedOrgs, ["acme"]);
-      assert.deepEqual(parsed.github.allowedTeams, ["acme/platform"]);
       assert.deepEqual(parsed.google.allowedDomains, ["example.com"]);
       assert.equal(parsed.oidc.displayName, "Continue");
       await startsUp(resolveSecrets(rendered));
@@ -838,18 +649,10 @@ describe("sign-in chart parity", { concurrency: true }, () => {
   );
 
   test(
-    "the API accepts exactly the Google sign-in settings the chart renders, alone and with GitHub",
+    "the API accepts exactly the Google sign-in settings the chart renders, with hosted domains",
     tooling,
     async () => {
       const domains = ["example.com", "corp.example.org"];
-      const both = {
-        ...githubUpgradeValues(recoveryUserId),
-        ...googleUpgradeValues(recoveryUserId),
-      };
-      const bothSettings = {
-        ...githubUpgradeSettings(recoveryUserId),
-        ...googleUpgradeSettings(recoveryUserId),
-      };
       await acceptsEach([
         {
           label: "Google only",
@@ -866,20 +669,6 @@ describe("sign-in chart parity", { concurrency: true }, () => {
           egress: ["google"],
         },
         {
-          label: "GitHub and Google",
-          values: both,
-          settings: bothSettings,
-          parsed: { github: githubParsed, google: googleParsed },
-          egress: ["github", "google"],
-        },
-        {
-          label: "GitHub and Google, recovery-only password sign-in",
-          values: { ...both, "auth.passwordSignIn": "recovery-only" },
-          settings: { ...bothSettings, OCC_AUTH_PASSWORD_SIGN_IN: "recovery-only" },
-          parsed: { github: githubParsed, google: googleParsed, passwordSignIn: "recovery-only" },
-          egress: ["github", "google"],
-        },
-        {
           // The default is not rendered: the API reads an absent setting as "all".
           label: "Google, password sign-in for every account",
           values: { ...googleUpgradeValues(recoveryUserId), "auth.passwordSignIn": "all" },
@@ -892,7 +681,7 @@ describe("sign-in chart parity", { concurrency: true }, () => {
   );
 
   test(
-    "the API accepts exactly the OIDC sign-in settings the chart renders, alone and with GitHub and Google",
+    "the API accepts exactly the OIDC sign-in settings the chart renders, alone and with Google",
     tooling,
     async () => {
       const oidc = {
@@ -936,15 +725,12 @@ describe("sign-in chart parity", { concurrency: true }, () => {
       });
       // A listed CIDR replaces the default, link-local included, for each provider.
       const narrowed = render({
-        ...githubUpgradeValues(recoveryUserId),
         ...googleUpgradeValues(recoveryUserId),
         ...oidcUpgradeValues(recoveryUserId),
-        "auth.github.egressCidrs[0]": "140.82.112.0/20",
         "auth.google.egressCidrs[0]": "169.254.10.0/24",
         "auth.oidc.egressCidrs[0]": "198.51.100.0/24",
       }).then((objects) => {
         for (const [provider, cidr] of [
-          ["github", "140.82.112.0/20"],
           ["google", "169.254.10.0/24"],
           ["oidc", "198.51.100.0/24"],
         ]) {
@@ -980,26 +766,23 @@ describe("sign-in chart parity", { concurrency: true }, () => {
             settings: oidcUpgradeSettings(recoveryUserId),
           },
           {
-            label: "GitHub, Google and OIDC, recovery-only password sign-in",
+            label: "Google and OIDC, recovery-only password sign-in",
             values: {
-              ...githubUpgradeValues(recoveryUserId),
               ...googleUpgradeValues(recoveryUserId),
               ...oidcUpgradeValues(recoveryUserId),
               "auth.passwordSignIn": "recovery-only",
             },
             settings: {
-              ...githubUpgradeSettings(recoveryUserId),
               ...googleUpgradeSettings(recoveryUserId),
               ...oidcUpgradeSettings(recoveryUserId),
               OCC_AUTH_PASSWORD_SIGN_IN: "recovery-only",
             },
             parsed: {
-              github: githubParsed,
               google: googleParsed,
               oidc,
               passwordSignIn: "recovery-only",
             },
-            egress: ["github", "google", "oidc"],
+            egress: ["google", "oidc"],
           },
         ]),
       ]);
@@ -1066,12 +849,11 @@ describe("sign-in chart parity", { concurrency: true }, () => {
   // refuses, and require the codes those in-process checks report for the same settings.
   test("the API and bootstrap entrypoints exit with the codes their in-process startup reports", async () => {
     const everyProvider = resolveSecrets({
-      ...githubUpgradeSettings(recoveryUserId),
       ...googleUpgradeSettings(recoveryUserId),
       ...oidcUpgradeSettings(recoveryUserId),
       OCC_AUTH_PASSWORD_SIGN_IN: "recovery-only",
     });
-    const nativeAdmin = withNativeAdmin("GitHub", githubOn);
+    const nativeAdmin = withNativeAdmin("Google", googleOn);
     const api = [
       // Past configuration, Driver loading and composition, to the database.
       [everyProvider, "PERSISTENCE_UNAVAILABLE"],
@@ -1135,11 +917,6 @@ describe("sign-in chart parity", { concurrency: true }, () => {
       const google = googleUpgradeValues(recoveryUserId);
       await chartOnly("google", [
         [
-          "the GitHub sign-in Secret",
-          { ...google, ...githubOn, "auth.google.secretName": "occ-github-login" },
-          /auth\.google\.secretName must name a dedicated Secret/,
-        ],
-        [
           "the Better Auth Secret",
           { ...google, "auth.google.secretName": "occ-auth" },
           /auth\.google\.secretName must name a dedicated Secret/,
@@ -1195,11 +972,6 @@ describe("sign-in chart parity", { concurrency: true }, () => {
           /auth\.oidc\.secretName must name a dedicated Secret/,
         ],
         [
-          "the GitHub sign-in Secret",
-          { ...oidc, ...githubOn, "auth.oidc.secretName": "occ-github-login" },
-          /auth\.oidc\.secretName must name a dedicated Secret/,
-        ],
-        [
           "the Better Auth Secret",
           { ...oidc, "auth.oidc.secretName": "occ-auth" },
           /auth\.oidc\.secretName must name a dedicated Secret/,
@@ -1240,20 +1012,17 @@ describe("sign-in chart parity", { concurrency: true }, () => {
       const proxied = Object.values(presets).filter(
         ({ values }) => values["api.trustedProxy.preset"],
       );
-      const [github, google, oidc, none, ...quiet] = await settle([
-        notice(githubUpgradeValues(recoveryUserId)),
+      const [google, oidc, none, ...quiet] = await settle([
         notice(googleUpgradeValues(recoveryUserId)),
         notice(oidcUpgradeValues(recoveryUserId)),
         notice(),
         ...proxied.flatMap(({ values }) => [
-          notice({ ...githubUpgradeValues(recoveryUserId), ...values }),
+          notice({ ...googleUpgradeValues(recoveryUserId), ...values }),
           notice(values),
         ]),
       ]);
-      assert.match(github, /^WARNING: api\.trustedProxy is not set\./);
-      assert.match(github, /external sign-in\nstarts have no per-client limit/);
       assert.match(google, /^WARNING: api\.trustedProxy is not set\./);
-      assert.match(oidc, /^WARNING: api\.trustedProxy is not set\. With GitHub, Google or OIDC/);
+      assert.match(oidc, /^WARNING: api\.trustedProxy is not set\. With Google or OIDC/);
       assert.match(oidc, /Behind an HTTP\nproxy, API calls fail with 403 until it is set\.$/);
       assert.match(
         none,
@@ -1268,11 +1037,11 @@ describe("sign-in chart parity", { concurrency: true }, () => {
   );
 
   test("a null optional sign-in map renders like an absent one", tooling, async () => {
-    // `auth.github: null` (or `--set auth.github=null`) deletes the map's defaults. The chart
+    // `auth.google: null` (or `--set auth.google=null`) deletes the map's defaults. The chart
     // must then render the password-only install without a trusted proxy, as validation and
     // the install notes already assume, instead of failing with a template nil pointer.
     await settle(
-      ["auth.github", "auth.google", "auth.oidc", "api.trustedProxy"].map(async (key) => {
+      ["auth.google", "auth.oidc", "api.trustedProxy"].map(async (key) => {
         const objects = await render({ [key]: "null" });
         assert.deepEqual(
           signInSettings(deploymentEnv(objects, "api")),
@@ -1298,7 +1067,6 @@ describe("sign-in chart parity", { concurrency: true }, () => {
       // Production names a missing Slack proxy for an unanswered Slack check only when API
       // egress is closed; an open sign-in rule can reach Slack directly (finding 2533). The chart
       // reports open exactly when it renders a login egress rule to 0.0.0.0/0, from any provider.
-      const github = githubUpgradeValues(recoveryUserId);
       const google = googleUpgradeValues(recoveryUserId);
       const oidc = oidcUpgradeValues(recoveryUserId);
       const narrowed = (provider) => ({ [`auth.${provider}.egressCidrs[0]`]: "203.0.113.0/24" });
@@ -1306,14 +1074,10 @@ describe("sign-in chart parity", { concurrency: true }, () => {
       await settle(
         [
           ["password only", {}, "false"],
-          ["null GitHub map", { "auth.github": "null" }, "false"],
-          ["GitHub", github, "true"],
-          ["GitHub narrowed", { ...github, ...narrowed("github") }, "false"],
           ["Google", google, "true"],
           ["Google narrowed", { ...google, ...narrowed("google") }, "false"],
           ["OIDC", oidc, "true"],
           ["OIDC narrowed", { ...oidc, ...narrowed("oidc") }, "false"],
-          ["GitHub narrowed, Google open", { ...github, ...narrowed("github"), ...google }, "true"],
         ].map(async ([label, values, open]) => {
           const objects = await render(values);
           assert.deepEqual(
@@ -1324,7 +1088,7 @@ describe("sign-in chart parity", { concurrency: true }, () => {
           const anyAddress = objects.some(
             ({ kind, metadata, spec }) =>
               kind === "NetworkPolicy" &&
-              /-api-(github|google|oidc)-login-egress$/.test(metadata.name) &&
+              /-api-(google|oidc)-login-egress$/.test(metadata.name) &&
               spec.egress.some(({ to }) => to.some(({ ipBlock }) => ipBlock?.cidr === "0.0.0.0/0")),
           );
           assert.equal(String(anyAddress), open, label);
@@ -1333,10 +1097,10 @@ describe("sign-in chart parity", { concurrency: true }, () => {
       );
       // The API accepts the rendered value and refuses anything but true or false.
       const environment = await renders(
-        "GitHub egress flag",
-        github,
-        githubUpgradeSettings(recoveryUserId),
-        ["github"],
+        "Google egress flag",
+        google,
+        googleUpgradeSettings(recoveryUserId),
+        ["google"],
       );
       const [accepted, refused] = await settle([
         startupCode({ ...environment, [flag]: "true" }),
@@ -1347,60 +1111,61 @@ describe("sign-in chart parity", { concurrency: true }, () => {
     },
   );
 
-  // With native admin, the API refuses at startup a console origin outside the shared cookie
-  // parent, or one without HTTPS (createControllerAuth, before any database read). The chart
-  // refuses the same values at render time, and still renders what the API accepts.
-  test("the chart refuses native admin base URLs the API refuses at startup", tooling, async () => {
-    const nativeAdmin = {
-      "gatewayRouting.enabled": "true",
-      "gatewayRouting.gatewayClassName": "private-envoy-gateway",
-      "gatewayRouting.apiKeySecretName": "occ-gateway-api-key",
-      "agentNativeAdmin.enabled": "true",
-      "agentNativeAdmin.domain": "agents.oce.example.com",
-      "agentNativeAdmin.sharedCookieDomain": "oce.example.com",
-    };
-    const apiRefusal = (baseUrl) => () =>
-      createControllerAuth({
-        mode: "production",
-        secret: "s".repeat(32),
-        baseURL: new URL(baseUrl).toString().replace(/\/$/, ""),
-        sharedCookieDomain: "oce.example.com",
-      });
-    const outsideParent = [
-      /agentNativeAdmin\.sharedCookieDomain must contain the auth\.baseUrl host/,
-      /OCC_AUTH_COOKIE_DOMAIN must contain the OCC_AUTH_BASE_URL host/,
-    ];
-    const refused = [
-      ["https://console.example.com", ...outsideParent],
-      ["https://console-oce.example.com", ...outsideParent],
-      [
-        "http://console.oce.example.com",
-        /agentNativeAdmin\.enabled requires an HTTPS auth\.baseUrl/,
-        /OCC_AUTH_COOKIE_DOMAIN requires secure HTTPS session cookies/,
-      ],
-    ].map(async ([baseUrl, chart, api]) => {
-      assert.throws(apiRefusal(baseUrl), api, baseUrl);
-      assert.match(await refusal({ ...nativeAdmin, "auth.baseUrl": baseUrl }), chart, baseUrl);
-    });
-    const accepted = [
-      "https://oce.example.com",
-      "https://Console.OCE.example.com",
-      "https://console.oce.example.com.",
-      "https://console.oce.example.com:8443",
-      " https://console.oce.example.com ",
-    ].map(async (baseUrl) => {
-      // The API's cookie checks pass; it stops later, at the Installation it was not given.
-      assert.throws(apiRefusal(baseUrl), /Better Auth issuer requires an Installation/, baseUrl);
-      const objects = await render({ ...nativeAdmin, "auth.baseUrl": baseUrl });
-      assert.ok(
-        deploymentEnv(objects, "api").some(
-          ({ name, value }) => name === "OCC_AUTH_BASE_URL" && value === baseUrl,
-        ),
-        baseUrl,
+  test(
+    "shared sessions derive DNS scope with native access enabled or disabled",
+    tooling,
+    async () => {
+      for (const enabled of ["true", "false"]) {
+        const values = {
+          "agentNativeAdmin.enabled": enabled,
+          "agentNativeAdmin.domain": "agents.oce.example.com",
+        };
+        for (const [baseUrl, domain] of [
+          ["https://console.oce.example.com", "oce.example.com"],
+          ["https://console.example.com", "example.com"],
+          ["https://Console.OCE.example.com.", "oce.example.com"],
+        ]) {
+          const auth = createControllerAuth({
+            mode: "production",
+            installationId: "ins_cookie_scope",
+            secret: "s".repeat(32),
+            baseURL: new URL(baseUrl).origin,
+            agentDomain: "agents.oce.example.com",
+          });
+          assert.equal(auth.sharedCookieDomain, domain);
+          await render({ ...values, "auth.baseUrl": baseUrl });
+        }
+        for (const baseUrl of ["http://console.oce.example.com", "https://console.other.net"]) {
+          assert.throws(
+            () =>
+              createControllerAuth({
+                mode: "production",
+                installationId: "ins_cookie_scope",
+                secret: "s".repeat(32),
+                baseURL: baseUrl,
+                agentDomain: "agents.oce.example.com",
+              }),
+            { message: /OCC_AUTH_BASE_URL|Console and Agent hostnames/ },
+          );
+          assert.match(
+            await refusal({ ...values, "auth.baseUrl": baseUrl }),
+            /HTTPS for (?:shared )?browser sessions|must share a non-public DNS suffix/,
+          );
+        }
+        assert.match(
+          await refusal({ ...values, "agentNativeAdmin.sharedCookieDomain": "example.com" }),
+          /sharedCookieDomain is no longer supported/,
+        );
+      }
+      const oidc = { ...oidcUpgradeValues(recoveryUserId), "agentNativeAdmin.enabled": "true" };
+      const settings = resolveSecrets(signInSettings(deploymentEnv(await render(oidc), "api")));
+      await startsUp(settings, "OIDC and native browser access");
+      assert.equal(
+        await startupCode({ ...settings, OCC_AUTH_COOKIE_DOMAIN: "oce.example.internal" }),
+        "AUTH_BASE_URL_INVALID",
       );
-    });
-    await settle([...refused, ...accepted]);
-  });
+    },
+  );
 
   // The API refuses an auth base URL that is not an absolute HTTP(S) origin: startApi parses
   // OCC_AUTH_BASE_URL, and createControllerAuth (validHttpBaseURL, which the bootstrap Job also
@@ -1442,18 +1207,26 @@ describe("sign-in chart parity", { concurrency: true }, () => {
         }
         const normalized = parsed.toString().replace(/\/$/, "");
         try {
-          createControllerAuth({ mode: "production", secret: "s".repeat(32), baseURL: normalized });
+          createControllerAuth({
+            mode: "production",
+            secret: "s".repeat(32),
+            baseURL: normalized,
+            agentDomain: "agents.oce.example.internal",
+          });
         } catch (error) {
           if (/Better Auth issuer requires an Installation/.test(error.message)) {
             return true;
           }
-          assert.match(error.message, /^OCC_AUTH_BASE_URL must be an absolute HTTP origin URL\.$/);
+          assert.match(
+            error.message,
+            /OCC_AUTH_BASE_URL|Shared session cookies|Console and Agent hostnames/,
+          );
           return false;
         }
         assert.fail(`createControllerAuth accepted ${baseUrl} without an Installation`);
       };
-      const notOrigin = /auth\.baseUrl must be an absolute HTTP\(S\) origin/;
-      const plainHttp = /auth\.baseUrl must use HTTPS unless its host is 127\.0\.0\.1 or localhost/;
+      const notOrigin = /auth\.baseUrl must be an absolute HTTP\(S\) origin|unable to parse url/;
+      const plainHttp = /auth\.baseUrl must use HTTPS for (?:shared )?browser sessions/;
       const unicodeEdge =
         /auth\.baseUrl must not begin or end with Unicode spaces or invisible characters/;
       const unicodeInside = /auth\.baseUrl must not contain spaces, invisible characters, < or >/;
@@ -1505,33 +1278,45 @@ describe("sign-in chart parity", { concurrency: true }, () => {
             "HTTPS://Console.OCE.example.internal",
             "https://console.oce.example.internal.",
             " https://console.oce.example.internal ",
-            "https://192.0.2.10",
             // A bare 0x, a full-width digit, or an ideographic dot inside a DNS name is not an
             // IPv4 host. Node keeps the name (mapping the borrowed characters) and the chart
             // must render it.
-            "https://0x.example.com",
-            "https://console\u3002example.com",
-            "https://\uFF11\uFF12\uFF17.example.com",
+            "https://0x.oce.example.internal",
+            "https://console\u3002oce.example.internal",
+            "https://\uFF11\uFF12\uFF17.oce.example.internal",
+            "https://bücher.oce.example.internal",
+            "https://console.例え.oce.example.internal",
+            // Only the last label decides whether a host is IPv4, after the parser maps
+            // compatibility characters (⑩ becomes 10, so this label is 10x).
+            "https://192.0.2.10.oce.example.internal",
+            "https://example.\u2469x.oce.example.internal",
+            // Helm reads http://[::1] as hostname ::1, which the bootstrap Job admits.
+          ],
+          undefined,
+          { api: true },
+        ),
+        ...urls(
+          [
+            "https://192.0.2.10",
             "https://192.168.10.1",
             "https://10.0.0.1",
             "https://[2001:db8::10]:8443",
             "https://localhost",
+          ],
+          /must share a non-public DNS suffix/,
+          { api: false, job: false },
+        ),
+        ...urls(
+          [
             "http://127.0.0.1",
             "http://127.0.0.1:8080/",
             "http://localhost:8080",
             "HTTP://LocalHost:8080",
             " http://localhost ",
-            "https://bücher.oce.example.internal",
-            "https://console.例え.テスト",
-            // Only the last label decides whether a host is IPv4, after the parser maps
-            // compatibility characters (⑩ becomes 10, so this label is 10x).
-            "https://192.0.2.10.example.com",
-            "https://example.\u2469x",
-            // Helm reads http://[::1] as hostname ::1, which the bootstrap Job admits.
             "http://[::1]:8080",
           ],
-          undefined,
-          { api: true },
+          plainHttp,
+          { api: false, job: false },
         ),
         // URL parsing strips only C0 controls and spaces from the ends, so other Unicode spaces
         // and invisible characters there reach the parser, which refuses them in the scheme or
@@ -1612,7 +1397,7 @@ describe("sign-in chart parity", { concurrency: true }, () => {
             "http://localhost.oce.example.internal",
           ],
           plainHttp,
-          { api: true, job: false },
+          { api: false, job: false },
         ),
         // Node repairs these degenerate spellings into an origin. They are not IPv4 hosts.
         ...urls(
@@ -1797,13 +1582,12 @@ describe("sign-in chart parity", { concurrency: true }, () => {
   });
 
   // The chart's sign-in checks read the scheme as URL parsing does, like the API: an uppercase
-  // HTTPS origin, or one with surrounding spaces, passes for GitHub, Google and OIDC. Plain HTTP
+  // HTTPS origin, or one with surrounding spaces, passes for Google and OIDC. Plain HTTP
   // stays refused even on loopback, where the bootstrap Job would accept it. The API also
   // requires HTTPS for production external sign-in, but only after its database opens, so only
   // the chart's refusal is checked here.
   test("external sign-in accepts the HTTPS spellings the API accepts", tooling, async () => {
     const providers = [
-      ["GitHub", githubUpgradeValues(recoveryUserId), githubUpgradeSettings(recoveryUserId)],
       ["Google", googleUpgradeValues(recoveryUserId), googleUpgradeSettings(recoveryUserId)],
       ["OIDC", oidcUpgradeValues(recoveryUserId), oidcUpgradeSettings(recoveryUserId)],
     ];
@@ -1829,3 +1613,107 @@ describe("sign-in chart parity", { concurrency: true }, () => {
     await settle([...refusals, ...accepted]);
   });
 });
+
+test(
+  "OIDC enrollment survives Helm rendering and retired GitHub settings fail closed",
+  tooling,
+  async () => {
+    const objects = await render(
+      oidcUpgradeValues(recoveryUserId, fixtureOidcIssuer, {
+        "enrollment.admission.groupsClaim": "groups",
+        "enrollment.admission.anyOf[0]": "example:engineering",
+        "enrollment.additionalScopes[0]": "groups",
+        "enrollment.createAccount.enabled": "true",
+        "enrollment.createAccount.role.id": "role_config_member",
+        "enrollment.createAccount.role.scope": "all",
+        "enrollment.groupIds[0]": "group_config_members",
+      }),
+    );
+    const environment = resolveSecrets(signInSettings(deploymentEnv(objects, "api")));
+    assert.deepEqual(humanLoginConfiguration(environment).oidc.enrollment, {
+      admission: { groupsClaim: "groups", anyOf: ["example:engineering"] },
+      additionalScopes: ["groups"],
+      createAccount: { enabled: true, role: { id: "role_config_member", scope: "all" } },
+      groupIds: ["group_config_members"],
+    });
+    assert.ok(
+      !deploymentEnv(objects, "worker").some(({ name }) => name === "OCC_AUTH_OIDC_ENROLLMENT"),
+    );
+    assert.match(await refusal({ "auth.github.enabled": "false" }), /auth.github was removed/);
+    assert.match(
+      await refusal({ "auth.oidc.enrollment.admission.groupsClaim": "groups" }),
+      /requires auth.oidc.enabled/,
+    );
+    assert.throws(
+      () => humanLoginConfiguration({ ...environment, OCC_AUTH_GITHUB_CLIENT_ID: "" }),
+      /retired/,
+    );
+    for (const policy of [
+      { admission: { groupsClaim: "groups", anyOf: [] } },
+      {
+        admission: { groupsClaim: "groups", anyOf: ["members"] },
+        createAccount: { enabled: true },
+      },
+      { admission: { groupsClaim: "groups", anyOf: ["members"] }, emailClaim: "alternate_email" },
+    ]) {
+      assert.throws(
+        () =>
+          humanLoginConfiguration({
+            ...environment,
+            OCC_AUTH_OIDC_ENROLLMENT: JSON.stringify(policy),
+          }),
+        { name: "Error", message: /^OIDC enrollment / },
+      );
+    }
+  },
+);
+
+test(
+  "chart host-only native admin is explicit and preserves guarded cookie scope",
+  tooling,
+  async () => {
+    const values = {
+      ...oidcUpgradeValues(recoveryUserId),
+      "agentNativeAdmin.enabled": "true",
+      "agentNativeAdmin.sessionMode": "host-only-exchange",
+      "agentNativeAdmin.domain": "agents.oce.example.internal",
+      "gatewayRouting.enabled": "true",
+    };
+    // Disabling the UI keeps the selected cookie boundary and its provider restrictions.
+    for (const enabled of ["true", "false"]) {
+      const selected = { ...values, "agentNativeAdmin.enabled": enabled };
+      const objects = await renderChart(selected);
+      const settings = signInSettings(deploymentEnv(objects, "api"));
+      assert.equal(settings.OCC_AGENT_NATIVE_ADMIN_SESSION_MODE, "host-only-exchange");
+      assert.equal(settings.OCC_AUTH_COOKIE_DOMAIN, undefined);
+      assert.equal(
+        signInSettings(deploymentEnv(objects, "worker")).OCC_AGENT_NATIVE_ADMIN_SESSION_MODE,
+        undefined,
+      );
+      await startsUp(resolveSecrets(settings), `host-only native admin ${enabled}`);
+      for (const provider of [
+        { "auth.oidc.enabled": "false", "auth.recoveryUserId": "" },
+        googleUpgradeValues(recoveryUserId),
+      ]) {
+        assert.match(
+          await chartRefusal({ ...selected, ...provider, "agentNativeAdmin.enabled": enabled }),
+          enabled === "true" && provider["auth.google.enabled"] === "true"
+            ? /auth.google requires agentNativeAdmin.enabled: false/
+            : /host-only-exchange requires guarded OIDC sign-in without Google/,
+        );
+      }
+    }
+    for (const [overrides, message] of [
+      [{ "agentNativeAdmin.sessionMode": "unknown" }, /sessionMode must be/],
+      [{ "agentNativeAdmin.sessionMode": "" }, /sessionMode must be/],
+      [
+        { "agentNativeAdmin.sharedCookieDomain": "example.com" },
+        /sharedCookieDomain is no longer supported/,
+      ],
+      [{ "gatewayRouting.sandbox.enabled": "true" }, /does not support sandbox preview/],
+      [{ "gatewayRouting.enabled": "false" }, /requires gatewayRouting.enabled/],
+    ]) {
+      assert.match(await chartRefusal({ ...values, ...overrides }), message);
+    }
+  },
+);

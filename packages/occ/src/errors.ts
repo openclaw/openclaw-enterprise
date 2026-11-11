@@ -175,6 +175,14 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
   }
 }
 
+/** A failed private runtime diagnostics transport read, without supplier details. */
+export class RuntimeDiagnosticsTransportError extends DependencyUnavailableError {
+  constructor() {
+    super("The private Gateway diagnostics transport is unavailable.");
+    this.name = "RuntimeDiagnosticsTransportError";
+  }
+}
+
 /**
  * Persisted platform state that its reader cannot decode, such as an invalid row. It fails closed
  * like any unavailable dependency, but unlike an outage it does not recover by itself, so a caller
@@ -361,6 +369,14 @@ export class ScopeViolationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ScopeViolationError";
+  }
+}
+
+/** A committed revision withdrawal permanently closes its repository session admission. */
+export class RepositorySessionWithdrawnError extends ScopeViolationError {
+  constructor() {
+    super("Repository session admission was withdrawn for this revision.");
+    this.name = "RepositorySessionWithdrawnError";
   }
 }
 
@@ -1032,6 +1048,13 @@ export class TransientDependencyError extends Error {
  * operator fixes that identity or grant, so Compute fails the Namespace step at once.
  * The message names only the provider's refusal code, never provider text.
  */
+export class SandboxNamespacePendingError extends Error {
+  constructor(message = "Sandbox Namespace resources have not converged.") {
+    super(message);
+    this.name = "SandboxNamespacePendingError";
+  }
+}
+
 export class SandboxNamespaceRefusedError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
@@ -1082,7 +1105,18 @@ export class ActivationPendingError extends Error {
 }
 
 /** An activation step that cannot complete for this revision. */
-export type ActivationFailedCode = "AGENT_GATEWAY_UNAUTHORIZED";
+export type ActivationFailedCode =
+  | "AGENT_GATEWAY_UNAUTHORIZED"
+  | "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE"
+  | "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE";
+
+const CODEX_PERMISSION_DENIALS = [
+  "sandbox-mode-denied",
+  "named-profile-denied",
+  "reviewer-denied",
+] as const;
+
+export type CodexPermissionDenial = (typeof CODEX_PERMISSION_DENIALS)[number];
 
 /** The selected Driver proved that this execution's repository access cannot be resumed.
  * Missing evidence or a failed dependency read must not produce this terminal result. */
@@ -1118,20 +1152,35 @@ export class ComputePreparationFailedError extends Error {
 }
 
 /**
- * Activation found its workloads running but one of them can never complete
- * activation for this revision: the dedicated Gateway refuses its own in-Pod CLI
- * as unauthorized, so it cannot confirm its workspace node. The cause is fixed
- * by the admitted Configuration, so the worker fails the deployment with `code`
- * instead of waiting for the convergence deadline. The message stays in the
- * controller; status shows a fixed text.
+ * A workload cannot activate under its current configuration or managed policy.
+ * Preparation and activation can both discover the refusal. The worker fails
+ * deployment with `code` instead of waiting for the convergence deadline.
+ * Status uses fixed text; the error message stays in the controller. Operational
+ * diagnostics may retain the fixed Codex permission denial categories.
  */
 export class ActivationFailedError extends Error {
   readonly code: ActivationFailedCode;
+  readonly permissionDenials?: readonly CodexPermissionDenial[];
 
-  constructor(code: ActivationFailedCode, message: string) {
+  constructor(
+    code: ActivationFailedCode,
+    message: string,
+    permissionDenials?: readonly CodexPermissionDenial[],
+  ) {
     super(message);
     this.name = "ActivationFailedError";
     this.code = code;
+    if (
+      code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE" &&
+      permissionDenials !== undefined
+    ) {
+      const recognized = CODEX_PERMISSION_DENIALS.filter((denial) =>
+        permissionDenials.includes(denial),
+      );
+      if (recognized.length > 0) {
+        this.permissionDenials = Object.freeze(recognized);
+      }
+    }
   }
 }
 

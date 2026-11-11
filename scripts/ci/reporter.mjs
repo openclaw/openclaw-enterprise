@@ -1,4 +1,15 @@
+import { skipperOperationDiagnostic } from "./skipper-release.ts";
+import {
+  boundedProgressLines,
+  openShellProgress,
+  openShellProgressPrefix,
+} from "./openshell-progress.mjs";
 import { failureInputLimit } from "./failure-redaction.mjs";
+import { recordsCoverage } from "./full-integration-coverage.ts";
+import {
+  openShellGitRetentionKind,
+  projectOpenShellGitRetention,
+} from "./openshell-git-retention.mjs";
 
 const safeOccErrorCodes = new Set([
   "INVALID_REQUEST",
@@ -108,15 +119,6 @@ const nativePolicyCleanupChecks = new Set([
   "cleanup.remove-directory",
   "cleanup.resume-worker",
 ]);
-const openShellMeasurementKinds = new Set([
-  openShellStageMeasurementKind,
-  openShellSandboxMeasurementKind,
-  openShellPolicyCheckKind,
-  openShellFixtureTeardownKind,
-  openShellGatewayTurnFailureKind,
-  openShellNativePolicyCheckKind,
-  openShellInitialTurnoverKind,
-]);
 const openShellPolicyChecks = new Set([
   "installation-discovery",
   "cluster-target-reachability",
@@ -136,9 +138,21 @@ const openShellPolicyChecks = new Set([
   "provider-allow-observed",
   "revision-unchanged",
   "second-agent-isolation",
+  "second-agent-control-request",
+  "second-agent-denied-request",
   "second-agent-cleanup",
   "editing-state-enforcement",
   "grant-revocation",
+]);
+const firstAgentStages = new Set([
+  "setup",
+  "cleanup",
+  "initial-deploy-and-model",
+  "reuse-model",
+  "native-deploy",
+  "native-model",
+  "native-redeploy",
+  "native-resumed-model",
 ]);
 const openShellSandboxStages = new Set([
   "installation",
@@ -172,6 +186,9 @@ function parseMeasurement(message) {
 }
 
 function safeMeasurement(value) {
+  if (isRecord(value) && value.kind === openShellGitRetentionKind) {
+    return projectOpenShellGitRetention(value);
+  }
   if (isRecord(value) && value.kind === openShellInitialTurnoverKind) {
     return safeOpenShellInitialTurnoverMeasurement(value);
   }
@@ -194,60 +211,68 @@ function safeMeasurement(value) {
     return validTurn && validStatus ? { kind, checkpoint, turn, status } : undefined;
   }
   if (isRecord(value) && value.kind === openShellStageMeasurementKind) {
-    if (
-      ![
-        "installation",
-        "initial-model",
-        "filesystem-network",
-        "network-policy",
-        "credential-route",
-        "replacement",
-        "untrusted-upstream",
-        "tool-outage",
-        "model-outage",
-        "gateway-outage",
-        "oauth-refresh",
-        "non-model-source",
-        "credential-absence",
-        "credential-withdrawal",
-        "embedded-refusal",
-        "native-policy",
-      ].includes(value.stage) ||
-      !["passed", "failed"].includes(value.outcome) ||
-      !Number.isInteger(value.elapsedMs) ||
-      value.elapsedMs < 0 ||
-      value.elapsedMs > 7_200_000
-    ) {
-      return undefined;
-    }
-    return {
-      kind: value.kind,
-      stage: value.stage,
-      outcome: value.outcome,
-      elapsedMs: value.elapsedMs,
-    };
+    const { kind, stage, outcome } = value;
+    const allowedStage =
+      stage !== "exposure-auth" && Boolean(openShellProgress({ kind, stage, outcome }));
+    return safeStageMeasurement(value, allowedStage, 7_200_000);
   }
   if (isRecord(value) && value.kind === openShellSandboxMeasurementKind) {
-    if (
-      !openShellSandboxStages.has(value.stage) ||
-      !["passed", "failed"].includes(value.outcome) ||
-      !Number.isInteger(value.elapsedMs) ||
-      value.elapsedMs < 0 ||
-      value.elapsedMs > 2_400_000
-    ) {
-      return undefined;
-    }
-    return {
-      kind: value.kind,
-      stage: value.stage,
-      outcome: value.outcome,
-      elapsedMs: value.elapsedMs,
-    };
+    return safeStageMeasurement(value, openShellSandboxStages.has(value.stage), 2_400_000);
   }
   if (isRecord(value) && value.kind === openShellPolicyCheckKind) {
     return openShellPolicyChecks.has(value.check)
       ? { kind: value.kind, check: value.check }
       : undefined;
+  }
+  if (isRecord(value) && value.kind === "openshell-policy-probe") {
+    const count = (number) => Number.isSafeInteger(number) && number >= 0;
+    const hash = (text) => typeof text === "string" && /^[a-f0-9]{64}$/.test(text);
+    if (
+      !(
+        (value.role === "control" && value.port === 8082) ||
+        (value.role === "policy" && value.port === 8083)
+      ) ||
+      !hash(value.targetHash) ||
+      !count(value.commandCount) ||
+      !count(value.candidateCount) ||
+      value.candidateCount > value.commandCount ||
+      !(value.selectedIndex === null
+        ? value.candidateCount === 0
+        : count(value.selectedIndex) &&
+          value.selectedIndex < value.commandCount &&
+          value.candidateCount > 0) ||
+      !count(value.laterUriMatches) ||
+      value.laterUriMatches >
+        (value.selectedIndex === null ? 0 : value.commandCount - value.selectedIndex - 1) ||
+      !Array.isArray(value.commands) ||
+      value.commands.length !== Math.min(8, value.commandCount - (value.selectedIndex ?? 0)) ||
+      !value.commands.every(
+        (command) =>
+          isRecord(command) &&
+          hash(command.hash) &&
+          [command.hasUrllib, command.hasInterpreter, command.hasExpectedUri].every(
+            (flag) => typeof flag === "boolean",
+          ),
+      )
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      role: value.role,
+      port: value.port,
+      targetHash: value.targetHash,
+      commandCount: value.commandCount,
+      candidateCount: value.candidateCount,
+      selectedIndex: value.selectedIndex,
+      laterUriMatches: value.laterUriMatches,
+      commands: value.commands.map(({ hash, hasUrllib, hasInterpreter, hasExpectedUri }) => ({
+        hash,
+        hasUrllib,
+        hasInterpreter,
+        hasExpectedUri,
+      })),
+    };
   }
   if (isRecord(value) && value.kind === openShellNativePolicyCheckKind) {
     const { kind, stage, primaryCheck, cleanupCheck } = value;
@@ -265,6 +290,55 @@ function safeMeasurement(value) {
     return ["passed", "failed", "incomplete"].includes(value.outcome)
       ? { kind: value.kind, outcome: value.outcome }
       : undefined;
+  }
+  if (isRecord(value) && value.kind === "local-first-agent-startup-failure") {
+    if (
+      ![
+        "unknown",
+        "canceled",
+        "deadline",
+        "controller-image-import",
+        "routing",
+        "network-verification",
+        "network-cleanup",
+        "registry-detach",
+        "platform-namespace",
+        "openshell-preparation",
+        "rollback",
+      ].includes(value.primaryStage) ||
+      typeof value.cleanupFailed !== "boolean" ||
+      typeof value.parentContextDone !== "boolean" ||
+      (value.routingOperation !== undefined &&
+        (value.primaryStage !== "routing" ||
+          ![
+            "manifest-download",
+            "gateway-api-readiness",
+            "manifest-filter",
+            "manifest-write",
+            "manifest-apply",
+            "controller-crd-readiness",
+            "controller-rollout",
+            "gateway-class-apply",
+            "gateway-class-readiness",
+            "node-pod-cidr",
+          ].includes(value.routingOperation))) ||
+      (value.routingController !== undefined &&
+        (value.routingOperation === undefined ||
+          value.routingOperation === "node-pod-cidr" ||
+          !["cert-manager", "envoy-gateway"].includes(value.routingController)))
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      primaryStage: value.primaryStage,
+      cleanupFailed: value.cleanupFailed,
+      parentContextDone: value.parentContextDone,
+      ...(value.routingOperation !== undefined ? { routingOperation: value.routingOperation } : {}),
+      ...(value.routingController !== undefined
+        ? { routingController: value.routingController }
+        : {}),
+    };
   }
   if (isRecord(value) && value.kind === "local-first-agent-setup-point") {
     if (
@@ -299,6 +373,22 @@ function safeMeasurement(value) {
     }
     return result;
   }
+  if (isRecord(value) && value.kind === "local-first-agent-manifest-failure") {
+    if (
+      ![
+        "selected-input",
+        "http-status",
+        "transport",
+        "deadline",
+        "canceled",
+        "integrity",
+        "local-io",
+      ].includes(value.reason)
+    ) {
+      return undefined;
+    }
+    return { kind: value.kind, reason: value.reason };
+  }
   if (isRecord(value) && value.kind === "local-first-agent-command") {
     if (
       !["setup", "cleanup"].includes(value.phase) ||
@@ -315,6 +405,19 @@ function safeMeasurement(value) {
         "k3d-image-import",
         "kubernetes-readiness",
         "helm-install",
+        "openshell-image-selection",
+        "openshell-image-validation",
+        "openshell-assets-directory",
+        "openshell-charts",
+        "openshell-agent-sandbox-manifest",
+        "openshell-runtime-class",
+        "openshell-agent-sandbox-apply",
+        "openshell-agent-sandbox-rollout",
+        "openshell-workspace-render",
+        "openshell-gateway-import",
+        "openshell-sandbox-import",
+        "openshell-supervisor-import",
+        "openshell-prepare",
       ].includes(value.stage) ||
       !Number.isInteger(value.count) ||
       value.count < 1 ||
@@ -390,30 +493,7 @@ function safeMeasurement(value) {
     return result;
   }
   if (isRecord(value) && value.kind === "local-first-agent") {
-    if (
-      ![
-        "setup",
-        "cleanup",
-        "initial-deploy-and-model",
-        "reuse-model",
-        "native-deploy",
-        "native-model",
-        "native-redeploy",
-        "native-resumed-model",
-      ].includes(value.stage) ||
-      !["passed", "failed"].includes(value.outcome) ||
-      !Number.isInteger(value.elapsedMs) ||
-      value.elapsedMs < 0 ||
-      value.elapsedMs > 7_200_000
-    ) {
-      return undefined;
-    }
-    return {
-      kind: value.kind,
-      stage: value.stage,
-      outcome: value.outcome,
-      elapsedMs: value.elapsedMs,
-    };
+    return safeStageMeasurement(value, firstAgentStages.has(value.stage), 7_200_000);
   }
   if (isRecord(value) && value.kind === "runtime-model-probe") {
     return safeModelProbeMeasurement(value);
@@ -590,6 +670,20 @@ function safeOpenShellInitialTurnoverMeasurement(value) {
   return measurement.qualification === openShellTurnoverQualification(measurement)
     ? measurement
     : undefined;
+}
+
+function safeStageMeasurement(value, allowedStage, maxElapsedMs) {
+  const { kind, stage, outcome, elapsedMs } = value;
+  if (
+    !allowedStage ||
+    (outcome !== "passed" && outcome !== "failed") ||
+    !Number.isInteger(elapsedMs) ||
+    elapsedMs < 0 ||
+    elapsedMs > maxElapsedMs
+  ) {
+    return undefined;
+  }
+  return { kind, stage, outcome, elapsedMs };
 }
 
 const modelProbeMeasurementCases = new Set([
@@ -1021,6 +1115,28 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
   const vocabularies = {
     proofRpcCode: ["UNAVAILABLE", "INVALID_REQUEST", "NOT_FOUND", "UNAUTHORIZED", "FORBIDDEN"],
     historyExecErrorFlag: ["none", "false", "true", "absent", "other", "mixed"],
+    historyExecOuterStatus: ["completed", "failed", "waiting"],
+    historyExecOuterCode: [
+      "aborted",
+      "invalid_input",
+      "runtime_unavailable",
+      "timeout",
+      "output_limit_exceeded",
+      "snapshot_limit_exceeded",
+      "internal_error",
+    ],
+    historyExecOuterFailurePhase: ["input", "guest", "bridge", "host"],
+    historyExecNestedStatus: ["completed", "failed"],
+    historyExecNestedFailureKind: [
+      "shell-command-not-found",
+      "shell-not-executable",
+      "overall-timeout",
+      "no-output-timeout",
+      "memory-limit",
+      "signal",
+      "aborted",
+      "runtime-error",
+    ],
     turnStatus: ["ok", "error", "timeout", "pending"],
     turnError: turnErrors,
     proofError: turnErrors,
@@ -1076,6 +1192,8 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     "historyToolProofPresent",
     "historyFinalProofPresent",
     "historySettleExpired",
+    "historyExecBridgeDispatchStarted",
+    "historyExecProofProgramEntryPresent",
     "workspaceReferencePresent",
     "attachedSessionMatches",
     "expectedNodeIdPresent",
@@ -1167,6 +1285,9 @@ function failureDiagnostic(error) {
   const diagnostic = error?.openclawCiDiagnostic;
   if (!isRecord(diagnostic)) {
     return undefined;
+  }
+  if (diagnostic.kind === "skipper-operation") {
+    return skipperOperationDiagnostic(diagnostic);
   }
   if (diagnostic.kind === "openshell-startup-process") {
     const keys = Reflect.ownKeys(diagnostic);
@@ -1486,14 +1607,43 @@ function outputTail() {
   const partial = { stdout: "", stderr: "" };
   const dropping = { stdout: false, stderr: false };
   let omitted = 0;
+  // A blank before a marker is its separator, even across chunks or stderr.
+  // Keep its position, but do not let it evict an ordinary line until classified.
+  let pendingStdoutBlank;
+  const settleStdoutBlank = () => {
+    if (pendingStdoutBlank?.index < 0) {
+      omitted += 1;
+    }
+    pendingStdoutBlank = undefined;
+  };
   // Trim in batches so a chatty passing file costs amortized constant time per line.
   const trim = (limit) => {
-    if (lines.length > limit) {
-      omitted += lines.length - outputTailLines;
-      lines.splice(0, lines.length - outputTailLines);
+    const pendingIndex = pendingStdoutBlank?.index ?? -1;
+    const count = lines.length - Number(pendingIndex >= 0);
+    if (count > limit) {
+      const excess = count - outputTailLines;
+      const removed = excess + Number(pendingIndex >= 0 && pendingIndex < excess);
+      omitted += excess;
+      lines.splice(0, removed);
+      if (pendingStdoutBlank) {
+        pendingStdoutBlank.index -= removed;
+      }
     }
   };
   const push = (line) => {
+    if (line.startsWith(`stdout: ${openShellProgressPrefix}`)) {
+      if (pendingStdoutBlank?.index >= 0) {
+        lines.splice(pendingStdoutBlank.index, 1);
+      }
+      pendingStdoutBlank = undefined;
+      return;
+    }
+    if (line.startsWith("stdout: ")) {
+      settleStdoutBlank();
+      if (line === "stdout: ") {
+        pendingStdoutBlank = { index: lines.length };
+      }
+    }
     lines.push(line.slice(0, failureInputLimit));
     trim(2 * outputTailLines);
   };
@@ -1529,6 +1679,7 @@ function outputTail() {
           push(`${stream}: ${partial[stream]}`);
         }
       }
+      settleStdoutBlank();
       trim(outputTailLines);
       return { lines, omitted };
     },
@@ -1562,7 +1713,7 @@ function* interruptedOutput({ lines, omitted }) {
   }
 }
 
-function location(data = {}) {
+function location(data = {}, recordCoverage = false) {
   const error = data.details?.error;
   const cause = error?.cause ?? error;
   const fileFailure = typeof data.file === "string" && data.name === data.file;
@@ -1588,6 +1739,22 @@ function location(data = {}) {
     type: data.type,
     testId: data.testId,
     parentId: data.parentId,
+    caseAssertionFailure:
+      recordCoverage &&
+      !fileFailure &&
+      data.details?.type === "test" &&
+      error?.failureType === "testCodeFailure" &&
+      cause?.code === "ERR_ASSERTION" &&
+      cause?.name === "AssertionError"
+        ? true
+        : undefined,
+    caseSubtestsFailed:
+      recordCoverage &&
+      !fileFailure &&
+      (data.details?.type === "test" || data.details?.type === "suite") &&
+      error?.failureType === "subtestsFailed"
+        ? true
+        : undefined,
     error: error
       ? {
           code: error.code === "ERR_TEST_FAILURE" ? "ERR_TEST_FAILURE" : undefined,
@@ -1623,7 +1790,22 @@ function location(data = {}) {
 // Only for scripts/ci/run-tests.mjs: failure text here is unredacted, so never
 // point a step whose stdout reaches a log or artifact at this reporter directly.
 export default async function* jsonLinesReporter(source) {
+  const recordCoverage = recordsCoverage(process.env.GITHUB_WORKFLOW);
   const output = outputTail();
+  const progress = [];
+  const readProgress = boundedProgressLines((line) => {
+    if (!line.startsWith(openShellProgressPrefix)) {
+      return;
+    }
+    try {
+      const value = openShellProgress(JSON.parse(line.slice(openShellProgressPrefix.length)));
+      if (value) {
+        progress.push(value);
+      }
+    } catch {
+      // Invalid progress never becomes raw failure output.
+    }
+  });
   let failed = false;
   let outputSent = false;
   // Tests dequeued and not yet complete: the ones a timeout interrupted. Tests
@@ -1667,6 +1849,12 @@ export default async function* jsonLinesReporter(source) {
     }
     if (event.type === "test:stdout" || event.type === "test:stderr") {
       if (typeof event.data?.message === "string") {
+        if (event.type === "test:stdout") {
+          readProgress(event.data.message);
+          for (const value of progress.splice(0)) {
+            yield `${JSON.stringify({ type: "test:progress", data: value })}\n`;
+          }
+        }
         output.add(event.type.slice(5), event.data.message);
       }
       continue;
@@ -1674,15 +1862,28 @@ export default async function* jsonLinesReporter(source) {
     if (event.type === "test:fail") {
       failed = true;
     }
+    if (
+      recordCoverage &&
+      event.type === "test:summary" &&
+      typeof event.data?.file === "string" &&
+      event.data.counts
+    ) {
+      const { tests, passed, failed, cancelled, skipped, todo, suites } = event.data.counts;
+      yield `${JSON.stringify({
+        type: "test:summary",
+        data: { tests, passed, failed, cancelled, skipped, todo, suites },
+      })}\n`;
+      continue;
+    }
     if (event.type === "test:diagnostic") {
       const message = event.data?.message;
       if (typeof message !== "string") {
         continue;
       }
       const value = parseMeasurement(message);
-      // Per-test diagnostics name their file; the run summary counts do not.
-      // OpenShell measurements belong only in the projected record, even on failure.
-      if (typeof event.data.file === "string" && !openShellMeasurementKinds.has(value?.kind)) {
+      // Structured receipts, including malformed or unknown kinds, belong only
+      // to safeMeasurement. Never duplicate their raw text into failure output.
+      if (typeof event.data.file === "string" && !message.startsWith(measurementPrefix)) {
         output.diagnostic(message);
       }
       // Node diagnostics can quote thrown errors; retain only this fixed failure category.
@@ -1705,7 +1906,7 @@ export default async function* jsonLinesReporter(source) {
 
     yield `${JSON.stringify({
       type: event.type,
-      data: location(event.data),
+      data: location(event.data, recordCoverage),
     })}\n`;
   }
   // Passing files send nothing extra.

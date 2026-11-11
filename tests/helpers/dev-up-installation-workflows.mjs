@@ -9,6 +9,7 @@ import test, { before } from "node:test";
 import { promisify } from "node:util";
 import { devUpUnrelatedImage, prepareDevUpImage } from "../../scripts/ci/prepare.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
+import { startupFailureObservation } from "./local-first-agent-stack.mjs";
 
 const execute = promisify(execFile);
 const repository = resolve(import.meta.dirname, "../..");
@@ -205,7 +206,13 @@ process.exit(result.status ?? 1);
           ];
           const stage =
             stages.findLast(([, marker]) => error.stdout?.includes(marker))?.[0] ?? "unknown";
-          const diagnostic = `dev-up exit ${exit}, signal ${signal}, build-error ${buildError}, stage ${stage}, elapsed ${elapsedSeconds}s.`;
+          const startup = startupFailureObservation();
+          startup.write(typeof error.stdout === "string" ? error.stdout : "");
+          const observation = startup.finish(error.code, error.signal, error.killed);
+          const attribution = observation
+            ? ` primary-stage ${observation.primaryStage}, cleanup-failed ${observation.cleanupFailed}, parent-context-done ${observation.parentContextDone}.`
+            : "";
+          const diagnostic = `dev-up exit ${exit}, signal ${signal}, build-error ${buildError}, stage ${stage}, elapsed ${elapsedSeconds}s.${attribution}`;
           assert.ok(
             /Verifying Kubernetes network isolation before configuring gateway trust/.test(
               error.stdout,
@@ -273,7 +280,8 @@ export function registerInstallationKeycloak() {
       const values = JSON.parse(await fixture.read("helm-values.json"));
       assert.equal(values.auth.oidc.enabled, true);
       assert.equal(values.auth.passwordSignIn, "recovery-only");
-      assert.equal(values.agentNativeAdmin.enabled, false);
+      assert.equal(values.agentNativeAdmin.enabled, true);
+      assert.equal(values.agentNativeAdmin.domain, `agents.${fixture.cluster}.oce.localhost`);
       // Probe the actual API after the OIDC upgrade, when the additive policy is active.
       await verifyKeycloakAPIEgress(fixture, state, values);
       const issuer = `https://${fixture.keycloakHost}/realms/oce`;
@@ -384,10 +392,11 @@ export function registerInstallationKeycloak() {
             );
             assert.equal(account.data.userId, adminId);
             const sessionCookie = cookies.find(
-              ({ name, value }) => name.endsWith(".session_token") && value,
+              ({ name, value }) => name === "__Secure-openclaw_occ_shared.session_token" && value,
             );
             assert.ok(sessionCookie);
-            assert.equal(sessionCookie.domain, fixture.consoleHost);
+            // OIDC preserves the shared session scope for the Console and Agent hosts.
+            assert.equal(sessionCookie.domain, `.${fixture.cluster}.oce.localhost`);
             assert.equal(sessionCookie.secure, true);
             assert.equal(sessionCookie.httpOnly, true);
 
