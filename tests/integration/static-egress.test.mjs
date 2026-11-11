@@ -1312,10 +1312,19 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
     );
     return captured;
   };
-  for (const metadata of [
-    turnMetadata,
-    { ...turnMetadata, workspaces: { [repositoryRoot]: workspace } },
+  // Captured native requests paired telemetry "ultra" with wire "xhigh". Preserve each field's
+  // supported spelling through authorization and the actual TLS provider request.
+  for (const [effort, metadata] of [
+    [inline.request.reasoning.effort, turnMetadata],
+    [
+      inline.request.reasoning.effort,
+      { ...turnMetadata, workspaces: { [repositoryRoot]: workspace } },
+    ],
+    ["high", { ...turnMetadata, reasoning_effort: "high" }],
+    ["xhigh", { ...turnMetadata, reasoning_effort: "ultra" }],
+    ["max", { ...turnMetadata, reasoning_effort: "max" }],
   ]) {
+    inline.request.reasoning.effort = effort;
     inline.request.client_metadata[metadataKey] = JSON.stringify(metadata);
     const captured = captureInline(inline.request);
     const { ready } = await f.resolve(captured);
@@ -1365,6 +1374,9 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
       metadata.reasoning_effort = "unrecognized";
       request.client_metadata[metadataKey] = JSON.stringify(metadata);
     },
+    ...["ultra", "unrecognized"].map((effort) => (request) => {
+      request.reasoning.effort = effort;
+    }),
     ...[
       { relative: workspace },
       { ["/".repeat(4097)]: workspace },

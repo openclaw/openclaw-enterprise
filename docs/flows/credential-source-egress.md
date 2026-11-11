@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-11
-last_updated_session: authoring-run/4a7d8e1a-0c95-4f57-8628-ea2d59fbe9b2
+last_updated_session: authoring-run/89ba83c7-7553-45e6-a3b5-a8e067da1d65
 ---
 
 # Protected credential request flow
@@ -266,8 +266,8 @@ The protected startup probe also disables retries.
 `apps/controller/src/drivers/egress-proxy/openai-provider.ts:createOpenAiStaticProvider`
 checks [request forms](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
 through `openai-responses.ts:validResponsesRequest` before Secret resolution.
-The check accepts local tools declared inline, bounded agent messages, optional
-Git workspace metadata and passive no-MCP attribution. The admitted grant
+Separate validators accept `max` for request effort or telemetry; only telemetry
+accepts `ultra`. The admitted grant
 selects the model and destination. Replayed assistant text can carry empty
 `annotations` and `logprobs` arrays.
 
@@ -332,6 +332,8 @@ caller independently.
 None.
 
 ## Changelog
+
+- 2026-11-11 08:40: Distinguish native telemetry effort from Responses request effort. (authoring-run/89ba83c7-7553-45e6-a3b5-a8e067da1d65 - 6b4e85174966c1a172f2ecd25a3ea1238fe6f0d7)
 
 - 2026-11-11 06:02: Admit native agent messages. (authoring-run/4a7d8e1a-0c95-4f57-8628-ea2d59fbe9b2 - 82078dad5edc334f21d3feaed447db6601fa5d31)
 
