@@ -1,9 +1,19 @@
 import assert from "node:assert/strict";
 import { execFile, spawn, spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { createServer } from "node:http";
 import { once } from "node:events";
@@ -293,6 +303,138 @@ test("installed Skipper receiver reports failures without exposing response cont
   }
 });
 
+test("private Git installer retains its process exit through wrapper cleanup", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "skipper-install-exit-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const checkout = join(directory, "checkout");
+  const bin = join(checkout, "bin");
+  const work = join(directory, "work");
+  const model = join(directory, "model");
+  const exec = promisify(execFile);
+
+  // Give the owner a clean source identity and an isolated CLI without touching the developer's bin/occ.
+  await mkdir(join(checkout, "scripts"), { recursive: true });
+  await cp("scripts/ci", join(checkout, "scripts/ci"), { recursive: true });
+  for (const path of ["scripts/lib", "apps", "tests", "go.mod", "compose.yaml", "package.json"]) {
+    await symlink(resolve(path), join(checkout, path));
+  }
+  await mkdir(bin);
+  await mkdir(work);
+  await mkdir(model);
+  await exec("go", ["build", "-trimpath", "-o", join(directory, "occ"), "./cmd/occ"]);
+  // Child output can resemble a stack frame or describe a healthy sandbox check.
+  const locationMarker = "skipper-prepared-git-installed.mjs:7314:8652";
+  await writeFile(
+    join(bin, "occ"),
+    `#!/bin/bash
+echo "bwrap check passed"
+echo "${locationMarker}" >&2
+exec "$TEST_OCC" "$@" 2> >(tee "$TEST_INSTALL_STDERR" >&2)
+`,
+    { mode: 0o700 },
+  );
+  // Isolate the owner's Docker inventory and cleanup. Any installer call to Docker fails the oracle.
+  const registry = "0".repeat(64);
+  await writeFile(
+    join(bin, "docker"),
+    `#!/bin/sh
+case "$*" in
+  'ps -a --format {{.Names}}'|'network ls --format {{.Name}}'|'rm --force --volumes ${registry}') ;;
+  *) echo unexpected >> "$TEST_DOCKER_CALLS"; exit 97 ;;
+esac
+echo "$1" >> "$TEST_DOCKER_CALLS"
+`,
+    { mode: 0o700 },
+  );
+  const git = (...args: string[]) => exec("git", args, { cwd: checkout });
+  await git("init", "--quiet");
+  await git("add", ".");
+  await git(
+    "-c",
+    "user.name=Test",
+    "-c",
+    "user.email=test@example.invalid",
+    "-c",
+    "commit.gpgsign=false",
+    "commit",
+    "--quiet",
+    "-m",
+    "Install fixture",
+  );
+  const head = (await git("rev-parse", "HEAD")).stdout.trim();
+  const stepOutput = join(directory, "step-output");
+  const calls = join(directory, "docker-calls");
+  const env = {
+    PATH: bin + ":" + process.env.PATH,
+    GITHUB_ACTIONS: "true",
+    GITHUB_SHA: head,
+    GITHUB_RUN_ID: "15",
+    GITHUB_RUN_ATTEMPT: "1",
+    GITHUB_OUTPUT: stepOutput,
+    OCC_FIRST_AGENT_SMOKE_DIRECTORY: work,
+    OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY: model,
+    OCC_TEST_SKIPPER_PRIVATE_GIT_WITNESS: "unused",
+    OCC_DEVELOPMENT_REPOSITORY_IMAGE: "unused",
+    OCC_SKIPPER_IMAGE_REGISTRY_CONTAINER: registry,
+    TEST_OCC: join(directory, "occ"),
+    TEST_INSTALL_STDERR: join(directory, "installer-stderr"),
+    TEST_DOCKER_CALLS: calls,
+    // CheckDevelopmentProfile rejects this retired selector before dispatch to Kubernetes.
+    OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP: "retired",
+    DOCKER_HOST: "unix://" + join(directory, "absent.sock"),
+  };
+  const owner = spawnSync(process.execPath, ["scripts/ci/skipper-prepared-git-installed.mjs"], {
+    cwd: checkout,
+    env,
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  assert.equal(owner.error, undefined);
+  assert.equal(owner.status, 1);
+  assert.ok(
+    (await readFile(env.TEST_INSTALL_STDERR, "utf8")).includes(
+      "OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP is retired",
+    ),
+  );
+  const diagnostic = owner.stderr + owner.stdout;
+  assert.ok(owner.stderr.includes("occ dev up exited 1"));
+  assert.ok(!diagnostic.includes(locationMarker));
+  assert.ok(!/bwrap|OPENSHELL_HOST_GATEWAY_IP/.test(diagnostic));
+  assert.deepEqual((await readFile(calls, "utf8")).trim().split("\n"), ["ps", "network", "rm"]);
+  await assert.rejects(stat(model), { code: "ENOENT" });
+  const clusters = await readdir(work);
+  assert.equal(clusters.length, 1);
+  const [cluster] = clusters;
+  assert.ok(cluster);
+  assert.deepEqual(await readdir(join(work, cluster)), []);
+  const outputs = Object.fromEntries(
+    (await readFile(stepOutput, "utf8"))
+      .trim()
+      .split("\n")
+      .map((row) => row.split("=")),
+  );
+  const receipt = join(directory, "failure.json");
+  await exec(process.execPath, ["scripts/ci/skipper-failure-receipt.ts", receipt], {
+    cwd: checkout,
+    env: {
+      ...env,
+      SKIPPER_STAGE: outputs.skipper_stage,
+      SKIPPER_INSTALLED_CLEANUP: outputs.skipper_installed_cleanup,
+      SKIPPER_PROOF_OUTCOME: "failure",
+    },
+  });
+  assert.deepEqual(JSON.parse(await readFile(receipt, "utf8")), {
+    version: 1,
+    runId: "15",
+    attempt: "1",
+    sourceSha: head,
+    outcome: "failed",
+    lastStage: "install",
+    installer: { component: "occ-dev-up", exitCode: 1 },
+    installedCleanup: "unknown",
+  });
+});
+
 test("installed Skipper failure retention preserves known checkpoints and withholds unknown data", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "skipper-failure-receipt-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -436,6 +578,19 @@ test("installed Skipper failure retention preserves known checkpoints and withho
   assert.doesNotMatch(published, /synthetic-canary/);
   assert.equal(JSON.parse(published).lastStage, "unknown");
   assert.equal(JSON.parse(published).installedCleanup, "unknown");
+
+  // The receipt accepts only genuine status values in the install checkpoint.
+  for (const [index, status] of ["SIGTERM", "0", "256", "SIGTERM\nsynthetic-canary"].entries()) {
+    const path = join(directory, "installer-" + index + ".json");
+    assert.equal(outcome(path, "failure", "install/occ-dev-up/" + status, "failed").status, 0);
+    const saved = JSON.parse(await readFile(path, "utf8"));
+    assert.deepEqual(
+      saved.installer,
+      status === "SIGTERM" ? { component: "occ-dev-up", signal: "SIGTERM" } : undefined,
+    );
+    assert.equal(saved.installedCleanup, "failed");
+    assert.ok(!JSON.stringify(saved).includes("synthetic-canary"));
+  }
 
   const success = child('await recordSkipperCheckpoint("skipper_installed_cleanup", "passed");');
   assert.equal(success.status, 0);
@@ -624,7 +779,7 @@ test("installed Skipper failure retention preserves known checkpoints and withho
         await writeFile(ledgerPath, diagnostic + "\n{\n");
         const failed = child(`
           import assert from "node:assert/strict";
-          import { join } from "node:path";
+          import { join, resolve } from "node:path";
           import { readSkipperJourney, recordSkipperTestFailure } from "./scripts/ci/skipper-failure-receipt.ts";
           const directory = ${JSON.stringify(directory)};
           const env = {};
