@@ -1206,7 +1206,11 @@ function bridgeRequirements(context, claimName, subPath) {
   };
 }
 
-function integrationGatewayClient(GrpcOpenShellGatewayClient, endpoint, { observeServiceUrl }) {
+function integrationGatewayClient(
+  GrpcOpenShellGatewayClient,
+  endpoint,
+  { observeServiceUrl, observeSandboxCreation },
+) {
   const gateway = new GrpcOpenShellGatewayClient({ endpoint });
   const observed = {
     async serviceCodexReadinessStatus(serviceUrl, ...args) {
@@ -1214,7 +1218,9 @@ function integrationGatewayClient(GrpcOpenShellGatewayClient, endpoint, { observ
       return await gateway.serviceCodexReadinessStatus(serviceUrl, ...args);
     },
     async createSandbox(request, signal) {
+      observeSandboxCreation?.("sandbox-create-attempt");
       const created = await gateway.createSandbox(request, signal);
+      observeSandboxCreation?.("sandbox-created");
       observeServiceUrl(created.serviceUrls[""]);
       return created;
     },
@@ -1403,7 +1409,7 @@ function createIntegrationSandboxDriverFactory(
   GrpcOpenShellGatewayClient,
   OpenShellGateway,
   operatorKubernetes,
-  { enableCompatibilityBridges, gatewayTrustPem },
+  { enableCompatibilityBridges, gatewayTrustPem, observeScratchEffect },
 ) {
   const gatewayState = new Map();
   const endpointClients = new Map();
@@ -1615,6 +1621,7 @@ function createIntegrationSandboxDriverFactory(
           ? clientForEndpoint(endpoint)
           : integrationGatewayClient(GrpcOpenShellGatewayClient, endpoint, {
               enableCompatibilityBridge: enableCompatibilityBridges,
+              observeSandboxCreation: (stage) => observeScratchEffect?.(stage, context.revision),
               observeServiceUrl: (serviceUrl) => {
                 harnessServiceUrls.set(context.revision.id, serviceUrl);
               },
@@ -1710,6 +1717,11 @@ function createIntegrationSandboxDriverFactory(
         }
       },
       async provisionHarness(context) {
+        observeScratchEffect?.("harness-provision", context.revision, {
+          scratchMounts: context.requirements.workspaceMounts
+            .filter(({ mountPath }) => mountPath === "/sandbox/scratch")
+            .map(({ claimName, subPath, mountPath }) => ({ claimName, subPath, mountPath })),
+        });
         if (
           enableCompatibilityBridges &&
           optionalSecretEnvironment(context.requirements, "OPENCLAW_NODE_SETUP_CODE") === undefined
@@ -1973,12 +1985,13 @@ function createIntegrationSandboxDriverFactory(
   return createDriver;
 }
 
-export function withFirstPrepareRevisionFailureDiagnostic(computeDriver) {
+export function withFirstPrepareRevisionFailureDiagnostic(computeDriver, observeScratchEffect) {
   let reported = false;
   return new Proxy(computeDriver, {
     get(target, property) {
       if (property === "prepareRevision") {
         return async (...args) => {
+          observeScratchEffect?.("compute-prepare", args[0]);
           try {
             return await target.prepareRevision(...args);
           } catch (error) {
@@ -2265,6 +2278,22 @@ async function prepareProductionInstallation(
   apiConfiguration.drivers.secret.configuration.authentication =
     controller.apiIdentity.authentication;
   await writeFile(startupPath, JSON.stringify(apiConfiguration), { mode: 0o600 });
+  // Observe calls at the real preparation and provider boundaries, before delegation.
+  // Keeping one ledger across worker compositions also catches transient effects that
+  // final Kubernetes lists would miss after a refusal cleaned them up.
+  const scratchEffects = [];
+  const observeScratchEffect = withScratch
+    ? (stage, revision, details = {}) => {
+        scratchEffects.push({
+          stage,
+          namespaceId: revision.namespaceId,
+          agentId: revision.agentId,
+          revisionId: revision.id,
+          observedAt: new Date().toISOString(),
+          ...details,
+        });
+      }
+    : undefined;
   const createSandboxDriver = createIntegrationSandboxDriverFactory(
     OpenShellSandboxDriver,
     GrpcOpenShellGatewayClient,
@@ -2272,6 +2301,7 @@ async function prepareProductionInstallation(
     operatorKubernetes,
     {
       enableCompatibilityBridges,
+      observeScratchEffect,
       ...(keycloak === undefined ? {} : { gatewayTrustPem: keycloak.caPem }),
     },
   );
@@ -2309,7 +2339,7 @@ async function prepareProductionInstallation(
       diagnosticWorkerDrivers: {
         ...loaded,
         computeDriver: withUnauthorizedTokenSourceDiagnostic(
-          withFirstPrepareRevisionFailureDiagnostic(loaded.computeDriver),
+          withFirstPrepareRevisionFailureDiagnostic(loaded.computeDriver, observeScratchEffect),
           tokenSources,
         ),
       },
@@ -2652,21 +2682,18 @@ async function prepareProductionInstallation(
     assert.equal(toolBinding.status, 201, JSON.stringify(toolBinding.error));
     toolSource.bindingId = toolBinding.data.id;
   }
-  const configureScratch = async (binding) => {
-    configuration.drivers.compute.configuration.runtime.scratchVolumes = [binding];
-    apiConfiguration.drivers.compute.configuration.runtime.scratchVolumes = [binding];
+  const configureScratch = async (binding, additionalBindings = []) => {
+    const bindings = [binding, ...additionalBindings];
+    configuration.drivers.compute.configuration.runtime.scratchVolumes = bindings;
+    apiConfiguration.drivers.compute.configuration.runtime.scratchVolumes = bindings;
     await writeFile(startupPath, JSON.stringify(apiConfiguration), { mode: 0o600 });
     await writeFile(workerStartupPath, JSON.stringify(configuration), { mode: 0o600 });
     await productionApp.close();
     await startApi(await loadApiDrivers());
   };
-  let scratchBinding;
-  if (withScratch) {
-    // An operator binds existing storage only after the API assigned the Agent ID.
-    // Restart both production compositions, as a real Installation edit requires.
-    await pauseWorker();
-    const claimName = `scratch-${hash(agent.data.id)}`;
-    const claimPath = join(directory, "scratch-pvc.json");
+  const createScratchBinding = async (agentId) => {
+    const claimName = `scratch-${hash(agentId)}`;
+    const claimPath = join(directory, `${claimName}.json`);
     await writeFile(
       claimPath,
       JSON.stringify({
@@ -2683,13 +2710,20 @@ async function prepareProductionInstallation(
     );
     await kubectl("create", "-f", claimPath);
     const claim = await resource("persistentvolumeclaim", claimName, placement);
-    scratchBinding = {
+    return {
       namespaceId,
-      agentId: agent.data.id,
+      agentId,
       namespace: placement,
       claimName,
       claimUid: claim.metadata.uid,
     };
+  };
+  let scratchBinding;
+  if (withScratch) {
+    // An operator binds existing storage only after the API assigned the Agent ID.
+    // Restart both production compositions, as a real Installation edit requires.
+    await pauseWorker();
+    scratchBinding = await createScratchBinding(agent.data.id);
     await configureScratch(scratchBinding);
   }
   const deployed = await request(
@@ -3064,12 +3098,27 @@ async function prepareProductionInstallation(
     assert.deepEqual(selected, [], "the parked Agent Service must not select the Harness Pod.");
   }
   return {
-    request,
+    request: (...args) => request(...args),
     placement,
     namespaceId,
     agent: agent.data,
     revision: deployed.data,
     scratchBinding,
+    scratchEffects,
+    createScratchBinding,
+    configureScratch,
+    async requestWithKey(key, method, url, payload) {
+      const response = await productionApp.inject({
+        method,
+        url,
+        headers: { "x-api-key": key, host: new URL(controllerAuthBaseURL).host },
+        ...(payload === undefined ? {} : { payload }),
+      });
+      return {
+        status: response.statusCode,
+        ...(response.body.length === 0 ? {} : response.json()),
+      };
+    },
     workspaceClaim,
     async deployScratch(binding) {
       await pauseWorker();
@@ -3930,7 +3979,7 @@ async function diagnoseAdditionalAgent(topology, agentId, revisionId, deployment
  * the first Agent's configuration, the given model source and the given tool sources. Its
  * principal receives `operate` on exactly those sources, as the first Agent's does.
  */
-async function deployAdditionalCredentialAgent(topology, modelSourceId, toolSources) {
+async function createAdditionalCredentialAgent(topology, modelSourceId, toolSources) {
   const { request, namespaceId } = topology;
   assert.equal(typeof topology.agent.configurationId, "string");
   const agent = await request("POST", `/namespaces/${namespaceId}/agents`, {
@@ -3957,6 +4006,13 @@ async function deployAdditionalCredentialAgent(topology, modelSourceId, toolSour
     });
     assert.equal(binding.status, 201, JSON.stringify(binding.error));
   }
+  return { agent: agent.data, path: agentPath };
+}
+
+async function deployAdditionalCredentialAgent(topology, modelSourceId, toolSources) {
+  const { request } = topology;
+  const created = await createAdditionalCredentialAgent(topology, modelSourceId, toolSources);
+  const agentPath = created.path;
   const deployed = await request("POST", `${agentPath}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
   const deploymentPath = `${agentPath}/deployments/${deployed.data.id}`;
@@ -3978,13 +4034,16 @@ async function deployAdditionalCredentialAgent(topology, modelSourceId, toolSour
     );
   } catch (error) {
     // Preserve the activation error if its best-effort diagnostic fails.
-    await diagnoseAdditionalAgent(topology, agent.data.id, deployed.data.id, deploymentPath).catch(
-      () => undefined,
-    );
+    await diagnoseAdditionalAgent(
+      topology,
+      created.agent.id,
+      deployed.data.id,
+      deploymentPath,
+    ).catch(() => undefined);
     throw error;
   }
   await waitForProviderHarnessPod(topology.placement, deployed.data);
-  return { agent: agent.data, revision: deployed.data, path: agentPath };
+  return { ...created, revision: deployed.data };
 }
 
 /**
@@ -6614,6 +6673,393 @@ async function assertScratchToolAccess(topology) {
   assert.equal(claim.metadata.uid, topology.scratchBinding.claimUid);
 }
 
+function scratchEffectsFor(topology, revision) {
+  return topology.scratchEffects.filter(
+    (event) =>
+      event.namespaceId === topology.namespaceId &&
+      event.agentId === revision.agentId &&
+      event.revisionId === revision.id,
+  );
+}
+
+function scratchEffectCounts(events) {
+  return Object.fromEntries(
+    ["compute-prepare", "harness-provision", "sandbox-create-attempt", "sandbox-created"].map(
+      (stage) => [stage, events.filter((event) => event.stage === stage).length],
+    ),
+  );
+}
+
+function assertScratchObserverControl(topology, revision, scratchMounts) {
+  const events = scratchEffectsFor(topology, revision);
+  const counts = scratchEffectCounts(events);
+  for (const [stage, count] of Object.entries(counts)) {
+    assert.ok(count > 0, `the running control must exercise the ${stage} observer`);
+  }
+  for (const event of events.filter(({ stage }) => stage === "harness-provision")) {
+    assert.deepEqual(event.scratchMounts, scratchMounts);
+  }
+  return counts;
+}
+
+async function removeScratchTestAgent(topology, agent) {
+  const stopped = await topology.request("POST", `${agent.path}/stop`);
+  assert.equal(stopped.status, 202, JSON.stringify(stopped.error));
+  await waitFor(
+    "stopped scratch test Agent runtime removal",
+    async () => {
+      for (const kind of ["pods", "sandboxes.agents.x-k8s.io"]) {
+        if (
+          (await resources(kind, topology.placement)).some(
+            ({ metadata }) => metadata.labels?.["openclaw.dev/agent"] === agent.agent.id,
+          )
+        ) {
+          return undefined;
+        }
+      }
+      return true;
+    },
+    180_000,
+  );
+  const deleted = await topology.request("DELETE", agent.path);
+  assert.equal(deleted.status, 202, JSON.stringify(deleted.error));
+  await waitFor(
+    "scratch test Agent removal through the worker",
+    async () => {
+      const observed = await topology.request("GET", agent.path);
+      assert.ok([200, 404].includes(observed.status), JSON.stringify(observed.error));
+      return observed.status === 404 ? true : undefined;
+    },
+    180_000,
+  );
+  for (const kind of ["pods", "sandboxes.agents.x-k8s.io"]) {
+    assert.equal(
+      (await resources(kind, topology.placement)).some(
+        ({ metadata }) => metadata.labels?.["openclaw.dev/agent"] === agent.agent.id,
+      ),
+      false,
+      `the removed Agent must retain no ${kind}`,
+    );
+  }
+}
+
+async function assertScratchSiblingIsolation(topology) {
+  const positive = assertScratchObserverControl(topology, topology.revision, [
+    {
+      claimName: topology.scratchBinding.claimName,
+      subPath: "scratch",
+      mountPath: "/sandbox/scratch",
+    },
+  ]);
+  // Keep the original Agent's real claim selected while admitting its sibling.
+  // A missing or removed Installation selection would not prove Agent isolation.
+  await topology.pauseWorker();
+  await topology.configureScratch(topology.scratchBinding);
+  await topology.resumeWorker();
+  const sibling = await deployAdditionalCredentialAgent(
+    topology,
+    topology.agent.harnessAuth.sourceId,
+    [],
+  );
+  assert.notEqual(sibling.revision.compute.admission?.startsWith("scratch:"), true);
+  await assertWorkerCompleted({
+    description: "scratch sibling worker completion",
+    events: topology.workerEvents,
+    pool: topology.observerPool,
+    namespaceId: topology.namespaceId,
+    agentId: sibling.agent.id,
+    revisionId: sibling.revision.id,
+  });
+  const sandbox = await waitForSandbox(topology.placement, sibling.revision);
+  const pod = await waitForProviderHarnessPod(topology.placement, sibling.revision);
+  await assertProviderOwnedHarness(topology.placement, sibling.revision, sandbox, pod);
+  const siblingCounts = assertScratchObserverControl(topology, sibling.revision, []);
+  // Inspect every actual sibling Pod, including its Gateway and all init/sidecar
+  // containers. Checking only the Harness container name would miss another mount.
+  const pods = (await resources("pods", topology.placement)).filter(
+    ({ metadata }) => metadata.labels?.["openclaw.dev/agent"] === sibling.agent.id,
+  );
+  assert.ok(pods.some(({ metadata }) => metadata.uid === pod.metadata.uid));
+  for (const observed of pods) {
+    assert.equal(
+      (observed.spec.volumes ?? []).some(
+        ({ persistentVolumeClaim }) =>
+          persistentVolumeClaim?.claimName === topology.scratchBinding.claimName,
+      ),
+      false,
+      "a sibling Pod must not reference the selected Agent's scratch claim",
+    );
+    for (const container of [
+      ...observed.spec.containers,
+      ...(observed.spec.initContainers ?? []),
+      ...(observed.spec.ephemeralContainers ?? []),
+    ]) {
+      assert.equal(
+        (container.volumeMounts ?? []).some(
+          ({ mountPath }) =>
+            mountPath === "/sandbox/scratch" || mountPath.startsWith("/sandbox/scratch/"),
+        ),
+        false,
+        "no sibling container may receive a scratch mount",
+      );
+    }
+  }
+  process.stderr.write(
+    `OpenShell scratch observer control: ${JSON.stringify({
+      agentId: topology.agent.id,
+      revisionId: topology.revision.id,
+      counts: positive,
+    })}\n`,
+  );
+  process.stderr.write(
+    `OpenShell scratch sibling isolation: ${JSON.stringify({
+      agentId: sibling.agent.id,
+      revisionId: sibling.revision.id,
+      sandboxUid: sandbox.metadata.uid,
+      harnessPodUid: pod.metadata.uid,
+      podCount: pods.length,
+      scratchMounted: false,
+      counts: siblingCounts,
+    })}\n`,
+  );
+  await removeScratchTestAgent(topology, sibling);
+}
+
+async function assertScratchQueuedActorRevocation(topology) {
+  const { namespaceId, request, observerPool } = topology;
+  const iamPath = `/namespaces/${namespaceId}/iam`;
+  const candidate = await createAdditionalCredentialAgent(
+    topology,
+    topology.agent.harnessAuth.sourceId,
+    [],
+  );
+  const binding = await topology.createScratchBinding(candidate.agent.id);
+  const storageClass = JSON.parse(await kubectl("get", "storageclass", "local-path", "-o", "json"));
+  assert.equal(storageClass.volumeBindingMode, "WaitForFirstConsumer");
+  const roles = [];
+  const bindings = [];
+  const errors = [];
+  let key;
+  let paused = false;
+  try {
+    await topology.pauseWorker();
+    paused = true;
+    // A fresh claim remains reserved to this Agent. The original Agent keeps its
+    // own binding, even though this candidate will never be allowed to prepare.
+    await topology.configureScratch(topology.scratchBinding, [binding]);
+    const principal = await request("POST", `${iamPath}/service-principals`, {});
+    assert.equal(principal.status, 201, JSON.stringify(principal.error));
+    for (const [action, resourceKind, resourceId] of [
+      ["deploy", "agent", candidate.agent.id],
+      ["read", "configuration", candidate.agent.configurationId],
+      ["operate", "credential_source", topology.agent.harnessAuth.sourceId],
+    ]) {
+      const role = await request("POST", `${iamPath}/roles`, {
+        permissions: [{ action, resourceKind }],
+      });
+      assert.equal(role.status, 201, JSON.stringify(role.error));
+      roles.push(role.data.id);
+      const granted = await request("POST", `${iamPath}/access-bindings`, {
+        subjectKind: "identity",
+        subjectId: principal.data.id,
+        roleId: role.data.id,
+        resourceKind,
+        resourceId,
+      });
+      assert.equal(granted.status, 201, JSON.stringify(granted.error));
+      bindings.push(granted.data.id);
+    }
+    const issued = await request("POST", "/api/auth/service-keys", {
+      servicePrincipalId: principal.data.id,
+      namespaceId,
+      name: "scratch-deploy-acceptance",
+    });
+    assert.equal(issued.status, 201, JSON.stringify(issued.error));
+    key = issued.data;
+    const asActor = (method, path) => topology.requestWithKey(key.key, method, path);
+    const configurationPath = `/namespaces/${namespaceId}/configurations/${candidate.agent.configurationId}`;
+    assert.equal((await asActor("GET", configurationPath)).status, 200);
+    const intervalStart = new Date().toISOString();
+    const before = topology.scratchEffects.length;
+    const admitted = await asActor("POST", `${candidate.path}/deploy`);
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.error));
+    const revision = admitted.data;
+    assert.match(revision.compute.admission, /^scratch:v1:/);
+    assert.deepEqual(
+      JSON.parse(revision.compute.admission.slice("scratch:v1:".length)).binding,
+      binding,
+    );
+    const readWork = async () => {
+      const work = await observerPool.query(
+        `SELECT state, actor_id, attempt_count, reason_code,
+                claim_token IS NOT NULL AS claimed, completed_at IS NOT NULL AS completed
+         FROM occ.controller_work
+         WHERE namespace_id = $1 AND agent_id = $2 AND revision_id = $3
+           AND idempotency_key = $4`,
+        [namespaceId, candidate.agent.id, revision.id, `agent_revision:${revision.id}:reconcile`],
+      );
+      assert.equal(work.rowCount, 1);
+      return work.rows[0];
+    };
+    const queued = await readWork();
+    assert.deepEqual(queued, {
+      state: "queued",
+      actor_id: principal.data.id,
+      attempt_count: 0,
+      reason_code: null,
+      claimed: false,
+      completed: false,
+    });
+    const revoked = await request("DELETE", `${iamPath}/access-bindings/${bindings[0]}`);
+    assert.equal(revoked.status, 204, JSON.stringify(revoked.error));
+    bindings.shift();
+    assert.deepEqual(await readWork(), queued, "revocation happens before the worker claims work");
+    assert.equal((await asActor("GET", configurationPath)).status, 200);
+    assert.deepEqual(scratchEffectsFor(topology, revision), []);
+    await topology.resumeWorker();
+    paused = false;
+    await waitFor(
+      "queued scratch deployment refused after actor grant revocation",
+      async () => {
+        const observed = await request("GET", `${candidate.path}/deployments/${revision.id}`);
+        assert.equal(observed.status, 200, JSON.stringify(observed.error));
+        return observed.data.status === "failed" ? observed.data : undefined;
+      },
+      180_000,
+    );
+    // Join the real worker before closing the observation interval: a terminal
+    // status followed by a late preparation must not escape this assertion.
+    await topology.pauseWorker();
+    paused = true;
+    const intervalEnd = new Date().toISOString();
+    const terminal = await readWork();
+    assert.equal(terminal.state, "failed_permanent");
+    assert.equal(terminal.reason_code, "AUTHORIZATION_DENIED");
+    assert.equal(terminal.actor_id, principal.data.id);
+    assert.equal(terminal.completed, true);
+    assert.equal(terminal.claimed, false);
+    assert.ok(terminal.attempt_count > 0);
+    const effects = topology.scratchEffects
+      .slice(before)
+      .filter((event) => event.agentId === candidate.agent.id || event.revisionId === revision.id);
+    assert.deepEqual(effects, [], "revoked deployment must never prepare or create a Sandbox");
+    for (const kind of ["pods", "sandboxes.agents.x-k8s.io"]) {
+      assert.equal(
+        (await resources(kind, topology.placement)).some(
+          ({ metadata }) =>
+            metadata.labels?.["openclaw.dev/agent"] === candidate.agent.id ||
+            metadata.labels?.["openclaw.dev/revision"] === revision.id,
+        ),
+        false,
+        "no runtime object may survive the refused deployment",
+      );
+    }
+    const claim = await resource("persistentvolumeclaim", binding.claimName, topology.placement);
+    assert.equal(claim.metadata.uid, binding.claimUid);
+    assert.equal(claim.status?.phase, "Pending");
+    assert.equal(
+      claim.spec.volumeName,
+      undefined,
+      "the never-consumed local-path claim stays unbound",
+    );
+    const denials = await observerPool.query(
+      `SELECT id FROM occ.audit_events
+       WHERE namespace_id = $1 AND actor_id = $2 AND resource_id = $3
+         AND kind = 'authorization_denial' AND action = 'openclaw.agents.deploy'
+         AND outcome = 'denied' AND occurred_at >= $4
+       ORDER BY occurred_at, id LIMIT 1`,
+      [namespaceId, principal.data.id, candidate.agent.id, intervalStart],
+    );
+    assert.ok(denials.rowCount > 0, "the worker must audit the exact actor's refusal");
+    assert.equal((await asActor("GET", configurationPath)).status, 200);
+    process.stderr.write(
+      `OpenShell scratch actor refusal: ${JSON.stringify({
+        agentId: candidate.agent.id,
+        revisionId: revision.id,
+        actorId: principal.data.id,
+        state: terminal.state,
+        // The exact code is asserted above; this safe label survives log redaction.
+        reason: "access_denied",
+        queuedAttempts: queued.attempt_count,
+        terminalAttempts: terminal.attempt_count,
+        intervalStart,
+        intervalEnd,
+        workerJoined: true,
+        counts: scratchEffectCounts(effects),
+        scratchClaimUid: claim.metadata.uid,
+        scratchClaimUnbound: true,
+        keyReadStillAllowed: true,
+        auditIds: denials.rows.map(({ id }) => id),
+      })}\n`,
+    );
+  } catch (error) {
+    errors.push(error);
+  } finally {
+    // Attempt every acquired cleanup even after a failed assertion or cleanup.
+    // No credential is persisted; principal rows belong to the disposable database.
+    const cleanup = async (operation) => {
+      try {
+        await operation();
+      } catch (error) {
+        errors.push(error);
+      }
+    };
+    if (key !== undefined) {
+      await cleanup(async () => {
+        const revoked = await request("DELETE", `/api/auth/service-keys/${key.id}`);
+        assert.equal(revoked.status, 200, JSON.stringify(revoked.error));
+        assert.equal(revoked.data.revoked, true);
+        assert.equal(
+          (
+            await topology.requestWithKey(
+              key.key,
+              "GET",
+              `/namespaces/${namespaceId}/configurations/${candidate.agent.configurationId}`,
+            )
+          ).status,
+          401,
+          "the temporary key must no longer authenticate after revocation",
+        );
+      });
+    }
+    for (const id of bindings) {
+      await cleanup(async () => {
+        const removed = await request("DELETE", `${iamPath}/access-bindings/${id}`);
+        assert.equal(removed.status, 204, JSON.stringify(removed.error));
+      });
+    }
+    for (const id of roles) {
+      await cleanup(async () => {
+        const removed = await request("DELETE", `${iamPath}/roles/${id}`);
+        assert.equal(removed.status, 204, JSON.stringify(removed.error));
+      });
+    }
+    if (paused) {
+      await cleanup(() => topology.resumeWorker());
+    }
+    await cleanup(() => removeScratchTestAgent(topology, candidate));
+  }
+  if (errors.length > 0) {
+    throw new AggregateError(errors, "Scratch actor acceptance or cleanup failed");
+  }
+  assert.equal(
+    (await resource("persistentvolumeclaim", binding.claimName, topology.placement)).metadata.uid,
+    binding.claimUid,
+    "Agent deletion must retain operator-owned scratch storage",
+  );
+  process.stderr.write(
+    `OpenShell scratch refusal cleanup: ${JSON.stringify({
+      agentId: candidate.agent.id,
+      keyRevoked: true,
+      actorGrantsRemoved: true,
+      actorRolesRemoved: true,
+      agentRemoved: true,
+      runtimeObjectsAbsent: true,
+      scratchClaimRetained: true,
+    })}\n`,
+  );
+}
+
 async function assertScratchClaimRefusals(topology) {
   const binding = topology.scratchBinding;
   const missingName = `${binding.claimName}-missing`;
@@ -9223,6 +9669,8 @@ export function registerProviderLifecycleTest(workflow) {
         assert.ok(topology.sandbox.metadata.name);
         if (workflow === "scratch") {
           await assertScratchToolAccess(topology);
+          await assertScratchSiblingIsolation(topology);
+          await assertScratchQueuedActorRevocation(topology);
           await assertScratchClaimRefusals(topology);
           return;
         }
