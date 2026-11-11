@@ -82,7 +82,9 @@ preview and update requests have a separate 32 MiB body limit; an explicit
 that byte limit. Preview and update share a replica-local budget per principal:
 2 requests per second with a burst of 10 across Agents. A depleted budget returns
 `429 SANDBOX_POLICY_RATE_LIMITED` with `Retry-After` before reading the body. OpenShell additionally
-limits each grant to 1024 distinct ports.
+limits each grant to 1024 distinct ports. These writes also share the
+[early authorization budget](api-explorer.md#write-request-limits) with Preset and
+Configuration writes.
 
 Default rules, generated workspace access, model credential delivery, and Compute
 isolation remain controlled by their existing owners. Users cannot submit

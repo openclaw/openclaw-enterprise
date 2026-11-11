@@ -1459,6 +1459,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   })) as unknown as readonly OccApiRoute[];
   const runtimeLogLimiter = new RuntimeLogLimiter();
   const sandboxPolicyRateLimit = new RequestRateLimiter(10, 2);
+  const preBodyAuthorizationRateLimit = new RequestRateLimiter(60, 5);
   const runtimeLogCursor =
     options.agentRuntimeLogs?.enabled === true
       ? createRuntimeLogCursorCodec(options.agentRuntimeLogs.cursorSecret)
@@ -4737,6 +4738,21 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         onRequest: async (request, reply) => {
           await admit(request, operation);
           if (authorizesBeforeBody(operation)) {
+            const admitted = admissions.get(request);
+            if (admitted === undefined) {
+              throw dependencyUnavailable();
+            }
+            // Bound identity resolution too, without sharing a budget across clients behind NAT.
+            const identityKey = JSON.stringify([
+              admitted.method,
+              admitted.externalIdentity.issuer,
+              admitted.externalIdentity.subject,
+            ]);
+            const authorizationRetryAfter = preBodyAuthorizationRateLimit.consume(identityKey);
+            if (authorizationRetryAfter !== undefined) {
+              reply.header("retry-after", String(authorizationRetryAfter));
+              throw failure(429, "RATE_LIMITED", "Too many write requests. Wait before retrying.");
+            }
             await resolveIdentity(request, operation);
             const rateLimit = request.routeOptions.config.rateLimit;
             if (rateLimit !== undefined) {

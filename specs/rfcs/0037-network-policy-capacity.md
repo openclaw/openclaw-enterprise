@@ -42,7 +42,9 @@ entry limits; arbitrary JSON whitespace or escaping does not receive unlimited
 space. Policy preview and save share a replica-local per-principal token bucket:
 2 requests per second with a burst of 10 across Agents. Exhaustion returns 429
 and Retry-After before reading the body. Recommendation batches remain limited
-to 32 suggestions.
+to 32 suggestions. The shared high-body write hook also budgets verified
+external identities before IAM lookup (5 requests per second, burst 60), including
+Preset and Configuration writes. Its 429 response also carries Retry-After.
 
 Compile the trusted ceiling into an executable/hostname index and combine
 adjacent port ranges. Admission must preserve exact executable matching,

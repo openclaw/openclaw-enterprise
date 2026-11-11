@@ -60,25 +60,23 @@ Agent discovery and policy GET
 use the same descriptor with owner-generated facet action URLs and current
 availability. The registry never selects a Driver from submitted additions.
 
-`apps/controller/src/index.ts:authorizeBeforeBody` calls
-`OpenClawController.authorizeAgentSandboxPolicyWrite` for preview and save before
-reading the request body. These routes first resolve the principal and charge a
-shared replica-local `RequestRateLimiter` budget (2 requests per second, burst 10)
-for that principal across Agents and both operations. A depleted budget returns
-429 and `Retry-After` before body reads or policy authorization work. The guard
-checks Agent `manage_policy` and SandboxPolicy
-`update`; the owning handler repeats authorization during admission. Those two
-routes accept up to 32 MiB unless `maxBodyBytes` supplies another limit. The shared
-`packages/contracts/src/sandbox-policy.ts:SandboxNetworkGrantsSchema` permits
-16,384 entries for both Agent additions and the Installation ceiling. Startup,
-discovery, and policy requests use that same schema. Field, range, and provider
-constraints remain separate checks. The controller snapshots
-`createSandboxNetworkGrantChecker` once at construction. It groups ceiling rules
-by executable and hostname and combines adjacent port ranges. Each admission
-checks the exact host and its possible single-label wildcard, preserving their
-combined coverage without scanning the full ceiling for every rule. The worker's
-`sandboxNetworkGrantsWithinCeiling` builds the same index for its application
-check.
+The policy write hook in `apps/controller/src/index.ts` charges a replica-local
+budget keyed by verified admission method, issuer, and subject before IAM lookup.
+Preset and Configuration writes share this early budget. Policy writes then
+resolve the principal, charge their stricter shared principal budget, and call
+`authorizeBeforeBody`. It delegates Agent `manage_policy` and SandboxPolicy
+`update` checks to `OpenClawController.authorizeAgentSandboxPolicyWrite`; admission
+repeats authorization. Either budget returns 429 and `Retry-After` before body
+reads. [API limits](../reference/api-explorer.md#write-request-limits) and
+[policy limits](../reference/sandbox-policies.md) define their scopes and values.
+
+Startup, discovery, and policy requests use
+`packages/contracts/src/sandbox-policy.ts:SandboxNetworkGrantsSchema` for the
+16,384-entry bound. The controller snapshots `createSandboxNetworkGrantChecker`
+at construction, grouping by executable and hostname and combining adjacent port
+ranges. Admission checks exact and single-label wildcard hosts together without
+scanning the ceiling for every rule. The worker's
+`sandboxNetworkGrantsWithinCeiling` builds the same index for application checks.
 
 `validateAgentSandboxPolicy` authorizes the exact Agent and policy, checks the
 current editing flag, expected version, and pending application, then runs shared
@@ -277,6 +275,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-11 11:50: Bound identity lookup and classify early write refusals. (01a1cb2b-f8fd-79b0-9789-7d0ca67c4ddd - b9a678f1b)
 
 - 2026-11-11 11:21: Record shared preview/save rate limits before body reads and policy authorization. (01a1cb2b-f8fd-79b0-9789-7d0ca67c4ddd - 5445a0281)
 

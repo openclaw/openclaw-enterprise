@@ -1177,6 +1177,7 @@
                   { "const": "NATIVE_ADMIN_RETURN_RATE_LIMITED", "type": "string" },
                   { "const": "RUNTIME_LOGS_RATE_LIMITED", "type": "string" },
                   { "const": "SANDBOX_POLICY_RATE_LIMITED", "type": "string" },
+                  { "const": "RATE_LIMITED", "type": "string" },
                   { "const": "RUNTIME_LOGS_CLUSTER_RBAC", "type": "string" },
                   { "const": "RUNTIME_LOGS_SANDBOX_NOT_FOUND", "type": "string" },
                   { "const": "RUNTIME_LOGS_UNAVAILABLE", "type": "string" },
@@ -33969,6 +33970,15 @@
             },
             "description": "The request content type is not supported."
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RATE_LIMITED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Too many requests. Wait for Retry-After and try again."
+          },
           "500": {
             "content": {
               "application/json": {
@@ -34763,6 +34773,15 @@
               }
             },
             "description": "The request content type is not supported."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RATE_LIMITED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Too many requests. Wait for Retry-After and try again."
           },
           "500": {
             "content": {
@@ -39667,6 +39686,15 @@
             },
             "description": "The request content type is not supported."
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RATE_LIMITED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Too many requests. Wait for Retry-After and try again."
+          },
           "500": {
             "content": {
               "application/json": {
@@ -40603,6 +40631,15 @@
               }
             },
             "description": "The request content type is not supported."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RATE_LIMITED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Too many requests. Wait for Retry-After and try again."
           },
           "500": {
             "content": {

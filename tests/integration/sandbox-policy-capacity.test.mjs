@@ -187,14 +187,20 @@ test("HTTP policy preview and save preserve 16,384 rules and reject excess entri
     { executionMode: "dedicated" },
   );
   const bursts = await Promise.all(
-    Array.from({ length: 20 }, () =>
+    Array.from({ length: 100 }, () =>
       fixture.request("POST", `${path}/validate`, {
         body: { expectedVersion: saved.data.version, additions: [] },
       }),
     ),
   );
-  const limited = bursts.find((result) => result.status === 429);
+  const limited = bursts.find(
+    (result) => result.body.error?.code === "SANDBOX_POLICY_RATE_LIMITED",
+  );
   assert.ok(limited, "policy preview must bound repeated admission work");
+  assert.ok(
+    bursts.some((result) => result.status === 429 && result.body.error?.code === "RATE_LIMITED"),
+    "identity resolution must also have a finite request budget",
+  );
   assert.equal(limited.body.error.code, "SANDBOX_POLICY_RATE_LIMITED");
   assert.ok(Number(limited.headers.get("retry-after")) >= 1);
   for (const target of [path, path.replace(agent.id, otherAgent.id)]) {
@@ -210,6 +216,22 @@ test("HTTP policy preview and save preserve 16,384 rules and reject excess entri
     assert.notEqual(refused, null, "rate-limited save waited for the unfinished body");
     assert.equal(refused.status, 429, JSON.stringify(refused.body));
   }
+  const configurationLimited = await partialWrite({
+    origin: fixture.origin,
+    transportOrigin: `http://127.0.0.1:${fixture.app.server.address().port}`,
+    method: "PATCH",
+    path: `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+    session: adminSession,
+    declaredBytes: 2 * 1024 * 1024,
+    bodyPrefix: '{"values":{"notes":"',
+  });
+  assert.notEqual(
+    configurationLimited,
+    null,
+    "authorization budget waited for a different write body",
+  );
+  assert.equal(configurationLimited.status, 429, JSON.stringify(configurationLimited.body));
+  assert.equal(configurationLimited.body.error.code, "RATE_LIMITED");
   const otherMember = await fixture.createNamespaceMember("policy-rate-other", namespace.id, [
     ["read", "namespace"],
     ["read", "agent"],

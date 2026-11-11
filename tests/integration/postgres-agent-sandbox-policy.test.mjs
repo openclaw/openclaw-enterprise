@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import pg from "pg";
+import { setTimeout as delay } from "node:timers/promises";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
@@ -598,8 +599,25 @@ test(
   "Agent policy HTTP admission persists bounded grants without changing an admitted revision",
   requiresPostgres,
   async (t) => {
-    const { pool, state, inject, deployAgent, grant, providerRefusalGrant } =
-      await createPolicyApp(t);
+    const fixture = await createPolicyApp(t);
+    const { pool, state, deployAgent, grant, providerRefusalGrant } = fixture;
+    // This persistence journey submits many refusals in a burst. Honor the real HTTP budget;
+    // capacity tests separately assert the first 429 and its rejection before body reads.
+    const inject = async (...args) => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const response = await fixture.inject(...args);
+        if (
+          response.statusCode !== 429 ||
+          !["SANDBOX_POLICY_RATE_LIMITED", "RATE_LIMITED"].includes(response.json().error?.code)
+        ) {
+          return response;
+        }
+        const seconds = Number(response.headers["retry-after"]);
+        assert.ok(Number.isFinite(seconds) && seconds >= 1 && seconds <= 5);
+        await delay(seconds * 1000);
+      }
+      assert.fail("policy request remained rate limited after honoring Retry-After");
+    };
     const { namespace, agent, revision } = await deployAgent("Sandbox policy");
     const base = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
     const read = await inject("GET", base);
