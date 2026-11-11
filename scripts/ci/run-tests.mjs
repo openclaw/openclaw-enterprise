@@ -139,6 +139,7 @@ function normalizeFile(file, laneName, index, issues) {
   return {
     path: file.path,
     expectedTests: stringArray(file.expectedTests, `${path}.expectedTests`, issues),
+    env: envObject(file.env, `${path}.env`, issues),
     requiredEnv: stringArray(file.requiredEnv, `${path}.requiredEnv`, issues),
     optionalEnv: stringArray(file.optionalEnv, `${path}.optionalEnv`, issues),
   };
@@ -1435,6 +1436,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   const env = mergeEnv(
     baseChildEnv([...requiredEnv, ...lane.optionalEnv, ...file.optionalEnv]),
     lane.env,
+    file.env,
     prepared.env,
   );
   for (const name of requiredEnv) {

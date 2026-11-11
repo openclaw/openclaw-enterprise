@@ -745,6 +745,68 @@ test(
   },
 );
 
+test("runner applies manifest file environment only to the selected file", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state/lane.jsonl");
+  const resultsPath = join(root, "results/file-env.json");
+  const first = "tests/integration/first.test.mjs";
+  const second = "tests/integration/second.test.mjs";
+  await writeFile(
+    join(root, "scripts/ci/prepare.mjs"),
+    'export function prepareFile({ file }) { return file.path.endsWith("/first.test.mjs") ? { env: { OCC_TEST_ENV_PRECEDENCE: "prepared" } } : {}; }\n',
+  );
+  await writeFile(
+    join(root, first),
+    `import assert from "node:assert/strict";
+import test from "node:test";
+test("opt-in case runs", { skip: process.env.OCC_TEST_NAMESPACE_OPENSHELL_REAL !== "1" }, () => {
+  assert.equal(process.env.OCC_TEST_FILE_ONLY, "configured");
+  assert.equal(process.env.OCC_TEST_FILE_OVERRIDE, "file");
+  assert.equal(process.env.OCC_TEST_ENV_PRECEDENCE, "prepared");
+});
+`,
+  );
+  await writeFile(
+    join(root, second),
+    `import assert from "node:assert/strict";
+import test from "node:test";
+test("sibling stays unselected", () => {
+  assert.equal(process.env.OCC_TEST_NAMESPACE_OPENSHELL_REAL, undefined);
+  assert.equal(process.env.OCC_TEST_FILE_ONLY, undefined);
+  assert.equal(process.env.OCC_TEST_FILE_OVERRIDE, "lane");
+  assert.equal(process.env.OCC_TEST_ENV_PRECEDENCE, "lane");
+});
+`,
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    groups: { ci: ["baseline"] },
+    lanes: {
+      baseline: {
+        env: { OCC_TEST_ENV_PRECEDENCE: "lane", OCC_TEST_FILE_OVERRIDE: "lane" },
+        files: [
+          {
+            path: first,
+            expectedTests: ["opt-in case runs"],
+            env: {
+              OCC_TEST_NAMESPACE_OPENSHELL_REAL: "1",
+              OCC_TEST_FILE_ONLY: "configured",
+              OCC_TEST_FILE_OVERRIDE: "file",
+              OCC_TEST_ENV_PRECEDENCE: "file",
+            },
+          },
+          { path: second, expectedTests: ["sibling stays unselected"] },
+        ],
+      },
+    },
+  });
+
+  const result = run(root, laneArgs(root, "baseline", statePath, resultsPath));
+  assert.equal(result.status, 0, result.stderr);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  assert.deepEqual(summary.counts, { passed: 2, failed: 0, skipped: 0, todo: 0, total: 2 });
+});
+
 test("run resolves lane documents relative to the manifest and preserves ordered case accounting", async (t) => {
   const root = await fixture(t);
   const statePath = join(root, "state/lane.jsonl");
