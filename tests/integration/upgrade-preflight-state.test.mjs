@@ -141,3 +141,58 @@ test("unplanned known slots in a migration attempt cannot be silently ignored", 
   assert.notEqual(result.status, 0);
   assert.equal(result.stdout, "");
 });
+
+for (const attempt of [".", "migration-preflight-resume.ABCD1234"]) {
+  test(`create evidence outside the attempt index is refused for ${attempt}`, (t) => {
+    const state = fixture(t);
+    const path = attempt === "." ? state.root : join(state.root, attempt);
+    if (attempt !== ".") {
+      mkdirSync(path, { mode: 0o700 });
+    }
+    state.success("register", [attempt, "abcd0123", "false"]);
+    const slot = attempt === "." ? "api" : "migration";
+    state.success("started", [attempt, slot]);
+    const startedPath = join(path, `preflight-${slot}-started.json`);
+    const started = JSON.parse(readFileSync(startedPath, "utf8"));
+    rmSync(startedPath);
+    const journalPath = join(state.root, "preflight-journal.json");
+    const journal = JSON.parse(readFileSync(journalPath, "utf8"));
+    delete journal.attempts[attempt];
+    writePrivate(journalPath, journal);
+
+    // A crash after plan publication and before registration has no create boundary.
+    const planOnly = state.inspect();
+    assert.equal(planOnly.status, 0, planOnly.stderr);
+    assert.deepEqual(JSON.parse(planOnly.stdout).resources, []);
+
+    // A lost index entry must not conceal a visible create boundary or acknowledgement.
+    const facts = [
+      [startedPath, started],
+      [
+        join(path, `preflight-${slot}-identity.json`),
+        {
+          kind: "job.batch",
+          name: `team-upgrade-preflight-${slot}-abcd0123`,
+          uid: "created-job-uid",
+        },
+      ],
+      [
+        join(path, `preflight-${slot}-pod-identity.json`),
+        {
+          kind: "pod",
+          name: "created-child",
+          uid: "created-child-uid",
+        },
+      ],
+    ];
+    // The fixed ACK staging name is also written only after a create response.
+    facts.push([join(path, `.preflight-${slot}-identity.json.tmp`), facts[1][1]]);
+    for (const [factPath, value] of facts) {
+      writePrivate(factPath, value);
+      const refused = state.inspect();
+      assert.notEqual(refused.status, 0, factPath);
+      assert.equal(refused.stdout, "");
+      rmSync(factPath);
+    }
+  });
+}

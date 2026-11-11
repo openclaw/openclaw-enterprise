@@ -344,6 +344,75 @@ test(
     );
 
     await scenario(
+      "recorded child replacement",
+      async ({ scope, directory, create, jobSpec, get, cleanup, dependenciesPresent, apply }) => {
+        const job = await create("api", jobSpec(true));
+        let original;
+        await waitFor("the real Job controller creates its child", async () => {
+          const pods = JSON.parse(await kubectl(...scope, "get", "pods", "-o", "json"));
+          original = pods.items.find(({ metadata }) =>
+            metadata.ownerReferences?.some(({ uid }) => uid === job.metadata.uid),
+          );
+          return original?.status.phase === "Running";
+        });
+        await writeFile(
+          join(directory, "preflight-api-pod-identity.json"),
+          JSON.stringify({ kind: "pod", name: original.metadata.name, uid: original.metadata.uid }),
+          { mode: 0o600 },
+        );
+        // An interrupted cleanup can leave a recorded name available for reuse.
+        // A new Pod at that name is not proof that the original child settled.
+        const observed = await get("pod", original.metadata.name);
+        await kubectl(
+          ...scope,
+          "patch",
+          "pod",
+          original.metadata.name,
+          "--type=merge",
+          "-p",
+          JSON.stringify({
+            metadata: {
+              finalizers: observed.metadata.finalizers.filter(
+                (value) => value !== "test.openclaw.dev/hold-consumer",
+              ),
+            },
+          }),
+        );
+        await kubectl(
+          ...scope,
+          "delete",
+          "job",
+          job.metadata.name,
+          "--cascade=foreground",
+          "--wait=true",
+          "--timeout=60s",
+        );
+        await waitFor(
+          "the original child is gone",
+          async () => !(await get("pod", original.metadata.name)),
+        );
+        const replacement = await apply({
+          apiVersion: "v1",
+          kind: "Pod",
+          metadata: { name: original.metadata.name, namespace: original.metadata.namespace },
+          spec: {
+            restartPolicy: "Never",
+            terminationGracePeriodSeconds: 0,
+            automountServiceAccountToken: false,
+            containers: [{ name: "replacement", image, command: ["sh", "-c", "sleep 600"] }],
+          },
+        });
+        assert.notEqual(replacement.metadata.uid, original.metadata.uid);
+        assert.equal((await cleanup()).code, 1);
+        assert.equal(
+          (await get("pod", original.metadata.name)).metadata.uid,
+          replacement.metadata.uid,
+        );
+        await dependenciesPresent();
+      },
+    );
+
+    await scenario(
       "lost create acknowledgement",
       async ({ directory, create, jobSpec, get, cleanup, dependenciesPresent }) => {
         const unknown = await create("api", jobSpec(), false);

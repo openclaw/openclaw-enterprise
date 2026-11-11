@@ -1074,7 +1074,29 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
             if (
               child.metadata.ownerReferences.some((owner) => owner.uid === current.metadata.uid)
             ) {
-              if (
+              if (fault === "child-replacement-after-delete") {
+                // The original child is gone; another Job now owns a Pod at
+                // that name. Its absent discovery label leaves only the saved
+                // child identity able to detect the replacement during cleanup.
+                state.preflight.pods[childName] = {
+                  ...child,
+                  metadata: {
+                    ...child.metadata,
+                    uid: randomUUID(),
+                    labels: {},
+                    annotations: { fixture: `replacement-child-${randomUUID()}` },
+                    ownerReferences: [
+                      {
+                        apiVersion: "batch/v1",
+                        kind: "Job",
+                        name: "another-preflight-job",
+                        uid: randomUUID(),
+                        controller: true,
+                      },
+                    ],
+                  },
+                };
+              } else if (
                 state.preflightFault?.mode !== "retained-child" ||
                 state.preflightFault.target !== child.spec.containers[0].name
               ) {

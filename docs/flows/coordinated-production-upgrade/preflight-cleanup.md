@@ -81,7 +81,9 @@ remains the operator's prerequisite.
 `scripts/upgrade-preflight-state.py:inspect` binds the original physical evidence
 directory, kubeconfig path/bytes, context, namespace, release and cleanup source
 hashes. It validates every registered attempt, its complete plan, started markers
-and acknowledgements. Files must be private regular files owned by the operator;
+and acknowledgements. Visible create records outside the attempt index also
+refuse cleanup; an unregistered plan alone can precede a create. Files must be
+private regular files owned by the operator;
 symlinks, conflicting records, changed plans and unsupported journals refuse.
 It syncs validated facts and directories before returning any cleanup identities.
 

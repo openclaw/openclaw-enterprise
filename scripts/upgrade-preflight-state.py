@@ -13,6 +13,7 @@ import tempfile
 
 
 FORMAT = "upgrade-preflight-v1"
+MIGRATION_ATTEMPT = re.compile(r"migration-preflight-resume\.[A-Za-z0-9]+")
 JOURNAL = "preflight-journal.json"
 PLAN = "preflight-plan.json"
 JOBS = ("api", "worker", "migration")
@@ -142,7 +143,7 @@ def journal(root):
 
 
 def attempt_directory(root, name):
-    require(name == "." or re.fullmatch(r"migration-preflight-resume\.[A-Za-z0-9]+", name),
+    require(name == "." or MIGRATION_ATTEMPT.fullmatch(name),
             "invalid preflight attempt name")
     return directory(root if name == "." else root / name)
 
@@ -186,6 +187,21 @@ def load_plan(root, name, entry):
     return path, plan
 
 
+def check_attempt_index(root, attempts):
+    names = ["."] + [entry.name for entry in root.iterdir() if MIGRATION_ATTEMPT.fullmatch(entry.name)]
+    facts = ["preflight-" + slot + suffix for slot in KINDS
+             for suffix in ("-started.json", "-identity.json")]
+    facts += ["preflight-" + slot + "-pod-identity.json" for slot in JOBS]
+    # A staged ACK also follows a create; an unregistered plan alone does not.
+    facts += ["." + name + ".tmp" for name in facts if name.endswith("-identity.json")]
+    for name in names:
+        if name in attempts:
+            continue
+        path, _ = attempt_directory(root, name)
+        require(not any(os.path.lexists(path / fact) for fact in facts),
+                "create evidence exists for an unregistered preflight attempt")
+
+
 def inspect(root, kubeconfig, context, namespace, release):
     params = parameters(root)
     require(params["arguments"][:4] == [kubeconfig, context, namespace, release],
@@ -196,6 +212,7 @@ def inspect(root, kubeconfig, context, namespace, release):
         require(hashlib.sha256((Path(__file__).resolve().parent / relative).read_bytes()).hexdigest()
                 == params.get(field), "cleanup requires the original helper source")
     state = journal(root)
+    check_attempt_index(root, state["attempts"])
     result = {"resources": [], "children": [], "consumerUnknown": False, "unknown": []}
     for name, entry in state["attempts"].items():
         path, plan = load_plan(root, name, entry)
