@@ -1501,6 +1501,7 @@ process.exit(73);
       ["false value", {}, ["--require-cache-export", "false"], /Unexpected argument: false/],
       ["equals value", {}, ["--require-cache-export=true"], /takes no value/],
       ["selected file", {}, ["--selected-file", "anything"], /cannot be combined/],
+      ["empty selected file", {}, ["--selected-file", ""], /cannot be combined/],
       [
         "lane argument",
         {},
@@ -1544,7 +1545,11 @@ process.exit(73);
 
   test("warm-only arguments cannot silently change lane preparation", async (t) => {
     const commands = await fixtureImageCommands(t, "success", "images-packaging", warmCacheEnv);
-    for (const args of [["--require-cache-export"], ["--node-base-image", nodeBaseImage]]) {
+    for (const args of [
+      ["--require-cache-export"],
+      ["--node-base-image", nodeBaseImage],
+      ["--node-base-image", ""],
+    ]) {
       const result = await commands.prepare(args);
       assert.notEqual(result.status, 0);
       assert.match(result.stderr, /require --warm-image-cache/);

@@ -4016,11 +4016,15 @@ async function warmImageCache({ statePath, requireCacheExport = false, nodeBaseI
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  if (!args["warm-image-cache"] && (args["require-cache-export"] || args["node-base-image"])) {
+  const warmImageCacheSelected = Object.hasOwn(args, "warm-image-cache");
+  if (
+    !warmImageCacheSelected &&
+    ["require-cache-export", "node-base-image"].some((name) => Object.hasOwn(args, name))
+  ) {
     throw new Error("--require-cache-export and --node-base-image require --warm-image-cache.");
   }
-  if (args["warm-image-cache"]) {
-    if (args.lane || args.file || args["selected-file"] || args["github-env"]) {
+  if (warmImageCacheSelected) {
+    if (["lane", "file", "selected-file", "github-env"].some((name) => Object.hasOwn(args, name))) {
       throw new Error(
         "--warm-image-cache cannot be combined with lane, file, selected-file or github-env.",
       );
