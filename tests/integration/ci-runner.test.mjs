@@ -8745,34 +8745,25 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   };
   // These records exercise the same consistency decision used by the real observer.
   // Contradiction stays incomplete even when each field is well-typed.
-  const conflictingSettings = {
-    ...turnContinuity,
-    settingsConsistent: false,
+  const incompleteTurnover = (base, overrides) => ({
+    ...base,
+    ...overrides,
     qualification: "incomplete",
-  };
-  const unchangedProvider = {
-    ...turnContinuity,
+  });
+  const conflictingSettings = incompleteTurnover(turnContinuity, { settingsConsistent: false });
+  const unchangedProvider = incompleteTurnover(turnContinuity, {
     providerEnvAfterSha256: turnContinuity.providerEnvBeforeSha256,
-    qualification: "incomplete",
-  };
-  const missingTurnoverEvent = {
-    ...unexercisedTurnover,
+  });
+  const missingTurnoverEvent = incompleteTurnover(unexercisedTurnover, {
     providerEnvAfterSha256: "e".repeat(64),
-    qualification: "incomplete",
-  };
-  const changedGateway = { ...turnContinuity, stableRuntime: false, qualification: "incomplete" };
-  const earlyRelay = {
-    ...turnContinuity,
-    staleTunnelAtMs: 1_799_999_999_999,
-    qualification: "incomplete",
-  };
-  const lateTurnover = {
-    ...turnContinuity,
-    turnoverAtMs: 1_800_000_010_001,
-    qualification: "incomplete",
-  };
-  await writeFile(
-    join(root, "tests/integration/measurements.test.mjs"),
+  });
+  const changedGateway = incompleteTurnover(turnContinuity, { stableRuntime: false });
+  const earlyRelay = incompleteTurnover(turnContinuity, { staleTunnelAtMs: 1_799_999_999_999 });
+  const lateTurnover = incompleteTurnover(turnContinuity, { turnoverAtMs: 1_800_000_010_001 });
+  await writeSingleFileRunnerLane(
+    root,
+    "measure",
+    "tests/integration/measurements.test.mjs",
     [
       'import test from "node:test";',
       `import { runOpenShellStage } from ${JSON.stringify(new URL("../helpers/openshell-stage.mjs", import.meta.url).href)};`,
@@ -9029,12 +9020,6 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       "});",
       "",
     ].join("\n"),
-  );
-  await writeSingleLaneManifest(
-    root,
-    "measure",
-    [{ path: "tests/integration/measurements.test.mjs" }],
-    { ci: ["measure"] },
   );
 
   const result = run(root, laneArgs(root, "measure", "state/measurements.jsonl", resultsPath));
