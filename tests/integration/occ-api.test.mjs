@@ -9346,10 +9346,10 @@ test("IAM and audit dependency failures fail closed without orphaned state", asy
   assertOnlyDefaultNamespace(stillUnchanged);
 });
 
-test("SSH Compute refuses managed mode at save and deploy and validates runtime authentication and deployment authorization", async () => {
+async function createSshAdmissionFixture(hosts, namespaceName, controllerOptions = {}) {
   const computeDriver = new SshComputeDriver({
     ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
-    hosts: { runtime: { address: "127.0.0.1", user: "root" } },
+    hosts,
     runtime: {
       nodePath: "/usr/bin/node",
       openclawPath: "/opt/openclaw/index.js",
@@ -9358,12 +9358,21 @@ test("SSH Compute refuses managed mode at save and deploy and validates runtime 
     },
     network: { gatewayPortRange: { start: 18800, end: 18899 } },
   });
-  const controller = await configuredController({ computeDriver, recordOperations: true });
+  const controller = await configuredController({ computeDriver, ...controllerOptions });
   await bootstrap(controller);
-  const namespace = await createNamespace(controller, "runtime");
-  // Namespace provisioning is a prerequisite; this test exercises admission, not SSH transport.
+  const namespace = await createNamespace(controller, namespaceName);
+  // Set Namespace readiness directly so these tests can exercise API admission.
   await controller.fixture.platformState.transact((unit) =>
     unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  return { controller, namespace };
+}
+
+test("SSH Compute refuses managed mode at save and deploy and validates runtime authentication and deployment authorization", async () => {
+  const { controller, namespace } = await createSshAdmissionFixture(
+    { runtime: { address: "127.0.0.1", user: "root" } },
+    "runtime",
+    { recordOperations: true },
   );
   const configuration = await createConfiguration(
     controller,
@@ -9477,22 +9486,9 @@ test("SSH Compute refuses managed mode at save and deploy and validates runtime 
 });
 
 test("SSH Compute names a Harness authentication method other than runtime at Agent save", async () => {
-  const computeDriver = new SshComputeDriver({
-    ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
-    hosts: { "auth-method": { address: "127.0.0.1", user: "root" } },
-    runtime: {
-      nodePath: "/usr/bin/node",
-      openclawPath: "/opt/openclaw/index.js",
-      user: "openclaw",
-      root: "/var/lib/ssh-runtime-test",
-    },
-    network: { gatewayPortRange: { start: 18800, end: 18899 } },
-  });
-  const controller = await configuredController({ computeDriver });
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "auth-method");
-  await controller.fixture.platformState.transact((unit) =>
-    unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  const { controller, namespace } = await createSshAdmissionFixture(
+    { "auth-method": { address: "127.0.0.1", user: "root" } },
+    "auth-method",
   );
   const configuration = await createConfiguration(
     controller,
@@ -9520,22 +9516,9 @@ test("SSH Compute names a Harness authentication method other than runtime at Ag
 test("SSH Compute refuses at deploy gateway authentication and Secret bindings it cannot deliver", async () => {
   // Finding 2351: only preparation refused these, so deploy admitted a revision every
   // preparation attempt failed. Deploy now names the setting, without its value.
-  const computeDriver = new SshComputeDriver({
-    ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
-    hosts: { "gateway-auth": { address: "127.0.0.1", user: "root" } },
-    runtime: {
-      nodePath: "/usr/bin/node",
-      openclawPath: "/opt/openclaw/index.js",
-      user: "openclaw",
-      root: "/var/lib/ssh-runtime-test",
-    },
-    network: { gatewayPortRange: { start: 18800, end: 18899 } },
-  });
-  const controller = await configuredController({ computeDriver });
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "gateway-auth");
-  await controller.fixture.platformState.transact((unit) =>
-    unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  const { controller, namespace } = await createSshAdmissionFixture(
+    { "gateway-auth": { address: "127.0.0.1", user: "root" } },
+    "gateway-auth",
   );
   const values = createHarnessConfiguration("openclaw", "gpt-5.1");
   const collection = `/namespaces/${namespace.id}/agents`;
@@ -9728,22 +9711,9 @@ test("SSH Compute refuses at Agent save and deploy a roster or workspace whose m
   // Findings 2285 and 2289: only the host refused these, at deployment, which retried until it
   // failed. The host accepts only a path derived from each Agent's id, which a Configuration
   // cannot name, so any explicit workspace is refused.
-  const computeDriver = new SshComputeDriver({
-    ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
-    hosts: { "workspace-roster": { address: "127.0.0.1", user: "root" } },
-    runtime: {
-      nodePath: "/usr/bin/node",
-      openclawPath: "/opt/openclaw/index.js",
-      user: "openclaw",
-      root: "/var/lib/ssh-runtime-test",
-    },
-    network: { gatewayPortRange: { start: 18800, end: 18899 } },
-  });
-  const controller = await configuredController({ computeDriver });
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "workspace-roster");
-  await controller.fixture.platformState.transact((unit) =>
-    unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  const { controller, namespace } = await createSshAdmissionFixture(
+    { "workspace-roster": { address: "127.0.0.1", user: "root" } },
+    "workspace-roster",
   );
   const values = createHarnessConfiguration("openclaw", "gpt-5.1");
   const withAgents = (agents) => ({ ...values, agents: { ...values.agents, ...agents } });
