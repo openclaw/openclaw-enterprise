@@ -3,10 +3,7 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs
 import { join, resolve } from "node:path";
 import { defaultK3sImage, lanesWithoutK3sAddons } from "../../scripts/ci/prepare.mjs";
 import { startFakePostgres } from "./fake-postgres-server.mjs";
-import {
-  commandShim as fixtureCommandShim,
-  startCommandServer,
-} from "./fixture-command-server.ts";
+import { commandShim as fixtureCommandShim, startCommandServer } from "./fixture-command-server.ts";
 
 // The external commands preparation runs (docker, podman, k3d, kubectl, helm, yq,
 // corepack), faked for ci-prepare*.test.mjs through fixture-command-server.ts: each is
