@@ -2227,7 +2227,7 @@ import { GitHubNativeRepositorySender } from "/app/apps/controller/src/drivers/r
 import { UnixRepositoryCredentialControlClient } from "/app/apps/controller/src/backends/repository-credentials/control-client.ts";
 const id = "compatibility-probe";
 const client = new UnixRepositoryCredentialControlClient({ controlSocket: "/run/openclaw/repository-control/private/control.sock" });
-const driver = new GitHubNativeRepositorySender({ id, drivers: { repo: id }, client }, {});
+const driver = new GitHubNativeRepositorySender({ backendId: id, driverId: id, client }, {});
 if (typeof driver.checkAdmissionReady !== "function") throw new Error("capability check unavailable");
 await driver.checkAdmissionReady(AbortSignal.timeout(5000));
 process.stdout.write("repository-admission-ready\n");

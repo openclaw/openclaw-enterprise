@@ -66,8 +66,8 @@ the same rule, so any configured ChatGPT Backend ID can be selected. A GitHub
 Backend ID must also fit in 200 UTF-16 code units (for example, 100 characters
 outside the Basic Multilingual Plane), because repository bindings store it
 under that bound. `openai` is an operator-chosen ID. The bundled types are
-`chatgpt`, `github`, and `openshell`; each has its own closed configuration and
-required member Drivers. A ChatGPT workspace UUID identifies the upstream workspace, not a Namespace.
+`chatgpt`, `github`, and `openshell`. Each has its own closed configuration.
+A ChatGPT workspace UUID identifies the upstream workspace, not a Namespace.
 
 `apiKeyPath` must be an absolute mounted file path. The key needs
 `chatgpt.enterprise.service_account.write` and authority for that workspace.
@@ -80,8 +80,9 @@ DNS-subdomain Kubernetes resource name of at most 253 characters. Its
 characters, but cannot be `.` or start with `..`; the unchanged default is
 `admin-key`.
 
-`backend[].drivers` declares required membership. The ChatGPT Backend and its
-selected `service_account` Driver must be configured together with matching IDs.
+For Backends with member Drivers, `backend[].drivers` declares membership.
+Configure the ChatGPT Backend and its selected `service_account` Driver together
+with matching IDs.
 OCC selects one Driver per capability, so only one ChatGPT Backend is supported.
 Missing, conflicting, or unselected members reject configuration.
 
@@ -95,8 +96,6 @@ backend:
     type: github
     configuration:
       registryPath: /etc/openclaw/repository-registry/registry.json
-    drivers:
-      repo: repository-credentials
 repository:
   id: repository-credentials
   configuration:
@@ -110,15 +109,21 @@ repository:
 ```
 
 Keep the ordinary required Driver settings alongside this fragment. One GitHub
-Backend is supported and may coexist with one ChatGPT Backend. Its member ID
-must match `repository.id`. With this configuration, the API and worker use the
-built-in GitHub registry policy. They require no public Repo Driver registration.
-Omit both the GitHub Backend and `repository` to leave Git unconfigured.
-Existing configurations may keep or omit `repository.policyMode: built-in` with
-the same policy and protected sender identity. Startup rejects other values and
-the retired `drivers.repo` selection. Drain admitted work on its original owner
-before changing senders. The registry's Backend ID must match the definition,
-and the session duration must fit the registry's maximum.
+Backend is supported and may coexist with one ChatGPT Backend. Explicit
+`repository` settings enable its built-in policy in the API and worker.
+Omit both the GitHub Backend and `repository` to leave Git disabled.
+Keep or omit `repository.policyMode: built-in` to use the same policy and
+protected sender identity. In an older startup file, the loader discards
+`backend[].drivers` on the GitHub Backend when its sole member is `repo` and
+the value exactly matches `repository.id`. This spelling has the same runtime
+identity as omitting the field. Startup rejects other policy modes, top-level
+`drivers.repo`, and all other GitHub Backend `drivers` values. The registry's
+Backend ID must match the definition, and the session duration must fit the
+registry maximum.
+
+Before changing senders, drain admitted work through its exact recorded sender.
+See the [cutover procedure](repository-credentials.md#installation-policy-and-delivery)
+before upgrading an installation with active grants.
 See [prepared native Git](repository-credentials/prepared-native-git.md#install-and-check)
 for delivery settings.
 

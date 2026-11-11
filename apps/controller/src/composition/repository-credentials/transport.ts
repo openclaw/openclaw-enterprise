@@ -4,7 +4,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { PostgresPool } from "@openclaw-enterprise/occ";
 import type { RepositoryTransportEmit } from "./contracts.ts";
-import type { InstallationRuntimeDrivers } from "../installation-config.ts";
+import type { RepositoryRuntime } from "../installation-config.ts";
 
 /**
  * A delivery that keeps failing writes `worker.repository-delivery-pending` at most this often:
@@ -61,7 +61,7 @@ interface RepositoryGitTransportOptions {
 
 /** Bind the selected sender. The worker retains storage and the right to start the credential owner. */
 export async function bindRepositoryGitTransport(
-  drivers: InstallationRuntimeDrivers,
+  runtime: Pick<RepositoryRuntime, "protectedDriver" | "transport">,
   authority: ProtectedRepositoryGitAuthority | undefined,
   pool: PostgresPool,
   emit?: RepositoryTransportEmit,
@@ -70,11 +70,8 @@ export async function bindRepositoryGitTransport(
     reconcileIntervalMs = REPOSITORY_RECONCILE_INTERVAL_MS,
   }: RepositoryGitTransportOptions = {},
 ): Promise<CredentialProxyBinding | undefined> {
-  const { repositoryTransport, repositoryGitDriver } = drivers;
-  if (
-    (repositoryGitDriver || repositoryTransport) &&
-    (!authority || !repositoryGitDriver || repositoryGitDriver !== drivers.protectedDriver)
-  ) {
+  const { transport: repositoryTransport, protectedDriver: repositoryGitDriver } = runtime;
+  if ((repositoryGitDriver || repositoryTransport) && (!authority || !repositoryGitDriver)) {
     throw new Error("Missing the selected Driver's protected repository Git authority.");
   }
   if (repositoryTransport && authority) {

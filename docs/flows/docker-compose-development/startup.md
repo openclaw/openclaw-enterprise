@@ -256,7 +256,7 @@ bundled Presets and Codex Plugin Driver and copies bootstrap credentials private
 `internal/occdev/repository_k3d.go` validates selected inputs and waits for
 authenticated bootstrap and Namespace readiness. It binds the server-assigned
 Namespace ID, generates a CA and exact-host broker certificate, creates Kubernetes
-inputs, and upgrades Helm with the Repo Driver and worker sidecar. Discovery must
+inputs, and upgrades Helm with the repository policy and worker sidecar. Discovery must
 match approved references and profiles; it proves no model turn, native sandbox,
 or Git operation. See [required inputs](../../guides/deploy/local-repository-credentials.md#prepare-the-approved-inputs).
 

@@ -1,13 +1,7 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 
-import type {
-  ComputeDriver,
-  RepositoryBindingRequest,
-  RepositoryPolicyDriver,
-} from "../../packages/contracts/src/index.ts";
 import type { PostgresPlatformState } from "../../packages/occ/src/index.ts";
-import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
-import { repositoryBoundary } from "./postgres-worker-revision-support.mjs";
 import { SAVED_REPOSITORY_SELECTION_NOT_APPROVED } from "./refusal-text.mjs";
 
 type Target = {
@@ -22,49 +16,23 @@ type Target = {
       data: unknown;
       error?: { message: string };
     }>;
+    restartApi: () => Promise<void>;
     revokeCurrentPrincipal: () => Promise<unknown>;
     cancelProvisioningAtTeardown: (namespaceId: string, agentId: string) => void;
   };
+  repository: { setApprovedNamespace: (namespaceId: string) => Promise<void> };
   namespace: { id: string };
   admitted: { data: { provisioning: { workId: string; url: string } } };
   failed: { agentId: string };
 };
 
-export async function assertProvisioningRepositoryStatus(
-  computeDriver: ComputeDriver,
-  setup: (
-    options: {
-      computeDriver: ComputeDriver;
-      repoDriver: ReturnType<typeof repositoryBoundary>["driver"] & {
-        resolveBindings: RepositoryPolicyDriver["resolve"];
-      };
-    },
-    overrides: { repositoryBindings: RepositoryBindingRequest[]; pluginApprovers: [] },
-  ) => Promise<Target>,
-) {
-  const boundary = repositoryBoundary({ backendId: "provisioning-repositories" });
-  const {
-    snapshot: {
-      bindings: [binding],
-    },
-  } = boundary;
-  assert.ok(binding);
-  const repoDriver = Object.assign(boundary.driver, {
-    // Installation admission uses the same synthetic policy as the legacy worker path.
-    resolveBindings(_input: Parameters<RepositoryPolicyDriver["resolve"]>[0]) {
-      return boundary.driver.resolve();
-    },
-  });
-  const topology = createTestKubernetesComputeDriver("gateway", { repositoryCredentials: true });
-  computeDriver.validateRepositoryCredentials =
-    topology.validateRepositoryCredentials.bind(topology);
-  const { fixture, namespace, admitted, failed } = await setup(
-    { computeDriver, repoDriver },
-    {
-      repositoryBindings: [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
-      pluginApprovers: [],
-    },
-  );
+export async function assertProvisioningRepositoryStatus({
+  fixture,
+  repository,
+  namespace,
+  admitted,
+  failed,
+}: Target) {
   fixture.cancelProvisioningAtTeardown(namespace.id, failed.agentId);
   const { workId, url } = admitted.data.provisioning;
   const snapshot = () => fixture.state.read((state) => state.provisioning.findWithWork(workId));
@@ -72,24 +40,11 @@ export async function assertProvisioningRepositoryStatus(
   assert.equal(stored?.record.agentId, failed.agentId);
   assert.ok(stored?.work);
 
-  const calls: string[] = [];
-  repoDriver.resolveBindings = () => {
-    calls.push("resolveBindings");
-    throw new Error("withdrawn repository access");
-  };
-  repoDriver.resolve = () => {
-    calls.push("resolve");
-    throw new Error("withdrawn repository access");
-  };
-  repoDriver.listOptions = async () => {
-    calls.push("listOptions");
-    throw new Error("withdrawn repository access");
-  };
+  await repository.setApprovedNamespace(`ns_${randomUUID()}`);
+  await fixture.restartApi();
   const status = await fixture.request("GET", url);
   assert.equal(status.status, 200, JSON.stringify(status.body));
   assert.deepEqual(status.data, failed);
-  assert.deepEqual(calls, []);
-  assert.deepEqual(boundary.calls, []);
   assert.deepEqual(await snapshot(), stored);
 
   // Cancellation independently forbids retry; repository refusal must still take precedence.
@@ -103,11 +58,9 @@ export async function assertProvisioningRepositoryStatus(
   const retry = await fixture.request("POST", `${url}/retry`);
   assert.equal(retry.status, 409, JSON.stringify(retry.body));
   assert.equal(retry.error?.message, SAVED_REPOSITORY_SELECTION_NOT_APPROVED);
-  assert.deepEqual(calls, ["resolveBindings"]);
   assert.deepEqual(await snapshot(), cancelled, "refused retry must not requeue work");
 
   await fixture.revokeCurrentPrincipal();
   const denied = await fixture.request("GET", url);
   assert.equal(denied.status, 403, JSON.stringify(denied.body));
-  assert.deepEqual(calls, ["resolveBindings"]);
 }

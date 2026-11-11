@@ -4709,7 +4709,6 @@ test("installation refuses OpenShell repository credentials before reading sessi
     id: "github-primary",
     type: "github",
     configuration: { registryPath: "/absent/repositories.json" },
-    drivers: { repo: id },
   });
   configuration.repository = {
     id,
@@ -5652,7 +5651,6 @@ test(
       id: "github-primary",
       type: "github",
       configuration: { registryPath },
-      drivers: { repo: "repository-credentials" },
     });
     configuration.repository = {
       ...fragment.repository,
@@ -5849,8 +5847,8 @@ test(
     const owner = protectedGit.protectedDriver;
     assert.equal(owner.require("sandbox"), protectedGit.sandboxDriver);
     assert.equal(owner.require("credential_proxy"), protectedGit.proxyDriver);
-    assert.equal(protectedGit.repositoryOwner.controlSocket, undefined);
-    assert.equal(protectedGit.nativeRepositorySender, undefined);
+    assert.equal(protectedGit.repositoryRuntime?.owner.controlSocket, undefined);
+    assert.equal(protectedGit.repositoryRuntime?.nativeSender, undefined);
     assert.equal(protectedGit.egressAuthority, undefined);
     // Release labels do not qualify the sender; runtime proof still gates material.
     repositoryGatewayVersion = "unknown";

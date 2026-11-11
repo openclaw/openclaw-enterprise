@@ -70,6 +70,7 @@ export function withUnavailableIAM(unavailable) {
 export function repositoryBoundary({
   count = 1,
   backendId = "repository-provider",
+  sessionDurationSeconds = 60,
   deadlineWallMs = Date.now() + 120_000,
 } = {}) {
   const bindings = Array.from({ length: count }, (_, index) => ({
@@ -116,8 +117,9 @@ export function repositoryBoundary({
   };
   const driver = {
     id: "repository-worker-boundary",
-    implementation: "repository-worker-boundary",
-    capability: "repo",
+    implementation: "github",
+    backendId,
+    sessionDurationSeconds,
     maintenanceIntervalMs: 3_600_000,
     durableBrokerReceipts: true,
     bindReceiptState(state) {
@@ -130,11 +132,37 @@ export function repositoryBoundary({
     async checkAdmissionReady() {
       assert.ok(receipts, "repository boundary requires its fixture's receipt state");
     },
-    async listOptions() {
+    // Direct OCC evaluator fixtures may vary these methods; Worker admission never uses them.
+    async listCatalog() {
       return { options: [] };
     },
-    resolve() {
+    allowsStandingApproval: () => false,
+    standingApprovalScope: () => undefined,
+    resolveBindings() {
       return { bindings, sessionDurationSeconds: 60 };
+    },
+    registry: {
+      version: 1,
+      backendId,
+      providerInstanceId: "repository-provider-instance",
+      appId: "123",
+      githubInstallationId: "456",
+      maximumDurationSeconds: 3600,
+      repositories: bindings.map((binding, index) => ({
+        repositoryRef: binding.repositoryRef,
+        repositoryId: String(index + 1),
+        repository: `organization/repository-${index}`,
+      })),
+    },
+    bindSnapshot(policy, namespaceId) {
+      const resolved = policy.resolveBindings({
+        namespaceId,
+        bindings: driver.registry.repositories.map(({ repositoryRef }) => ({
+          repositoryRef,
+          profile: "git-read",
+        })),
+      });
+      bindings.splice(0, bindings.length, ...resolved.bindings);
     },
     async open(input, signal) {
       calls.push({ operation: input.recoverOnly ? "recover" : "open", input, signal });

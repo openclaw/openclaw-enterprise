@@ -1,13 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test, { after } from "node:test";
-import type {
-  ComputeDriver,
-  GitHubRepositoryCredentialBackendDefinition,
-} from "../../packages/contracts/src/index.ts";
-import { OpenClawController } from "../../packages/occ/src/index.ts";
-import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
-import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import type { ComputeDriver } from "../../packages/contracts/src/index.ts";
+import { OpenClawController, validateRepositoryAdmission } from "../../packages/occ/src/index.ts";
 import { RepositoryCredentialLifecycle } from "../../apps/controller/src/worker/repository-credentials.ts";
 import type { InstallationRuntimeDrivers } from "../../apps/controller/src/composition/installation-config.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
@@ -24,65 +19,20 @@ import {
 const { setup, cleanup } = createWorkerRevisionFixtures(import.meta.url);
 after(cleanup);
 
-function nativeRepositoryPolicy(
-  backend: GitHubRepositoryCredentialBackendDefinition,
-  namespaceId: string,
-) {
-  return new GitHubRepositoryPolicy(
-    { driverId: backend.drivers.repo, backendId: backend.id },
-    validateGitHubRepositoryRegistry({
-      version: 1,
-      backendId: backend.id,
-      providerInstanceId: "worker-github-policy",
-      appId: "123",
-      githubInstallationId: "456",
-      maximumDurationSeconds: 3600,
-      repositories: [
-        {
-          repositoryRef: "source",
-          repositoryId: "789",
-          repository: "example/source",
-          namespaces: [
-            {
-              namespaceId,
-              profiles: ["git-read"],
-            },
-          ],
-        },
-      ],
-    }),
-    { sessionDurationSeconds: 300 },
-  );
-}
+const repositoryRoleFailure = {
+  id: "has the wrong id",
+  implementation: "has the wrong implementation",
+  absent: "is absent",
+  substituted: "is substituted with an unsealed runtime",
+} as const;
 
-function repositoryWorkerComposition(
-  drivers: InstallationRuntimeDrivers,
-  backend: GitHubRepositoryCredentialBackendDefinition,
-  policy: GitHubRepositoryPolicy,
-  mode: "built-in" | "legacy" | "conflicting" | "missing-legacy",
-): InstallationRuntimeDrivers {
-  const { repositoryPolicy, ...others } = drivers;
-  assert.ok(repositoryPolicy && drivers.nativeRepositorySender);
-  assert.equal(repositoryPolicy.id, policy.id);
-  assert.equal(drivers.nativeRepositorySender.implementation, policy.implementation);
-  return {
-    ...others,
-    installation: { ...drivers.installation, backend: [backend] },
-    repositoryAdmission: {
-      policy,
-      backendId: backend.id,
-      ...(mode === "built-in" || mode === "conflicting" ? { policyMode: "built-in" as const } : {}),
-    },
-    ...(mode === "legacy" ? { repositoryPolicy: policy } : {}),
-    // Same ID, different object: the public policy must not be ignored.
-    ...(mode === "conflicting" ? { repositoryPolicy } : {}),
-  };
-}
-
-for (const role of ["repositoryPolicy", "nativeRepositorySender"] as const) {
-  for (const field of ["id", "implementation", "absent"] as const) {
+for (const [role, fields] of [
+  ["repositoryAdmission", ["id", "implementation", "absent", "substituted"]],
+  ["nativeRepositorySender", ["id", "implementation", "absent"]],
+] as const) {
+  for (const field of fields) {
     test(
-      `worker refuses repository credentials when ${role} is ${field === "absent" ? "absent" : `present with the wrong ${field}`}`,
+      `worker refuses repository credentials when ${role} ${repositoryRoleFailure[field]}`,
       requiresPostgres,
       async (context) => {
         const repository = repositoryBoundary();
@@ -94,61 +44,86 @@ for (const role of ["repositoryPolicy", "nativeRepositorySender"] as const) {
         });
         let preparations = 0;
         let policyChecks = 0;
-        await fixture.start(
-          {
-            ...fixture.compute,
-            async prepareRevision(...args: Parameters<typeof fixture.compute.prepareRevision>) {
-              preparations++;
-              return fixture.compute.prepareRevision(...args);
+        const start = () =>
+          fixture.start(
+            {
+              ...fixture.compute,
+              async prepareRevision(...args: Parameters<typeof fixture.compute.prepareRevision>) {
+                preparations++;
+                return fixture.compute.prepareRevision(...args);
+              },
             },
-          },
-          {
-            transformDrivers(drivers: InstallationRuntimeDrivers) {
-              const { repositoryPolicy, nativeRepositorySender } = drivers;
-              assert.ok(repositoryPolicy && nativeRepositorySender);
-              assert.equal("open" in repositoryPolicy, false);
-              assert.equal("resolve" in nativeRepositorySender, false);
-              assert.deepEqual(
-                repositoryPolicy.resolve({
-                  namespaceId: fixture.namespace.id,
-                  bindings: repository.snapshot.bindings.map(({ repositoryRef, profile }) => ({
-                    repositoryRef,
-                    profile,
-                  })),
-                }).bindings,
-                repository.snapshot.bindings,
-              );
-              const installed = {
-                ...drivers,
-                repositoryPolicy: {
-                  ...repositoryPolicy,
-                  resolve(input: Parameters<typeof repositoryPolicy.resolve>[0]) {
+            {
+              transformDrivers(drivers: InstallationRuntimeDrivers) {
+                const { admission: repositoryAdmission, nativeSender: nativeRepositorySender } =
+                  drivers.repositoryRuntime!;
+                assert.ok(repositoryAdmission && nativeRepositorySender);
+                const { policy } = repositoryAdmission;
+                assert.equal("open" in policy, false);
+                assert.equal("resolveBindings" in nativeRepositorySender, false);
+                if (field === "absent") {
+                  const { repositoryRuntime: _runtime, ...others } = drivers;
+                  if (role === "repositoryAdmission") {
+                    return others;
+                  }
+                  const { repository: _repository, ...installation } = others.installation;
+                  return {
+                    ...others,
+                    installation: {
+                      ...installation,
+                      backend: (installation.backend ?? []).filter(
+                        (backend) => backend.type !== "github",
+                      ),
+                    },
+                  };
+                }
+                const identityChange = { [field]: `unselected-${field}` };
+                const observedPolicy = {
+                  ...policy,
+                  resolveBindings(input: Parameters<typeof policy.resolveBindings>[0]) {
                     policyChecks++;
-                    return repositoryPolicy.resolve(input);
+                    return policy.resolveBindings(input);
                   },
-                },
-              };
-              if (field === "absent") {
-                const { [role]: removed, ...others } = installed;
-                assert.ok(removed);
-                return others;
-              }
-              return {
-                ...installed,
-                [role]: { ...installed[role], [field]: `unselected-${field}` },
-              };
+                };
+                if (role === "repositoryAdmission") {
+                  return {
+                    ...drivers,
+                    repositoryRuntime: {
+                      ...drivers.repositoryRuntime,
+                      admission: {
+                        ...repositoryAdmission,
+                        policy:
+                          field === "substituted"
+                            ? observedPolicy
+                            : Object.assign(observedPolicy, identityChange),
+                      },
+                    },
+                  };
+                }
+                // Simulate a sender whose reported identity no longer matches its receipt owner.
+                Object.assign(nativeRepositorySender, identityChange);
+                return drivers;
+              },
             },
-          },
-        );
+          );
+        if (role === "repositoryAdmission") {
+          await assert.rejects(
+            async () => start(),
+            /built-in repository admission|selected repository runtime/,
+          );
+          assert.equal(policyChecks, 0);
+          assert.deepEqual(repository.calls, []);
+          assert.deepEqual(await repositoryAttempts(fixture, candidate), []);
+          assert.equal(preparations, 0);
+          return;
+        }
+        await start();
         const work = await fixture.work(candidate, "failed_permanent", 15_000);
         assert.equal(work.attempt_count, 1);
         assert.equal(
           (await fixture.workResult(candidate)).rows[0]?.reason_code,
           "REPOSITORY_DRIVER_MISMATCH",
         );
-        if (role === "nativeRepositorySender") {
-          assert.ok(policyChecks > 0, "the worker revalidated the admitted grant");
-        }
         assert.deepEqual(repository.calls, []);
         assert.deepEqual(await repositoryAttempts(fixture, candidate), []);
         assert.equal(preparations, 0);
@@ -162,24 +137,18 @@ test(
   "worker startup binds built-in repository provisioning without public registration",
   requiresPostgres,
   async (t) => {
-    for (const mode of ["built-in", "legacy", "conflicting", "missing-legacy"] as const) {
+    for (const mode of ["bound", "retired-role", "retired-mode"] as const) {
       await t.test(mode, async (context) => {
-        const repository = repositoryBoundary();
-        // The synthetic sender's receipt owner matches the real policy from the outset.
-        // No identity is changed after the finite revision has been admitted.
-        repository.driver.implementation = "github";
-        const backend: GitHubRepositoryCredentialBackendDefinition = {
-          id: repository.snapshot.bindings[0]!.backendId,
-          type: "github",
-          configuration: { registryPath: "/unused/worker-repository-registry.json" },
-          drivers: { repo: repository.driver.id },
-        };
-        const options = { repoDriver: repository.driver, backends: [backend] };
-        const fixture = await setup(context, options);
-        const policy = nativeRepositoryPolicy(backend, fixture.namespace.id);
+        const repository = repositoryBoundary({ sessionDurationSeconds: 300 });
+        const fixture = await setup(context, { repoDriver: repository.driver });
+        const admission = fixture.repositoryAdmission;
+        assert.ok(admission);
+        const policy = admission.policy;
         const input = {
           namespaceId: fixture.namespace.id,
-          bindings: [{ repositoryRef: "source", profile: "git-read" }],
+          bindings: [
+            { repositoryRef: repository.snapshot.bindings[0]!.repositoryRef, profile: "git-read" },
+          ],
         };
         const finite = policy.resolveBindings(input);
         const snapshot = {
@@ -190,7 +159,6 @@ test(
         const { candidate } = await fixture.admitInitialRevision("bound-repository", {
           revision: { repositoryCredentials: snapshot },
         });
-        const checks = context.mock.method(policy, "resolveBindings");
         const provisioning = context.mock.method(OpenClawController, "forInstallation");
         const preparations: Parameters<ComputeDriver["prepareRevision"]>[] = [];
         const compute = {
@@ -203,16 +171,31 @@ test(
         const start = () =>
           fixture.start(compute, {
             transformDrivers(drivers: InstallationRuntimeDrivers) {
-              return repositoryWorkerComposition(drivers, backend, policy, mode);
+              if (mode === "retired-role") {
+                return { ...drivers, repositoryPolicy: policy };
+              }
+              if (mode === "retired-mode") {
+                const runtime = drivers.repositoryRuntime!;
+                return {
+                  ...drivers,
+                  repositoryRuntime: {
+                    ...runtime,
+                    admission: { ...runtime.admission, policyMode: "built-in" },
+                  },
+                };
+              }
+              return drivers;
             },
           });
-        if (mode === "conflicting" || mode === "missing-legacy") {
+        if (mode !== "bound") {
           await assert.rejects(async () => start(), {
             name: "Error",
-            message: "The bound repository admission owner is not selected or unavailable.",
+            message:
+              mode === "retired-role"
+                ? "Repository Driver selection and policy modes are retired."
+                : "Startup requires the selected repository runtime and its delivery Drivers.",
           });
           assert.equal(provisioning.mock.callCount(), 0);
-          assert.equal(checks.mock.callCount(), 0);
           assert.deepEqual(preparations, []);
           assert.deepEqual(repository.calls, []);
           assert.deepEqual(await repositoryAttempts(fixture, candidate), []);
@@ -224,14 +207,6 @@ test(
         const controller = provisioning.mock.calls[0]!.result;
         assert.ok(controller);
         await controller.validateBackendConfiguration();
-        if (mode === "built-in") {
-          assert.throws(() => controller.selectedDriver("repo"), {
-            name: "DriverSelectionError",
-            message: /unavailable/,
-          });
-        } else {
-          assert.equal(controller.selectedDriver("repo"), policy);
-        }
         const prepared = await completion(
           preparations,
           "the original finite repository revision to reach Compute",
@@ -241,13 +216,6 @@ test(
         assert.deepEqual(prepared[0].repositoryCredentials, snapshot);
         assert.ok(prepared[1]);
         assert.ok(prepared[1].repositoryCredentials);
-        assert.ok(
-          checks.mock.callCount() > 0,
-          "the bound native policy rechecked current permission",
-        );
-        for (const call of checks.mock.calls) {
-          assert.deepEqual(call.arguments, [input]);
-        }
         const opened = repository.calls.filter(({ operation }) => operation === "open");
         assert.equal(opened.length, 1);
         assert.deepEqual(opened[0]!.input.binding, finite.bindings[0]);
@@ -267,7 +235,7 @@ async function admitLegacyRepositorySession(
   fixture: RevisionWorkerFixture,
   repository: RepositoryBoundary,
   legacy: OpenClawController,
-  policy: GitHubRepositoryPolicy,
+  policy: NonNullable<InstallationRuntimeDrivers["repositoryRuntime"]>["admission"]["policy"],
 ) {
   // Seed only ordinary resources; the actual Worker controller saves and admits them.
   const owner = await fixture.agent("legacy-repository-restart");
@@ -276,7 +244,9 @@ async function admitLegacyRepositorySession(
     kind: "agent",
     values: createHarnessConfiguration("openclaw", "gpt-4.1"),
   });
-  const bindings = [{ repositoryRef: "source", profile: "git-read" }];
+  const bindings = [
+    { repositoryRef: repository.snapshot.bindings[0]!.repositoryRef, profile: "git-read" },
+  ];
   await legacy.updateAgent(
     fixture.actor.id,
     {
@@ -374,57 +344,38 @@ async function deferLegacyRepositoryCleanup(
 }
 
 test(
-  "built-in Worker settles legacy admission through the original repository sender",
+  "Worker restart settles retained admission through the original repository sender",
   requiresPostgres,
   async (t) => {
     for (const wrongSender of [false, true]) {
       await t.test(
         wrongSender ? "wrong sender then original sender" : "original sender",
         async (context) => {
-          const repository = repositoryBoundary();
-          repository.driver.implementation = "github";
-          const backend: GitHubRepositoryCredentialBackendDefinition = {
-            id: repository.snapshot.bindings[0]!.backendId,
-            type: "github",
-            configuration: { registryPath: "/unused/worker-repository-registry.json" },
-            drivers: { repo: repository.driver.id },
-          };
-          const options = { repoDriver: repository.driver, backends: [backend] };
-          const fixture = await setup(context, options);
-          const policy = nativeRepositoryPolicy(backend, fixture.namespace.id);
+          const repository = repositoryBoundary({ sessionDurationSeconds: 300 });
+          const fixture = await setup(context, { repoDriver: repository.driver });
+          const admissionBinding = fixture.repositoryAdmission;
+          assert.ok(admissionBinding);
+          const policy = admissionBinding.policy;
           const provisioning = context.mock.method(OpenClawController, "forInstallation");
           const events: Record<string, unknown>[] = [];
-          async function start(mode: "legacy" | "built-in", mismatchedSender = false) {
-            await fixture.start(fixture.compute, {
-              emit: (event: Record<string, unknown>) => events.push(event),
-              transformDrivers(drivers: InstallationRuntimeDrivers) {
-                const composed = repositoryWorkerComposition(drivers, backend, policy, mode);
-                assert.ok(composed.nativeRepositorySender);
-                return mismatchedSender
-                  ? {
-                      ...composed,
-                      nativeRepositorySender: {
-                        ...composed.nativeRepositorySender,
-                        implementation: "wrong-sender",
-                      },
-                    }
-                  : composed;
-              },
-            });
+          async function start(mismatchedSender = false) {
+            const originalId = repository.driver.id;
+            try {
+              if (mismatchedSender) {
+                repository.driver.id = "replacement-sender";
+              }
+              await fixture.start(fixture.compute, {
+                emit: (event: Record<string, unknown>) => events.push(event),
+              });
+            } finally {
+              repository.driver.id = originalId;
+            }
             const controller = provisioning.mock.calls.at(-1)!.result;
             assert.ok(controller);
             await controller.validateBackendConfiguration();
-            if (mode === "legacy") {
-              assert.equal(controller.selectedDriver("repo"), policy);
-            } else {
-              assert.throws(() => controller.selectedDriver("repo"), {
-                name: "DriverSelectionError",
-                message: /unavailable/,
-              });
-            }
             return controller;
           }
-          const legacy = await start("legacy");
+          const legacy = await start();
           const admission = await admitLegacyRepositorySession(fixture, repository, legacy, policy);
           const { owner, revision, candidate, snapshot, opened } = admission;
           const { stop, cleanupWork, closing } = await deferLegacyRepositoryCleanup(
@@ -436,7 +387,7 @@ test(
           const callsBeforeRestart = repository.calls.length;
           if (wrongSender) {
             events.length = 0;
-            await start("built-in", true);
+            await start(true);
             await advanceCleanupRetries(fixture, candidate);
             await completion(
               events,
@@ -461,7 +412,7 @@ test(
             assert.deepEqual(await repositoryAttempts(fixture, candidate), [closing]);
           }
           events.length = 0;
-          await start("built-in");
+          await start();
           await advanceCleanupRetries(fixture, candidate);
           await fixture.work(cleanupWork, "succeeded");
           await fixture.work(stop, "succeeded");
@@ -487,7 +438,7 @@ test(
 );
 
 test(
-  "live repository cleanup uses the persisted owner with revision identity only",
+  "live repository lifecycle refuses resolution identity drift and cleanup uses the persisted owner",
   requiresPostgres,
   async (context) => {
     const repository = repositoryBoundary();
@@ -501,6 +452,68 @@ test(
     const claim = await queue.claim();
     assert.ok(claim);
     assert.equal(claim.idempotencyKey, candidate.idempotencyKey);
+    const revision = await fixture.state.read((view) =>
+      view.revisions.findRevision(candidate.namespaceId, candidate.agentId, candidate.id),
+    );
+    assert.ok(revision);
+    const admission = fixture.repositoryAdmission;
+    assert.ok(admission);
+    // Exercise the lifecycle directly: startup correctly refuses substituted runtimes
+    // before their resolver can run. Delegate resolution to the real selected policy.
+    const authorizationReached = new Error("original owner reached authorization");
+    for (const field of [undefined, "id", "implementation"] as const) {
+      let resolutions = 0;
+      const policy = {
+        id: String(admission.policy.id),
+        implementation: String(admission.policy.implementation),
+        listCatalog: admission.policy.listCatalog.bind(admission.policy),
+        allowsStandingApproval: admission.policy.allowsStandingApproval.bind(admission.policy),
+        standingApprovalScope: admission.policy.standingApprovalScope.bind(admission.policy),
+        resolveBindings(input: Parameters<typeof admission.policy.resolveBindings>[0]) {
+          const resolved = admission.policy.resolveBindings(input);
+          resolutions++;
+          if (field !== undefined) {
+            policy[field] = `changed-${field}`;
+          }
+          return resolved;
+        },
+      };
+      const validated = validateRepositoryAdmission({ ...admission, policy }, [
+        {
+          id: admission.backendId,
+          type: "github",
+          configuration: { registryPath: "/unused/registry.json" },
+        },
+      ]);
+      assert.ok(validated);
+      assert.equal(validated.hasCurrentIdentity(), true);
+      const lifecycle = new RepositoryCredentialLifecycle({
+        state: fixture.state,
+        queueOptions,
+        repository: validated,
+        nativeSender: {
+          ...repository.driver,
+          durableBrokerReceipts: true,
+          async open() {
+            assert.fail("resolution control must not open a session");
+          },
+        },
+        authorize: async () => {
+          throw authorizationReached;
+        },
+        effect: async () => assert.fail("identity drift must precede sender effects"),
+      });
+      await assert.rejects(
+        lifecycle.prepare(claim, revision),
+        field === undefined
+          ? (error) => error === authorizationReached
+          : { code: "REPOSITORY_DRIVER_MISMATCH" },
+      );
+      assert.equal(resolutions, 1);
+      assert.equal(validated.hasCurrentIdentity(), field === undefined);
+      assert.deepEqual(repository.calls, []);
+      assert.deepEqual(await repositoryAttempts(fixture, candidate), []);
+    }
     const binding = repository.snapshot.bindings[0]!;
     const attempt = await fixture.state.transact((unit) =>
       unit.repositorySessions.createAttempt({
@@ -548,10 +561,6 @@ test(
         effect: async (_claim, operation) => operation(AbortSignal.timeout(5_000)),
       });
     const original = lifecycle(repository.driver.implementation);
-    const revision = await fixture.state.read((view) =>
-      view.revisions.findRevision(candidate.namespaceId, candidate.agentId, candidate.id),
-    );
-    assert.ok(revision);
     await original.closeRevision(claim, revision, { awaitCleanup: false });
     const [closing] = await repositoryAttempts(fixture, candidate);
     assert.equal(closing?.phase, "closing");

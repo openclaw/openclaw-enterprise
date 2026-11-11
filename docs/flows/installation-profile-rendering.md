@@ -213,7 +213,7 @@ matching ServiceAccount Driver; otherwise Codex Agents use the existing
 `codex_pat` token path configured at Agent creation. If the chart-managed Slack
 proxy is enabled, Compute receives the generated Service DNS URL and selector
 for gateway-to-proxy egress; the chart grants API-to-proxy egress. Repository
-opt-in adds the GitHub Backend, Repo Driver,
+opt-in adds the GitHub Backend, repository policy,
 and worker peer expected by the broker sidecar.
 
 The renderer derives the Compute Gateway name the same way Helm does: it

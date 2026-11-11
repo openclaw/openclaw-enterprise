@@ -534,6 +534,7 @@
       "expectedTests": [
         "standing maintenance supervises missing Git evidence across restart and still withdraws model authority",
         "standing maintenance refuses withdrawn eligibility with unchanged scope",
+        "standing maintenance rechecks durable approval after Namespace lock wait",
         "bound worker reconciliation retains the original repository admission policy"
       ]
     },

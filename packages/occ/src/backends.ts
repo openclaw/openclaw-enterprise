@@ -89,18 +89,6 @@ function validateBackendDefinition(value: unknown, index: number): BackendDefini
   if (configuration === undefined) {
     throw new ScopeViolationError(path(id, "configuration") + " must be one object.");
   }
-  const drivers = asRecord(candidate.drivers);
-  if (drivers === undefined) {
-    throw new ScopeViolationError(path(id, "drivers") + " must be one object.");
-  }
-  if (Object.hasOwn(drivers, "conduit")) {
-    throw new ScopeViolationError(
-      path(id, "drivers.conduit") + " is retired; use drivers.credential_proxy instead.",
-    );
-  }
-  if (candidate.type === "openshell") {
-    return validateOpenShellBackend(id, configuration, drivers);
-  }
   if (candidate.type === "github") {
     for (const key of Object.keys(configuration)) {
       if (key !== "registryPath") {
@@ -113,21 +101,26 @@ function validateBackendDefinition(value: unknown, index: number): BackendDefini
         path(id, "configuration.registryPath") + " must be an absolute mounted file path.",
       );
     }
-    for (const key of Object.keys(drivers)) {
-      if (key !== "repo") {
-        throw new ScopeViolationError(path(id, `drivers.${key}`) + " is unsupported.");
-      }
-    }
-    const repo = drivers.repo;
-    if (!isNonEmptyString(repo)) {
-      throw new ScopeViolationError(path(id, "drivers.repo") + " is required.");
+    if ("drivers" in candidate) {
+      throw new ScopeViolationError(path(id, "drivers") + " is retired for GitHub Backends.");
     }
     return deepFreeze({
       id,
       type: "github",
       configuration: { registryPath },
-      drivers: { repo },
     });
+  }
+  const drivers = asRecord(candidate.drivers);
+  if (drivers === undefined) {
+    throw new ScopeViolationError(path(id, "drivers") + " must be one object.");
+  }
+  if (Object.hasOwn(drivers, "conduit")) {
+    throw new ScopeViolationError(
+      path(id, "drivers.conduit") + " is retired; use drivers.credential_proxy instead.",
+    );
+  }
+  if (candidate.type === "openshell") {
+    return validateOpenShellBackend(id, configuration, drivers);
   }
   for (const key of Object.keys(configuration)) {
     if (!["workspaceId", "apiKeyPath", "credentialTtlSeconds"].includes(key)) {
@@ -449,7 +442,7 @@ function backendMembers(backend: BackendDefinition): readonly string[] {
     return [`service_account:${backend.drivers.service_account}`];
   }
   if (backend.type === "github") {
-    return [`repo:${backend.drivers.repo}`];
+    return [];
   }
   return [
     `sandbox:${backend.drivers.sandbox}`,
@@ -527,7 +520,7 @@ export function validateSelectedBackendDrivers(
   };
   for (const backend of backends) {
     if (backend.type === "github") {
-      requires("repo", backend.drivers.repo, "repository credential Driver");
+      continue;
     } else if (backend.type === "chatgpt") {
       requires("service_account", backend.drivers.service_account, "ServiceAccount Driver");
     } else {

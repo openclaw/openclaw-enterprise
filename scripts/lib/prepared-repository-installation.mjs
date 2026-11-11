@@ -31,12 +31,11 @@ export function preparedRepositoryInstallation({
   };
 }
 
-/** The GitHub Backend whose repository bindings that driver serves. */
-export function preparedRepositoryBackend({ backendId, driverId = REPOSITORY_DRIVER_ID }) {
+/** The GitHub Backend for the mounted repository registry. */
+export function preparedRepositoryBackend({ backendId }) {
   return {
     id: backendId,
     type: "github",
     configuration: { registryPath: REPOSITORY_REGISTRY_PATH },
-    drivers: { repo: driverId },
   };
 }

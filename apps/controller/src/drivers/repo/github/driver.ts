@@ -3,7 +3,6 @@ import type {
   JSONSchema,
   OpenRepositorySessionInput,
   OpenRepositorySessionResult,
-  Backend,
   NativeRepositorySender,
   RepositoryCredentialSessionStatus,
 } from "@openclaw-enterprise/contracts";
@@ -80,19 +79,23 @@ export class GitHubNativeRepositorySender implements NativeRepositorySender {
   readonly #publicCa: Uint8Array | undefined;
 
   constructor(
-    backend: Backend<RepositoryCredentialControlClient | undefined>,
+    owner: {
+      readonly driverId: string;
+      readonly backendId: string;
+      readonly client: RepositoryCredentialControlClient;
+    },
     options: { readonly publicCa?: Uint8Array },
   ) {
-    const id = backend.drivers.repo;
+    const id = owner.driverId;
     if (typeof id !== "string" || !id || Buffer.byteLength(id) > 512 || hasControlCharacter(id)) {
       throw new Error("Native repository sender requires its exact policy owner identity.");
     }
     this.id = id;
-    if (!backend.client) {
+    if (!owner.client) {
       throw new Error("Native repository sender requires a broker client.");
     }
-    this.#backendId = backend.id;
-    const client = backend.client;
+    this.#backendId = owner.backendId;
+    const client = owner.client;
     this.#client = client;
     this.checkAdmissionReady = (signal) => this.control(() => client.checkAdmissionReady(signal));
     if (options.publicCa !== undefined) {

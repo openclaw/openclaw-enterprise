@@ -97,7 +97,7 @@ Installation; shorten the socket path if it exceeds the byte limit. If startup
 reports only a generic failure, check that both path settings contain nonblank
 strings: the initial Installation reader rejects blank values before native
 sender validation.
-Keep the Backend’s `drivers.repo` policy ID equal to `repository.id`.
+Set the GitHub Backend ID to the registry’s Backend ID. Omit its retired `drivers` field.
 Omit the Installation’s `drivers.repo`, Sandbox and Credential Proxy selections. Mount the signing and custody
 keys in the worker; do not copy them to the Agent or broker. OCE must be able to
 bind this repository session to the admitted revision and restrict broker ingress.

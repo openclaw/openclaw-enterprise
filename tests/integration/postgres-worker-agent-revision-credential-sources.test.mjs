@@ -3106,7 +3106,7 @@ function attachedGitExpires({
 }) {
   return async (t) => {
     let withdrawalCommitted = false;
-    let unacknowledgedStop;
+    let unacknowledgedPause;
     let finalizationStop;
     let finalizationRemoval;
     const stopWork = [];
@@ -3169,15 +3169,21 @@ function attachedGitExpires({
     let runtime = startup.getRuntime();
     let sessionId;
     const bodies = await gitCommandBodies(t, "refs/heads/review");
-    const originalCompute = startup.compute;
     assert.deepEqual(revision.executionAdmission, { version: 5, mode: "protected" });
     assert.equal(revision.egressPlan.repositoryGitAuthorization, "online-request");
     assert.deepEqual(revision.egressPlan.repositoryGit, revision.repositoryCredentials);
     assert.equal(revision.repositoryCredentials.standingApprovalId, undefined);
     assert.deepEqual(revision.egressPlan.harnessCredentialSource, revision.harnessAuth);
-    const compute = {
-      ...originalCompute,
+    const createComputeEffects = (baseline) => ({
       ...(unacknowledgedActivation && { supportsWorkspaceSetup: true }),
+      ...(previous && {
+        requiresStoppedPredecessors(r) {
+          // This candidate overlaps only a deferred predecessor with no physical workload.
+          return r.id === revision.id
+            ? false
+            : (baseline.requiresStoppedPredecessors?.(r) ?? false);
+        },
+      }),
       ...(removalDuringPreparation && {
         async bindAgent(context) {
           // This real Driver call occurs after the worker read the withdrawal marker,
@@ -3187,7 +3193,7 @@ function attachedGitExpires({
             preparing = true;
             await resumePreparation.promise;
           }
-          await originalCompute.bindAgent?.(context);
+          await baseline.bindAgent?.(context);
         },
       }),
       async prepareRevision(r, context) {
@@ -3208,7 +3214,7 @@ function attachedGitExpires({
         const [open] = await repositoryAttempts(f, r);
         assert.equal(open.phase, "open");
         sessionId = open.sessionId;
-        return originalCompute.prepareRevision(r, context);
+        return baseline.prepareRevision(r, context);
       },
       ...((removalDuringFinalization || unacknowledgedActivation) && {
         async activateRevision(r) {
@@ -3298,7 +3304,7 @@ function attachedGitExpires({
         }
         return f.compute.stopRevision(r);
       },
-    };
+    });
     let stoppedMaintenance;
     const readMaintenance = async () =>
       (
@@ -3308,15 +3314,16 @@ function attachedGitExpires({
         )
       ).rows;
     const start = () =>
-      startup.start(compute, (e) => {
+      startup.start(createComputeEffects, (e) => {
         if (
           unacknowledgedActivation &&
           e.event === "worker.completed" &&
           e.workId === revision.idempotencyKey &&
           e.code === "REVISION_FINALIZATION_INCOMPLETE"
         ) {
-          // Stop after the completed pass, before a later claim can own the lease.
-          unacknowledgedStop = f.stop();
+          // Park after this exact pass, before another claim can own the lease.
+          // Keep the selected owner and listener live for withdrawal recovery.
+          unacknowledgedPause = startup.pauseRevisionClaims();
         }
       });
     let originRequests = 0;
@@ -3351,7 +3358,11 @@ function attachedGitExpires({
     async function admitReplacement(actorId) {
       // Keep this intentionally unprotected queued candidate on the selected Compute;
       // its revoked actor must fail real IAM without preparing another Git runtime.
-      return f.revision(agent, revision.revision + 1, {
+      // A local owner copy selects the fixture's approved development embedded Harness
+      // for this non-exclusive successor, without changing the persisted Agent or prior revision.
+      // A dedicated successor's exclusive guard intentionally stops the refused candidate
+      // and supersedes original maintenance; this overlap scenario retains the no-stop assertion.
+      return f.revision({ ...agent, executionMode: "embedded" }, revision.revision + 1, {
         actorId,
         compute: revision.compute,
       });
@@ -3385,7 +3396,7 @@ function attachedGitExpires({
         "a finite deadline that has not elapsed is not withdrawal authority",
       );
       assert.deepEqual(world.detaches, []);
-      await f.controller.updateAgent(f.actor.id, {
+      await startup.controller.updateAgent(f.actor.id, {
         namespaceId: f.namespace.id,
         agentId: agent.id,
         configurationId: agent.configurationId,
@@ -3412,8 +3423,8 @@ function attachedGitExpires({
         "activation acknowledgment lost",
         (e) => e.event === "worker.completed" && e.workId === revision.idempotencyKey,
       );
-      assert.ok(unacknowledgedStop);
-      await unacknowledgedStop;
+      assert.ok(unacknowledgedPause);
+      await unacknowledgedPause;
       assert.equal(unacknowledged.code, "REVISION_FINALIZATION_INCOMPLETE");
       assert.equal(unacknowledged.outcome, "pending");
       await assertUnacknowledged();
@@ -3542,7 +3553,7 @@ function attachedGitExpires({
     assert.ok(remaining > 0, "use Git before its legitimately admitted deadline");
     if (removalDuringPreparation) {
       const [original] = await repositoryAttempts(f, revision);
-      await f.stop();
+      await startup.pauseRevisionClaims();
       pauseBeforePreparation = true;
       const due = await f.advanceMaintenance(revision);
       assert.equal(due.rowCount, 1);
@@ -3563,7 +3574,7 @@ function attachedGitExpires({
         }
         await commitRemoval();
         // Readding the same desired binding cannot revive the withdrawn admitted revision.
-        await f.controller.updateAgent(f.actor.id, {
+        await startup.controller.updateAgent(f.actor.id, {
           namespaceId,
           agentId: agent.id,
           configurationId: agent.configurationId,
@@ -3595,7 +3606,7 @@ function attachedGitExpires({
         "in-flight maintenance to finish",
         (e) => e.event === "worker.completed" && e.workId === maintenanceKey,
       );
-      await f.stop();
+      await startup.pauseRevisionClaims();
       assert.deepEqual(
         [completed.outcome, completed.code],
         ["pending", "REPOSITORY_CLEANUP_PENDING"],
@@ -3639,7 +3650,7 @@ function attachedGitExpires({
         await start();
         await f.work(supersededStop, "succeeded");
         await f.work(refusedDeployment, "failed_permanent");
-        await f.stop();
+        await startup.pauseRevisionClaims();
         assert.equal(
           (await f.workResult(refusedDeployment)).rows[0].reason_code,
           "AUTHORIZATION_DENIED",
@@ -3656,9 +3667,10 @@ function attachedGitExpires({
       return;
     }
     if (removal && !removalDuringFinalization && !unacknowledgedActivation) {
-      await f.stop();
-      // Only the committed OCC mutation may authorize predeadline subtraction. Stop the
-      // worker first so its next pass cannot conceal a missing transactional handoff.
+      await startup.pauseRevisionClaims();
+      // Only the committed OCC mutation may authorize predeadline subtraction. Park
+      // revision claims so the next pass cannot conceal a missing transactional handoff;
+      // the same selected owner and listener stay live.
       let outstandingStop;
       let lostMaintenance;
       const recoveryQueue = new f.PostgresWorkQueue(f.observerPool, { maxAttempts: 1 });
@@ -3716,7 +3728,7 @@ function attachedGitExpires({
           }
           await start();
           await f.work(outstandingStop, "failed_permanent");
-          await f.stop();
+          await startup.pauseRevisionClaims();
           assert.equal(
             (await f.workResult(outstandingStop)).rows[0].reason_code,
             "AUTHORIZATION_DENIED",
@@ -3767,7 +3779,7 @@ function attachedGitExpires({
           (e) =>
             e.event === "worker.completed" && e.workId === repositoryRemovalWorkKey(revision.id),
         );
-        await f.stop();
+        await startup.pauseRevisionClaims();
         await deferWork(
           f.observerPool,
           { keyLike: repositoryRemovalWorkKey(revision.id), state: "queued" },
@@ -3802,7 +3814,7 @@ function attachedGitExpires({
           return;
         }
         // A later deployment may supersede Stop without ever replacing this runtime.
-        await f.controller.updateAgent(f.actor.id, {
+        await startup.controller.updateAgent(f.actor.id, {
           namespaceId,
           agentId: agent.id,
           configurationId: agent.configurationId,
@@ -4015,7 +4027,7 @@ function attachedGitExpires({
         "queued",
         "cleanup retains responsibility for stopped intent",
       );
-      await f.stop();
+      await startup.pauseRevisionClaims();
       // No new Stop is issued. A later denied deployment restores running intent,
       // and the same cleanup must resume the original actor's one maintenance chain.
       const replacementActor = `replacement-actor-${randomUUID()}`;
@@ -4062,7 +4074,7 @@ function attachedGitExpires({
         observationsBeforeMaintenance + 1,
         "maintenance observes the retained runtime once",
       );
-      await f.stop();
+      await startup.pauseRevisionClaims();
       assert.equal((await f.workResult(revision)).rows[0].reason_code, "LEASE_EXPIRED");
       await assertUnacknowledged();
       const successors = await f.advanceMaintenance(revision);

@@ -2,8 +2,31 @@ import { createHash } from "node:crypto";
 import type {
   AdmittedRepositoryBinding,
   RepositoryApprovalScope,
-  RepositoryPolicyDriver,
+  RepositoryOptions,
+  RepositoryBindingRequest,
+  RepositoryCredentialResolution,
 } from "@openclaw-enterprise/contracts";
+
+export interface InstallationRepositoryAdmission {
+  readonly backendId: string;
+  readonly policy: {
+    readonly id: string;
+    readonly implementation: string;
+    listCatalog(input: { readonly namespaceId: string }): Promise<RepositoryOptions>;
+    resolveBindings(input: {
+      readonly namespaceId: string;
+      readonly bindings: readonly RepositoryBindingRequest[];
+    }): RepositoryCredentialResolution;
+    allowsStandingApproval(input: {
+      namespaceId: string;
+      binding: AdmittedRepositoryBinding;
+    }): boolean;
+    standingApprovalScope(input: {
+      namespaceId: string;
+      binding: AdmittedRepositoryBinding;
+    }): RepositoryApprovalScope | undefined;
+  };
+}
 
 // Sort object keys recursively; arrays retain their provider-defined semantics.
 // Reject non-JSON values rather than silently omitting security-relevant fields.
@@ -41,11 +64,11 @@ export function repositoryApprovalFingerprint(input: {
 
 /** A scope describes authority only when the current policy explicitly permits it. */
 export function eligibleRepositoryApprovalScope(
-  driver: RepositoryPolicyDriver,
+  policy: InstallationRepositoryAdmission["policy"],
   input: { namespaceId: string; binding: AdmittedRepositoryBinding },
 ): RepositoryApprovalScope | undefined {
-  if (driver.allowsStandingApproval?.(input) !== true) {
+  if (policy.allowsStandingApproval(input) !== true) {
     return undefined;
   }
-  return driver.standingApprovalScope?.(input);
+  return policy.standingApprovalScope(input);
 }

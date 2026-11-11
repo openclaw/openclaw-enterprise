@@ -9,7 +9,7 @@ import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
-import { createConsoleAppFixture } from "./console-app.mjs";
+import { consoleRepositoryAdmission, createConsoleAppFixture } from "./console-app.mjs";
 
 /** Real Console/API/Drivers with passive storage, but no cluster or external providers. */
 export async function createConsoleRepositoryLaunchFixture(
@@ -154,9 +154,14 @@ export async function createConsoleRepositoryLaunchFixture(
     id: "console-repositories",
     type: "github",
     configuration: { registryPath: "/unused/console/registry.json" },
-    drivers: { repo: "console-repository-driver" },
   };
+  let repo;
   const fixture = await createConsoleAppFixture(t, {
+    repositoryAdmission: consoleRepositoryAdmission(
+      provider.id,
+      "console-repository-driver",
+      () => repo,
+    ),
     state: storage,
     backends: [provider],
     computeDriver: compute,
@@ -182,9 +187,9 @@ export async function createConsoleRepositoryLaunchFixture(
     ...controlNamespace,
     status: { phase: "Active" },
   });
-  const repo = new GitHubRepositoryPolicy(
+  repo = new GitHubRepositoryPolicy(
     {
-      driverId: provider.drivers.repo,
+      driverId: "console-repository-driver",
       backendId: provider.id,
     },
     validateGitHubRepositoryRegistry(
@@ -211,8 +216,6 @@ export async function createConsoleRepositoryLaunchFixture(
     ),
     { sessionDurationSeconds: 600 },
   );
-  fixture.controller.registerDriver(repo);
-  fixture.controller.selectDriver("repo", repo.id);
   // Read managed policy written through the actual IAM API. The adapter supplies
   // state only; NativeIAMDriver remains the authorization decision owner.
   const iam = new NativeIAMDriver(

@@ -74,8 +74,8 @@ test("selected native sender recovers only the original grant without loading br
   await once(server, "listening");
   const sender = new GitHubNativeRepositorySender(
     {
-      id: "backend-original",
-      drivers: { repo: "policy-original" },
+      backendId: "backend-original",
+      driverId: "policy-original",
       client: new UnixRepositoryCredentialControlClient({ controlSocket: socket }),
     },
     {},

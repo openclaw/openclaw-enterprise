@@ -472,7 +472,7 @@ func (r *runner) enableDevelopmentRepository(ctx context.Context, state *develop
 	}
 	// Keep the installed Compute and model backend selection unchanged.
 	backends, _ := installation["backend"].([]any)
-	installation["backend"] = append(backends, map[string]any{"id": inputs.backendID, "type": "github", "configuration": map[string]any{"registryPath": "/etc/openclaw/repository-registry/registry.json"}, "drivers": map[string]string{"repo": "repository-credentials"}})
+	installation["backend"] = append(backends, map[string]any{"id": inputs.backendID, "type": "github", "configuration": map[string]any{"registryPath": "/etc/openclaw/repository-registry/registry.json"}})
 	computeDriver, ok := drivers["compute"].(map[string]any)
 	if !ok {
 		return fmt.Errorf("development Installation has no Compute Driver")

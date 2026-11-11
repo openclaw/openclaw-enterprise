@@ -118,7 +118,7 @@ export async function standingExecutionFixture(
       profile: "git-write",
     },
   ];
-  const [selected] = driver.resolve({
+  const [selected] = driver.resolveBindings({
     namespaceId: f.namespace.id,
     bindings,
   }).bindings;

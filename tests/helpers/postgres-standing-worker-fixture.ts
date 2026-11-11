@@ -1,4 +1,7 @@
-import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
+import { loadNativeRepositoryAccess } from "../../apps/controller/src/composition/installation-config.ts";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { socketDirectory } from "./socket-directory.mjs";
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import { randomUUID, createHash } from "node:crypto";
@@ -9,8 +12,6 @@ import {
 import { databaseUrl } from "./postgres-database.mjs";
 import { ensurePostgresAgentBootstrap } from "./postgres-agent-app.mjs";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
-import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
-import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
 import type {
@@ -75,6 +76,41 @@ export async function setupStandingWorkerDatabase(
   return { ...f, workers: database.workers };
 }
 
+// Each Worker loads its own TokenService from the same selected registry and
+// reaches the same broker socket across restarts.
+export async function loadWorkerNativeRepositoryAccess(
+  t: TestContext,
+  credentials: NonNullable<Awaited<ReturnType<typeof startRegistryCredentialServiceFixture>>>,
+  {
+    registry = credentials.registry,
+    sessionDurationSeconds = 90,
+    controlSocket = credentials.config.gateway.controlSocket,
+  } = {},
+) {
+  const directory = await socketDirectory(t, "standing-native-");
+  const registryPath = join(directory, "registry.json");
+  const publicCaPath = join(directory, "ca.pem");
+  await writeFile(registryPath, JSON.stringify(registry), { mode: 0o600 });
+  await writeFile(publicCaPath, credentials.tls.ca, { mode: 0o600 });
+  const backend = {
+    id: credentials.backendId,
+    type: "github" as const,
+    configuration: { registryPath },
+  };
+  const selection = {
+    id: "repository-credentials",
+    implementation: "github" as const,
+    configuration: { sessionDurationSeconds },
+  };
+  const load = () =>
+    loadNativeRepositoryAccess(
+      { backend, selection },
+      { controlSocket, publicCaPath },
+      { custodyKeyPath: join(directory, "custody"), privateKeyPath: join(directory, "signer") },
+    );
+  return { access: await load(), backend, selection, load };
+}
+
 export async function setupStandingWorkerAuthority(
   t: TestContext,
   f: Awaited<ReturnType<typeof setupStandingWorkerDatabase>>,
@@ -95,19 +131,10 @@ export async function setupStandingWorkerAuthority(
       p.allowStandingApproval = true;
     }
   }
-  const backend = {
-    id: credentials.backendId,
-    client: new UnixRepositoryCredentialControlClient({
-      controlSocket: credentials.config.gateway.controlSocket,
-    }),
-    drivers: { repo: "repository-credentials" },
-  };
-  const driver = new GitHubRepositoryPolicy(
-    { driverId: backend.drivers.repo, backendId: backend.id },
-    registry,
-    { sessionDurationSeconds: 90 },
-  );
-  const sender = new GitHubNativeRepositorySender(backend, { publicCa: credentials.tls.ca });
+  const native = await loadWorkerNativeRepositoryAccess(t, credentials, { registry });
+  const driver = native.access.repositoryAdmission.policy;
+  const sender = native.access.bindCompute(f.compute).nativeSender;
+  assert.ok(sender);
   const receipt = await startRepositoryReceiptServer({
     state: f.state,
     controlSocket: credentials.config.gateway.controlSocket,
@@ -119,7 +146,7 @@ export async function setupStandingWorkerAuthority(
   const owner = await f.agent("standing-runtime", { auth: "credential_source", nonModelSources });
   const modelSourceId =
     owner.harnessAuth?.method === "credential_source" ? owner.harnessAuth.sourceId : undefined;
-  const [selected] = driver.resolve({
+  const [selected] = driver.resolveBindings({
     namespaceId: f.namespace.id,
     bindings: [{ repositoryRef: "repo-a", profile: "git-write" }],
   }).bindings;
@@ -166,6 +193,7 @@ export async function setupStandingWorkerAuthority(
     fingerprint: createHash("sha256").update(randomUUID()).digest("hex"),
   };
   return {
+    native,
     credentials,
     driver,
     sender,

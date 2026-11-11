@@ -240,7 +240,6 @@ export type {
   RepositoryBindingSelection,
   RepositoryOption,
   RepositoryOptions,
-  RepositoryPolicyDriver,
   RepositoryApprovalScope,
   RepositoryApprovalValue,
   RepositoryCredentialGrantIdentity,
@@ -279,7 +278,6 @@ export interface GitHubRepositoryCredentialBackendDefinition {
   readonly id: string;
   readonly type: "github";
   readonly configuration: { readonly registryPath: string };
-  readonly drivers: { readonly repo: string };
 }
 
 /** Connection settings for one OpenShell gateway deployment; no workspace policy. */

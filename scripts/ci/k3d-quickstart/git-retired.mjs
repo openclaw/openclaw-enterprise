@@ -51,22 +51,25 @@ try {
     const { use, installed } = JSON.parse(readFileSync(0, "utf8"));
     assert.equal(installed.route.revisionId, revision);
     const drivers = await loadInstallationConfiguration({ mode: process.env.NODE_ENV });
-    const selection = repositoryGitAuthority(drivers);
+    const selection = repositoryGitAuthority(drivers.repositoryRuntime);
     assert.equal(selection.repositoryGitCustody.kind, "selected");
     assert.ok(
-      drivers.repositoryTransport && drivers.preparedRepositoryGit && drivers.repositoryOwner,
+      drivers.repositoryRuntime?.transport &&
+        drivers.repositoryRuntime?.prepared &&
+        drivers.repositoryRuntime?.owner,
     );
     assert.ok(
-      !drivers.repositoryOwner.controlSocket && !drivers.preparedRepositoryGit.issuerCaPath,
+      !drivers.repositoryRuntime?.owner.controlSocket &&
+        !drivers.repositoryRuntime?.prepared.issuerCaPath,
     );
     // Instantiate only the same authorization port as the running worker. No listener,
     // maintenance, credential delivery, or Git sender runs in this probe.
     owner = await startPreparedGitHubGitOwner({
-      ...drivers.repositoryOwner,
-      ...drivers.preparedRepositoryGit,
+      ...drivers.repositoryRuntime?.owner,
+      ...drivers.repositoryRuntime?.prepared,
       ...selection,
       pool,
-      registry: drivers.repositoryRegistry,
+      registry: drivers.repositoryRuntime?.admission.registry,
       startWorker: false,
     });
     const proxy = protectedOpenShellGitOwner(owner.protectedGit);

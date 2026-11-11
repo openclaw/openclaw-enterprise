@@ -2067,7 +2067,6 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
                 id: "github-primary",
                 type: "github",
                 configuration: { registryPath: "/etc/openclaw/repository-registry/registry.json" },
-                drivers: { repo: "repository-credentials" },
               },
             ],
             repository: {
@@ -5276,7 +5275,6 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
                   id: "github-primary",
                   type: "github",
                   configuration: { registryPath: "/etc/other/registry.json" },
-                  drivers: { repo: "repository-credentials" },
                 },
               ];
             }

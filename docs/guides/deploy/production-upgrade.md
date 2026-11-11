@@ -163,7 +163,7 @@ Review image, draft and credential compatibility before maintenance; startup
 preflight does not prove external access.
 Candidate files cannot change IAM, authentication, Installation identity, database credentials,
 bootstrap, native administration, Compute identity or cluster trust, or repository
-settings, including the GitHub Backend, registry path, Repo Driver and Compute credential-service peer.
+settings, including the GitHub Backend, registry path, repository policy and Compute credential-service peer.
 Select images with their flags; do not edit image fields or the managed
 Installation checksum in candidate files.
 

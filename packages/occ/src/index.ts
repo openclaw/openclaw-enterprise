@@ -27,11 +27,13 @@ export type {
   CredentialDeliveryReduction,
   CredentialDeliveryReductionProgress,
 } from "./state/credential-delivery-reductions.ts";
+export type { InstallationRepositoryAdmission } from "./repository-approval.ts";
 export {
   eligibleRepositoryApprovalScope,
   repositoryApprovalFingerprint,
 } from "./repository-approval.ts";
 import {
+  type InstallationRepositoryAdmission,
   eligibleRepositoryApprovalScope,
   repositoryApprovalFingerprint,
 } from "./repository-approval.ts";
@@ -243,7 +245,6 @@ import type {
   RepositoryBindingSelection,
   RepositoryOption,
   RepositoryOptions,
-  RepositoryPolicyDriver,
   RepositoryCredentialResolution,
   RepositoryRevisionState,
   RevisionHarnessDescriptor,
@@ -2225,22 +2226,57 @@ function rejectCrossNamespaceSecretSources(
   }
 }
 
-// Internal Installation composition only; the public Repo Driver contract is unchanged.
-type InstallationRepositoryAdmission = Readonly<{
-  policyMode?: "built-in";
-  policy: RepositoryPolicyDriver & {
-    listCatalog(input: { readonly namespaceId: string }): Promise<RepositoryOptions>;
-    resolveBindings(input: {
-      readonly namespaceId: string;
-      readonly bindings: readonly RepositoryBindingRequest[];
-    }): RepositoryCredentialResolution;
-  };
-  backendId: string;
-}>;
+type ValidatedRepositoryAdmission = InstallationRepositoryAdmission & {
+  readonly hasCurrentIdentity: () => boolean;
+};
+
+const validatedRepositoryAdmissions = new WeakMap<
+  InstallationRepositoryAdmission,
+  ValidatedRepositoryAdmission
+>();
+
+/** Bind repository policy to its validated owning Backend. */
+export function validateRepositoryAdmission(
+  admission: InstallationRepositoryAdmission | undefined,
+  backends: readonly BackendDefinition[],
+): ValidatedRepositoryAdmission | undefined {
+  if (admission === undefined) {
+    return undefined;
+  }
+  const policy = admission.policy;
+  const validated = validatedRepositoryAdmissions.get(admission);
+  if (
+    !backends.some((backend) => backend.type === "github" && backend.id === admission.backendId) ||
+    "policyMode" in admission ||
+    !policy ||
+    "capability" in policy ||
+    !isNonEmptyString(policy.id) ||
+    !isNonEmptyString(policy.implementation) ||
+    typeof policy.listCatalog !== "function" ||
+    typeof policy.resolveBindings !== "function" ||
+    typeof policy.allowsStandingApproval !== "function" ||
+    typeof policy.standingApprovalScope !== "function" ||
+    (validated !== undefined && !validated.hasCurrentIdentity())
+  ) {
+    throw new DriverSelectionError(
+      "Repository admission must bind its exact policy and owning GitHub Backend.",
+    );
+  }
+  if (validated !== undefined) {
+    return validated;
+  }
+  const { id, implementation } = policy;
+  const bound = Object.freeze({
+    backendId: admission.backendId,
+    policy,
+    hasCurrentIdentity: () => policy.id === id && policy.implementation === implementation,
+  });
+  validatedRepositoryAdmissions.set(bound, bound);
+  return bound;
+}
 
 export class OpenClawController {
-  private installationRepositoryAdmission?: InstallationRepositoryAdmission;
-  private builtInRepositoryDriver?: RegisteredDriver;
+  private installationRepositoryAdmission: ReturnType<typeof validateRepositoryAdmission>;
 
   /** @internal Bind the Installation's exact owner for fresh revision admission. */
   static forInstallation(
@@ -2249,44 +2285,10 @@ export class OpenClawController {
     repositoryAdmission: InstallationRepositoryAdmission | undefined,
   ): OpenClawController {
     const controller = new OpenClawController(installation, options);
-    if (
-      repositoryAdmission === undefined &&
-      controller.backends.some((backend) => "repo" in backend.drivers)
-    ) {
-      throw new DriverSelectionError(
-        "The Installation requires an explicit repository admission owner.",
-      );
-    }
-    if (repositoryAdmission !== undefined) {
-      const backend = controller.backendMap.get(repositoryAdmission.backendId);
-      if (backend?.type !== "github" || backend.drivers.repo !== repositoryAdmission.policy.id) {
-        throw new DriverSelectionError("Repository admission must bind its exact owning Backend.");
-      }
-      if (
-        repositoryAdmission.policyMode !== undefined &&
-        repositoryAdmission.policyMode !== "built-in"
-      ) {
-        throw new DriverSelectionError("The repository policy mode is invalid.");
-      }
-      if (repositoryAdmission.policyMode === "built-in") {
-        const policy = repositoryAdmission.policy;
-        const identity: RegisteredDriver = Object.freeze({
-          driver: policy,
-          id: policy.id,
-          capability: policy.capability,
-          implementation: policy.implementation,
-        });
-        if (
-          identity.capability !== "repo" ||
-          !isNonEmptyString(identity.implementation) ||
-          !controller.unchangedDriver(identity)
-        ) {
-          throw new DriverSelectionError("The bound repository policy is unavailable.");
-        }
-        controller.builtInRepositoryDriver = identity;
-      }
-      controller.installationRepositoryAdmission = Object.freeze({ ...repositoryAdmission });
-    }
+    controller.installationRepositoryAdmission = validateRepositoryAdmission(
+      repositoryAdmission,
+      controller.backends,
+    );
     return controller;
   }
 
@@ -2462,14 +2464,6 @@ export class OpenClawController {
     ) {
       throw new DriverSelectionError("The Driver does not satisfy its exact capability contract.");
     }
-    if (
-      driver.capability === "repo" &&
-      this.installationRepositoryAdmission?.policyMode === "built-in"
-    ) {
-      throw new DriverSelectionError(
-        "Built-in repository policy cannot be combined with a registered Repo Driver.",
-      );
-    }
     const key = this.driverKey(driver.capability, driver.id);
     if (this.registry.has(key)) {
       throw new DriverSelectionError(
@@ -2558,14 +2552,6 @@ export class OpenClawController {
         selection.driver,
       ]),
     );
-    const admission = this.installationRepositoryAdmission;
-    if (admission?.policyMode === "built-in") {
-      const owner = this.repositoryPermissionOwner(admission);
-      if (owner === undefined) {
-        throw new DriverSelectionError("The bound repository policy is unavailable.");
-      }
-      selected.repo = owner.driver;
-    }
     validateSelectedBackendDrivers(
       this.backends,
       selected,
@@ -3284,7 +3270,8 @@ export class OpenClawController {
     }
     // No repository settings is a fixed Installation state, not an outage: answer no options
     // and say why, as Agent save names it (finding 2387).
-    if (!this.repositoryConfigured) {
+    const admission = this.installationRepositoryAdmission;
+    if (!admission) {
       return Object.freeze({ options: Object.freeze([]), notConfigured: true });
     }
     let compute: ComputeDriver;
@@ -3310,22 +3297,16 @@ export class OpenClawController {
           : "The selected Compute Driver cannot support repository options with this composition.",
       );
     }
-    const owner = this.repositoryPermissionOwner(this.installationRepositoryAdmission);
-    if (owner === undefined) {
-      throw new RepositoryOptionsUnavailableError(
-        "The selected repository credential Driver is unavailable.",
-      );
+    if (!admission.hasCurrentIdentity()) {
+      throw new RepositoryOptionsUnavailableError("The bound repository policy is unavailable.");
     }
-    const { driver, admission } = owner;
     let result: RepositoryOptions;
     try {
       const input = { namespaceId: namespace.id };
-      result = await (admission === undefined
-        ? driver.listOptions(input)
-        : admission.policy.listCatalog(input));
+      result = await admission.policy.listCatalog(input);
     } catch {
       throw new DependencyUnavailableError(
-        "The selected repository credential Driver could not list repository options.",
+        "The installation repository policy could not list repository options.",
       );
     }
     if (
@@ -3335,10 +3316,10 @@ export class OpenClawController {
       !result.options.every(validRepositoryOption) ||
       new Set(result.options.map((option) => option.repositoryRef)).size !==
         result.options.length ||
-      !owner.unchanged()
+      !admission.hasCurrentIdentity()
     ) {
       throw new DependencyUnavailableError(
-        "The selected repository credential Driver returned invalid repository options.",
+        "The installation repository policy returned invalid repository options.",
       );
     }
     return immutableCopy(result);
@@ -12374,17 +12355,16 @@ export class OpenClawController {
       }
       // TODO: support multiple independently approved bindings when session admission supports them.
       // Without a repository Driver nothing can be approved (finding 2362).
-      if (agent.repositoryBindings?.length !== 1 || !this.repositoryConfigured) {
+      if (agent.repositoryBindings?.length !== 1 || !this.installationRepositoryAdmission) {
         return [];
       }
       const resolved = this.resolveRepositoryBindings(
         namespaceId,
         agent.repositoryBindings,
         "saved",
-        this.selectedStandingRepositoryAdmission(),
       );
       return (resolved?.resolution.bindings ?? []).flatMap((binding) => {
-        const scope = eligibleRepositoryApprovalScope(resolved!.driver, { namespaceId, binding });
+        const scope = eligibleRepositoryApprovalScope(resolved!.policy, { namespaceId, binding });
         return scope
           ? [
               {
@@ -12735,17 +12715,11 @@ export class OpenClawController {
           );
           // The request's own selections resolved above, so only saved ones can fail here.
           const resolved =
-            selected &&
-            this.resolveRepositoryBindings(
-              namespace.id,
-              [selected],
-              "saved",
-              this.selectedStandingRepositoryAdmission(),
-            );
+            selected && this.resolveRepositoryBindings(namespace.id, [selected], "saved");
           const binding = resolved?.resolution.bindings[0];
           const scope =
             binding &&
-            eligibleRepositoryApprovalScope(resolved!.driver, {
+            eligibleRepositoryApprovalScope(resolved!.policy, {
               namespaceId: namespace.id,
               binding,
             });
@@ -13554,9 +13528,8 @@ export class OpenClawController {
             namespace.id,
             [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
             "saved",
-            this.installationRepositoryAdmission,
           )!;
-          const scope = eligibleRepositoryApprovalScope(resolved.driver, {
+          const scope = eligibleRepositoryApprovalScope(resolved.policy, {
             namespaceId: namespace.id,
             binding,
           });
@@ -16288,7 +16261,6 @@ export class OpenClawController {
         namespace.id,
         planRecord.repositoryBindings as readonly RepositoryBindingRequest[] | undefined,
         "saved",
-        this.installationRepositoryAdmission,
       );
       const repositoryAccess = normalizedRepositoryAccess(
         planRecord.repositoryAccess,
@@ -18087,12 +18059,7 @@ export class OpenClawController {
     repositoryAccess?: RepositoryAccess;
   } {
     const resolve = (bindings: readonly RepositoryBindingRequest[] | undefined) =>
-      this.repositoryBindingSelections(
-        namespaceId,
-        bindings,
-        "request",
-        this.installationRepositoryAdmission,
-      );
+      this.repositoryBindingSelections(namespaceId, bindings, "request");
     if (input.repositoryAccess === undefined) {
       return {
         repositoryBindings: resolve(input.repositoryBindings),
@@ -18112,55 +18079,6 @@ export class OpenClawController {
     };
   }
 
-  private get repositoryConfigured(): boolean {
-    return (
-      this.installationRepositoryAdmission?.policyMode === "built-in" || this.selections.has("repo")
-    );
-  }
-
-  private repositoryPermissionOwner(admission: InstallationRepositoryAdmission | undefined) {
-    if (admission?.policyMode === "built-in") {
-      const identity = this.builtInRepositoryDriver;
-      if (
-        identity === undefined ||
-        identity.driver !== admission.policy ||
-        !this.unchangedDriver(identity)
-      ) {
-        return undefined;
-      }
-      return {
-        driver: admission.policy,
-        admission,
-        unchanged: () => this.unchangedDriver(identity),
-      };
-    }
-    let driver: RepositoryPolicyDriver;
-    try {
-      driver = this.selectedDriver("repo");
-    } catch {
-      return undefined;
-    }
-    if (admission !== undefined && admission.policy !== driver) {
-      throw new DependencyUnavailableError("The bound repository admission owner is not selected.");
-    }
-    return {
-      driver,
-      admission,
-      unchanged: () => {
-        const selected = this.selections.get("repo");
-        return selected?.driver === driver && this.unchangedDriver(selected);
-      },
-    };
-  }
-
-  private selectedStandingRepositoryAdmission(): InstallationRepositoryAdmission | undefined {
-    const admission = this.installationRepositoryAdmission;
-    return admission?.policyMode === "built-in" ||
-      admission?.policy === this.selections.get("repo")?.driver
-      ? admission
-      : undefined;
-  }
-
   /**
    * `origin` says whether the request sent `bindings` or they are saved state (an Agent's
    * bindings, or queued provisioning work): a selection the Driver refuses is a 400 about the
@@ -18170,10 +18088,9 @@ export class OpenClawController {
     namespaceId: string,
     bindings: readonly RepositoryBindingRequest[] | undefined,
     origin: "request" | "saved",
-    admission?: InstallationRepositoryAdmission,
   ):
     | {
-        readonly driver: RepositoryPolicyDriver;
+        readonly policy: InstallationRepositoryAdmission["policy"];
         readonly resolution: RepositoryCredentialResolution;
       }
     | undefined {
@@ -18188,21 +18105,17 @@ export class OpenClawController {
     if (bindings.length === 0) {
       return undefined;
     }
-    if (!this.repositoryConfigured) {
+    const admission = this.installationRepositoryAdmission;
+    if (!admission) {
       throw new RepositoryDriverNotConfiguredError();
     }
-    const owner = this.repositoryPermissionOwner(admission);
-    if (owner === undefined) {
-      throw new DependencyUnavailableError(
-        "The selected repository credential Driver is unavailable.",
-      );
+    if (!admission.hasCurrentIdentity()) {
+      throw new DependencyUnavailableError("The bound repository policy is unavailable.");
     }
-    const { driver } = owner;
     let resolution: RepositoryCredentialResolution;
     try {
       const input = immutableCopy({ namespaceId, bindings });
-      resolution =
-        admission === undefined ? driver.resolve(input) : admission.policy.resolveBindings(input);
+      resolution = admission.policy.resolveBindings(input);
     } catch {
       // Every caller holds the Agent's or Namespace's grant, and the fixed text names no
       // repository or Driver reason, so it is a request or saved-state error, not a scope miss.
@@ -18215,10 +18128,10 @@ export class OpenClawController {
       !validAdmittedRepositoryBindings(resolution.bindings) ||
       !Number.isSafeInteger(resolution.sessionDurationSeconds) ||
       resolution.sessionDurationSeconds <= 0 ||
-      !owner.unchanged()
+      !admission.hasCurrentIdentity()
     ) {
       throw new DependencyUnavailableError(
-        "The selected repository credential Driver returned an invalid resolution.",
+        "The installation repository policy returned an invalid resolution.",
       );
     }
     const requested = new Map(
@@ -18228,16 +18141,12 @@ export class OpenClawController {
       requested.size !== bindings.length ||
       resolution.bindings.length !== bindings.length ||
       resolution.bindings.some((binding) => {
-        const backend = this.backendMap.get(binding.backendId);
         return (
           !requested.has(binding.repositoryRef) ||
           ((requested.get(binding.repositoryRef) !== undefined ||
             isInstallationRepositoryProfile(binding.profile)) &&
             requested.get(binding.repositoryRef) !== binding.profile) ||
-          (admission !== undefined && binding.backendId !== admission.backendId) ||
-          backend === undefined ||
-          !("repo" in backend.drivers) ||
-          backend.drivers.repo !== driver.id
+          binding.backendId !== admission.backendId
         );
       })
     ) {
@@ -18252,16 +18161,15 @@ export class OpenClawController {
     ) {
       throw new RepositoryBindingSelectionError();
     }
-    return { driver, resolution: immutableCopy(resolution) };
+    return { policy: admission.policy, resolution: immutableCopy(resolution) };
   }
 
   private repositoryBindingSelections(
     namespaceId: string,
     bindings: readonly RepositoryBindingRequest[] | undefined,
     origin: "request" | "saved" = "request",
-    admission?: InstallationRepositoryAdmission,
   ): readonly RepositoryBindingSelection[] | undefined {
-    const resolved = this.resolveRepositoryBindings(namespaceId, bindings, origin, admission);
+    const resolved = this.resolveRepositoryBindings(namespaceId, bindings, origin);
     if (resolved === undefined || bindings === undefined) {
       return undefined;
     }
@@ -18285,20 +18193,19 @@ export class OpenClawController {
       agent.namespaceId,
       agent.repositoryBindings,
       "saved",
-      this.installationRepositoryAdmission,
     );
     if (resolved === undefined) {
       return undefined;
     }
     validateRepositoryTopology(compute, harness, sandboxDriverId);
     const snapshot: RepositoryRevisionState = {
-      driver: { id: resolved.driver.id, implementation: resolved.driver.implementation },
+      driver: { id: resolved.policy.id, implementation: resolved.policy.implementation },
       deadlineWallMs: admittedAtWallMs + resolved.resolution.sessionDurationSeconds * 1000,
       bindings: resolved.resolution.bindings,
     };
     if (!validRepositoryRevisionState(snapshot)) {
       throw new DependencyUnavailableError(
-        "The selected repository credential Driver returned an invalid admission snapshot.",
+        "The installation repository policy returned an invalid admission snapshot.",
       );
     }
     return immutableCopy(snapshot);

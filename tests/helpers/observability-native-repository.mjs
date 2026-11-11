@@ -105,7 +105,6 @@ export async function prepareObservabilityNativeRepository(f) {
       id: backendId,
       type: "github",
       configuration: { registryPath: "/etc/openclaw/repository-registry/registry.json" },
-      drivers: { repo: driverId },
     },
   ];
   f.configuration.repository = {

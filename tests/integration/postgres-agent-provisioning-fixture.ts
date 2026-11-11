@@ -2,11 +2,16 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { rootCertificates } from "node:tls";
 import type { TestContext } from "node:test";
 import pg from "pg";
 
 import type { PostgresDevelopmentConfig } from "../../apps/controller/src/composition/development-postgres.ts";
-import type { InstallationRuntimeDrivers } from "../../apps/controller/src/composition/installation-config.ts";
+import {
+  loadInstallationConfiguration,
+  loadNativeRepositoryAccess,
+  type InstallationRuntimeDrivers,
+} from "../../apps/controller/src/composition/installation-config.ts";
 import {
   createControllerWorker,
   type ControllerWorkerOptions,
@@ -16,16 +21,198 @@ import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 
 interface FixtureDrivers {
   computeDriver: InstallationRuntimeDrivers["computeDriver"];
   configurationDriver: InstallationRuntimeDrivers["configurationDriver"];
   secretDriver: InstallationRuntimeDrivers["secretDriver"];
-  repoDriver?: InstallationRuntimeDrivers["repositoryPolicy"];
+  repository?: Awaited<ReturnType<typeof createProvisioningRepository>>;
   pluginDriver?: NonNullable<InstallationRuntimeDrivers["pluginDrivers"]>[number] | undefined;
   sandboxDriver?: InstallationRuntimeDrivers["sandboxDriver"];
   credentialGatewayDriver?: InstallationRuntimeDrivers["credentialGatewayDriver"];
+}
+
+// Keep the registry and native custody paths in one short, fixture-owned directory.
+// Each API or Worker loads its own constructor-bound runtime from this shared registry.
+export async function createProvisioningRepository(
+  context: TestContext,
+  namespaceId: string,
+  profiles: readonly string[],
+  installationAccess = false,
+) {
+  const directory = await socketDirectory(context, "provisioning-repo-");
+  const registryPath = join(directory, "registry.json");
+  const publicCaPath = join(directory, "ca.pem");
+  const backend = {
+    id: "provisioning-repositories",
+    type: "github" as const,
+    configuration: { registryPath },
+  };
+  const selection = {
+    id: "provisioning-repo",
+    implementation: "github" as const,
+    configuration: { sessionDurationSeconds: 600 },
+  };
+  const registry = {
+    ...(installationAccess && {
+      installationAccess: {
+        repositoryRef: "installation",
+        namespaces: [{ namespaceId, accessMode: "installation" }],
+      },
+    }),
+    version: 1,
+    backendId: backend.id,
+    providerInstanceId: "provisioning-github",
+    appId: "123",
+    githubInstallationId: "456",
+    maximumDurationSeconds: 3600,
+    repositories: [
+      {
+        repositoryRef: "project",
+        repositoryId: "789",
+        repository: "example/project",
+        namespaces: [{ namespaceId, profiles }],
+      },
+    ],
+  };
+  await writeFile(registryPath, JSON.stringify(registry), { mode: 0o600 });
+  await writeFile(publicCaPath, rootCertificates[0]!, { mode: 0o600 });
+  const prepared = {
+    custodyKeyPath: join(directory, "custody"),
+    privateKeyPath: join(directory, "signer"),
+  };
+  return {
+    backend,
+    selection,
+    publicCaPath,
+    prepared,
+    async load(computeDriver: InstallationRuntimeDrivers["computeDriver"]) {
+      const access = await loadNativeRepositoryAccess(
+        { backend, selection },
+        { controlSocket: join(directory, "control.sock"), publicCaPath },
+        prepared,
+      );
+      return {
+        repositoryRuntime: access.bindCompute(computeDriver),
+        tokenService: access.tokenService,
+      };
+    },
+    async setApprovedNamespace(approvedNamespaceId: string) {
+      registry.repositories[0]!.namespaces = [{ namespaceId: approvedNamespaceId, profiles }];
+      await writeFile(registryPath, JSON.stringify(registry), { mode: 0o600 });
+    },
+  };
+}
+
+// Selection A uses the installed package and the loader's sealed runtime. Selection B is
+// built separately by createProvisioningRepository, with the same registry and policy IDs.
+export async function createProtectedProvisioningDrivers(
+  context: TestContext,
+  repository: Awaited<ReturnType<typeof createProvisioningRepository>>,
+  local: Pick<FixtureDrivers, "computeDriver" | "configurationDriver" | "secretDriver">,
+): Promise<InstallationRuntimeDrivers> {
+  const id = "provisioning-protected-git";
+  const { directory } = await protectedDriverPackage(context, id, "repository-git");
+  const base = createInstallationDriverConfiguration();
+  const { gatewayClients: _clients, ...network } = base.drivers.compute.configuration.network;
+  const path = join(directory, "installation.json");
+  await writeFile(
+    path,
+    JSON.stringify({
+      ...base,
+      presets: { includeDefaults: false },
+      runtime: { nativeWorkerSupport: "custom-image" },
+      backend: [repository.backend],
+      repository: {
+        id: repository.selection.id,
+        configuration: repository.selection.configuration,
+        preparedGitHub: repository.prepared,
+      },
+      drivers: {
+        ...base.drivers,
+        configuration: { ...base.drivers.configuration, id: local.configurationDriver.id },
+        secret: { ...base.drivers.secret, id: local.secretDriver.id },
+        compute: {
+          ...base.drivers.compute,
+          id: local.computeDriver.id,
+          configuration: {
+            ...base.drivers.compute.configuration,
+            network,
+            gatewayRouting: {
+              hostname: "agents.example.test",
+              gatewayName: "gateways",
+              gatewayNamespace: "occ-system",
+              envoyNamespace: "envoy",
+            },
+          },
+        },
+        sandbox: {
+          id,
+          package: id,
+          configuration: {
+            origin: "https://127.0.0.1:1",
+            peerOrigin: "https://127.0.0.1:2",
+            capabilityOrigin: "https://127.0.0.1:3",
+            certFile: repository.publicCaPath,
+            releaseKey: "unused-before-release",
+          },
+        },
+        credential_proxy: { id, configuration: {} },
+      },
+    }),
+    { mode: 0o600 },
+  );
+  const loaded = await loadInstallationConfiguration({
+    mode: "production",
+    packageRoot: directory,
+    environment: { OCC_CONFIG_PATH: path },
+  });
+  assert.ok(loaded?.repositoryRuntime?.protectedDriver);
+  assert.equal(loaded.repositoryRuntime.computeDriver, loaded.computeDriver);
+  assert.equal(loaded.repositoryRuntime.protectedDriver, loaded.protectedDriver);
+  assert.equal(loaded.protectedDriver!.require("sandbox"), loaded.sandboxDriver);
+  assert.equal(loaded.protectedDriver!.require("credential_proxy"), loaded.proxyDriver);
+  assert.ok(loaded.sandboxDriver?.repositoryAccess);
+
+  // Adapt local effects on the selected instance, retaining its Sandbox-aware validators.
+  // No cluster preflight or runtime credential read is needed to admit this saved request.
+  Object.assign(loaded.computeDriver, {
+    preflight: undefined,
+    setLifecycleDrivers: undefined,
+    getAgentRuntimeCredentialStatus: local.computeDriver.getAgentRuntimeCredentialStatus!.bind(
+      local.computeDriver,
+    ),
+  });
+  let effects = 0;
+  const noEffect = () => {
+    effects++;
+    assert.fail("this case ends before provisioning or repository delivery");
+  };
+  context.after(() => assert.equal(effects, 0, "selection A must not provision or deliver"));
+  assert.equal(typeof loaded.computeDriver.provisionAgentRuntimeCredentials, "function");
+  assert.equal(typeof loaded.sandboxDriver.provisionHarness, "function");
+  assert.equal(typeof loaded.proxyDriver?.bindRepositoryGit, "function");
+  loaded.computeDriver.provisionAgentRuntimeCredentials = noEffect;
+  loaded.sandboxDriver.provisionHarness = noEffect;
+  loaded.proxyDriver!.bindRepositoryGit = noEffect;
+  for (const method of [
+    "verifyExecution",
+    "retireExpired",
+    "routeReadiness",
+    "materialSettledAt",
+    "isRouteBlockedError",
+  ] as const) {
+    context.mock.method(loaded.sandboxDriver.repositoryAccess, method, noEffect);
+  }
+  return {
+    ...loaded,
+    configurationDriver: local.configurationDriver,
+    secretDriver: local.secretDriver,
+  };
 }
 
 type WorkerEventListener = NonNullable<ControllerWorkerOptions["emit"]>;
@@ -37,6 +224,7 @@ type WorkerStatementHook = (
 ) => void | Promise<void>;
 
 interface FixtureOptions extends Partial<FixtureDrivers> {
+  selectedDrivers?: InstallationRuntimeDrivers;
   nativeAdmin?: boolean;
   beforeWorkerStatement?: WorkerStatementHook;
   leaseDurationMs?: number;
@@ -117,31 +305,27 @@ interface SessionData {
   user: { id: string };
 }
 
-function installationDrivers({
+async function installationDrivers({
   computeDriver,
   configurationDriver,
   secretDriver,
-  repoDriver,
+  repository,
   pluginDriver,
   sandboxDriver,
   credentialGatewayDriver,
-}: FixtureDrivers): InstallationRuntimeDrivers {
+}: FixtureDrivers): Promise<InstallationRuntimeDrivers> {
+  const loaded = await repository?.load(computeDriver);
+  if (loaded !== undefined) {
+    assert.equal(loaded.repositoryRuntime.computeDriver, computeDriver);
+    assert.equal(sandboxDriver, undefined, "native repository delivery cannot select a Sandbox");
+  }
   return {
     // The fixture injects Drivers directly and omits loader-only definitions and a logging level.
     installation: {
       occ: { cluster: "postgres-agent-provisioning" },
       logging: {},
       backend: [
-        ...(repoDriver === undefined
-          ? []
-          : [
-              {
-                id: "provisioning-repositories",
-                type: "github" as const,
-                configuration: { registryPath: "/unused/provisioning/registry.json" },
-                drivers: { repo: repoDriver.id },
-              },
-            ]),
+        ...(repository === undefined ? [] : [repository.backend]),
         ...(credentialGatewayDriver === undefined
           ? []
           : [
@@ -159,6 +343,7 @@ function installationDrivers({
               },
             ]),
       ],
+      ...(repository === undefined ? {} : { repository: repository.selection }),
       drivers: {
         iam: { id: "native-iam", implementation: "native", configuration: {} },
         compute: {
@@ -201,18 +386,7 @@ function installationDrivers({
     secretDriver,
     ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
     ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
-    ...(repoDriver === undefined
-      ? {}
-      : {
-          repositoryPolicy: repoDriver,
-          repositoryAdmission: {
-            // Use the same fixture policy for both admission and Worker resolution.
-            policy: repoDriver as NonNullable<
-              InstallationRuntimeDrivers["repositoryAdmission"]
-            >["policy"],
-            backendId: "provisioning-repositories",
-          },
-        }),
+    ...loaded,
     pluginDrivers: pluginDriver === undefined ? [] : [pluginDriver],
     createIAMDriver: (state) =>
       new NativeIAMDriver(state, { id: "native-iam", implementation: "native" }),
@@ -275,30 +449,48 @@ export async function createProvisioningFixture(
     return originalFetch(url, init);
   }) satisfies typeof originalFetch);
   const pool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
+  const disposal: { cleanup?: () => Promise<void>; closeApp?: () => Promise<void> } = {};
+  context.after(async () => {
+    try {
+      await disposal.cleanup?.();
+    } finally {
+      try {
+        await disposal.closeApp?.();
+      } finally {
+        await pool.end();
+      }
+    }
+  });
   const state = new PostgresPlatformState(pool);
   await ensureProvisioningBootstrap(context, state);
   const credentials = { email: adminEmail, password: adminPassword };
-  const computeDriver = options.computeDriver ?? createRuntimeComputeDriver();
+  const computeDriver =
+    options.selectedDrivers?.computeDriver ?? options.computeDriver ?? createRuntimeComputeDriver();
   const configurationDriver =
+    options.selectedDrivers?.configurationDriver ??
     options.configurationDriver ??
     createProvisioningConfigurationDriver({ id: "configuration-provisioning" });
   const secretDriver =
-    options.secretDriver ?? createTestSecretDriver({ id: "secret-provisioning" });
+    options.selectedDrivers?.secretDriver ??
+    options.secretDriver ??
+    createTestSecretDriver({ id: "secret-provisioning" });
   let worker: ReturnType<typeof createControllerWorker> | undefined;
   let workerPool: pg.Pool | undefined;
   let workerCompletion: Promise<void> | undefined;
   const revokedBindings: RevokedBindingRow[] = [];
   const teardownCancellations: { namespaceId: string; agentId: string }[] = [];
   const teardownWorkCancellations: { workId: string; message: string }[] = [];
-  const drivers = installationDrivers({
-    computeDriver,
-    configurationDriver,
-    secretDriver,
-    repoDriver: options.repoDriver,
-    pluginDriver: options.pluginDriver,
-    sandboxDriver: options.sandboxDriver,
-    credentialGatewayDriver: options.credentialGatewayDriver,
-  });
+  const loadDrivers = () =>
+    options.selectedDrivers ??
+    installationDrivers({
+      computeDriver,
+      configurationDriver,
+      secretDriver,
+      ...(options.repository === undefined ? {} : { repository: options.repository }),
+      pluginDriver: options.pluginDriver,
+      sandboxDriver: options.sandboxDriver,
+      credentialGatewayDriver: options.credentialGatewayDriver,
+    });
   const origin = options.nativeAdmin ? "https://console.oce.localhost:9443" : authBaseURL;
   let nativeAdminSettings: Pick<PostgresDevelopmentConfig, "nativeAdmin" | "gatewayApiKeyPath"> = {
     nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
@@ -323,10 +515,13 @@ export async function createProvisioningFixture(
     authBaseURL: origin,
     ...nativeAdminSettings,
   };
-  let app = await composePostgresDevelopment(settings, drivers);
+  let app = await composePostgresDevelopment(settings, await loadDrivers());
+  disposal.closeApp = async () => {
+    await app.close?.();
+  };
   const session = await signInToControllerApp(app, credentials, { origin });
 
-  context.after(async () => {
+  disposal.cleanup = async () => {
     for (const binding of revokedBindings) {
       await pool.query(
         `INSERT INTO occ.iam_access_bindings
@@ -348,23 +543,18 @@ export async function createProvisioningFixture(
       await request("POST", `/namespaces/${namespaceId}/agents/${agentId}/stop`);
     }
     await stopWorker();
-    try {
-      // Queued work stays in the database the file's later tests share; cancel it so no later
-      // worker picks it up (finding 1616), even when the test failed before its end.
-      for (const { workId, message } of teardownWorkCancellations) {
-        const claim = await claimProvisioningWork(pool, workId, { ifQueued: true });
-        if (claim !== undefined) {
-          const cancelled = await state.transact((unit) =>
-            unit.provisioning.cancel(claim, { code: "PROVISIONING_CANCELLED", message }),
-          );
-          assert.equal(cancelled.status, "cancelled", workId);
-        }
+    // Queued work stays in the database the file's later tests share; cancel it so no later
+    // worker picks it up (finding 1616), even when the test failed before its end.
+    for (const { workId, message } of teardownWorkCancellations) {
+      const claim = await claimProvisioningWork(pool, workId, { ifQueued: true });
+      if (claim !== undefined) {
+        const cancelled = await state.transact((unit) =>
+          unit.provisioning.cancel(claim, { code: "PROVISIONING_CANCELLED", message }),
+        );
+        assert.equal(cancelled.status, "cancelled", workId);
       }
-    } finally {
-      await app.close?.();
-      await pool.end();
     }
-  });
+  };
 
   async function request<Data = unknown>(
     method: RequestMethod,
@@ -420,6 +610,7 @@ export async function createProvisioningFixture(
   async function startWorker() {
     assert.equal(worker, undefined, "the fixture worker is already running");
     assert.equal(workerPool, undefined, "the fixture worker pool is already open");
+    const drivers = await loadDrivers();
     workerPool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
     if (options.beforeWorkerStatement !== undefined) {
       holdWorkerStatements(workerPool, options.beforeWorkerStatement);
@@ -461,7 +652,7 @@ export async function createProvisioningFixture(
 
   async function restartApi() {
     await app.close();
-    app = await composePostgresDevelopment(settings, drivers);
+    app = await composePostgresDevelopment(settings, await loadDrivers());
   }
 
   // The signed-in administrator's Principal, whose subject is its account: a test may add

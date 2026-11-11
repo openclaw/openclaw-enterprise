@@ -12,6 +12,7 @@ import {
   loadOperationalLoggingConfiguration,
   loadStartupConfigurationSnapshot,
   readPublicCaBundle,
+  repositoryStartupConfiguration,
 } from "./composition/installation-config.ts";
 import { PresetFileError } from "./composition/installation-presets.ts";
 import { createOccLogger, createWorkerLogEmitter, emitOccLogEvent } from "./logging.ts";
@@ -162,6 +163,7 @@ try {
     }
   }
   const drivers = await loadInstallationConfiguration({ mode, startupConfiguration });
+  const { runtime } = repositoryStartupConfiguration(drivers);
   let computeDriver;
   if (drivers === undefined && mode === "development") {
     const { createDevelopmentDockerComputeDriver } =
@@ -172,32 +174,32 @@ try {
     }
   }
   pool = await createPostgresPool(databaseUrl, workerDatabasePoolOptions(databaseTimeoutMs));
-  const repositoryOwner = drivers?.repositoryOwner;
+  const repositoryOwner = runtime?.owner;
   if (repositoryOwner?.controlSocket !== undefined) {
     receiptServer = await startRepositoryReceiptServer({
       ...repositoryOwner,
       state: new PostgresPlatformState(pool),
     });
   }
-  if (repositoryOwner && drivers.preparedRepositoryGit) {
-    const { issuerCaPath, ...owner } = drivers.preparedRepositoryGit;
+  if (repositoryOwner && runtime.prepared) {
+    const { issuerCaPath, ...owner } = runtime.prepared;
     preparedRepositoryGit = await startPreparedGitHubGitOwner({
       ...repositoryOwner,
       ...owner,
       ...(issuerCaPath ? { ca: Buffer.from(await readPublicCaBundle(issuerCaPath)) } : {}),
       pool,
-      registry: drivers.repositoryRegistry,
-      ...repositoryGitAuthority(drivers),
+      registry: runtime.admission.registry,
+      ...repositoryGitAuthority(runtime),
       report: (code, context, severity = "error") =>
         emitOccLogEvent(logger, { event: `worker.${severity}`, code, ...context }),
     });
     repositoryGitTransport = await bindRepositoryGitTransport(
-      drivers,
+      runtime,
       preparedRepositoryGit.protectedGit,
       pool,
       (event) => emitOccLogEvent(logger, event),
     );
-  } else if (drivers?.repositoryGitDriver || drivers?.repositoryTransport) {
+  } else if (runtime?.protectedDriver || runtime?.transport) {
     throw new Error("The repository Git transport requires its selected prepared owner.");
   }
   let metrics;

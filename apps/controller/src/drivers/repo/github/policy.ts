@@ -2,7 +2,6 @@ import { hasControlCharacter } from "../access/client-contracts.ts";
 import type {
   ErrorDetail,
   JSONSchema,
-  RepositoryPolicyDriver,
   RepositoryBindingRequest,
   RepositoryCredentialResolution,
   RepositoryOption,
@@ -19,7 +18,7 @@ import {
 } from "./access/registry.ts";
 
 /** Repository selection and approval policy, independent of credential transport. */
-export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
+export class GitHubRepositoryPolicy {
   static readonly configurationSchema: JSONSchema = {
     type: "object",
     additionalProperties: false,
@@ -55,7 +54,6 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
     }
     return [];
   }
-  readonly capability = "repo" as const;
   readonly implementation = "github";
   readonly id: string;
   readonly #registry: GitHubRepositoryRegistry;
@@ -67,7 +65,7 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
   ) {
     const { driverId: id, backendId } = owner;
     if (typeof id !== "string" || !id || Buffer.byteLength(id) > 512 || hasControlCharacter(id)) {
-      throw new Error("The GitHub Backend must declare its repository policy Driver.");
+      throw new Error("The repository policy requires an identity.");
     }
     this.id = id;
     if (typeof backendId !== "string") {
@@ -83,11 +81,6 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
     }
     this.#duration = options.sessionDurationSeconds;
   }
-  async listOptions(input: { readonly namespaceId: string }): Promise<RepositoryOptions> {
-    return this.listCatalog(input);
-  }
-
-  /** Provider catalog shared by the Installation picker and the legacy Driver adapter. */
   async listCatalog(input: { readonly namespaceId: string }): Promise<RepositoryOptions> {
     const options: RepositoryOption[] = [];
     this.#registry.repositories.forEach((repository) => {
@@ -132,14 +125,6 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
     return this.standingApprovalScope(input) !== undefined;
   }
 
-  resolve(input: {
-    readonly namespaceId: string;
-    readonly bindings: readonly RepositoryBindingRequest[];
-  }): RepositoryCredentialResolution {
-    return this.resolveBindings(input);
-  }
-
-  /** Provider policy shared by Installation admission and the legacy Driver adapter. */
   resolveBindings(input: {
     readonly namespaceId: string;
     readonly bindings: readonly RepositoryBindingRequest[];
@@ -173,4 +158,28 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
       );
     }
   }
+}
+
+const builtInPolicyMethods = Object.freeze({
+  listCatalog: GitHubRepositoryPolicy.prototype.listCatalog,
+  resolveBindings: GitHubRepositoryPolicy.prototype.resolveBindings,
+  allowsStandingApproval: GitHubRepositoryPolicy.prototype.allowsStandingApproval,
+  standingApprovalScope: GitHubRepositoryPolicy.prototype.standingApprovalScope,
+});
+
+/** Preserve the built-in methods even if a caller changes the class prototype later. */
+export function createImmutableGitHubRepositoryPolicy(
+  owner: { readonly driverId: string; readonly backendId: string },
+  registry: GitHubRepositoryRegistry,
+  options: { readonly sessionDurationSeconds: number },
+): GitHubRepositoryPolicy {
+  const policy = new GitHubRepositoryPolicy(owner, registry, options);
+  Object.assign(policy, {
+    listCatalog: builtInPolicyMethods.listCatalog.bind(policy),
+    resolveBindings: builtInPolicyMethods.resolveBindings.bind(policy),
+    allowsStandingApproval: builtInPolicyMethods.allowsStandingApproval.bind(policy),
+    standingApprovalScope: builtInPolicyMethods.standingApprovalScope.bind(policy),
+  });
+  Object.freeze(policy);
+  return policy;
 }

@@ -17,6 +17,8 @@ import {
   loadInstallationConfiguration,
   loadStartupConfigurationSnapshot,
 } from "../../apps/controller/src/composition/installation-config.ts";
+import { composeProduction } from "../../apps/controller/src/composition/production.ts";
+import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
 import {
   DEVELOPMENT_BROWSER_ORIGIN_RULE,
   isDevelopmentBrowserOrigin,
@@ -813,7 +815,6 @@ async function repositoryInstallation(t) {
       id: registry.backendId,
       type: "github",
       configuration: { registryPath },
-      drivers: { repo: "repository-credentials" },
     },
   ];
   configuration.repository = {
@@ -838,6 +839,66 @@ async function repositoryInstallation(t) {
   };
   return { configuration, registry, registrySource, tls, writableCaPath };
 }
+
+test("GitHub Backend startup requires repository selection and its selected runtime before storage", async (t) => {
+  const { configuration } = await repositoryInstallation(t);
+  const load = async (value) =>
+    loadInstallationConfiguration({
+      mode: "production",
+      environment: { OCC_CONFIG_PATH: await fixture(t, value) },
+    });
+  const selected = await load(configuration);
+  const withoutSelection = structuredClone(configuration);
+  delete withoutSelection.repository;
+  await assert.rejects(load(withoutSelection), {
+    message: "A GitHub Backend requires repository selection.",
+  });
+  const disabledConfiguration = structuredClone(withoutSelection);
+  disabledConfiguration.backend = disabledConfiguration.backend.filter(
+    (backend) => backend.type !== "github",
+  );
+  delete disabledConfiguration.drivers.compute.configuration.network.repositoryCredentials;
+  const disabled = await load(disabledConfiguration);
+  assert.equal(disabled.repositoryRuntime, undefined);
+
+  const { repositoryRuntime: _runtime, ...withoutRuntime } = selected;
+  const { repository: _selection, ...installationWithoutSelection } = selected.installation;
+  const cases = [
+    ["selected", selected, true],
+    ["disabled", disabled, true],
+    ["missing runtime", withoutRuntime, false],
+    ["missing selection", { ...selected, installation: installationWithoutSelection }, false],
+    ["missing both", { ...withoutRuntime, installation: installationWithoutSelection }, false],
+  ];
+  for (const mode of ["production", "development"]) {
+    for (const [label, drivers, accepted] of cases) {
+      let storageReads = 0;
+      const storageBoundary = new Error("storage boundary reached");
+      const config = {
+        mode,
+        drivers,
+        // Stop at the real composition's storage boundary, without opening PostgreSQL.
+        get databaseUrl() {
+          storageReads++;
+          throw storageBoundary;
+        },
+      };
+      await assert.rejects(
+        mode === "production"
+          ? composeProduction(config)
+          : composePostgresDevelopment(config, drivers),
+        accepted
+          ? (error) => error === storageBoundary
+          : {
+              message:
+                "Startup requires built-in repository admission from the selected GitHub Backend.",
+            },
+        `${mode}: ${label}`,
+      );
+      assert.equal(storageReads, accepted ? 1 : 0, `${mode}: ${label}`);
+    }
+  }
+});
 
 for (const mode of ["native", "selected-blocked", "selected"]) {
   test(`Installation loads prepared GitHub lifecycle only for selected metadata: ${mode}`, async (t) => {
@@ -876,16 +937,16 @@ test("repository startup constructs the same local resolver without a private so
   for (const runtime of [api, worker]) {
     assert.equal(Object.hasOwn(runtime, "repositoryPolicy"), false);
     assert.equal(Object.hasOwn(runtime.installation.drivers, "repo"), false);
-    assert.equal(runtime.repositoryAdmission.policyMode, "built-in");
-    assert.equal(runtime.repositoryAdmission.backendId, registry.backendId);
+    assert.ok(runtime.repositoryRuntime?.admission);
+    assert.equal(runtime.repositoryRuntime?.admission.backendId, registry.backendId);
   }
-  const policy = api.repositoryAdmission.policy;
-  const workerPolicy = worker.repositoryAdmission.policy;
-  assert.equal(policy.capability, "repo");
+  const policy = api.repositoryRuntime?.admission.policy;
+  const workerPolicy = worker.repositoryRuntime?.admission.policy;
+  assert.equal("capability" in policy, false);
   // The capability name does not replace the operator's opaque policy identity.
   assert.equal(policy.id, "repository-credentials");
   assert.equal(workerPolicy.id, policy.id);
-  assert.deepEqual(api.installation.backend[0].drivers, { repo: policy.id });
+  assert.equal("drivers" in api.installation.backend[0], false);
   assert.equal(Object.hasOwn(api.installation.drivers, "repository_credentials"), false);
   assert.equal(api.installation.repository.implementation, policy.implementation);
   const selection = { namespaceId: "ns_repository", bindings: [{ repositoryRef: "application" }] };
@@ -1120,6 +1181,27 @@ function nativeSenderRefusal(path, code, message) {
 
 test("repository startup rejects unmatched ownership, registry identity, duration and CA inputs", async (t) => {
   const { configuration: baseline, tls, writableCaPath } = await repositoryInstallation(t);
+  const legacy = structuredClone(baseline);
+  legacy.backend[0].drivers = { repo: legacy.repository.id };
+  const options = {
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: await fixture(t, legacy) },
+  };
+  const snapshot = await loadStartupConfigurationSnapshot(options);
+  assert.deepEqual(snapshot.configuration.backend, baseline.backend);
+  const runtime = await loadInstallationConfiguration({
+    ...options,
+    startupConfiguration: snapshot,
+  });
+  assert.equal(runtime.repositoryRuntime.admission.policy.id, legacy.repository.id);
+  await assert.rejects(
+    loadInstallationConfiguration({
+      ...options,
+      startupConfiguration: { ...snapshot, configuration: legacy },
+    }),
+    /drivers is retired for GitHub Backends/,
+  );
+
   for (const [mutate, expected] of [
     [(value) => delete value.backend, /requires an owning backend/],
     [
@@ -1129,15 +1211,24 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
       },
       /unsupported option repository_credentials/,
     ],
+    ...[
+      { repo: "other-repository" },
+      { repo: baseline.repository.id, extra: true },
+      { repo: 1 },
+      {},
+      [baseline.repository.id],
+      null,
+    ].map((drivers) => [
+      (value) => (value.backend[0].drivers = drivers),
+      /drivers is retired for GitHub Backends/,
+    ]),
     [
       (value) => {
-        value.backend[0].drivers.repository_credentials = value.backend[0].drivers.repo;
-        delete value.backend[0].drivers.repo;
+        value.backend[0].drivers = { repo: value.repository.id };
+        delete value.repository;
       },
-      /plaintext credential/,
+      /drivers is retired for GitHub Backends/,
     ],
-    [(value) => delete value.repository, /requires repository/],
-    [(value) => (value.backend[0].drivers.repo = "other-driver"), /must match/],
     [
       (value) => (value.backend[0].configuration.registryPath = "relative.json"),
       /absolute mounted/,
@@ -1145,7 +1236,7 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
     [(value) => (value.backend[0].configuration.apiKeyPath = "/unavailable"), /unsupported/],
     [
       (value) => value.backend.push({ ...structuredClone(value.backend[0]), id: "other-github" }),
-      /cannot belong to multiple Backends/,
+      /Only one bundled GitHub Backend/,
     ],
     [(value) => (value.backend[0].id = "other-backend"), /invalid-repository-registry/],
     [
@@ -1189,19 +1280,19 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
       /drivers\.compute\.configuration\.network\.repositoryCredentials requires repository\.nativeSender/,
     ],
     [
-      (value) => (value.backend[0].drivers.repo = "ghp_notarealtoken123456"),
+      (value) => (value.backend[0].drivers = { repo: "ghp_notarealtoken123456" }),
       /plaintext credential/,
     ],
     [
-      (value) => (value.backend[0].drivers.repo = "ghu_notarealtoken123456"),
+      (value) => (value.backend[0].drivers = { repo: "ghu_notarealtoken123456" }),
       /plaintext credential/,
     ],
     [
-      (value) => (value.backend[0].drivers.repo = "ghs_notarealtoken123456"),
+      (value) => (value.backend[0].drivers = { repo: "ghs_notarealtoken123456" }),
       /plaintext credential/,
     ],
     [
-      (value) => (value.backend[0].drivers.repo = "ghr_notarealtoken123456"),
+      (value) => (value.backend[0].drivers = { repo: "ghr_notarealtoken123456" }),
       /plaintext credential/,
     ],
   ]) {

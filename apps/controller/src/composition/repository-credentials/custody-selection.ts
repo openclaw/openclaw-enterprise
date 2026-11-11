@@ -1,5 +1,5 @@
 import type { DriverRegistrationRef } from "@openclaw-enterprise/contracts";
-import type { InstallationRuntimeDrivers } from "../installation-config.ts";
+import type { RepositoryRuntime } from "../installation-config.ts";
 import {
   openShellGitRecipientEvidence,
   openShellPreviewEnded,
@@ -70,21 +70,17 @@ export function selectBundledRepositoryGitCustody(
 
 /** Trusted Worker composition. The transport is the private first-party binding;
  * external Drivers do not carry it and use the controller's registered witness. */
-export function repositoryGitAuthority(drivers: InstallationRuntimeDrivers) {
-  const { tokenService, repositoryGitDriver: driver, repositoryTransport } = drivers;
+export function repositoryGitAuthority(runtime: RepositoryRuntime) {
+  const { tokenService, protectedDriver: driver, transport: repositoryTransport } = runtime;
   if (!tokenService) {
     throw new Error("Prepared repository Git requires the installed Token Service.");
-  }
-  if ((driver || repositoryTransport) && (!driver || driver !== drivers.protectedDriver)) {
-    throw new Error("Missing the selected Driver's protected repository Git authority.");
   }
   const repositoryGitCustody: RepositoryGitCustody = driver
     ? (repositoryTransport
         ? selectBundledRepositoryGitCustody
         : selectRegisteredRepositoryGitCustody)(driver.ref)
     : {
-        kind:
-          drivers.repositoryOwner?.controlSocket === undefined ? "unavailable" : "native-broker",
+        kind: runtime.owner.controlSocket === undefined ? "unavailable" : "native-broker",
       };
   return { tokenService, repositoryGitCustody };
 }

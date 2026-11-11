@@ -2459,7 +2459,6 @@ test(
         id: "github-primary",
         type: "github",
         configuration: { registryPath: "/etc/openclaw/repository-registry/registry.json" },
-        drivers: { repo: "repository-credentials" },
       },
     ];
     installationDocument.repository = {

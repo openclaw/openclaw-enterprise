@@ -686,7 +686,6 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     id: "repository-backend",
     type: "github",
     configuration: { registryPath: "/etc/openclaw/repository-registry/registry.json" },
-    drivers: { repo: "repository-credentials" },
   });
   installation.repository = {
     id: "repository-credentials",
