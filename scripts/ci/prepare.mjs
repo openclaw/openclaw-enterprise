@@ -11,6 +11,7 @@ import {
   link,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   rename,
   rm,
@@ -351,8 +352,10 @@ async function writeState(path, state) {
 async function persistState(path, state, { exclusive = false } = {}) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temp = join(dirname(path), `.${basename(path)}.${process.pid}.${randomSuffix()}.tmp`);
-  await writeFile(temp, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+  const content = `${JSON.stringify(state, null, 2)}\n`;
+  const file = await open(temp, "wx", 0o600);
   try {
+    await file.writeFile(content).finally(() => file.close());
     await chmod(temp, 0o600);
     if (exclusive) {
       // Publish a complete initial journal without replacing another owner's state.

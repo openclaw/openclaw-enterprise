@@ -286,7 +286,7 @@ awaits an approved resource ledger.
 
 ## Changelog
 
-- 2026-11-11 16:53: Publish journals atomically. (authoring-run/fac6c060-7d04-496a-9194-8dfc3ba080e5 - 9209a107a78a5850f7f11b68e1763956d65cde3a)
+- 2026-11-11 16:52: Publish journals atomically. (authoring-run/fac6c060-7d04-496a-9194-8dfc3ba080e5 - 9209a107a78a5850f7f11b68e1763956d65cde3a)
 
 - 2026-11-11 16:18: Bind child cleanup ownership. (authoring-run/bfbc4468-ece0-4912-b2df-e60c34f373b1 - b5eb70f7384601a69ad62e089e5909c01789e011)
 
