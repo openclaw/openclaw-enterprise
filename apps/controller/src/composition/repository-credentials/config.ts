@@ -1,8 +1,9 @@
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { createSecureContext } from "node:tls";
 import type { Clock } from "../../drivers/repo/access/backend-contracts.ts";
 import type { LoadedConfiguration } from "./contracts.ts";
 import { record, string, validateServiceConfig } from "../../drivers/repo/access/configuration.ts";
+import { isCanonicalUnixSocketPath } from "../../drivers/repo/access/client-contracts.ts";
 import {
   GITHUB_REPOSITORY_REGISTRY_MAX_BYTES,
   validateGitHubRepositoryRegistry,
@@ -105,9 +106,7 @@ export async function loadConfiguration(
           ? join(dirname(config.gateway.controlSocket), "prepared-git-use.sock")
           : string(backendInput.socketPath);
       if (
-        !isAbsolute(socketPath) ||
-        resolve(socketPath) !== socketPath ||
-        Buffer.byteLength(socketPath) > 103 ||
+        !isCanonicalUnixSocketPath(socketPath) ||
         socketPath === config.gateway.controlSocket ||
         socketPath === join(dirname(config.gateway.controlSocket), "receipt.sock")
       ) {

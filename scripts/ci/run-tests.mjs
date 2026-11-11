@@ -1504,6 +1504,12 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
             }
             return;
           }
+          if (kind === "openshell-stage-failure") {
+            process.stderr.write(
+              `[run:${lane.name}] ${relativePath}: ${kind} ${stage} ${progress.category} code=${progress.code ?? "unknown"} workflow=${progress.location}\n`,
+            );
+            return;
+          }
           process.stderr.write(`[run:${lane.name}] ${relativePath}: ${kind} ${stage} ${outcome}\n`);
         },
       });

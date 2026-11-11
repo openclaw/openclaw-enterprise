@@ -1,8 +1,20 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:https";
-import { createRequire } from "node:module";
 import test from "node:test";
+import {
+  Agent,
+  buildConnector,
+  getGlobalDispatcher,
+  setGlobalDispatcher,
+} from "../../apps/controller/node_modules/undici/index.js";
+import type {
+  ComputeDriver,
+  Permission,
+  ServiceAccount,
+  ServiceAccountCredential,
+  ServiceAccountDriver,
+} from "../../packages/contracts/src/index.ts";
 import { ChatGPTClient } from "../../apps/controller/src/backends/chatgpt.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
@@ -10,6 +22,7 @@ import {
   DependencyUnavailableError,
   DriverSelectionError,
   OpenClawController,
+  PostgresPlatformState,
   ResourceConflictError,
   ScopeViolationError,
   ServiceAccountCredentialSecretExistsError,
@@ -26,9 +39,6 @@ import { within } from "../helpers/wait-for.mjs";
 
 const administrator = "service-account-driver-administrator";
 const reader = "service-account-driver-reader";
-const { Agent, buildConnector, getGlobalDispatcher, setGlobalDispatcher } = createRequire(
-  new URL("../../apps/controller/package.json", import.meta.url),
-)("undici");
 const installation = Object.freeze({
   id: "installation-service-account-driver",
   name: "ServiceAccount Driver OCC conformance",
@@ -45,17 +55,53 @@ const backend = Object.freeze({
   drivers: Object.freeze({ service_account: "service-account-driver-conformance" }),
 });
 
+type ChatGPTDriverArguments = ConstructorParameters<
+  typeof import("../../apps/controller/src/drivers/service-account/chatgpt.ts").ChatGPTServiceAccountDriver
+>;
+
+const chatGPTDriverIdentity = {
+  id: backend.id,
+  drivers: { service_account: "chatgpt-service-accounts" },
+} satisfies Pick<ChatGPTDriverArguments[0], "id" | "drivers">;
+
+// These provider scenarios use in-memory controller state. A real database
+// connection or an unused credential storage operation fails the fixture.
+const unusedDatabasePool = {
+  async connect() {
+    assert.fail("unexpected database connection");
+  },
+  async end() {},
+} satisfies ConstructorParameters<typeof PostgresPlatformState>[0];
+const unusedCredentialStorage: ChatGPTDriverArguments[3] = {
+  async storeServiceAccountCredential() {
+    assert.fail("unexpected credential write");
+  },
+  async findServiceAccountCredential() {
+    assert.fail("unexpected credential lookup");
+  },
+  async deleteServiceAccountCredential() {
+    assert.fail("unexpected credential deletion");
+  },
+};
+
 async function fixture({
   selectServiceAccountDriver = true,
   createCredential,
   configuredServiceAccountDriverId,
+}: {
+  selectServiceAccountDriver?: boolean;
+  createCredential?: ServiceAccountDriver["createCredential"];
+  configuredServiceAccountDriverId?: string;
 } = {}) {
-  const administrators = {
-    namespace: ["create", "read"],
-    service_account: ["create", "read", "update", "delete"],
-    configuration: ["create", "read"],
-    agent: ["create", "read", "deploy"],
-  };
+  const administrators: readonly {
+    resourceKind: Permission["resourceKind"];
+    actions: readonly Permission["action"][];
+  }[] = [
+    { resourceKind: "namespace", actions: ["create", "read"] },
+    { resourceKind: "service_account", actions: ["create", "read", "update", "delete"] },
+    { resourceKind: "configuration", actions: ["create", "read"] },
+    { resourceKind: "agent", actions: ["create", "read", "deploy"] },
+  ];
   const iam = new NativeIAMDriver(
     {
       loadNativeIAMState: async () => ({
@@ -70,7 +116,7 @@ async function fixture({
         roles: [
           {
             id: "service-account-driver-administrator-role",
-            permissions: Object.entries(administrators).flatMap(([resourceKind, actions]) =>
+            permissions: administrators.flatMap(({ resourceKind, actions }) =>
               actions.map((action) => ({ action, resourceKind })),
             ),
           },
@@ -95,17 +141,19 @@ async function fixture({
     ...(configuredServiceAccountDriverId === undefined ? {} : { configuredServiceAccountDriverId }),
   });
   // Records the account-owned token Secrets a forced deletion removes through Compute.
-  const deletedCredentialSecrets = [];
+  const deletedCredentialSecrets: Parameters<
+    NonNullable<ComputeDriver["deleteServiceAccountCredential"]>
+  >[0][] = [];
   const compute = Object.freeze({
     ...createDevelopmentComputeDriver(),
-    async deleteServiceAccountCredential(input) {
+    async deleteServiceAccountCredential(input: (typeof deletedCredentialSecrets)[number]) {
       deletedCredentialSecrets.push(input);
     },
   });
   const configuration = createTestConfigurationDriver();
-  const externalAccounts = new Set();
-  const externalCredentials = new Set();
-  const driver = {
+  const externalAccounts = new Set<string>();
+  const externalCredentials = new Set<string>();
+  const driver: ServiceAccountDriver & { backendId: string } = {
     id: "service-account-driver-conformance",
     capability: "service_account",
     implementation: "occ-conformance-service-account",
@@ -187,7 +235,7 @@ test("a selected ServiceAccount Driver owns authorized account and credential li
     namespace.id,
     account.id,
   );
-  assert.equal(issued.credential.kind, "access_token");
+  assert.equal(issued.credential?.kind, "access_token");
   assert.equal(externalCredentials.has(account.id), true);
   assert.deepEqual(
     await controller.getServiceAccount(administrator, namespace.id, account.id),
@@ -245,7 +293,7 @@ test("issuance without a ChatGPT Backend names the fix after the grant and the a
   await assert.rejects(
     controller.createServiceAccountCredential(administrator, namespace.id, account.id),
     (error) => {
-      assert.ok(error instanceof ServiceAccountDriverNotConfiguredError, error.name);
+      assert.ok(error instanceof ServiceAccountDriverNotConfiguredError, String(error));
       assert.ok(!(error instanceof DependencyUnavailableError));
       assert.match(error.message, /no ChatGPT Backend.*guides\/integrations\/chatgpt\//);
       return true;
@@ -293,7 +341,7 @@ test("deleting an account with an issued token without a ChatGPT Backend names t
   await assert.rejects(
     controller.deleteServiceAccount(administrator, namespace.id, account.id),
     (error) => {
-      assert.ok(error instanceof ServiceAccountDriverNotConfiguredError, error.name);
+      assert.ok(error instanceof ServiceAccountDriverNotConfiguredError, String(error));
       assert.ok(!(error instanceof DependencyUnavailableError));
       assert.match(
         error.message,
@@ -304,7 +352,7 @@ test("deleting an account with an issued token without a ChatGPT Backend names t
     },
   );
   assert.equal(
-    (await controller.getServiceAccount(administrator, namespace.id, account.id)).credential.kind,
+    (await controller.getServiceAccount(administrator, namespace.id, account.id)).credential?.kind,
     "access_token",
   );
   // An explicit `force: false` is the same refusal.
@@ -335,7 +383,7 @@ test("a forced delete without a ChatGPT Backend removes the account and its toke
     namespaceId: namespace.id,
     name: "orphaned-token-account",
   });
-  const credential = {
+  const credential: ServiceAccountCredential = {
     kind: "access_token",
     secretRef: { name: `account-${account.id.slice(3)}`, key: "token" },
   };
@@ -443,7 +491,7 @@ test("force never deletes past a configured ServiceAccount Driver that is unavai
   }
   assert.deepEqual(deletedCredentialSecrets, []);
   assert.equal(
-    (await controller.getServiceAccount(administrator, namespace.id, account.id)).credential.kind,
+    (await controller.getServiceAccount(administrator, namespace.id, account.id)).credential?.kind,
     "access_token",
   );
 });
@@ -508,7 +556,7 @@ test("a leftover credential Secret reaches the issuing caller as a conflict that
 
 test("outer transaction failure compensates selected Driver account and credential effects", async () => {
   const { controller, externalAccounts, externalCredentials, namespace } = await fixture();
-  let abortedAccount;
+  let abortedAccount: ServiceAccount | undefined;
 
   // HTTP audit append runs after the inner OCC mutation in this same outer transaction.
   await assert.rejects(
@@ -521,6 +569,7 @@ test("outer transaction failure compensates selected Driver account and credenti
     }),
     /transactional audit append failed/,
   );
+  assert.ok(abortedAccount);
   assert.equal(externalAccounts.has(abortedAccount.id), false);
   await assert.rejects(
     controller.getServiceAccount(administrator, namespace.id, abortedAccount.id),
@@ -546,25 +595,25 @@ test("outer transaction failure compensates selected Driver account and credenti
   );
 });
 
-test("the ChatGPT account name is cut by whole characters, never half of a surrogate pair", async () => {
+test("the ChatGPT account name is cut by whole characters, never half of a surrogate pair", async (t) => {
   const { ChatGPTServiceAccountDriver } =
     await import("../../apps/controller/src/drivers/service-account/chatgpt.ts");
-  const names = [];
+  const names: string[] = [];
   const stop = new Error("stop after the provider call");
+  const client = new ChatGPTClient({
+    workspaceId: backend.configuration.workspaceId,
+    adminKey: "synthetic-test-key",
+  });
+  const captureName: ChatGPTClient["createServiceAccount"] = async ({ name }) => {
+    names.push(name);
+    throw stop;
+  };
+  t.mock.method(client, "createServiceAccount", captureName);
   const driver = new ChatGPTServiceAccountDriver(
-    {
-      id: "openai",
-      drivers: { service_account: "chatgpt-service-accounts" },
-      client: {
-        async createServiceAccount({ name }) {
-          names.push(name);
-          throw stop;
-        },
-      },
-    },
-    {},
-    {},
-    {},
+    { ...chatGPTDriverIdentity, client },
+    new OpenClawController(installation),
+    new PostgresPlatformState(unusedDatabasePool),
+    unusedCredentialStorage,
   );
   const id = "sa_11111111-1111-4111-8111-111111111111";
   // One ASCII character puts every emoji on an odd UTF-16 offset, so a 160-unit cut would
@@ -573,6 +622,7 @@ test("the ChatGPT account name is cut by whole characters, never half of a surro
   await assert.rejects(driver.create({ id, namespaceId: "ns_x", name }), stop);
   const [sent] = names;
   assert.equal(sent, `x${"\u{1F600}".repeat(79)}-${id}`);
+  assert.ok(sent !== undefined);
   assert.ok(sent.length <= 200);
   assert.doesNotMatch(sent, /\p{Cs}/u);
 });
@@ -601,8 +651,8 @@ test("ChatGPT Backend releases rejected HTTPS responses for subsequent account c
     },
   ]) {
     await t.test(fault.name, async () => {
-      const requests = [];
-      let streamTimer;
+      const requests: { method: string | undefined; path: string | undefined }[] = [];
+      let streamTimer: NodeJS.Timeout | undefined;
       let streamedBytes = 0;
       const server = createServer({ key, cert }, (request, response) => {
         requests.push({ method: request.method, path: request.url });
@@ -636,18 +686,21 @@ test("ChatGPT Backend releases rejected HTTPS responses for subsequent account c
         connections: 1,
         pipelining: 1,
         // Route native fetch to our TLS listener without replacing fetch or body disposal.
-        connect: (options, callback) =>
-          connector(
+        connect: (options, callback) => {
+          const address = server.address();
+          assert.ok(address !== null && typeof address !== "string");
+          return connector(
             {
               ...options,
               hostname: "127.0.0.1",
-              port: server.address().port,
+              port: String(address.port),
               servername: "api.chatgpt.com",
             },
             callback,
-          ),
+          );
+        },
       });
-      let retry;
+      let retry: ReturnType<ChatGPTClient["createServiceAccount"]> | undefined;
       try {
         server.listen(0, "127.0.0.1");
         await once(server, "listening");
@@ -696,14 +749,15 @@ test("ChatGPT Backend reads a response of exactly 4 MiB, declared or streamed", 
     enabled: true,
     pad: "",
   });
-  const body = (bytes) => empty.replace('"pad":""', `"pad":"${"x".repeat(bytes - empty.length)}"`);
+  const body = (bytes: number) =>
+    empty.replace('"pad":""', `"pad":"${"x".repeat(bytes - empty.length)}"`);
   const original = globalThis.fetch;
   try {
     for (const [declared, bytes, accepted] of [
       [true, limit, true],
       [false, limit, true],
       [false, limit + 1, false],
-    ]) {
+    ] as const) {
       const label = `${declared ? "declared" : "streamed"} ${bytes} bytes`;
       const text = body(bytes);
       assert.equal(Buffer.byteLength(text), bytes, label);
@@ -730,13 +784,23 @@ test("ChatGPT Backend reads a response of exactly 4 MiB, declared or streamed", 
 
 // An in-memory ChatGPT Admin API behind a replaced global fetch. Each fault applies the
 // request first (or not), then answers as the test asks.
-function fakeChatGPT(workspaceId) {
-  const accounts = new Map();
-  const requests = [];
-  const faults = [];
+interface FakeFault {
+  apply?: boolean;
+  body?: Record<string, unknown>;
+  lost?: boolean;
+  status?: number;
+  text?: string;
+}
+
+function fakeChatGPT(workspaceId: string) {
+  const accounts = new Map<string, { name: string; credentials: Set<string> }>();
+  const requests: { method: string | undefined; path: string }[] = [];
+  const faults: FakeFault[] = [];
   let next = 0;
-  const json = (status, body) => Response.json(body, { status });
-  const fetch = async (url, init) => {
+  const json = (status: number, body: unknown) => Response.json(body, { status });
+  const fetch: typeof globalThis.fetch = async (url, init) => {
+    assert.ok(typeof url === "string");
+    assert.ok(init);
     const path = new URL(url).pathname;
     const base = `/v1/manage/workspaces/${workspaceId}/service-accounts`;
     const [accountId, segment, credentialId] = path.slice(base.length + 1).split("/");
@@ -746,12 +810,21 @@ function fakeChatGPT(workspaceId) {
     if (fault.apply === false) {
       throw new TypeError("fetch failed");
     }
-    let reply;
+    let reply: Response;
     if (init.method === "POST" && path === base) {
       const id = `acct-${++next}`;
-      accounts.set(id, { name: JSON.parse(init.body).name, credentials: new Set() });
+      assert.ok(typeof init.body === "string");
+      const body: unknown = JSON.parse(init.body);
+      assert.ok(
+        typeof body === "object" &&
+          body !== null &&
+          "name" in body &&
+          typeof body.name === "string",
+      );
+      accounts.set(id, { name: body.name, credentials: new Set() });
       reply = json(200, { id, workspace_id: workspaceId, enabled: true, ...fault.body });
     } else if (init.method === "POST" && segment === "credentials" && credentialId === undefined) {
+      assert.ok(accountId !== undefined);
       const owner = decodeURIComponent(accountId);
       const account = accounts.get(owner);
       if (account === undefined) {
@@ -759,7 +832,16 @@ function fakeChatGPT(workspaceId) {
       } else {
         const id = `cred-${++next}`;
         account.credentials.add(id);
-        const { scopes, ttl } = JSON.parse(init.body);
+        assert.ok(typeof init.body === "string");
+        const body: unknown = JSON.parse(init.body);
+        assert.ok(
+          typeof body === "object" &&
+            body !== null &&
+            "scopes" in body &&
+            "ttl" in body &&
+            typeof body.ttl === "number",
+        );
+        const { scopes, ttl } = body;
         reply = json(200, {
           id,
           access_token: `synthetic-${id}`,
@@ -771,6 +853,7 @@ function fakeChatGPT(workspaceId) {
         });
       }
     } else if (init.method === "DELETE" && segment === "credentials") {
+      assert.ok(accountId !== undefined && credentialId !== undefined);
       const account = accounts.get(decodeURIComponent(accountId));
       if (!account?.credentials.delete(decodeURIComponent(credentialId))) {
         reply = json(404, { error: { code: "credential_not_found" } });
@@ -778,6 +861,7 @@ function fakeChatGPT(workspaceId) {
         reply = json(200, { id: decodeURIComponent(credentialId), deleted: true });
       }
     } else if (init.method === "DELETE" && segment === undefined) {
+      assert.ok(accountId !== undefined);
       if (!accounts.delete(decodeURIComponent(accountId))) {
         reply = json(404, { error: { code: "service_account_not_found" } });
       } else {
@@ -797,14 +881,20 @@ function fakeChatGPT(workspaceId) {
   return { accounts, requests, faults, fetch };
 }
 
-async function withFakeChatGPT(work) {
+async function withFakeChatGPT<T>(
+  work: (fixture: {
+    client: ChatGPTClient;
+    server: ReturnType<typeof fakeChatGPT>;
+    workspaceId: string;
+  }) => Promise<T>,
+): Promise<T> {
   const workspaceId = backend.configuration.workspaceId;
   const server = fakeChatGPT(workspaceId);
   const original = globalThis.fetch;
   globalThis.fetch = server.fetch;
   try {
     const client = new ChatGPTClient({ workspaceId, adminKey: "synthetic-test-key" });
-    await work({ client, server, workspaceId });
+    return await work({ client, server, workspaceId });
   } finally {
     globalThis.fetch = original;
   }
@@ -875,33 +965,30 @@ test("a ChatGPT account create whose reply is invalid removes exactly the accoun
 });
 
 test("a ChatGPT credential create whose reply is invalid revokes exactly the credential it issued", async (t) => {
-  const invalid = (error) =>
+  const invalid = (error: unknown) =>
     error instanceof DependencyUnavailableError &&
     error.message === "ChatGPT returned an invalid service-account credential.";
-  const credentials = (server) =>
+  const credentials = (server: ReturnType<typeof fakeChatGPT>) =>
     Object.fromEntries([...server.accounts].map(([id, { credentials }]) => [id, [...credentials]]));
-  const issue = async (body) => {
-    let result;
-    await withFakeChatGPT(async ({ client, server }) => {
+  const issue = async (body?: Record<string, unknown>) =>
+    withFakeChatGPT(async ({ client, server }) => {
       server.accounts.set("acct-own", { name: "own", credentials: new Set() });
       server.accounts.set("acct-other", { name: "other", credentials: new Set(["cred-other"]) });
       server.faults.push(body === undefined ? {} : { body });
-      let error;
-      let credential;
+      let error: unknown;
+      let credential: Awaited<ReturnType<ChatGPTClient["createCredential"]>> | undefined;
       try {
         credential = await client.createCredential({ accountId: "acct-own", name: "occ-sa_x" });
       } catch (caught) {
         error = caught;
       }
-      result = {
+      return {
         error,
         credential,
         stored: credentials(server),
         requests: server.requests.map(({ method, path }) => `${method} ${path.split("/").at(-1)}`),
       };
     });
-    return result;
-  };
 
   await t.test("a valid reply is returned unchanged", async () => {
     const { error, credential, stored } = await issue();
@@ -914,7 +1001,7 @@ test("a ChatGPT credential create whose reply is invalid revokes exactly the cre
     ["an unexpected scope", { scopes: ["another.scope"] }],
     ["no access token", { access_token: "" }],
     ["no expiry", { expires_at: null }],
-  ]) {
+  ] as const) {
     await t.test(`a reply with ${name} under this account removes that credential`, async () => {
       const { error, stored, requests } = await issue(body);
       assert.ok(invalid(error), String(error));
@@ -929,7 +1016,7 @@ test("a ChatGPT credential create whose reply is invalid revokes exactly the cre
     ["another account", { service_account_id: "acct-other", id: "cred-other" }],
     ["another workspace", { workspace_id: "22222222-2222-4222-8222-222222222222" }],
     ["no credential ID", { id: "" }],
-  ]) {
+  ] as const) {
     await t.test(`a reply naming ${name} deletes nothing`, async () => {
       const { error, stored, requests } = await issue(body);
       assert.ok(invalid(error), String(error));
@@ -1004,7 +1091,7 @@ test("a ChatGPT credential revocation never sends a dot path segment", async () 
   });
 });
 
-test("a ChatGPT account delete that applied but answered an error completes on retry", async () => {
+test("a ChatGPT account delete that applied but answered an error completes on retry", async (t) => {
   const { ChatGPTServiceAccountDriver } =
     await import("../../apps/controller/src/drivers/service-account/chatgpt.ts");
   await withFakeChatGPT(async ({ client, server, workspaceId }) => {
@@ -1018,17 +1105,26 @@ test("a ChatGPT account delete that applied but answered an error completes on r
       workspaceId,
     };
     const secrets = new Set(["service-account-own"]);
-    const driver = new ChatGPTServiceAccountDriver(
-      { id: "openai", drivers: { service_account: "chatgpt-service-accounts" }, client },
-      { transact: (work) => work({}) },
-      { queryInTransaction: async () => ({ rows: [binding], rowCount: 1 }) },
-      {
-        async deleteServiceAccountCredential({ secretRef }) {
-          secrets.delete(secretRef.name);
-        },
+    const state = new PostgresPlatformState(unusedDatabasePool);
+    // Supply the account binding while the real Driver and client exercise provider deletion.
+    const readBinding: PostgresPlatformState["queryInTransaction"] = async () => ({
+      rows: [binding],
+      rowCount: 1,
+    });
+    t.mock.method(state, "queryInTransaction", readBinding);
+    const credentialStorage: ChatGPTDriverArguments[3] = {
+      ...unusedCredentialStorage,
+      async deleteServiceAccountCredential({ secretRef }) {
+        secrets.delete(secretRef.name);
       },
+    };
+    const driver = new ChatGPTServiceAccountDriver(
+      { ...chatGPTDriverIdentity, client },
+      new OpenClawController(installation),
+      state,
+      credentialStorage,
     );
-    const account = {
+    const account: ServiceAccount = {
       id: "sa_own",
       namespaceId: "ns_own",
       name: "own",
@@ -1043,7 +1139,9 @@ test("a ChatGPT account delete that applied but answered an error completes on r
     // The retry finds every provider resource already gone and completes.
     await driver.delete(account);
     assert.deepEqual([...server.accounts.keys()], ["foreign"]);
-    assert.deepEqual([...server.accounts.get("foreign").credentials], ["cred-foreign"]);
+    const foreign = server.accounts.get("foreign");
+    assert.ok(foreign);
+    assert.deepEqual([...foreign.credentials], ["cred-foreign"]);
     assert.equal(secrets.size, 0);
   });
 });
