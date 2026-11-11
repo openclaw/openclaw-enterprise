@@ -338,13 +338,30 @@ export class AgentReconciler {
       requestedRevisionId: ownership.management?.requestedRevisionId,
     };
     if (input.desiredRuntimeState === "stopped" && live.desiredRuntimeState === "stopped") {
-      const stoppedRevisionId = ownership.management?.requestedRevisionId;
-      if (stoppedRevisionId !== undefined) {
-        const runtime = await api.call<{ pods: unknown[] }>(
-          "GET",
-          `${path}/deployments/${encodeURIComponent(stoppedRevisionId)}/runtime`,
+      if (live.activeRevisionId !== undefined) {
+        throw new ReconcilePending(
+          "Stopping",
+          "Enterprise has not completed the Agent stop.",
+          result,
         );
-        if (!Array.isArray(runtime.pods) || runtime.pods.length !== 0) {
+      }
+      // A candidate can have Pods before it becomes active. Inspect the Agent's
+      // admitted versions too; observing only an old active pointer can miss it.
+      const revisions = await api.call<{ id: string }[]>("GET", `${path}/revisions`);
+      for (const revision of revisions) {
+        const runtime = await api.call<{ revisionId: string; observedAt: string; pods: unknown[] }>(
+          "GET",
+          `${path}/deployments/${encodeURIComponent(revision.id)}/runtime`,
+        );
+        const age = Date.now() - Date.parse(runtime.observedAt);
+        if (
+          runtime.revisionId !== revision.id ||
+          !Number.isFinite(age) ||
+          age < -30_000 ||
+          age > 90_000 ||
+          !Array.isArray(runtime.pods) ||
+          runtime.pods.length !== 0
+        ) {
           throw new ReconcilePending(
             "Stopping",
             "The Agent is stopping; runtime cleanup is not complete.",

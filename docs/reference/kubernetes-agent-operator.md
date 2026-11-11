@@ -93,7 +93,9 @@ Successful running intent requires the requested revision to be active, deployme
 completion, a runtime observation no older than 90 seconds with ready Gateway
 and Agent Pods, and successful current Gateway configuration, authentication and
 connectivity diagnostics. An accepted API write alone is insufficient. Stopped intent waits
-for runtime cleanup. Status contains IDs and sanitized reasons, no credentials
+for the active pointer to clear and fresh empty runtime observations for the
+Agent versions. Grant revision read on the parent Agent, not a subset of its
+versions. Status contains IDs and sanitized reasons, no credentials
 or private input fingerprints.
 
 The Operator watches its four kinds and resynchronizes every 30 seconds. Writes
