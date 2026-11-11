@@ -1,3 +1,4 @@
+import { createOccLogger, createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
 import { runOpenShellStage } from "./openshell-stage.mjs";
 import { observeOpenShellPermissionRefusal } from "./openshell-permission-diagnostic.ts";
 import { openShellTurnoverQualification } from "../../scripts/ci/reporter.mjs";
@@ -76,6 +77,7 @@ import {
   observeSandboxProbe,
   tokenEchoDigest,
   tokenEchoReply,
+  summarizeWorkerEvents,
 } from "../helpers/k3d-failure-diagnostics.mjs";
 import {
   createEnvoyWorkspaceGatewayPlan,
@@ -500,57 +502,6 @@ function workspaceGatewayHostname(workspaceGateway) {
   )}.${workspaceGateway.routing.envoyNamespace}.svc.cluster.local`;
 }
 
-function summarizeWorkerEvent(event) {
-  return Object.fromEntries(
-    [
-      "event",
-      "operation",
-      "revisionId",
-      "outcome",
-      "code",
-      "attempt",
-      "cause",
-      "failure",
-      "dependency",
-      "method",
-      "grpcStatus",
-    ]
-      .map((key) => [key, event[key]])
-      .filter(([, value]) => typeof value === "string" || typeof value === "number"),
-  );
-}
-
-// Identical events collapse into one entry with a count and their first and last receipt
-// times, ordered by last receipt: a namespace.ensure retried every poll (finding 1532) would
-// otherwise fill the list and push the persisted revision and queue state out of the message.
-function summarizeWorkerEvents(events, revisionId, limit = 40) {
-  const collapsed = new Map();
-  for (const event of events) {
-    const summary = summarizeWorkerEvent(event);
-    if (
-      summary.revisionId !== revisionId &&
-      summary.event !== "worker.completed" &&
-      summary.event !== "worker.error"
-    ) {
-      continue;
-    }
-    const key = JSON.stringify(summary);
-    const previous = collapsed.get(key);
-    collapsed.delete(key);
-    collapsed.set(key, {
-      ...summary,
-      count: (previous?.count ?? 0) + 1,
-      firstAt: previous?.firstAt ?? event.observedAt,
-      lastAt: event.observedAt,
-    });
-  }
-  return [...collapsed.values()]
-    .slice(-limit)
-    .map(({ count, firstAt, lastAt, ...summary }) =>
-      count === 1 ? { ...summary, at: lastAt } : { ...summary, count, firstAt, lastAt },
-    );
-}
-
 async function diagnosticQuery(pool, text, values) {
   return pool.query({ text, values, query_timeout: diagnosticQueryTimeoutMs });
 }
@@ -615,13 +566,13 @@ async function writeWorkerCompletionDiagnostics(options) {
     persisted,
     events: summarizeWorkerEvents(options.events, options.revisionId),
   };
-  // The reporter cuts the line at 1,000 characters, so the events there run newest first.
+  // Separate records keep the reporter's line limit from discarding preparation failures.
   process.stderr.write(
-    `OpenShell worker completion diagnostic: ${JSON.stringify({
-      ...diagnostic,
-      events: [...diagnostic.events].reverse(),
-    })}\n`,
+    `OpenShell worker completion diagnostic: ${JSON.stringify({ ...diagnostic, events: undefined })}\n`,
   );
+  for (const event of [...diagnostic.events].reverse()) {
+    process.stderr.write(`OpenShell worker event: ${JSON.stringify(event)}\n`);
+  }
   return diagnostic;
 }
 
@@ -2404,6 +2355,9 @@ async function prepareProductionInstallation(
     controllerAuthBaseURL,
   );
   const events = [];
+  const logWorkerEvent = createWorkerLogEmitter(
+    createOccLogger({ component: "openshell-test-worker", destination: "stderr" }),
+  );
   const startWorker = async (diagnosticWorkerDrivers) => {
     workerPool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
     worker = createControllerWorker({
@@ -2416,18 +2370,9 @@ async function prepareProductionInstallation(
       emit: (event) => {
         // The receipt time lets a failure diagnostic collapse repeated events into first/last.
         events.push({ ...event, observedAt: new Date().toISOString() });
-        // The in-process worker bypasses the normal worker log sink. Keep the fixed denial
-        // code on its own line before a failed deployment tears down the fixture.
-        if (
-          event.event === "worker.completed" &&
-          typeof event.failure === "string" &&
-          (event.code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE" ||
-            event.refusal === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE")
-        ) {
-          process.stderr.write(
-            `OpenShell Codex readiness refusal: ${JSON.stringify(summarizeWorkerEvent(event))}\n`,
-          );
-        }
+        // Use the same bounded field projection as the standalone worker. Keep preparation
+        // and cleanup failures visible even if a later timeout interrupts diagnostic reads.
+        logWorkerEvent(event);
       },
     });
     await worker.start();
@@ -2675,6 +2620,13 @@ async function prepareProductionInstallation(
       workerEvents: events,
     });
   } catch (error) {
+    await writeWorkerCompletionDiagnostics({
+      pool: observerPool,
+      events,
+      namespaceId,
+      agentId: agent.data.id,
+      revisionId: deployed.data.id,
+    });
     // These refusals already identify the failing readiness check. No Pod log read is needed.
     if (
       error instanceof OpenShellDeploymentFailedError &&
@@ -7993,7 +7945,17 @@ export function registerGatewayToolPolicyTest() {
   return test(
     "OpenShell dedicated Agents enforce Gateway tool policy during normal work",
     { ...requiresOpenShellK3d, timeout: 2_400_000 },
-    async (context) => {
+    async (testContext) => {
+      const teardown = boundedTeardown(testContext, {
+        label: "OpenShell tool-policy teardown",
+        onOutcome: (outcome) =>
+          testContext.diagnostic(
+            "openclaw-ci-measurement " +
+              JSON.stringify({ kind: "openshell-fixture-teardown", outcome }),
+          ),
+      });
+      teardownStarted = () => teardown.started;
+      const { context } = teardown;
       const controlUiOrigin = "http://127.0.0.1";
       const topology = await prepareProductionInstallation(context, {
         harnessId: selectedHarness,
@@ -8748,17 +8710,18 @@ export function registerGatewayToolPolicyTest() {
       assert.equal(redeployed.data.gatewayManagedMode, true);
       assert.notEqual(redeployed.data.id, oldRevisionId);
       assert.equal(redeployed.data.configurationGeneration, updated.data.generation);
-      await waitFor("narrower Gateway policy revision activation", async () => {
-        const observed = await topology.request("GET", agentPath);
-        assert.equal(observed.status, 200, JSON.stringify(observed.error));
-        const status = await topology.request(
-          "GET",
-          `${agentPath}/deployments/${redeployed.data.id}`,
-        );
-        assert.equal(status.status, 200, JSON.stringify(status.error));
-        assert.notEqual(status.data.status, "failed", "the policy replacement must activate");
-        return observed.data.activeRevisionId === redeployed.data.id || undefined;
-      });
+      try {
+        await waitForOpenShellRevisionActivation(waitFor, {
+          request: topology.request,
+          agentPath,
+          revisionId: redeployed.data.id,
+          workerEvents: topology.workerEvents,
+        });
+      } catch (error) {
+        // Read the replacement's worker state before teardown removes its workloads.
+        await topology.diagnoseRevision(redeployed.data.id);
+        throw error;
+      }
       topology.harnessPod = await waitForProviderHarnessPod(topology.placement, redeployed.data);
       topology.gatewayPod = await waitFor("the replacement Agent Gateway Pod", async () => {
         const pod = await resource(

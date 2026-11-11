@@ -17,6 +17,72 @@ const maxPods = 5;
 const maxLogContainers = 6;
 const credentialLineMarker = "[redacted credential-bearing line]";
 
+// Only worker-owned identifiers and classifications; never provider messages or chat text.
+function summarizeWorkerEvent(event) {
+  return Object.fromEntries(
+    [
+      "event",
+      "operation",
+      "revisionId",
+      "outcome",
+      "code",
+      "attempt",
+      "cause",
+      "failure",
+      "dependency",
+      "method",
+      "grpcStatus",
+      "step",
+      "errorClass",
+      "status",
+      "candidatePreparationReached",
+      "cleanupCause",
+      "validationCategory",
+    ]
+      .map((key) => [key, event[key]])
+      .filter(
+        ([key, value]) =>
+          (typeof value === "string" &&
+            /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u.test(value) &&
+            !isCredentialLine(value) &&
+            redactLogLine(value, [], 160) === value) ||
+          (typeof value === "number" && Number.isSafeInteger(value)) ||
+          (key === "candidatePreparationReached" && typeof value === "boolean"),
+      ),
+  );
+}
+
+// Identical events collapse into one entry with a count and their first and last receipt
+// times, ordered by last receipt: a namespace.ensure retried every poll (finding 1532) would
+// otherwise fill the list and push the persisted revision and queue state out of the message.
+export function summarizeWorkerEvents(events, revisionId, limit = 40) {
+  const collapsed = new Map();
+  for (const event of events) {
+    const summary = summarizeWorkerEvent(event);
+    if (
+      summary.revisionId !== revisionId &&
+      summary.event !== "worker.completed" &&
+      summary.event !== "worker.error"
+    ) {
+      continue;
+    }
+    const key = JSON.stringify(summary);
+    const previous = collapsed.get(key);
+    collapsed.delete(key);
+    collapsed.set(key, {
+      ...summary,
+      count: (previous?.count ?? 0) + 1,
+      firstAt: previous?.firstAt ?? event.observedAt,
+      lastAt: event.observedAt,
+    });
+  }
+  return [...collapsed.values()]
+    .slice(-limit)
+    .map(({ count, firstAt, lastAt, ...summary }) =>
+      count === 1 ? { ...summary, at: lastAt } : { ...summary, count, firstAt, lastAt },
+    );
+}
+
 function openShellEvent(line) {
   const json = /\bOCSF-JSON (\{.*\})$/.exec(line);
   let event;

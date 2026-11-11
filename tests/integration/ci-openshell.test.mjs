@@ -22,6 +22,7 @@ import {
   openShellStaleRelay,
   openShellSettingsChange,
   observeSandboxProbe,
+  summarizeWorkerEvents,
 } from "../helpers/k3d-failure-diagnostics.mjs";
 import { listen } from "../helpers/listen.ts";
 import {
@@ -41,6 +42,59 @@ async function fixture(t, prefix = "ci-openshell-test") {
   await chmod(root, 0o700);
   return root;
 }
+
+test("OpenShell failure summaries retain bounded Compute causes without provider or chat text", () => {
+  const revisionId = "rev_10000000-0000-4000-8000-000000000003";
+  const failure = {
+    event: "worker.compute-prepare-failed",
+    revisionId,
+    code: "KUBERNETES_API_REJECTED",
+    step: "gateway_deployment",
+    errorClass: "KubernetesApiError",
+    status: 422,
+    candidatePreparationReached: false,
+  };
+  // The worker can retry the same preparation failure many times before the wait ends.
+  const events = ["2026-11-11T20:00:00.000Z", "2026-11-11T20:01:00.000Z"].map((observedAt) => ({
+    ...failure,
+    observedAt,
+    message: "private provider response",
+    chat: "private chat",
+  }));
+  events.push({
+    event: "worker.completed",
+    revisionId,
+    code: "WORKSPACE_NODE_PENDING",
+    cleanupCause: "SANDBOX_DELETE_PENDING",
+    observedAt: "2026-11-11T20:02:00.000Z",
+  });
+  assert.deepEqual(summarizeWorkerEvents(events, revisionId), [
+    { ...failure, count: 2, firstAt: events[0].observedAt, lastAt: events[1].observedAt },
+    {
+      event: "worker.completed",
+      revisionId,
+      code: "WORKSPACE_NODE_PENDING",
+      cleanupCause: "SANDBOX_DELETE_PENDING",
+      at: events[2].observedAt,
+    },
+  ]);
+  assert.equal(summarizeWorkerEvents(events, revisionId, 1).length, 1);
+  assert.deepEqual(
+    summarizeWorkerEvents(
+      [
+        {
+          ...failure,
+          step: "x".repeat(161),
+          errorClass: "sk-" + "s".repeat(30),
+          status: Number.POSITIVE_INFINITY,
+          candidatePreparationReached: "private provider response",
+        },
+      ],
+      revisionId,
+    ),
+    [{ event: failure.event, revisionId, code: failure.code, at: undefined }],
+  );
+});
 
 function ownedCluster(root, name = "openclaw-k8s-openshell-test") {
   return {
