@@ -8993,7 +8993,7 @@ test("dedicated Codex projects the account-owned token through the common PAT lo
   assert.equal(gatewayEnvironment.has("MSTEAMS_APP_PASSWORD"), false);
 });
 
-test("a ServiceAccount credential Secret create that applied but answered an error removes only its own Secret", async (t) => {
+test("a ServiceAccount credential Secret create that applied but answered an error retains its recovery receipt", async (t) => {
   const serviceAccountId = "sa_00000000-0000-4000-8000-000000000001";
   const input = {
     namespaceId: tenant.id,
@@ -9005,21 +9005,20 @@ test("a ServiceAccount credential Secret create that applied but answered an err
     .update(serviceAccountId)
     .digest("hex")
     .slice(0, 32)}`;
+  const secretRef = { name: secretName, key: "token" };
   const dropped = Object.assign(new Error("dropped"), { statusCode: 500 });
   const unknown = (error) =>
     error instanceof DependencyUnavailableError &&
-    error.message ===
-      "The ServiceAccount credential Secret create outcome is unknown, and its cleanup could not finish.";
+    error.message === "The ServiceAccount credential Secret create outcome could not be confirmed.";
   // Faults injected around the fixture's in-memory Secret calls.
   const harness = async ({ applied, mutate, readStatus, deleteStatus }) => {
     const { driver, namespace, objects } = workspaceSetupFixture(false);
     const { core } = await driver.apiClients;
     const key = `Secret:${namespace}:${secretName}`;
-    const calls = { reads: 0, deletes: [] };
-    let created = false;
+    const calls = { creates: 0, reads: 0, deletes: [] };
     const create = core.createNamespacedSecret;
     core.createNamespacedSecret = async (request) => {
-      created = true;
+      calls.creates += 1;
       if (applied) {
         await create(request);
         mutate?.(objects.get(key));
@@ -9028,7 +9027,7 @@ test("a ServiceAccount credential Secret create that applied but answered an err
     };
     const read = core.readNamespacedSecret;
     core.readNamespacedSecret = async (request) => {
-      if (created && request.name === secretName) {
+      if (calls.creates > 0 && request.name === secretName) {
         calls.reads += 1;
         if (readStatus !== undefined) {
           throw Object.assign(new Error("read failed"), { statusCode: readStatus });
@@ -9038,48 +9037,44 @@ test("a ServiceAccount credential Secret create that applied but answered an err
     };
     const remove = core.deleteNamespacedSecret;
     core.deleteNamespacedSecret = async (request) => {
-      calls.deletes.push(request.body.preconditions);
+      calls.deletes.push(request.body?.preconditions);
       if (deleteStatus !== undefined) {
         throw Object.assign(new Error("delete failed"), { statusCode: deleteStatus });
       }
       return remove(request);
     };
-    const restore = () => {
-      core.createNamespacedSecret = create;
-    };
-    return { driver, objects, key, calls, restore };
+    return { driver, namespace, objects, key, calls };
   };
 
-  await t.test(
-    "applied, reply lost: the exact Secret is removed and issuance can retry",
-    async () => {
-      const { driver, objects, key, calls, restore } = await harness({ applied: true });
-      await assert.rejects(
-        driver.storeServiceAccountCredential(input),
-        (error) => error === dropped,
-      );
-      assert.equal(objects.has(key), false);
-      assert.equal(calls.reads, 1);
-      assert.deepEqual(calls.deletes, [{ uid: `${secretName}-uid`, resourceVersion: "1" }]);
-      // Without the cleanup, every later issuance stopped at "already exists".
-      restore();
-      assert.deepEqual(await driver.storeServiceAccountCredential(input), {
-        name: secretName,
-        key: "token",
-      });
-      assert.equal(
-        Buffer.from(objects.get(key).data.token, "base64").toString(),
-        "at-request-fixture",
-      );
-    },
-  );
+  await t.test("applied, reply lost: the exact Secret confirms storage and stays", async () => {
+    const { driver, objects, key, calls } = await harness({ applied: true });
+    assert.deepEqual(await driver.storeServiceAccountCredential(input), secretRef);
+    assert.deepEqual(calls, { creates: 1, reads: 1, deletes: [] });
+    const stored = objects.get(key);
+    assert.equal(stored.metadata.uid, `${secretName}-uid`);
+    assert.equal(stored.metadata.resourceVersion, "1");
+    assert.equal(
+      stored.metadata.annotations["openclaw.dev/provider-credential-id"],
+      input.credentialId,
+    );
+    assert.equal(Buffer.from(stored.data.token, "base64").toString(), input.accessToken);
+    // Only the ServiceAccount Driver can confirm provider revocation before exact cleanup.
+    assert.deepEqual(
+      await driver.findServiceAccountCredential({ namespaceId: tenant.id, serviceAccountId }),
+      {
+        secretNamespace: key.split(":")[1],
+        secretRef,
+        credentialId: input.credentialId,
+      },
+    );
+    assert.deepEqual(calls.deletes, []);
+  });
 
   await t.test("never applied: nothing is deleted and the create keeps its error", async () => {
     const { driver, objects, key, calls } = await harness({ applied: false });
     await assert.rejects(driver.storeServiceAccountCredential(input), (error) => error === dropped);
     assert.equal(objects.has(key), false);
-    assert.equal(calls.reads, 1);
-    assert.deepEqual(calls.deletes, []);
+    assert.deepEqual(calls, { creates: 1, reads: 1, deletes: [] });
   });
 
   for (const [name, mutate] of [
@@ -9101,6 +9096,18 @@ test("a ServiceAccount credential Secret create that applied but answered an err
         stored.data.token = Buffer.from("at-another-request").toString("base64");
       },
     ],
+    [
+      "another provider credential ID",
+      (stored) => {
+        stored.metadata.annotations["openclaw.dev/provider-credential-id"] = "cred-another";
+      },
+    ],
+    [
+      "no provider credential ID",
+      (stored) => {
+        delete stored.metadata.annotations["openclaw.dev/provider-credential-id"];
+      },
+    ],
   ]) {
     await t.test(`an object with ${name} is kept and the create keeps its error`, async () => {
       const { driver, objects, key, calls } = await harness({ applied: true, mutate });
@@ -9109,7 +9116,7 @@ test("a ServiceAccount credential Secret create that applied but answered an err
         (error) => error === dropped,
       );
       assert.equal(objects.has(key), true);
-      assert.deepEqual(calls.deletes, []);
+      assert.deepEqual(calls, { creates: 1, reads: 1, deletes: [] });
     });
   }
 
@@ -9117,60 +9124,59 @@ test("a ServiceAccount credential Secret create that applied but answered an err
     const { driver, objects, key, calls } = await harness({ applied: true, readStatus: 403 });
     await assert.rejects(driver.storeServiceAccountCredential(input), unknown);
     assert.equal(objects.has(key), true);
-    assert.deepEqual(calls.deletes, []);
+    assert.deepEqual(calls, { creates: 1, reads: 1, deletes: [] });
   });
 
-  await t.test("a Secret already gone at delete counts as removed", async () => {
-    const { driver, calls } = await harness({ applied: true, deleteStatus: 404 });
-    await assert.rejects(driver.storeServiceAccountCredential(input), (error) => error === dropped);
-    assert.equal(calls.deletes.length, 1);
-  });
+  for (const field of ["uid", "resourceVersion"]) {
+    for (const value of [undefined, ""]) {
+      await t.test(
+        `a Secret with ${value === undefined ? "missing" : "empty"} ${field} remains unknown`,
+        async () => {
+          const { driver, objects, key, calls } = await harness({
+            applied: true,
+            mutate: (stored) => {
+              if (value === undefined) {
+                delete stored.metadata[field];
+              } else {
+                stored.metadata[field] = value;
+              }
+            },
+          });
+          await assert.rejects(driver.storeServiceAccountCredential(input), unknown);
+          assert.equal(objects.has(key), true);
+          assert.deepEqual(calls, { creates: 1, reads: 1, deletes: [] });
+        },
+      );
+    }
+  }
 
-  await t.test("a Secret without a resource version is not deleted blindly", async () => {
-    const { driver, objects, key, calls } = await harness({
-      applied: true,
-      mutate: (stored) => {
-        delete stored.metadata.resourceVersion;
-      },
-    });
-    await assert.rejects(driver.storeServiceAccountCredential(input), unknown);
-    assert.equal(objects.has(key), true);
-    assert.deepEqual(calls.deletes, []);
-  });
-
-  await t.test("a Secret changed before the delete is kept as unknown", async () => {
-    const { driver, objects, key, calls } = await harness({ applied: true, deleteStatus: 409 });
-    await assert.rejects(driver.storeServiceAccountCredential(input), unknown);
-    assert.equal(objects.has(key), true);
-    assert.equal(calls.deletes.length, 1);
-  });
-
-  await t.test("the cleanup delete fails: the outcome is reported as unknown", async () => {
+  await t.test("a later exact cleanup failure retains the confirmed receipt", async () => {
     const { driver, objects, key, calls } = await harness({ applied: true, deleteStatus: 503 });
-    await assert.rejects(driver.storeServiceAccountCredential(input), unknown);
-    assert.equal(objects.has(key), true);
-    assert.equal(calls.deletes.length, 1);
+    assert.deepEqual(await driver.storeServiceAccountCredential(input), secretRef);
+    assert.deepEqual(calls, { creates: 1, reads: 1, deletes: [] });
+    const receipt = structuredClone(objects.get(key));
+    // This explicit call is the cleanup the ServiceAccount Driver owns after revocation.
+    await assert.rejects(driver.deleteServiceAccountCredential({ ...input, secretRef }), {
+      message: "delete failed",
+      statusCode: 503,
+    });
+    assert.deepEqual(objects.get(key), receipt);
+    assert.deepEqual(calls.deletes, [
+      { uid: receipt.metadata.uid, resourceVersion: receipt.metadata.resourceVersion },
+    ]);
   });
 
   await t.test(
     "a leftover Secret blocks the retry with a conflict that names it, not an outage",
     async () => {
-      const { driver, objects, key, calls, restore } = await harness({
-        applied: true,
-        deleteStatus: 503,
-      });
-      await assert.rejects(driver.storeServiceAccountCredential(input), unknown);
-      restore();
+      const { driver, namespace, objects, key, calls } = await harness({ applied: true });
+      assert.deepEqual(await driver.storeServiceAccountCredential(input), secretRef);
       const leftover = structuredClone(objects.get(key));
-      const namespace = key.split(":")[1];
-      const { core } = await driver.apiClients;
-      let creates = 0;
-      const create = core.createNamespacedSecret;
-      core.createNamespacedSecret = async (request) => {
-        creates += 1;
-        return create(request);
+      const retry = {
+        ...input,
+        credentialId: "cred-retry-fixture",
+        accessToken: "at-retry-fixture",
       };
-      const retry = { ...input, accessToken: "at-retry-fixture" };
       await assert.rejects(driver.storeServiceAccountCredential(retry), (error) => {
         // Before finding 935 this was a ConfigurationFailure the controller hid behind 503.
         assert.ok(error instanceof ServiceAccountCredentialSecretExistsError, error.name);
@@ -9185,23 +9191,22 @@ test("a ServiceAccount credential Secret create that applied but answered an err
         assert.doesNotMatch(error.message, /at-request-fixture|at-retry-fixture/);
         return true;
       });
-      // Nothing is written: the leftover stays for the operator, and no create is attempted.
-      assert.equal(creates, 0);
+      // Compute cannot revoke the provider credential, so it leaves the receipt untouched.
       assert.deepEqual(objects.get(key), leftover);
-      assert.equal(calls.deletes.length, 1);
+      assert.equal(calls.creates, 1);
+      assert.deepEqual(calls.deletes, []);
     },
   );
 
   await t.test("a foreign object under the name keeps the ownership failure", async () => {
-    const { driver, objects, key, restore } = await harness({
+    const { driver, objects, key, calls } = await harness({
       applied: true,
       mutate: (stored) => {
         stored.metadata.labels["openclaw.dev/service-account"] = "sa_another";
       },
     });
     await assert.rejects(driver.storeServiceAccountCredential(input), (error) => error === dropped);
-    restore();
-    assert.equal(objects.has(key), true);
+    const foreign = structuredClone(objects.get(key));
     await assert.rejects(
       driver.storeServiceAccountCredential(input),
       // Not the account's own leftover, so the Driver's ownership refusal stands (still 503).
@@ -9209,6 +9214,9 @@ test("a ServiceAccount credential Secret create that applied but answered an err
         error.constructor.name === "OwnershipFailure" &&
         !(error instanceof ResourceStateConflictError),
     );
+    assert.deepEqual(objects.get(key), foreign);
+    assert.equal(calls.creates, 1);
+    assert.deepEqual(calls.deletes, []);
   });
 });
 
@@ -16482,15 +16490,9 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
     }
   }
 
+  const anotherCompute = { id: "another-driver", implementation: "another-implementation" };
   for (const invalid of [
-    {
-      ...revision,
-      compute: {
-        ...revision.compute,
-        id: "another-driver",
-        implementation: "another-implementation",
-      },
-    },
+    { ...revision, compute: { ...revision.compute, ...anotherCompute } },
     { ...revision, servicePrincipalId: undefined },
     { ...revision, servicePrincipalId: " " },
   ]) {
@@ -16548,30 +16550,94 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
       },
     },
   );
-  const dedicatedNativeConfiguration = createHarnessConfiguration("openclaw", "gpt-5");
-  assert.doesNotThrow(() =>
-    production.validateHarnessAuth(
-      { id: "openclaw", version: "1.0.0", mode: "dedicated" },
-      apiKeyAuth,
-      dedicatedNativeConfiguration,
-    ),
+  assertDedicatedOpenClawCatalog(production);
+  await assertKubernetesOperatorCredentials(production, revision);
+
+  const embeddedRevision = {
+    ...revision,
+    compute: { id: production.id, implementation: production.implementation },
+    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+    harnessAuth: apiKeyAuth,
+    configuration: { ...revision.configuration, agents: { defaults: { model: "openai/gpt-5" } } },
+  };
+  await assertEmbeddedOpenClawConfiguration(production, revision.harness, embeddedRevision);
+
+  const namespace = kubernetesNamespaceName(tenant.id);
+  const agentHash = createHash("sha256").update(revision.agentId).digest("hex");
+  const gateway = production.deployment(
+    `gateway-${agentHash.slice(0, 12)}`,
+    { namespaceId: tenant.id, agentId: revision.agentId },
+    { name: namespace, plane: "execution" },
+    "openclaw-enterprise/gateway-fixture:local",
+    `agent-${agentHash.slice(0, 12)}`,
+    "gateway",
+    {},
+    production.gatewayConfiguration(embeddedRevision).loggingLevel,
+    production.gatewayConfiguration(embeddedRevision),
+    true,
+    revision.servicePrincipalId,
+    preparedAuth(production, namespace, true),
   );
+  const pod = gateway.spec.template.spec;
+  const environment = Object.fromEntries(pod.containers[0].env.map((entry) => [entry.name, entry]));
+
+  // The approved combined Agent workload receives only its own projected identity and model Secret.
+  assert.equal(pod.serviceAccountName, `agent-${agentHash.slice(0, 12)}`);
+  assert.ok(pod.volumes.some(({ name }) => name === "openclaw-service-principal"));
+  assert.deepEqual(environment.OPENAI_API_KEY.valueFrom.secretKeyRef, {
+    name: "occ-model-key",
+    key: "value",
+  });
+  assert.equal(environment.HOME.value, "/home/node");
+  assert.equal(environment.APP_SERVER_TOKEN, undefined);
+  assert.equal(environment.APP_SERVER_URL, undefined);
+
+  const policies = production
+    .agentNetworkPolicies(embeddedRevision, {
+      name: namespace,
+      plane: "execution",
+    })
+    .map(({ resource }) => resource);
+  assert.equal(policies.length, 1);
+  assert.deepEqual(policies[0].spec.podSelector.matchLabels, {
+    "openclaw.dev/namespace": tenant.id,
+    "openclaw.dev/workload-role": "gateway",
+    "openclaw.dev/agent": revision.agentId,
+    "openclaw.dev/network-profile": "broad-egress-v1",
+  });
+  assert.deepEqual(policies[0].spec.policyTypes, ["Egress"]);
+  assert.deepEqual(policies[0].spec.egress[0].ports, [{ protocol: "TCP", port: 443 }]);
+
+  await assert.rejects(
+    driver.retireRevision({ ...revision, compute: { ...anotherCompute } }),
+    /another Compute Driver/i,
+  );
+  await assert.rejects(
+    driver.stopRevision({ ...revision, compute: { ...anotherCompute } }),
+    /another Compute Driver/i,
+  );
+});
+
+function assertDedicatedOpenClawCatalog(production) {
+  const harness = { id: "openclaw", version: "1.0.0", mode: "dedicated" };
+  const nativeConfiguration = createHarnessConfiguration("openclaw", "gpt-5");
+  const withOpenAI = (openai) => ({
+    ...nativeConfiguration,
+    models: { providers: { openai } },
+  });
+  const validate = (configuration) =>
+    production.validateHarnessAuth(harness, apiKeyAuth, configuration);
+  const baseUrlMismatch =
+    "OpenAI model baseUrl must match the resolved Harness modelProvider.baseUrl.";
+
+  assert.doesNotThrow(() => validate(nativeConfiguration));
   assert.throws(
     () =>
-      production.validateHarnessAuth(
-        { id: "openclaw", version: "1.0.0", mode: "dedicated" },
-        apiKeyAuth,
-        {
-          ...dedicatedNativeConfiguration,
-          models: {
-            providers: {
-              openai: {
-                ...dedicatedNativeConfiguration.models.providers.openai,
-                models: [{ id: "gpt-5", contextWindow: 128000, maxTokens: 8192 }],
-              },
-            },
-          },
-        },
+      validate(
+        withOpenAI({
+          ...nativeConfiguration.models.providers.openai,
+          models: [{ id: "gpt-5", contextWindow: 128000, maxTokens: 8192 }],
+        }),
       ),
     {
       name: "ConfigurationHarnessError",
@@ -16582,34 +16648,18 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
   // A Secret grant must not let an Agent editor choose where the raw key is sent.
   assert.throws(
     () =>
-      production.validateHarnessAuth(
-        { id: "openclaw", version: "1.0.0", mode: "dedicated" },
-        apiKeyAuth,
-        {
-          ...dedicatedNativeConfiguration,
-          models: {
-            providers: {
-              openai: {
-                ...dedicatedNativeConfiguration.models.providers.openai,
-                baseUrl: "https://models.example.test/inference/v1",
-                api: "openai-completions",
-              },
-            },
-          },
-        },
+      validate(
+        withOpenAI({
+          ...nativeConfiguration.models.providers.openai,
+          baseUrl: "https://models.example.test/inference/v1",
+          api: "openai-completions",
+        }),
       ),
-    {
-      name: "ConfigurationHarnessError",
-      message: "OpenAI model baseUrl must match the resolved Harness modelProvider.baseUrl.",
-    },
+    { name: "ConfigurationHarnessError", message: baseUrlMismatch },
   );
-  // Each dedicated OpenClaw catalog refusal names the setting the caller fixes (finding 1116);
-  // preparation applies the same rule to the admitted revision.
-  const openaiRow = dedicatedNativeConfiguration.models.providers.openai;
-  const withOpenAI = (openai) => ({
-    ...dedicatedNativeConfiguration,
-    models: { providers: { openai } },
-  });
+
+  // Catalog refusals identify the setting the caller fixes (finding 1116).
+  const openaiRow = nativeConfiguration.models.providers.openai;
   const withEntry = (entry) =>
     withOpenAI({ ...openaiRow, models: [{ ...openaiRow.models[0], ...entry }] });
   for (const [configuration, setting, requirement] of [
@@ -16646,23 +16696,15 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
       "models.providers.openai.models.0.headers",
       "must be unset on Dedicated OpenClaw",
     ],
-    [
-      withEntry({ baseUrl: "not a url" }),
-      "models.providers.openai.models.0.baseUrl",
-      "(or models.providers.openai.baseUrl) must be an HTTPS endpoint on port 443 ending in /v1 without credentials, query, fragment, or wildcard on Dedicated OpenClaw",
-    ],
     ...[
+      "not a url",
       "http://models.example.test/v1",
       "https://models.example.test:8443/v1",
       "https://models.example.test/v1?key=forbidden",
       "https://models.example.test/v1#fragment",
       "https://*.example.test/v1",
       "https://models.example.test/other",
-    ].map((baseUrl) => [
-      withEntry({ baseUrl }),
-      "models.providers.openai.models.0.baseUrl",
-      "(or models.providers.openai.baseUrl) must be an HTTPS endpoint on port 443 ending in /v1 without credentials, query, fragment, or wildcard on Dedicated OpenClaw",
-    ]),
+    ].map((baseUrl) => [withEntry({ baseUrl }), "models.providers.openai.models.0.baseUrl"]),
     [
       withEntry({ reasoning: "yes" }),
       "models.providers.openai.models.0.reasoning",
@@ -16681,11 +16723,11 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
     // Preparation refused this only after a dedicated deployment stopped its predecessors.
     [
       {
-        ...dedicatedNativeConfiguration,
+        ...nativeConfiguration,
         agents: {
-          ...dedicatedNativeConfiguration.agents,
+          ...nativeConfiguration.agents,
           defaults: {
-            ...dedicatedNativeConfiguration.agents.defaults,
+            ...nativeConfiguration.agents.defaults,
             embeddedAgent: { runtimeServer: { url: "ws://127.0.0.1:1" } },
           },
         },
@@ -16695,21 +16737,19 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
     ],
   ]) {
     assert.throws(
-      () =>
-        production.validateHarnessAuth(
-          { id: "openclaw", version: "1.0.0", mode: "dedicated" },
-          apiKeyAuth,
-          configuration,
-        ),
+      () => validate(configuration),
       {
         name: "ConfigurationHarnessError",
         message: setting.endsWith(".baseUrl")
-          ? "OpenAI model baseUrl must match the resolved Harness modelProvider.baseUrl."
+          ? baseUrlMismatch
           : `Configuration setting ${setting} ${requirement}.`,
       },
       setting,
     );
   }
+}
+
+async function assertKubernetesOperatorCredentials(production, revision) {
   const serviceAccountId = "sa_00000000-0000-4000-8000-000000000001";
   const serviceAccount = {
     method: "codex_pat",
@@ -16795,19 +16835,15 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
       /admitted account/i,
     );
   }
-  const embeddedRevision = {
-    ...revision,
-    compute: { id: production.id, implementation: production.implementation },
-    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
-    harnessAuth: apiKeyAuth,
-    configuration: { ...revision.configuration, agents: { defaults: { model: "openai/gpt-5" } } },
-  };
+}
+
+async function assertEmbeddedOpenClawConfiguration(production, dedicatedHarness, embeddedRevision) {
   admitRevisionHarness(production, embeddedRevision);
   // Admission must retain supported model choices without permitting a second credential selector.
   for (const model of ["codex/gpt-5", "openai/gpt-5"]) {
     const configuration = { agents: { defaults: { model } } };
     assert.doesNotThrow(() =>
-      production.validateHarnessAuth(revision.harness, apiKeyAuth, configuration),
+      production.validateHarnessAuth(dedicatedHarness, apiKeyAuth, configuration),
     );
     assert.equal(configuration.agents.defaults.model, model);
   }
@@ -16913,67 +16949,7 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
       /channels require a dedicated Agent workload\./i,
     );
   }
-  const namespace = kubernetesNamespaceName(tenant.id);
-  const agentHash = createHash("sha256").update(revision.agentId).digest("hex");
-  const gateway = production.deployment(
-    `gateway-${agentHash.slice(0, 12)}`,
-    { namespaceId: tenant.id, agentId: revision.agentId },
-    { name: namespace, plane: "execution" },
-    "openclaw-enterprise/gateway-fixture:local",
-    `agent-${agentHash.slice(0, 12)}`,
-    "gateway",
-    {},
-    production.gatewayConfiguration(embeddedRevision).loggingLevel,
-    production.gatewayConfiguration(embeddedRevision),
-    true,
-    revision.servicePrincipalId,
-    preparedAuth(production, namespace, true),
-  );
-  const pod = gateway.spec.template.spec;
-  const environment = Object.fromEntries(pod.containers[0].env.map((entry) => [entry.name, entry]));
-
-  // The approved combined Agent workload receives only its own projected identity and model Secret.
-  assert.equal(pod.serviceAccountName, `agent-${agentHash.slice(0, 12)}`);
-  assert.ok(pod.volumes.some(({ name }) => name === "openclaw-service-principal"));
-  assert.deepEqual(environment.OPENAI_API_KEY.valueFrom.secretKeyRef, {
-    name: "occ-model-key",
-    key: "value",
-  });
-  assert.equal(environment.HOME.value, "/home/node");
-  assert.equal(environment.APP_SERVER_TOKEN, undefined);
-  assert.equal(environment.APP_SERVER_URL, undefined);
-
-  const policies = production
-    .agentNetworkPolicies(embeddedRevision, {
-      name: namespace,
-      plane: "execution",
-    })
-    .map(({ resource }) => resource);
-  assert.equal(policies.length, 1);
-  assert.deepEqual(policies[0].spec.podSelector.matchLabels, {
-    "openclaw.dev/namespace": tenant.id,
-    "openclaw.dev/workload-role": "gateway",
-    "openclaw.dev/agent": revision.agentId,
-    "openclaw.dev/network-profile": "broad-egress-v1",
-  });
-  assert.deepEqual(policies[0].spec.policyTypes, ["Egress"]);
-  assert.deepEqual(policies[0].spec.egress[0].ports, [{ protocol: "TCP", port: 443 }]);
-
-  await assert.rejects(
-    driver.retireRevision({
-      ...revision,
-      compute: { id: "another-driver", implementation: "another-implementation" },
-    }),
-    /another Compute Driver/i,
-  );
-  await assert.rejects(
-    driver.stopRevision({
-      ...revision,
-      compute: { id: "another-driver", implementation: "another-implementation" },
-    }),
-    /another Compute Driver/i,
-  );
-});
+}
 
 // options() shares one resource object across roles; give each role its own.
 function separateResources() {

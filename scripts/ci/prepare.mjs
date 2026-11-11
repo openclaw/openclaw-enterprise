@@ -8,8 +8,10 @@ import {
   appendFile,
   chmod,
   lstat,
+  link,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   rename,
   rm,
@@ -354,13 +356,23 @@ async function writeState(path, state) {
   }
 }
 
-async function persistState(path, state) {
+async function persistState(path, state, { exclusive = false } = {}) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temp = join(dirname(path), `.${basename(path)}.${process.pid}.${randomSuffix()}.tmp`);
-  await writeFile(temp, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-  await chmod(temp, 0o600);
-  await rename(temp, path);
-  await chmod(path, 0o600);
+  const content = `${JSON.stringify(state, null, 2)}\n`;
+  const file = await open(temp, "wx", 0o600);
+  try {
+    await file.writeFile(content).finally(() => file.close());
+    await chmod(temp, 0o600);
+    if (exclusive) {
+      // Publish a complete initial journal without replacing another owner's state.
+      await link(temp, path);
+    } else {
+      await rename(temp, path);
+    }
+  } finally {
+    await rm(temp, { force: true });
+  }
 }
 
 async function prepareTogether(operations, concurrency = operations.length) {
@@ -635,9 +647,8 @@ async function commandAvailable(command, args = ["--version"], options) {
   }
 }
 
-// Ports this process has handed out. PostgreSQL and k3d now reserve theirs
-// concurrently and release the probe listener before binding, so the kernel could
-// return the same free port to both; never hand one out twice.
+// Never hand out the same probe port twice within this preparation process.
+// Docker allocates PostgreSQL's port directly; other callers still use probes.
 const reservedLoopbackPorts = new Set();
 
 async function reserveLoopbackPort() {
@@ -691,10 +702,6 @@ async function ensurePostgresServer(statePath, state) {
     "--format",
     "{{.Server.Version}}",
   ]);
-  const port = await reserveLoopbackPort();
-  if (port === 55432) {
-    throw new Error("Refusing to use the developer PostgreSQL port 55432.");
-  }
   const project = ownedName("openclaw-ci-pg", state.prefix, { maxLength: 63, separator: "_" });
   const directory = join(dirname(statePath), `${project}-bootstrap`);
   try {
@@ -711,7 +718,9 @@ async function ensurePostgresServer(statePath, state) {
     directoryCreated: false,
     initSqlCreated: false,
     composeFile: composePostgresFile,
-    port,
+    // Zero asks Docker to allocate in its own host namespace. Keep this pending
+    // value until discovery succeeds so partial startup can still be cleaned.
+    port: 0,
   });
   await writeState(statePath, state);
   try {
@@ -737,7 +746,7 @@ async function ensurePostgresServer(statePath, state) {
     await execFile(
       process.env.OCC_DOCKER_BIN ?? "docker",
       dockerArgsForPostgres(resource, "up", "-d", "--wait"),
-      { env: { OCC_POSTGRES_PORT: String(port), OPENCLAW_CI_POSTGRES_INIT_SQL: initSql } },
+      { env: { OCC_POSTGRES_PORT: "0", OPENCLAW_CI_POSTGRES_INIT_SQL: initSql } },
     );
   } catch (error) {
     if (
@@ -755,6 +764,42 @@ async function ensurePostgresServer(statePath, state) {
     }
     throw error;
   }
+  const docker = process.env.OCC_DOCKER_BIN ?? "docker";
+  const container = (
+    await execFile(docker, dockerArgsForPostgres(resource, "ps", "-q", "postgres"), {
+      env: { OCC_POSTGRES_PORT: "0", OPENCLAW_CI_POSTGRES_INIT_SQL: initSql },
+    })
+  ).stdout.trim();
+  if (!/^[a-f0-9]{64}$/.test(container)) {
+    throw new Error("Expected one owned PostgreSQL container for port discovery.");
+  }
+  const output = await execFile(docker, [
+    "inspect",
+    "--format",
+    "{{json .NetworkSettings.Ports}}",
+    container,
+  ]);
+  let ports;
+  try {
+    ports = JSON.parse(output.stdout);
+  } catch {
+    throw new Error("Invalid PostgreSQL port discovery response.");
+  }
+  const bindings = ports?.["5432/tcp"];
+  const port = Number(bindings?.[0]?.HostPort);
+  if (
+    !Array.isArray(bindings) ||
+    bindings.length !== 1 ||
+    bindings[0]?.HostIp !== "127.0.0.1" ||
+    typeof bindings[0]?.HostPort !== "string" ||
+    !/^[1-9][0-9]{0,4}$/.test(bindings[0].HostPort) ||
+    port > 65535 ||
+    port === 55432
+  ) {
+    throw new Error("Expected one loopback PostgreSQL port outside developer port 55432.");
+  }
+  resource.port = port;
+  await writeState(statePath, state);
   await postgresAdmin(resource, { statements: ciPostgresSettings, stage: "postgres-settings" });
   await markResourceReady(statePath, state, resource);
   return resource;
@@ -824,6 +869,9 @@ async function createAndMigrateDatabase(
     );
   }
   const server = existingServer ?? (await ensurePostgresServer(statePath, state));
+  if (server.status !== "ready") {
+    throw new Error("PostgreSQL server is not ready; clean up the failed preparation first.");
+  }
   const source =
     template === undefined
       ? await laneTemplateDatabase(statePath, state, server, kind)
@@ -3294,7 +3342,13 @@ async function prepareLaneLogging(statePath, state, env, cluster) {
   await markResourceReady(statePath, state, logging.resource);
 }
 
-async function prepareLane({ lane, statePath, file }) {
+async function prepareLane({ lane, statePath, file, cleanupOwner }) {
+  if (
+    cleanupOwner !== undefined &&
+    (typeof cleanupOwner !== "string" || !/^[a-z0-9-]{1,128}$/.test(cleanupOwner))
+  ) {
+    throw new Error("Invalid CI cleanup owner.");
+  }
   const name = assertLane(lane);
   const relativeFile = file === undefined ? undefined : toRepositoryRelative(filePath(file));
   if (
@@ -3353,8 +3407,11 @@ async function prepareLane({ lane, statePath, file }) {
   }
   const state = baseState(name, resolvedStatePath);
   state.selectedFile = relativeFile;
+  if (cleanupOwner !== undefined) {
+    state.cleanupOwner = cleanupOwner;
+  }
   const env = baseEnv(resolvedStatePath, state);
-  await writeState(resolvedStatePath, state);
+  await persistState(resolvedStatePath, state, { exclusive: true });
 
   const sourceBuild = lanePrepare(name).sourceBuildFiles?.some((path) =>
     relativeFile === undefined
@@ -3490,25 +3547,23 @@ async function prepareLane({ lane, statePath, file }) {
     case "k3d-fixture-state":
     case "k3d-fixture-network":
     case "k3d-fixture-plugins": {
-      // PostgreSQL, cluster creation and the fixture build are independent.
-      const [, cluster, built] = await timedPreparation(
-        name,
-        "postgres-cluster-fixture-build",
-        () =>
-          prepareTogether([
-            () =>
-              timedPreparation(name, "postgres-start", () =>
-                ensurePostgresServer(resolvedStatePath, state),
-              ),
-            () =>
-              timedPreparation(name, "k3d-create", () =>
-                ensureK3dCluster(resolvedStatePath, state),
-              ),
-            () =>
-              timedPreparation(name, "fixture-image-build", () =>
-                buildFixtureImage(resolvedStatePath, state),
-              ),
-          ]),
+      // Publish PostgreSQL's daemon-assigned port before k3d probes its fixed API
+      // port. The independent image build can overlap both resource startups.
+      const [cluster, built] = await timedPreparation(name, "postgres-cluster-fixture-build", () =>
+        prepareTogether([
+          async () => {
+            await timedPreparation(name, "postgres-start", () =>
+              ensurePostgresServer(resolvedStatePath, state),
+            );
+            return timedPreparation(name, "k3d-create", () =>
+              ensureK3dCluster(resolvedStatePath, state),
+            );
+          },
+          () =>
+            timedPreparation(name, "fixture-image-build", () =>
+              buildFixtureImage(resolvedStatePath, state),
+            ),
+        ]),
       );
       const fixture = await timedPreparation(name, "fixture-storage-image-import", () =>
         prepareFixtureStorageAndImage(resolvedStatePath, state, cluster, built),
@@ -4023,6 +4078,19 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     };
   }
 
+  if (relativeFile === "tests/integration/ci-prepare-postgres-real.test.ts") {
+    // The runner survives a killed test worker. Journal both child state paths
+    // before handing them to the test, so file or lane cleanup can recover them.
+    const children = Array.from({ length: 2 }, () => {
+      const name = `${effectiveState.prefix}-child-${randomSuffix()}`;
+      const resource = addResource(effectiveState, "child-state", { name });
+      resourceIds.push(resource.id);
+      return { path: join(dirname(resolvedStatePath), `${name}.json`), owner: resource.id };
+    });
+    await writeState(resolvedStatePath, effectiveState);
+    env.OCC_TEST_CI_POSTGRES_STATES = JSON.stringify(children);
+  }
+
   if (prepare.postgres && !prepare.selfProvisionedFiles?.includes(relativeFile)) {
     const dbKind = prepare.k3d ? "k8s" : "ci";
     const database = await createAndMigrateDatabase(resolvedStatePath, effectiveState, {
@@ -4228,7 +4296,12 @@ async function main() {
   }
   const result = args.file
     ? await prepareFile({ lane: args.lane, file: args.file, statePath: args.state })
-    : await prepareLane({ lane: args.lane, statePath: args.state, file: args["selected-file"] });
+    : await prepareLane({
+        lane: args.lane,
+        statePath: args.state,
+        file: args["selected-file"],
+        cleanupOwner: args["cleanup-owner"],
+      });
   const env = { ...result.defaults, ...result.env };
   await appendGithubEnv(args["github-env"] ?? process.env.GITHUB_ENV, env);
   process.stdout.write(`${JSON.stringify({ envNames: Object.keys(env).sort() }, null, 2)}\n`);

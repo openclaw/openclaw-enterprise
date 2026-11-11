@@ -104,9 +104,48 @@ function serialize(serializer, value) {
   try {
     return { output: serializer(value) };
   } catch (error) {
-    return { error: `${error?.constructor?.name}: ${error?.message}` };
+    const type = error?.constructor?.name;
+    const message = String(error?.message);
+    const schemaMismatch =
+      type === "TypeError" && message.endsWith("' does not match schema definition.")
+        ? /^The value of '(__fjs_(?:root|merged))_\d+(#.*)$/su.exec(message)
+        : null;
+    return {
+      error: {
+        type,
+        message: schemaMismatch
+          ? { schemaFamily: schemaMismatch[1], detail: schemaMismatch[2] }
+          : message,
+      },
+    };
   }
 }
+
+test("serializer error comparison preserves generated-looking property names", () => {
+  function failure(property, schemaId) {
+    const schema = {
+      type: "object",
+      properties: { [property]: { anyOf: [{ type: "string" }, { type: "number" }] } },
+    };
+    const serializer = cachedResponseSerializers(null)(
+      schemaId ? { External: { $id: schemaId, ...schema } } : {},
+      {},
+    )({
+      schema: schemaId ? { $ref: schemaId } : { allOf: [schema] },
+      httpStatus: "200",
+    });
+    return serialize(serializer, { [property]: {} });
+  }
+
+  const first = failure("__fjs_merged_1");
+  assert.ok(first.error, "the invalid property value fails serialization");
+  // These are real property names after the fragment, not generated schema IDs.
+  assert.notDeepEqual(first, failure("__fjs_merged_2"));
+  // An unnumbered explicit ID and the other generated family must remain distinct too.
+  assert.notDeepEqual(first, failure("__fjs_merged_1", "__fjs_merged"));
+  assert.notDeepEqual(first, failure("__fjs_merged_1", "__fjs_root_1"));
+  assert.equal(first.error.type, "TypeError");
+});
 
 test("the generator records every route schema", () => {
   assert.ok(generated.validators >= 40, `${generated.validators} validators`);

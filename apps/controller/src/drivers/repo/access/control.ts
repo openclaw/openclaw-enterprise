@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
+import { admissionIdTimestamp } from "./admission-id.ts";
 import type { Clock } from "./backend-contracts.ts";
 import type { CredentialServiceOwner } from "./internal-contracts.ts";
 import type { SessionInput } from "./sessions.ts";
@@ -275,9 +276,8 @@ export function createControlAdmission(
         throw new Error("CONTROL_CLOSED");
       }
     }
-    const timestamp =
-      /^([0-9]{13})-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.exec(id);
-    const age = timestamp ? now() - Number(timestamp[1]) : -1;
+    const timestamp = admissionIdTimestamp(id);
+    const age = timestamp === undefined ? -1 : now() - Number(timestamp);
     if (age < 0) {
       throw new Error("INVALID_ADMISSION");
     }

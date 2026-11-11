@@ -286,6 +286,7 @@
     "tests/integration/postgres-repository-transactions.test.mjs": 500,
     "tests/integration/postgres-restart-recovery.test.mjs": 4100,
     "tests/integration/postgres-secret-state.test.mjs": 600,
+    "tests/integration/postgres-service-account-compensation.test.ts": 8760,
     "tests/integration/postgres-service-account-deletion.test.mjs": 800,
     "tests/integration/postgres-service-account-issuance-recovery.test.mjs": 700,
     "tests/integration/postgres-standing-approval-api.test.ts": 2500,
