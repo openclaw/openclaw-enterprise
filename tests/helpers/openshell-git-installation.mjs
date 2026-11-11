@@ -374,6 +374,59 @@ async function trustedSupervisor({
       ? /^[^\s@]+@sha256:[a-f0-9]{64}$/
       : /^ghcr\.io\/nvidia\/openshell\/supervisor:0\.1\.6@sha256:[a-f0-9]{64}$/,
   );
+  const inspectImage = async (image, options) => {
+    const identity = JSON.parse(
+      await command(
+        "docker",
+        [
+          "image",
+          "inspect",
+          "--format",
+          '{"id":{{json .Id}},"digests":{{json .RepoDigests}}}',
+          image,
+        ],
+        options,
+      ),
+    );
+    assert.match(identity.id, /^sha256:[a-f0-9]{64}$/);
+    assert.ok(Array.isArray(identity.digests));
+    return identity;
+  };
+  const parentIdentity = await inspectImage(parent);
+  const verifyParent = async (options) => {
+    const current = await inspectImage(parent, options);
+    assert.equal(current.id, parentIdentity.id);
+    assert.ok(
+      current.digests.some((digest) => digest.endsWith(parent.slice(parent.lastIndexOf("@")))),
+    );
+  };
+  await verifyParent();
+  // BuildKit resolves digest FROM references through registries. Bind a private
+  // local alias to the selected parent instead, without changing its contents.
+  const alias = `oce-git-supervisor-parent-${randomUUID()}:test`;
+  const aliasExists = async (options) =>
+    (
+      await command(
+        "docker",
+        ["image", "ls", "--quiet", "--no-trunc", "--filter", `reference=${alias}`],
+        options,
+      )
+    ).trim();
+  assert.equal(await aliasExists(), "");
+  let aliasCreated = false;
+  cleanup.push(async () => {
+    const options = { signal: AbortSignal.timeout(30_000), timeout: 30_000 };
+    if (!(await aliasExists(options))) {
+      assert.ok(aliasCreated, "Supervisor parent alias creation is unresolved");
+      return;
+    }
+    assert.equal((await inspectImage(alias, options)).id, parentIdentity.id);
+    await command("docker", ["image", "rm", "--no-prune", alias], options);
+    assert.equal(await aliasExists(options), "");
+    await verifyParent(options);
+  });
+  await command("docker", ["tag", parent, alias]);
+  aliasCreated = true;
   const context = join(directory, "supervisor-trust");
   await mkdir(context, { mode: 0o700 });
   const extract = (image, filename, destination) =>
@@ -389,11 +442,16 @@ async function trustedSupervisor({
   );
   await writeFile(
     join(context, "Dockerfile"),
-    `FROM ${parent}\nCOPY --chmod=0644 ca-certificates.crt /etc/ssl/certs/ca-certificates.crt\n`,
+    `FROM ${alias}\nCOPY --chmod=0644 ca-certificates.crt /etc/ssl/certs/ca-certificates.crt\n`,
   );
   const tag = `oce-git-supervisor-${randomUUID()}:test`;
-  await command("docker", ["build", "--network=none", "--tag", tag, context], { timeout: 120_000 });
+  assert.equal((await inspectImage(alias)).id, parentIdentity.id);
+  await command("docker", ["build", "--network=none", "--pull=false", "--tag", tag, context], {
+    timeout: 120_000,
+  });
   cleanup.push(() => command("docker", ["image", "rm", tag]));
+  assert.equal((await inspectImage(alias)).id, parentIdentity.id);
+  await verifyParent();
   await extract(tag, "/openshell-supervisor", join(directory, "trusted-supervisor"));
   const binaryHash = hash(await readFile(join(directory, "stock-supervisor")));
   assert.equal(hash(await readFile(join(directory, "trusted-supervisor"))), binaryHash);
