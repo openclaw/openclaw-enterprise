@@ -288,10 +288,13 @@ import {
 } from "../embedded-gateway-owner.ts";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
+  CLAUDE_CODE_CONFIG_DIRECTORY,
+  CLAUDE_CODE_CONFIG_SUBPATH,
   CLAUDE_CODE_MANAGED_SETTINGS_DIRECTORY,
   CLAUDE_CODE_SETTINGS_INIT_ENTRYPOINT,
   CLAUDE_CODE_SETTINGS_INIT_ROOT,
   CLAUDE_CODE_SETTINGS_SUBPATH,
+  CLAUDE_CODE_TRANSCRIPT_DIRECTORY,
   COMPUTE_AGENT_RUNTIME_ENTRYPOINT,
   COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
   COMPUTE_AGENT_WITH_NODE_ENTRYPOINT,
@@ -1457,12 +1460,13 @@ const GATEWAY_PRIVATE_STATE_CATEGORIES = Object.freeze([
   ["worktree-sources", "/home/node/.openclaw/worktree-sources"],
 ] as const);
 // Claude Code keeps each session's transcript under its configuration directory, and
-// OpenClaw resumes a conversation by that session ID (`claude --resume`). The rest of the
-// directory stays Pod-local. The managed settings that carry the credential are not in it:
-// they come read-only from CLAUDE_CODE_SETTINGS_VOLUME.
+// OpenClaw resumes a conversation by that session ID (`claude --resume`). That directory
+// is the only writable path in it: the rest is the read-only skeleton from
+// CLAUDE_CODE_SETTINGS_VOLUME (finding 3178), as are the managed settings that carry the
+// credential.
 const CLAUDE_CODE_PROJECTS_STATE = Object.freeze([
   "claude-projects",
-  "/home/node/.claude/projects",
+  `${CLAUDE_CODE_CONFIG_DIRECTORY}/${CLAUDE_CODE_TRANSCRIPT_DIRECTORY}`,
 ] as const);
 const CLAUDE_CODE_SETTINGS_VOLUME = "claude-code-settings";
 // What prepare-claude-code-settings reads, besides the credential variable they name.
@@ -15166,8 +15170,18 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       });
     }
     if (claudeCode) {
+      // The read-only configuration skeleton first, then the transcripts mounted into its
+      // one mount point. Nothing else under CLAUDE_CONFIG_DIR is writable.
       const [subPath, mountPath] = CLAUDE_CODE_PROJECTS_STATE;
-      mounts.push({ name: GATEWAY_PRIVATE_STATE_VOLUME, mountPath, subPath, readOnly: false });
+      mounts.push(
+        {
+          name: CLAUDE_CODE_SETTINGS_VOLUME,
+          mountPath: CLAUDE_CODE_CONFIG_DIRECTORY,
+          subPath: CLAUDE_CODE_CONFIG_SUBPATH,
+          readOnly: true,
+        },
+        { name: GATEWAY_PRIVATE_STATE_VOLUME, mountPath, subPath, readOnly: false },
+      );
     }
     return mounts;
   }
@@ -15182,7 +15196,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         ? [
             ...GATEWAY_PRIVATE_STATE_CATEGORIES.map(([, mountPath]) => mountPath),
             GATEWAY_SESSION_DIRECTORY,
-            // Init owns the configuration directory (0700) before the transcript mount lands in it.
+            // Init owns the configuration directory's mount point (0700) in the home volume.
             ...(claudeCode ? [CLAUDE_CODE_PROJECTS_STATE[1]] : []),
           ]
         : HARNESS_WORKSPACE_CATEGORIES.map(([, mountPath]) => mountPath);
@@ -17239,9 +17253,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     }
     if (claudeCode) {
       // Claude Code's admin-managed settings carry the credential and outrank every other
-      // settings tier, so the model's tools (the Gateway's uid) must not change them. Only
-      // this init mounts the volume writable; the Gateway gets the file read-only, and its
-      // entrypoint refuses to start Claude Code unless that mount is read-only.
+      // settings tier, and its configuration directory holds the caches and stored
+      // sign-ins that can supply remote managed settings, so the model's tools (the
+      // Gateway's uid) must not change either. Only this init mounts the volume writable;
+      // the Gateway gets both read-only (the skeleton in gatewayPrivateStateVolumeMounts),
+      // and its entrypoint refuses to start Claude Code unless both mounts are read-only.
       const credentialVariable = variables.find(
         ({ name }) => name === "OPENCLAW_HARNESS_CREDENTIAL_ENV",
       )?.value;

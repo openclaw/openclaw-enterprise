@@ -13785,7 +13785,7 @@ async function exerciseEmbeddedReplacement(scenario) {
   );
   // Claude Code transcripts live on the Agent's private state claim, so `claude --resume`
   // finds a conversation after a restart or redeploy; the rest of its configuration
-  // directory (the credential's settings file) stays on the Pod-local home.
+  // directory is the init's read-only skeleton (finding 3178).
   const gatewayPod = replaced.spec.template.spec;
   const transcriptMounts = gatewayPod.containers[0].volumeMounts.filter(
     ({ mountPath }) => mountPath === "/home/node/.claude/projects",
@@ -13813,7 +13813,17 @@ async function exerciseEmbeddedReplacement(scenario) {
     });
     const settingsMounts = (container) =>
       container.volumeMounts.filter(({ name }) => name === "claude-code-settings");
+    // The configuration directory is read-only too: every file that can supply remote
+    // managed settings or make a session eligible for them (remote-settings.json,
+    // .credentials.json, settings.json and the rest) lives directly in it. Only the
+    // transcript directory, mounted after it and into it, is writable.
     assert.deepEqual(settingsMounts(gatewayPod.containers[0]), [
+      {
+        name: "claude-code-settings",
+        mountPath: "/home/node/.claude",
+        subPath: "config",
+        readOnly: true,
+      },
       {
         name: "claude-code-settings",
         mountPath: "/etc/claude-code",
@@ -13821,6 +13831,22 @@ async function exerciseEmbeddedReplacement(scenario) {
         readOnly: true,
       },
     ]);
+    const gatewayMountPaths = gatewayPod.containers[0].volumeMounts.map(
+      ({ mountPath }) => mountPath,
+    );
+    assert.ok(
+      gatewayMountPaths.indexOf("/home/node/.claude") <
+        gatewayMountPaths.indexOf("/home/node/.claude/projects"),
+    );
+    const writableClaudePaths = gatewayPod.containers[0].volumeMounts.filter(
+      ({ mountPath, readOnly }) =>
+        readOnly !== true &&
+        (mountPath === "/home/node/.claude" || mountPath.startsWith("/home/node/.claude/")),
+    );
+    assert.deepEqual(
+      writableClaudePaths.map(({ mountPath }) => mountPath),
+      ["/home/node/.claude/projects"],
+    );
     const writers = gatewayPod.initContainers.filter(
       (container) => settingsMounts(container).length > 0,
     );
@@ -13872,11 +13898,21 @@ async function exerciseEmbeddedReplacement(scenario) {
   }
   assert.equal(
     gatewayPod.containers[0].volumeMounts.some(
-      ({ mountPath }) => mountPath === "/home/node/.claude",
+      ({ name, mountPath }) =>
+        name === "openclaw-gateway-state" &&
+        (mountPath === "/home/node/.claude" || mountPath === "/etc/claude-code"),
     ),
     false,
-    "the Claude Code settings file never reaches the claim",
+    "the Claude Code settings and configuration never reach the claim",
   );
+  if (agentRuntimeId !== "claude-cli") {
+    assert.equal(
+      gatewayPod.containers[0].volumeMounts.some(({ mountPath }) =>
+        mountPath.startsWith("/home/node/.claude"),
+      ),
+      false,
+    );
+  }
   const probeConfiguration = JSON.parse(gatewayEnvironment.OPENCLAW_HARNESS_PROBE_CONFIG.value);
   assert.equal(probeConfiguration.agents.defaults.model, modelRef);
   assert.deepEqual(probeConfiguration.agents.defaults.models, {

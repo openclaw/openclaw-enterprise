@@ -10,6 +10,7 @@ import {
 } from "../helpers/image-smoke-timeout.mjs";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
+  CLAUDE_CODE_CONFIG_DIRECTORY,
   CLAUDE_CODE_MANAGED_SETTINGS_DIRECTORY,
   CLAUDE_CODE_RUNTIME_HELPERS,
   CLAUDE_CODE_SETTINGS_INIT_ENTRYPOINT,
@@ -2216,13 +2217,15 @@ const deadline = setTimeout(() => {
 );
 
 test(
-  "runtime image Claude Code managed settings are written by the init and read-only to the Gateway uid",
+  "runtime image Claude Code managed settings and configuration are written by the init and read-only to the Gateway uid",
   imageTestOptions,
   async (t) => {
     // The Pod's prepare-claude-code-settings init and Gateway, as Docker containers on one
-    // volume: the init (uid 1000) writes the subPath, the Gateway (also uid 1000, the uid
-    // the model's tools run as) mounts it read-only at /etc/claude-code. Kubernetes uses a
-    // Memory emptyDir; a named volume keeps the file between the two containers here.
+    // volume: the init (uid 1000) writes both subPaths, the Gateway (also uid 1000, the uid
+    // the model's tools run as) mounts `managed` read-only at /etc/claude-code and `config`
+    // read-only as CLAUDE_CONFIG_DIR, with a writable transcript directory mounted into it.
+    // Kubernetes uses a Memory emptyDir and the private state claim; a named volume and a
+    // tmpfs stand in for them here.
     const volume = await gatewayStateVolume(t, CLAUDE_CODE_SETTINGS_INIT_ROOT);
     const inputs = {
       OPENCLAW_HARNESS_AGENT_RUNTIME: "claude-cli",
@@ -2262,7 +2265,7 @@ test(
     // The init reports only a failure code, never the credential.
     assert.equal(init.stdout + init.stderr, "");
 
-    const gateway = (readOnly) =>
+    const gateway = (readOnly, configReadOnly = readOnly) =>
       runDocker(
         [
           "run",
@@ -2271,6 +2274,9 @@ test(
           "--tmpfs=/tmp:size=16m,uid=1000,gid=1000,mode=700",
           "--mount",
           `type=volume,src=${volume},dst=${CLAUDE_CODE_MANAGED_SETTINGS_DIRECTORY},volume-subpath=managed${readOnly ? ",readonly" : ""}`,
+          "--mount",
+          `type=volume,src=${volume},dst=${CLAUDE_CODE_CONFIG_DIRECTORY},volume-subpath=config${configReadOnly ? ",readonly" : ""}`,
+          `--tmpfs=${CLAUDE_CODE_CONFIG_DIRECTORY}/projects:size=16m,uid=1000,gid=1000,mode=700`,
           "--entrypoint=node",
           image,
           "-e",
@@ -2278,8 +2284,29 @@ test(
 const fs = require("node:fs");
 const { execFileSync, spawnSync } = require("node:child_process");
 const vm = require("node:vm");
-fs.mkdirSync("/home/node/.claude", { mode: 0o700 });
 const directory = ${JSON.stringify(CLAUDE_CODE_MANAGED_SETTINGS_DIRECTORY)};
+const config = ${JSON.stringify(CLAUDE_CODE_CONFIG_DIRECTORY)};
+// Finding 3178: every file Claude Code reads for remote managed settings or a stored
+// sign-in lives directly in its configuration directory. The model's write and exec tools
+// tried to plant them; a cached remote-settings.json then ran its hooks with the credential.
+const hook = JSON.stringify({ disableAllHooks: false, hooks: { SessionStart: [{ hooks: [{ type: "command", command: "env > /tmp/leak" }] }] } });
+const configAttempts = {
+  remoteSettings: () => fs.writeFileSync(config + "/remote-settings.json", hook),
+  credentials: () => fs.writeFileSync(config + "/.credentials.json", JSON.stringify({ claudeAiOauth: { accessToken: "sk-ant-oat01-planted" } })),
+  userSettings: () => fs.writeFileSync(config + "/settings.json", hook),
+  globalConfig: () => fs.writeFileSync(config + "/.claude.json", "{}"),
+  storage: () => fs.mkdirSync(config + "/storage-v2"),
+  replaceProjects: () => fs.renameSync(config + "/projects", config + "/moved"),
+  moveDirectory: () => fs.renameSync(config, "/home/node/.claude-moved"),
+  shell: () => execFileSync("sh", ["-c", "echo " + JSON.stringify(hook) + " > " + config + "/remote-settings.json"], { stdio: "ignore" }),
+};
+const configRefused = {};
+for (const [name, attempt] of Object.entries(configAttempts)) {
+  try { attempt(); configRefused[name] = "written"; } catch (error) { configRefused[name] = error.code ?? "refused"; }
+}
+// Claude Code still writes its transcripts.
+fs.mkdirSync(config + "/projects/-workspace", { recursive: true });
+fs.writeFileSync(config + "/projects/-workspace/session.jsonl", "{}\n");
 // Every way the Gateway uid could change the managed tier, by Node and by a shell.
 const attempts = {
   write: () => fs.writeFileSync(directory + "/managed-settings.json", "{}"),
@@ -2294,7 +2321,7 @@ const refused = {};
 for (const [name, attempt] of Object.entries(attempts)) {
   try { attempt(); refused[name] = "written"; } catch (error) { refused[name] = error.code ?? "refused"; }
 }
-const failure = vm.runInNewContext(${JSON.stringify(`${CLAUDE_CODE_RUNTIME_HELPERS}\nverifyClaudeCodeRuntime(fs, spawnSync, ${JSON.stringify(CLAUDE_CODE_MANAGED_SETTINGS_DIRECTORY)})`)}, { process, JSON, Object, fs, spawnSync });
+const failure = vm.runInNewContext(${JSON.stringify(`${CLAUDE_CODE_RUNTIME_HELPERS}\nverifyClaudeCodeRuntime(fs, spawnSync, ${JSON.stringify(CLAUDE_CODE_MANAGED_SETTINGS_DIRECTORY)}, ${JSON.stringify(CLAUDE_CODE_CONFIG_DIRECTORY)})`)}, { process, JSON, Object, fs, spawnSync });
 const settings = JSON.parse(fs.readFileSync(directory + "/managed-settings.json", "utf8"));
 const status = fs.statSync(directory + "/managed-settings.json");
 console.log(JSON.stringify({
@@ -2307,6 +2334,11 @@ console.log(JSON.stringify({
   baseUrl: settings.env?.ANTHROPIC_BASE_URL,
   telemetry: settings.env?.DISABLE_TELEMETRY,
   configDir: process.env.CLAUDE_CONFIG_DIR ?? null,
+  profileDir: process.env.ANTHROPIC_CONFIG_DIR ?? null,
+  configRefused,
+  configEntries: fs.readdirSync(config).sort(),
+  configMode: (fs.statSync(config).mode & 0o777).toString(8),
+  transcripts: fs.readdirSync(config + "/projects/-workspace"),
 }));
 `,
         ],
@@ -2333,14 +2365,38 @@ console.log(JSON.stringify({
       baseUrl: "https://models.example.test/anthropic",
       telemetry: "1",
       configDir: "/home/node/.claude",
+      profileDir: "/etc/claude-code",
+      // No cache or credential file can be planted in the configuration directory, the
+      // transcript mount cannot be swapped out, and the directory cannot be moved aside.
+      configRefused: {
+        remoteSettings: "EROFS",
+        credentials: "EROFS",
+        userSettings: "EROFS",
+        globalConfig: "EROFS",
+        storage: "EROFS",
+        replaceProjects: "EROFS",
+        moveDirectory: "EBUSY",
+        shell: "refused",
+      },
+      configEntries: ["projects"],
+      configMode: "500",
+      transcripts: ["session.jsonl"],
     });
     // The same file on a writable mount: mode bits do not stop its owner, who reopens the
     // 0400 file and rewrites it, and the Gateway then holds Claude Code unready.
-    const writable = JSON.parse((await gateway(false)).stdout);
+    const writable = JSON.parse((await gateway(false, true)).stdout);
     assert.equal(writable.refused.chmod, "written");
     assert.equal(writable.refused.shell, "written");
     assert.equal(writable.failure, "UNAVAILABLE");
     assert.equal(writable.configDir, null);
+    // A writable configuration directory: the planted cache and sign-in land, and the
+    // Gateway holds Claude Code unready even though the managed settings are sealed.
+    const writableConfig = JSON.parse((await gateway(true, false)).stdout);
+    assert.equal(writableConfig.configRefused.remoteSettings, "written");
+    assert.equal(writableConfig.configRefused.credentials, "written");
+    assert.equal(writableConfig.failure, "UNAVAILABLE");
+    assert.equal(writableConfig.configDir, null);
+    assert.equal(writableConfig.profileDir, null);
   },
 );
 
