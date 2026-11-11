@@ -1649,21 +1649,12 @@ export async function runOidcAgentChatScenario(context) {
   });
   try {
     const initialMarker = `oidc-chat-${randomUUID()}`;
-    let initialReply;
-    try {
-      initialReply = await submitChatTurnWithAssistantProof(
-        nativePage,
-        initialMarker,
-        frames,
-        waitFor,
-      );
-    } catch (error) {
-      await nativePage.screenshot({
-        path: join(artifacts, "oidc-chat-failure.png"),
-        fullPage: true,
-      });
-      throw error;
-    }
+    const initialReply = await submitChatTurnWithAssistantProof(
+      nativePage,
+      initialMarker,
+      frames,
+      waitFor,
+    );
     const lifecycle = await assertChatStreamStopAndResume({
       page: nativePage,
       initialReply,
@@ -1687,6 +1678,9 @@ export async function runOidcAgentChatScenario(context) {
     context.diagnostic(
       "Real Keycloak sign-in enabled ordinary-owner create/deploy and an exact-Agent operator model turn; native HTTP/WS administration and sibling access were denied.",
     );
+  } catch (error) {
+    await nativePage.screenshot({ path: join(artifacts, "oidc-chat-failure.png"), fullPage: true });
+    throw error;
   } finally {
     await recording.dispose();
   }

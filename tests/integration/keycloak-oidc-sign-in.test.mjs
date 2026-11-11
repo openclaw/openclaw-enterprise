@@ -605,70 +605,70 @@ test(
         ),
       );
     }
+    // Each row states independent expectations for strict and permissive policy.
     const cases = [];
-    for (const requireVerifiedEmail of [true, false]) {
-      for (const verification of [true, false, undefined, "true", 1, null]) {
+    for (const [verification, strict, permissive] of [
+      [true, true, true],
+      [false, false, true],
+      [undefined, false, true],
+      ["true", false, false],
+      [1, false, false],
+      [null, false, false],
+      [[], false, false],
+      [{}, false, false],
+    ]) {
+      for (const [requireVerifiedEmail, allowed] of [
+        [true, strict],
+        [false, permissive],
+      ]) {
         cases.push({
           name: `email policy ${requireVerifiedEmail}, claim ${JSON.stringify(verification)}`,
           requireVerifiedEmail,
           verification,
           groups: "members",
-          allowed:
-            verification === true ||
-            (!requireVerifiedEmail && (verification === false || verification === undefined)),
+          allowed,
         });
       }
     }
     for (const [name, groups, allowed] of [
       ["array", ["other", "members"], true],
       ["missing", undefined, false],
+      ["null", null, false],
+      ["number", 1, false],
+      ["object", {}, false],
+      ["empty array", [], false],
       ["mixed array", ["members", 1], false],
       ["case mismatch", "Members", false],
-      ["padded", " members ", false],
+      ["leading space", " members", false],
+      ["trailing space", "members ", false],
       ["comma joined", "members,other", false],
     ]) {
       cases.push({
         name: `groups ${name}`,
-        requireVerifiedEmail: true,
-        verification: true,
         groups,
+        verification: true,
+        requireVerifiedEmail: true,
         allowed,
       });
     }
-    cases.push(
-      {
-        name: "email collision",
-        email: "alice@example.test",
+    for (const email of ["alice@example.test", " ALICE@EXAMPLE.TEST ", null, 42, "not-an-email"]) {
+      cases.push({
+        name: `invalid or occupied email ${JSON.stringify(email)}`,
+        email,
         groups: "members",
         verification: false,
         requireVerifiedEmail: false,
         allowed: false,
-      },
-      {
-        name: "missing standard email",
-        email: null,
-        groups: "members",
-        verification: false,
-        requireVerifiedEmail: false,
-        allowed: false,
-      },
-      {
-        name: "invalid standard email",
-        email: "not-an-email",
-        groups: "members",
-        verification: false,
-        requireVerifiedEmail: false,
-        allowed: false,
-      },
-      {
-        name: "unsupported token signature",
-        groups: "members",
-        verification: true,
-        requireVerifiedEmail: false,
-        signingAlgorithm: "HS256",
-        allowed: false,
-      },
-    );
+      });
+    }
+    cases.push({
+      name: "unsupported token signature",
+      groups: "members",
+      verification: true,
+      requireVerifiedEmail: false,
+      signingAlgorithm: "HS256",
+      allowed: false,
+    });
     for (const scenario of cases) {
       await t.test(scenario.name, async (subtest) => {
         const username = `enrollment-${randomUUID()}`;
