@@ -288,6 +288,13 @@ export async function startSyntheticEgressProvider(t, configuration, credentials
   server.on("connection", () => {
     tcpConnections++;
   });
+  // Count decrypted input even when no complete HTTP request can be parsed.
+  let applicationBytes = 0;
+  server.on("secureConnection", (socket) => {
+    socket.on("data", (bytes) => {
+      applicationBytes += bytes.length;
+    });
+  });
   server.requestTimeout = 35_000;
   server.headersTimeout = 5_000;
   t.after(() => {
@@ -303,9 +310,15 @@ export async function startSyntheticEgressProvider(t, configuration, credentials
     server.once("error", reject);
     server.listen(configuration.bindPort, configuration.bindHost, resolve);
   });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
   return {
+    port: address.port,
     observations,
     errors,
+    get applicationBytes() {
+      return applicationBytes;
+    },
     get tcpConnections() {
       return tcpConnections;
     },

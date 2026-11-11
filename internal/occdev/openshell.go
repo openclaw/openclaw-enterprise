@@ -212,8 +212,8 @@ func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, 
 		return nil, err
 	}
 	advance("openshell-agent-sandbox-rollout")
-	if err := r.run(ctx, "kubectl", "rollout", "status", "deployment/agent-sandbox-controller", "--namespace", "agent-sandbox-system", "--timeout", timeout.String()); err != nil {
-		r.captureAgentSandboxRollout(state)
+	if err := r.run(ctx, "kubectl", "rollout", "status", "deployment/"+agentSandboxName, "--namespace", agentSandboxNamespace, "--timeout", timeout.String()); err != nil {
+		r.captureAgentSandboxRollout(context.Background(), state)
 		return nil, err
 	}
 	assets := &openShellDevelopmentAssets{gatewayChart: gatewayChart}

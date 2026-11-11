@@ -12,7 +12,7 @@ OCC authorizes exact-Agent browser access through the OCE session or a host-only
 
 ## Entry Points
 
-- Trigger: Console opts into native admin during Agent creation, opens an Agent native admin URL, or `scripts/first-agent.mjs --control-ui` creates a compatible local Compose/OpenShell Agent.
+- Trigger: Console opts into native admin during Agent creation, opens an Agent native admin URL, or `scripts/first-agent.mjs --control-ui` creates a compatible Agent in Local Setup with OpenShell.
 - Source: `scripts/first-agent.ts:nativeConfiguration`
 - Source: `apps/controller/src/console/agents/native-admin.mts:renderNativeAdminAccess`
 - Source: `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
@@ -101,12 +101,11 @@ reuse its fingerprinted plan and identity. The worker creates and deploys.
 `scripts/first-agent.ts:nativeConfiguration`
 `scripts/first-agent.ts:ensureManagedConfiguration`
 
-With launcher-owned Compose/OpenShell browser state, the helper saves disabled
-Configuration generation 1, creates the Agent, then derives its origin. Before
-deployment, generation 2 enables `controlUi`, pins origins, and grants
-`occ-workspace-files` trusted-proxy `operator.admin` with device auto-approval.
-Identity grants supply admin independently of device scopes.
-An existing helper-owned name cannot change this selection.
+Using Local Setup browser state, the helper saves disabled Configuration generation 1,
+creates the Agent, and derives its origin. Generation 2 enables `controlUi`, pins
+origins, requires `x-openclaw-scopes`, and grants `occ-workspace-files` trusted-proxy
+`operator.admin` with device auto-approval before deployment. Identity grants supply
+admin independently of device scopes. Existing helper-owned names keep this selection.
 
 ### 1. Console renders native admin availability
 
@@ -340,6 +339,8 @@ admin Configuration remains Pod-local.
 - 2026-11-11 23:20: Document native admin HTTP relay handling. (authoring-run/30741f75-946a-4c47-952b-1afd8ff10888 - a8ccd21095bf8f651c8dbc270e069808251fd0db)
 
 - 2026-11-11 21:13: Describe hostname validation before Agent-reference lookup. (authoring-run/c70a6869-705d-495a-85dd-f0c603db8196 - dfbdd7bfa6ccfba7d3d2e6b28f2770988c0cfc0d)
+
+- 2026-11-11 20:31: Persist the first-Agent native UI scope-header requirement. (authoring-run/4eb36434-af9e-40b8-8958-e8a2f9f2b662 - be754f513bcfdee8c898c33df1fe37bff4581261)
 
 - 2026-11-11 18:51: Integrate admission classification; retain canonical domain refusal. (authoring-run/6c64aee6-cdeb-442f-b8bf-936f62eb5bc5 - d7f1a5a6196545a406f46a616278c123ab970095)
 

@@ -6,6 +6,7 @@ import dns from "node:dns";
 import { connect } from "node:net";
 import { basename } from "node:path";
 import { connect as connectTls } from "node:tls";
+import { withBoundedTeardown } from "./bounded-teardown.ts";
 import { availablePort } from "./available-port.mjs";
 import { startWorkspaceGatewayRelayContainer } from "./workspace-gateway-relay-container.mjs";
 import { request as requestHttps } from "node:https";
@@ -207,24 +208,19 @@ async function waitForWorkspaceGatewayTls(hostname, port, waitFor) {
 }
 
 export async function startWorkspaceGatewayHostRelay(
-  context,
+  testContext,
   workspaceGateway,
   { kubectl, resources, waitFor, startPortForwardTarget, gatewayImage },
 ) {
-  const containerEngine = process.env.OCC_DOCKER_BIN ?? "docker";
-  // Docker Desktop and Podman Machine host networking stays in their Linux VM.
-  // Publish to macOS loopback and use the engine's host alias for the port-forward.
+  const context = withBoundedTeardown(testContext, { label: "Workspace Gateway cleanup" });
   const usesContainerVm = process.platform === "darwin";
-  const relayHost = usesContainerVm
-    ? basename(containerEngine) === "podman"
-      ? "host.containers.internal"
-      : "host.docker.internal"
-    : "127.0.0.1";
-  const dockerRuntimeImage = process.env.OCC_DOCKER_RUNTIME_IMAGE;
-  assert.ok(
-    dockerRuntimeImage,
-    "OCC_DOCKER_RUNTIME_IMAGE is required for the loopback-only Gateway routing relay.",
-  );
+  const dockerRuntimeImage = process.env.OCC_DOCKER_RUNTIME_IMAGE ?? "";
+  if (usesContainerVm) {
+    assert.ok(
+      dockerRuntimeImage,
+      "OCC_DOCKER_RUNTIME_IMAGE is required for the loopback-only Gateway routing relay.",
+    );
+  }
   const gatewayHostname = nonempty(workspaceGateway.routing.hostname, "Gateway hostname");
   const services = await resources(
     "services",
@@ -241,32 +237,6 @@ export async function startWorkspaceGatewayHostRelay(
     /^(?:\d{1,3}\.){3}\d{1,3}$/,
     "the disposable k3d Gateway must expose an IPv4 ClusterIP.",
   );
-  const endpointPort = usesContainerVm ? await availablePort() : 443;
-  if (usesContainerVm) {
-    const envoyHttpsPort = envoyService.spec.ports.find(({ port }) => port === 443);
-    assert.ok(envoyHttpsPort, "the workspace Gateway Service must retain its HTTPS port.");
-    await kubectl(
-      "patch",
-      "service",
-      envoyService.metadata.name,
-      "--namespace",
-      workspaceGateway.routing.envoyNamespace,
-      "--type=json",
-      "--patch",
-      JSON.stringify([
-        {
-          op: "add",
-          path: "/spec/ports/-",
-          value: {
-            name: "oce-host-relay",
-            protocol: envoyHttpsPort.protocol ?? "TCP",
-            port: endpointPort,
-            targetPort: envoyHttpsPort.targetPort ?? envoyHttpsPort.port,
-          },
-        },
-      ]),
-    );
-  }
   const relayPod = `oce-routing-relay-${hash(randomUUID())}`;
   const relayLabels = Object.entries(workspaceGateway.apiPodLabels)
     .map(([name, value]) => `${name}=${value}`)
@@ -309,39 +279,71 @@ export async function startWorkspaceGatewayHostRelay(
     `pod/${relayPod}`,
     "0:8443",
   );
+  // Reuse kubectl's bound socket on Linux; a second listener would race other tests.
+  context.after(() => forwarding.stop());
   const forwardedPort = Number(new URL(forwarding.url).port);
-  const relayName = `oce-openshell-routing-${hash(randomUUID())}`;
-  // Bind/startup failure must still close the forwarding process and owned relay.
-  context.after(() => forwarding.stop().catch(() => undefined));
-  const relayProgram = [
-    'const net = require("node:net");',
-    "const targetPort = Number(process.argv[1]);",
-    "const server = net.createServer((client) => {",
-    `  const upstream = net.connect({ host: ${JSON.stringify(relayHost)}, port: targetPort });`,
-    "  client.pipe(upstream).pipe(client);",
-    '  client.on("error", () => upstream.destroy());',
-    '  upstream.on("error", () => client.destroy());',
-    "});",
-    `server.listen(443, ${JSON.stringify(usesContainerVm ? "0.0.0.0" : "127.0.0.1")});`,
-    'process.on("SIGTERM", () => server.close(() => process.exit(0)));',
-  ].join("\n");
-  await startWorkspaceGatewayRelayContainer(context, {
-    containerEngine,
-    relayName,
-    runArguments: [
-      ...(usesContainerVm ? ["--publish", `127.0.0.1:${endpointPort}:443`] : ["--network", "host"]),
-      "--user",
-      "0",
-      "--stop-timeout",
-      "2",
-      "--entrypoint",
-      "node",
-      dockerRuntimeImage,
-      "-e",
-      relayProgram,
-      String(forwardedPort),
-    ],
-  });
+  const endpointPort = usesContainerVm ? await availablePort() : forwardedPort;
+  // In-cluster callers use the same endpoint port through the Envoy Service.
+  const envoyHttpsPort = envoyService.spec.ports.find(({ port }) => port === 443);
+  assert.ok(envoyHttpsPort, "the workspace Gateway Service must retain its HTTPS port.");
+  await kubectl(
+    "patch",
+    "service",
+    envoyService.metadata.name,
+    "--namespace",
+    workspaceGateway.routing.envoyNamespace,
+    "--type=json",
+    "--patch",
+    JSON.stringify([
+      {
+        op: "add",
+        path: "/spec/ports/-",
+        value: {
+          name: "oce-host-relay",
+          protocol: envoyHttpsPort.protocol ?? "TCP",
+          port: endpointPort,
+          targetPort: envoyHttpsPort.targetPort ?? envoyHttpsPort.port,
+        },
+      },
+    ]),
+  );
+  if (usesContainerVm) {
+    // Docker Desktop and Podman Machine host networking stays in their Linux VM.
+    const containerEngine = process.env.OCC_DOCKER_BIN ?? "docker";
+    const relayHost =
+      basename(containerEngine) === "podman" ? "host.containers.internal" : "host.docker.internal";
+    const relayName = `oce-openshell-routing-${hash(randomUUID())}`;
+    const relayProgram = [
+      'const net = require("node:net");',
+      "const targetPort = Number(process.argv[1]);",
+      "const server = net.createServer((client) => {",
+      `  const upstream = net.connect({ host: ${JSON.stringify(relayHost)}, port: targetPort });`,
+      "  client.pipe(upstream).pipe(client);",
+      '  client.on("error", () => upstream.destroy());',
+      '  upstream.on("error", () => client.destroy());',
+      "});",
+      'server.listen(443, "0.0.0.0");',
+      'process.on("SIGTERM", () => server.close(() => process.exit(0)));',
+    ].join("\n");
+    await startWorkspaceGatewayRelayContainer(context, {
+      containerEngine,
+      relayName,
+      runArguments: [
+        "--publish",
+        `127.0.0.1:${endpointPort}:443`,
+        "--user",
+        "0",
+        "--stop-timeout",
+        "2",
+        "--entrypoint",
+        "node",
+        dockerRuntimeImage,
+        "-e",
+        relayProgram,
+        String(forwardedPort),
+      ],
+    });
+  }
   const originalLookup = dns.lookup;
   dns.lookup = function lookup(hostname, options, callback) {
     if (hostname !== gatewayHostname) {
@@ -364,10 +366,11 @@ export async function startWorkspaceGatewayHostRelay(
 }
 
 export async function createEnvoyWorkspaceGatewayPlan(
-  context,
+  testContext,
   { platformNamespace, sandboxPreview = false },
   helpers,
 ) {
+  const context = withBoundedTeardown(testContext, { label: "Workspace Gateway cleanup" });
   let apiKey = randomBytes(32).toString("base64url");
   const apiKeySecretName = `oce-gateway-api-key-${hash(platformNamespace)}`;
 
@@ -419,15 +422,13 @@ export async function createEnvoyWorkspaceGatewayPlan(
   // would block until the platform Namespace's Gateway is gone. That Namespace may be deleted
   // after this cleanup (finding 1711): request the deletion and let the finalizer complete it.
   context.after(async () => {
-    await helpers
-      .kubectl(
-        "delete",
-        "gatewayclass",
-        gatewayClassName,
-        "--ignore-not-found=true",
-        "--wait=false",
-      )
-      .catch(() => undefined);
+    await helpers.kubectl(
+      "delete",
+      "gatewayclass",
+      gatewayClassName,
+      "--ignore-not-found=true",
+      "--wait=false",
+    );
   });
   const gatewayRoutingManifests = await renderGatewayRoutingManifests({
     releaseNamespace: platformNamespace,
@@ -698,7 +699,7 @@ function registerRenderedExternalCleanup(context, manifests, platformNamespace, 
         "--namespace",
         object.namespace,
         "--ignore-not-found=true",
-      ).catch(() => undefined);
+      );
     });
   }
 }
