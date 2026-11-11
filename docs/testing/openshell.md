@@ -8,8 +8,8 @@ last_verified: "2026-11-04"
 
 ## Overview
 
-From the repository root, run the OpenShell setup and real Agent tests, including the
-[imported plugin tests](plugins.md#imported-plugins-on-dedicated-openclaw).
+From the repository root, run OpenShell setup and Agent tests, including
+[imported plugins](plugins.md#imported-plugins-on-dedicated-openclaw).
 Setup selects official OpenShell `v0.1.6`. See [images and trust](openshell-oauth.md#prepare-images-and-trust)
 for versions and qualification limits.
 
