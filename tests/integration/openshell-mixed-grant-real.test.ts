@@ -7,6 +7,7 @@ import {
   openShellGitRetentionKind,
   emitOpenShellGitRetention,
 } from "../../scripts/ci/openshell-git-retention.mjs";
+import { emitOpenShellSetupProgress } from "../../scripts/ci/openshell-progress.mjs";
 import { mixedGrantDeploymentCode } from "../helpers/openshell-mixed-grant-setup.ts";
 import { FixtureCommandTimeoutError } from "../fixtures/repository-credentials/process.mjs";
 
@@ -39,6 +40,7 @@ test(
       assert.ok(gitScope);
       assert.ok(modelOrigin);
       phase = "Gateway assertion profiles";
+      emitOpenShellSetupProgress("verification", phase);
       for (const provider of [a.modelProvider, a.gitProvider]) {
         const credentials = provider.profile.definition?.credentials;
         assert.ok(Array.isArray(credentials));
@@ -125,6 +127,7 @@ test(
       };
 
       phase = "model before Git";
+      emitOpenShellSetupProgress("verification", phase);
       assert.equal((await origin.snapshot()).issued, 0, "admission must not mint a Git credential");
       assert.equal((await origin.gitRequests()).length, 0);
       const modelBindingId = a.modelAdmission.route.bindingId;
@@ -173,6 +176,7 @@ test(
       });
 
       phase = "first fresh Git fetch";
+      emitOpenShellSetupProgress("verification", phase);
       // Publication happens after the first model turn. Its SHA and content come
       // from the independent origin, and neither object may preexist in the workload.
       const first = await origin.publishFreshCommit();
@@ -212,6 +216,7 @@ test(
       });
 
       phase = "Git withdrawal";
+      emitOpenShellSetupProgress("verification", phase);
       // Include requests made during withdrawal in the denial accounting.
       const withdrawn = await origin.snapshot();
       const requestsBeforeDenial = await origin.gitRequests();
@@ -258,6 +263,7 @@ test(
       });
       const policyBaseline = await denial.snapshot();
       phase = "withdrawn fresh Git fetch";
+      emitOpenShellSetupProgress("verification", phase);
       const startedAt = Date.now();
       const refused = await fetch(second.sha, 128);
       const endedAt = Date.now();
@@ -315,6 +321,7 @@ test(
       });
 
       phase = "same conversation after Git withdrawal";
+      emitOpenShellSetupProgress("verification", phase);
       assert.equal(a.modelTurns.after.priorTurnId, a.modelTurns.before.id);
       // The helper sends only the new marker. The independent origin refuses it
       // unless the runtime forwards the earlier assistant answer in its history.

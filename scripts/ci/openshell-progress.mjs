@@ -19,7 +19,16 @@ const openShellStages = new Set([
   "native-policy",
 ]);
 
-// Setup markers report entry, not successful completion. The retained receipt
+export const openShellVerificationOperations = [
+  "Gateway assertion profiles",
+  "model before Git",
+  "first fresh Git fetch",
+  "Git withdrawal",
+  "withdrawn fresh Git fetch",
+  "same conversation after Git withdrawal",
+];
+
+// Mixed-grant markers report entry, not successful completion. The retained receipt
 // uses this same closed vocabulary.
 const openShellSetupOperations = new Set([
   "input-validation",
@@ -41,6 +50,7 @@ const openShellSetupOperations = new Set([
   "agent-admission",
   "committed-admission",
   "provider-registration",
+  ...openShellVerificationOperations,
 ]);
 
 export function openShellSetupProgress(value) {
@@ -50,7 +60,7 @@ export function openShellSetupProgress(value) {
     Array.isArray(value) ||
     Object.keys(value).length !== 3 ||
     value.kind !== "openshell-mixed-grant-setup" ||
-    !["installation", "deployment"].includes(value.phase) ||
+    !["installation", "deployment", "verification"].includes(value.phase) ||
     !openShellSetupOperations.has(value.operation)
   ) {
     return undefined;

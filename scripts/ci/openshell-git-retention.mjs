@@ -7,7 +7,7 @@ import {
   WORKSPACE_SETUP_REFUSED,
 } from "../../packages/contracts/src/runtime-failure.mjs";
 
-import { openShellSetupProgress } from "./openshell-progress.mjs";
+import { openShellSetupProgress, openShellVerificationOperations } from "./openshell-progress.mjs";
 
 export const openShellGitRetentionKind = "openshell-git-retention";
 
@@ -356,19 +356,7 @@ const policyDenial = {
 };
 const events = {
   "mixed-grant-failure": {
-    phase: [
-      "phase",
-      choice(
-        "installation",
-        "deployment",
-        "Gateway assertion profiles",
-        "model before Git",
-        "first fresh Git fetch",
-        "Git withdrawal",
-        "withdrawn fresh Git fetch",
-        "same conversation after Git withdrawal",
-      ),
-    ],
+    phase: ["phase", choice("installation", "deployment", ...openShellVerificationOperations)],
     category: [
       "category",
       choice("assertion", "command-timeout", "cancelled", "http", "deployment", "operation"),

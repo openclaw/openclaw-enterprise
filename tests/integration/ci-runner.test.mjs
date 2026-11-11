@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import {
   chmod,
   mkdir,
@@ -279,7 +279,7 @@ function mixedPrecisionEventBoundary({ namespace, pod, second, laterCount = 199 
 
 // run() without blocking this process, for the waiting tests below, which run side by side.
 // The result has spawnSync's shape, including its ETIMEDOUT error when `timeout` ends the runner.
-function runAsync(root, args, env = {}, { timeout, execArgv = [] } = {}) {
+function runAsync(root, args, env = {}, { timeout, execArgv = [], onStderrLine } = {}) {
   return new Promise((resolvePromise) => {
     const child = spawn(process.execPath, [...execArgv, runnerPath, ...args], {
       cwd: repositoryRoot,
@@ -289,6 +289,8 @@ function runAsync(root, args, env = {}, { timeout, execArgv = [] } = {}) {
     let stdout = "";
     let stderr = "";
     let error;
+    const lines = onStderrLine ? createInterface({ input: child.stderr }) : undefined;
+    lines?.on("line", onStderrLine);
     child.stdout.setEncoding("utf8").on("data", (chunk) => (stdout += chunk));
     child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
     const timer =
@@ -302,6 +304,7 @@ function runAsync(root, args, env = {}, { timeout, execArgv = [] } = {}) {
           }, timeout);
     const settle = (status, signal) => {
       clearTimeout(timer);
+      lines?.close();
       resolvePromise({ status, signal, stdout, stderr, error });
     };
     child.on("error", (spawnError) => {
@@ -740,7 +743,7 @@ test(
       join(root, file),
       `import { watch } from "node:fs";
 import test from "node:test";
-import { emitOpenShellProgress, openShellProgressPrefix } from ${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/openshell-progress.mjs")).href)};
+import { emitOpenShellProgress, emitOpenShellSetupProgress, openShellProgressPrefix } from ${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/openshell-progress.mjs")).href)};
 const write = (text) => new Promise((resolve, reject) => process.stdout.write(text, (error) => error ? reject(error) : resolve()));
 const record = (value) => openShellProgressPrefix + JSON.stringify(value) + "\\n";
 // The legitimate start/pass record also crosses many reporter pipe chunks.
@@ -776,6 +779,7 @@ test("live progress " + "x".repeat(1024 * 1024), async (context) => {
   emitOpenShellProgress("installation", "started");
   await released;
   emitOpenShellProgress("installation", "passed");
+  emitOpenShellSetupProgress("verification", "model before Git");
   context.diagnostic('openclaw-ci-measurement ' + JSON.stringify({ ...stage, outcome: "passed", elapsedMs: 123 }));
   context.diagnostic('openclaw-ci-measurement ' + JSON.stringify({ kind: "openshell-git-retention", event: "mixed-grant-setup", phase: "deployment", operation: "agent-admission" }));
 });
@@ -790,58 +794,31 @@ test("failed stage", async () => {
 });
 `,
     );
-    const child = spawn(
-      process.execPath,
-      [runnerPath, ...laneArgs(root, "progress", "state/progress.jsonl", resultsPath)],
+    const label = `[run:progress] ${file}: `;
+    const progressLines = (stderr) =>
+      stderr
+        .split("\n")
+        .filter((line) => line.startsWith(label))
+        .map((line) => line.slice(label.length));
+    // A final buffered transcript cannot release the fixture in time to pass.
+    const result = await runAsync(
+      root,
+      laneArgs(root, "progress", "state/progress.jsonl", resultsPath),
+      { CI_RUNNER_TEST_TIMEOUT_MS: "10000" },
       {
-        cwd: repositoryRoot,
-        env: runnerEnv({ CI_RUNNER_TEST_TIMEOUT_MS: "10000" }),
-        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 15000,
+        onStderrLine(line) {
+          if (line === `${label}openshell-stage installation started`) {
+            writeFileSync(join(root, "release"), "");
+          }
+        },
       },
     );
-    let stdout = "";
-    let stderr = "";
-    const progress = [];
-    const label = `[run:progress] ${file}: `;
-    const lines = createInterface({ input: child.stderr });
-    const closed = new Promise((resolve, reject) =>
-      child.once("error", reject).once("close", resolve),
-    );
-    const live = new Promise((resolve) => {
-      lines.on("line", (line) => {
-        if (line === `${label}openshell-stage installation started`) {
-          resolve(true);
-        }
-      });
-      child.once("close", () => resolve(false));
-    });
-    t.after(() => {
-      lines.close();
-      if (child.exitCode === null) {
-        child.kill("SIGTERM");
-      }
-    });
-    lines.on("line", (line) => {
-      if (!line.startsWith(label)) {
-        return;
-      }
-      progress.push(line.slice(label.length));
-    });
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
-    // A final buffered transcript cannot satisfy this handshake.
-    assert.ok(await live, "progress must arrive while the child waits for its release file");
-    assert.equal(child.exitCode, null);
-    await writeFile(join(root, "release"), "");
-    const code = await closed;
-    assert.equal(code, 1);
-    assert.deepEqual(progress, [
+    assert.equal(result.status, 1);
+    assert.deepEqual(progressLines(result.stderr), [
       "openshell-stage installation started",
       "openshell-stage installation passed",
+      "openshell-mixed-grant-setup verification model before Git",
       "openshell-stage initial-model started",
       "openshell-stage initial-model failed",
     ]);
@@ -866,13 +843,14 @@ test("failed stage", async () => {
       "stdout: unfinished ordinary output",
     ]);
     assert.equal(tail.omittedLines, 400);
-    for (const output of [stdout, stderr, artifact, diagnostics]) {
+    for (const output of [result.stdout, result.stderr, artifact, diagnostics]) {
       assert.doesNotMatch(output, /private-\w+-canary/);
     }
     // A separate child makes interruption proof independent of completed-test buffering.
     await writeFile(
       join(root, file),
       `
+import { watch, writeFileSync } from "node:fs";
 import test from "node:test";
 import { emitOpenShellSetupProgress, openShellProgressPrefix } from ${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/openshell-progress.mjs")).href)};
 test("blocked setup", async (context) => {
@@ -885,53 +863,39 @@ test("blocked setup", async (context) => {
     { ...setup, kind: "private-kind-canary" },
   ]) process.stdout.write(openShellProgressPrefix + JSON.stringify(invalid) + "\\n");
   context.diagnostic('openclaw-ci-measurement ' + JSON.stringify({ kind: "openshell-git-retention", event: "mixed-grant-setup", phase: setup.phase, operation: setup.operation }));
+  // Subscribe before the marker; acknowledge that the parent released a live child.
+  const released = new Promise((resolve) => {
+    const watcher = watch(${JSON.stringify(root)}, (_event, name) => {
+      if (name === "setup-release") { watcher.close(); resolve(); }
+    });
+    context.after(() => watcher.close());
+  });
   emitOpenShellSetupProgress(setup.phase, setup.operation);
+  await released;
+  writeFileSync(${JSON.stringify(join(root, "setup-ack"))}, "alive");
   // The runner's deadline terminates only this disposable blocked test process.
   await new Promise(() => setInterval(() => {}, 1000));
 });
 `,
     );
-    const interrupted = spawn(
-      process.execPath,
-      [runnerPath, ...laneArgs(root, "progress", "state/interrupted.jsonl", resultsPath)],
+    const interrupted = await runAsync(
+      root,
+      laneArgs(root, "progress", "state/interrupted.jsonl", resultsPath),
+      { CI_RUNNER_TEST_TIMEOUT_MS: "3000" },
       {
-        cwd: repositoryRoot,
-        env: runnerEnv({ CI_RUNNER_TEST_TIMEOUT_MS: "3000" }),
-        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 10000,
+        onStderrLine(line) {
+          if (line === `${label}openshell-mixed-grant-setup installation gateway-connect`) {
+            writeFileSync(join(root, "setup-release"), "");
+          }
+        },
       },
     );
-    let publicOutput = "";
-    const interruptedLines = createInterface({ input: interrupted.stderr });
-    const interruptionClosed = new Promise((resolve, reject) =>
-      interrupted.once("error", reject).once("close", resolve),
-    );
-    t.after(() => {
-      interruptedLines.close();
-      if (interrupted.exitCode === null) {
-        interrupted.kill("SIGTERM");
-      }
-    });
-    const setupProgress = [];
-    const setupLive = new Promise((resolve) => {
-      interruptedLines.on("line", (line) => {
-        if (line.startsWith(label)) {
-          setupProgress.push(line.slice(label.length));
-        }
-        if (line === `${label}openshell-mixed-grant-setup installation gateway-connect`) {
-          resolve(true);
-        }
-      });
-      interrupted.once("close", () => resolve(false));
-    });
-    for (const stream of [interrupted.stdout, interrupted.stderr]) {
-      stream.on("data", (chunk) => {
-        publicOutput += chunk;
-      });
-    }
-    assert.ok(await setupLive, "pre-action marker must arrive while the fixture is blocked");
-    assert.equal(interrupted.exitCode, null);
-    assert.equal(await interruptionClosed, 1);
-    assert.deepEqual(setupProgress, ["openshell-mixed-grant-setup installation gateway-connect"]);
+    assert.equal(await readFile(join(root, "setup-ack"), "utf8"), "alive");
+    assert.equal(interrupted.status, 1);
+    assert.deepEqual(progressLines(interrupted.stderr), [
+      "openshell-mixed-grant-setup installation gateway-connect",
+    ]);
     const interruptedArtifact = await readFile(resultsPath, "utf8");
     const interruptedSummary = JSON.parse(interruptedArtifact);
     assert.ok(interruptedSummary.issues.some((issue) => issue.code === "test-timeout"));
@@ -940,7 +904,12 @@ test("blocked setup", async (context) => {
       join(root, "state/interrupted.jsonl.diagnostics.json"),
       "utf8",
     );
-    for (const output of [publicOutput, interruptedArtifact, interruptedDiagnostics]) {
+    for (const output of [
+      interrupted.stdout,
+      interrupted.stderr,
+      interruptedArtifact,
+      interruptedDiagnostics,
+    ]) {
       assert.doesNotMatch(output, /private-\w+-canary/);
     }
   },
@@ -1053,8 +1022,6 @@ test("run records a sanitized file failure after all reported cases pass", async
 });
 
 test("mixed-grant output closes deployment codes and projects before diagnostics", async (t) => {
-  const name =
-    "OpenShell grants model and Git on demand and preserves the conversation after Git withdrawal";
   const path = "tests/integration/openshell-mixed-grant-real.test.ts";
   const retentionUrl = new URL("../../scripts/ci/openshell-git-retention.mjs", import.meta.url)
     .href;
@@ -1080,7 +1047,7 @@ registerHooks({ load(url, context, nextLoad) {
 }});
 test("closed diagnostic projection", (t) => {
   const common = { kind: "openshell-git-retention", phase: "installation", extra: "PRIVATE_FIELD_CANARY" };
-  emitOpenShellGitRetention(t, { ...common, event: "mixed-grant-setup", operation: "input-validation" });
+  emitOpenShellGitRetention(t, { ...common, event: "mixed-grant-setup", phase: "verification", operation: "model before Git" });
   emitOpenShellGitRetention(t, { ...common, event: "mixed-grant-failure", category: "operation", httpStatus: null });
   // Existing events still supply the original identity for collector-side hashing.
   emitOpenShellGitRetention(t, { kind: common.kind, event: "mixed-grant-git-fetched", revisionId: "revision-identity", sha: "a".repeat(40), gitIssued: 1, gitRequests: 2 });
@@ -1089,17 +1056,7 @@ process.env.OCC_TEST_OPENSHELL_MIXED_GRANT_REAL = "1";
 await import(${JSON.stringify(realTestUrl)});
 `,
     );
-    await writeSingleLaneManifest(
-      root,
-      "closed-output",
-      [
-        {
-          path,
-          expectedTests: ["closed diagnostic projection", name],
-        },
-      ],
-      {},
-    );
+    await writeSingleLaneManifest(root, "closed-output", [{ path }], {});
     const directEnv = runnerEnv();
     delete directEnv.NODE_TEST_CONTEXT;
     const direct = spawnSync(process.execPath, ["--test", join(root, path)], {
@@ -1128,8 +1085,8 @@ await import(${JSON.stringify(realTestUrl)});
       {
         kind: "openshell-git-retention",
         event: "mixed-grant-setup",
-        phase: "installation",
-        operation: "input-validation",
+        phase: "verification",
+        operation: "model before Git",
       },
       {
         kind: "openshell-git-retention",
