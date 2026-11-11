@@ -3,8 +3,9 @@
 Use the `gateway-routing` lane to check browser chat through OCC, Kubernetes
 routing, and the real OpenClaw runtime. The `oidc-agent-chat` QA scenario adds
 Keycloak sign-in and signed admission claims to that path. It creates Default users through first-login enrollment and verifies that
-returning login reuses the account. The PostgreSQL and Keycloak enrollment tests
-cover the broader admission and email-policy matrix.
+returning login reuses the account. The real Keycloak tests own the admission and
+email-policy matrix. PostgreSQL enrollment tests cover policy changes, returning
+identities, initial grants, concurrency, and transaction rollback.
 
 ## Run the combined OIDC journey
 

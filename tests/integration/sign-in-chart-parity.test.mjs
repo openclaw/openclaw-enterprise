@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { startApi, startupFailureFields } from "../../apps/controller/src/api-startup.mjs";
 import {
   refuseRewrittenIpv4Host,
@@ -1247,8 +1248,16 @@ describe("sign-in chart parity", { concurrency: true }, () => {
             "https://console.oce.example.internal/#",
             " https://console.oce.example.internal? ",
             "https://admin@console.oce.example.internal",
-            "https://admin:secret@console.oce.example.internal",
-            "https://:secret@console.oce.example.internal",
+            syntheticCredentialUrl({
+              username: "admin",
+              password: "secret",
+              host: "console.oce.example.internal",
+            }),
+            syntheticCredentialUrl({
+              username: "",
+              password: "secret",
+              host: "console.oce.example.internal",
+            }),
             // Node drops an empty user info and publishes the host alone; Go keeps it.
             "https://@console.oce.example.internal",
             "https://:@console.oce.example.internal",

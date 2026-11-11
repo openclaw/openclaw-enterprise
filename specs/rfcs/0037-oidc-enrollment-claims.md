@@ -79,9 +79,9 @@ in the implementation PR; implementation is not evidence of qualification.
 
 ### Verification record
 
-The implementation passes 17 PostgreSQL enrollment checks, 11 PostgreSQL OIDC
+At revision `a9f946bbc`, the implementation passed 17 PostgreSQL enrollment checks, 11 PostgreSQL OIDC
 sign-in checks, and two Helm/profile configuration checks. The controlled real
-Keycloak 26.7.5 matrix passes 23 checks against PostgreSQL 18.6, including
+Keycloak 26.7.5 matrix passed 23 checks against PostgreSQL 18.6, including
 IdP-emitted false and absent verification. These results cover AC-1, AC-2 and
 AC-4. The hosted [Keycloak OIDC](https://github.com/openclaw/openclaw-enterprise/actions/runs/43087783484/job/130756778780)
 and [PostgreSQL authentication](https://github.com/openclaw/openclaw-enterprise/actions/runs/43087783484/job/130756779023)
