@@ -349,7 +349,7 @@ test(
       // failure shape, then select its code from the platform vocabulary.
       const terminalFailure =
         error instanceof Error
-          ? /^MIXED_GRANT_DEPLOYMENT_FAILED: ([A-Z][A-Z0-9_]{0,95}); selected revision failed (?:before|after) provider registration$/u.exec(
+          ? /^MIXED_GRANT_DEPLOYMENT_FAILED: ([A-Z][A-Z0-9_]{0,95}); selected revision failed (before|after) provider registration$/u.exec(
               error.message,
             )
           : null;
@@ -424,7 +424,7 @@ test(
       if (terminalFailure) {
         // eslint-disable-next-line preserve-caught-error -- The raw cause may contain credentials; retain only the fixed diagnostic.
         throw new Error(
-          `MIXED_GRANT_DEPLOYMENT_FAILED: ${mixedGrantDeploymentCode(terminalFailure[1])}; verification phase ${phase}.`,
+          `MIXED_GRANT_DEPLOYMENT_FAILED: ${mixedGrantDeploymentCode(terminalFailure[1])}; selected revision failed ${terminalFailure[2]} provider registration; verification phase ${phase}.`,
         );
       }
       const locations: string[] = [];

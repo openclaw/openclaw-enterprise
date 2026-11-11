@@ -1028,12 +1028,16 @@ test("mixed-grant output closes deployment codes and projects before diagnostics
   const installationUrl = new URL("../helpers/openshell-git-installation.mjs", import.meta.url)
     .href;
   const realTestUrl = new URL("./openshell-mixed-grant-real.test.ts", import.meta.url).href;
-  for (const code of ["PRIVATE_UPPERCASE_CANARY", "SANDBOX_GATEWAY_UNAUTHORIZED", null]) {
+  for (const [code, registrationStage] of [
+    ["PRIVATE_UPPERCASE_CANARY", "before"],
+    ["SANDBOX_GATEWAY_UNAUTHORIZED", "after"],
+    [null, null],
+  ]) {
     const root = await fixture(t);
     const gatewayFailure = code === null;
     const message = gatewayFailure
       ? "PRIVATE_RPC_MESSAGE_CANARY"
-      : `MIXED_GRANT_DEPLOYMENT_FAILED: ${code}; selected revision failed before provider registration`;
+      : `MIXED_GRANT_DEPLOYMENT_FAILED: ${code}; selected revision failed ${registrationStage} provider registration`;
     const fields = gatewayFailure
       ? {
           requestDiagnostic: { method: "GetProviderProfile", grpcStatus: 14 },
@@ -1076,11 +1080,10 @@ await import(${JSON.stringify(realTestUrl)});
     });
     assert.equal(direct.status, 1, direct.stderr);
     const expectedCode = code === "PRIVATE_UPPERCASE_CANARY" ? "UNKNOWN_DEPLOYMENT_FAILURE" : code;
+    const expectedMessage = `MIXED_GRANT_DEPLOYMENT_FAILED: ${expectedCode}; selected revision failed ${registrationStage} provider registration; verification phase installation.`;
     assert.ok(
       (direct.stdout + direct.stderr).includes(
-        gatewayFailure
-          ? "GetProviderProfile gRPC 14"
-          : `MIXED_GRANT_DEPLOYMENT_FAILED: ${expectedCode}; verification phase installation.`,
+        gatewayFailure ? "GetProviderProfile gRPC 14" : expectedMessage,
       ),
     );
     const result = run(
@@ -1129,7 +1132,7 @@ await import(${JSON.stringify(realTestUrl)});
       },
     ]);
     if (!gatewayFailure) {
-      assert.ok(raw.includes(expectedCode));
+      assert.ok(raw.includes(expectedMessage));
     }
   }
 });
