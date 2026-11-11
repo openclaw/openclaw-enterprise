@@ -253,7 +253,9 @@ const inputItems = array(
     additionalLocalTools(item),
 );
 
-const reasoningEffort = oneOf("none", "minimal", "low", "medium", "high", "xhigh");
+const reasoningEffort = oneOf("none", "minimal", "low", "medium", "high", "xhigh", "max");
+// Native ultra is telemetry; its request effort is xhigh.
+const nativeReasoningEffort: Validator = (value) => reasoningEffort(value) || value === "ultra";
 const reasoning = optionalFields({
   effort: reasoningEffort,
   summary: oneOf("auto", "concise", "detailed"),
@@ -354,7 +356,7 @@ const clientMetadata = optionalFields({
       analytics_enabled: bool,
       history_ingest_requested: bool,
       model: metadataText,
-      reasoning_effort: reasoningEffort,
+      reasoning_effort: nativeReasoningEffort,
       workspaces: gitWorkspaces,
     }),
   ),
