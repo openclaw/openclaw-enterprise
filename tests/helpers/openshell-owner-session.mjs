@@ -117,11 +117,13 @@ export async function verifyOpenShellOwnerSession({
     ...environment,
     OPENCLAW_FIRST_AGENT_MODEL: process.env.OCC_TEST_OPENAI_MODEL,
   };
-  delete modelEnvironment.OPENAI_API_KEY;
-  delete modelEnvironment.OPENAI_API_KEY_FILE;
+  // General browser proof uses the API-key path even when CI also supplies a PAT.
+  // Dedicated PAT cases retain their account-policy checks separately.
+  delete modelEnvironment.CODEX_ACCESS_TOKEN;
+  delete modelEnvironment.CODEX_ACCESS_TOKEN_FILE;
   assert.ok(
-    modelEnvironment.CODEX_ACCESS_TOKEN || modelEnvironment.CODEX_ACCESS_TOKEN_FILE,
-    "Set the existing Codex service-account token or its private file for the real browser Agent",
+    modelEnvironment.OPENAI_API_KEY || modelEnvironment.OPENAI_API_KEY_FILE,
+    "Set OPENAI_API_KEY or OPENAI_API_KEY_FILE for the real browser Agent",
   );
   assert.ok(
     modelEnvironment.OPENCLAW_FIRST_AGENT_MODEL,

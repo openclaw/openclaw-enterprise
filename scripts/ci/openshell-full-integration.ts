@@ -7,15 +7,22 @@ const installerFiles = new Set([
   "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
 ]);
 
+export function isOpenShellInstallerFile(file: string | undefined) {
+  return file !== undefined && installerFiles.has(file);
+}
+
 export function isOpenShellLane(lane: string) {
   return lane === "openshell" || lane === policyLane || lane === installerLane;
 }
 
-function hasFiles(lane: unknown): lane is { files: { path: string }[] } {
+function hasFiles(lane: unknown): lane is { files: { path: string }[]; requiredEnv?: string[] } {
   return (
     typeof lane === "object" &&
     lane !== null &&
     "files" in lane &&
+    (!("requiredEnv" in lane) ||
+      (Array.isArray(lane.requiredEnv) &&
+        lane.requiredEnv.every((name: unknown) => typeof name === "string"))) &&
     Array.isArray(lane.files) &&
     lane.files.every(
       (file: unknown) =>
@@ -44,8 +51,8 @@ export function projectFullIntegrationOpenShell(manifest: {
     throw new Error("Full Integration requires the canonical OpenShell lane exactly once.");
   }
   const paths = new Set(original.files.map(({ path }) => path));
-  const installers = original.files.filter(({ path }) => installerFiles.has(path));
-  const shared = original.files.filter(({ path }) => !installerFiles.has(path));
+  const installers = original.files.filter(({ path }) => isOpenShellInstallerFile(path));
+  const shared = original.files.filter(({ path }) => !isOpenShellInstallerFile(path));
   if (
     paths.size !== original.files.length ||
     installers.length !== installerFiles.size ||
@@ -58,7 +65,11 @@ export function projectFullIntegrationOpenShell(manifest: {
     lanes: {
       ...otherLanes,
       [policyLane]: { ...original, files: shared },
-      [installerLane]: { ...original, files: installers },
+      [installerLane]: {
+        ...original,
+        requiredEnv: (original.requiredEnv ?? []).filter((name) => name !== "CODEX_ACCESS_TOKEN"),
+        files: installers,
+      },
     },
     groups: {
       ...manifest.groups,

@@ -197,6 +197,11 @@ test("full coverage receipts require real case evidence and retain approved same
     "full-integration",
   );
   const installerPaths = full.lanes["openshell-installers"].files.map(({ path }) => path);
+  assert.deepEqual(full.lanes["openshell-installers"].requiredEnv, [
+    "OPENAI_API_KEY",
+    "OCC_TEST_OPENAI_MODEL",
+  ]);
+  assert.ok(full.lanes["openshell-policy"].requiredEnv.includes("CODEX_ACCESS_TOKEN"));
   const skipperLane = "skipper-prepared-git-installed";
   const skipperFiles = full.lanes[skipperLane].files;
   const fixtureRoot = await temporaryDirectory(t, "full-coverage-receipts-");

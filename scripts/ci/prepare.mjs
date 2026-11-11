@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.mjs";
 import { loadTestSuites } from "./test-suites.mjs";
-import { isOpenShellLane } from "./openshell-full-integration.ts";
+import { isOpenShellInstallerFile, isOpenShellLane } from "./openshell-full-integration.ts";
 import {
   assertRuntimeArtifactTagAvailable,
   loadRuntimeArtifact,
@@ -949,9 +949,11 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
   ].includes(file);
   const openShellApiKey =
     isOpenShellLane(name) &&
-    ((effectiveEnv.OCC_TEST_OPENSHELL_HARNESS === "openclaw" &&
-      (openShellGatewayFile ||
-        (file === undefined && effectiveEnv.OCC_K3D_HARNESS === "openclaw"))) ||
+    (name === "openshell-installers" ||
+      isOpenShellInstallerFile(file) ||
+      (effectiveEnv.OCC_TEST_OPENSHELL_HARNESS === "openclaw" &&
+        (openShellGatewayFile ||
+          (file === undefined && effectiveEnv.OCC_K3D_HARNESS === "openclaw"))) ||
       (openShellGatewayFile && Boolean(effectiveEnv.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim())));
   requireEnv(
     (prepare.requireEnv ?? []).map((input) =>

@@ -144,16 +144,15 @@ cannot prove a Linear tool call.
 
 See [host relay diagnostics](docker.md#verify-host-routing-relay-diagnostics).
 
-Stop the reusable environment before running these tests. Each creates and
-removes its own disposable cluster. Install Docker or Podman, k3d, kubectl,
-Helm, and the dependencies in the [testing prerequisites](README.md#requirements-and-credentials).
-Build the local CLI first with `pnpm cli:build`.
+Stop reusable environments first. Each test creates and removes its own cluster.
+Install the [prerequisites](README.md#requirements-and-credentials), Docker or
+Podman, k3d, kubectl and Helm, then run `pnpm cli:build`.
 
 ```sh
 # Kubernetes control plane, including a real first-Agent deployment and browser access checks.
 # Install certutil and sandboxed Chromium as in the Kubernetes testing prerequisites.
-# Select an existing authorized Codex service account and its model.
-CODEX_ACCESS_TOKEN_FILE=/secure/oce/codex-token OCC_TEST_OPENAI_MODEL="$MODEL" \
+# Select an existing authorized OpenAI API key and its model.
+OPENAI_API_KEY_FILE=/secure/oce/openai-key OCC_TEST_OPENAI_MODEL="$MODEL" \
 OCC_TEST_DEV_UP_OPENSHELL_REAL=1 \
   node --test tests/integration/dev-up-openshell-k3d-real.test.mjs
 
@@ -162,11 +161,11 @@ OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL=1 \
   node --test tests/integration/dev-up-openshell-k3d-real.test.mjs
 ```
 
-Each command selects one case and skips the other. Both check setup, Workspace
-reconciliation, and cleanup. Kubernetes also checks browser access and a model
-reply from a real Agent, using an OIDC protocol fixture. Compose uses a
-synthetic credential without calling a model. Both default to Docker. Set
-`OCC_TEST_DEV_UP_CONTAINER_ENGINE=podman` for Podman.
+Both cases verify setup, Workspaces and cleanup. Kubernetes also checks browser
+access and a model reply through an OIDC fixture. Its Agent uses `OPENAI_API_KEY`
+or `OPENAI_API_KEY_FILE`; any PAT is excluded. Compose registers a synthetic
+credential. Docker is default;
+set `OCC_TEST_DEV_UP_CONTAINER_ENGINE=podman` for Podman.
 
 Set `OCC_TEST_NATIVE_BROWSER_RECEIPT` to a new file in an existing directory to
 retain the successful check's source, image identities, and assertion results.
@@ -211,9 +210,9 @@ official operator-mTLS access-token retrieval. Synthetic issuer results do not
 prove real ChatGPT login or model execution; repeat credentialed qualification
 against the exact selected images.
 
-The CI lane requires authorized `CODEX_ACCESS_TOKEN` for Codex and
-`OPENAI_API_KEY` for native OpenClaw, both permitting `OCC_TEST_OPENAI_MODEL`.
-Keep them separate: a Codex PAT cannot authenticate native OpenClaw. Never put
+The CI lane requires `CODEX_ACCESS_TOKEN` for dedicated PAT cases and
+`OPENAI_API_KEY` for general installers and native OpenClaw, both permitting
+`OCC_TEST_OPENAI_MODEL`. PAT cases retain managed permission checks. Never put
 either value in commands, logs, or shell history. Docker, k3d, kubectl, Helm,
 `openssl`, and network access to pinned assets are required. Preparation creates
 a disposable cluster, installs OpenShell and Agent Sandbox prerequisites, imports
@@ -290,8 +289,8 @@ its namespace. Both `test` and `demo` accept these flags. Without flags,
 `OCC_TEST_OPENSHELL_MODEL_BASE_URL` and `OCC_TEST_OPENAI_MODEL` select the endpoint
 and model. Explicit flags override inherited and prepared settings. Native helper
 bootstrap and its selected native test use `OPENAI_API_KEY`, not `CODEX_ACCESS_TOKEN`.
-Full OpenShell lane preparation and the first-Agent workflows still require their
-Codex token.
+Full OpenShell lane preparation still requires a token for its dedicated PAT cases.
+The upstream-outage test defaults to `https://api.openai.com/v1` and uses the API key.
 
 Both commands use the test-only bridge. `test` requires an authorized
 `OPENAI_API_KEY`; `demo` prompts for one if it is not set. `demo` leaves the
@@ -325,7 +324,8 @@ and Kubernetes-only first-Agent stacks. Each stack is created by the public Loca
 Setup installer, including OpenShell installation. Hosted focused jobs prepare
 current-source images through the [CI image path](ci.md); local runs retain source
 builds in the installer.
-The first run checks a fresh nonce and custom prompt. Reuse checks a new nonce
+Installer tests use `OPENAI_API_KEY` and verify exact CredentialSource access.
+The first run checks a nonce and custom prompt. Reuse checks a new nonce
 without that prompt or helper-environment credentials, retaining the exact Agent,
 revision, Namespace, and model. [CI results](ci/openshell-execution.md#interpret-timing-and-proof)
 retain stage timings.

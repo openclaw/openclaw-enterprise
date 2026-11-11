@@ -1,3 +1,7 @@
-import { registerProviderLifecycleTest } from "../helpers/openshell-sandbox-workflows.mjs";
+// Select the API-key path before the shared workflow reads its model inputs.
+// Keep a hostname so the real upstream certificate and outage checks run.
+process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL ||= "https://api.openai.com/v1";
+const { registerProviderLifecycleTest } =
+  await import("../helpers/openshell-sandbox-workflows.mjs");
 
 registerProviderLifecycleTest("upstream");

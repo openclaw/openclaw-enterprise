@@ -61,12 +61,14 @@ async function writeState(path, state) {
 test("focused first-Agent preparation leaves installation to Local Setup and refuses another file", async (t) => {
   const root = await fixture(t);
   const saved = {
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY,
     CODEX_ACCESS_TOKEN: process.env.CODEX_ACCESS_TOKEN,
     OCC_HELM_BIN: process.env.OCC_HELM_BIN,
     OCC_TEST_OPENAI_MODEL: process.env.OCC_TEST_OPENAI_MODEL,
   };
   // Fail before side effects if generic stack preparation is accidentally restored.
   process.env.OCC_HELM_BIN = join(root, "unavailable-helm");
+  process.env.OPENAI_API_KEY = "synthetic-model-credential";
   process.env.CODEX_ACCESS_TOKEN = "synthetic-model-credential";
   process.env.OCC_TEST_OPENAI_MODEL = "synthetic-model";
   t.after(() => {
@@ -916,6 +918,7 @@ describe("CI preparation", { concurrency }, () => {
         OCC_CI_SUITE_VIEW: view,
         NODE_BASE_IMAGE: packagingNodeBaseImage,
         CODEX_ACCESS_TOKEN: "synthetic-model-credential",
+        OPENAI_API_KEY: "synthetic-model-credential",
         OCC_TEST_OPENAI_MODEL: "synthetic-model",
         // The hosted action must supply its builder for the full lane, even
         // though no individual test file was selected. Fail before tool calls.
@@ -3567,7 +3570,6 @@ if (args[0] === "pull") {
       {
         harness: "openclaw",
         credentials: ["OPENAI_API_KEY"],
-        missing: "CODEX_ACCESS_TOKEN",
         file: other,
       },
       {
@@ -3601,7 +3603,6 @@ if (args[0] === "pull") {
       "tests/integration/openshell-gateway-tool-policy-real.test.ts",
       "tests/integration/openshell-credentials-real.test.ts",
       "tests/integration/openshell-withdrawal-real.test.ts",
-      "tests/integration/openshell-upstream-real.test.ts",
       "tests/integration/openshell-refresh-real.test.ts",
     ]) {
       cases.push(
@@ -3614,6 +3615,20 @@ if (args[0] === "pull") {
           missing: "OPENAI_API_KEY",
         },
         { harness: "codex", endpoint: true, credentials: ["OPENAI_API_KEY"], file },
+      );
+    }
+    // General installers use API keys even when an unrelated managed PAT is present.
+    // PAT-only input must fail before the preparer creates a state file or any resources.
+    for (const file of [
+      "tests/integration/openshell-upstream-real.test.ts",
+      "tests/integration/local-first-agent-openshell-real.test.mjs",
+      "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
+      "tests/integration/dev-up-openshell-k3d-real.test.mjs",
+    ]) {
+      cases.push(
+        { harness: "codex", credentials: ["OPENAI_API_KEY"], file },
+        { harness: "codex", credentials: ["CODEX_ACCESS_TOKEN", "OPENAI_API_KEY"], file },
+        { harness: "codex", credentials: ["CODEX_ACCESS_TOKEN"], file, missing: "OPENAI_API_KEY" },
       );
     }
     for (const [index, value] of cases.entries()) {
