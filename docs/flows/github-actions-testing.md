@@ -1,26 +1,28 @@
 ---
 created: 2026-09-04
-updated: 2026-11-10
-last_updated_session: authoring-run/320d719f-dd4a-44fd-968c-59c377d1a5bc
+updated: 2026-11-11
+last_updated_session: authoring-run/468c8b0e-17e2-4d4e-988e-f00f3434ccfa
 ---
 
 # GitHub Actions testing flow
 
 ## Overview
 
-The [ordinary CI lanes](../testing/ci/required-checks.md) reject missing or skipped coverage. Docs-only runs execute Suite Audit and Static Checks. Neither proves credentialed integrations.
+[Ordinary CI lanes](../testing/ci/required-checks.md) reject missing or skipped coverage. Docs-only runs execute Suite Audit and Static Checks. Neither proves credentialed integrations.
 
 ## Entry Points
 
 - `.github/workflows/ci.yml:jobs`: PR, main push, merge-group and manual checks on ephemeral runners.
 - `.github/workflows/qa-advisory.yml:jobs`: 6-hourly QA on `main`, and post-merge QA when `QA_ADVISORY_ON_PUSH` is `true`; trusted pull requests select [full or focused advisory QA](../testing/ci/qa-advisory.md).
-- `.github/workflows/full-integration.yml:jobs`: automatic main pushes and approved manual main integrations, pinned to `github.sha`.
+- `.github/workflows/full-integration.yml:jobs`: scheduled and approved manual main integrations, pinned to `github.sha`.
 
 ## Flow
 
 ```mermaid
 graph TD
   A["PR or other CI event"] --> S["Select impact mode"]
+  A --> AQ["Select advisory scope"]
+  AQ -->|eligible; focused source verified| AJ["Selected advisory jobs: setup, tests, cleanup, results"]
   A --> N["Suite Audit and Static Checks: every mode"]
   S -->|full PR| Q["Report affected packages (advisory)"]
   S -->|full or tests| B["All ordinary or selected CI lanes"]
@@ -36,10 +38,11 @@ graph TD
   G -->|full or tests| L["Aggregate same-source lane results"]
   G -->|docs| M["Documentation coverage result"]
   L --> R["Full CI coverage result"]
-  C["Main push or approved dispatch"] --> P["Source and environment preflight"]
-  P -->|docs only| D["Finish without execution lock"]
+  C["Scheduled tick or approved manual dispatch"] --> P["Source and environment preflight"]
+  P -->|scheduled tick skips admission| D["Finish without suite jobs"]
   P -->|eligible| V["Acquire execution lock and revalidate"]
-  V --> E["Protected test jobs"]
+  V -->|scheduled recheck skips admission| D
+  V -->|eligible| E["Protected test jobs"]
   V -->|all or dev-up-k3d| U["Credential-free installation job"]
   U --> T
   P -->|missing protection| X["Failed check"]
@@ -88,13 +91,18 @@ raw output. Selector errors fail the job; missing evidence is unavailable.
 
 For full-mode PRs, `affected-packages` verifies the checkout and reports dependents; it does not select tests or gate CI. Base-loaded policy cannot prevent PR changes to the workflow itself.
 
-Full Integration uses `github.sha`: verified docs-only main pushes omit runtime lanes; other pushes select `all`. Manual dispatch requires `integration-main-approval` and verified dispatcher, team and environment policy. Admission rejects invalid selections.
-A push may reuse same-SHA CI results after the [bounded admission and publication checks](../testing/ci/full-integration.md#results-and-limits);
-otherwise it runs fresh. Credentialed lanes do not wait for reuse.
+Advisory `.github/workflows/qa-advisory.yml:eligibility` selects fixed scopes,
+excluding empty groups. Focused jobs verify SHA and ordered PR parents. QA
+materializes only its selected credential; see
+[inputs and evidence](../testing/ci/qa-advisory.md#trigger).
 
-Preflight precedes the main-push execution lock; docs-only pushes never enter it.
-Eligible pushes share one pending slot. The same-commit reusable workflow revalidates
-after waiting, then admits and runs lanes. Dispatch locks are run-specific. Slack Live serializes channel/app access. Installation and installed Skipper Git serialize per branch. These resource queues retain waiting jobs. Jobs verify repository, branch and event. Push retries retain their source; manual retries require a new [approved dispatch](../testing/ci/configuration.md#environments).
+Full Integration checks out `github.sha`. [Scheduled admission](../testing/ci/full-integration.md#trigger)
+checks the current main commit, cadence and exact execution receipts before the
+automatic execution queue. The reusable workflow rechecks after acquiring the
+queue. Manual dispatch retains dispatcher, team and environment checks and a
+separate execution queue. Slack Live serializes channel/app access. Installation
+and installed Skipper Git serialize per branch. Retry through a new
+[approved dispatch](../testing/ci/configuration.md#environments).
 
 `all` selects every suite. QA waits for Slack even after failure. Cancellation
 stops QA. Aggregation requires the selected results.
@@ -114,9 +122,14 @@ PR dependency caches stay within GitHub's PR merge-ref scope; main caches stay m
 
 `scripts/ci/prepare.mjs:main` and `scripts/ci/prepare.mjs:ensureK3dCluster`
 
-[CI resource preparation](github-actions-testing/preparation.md) traces tool setup, image and cluster preparation, protected credentials, and resource ownership. Continue below when preparation has produced the lane state.
+[CI resource preparation](github-actions-testing/preparation.md) covers tools, images, clusters, credentials and ownership.
 
-For `logging-collector`, `scripts/ci/prepare.mjs:prepareLane` pre-pulls the pinned Collector, Node, Prometheus and Grafana images before publishing lane inputs. The metrics test and preparation share the digests in `scripts/ci/metrics-monitoring-images.mjs:metricsMonitoringImages`. `scripts/ci/prepare.mjs:ensureDockerSourceImage` reuses a verified local repository digest or pulls through `scripts/ci/image-pull.ts:pullImage`, then verifies that digest before tests start containers. Registry 5xx and rate limits retry within the shared pull budget; missing manifests and authorization refusals fail preparation immediately. Explicit unpinned Node overrides keep the existing test-owned pull behavior.
+For `logging-collector`, `scripts/ci/prepare.mjs:prepareLane` pre-pulls configured
+Collector and Node images and the shared Prometheus and Grafana pins.
+`ensureDockerSourceImage` reuses verified local digests or verifies downloads from
+`scripts/ci/image-pull.ts:pullImage` before publishing inputs. Registry 5xx/rate
+limits retry within the shared budget; missing manifests/authorization refusals
+fail immediately. Unpinned Node overrides retain test-owned pulls.
 
 `scripts/ci/prepare.mjs:imageBuildArgs` restores scoped BuildKit caches for hosted image jobs. Only the [CI Image Cache workflow](../../.github/workflows/ci-image-cache.yml) calls `warmImageCache` to export the shared controller/runtime cache. Full OpenShell lanes retain this builder and `SOURCE_DATE_EPOCH=0` through
 [source-build tests](../testing/ci/openshell-execution.md#hosted-preparation).
@@ -165,7 +178,13 @@ both commits.
 
 `scripts/ci/run-tests.mjs:main`, `scripts/ci/reporter.mjs:jsonLinesReporter` and `scripts/ci/failure-redaction.mjs:redactFailure`
 
-Whole files run with scoped environments and one owning lane each; differing prerequisites require separate files. The reporter records case names, locations and outcomes. Results and logs retain failure messages (600 characters) and top frames (240). Redaction removes repository paths, replaces nonpublic job/child environment values (8+ characters) with `[env:NAME]`, and masks token/key shapes, URL passwords and `password=` values as `[redacted]`; generated values require a matching shape.
+`scripts/ci/run-tests.mjs:normalizeFile` validates `file.env`.
+`runFile` merges, per child: filtered inherited values
+with declared inputs restored, `lane.env`, preparation defaults, `file.env`, then
+generated values. Later values win.
+`scripts/ci/prepare.mjs:prepareFile` separates re-resolved defaults from generated outputs. `file.env` affects neither preflight nor resource preparation. Keep differing prerequisites in separate files.
+
+The reporter records case names, locations and outcomes. Results and logs retain failure messages (600 characters) and top frames (240). Redaction removes repository paths, replaces nonpublic job/child environment values (8+ characters) with `[env:NAME]`, and masks token/key shapes, URL passwords and `password=` values as `[redacted]`; generated values require a matching shape.
 
 HTTP diagnostics retain numeric actual/expected statuses, allowlisted OCC codes and available ChatGPT operation/status. Denied traffic retains an allowlisted category and plugin failures an allowlisted readiness/rollout stage. Rollouts retain allowed Pod phases, readiness/scheduling flags, restart counts, exit codes and allowlisted reasons.
 
@@ -176,10 +195,6 @@ categories; `run-tests.mjs:runNode` adds lane/file labels. Installation ordinals
 and millisecond offsets enter [file receipts](../testing/ci/openshell-execution.md#interpret-timing-and-proof),
 not live logs. Readers bound partial records; parent byte limits apply first.
 Markers and separators stay out of failure tails. Timing and case accounting remain separate.
-
-For placement and proof observations available after a native first-Agent proof
-failure, see
-[interpret timing and proof](../testing/ci/openshell-execution.md#interpret-timing-and-proof).
 
 Required cases must pass; every skip or TODO fails the lane. There are no counterpart-skip lists or CI name filters. Synthetic file-wrapper success, missing output, zero cases, or interruption without final reporter output cannot establish coverage. Lane results retain failure, timeout and cleanup outcomes.
 
@@ -266,6 +281,14 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 02:22: Persist defaults separately. (authoring-run/468c8b0e-17e2-4d4e-988e-f00f3434ccfa - 52faf13e94dab59c20c80b161169c1d32429da36)
+
+- 2026-11-11 02:08: Trace per-file environment precedence and preparation boundaries. (authoring-run/3950ed4c-e0a8-42f9-8fc0-6b5fa60d7d3a - 08c7419aea802667090483843a386071c13e9050)
+
+- 2026-11-11 01:21: Include the OTEL lane in sanitized image-cache observations. (authoring-run/d63d3aa5-5c9c-493a-b4ea-51a1d64e9454 - 60289cbf3d6995ed46960ddb32402e52bf5efad7)
+
+- 2026-11-11 00:08: Select focused advisory jobs and verify their PR merge identity. (authoring-run/bf3df73c-1de0-42d0-b8e4-1326f775739f - 90cee90b34bf20c96538423778a652e55ff02eb4)
 
 - 2026-11-10 19:00: Classify RFC PNG illustrations as documentation. (authoring-run/320d719f-dd4a-44fd-968c-59c377d1a5bc - b3f542cdf738ffcbc4c351e7c9123228ae76a415)
 

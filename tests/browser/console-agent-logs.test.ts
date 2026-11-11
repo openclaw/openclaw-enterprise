@@ -4099,6 +4099,22 @@ async function openRetainedLogs(
   return { page, requests, deployment, leave };
 }
 
+async function openAuthorizedRuntimeLogs(t: TestContext, memberName: string, initialText: string) {
+  const logs = await logsFixture(t);
+  logs.computeDriver.state.lines = [line(1, initialText)];
+  const { account, role } = await logsMember(logs.fixture, logs.namespace, memberName, [
+    "read",
+    "operate",
+    "read_logs",
+  ]);
+  const { page, requests, leave } = await openRetainedLogs(t, logs, account.credentials);
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  await pane.getByText(initialText).waitFor();
+  const pods = page.locator(".runtime-pod");
+  await pods.first().waitFor();
+  return { logs, role, page, requests, leave, pane, pods };
+}
+
 // Record if the text or element appears at any point after this call. Checking only the final
 // DOM would miss the Console briefly restoring revoked output from a cached view.
 async function watchPainted(page: Page, target: { text: string } | { selector: string }) {
@@ -4271,19 +4287,11 @@ for (const delayed of ["follow", "download"]) {
 // refused since, with that answer unchanged, keeps the cached Pod cards off screen. The answer
 // still allows operate, so the refusal is not a lost grant: nothing asks again.
 test("Back rebuilds a Logs view whose status read alone is refused since", async (t) => {
-  const logs = await logsFixture(t);
-  logs.computeDriver.state.lines = [line(1, "operator output")];
-  const { account } = await logsMember(logs.fixture, logs.namespace, "status-refused", [
-    "read",
-    "operate",
-    "read_logs",
-  ]);
-  const { page, leave } = await openRetainedLogs(t, logs, account.credentials);
-  await page
-    .getByRole("log", { name: "Runtime log output" })
-    .getByText("operator output")
-    .waitFor();
-  await page.locator(".runtime-pod").first().waitFor();
+  const { logs, page, leave } = await openAuthorizedRuntimeLogs(
+    t,
+    "status-refused",
+    "operator output",
+  );
   await leave();
   let refusals = 0;
   await page.route(
@@ -4315,18 +4323,11 @@ test("Back rebuilds a Logs view whose status read alone is refused since", async
 // (finding 1597). The log refusal now asks for status once at once, on no new timer; a first
 // log read refused (log text never allowed) asks nothing more.
 test("a follow poll refused with operate revoked too clears the Pod cards at once", async (t) => {
-  const logs = await logsFixture(t);
-  logs.computeDriver.state.lines = [line(1, "read before the revoke")];
-  const { account, role } = await logsMember(logs.fixture, logs.namespace, "one-revoke", [
-    "read",
-    "operate",
-    "read_logs",
-  ]);
-  const { page, requests } = await openRetainedLogs(t, logs, account.credentials);
-  const pane = page.getByRole("log", { name: "Runtime log output" });
-  await pane.getByText("read before the revoke").waitFor();
-  const pods = page.locator(".runtime-pod");
-  await pods.first().waitFor();
+  const { logs, role, page, requests, pane, pods } = await openAuthorizedRuntimeLogs(
+    t,
+    "one-revoke",
+    "read before the revoke",
+  );
   await page.getByRole("button", { name: "Follow" }).click();
   const statusReads = () =>
     requests.filter(({ path }) => path.endsWith(`/deployments/${logs.revisionId}/runtime`)).length;
@@ -4357,17 +4358,11 @@ test("a follow poll refused with operate revoked too clears the Pod cards at onc
 // Configuration read before the revoke (finding 2550). A refusal after the same read succeeded
 // now says the access changed, and the next tab reads the page again, as Refresh does.
 test("a revoke seen by Logs says access changed, and a tab change reads the page again", async (t) => {
-  const logs = await logsFixture(t);
-  logs.computeDriver.state.lines = [line(1, "read before the revoke")];
-  const { account, role } = await logsMember(logs.fixture, logs.namespace, "revoked-agent", [
-    "read",
-    "operate",
-    "read_logs",
-  ]);
-  const { page } = await openRetainedLogs(t, logs, account.credentials);
-  const pane = page.getByRole("log", { name: "Runtime log output" });
-  await pane.getByText("read before the revoke").waitFor();
-  await page.locator(".runtime-pod").first().waitFor();
+  const { role, page, pane } = await openAuthorizedRuntimeLogs(
+    t,
+    "revoked-agent",
+    "read before the revoke",
+  );
   await page.getByRole("button", { name: "Follow" }).click();
 
   for (const permission of ["read", "operate", "read_logs"] satisfies PermissionAction[]) {
@@ -4408,18 +4403,11 @@ for (const { name, revoked, podsKept, staleFails = false } of [
   staleFails?: boolean;
 }[]) {
   test(`a status read in flight at a log refusal yields to a fresh one: ${name}`, async (t) => {
-    const logs = await logsFixture(t);
-    logs.computeDriver.state.lines = [line(1, "read before the revoke")];
-    const { account, role } = await logsMember(logs.fixture, logs.namespace, "stale-status", [
-      "read",
-      "operate",
-      "read_logs",
-    ]);
-    const { page, requests } = await openRetainedLogs(t, logs, account.credentials);
-    const pane = page.getByRole("log", { name: "Runtime log output" });
-    await pane.getByText("read before the revoke").waitFor();
-    const pods = page.locator(".runtime-pod");
-    await pods.first().waitFor();
+    const { logs, role, page, requests, pane, pods } = await openAuthorizedRuntimeLogs(
+      t,
+      "stale-status",
+      "read before the revoke",
+    );
     await page.getByRole("button", { name: "Follow" }).click();
     const statusPath = `/deployments/${logs.revisionId}/runtime`;
     const statusReads = () => requests.filter(({ path }) => path.endsWith(statusPath)).length;
@@ -4493,18 +4481,11 @@ for (const { name, revoked, podsKept, staleFails = false } of [
 
 // Losing operate hides the last status, not log text the member still has permission to read.
 test("a refused status poll clears the Pod details and keeps authorized log reads", async (t) => {
-  const logs = await logsFixture(t);
-  logs.computeDriver.state.lines = [line(1, "before losing operate")];
-  const { account, role } = await logsMember(logs.fixture, logs.namespace, "lose-operate", [
-    "read",
-    "operate",
-    "read_logs",
-  ]);
-  const { page, requests } = await openRetainedLogs(t, logs, account.credentials);
-  const pane = page.getByRole("log", { name: "Runtime log output" });
-  await pane.getByText("before losing operate").waitFor();
-  const pods = page.locator(".runtime-pod");
-  await pods.first().waitFor();
+  const { logs, role, page, requests, pane, pods } = await openAuthorizedRuntimeLogs(
+    t,
+    "lose-operate",
+    "before losing operate",
+  );
   const reads = () => logRequests(requests, logs.revisionId);
   const initialReads = reads().length;
 

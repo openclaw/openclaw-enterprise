@@ -10,6 +10,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, test } from "node:test";
+import { runInNewContext } from "node:vm";
 import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 import { prepareCodexSeccompProfile } from "../../scripts/ci/codex-seccomp.mjs";
 import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.mjs";
@@ -79,7 +80,7 @@ test("focused first-Agent preparation leaves installation to Local Setup and ref
     assert.deepEqual(state.resources, []);
     assert.equal(prepared.env.OCC_TEST_DATABASE_URL, undefined);
     assert.equal(prepared.env.OCC_TEST_KUBERNETES_CONTEXT, undefined);
-    assert.equal(prepared.env.OCC_TEST_LOCAL_FIRST_AGENT_REAL, "1");
+    assert.equal(prepared.defaults.OCC_TEST_LOCAL_FIRST_AGENT_REAL, "1");
     await assert.rejects(
       prepareFile({
         lane: "openshell",
@@ -799,6 +800,29 @@ describe("CI preparation", { concurrency }, () => {
       }
       const calls = (await commands.commands()).filter(({ args }) => args[0] === "buildx");
       const builds = calls.filter(({ args }) => args.includes("--load"));
+      if (lane === "k3d-otel") {
+        // Parse synthetic BuildKit output through the real preparation entrypoint;
+        // this proves sanitized counters, not live cache hits.
+        assert.ok(calls.every(({ args }) => args.includes("--progress=plain")));
+        const prefix = `[prepare:${lane}] `;
+        const records = prepared.stderr.split("\n").flatMap((line) => {
+          if (!line.startsWith(prefix + "{")) {
+            return [];
+          }
+          const record = JSON.parse(line.slice(prefix.length));
+          return record.stage === "image-cache" ? [record] : [];
+        });
+        assert.deepEqual(records.map(({ role, phase }) => `${role}:${phase}`).sort(), [
+          "controller:load",
+          "controller:probe",
+          "runtime:load",
+          "runtime:probe",
+        ]);
+        assert.doesNotMatch(
+          prepared.stdout + prepared.stderr,
+          /private-step|synthetic-build-command|synthetic-sibling-command|synthetic-build-output/,
+        );
+      }
       assert.equal(builds.length, 2, event);
       // Each build first probes for an image the engine already holds.
       assert.equal(calls.length, 4, event);
@@ -2086,80 +2110,405 @@ assert.equal(commands, 0);
     }
   });
 
-  test("advisory OpenShell shards execute every manifest file once without cancelling siblings", async (t) => {
+  test("advisory labels select only requested jobs and bind focused proof to the PR merge", async (t) => {
     const workflow = loadYaml(
       await readFile(join(repositoryRoot, ".github/workflows/qa-advisory.yml"), "utf8"),
     );
-    const selection = workflow.jobs.eligibility.steps.find(
-      (step) => step.id === "openshell-matrix",
-    );
-    const job = workflow.jobs.openshell;
-    const action = job.steps.find((step) => step.uses === "./.github/actions/run-ci-lane");
-    const files = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json")).lanes
-      .openshell.files;
-    assert.equal(job["runs-on"], "ubuntu-24.04");
-    assert.equal(job.strategy["fail-fast"], false);
-    assert.equal(job.environment, "integration-qa-pr");
-    assert.equal(
-      job.strategy.matrix,
-      "${{ fromJSON(needs.eligibility.outputs.openshell-matrix) }}",
-    );
-    assert.equal(action.with["test-file"], "${{ matrix.file }}");
-    assert.equal(action.with["artifact-prefix"], "qa-advisory-${{ matrix.shard }}");
-
-    const root = await fixture(t);
-    for (const [index, selected] of [
-      "",
-      files[0].path,
-      "tests/integration/unknown.test.mjs",
-    ].entries()) {
-      const output = join(root, `matrix-${index}`);
-      // Execute the workflow's selector, so a fixed matrix that drops a registered file fails here.
-      const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", selection.run], {
-        cwd: repositoryRoot,
-        env: { ...process.env, OPENSHELL_FILE: selected, GITHUB_OUTPUT: output },
-        encoding: "utf8",
-      });
-      if (index === 2) {
-        assert.notEqual(
-          result.status,
-          0,
-          "An unknown selection must fail, not produce an empty matrix.",
-        );
-        continue;
-      }
-      assert.equal(result.status, 0, result.stderr);
-      const { include } = JSON.parse(
-        (await readFile(output, "utf8"))
-          .split("\n")
-          .find((line) => line.startsWith("matrix="))
-          .slice("matrix=".length),
-      );
-      assert.deepEqual(
-        include.map(({ file }) => file),
-        selected ? [selected] : files.map(({ path }) => path),
-      );
-      assert.equal(new Set(include.map(({ shard }) => shard)).size, include.length);
-      const installation = JSON.parse(
-        (await readFile(output, "utf8"))
-          .split("\n")
-          .find((line) => line.startsWith("installation-matrix="))
-          .slice("installation-matrix=".length),
-      );
-      assert.deepEqual(
-        installation.include.map(({ file }) => file),
-        loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json")).lanes[
-          "dev-up-k3d"
-        ].files.map(({ path }) => path),
-      );
-      const installationJob = workflow.jobs["local-installation"];
-      assert.equal(installationJob.strategy["fail-fast"], false);
+    const selector = workflow.jobs.eligibility.steps.find(({ id }) => id === "selection");
+    // Matrix selection must reach the same narrow leaf invocation and isolated evidence.
+    for (const [name, lane, runner, environment, prefix] of [
+      [
+        "openshell",
+        "openshell",
+        "ubuntu-24.04",
+        "integration-qa-pr",
+        "qa-advisory-${{ matrix.shard }}",
+      ],
+      [
+        "local-installation",
+        "dev-up-k3d",
+        "ubuntu-22.04",
+        undefined,
+        "qa-advisory-local-installation-${{ matrix.shard }}",
+      ],
+      [
+        "qa",
+        "qa-matrix",
+        "blacksmith-8vcpu-ubuntu-2404",
+        "integration-qa-pr",
+        "qa-advisory-${{ matrix.installation }}",
+      ],
+    ]) {
+      const job = workflow.jobs[name];
+      const action = job.steps.find((step) => step.uses === "./.github/actions/run-ci-lane");
+      assert.equal(job["runs-on"], runner);
+      assert.equal(job.environment, environment);
+      assert.equal(job.strategy["fail-fast"], false);
+      assert.equal(action.with.lane, lane);
       assert.equal(
-        installationJob.steps.find((step) => step.uses === "./.github/actions/run-ci-lane").with[
-          "test-file"
-        ],
-        "${{ matrix.file }}",
+        action.with["test-file"],
+        name === "qa" ? "tests/integration/qa-matrix-real.test.mjs" : "${{ matrix.file }}",
       );
+      assert.equal(action.with["artifact-prefix"], prefix);
+    }
+    const root = await fixture(t);
+    const source = join(root, "source");
+    await mkdir(source);
+    const git = (cwd, ...args) => {
+      const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+      return result.stdout.trim();
+    };
+    git(source, "init", "-b", "main");
+    git(source, "config", "user.name", "Fixture");
+    git(source, "config", "user.email", "fixture@example.invalid");
+    const manifestDirectory = "scripts/ci/test-suites";
+    await mkdir(join(source, manifestDirectory), { recursive: true });
+    const manifests = {};
+    for (const lane of ["openshell", "dev-up-k3d"]) {
+      const text = await readFile(join(repositoryRoot, manifestDirectory, `${lane}.json`), "utf8");
+      manifests[lane] = JSON.parse(text).files.map(({ path }) => path);
+      await writeFile(join(source, manifestDirectory, `${lane}.json`), text);
+    }
+    git(source, "add", ".");
+    git(source, "commit", "-m", "base");
+    git(source, "checkout", "-b", "feature");
+    git(source, "commit", "--allow-empty", "-m", "head");
+    const head = git(source, "rev-parse", "HEAD");
+    git(source, "checkout", "main");
+    git(source, "commit", "--allow-empty", "-m", "base advance");
+    const base = git(source, "rev-parse", "HEAD");
+    git(source, "merge", "--no-ff", "feature", "-m", "merge");
+    const sha = git(source, "rev-parse", "HEAD");
+    // Checkout uses shallow history: parent identity must come from the commit headers.
+    const checkout = join(root, "checkout");
+    git(root, "clone", "--depth=1", `file://${source}`, checkout);
+    assert.equal(git(checkout, "rev-parse", "--is-shallow-repository"), "true");
+    const evaluate = (expression, context) =>
+      runInNewContext(
+        expression
+          .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+          .replaceAll("labels.*.name", "labels.map(({ name }) => name)")
+          .replace(/\.([a-zA-Z][\w]*-[\w-]+)/g, '["$1"]'),
+        {
+          // Actions string comparisons, including contains, ignore case.
+          contains: (list, value) =>
+            list.some((entry) => entry.toLowerCase() === value.toLowerCase()),
+          format: (text, value) => text.replace("{0}", value),
+          fromJSON: JSON.parse,
+          ...context,
+        },
+      );
+    const event = (labels) => ({
+      action: "synchronize",
+      number: 7,
+      pull_request: {
+        user: { login: "contributor" },
+        labels: labels.map((name) => ({ name })),
+        base: { sha: base },
+        head: { sha: head, repo: { full_name: "example/oce" } },
+      },
+    });
+    const context = (payload, name = "pull_request") => ({
+      github: {
+        event: payload,
+        event_name: name,
+        ref: name === "pull_request" ? "refs/pull/7/merge" : "refs/heads/main",
+        repository: "example/oce",
+        actor: "contributor",
+        sha,
+        run_id: "123",
+      },
+      vars: { QA_ADVISORY_ON_PUSH: "true" },
+    });
+    const keycloak = "qa-keycloak-installation";
+    const model = "qa-openclaw-model-ui";
+    const compose = "qa-openshell-compose";
+    const run = async (payload, name = "pull_request", overrides = {}) => {
+      const input = join(root, "event.json");
+      const output = join(root, "output");
+      const summary = join(root, "summary");
+      await writeFile(input, JSON.stringify(payload));
+      await writeFile(output, "");
+      await writeFile(summary, "");
+      const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", selector.run], {
+        cwd: checkout,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GITHUB_EVENT_PATH: input,
+          GITHUB_EVENT_NAME: name,
+          GITHUB_REF: context(payload, name).github.ref,
+          GITHUB_SHA: sha,
+          GITHUB_RUN_ID: "123",
+          GITHUB_RUN_ATTEMPT: "1",
+          GITHUB_OUTPUT: output,
+          GITHUB_STEP_SUMMARY: summary,
+          ...overrides,
+        },
+      });
+      const outputs = Object.fromEntries(
+        (await readFile(output, "utf8"))
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => {
+            const index = line.indexOf("=");
+            return [line.slice(0, index), line.slice(index + 1)];
+          }),
+      );
+      return { ...result, outputs, summary: await readFile(summary, "utf8") };
+    };
+    const fullCounts = [manifests["dev-up-k3d"].length, 2, manifests.openshell.length, 1];
+    for (const [labels, counts, name = "pull_request"] of [
+      [["Full-QA", model], fullCounts],
+      [
+        ["QA-Keycloak-Installation", "qa-OpenClaw-model-ui"],
+        [1, 1, 0, 0],
+      ],
+      [
+        [keycloak, "QA-KEYCLOAK-INSTALLATION"],
+        [1, 0, 0, 0],
+      ],
+      [[keycloak], [1, 0, 0, 0]],
+      [[model], [0, 1, 0, 0]],
+      [[compose], [0, 0, 1, 0]],
+      [
+        [keycloak, model],
+        [1, 1, 0, 0],
+      ],
+      [
+        [compose, model],
+        [0, 1, 1, 0],
+      ],
+      [
+        [compose, keycloak],
+        [1, 0, 1, 0],
+      ],
+      [
+        [compose, keycloak, model],
+        [1, 1, 1, 0],
+      ],
+      [["full-qa"], fullCounts],
+      [["full-qa", compose, keycloak, model], fullCounts],
+      [[], fullCounts, "schedule"],
+      [[], fullCounts, "workflow_dispatch"],
+      [[], [0, ...fullCounts.slice(1)], "push"],
+    ]) {
+      const payload = event(labels);
+      const ctx = context(payload, name);
+      assert.equal(evaluate(workflow.jobs.eligibility.if, ctx), true);
+      const result = await run(payload, name);
+      assert.equal(result.status, 0, result.stderr);
+      const outputs = Object.fromEntries(
+        Object.entries(workflow.jobs.eligibility.outputs).map(([key, expression]) => [
+          key,
+          evaluate(expression, { ...ctx, steps: { selection: { outputs: result.outputs } } }),
+        ]),
+      );
+      ctx.needs = { eligibility: { outputs } };
+      const groups = ["local-installation", "qa", "openshell", "oidc-agent-chat"];
+      for (const [index, group] of groups.entries()) {
+        const job = workflow.jobs[group];
+        const enabled = evaluate(job.if, ctx);
+        assert.equal(enabled, counts[index] > 0, `${name}/${labels}: ${group} gate`);
+        if (enabled && job.strategy) {
+          const rows = evaluate(job.strategy.matrix, ctx).include;
+          assert.equal(rows.length, counts[index], `${name}/${labels}: ${group} rows`);
+          if (group === "qa") {
+            for (const matrix of rows) {
+              const rowContext = { ...ctx, matrix };
+              for (const [variable, expected] of [
+                ["OCC_TEST_QA_INSTALLATION", matrix.installation],
+                ["OCC_TEST_QA_PRESET", matrix.preset],
+                ["OCC_TEST_QA_SCENARIOS", matrix.scenarios],
+                ["OCC_TEST_QA_SOURCE_SHA", matrix.focused ? sha : "working-tree"],
+                ["OCC_TEST_BROWSER_EXECUTABLE", matrix.focused ? "/usr/bin/google-chrome" : ""],
+              ]) {
+                assert.equal(evaluate(job.env[variable], rowContext), expected);
+              }
+              for (const [step, expected] of [
+                ["Materialize focused OpenClaw credentials", matrix.focused],
+                ["Materialize selected QA credentials", !matrix.focused],
+              ]) {
+                assert.equal(
+                  evaluate(job.steps.find(({ name }) => name === step).if, rowContext),
+                  expected,
+                );
+              }
+            }
+            assert.deepEqual(
+              JSON.parse(JSON.stringify(rows)),
+              labels.some((label) => label.toLowerCase() === "full-qa") || name !== "pull_request"
+                ? ["compose", "kubernetes"].map((installation) => ({
+                    installation,
+                    preset: "Codex",
+                    scenarios: "console-secrets",
+                    focused: false,
+                  }))
+                : [
+                    {
+                      installation: "kubernetes",
+                      preset: "OpenClaw",
+                      scenarios: "model-ui",
+                      focused: true,
+                    },
+                  ],
+            );
+          } else {
+            assert.equal(new Set(rows.map(({ shard }) => shard)).size, rows.length);
+            const expected = group === "openshell" ? manifests.openshell : manifests["dev-up-k3d"];
+            assert.deepEqual(
+              rows.map(({ file }) => file),
+              counts[index] === expected.length
+                ? expected
+                : [
+                    group === "openshell"
+                      ? "tests/integration/local-first-agent-openshell-real.test.mjs"
+                      : "tests/integration/dev-up-k3d-keycloak-real.test.ts",
+                  ],
+            );
+          }
+        }
+      }
+      assert.match(result.summary, new RegExp(sha));
+      if (name === "pull_request" && !labels.some((label) => label.toLowerCase() === "full-qa")) {
+        assert.match(result.summary, new RegExp(base));
+        assert.match(result.summary, new RegExp(head));
+      }
+    }
+    // Admission and cancellation use the added label, while selection uses all current labels.
+    for (const label of [keycloak, model, compose, "full-qa", "unrelated"]) {
+      const payload = { ...event([keycloak, label]), action: "labeled", label: { name: label } };
+      const ctx = context(payload);
+      const allowed = label !== "unrelated";
+      assert.equal(evaluate(workflow.jobs.eligibility.if, ctx), allowed);
+      const group = workflow.concurrency.group.replace(/\$\{\{([\s\S]*?)\}\}/g, (_, expression) =>
+        String(evaluate(expression, ctx)),
+      );
+      assert.match(group, allowed ? /pr-7/ : /run-123/);
+    }
+    for (const ctx of [
+      context(event([])),
+      context({
+        ...event([keycloak]),
+        pull_request: {
+          ...event([keycloak]).pull_request,
+          head: { sha: head, repo: { full_name: "fork/oce" } },
+        },
+      }),
+      {
+        ...context(event([keycloak])),
+        github: { ...context(event([keycloak])).github, actor: "dependabot[bot]" },
+      },
+      context({
+        ...event([keycloak]),
+        pull_request: { ...event([keycloak]).pull_request, user: { login: "dependabot[bot]" } },
+      }),
+      { ...context(event([]), "push"), vars: { QA_ADVISORY_ON_PUSH: "false" } },
+    ]) {
+      assert.equal(evaluate(workflow.jobs.eligibility.if, ctx), false);
+    }
+    for (const [payload, overrides] of [
+      [event([keycloak]), { GITHUB_SHA: head }],
+      [
+        {
+          ...event([model]),
+          pull_request: { ...event([model]).pull_request, base: { sha: head } },
+        },
+        {},
+      ],
+    ]) {
+      const result = await run(payload, "pull_request", overrides);
+      assert.notEqual(
+        result.status,
+        0,
+        "Mismatched source must fail before publishing job selection.",
+      );
+      assert.deepEqual(result.outputs, {});
+    }
+    // Full selection must reject an empty manifest; intentionally unselected groups stay empty.
+    for (const lane of ["openshell", "dev-up-k3d"]) {
+      const path = join(checkout, manifestDirectory, `${lane}.json`);
+      const original = await readFile(path, "utf8");
+      await writeFile(path, JSON.stringify({ ...JSON.parse(original), files: [] }));
+      const result = await run(event(["full-qa"]));
+      assert.notEqual(result.status, 0, `Full selection must not silently drop ${lane}.`);
+      assert.deepEqual(result.outputs, {});
+      await writeFile(path, original);
+    }
+    const manifestPath = join(checkout, manifestDirectory, "dev-up-k3d.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    manifest.files = manifest.files.filter(({ path }) => !path.includes("keycloak"));
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    assert.notEqual(
+      (await run(event([keycloak]))).status,
+      0,
+      "A missing fixed file must fail closed.",
+    );
+  });
+
+  test("focused advisory QA validates its inputs and materializes only the selected provider", async (t) => {
+    const workflow = loadYaml(
+      await readFile(join(repositoryRoot, ".github/workflows/qa-advisory.yml"), "utf8"),
+    );
+    const job = workflow.jobs.qa;
+    const selected = job.steps.find(
+      ({ name }) => name === "Materialize focused OpenClaw credentials",
+    );
+    const original = job.steps.find(({ name }) => name === "Materialize selected QA credentials");
+    assert.equal(job.environment, "integration-qa-pr");
+    assert.deepEqual(selected.env, { OPENAI_API_KEY: "${{ secrets.OPENAI_API_KEY }}" });
+    assert.deepEqual(original.env, { CODEX_ACCESS_TOKEN: "${{ secrets.CODEX_ACCESS_TOKEN }}" });
+    assert.equal(selected.if, "matrix.focused");
+    assert.equal(original.if, "${{ !matrix.focused }}");
+    assert.equal(workflow.jobs["local-installation"].environment, undefined);
+    assert.equal(
+      job.env.OCC_TEST_QA_OPENAI_MODEL,
+      "${{ matrix.focused && vars.OCC_TEST_OPENAI_MODEL || '' }}",
+    );
+    assert.equal(
+      job.env.OCC_TEST_QA_SOURCE_SHA,
+      "${{ matrix.focused && github.sha || 'working-tree' }}",
+    );
+    const root = await fixture(t);
+    for (const [index, [key, model, expected]] of [
+      ["", "model", 1],
+      ["key", " ", 1],
+      ["synthetic-key", "synthetic-model", 0],
+    ].entries()) {
+      const runRoot = join(root, String(index));
+      await mkdir(runRoot);
+      const environment = join(runRoot, "environment");
+      const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", selected.run], {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          RUNNER_TEMP: runRoot,
+          GITHUB_ENV: environment,
+          OPENAI_API_KEY: key,
+          CODEX_ACCESS_TOKEN: "",
+          OCC_TEST_QA_INSTALLATION: "kubernetes",
+          OCC_TEST_QA_PRESET: "OpenClaw",
+          OCC_TEST_QA_SCENARIOS: "model-ui",
+          OCC_TEST_QA_OPENAI_MODEL: model,
+        },
+      });
+      assert.equal(result.status, expected, result.stderr);
+      if (expected === 0) {
+        const entries = (await readFile(environment, "utf8")).trim().split("\n");
+        assert.equal(entries.length, 2);
+        assert.match(entries[1], /^OCC_TEST_QA_ARTIFACTS=/);
+        assert.match(entries[0], /^OCC_TEST_QA_OPENAI_KEY_FILE=/);
+        const path = entries[0].split("=")[1];
+        assert.equal(await readFile(path, "utf8"), key);
+        assert.equal((await stat(path)).mode & 0o777, 0o600);
+        assert.equal((await stat(dirname(path))).mode & 0o777, 0o700);
+        assert.ok(!result.stdout.includes(key));
+      } else {
+        await assert.rejects(stat(join(runRoot, "qa-matrix-credentials")), { code: "ENOENT" });
+      }
     }
   });
 
@@ -2978,6 +3327,14 @@ if (args[0] === "pull") {
       const engine = await launcherImageEngine(t);
       const root = engine.root;
       const envPath = join(root, "prepared.env");
+      if (name === "selected") {
+        // A later process must retain the prepared selection without re-exporting its inputs.
+        const lane = await runPrepare(
+          ["--lane", "dev-up-k3d", "--state", join(root, `${name}.json`)],
+          { ...engine.env, ...inputs },
+        );
+        assert.equal(lane.status, 0, lane.stderr);
+      }
       const result = await runPrepare(
         [
           "--lane",
@@ -2989,7 +3346,11 @@ if (args[0] === "pull") {
           "--github-env",
           envPath,
         ],
-        { ...engine.env, ...inputs },
+        {
+          ...engine.env,
+          OCC_TEST_BROWSER_EXECUTABLE: "",
+          OCC_TEST_DEV_UP_CONTAINER_ENGINE: "",
+        },
       );
       assert.equal(result.status, 0, result.stderr);
       assert.deepEqual(

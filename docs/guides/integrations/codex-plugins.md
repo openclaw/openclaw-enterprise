@@ -6,7 +6,7 @@ last_verified: "2026-11-02"
 
 # Add Codex plugins to an OpenShell Agent
 
-Enable Linear on the Codex Agent you created during setup (`fred` in this example), then ask it to list teams. You can [add Git](../repository-credentials/openshell-git-push.md) to the same Agent before or after Linear.
+Enable Linear on the Codex Agent you created during setup (`fred` in this example), then ask it to list teams. You can [add Git](../repository-credentials/openshell-git-push.md) to the same Agent before or after Linear. For dedicated OpenClaw Agents using managed CLI or hosted MCP plugins, see [Get started with managed OpenClaw plugins](../topics/openclaw-plugins.md).
 
 ## Before you start
 

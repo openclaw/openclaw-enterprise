@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { after } from "node:test";
 
 import { commandPath, composeConfigurationProvider } from "./compose.mjs";
-import { bashString, commandShim, startCommandServer } from "./fixture-command-server.mjs";
+import { bashString, commandShim, startCommandServer } from "./fixture-command-server.ts";
 import { readJsonLines as readJsonLinesFile } from "./json-lines.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 import { withoutShellStartup } from "./environment.ts";
@@ -63,7 +63,7 @@ async function writeExecutable(path, body) {
 
 // The external commands dev-up runs (the container engine, yq, uname, the project's occ,
 // and k3d, kubectl and helm for Kubernetes Compute) are bash scripts answered by the
-// fixture's command server (fixture-command-server.mjs), so their logic below runs in
+// fixture's command server (fixture-command-server.ts), so their logic below runs in
 // the test process: a command costs a bash start instead of a node start. The real CLI,
 // scripts/dev-up and scripts/dev-down still start each one as a process. A command
 // sends the environment variables below.
@@ -95,6 +95,7 @@ const forwardedEnv = [
   "OCC_DOCKER_AGENT_IMAGE",
   "OCC_DOCKER_GATEWAY_IMAGE",
   "OCC_DOCKER_RUNTIME_IMAGE",
+  "OPENCLAW_DEV_PORT",
   "PODMAN_COMPOSE_PROVIDER",
   "SAFETY_LOG",
 ];
@@ -151,6 +152,9 @@ async function runFake(io, logic) {
   }
 }
 
+const fixtureNamespaceId = "namespace_fixture";
+const fixtureNamespaceNetwork = "oce-namespace-fixture-0123456789ab";
+
 function engineCommand(fake, { args, env, cwd }, { stdout, exit }) {
   const { engine, options } = fake;
   const podmanJsonConfig = options.podmanJsonConfig ?? false;
@@ -184,7 +188,8 @@ function engineCommand(fake, { args, env, cwd }, { stdout, exit }) {
     );
   const composeCommandIndex = () =>
     args.findIndex(
-      (arg, index) => index > 0 && ["config", "build", "up", "ps", "cp", "exec"].includes(arg),
+      (arg, index) =>
+        index > 0 && ["config", "build", "up", "ps", "cp", "exec", "down"].includes(arg),
     );
   // The real Compose renders the configuration, as this command's own child did: the
   // command runs it with its own environment and these overrides.
@@ -297,6 +302,16 @@ function engineCommand(fake, { args, env, cwd }, { stdout, exit }) {
     writeServiceKey(args[args.length - 1], "key_3033697e-6397-4cc6-9b04-8ec17af78cf1");
     exit(0);
   }
+  // The Namespace network Docker Compute created for the fixture Installation's Namespace.
+  if (args[0] === "network" && args[1] === "ls") {
+    if (args.includes("label=org.openclaw.enterprise.namespace-id=" + fixtureNamespaceId)) {
+      stdout(fixtureNamespaceNetwork + "\n");
+    }
+    exit(0);
+  }
+  if (args[0] === "network" && args[1] === "rm") {
+    exit(0);
+  }
   if (args[0] !== "compose") {
     exit(99, "unexpected " + engine + " command: " + args.join(" "));
   }
@@ -317,7 +332,7 @@ function engineCommand(fake, { args, env, cwd }, { stdout, exit }) {
   if (command === "build") {
     exit(0);
   }
-  if (command === "up") {
+  if (command === "up" || command === "down") {
     exit(0);
   }
   if (command === "ps") {
@@ -380,6 +395,11 @@ function engineCommand(fake, { args, env, cwd }, { stdout, exit }) {
   }
   if (engine === "docker" && command === "cp") {
     writeServiceKey(args[args.length - 1], "key_3033697e-6397-4cc6-9b04-8ec17af78cf1");
+    exit(0);
+  }
+  if (command === "exec" && args.includes("psql")) {
+    // The fixture Installation's database records one Namespace.
+    stdout(fixtureNamespaceId + "\n");
     exit(0);
   }
   if (command === "exec") {
@@ -552,6 +572,19 @@ function lifecycleCommand(fake, invocation, io) {
       exit(1);
     } else if (
       args[0] === "ps" &&
+      args[1] === "--format" &&
+      scenario === "docker-stack-holds-api-port"
+    ) {
+      // The default Docker-compatible stack's controller still publishes the API port.
+      output(
+        [
+          "openclaw-enterprise-development-controller-1",
+          `127.0.0.1:${env.OPENCLAW_DEV_PORT}->3000/tcp`,
+          "com.docker.compose.project=openclaw-enterprise-development,com.docker.compose.service=controller",
+        ].join("\t"),
+      );
+    } else if (
+      args[0] === "ps" &&
       state.compose &&
       args.includes("label=com.docker.compose.service=browser-proxy")
     ) {
@@ -649,6 +682,15 @@ function lifecycleCommand(fake, invocation, io) {
     if (args[0] === "cluster" && args[1] === "list") {
       output(JSON.stringify(state.clusters.map((name) => ({ name }))));
     } else if (args[0] === "cluster" && args[1] === "create") {
+      if (scenario === "cluster-create-rolled-back") {
+        // k3d's own rollback after a port clash: nothing of the cluster remains.
+        return fail(
+          "ERRO[0009] Failed Cluster Start: Failed to start server k3d-" +
+            args[2] +
+            "-serverlb: Bind for 127.0.0.1:3000 failed: port is already allocated\n" +
+            "FATA[0009] Cluster creation FAILED, all changes have been rolled back!",
+        );
+      }
       state.clusters.push(args[2]);
       save();
       if (scenario === "cluster-create-failed") {
@@ -1125,6 +1167,7 @@ export {
   createFixture,
   customRuntimeOverride,
   defaultRuntimeImage,
+  fixtureNamespaceNetwork,
   matchingInstallationId,
   mismatchedInstallationId,
   perImageOverride,

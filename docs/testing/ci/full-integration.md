@@ -17,22 +17,23 @@ clusters, and provider services. The workflow collects the selected results in
 
 ## Trigger
 
-Verified documentation-only main pushes select no runtime lanes. Other pushes
-to `main` select `all`. Missing history or uncertain impact retains full execution. Manual dispatch selects one supported `lane` or
-`all` on `main` and requires the dispatcher's [team approval](configuration.md#environments).
-Manual reruns fail preflight; start a new approved dispatch instead.
-Source, environment and selection validation run before queue admission. Verified docs-only
-pushes never enter the execution queue, so they cannot replace pending full work.
-Eligible automatic runs still share one running and one pending slot; the next
-run to enter the group replaces the pending one. A scheduled advisory run does not run this workflow.
+Quarter-hour ticks can admit a full run on the current main commit. Automatic
+starts are at least 60 minutes apart and at least 15 minutes after the preceding
+full run finishes. Stale ticks and revisions with verified full execution select
+no lanes. The outer preflight screens ticks before the execution queue. The
+reusable workflow rechecks admission in the queue and confirms its admission
+receipt before starting the full suite. Missing admission metadata fails visibly.
+
+Manual dispatch selects one supported `lane` or `all` on `main` and requires the
+dispatcher's [team approval](configuration.md#environments). The ordinary PR
+and merge-group checks still provide targeted premerge feedback. QA Advisory
+has its own schedule.
 
 ## Scenarios
 
-For main pushes, `pr-safe-same-sha` can reuse successful [CI suite](required-checks.md#scenarios)
-results at the same commit. Manual dispatch runs fresh. Runtime Image Fixture,
-image lanes, Repository Credentials, and [Demo Observability Smoke](observability-demo.md)
-always run fresh. Dispatch Preflight checks policy; Full Integration Aggregate
-requires selected results. QA waits for Slack to finish, including after Slack failure.
+Scheduled and manual dispatches run the selected lanes fresh. Dispatch Preflight
+checks environment policy; Full Integration Aggregate requires selected results.
+QA waits for Slack to finish, including after Slack failure.
 Some lanes are also selected by [CI](required-checks.md) or
 [QA Advisory](qa-advisory.md); those pages own automatic selection rules.
 
@@ -95,7 +96,7 @@ gh workflow run full-integration.yml --ref main -f lane=dev-up-k3d
 Check `headSha` and `full-results-dev-up-k3d`; every case must pass without skips.
 The 180-minute job budget includes setup/cleanup. Manual runs require the same
 team approval as credentialed lanes. Start a new approved dispatch to retry a manual run.
-Jobs triggered by a main push can retry at the original commit.
+Retry a scheduled failure through a new approved manual dispatch.
 
 ## Results and limits
 
@@ -133,23 +134,16 @@ its assigned files serially, and the aggregate requires both results. QA Advisor
 [parallel per-file runners](qa-advisory.md#openshell-file-coverage).
 Use the [shared cleanup procedure](run-lanes.md#results-and-cleanup) for local runs.
 
-The reuse job polls ordinary CI every 30 seconds for at most 12 minutes. Other
-Full Integration lanes continue without waiting for it. Reuse requires a successful
-canonical `main` push run, its current attempt's successful lane and static-check
-jobs, and immutable result artifacts with matching source commit and full coverage.
-Preparation profiles and Node versions must match. The existing result validator
-checks required cases and cleanup before results are published as `full-results-reused`.
-Missing, expired, incomplete, or unavailable evidence runs fresh instead. A failed
-artifact download or publication also runs fresh. The job log identifies the CI
-producer run and attempt; Full Integration Aggregate validates reused and fresh
-results together.
+Scheduled and manual runs plan fresh ordinary CI lanes. Earlier main-push
+runs could reuse qualified results from ordinary CI for the exact source SHA.
+The aggregate validates either source against the same case and cleanup rules.
 
 ## Files
 
 - [Full Integration workflow](../../../.github/workflows/full-integration.yml): events, approval, preflight, and execution queue admission.
 - [Execution workflow](../../../.github/workflows/full-integration-execution.yml): same-commit revalidation, selectable lanes, dependencies, and aggregate.
 - [Dispatch preflight](../../../scripts/ci/full-integration-preflight.mjs): lane and environment policy.
-- [CI result reuse](../../../scripts/ci/full-integration-reuse.mjs): producer admission, result validation, and fresh-lane fallback.
+- [CI lane planning](../../../scripts/ci/full-integration-reuse.mjs): ordinary CI lane selection and result validation.
 - [Suite index](../../../scripts/ci/test-suites.json): group membership; exact manifests are linked in Scenarios.
 - [Test runner](../../../scripts/ci/run-tests.mjs): expected-case and result checks.
 - [Lane action](../../../.github/actions/run-ci-lane/action.yml): preparation and cleanup.

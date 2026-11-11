@@ -12,7 +12,9 @@ repo_root="$(CDPATH="" cd "$script_dir/.." && pwd)"
 occ_cli="$repo_root/bin/occ"
 CDPATH="" cd "$repo_root"
 
-development_compute_driver="${OCC_DEVELOPMENT_COMPUTE_DRIVER:-docker}"
+# Match occ dev up: unset Compute selects Kubernetes, whose unset control plane
+# is the Kubernetes-only profile. occ dev up names Docker when it runs this script.
+development_compute_driver="${OCC_DEVELOPMENT_COMPUTE_DRIVER:-kubernetes}"
 development_sandbox_driver="${OCC_DEVELOPMENT_SANDBOX_DRIVER:-none}"
 development_control_plane="${OCC_DEVELOPMENT_CONTROL_PLANE:-}"
 case "$development_sandbox_driver" in
@@ -143,10 +145,16 @@ fi
 
 temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/openclaw-dev-up.XXXXXXXXXX")"
 chmod 700 "$temporary_directory"
+key_directory=""
 cleanup() {
   local status=$?
   trap - EXIT
   rm -rf -- "$temporary_directory"
+  # A failed or interrupted start removes the key directory it created while it is still
+  # empty. One that holds a copied key stays, recorded for occ dev down.
+  if [ "$status" -ne 0 ] && [ -n "$key_directory" ]; then
+    rmdir -- "$key_directory" 2>/dev/null || true
+  fi
   exit "$status"
 }
 trap cleanup EXIT
@@ -177,11 +185,9 @@ if stat.S_IMODE(parent_stat.st_mode) & 0o077:
 PY
 }
 
-if [ -z "$key_output" ]; then
-  key_directory="$(mktemp -d "${TMPDIR:-/tmp}/openclaw-dev-up-key.XXXXXXXXXX")"
-  chmod 700 "$key_directory"
-  key_output="$key_directory/initial-admin-service-key.json"
-else
+# Without --key-output the key goes to a directory this script creates once the checkout's
+# browser directory is known (below), so occ dev down can find and remove it.
+if [ -n "$key_output" ]; then
   if ! key_output_error="$(validate_key_output "$key_output" 2>&1)"; then
     usage_error "key output" "$key_output_error"
   fi
@@ -436,6 +442,17 @@ fi
 export OCC_DEVELOPMENT_BROWSER_ORIGIN OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN OCC_DEVELOPMENT_BROWSER_PORT
 export OCC_DEVELOPMENT_BROWSER_TLS_CERT OCC_DEVELOPMENT_BROWSER_TLS_KEY
 export OCC_AGENT_NATIVE_ADMIN_ENABLED=false
+if [ -z "$key_output" ]; then
+  # Drop trailing slashes (macOS sets TMPDIR to ".../T/") so the recorded path is clean.
+  key_parent="${TMPDIR:-/tmp}"
+  while [ "$key_parent" != "${key_parent%/}" ]; do key_parent="${key_parent%/}"; done
+  key_directory="$(mktemp -d "$key_parent/openclaw-dev-up-key.XXXXXXXXXX")"
+  chmod 700 "$key_directory"
+  key_output="$key_directory/initial-admin-service-key.json"
+  # Record only directories this script created: occ dev down removes them with the
+  # stack and never touches a --key-output path.
+  printf '%s\n' "$key_directory" >>"${OCC_DEVELOPMENT_BROWSER_TLS_CERT%/*}/dev-up-key-directories"
+fi
 browser_compose_file_selected=0
 for arg in "${compose_args[@]+${compose_args[@]}}"; do
   case "$arg" in -f | --file | -f?* | --file=*) browser_compose_file_selected=1 ;; esac
@@ -527,6 +544,8 @@ PY
       --build-arg "OPENCLAW_SOURCE_SHA256=$openclaw_archive_sha256"
       --build-arg "OPENCLAW_BUILD_TIMESTAMP=$openclaw_build_timestamp"
       --tag "$DEFAULT_RUNTIME_IMAGE" .)
+    # Matches internal/occdev's note for the Kubernetes profiles.
+    echo "dev-up: Building the runtime image. With no build cache, this compiles Node.js from source first: 15-60 minutes or longer, depending on CPUs and memory; later builds reuse the cache." >&2
     if ! engine "${runtime_build_args[@]}"; then
       fail "runtime image" "could not build $DEFAULT_RUNTIME_IMAGE" "${engine_command[@]}" "${runtime_build_args[@]}"
     fi
@@ -825,6 +844,8 @@ next_check_command="$(quote_command "OCC_URL=$api_url" "OCC_SERVICE_KEY_FILE=$ke
 cat <<EOF
 OpenClaw Enterprise development stack is ready.
 Container engine: $container_engine_label
+Control plane: Compose
+Compute Driver: Docker (control-plane preview; it cannot deploy Agents)
 API URL: $api_url
 Browser console: $OCC_DEVELOPMENT_BROWSER_ORIGIN/console/
 Browser CA certificate: ${OCC_DEVELOPMENT_BROWSER_TLS_CERT%/*}/browser-ca.crt

@@ -1,12 +1,14 @@
 package occdev
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
 
 func TestResolveProfileDefaults(t *testing.T) {
-	want := Profile{ComputeDriver: "docker", ControlPlane: "compose", SandboxDriver: "none"}
+	// Nothing selected is the Kubernetes-only profile, the only one that deploys Agents.
+	want := Profile{ComputeDriver: "kubernetes", ControlPlane: "kubernetes", SandboxDriver: "none"}
 	if got := resolveProfile(map[string]string{}); got != want {
 		t.Fatalf("unset selectors resolve to %+v, want %+v", got, want)
 	}
@@ -14,13 +16,31 @@ func TestResolveProfileDefaults(t *testing.T) {
 	if got := resolveProfile(empty); got != want {
 		t.Fatalf("empty selectors resolve to %+v, want %+v", got, want)
 	}
-	if want.KubernetesOnly() {
-		t.Fatal("the default profile reports Kubernetes-only")
+	if !want.KubernetesOnly() {
+		t.Fatal("the default profile is not Kubernetes-only")
 	}
-	for name, err := range map[string]error{"compute": want.CheckComputeDriver(), "control plane": want.CheckControlPlane(), "sandbox": want.CheckSandboxDriver(), "docker compute": want.CheckDockerCompute()} {
+	for name, err := range map[string]error{"compute": want.CheckComputeDriver(), "control plane": want.CheckControlPlane(), "sandbox": want.CheckSandboxDriver(), "keycloak": want.checkKeycloakSignIn()} {
 		if err != nil {
 			t.Errorf("the default profile fails its %s check: %v", name, err)
 		}
+	}
+	// The control-plane default follows the selected Compute Driver.
+	for name, test := range map[string]struct {
+		env  map[string]string
+		want Profile
+	}{
+		"kubernetes compute alone":   {map[string]string{"OCC_DEVELOPMENT_COMPUTE_DRIVER": "kubernetes"}, Profile{"kubernetes", "kubernetes", "none"}},
+		"kubernetes with openshell":  {map[string]string{"OCC_DEVELOPMENT_COMPUTE_DRIVER": "kubernetes", "OCC_DEVELOPMENT_SANDBOX_DRIVER": "openshell"}, Profile{"kubernetes", "kubernetes", "openshell"}},
+		"unset compute with compose": {map[string]string{"OCC_DEVELOPMENT_CONTROL_PLANE": "compose"}, Profile{"kubernetes", "compose", "none"}},
+		"docker compute alone":       {map[string]string{"OCC_DEVELOPMENT_COMPUTE_DRIVER": "docker"}, Profile{"docker", "compose", "none"}},
+	} {
+		if got := resolveProfile(test.env); got != test.want {
+			t.Errorf("%s resolves to %+v, want %+v", name, got, test.want)
+		}
+	}
+	// Docker Compute alone must stay a profile Docker Compute serves.
+	if err := resolveProfile(map[string]string{"OCC_DEVELOPMENT_COMPUTE_DRIVER": "docker"}).CheckDockerCompute(); err != nil {
+		t.Errorf("OCC_DEVELOPMENT_COMPUTE_DRIVER=docker alone fails CheckDockerCompute: %v", err)
 	}
 }
 
@@ -71,5 +91,63 @@ func TestProfileRefusals(t *testing.T) {
 	}
 	if err := (Profile{"docker", "compose", "none"}).checkDatabaseNameCompute(false); err != nil {
 		t.Errorf("Docker Compute refused an unset database name: %v", err)
+	}
+}
+
+func TestChooseDownStack(t *testing.T) {
+	inspectErr := errors.New("cannot inspect development state directory /state: permission denied")
+	for name, test := range map[string]struct {
+		env            map[string]string
+		composeOptions bool
+		present        bool
+		inspect        error
+		want           Profile
+		reason         downReason
+		wantErr        string
+	}{
+		"explicit docker ignores recorded state":        {env: map[string]string{"OCC_DEVELOPMENT_COMPUTE_DRIVER": "docker"}, present: true, want: Profile{"docker", "compose", "none"}, reason: downComputeSelected},
+		"explicit kubernetes without state":             {env: map[string]string{"OCC_DEVELOPMENT_COMPUTE_DRIVER": "kubernetes"}, want: Profile{"kubernetes", "kubernetes", "none"}, reason: downComputeSelected},
+		"unset with recorded state":                     {present: true, want: Profile{"kubernetes", "kubernetes", "none"}, reason: downRecordedState},
+		"unset without recorded state":                  {want: Profile{"docker", "compose", "none"}, reason: downNoRecordedState},
+		"unset with compose control plane":              {env: map[string]string{"OCC_DEVELOPMENT_CONTROL_PLANE": "compose"}, present: true, want: Profile{"kubernetes", "compose", "none"}, reason: downRecordedState},
+		"unset with an uninspectable directory":         {inspect: inspectErr, wantErr: inspectErr.Error()},
+		"compose options keep docker":                   {composeOptions: true, present: true, want: Profile{"docker", "compose", "none"}, reason: downComposeOptions},
+		"kubernetes control plane selects kubernetes":   {env: map[string]string{"OCC_DEVELOPMENT_CONTROL_PLANE": "kubernetes"}, want: Profile{"kubernetes", "kubernetes", "none"}, reason: downKubernetesSelected},
+		"kubernetes control plane with compose options": {env: map[string]string{"OCC_DEVELOPMENT_CONTROL_PLANE": "kubernetes"}, composeOptions: true, want: Profile{"kubernetes", "kubernetes", "none"}, reason: downKubernetesSelected},
+		"openshell selects kubernetes":                  {env: map[string]string{"OCC_DEVELOPMENT_SANDBOX_DRIVER": "openshell"}, want: Profile{"kubernetes", "kubernetes", "openshell"}, reason: downKubernetesSelected},
+	} {
+		t.Run(name, func(t *testing.T) {
+			consulted := false
+			got, err := chooseDownStack(test.env, test.composeOptions, func() (string, bool, error) {
+				consulted = true
+				return "/state", test.present, test.inspect
+			})
+			if test.wantErr != "" {
+				if err == nil || err.Error() != test.wantErr {
+					t.Fatalf("chooseDownStack error = %v, want %q", err, test.wantErr)
+				}
+				if !consulted {
+					t.Fatal("recorded state not consulted")
+				}
+				return
+			}
+			if err != nil || got.Profile != test.want || got.Reason != test.reason {
+				t.Fatalf("chooseDownStack = %+v, %v; want %+v for reason %d", got, err, test.want, test.reason)
+			}
+			// The Docker fallback must be a profile Docker Compute can stop, although
+			// occ dev up now defaults to Kubernetes Compute.
+			if got.Profile.ComputeDriver == "docker" {
+				if err := got.Profile.CheckDockerCompute(); err != nil {
+					t.Fatalf("Docker choice fails CheckDockerCompute: %v", err)
+				}
+			}
+			// Only the unselected choices consult the state directory, and they carry its path.
+			if consulted != got.unselected() {
+				t.Fatalf("recorded state consulted = %v for reason %d", consulted, got.Reason)
+			}
+			if wantPath := map[bool]string{true: "/state"}[got.unselected()]; got.StateDirectory != wantPath {
+				t.Fatalf("state directory = %q, want %q", got.StateDirectory, wantPath)
+			}
+		})
 	}
 }

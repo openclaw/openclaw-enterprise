@@ -57,9 +57,6 @@ func developmentCommand() *cobra.Command {
 					if sandboxNetworkPolicyFile != "" || sandboxNetworkPolicyCeilingFile != "" {
 						return fmt.Errorf("Sandbox policy input requires Kubernetes Compute and a Sandbox Driver")
 					}
-					if err := occdev.CheckDevelopmentSignIn(os.Getenv); err != nil {
-						return err
-					}
 					// Reuse the established Docker startup flow. Its Kubernetes
 					// dispatch cannot recur because this branch selects Docker.
 					arguments := []string{filepath.Join(repository, "scripts", "dev-up")}

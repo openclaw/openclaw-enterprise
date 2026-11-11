@@ -91,7 +91,7 @@ Resume locks evidence paths/devices/inodes/aliases and runtime dispatch journals
 Invalid inputs/unwritable evidence cause `Cannot compare upgrade YAML`.
 Projections/`cmp` permit Slack directory proxy, curated Codex PluginDriver selection
 and array-wrapping one registration.
-Removing empty `agentNativeAdmin.sharedCookieDomain` affects only baseline projection;
+Removing any `agentNativeAdmin.sharedCookieDomain` affects only baseline projection;
 live comparison stays exact. Immutable reference switches require string keys.
 Startup validates controllers; broker checks only references.
 

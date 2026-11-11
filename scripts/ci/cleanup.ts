@@ -1,4 +1,4 @@
-import { cleanupLogging, ciOtelBackendResourceKind } from "./logging.mjs";
+import { cleanupLogging, ciOtelBackendResourceKind } from "./logging.ts";
 import { cleanupKeycloak, keycloakResourceKind } from "./keycloak.mjs";
 import { laneImagesResourceKind, restoreLaneImages } from "./lane-images.ts";
 import { fork, spawn } from "node:child_process";

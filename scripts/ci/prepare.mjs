@@ -109,11 +109,17 @@ function lanePrepare(name) {
   return laneDefinition(name).prepare ?? {};
 }
 
-function applyLaneEnv(name, env) {
-  Object.assign(env, laneDefinition(name).env ?? {});
+function laneDefaults(name, env) {
+  const defaults = { ...laneDefinition(name).env };
+  const effective = { ...env, ...defaults };
   for (const [envName, defaultValue] of Object.entries(lanePrepare(name).defaultEnv ?? {})) {
-    env[envName] = process.env[envName] || env[envName] || defaultValue;
+    defaults[envName] = process.env[envName] || effective[envName] || defaultValue;
   }
+  return defaults;
+}
+
+function applyLaneEnv(name, env) {
+  Object.assign(env, laneDefaults(name, env));
 }
 
 function effectiveLaneEnv(name, env = {}) {
@@ -1146,7 +1152,10 @@ async function laneImageCommand(role, args, budgetMs = imageBuildBudgetMs()) {
 }
 
 function observesImageCache(lane) {
-  return isOpenShellLane(lane) || ["slack", "production-tui", "gateway-routing"].includes(lane);
+  return (
+    isOpenShellLane(lane) ||
+    ["slack", "production-tui", "gateway-routing", "k3d-otel"].includes(lane)
+  );
 }
 
 // Keep cache evidence without build arguments, URLs, command text or credentials.
@@ -3709,9 +3718,13 @@ async function prepareLane({ lane, statePath, file }) {
     await markResourceReady(resolvedStatePath, state, keycloak.resource);
   }
 
-  applyLaneEnv(name, env);
+  const defaults = laneDefaults(name, env);
+  state.defaults = defaults;
   await saveLaneEnv(resolvedStatePath, state, env);
-  return { env, cleanup: async () => cleanupResourceIds(resolvedStatePath) };
+  return {
+    env: { ...defaults, ...env },
+    cleanup: async () => cleanupResourceIds(resolvedStatePath),
+  };
 }
 
 async function prepareK3dModelLane(statePath, state, env, options) {
@@ -3738,6 +3751,7 @@ async function prepareK3dModelLane(statePath, state, env, options) {
 // returned for this state. The file's database is then a copy of that database
 // (CREATE DATABASE ... TEMPLATE) instead of a copy of the lane template. The worker
 // revision suite copies the database the runner prepared for its file, one copy per test.
+// Defaults remain overridable by a file; env contains preparation-owned outputs.
 async function prepareFile({ lane, file, statePath, template }) {
   const name = assertLane(lane);
   if (!file) {
@@ -3808,12 +3822,15 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     if (state?.lane !== name) {
       throw new Error("Repository credential images require their own lane state.");
     }
-    applyLaneEnv(name, env);
     const prepared = await prepareRepositoryCredentialsFile({
       clientImage: env.REPOSITORY_CREDENTIALS_CLIENT_IMAGE,
       execFile,
     });
-    return { env: { ...env, ...prepared.env }, cleanup: prepared.cleanup };
+    return {
+      defaults: laneDefaults(name, { ...state.defaults, ...env }),
+      env: { ...env, ...prepared.env },
+      cleanup: prepared.cleanup,
+    };
   }
 
   if (prepare.postgres && !prepare.selfProvisionedFiles?.includes(relativeFile)) {
@@ -3873,16 +3890,19 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     env.OCC_PRODUCTION_WIREUP_DATABASE_URL = production.appUrl;
   }
 
-  applyLaneEnv(name, env);
+  const defaults = laneDefaults(name, { ...state?.defaults, ...env });
 
   if (name === "dev-up-k3d") {
-    await prepareDevUpImage(env.OCC_TEST_DEV_UP_CONTAINER_ENGINE);
+    await prepareDevUpImage(
+      env.OCC_TEST_DEV_UP_CONTAINER_ENGINE ?? defaults.OCC_TEST_DEV_UP_CONTAINER_ENGINE,
+    );
   }
 
   if (state) {
     await writeState(resolvedStatePath, effectiveState);
   }
   return {
+    defaults,
     env,
     // `lockTimeoutMs` limits the wait for the CI state lock (cleanupResourceIds).
     cleanup: async ({ lockTimeoutMs } = {}) => {
@@ -3993,10 +4013,9 @@ async function main() {
   const result = args.file
     ? await prepareFile({ lane: args.lane, file: args.file, statePath: args.state })
     : await prepareLane({ lane: args.lane, statePath: args.state, file: args["selected-file"] });
-  await appendGithubEnv(args["github-env"] ?? process.env.GITHUB_ENV, result.env);
-  process.stdout.write(
-    `${JSON.stringify({ envNames: Object.keys(result.env).sort() }, null, 2)}\n`,
-  );
+  const env = { ...result.defaults, ...result.env };
+  await appendGithubEnv(args["github-env"] ?? process.env.GITHUB_ENV, env);
+  process.stdout.write(`${JSON.stringify({ envNames: Object.keys(env).sort() }, null, 2)}\n`);
 }
 
 export { defaultK3sImage, imageCacheLanes, lanesWithoutK3sAddons, prepareFile, prepareLane };

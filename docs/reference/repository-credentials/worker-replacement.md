@@ -69,6 +69,14 @@ under an authorized interruption, or plan normal revision replacement. A missing
 endpoint or denied inventory does not establish an empty fleet. Runtime upgrades
 keep their explicit replacement and dispatch journal.
 
+When OpenShell checks whether an execution can stay running after Git withdrawal,
+`worker.openshell-git-expiry` distinguishes four launch failures. The Sandbox
+lookup can return no result (`launch_sandbox_missing`), the workload check can
+fail to confirm its Pod identities (`launch_workload_unconfirmed`), or the
+observed Sandbox can fail its launch checks (`launch_contract_mismatch`).
+`launch_fingerprint_mismatch` means the observed Sandbox and workload identity
+produced a different combined fingerprint.
+
 For the first upgrade from a controller that returns inventory without this
 assessment, even a revision without repository access cannot establish
 `not-applicable`. Stop and settle retained running Agents before preparation, or
