@@ -764,7 +764,7 @@ async function withdrawAndObserveSandboxAbsence(setup, stack, evidence, deployme
         assert.ok(!setup.input.controllerUpgrade, "the bundled retirement owner requires a stop");
       } else {
         assert.equal(status.state, "pending");
-        assert.equal(status.lastReason, "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT");
+        assert.equal(status.reason, "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT");
       }
       return status;
     },
@@ -773,7 +773,7 @@ async function withdrawAndObserveSandboxAbsence(setup, stack, evidence, deployme
   await checkpoint("withdrawal-outcome", {
     revisionId: revision.id,
     state: withdrawal.state,
-    lastReason: withdrawal.lastReason,
+    reason: withdrawal.reason,
   });
   // This Driver cannot reduce the retained policy in place. Stop through the
   // Agent API; neither an accepted stop nor a pending withdrawal proves fencing.
@@ -847,7 +847,7 @@ async function withdrawAndObserveSandboxAbsence(setup, stack, evidence, deployme
   );
   assert.equal(retained.rowCount, 1);
   assert.equal(retained.rows[0].state, withdrawal.state);
-  assert.equal(retained.rows[0].last_reason, withdrawal.lastReason ?? null);
+  assert.equal(retained.rows[0].last_reason, withdrawal.reason ?? null);
   if (withdrawal.state === "pending") {
     assert.equal(retained.rows[0].completed_at, null);
   }
