@@ -215,7 +215,6 @@ function requireEnforceableClaudeCodeToolPolicy(
   }
 }
 
-
 // The runtime a model policy selects. `policy` gives the setting path of the object that holds
 // agentRuntime, such as agents.defaults.models["openai/gpt-5.1"]; it is built only for a refusal,
 // so a large policy map stays cheap to read (finding 1316).
