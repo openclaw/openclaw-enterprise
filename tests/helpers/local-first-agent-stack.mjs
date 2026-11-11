@@ -5,6 +5,12 @@ import { access, lstat, mkdir, readFile, realpath, rm, writeFile } from "node:fs
 import { createServer } from "node:net";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  failureInputLimit,
+  failureSecrets,
+  redactFailureDetail,
+  redactLogLine,
+} from "../../scripts/ci/failure-redaction.mjs";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const cli = join(root, "bin", "occ");
@@ -186,6 +192,7 @@ function run(
     command === cli && args[0] === "dev" && args[1] === "up"
       ? startupFailureObservation()
       : undefined;
+  const startupSecrets = startup ? failureSecrets([process.env, environment]) : [];
   const observed = new Set();
   const commands = new Map();
   return new Promise((resolve, reject) => {
@@ -197,6 +204,8 @@ function run(
     });
     const output = [];
     let outputSize = 0;
+    let startupStderr = "";
+    let stderrTruncated = false;
     let phase;
     let timedOut = false;
     let spawnCode;
@@ -215,6 +224,10 @@ function run(
       stream.on("data", (chunk) => {
         if (index === 0) {
           startup?.write(chunk);
+        } else if (startup) {
+          // Keep a bounded prefix: a tail could start inside a secret or PEM block.
+          stderrTruncated ||= startupStderr.length + chunk.length > failureInputLimit;
+          startupStderr = (startupStderr + chunk).slice(0, failureInputLimit);
         }
         if (collect && index === 0) {
           outputSize += Buffer.byteLength(chunk);
@@ -346,8 +359,28 @@ function run(
                   ? signal
                   : "an unknown signal");
       const progress = phase ? "; last stage: " + phase : "";
-      // Raw output is never included: Compose and bootstrap can emit credentials.
-      reject(new Error(label + " " + status + progress + "; raw output withheld."));
+      // Keep only complete lines before either redactor changes any text. Dropping
+      // that line and its suffix also withholds orphaned multiline secret values.
+      let safeEnd = startupStderr.length;
+      for (const redacted of [
+        redactLogLine(startupStderr, startupSecrets, failureInputLimit),
+        redactFailureDetail({ message: startupStderr }, startupSecrets, root)?.message ?? "",
+      ]) {
+        let index = 0;
+        while (index < safeEnd && startupStderr[index] === redacted[index]) {
+          index += 1;
+        }
+        if (index < safeEnd) {
+          safeEnd = startupStderr.lastIndexOf("\n", index - 1) + 1;
+        }
+      }
+      const detail = startupStderr.slice(0, safeEnd);
+      const diagnostic = detail
+        ? "\nStartup stderr (redacted): " +
+          detail.slice(0, 2_000).replace(/[\uD800-\uDBFF]$/u, "") +
+          (stderrTruncated || detail.length > 2_000 ? " [stderr truncated]" : "")
+        : "";
+      reject(new Error(label + " " + status + progress + "; raw output withheld." + diagnostic));
     });
   });
 }

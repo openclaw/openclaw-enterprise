@@ -38,6 +38,11 @@ export async function writeFirstAgentCliFixture(root: string, cliBody: string) {
     join(root, "tests/helpers/local-first-agent-stack.mjs"),
     await readFile(new URL("./local-first-agent-stack.mjs", import.meta.url)),
   );
+  await mkdir(join(root, "scripts/ci"), { recursive: true });
+  await writeFile(
+    join(root, "scripts/ci/failure-redaction.mjs"),
+    await readFile(new URL("../../scripts/ci/failure-redaction.mjs", import.meta.url)),
+  );
   await writeFile(join(root, "bin/occ"), `#!${process.execPath}\n${cliBody}`, { mode: 0o700 });
 }
 
