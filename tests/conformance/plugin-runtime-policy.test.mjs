@@ -1176,6 +1176,8 @@ test("a workspace-node Gateway keeps owner Codex tool excludes, pins the codex p
               baseUrl: "https://forbidden.example.test/v1",
             },
           },
+          // An unannotated sibling must not inherit the preceding model's efforts.
+          { id: "plain" },
         ],
       },
       // Codex's other provider: an authored transport here would also make Codex
@@ -1266,6 +1268,7 @@ test("a workspace-node Gateway keeps owner Codex tool excludes, pins the codex p
               supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
             },
           },
+          { id: "plain" },
         ],
         baseUrl: "http://127.0.0.1:9",
         api: "openai-responses",
