@@ -1259,6 +1259,7 @@ async function main(options: Options) {
       `${agentPath}/runtime-credentials`,
     );
     if (!credentials.transportConfigured) {
+      await checkProvisioning();
       await api("POST", `${agentPath}/runtime-credentials`, {});
     }
 

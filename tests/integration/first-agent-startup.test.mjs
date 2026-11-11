@@ -536,6 +536,7 @@ test("first-Agent deployment failure advice follows the reported cause", async (
       let role;
       let binding;
       let transportConfigured = false;
+      let interruptBeforeTransport = code === "RUNTIME_STARTUP_FAILED";
       let deploymentReads = 0;
       const unexpected = [];
       // Run the real helper and HTTP client against supported API envelopes. The
@@ -623,6 +624,11 @@ test("first-Agent deployment failure advice follows the reported cause", async (
               data = binding;
               break;
             case `GET ${agentPath}/runtime-credentials`:
+              if (interruptBeforeTransport) {
+                response.writeHead(503, { "content-type": "application/json" });
+                response.end(JSON.stringify({ error: { code: "DEPENDENCY_UNAVAILABLE" }, meta }));
+                return;
+              }
               data = { transportConfigured };
               break;
             case `POST ${agentPath}/runtime-credentials`:
@@ -731,6 +737,23 @@ test("first-Agent deployment failure advice follows the reported cause", async (
       // The saved Secret is reused; parent model credentials must never reach kubectl.
       env.CODEX_ACCESS_TOKEN = "synthetic-parent-model-token";
       env.CODEX_ACCESS_TOKEN_FILE = join(directory, "unused-model-token");
+      if (interruptBeforeTransport) {
+        // Stop after the draft Agent was saved. A later controller outage must
+        // refuse its retry before creating the missing transport credentials.
+        await runFirstAgentAsync(env, "--harness", "codex");
+        const draft = JSON.parse(await readFile(recordPath, "utf8"));
+        assert.equal(draft.agentId, agentId);
+        assert.equal(draft.revisionId, undefined);
+        assert.equal(transportConfigured, false);
+        interruptBeforeTransport = false;
+        const refused = await runFirstAgentAsync(
+          { ...env, FIRST_AGENT_TEST_CONTROLLER_UNAVAILABLE: "1" },
+          "--harness",
+          "codex",
+        );
+        assert.match(refused, /Agent Sandbox controller readiness could not be verified/);
+        assert.equal(transportConfigured, false, "refused draft retry must not create credentials");
+      }
       const output = await runFirstAgentAsync(env, "--harness", "codex");
       assert.match(output, new RegExp(`The Agent deployment failed \\(${code}\\)`));
       assert.doesNotMatch(output, /private-provider-message/);

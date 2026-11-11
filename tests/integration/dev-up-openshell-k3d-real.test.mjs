@@ -464,6 +464,17 @@ test(
         }
       }
       assert.ok(imageUnavailable, "The test controller must hit a real image availability failure");
+      // This refusal must reach readiness even when the hosted lane has both
+      // credential families. Keep credentials for the later owner-session proof.
+      const refusalEnvironment = { ...environment };
+      for (const key of [
+        "OPENAI_API_KEY",
+        "OPENAI_API_KEY_FILE",
+        "CODEX_ACCESS_TOKEN",
+        "CODEX_ACCESS_TOKEN_FILE",
+      ]) {
+        delete refusalEnvironment[key];
+      }
       await assert.rejects(
         execute(
           process.execPath,
@@ -473,7 +484,7 @@ test(
             "--harness",
             "codex",
           ],
-          { cwd: repository, env: environment, timeout: 45_000, maxBuffer: 256 * 1024 },
+          { cwd: repository, env: refusalEnvironment, timeout: 45_000, maxBuffer: 256 * 1024 },
         ),
         (error) => {
           assert.match(error.stderr, /Agent Sandbox controller readiness could not be verified/);
