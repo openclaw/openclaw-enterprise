@@ -50,6 +50,8 @@ operator connection can retrieve an access token. That credential lifecycle does
 not establish the three release requirements above. In particular, the released
 access-token RPC is not the proposed credential-access and dispatch protocol.
 
+In the online profile above, OpenShell holds the installed credential. The approved direction for [OpenClaw model keys](openclaw-model-keys.md) resolves the key from the selected Namespace Secret on each authorized request. A dedicated OpenClaw Agent can then use a separately granted saved plugin account. Enabling the profile requires a fresh Installation where a real model turn calls the plugin and each grant can be withdrawn independently.
+
 Keep [exact dispatch](protocol.md) for installations that must bind the selected credential,
 one send attempt and its response to the same execution. Select the level explicitly at
 admission. Never satisfy an exact-dispatch requirement with online authorization, or either
