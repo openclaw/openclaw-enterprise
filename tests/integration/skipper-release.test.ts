@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile, spawnSync } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -327,6 +327,34 @@ test("installed Skipper failure retention preserves known checkpoints and withho
         .map((row) => row.split("=")),
     );
 
+  // The real owner rejects this source before creating its work directory or invoking Docker.
+  const ownerWork = join(directory, "owner-work");
+  const owner = spawnSync(process.execPath, ["scripts/ci/skipper-prepared-git-installed.mjs"], {
+    encoding: "utf8",
+    timeout: 30_000,
+    env: { ...scope, GITHUB_SHA: "0".repeat(40), OCC_FIRST_AGENT_SMOKE_DIRECTORY: ownerWork },
+  });
+  assert.equal(owner.error, undefined);
+  assert.equal(owner.status, 1);
+  assert.match(owner.stderr, /AssertionError/);
+  const ownerOutputs = await readOutputs();
+  await assert.rejects(readFile(ownerWork), { code: "ENOENT" });
+  const ownerFailure = join(directory, "owner-failure.json");
+  assert.equal(
+    outcome(
+      ownerFailure,
+      "failure",
+      ownerOutputs.skipper_stage,
+      ownerOutputs.skipper_installed_cleanup,
+    ).status,
+    0,
+  );
+  assert.deepEqual(ownerOutputs, { skipper_stage: "preflight" });
+  const ownerReceipt = JSON.parse(await readFile(ownerFailure, "utf8"));
+  assert.equal(ownerReceipt.lastStage, "preflight");
+  assert.equal(ownerReceipt.installedCleanup, "unknown");
+  await rm(stageOutput);
+
   const failed = child(
     'await recordSkipperCheckpoint("skipper_installed_cleanup", "failed"); process.exitCode = 37;',
   );
@@ -350,8 +378,29 @@ test("installed Skipper failure retention preserves known checkpoints and withho
   assert.equal(JSON.parse(await readFile(failure, "utf8")).lastStage, "selected-test");
 
   await rm(stageOutput);
-  const timeout = child("setInterval(() => {}, 1_000);", 1_500);
-  assert.equal((timeout.error as NodeJS.ErrnoException | undefined)?.code, "ETIMEDOUT");
+  const interrupted = spawn(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      checkpoint + '\nprocess.stdout.write("ready\\n"); setInterval(() => {}, 1_000);',
+    ],
+    { env: scope },
+  );
+  try {
+    // Interrupt only after the awaited checkpoint, independently of process startup time.
+    const [ready] = await once(interrupted.stdout, "data", { signal: AbortSignal.timeout(10_000) });
+    assert.equal(ready.toString(), "ready\n");
+    const exited = once(interrupted, "exit", { signal: AbortSignal.timeout(10_000) });
+    interrupted.kill("SIGTERM");
+    assert.deepEqual(await exited, [null, "SIGTERM"]);
+  } finally {
+    if (interrupted.exitCode === null && interrupted.signalCode === null) {
+      const exited = once(interrupted, "exit", { signal: AbortSignal.timeout(10_000) });
+      interrupted.kill("SIGKILL");
+      await exited;
+    }
+  }
   const partial = await readOutputs();
   const timed = join(directory, "timeout.json");
   assert.equal(

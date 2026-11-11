@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-11
-last_updated_session: authoring-run/d63d3aa5-5c9c-493a-b4ea-51a1d64e9454
+last_updated_session: authoring-run/ca550d16-3b1c-4ed9-9ec7-d10efbb6baf9
 ---
 
 # GitHub Actions testing flow
@@ -177,7 +177,9 @@ Files use scoped environments in one owning lane; differing prerequisites requir
 
 HTTP diagnostics retain numeric actual/expected statuses, allowlisted OCC codes and available ChatGPT operation/status. Denied traffic retains an allowlisted category and plugin failures an allowlisted readiness/rollout stage. Rollouts retain allowed Pod phases, readiness/scheduling flags, restart counts, exit codes and allowlisted reasons.
 
-For captured Skipper failures, `skipper-release.ts:runSkipperOperation` provides the reporter and `skipperFailureSummary` with an operation label, bounded exit code and allowlisted signal/error code. Structured diagnostics exclude response bodies, credentials and identities.
+`skipper-release.ts:runSkipperOperation` projects captured Skipper errors. After
+failed installed proof, the workflow invokes `skipper-failure-receipt.ts` to publish
+the wrapper's [checkpoints](../testing/ci/full-integration.md#results-and-limits).
 
 `scripts/ci/openshell-progress.mjs:emitOpenShellProgress` emits fixed lifecycle
 categories; `run-tests.mjs:runNode` adds lane/file labels. Installation ordinals
@@ -273,6 +275,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 02:49: Trace installed failure receipts. (authoring-run/ca550d16-3b1c-4ed9-9ec7-d10efbb6baf9 - 2f93d2d9a4e452c79813467b4fbe0f9218410835)
 
 - 2026-11-11 01:21: Include the OTEL lane in sanitized image-cache observations. (authoring-run/d63d3aa5-5c9c-493a-b4ea-51a1d64e9454 - 60289cbf3d6995ed46960ddb32402e52bf5efad7)
 

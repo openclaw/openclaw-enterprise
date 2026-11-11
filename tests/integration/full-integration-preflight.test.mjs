@@ -2365,22 +2365,34 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   );
   assert.equal(failure.with.path, "${{ runner.temp }}/skipper-installed-failure.json");
   assert.equal(failure.with["if-no-files-found"], "error");
+  const proof = gitJob.steps.find((step) => step.id === "installed-skipper-proof");
+  assert.ok(
+    proof.run.includes(
+      "node scripts/qualification/skipper-private-git-fixture.mjs --team-review -- node scripts/ci/skipper-prepared-git-installed.mjs",
+    ),
+  );
   const recordFailure = gitJob.steps.find((step) => step.id === "installed-skipper-failure");
   // Failure evidence stays separate from success aggregation and is withheld on cancellation.
-  for (const outcome of ["success", "failure", "skipped", "cancelled"]) {
+  for (const [proofOutcome, recorderOutcome] of [
+    ["failure", "success"],
+    ["failure", "failure"],
+    ["success", "skipped"],
+    ["skipped", "skipped"],
+  ]) {
     for (const cancelled of [false, true]) {
       const context = {
         cancelled: () => cancelled,
-        steps: {
-          "installed-skipper-proof": { outcome },
-          "installed-skipper-failure": { outcome },
-        },
+        steps: { "installed-skipper-proof": { outcome: proofOutcome } },
       };
       assert.equal(
         workflowCondition(recordFailure.if, context),
-        !cancelled && outcome === "failure",
+        !cancelled && proofOutcome === "failure",
       );
-      assert.equal(workflowCondition(failure.if, context), !cancelled && outcome === "success");
+      context.steps["installed-skipper-failure"] = { outcome: recorderOutcome };
+      assert.equal(
+        workflowCondition(failure.if, context),
+        !cancelled && recorderOutcome === "success",
+      );
     }
   }
   assert.ok(workflow.jobs["full-aggregate"].needs.includes(privateGit));
