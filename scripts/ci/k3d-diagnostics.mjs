@@ -699,7 +699,7 @@ async function stopWatch(child) {
  * projection to the report's `containerLogs`. Pass the child's environment as
  * `finish({ env })` so its prepared secrets are redacted too.
  */
-export async function startAgentNamespaceCapture({ statePath, lane, file }) {
+export async function startAgentNamespaceCapture({ statePath, lane, file, preparationId }) {
   let clusters;
   try {
     const state = JSON.parse(await readFile(statePath, "utf8"));
@@ -807,9 +807,12 @@ export async function startAgentNamespaceCapture({ statePath, lane, file }) {
           return;
         }
         const diagnosticsPath = `${statePath}.diagnostics.json`;
-        let report = { lane };
+        let report = { lane, preparationId };
         try {
-          report = JSON.parse(await readFile(diagnosticsPath, "utf8"));
+          const previous = JSON.parse(await readFile(diagnosticsPath, "utf8"));
+          if (previous.lane === lane && previous.preparationId === preparationId) {
+            report = previous;
+          }
         } catch {
           // The first passing file starts the report.
         }

@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { cleanEnvironment, run } from "../fixtures/repository-credentials/process.mjs";
 import { extractOpenShellImageFile } from "../helpers/openshell-git-installation.mjs";
+import { removeImageFileContainer } from "../../scripts/lib/image-file.mjs";
 
 type CommandOptions = { signal?: AbortSignal; timeout?: number };
 
@@ -42,6 +44,9 @@ for (const phase of [
       );
       const controller = new AbortController();
       const cleanup: (() => Promise<void>)[] = [];
+      const resource = { name: `oce-extraction-${randomUUID()}` };
+      const receipt = join(directory, "resource.json");
+      const persist = () => writeFile(receipt, JSON.stringify(resource));
       let container: string | undefined;
       let pendingCreate: string[] | undefined;
       const remainingContainer = async () =>
@@ -128,6 +133,8 @@ for (const phase of [
         image,
         filename: "/opt/oce/runtime/provenance.json",
         destination: join(directory, "provenance.json"),
+        resource,
+        persist,
       });
       if (phase === "no default command") {
         await extraction;
@@ -136,6 +143,13 @@ for (const phase of [
         );
       } else {
         await assert.rejects(extraction, expected);
+      }
+      if (phase === "create") {
+        // A fresh cleanup process has only the durable receipt after both replies were lost.
+        const recovered = JSON.parse(await readFile(receipt, "utf8"));
+        assert.equal(recovered.containerId, container);
+        await removeImageFileContainer({ command, resource: recovered });
+        assert.equal(recovered.removed, true);
       }
       if (phase === "replaced create") {
         assert.equal(await remainingContainer(), container, "replacement must remain untouched");

@@ -723,6 +723,7 @@ async function cleanupResource(resource: CleanupResource, state: CleanupState, s
       }
       await removeImageFileContainer({
         resource,
+        persist: () => writeState(statePath, state),
         command: async (_docker: string, args: string[], options: { timeout?: number } = {}) => {
           try {
             return (

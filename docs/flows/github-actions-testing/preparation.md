@@ -81,9 +81,9 @@ Before tagging or import, the CLI records image resources in private `RUNNER_TEM
 
 `scripts/ci/prepare.mjs:retainRuntimeProvenance` compares platform-selected host
 and CRI config digests. `scripts/ci/runtime-provenance.mjs:readImageCodexProvenance`
-reads bounded metadata from immutable images into result and diagnostic
-projections. Missing metadata records `unavailable`; image policy is unchanged.
-Extraction journals ownership identities. Cleanup removes containers and anonymous volumes. Journal and cleanup errors fail preparation; unresolved resources retain receipts.
+reads bounded image metadata into each preparation's results and diagnostics.
+Missing metadata records `unavailable`; image policy is unchanged.
+Extraction journals IDs before removal. Cleanup removes containers and anonymous volumes. Journal and cleanup errors fail preparation; unresolved resources retain receipts.
 
 Before creating the bootstrap directory beside the state file,
 `scripts/ci/prepare.mjs:ensurePostgresServer` records its absolute path. It refuses

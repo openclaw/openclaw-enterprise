@@ -36,7 +36,12 @@ function singleFile(archive, filename, maxBytes) {
   return archive.subarray(512, 512 + size);
 }
 
-export async function removeImageFileContainer({ command, resource, final = true }) {
+export async function removeImageFileContainer({
+  command,
+  resource,
+  final = true,
+  persist = async () => {},
+}) {
   if (resource.removed !== true) {
     // A lost create reply still leaves this name owned. Cleanup must outlive
     // cancellation, but shares one finite deadline for lookup and removal.
@@ -120,6 +125,7 @@ export async function removeImageFileContainer({ command, resource, final = true
             }
             resource.containerId = container;
           }
+          await persist();
           await run(["rm", "--volumes", container]);
           resource.removed = true;
           return;
@@ -158,7 +164,7 @@ export async function extractImageFile({
   persist = async () => {},
 }) {
   const remove = async (final = false) => {
-    await removeImageFileContainer({ command, resource, final });
+    await removeImageFileContainer({ command, resource, final, persist });
     await persist();
   };
   cleanup.push(() => remove(true));

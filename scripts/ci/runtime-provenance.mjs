@@ -111,7 +111,7 @@ export async function readImageCodexProvenance({
     }
   }
   const outcomes = await Promise.allSettled([
-    removeImageFileContainer({ command, resource }),
+    removeImageFileContainer({ command, resource, persist }),
     rm(destination, { force: true }),
   ]);
   errors.push(

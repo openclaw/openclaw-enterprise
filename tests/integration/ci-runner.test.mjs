@@ -8735,6 +8735,12 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
   state.runtimeProvenance.OCC_TEST_KUBERNETES_GATEWAY_IMAGE.config = provenanceCanary;
   state.runtimeProvenance.OCC_TEST_KUBERNETES_AGENT_IMAGE.error = provenanceCanary;
   await writeJson(statePath, state);
+  await writeJson(`${statePath}.diagnostics.json`, {
+    lane: "previous-lane",
+    preparationId: "previous-preparation",
+    failures: [{ file: "previous-file", private: provenanceCanary }],
+    runtimeProvenance,
+  });
   const result = run(root, args, {
     OCC_KUBECTL_BIN: kubectl,
     PATH: `${bin}:${process.env.PATH}`,
@@ -8811,6 +8817,32 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
   assert.deepEqual(
     (await readdir(clusterDirectory)).filter((name) => name.startsWith("container-logs-")),
     [],
+  );
+
+  // A later stateless lane reuses the path after cleanup, but owns none of the old evidence.
+  await rm(statePath, { force: true });
+  await writeFile(
+    join(root, "tests/integration/later.test.mjs"),
+    'import test from "node:test"; test("later failure", () => { throw new Error("later"); });\n',
+  );
+  await writeJson(join(root, "scripts/ci/k3d-lane.json"), {
+    files: [{ path: "tests/integration/later.test.mjs", expectedTests: ["later failure"] }],
+  });
+  await writeJson(join(root, "scripts/ci/suites.json"), {
+    version: 1,
+    lanes: { "later-lane": "./k3d-lane.json" },
+    groups: {},
+  });
+  const later = run(root, [args[0], "later-lane", ...args.slice(2)]);
+  assert.equal(later.status, 1, later.stderr);
+  const next = JSON.parse(await readFile(`${statePath}.diagnostics.json`, "utf8"));
+  assert.equal(next.lane, "later-lane");
+  assert.equal(next.runtimeProvenance, undefined);
+  assert.equal(next.agentNamespaces, undefined);
+  assert.equal(next.containerLogs, undefined);
+  assert.deepEqual(
+    next.failures.map(({ file }) => file),
+    ["tests/integration/later.test.mjs"],
   );
 });
 

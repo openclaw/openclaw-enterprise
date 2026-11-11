@@ -176,7 +176,8 @@ no OCE build revision, and the upstream OpenClaw commit is a separate identity.
 No image configuration, credentials or arbitrary provenance fields are uploaded.
 Collection bounds the archive before accepting a single regular metadata file;
 directories, oversized files and unsupported archive records remain unavailable.
-Early provenance capture merges prior diagnostics only for the same preparation.
+Diagnostic writers merge prior fields only for the same lane and preparation;
+stateless runs receive a fresh invocation identity.
 
 For a failed matrix job, inspect each lane's result artifact to find the failing
 lane. The aggregate reports the parent failure once and requires every selected

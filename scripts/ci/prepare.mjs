@@ -2964,7 +2964,7 @@ async function retainRuntimeProvenance(statePath, state, cluster, image, role) {
       let report = { lane: state.lane, preparationId: state.prefix };
       try {
         const previous = JSON.parse(await readFile(path, "utf8"));
-        if (previous.preparationId === state.prefix) {
+        if (previous.lane === state.lane && previous.preparationId === state.prefix) {
           report = previous;
         }
       } catch {
