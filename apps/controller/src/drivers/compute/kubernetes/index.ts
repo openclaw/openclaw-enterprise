@@ -7412,6 +7412,78 @@ export class KubernetesComputeDriver implements ComputeDriver {
           return { ...result, runtimeFailure };
         }
         this.verifySandboxResourceRef(sandbox, revision, namespace);
+        // The provider-owned Harness's own view of its startup, read through the
+        // provider with the Agent transport token. `failed` carries a held startup
+        // failure (a failed model probe), validated like a Compute-owned status port.
+        // A provider that does not answer is no evidence about the Harness, and no reason
+        // to spend the attempt budget: like a Kubernetes API that is converging, it is
+        // rechecked until the deployment deadline (finding 1658). A Driver's own transient
+        // class is not a DependencyUnavailableError and passes through; refusals and invalid
+        // data keep their classes.
+        const transientProviderFailure = (error: unknown, message: string): unknown =>
+          error instanceof DependencyUnavailableError
+            ? new TransientDependencyError("sandbox_gateway", "unavailable", message, {
+                cause: error,
+              })
+            : error;
+        const observeProviderHarness = async (): Promise<SandboxHarnessStatus> =>
+          this.prepareRevisionStage("sandbox_provision", async () => {
+            const transportToken = await this.prepareRevisionStage("harness_auth", () =>
+              this.sandboxTransportTokenText(revision),
+            );
+            try {
+              return await sandboxDriver.harnessStatus!({ ...harnessContext, transportToken });
+            } catch (error) {
+              throw transientProviderFailure(
+                error,
+                "The Sandbox provider did not answer the Harness status read.",
+              );
+            }
+          });
+        const heldProviderHarnessFailure = (
+          harness: SandboxHarnessStatus,
+        ): ComputeReadiness | undefined => {
+          if (harness.state !== "failed") {
+            return undefined;
+          }
+          const runtimeFailure = this.runtimeFailureEvidence(harness.runtimeFailure);
+          // `failed` without evidence is as invalid as malformed evidence.
+          if (runtimeFailure === undefined) {
+            throw new DependencyUnavailableError("Runtime failure status returned invalid data.");
+          }
+          return { ...result, runtimeFailure };
+        };
+        // A released protected Codex can hold a startup failure while its Agent
+        // Gateway is still waiting for it. Read only failure evidence before
+        // enrollment/readiness can mask that failure; normal readiness is re-read below.
+        if (
+          egressContext !== undefined &&
+          nativeRuntime === undefined &&
+          revision.harness.id === "codex" &&
+          sandboxDriver.harnessStatus !== undefined &&
+          (await this.providerHarnessReady(revision, namespace, requirements.labels))
+        ) {
+          let harness: SandboxHarnessStatus | undefined;
+          try {
+            harness = await observeProviderHarness();
+          } catch (error) {
+            this.operationSignal().throwIfAborted();
+            if (
+              !(error instanceof TransientDependencyError) ||
+              error.dependency !== "sandbox_gateway"
+            ) {
+              throw error;
+            }
+            // An unavailable diagnostic is no startup evidence. Preserve the
+            // original enrollment and Gateway readiness path in this pass.
+          }
+          if (harness !== undefined) {
+            const held = heldProviderHarnessFailure(harness);
+            if (held !== undefined) {
+              return held;
+            }
+          }
+        }
         let heldForRepositoryGitMaterial = false;
         if (egressContext !== undefined && nativeRuntime !== undefined && nodeEnrolled) {
           // The node has enrolled and the Sandbox removes its temporary transport.
@@ -7486,34 +7558,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
             pendingReason: "REPOSITORY_GIT_ROUTE_PENDING",
           };
         }
-        // The provider-owned Harness's own view of its startup, read through the
-        // provider with the Agent transport token. `failed` carries a held startup
-        // failure (a failed model probe), validated like a Compute-owned status port.
-        // A provider that does not answer is no evidence about the Harness, and no reason
-        // to spend the attempt budget: like a Kubernetes API that is converging, it is
-        // rechecked until the deployment deadline (finding 1658). A Driver's own transient
-        // class is not a DependencyUnavailableError and passes through; refusals and invalid
-        // data keep their classes.
-        const transientProviderFailure = (error: unknown, message: string): unknown =>
-          error instanceof DependencyUnavailableError
-            ? new TransientDependencyError("sandbox_gateway", "unavailable", message, {
-                cause: error,
-              })
-            : error;
-        const observeProviderHarness = async (): Promise<SandboxHarnessStatus> =>
-          this.prepareRevisionStage("sandbox_provision", async () => {
-            const transportToken = await this.prepareRevisionStage("harness_auth", () =>
-              this.sandboxTransportTokenText(revision),
-            );
-            try {
-              return await sandboxDriver.harnessStatus!({ ...harnessContext, transportToken });
-            } catch (error) {
-              throw transientProviderFailure(
-                error,
-                "The Sandbox provider did not answer the Harness status read.",
-              );
-            }
-          });
         // The node has enrolled: the worker is past its checks, and from now on agent-run
         // code may bind the worker's transport port, so the exposure Compute's read used
         // must go before the revision is ready (finding 1657). A withdrawal that fails
@@ -7535,19 +7579,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
               );
             }
           });
-        };
-        const heldProviderHarnessFailure = (
-          harness: SandboxHarnessStatus,
-        ): ComputeReadiness | undefined => {
-          if (harness.state !== "failed") {
-            return undefined;
-          }
-          const runtimeFailure = this.runtimeFailureEvidence(harness.runtimeFailure);
-          // `failed` without evidence is as invalid as malformed evidence.
-          if (runtimeFailure === undefined) {
-            throw new DependencyUnavailableError("Runtime failure status returned invalid data.");
-          }
-          return { ...result, runtimeFailure };
         };
         if (!(await this.workspaceNodeReady(revision, namespace))) {
           if (nativeRuntime !== undefined && !nodeEnrolled) {

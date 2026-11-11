@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-11-10
-last_updated_session: authoring-run/7e421486-330f-4f04-b3b8-2b00f30f5647
+updated: 2026-11-11
+last_updated_session: authoring-run/a0167223-fa41-4787-9f78-82cfa3b9fa7a
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -45,7 +45,9 @@ graph TD
   W0 -- "no" --> H
   H --> I["<b>Initialize workspace</b><br/>Private ExecSandbox stdin"]
   I --> V{"<b>Harness</b>"}
-  V -- "Codex" --> J["<b>Resolve exposure</b><br/>Advertised WebSocket origin"]
+  V -- "Codex" --> H0{"<b>Protected startup</b><br/>Validated held failure?"}
+  H0 -- "yes" --> R
+  H0 -- "no or not observed" --> J["<b>Resolve exposure</b><br/>Advertised WebSocket origin"]
   J --> K["<b>Prepare Gateway route</b><br/>When no predecessor owns it"]
   K --> C1{"<b>Read Codex requirements</b><br/>Harness readiness"}
   C1 -- "refused" --> R
@@ -79,7 +81,7 @@ graph TD
   classDef blocked fill:#F3F4F6,stroke:#98A2AE,color:#44505F,stroke-width:1px
   class A,B,F,D1 state
   class D,E,I,Q,W,W1,W2,H,J,K,L,M,N,O,P,P1,R1,T,U operation
-  class C,C1,C2,G,S,V,Y,Y0,Z,W0,D2 gate
+  class C,C1,C2,G,H0,S,V,Y,Y0,Z,W0,D2 gate
   class X,R,R0,R2,D3 blocked
   linkStyle default stroke:#8B949E,stroke-width:1px
 ```
@@ -341,6 +343,11 @@ On process-group `EPERM`, the supervisor signals the process directly.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
 
 Compute verifies Namespace, Agent, ServicePrincipal and revision IDs.
+After successful provisioning, protected Codex with a ready provider Pod reads
+authenticated Harness status before enrollment or Gateway readiness waits. A
+validated `failed` result returns its runtime failure. Other states continue
+through ordinary release and readiness checks.
+
 Codex `harnessEndpoint` sets `APP_SERVER_URL`, `OPENCLAW_REMOTE_WORKSPACE_ROOT`
 and `OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE`; owned k3d pins the provider host.
 `gatewayConfigurationDocument` maps `/home/node/workspace` to the Sandbox root
@@ -433,20 +440,6 @@ model execution.
 
 ## Changelog
 
-- 2026-11-10 05:13: Bound complete Codex requirements separately and distinguish post-publication refusal. (authoring-run/7e421486-330f-4f04-b3b8-2b00f30f5647 - 1b3382ad62844cc821c9b004870d86f4814d0b39)
-
-- 2026-11-10 00:45: Check Codex permission requirements before reporting Harness readiness. (authoring-run/2e07121e-8d92-484b-921e-c6c9f179bc00 - c4094c2f34c912b581b9c26d2edea91d3a0ebfd4)
-
-- 2026-11-08 12:06: Bound archive retries. (authoring-run/0ff5cd21-1ead-46fb-bb5f-9f578872634a - 4566d20b8ef66a3268e27bceac946765ecd5d336)
-
-- 2026-11-08 06:54: Trace serving-process PAT readiness. (authoring-run/cc85b8e8-41ee-4b88-9807-456c25e0fa77 - 12582b2da6c58b020cff462d6d8ecfe2bbedde8a)
-
-- 2026-11-05 14:34: Reuse bounded retries for the pinned Agent Sandbox manifest. (authoring-run/33ffb317-d84b-4de5-b946-70b58f35af74 - a383313636fc348a2325c0b1f6e05ae80327fd30)
-
-- 2026-11-05 14:17: Revoke empty API grants. (authoring-run/a85a4857-880b-4f7b-8fe2-d648c86e601e - 2b92aa9b35de6e7633b960dfd7edcf1fd3fd46ea)
-
-- 2026-11-05 12:54: Extract shared setup validation while preserving OpenShell provisioning. (authoring-run/0428fede-167f-4783-a06f-00eb40ffa23c - f1295c81f3ac79f51af2b93b61013e0a8e5c0394)
-
-- 2026-11-05 12:54: Reject projected identity at admission. (authoring-run/root-deployment_docs - 894a5b6698049c41fba27f5c2c0764e86b4c0632)
+- 2026-11-11 11:22: Surface held startup failures for protected Codex before enrollment and Gateway waits in the accompanying Compute fix. (authoring-run/a0167223-fa41-4787-9f78-82cfa3b9fa7a - be9f83c938fad886c1317e2db006697dccaaa10b)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.
