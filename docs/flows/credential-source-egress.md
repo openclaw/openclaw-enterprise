@@ -157,10 +157,10 @@ Ambiguity refuses. OCC rechecks pins around provider calls and at material acces
 send and response release; changes restored between checks escape detection.
 Only one exact route match reserves a UUIDv7 ID before capture or policy I/O.
 Creation fixes its 30-second replay horizon; [capacity is bounded](../reference/drivers/credential-proxy.md#request-time-capacity).
-Unsupported or ambiguous operations refuse before reservation. If exactly one
-refused route reports a valid rule, `createCredentialProxy` audits it with the
-execution and exact request ID before capture or credential access. Persistence
-failure returns authority-unavailable, never permission.
+Unsupported or ambiguous operations refuse before reservation. `createCredentialProxy`
+audits only when exactly one refused route reports, exactly once with a valid rule.
+It records execution and exact request ID before capture or credential access.
+Persistence failure refuses as authority-unavailable.
 
 Enrollment must start at the authenticated supervisor hello. The supplier must keep
 its private key outside the Agent and pin its actual reply sink before queueing. This path remains
