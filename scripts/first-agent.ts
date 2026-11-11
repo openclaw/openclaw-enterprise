@@ -952,6 +952,12 @@ async function main(options: Options) {
     }
     throw error;
   }
+  if (local.sandboxDriver === "openshell") {
+    progress("Checking the managed Agent Sandbox controller before deploying...");
+    await run(join(root, "bin", "occ"), ["dev", "check"], {
+      env: { ...process.env, OCC_DEVELOPMENT_STATE_DIRECTORY: local.directory },
+    });
+  }
   const api = createFirstAgentApi(local);
   const installation = await objectResponse(api, "id", "GET", "/installation");
   if (installation.id !== local.key.meta.installationId) {

@@ -342,6 +342,139 @@ test(
     );
     assert.equal(namespaceList.items.length, 1);
     const namespace = namespaceList.items[0].metadata.name;
+    // The controller can disappear after Local Setup has reported success. Exercise
+    // first-agent's real preflight before any credential or Agent write, then restore
+    // only this test-owned Deployment and continue the normal managed workflow.
+    const listAgents = async () =>
+      JSON.parse(
+        (
+          await execute(
+            occ,
+            [
+              "--namespace",
+              namespaceList.items[0].metadata.labels["openclaw.dev/namespace"],
+              "agent",
+              "list",
+              "--output",
+              "json",
+            ],
+            {
+              cwd: repository,
+              env: {
+                ...environment,
+                OCC_URL: `http://127.0.0.1:${apiPort}`,
+                OCC_SERVICE_KEY_FILE: state.keyPath,
+              },
+            },
+          )
+        ).stdout,
+      );
+    const agentsBefore = await listAgents();
+    const controllerArgs = ["-n", "agent-sandbox-system", "deployment/agent-sandbox-controller"];
+    const controller = JSON.parse(
+      (
+        await execute("kubectl", [...kubectl, "get", ...controllerArgs, "-o", "json"], {
+          env: environment,
+        })
+      ).stdout,
+    );
+    const original = controller.spec.template.spec.containers[0];
+    const patchController = async (container) =>
+      execute(
+        "kubectl",
+        [
+          ...kubectl,
+          "patch",
+          ...controllerArgs,
+          "--type=strategic",
+          "-p",
+          JSON.stringify({ spec: { template: { spec: { containers: [container] } } } }),
+        ],
+        { env: environment, timeout: 30_000 },
+      );
+    try {
+      await patchController({
+        name: original.name,
+        image: `registry.invalid/missing-controller:${suffix}`,
+        imagePullPolicy: "Never",
+      });
+      const deadline = Date.now() + 30_000;
+      let imageUnavailable = false;
+      while (Date.now() < deadline && !imageUnavailable) {
+        const pods = JSON.parse(
+          (
+            await execute(
+              "kubectl",
+              [
+                ...kubectl,
+                "get",
+                "pods",
+                "-n",
+                "agent-sandbox-system",
+                "-l",
+                "app=agent-sandbox-controller",
+                "-o",
+                "json",
+              ],
+              { env: environment },
+            )
+          ).stdout,
+        );
+        imageUnavailable = pods.items.some((pod) =>
+          pod.status.containerStatuses?.some(
+            (container) => container.state?.waiting?.reason === "ErrImageNeverPull",
+          ),
+        );
+        if (!imageUnavailable) {
+          await delay(250);
+        }
+      }
+      assert.ok(imageUnavailable, "The test controller must hit a real image availability failure");
+      await assert.rejects(
+        execute(
+          process.execPath,
+          [
+            join(repository, "scripts", "first-agent.mjs"),
+            `dependency-${suffix}`,
+            "--harness",
+            "codex",
+          ],
+          { cwd: repository, env: environment, timeout: 45_000, maxBuffer: 256 * 1024 },
+        ),
+        (error) => {
+          assert.match(error.stderr, /Agent Sandbox controller is unavailable/);
+          assert.match(error.stderr, /ErrImageNeverPull/);
+          assert.doesNotMatch(
+            error.stderr,
+            /Saving the model credential|Registering the model credential/,
+          );
+          return true;
+        },
+      );
+      assert.deepEqual(
+        await listAgents(),
+        agentsBefore,
+        "Dependency refusal must not create an Agent",
+      );
+    } finally {
+      await patchController({
+        name: original.name,
+        image: original.image,
+        imagePullPolicy: original.imagePullPolicy,
+      });
+      await execute(
+        "kubectl",
+        [...kubectl, "rollout", "status", ...controllerArgs, "--timeout=120s"],
+        { env: environment, timeout: 125_000 },
+      );
+    }
+    const checked = await execute(occ, ["dev", "check"], {
+      cwd: repository,
+      env: environment,
+      timeout: 45_000,
+    });
+    assert.match(checked.stdout, /Agent Sandbox controller is ready/);
+
     assert.equal(namespaceList.items[0].metadata.labels["openshell.ai/openclaw-workspace"], "true");
     const service = JSON.parse(
       (
