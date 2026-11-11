@@ -701,12 +701,10 @@ test("same-SHA reuse waits at most twelve minutes and falls back without delayin
       "utf8",
     ),
   );
+  // The model job reads the artifact output directly; its producer must be a dependency.
+  assert.ok(workflow.jobs["docker-model"].needs.includes("runtime-artifact"));
   for (const lane of ["docker-model", "k3d-model", "gateway-routing", "slack", "openshell"]) {
-    assert.deepEqual(
-      workflow.jobs[lane].needs,
-      lane === "docker-model" ? ["preflight", "runtime-artifact"] : "preflight",
-      lane,
-    );
+    assert.equal([workflow.jobs[lane].needs].flat().includes("ci-reuse"), false, lane);
   }
 });
 
@@ -1945,6 +1943,7 @@ test("split dispatcher leaves skipped ticks outside the execution queue", async 
             preflight: { result: "success", outputs: { selected_lane: "skip", run_all: "false" } },
             "manual-approval": { result: "skipped" },
             "runtime-artifact": { result: "skipped" },
+            "gateway-image-selection": { result: "skipped", outputs: {} },
             slack: { result: "skipped" },
           },
           inputs: {},
@@ -2227,7 +2226,8 @@ function workflowCondition(expression, context) {
   return runInNewContext(
     expression
       .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
-      .replace(/\b(needs|steps)\.([a-z][a-z0-9-]*)/g, '$1["$2"]'),
+      .replace(/\b(needs|steps)\.([a-z][a-z0-9-]*)/g, '$1["$2"]')
+      .replace(/\.outputs\.([a-z][a-z0-9_-]*)/g, '.outputs["$1"]'),
     { cancelled: () => false, ...context },
   );
 }
@@ -2276,6 +2276,10 @@ test("workflow gates scheduled and approved manual attempts before starting lane
         },
         slack: { result: "success" },
         "runtime-artifact": { result: "success" },
+        "gateway-image-selection": {
+          result: "success",
+          outputs: { "use-runtime-artifact": "true" },
+        },
       };
       const inputs = { lane: needs.preflight.outputs.selected_lane };
       assert.equal(
