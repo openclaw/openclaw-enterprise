@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-11-10"
-last_updated_session: "authoring-run/f66b42c3-90f1-4ca7-9805-a68727232c1e"
+updated: "2026-11-11"
+last_updated_session: "authoring-run/d7b92a2e-e167-4140-b75a-6f1410267881"
 ---
 
 # Production image upgrade flow
@@ -149,8 +149,10 @@ API `apps/controller/src/composition/console-theme.ts:loadConsoleTheme` rejects 
 bundles; workers skip themes. Both use `loadStartupConfigurationSnapshot` and
 `loadInstallationConfiguration` without database access.
 `apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure` filters
-typed refusals to up to 32 field diagnostics. Preflight checks Job/Pod identity around log retrieval, rejects NUL bytes and
-discards unbound output. kubectl diagnostics stay separate from container logs.
+typed refusals to up to 32 field diagnostics. The final successful preflight poll
+supplies the Job/Pod identity check immediately before log retrieval. Preflight
+rechecks identity after the request, rejects NUL bytes and discards unbound output.
+kubectl diagnostics stay separate from container logs.
 
 Kubernetes Compute `preflight` uses startup's Pod credentials (`inCluster` service account). It refuses
 [split-layout Gateway storage](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations)
@@ -364,6 +366,8 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 
 ## Changelog
 
+- 2026-11-11 11:42: Reuse the final preflight observation before reading logs; retain the post-read identity check. (authoring-run/d7b92a2e-e167-4140-b75a-6f1410267881 - 486a9d4ddfea4bfbab6aefd0cef300a1556149b7)
+
 - 2026-11-10 12:41: Validate the preprovisioned Namespace boolean before access. (authoring-run/f66b42c3-90f1-4ca7-9805-a68727232c1e - 9c59ab71b8dfe3ea2816e3cee25182aeb4bcf172)
 
 - 2026-11-10 12:09: Clarify resume refusal and retained diagnostics. (authoring-run/fa6778fc-83cb-4f82-8f90-4085873cf49b - d2d12783a23e1c06c27f3f932faa09ffb2f59110)
@@ -404,11 +408,5 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 - 2026-11-07 02:48: Verify selected Agent readiness before completion. (authoring-run/87bf103a-4285-4561-8ab8-6a9f1e265248 - ada47832cb112f255f6c51d34dae37acce9760cd)
 
 - 2026-11-07 02:27: Validate both writers before stopping either. (authoring-run/a2f2f4b1-8e0e-4f19-8ce3-11d6e118a054 - 7f5489fe39ba84a34987bd22d905e942cf65a8ee)
-
-- 2026-11-06 23:52: Check container identity, quantities and attempt durability. (authoring-run/9507f38c-1639-4152-a4ae-0de499d7ca5d - a0560795)
-- 2026-11-06 23:37: Fix retry publication, resource lookup and execution checks. (authoring-run/9507f38c-1639-4152-a4ae-0de499d7ca5d - bbf4891d)
-- 2026-11-06 23:24: Bind attempts and acknowledge same-candidate recovery. (authoring-run/9507f38c-1639-4152-a4ae-0de499d7ca5d - 1b6c65cc)
-
-- 2026-11-06 19:10: Bind resume to each submitted Helm revision. (authoring-run/9ac3c663-290c-4524-94bd-7157cbd44914 - f1c0865be4c523090af0dccc29c613ad1d47d542)
 
 [Production image upgrade flow documentation history](coordinated-production-upgrade/history.md) preserves the older dated entries.

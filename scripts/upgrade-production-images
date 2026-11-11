@@ -1051,33 +1051,29 @@ run_preflight_jobs() {
       esac
       sleep 2
     done
-    # The logs API addresses a name, so retain output only while that name still
-    # identifies the validated child before and after the request.
-    if [[ -n "$pod" ]] && ((identity_valid)); then
-      if ! child=$(read_preflight_child "$component" "$job" "$job_uid" "$pod_uid" 30s) || [[ -z "$child" ]]; then
-        message="cannot bind the $component startup preflight logs to the original child Pod; no ${writer_qualifier}OCC writer was stopped."
-      else
-        logs_status=0
-        # Bash drops NUL bytes; reject them before they can change a result marker.
-        logs=$("${kube[@]}" --request-timeout=30s --namespace "$namespace" logs "pod/$pod" --container "$component" \
-          2>"$evidence_dir/preflight-$component-logs.err" |
-          python3 -c 'import sys
+    # The last successful poll supplies the pre-log identity check. No remote
+    # operation intervenes; recheck after the name-based request before retaining logs.
+    if [[ -n "$pod" && -n "$child" ]] && ((identity_valid)); then
+      logs_status=0
+      # Bash drops NUL bytes; reject them before they can change a result marker.
+      logs=$("${kube[@]}" --request-timeout=30s --namespace "$namespace" logs "pod/$pod" --container "$component" \
+        2>"$evidence_dir/preflight-$component-logs.err" |
+        python3 -c 'import sys
 data = sys.stdin.buffer.read()
 if b"\0" in data:
     sys.exit(1)
 sys.stdout.buffer.write(data)') || logs_status=$?
-        if ! child=$(read_preflight_child "$component" "$job" "$job_uid" "$pod_uid" 30s) || [[ -z "$child" ]]; then
-          logs=
-          message="cannot bind the $component startup preflight logs to the original child Pod; discarded unconfirmed output. No ${writer_qualifier}OCC writer was stopped."
-        else
-          printf '%s\n' "$child" >"$evidence_dir/preflight-$component-status.json"
-          printf '%s\n' "$logs" >"$evidence_dir/preflight-$component.log"
-          logs=
-          phase=$(node scripts/upgrade-startup-preflight.mjs phase "$evidence_dir/preflight-$component-status.json" \
-            "$evidence_dir/preflight-$component-job-status.json")
-          if ((logs_status != 0)) && [[ -z "$message" && "$phase" == Succeeded ]]; then
-            message="cannot read the $component startup preflight logs; no ${writer_qualifier}OCC writer was stopped."
-          fi
+      if ! child=$(read_preflight_child "$component" "$job" "$job_uid" "$pod_uid" 30s) || [[ -z "$child" ]]; then
+        logs=
+        message="cannot bind the $component startup preflight logs to the original child Pod; discarded unconfirmed output. No ${writer_qualifier}OCC writer was stopped."
+      else
+        printf '%s\n' "$child" >"$evidence_dir/preflight-$component-status.json"
+        printf '%s\n' "$logs" >"$evidence_dir/preflight-$component.log"
+        logs=
+        phase=$(node scripts/upgrade-startup-preflight.mjs phase "$evidence_dir/preflight-$component-status.json" \
+          "$evidence_dir/preflight-$component-job-status.json")
+        if ((logs_status != 0)) && [[ -z "$message" && "$phase" == Succeeded ]]; then
+          message="cannot read the $component startup preflight logs; no ${writer_qualifier}OCC writer was stopped."
         fi
       fi
     fi
