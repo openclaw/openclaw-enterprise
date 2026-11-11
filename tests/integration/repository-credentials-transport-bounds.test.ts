@@ -478,22 +478,32 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
     await released(fixture);
   });
 
-  bounded("a provider that never answers TLS is logged as a connect timeout", async (t) => {
-    const fixture = await startTransport(t, answer, { connectMs: 300 });
-    const port = await stopUpstream(fixture);
-    // Accept TCP on the same port and never answer the TLS handshake, as a dropped connect.
-    let accepted = 0;
-    const silent = createTcpServer((socket) => {
-      socket.on("error", () => {});
-      accepted++;
-    });
-    await listen(fixture.resources, silent, port);
-    // Nothing was dispatched, so the Agent gets the same definite 503 as a refused connect.
-    assertRefused(await readDiscovery(fixture));
-    assertConnectFailureLogged(fixture, port, "connect-timeout");
-    assert.equal(accepted, 1);
-    await released(fixture);
-  });
+  // The defaults set connectMs === stallMs, and the input stall watchdog is armed first, so
+  // whichever timer ends a dropped connect, the result must be the same.
+  for (const [name, limits] of [
+    ["connect timer first", { connectMs: 300 }],
+    ["stall timer first (default shape)", { connectMs: 300, stallMs: 300 }],
+  ] as const) {
+    bounded(
+      `a provider that never answers TLS is logged as a connect timeout: ${name}`,
+      async (t) => {
+        const fixture = await startTransport(t, answer, limits);
+        const port = await stopUpstream(fixture);
+        // Accept TCP on the same port and never answer the TLS handshake, as a dropped connect.
+        let accepted = 0;
+        const silent = createTcpServer((socket) => {
+          socket.on("error", () => {});
+          accepted++;
+        });
+        await listen(fixture.resources, silent, port);
+        // Nothing was dispatched, so the Agent gets the same definite 503 as a refused connect.
+        assertRefused(await readDiscovery(fixture));
+        assertConnectFailureLogged(fixture, port, "connect-timeout");
+        assert.equal(accepted, 1);
+        await released(fixture);
+      },
+    );
+  }
 
   // Finding 2429: a head refused after its fields are checked (here a wrong Host) is logged
   // when its one Authorization field, in any scheme Git or gh sends, names an open session.

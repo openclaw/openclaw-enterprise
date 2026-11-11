@@ -153,7 +153,16 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
     let stopConnect: (() => void) | undefined;
     let stopHeaders: (() => void) | undefined;
     let stopInput: (() => void) | undefined;
-    const inputStall = watchdog(options.clock, plan.limits.stallMs, cancel);
+    const inputStall = watchdog(options.clock, plan.limits.stallMs, () => {
+      // Before TLS nothing is queued: a stall here is a dropped connect, not a client stall.
+      // With the default limits (connectMs === stallMs) this fires before the connect timer.
+      if (!tlsEstablished && !dispatched) {
+        failConnect("connect-timeout");
+        stopUpstream();
+      } else {
+        cancel();
+      }
+    });
     let responseStall: ReturnType<typeof watchdog> | undefined;
     context.signal.addEventListener("abort", cancel, { once: true });
     try {
