@@ -162,6 +162,7 @@ export async function attachPostgresToK3d(registerCleanup) {
     cluster,
     container: postgresContainer,
     attachmentName: "postgres",
+    preservePublishedPort: true,
   });
 }
 
@@ -199,9 +200,27 @@ export async function attachKeycloakToK3d(
   });
 }
 
+async function supportsGatewayPriority(containerBin) {
+  try {
+    const { stdout: help } = await executeFile(containerBin, ["network", "connect", "--help"]);
+    if (!help.includes("--gw-priority")) {
+      return false;
+    }
+    const { stdout } = await executeFile(containerBin, ["version", "--format", "{{json .}}"]);
+    const version = JSON.parse(stdout);
+    return [version?.Client?.ApiVersion, version?.Server?.ApiVersion].every((api) => {
+      const parts = /^(\d+)\.(\d+)$/.exec(api ?? "");
+      return parts && (Number(parts[1]) > 1 || (Number(parts[1]) === 1 && Number(parts[2]) >= 48));
+    });
+  } catch {
+    // Read-only capability probes must not replace the existing engine's attach result.
+    return false;
+  }
+}
+
 async function attachContainerToK3d(
   registerCleanup,
-  { statePath, containerBin, cluster, container, attachmentName },
+  { statePath, containerBin, cluster, container, attachmentName, preservePublishedPort = false },
 ) {
   const serverContainer = `k3d-${cluster.name}-server-0`;
   const { stdout: serverNetworksOutput } = await executeFile(containerBin, [
@@ -238,7 +257,13 @@ async function attachContainerToK3d(
     let connectedByHarness = registry.connectedByHarness;
     let connectedNow = false;
     if (!(await attached())) {
-      await executeFile(containerBin, ["network", "connect", network, container]);
+      const args = ["network", "connect"];
+      // Keep the legacy command for engines without gateway priority. A connect
+      // failure must be returned as-is, with no retry under a different option.
+      if (preservePublishedPort && (await supportsGatewayPriority(containerBin))) {
+        args.push("--gw-priority=-1");
+      }
+      await executeFile(containerBin, [...args, network, container]);
       connectedByHarness = true;
       connectedNow = true;
     }
