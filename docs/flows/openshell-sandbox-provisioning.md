@@ -98,39 +98,31 @@ graph TD
 `internal/occdev/openshell.go:prepareOpenShell`,
 `internal/occdev/kubernetes.go:writeInstallation`
 
-Launchers require Landlock, support Node and x64/ARM64 Codex, verify 0.1.6 charts
-and pin Gateway/supervisor/sandbox images. Importing OCE images first
-prevents garbage collection. `writeInstallation` selects curated Codex plugins.
+[downloadVerified](../../internal/occdev/openshell_assets.go) streams archives;
+[Go](../../internal/occdev/routing_manifest.go)/[CI](../../scripts/ci/routing.mjs)
+fetch manifests (32 MiB maximum). Cancelable retries for network/HTTP 408/429/5xx:
+eight 60-second attempts starting within 120 seconds. Other errors fail.
+Retries remove failed `0600` archives, preserving existing files.
 
-`internal/occdev/openshell_assets.go:downloadVerified` streams archives;
-`internal/occdev/routing_manifest.go` and
-`scripts/ci/routing.mjs:downloadPinnedArtifact` fetch manifests (maximum 32 MiB).
-Cancelable downloads retry network/HTTP 408/429/5xx errors: eight 60-second
-attempts starting within 120 seconds. Others fail. Archive retries remove failed
-`0600` files, preserving existing files.
+Kubernetes-only provides PostgreSQL in `oce-system`, in-cluster authentication and
+[per-Agent HTTPS](../guides/deploy/local-setup.md); Compose uses PostgreSQL/OCC with k3d.
 
-The launcher validates Kubernetes/OpenShell before startup.
-Kubernetes-only: PostgreSQL in `oce-system`, in-cluster authentication,
-[per-Agent HTTPS](../guides/deploy/local-setup.md). Startup records engine/cluster,
-Namespace, checked ports and key path. Compose: PostgreSQL/OCC with k3d.
-
-`prepareOpenShell`/`scripts/ci/openshell.mjs:installAgentSandbox` preserve native/descriptor
+`prepareOpenShell`/[installAgentSandbox](../../scripts/ci/openshell.mjs) preserve native/descriptor
 identity through cached child/index or exact-child pull. Manifest/config/CRI checks
 precede apply (`Never`); CRI misses retry. Overrides stay unchanged.
 
-`internal/occdev/openshell_image.go` persists tag/engine-ID intent before creation.
-Return/rollback/`dev down` reconcile independently of clusters/Compose providers;
+The [image importer](../../internal/occdev/openshell_image.go) journals tag/engine-ID intent before creation.
+Return/rollback/`dev down` reconcile without clusters/Compose providers;
 incomplete inspection or uncertain/replaced tags retain state.
 
-Before provisioning, `scripts/first-agent.ts:main` and the operator hook
-call `internal/occdev/check.go:Check`. An unavailable controller refuses deployment
-with the same diagnostics.
+Before provisioning, [first-agent](../../scripts/first-agent.ts) and the operator hook call
+[Check](../../internal/occdev/check.go), refusing unavailable controllers with shared diagnostics.
 
-`internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout`
-reports rollout failures once, preserving rollback errors: Deployment, UID-linked
-ReplicaSets/Pods and Warning reasons, excluding messages, environment, full labels
-and logs. It marks unavailable/malformed/oversized results. Limits: 15-second context;
-three seconds/256 KiB per command; 32 KiB per record; no retries.
+[captureAgentSandboxRollout](../../internal/occdev/agent_sandbox_rollout_diagnostics.go)
+reports failures once, preserving rollback errors: Deployment, UID-linked ReplicaSets/Pods
+and Warning reasons; no messages, environment, full labels or logs.
+It marks unavailable/malformed/oversized results. Bounds: 15-second context,
+three seconds/256 KiB per command, 32 KiB per record, no retries.
 The 200 ms pipe drain cannot terminate descendants.
 
 `network.providerHarness` records Gateway ClusterIP, Pod selector and TCP/8080.
