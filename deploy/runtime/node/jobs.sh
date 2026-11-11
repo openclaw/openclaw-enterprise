@@ -47,13 +47,13 @@ if [ -r "$cgroup/memory.max" ] && read -r limit <"$cgroup/memory.max" && [ "$lim
 fi
 
 # Leave 8 GiB for the image's other build stages, which run beside this one,
-# and budget 2 GiB per compiler job (measured peak: about 0.5 GiB per job).
-# Past 32 jobs the serial configure, code generation, link and test steps
-# dominate, so more jobs add load without saving much time.
+# and budget 2 GiB per compiler job: the step's cgroup peaked at about 1 GiB
+# per job at 32 and 64 jobs, page cache included. The cap bounds the load on
+# large shared hosts; the serial code generation, link and tests remain.
 by_memory=$(((available_kib / 1048576 - 8) / 2))
 jobs=$cpus
 [ "$by_memory" -ge "$jobs" ] || jobs=$by_memory
-[ "$jobs" -le 32 ] || jobs=32
+[ "$jobs" -le 64 ] || jobs=64
 # Never fewer than the previous fixed default of four.
 [ "$jobs" -ge 4 ] || jobs=4
 echo "NODE_BUILD_JOBS=auto selected $jobs compiler jobs (CPUs: $cpus, available memory: $((available_kib / 1048576)) GiB)" >&2

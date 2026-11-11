@@ -21,7 +21,7 @@ The source-only stage remains available for the slim test harness.
 The default `NODE_BUILD_JOBS=auto` lets [`jobs.sh`](jobs.sh) size Make
 parallelism to the builder when the step runs: one job per CPU (after any cgroup
 quota) and per 2 GiB of available memory, after leaving 8 GiB for the image's
-other build stages, at most 32 and never fewer than four. The build log prints
+other build stages, at most 64 and never fewer than four. The build log prints
 the selected count. The argument itself stays `auto`, so every builder shares
 one cache key for the compile layer.
 

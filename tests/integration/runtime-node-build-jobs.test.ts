@@ -33,8 +33,8 @@ test("auto Node compile jobs follow the builder's CPUs and memory within fixed b
     // Memory bounds a large-CPU builder: (40 - 8) / 2.
     [{ cpus: 192, availableGiB: 40 }, 16],
     [{ cpus: 12, availableGiB: 64 }, 12],
-    // Past the cap, more jobs mostly wait on serial steps.
-    [{ cpus: 192, availableGiB: 150 }, 32],
+    // The cap bounds the load on large shared hosts.
+    [{ cpus: 192, availableGiB: 150 }, 64],
     // Never fewer than the previous fixed default.
     [{ cpus: 2, availableGiB: 4 }, 4],
     [{ cpus: 16, availableGiB: 7 }, 4],
@@ -48,7 +48,7 @@ test("auto Node compile jobs follow the builder's CPUs and memory within fixed b
       },
       10,
     ],
-    [{ cpus: 64, availableGiB: 150, cgroup: { "cpu.max": "max 100000", "memory.max": "max" } }, 32],
+    [{ cpus: 48, availableGiB: 150, cgroup: { "cpu.max": "max 100000", "memory.max": "max" } }, 48],
   ] as const) {
     const result = await selectJobs(t, "auto", builder);
     assert.equal(result.status, 0, result.stderr);
