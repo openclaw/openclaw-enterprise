@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-10-29"
-last_updated_session: "01a1891d-5b6b-7071-b482-793a9dd01044"
+updated: "2026-11-11"
+last_updated_session: "01a1cb2b-f8fd-79b0-9789-7d0ca67c4ddd"
 ---
 
 # Agent sandbox policy flow
@@ -59,6 +59,22 @@ inspection exposes [Driver-projected startup values](driver-plugin-loading.md#4-
 Agent discovery and policy GET
 use the same descriptor with owner-generated facet action URLs and current
 availability. The registry never selects a Driver from submitted additions.
+
+`apps/controller/src/index.ts:authorizeBeforeBody` calls
+`OpenClawController.authorizeAgentSandboxPolicyWrite` for preview and save before
+reading the request body. It checks Agent `manage_policy` and SandboxPolicy
+`update`; the owning handler repeats authorization during admission. Those two
+routes accept up to 32 MiB unless `maxBodyBytes` supplies another limit. The shared
+`packages/contracts/src/sandbox-policy.ts:SandboxNetworkGrantsSchema` permits
+16,384 entries for both Agent additions and the Installation ceiling. Startup,
+discovery, and policy requests use that same schema. Field, range, and provider
+constraints remain separate checks. The controller snapshots
+`createSandboxNetworkGrantChecker` once at construction. It groups ceiling rules
+by executable and hostname and combines adjacent port ranges. Each admission
+checks the exact host and its possible single-label wildcard, preserving their
+combined coverage without scanning the full ceiling for every rule. The worker's
+`sandboxNetworkGrantsWithinCeiling` builds the same index for its application
+check.
 
 `validateAgentSandboxPolicy` authorizes the exact Agent and policy, checks the
 current editing flag, expected version, and pending application, then runs shared
@@ -257,6 +273,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-11 10:55: Trace 16,384-entry policy admission and authorization before large body reads. (01a1cb2b-f8fd-79b0-9789-7d0ca67c4ddd - 9afd6412e)
 
 - 2026-10-29 12:37: Link Installation inspection to its startup projection owner. (01a1891d-5b6b-7071-b482-793a9dd01044 - 32b59e204e)
 

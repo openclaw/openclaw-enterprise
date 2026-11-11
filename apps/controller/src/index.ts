@@ -41,6 +41,7 @@ import {
   type ResourceKind,
   type ResourceRef,
   type SandboxDriver,
+  type SandboxFacet,
   type SecretDriver,
   type SecretReference,
   type CredentialSourceReference,
@@ -281,6 +282,9 @@ const resourceHandlers: ResourceHandlers = {
 };
 
 const DEFAULT_BODY_LIMIT = 64 * 1024;
+// Reserve room for 16,384 ordinary grants without raising limits on unrelated routes.
+// JSON whitespace/escaping still consumes this independent finite request budget.
+const SANDBOX_POLICY_BODY_LIMIT = 32 * 1024 * 1024;
 // Four 16 KiB documents can expand sixfold in JSON, plus the ordinary create fields.
 const AGENT_CREATE_BODY_LIMIT = 448 * 1024;
 // A bounded template may use six-byte JSON escapes; reserve space for its name and envelope.
@@ -478,7 +482,9 @@ function authorizesBeforeBody(operation: OccApiRoute): boolean {
     operation.operationId === "createPreset" ||
     operation.operationId === "updatePreset" ||
     operation.operationId === "createConfiguration" ||
-    operation.operationId === "updateConfiguration"
+    operation.operationId === "updateConfiguration" ||
+    operation.operationId === "validateAgentSandboxPolicy" ||
+    operation.operationId === "updateAgentSandboxPolicy"
   );
 }
 
@@ -2148,8 +2154,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   }
 
   /**
-   * Preset and Configuration writes accept bodies of about 6 MiB (PRESET_BODY_LIMIT,
-   * CONFIGURATION_BODY_LIMIT), far above the general limit. Their grant check needs only the
+   * Preset and Configuration writes accept about 6 MiB; policy preview/save accept 32 MiB.
+   * These routes exceed the general body limit. Their grant check needs only the
    * path and the caller, so it runs here, in onRequest, before the body is read: a caller
    * without the grant gets the same 403 or 404 and audit row as when the check ran in the
    * handler, and the controller never buffers the body. The handler repeats the check in its
@@ -2164,6 +2170,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
     }
     const params = request.params as Record<string, string>;
+    if (
+      operation.operationId === "validateAgentSandboxPolicy" ||
+      operation.operationId === "updateAgentSandboxPolicy"
+    ) {
+      await controller.authorizeAgentSandboxPolicyWrite(
+        context.actorId,
+        params.namespaceId!,
+        params.agentId!,
+        params.facet as SandboxFacet,
+      );
+      return;
+    }
     if (
       operation.operationId === "createConfiguration" ||
       operation.operationId === "updateConfiguration"
@@ -4707,6 +4725,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                   operation.operationId === "updateConfiguration"
                 ? { bodyLimit: options.maxBodyBytes ?? CONFIGURATION_BODY_LIMIT }
                 : {}),
+        ...(operation.operationId === "validateAgentSandboxPolicy" ||
+        operation.operationId === "updateAgentSandboxPolicy"
+          ? { bodyLimit: options.maxBodyBytes ?? SANDBOX_POLICY_BODY_LIMIT }
+          : {}),
         schema,
         onRequest: async (request) => {
           await admit(request, operation);

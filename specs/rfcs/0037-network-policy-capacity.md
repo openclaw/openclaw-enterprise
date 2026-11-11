@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Implemented
 author: russellb
 ---
 
@@ -9,6 +9,7 @@ author: russellb
 - **ID:** RFC-0037
 - **Created:** 2026-11-11
 - **Last updated:** 2026-11-11
+- **RFC PR:** https://github.com/openclaw/openclaw-enterprise/pull/5497
 - **Related:** [Sandbox policies](../../docs/reference/sandbox-policies.md)
 
 ## Summary
@@ -40,6 +41,12 @@ ordinary request limit for unrelated routes. Byte limits remain independent of
 entry limits; arbitrary JSON whitespace or escaping does not receive unlimited
 space. Recommendation batches remain limited to 32 suggestions.
 
+Compile the trusted ceiling into an executable/hostname index and combine
+adjacent port ranges. Admission must preserve exact executable matching,
+single-label wildcards, and union coverage across matching rules. A full-size
+Agent policy against a full-size ceiling must complete through regular HTTP
+admission without the previous repeated full-ceiling scans.
+
 The count change does not alter policy ownership, persistence, version checks,
 application recovery, protected execution, or authorization. Provider byte and
 port limits still apply. No deployed Installation changes merely because this
@@ -66,6 +73,7 @@ same requested capacity and share their validation contract.
 
 Submit this proposal for review before implementation, then include source,
 focused admission tests, generated API changes, and documentation in the same PR.
-Run the applicable repository checks. In-memory or PostgreSQL admission tests
+Run the applicable repository checks. Startup and full-size HTTP admission tests
+pass locally; installed OpenShell enforcement at this capacity remains unverified. In-memory or PostgreSQL admission tests
 establish the boundaries they exercise; they do not establish live OpenShell
 network enforcement at maximum capacity.

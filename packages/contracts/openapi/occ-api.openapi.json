@@ -30439,7 +30439,7 @@
                             "required": ["id", "binary", "host", "ports"],
                             "type": "object"
                           },
-                          "maxItems": 32,
+                          "maxItems": 16384,
                           "title": "Network rules",
                           "type": "array"
                         },
@@ -30640,7 +30640,7 @@
                                 "required": ["id", "binary", "host", "ports"],
                                 "type": "object"
                               },
-                              "maxItems": 32,
+                              "maxItems": 16384,
                               "title": "Network rules",
                               "type": "array"
                             },
@@ -30946,7 +30946,7 @@
                       "required": ["id", "binary", "host", "ports"],
                       "type": "object"
                     },
-                    "maxItems": 32,
+                    "maxItems": 16384,
                     "title": "Network rules",
                     "type": "array"
                   },
@@ -31038,7 +31038,7 @@
                             "required": ["id", "binary", "host", "ports"],
                             "type": "object"
                           },
-                          "maxItems": 32,
+                          "maxItems": 16384,
                           "title": "Network rules",
                           "type": "array"
                         },
@@ -31396,7 +31396,7 @@
                             "required": ["id", "binary", "host", "ports"],
                             "type": "object"
                           },
-                          "maxItems": 32,
+                          "maxItems": 16384,
                           "title": "Network rules",
                           "type": "array"
                         },

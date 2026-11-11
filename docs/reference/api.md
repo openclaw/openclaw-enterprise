@@ -7651,7 +7651,7 @@ Read one Agent sandbox policy and delegation ceiling
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.capability` | `null or object` | Yes | — |
-| `data.ceiling` | `array<object>` | Yes | max items: 32 |
+| `data.ceiling` | `array<object>` | Yes | max items: 16384 |
 | `data.ceiling[].binary` | `string` | Yes | min length: 2; max length: 512; pattern: `^/[^\s\x00-\x1f]+$`; Absolute path of the executable receiving access. |
 | `data.ceiling[].host` | `string` | Yes | min length: 1; max length: 253; pattern: `^(\*\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`; DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied. |
 | `data.ceiling[].id` | `string` | Yes | pattern: `^[a-z][a-z0-9-]{0,47}$` |
@@ -7689,7 +7689,7 @@ Read one Agent sandbox policy and delegation ceiling
 | `data.deployedPolicyVersion` | `integer` | No | minimum: 1; maximum: 2147483647; The saved policy version the active revision (defaultsRevisionId) was deployed with. Its Sandbox enforces that version without a live application. |
 | `data.editingEnabled` | `boolean` | Yes | — |
 | `data.policy` | `object` | Yes | — |
-| `data.policy.additions` | `array<object>` | Yes | max items: 32 |
+| `data.policy.additions` | `array<object>` | Yes | max items: 16384 |
 | `data.policy.additions[].binary` | `string` | Yes | min length: 2; max length: 512; pattern: `^/[^\s\x00-\x1f]+$`; Absolute path of the executable receiving access. |
 | `data.policy.additions[].host` | `string` | Yes | min length: 1; max length: 253; pattern: `^(\*\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`; DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied. |
 | `data.policy.additions[].id` | `string` | Yes | pattern: `^[a-z][a-z0-9-]{0,47}$` |
@@ -7773,7 +7773,7 @@ Replace one Agent network policy additions
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `additions` | `array<object>` | Yes | max items: 32 |
+| `additions` | `array<object>` | Yes | max items: 16384 |
 | `additions[].binary` | `string` | Yes | min length: 2; max length: 512; pattern: `^/[^\s\x00-\x1f]+$`; Absolute path of the executable receiving access. |
 | `additions[].host` | `string` | Yes | min length: 1; max length: 253; pattern: `^(\*\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`; DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied. |
 | `additions[].id` | `string` | Yes | pattern: `^[a-z][a-z0-9-]{0,47}$` |
@@ -7810,7 +7810,7 @@ Example request
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
-| `data.additions` | `array<object>` | Yes | max items: 32 |
+| `data.additions` | `array<object>` | Yes | max items: 16384 |
 | `data.additions[].binary` | `string` | Yes | min length: 2; max length: 512; pattern: `^/[^\s\x00-\x1f]+$`; Absolute path of the executable receiving access. |
 | `data.additions[].host` | `string` | Yes | min length: 1; max length: 253; pattern: `^(\*\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`; DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied. |
 | `data.additions[].id` | `string` | Yes | pattern: `^[a-z][a-z0-9-]{0,47}$` |
@@ -7917,7 +7917,7 @@ Example request
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
-| `data.additions` | `array<object>` | Yes | max items: 32 |
+| `data.additions` | `array<object>` | Yes | max items: 16384 |
 | `data.additions[].binary` | `string` | Yes | min length: 2; max length: 512; pattern: `^/[^\s\x00-\x1f]+$`; Absolute path of the executable receiving access. |
 | `data.additions[].host` | `string` | Yes | min length: 1; max length: 253; pattern: `^(\*\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`; DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied. |
 | `data.additions[].id` | `string` | Yes | pattern: `^[a-z][a-z0-9-]{0,47}$` |

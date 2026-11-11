@@ -75,8 +75,11 @@ exactly; a symlink or alternate interpreter path is a different executable.
 `*.example.com` covers one DNS label, not the apex or deeper subdomains. A
 wildcard addition requires that exact wildcard in the ceiling. Port coverage may
 combine adjacent ceiling ranges; gaps remain unauthorized. Drivers reject
-unsupported constraints. Policy documents allow at most 32 grants and 16 ranges
-per grant. OpenShell additionally limits each grant to 1024 distinct ports.
+unsupported constraints. An Installation delegation ceiling and an Agent's additions
+can each contain at most 16,384 grants, with at most 16 ranges per grant. Policy
+preview and update requests have a separate 32 MiB body limit; an explicit
+`maxBodyBytes` override still applies. JSON escaping and whitespace count toward
+that byte limit. OpenShell additionally limits each grant to 1024 distinct ports.
 
 Default rules, generated workspace access, model credential delivery, and Compute
 isolation remain controlled by their existing owners. Users cannot submit

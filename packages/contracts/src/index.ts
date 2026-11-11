@@ -154,6 +154,7 @@ export {
   SandboxNetworkPolicyConfiguration,
   validateSandboxNetworkGrants,
   sandboxNetworkGrantsWithinCeiling,
+  createSandboxNetworkGrantChecker,
 } from "./sandbox-policy.ts";
 
 export type {
