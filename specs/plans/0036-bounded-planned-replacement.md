@@ -40,9 +40,11 @@ completion. A Controller outage eventually releases admission.
    callers. Test rejection, continuation, late delivery, cancellation and expiry.
 2. **Shared OCE stop boundary:** add typed storage, claim-checked operations,
    worker integration and common maintenance/native-admin status semantics.
-   Reuse the existing administrative client for Kubernetes completion waiting.
+   Preserve the conservative path for legacy records with unknown stop history.
+3. **Bounded wait integration:** reuse the existing administrative client for
+   Kubernetes completion waiting under the shared worker boundary.
    Unsupported runtimes retain the existing replacement path and report why.
-3. **Operator behavior and qualification:** expose waiting/outcome through
+4. **Operator behavior and qualification:** expose waiting/outcome through
    existing progress, logs and metrics; align convergence and release-helper
    clocks. Exercise actual PostgreSQL and the isolated Kubernetes release flow.
    Update the existing lifecycle flow and reference documents.
@@ -53,24 +55,30 @@ default runtime pin is not advanced before the candidate runtime is qualified.
 
 ## Verification
 
-| Required outcome                           | Real check and prerequisites                                                    | Result or remaining proof |
-| ------------------------------------------ | ------------------------------------------------------------------------------- | ------------------------- |
-| Wait for tasks and final delivery          | Authenticated Gateway RPC, actual task and completion handoff                   | Not run                   |
-| Reject new work; permit continuations      | Gateway admission and approval paths during the same wait                       | Not run                   |
-| Keep a fixed deadline                      | PostgreSQL restart, retry and successor replacement                             | Not run                   |
-| Preserve authority and stop intent         | Revocation, cancellation and worker interruption through regular Agent workflow | Not run                   |
-| Upgrade busy and idle Agents independently | Retained isolated Kubernetes installation, both Gateway and Harness replaced    | Not run                   |
-| Force progress after deadline              | Same release path with outstanding work; no uncertain replay                    | Not run                   |
-| Preserve ordinary operations               | Old conversation, scheduled task and unsupported-runtime replacement            | Not run                   |
+| Required outcome                           | Real check and prerequisites                                                    | Result or remaining proof                                                             |
+| ------------------------------------------ | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| Wait for tasks and final delivery          | Authenticated Gateway RPC, actual task and completion handoff                   | Transport with a held admitted root passed; real Codex task pending                   |
+| Reject new work; permit continuations      | Gateway admission and approval paths during the same wait                       | Existing continuation contracts and real chat rejection passed; full workflow pending |
+| Keep a fixed deadline                      | PostgreSQL restart, retry and successor replacement                             | Gateway cutoff passed; worker integration pending                                     |
+| Preserve authority and stop intent         | Revocation, cancellation and worker interruption through regular Agent workflow | Shared stop boundary and legacy adoption passed; wait integration pending             |
+| Upgrade busy and idle Agents independently | Retained isolated Kubernetes installation, both Gateway and Harness replaced    | Not run                                                                               |
+| Force progress after deadline              | Same release path with outstanding work; no uncertain replay                    | Not run                                                                               |
+| Preserve ordinary operations               | Old conversation, scheduled task and unsupported-runtime replacement            | Not run                                                                               |
 
 ## Delivery record
 
 - Shared stop-boundary slice: 15 native-access tests passed; PostgreSQL migration
   qualification passed ten fresh, upgrade and restore paths. All 40 PostgreSQL
   worker cases passed; an isolated baseline copy failed the new maintenance case
-  as expected, without modifying the working source. This slice does not yet enable completion waiting.
+  as expected, without modifying the working source. Review also found and fixed
+  legacy adoption incorrectly reopening a stopped predecessor. Its real admission
+  and worker regression failed before the fix and passed after it; all 15 native
+  access tests passed again. This slice does not yet enable completion waiting.
 - Gateway primitive: 43 coordinator tests and 21 schema/handler tests passed.
   Red-baseline tests reproduced the old busy refusal and missing protocol field.
+  Review found and fixed readiness routing during completion wait. Another 67
+  readiness/admission/continuation checks and one real authenticated transport
+  test passed, including control reconnect and new-message rejection.
   Full runtime and release-path validation remains outstanding.
 
 - Reused clean, inactive worktrees after verifying their earlier PRs were merged.

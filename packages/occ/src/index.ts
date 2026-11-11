@@ -13761,11 +13761,24 @@ export class OpenClawController {
         lockedAgent.activeRevisionId &&
         compute.requiresStoppedPredecessors?.(revision) === true
       ) {
-        await state.agents.recordPredecessorReplacement(namespace.id, lockedAgent.id, {
-          predecessorRevisionId: lockedAgent.activeRevisionId,
-          candidateRevisionId: revision.id,
-          phase: "pre-stop",
-        });
+        const replacement = await state.agents.findPredecessorReplacement(
+          namespace.id,
+          lockedAgent.id,
+        );
+        const predecessor = previous.find(({ id }) => id === lockedAgent.activeRevisionId);
+        // Legacy replacement attempts may already have stopped the active pointer.
+        // Only the first replacement, or a recorded boundary, proves it may still serve.
+        const knownBoundary = replacement?.predecessorRevisionId === lockedAgent.activeRevisionId;
+        const firstReplacement =
+          predecessor !== undefined &&
+          !previous.some(({ revision: number }) => number > predecessor.revision);
+        if (knownBoundary || firstReplacement) {
+          await state.agents.recordPredecessorReplacement(namespace.id, lockedAgent.id, {
+            predecessorRevisionId: lockedAgent.activeRevisionId,
+            candidateRevisionId: revision.id,
+            phase: "pre-stop",
+          });
+        }
       }
       const running = await state.agents.transitionAgentDesiredRuntimeState(
         namespace.id,
