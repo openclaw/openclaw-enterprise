@@ -528,7 +528,11 @@ export async function googleSignIn(
   return { start, callback, attemptId, url, state, bindingCookie };
 }
 
-/** Installs the shared synthetic OIDC protocol on this test's fetch transport. */
+/**
+ * Installs the shared synthetic OIDC protocol on this test's fetch transport.
+ * @param {import("node:test").TestContext} t
+ * @param {{ clientId: string, clientSecret: string, issuer?: typeof fixtureOidcIssuer, tokenAuth?: string }} options
+ */
 export function fakeOidc(t, { issuer = fixtureOidcIssuer, ...options } = {}) {
   const fixture = createOidcProvider({ issuer, ...options });
   const originalFetch = globalThis.fetch;

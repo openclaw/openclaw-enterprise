@@ -30,7 +30,7 @@ export function createOidcProvider({
     requests: 0,
     issuer,
     tokenAuth,
-    authorizations: [],
+    authorizations: /** @type {Record<string, string>[]} */ ([]),
     tokens: [],
     get jwks() {
       return { keys: [key.jwk] };

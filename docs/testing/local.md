@@ -89,12 +89,12 @@ On an isolated Linux Docker host with Node.js 24, k3d, kubectl, Python 3 and the
 repository's installed dependencies, select the real cleanup fixture:
 
 ```sh
-OCC_TEST_STAGED_SIGNIN_CLEANUP_REAL=1 node --test --test-concurrency=1 tests/integration/staged-signin-cleanup-real.test.mjs
+OCC_TEST_STAGED_SIGNIN_CLEANUP_REAL=1 node --test --test-concurrency=1 tests/integration/staged-signin-cleanup-real.test.ts
 ```
 
-The equivalent explicit CI lane is `staged-signin-cleanup`; it is not part of
-the default PR or full-integration groups. All three cases must pass without
-skips. Set `OCC_TEST_STAGED_SIGNIN_CLEANUP_ARTIFACT_DIR` to a fresh directory to
+The `k3d-fixture-configuration` PR lane runs this file serially before its
+shared fixture tests, without preparing a separate database for it. All three
+cases must pass without skips. Set `OCC_TEST_STAGED_SIGNIN_CLEANUP_ARTIFACT_DIR` to a fresh directory to
 retain source identity, observed resource identities, refusal output, assertion
 outcomes and final cleanup status.
 
@@ -105,6 +105,14 @@ expose its local Docker socket and the server's PID/cgroup identity. The fixture
 uses private kubeconfigs and loopback API ports; it preserves the default
 kubeconfig and unrelated resources. No controller/runtime build, model
 credential or published release pair is needed.
+
+The cases share a twelve-minute admission deadline and stop creating resources
+after a failure. Preparation retains its existing finite retries; after hooks
+stop further stages and await the body before cleanup. Final cleanup has a
+separate three-minute budget. A hard-killed runner can prevent those hooks;
+retained private state is diagnostic, and the outer lane does not automatically
+recover it. This suite does not prove recovery from arbitrary runner termination.
+No timeout or uncertain command outcome counts as successful cleanup.
 
 The unchanged cleanup CLI must remove the owned resources after a settled
 failed case, and refuse both a replaced cluster and a newly shared volume.
