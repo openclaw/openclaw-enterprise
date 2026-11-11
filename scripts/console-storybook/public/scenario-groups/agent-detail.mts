@@ -78,6 +78,7 @@ type AgentDetailScenario = {
   agentCreateRestricted?: true;
   gatewayPasswordAllowlistOmits?: true;
   messageQueue?: OpenClawConfigurationDocument;
+  runtimeTelemetry?: boolean;
   slack?: true;
   secretOperateDenied?: string[];
   agentPermissionSummary?: PermissionSnapshot;
@@ -1083,10 +1084,10 @@ export function createAgentDetailScenarios({
         path: draft,
         deployed: true,
         description:
-          "The Configuration tab shows the Gateway collaboration and safety settings a deployment runs with. By default, other participants can steer a running turn, and apply_patch changes files only in the workspace.",
+          "The Configuration tab shows the Gateway collaboration and safety settings a deployment runs with. By default, other participants can steer a running turn, apply_patch changes files only in the workspace, and agent runtimes send no telemetry to their vendors.",
         steps: [
-          "Read each toggle's state and where it comes from: Default: on. Check that steering help distinguishes channel users and local operators from OCE users who share one Gateway identity.",
-          "Turn on Strict mode. The Configuration JSON opens with both locked-down values written, and focus stays on Strict mode.",
+          "Read each toggle's state and where it comes from: Default: on, or Default: off for runtime telemetry. Check that steering help distinguishes channel users and local operators from OCE users who share one Gateway identity.",
+          "Turn on Strict mode. The Configuration JSON opens with the three locked-down values written, and focus stays on Strict mode.",
           "Turn steering back on. Its value leaves the JSON and Strict mode turns off. Cancel, or Save Configuration and deploy a new version.",
         ],
         gap: "Simulated UI proof; does not show a deployed Gateway steering a turn.",
@@ -1100,6 +1101,19 @@ export function createAgentDetailScenarios({
         description:
           "Strict mode writes every locked-down value into the Configuration JSON; Save Configuration keeps them, and the next deployment applies them.",
         gap: "Simulated UI proof; does not show a deployed Gateway steering a turn.",
+      },
+      gatewaySafetyRuntimeTelemetry: {
+        group: "Pages/Agent detail",
+        name: "Collaboration and safety, runtime telemetry opted in",
+        path: `${draft}&tab=configuration`,
+        deployed: true,
+        runtimeTelemetry: true,
+        description:
+          "The Configuration sets telemetry.enabled, so agent runtimes such as Claude Code can send telemetry to their vendors. The toggle shows Set in Configuration. and Strict mode is off.",
+        steps: [
+          "Turn the runtime telemetry toggle off. telemetry.enabled leaves the Configuration JSON, the toggle shows Default: off., and the next deployment turns the runtime's telemetry off.",
+        ],
+        gap: "Simulated UI proof; does not show a deployed runtime's telemetry traffic.",
       },
       gatewaySafetyRejectSteering: {
         group: "Pages/Agent detail",

@@ -153,9 +153,12 @@ import {
   ActivationFailedError,
   ActivationPendingError,
   agentEntryMessage,
+  agentRuntimeTelemetryEnabled,
   ComputeGatewaySettingError,
   ConfigurationHarnessError,
   configurationSettingMessage,
+  CLAUDE_CLI_AGENT_RUNTIME_ID,
+  ClaudeCodeToolPolicyError,
   CredentialWithdrawalRefusedError,
   DEDICATED_OPENCLAW_SANDBOX_REQUIRED,
   DependencyUnavailableError,
@@ -168,6 +171,7 @@ import {
   requireChannelSecretBindings,
   requireOpenClawRoster,
   resolveConfiguredHarnessId,
+  selectsClaudeCodeRuntime,
   ResourceConflictError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsForbiddenByClusterError,
@@ -281,6 +285,13 @@ import {
 } from "../embedded-gateway-owner.ts";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
+  CLAUDE_CODE_CONFIG_DIRECTORY,
+  CLAUDE_CODE_CONFIG_SUBPATH,
+  CLAUDE_CODE_MANAGED_SETTINGS_DIRECTORY,
+  CLAUDE_CODE_SETTINGS_INIT_ENTRYPOINT,
+  CLAUDE_CODE_SETTINGS_INIT_ROOT,
+  CLAUDE_CODE_SETTINGS_SUBPATH,
+  CLAUDE_CODE_TRANSCRIPT_DIRECTORY,
   COMPUTE_AGENT_RUNTIME_ENTRYPOINT,
   COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
   COMPUTE_AGENT_WITH_NODE_ENTRYPOINT,
@@ -1374,6 +1385,25 @@ const GATEWAY_PRIVATE_STATE_CATEGORIES = Object.freeze([
   ["worktrees", "/home/node/.openclaw/worktrees"],
   ["worktree-sources", "/home/node/.openclaw/worktree-sources"],
 ] as const);
+// Claude Code keeps each session's transcript under its configuration directory, and
+// OpenClaw resumes a conversation by that session ID (`claude --resume`). That directory
+// is the only writable path in it: the rest is the read-only skeleton from
+// CLAUDE_CODE_SETTINGS_VOLUME (finding 3178), as are the managed settings that carry the
+// credential.
+const CLAUDE_CODE_PROJECTS_STATE = Object.freeze([
+  "claude-projects",
+  `${CLAUDE_CODE_CONFIG_DIRECTORY}/${CLAUDE_CODE_TRANSCRIPT_DIRECTORY}`,
+] as const);
+const CLAUDE_CODE_SETTINGS_VOLUME = "claude-code-settings";
+// What prepare-claude-code-settings reads, besides the credential variable they name.
+const CLAUDE_CODE_SETTINGS_INPUTS: readonly string[] = Object.freeze([
+  "OPENCLAW_HARNESS_AGENT_RUNTIME",
+  "OPENCLAW_HARNESS_PROVIDER",
+  "OPENCLAW_HARNESS_MODEL",
+  "OPENCLAW_HARNESS_CREDENTIAL_ENV",
+  "OPENCLAW_HARNESS_PROBE_CONFIG",
+  "OCE_AGENT_RUNTIME_TELEMETRY",
+]);
 const HARNESS_WORKSPACE_VOLUME = "openclaw-workspace";
 const HARNESS_WORKSPACE_SIZE = "40Gi";
 type WorkspaceRole = "agent" | "gateway";
@@ -2872,6 +2902,10 @@ function requireConfiguredModelProviders(
     harnessId = resolveConfiguredHarnessId(resolvable);
     authentication = harnessModelAuthentication(resolvable, harnessId === "openclaw");
   } catch (error) {
+    // A Claude Code tool policy the runtime would ignore is not a draft gap: refuse it at save.
+    if (error instanceof ClaudeCodeToolPolicyError) {
+      throw error;
+    }
     if (error instanceof ConfigurationHarnessError || error instanceof ConfigurationFailure) {
       return;
     }
@@ -4709,7 +4743,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
         ),
       );
     }
-
+    // Claude Code runs as a child of the embedded Gateway process. The dedicated OpenClaw
+    // worker does not spawn it, and the Harness binary is only on the Gateway image path. This
+    // precedes the provider rules so the refusal names the setting the caller changes.
+    if (selectsClaudeCodeRuntime(configuration) && !embedded) {
+      throw callerSettingError(
+        "agents.defaults.models",
+        "selects the Claude Code agent runtime, which runs only under embedded OpenClaw: set the Agent's executionMode to embedded",
+      );
+    }
     // Every model selection (fallbacks, subagents, image, PDF, per-channel, ...) and every Agent
     // entry uses the primary model's provider, named by the setting (finding 1291). Dedicated
     // Codex qualifies model policy selectors, so it refuses every bare one, a little more than
@@ -14919,7 +14961,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     }));
   }
 
-  private gatewayPrivateStateVolumeMounts(embedded: boolean): V1VolumeMount[] {
+  private gatewayPrivateStateVolumeMounts(embedded: boolean, claudeCode: boolean): V1VolumeMount[] {
     const mounts: V1VolumeMount[] = GATEWAY_PRIVATE_STATE_CATEGORIES.map(
       ([subPath, mountPath]) => ({
         name: GATEWAY_PRIVATE_STATE_VOLUME,
@@ -14945,15 +14987,35 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         readOnly: false,
       });
     }
+    if (claudeCode) {
+      // The read-only configuration skeleton first, then the transcripts mounted into its
+      // one mount point. Nothing else under CLAUDE_CONFIG_DIR is writable.
+      const [subPath, mountPath] = CLAUDE_CODE_PROJECTS_STATE;
+      mounts.push(
+        {
+          name: CLAUDE_CODE_SETTINGS_VOLUME,
+          mountPath: CLAUDE_CODE_CONFIG_DIRECTORY,
+          subPath: CLAUDE_CODE_CONFIG_SUBPATH,
+          readOnly: true,
+        },
+        { name: GATEWAY_PRIVATE_STATE_VOLUME, mountPath, subPath, readOnly: false },
+      );
+    }
     return mounts;
   }
 
-  private privateStateDirectories(role: WorkspaceRole, projectedSkillPath?: string): string[] {
+  private privateStateDirectories(
+    role: WorkspaceRole,
+    projectedSkillPath?: string,
+    claudeCode = false,
+  ): string[] {
     const paths =
       role === "gateway"
         ? [
             ...GATEWAY_PRIVATE_STATE_CATEGORIES.map(([, mountPath]) => mountPath),
             GATEWAY_SESSION_DIRECTORY,
+            // Init owns the configuration directory's mount point (0700) in the home volume.
+            ...(claudeCode ? [CLAUDE_CODE_PROJECTS_STATE[1]] : []),
           ]
         : HARNESS_WORKSPACE_CATEGORIES.map(([, mountPath]) => mountPath);
     // Both runtimes need writable parents before the read-only skill file mount.
@@ -14975,8 +15037,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     embedded: boolean,
     writableConfiguration = false,
     projectedSkillPath?: string,
+    claudeCode = false,
   ): KubernetesRecord {
-    const directories = this.privateStateDirectories(role, projectedSkillPath);
+    const directories = this.privateStateDirectories(role, projectedSkillPath, claudeCode);
     const volumeMounts: V1VolumeMount[] = [
       { name: "runtime-state", mountPath: "/runtime-state" },
       { name: "runtime-temporary", mountPath: "/runtime-temporary" },
@@ -14996,6 +15059,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         "/runtime-state/home/gateway-codex-home",
       );
       directories.push(embedded ? "/gateway-state/workspace" : "/gateway-state/sessions");
+      if (claudeCode) {
+        directories.push(`/gateway-state/${CLAUDE_CODE_PROJECTS_STATE[0]}`);
+      }
     }
     // Init mounts the volume root; the gateway later mounts its home subdirectory.
     const writableConfigurationInitPath = WRITABLE_CONFIGURATION_PATH.replace(
@@ -15839,6 +15905,22 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                   ),
                 ),
               },
+              // This selects the prepare-claude-code-settings init and the Gateway
+              // entrypoint's Claude Code check, after the model probe; the probe itself
+              // stays on OpenClaw's HTTP client (harnessProbeConfiguration pins
+              // agentRuntime to openclaw).
+              ...(selectsClaudeCodeRuntime(revision.configuration)
+                ? [
+                    { name: "OPENCLAW_HARNESS_AGENT_RUNTIME", value: CLAUDE_CLI_AGENT_RUNTIME_ID },
+                    // The runtime's vendor telemetry stays off unless the Configuration opts in.
+                    {
+                      name: "OCE_AGENT_RUNTIME_TELEMETRY",
+                      value: agentRuntimeTelemetryEnabled(revision.configuration)
+                        ? "enabled"
+                        : "disabled",
+                    },
+                  ]
+                : []),
             ]
           : []),
       ],
@@ -16426,6 +16508,15 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       pluginRuntime?.runtime.kind === "codex" && !embedded
         ? pluginRuntime.runtime.publicGithubRead
         : undefined;
+    // The same variable that tells the Gateway entrypoint to prepare Claude Code.
+    const claudeCode =
+      role === "gateway" &&
+      embedded &&
+      runtime !== undefined &&
+      harnessAuth?.environment.some(
+        ({ name, value }) =>
+          name === "OPENCLAW_HARNESS_AGENT_RUNTIME" && value === CLAUDE_CLI_AGENT_RUNTIME_ID,
+      ) === true;
     if (providerEndpoint?.tls !== undefined) {
       if (role !== "gateway" || !dedicated || configuration === undefined) {
         throw new ConfigurationFailure(
@@ -16461,6 +16552,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             embedded,
             writableConfiguration,
             publicGithubRead?.skillPath,
+            claudeCode,
           ),
         ]
       : [];
@@ -16770,7 +16862,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         name: GATEWAY_PRIVATE_STATE_VOLUME,
         persistentVolumeClaim: { claimName: this.gatewayPrivateStateClaimName(agentId) },
       });
-      volumeMounts.push(...this.gatewayPrivateStateVolumeMounts(embedded), {
+      volumeMounts.push(...this.gatewayPrivateStateVolumeMounts(embedded, claudeCode), {
         name: "runtime-state",
         mountPath: "/home/node/.openclaw/agents/main/agent/codex-home",
         subPath: "home/gateway-codex-home",
@@ -16976,6 +17068,48 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       });
       volumeMounts.push({ ...publicKey, readOnly: true }, startup);
       variables.push({ name: "OPENCLAW_EMBEDDED_GATEWAY_OWNER", value: "1" });
+    }
+    if (claudeCode) {
+      // Claude Code's admin-managed settings carry the credential and outrank every other
+      // settings tier, and its configuration directory holds the caches and stored
+      // sign-ins that can supply remote managed settings, so the model's tools (the
+      // Gateway's uid) must not change either. Only this init mounts the volume writable;
+      // the Gateway gets both read-only (the skeleton in gatewayPrivateStateVolumeMounts),
+      // and its entrypoint refuses to start Claude Code unless both mounts are read-only.
+      const credentialVariable = variables.find(
+        ({ name }) => name === "OPENCLAW_HARNESS_CREDENTIAL_ENV",
+      )?.value;
+      const settingsInputs = variables.filter(
+        ({ name }) =>
+          CLAUDE_CODE_SETTINGS_INPUTS.includes(name) ||
+          (credentialVariable !== undefined && name === credentialVariable),
+      );
+      volumes.push({
+        name: CLAUDE_CODE_SETTINGS_VOLUME,
+        emptyDir: { medium: "Memory", sizeLimit: "64Ki" },
+      });
+      initContainers.push({
+        name: "prepare-claude-code-settings",
+        image,
+        imagePullPolicy: "IfNotPresent",
+        command: [...SETUP_WRAPPER_COMMAND],
+        args: [CLAUDE_CODE_SETTINGS_INIT_ENTRYPOINT],
+        env: settingsInputs,
+        volumeMounts: [
+          { name: CLAUDE_CODE_SETTINGS_VOLUME, mountPath: CLAUDE_CODE_SETTINGS_INIT_ROOT },
+        ],
+        securityContext: {
+          allowPrivilegeEscalation: false,
+          readOnlyRootFilesystem: true,
+          capabilities: { drop: ["ALL"] },
+        },
+      });
+      volumeMounts.push({
+        name: CLAUDE_CODE_SETTINGS_VOLUME,
+        mountPath: CLAUDE_CODE_MANAGED_SETTINGS_DIRECTORY,
+        subPath: CLAUDE_CODE_SETTINGS_SUBPATH,
+        readOnly: true,
+      });
     }
     if (dedicated && this.options.executionCluster !== undefined) {
       if (role === "gateway") {

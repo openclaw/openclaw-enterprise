@@ -149,6 +149,10 @@
                     "label": "Harness"
                   },
                   {
+                    "page": "reference/claude-code-runtime",
+                    "label": "Claude Code Runtime"
+                  },
+                  {
                     "page": "guides/topics/remote-harness",
                     "label": "Remote Harness"
                   },

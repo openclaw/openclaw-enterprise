@@ -193,7 +193,7 @@ Configuration takes effect on the next deployment.
 ### Native runtime selection
 
 Select a Configuration's primary model as `provider/model`; the model ID can contain slashes. An
-explicit `agentRuntime.id` selects `openclaw` or `codex`. Agent entries must
+explicit `agentRuntime.id` selects `openclaw`, `codex` or [`claude-cli`](claude-code-runtime.md). Agent entries must
 agree on the primary model and Harness. Fallbacks must use the same provider and
 resolve to the same Harness. Admission preserves their order.
 
