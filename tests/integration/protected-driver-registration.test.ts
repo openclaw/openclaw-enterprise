@@ -1,10 +1,11 @@
+import { createReadyComputeDriver } from "../helpers/development.ts";
 import { bindRepositoryGitTransport } from "../../apps/controller/src/composition/repository-credentials/transport.ts";
 import { takeUnloggedRuntimeFields } from "../helpers/openshell-git-runtime.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
   resolveGitHubRepositoryBinding,
   validateGitHubRepositoryRegistry,
-} from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+} from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { createOpenShellCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-registration.ts";
 import type { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
@@ -27,9 +28,7 @@ import { join } from "node:path";
 import test, { afterEach } from "node:test";
 import type {
   AgentRevision,
-  ComputeDriver,
   CredentialProxyDriver,
-  Driver,
   EgressInstallation,
   Namespace,
   ProtectedRepositoryGitAuthority,
@@ -47,7 +46,6 @@ import {
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { installEgressAuthority } from "../../apps/controller/src/composition/egress-authority.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
-import { ComputeLifecycleDispatcher } from "../../apps/controller/src/drivers/compute/lifecycle-hooks.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { routedRevision } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
@@ -280,17 +278,16 @@ test("one installed Driver owns both protected capabilities, lifecycle and verif
     "no release on changed runtime, substituted wiring or unauthenticated peer",
   );
 
-  // Selection of the two capabilities installs one real Compute lifecycle owner.
-  let hooks: readonly Driver[] = [];
-  const seed: ComputeDriver = Object.assign(Object.create(api.computeDriver), {
-    setLifecycleDrivers(selected: readonly Driver[]) {
-      hooks = selected;
-    },
-  });
-  controller.registerDriver(seed);
-  controller.selectDriver("compute", seed.id);
-  assert.equal(hooks.length, 1);
-  await new ComputeLifecycleDispatcher(hooks).afterNamespacePrepared(context.namespace);
+  const compute = createReadyComputeDriver("namespace-contract-compute");
+  controller.registerDriver(compute);
+  controller.selectDriver("compute", compute.id);
+  // Both selected capabilities share one registration's Namespace effects.
+  await controller.observeNamespaceLifecycle(
+    context.namespace,
+    "ready",
+    new AbortController().signal,
+    () => {},
+  );
   assert.equal(calls.lifecycle, 1);
 
   // Two separate registrations cannot establish a protected Backend, even with the same IDs.
@@ -954,15 +951,17 @@ test("repository scope changes invalidate the external Driver identity while a r
       }
       const runtime = (await loadPolicy({ sessionDurationSeconds: 601 }))!;
       t.after(() => runtime.protectedDriver?.close());
-      assert.equal(
-        (
-          await runtime.repositoryPolicy!.resolve({
-            namespaceId: "namespace-a",
-            bindings: [{ repositoryRef: "application", profile: "git-write" }],
-          })
-        ).sessionDurationSeconds,
-        601,
-      );
+      const admission = runtime.repositoryAdmission;
+      assert.ok(admission);
+      assert.equal(admission.policyMode, "built-in");
+      assert.equal(admission.backendId, registry.backendId);
+      assert.equal(admission.policy.id, "repo");
+      assert.equal(Object.hasOwn(runtime, "repositoryPolicy"), false);
+      const binding = admission.policy.resolveBindings({
+        namespaceId: "namespace-a",
+        bindings: [{ repositoryRef: "application", profile: "git-write" }],
+      });
+      assert.equal(binding.sessionDurationSeconds, 601);
       assert.equal(runtime.repositoryOwner!.driverId, "repo");
       assert.equal(runtime.repositoryOwner!.backendId, registry.backendId);
       if (mode === "native") {
@@ -982,7 +981,7 @@ test("repository scope changes invalidate the external Driver identity while a r
     });
     assert.equal(child.status, 0, child.error?.message ?? child.stderr);
   }
-  const binding = await original.repositoryPolicy!.resolve({
+  const binding = original.repositoryAdmission!.policy.resolveBindings({
     namespaceId: "namespace-a",
     bindings: [{ repositoryRef: "application", profile: "git-write" }],
   });
@@ -1051,7 +1050,7 @@ test("repository scope changes invalidate the external Driver identity while a r
   const reordered = await load();
   assert.deepEqual(reordered.protectedDriver!.ref, original.protectedDriver!.ref);
   assert.deepEqual(
-    await reordered.repositoryPolicy!.resolve({
+    reordered.repositoryAdmission!.policy.resolveBindings({
       namespaceId: "namespace-a",
       bindings: [{ repositoryRef: "application", profile: "git-write" }],
     }),

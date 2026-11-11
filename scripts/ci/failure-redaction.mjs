@@ -219,8 +219,13 @@ function redactShapes(text) {
 // The budget is JavaScript UTF-16 units, including the omission marker.
 // After repeated nested captures, omission counts describe the current input,
 // so they only approximate how much original text was omitted.
-export function captureFailureText(text) {
-  const value = redactShapes(stripControl(text));
+export function captureFailureText(text, secrets = []) {
+  // Match known multi-line values before either window can remove their context.
+  let input = text;
+  for (const [value, name] of secrets) {
+    input = input.replaceAll(value, `[env:${name}]`);
+  }
+  const value = redactShapes(stripControl(input));
   if (value.length <= failureInputLimit) {
     return value;
   }

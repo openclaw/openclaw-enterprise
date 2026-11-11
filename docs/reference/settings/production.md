@@ -32,7 +32,7 @@ session cookie before forwarding to the native gateway.
 | `OCC_DATABASE_URL`                         | Explicit PostgreSQL application-role URL.                                                                          | Must connect to the already migrated controller database. With TLS verification, an IP host must match an IP subjectAltName. |
 | `OCC_CONFIG_PATH`                          | Absolute path to trusted Installation startup YAML.                                                                | Selects Configuration, IAM, Compute, and optional account Drivers.                                                           |
 | `OCC_AUTH_SECRET`                          | Mounted high-entropy Better Auth secret.                                                                           | Signs and verifies session material without logging it.                                                                      |
-| `OCC_AUTH_BASE_URL`                        | HTTP(S) origin without path, query, fragment or user info; IPv4 as four decimal octets, no leading zeros.          | Defines the Better Auth base URL and cookie origin.                                                                          |
+| `OCC_AUTH_BASE_URL`                        | HTTPS DNS origin without path, query, fragment or user info; must share a non-public suffix with the Agent domain. | Defines the Better Auth base URL and cookie origin.                                                                          |
 | `OCC_GATEWAY_API_KEY_PATH`                 | Optional absolute path to the private gateway service-key file.                                                    | API only; validates at startup and reads each operation for rotation. Requires Compute endpoint resolution.                  |
 | `OCC_PREPROVISIONED_NAMESPACE`             | Optional JSON `{"namespaceId","uid"}` binding one operator-created namespace; set by Helm.                         | API and worker. See [preprovisioned namespace](../drivers/kubernetes-compute/preprovisioned-namespace.md).                   |
 | `OCC_CHANNEL_DIRECTORY_PROXY_URL`          | Optional HTTP(S) proxy URL with one literal IPv4 address and explicit port, or the exact Helm-managed Service URL. | API only; routes Slack lookup and credential validation through an HTTP CONNECT tunnel. Invalid values fail startup.         |
@@ -52,13 +52,18 @@ lookup and credential validation require another approved network route.
 [Agent logs](../../guides/topics/agent-logs.md) routes; `false` makes them answer
 `501`. The chart sets it from `agentRuntimeLogs.enabled`.
 
-When the native admin pilot is enabled, the API also requires:
+All browser sessions require `OCC_AGENT_NATIVE_ADMIN_DOMAIN`, including the
+bootstrap process and installations with native access disabled. In default shared-cookie mode, OCC derives the
+shared cookie domain from it and the HTTPS `OCC_AUTH_BASE_URL`. The removed
+`OCC_AUTH_COOKIE_DOMAIN` and `agentNativeAdmin.sharedCookieDomain` inputs are rejected.
 
-| Variable                         | Required value or format                                                                                                                                     | Behavior                                                                                                    |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| `OCC_AGENT_NATIVE_ADMIN_ENABLED` | `true`.                                                                                                                                                      | Enables the trusted-operator Agent native admin UI path.                                                    |
-| `OCC_AGENT_NATIVE_ADMIN_DOMAIN`  | Agent host suffix, such as `agents.oce.example.com`, without scheme, wildcard, port, or path.                                                                | Derives stable per-Agent browser hosts.                                                                     |
-| `OCC_AUTH_COOKIE_DOMAIN`         | Shared OCE session cookie parent, such as `oce.example.com`; not a public suffix and must contain the console host and Agent suffix on DNS-label boundaries. | Scopes the ordinary Better Auth session cookie to the console and Agent hosts when native admin is enabled. |
+Native browser access uses these settings:
+
+| Variable                              | Required value or format                                                                      | Behavior                                                                                                                                  |
+| ------------------------------------- | --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `OCC_AGENT_NATIVE_ADMIN_ENABLED`      | `true`.                                                                                       | Enables Agent chat and administration through native browser access.                                                                      |
+| `OCC_AGENT_NATIVE_ADMIN_DOMAIN`       | Agent host suffix, such as `agents.oce.example.com`, without scheme, wildcard, port, or path. | Required for shared cookie scope; also derives stable per-Agent browser hosts.                                                            |
+| `OCC_AGENT_NATIVE_ADMIN_SESSION_MODE` | `shared-cookie` (default) or `host-only-exchange`.                                            | Host-only exchange requires guarded OIDC and same-site HTTPS; see [native sessions](../agent-native-admin.md#host-only-session-exchange). |
 
 For changes to startup `logging.level`, follow the
 [log-level procedure](../../guides/observability.md#1-choose-the-log-level).
@@ -116,33 +121,25 @@ replacing the mounted Secret and restarting; it also invalidates every
 [known-device cookie](../authentication.md#known-devices) until each browser's next sign-in.
 Revoking one account's cookies needs no rotation: reset its password.
 
-### GitHub sign-in and trusted proxies
+### External sign-in and trusted proxies
 
 These optional variables reach only the API, never other workloads.
 
-| Variable                               | Helm value                                 | Behavior                                                                                                                                                                                                                 |
-| -------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `OCC_AUTH_GITHUB_CLIENT_ID`            | `auth.github` Secret key `clientIdKey`     | GitHub App client ID. Set the client ID, client secret, and recovery user ID together or not at all.                                                                                                                     |
-| `OCC_AUTH_GITHUB_CLIENT_SECRET`        | `auth.github` Secret key `clientSecretKey` | GitHub App client secret, read from the dedicated `auth.github.secretName` Secret.                                                                                                                                       |
-| `OCC_AUTH_GITHUB_ALLOWED_ORGS`         | `auth.github.allowedOrgs`, comma-joined    | Optional GitHub organization logins whose active members may sign in; see [allowlist](../authentication/external-sign-in.md#organization-and-team-allowlist). At most 10 entries with the teams. Requires the client ID. |
-| `OCC_AUTH_GITHUB_ALLOWED_TEAMS`        | `auth.github.allowedTeams`, comma-joined   | Optional `org/team-slug` entries whose active members may sign in. The GitHub App needs organization permission Members: read.                                                                                           |
-| `OCC_AUTH_GITHUB_AUTO_ENROLL_GROUP_ID` | `auth.github.autoEnrollGroupId`            | Optional existing Installation IAM Group for [automatic team enrollment](../authentication/team-enrollment.md). Requires allowed teams and no allowed organizations; default empty.                                      |
-| `OCC_AUTH_GITHUB_RECOVERY_USER_ID`     | `auth.recoveryUserId`                      | Existing local password administrator's user ID; designates the recovery account on first activation.                                                                                                                    |
-| `OCC_AUTH_PASSWORD_SIGN_IN`            | `auth.passwordSignIn`                      | `all` (default, not rendered) or `recovery-only`: only the recovery account may use a password. Needs GitHub, Google or OIDC; see [recovery-only](../authentication/external-sign-in.md#recovery-only-password-sign-in). |
-| `OCC_AUTH_TRUSTED_PROXY_CIDRS`         | `api.trustedProxy.cidrs`                   | Comma-separated IPv4 or IPv6 CIDRs, subject to the limits below. Requests whose socket peer is inside them may carry forwarded headers.                                                                                  |
-| `OCC_AUTH_TRUSTED_PROXY_PRESET`        | `api.trustedProxy.preset`                  | `ingress-nginx` (default), `aws` or `generic`. Named presets read `x-forwarded-for`. Set with the CIDRs.                                                                                                                 |
-| `OCC_AUTH_CLIENT_IP_HEADER`            | `api.trustedProxy.clientAddressHeader`     | Lowercase header name, up to 64 characters, `generic` only. Sign-in limits key on the client address it carries from a trusted peer.                                                                                     |
+| Variable                        | Helm value                             | Behavior                                                                                                                                                                                                         |
+| ------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OCC_AUTH_RECOVERY_USER_ID`     | `auth.recoveryUserId`                  | Existing local password administrator's user ID; designates the recovery account on first activation.                                                                                                            |
+| `OCC_AUTH_PASSWORD_SIGN_IN`     | `auth.passwordSignIn`                  | `all` (default, not rendered) or `recovery-only`: only the recovery account may use a password. Needs Google or OIDC; see [recovery-only](../authentication/external-sign-in.md#recovery-only-password-sign-in). |
+| `OCC_AUTH_TRUSTED_PROXY_CIDRS`  | `api.trustedProxy.cidrs`               | Comma-separated IPv4 or IPv6 CIDRs, subject to the limits below. Requests whose socket peer is inside them may carry forwarded headers.                                                                          |
+| `OCC_AUTH_TRUSTED_PROXY_PRESET` | `api.trustedProxy.preset`              | `ingress-nginx` (default), `aws` or `generic`. Named presets read `x-forwarded-for`. Set with the CIDRs.                                                                                                         |
+| `OCC_AUTH_CLIENT_IP_HEADER`     | `api.trustedProxy.clientAddressHeader` | Lowercase header name, up to 64 characters, `generic` only. Sign-in limits key on the client address it carries from a trusted peer.                                                                             |
 
 The API Deployment uses `Recreate`: an upgrade stops the old API Pod first, so
 two controllers never serve together. Activation still requires closed ingress and stopped identity writers.
 
-With `auth.github.enabled`, the chart adds an API-only egress policy on TCP 443
-for `github.com` and `api.github.com`. Empty `auth.github.egressCidrs` allows
-any address except link-local `169.254.0.0/16`. To narrow it, list the `web` and `api`
-IPv4 ranges from `https://api.github.com/meta` and keep them current.
-A non-empty list replaces the default, so an egress proxy on a link-local address is
-reached by listing its CIDR; the same holds for Google and OIDC. Listed CIDRs carry no
-link-local exception, so keep them narrow.
+Google and OIDC have API-only HTTPS egress rules. Empty provider `egressCidrs`
+allows every address except link-local `169.254.0.0/16`. An explicit list replaces
+that default, including the exception; keep it narrow. Direct GitHub sign-in
+settings are rejected. See [upgrade instructions](../../guides/deploy/oidc-upgrade.md).
 
 `api.trustedProxy` defaults off: `Forwarded`, `X-Forwarded-*`, and `X-Real-IP`
 return `403` on API calls (sign-in still works), and the API logs
@@ -151,7 +148,7 @@ return `403` on API calls (sign-in still works), and the API logs
 peer is outside `api.trustedProxy.cidrs`. Without a proxy, a
 scanner sending `X-Forwarded-For` can trigger `TRUSTED_PROXY_NOT_CONFIGURED`;
 ignore it and leave `api.trustedProxy` unset. Failed password sign-ins have per-email limits only: browsers behind
-a proxy share its address. With GitHub, Google or OIDC, start, callback, and result
+a proxy share its address. With Google or OIDC, start, callback, and result
 key on browser cookies; start has only an active cap and the 1,000-pending-attempt
 cap. Startup logs `authentication.sign-in-limit-warning`; Helm notes and profile
 rendering also warn without failing. Set `api.trustedProxy` unless the API sees
@@ -169,15 +166,14 @@ Trust only proxies that overwrite or append the header, and admit them through
 The API and chart refuse entries covering every IPv4 or IPv6 address, including
 `/0`. Mapped peers and header hops use dotted IPv4 sign-in limit keys.
 
-Rendering fails on incomplete GitHub values, an allowlist entry that is
-not an organization login or `org/team-slug`, more than 10 allowlist entries, a shared Secret,
-`agentNativeAdmin.enabled` with GitHub, refused proxy CIDRs, another header with a
-named preset, or credential, routing and internal headers such as `cookie`.
+Rendering rejects invalid provider configuration, shared credential Secrets,
+refused proxy CIDRs, or a different header for a named proxy preset. Credential
+and routing headers such as `cookie` cannot supply a client address.
 
 ### Google sign-in
 
 These optional variables also apply to the API only. Google sign-in uses the same
-guarded profile and `OCC_AUTH_GITHUB_RECOVERY_USER_ID` recovery user as GitHub; see
+guarded profile and `OCC_AUTH_RECOVERY_USER_ID` recovery user; see
 [Google sign-in](../../guides/deploy/google-sign-in.md).
 
 | Variable                          | Helm value                                 | Behavior                                                                                                                                           |
@@ -190,7 +186,7 @@ With `auth.google.enabled`, the chart adds the API-only egress policy
 `openclaw-enterprise-api-google-login-egress` on TCP 443 for
 `oauth2.googleapis.com` and `www.googleapis.com`. Empty `auth.google.egressCidrs`
 allows any address except link-local `169.254.0.0/16`; narrow it with an egress proxy.
-Rendering fails on incomplete Google values, a Secret shared with GitHub or any other
+Rendering fails on incomplete Google values, a Secret shared with any other
 chart Secret, `agentNativeAdmin.enabled` with Google, an HTTP base URL, or an allowed
 domain that is not a DNS name.
 
@@ -198,7 +194,7 @@ domain that is not a DNS name.
 
 [OIDC controller settings](oidc.md) defines the provider URLs, client credentials,
 API egress and optional private CA trust. These API-only settings require the
-same guarded sign-in profile and recovery user as GitHub and Google.
+same guarded sign-in profile and recovery user and Google.
 
 ### Production Installation bootstrap environment
 
@@ -222,7 +218,8 @@ before another attempt.
 | Variable                          | Required value or format                                                                                |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------- |
 | `OCC_AUTH_SECRET`                 | Same mounted Better Auth secret used by the API.                                                        |
-| `OCC_AUTH_BASE_URL`               | Same as the API; HTTPS unless the host is `localhost`, `127.0.0.1`, or `[::1]`.                         |
+| `OCC_AUTH_BASE_URL`               | Same HTTPS DNS origin as the API.                                                                       |
+| `OCC_AGENT_NATIVE_ADMIN_DOMAIN`   | Same Agent DNS suffix as the API; required for derived shared session cookies.                          |
 | `OCC_BOOTSTRAP_ADMIN_EMAIL`       | Email address for the first administrator account.                                                      |
 | `OCC_BOOTSTRAP_PASSWORD_FILE`     | New file path on protected operator-owned storage for the generated password.                           |
 | `OCC_BOOTSTRAP_INSTALLATION_NAME` | Installation display name; it must follow the API Name rule (`INSTALLATION_NAME_INVALID`).              |

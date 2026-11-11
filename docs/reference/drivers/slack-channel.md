@@ -50,7 +50,7 @@ path. A retryable `503` means Slack or its route failed. When the production API
 has no proxy URL, its egress is closed (`OCC_API_HTTPS_EGRESS_OPEN` is not `true`),
 and `auth.test` gets no answer from Slack (connection, DNS, or time budget
 failure), validation instead returns `409` `RESOURCE_CONFLICT`. Helm sets
-`OCC_API_HTTPS_EGRESS_OPEN` to `true` when GitHub, Google or OIDC sign-in is
+`OCC_API_HTTPS_EGRESS_OPEN` to `true` when Google or OIDC sign-in is
 enabled with empty `egressCidrs`, because that rule allows TCP 443 to any address. The
 message names the [proxy settings](#enable-lookup-in-production) and says to try
 again if the API has another approved route to Slack, because an open route that

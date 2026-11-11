@@ -343,6 +343,6 @@ ID-token checks, attach semantics and routes. Current behavior:
 [Keycloak CI job](../../docs/testing/kubernetes.md#keycloak-oidc-tests). Source:
 [`auth/oidc.ts`](../../apps/controller/src/auth/oidc.ts),
 [`auth/id-token.ts`](../../apps/controller/src/auth/id-token.ts),
-[`auth/github.ts`](../../apps/controller/src/auth/github.ts),
+[`auth/github.ts`](https://github.com/openclaw/openclaw-enterprise/blob/5cf15141c6e52d387bd8e2a83cc39542291bf916/apps/controller/src/auth/github.ts),
 [`assemble-api-ca.mjs`](../../deploy/helm/openclaw-enterprise/files/assemble-api-ca.mjs) and
 [`check-api-database-ca.mjs`](../../deploy/helm/openclaw-enterprise/files/check-api-database-ca.mjs).

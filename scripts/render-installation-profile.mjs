@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { oidcEnrollmentPolicy } from "../apps/controller/src/auth/oidc-enrollment.ts";
 import { createHash } from "node:crypto";
 import dns from "node:dns/promises";
 import { realpathSync, statSync } from "node:fs";
@@ -746,71 +747,39 @@ function sourceCidrs(controlPlane, key, diagnostics, { warnWide = false } = {}) 
   return cidrs;
 }
 
-// The API refuses a public-suffix shared cookie domain at startup (normalizeSharedCookieDomain)
-// with tldts and its bundled list. Resolve the controller's pinned copy so both use the same
-// list without a new root dependency; load it only when native admin is configured.
-function isPublicSuffix(hostname) {
-  const require = createRequire(new URL("../apps/controller/package.json", import.meta.url));
-  let tldts;
-  try {
-    tldts = require("tldts");
-  } catch {
-    return undefined;
-  }
-  const parsed = tldts.parse(hostname, { allowPrivateDomains: true, validateHostname: true });
-  return parsed.isIp || parsed.domain === null || parsed.publicSuffix === hostname;
-}
-
-function validateNativeAdminDomains(domain, sharedCookieDomain, authBaseUrl, diagnostics) {
-  const lowerDomain = domain.toLowerCase();
-  const lowerSharedCookieDomain = sharedCookieDomain.toLowerCase();
-  if (!dnsHostname.test(lowerDomain)) {
+function validateNativeAdminDomains(domain, authBaseUrl, diagnostics) {
+  if (!dnsHostname.test(domain.toLowerCase())) {
     diagnostics.errors.push(
       "controlPlane.agentNativeAdminDomain must be a DNS hostname without a wildcard, port, scheme, or path.",
     );
-  }
-  if (!dnsHostname.test(lowerSharedCookieDomain)) {
-    diagnostics.errors.push(
-      "controlPlane.sharedCookieDomain must be a DNS hostname without a wildcard, port, scheme, or path.",
-    );
-  } else {
-    const publicSuffix = isPublicSuffix(lowerSharedCookieDomain);
-    if (publicSuffix === undefined) {
-      diagnostics.errors.push(
-        "controlPlane.sharedCookieDomain needs the public suffix list: run pnpm install first.",
-      );
-    } else if (publicSuffix) {
-      diagnostics.errors.push("controlPlane.sharedCookieDomain must not be a public suffix.");
-    }
-  }
-  if (
-    dnsHostname.test(lowerDomain) &&
-    dnsHostname.test(lowerSharedCookieDomain) &&
-    lowerDomain !== lowerSharedCookieDomain &&
-    !lowerDomain.endsWith(`.${lowerSharedCookieDomain}`)
-  ) {
-    diagnostics.errors.push(
-      "controlPlane.agentNativeAdminDomain must be inside controlPlane.sharedCookieDomain.",
-    );
-  }
-  // The API refuses these at startup: shared session cookies are secure-only, and the
-  // console host must be inside their parent.
-  let baseUrl;
-  try {
-    baseUrl = new URL(authBaseUrl);
-  } catch {
-    // asString already reported it as not an absolute HTTP(S) origin.
     return;
   }
-  if (baseUrl.protocol !== "https:") {
-    diagnostics.errors.push("controlPlane.authBaseUrl must use HTTPS with native admin.");
-  } else if (dnsHostname.test(lowerSharedCookieDomain)) {
-    const host = baseUrl.hostname.replace(/\.$/, "");
-    if (host !== lowerSharedCookieDomain && !host.endsWith(`.${lowerSharedCookieDomain}`)) {
-      diagnostics.errors.push(
-        "controlPlane.authBaseUrl host must be inside controlPlane.sharedCookieDomain.",
-      );
+  if (diagnostics.errors.some((error) => error.startsWith("controlPlane.authBaseUrl"))) {
+    return;
+  }
+  // Load the auth owner lazily so a plain checkout still writes a useful preflight refusal.
+  let deriveSharedCookieDomain;
+  try {
+    ({ deriveSharedCookieDomain } = createRequire(import.meta.url)(
+      "../apps/controller/src/auth/configuration.ts",
+    ));
+  } catch (error) {
+    if (error.code !== "MODULE_NOT_FOUND" && error.code !== "ERR_MODULE_NOT_FOUND") {
+      throw error;
     }
+    diagnostics.errors.push(
+      "Shared browser sessions need the public suffix list: run pnpm install first.",
+    );
+    return;
+  }
+  try {
+    deriveSharedCookieDomain(authBaseUrl, domain);
+  } catch {
+    diagnostics.errors.push(
+      new URL(authBaseUrl).protocol !== "https:"
+        ? "controlPlane.authBaseUrl must use HTTPS for shared browser sessions."
+        : "controlPlane.authBaseUrl and controlPlane.agentNativeAdminDomain must share a non-public DNS suffix.",
+    );
   }
 }
 
@@ -846,8 +815,6 @@ function clientSelectors(source, diagnostics) {
 }
 
 const recoveryUserIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
-const githubOrganization = /^[a-z0-9][a-z0-9-]{0,38}$/;
-const githubTeam = /^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9_-]{0,99}$/;
 const trustedProxyPresets = ["ingress-nginx", "aws", "generic"];
 const passwordSignInPolicies = ["all", "recovery-only"];
 
@@ -924,38 +891,6 @@ function signInProvider(source, name, diagnostics) {
       nonempty: false,
     });
   }
-  // GitHub's organization and team allowlist (RFC-0061), as the chart and API accept it.
-  if (source.allowedOrgs !== undefined) {
-    rendered.allowedOrgs = stringArray(source, [...path, "allowedOrgs"], diagnostics, {
-      validate: (value) => githubOrganization.test(value),
-      description: "a lowercase GitHub organization login such as acme",
-      nonempty: false,
-    });
-  }
-  if (source.allowedTeams !== undefined) {
-    rendered.allowedTeams = stringArray(source, [...path, "allowedTeams"], diagnostics, {
-      validate: (value) => githubTeam.test(value),
-      description: "a lowercase org/team-slug entry such as acme/platform",
-      nonempty: false,
-    });
-  }
-  if ((rendered.allowedOrgs?.length ?? 0) + (rendered.allowedTeams?.length ?? 0) > 10) {
-    diagnostics.errors.push(
-      "controlPlane.github.allowedOrgs and allowedTeams list at most 10 entries together.",
-    );
-  }
-  if (source.autoEnrollGroupId !== undefined) {
-    rendered.autoEnrollGroupId = optionalString(
-      source,
-      [...path, "autoEnrollGroupId"],
-      diagnostics,
-    );
-    if (!rendered.allowedTeams?.length || rendered.allowedOrgs?.length) {
-      diagnostics.errors.push(
-        "controlPlane.github.autoEnrollGroupId requires allowedTeams and no allowedOrgs.",
-      );
-    }
-  }
   if (source.egressCidrs !== undefined) {
     rendered.egressCidrs = stringArray(source, [...path, "egressCidrs"], diagnostics, {
       validate: isIpv4Cidr,
@@ -1028,27 +963,27 @@ function renderOidc(source, diagnostics) {
   if (displayName !== undefined) {
     rendered.displayName = displayName;
   }
+  if (source.enrollment !== undefined) {
+    try {
+      rendered.enrollment = oidcEnrollmentPolicy(source.enrollment);
+    } catch (error) {
+      diagnostics.errors.push(`controlPlane.oidc.enrollment: ${error.message}`);
+    }
+  }
   return rendered;
 }
 
-// Mirrors the chart's auth.github/auth.google/auth.oidc checks. Activation is one-way, so every
+// Mirrors the chart's auth.google/auth.oidc checks. Activation is one-way, so every
 // profile rerender after activation must keep rendering these values.
-function renderExternalSignIn(controlPlane, github, google, oidc, authBaseUrl, diagnostics) {
+function renderExternalSignIn(controlPlane, google, oidc, authBaseUrl, diagnostics) {
   // The scheme as URL parsing reads it, like the API: HTTPS:// and surrounding spaces pass.
   if (!URL.canParse(authBaseUrl) || new URL(authBaseUrl).protocol !== "https:") {
     diagnostics.errors.push("controlPlane.authBaseUrl must use HTTPS with external sign-in.");
   }
-  for (const key of ["agentNativeAdminDomain", "sharedCookieDomain"]) {
-    if (controlPlane[key] !== undefined) {
-      diagnostics.errors.push(
-        `controlPlane.${key} is not consumed with external sign-in: GitHub, Google and OIDC sign-in disable native admin.`,
-      );
-    }
-  }
   let recoveryUserId;
   if (controlPlane.recoveryUserId === undefined) {
     diagnostics.errors.push(
-      "controlPlane.recoveryUserId is required with controlPlane.github, controlPlane.google or controlPlane.oidc.",
+      "controlPlane.recoveryUserId is required with controlPlane.google or controlPlane.oidc.",
     );
   } else {
     recoveryUserId = asString(controlPlane, ["controlPlane", "recoveryUserId"], diagnostics, {
@@ -1068,9 +1003,6 @@ function renderExternalSignIn(controlPlane, github, google, oidc, authBaseUrl, d
   return {
     recoveryUserId,
     ...(passwordSignIn === undefined ? {} : { passwordSignIn }),
-    ...(controlPlane.github === undefined
-      ? {}
-      : { github: signInProvider(github, "github", diagnostics) }),
     ...(controlPlane.google === undefined
       ? {}
       : { google: signInProvider(google, "google", diagnostics) }),
@@ -1208,7 +1140,7 @@ function buildInput(rawInput, diagnostics) {
       "gatewayClassName",
       "gatewayApiKeySecretName",
       "agentNativeAdminDomain",
-      "sharedCookieDomain",
+      "agentNativeAdminSessionMode",
       "gatewayTrustedProxyCidrs",
       "pluginStatusProxySourceCidrs",
       "nodeSelector",
@@ -1219,7 +1151,6 @@ function buildInput(rawInput, diagnostics) {
       "observabilityUrl",
       "recoveryUserId",
       "passwordSignIn",
-      "github",
       "google",
       "oidc",
       "trustedProxy",
@@ -1280,21 +1211,11 @@ function buildInput(rawInput, diagnostics) {
   closed(databaseCa, "controlPlane.databaseCa", ["secretName", "key", "mountPath"], diagnostics);
   const loggingCollector = section(controlPlane, "loggingCollector", diagnostics, false);
   closed(loggingCollector, "controlPlane.loggingCollector", ["enabled", "exporter"], diagnostics);
-  const github = section(controlPlane, "github", diagnostics, false);
-  closed(
-    github,
-    "controlPlane.github",
-    [
-      "secretName",
-      "clientIdKey",
-      "clientSecretKey",
-      "allowedOrgs",
-      "allowedTeams",
-      "autoEnrollGroupId",
-      "egressCidrs",
-    ],
-    diagnostics,
-  );
+  if (controlPlane.github !== undefined) {
+    diagnostics.errors.push(
+      "controlPlane.github was removed; use controlPlane.oidc.enrollment. See docs/guides/deploy/oidc-upgrade.md.",
+    );
+  }
   const google = section(controlPlane, "google", diagnostics, false);
   closed(
     google,
@@ -1307,6 +1228,7 @@ function buildInput(rawInput, diagnostics) {
     oidc,
     "controlPlane.oidc",
     [
+      "enrollment",
       "issuer",
       "authorizationUrl",
       "tokenUrl",
@@ -1348,7 +1270,6 @@ function buildInput(rawInput, diagnostics) {
     loggingCollector,
     managedServiceAccounts,
     presets,
-    github,
     google,
     oidc,
     trustedProxy,
@@ -1363,7 +1284,6 @@ const chartSecrets = {
   auth: "occ-auth",
 };
 const signInSecretDefaults = {
-  github: "occ-github-login",
   google: "occ-google-login",
   oidc: "occ-oidc-login",
 };
@@ -1513,7 +1433,6 @@ function buildRendered(profile, parsed, diagnostics) {
     loggingCollector,
     managedServiceAccounts,
     presets,
-    github,
     google,
     oidc,
     trustedProxy,
@@ -1547,12 +1466,9 @@ function buildRendered(profile, parsed, diagnostics) {
     validate: httpOrigin,
     description: "an absolute HTTP(S) origin URL without a path, query, fragment, or user info",
   });
-  const externalSignIn =
-    controlPlane.github !== undefined ||
-    controlPlane.google !== undefined ||
-    controlPlane.oidc !== undefined;
+  const externalSignIn = controlPlane.google !== undefined || controlPlane.oidc !== undefined;
   const signIn = externalSignIn
-    ? renderExternalSignIn(controlPlane, github, google, oidc, authBaseUrl, diagnostics)
+    ? renderExternalSignIn(controlPlane, google, oidc, authBaseUrl, diagnostics)
     : {};
   // Without a trusted proxy the API sees the ingress as every browser's address. Existing
   // source-preserving setups (such as an NLB) stay valid, so this warns rather than fails
@@ -1566,40 +1482,38 @@ function buildRendered(profile, parsed, diagnostics) {
   }
   if (!externalSignIn && controlPlane.recoveryUserId !== undefined) {
     diagnostics.errors.push(
-      "controlPlane.recoveryUserId requires controlPlane.github, controlPlane.google or controlPlane.oidc.",
+      "controlPlane.recoveryUserId requires controlPlane.google or controlPlane.oidc.",
     );
   }
   if (!externalSignIn && controlPlane.passwordSignIn !== undefined) {
     diagnostics.errors.push(
-      "controlPlane.passwordSignIn requires controlPlane.github, controlPlane.google or controlPlane.oidc.",
+      "controlPlane.passwordSignIn requires controlPlane.google or controlPlane.oidc.",
     );
   }
-  // Helm refuses native admin with external sign-in (host-only cookies only).
-  let agentNativeAdmin = { enabled: false };
-  if (!externalSignIn) {
-    const agentNativeAdminDomain = asString(
-      controlPlane,
-      ["controlPlane", "agentNativeAdminDomain"],
-      diagnostics,
+  const sessionMode =
+    optionalString(controlPlane, ["controlPlane", "agentNativeAdminSessionMode"], diagnostics, {
+      validate: (value) => ["shared-cookie", "host-only-exchange"].includes(value),
+      description: "shared-cookie or host-only-exchange",
+    }) ?? "shared-cookie";
+  const agentNativeAdminDomain = asString(
+    controlPlane,
+    ["controlPlane", "agentNativeAdminDomain"],
+    diagnostics,
+  );
+  validateNativeAdminDomains(agentNativeAdminDomain, authBaseUrl, diagnostics);
+  if (
+    sessionMode === "host-only-exchange" &&
+    (controlPlane.oidc === undefined || controlPlane.google !== undefined)
+  ) {
+    diagnostics.errors.push(
+      "controlPlane.agentNativeAdminSessionMode host-only-exchange requires OIDC sign-in without Google.",
     );
-    const sharedCookieDomain = asString(
-      controlPlane,
-      ["controlPlane", "sharedCookieDomain"],
-      diagnostics,
-    );
-    validateNativeAdminDomains(
-      agentNativeAdminDomain,
-      sharedCookieDomain,
-      authBaseUrl,
-      diagnostics,
-    );
-    // The API lowercases both at startup; the chart accepts only lowercase.
-    agentNativeAdmin = {
-      enabled: true,
-      domain: agentNativeAdminDomain.toLowerCase(),
-      sharedCookieDomain: sharedCookieDomain.toLowerCase(),
-    };
   }
+  const agentNativeAdmin = {
+    enabled: controlPlane.google === undefined,
+    domain: agentNativeAdminDomain.toLowerCase(),
+    ...(sessionMode === "host-only-exchange" ? { sessionMode } : {}),
+  };
   const envoyNamespace =
     optionalString(controlPlane, ["controlPlane", "envoyNamespace"], diagnostics, namespaceRule) ??
     "envoy-gateway-system";
@@ -2219,17 +2133,19 @@ function buildRendered(profile, parsed, diagnostics) {
     "Envoy Gateway and cert-manager ready, their CRDs and Gateway API CRDs Established, and the configured GatewayClass Accepted before Helm installation; the chart does not install these prerequisites.",
     "Configured gatewayApiKeySecretName Secret created with key occ in the control-plane namespace before Helm installation; private routing is enabled by default.",
   );
+  diagnostics.prerequisites.push(
+    "HTTPS Console and Agent DNS hosts configured under a shared non-public DNS suffix.",
+  );
   if (agentNativeAdmin.enabled) {
-    diagnostics.prerequisites.push(
-      "Wildcard DNS and TLS configured for the native admin domain and shared cookie parent.",
-    );
-  } else {
+    diagnostics.prerequisites.push("Wildcard DNS and TLS configured for the native admin domain.");
+  }
+  if (externalSignIn) {
     diagnostics.prerequisites.push(
       "External sign-in Secrets created, and controlPlane.recoveryUserId read from a verified password administrator's session, before the first helm upgrade that renders them.",
     );
     if (signIn.passwordSignIn === "recovery-only") {
       diagnostics.prerequisites.push(
-        "A GitHub, Google or OIDC identity attached to every ordinary account before the helm upgrade that renders passwordSignIn: recovery-only; accounts without one cannot sign in until an administrator attaches it.",
+        "A Google or OIDC identity attached to every ordinary account before the helm upgrade that renders passwordSignIn: recovery-only; accounts without one cannot sign in until an administrator attaches it.",
       );
     }
   }
@@ -2282,6 +2198,16 @@ function buildRendered(profile, parsed, diagnostics) {
     `Run helm upgrade --install ${releaseName} deploy/helm/openclaw-enterprise --namespace ${namespace} --values values.yaml.`,
     "Retrieve the bootstrap service key from the protected bootstrap PVC and verify authenticated OCC access.",
   );
+
+  const backendIds = new Set();
+  for (const backend of installation.backend) {
+    if (backendIds.has(backend.id)) {
+      diagnostics.errors.push(
+        `Generated Backend IDs must be unique; repository.backendId ${JSON.stringify(backend.id)} is already used by another configured Backend.`,
+      );
+    }
+    backendIds.add(backend.id);
+  }
 
   // Helm merges these values over the chart default `dns.podLabels` (`k8s-app: kube-dns`), and
   // the DNS egress rule needs every merged label. A null deletes the default for a selector
