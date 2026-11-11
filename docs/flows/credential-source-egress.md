@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-11
-last_updated_session: authoring-run/89ba83c7-7553-45e6-a3b5-a8e067da1d65
+last_updated_session: authoring-run/4725ad71-5a10-4e44-9484-68c6f372df23
 ---
 
 # Protected credential request flow
@@ -134,39 +134,38 @@ original launch witness or startup acknowledgment.
 
 ### 2. Capture identity, operation and first authority decision
 
-Each TLS stream carries one `HttpInstallationExchange.Exchange`. After bearer authentication,
-the adapter issues a random 32-byte challenge. Up to 1,024 openings, 256 per Sandbox, await
-proof until signed acceptance, closure or a 30-second deadline. The owner rechecks the bearer
-and verifies both the gateway-signed `exchange_key` and the supervisor’s Ed25519 signature over
-`openshell-exchange-v1`, a zero byte, the challenge and the binary opening request.
-Request JSON cannot supply a key; bearer-only RPCs refuse. Online authorization
+Each TLS `HttpInstallationExchange.Exchange` authenticates a bearer, then challenges
+its supervisor with 32 random bytes. Up to 1,024 openings, 256 per Sandbox, wait
+for acceptance, closure or a 30-second deadline. The owner rechecks the bearer,
+gateway-signed `exchange_key` and supervisor Ed25519 signature over
+`openshell-exchange-v1`, zero byte, challenge and binary opening. Request JSON
+cannot supply a key; bearer-only calls refuse. Online authorization
 (`apps/controller/src/drivers/egress-proxy/openshell-online-authority.ts:createAuthority`)
-likewise holds at most 1,024 decisions in flight, 256 per Sandbox.
+has the same capacity limits.
 
-Before awaiting work, the adapter copies the request and binds a private capability to the stream.
-Credential Proxy bounds body size, reserves an authentication slot and snapshots headers and body.
-The stream owns the response. OCC copies each authenticated peer descriptor before
-awaiting more work. Send and response require the captured sender, Sandbox,
-instance, exchange, installation and optional peer key. Adding, changing or removing the key
-refuses; peer expiry must be valid and future at resolution, send and response lookup. A bearer
-or handle cannot transfer custody. Closing the stream cancels it. Cancellation or expiry
-releases material; pending policy or receipt work keeps its slot. No pipelining.
+Before awaiting work, the adapter copies the request and binds a private capability
+to the stream. Credential Proxy bounds body size, reserves capacity and copies
+headers, body and authenticated peer. Send and response require the same sender,
+Sandbox, instance, exchange, installation and optional peer key. Any key change
+refuses. Peer expiry must remain valid at resolution, send and response lookup.
+Bearers and handles cannot transfer custody. Closure cancels the stream; cancellation
+or expiry releases material. Pending policy or receipt work retains its slot. No pipelining.
 
-`packages/occ/src/credential-proxy.ts:resolve` moves the slot to the verified Sandbox's share,
-maps the peer to persisted installation state and pins eligible providers and methods before
-classification. Ambiguity blocks classification. OCC rechecks pins before and after provider
-use and at material access, send authorization and response release. Changes restored between checks
-escape detection. Secret Driver network access and supervisor response writes remain downstream.
-After one exact route matches, OCC reserves a UUIDv7 request ID before capture or policy I/O.
-Creation fixes the 30-second replay horizon. [Slots and IDs are bounded](../reference/drivers/credential-proxy.md#request-time-capacity);
-unsupported or ambiguous operations refuse before reservation.
+`packages/occ/src/credential-proxy.ts:resolve` assigns the verified Sandbox's share,
+loads its persisted installation and pins eligible providers before classification.
+Ambiguity refuses. OCC rechecks pins around provider calls and at material access,
+send and response release; changes restored between checks escape detection.
+Only one exact route match reserves a UUIDv7 ID before capture or policy I/O.
+Creation fixes its 30-second replay horizon; [capacity is bounded](../reference/drivers/credential-proxy.md#request-time-capacity).
+Unsupported or ambiguous operations refuse before reservation. If exactly one
+refused route reports a valid rule, `createCredentialProxy` audits it with the
+execution and exact request ID before capture or credential access. Persistence
+failure returns authority-unavailable, never permission.
 
-Supplier enrollment starts at its authenticated current supervisor hello, not the first
-exchange. The supplier must keep the corresponding private key outside the Agent and
-pin its actual downstream reply sink before queueing. The complete path is not yet
-qualified. The Driver requires
-`openshell.supervisor-middleware.installation-exchange.v1`; old counterparts
-cannot acquire this profile through an existing executable-restricted grant.
+Enrollment starts at the authenticated supervisor hello. Its private key stays outside
+the Agent; its downstream reply sink is pinned before queueing. This path remains
+unqualified. Required capability `openshell.supervisor-middleware.installation-exchange.v1`
+cannot be substituted by an old executable-restricted grant.
 
 Each check requires a fresh platform transaction; enclosing transactions refuse to
 prevent IAM snapshot reuse. It verifies current Namespace/Agent state, admitted revision,
@@ -316,7 +315,11 @@ verifies the original fence, recipient, material, policy and request without rea
 
 Follow the [testing guide](../testing/static-egress.md) to qualify model execution,
 response custody and NetworkPolicy on the selected deployment. Observe origin and
-caller independently.
+caller independently. Correlate `openclaw.egress.authorize` denials by exact `requestId`.
+Optional `classificationRule` refers to the selected provider's stable rules. OpenAI
+Responses rules (`apps/controller/src/drivers/egress-proxy/openai-responses.ts:responsesRequestFailure`)
+identify root slots; wire rule 1 hides the unknown member's name. No rule reveals
+request values; an absent rule identifies no slot.
 
 ## Related docs
 
@@ -332,6 +335,8 @@ caller independently.
 None.
 
 ## Changelog
+
+- 2026-11-11 09:24: Record bounded provider classification rules on refused requests. (authoring-run/4725ad71-5a10-4e44-9484-68c6f372df23 - f0b9c002c0577bcc8854913b0eafa5449bd5fbe3)
 
 - 2026-11-11 08:40: Distinguish native telemetry effort from Responses request effort. (authoring-run/89ba83c7-7553-45e6-a3b5-a8e067da1d65 - 6b4e85174966c1a172f2ecd25a3ea1238fe6f0d7)
 

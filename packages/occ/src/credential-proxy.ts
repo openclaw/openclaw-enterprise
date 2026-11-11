@@ -68,6 +68,11 @@ export interface EgressAuthorityPorts {
   readonly now: () => number;
   installation(peer: EgressPeer): Promise<EgressInstallation | undefined>;
   provider(route: EgressRoute): CredentialProviderDefinition | "ambiguous" | undefined;
+  /** Persist a bounded classification refusal against an authenticated installed route. */
+  classificationRefused?(
+    use: Pick<CapturedEgressUse, "id" | "route" | "installation">,
+    rule: number,
+  ): Promise<void>;
   /**
    * Each call must open a new policy unit, independent of the capture and Secret read.
    * With `stream`, the check runs during a leased response: it is bounded by the lease,
@@ -617,13 +622,25 @@ export class CredentialProxy implements CredentialProxyExchange {
       }
     }
     const matches = [];
+    const refused: { route: EgressRoute; provider: ExchangeProvider; rule: number }[] = [];
     for (const { route, provider } of candidates) {
       if (!provider.isCurrent()) {
         return refuse("stale_configuration");
       }
       let operation;
+      let rule: number | undefined;
+      let reports = 0;
       try {
-        operation = Reflect.apply(provider.methods.classify, provider.receiver, [route, request]);
+        operation = Reflect.apply(provider.methods.classify, provider.receiver, [
+          route,
+          request,
+          (value: number) => {
+            reports += 1;
+            if (Number.isInteger(value) && value >= 1 && value <= 255) {
+              rule = value;
+            }
+          },
+        ]);
       } catch {
         return refuse("unsupported_operation");
       }
@@ -632,9 +649,29 @@ export class CredentialProxy implements CredentialProxyExchange {
       }
       if (operation) {
         matches.push({ route, provider, operation });
+      } else if (reports === 1 && rule !== undefined) {
+        refused.push({ route, provider, rule });
       }
     }
     if (matches.length !== 1) {
+      // A rule identifies one refused installed route, never a guessed operation.
+      if (matches.length === 0 && refused.length === 1 && !signal.aborted) {
+        const { route, provider, rule } = refused[0]!;
+        if (
+          provider.isCurrent() &&
+          deadline <= createdAt + route.deadlineMs &&
+          this.ports.now() < deadline
+        ) {
+          try {
+            await this.ports.classificationRefused?.(
+              immutableCopy({ id: request.id, route, installation }),
+              rule,
+            );
+          } catch {
+            return { kind: "refused", error: { kind: "unavailable", code: "authority" } };
+          }
+        }
+      }
       return refuse(matches.length > 1 ? "ambiguous_route" : "unsupported_operation");
     }
     const { route, provider, operation } = matches[0]!;
@@ -642,7 +679,7 @@ export class CredentialProxy implements CredentialProxyExchange {
     if (deadline > createdAt + route.deadlineMs || this.ports.now() >= deadline) {
       return { kind: "refused", error: { kind: "deadline_exceeded" } };
     }
-    // Reserve after the side-effect-free installation and route refusals, before capture,
+    // Reserve after installation and classification refusals, before operation capture,
     // policy or Secret I/O. From here a failed attempt cannot reuse its request ID.
     const reserved = this.reserveReplay(replayKey, share, createdAt + 30_000);
     if (reserved) {

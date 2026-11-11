@@ -11,7 +11,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
 import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
-import { validChatRequest, validResponsesRequest } from "./openai-responses.ts";
+import { validChatRequest, responsesRequestFailure } from "./openai-responses.ts";
 import { protectedResponseOutput, protectedResponsesStream } from "./openai-responses-stream.ts";
 import { parseUnambiguousJson } from "../repo/access/json-members.ts";
 
@@ -202,7 +202,7 @@ export function createOpenAiStaticProvider(): CredentialProviderDefinition {
         }),
       );
     },
-    classify(route, request) {
+    classify(route, request, refused) {
       let url: URL;
       try {
         url = new URL(request.url);
@@ -232,8 +232,16 @@ export function createOpenAiStaticProvider(): CredentialProviderDefinition {
       ) {
         return undefined;
       }
-      const valid = route.path.endsWith("/responses") ? validResponsesRequest : validChatRequest;
-      return valid(body) ? { kind: "inference", action: "generate", model: body.model } : undefined;
+      if (route.path.endsWith("/responses")) {
+        const rule = responsesRequestFailure(body);
+        if (rule !== undefined) {
+          refused?.(rule);
+          return undefined;
+        }
+      } else if (!validChatRequest(body)) {
+        return undefined;
+      }
+      return { kind: "inference", action: "generate", model: body.model };
     },
     inject(value) {
       if (value.length < 8 || value.length > 8192 || /[^\x21-\x7e]/.test(value)) {
