@@ -519,7 +519,8 @@
         "dev-up refuses Keycloak sign-in for the Docker profile before startup",
         "dev-down removes the service key directory dev-up created and keeps a chosen key output",
         "dev-down --volumes removes the Installation's Docker Compute Namespace networks",
-        "a failed dev-up removes the empty service key directory it created"
+        "a failed dev-up removes the empty service key directory it created",
+        "dev-up records a clean key directory path when TMPDIR ends in a slash"
       ]
     },
     {

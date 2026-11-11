@@ -22,11 +22,11 @@ Installation bootstrap, API health, and worker readiness. The Kubernetes-only
 profile performs the equivalent readiness checks inside its owned cluster.
 All profiles prepare HTTPS Console and Agent DNS hosts and use the existing
 loopback TLS proxy, even when Agent native access is disabled. Session cookie
-scope is derived from those hosts; no cookie-domain setting is accepted.
+scope derives from those hosts; cookie-domain settings are refused.
 For Docker Compute, `scripts/dev-up` calls the hidden CLI adapter backed by
 `internal/occdev/docker_browser.go:DockerBrowserEnvironment`. It reuses the
-existing TLS generator and retains private per-checkout certificates under the
-system temporary directory across stop/start. The launcher prints the Console
+TLS generator and keeps private per-checkout certificates in the system
+temporary directory across stop/start. The launcher prints the Console
 URL and CA certificate path. `occ dev down` reloads the same proxy settings.
 Startup proves authenticated Installation access with a protected local
 bootstrap service key; it does not create an Agent or prove model execution.
@@ -171,9 +171,9 @@ unavailable engine or invalid socket fails cleanup.
 
 Compose removes its project containers and network; database, Configuration,
 and bootstrap volumes remain without `--volumes`. Down removes the service-key
-directory `scripts/dev-up` created. `--volumes` also removes idle Docker Compute
-networks labelled with the Installation's Namespace IDs, read from its database
-first. For Agent containers, see [safe development shutdown](../guides/deploy/local-operations.md#stop-development-safely).
+directory `scripts/dev-up` created. `--volumes` first reads the Installation's
+Namespace IDs from its database, then removes their idle Docker Compute
+networks. For Agent containers, see [safe development shutdown](../guides/deploy/local-operations.md#stop-development-safely).
 
 ### 4. Start and clean up Kubernetes development
 
