@@ -1,6 +1,6 @@
 # Rehearse Strands repository withdrawal locally
 
-Use the `strands-sender` lane to check the real Strands repository sender with
+Use the fast harness to check the real Strands repository sender with
 native Codex, real Git, mutual TLS, and controlled local services. It uses the
 shared [Agent grant rehearsal](../../tests/helpers/agent-grant-rehearsal.ts).
 It does not start Box or an installed OpenClaw Enterprise (OCE) deployment.
@@ -13,7 +13,32 @@ and the native Codex version pinned in the [runtime image](../../deploy/runtime/
 Set `OCC_TEST_STANDING_GIT_CODEX` to that executable's absolute path. The test
 does not download binaries, use account credentials, or call public providers.
 
-From the repository root:
+From the repository root, run all six sender and native-conversation checks:
+
+```sh
+node scripts/strands-fast.ts --codex "$OCC_TEST_STANDING_GIT_CODEX"
+```
+
+The harness runs the existing `strands-sender` lane and the five sender controls
+concurrently. Each selection owns its state file, temporary files and dynamically
+allocated loopback ports. It prints a fresh result directory containing the
+original CI receipts, logs and `summary.json`. Missing inputs, failing checks,
+skips or incomplete cleanup fail the command. No image build or guest boot is
+required. `--output` selects a directory that must not already exist.
+
+To measure the same checks repeatedly, including cleanup:
+
+```sh
+node scripts/strands-fast.ts --repeat 5
+node scripts/strands-fast.ts --repeat 5 --serial
+```
+
+The summary reports each sample, median and nearest-rank p90, plus total time
+including executable fingerprinting and setup. Repetitions stop on the first
+failed sample. Interrupting stops additional work and lets current tests finish
+their owned cleanup; it does not immediately kill the native process's owner.
+
+For only the native rehearsal:
 
 ```sh
 OCC_TEST_STRANDS_SENDER_REHEARSAL=1 \
@@ -32,7 +57,8 @@ selector, the ordinary test sweep skips this case. Once selected, missing
 inputs and runtime failures fail the case. No PostgreSQL or Kubernetes setup
 is required.
 
-Require one passing case, zero skips, and all four check records:
+Require one passing case for the native lane, or six for the fast harness, zero
+skips, successful cleanup, and all four rehearsal check records:
 
 1. `model-before`: the native process finishes a model turn and persists the reply.
 2. `git-fetched`: a fresh commit arrives through the real sender and matches the
