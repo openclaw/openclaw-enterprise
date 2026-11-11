@@ -70,10 +70,11 @@ To verify allocation, migration, application-role access and cleanup with two
 owned real Docker projects, run:
 
 ```sh
-node --test tests/integration/ci-prepare-postgres-real.test.ts
+OCC_TEST_CI_POSTGRES_REAL=1 node --test tests/integration/ci-prepare-postgres-real.test.ts
 ```
 
-The `postgres` CI lane requires this check with no skips. It needs Docker Compose,
+The `postgres` CI lane selects this check and requires it to pass with no skips.
+Default local suites leave it unselected. It needs Docker Compose,
 PostgreSQL image access and installed workspace dependencies. It removes only its own projects and volumes;
 cleanup failures retain the state directory printed in the error.
 
