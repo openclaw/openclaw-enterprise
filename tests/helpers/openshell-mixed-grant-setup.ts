@@ -1,19 +1,40 @@
+/// <reference lib="es2023.array" />
+
 import assert from "node:assert/strict";
 import { createHash, createPublicKey, generateKeyPairSync, randomBytes } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
+
+import type { AgentDeploymentStatusWire } from "../../packages/contracts/src/api/resources.ts";
+import type {
+  OpenShellGatewayClient,
+  OpenShellProviderResponse,
+  OpenShellStoredProviderProfile,
+} from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { modelRequestProviderName } from "../../apps/controller/src/drivers/sandbox/openshell-model-request-policy.ts";
 import {
   selectOpenShellCandidate,
   verifyOpenShellCandidate,
 } from "../../scripts/ci/openshell-candidate.ts";
 import { run } from "../fixtures/repository-credentials/process.mjs";
-import { startOpenShellModelOrigin } from "../fixtures/openshell-model-origin.ts";
+import {
+  startOpenShellModelOrigin,
+  type ModelOriginObservation,
+  type ModelOriginTurn,
+} from "../fixtures/openshell-model-origin.ts";
 import { startInstalledGrantGitHubOrigin } from "./installed-grant-github-origin.ts";
 
-const sha256 = (value) => createHash("sha256").update(value).digest("hex");
+const sha256 = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
+
+// The JavaScript runner passes a supplied environment straight to spawn.
+// Its inferred option type describes the default Git environment instead.
+type CandidateCommandRunner = (
+  command: string,
+  args: string[],
+  options: { env: NodeJS.ProcessEnv; signal: AbortSignal; timeout: number },
+) => ReturnType<typeof run>;
 
 /** Mixed grant proof selects an explicit supplier; the finite suite keeps its stock pins. */
-export async function mixedGrantSupplier(directory, signal) {
+export async function mixedGrantSupplier(directory: string, signal: AbortSignal) {
   const names = [
     "GATEWAY_IMAGE",
     "SANDBOX_IMAGE",
@@ -25,7 +46,11 @@ export async function mixedGrantSupplier(directory, signal) {
   const environment = Object.fromEntries(
     names.map((name) => [`OCC_TEST_OPENSHELL_${name}`, process.env[`OCC_TEST_OPENSHELL_${name}`]]),
   );
-  const selected = selectOpenShellCandidate(environment, {});
+  // This scenario requires explicit images and has no released pins for comparison.
+  const selected = selectOpenShellCandidate(
+    environment,
+    {} as Parameters<typeof selectOpenShellCandidate>[1],
+  );
   assert.ok(selected, "Mixed grant proof requires an explicit OpenShell supplier selection");
   for (const image of Object.values(selected.images)) {
     assert.match(image, /^[^\s@]+@sha256:[a-f0-9]{64}$/, "Select immutable OpenShell images");
@@ -36,7 +61,12 @@ export async function mixedGrantSupplier(directory, signal) {
       .map((name) => [name, process.env[name]]),
   );
   const verified = await verifyOpenShellCandidate(selected, {
-    execFile: (executable, args) => run(executable, args, { env, signal, timeout: 30_000 }),
+    execFile: (executable, args) =>
+      (run as unknown as CandidateCommandRunner)(executable, args, {
+        env,
+        signal,
+        timeout: 30_000,
+      }),
     docker: "docker",
     helm: "helm",
     snapshotParent: directory,
@@ -45,14 +75,24 @@ export async function mixedGrantSupplier(directory, signal) {
   return verified;
 }
 
-export async function mixedGrantOrigins({ host, tls, cleanup }) {
+interface MixedGrantOriginOptions {
+  host: string;
+  tls: {
+    ca: string;
+    origin: { key: string; cert: string };
+    model: { key: string; cert: string };
+  };
+  cleanup: Array<() => Promise<unknown>>;
+}
+
+export async function mixedGrantOrigins({ host, tls, cleanup }: MixedGrantOriginOptions) {
   const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const gitScope = {
     repository: "fixture-org/mixed-grant",
     repositoryRef: "mixed-grant-repository",
     repositoryId: "4101",
     permissions: { contents: "read", metadata: "read" },
-  };
+  } as const;
   const origin = await startInstalledGrantGitHubOrigin({
     host,
     port: 0,
@@ -76,8 +116,8 @@ export async function mixedGrantOrigins({ host, tls, cleanup }) {
       answer: `OCE-MODEL-retained-${randomBytes(12).toString("hex")}`,
       priorTurnId: "before-git-withdrawal",
     },
-  };
-  const observations = [];
+  } satisfies Record<"before" | "after", ModelOriginTurn>;
+  const observations: ModelOriginObservation[] = [];
   const model = "gpt-5.4";
   const modelOrigin = await startOpenShellModelOrigin({
     host,
@@ -99,11 +139,11 @@ export async function mixedGrantOrigins({ host, tls, cleanup }) {
     modelOrigin: {
       ...modelOrigin,
       snapshot: () => structuredClone(observations),
-      readOriginTurn: async (id) =>
+      readOriginTurn: async (id: string) =>
         structuredClone(
           observations.findLast((event) => event.kind === "turn" && event.turnId === id),
         ),
-      readOriginToolTurn: async (id) =>
+      readOriginToolTurn: async (id: string) =>
         structuredClone(
           observations.findLast((event) => event.kind === "tool" && event.turnId === id),
         ),
@@ -111,10 +151,51 @@ export async function mixedGrantOrigins({ host, tls, cleanup }) {
   };
 }
 
-export function gatewayGrantBundle(publicKey, keyId) {
+export function gatewayGrantBundle(publicKey: Buffer, keyId: string) {
   const jwk = createPublicKey(publicKey).export({ format: "jwk" });
   assert.equal(jwk.crv, "Ed25519");
   return JSON.stringify({ keys: [{ ...jwk, kid: keyId, alg: "EdDSA", use: "sig" }] });
+}
+
+interface ProviderAssertion {
+  provider_id: string;
+  credential_key: string;
+  token_endpoint: string;
+}
+
+interface GatewayValues {
+  gatewayConfig: {
+    "openshell.gateway.provider_assertions"?: ProviderAssertion[];
+  };
+}
+
+interface RegisterMixedGrantProvidersOptions {
+  request: (method: "GET", path: string) => Promise<AgentDeploymentStatusWire>;
+  namespace: { id: string };
+  agent: { id: string };
+  revision: { id: Parameters<typeof modelRequestProviderName>[0] };
+  workspace: string;
+  gatewayClient: Pick<OpenShellGatewayClient, "getSandbox" | "getProvider" | "getProviderProfile">;
+  kube: (args: string[]) => Promise<string>;
+  gatewayValues: GatewayValues;
+  modelEndpoint: string;
+  gitEndpoint: string;
+  upgradeGateway: (values: GatewayValues) => Promise<void>;
+  signal: AbortSignal;
+}
+
+type SelectedProvider = OpenShellProviderResponse & {
+  id: string;
+  profile?: OpenShellStoredProviderProfile | undefined;
+};
+
+interface SelectedProviders {
+  modelProvider: SelectedProvider;
+  gitProvider: SelectedProvider;
+}
+
+interface HarnessPodList {
+  items: Array<{ metadata: { ownerReferences?: Array<{ kind: string; name: string }> } }>;
 }
 
 /** Registration must precede readiness: the provider assertion is needed during startup. */
@@ -131,11 +212,11 @@ export async function registerMixedGrantProviders({
   gitEndpoint,
   upgradeGateway,
   signal,
-}) {
+}: RegisterMixedGrantProvidersOptions) {
   const path = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`;
   const modelName = modelRequestProviderName(revision.id);
   const deadline = Date.now() + 300_000;
-  let selected;
+  let selected: SelectedProviders | undefined;
   while (Date.now() < deadline) {
     signal.throwIfAborted();
     const deployment = await request("GET", path);
@@ -146,23 +227,25 @@ export async function registerMixedGrantProviders({
       // API error messages and supplier logs can contain private data. The status
       // is sufficient here; retries remain running and continue this observation.
       const code = /^[A-Z][A-Z0-9_]{0,95}$/.test(deployment.error?.code ?? "")
-        ? deployment.error.code
+        ? deployment.error!.code
         : "UNKNOWN_DEPLOYMENT_FAILURE";
       throw new Error(
         `MIXED_GRANT_DEPLOYMENT_FAILED: ${code}; selected revision failed before provider registration`,
       );
     }
-    const pods = JSON.parse(
-      await kube([
-        "get",
-        "pods",
-        "-n",
-        workspace,
-        "-l",
-        `openclaw.dev/agent=${agent.id},openclaw.dev/revision=${revision.id},openclaw.dev/workload-role=agent`,
-        "-o",
-        "json",
-      ]),
+    const pods = (
+      JSON.parse(
+        await kube([
+          "get",
+          "pods",
+          "-n",
+          workspace,
+          "-l",
+          `openclaw.dev/agent=${agent.id},openclaw.dev/revision=${revision.id},openclaw.dev/workload-role=agent`,
+          "-o",
+          "json",
+        ]),
+      ) as HarnessPodList
     ).items;
     assert.ok(pods.length < 2, "Expected one selected Harness Pod");
     const owner = pods[0]?.metadata.ownerReferences?.find(({ kind }) => kind === "Sandbox");
@@ -171,7 +254,7 @@ export async function registerMixedGrantProviders({
       if (sandbox?.id) {
         assert.equal(sandbox.annotations["openclaw.dev/agent-id"], agent.id);
         assert.equal(sandbox.annotations["openclaw.dev/revision-id"], revision.id);
-        const names = sandbox.spec?.providers ?? [];
+        const names = (sandbox.spec?.providers ?? []) as readonly string[];
         const gitNames = names.filter((name) =>
           /^oce-(?:git|github-installation)-[a-f0-9]{32}$/.test(name),
         );
@@ -185,7 +268,7 @@ export async function registerMixedGrantProviders({
             for (const provider of [modelProvider, gitProvider]) {
               assert.equal(provider.workspace, workspace);
               assert.equal(provider.profileWorkspace, workspace);
-              assert.match(provider.id, /^[A-Za-z0-9_.-]{1,200}$/);
+              assert.match(provider.id!, /^[A-Za-z0-9_.-]{1,200}$/);
             }
             assert.equal(modelProvider.labels["openclaw.dev/namespace-id"], namespace.id);
             assert.equal(modelProvider.labels["openclaw.dev/agent-id"], agent.id);
@@ -194,12 +277,12 @@ export async function registerMixedGrantProviders({
             assert.match(gitOwner ?? "", /^[a-f0-9]{48}$/);
             assert.ok(
               [
-                `oce-git-${gitOwner.slice(0, 32)}`,
-                `oce-github-installation-${gitOwner.slice(0, 32)}`,
+                `oce-git-${gitOwner!.slice(0, 32)}`,
+                `oce-github-installation-${gitOwner!.slice(0, 32)}`,
               ].includes(gitProvider.name),
             );
             assert.notEqual(modelProvider.id, gitProvider.id);
-            selected = { modelProvider, gitProvider };
+            selected = { modelProvider, gitProvider } as SelectedProviders;
             break;
           }
         }

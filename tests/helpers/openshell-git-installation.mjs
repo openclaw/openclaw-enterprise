@@ -27,7 +27,7 @@ import {
   mixedGrantOrigins,
   gatewayGrantBundle,
   registerMixedGrantProviders,
-} from "./openshell-mixed-grant-setup.mjs";
+} from "./openshell-mixed-grant-setup.ts";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const { loadYaml } = await import(require.resolve("@kubernetes/client-node"));
