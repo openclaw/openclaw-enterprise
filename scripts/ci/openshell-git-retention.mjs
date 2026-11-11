@@ -483,6 +483,7 @@ const events = {
     parentDigest: ["parent", imageDigest],
     imageDigest: ["reference", imageDigest],
     binaryHash: ["binaryHash", hash],
+    manifestDigest: ["manifestDigest", digest],
     configDigest: ["configDigest", digest],
   },
   "finite-git-grant": {

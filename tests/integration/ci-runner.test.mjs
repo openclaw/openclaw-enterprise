@@ -7191,7 +7191,8 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       parent: `ghcr.io/example/stock@sha256:${sha256}`,
       reference: `docker.io/library/test@sha256:${sha256}`,
       binaryHash: sha256,
-      configDigest: `sha256:${sha256}`,
+      manifestDigest: `sha256:${"1".repeat(64)}`,
+      configDigest: `sha256:${"2".repeat(64)}`,
     },
     { event: "finite-git-grant", revisionId: opaque, deadlineWallMs: 1_800_000_000_000 },
     { event: "initial-runtime", ...runtimeReceipt },
@@ -8065,7 +8066,8 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       parentDigest: `sha256:${sha256}`,
       imageDigest: `sha256:${sha256}`,
       binaryHash: sha256,
-      configDigest: `sha256:${sha256}`,
+      manifestDigest: `sha256:${"1".repeat(64)}`,
+      configDigest: `sha256:${"2".repeat(64)}`,
     },
   );
   assert.deepEqual(

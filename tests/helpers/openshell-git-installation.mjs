@@ -472,15 +472,91 @@ async function trustedSupervisor({
     : `docker.io/library/${importedRepository}`;
   const reference = `${repository}@${imported[2]}`;
   await command("docker", [...containerd, "tag", imported[0], reference]);
-  const configDigest = (
-    await command("docker", ["image", "inspect", "--format", "{{.Id}}", tag])
-  ).trim();
-  assert.match(configDigest, /^sha256:[a-f0-9]{64}$/);
-  await checkpoint("supervisor-trust", { parent, reference, binaryHash, configDigest });
+  const platform = JSON.parse(
+    await command("docker", [
+      "image",
+      "inspect",
+      "--format",
+      '{"os":{{json .Os}},"architecture":{{json .Architecture}}}',
+      tag,
+    ]),
+  );
+  assert.equal(platform.os, "linux");
+  assert.match(platform.architecture, /^[a-z0-9_]+$/);
+  const readContent = async (descriptor) => {
+    assert.match(descriptor.digest, /^sha256:[a-f0-9]{64}$/);
+    // Encode before the text-only command adapter; the digest verifies decoded bytes.
+    const bytes = Buffer.from(
+      await command("docker", [
+        "exec",
+        containerd[1],
+        "sh",
+        "-c",
+        'ctr -n k8s.io content get "$1" | base64',
+        "oce-read-image-content",
+        descriptor.digest,
+      ]),
+      "base64",
+    );
+    if (descriptor.size !== undefined) {
+      assert.ok(Number.isSafeInteger(descriptor.size) && descriptor.size >= 0);
+      assert.equal(bytes.length, descriptor.size, "Imported image content size must match.");
+    }
+    assert.equal("sha256:" + hash(bytes), descriptor.digest, "Imported image content must match.");
+    return JSON.parse(bytes.toString("utf8"));
+  };
+  const rootDigest = imported[2];
+  const manifestTypes = [
+    "application/vnd.oci.image.manifest.v1+json",
+    "application/vnd.docker.distribution.manifest.v2+json",
+  ];
+  let descriptor = { digest: rootDigest, mediaType: imported[1] };
+  let manifest = await readContent(descriptor);
+  assert.equal(manifest.schemaVersion, 2);
+  assert.equal(manifest.mediaType, descriptor.mediaType);
+  if (
+    [
+      "application/vnd.oci.image.index.v1+json",
+      "application/vnd.docker.distribution.manifest.list.v2+json",
+    ].includes(manifest.mediaType)
+  ) {
+    assert.ok(Array.isArray(manifest.manifests));
+    const matches = manifest.manifests.filter(
+      (entry) =>
+        entry.platform?.os === platform.os &&
+        entry.platform?.architecture === platform.architecture,
+    );
+    assert.equal(matches.length, 1, "The imported image must have one matching build platform.");
+    descriptor = matches[0];
+    assert.ok(manifestTypes.includes(descriptor.mediaType));
+    manifest = await readContent(descriptor);
+  }
+  assert.equal(manifest.schemaVersion, 2);
+  assert.ok(manifestTypes.includes(manifest.mediaType));
+  assert.equal(manifest.mediaType, descriptor.mediaType);
+  assert.ok(
+    [
+      "application/vnd.oci.image.config.v1+json",
+      "application/vnd.docker.container.image.v1+json",
+    ].includes(manifest.config?.mediaType),
+  );
+  const config = await readContent(manifest.config);
+  assert.equal(config.os, platform.os);
+  assert.equal(config.architecture, platform.architecture);
+  const manifestDigest = descriptor.digest;
+  const configDigest = manifest.config.digest;
+  await checkpoint("supervisor-trust", {
+    parent,
+    reference,
+    binaryHash,
+    manifestDigest,
+    configDigest,
+  });
   const slash = repository.indexOf("/");
   return {
     reference,
     binaryHash,
+    manifestDigest,
     configDigest,
     image: {
       registry: repository.slice(0, slash),
@@ -1151,24 +1227,28 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
   }
   setupCheckpoint("gateway-connect");
   const port = await availablePort();
-  const forward = spawn(
-    "kubectl",
-    [
-      ...kubectl,
-      "-n",
-      platform,
-      "port-forward",
-      "--address=127.0.0.1",
-      "service/openshell-gateway",
-      `${port}:8080`,
-    ],
-    { env: environment, stdio: "ignore" },
-  );
-  let forwardFailed = false;
-  forward.on("error", () => {
-    forwardFailed = true;
-  });
-  cleanup.push(() => stopProcess(forward));
+  const startForward = () => {
+    const child = spawn(
+      "kubectl",
+      [
+        ...kubectl,
+        "-n",
+        platform,
+        "port-forward",
+        "--address=127.0.0.1",
+        "service/openshell-gateway",
+        `${port}:8080`,
+      ],
+      { env: environment, stdio: "ignore" },
+    );
+    cleanup.push(() => stopProcess(child));
+    const current = { child, failed: false };
+    child.on("error", () => {
+      current.failed = true;
+    });
+    return current;
+  };
+  let forward = startForward();
   const gatewayBackend = await localOpenShellGatewayOptions(
     { after: (operation) => cleanup.push(operation) },
     kubectl,
@@ -1178,25 +1258,31 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
   );
   const gatewayClient = new GrpcOpenShellGatewayClient(gatewayBackend);
   cleanup.push(() => gatewayClient.close());
-  await eventually("authenticated OpenShell workspace", async () => {
-    assert.equal(forwardFailed, false, "Gateway port-forward could not start");
-    assert.equal(forward.exitCode, null, "Gateway port-forward exited");
-    const deadline = AbortSignal.timeout(5000);
-    try {
-      return await gatewayClient.getWorkspace(
-        sandboxNamespace,
-        AbortSignal.any([t.signal, deadline]),
-      );
-    } catch (error) {
-      t.signal.throwIfAborted();
-      // GetWorkspace already maps NOT_FOUND to absence. Only a temporarily
-      // unavailable transport or request deadline can become ready on a later poll.
-      if ((deadline.aborted && error === deadline.reason) || [4, 14].includes(error?.grpcStatus)) {
-        return undefined;
+  const waitForGateway = (current) =>
+    eventually("authenticated OpenShell workspace", async () => {
+      assert.equal(current.failed, false, "Gateway port-forward could not start");
+      assert.equal(current.child.exitCode, null, "Gateway port-forward exited");
+      assert.equal(current.child.signalCode, null, "Gateway port-forward was terminated");
+      const deadline = AbortSignal.timeout(5000);
+      try {
+        return await gatewayClient.getWorkspace(
+          sandboxNamespace,
+          AbortSignal.any([t.signal, deadline]),
+        );
+      } catch (error) {
+        t.signal.throwIfAborted();
+        // GetWorkspace already maps NOT_FOUND to absence. Only a temporarily
+        // unavailable transport or request deadline can become ready on a later poll.
+        if (
+          (deadline.aborted && error === deadline.reason) ||
+          [4, 14].includes(error?.grpcStatus)
+        ) {
+          return undefined;
+        }
+        throw error;
       }
-      throw error;
-    }
-  });
+    });
+  await waitForGateway(forward);
   const verifySupervisorImage = async ({ sandboxName, sandboxId }) => {
     const selected = await gatewayClient.getSandbox(
       { workspace: sandboxNamespace, name: sandboxName },
@@ -1259,11 +1345,13 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
       supervisor.reference,
       "the supervisor must select the imported trust-only image",
     );
-    // CRI implementations report either the manifest or image-config digest.
-    // Both were observed from this build, never inferred from the requested tag.
+    // CRI can report the imported root, selected platform manifest, or config.
+    // Each identity was verified along the same imported content chain.
     const runningDigest = status.imageID.match(/sha256:[a-f0-9]{64}$/)?.[0];
     assert.ok(
-      [supervisor.image.digest, supervisor.configDigest].includes(runningDigest),
+      [supervisor.image.digest, supervisor.manifestDigest, supervisor.configDigest].includes(
+        runningDigest,
+      ),
       "the running supervisor image must match the imported trust-only build",
     );
     return {
@@ -1739,6 +1827,12 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
         observed.gatewayConfig["openshell.gateway.provider_assertions"],
         next.gatewayConfig["openshell.gateway.provider_assertions"],
       );
+      // This config rollout replaces the Pod behind the existing port-forward.
+      // Keep the shared client object, but reconnect its channel through the new Pod.
+      await stopProcess(forward.child);
+      gatewayClient.close();
+      forward = startForward();
+      await waitForGateway(forward);
     };
     return Object.assign(fixture, {
       gitScope: mixed.gitScope,
