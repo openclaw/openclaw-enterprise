@@ -35,7 +35,7 @@ export function clockBehind(behindMs: number): Clock {
 export type ObserveGitApproval = (
   requestId: string,
   outcome: Awaited<ReturnType<ReturnType<typeof postgresRequestCredentialApprovals>["tryInsert"]>>,
-) => void;
+) => void | Promise<void>;
 
 export interface SelectedRepositories {
   allowStandingApproval?: true;
@@ -240,7 +240,7 @@ export async function preparedStandingGitPeer(
                 ...approvals,
                 async tryInsert(...input) {
                   const outcome = await approvals.tryInsert(...input);
-                  options.observeGitApproval!(input[0].requestId, outcome);
+                  await options.observeGitApproval!(input[0].requestId, outcome);
                   return outcome;
                 },
               };

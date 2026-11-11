@@ -12,6 +12,7 @@ import {
 } from "../helpers/postgres-repository-set-journey.ts";
 import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
 import { gitCommandBodies } from "../helpers/openshell-online-git-journey.mjs";
+import { within } from "../helpers/wait-for.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { standingExecutionPlatform } from "../helpers/postgres-standing-execution.ts";
 import { preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
@@ -323,18 +324,32 @@ test(
   "two independently bound Git Workers share one mint without sharing request authority",
   { ...requiresPostgres, timeout: 90_000 },
   async (t) => {
+    const afterInsert = new Map<string, () => Promise<void>>();
+    function holdInsert(requestId: string) {
+      const inserted = Promise.withResolvers<void>();
+      const commit = Promise.withResolvers<void>();
+      afterInsert.set(requestId, () => {
+        inserted.resolve();
+        return commit.promise;
+      });
+      return {
+        inserted: inserted.promise,
+        release() {
+          afterInsert.delete(requestId);
+          commit.resolve();
+        },
+      };
+    }
     const contentions = new Map<string, () => void>();
-    const expectContention = (requestId: string) => {
+    const expectContention = (
+      requestId: string,
+      timeoutMessage = "The signed request did not observe PostgreSQL quota contention.",
+    ) => {
       const { promise, resolve } = Promise.withResolvers<void>();
       contentions.set(requestId, resolve);
       return async () => {
         try {
-          await Promise.race([
-            promise,
-            delay(1500, undefined, { ref: false }).then(() => {
-              throw new Error("The signed request did not observe PostgreSQL quota contention.");
-            }),
-          ]);
+          await within(promise, timeoutMessage, 1500);
         } finally {
           contentions.delete(requestId);
         }
@@ -395,8 +410,13 @@ test(
       }
       const approvals = async (...ids: string[]) =>
         (
-          await first.pool.query<{ request_id: string; recipient_id: string; consumed: boolean }>(
-            `SELECT request_id, recipient_id, consumed FROM occ.request_credential_approvals
+          await first.pool.query<{
+            request_id: string;
+            recipient_id: string;
+            binding_id: string;
+            consumed: boolean;
+          }>(
+            `SELECT request_id, recipient_id, binding_id, consumed FROM occ.request_credential_approvals
          WHERE request_id = ANY($1::text[]) ORDER BY request_id`,
             [ids],
           )
@@ -444,27 +464,50 @@ test(
       const inputB = second.peer.input(b.bindingId, second.sandboxId, false, second.workspace);
       const requestA = inputA.context.request_id;
       const requestB = inputB.context.request_id;
-      const waiting = await holdQuota(async () => {
-        const sawA = expectContention(requestA);
-        const sawB = expectContention(requestB);
-        const decisions = [first.evaluateRequest(inputA), second.evaluateRequest(inputB)];
-        await Promise.all([sawA(), sawB()]);
-        assert.deepEqual(await approvals(requestA, requestB), [], "contention precedes any write");
-        return decisions;
-      });
-      const [decisionA, decisionB] = await Promise.all(waiting);
-      assert.equal(decisionA!.decision, 1, decisionA!.reason_code);
-      assert.equal(decisionB!.decision, 1, decisionB!.reason_code);
-      const committed = await approvals(requestA, requestB);
-      assert.deepEqual(
-        new Map(committed.map((row) => [row.request_id, row.recipient_id])),
-        new Map([
-          [requestA, first.sandboxId],
-          [requestB, second.sandboxId],
-        ]),
+      const insertedA = holdInsert(requestA);
+      const insertedB = holdInsert(requestB);
+      const sawB = expectContention(
+        requestB,
+        "Request B did not observe PostgreSQL quota contention.",
       );
-      assert.equal(committed.length, 2);
-      assert.ok(committed.every((row) => !row.consumed));
+      // Start B only after A has inserted its row and still owns the quota lock.
+      const pendingA = first.evaluateRequest(inputA);
+      const pendingB = within(insertedA.inserted, "A did not insert its approval", 1500).then(() =>
+        second.evaluateRequest(inputB),
+      );
+      const rowA = {
+        request_id: requestA,
+        recipient_id: first.sandboxId,
+        binding_id: a.bindingId,
+        consumed: false,
+      };
+      const rowB = {
+        request_id: requestB,
+        recipient_id: second.sandboxId,
+        binding_id: b.bindingId,
+        consumed: false,
+      };
+      async function observeCommitOrder() {
+        await sawB();
+        assert.deepEqual(await approvals(requestA, requestB), [], "A's uncommitted row is private");
+        insertedA.release();
+        // The original B call has retried. While its insert is uncommitted, only A is visible.
+        await within(insertedB.inserted, "B did not insert after quota contention", 1500);
+        assert.deepEqual(await approvals(requestA, requestB), [rowA]);
+        insertedB.release();
+      }
+      const order = observeCommitOrder();
+      try {
+        const [decisionA, decisionB] = await Promise.all([pendingA, pendingB, order]);
+        assert.equal(decisionA.decision, 1, decisionA.reason_code);
+        assert.equal(decisionB.decision, 1, decisionB.reason_code);
+      } finally {
+        insertedA.release();
+        insertedB.release();
+        await Promise.allSettled([pendingA, pendingB, order]);
+      }
+      const committed = await approvals(requestA, requestB);
+      assert.deepEqual(new Set(committed), new Set([rowA, rowB]));
       assert.equal(
         (await first.evaluateRequest(inputA)).decision,
         2,
@@ -562,6 +605,9 @@ test(
     await selectedReadGitTwoWorkerJourney(t, import.meta.url, exercise, (id, outcome) => {
       if (outcome === "contended") {
         contentions.get(id)?.();
+      }
+      if (outcome === "inserted") {
+        return afterInsert.get(id)?.();
       }
     });
   },
