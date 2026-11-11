@@ -3030,7 +3030,7 @@ async function controllerUpgradePeers(t, fault = {}) {
   const namespaceId = "ns_11111111-1111-4111-8111-111111111111";
   const existingId = "cs_11111111-1111-4111-8111-111111111111";
   const createdId = "cs_22222222-2222-4222-8222-222222222222";
-  const runId = randomUUID();
+  const runId = fault.recording?.runId ?? randomUUID();
   const provider = { observations: [], tcpConnections: 0 };
   const origin = createServer((_request, response) => {
     provider.observations.push({});
@@ -3097,8 +3097,13 @@ async function controllerUpgradePeers(t, fault = {}) {
       controllerSelector: "controller",
       openShellGatewayNamespace: "supplier",
       openShellGatewaySelector: "supplier",
+      oceCommit: "b".repeat(40),
       images: { controller: "controller:after" },
-      controllerUpgrade: { fromImage: "controller:before", timeoutMs: 10_000 },
+      controllerUpgrade: {
+        fromCommit: "c".repeat(40),
+        fromImage: "controller:before",
+        timeoutMs: 10_000,
+      },
     },
     controller: { providerOrigin: "https://provider.example" },
     f: {
@@ -3150,14 +3155,20 @@ async function controllerUpgradePeers(t, fault = {}) {
       },
     },
   };
-  const ledger = { resources: [] };
+  const ledger = fault.recording?.ledger ?? { resources: [] };
   const sourceReads = [];
   let requests = 0;
   const evidence = {
     runId,
     credentials: { initial: "synthetic" },
     ledger,
-    async checkpoint() {},
+    async checkpoint(phase, details, privateDetails) {
+      await fault.recording?.checkpoint(phase, details, privateDetails);
+      // The operator can act as soon as readiness is published, before observe starts.
+      if (phase === "controller-upgrade-ready" && fault.window === "ready") {
+        await reachOrigin();
+      }
+    },
     async api(method, path) {
       if (method === "PATCH") {
         return { id: existingId, state: "ready", egress: { adoption: "live", retention: "none" } };
@@ -3254,7 +3265,7 @@ test("upgrade and retirement quiet windows reject TCP arrivals without HTTP", as
     assert.equal(peer.ledger.pendingCreate, undefined);
     assert.equal(peer.ledger.pendingDeploy, undefined);
   });
-  for (const window of ["replacement", 0, 1, 2, 3]) {
+  for (const window of ["ready", "replacement", 0, 1, 2, 3]) {
     for (const traffic of ["tcp", "http"]) {
       await t.test(`${window}: ${traffic}`, async (t) => {
         const peer = await controllerUpgradePeers(t, { window, traffic });
@@ -3265,6 +3276,68 @@ test("upgrade and retirement quiet windows reject TCP arrivals without HTTP", as
         assert.equal(peer.provider.tcpConnections > 0, true);
         assert.equal(peer.provider.observations.length, traffic === "tcp" ? 0 : 1);
       });
+    }
+  }
+});
+
+test("controller upgrade checkpoints keep process identity in the private ledger", async (t) => {
+  const diagnostics = [];
+  const recording = await createRunEvidence(
+    { signal: t.signal, diagnostic: (line) => diagnostics.push(line) },
+    { input: { images: {} }, controller: {} },
+    {},
+  );
+  t.after(() => rm(recording.directory, { recursive: true, force: true }));
+  // Protocol peers supply identity observations; the actual checkpoint writer
+  // decides what reaches public diagnostics and the private on-disk ledger.
+  const peer = await controllerUpgradePeers(t, { recording });
+  await peer.run();
+  const saved = JSON.parse(await readFile(`${recording.directory}/observations.json`, "utf8"));
+  for (const [phase, generation] of [
+    ["controller-upgrade-ready", "before"],
+    ["controller-upgrade-observed", "after"],
+  ]) {
+    const retained = saved.phases.find((entry) => entry.phase === phase);
+    const line = diagnostics.find((entry) => entry.startsWith(`egress-connected ${phase} `));
+    assert.ok(line, "public progress remains observable");
+    const visible = JSON.parse(line.slice(line.indexOf("{")));
+    assert.equal(
+      Object.hasOwn(visible, "controllers"),
+      false,
+      "process identities must stay private",
+    );
+    assert.equal(visible.componentCount, 2);
+    assert.equal(retained.controllers.length, 2);
+    for (const process of retained.controllers) {
+      assert.ok(process.name.endsWith(generation));
+      for (const field of [
+        "name",
+        "uid",
+        "containerID",
+        "imageID",
+        "startedAt",
+        "configurationSha256",
+        "installationSha256",
+      ]) {
+        assert.equal(typeof process[field], "string", `retained ${field}`);
+        assert.equal(line.includes(process[field]), false, `${field} must stay private`);
+      }
+    }
+    if (generation === "before") {
+      for (const field of [
+        "fromCommit",
+        "toCommit",
+        "fromImage",
+        "toImage",
+        "retainedStateSha256",
+      ]) {
+        assert.equal(typeof retained[field], "string", `retained ${field}`);
+        assert.equal(line.includes(retained[field]), false, `${field} must stay private`);
+      }
+      assert.deepEqual(visible.providerBaseline, { httpRequests: 0, tcpConnections: 0 });
+    } else {
+      assert.equal(visible.retainedStateUnchanged, true);
+      assert.equal(visible.providerSends, 0);
     }
   }
 });

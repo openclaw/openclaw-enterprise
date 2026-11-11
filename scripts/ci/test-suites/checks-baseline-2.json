@@ -672,7 +672,8 @@
         "failed custody deployment preserves worker event order across a reused attempt budget",
         "reconnect checkpoints keep correlation in the private ledger on success and failure",
         "unexpected retirement creates require new, read-back run ownership before cleanup",
-        "upgrade and retirement quiet windows reject TCP arrivals without HTTP"
+        "upgrade and retirement quiet windows reject TCP arrivals without HTTP",
+        "controller upgrade checkpoints keep process identity in the private ledger"
       ]
     },
     {

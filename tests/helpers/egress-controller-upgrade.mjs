@@ -232,16 +232,37 @@ export async function prepareControllerUpgrade(
     ["REVISION_ACTIVATED", "REVISION_ALREADY_ACTIVE"].includes(deploymentWork[0].reason_code),
   );
   const grants = await api("GET", `${namespacePath}/iam/access-bindings`);
-  await checkpoint("controller-upgrade-ready", {
-    fromCommit: input.controllerUpgrade.fromCommit,
-    toCommit: input.oceCommit,
-    fromImage: input.controllerUpgrade.fromImage,
-    toImage: input.images.controller,
-    timeoutMs: input.controllerUpgrade.timeoutMs,
+  // Start the quiet window before readiness lets the operator begin replacement.
+  const providerBaseline = {
+    httpRequests: owned.provider.observations.length,
+    tcpConnections: owned.provider.tcpConnections,
+  };
+  await checkpoint(
+    "controller-upgrade-ready",
+    {
+      componentCount: controllers.length,
+      timeoutMs: input.controllerUpgrade.timeoutMs,
+      providerBaseline,
+    },
+    {
+      fromCommit: input.controllerUpgrade.fromCommit,
+      toCommit: input.oceCommit,
+      fromImage: input.controllerUpgrade.fromImage,
+      toImage: input.images.controller,
+      controllers,
+      retainedStateSha256: createHash("sha256").update(JSON.stringify(state)).digest("hex"),
+    },
+  );
+  return {
+    replacement,
+    unbound,
     controllers,
-    retainedStateSha256: createHash("sha256").update(JSON.stringify(state)).digest("hex"),
-  });
-  return { replacement, unbound, controllers, suppliers, gateways, state, grants };
+    suppliers,
+    gateways,
+    state,
+    grants,
+    providerBaseline,
+  };
 }
 
 export async function observeControllerUpgrade(
@@ -255,8 +276,8 @@ export async function observeControllerUpgrade(
   const { input, f } = setup;
   const { api, checkpoint } = evidence;
   const { namespacePath } = stack;
-  const beforeIngress = owned.provider.observations.length;
-  const beforeConnections = owned.provider.tcpConnections;
+  const beforeIngress = retained.providerBaseline.httpRequests;
+  const beforeConnections = retained.providerBaseline.tcpConnections;
   const deadline = Date.now() + input.controllerUpgrade.timeoutMs;
   const withinDeadline = () =>
     assert.ok(Date.now() < deadline, "controller upgrade checkpoint expired");
@@ -388,11 +409,11 @@ export async function observeControllerUpgrade(
     "controller replacement must not open provider connections",
   );
   withinDeadline();
-  await checkpoint("controller-upgrade-observed", {
-    controllers,
-    retainedStateUnchanged: true,
-    providerSends: 0,
-  });
+  await checkpoint(
+    "controller-upgrade-observed",
+    { componentCount: controllers.length, retainedStateUnchanged: true, providerSends: 0 },
+    { controllers },
+  );
 
   const requests = [
     {
