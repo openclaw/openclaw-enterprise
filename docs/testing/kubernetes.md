@@ -199,7 +199,7 @@ credentials and an in-process production API with PostgreSQL.
 
 ### Verified Keycloak flows
 
-The [six cases](../../tests/integration/keycloak-oidc-sign-in.test.mjs) check:
+The [cases](../../tests/integration/keycloak-oidc-sign-in.test.mjs) check:
 
 | Case                               | Evidence                                                                                                                                                                    |
 | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

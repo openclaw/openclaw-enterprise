@@ -32,7 +32,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AUTH_SECRET` — Production requires a high-entropy session-signing secret; development has a local-only fallback.
 - `OCC_AUTH_BASE_URL` — Authentication, cookie, and exact development browser origin; required in production; default in development: `http://127.0.0.1:3000`.
 - `OCC_AUTH_RECOVERY_USER_ID` — Existing local password administrator protected for recovery when Google or OIDC sign-in is enabled.
-- `OCC_AUTH_OIDC_ENROLLMENT` — Optional JSON admission and account creation policy; see [OIDC enrollment](../authentication/team-enrollment.md).
+- `OCC_AUTH_OIDC_ENROLLMENT` — Optional JSON admission and account creation policy, including `createAccount.requireVerifiedEmail` (default `true`); see [OIDC enrollment](../authentication/team-enrollment.md).
 - `OCC_AUTH_PASSWORD_SIGN_IN` — `all` (default) or `recovery-only`, which lets only the recovery account sign in with a password; requires Google or OIDC sign-in. See [recovery-only password sign-in](../authentication/external-sign-in.md#recovery-only-password-sign-in).
 - `OCC_AUTH_GOOGLE_CLIENT_ID` — Optional Google OAuth web client ID; selects the provider instance. Requires the client secret and the recovery user ID; see [Google sign-in](../../guides/deploy/google-sign-in.md).
 - `OCC_AUTH_GOOGLE_CLIENT_SECRET` — Protected server-side client secret for the configured Google OAuth client.

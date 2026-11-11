@@ -98,6 +98,10 @@ auth:
     tokenAuth: client_secret_post
     # Console button label ("Continue with <displayName>"); empty means "single sign-on".
     displayName: ""
+    # Optional enrollment: see docs/reference/authentication/team-enrollment.md.
+    # createAccount.requireVerifiedEmail defaults to true; false permits an absent
+    # or false email_verified claim without marking the email as verified.
+    # Admission group strings are one exact group; arrays contain exact strings.
     # API Pod HTTPS egress for the token and JWKS URLs. Empty allows TCP 443 to any
     # address except link-local 169.254.0.0/16; list the IdP's IPv4 ranges to narrow it.
     egressCidrs: []
