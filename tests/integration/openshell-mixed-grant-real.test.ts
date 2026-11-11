@@ -118,13 +118,8 @@ test(
       phase = "model before Git";
       assert.equal((await origin.snapshot()).issued, 0, "admission must not mint a Git credential");
       assert.equal((await origin.gitRequests()).length, 0);
-      const modelRoutes = a.revision.egressPlan?.routes;
-      assert.equal(modelRoutes?.length, 1);
-      const modelRoute = modelRoutes?.[0];
-      assert.ok(modelRoute);
-      assert.equal(modelRoute.binding.grant.kind, "inference");
-      assert.equal(modelRoute.method, "POST");
-      assert.equal(modelRoute.path, "/v1/responses");
+      const modelBindingId = a.modelAdmission.route.bindingId;
+      assert.ok(modelBindingId);
       const readModelGrantApprovals = fixture.readModelGrantApprovals;
       assert.ok(readModelGrantApprovals);
       // A correct upstream bearer alone could be left over from startup. Require
@@ -138,7 +133,7 @@ test(
             providerId: a.modelProvider.id,
             credentialKey: "access_token",
             sandboxId: a.target.sandboxId,
-            bindingId: modelRoute.binding.binding.id,
+            bindingId: modelBindingId,
             namespaceId: a.revision.namespaceId,
             agentId: a.agent.id,
             revisionId: a.revision.id,

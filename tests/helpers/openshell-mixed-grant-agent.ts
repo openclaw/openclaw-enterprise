@@ -6,7 +6,12 @@ import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
-import type { Agent, AgentRevision, Configuration } from "@openclaw-enterprise/contracts";
+import type {
+  Agent,
+  AgentRevision,
+  Configuration,
+  HarnessAuthBinding,
+} from "@openclaw-enterprise/contracts";
 import type {
   OpenShellGatewayClient,
   OpenShellProviderResponse,
@@ -24,6 +29,33 @@ type SelectedProvider = OpenShellProviderResponse & {
   id: string;
   profile: OpenShellStoredProviderProfile;
 };
+
+// clientRevision() exposes these fields but not the private admission snapshot.
+type PublicAgentRevision = Pick<AgentRevision, "id" | "namespaceId" | "agentId" | "harness"> & {
+  harnessAuth: HarnessAuthBinding;
+};
+
+interface ModelAdmission {
+  namespaceId: string;
+  agentId: string;
+  revisionId: string;
+  execution: {
+    namespaceId: string | null;
+    agentId: string | null;
+    revisionId: string | null;
+  };
+  authorization: string | null;
+  repositoryGitAuthorization: string | null;
+  routeCount: number | null;
+  route: {
+    bindingId: string | null;
+    sourceId: string | null;
+    grantKind: string | null;
+    method: string | null;
+    path: string | null;
+    origin: string | null;
+  };
+}
 
 interface MixedGrantFixture {
   request: (method: string, path: string, body?: unknown) => Promise<unknown>;
@@ -46,8 +78,12 @@ interface MixedGrantFixture {
     containerId: string;
     binaryHash: string;
   }>;
+  readModelAdmission: (identity: {
+    agentId: string;
+    revisionId: string;
+  }) => Promise<ModelAdmission>;
   registerProviders: (
-    revision: AgentRevision,
+    revision: Pick<PublicAgentRevision, "id">,
     agent: Agent,
   ) => Promise<{
     modelProvider: SelectedProvider;
@@ -121,7 +157,7 @@ async function gatewayAccess(
   t: TestContext,
   fixture: MixedGrantFixture,
   agent: Agent,
-  revision: AgentRevision,
+  revision: Pick<PublicAgentRevision, "id">,
 ) {
   const selector = `openclaw.dev/namespace=${fixture.namespace.id},openclaw.dev/agent=${agent.id},openclaw.dev/revision=${revision.id},openclaw.dev/workload-role=gateway`;
   const pods = JSON.parse(
@@ -256,19 +292,47 @@ export async function deployMixedGrantAgent(t: TestContext, fixture: MixedGrantF
   };
   const revision = (await request("POST", `${path}/deploy`, {
     harnessOverrides: { modelProvider: selectedModelProvider },
-  })) as AgentRevision;
+  })) as PublicAgentRevision;
   assert.deepEqual(revision.harness.configuration.modelProvider, selectedModelProvider);
   assert.equal(revision.namespaceId, namespace.id);
   assert.equal(revision.agentId, agent.id);
   assert.equal(revision.harness.id, "codex");
   assert.ok(revision.harnessAuth.method === "credential_source");
   assert.equal(revision.harnessAuth.sourceId, modelSource.id);
-  assert.equal(revision.egressPlan?.authorization, "online-request");
-  assert.equal(revision.egressPlan?.repositoryGitAuthorization, "online-request");
+  const modelAdmission = await fixture.readModelAdmission({
+    agentId: agent.id,
+    revisionId: revision.id,
+  });
+  assert.equal(modelAdmission.namespaceId, namespace.id);
+  assert.equal(modelAdmission.agentId, agent.id);
+  assert.equal(modelAdmission.revisionId, revision.id);
+  assert.deepEqual(modelAdmission.execution, {
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    revisionId: revision.id,
+  });
+  assert.equal(modelAdmission.authorization, "online-request");
+  assert.equal(modelAdmission.repositoryGitAuthorization, "online-request");
+  assert.equal(modelAdmission.routeCount, 1);
+  assert.equal(modelAdmission.route.grantKind, "inference");
+  assert.equal(modelAdmission.route.sourceId, modelSource.id);
+  assert.equal(modelAdmission.route.method, "POST");
+  assert.equal(modelAdmission.route.path, "/v1/responses");
+  assert.equal(modelAdmission.route.origin, new URL(modelBaseUrl).origin);
+  assert.ok(modelAdmission.route.bindingId, "the committed route must identify its binding");
 
   // Registration is required during preparation. Waiting for a successful
   // deployment first would prevent the providers from obtaining assertions.
   const { modelProvider, gitProvider } = await fixture.registerProviders(revision, agent);
+  const modelCredentials = modelProvider.profile.definition?.credentials;
+  assert.ok(Array.isArray(modelCredentials));
+  assert.equal(modelCredentials.length, 1);
+  assert.equal(modelCredentials[0]?.name, "access_token");
+  assert.equal(
+    modelCredentials[0]?.token_grant?.audience,
+    modelAdmission.route.bindingId,
+    "the selected model provider must use the independently observed committed binding",
+  );
   await observeUntil(
     "mixed-grant Agent startup",
     t.signal,
@@ -387,6 +451,7 @@ export async function deployMixedGrantAgent(t: TestContext, fixture: MixedGrantF
     supervisor,
     modelProvider,
     gitProvider,
+    modelAdmission,
     modelTurns: fixture.modelTurns,
     modelTurnOptions: { ...access, readOriginTurn: fixture.modelOrigin.readOriginTurn },
   };

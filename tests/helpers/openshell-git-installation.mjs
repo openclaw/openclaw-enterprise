@@ -56,6 +56,44 @@ try {
 }
 `;
 
+// Admission is intentionally absent from the public revision response. Project
+// only this proof's fields from the committed snapshot, independently of grants.
+const readModelAdmission = `
+import { createPostgresPool } from './packages/occ/src/index.ts';
+const pool = await createPostgresPool(process.env.OCC_DATABASE_URL, {
+  max: 1, connectionTimeoutMillis: 5000, query_timeout: 10000,
+});
+try {
+  const { rows } = await pool.query(
+    \`SELECT r.namespace_id AS "namespaceId", r.agent_id AS "agentId", r.id AS "revisionId",
+      jsonb_build_object(
+        'namespaceId', r.admitted_spec #>> '{egress_plan,execution,namespaceId}',
+        'agentId', r.admitted_spec #>> '{egress_plan,execution,agentId}',
+        'revisionId', r.admitted_spec #>> '{egress_plan,execution,revisionId}'
+      ) AS execution,
+      r.admitted_spec #>> '{egress_plan,authorization}' AS authorization,
+      r.admitted_spec #>> '{egress_plan,repositoryGitAuthorization}' AS "repositoryGitAuthorization",
+      jsonb_array_length(r.admitted_spec #> '{egress_plan,routes}') AS "routeCount",
+      jsonb_build_object(
+        'bindingId', r.admitted_spec #>> '{egress_plan,routes,0,binding,binding,id}',
+        'sourceId', r.admitted_spec #>> '{egress_plan,routes,0,binding,source,source,id}',
+        'grantKind', r.admitted_spec #>> '{egress_plan,routes,0,binding,grant,kind}',
+        'method', r.admitted_spec #>> '{egress_plan,routes,0,method}',
+        'path', r.admitted_spec #>> '{egress_plan,routes,0,path}',
+        'origin', r.admitted_spec #>> '{egress_plan,routes,0,origin}'
+      ) AS route
+    FROM occ.agent_revisions AS r
+    JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
+    JOIN occ.namespaces AS n ON n.id = r.namespace_id AND n.deleted_at IS NULL
+    WHERE r.namespace_id = $1 AND r.agent_id = $2 AND r.id = $3\`,
+    process.argv.slice(1),
+  );
+  process.stdout.write(JSON.stringify(rows));
+} finally {
+  await pool.end();
+}
+`;
+
 const workerLabels = {
   "app.kubernetes.io/name": "openclaw-enterprise",
   "app.kubernetes.io/instance": "openclaw-enterprise",
@@ -1643,6 +1681,27 @@ async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
           model: mixed.model,
           modelTurns: mixed.modelTurns,
           modelOrigin: mixed.modelOrigin,
+          readModelAdmission: async ({ agentId, revisionId }) => {
+            const rows = JSON.parse(
+              await kube([
+                "exec",
+                "-n",
+                platform,
+                "deployment/openclaw-enterprise-api",
+                "--",
+                "node",
+                "--input-type=module",
+                "-e",
+                readModelAdmission,
+                namespace.id,
+                agentId,
+                revisionId,
+              ]),
+            );
+            assert.ok(Array.isArray(rows), "expected committed model admission records");
+            assert.equal(rows.length, 1, "expected exactly one selected committed admission");
+            return rows[0];
+          },
           stateDirectory: stack.directory,
           after: (operation) => cleanup.push(operation),
           registerProviders: (revision, agent) =>
