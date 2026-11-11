@@ -179,7 +179,7 @@ them. Docker is the default development selection, not a bundled YAML selection.
 For example, with an image already loaded in the engine:
 
 ```bash
-OCC_DOCKER_RUNTIME_IMAGE=oce-runtime:local scripts/dev-up
+OCC_DEVELOPMENT_COMPUTE_DRIVER=docker OCC_DOCKER_RUNTIME_IMAGE=oce-runtime:local scripts/dev-up
 ```
 
 ### Development configuration and persistence
