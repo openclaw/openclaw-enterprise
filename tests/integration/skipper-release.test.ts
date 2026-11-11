@@ -852,6 +852,7 @@ test("installed Skipper failure retention preserves known checkpoints and withho
           tlsErrors: null,
         });
         await writeFile(ledgerPath, diagnostic + "\n{\n");
+        await writeFile(stageOutput, "");
         const failed = child(`
           import assert from "node:assert/strict";
           import { join, resolve } from "node:path";
