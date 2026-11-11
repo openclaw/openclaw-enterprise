@@ -31,8 +31,8 @@ import {
 } from "../gateway/native-admin-proxy.ts";
 import {
   deriveNativeAdminHost,
+  nativeAdminBrowserChatTurnedOn,
   nativeAdminConfigurationSupported,
-  nativeAdminControlUiEnabled,
   nativeAdminGatewayHttpBase,
   nativeAdminTarget,
   normalizeNativeAdminDomain,
@@ -912,7 +912,9 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       return { status: "unavailable" };
     }
     if (!nativeAdminConfigurationSupported(revision, target.origin)) {
-      const reason = nativeAdminControlUiEnabled(revision) ? "configuration" : "not-enabled";
+      const reason = nativeAdminBrowserChatTurnedOn(revision, target.origin)
+        ? "configuration"
+        : "not-enabled";
       return { status: "unsupported", reason, agent, revision, target, mode };
     }
     let compute: ComputeDriver;

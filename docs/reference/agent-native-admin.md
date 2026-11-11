@@ -84,13 +84,13 @@ runtime authority fails closed instead of granting administration.
 
 The response reports:
 
-| Status        | Meaning                                                                                                                                                                                                    |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `disabled`    | The Installation has not enabled native admin UI access.                                                                                                                                                   |
-| `stopped`     | The Agent is not in desired running state.                                                                                                                                                                 |
-| `unsupported` | Native admin UI access is unsupported. `reason`: `not-enabled` (`gateway.controlUi.enabled` is not `true`), `configuration` (another native setting refuses it) or `compute` (no usable gateway endpoint). |
-| `unavailable` | No version is serving yet: the Agent has no selected version, or a newer version is replacing it.                                                                                                          |
-| `available`   | The caller may open the returned `url` for the selected version.                                                                                                                                           |
+| Status        | Meaning                                                                                                                                                                                                                                                             |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `disabled`    | The Installation has not enabled native admin UI access.                                                                                                                                                                                                            |
+| `stopped`     | The Agent is not in desired running state.                                                                                                                                                                                                                          |
+| `unsupported` | Native admin UI access is unsupported. `reason`: `not-enabled` (no browser chat opt-in: `controlUi` is off, or has neither the Agent origin nor trusted-proxy auth), `configuration` (another native setting refuses it) or `compute` (no usable gateway endpoint). |
+| `unavailable` | No version is serving yet: the Agent has no selected version, or a newer version is replacing it.                                                                                                                                                                   |
+| `available`   | The caller may open the returned `url` for the selected version.                                                                                                                                                                                                    |
 
 A stopped Agent without a selected version returns only `status: "stopped"`, including before first deployment and after completed stop reconciliation. Otherwise, stopped results include target fields. A desired-running Agent without a selected version returns `unavailable` in the success envelope. Dependency outages, including IAM, return `503 DEPENDENCY_UNAVAILABLE`. Malformed requests, IAM denials and missing sessions use the protected-route error envelope.
 
@@ -101,8 +101,8 @@ and implementation with the selected version's recorded owner. A mismatch return
 private gateway-key lookup or transport. Agent-host HTTP retains its existing
 `403` refusal. WebSocket admission destroys the client socket without an HTTP
 response, before gateway-key lookup or connection; a mismatch during a WebSocket
-lease closes the connection through the existing failed-lease path. Matching ownership retains
-normal access. Earlier stopped, replacing and unsupported-configuration outcomes
+lease closes the connection through the existing failed-lease path.
+Earlier stopped, replacing and unsupported-configuration outcomes
 keep their precedence.
 
 The mismatch is not transient, so refreshing does not clear it. Each API process
