@@ -345,7 +345,8 @@ configuration-change, forced-disconnection or upgrade behavior.
 The sibling and TCP probe use the authenticated [workload launch path](./protected-repository-custody.md);
 Kubernetes exec inspects processes. Exchanges
 require matching resolve, permit and response transitions. IAM revocation
-must prevent permits and upstream traffic. TCP bypass must fail; verify listener
+must prevent permits and provider application bytes. The supervisor may establish TCP/TLS
+before authorizing the captured request. TCP bypass must fail; verify listener
 reachability before and after. Hostile responses require native HTTP status 403
 (409 for oversized capture), no assistant output and private `response_blocked` evidence. Leak checks
 cover Agent/Codex environments, responses, logs, diagnostics, audit, Pod specs

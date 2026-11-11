@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { connect } from "node:net";
+import { connect as connectTls } from "node:tls";
+import { selfSigned } from "../helpers/certificates.mjs";
 import { once } from "node:events";
 import {
   observeControllerUpgrade,
@@ -47,6 +49,7 @@ import { createKubernetesClient } from "../helpers/kubernetes-real.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
   encodeSyntheticEvents,
+  startSyntheticEgressProvider,
   syntheticResponsesEvents,
 } from "../fixtures/synthetic-egress-provider.mjs";
 import {
@@ -803,6 +806,55 @@ test("installed cleanup names an unsettled prepared source and does not wait out
     },
   );
 });
+
+// Use a real TLS socket: HTTP request counts alone miss partially sent headers.
+test(
+  "synthetic provider separates TLS handshakes from partial HTTP bytes",
+  { timeout: 10_000 },
+  async (t) => {
+    const directory = await temporaryDirectory(t, "egress-provider-bytes-");
+    const tls = await selfSigned(directory);
+    const provider = await startSyntheticEgressProvider(
+      t,
+      {
+        bindHost: "127.0.0.1",
+        bindPort: 0,
+        certificatePath: tls.certPath,
+        privateKeyPath: tls.keyPath,
+      },
+      {
+        initial: `SYNTHETIC-OCE-EGRESS-${randomUUID()}-v1`,
+        rotated: `SYNTHETIC-OCE-EGRESS-${randomUUID()}-v2`,
+      },
+    );
+    const client = connectTls({ host: "127.0.0.1", port: provider.port, ca: tls.cert });
+    t.after(() => client.destroy());
+    await once(client, "secureConnect");
+    assert.equal(provider.tcpConnections, 1);
+    assert.equal(provider.applicationBytes, 0, "TLS handshake bytes are not application bytes");
+    assert.equal(provider.observations.length, 0);
+
+    const partial = "GET /v1/responses HTTP/1.1\r\nHost: localhost\r\n";
+    client.write(partial);
+    await waitFor("partial HTTP bytes at origin", () => provider.applicationBytes > 0, 5000, {
+      interval: 10,
+    });
+    assert.equal(provider.applicationBytes, Buffer.byteLength(partial));
+    assert.equal(provider.observations.length, 0, "the HTTP parser has no complete headers yet");
+
+    // Completing the same request must count every byte exactly once. No credential
+    // is supplied, so the real provider rejects it after recording the HTTP request.
+    const ending = "Connection: close\r\n\r\n";
+    client.resume();
+    const closed = once(client, "close");
+    client.end(ending);
+    await closed;
+    assert.equal(provider.applicationBytes, Buffer.byteLength(partial + ending));
+    assert.equal(provider.observations.length, 1);
+    assert.equal(provider.observations[0].status, 403);
+    assert.deepEqual(provider.errors, []);
+  },
+);
 
 test("connected adversarial wire carries split and nested-JSON material without raw reflection", () => {
   const credential = `SYNTHETIC-OCE-EGRESS-${randomUUID()}-v1`;

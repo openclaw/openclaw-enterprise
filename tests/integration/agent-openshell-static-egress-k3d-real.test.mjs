@@ -522,16 +522,27 @@ async function revokeExactGrantAndObserveDenial(stack, evidence, owned, deployme
   const knownDenials = new Set(beforeDenials.rows.map(({ id }) => id));
   const beforeDenied = provider.observations.length;
   const beforeConnections = provider.tcpConnections;
+  const beforeApplicationBytes = provider.applicationBytes;
   const { requestId } = await turn("fresh-iam-revoked", "failed", 403);
+  // The supervisor may establish TCP/TLS before authorizing the captured HTTP
+  // request. Record transport activity separately from the forbidden request send.
+  await checkpoint("fresh-iam-provider-observed", {
+    httpRequestsBefore: beforeDenied,
+    httpRequestsAfter: provider.observations.length,
+    tcpConnectionsBefore: beforeConnections,
+    tcpConnectionsAfter: provider.tcpConnections,
+    applicationBytesBefore: beforeApplicationBytes,
+    applicationBytesAfter: provider.applicationBytes,
+  });
   assert.equal(
     provider.observations.length,
     beforeDenied,
     "fresh IAM denial must precede every provider send",
   );
   assert.equal(
-    provider.tcpConnections,
-    beforeConnections,
-    "fresh IAM denial must precede every provider connection",
+    provider.applicationBytes,
+    beforeApplicationBytes,
+    "fresh IAM denial must precede every provider application byte",
   );
   const denials = await pool.query(
     "SELECT id, actor_id, resource_kind, resource_id, details, outcome FROM occ.audit_events WHERE namespace_id = $1 AND actor_id = $2 AND resource_id = $3 AND action = 'openclaw.egress.authorize'",
