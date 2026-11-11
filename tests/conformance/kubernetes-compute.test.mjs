@@ -5363,6 +5363,34 @@ test("a Namespace deletion refused with HTTP 403 reports the tenant access hint"
   );
 });
 
+test("a 403 listing repository material workloads reports the tenant access hint", async () => {
+  const { ApiException } = createRequire(
+    new URL("../../apps/controller/package.json", import.meta.url),
+  )("@kubernetes/client-node");
+  const fixture = adoptedNamespaceTeardownFixture(
+    options({
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      network: {
+        ...options().network,
+        repositoryCredentials: {
+          namespace: "repository-service",
+          podLabels: { app: "repository" },
+          port: 8443,
+        },
+      },
+    }),
+  );
+  // Teardown lists tenant Pods before it removes repository material, so that LIST needs the hint too.
+  const clients = await fixture.driver.apiClients;
+  clients.core.listNamespacedPod = async () => {
+    throw new ApiException(403, "Forbidden", JSON.stringify({ code: 403 }), {});
+  };
+  assert.deepEqual(await captureNamespaceHint(() => fixture.teardown()), {
+    observation: { namespaceId: tenant.id, namespaceDeleted: false, failure: "permanent" },
+    hintCode: "KUBERNETES_TENANT_ACCESS_DENIED",
+  });
+});
+
 test("explicit existing namespace adoption claims tenant identity only after security checks", async () => {
   const selection = { ...tenant, status: "provisioning", existingNamespace: "customer-support" };
   const prepared = () => ({

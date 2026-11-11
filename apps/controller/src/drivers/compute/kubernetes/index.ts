@@ -6131,10 +6131,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
       }
       if (external) {
         if (this.options.network.repositoryCredentials !== undefined) {
-          const references = await this.repositoryMaterialReferences(ownership, name);
-          const cleaned = await withTenantAccessHint(async () =>
-            (await this.repositoryMaterialStore(name)).cleanup(ownership, references),
-          );
+          const cleaned = await withTenantAccessHint(async () => {
+            const references = await this.repositoryMaterialReferences(ownership, name);
+            return (await this.repositoryMaterialStore(name)).cleanup(ownership, references);
+          });
           if (!cleaned) {
             return result;
           }
