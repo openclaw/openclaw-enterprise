@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
 updated: 2026-11-11
-last_updated_session: authoring-run/28db5867-56df-4145-a1c5-07be7a7874ee
+last_updated_session: authoring-run/4eb36434-af9e-40b8-8958-e8a2f9f2b662
 ---
 
 # Agent Native Admin UI Flow
@@ -102,12 +102,11 @@ plan and identity. The worker creates and deploys the Agent.
 `scripts/first-agent.ts:nativeConfiguration`
 `scripts/first-agent.ts:ensureManagedConfiguration`
 
-With launcher-owned Compose/OpenShell browser state, the helper saves disabled
-Configuration generation 1, creates the Agent, then derives its origin. Before
-deployment, generation 2 enables `controlUi`, pins origins, and grants
-`occ-workspace-files` trusted-proxy `operator.admin` with device auto-approval.
-Identity grants supply admin independently of device scopes.
-An existing helper-owned name cannot change this selection.
+Using Local Setup browser state, the helper saves disabled Configuration generation 1,
+creates the Agent, and derives its origin. Generation 2 enables `controlUi`, pins
+origins, requires `x-openclaw-scopes`, and grants `occ-workspace-files` trusted-proxy
+`operator.admin` with device auto-approval before deployment. Identity grants supply
+admin independently of device scopes. Existing helper-owned names keep this selection.
 
 ### 1. Console renders native admin availability
 
@@ -307,6 +306,8 @@ admin Configuration remains Pod-local.
 
 ## Changelog
 
+- 2026-11-11 20:31: Persist the first-Agent native UI scope-header requirement. (authoring-run/4eb36434-af9e-40b8-8958-e8a2f9f2b662 - be754f513bcfdee8c898c33df1fe37bff4581261)
+
 - 2026-11-11 09:26: Classify native admission failures. (authoring-run/28db5867-56df-4145-a1c5-07be7a7874ee - f0b9c002c0577bcc8854913b0eafa5449bd5fbe3)
 
 - 2026-11-10 08:30: Add named chat and stale-version browser recovery. (authoring-run/37c71df8-7e9c-4224-bc36-e4091f387620 - eef0b3f10d0e0f4ed09fd32086c84628c41f1b93)
@@ -333,7 +334,6 @@ admin Configuration remains Pod-local.
 
 - 2026-10-15 21:41: Allowed narrow device enrollment with machine admin grants. (authoring-run/4a439216-a1ba-4628-b96e-660a9db92d59 - e03429ce3d889b0ac07fedad801aacacc3498a6a)
 
-- 2026-10-25 12:00: Skip the status read when the permission answer denies `administer`.
 - 2026-10-24 23:25: Documented the authenticated browser 403 Agents link.
 - 2026-10-20 14:54: Extract persistence repair; trim repeated prose. (agent:roboclaw:dashboard:830a6ba7-3357-4ae0-9037-95d98205608c - 1ce18eeea10c83c856c8c08f6b0815e4b39308e0)
 
