@@ -288,7 +288,13 @@ export class KubernetesAgentOperator {
           }
         }
         try {
-          await this.reconciler.report(resource, {}, ready, reason, message);
+          await this.reconciler.report(
+            resource,
+            error instanceof ReconcilePending ? error.values : {},
+            ready,
+            reason,
+            message,
+          );
         } catch (statusError) {
           process.stderr.write(
             `${JSON.stringify({ event: "operator.status_unavailable", kind: task.kind, status: statusCode(statusError) ?? 0 })}\n`,

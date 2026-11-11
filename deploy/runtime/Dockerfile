@@ -43,6 +43,7 @@ FROM node-runtime-base AS repository-credentials-deps
 WORKDIR /build
 COPY LICENSE package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/controller/package.json apps/controller/package.json
+COPY apps/operator/package.json apps/operator/package.json
 COPY packages/audit/package.json packages/audit/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
 COPY packages/iam/package.json packages/iam/package.json
@@ -105,6 +106,7 @@ FROM repository-credentials-deps AS repository-credentials-build
 COPY tsconfig.base.json tsconfig.json ./
 COPY packages packages
 COPY apps/controller apps/controller
+COPY apps/operator apps/operator
 COPY scripts/build-repository-credentials.mjs scripts/build-repository-credentials.mjs
 COPY scripts/build-repository-credentials.ts scripts/build-repository-credentials.ts
 COPY deploy/runtime/repository-credentials/.dockerignore deploy/runtime/repository-credentials/.dockerignore

@@ -233,6 +233,7 @@ export function operatorCustomResourceDefinitions(): readonly Readonly<Record<st
                     agentId: opaqueId,
                     configurationId: opaqueId,
                     activeRevisionId: opaqueId,
+                    requestedRevisionId: opaqueId,
                     operationId: opaqueId,
                     managementVersion: { type: "integer", format: "int64", minimum: 1 },
                     lastObservedTime: { type: "string", format: "date-time" },

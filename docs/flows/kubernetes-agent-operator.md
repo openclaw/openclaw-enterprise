@@ -71,7 +71,7 @@ versions/generations conflict. See [deployment worker flow](controller-worker.md
 ### 3. Observe readiness or release
 
 `reconciler.ts:agent` compares the receipt's requested revision with the active
-revision, deployment status and fresh runtime Pods. `report` writes status with
+revision, deployment status, fresh runtime Pods and current Gateway diagnostics. `report` writes status with
 a resource-version precondition. `argocd-health.lua` rejects stale generations
 and timestamps; failed deployment or ownership conflict is Degraded.
 

@@ -39,7 +39,8 @@ Pod access. Secret import fields are reserved and fail closed in this alpha.
 ## Agent configuration and credentials
 
 `spec.configuration.values` is the native OpenClaw configuration document.
-`secretBindings` maps environment names to `{ secretRef: <OCESecret name> }`.
+`secretBindings` maps environment names to
+`{ secretRef: <OCESecret name>, delivery: { type: env } }`.
 The Operator resolves the OCC Secret ID and requests ordinary env delivery;
 it does not read the Telegram token. The selected Compute Driver remains
 responsible for delivery to the Gateway.
@@ -89,8 +90,9 @@ resume. Release retains a version tombstone that rejects an old adoption request
 
 `status.observedGeneration` and the Ready condition identify the observed spec.
 Successful running intent requires the requested revision to be active, deployment
-completion and a runtime observation no older than 90 seconds with ready Gateway
-and Agent Pods. An accepted API write alone is insufficient. Stopped intent waits
+completion, a runtime observation no older than 90 seconds with ready Gateway
+and Agent Pods, and successful current Gateway configuration, authentication and
+connectivity diagnostics. An accepted API write alone is insufficient. Stopped intent waits
 for runtime cleanup. Status contains IDs and sanitized reasons, no credentials
 or private input fingerprints.
 

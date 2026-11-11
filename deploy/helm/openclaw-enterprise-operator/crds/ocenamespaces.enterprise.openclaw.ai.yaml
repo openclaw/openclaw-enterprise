@@ -157,6 +157,11 @@
                     "minLength": 1,
                     "maxLength": 256
                   },
+                  "requestedRevisionId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
                   "operationId": {
                     "type": "string",
                     "minLength": 1,

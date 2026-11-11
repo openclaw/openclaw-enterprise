@@ -50,9 +50,11 @@ interface Tenant {
 
 export class ReconcilePending extends Error {
   readonly reason: string;
-  constructor(reason: string, message: string) {
+  readonly values: Record<string, unknown>;
+  constructor(reason: string, message: string, values: Record<string, unknown> = {}) {
     super(message);
     this.reason = reason;
+    this.values = values;
     this.name = "ReconcilePending";
   }
 }
@@ -332,7 +334,8 @@ export class AgentReconciler {
       agentId,
       configurationId: ownership.adoption.configurationId,
       managementVersion: ownership.management!.version,
-      ...(live.activeRevisionId === undefined ? {} : { activeRevisionId: live.activeRevisionId }),
+      activeRevisionId: live.activeRevisionId,
+      requestedRevisionId: ownership.management?.requestedRevisionId,
     };
     if (input.desiredRuntimeState === "stopped" && live.desiredRuntimeState === "stopped") {
       const stoppedRevisionId = ownership.management?.requestedRevisionId;
@@ -345,33 +348,36 @@ export class AgentReconciler {
           throw new ReconcilePending(
             "Stopping",
             "The Agent is stopping; runtime cleanup is not complete.",
+            result,
           );
         }
       }
       return result;
     }
     const requestedRevisionId = ownership.management?.requestedRevisionId;
-    if (
-      live.activeRevisionId === undefined ||
-      requestedRevisionId === undefined ||
-      live.activeRevisionId !== requestedRevisionId
-    ) {
-      throw new ReconcilePending("DeploymentPending", "The Agent has no selected revision yet.");
+    if (requestedRevisionId === undefined) {
+      throw new ReconcilePending(
+        "DeploymentPending",
+        "The Agent has no requested revision yet.",
+        result,
+      );
     }
     const deployment = await api.call<{ status: string }>(
       "GET",
-      `${path}/deployments/${encodeURIComponent(live.activeRevisionId)}`,
+      `${path}/deployments/${encodeURIComponent(requestedRevisionId)}`,
     );
     if (deployment.status === "failed") {
       throw new ReconcilePending(
         "DeploymentFailed",
         "Enterprise recorded a deployment failure; change desired state or explicitly request a retry.",
+        result,
       );
     }
-    if (deployment.status !== "succeeded") {
+    if (deployment.status !== "succeeded" || live.activeRevisionId !== requestedRevisionId) {
       throw new ReconcilePending(
         "DeploymentPending",
         "Enterprise has not recorded deployment completion.",
+        result,
       );
     }
     // Deployment completion and current runtime observation are separate facts.
@@ -394,6 +400,35 @@ export class AgentReconciler {
       throw new ReconcilePending(
         "RuntimeUnknown",
         "The current runtime observation is unavailable.",
+        result,
+      );
+    }
+    const diagnostics = await api.call<{
+      revisionId: string;
+      observedAt: string;
+      checks: { component: string; check: string; state: string }[];
+    }>("POST", `${path}/deployments/${encodeURIComponent(live.activeRevisionId)}/diagnostics`);
+    const diagnosticAge = Date.now() - Date.parse(diagnostics.observedAt);
+    const gatewayChecks = ["configuration", "authentication", "connectivity"];
+    if (
+      diagnostics.revisionId !== live.activeRevisionId ||
+      !Number.isFinite(diagnosticAge) ||
+      diagnosticAge < -30_000 ||
+      diagnosticAge > 90_000 ||
+      !Array.isArray(diagnostics.checks) ||
+      diagnostics.checks.some((check) => check.state === "failed") ||
+      gatewayChecks.some(
+        (name) =>
+          !diagnostics.checks.some(
+            (check) =>
+              check.component === "gateway" && check.check === name && check.state === "succeeded",
+          ),
+      )
+    ) {
+      throw new ReconcilePending(
+        "RuntimeDiagnosticsPending",
+        "The current Gateway configuration, authentication and connectivity checks have not succeeded.",
+        result,
       );
     }
     return result;

@@ -83,6 +83,8 @@ spec:
     secretBindings:
       TELEGRAM_BOT_TOKEN:
         secretRef: telegram-token
+        delivery:
+          type: env
 ```
 
 Create the referenced `OCENamespace` with `connectionRef`, `existingId` and
