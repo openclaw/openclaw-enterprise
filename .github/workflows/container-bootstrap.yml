@@ -53,4 +53,4 @@ jobs:
           CI_RUN_ID: ${{ inputs.ci_run_id }}
           GHCR_CONTROLLER_IMAGE: ${{ vars.GHCR_CONTROLLER_IMAGE }}
           GHCR_RUNTIME_IMAGE: ${{ vars.GHCR_RUNTIME_IMAGE }}
-        run: node scripts/ci/container-bootstrap.mjs
+        run: node scripts/ci/container-bootstrap.ts

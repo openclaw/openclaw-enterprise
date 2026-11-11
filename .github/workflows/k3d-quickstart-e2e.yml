@@ -13,13 +13,20 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  quickstart:
+  runtime-artifact:
     # A maintainer sets the repository variable to the reviewed commit before pushing.
     if: >-
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected) ||
       (github.event_name == 'push' && github.repository == 'openclaw/openclaw-enterprise' &&
        github.ref == 'refs/heads/dev/kevinlin/k3d-quickstart-actions' &&
        github.actor == 'kevinlin-openai' && github.sha == vars.OCE_QUICKSTART_REVIEWED_SHA)
+    uses: ./.github/workflows/ci-runtime-artifact.yml
+
+  quickstart:
+    needs: runtime-artifact
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     env:
@@ -58,7 +65,7 @@ jobs:
           set -euo pipefail
           bash scripts/ci/setup-tools.sh k3d
           pnpm install --frozen-lockfile
-          sudo apt-get install --no-install-recommends -y libnss3-tools
+          sudo apt-get install --no-install-recommends -y libnss3-tools skopeo
           test -x "$OCC_TEST_BROWSER_EXECUTABLE"
           # Check the same sandboxed browser launch before provisioning or reading secrets.
           node --input-type=module <<'JS'
@@ -74,6 +81,24 @@ jobs:
             sudo modprobe br_netfilter
           fi
           sudo sysctl -w net.bridge.bridge-nf-call-iptables=1
+      - name: Download the same-run runtime image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          artifact-ids: ${{ needs.runtime-artifact.outputs.artifact-id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.runtime-artifact.outputs.run-id }}
+          path: ${{ runner.temp }}/runtime-artifact
+          merge-multiple: true
+      - name: Prepare the matching image pair before staging credentials
+        timeout-minutes: 35
+        env:
+          OCC_CI_RUNTIME_ARTIFACT_DIRECTORY: ${{ runner.temp }}/runtime-artifact
+          OCC_CI_RUNTIME_ARTIFACT_SHA256: ${{ needs.runtime-artifact.outputs.archive-sha256 }}
+          OCC_CI_RUNTIME_ARTIFACT_SOURCE_SHA: ${{ needs.runtime-artifact.outputs.source-sha }}
+          OCC_CI_RUNTIME_ARTIFACT_RUN_ID: ${{ needs.runtime-artifact.outputs.run-id }}
+          OCC_CI_RUNTIME_ARTIFACT_ATTEMPT: ${{ needs.runtime-artifact.outputs.producer-attempt }}
+        run: node scripts/ci/k3d-quickstart/images.mjs
       - name: Stage run-private inputs
         id: inputs
         env:
@@ -130,6 +155,17 @@ jobs:
         if: always() && steps.inputs.outcome == 'success' && (steps.git.outcome == 'skipped' || steps.git_cleanup.outcome == 'success')
         timeout-minutes: 18
         run: bash scripts/ci/k3d-quickstart/private-step.sh teardown
+      - name: Remove the run-owned image registry
+        if: always()
+        run: |
+          set -euo pipefail
+          owner="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          id=$(docker ps --all --quiet --no-trunc --filter "label=openclaw.dev/quickstart-image-owner=$owner")
+          if [[ -n "$id" ]]; then
+            [[ "$id" =~ ^[a-f0-9]{64}$ ]]
+            test "$(docker inspect --format '{{.Name}}' "$id")" = "/oce-quickstart-images-$owner"
+            docker rm --force --volumes "$id"
+          fi
       - name: Remove private input files
         if: always()
         run: rm -f -- "$RUNNER_TEMP/oce-credentials/app.pem" "$RUNNER_TEMP/oce-credentials/codex-pat"

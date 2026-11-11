@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { openShellGitRetentionKind } from "../../scripts/ci/openshell-git-retention.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { createOpenShellGitInstallation } from "./openshell-git-installation.mjs";
 
@@ -98,6 +99,22 @@ export async function deployFiniteAgent(t: TestContext, fixture: GitInstallation
   assert.ok(deadlineWallMs >= admissionStartedAt + 600_000);
   assert.ok(deadlineWallMs <= admissionReturnedAt + 600_000);
   await evidence("finite-git-grant", { revisionId: revision.id, deadlineWallMs });
+  const reportInitialRuntimeFailure =
+    (stage: "deployment-observation" | "runtime-identity-read" | "runtime-receipt") =>
+    (error: unknown): never => {
+      try {
+        t.diagnostic(
+          `openclaw-ci-measurement ${JSON.stringify({
+            kind: openShellGitRetentionKind,
+            event: "finite-git-initialization-failed",
+            stage,
+          })}`,
+        );
+      } catch {
+        // A diagnostic failure must not replace the original setup error.
+      }
+      throw error;
+    };
   await observeUntil(
     "real Agent startup",
     t.signal,
@@ -112,7 +129,7 @@ export async function deployFiniteAgent(t: TestContext, fixture: GitInstallation
         : undefined;
     },
     10 * 60_000,
-  );
+  ).catch(reportInitialRuntimeFailure("deployment-observation"));
 
   const selector = `openclaw.dev/agent=${agent.id},openclaw.dev/revision=${revision.id},openclaw.dev/workload-role=agent`;
   const readExecution = async () => {
@@ -170,8 +187,12 @@ export async function deployFiniteAgent(t: TestContext, fixture: GitInstallation
       },
     };
   };
-  const original = await readExecution();
-  await evidence("initial-runtime", original.identity);
+  const original = await readExecution().catch(
+    reportInitialRuntimeFailure("runtime-identity-read"),
+  );
+  await evidence("initial-runtime", original.identity).catch(
+    reportInitialRuntimeFailure("runtime-receipt"),
+  );
   const target = {
     sandboxName: original.sandbox.name,
     sandboxId: original.sandbox.id,

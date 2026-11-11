@@ -99,6 +99,27 @@ are `incomplete`. These observations use synchronized host and container clocks.
 They do not prove that a particular workspace read was pending or retried, and
 ordinary refresh success alone is not evidence of read recovery.
 
+## Native permission refusals
+
+After the real Driver classifies a Codex PAT permission refusal, the fixture
+collects one diagnostic per revision before rethrowing that failure. One
+connection through the same OpenShell exposure reads requirements and PAT status,
+then requests an ephemeral `:danger-full-access` thread with user review.
+
+The receipt compares approval/profile requirements and the returned profile,
+reviewer, approval policy, ephemeral flag, and legacy sandbox representation.
+`accepted` requires matching permission settings and an ephemeral thread; unknown provenance is
+`unconfirmed`, and different settings are `mismatch`. RPC errors do not establish
+a policy denial. Receipts include the fixture revision ID and fixed phase,
+outcome and cleanup classifications. Peer fields contain known enums and boolean
+or null comparisons; credentials, account details, instructions and peer text are excluded.
+
+No diagnostic model turn or approval response is sent; ordinary runtime startup
+still performs its authentication probe. The exchange has ten seconds, socket
+cleanup two seconds, and output one second. Cancellation preserves an already
+classified Driver failure without changing worker claim-loss handling. Normal
+candidate teardown owns thread cleanup; socket closure does not prove removal.
+
 ## Agent network policy
 
 The policy scenario uses the production HTTP admission path, PostgreSQL worker,
@@ -245,3 +266,32 @@ The selected workflow must pass without skips. Its sanitized runtime log is
 written to the matrix artifacts directory. Cleanup remains with the owner of the
 prepared OpenShell lane; run the documented cleanup even on failure. The existing
 OpenShell advisory job exercises this workflow with the rest of its runtime suite.
+
+## Namespace bootstrap
+
+`namespace-driver-openshell-k3d-real.test.ts` uses shipped Installation bootstrap,
+PostgreSQL and the queued worker. It renders gateway configuration without
+installing gateway workloads. Selected Drivers create the gateway, signing key,
+and Workspace. The test checks zero persisted Agents, actual Pod readiness,
+gateway health, Workspace ownership, and distinct resources for a later Namespace.
+Operator-installed CRDs, RuntimeClass, RBAC and Envoy Agent routing are prerequisites.
+They do not create the namespace-owned OpenShell gateway or Workspace.
+
+Select `OCC_TEST_NAMESPACE_OPENSHELL_REAL=1` with the prepared `openshell` lane
+file environment, or QA scenario `namespace-lifecycle` with
+`OCC_TEST_QA_SANDBOX_ENV`. The advisory matrix includes the file on `main` and
+trusted `full-qa` PRs. Missing preparation fails the selected case.
+After both checkpoints, the test creates a native OpenClaw Agent in each Namespace
+through the API, deploys it through the same worker and OpenShell gateway, and
+checks a real model reply through authenticated Agent routing. It deletes each
+Agent through the API before Namespace cleanup. This uses the existing OpenShell
+Credential Gateway topology; it does not prove projected workload identity.
+
+The selected file requires `OPENAI_API_KEY` and `OCC_TEST_OPENAI_MODEL`. The QA
+entry point requires `OCC_TEST_QA_OPENAI_KEY_FILE`, `OCC_TEST_QA_OPENAI_MODEL` and
+`OCC_TEST_QA_SANDBOX_ENV`, with the `OpenClaw` preset and Kubernetes installation.
+It also checks pending setup, graceful worker restart, IAM denial and revocation,
+quota refusal, unavailable gateway cleanup, and deletion of an unclaimed external
+Namespace while preserving its operator-owned resources. Active database-lease
+loss remains outside this live case. See the [implementation plan](../../specs/plans/0035-namespace-driver-lifecycle.md)
+for recorded run results and remaining delivery checks.

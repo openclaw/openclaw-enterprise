@@ -35,9 +35,9 @@ import { retireToken } from "../../apps/controller/src/backends/token-service/re
 import { createWarmTokenReader } from "../../apps/controller/src/backends/token-service/warm-reader.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { githubMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
-import type { GitHubPreparationAdmission } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-contracts.ts";
-import { PostgresPreparedGitHubLifecycle } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-lifecycle.ts";
-import { PreparedGitHubPostgres } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-postgres.ts";
+import type { GitHubPreparationAdmission } from "../../apps/controller/src/drivers/repo/github/access/prepared-contracts.ts";
+import { PostgresPreparedGitHubLifecycle } from "../../apps/controller/src/drivers/repo/github/access/prepared-lifecycle.ts";
+import { PreparedGitHubPostgres } from "../../apps/controller/src/drivers/repo/github/access/prepared-postgres.ts";
 import {
   EgressSendReceipts,
   type SendAttempt,

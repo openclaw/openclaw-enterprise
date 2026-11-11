@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { fork } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import test, { type TestContext } from "node:test";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
@@ -10,7 +11,7 @@ import {
   sessionCookieName,
 } from "../helpers/production-sign-in.mjs";
 
-type Api = { url: string };
+type Api = { url: string; authorize(url: string): Promise<string> };
 type Login = { attemptId: string; cookie: string };
 type ApiInput = { databaseUrl: string; recoveryUserId: string; secrets: Record<string, string> };
 
@@ -76,7 +77,30 @@ async function startApi(t: TestContext, input: ApiInput) {
   assert.equal(message.type, "ready");
   assert.equal(message.pid, child.pid);
   assert.ok(typeof message.url === "string");
-  return { url: message.url, pid: child.pid, stop };
+  const authorize = async (url: string) => {
+    const id = randomUUID();
+    let listener: (message: unknown) => void;
+    const reply = new Promise<string>((resolve) => {
+      listener = (message) => {
+        if (
+          isRecord(message) &&
+          message.type === "code" &&
+          message.id === id &&
+          typeof message.code === "string"
+        ) {
+          resolve(message.code);
+        }
+      };
+      child.on("message", listener);
+      child.send({ type: "authorize", id, url });
+    });
+    try {
+      return await within(reply, 10000, "OIDC fixture did not authorize");
+    } finally {
+      child.off("message", listener!);
+    }
+  };
+  return { url: message.url, pid: child.pid, stop, authorize };
 }
 
 async function request(
@@ -120,16 +144,17 @@ async function request(
 }
 
 async function callback(api: Api): Promise<Login> {
-  const start = await request(api, "/api/auth/providers/github/start", { method: "POST" });
+  const start = await request(api, "/api/auth/providers/oidc/start", { method: "POST" });
   assert.equal(start.status, 200);
   assert.ok(typeof start.data.url === "string" && typeof start.data.attemptId === "string");
   const redirect = URL.parse(start.data.url);
   assert.ok(redirect, "Provider redirect must be a valid URL");
   const state = redirect.searchParams.get("state");
   assert.ok(state);
+  const code = await api.authorize(start.data.url);
   const completed = await request(
     api,
-    `/api/auth/providers/github/callback?state=${encodeURIComponent(state)}&code=subject-9400011`,
+    `/api/auth/providers/oidc/callback?state=${encodeURIComponent(state)}&code=${encodeURIComponent(code)}`,
     { cookie: cookieHeaderFromSetCookie(start.cookies) },
   );
   assert.equal(completed.status, 302);
@@ -140,7 +165,7 @@ async function callback(api: Api): Promise<Login> {
 }
 
 function collect(api: Api, login: Login) {
-  return request(api, "/api/auth/providers/github/result", {
+  return request(api, "/api/auth/providers/oidc/result", {
     method: "POST",
     cookie: login.cookie,
     body: { attemptId: login.attemptId },
@@ -192,8 +217,8 @@ test(
     assert.ok(databaseUrl);
     const secrets = {
       "occ-auth/secret": "process-sign-in-fixture-secret-at-least-32-bytes",
-      "occ-github-login/client-id": "process-fixture-client",
-      "occ-github-login/client-secret": "process-fixture-client-secret",
+      "occ-oidc-login/client-id": "process-fixture-client",
+      "occ-oidc-login/client-secret": "process-fixture-client-secret",
     };
     const email = "process-recovery@example.test";
     const password = await bootstrapProductionInstallation(t, {
@@ -221,7 +246,7 @@ test(
       cookie: adminCookie,
     });
     assert.equal(account.status, 200);
-    const attached = await request(a, `/api/auth/accounts/${recoveryUserId}/providers/github`, {
+    const attached = await request(a, `/api/auth/accounts/${recoveryUserId}/providers/oidc`, {
       method: "POST",
       cookie: adminCookie,
       body: { subject: "9400011", expectedVersion: account.data.version },

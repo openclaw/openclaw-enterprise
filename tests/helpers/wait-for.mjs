@@ -10,6 +10,13 @@ import { setTimeout as delay } from "node:timers/promises";
 // recent error from any read (even if later reads returned undefined) and keeps it as `cause`.
 // `description` may be a function, called once at the deadline, so the failure can report
 // the state that was still wrong.
+/**
+ * @template T
+ * @param {string | (() => string)} description
+ * @param {() => T | undefined | PromiseLike<T | undefined>} read
+ * @param {number | null | { timeoutMs?: number, intervalMs?: number, retryErrors?: boolean }} [options]
+ * @returns {Promise<T>}
+ */
 export async function waitFor(description, read, options = {}) {
   const {
     timeoutMs = 10_000,

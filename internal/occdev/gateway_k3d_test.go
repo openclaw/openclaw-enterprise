@@ -22,7 +22,7 @@ func TestComposeRoutingEnablesTheClusterScopedNativeAdminHosts(t *testing.T) {
 	nativeAdmin := values["agentNativeAdmin"].(map[string]any)
 	if nativeAdmin["enabled"] != true ||
 		nativeAdmin["domain"] != "agents.occ-dev-example.oce.localhost" ||
-		nativeAdmin["sharedCookieDomain"] != "occ-dev-example.oce.localhost" {
+		nativeAdmin["sharedCookieDomain"] != nil {
 		t.Fatalf("unexpected native admin routing values: %#v", nativeAdmin)
 	}
 }

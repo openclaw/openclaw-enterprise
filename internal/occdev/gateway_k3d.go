@@ -396,7 +396,7 @@ func composeDevelopmentRoutingValues(
 	routing *composeDevelopmentRouting,
 	remoteNodeCIDRs []string,
 ) map[string]any {
-	_, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
+	_, agentDomain, _ := developmentBrowserHosts(state.Cluster)
 	return map[string]any{
 		"images": map[string]string{"controller": routing.reference},
 		"auth":   map[string]string{"baseUrl": state.BrowserOrigin},
@@ -411,7 +411,7 @@ func composeDevelopmentRoutingValues(
 		"database": map[string]any{"cidrs": []string{routing.postgresCIDR}},
 		"cluster":  map[string]any{"cidrs": []string{routing.nodeCIDR}, "port": 6443},
 		"agentNativeAdmin": map[string]any{
-			"enabled": true, "domain": agentDomain, "sharedCookieDomain": cookieDomain,
+			"enabled": true, "domain": agentDomain,
 		},
 		"gatewayRouting": map[string]any{
 			"enabled":          true,
