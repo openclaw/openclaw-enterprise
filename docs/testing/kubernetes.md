@@ -191,13 +191,12 @@ suites for those outcomes.
 
 ## Keycloak OIDC tests
 
-The `keycloak-oidc` lane runs Chromium against disposable Keycloak and the
-production API with PostgreSQL. It generates fixture credentials.
+The `keycloak-oidc` lane uses Chromium, disposable Keycloak, the production API,
+PostgreSQL, and generated fixture credentials.
 
 ### Verified Keycloak flows
 
-The [sign-in suite](../../tests/integration/keycloak-oidc-sign-in.test.mjs)
-fails when a case is skipped or missing.
+Each [sign-in case](../../tests/integration/keycloak-oidc-sign-in.test.mjs) must pass.
 
 | Case                          | Evidence                                                                                                                           |
 | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
@@ -205,7 +204,7 @@ fails when a case is skipped or missing.
 | `client_secret_post` sign-in  | An attached user receives an OCE session.                                                                                          |
 | `client_secret_basic` sign-in | Sign-in uses HTTP Basic at the token endpoint.                                                                                     |
 | One named Keycloak provider   | Sign-in uses the named callback and creates a PostgreSQL session.                                                                  |
-| Two named OIDC providers      | After linking, the user signs in to one account through either realm.                                                              |
+| Two named OIDC providers      | Both realms sign in to one account. Ownership or access changes block links and replacement sessions.                              |
 | Signing-key rotation          | The next sign-in succeeds with the new key before a controller restart.                                                            |
 | Unattached user               | OCE refuses and audits sign-in. It creates no users or sessions.                                                                   |
 | Sign-out and user disablement | Sign-out ends the OCE session and keeps the Keycloak session. Disablement blocks future sign-in and keeps the current OCE session. |

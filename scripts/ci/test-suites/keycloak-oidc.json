@@ -24,6 +24,10 @@
         "attached alice signs in through Keycloak with client_secret_basic",
         "one named Keycloak provider signs in through the Console",
         "two named OIDC providers link and sign in through the Console",
+        "link completion refuses an identity attached to another account",
+        "link completion refuses an owner whose sessions were revoked",
+        "link completion refuses a disabled owner account",
+        "link completion refuses a detached owner method",
         "a higher-priority Keycloak realm key changes the signing kid and the next sign-in succeeds without a controller restart",
         "unattached carol is refused after Keycloak sign-in, audited and given no account",
         "Console sign-out ends alice's OCE session, one click signs her in again while her Keycloak session lives, and disabling her keeps that session but refuses her next sign-in"

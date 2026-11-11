@@ -6,7 +6,9 @@ import {
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import test, { after } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { tlsPeerCertificate } from "../helpers/tls-peer-certificate.mjs";
 import pg from "pg";
 import { chromium } from "playwright";
@@ -15,10 +17,14 @@ import { providerJSON } from "../../apps/controller/src/auth/provider-transport.
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { chromiumTrustArg, startHttpsIngress } from "../helpers/console-app.mjs";
 import {
+  assertProviderAttached,
   bootstrapProductionInstallation,
+  changeAccount,
   clientAddresses,
   composeProductionSignIn,
+  createAccount,
   installationRoles,
+  loginDenialCount,
   oidcUpgradeSettings,
   readAccount,
   signedInHeaders,
@@ -29,7 +35,7 @@ import {
 // https://keycloak.oce.localhost on 127.0.0.1:443 under a per-run CA that this process
 // trusts through NODE_EXTRA_CA_CERTS. Nothing here is stubbed: the browser fills Keycloak's
 // own login form, and the controller reaches the real token and JWKS endpoints with its
-// production transport. Requests are only observed.
+// production transport. The linking cases can pause a response without changing its contents.
 const issuer = process.env.OCC_TEST_KEYCLOAK_ISSUER;
 const secretsFile = process.env.OCC_TEST_KEYCLOAK_SECRETS_FILE;
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
@@ -165,6 +171,7 @@ async function prepareInstallation(t) {
     .rows[0].id;
   const endpoints = keycloakEndpoints(issuer);
   const prepared = {
+    admin: { email: adminEmail, password: adminPassword },
     pool,
     state,
     secrets,
@@ -199,6 +206,7 @@ async function prepareInstallation(t) {
     },
   };
   const roles = await installationRoles(state, pool);
+  prepared.readerRoleId = roles.reader.id;
   const app = await composeProductionSignIn(t, {
     ...prepared.composition,
     settings: prepared.settings("client_secret_post"),
@@ -284,6 +292,7 @@ async function serveConsole(t, tokenAuth, named = false, extraSettings = {}) {
   }
   return {
     ...prepared,
+    app,
     callbackPath: named ? namedCallbackPath : callbackPath,
     resultPath: named ? "/api/auth/providers/oidc/keycloak/result" : resultPath,
   };
@@ -351,12 +360,80 @@ async function signInThroughKeycloak({ prepared, page }, user) {
 }
 
 async function submitKeycloakLogin({ prepared, page }, user) {
+  await (await keycloakLoginButton({ prepared, page }, user)).click();
+}
+
+async function keycloakLoginButton({ prepared, page }, user) {
   const label = prepared.label ?? "Keycloak";
   await page.getByRole("button", { name: `Continue with ${label}`, exact: true }).click();
   await page.waitForURL((url) => url.origin === new URL(prepared.endpoints.issuer).origin);
   await page.locator("#username").fill(user);
   await page.locator("#password").fill(prepared.secrets.users[user].password);
-  await page.locator("#kc-login").click();
+  return page.locator("#kc-login");
+}
+
+async function whileTokenResponseIsPaused(tokenUrl, submit, action) {
+  const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+  const { getGlobalDispatcher, setGlobalDispatcher } = require("undici");
+  const dispatcher = getGlobalDispatcher();
+  const { origin, pathname } = new URL(tokenUrl);
+  const received = Promise.withResolvers();
+  const deadline = new AbortController();
+  let release;
+  // Let real Keycloak accept the owner login. Hold its response until the
+  // administrator's change commits, before OCC can verify the returned identity.
+  setGlobalDispatcher(
+    dispatcher.compose((dispatch) => (request, handler) => {
+      if (
+        String(request.origin) !== origin ||
+        request.path !== pathname ||
+        request.method !== "POST"
+      ) {
+        return dispatch(request, handler);
+      }
+      return dispatch(request, {
+        onRequestStart: handler.onRequestStart?.bind(handler),
+        onResponseStart(controller, status, ...args) {
+          if (status < 200) {
+            handler.onResponseStart?.(controller, status, ...args);
+            return;
+          }
+          controller.pause();
+          release = () => {
+            if (!controller.aborted) {
+              handler.onResponseStart?.(controller, status, ...args);
+              controller.resume();
+            }
+          };
+          received.resolve(status);
+        },
+        onResponseData: handler.onResponseData?.bind(handler),
+        onResponseEnd: handler.onResponseEnd?.bind(handler),
+        onResponseError: handler.onResponseError?.bind(handler),
+      });
+    }),
+  );
+  // Playwright may wait for the navigation triggered by this click. Let the
+  // callback finish after releasing the response, then wait for the click.
+  const submitted = Promise.resolve().then(submit);
+  let result;
+  try {
+    const status = await Promise.race([
+      received.promise,
+      submitted.then(() => received.promise),
+      delay(8_000, undefined, { signal: deadline.signal, ref: false }).then(() => {
+        assert.fail("Keycloak did not answer the owner token request");
+      }),
+    ]);
+    assert.equal(status, 200, "Keycloak accepted the owner token request");
+    result = await action();
+  } finally {
+    deadline.abort();
+    setGlobalDispatcher(dispatcher);
+    release?.();
+  }
+  await submitted;
+  return result;
 }
 
 function assertAuthorizationRequest(prepared, authorizations) {
@@ -582,32 +659,133 @@ test(
           [prepared.aliceId],
         )
       ).rows;
+    async function startLinkConfirmation(context) {
+      const linking = await openPage(context, partners);
+      await linking.page.goto(`${origin}/console/`);
+      await linking.page
+        .getByRole("button", { name: "Continue with Keycloak", exact: true })
+        .waitFor();
+      await linking.page
+        .getByRole("button", { name: `Continue with ${label}`, exact: true })
+        .waitFor();
+      await linking.page.getByRole("button", { name: "Link an existing account" }).click();
+      await submitKeycloakLogin(linking, "alice");
+      assertAuthorizationRequest(partners, linking.authorizations);
+      assert.equal((await linking.callback).headers().location, "/console/?authLink=oidc/partners");
+      await linking.page
+        .getByText(`To link ${label}, use a sign-in method already on your account.`)
+        .waitFor();
+      return observeProvider(linking.page, primary);
+    }
+
+    const { app } = primary;
+    const admin = await signedInHeaders(app, origin, prepared.admin, prepared.address());
+    const other = await createAccount(app, admin, {
+      email: "partners-operator-assignment@example.test",
+      password: randomBytes(24).toString("base64url"),
+      roleId: prepared.readerRoleId,
+    });
+    async function changeAccess(userId, operation) {
+      const response = await changeAccount(app, admin, userId, operation);
+      assert.equal(response.statusCode, 200, `Operator could ${operation} on the test account`);
+    }
+    async function detachMethod(userId, externalSubject) {
+      const account = await readAccount(app, admin, userId);
+      const method = account.methods.find(({ subject }) => subject === externalSubject);
+      assert.ok(method, "the operator can see the attached method");
+      await changeAccess(userId, `methods/${method.methodId}/detach`);
+    }
+    async function linkEffects() {
+      const identities = await prepared.pool.query(
+        "SELECT id, user_id, provider_id, account_id FROM occ.account WHERE identity_only ORDER BY id",
+      );
+      const sessions = await prepared.pool.query("SELECT id, user_id FROM occ.session ORDER BY id");
+      const results = await prepared.pool.query(
+        "SELECT count(*)::int AS count FROM occ.human_authentication_results",
+      );
+      const audit = await prepared.state.transact((unit) => unit.audit.list());
+      return {
+        identities: identities.rows,
+        sessions: sessions.rows,
+        results: results.rows[0].count,
+        linkAudits: audit.filter(({ action }) => action === "authentication.method.link").length,
+      };
+    }
+
+    async function assertLinkRefused(context, mutate, { disabled = false } = {}) {
+      const confirmation = await startLinkConfirmation(context);
+      const ownerLogin = await keycloakLoginButton(confirmation, "alice");
+      const reason = disabled ? "ACCOUNT_DISABLED" : deniedReason;
+      const denials = () => loginDenialCount(prepared.state, reason, "oidc");
+      const deniedBefore = await denials();
+      const afterAdmin = await whileTokenResponseIsPaused(
+        primary.endpoints.tokenUrl,
+        () => ownerLogin.click(),
+        async () => {
+          await mutate();
+          return linkEffects();
+        },
+      );
+      const redirect = await confirmation.callback;
+      assertAuthorizationRequest(primary, confirmation.authorizations);
+      assert.equal(redirect.status(), 302);
+      assert.equal(
+        redirect.headers().location,
+        `/console/?authError=oidc/keycloak${disabled ? "&authReason=account-disabled" : ""}`,
+      );
+      await confirmation.page.waitForURL(`${origin}/console/**`);
+      assert.equal(
+        await confirmation.page.evaluate(
+          async () => (await (await fetch("/api/auth/session")).json()).data,
+        ),
+        null,
+        "the browser has no replacement session",
+      );
+      assert.deepEqual(await linkEffects(), afterAdmin, "only the operator's changes persist");
+      assert.equal(await denials(), deniedBefore + 1, "the callback refusal is audited");
+    }
+
+    await signInAlice(await openPage(t, primary));
+    await t.test(
+      "link completion refuses an identity attached to another account",
+      async (caseT) => {
+        await assertLinkRefused(caseT, async () => {
+          await assertProviderAttached(app, admin, other.id, "oidc/partners", subject);
+          caseT.after(() => detachMethod(other.id, subject));
+        });
+      },
+    );
+    await t.test("link completion refuses an owner whose sessions were revoked", async (caseT) => {
+      await assertLinkRefused(caseT, () => changeAccess(prepared.aliceId, "revoke"));
+    });
+    await t.test("link completion refuses a disabled owner account", async (caseT) => {
+      await assertLinkRefused(
+        caseT,
+        async () => {
+          await changeAccess(prepared.aliceId, "disable");
+          caseT.after(() => changeAccess(prepared.aliceId, "enable"));
+        },
+        { disabled: true },
+      );
+    });
+    await t.test("link completion refuses a detached owner method", async (caseT) => {
+      await assertLinkRefused(caseT, async () => {
+        await detachMethod(prepared.aliceId, aliceSubject);
+        caseT.after(() =>
+          assertProviderAttached(app, admin, prepared.aliceId, "oidc/keycloak", aliceSubject),
+        );
+      });
+    });
+
     await signInAlice(await openPage(t, primary));
     const methodsBefore = await methods();
     assert.equal(methodsBefore.length, 1);
     const sessionsBefore = await aliceSessions(prepared);
 
-    const linking = await openPage(t, partners);
-    await linking.page.goto(`${origin}/console/`);
-    await linking.page
-      .getByRole("button", { name: "Continue with Keycloak", exact: true })
-      .waitFor();
-    await linking.page
-      .getByRole("button", { name: `Continue with ${label}`, exact: true })
-      .waitFor();
-    await linking.page.getByRole("button", { name: "Link an existing account" }).click();
-    await submitKeycloakLogin(linking, "alice");
-    assertAuthorizationRequest(partners, linking.authorizations);
-    assert.equal((await linking.callback).headers().location, "/console/?authLink=oidc/partners");
-
+    const confirmation = await startLinkConfirmation(t);
     // A verified login from the new realm alone must not add a method or session.
     assert.deepEqual(await methods(), methodsBefore);
     assert.deepEqual(await aliceSessions(prepared), sessionsBefore);
-    await linking.page
-      .getByText(`To link ${label}, use a sign-in method already on your account.`)
-      .waitFor();
-
-    const confirmation = observeProvider(linking.page, primary);
     const result = nextResponse(confirmation.page, primary.resultPath);
     await submitKeycloakLogin(confirmation, "alice");
     await assertAliceSignedIn(confirmation, confirmation.callback, result);
