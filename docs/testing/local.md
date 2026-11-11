@@ -115,12 +115,22 @@ retained private state is diagnostic, and the outer lane does not automatically
 recover it. This suite does not prove recovery from arbitrary runner termination.
 No timeout or uncertain command outcome counts as successful cleanup.
 
-The unchanged cleanup CLI must remove the owned resources after a settled
+The cleanup CLI must remove the owned resources after a settled
 failed case, and refuse both a replaced cluster and a newly shared volume.
 Assertions inspect those effects before the fixture's separate final cleanup.
 The runner, release and settlement inputs are synthetic; this proves real
 Docker/k3d cleanup effects, not GitHub admission, image publication, child
 settlement or installed sign-in. A failed settled case never qualifies a release.
+
+Staged cleanup passes the prepared state digest and captured Docker custody into
+the cleanup owner. It checks the state under its lock, removes the exact server
+and network IDs, and rechecks volume generation and consumers before non-forced
+removal. A consumer attached after server removal preserves the volume and fails
+cleanup. Docker has no atomic generation condition for named-volume deletion;
+these checks do not protect against a privileged actor recreating an unused
+same-name volume between inspection and removal. Run this proof on an isolated
+host without competing Docker writers. Partial or uncertain cleanup retains state
+for reconciliation and never qualifies a release.
 
 ## Packaged-driver integration
 

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: 2026-11-11
-last_updated_session: authoring-run/8a266aca-074d-4db2-a374-624cabc77861
+updated: "2026-11-11"
+last_updated_session: "authoring-run/f3df3f10-664e-40c7-9f31-907e3bcf7ad1"
 ---
 
 # GitHub Actions testing flow
@@ -228,12 +228,13 @@ prevent retention.
 Fixture bootstrap diagnostics upload separately as `diagnostics-<artifact-prefix>-<lane>-attempt-<N>`.
 They survive cluster/private-state cleanup but cannot satisfy required test results.
 
-Per-file cleanup releases its database; job cleanup removes owned resources. Deleting the
-owned k3d cluster removes Collector RBAC and Namespace. Logging cleanup removes its Docker
-backend and JSONL/config directory without Kubernetes. Cleanup errors fail the check except
-for [hosted QA image warnings](github-actions-testing/preparation.md). Private state stays
-on its original runner and path. User databases, contexts, unrelated containers and other
-image references remain untouched.
+Per-file cleanup releases databases; job cleanup removes owned resources,
+including Collector objects and logging data. Errors fail
+except [QA image warnings](github-actions-testing/preparation.md).
+`cleanup-staged-signin.mjs` passes the prepared state digest and custody to
+`scripts/ci/cleanup.ts:cleanupState`: locked validation precedes exact server/network
+deletion and volume checks. [Named-volume limits](../testing/local.md#staged-sign-in-cleanup)
+remain. State stays on its runner; unrelated resources remain untouched.
 
 `scripts/ci/cleanup.ts:execFile` awaits exit and drained output. On POSIX,
 `scripts/ci/cleanup-command.ts` kills its group on caller IPC closure, including caller SIGKILL.
@@ -278,6 +279,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 08:17: Carry prepared custody into destructive cleanup. (authoring-run/f3df3f10-664e-40c7-9f31-907e3bcf7ad1 - 6a60e750c83a3508041ef5100a36f7232ed226ea)
 
 - 2026-11-11 08:11: Bind sign-in rehearsal to the current v3 profile. (authoring-run/8a266aca-074d-4db2-a374-624cabc77861 - 9bf18bf3244b0a0e6f26f5a10263f51ea0b08b3c)
 

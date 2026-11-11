@@ -112,7 +112,14 @@ async function cleanup(planHash, preparedHash) {
     assert.equal(current.nodeUID, owned.nodeUID);
     assert.deepEqual(await current.cleanupIdentity(), owned.membership);
     const { cleanupState } = await import("./cleanup.mjs");
-    await cleanupState(join(dir, "cluster-state.json"));
+    await cleanupState(join(dir, "cluster-state.json"), {
+      expectedStateSha256: owned.stateSha256,
+      k3dIdentity: {
+        cluster: owned.cluster,
+        serverID: owned.serverID,
+        ...owned.membership,
+      },
+    });
     for (const [kind, id] of [
       ["network", owned.membership.networkID],
       ...owned.membership.volumes.map((v) => ["volume", v.name]),
