@@ -5343,11 +5343,7 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   assert.deepEqual(saved.data.plugins, initialPlugins);
   assert.deepEqual(saved.data.pluginApprovers, []);
 
-  await controller.fixture.controller.handleNamespaceLifecycle(
-    controller.fixture.principal.id,
-    namespace.id,
-    "ready",
-  );
+  await controller.fixture.markNamespaceReady(namespace.id);
   await bindHarnessKey(controller.fixture, namespace.id, created.data);
   const deployment = await controller.request(
     "POST",
@@ -5661,11 +5657,7 @@ test("the Codex Plugin Driver refuses an automatic reviewer without an on-reques
     body: { configurationId: configuration.id, plugins: automatic },
   });
   assert.equal(restored.status, 200, JSON.stringify(restored.body));
-  await controller.fixture.controller.handleNamespaceLifecycle(
-    controller.fixture.principal.id,
-    namespace.id,
-    "ready",
-  );
+  await controller.fixture.markNamespaceReady(namespace.id);
   await bindHarnessKey(controller.fixture, namespace.id, created.data);
   const store = async (approvalPolicy) => {
     const stored = configurationDriver.stored({ namespaceId: namespace.id, id: configuration.id });
@@ -5760,11 +5752,7 @@ test("Agent save and deployment refuse plugins the Plugin Driver cannot run in t
     }),
     "update",
   );
-  await controller.fixture.controller.handleNamespaceLifecycle(
-    controller.fixture.principal.id,
-    namespace.id,
-    "ready",
-  );
+  await controller.fixture.markNamespaceReady(namespace.id);
   await bindHarnessKey(controller.fixture, namespace.id, embedded.data);
   // Removing an installed catalog prevents another deployment of an Agent that already selected it.
   const openclawPath = `${agents}/${embedded.data.id}`;
@@ -6020,11 +6008,7 @@ test("the OpenClaw Plugin Driver refuses a selection whose every tool the Config
   const unchanged = await controller.request("GET", agentPath);
   assert.equal(unchanged.data.configurationId, configuration.id);
   assert.deepEqual(unchanged.data.plugins, plugins);
-  await controller.fixture.controller.handleNamespaceLifecycle(
-    controller.fixture.principal.id,
-    namespace.id,
-    "ready",
-  );
+  await controller.fixture.markNamespaceReady(namespace.id);
   await bindHarnessKey(controller.fixture, namespace.id, created.data);
   const store = async (values) => {
     const stored = configurationDriver.stored({ namespaceId: namespace.id, id: configuration.id });
@@ -6176,11 +6160,7 @@ test("the OpenClaw Plugin Driver refuses Configuration plugin settings the Gatew
   // the pair again and creates no revision; removing the setting deploys.
   const [agent] = agents;
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
-  await controller.fixture.controller.handleNamespaceLifecycle(
-    controller.fixture.principal.id,
-    namespace.id,
-    "ready",
-  );
+  await controller.fixture.markNamespaceReady(namespace.id);
   await bindHarnessKey(controller.fixture, namespace.id, agent);
   const stored = configurationDriver.stored({
     namespaceId: namespace.id,
