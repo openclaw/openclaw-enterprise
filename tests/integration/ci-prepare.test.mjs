@@ -3607,8 +3607,20 @@ if (args[0] === "pull") {
         prepareLane: true,
       },
     ];
+    // The documented --selected-file command must admit the same API-key path.
+    for (const credentials of [["OPENAI_API_KEY"], ["CODEX_ACCESS_TOKEN"]]) {
+      cases.push({
+        harness: "codex",
+        endpoint: true,
+        credentials,
+        file: "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts",
+        selectedFile: true,
+        ...(credentials.includes("OPENAI_API_KEY") ? {} : { missing: "OPENAI_API_KEY" }),
+      });
+    }
     // Each split owner must retain the credential admission gate before any resource is created.
     for (const file of [
+      "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts",
       "tests/integration/openshell-gateway-tool-policy-real.test.ts",
       "tests/integration/openshell-credentials-real.test.ts",
       "tests/integration/openshell-withdrawal-real.test.ts",
@@ -3627,6 +3639,22 @@ if (args[0] === "pull") {
         { harness: "codex", endpoint: true, credentials: ["OPENAI_API_KEY"], file },
       );
     }
+    const scratch = "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts";
+    for (const selectedFile of [false, true]) {
+      cases.push({
+        harness: "openclaw",
+        credentials: ["OPENAI_API_KEY"],
+        file: scratch,
+        selectedFile,
+        unsupportedHarness: true,
+      });
+    }
+    cases.push({
+      harness: "openclaw",
+      credentials: ["OPENAI_API_KEY"],
+      file: "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+      selectedFile: true,
+    });
     for (const [index, value] of cases.entries()) {
       const statePath = join(root, `credential-${index}.json`);
       const env = {
@@ -3655,17 +3683,23 @@ if (args[0] === "pull") {
               "openshell",
               "--state",
               statePath,
-              ...(value.file ? ["--file", value.file] : []),
+              ...(value.file
+                ? [value.selectedFile ? "--selected-file" : "--file", value.file]
+                : []),
             ],
             env,
           );
       assert.equal(result.status, 1);
-      assert.match(
-        result.stderr,
-        value.missing
-          ? new RegExp(`Missing required CI input\\(s\\): ${value.missing}`)
-          : /OCC_TEST_KUBERNETES_GATEWAY_IMAGE must be an immutable/,
-      );
+      if (value.unsupportedHarness) {
+        assert.match(result.stderr, /requires OCC_TEST_OPENSHELL_HARNESS=codex/);
+      } else {
+        assert.match(
+          result.stderr,
+          value.missing
+            ? new RegExp(`Missing required CI input\\(s\\): ${value.missing}`)
+            : /OCC_TEST_KUBERNETES_GATEWAY_IMAGE must be an immutable/,
+        );
+      }
       await assert.rejects(() => stat(statePath), { code: "ENOENT" });
     }
   });
@@ -3727,6 +3761,10 @@ if (args[0] === "pull") {
         },
       ],
     ]) {
+      const selectedFile =
+        name === "stock"
+          ? "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts"
+          : file;
       const statePath = join(root, name + ".json");
       const env = { ...preparedInputs, ...version };
       await writeState(statePath, {
@@ -3735,7 +3773,7 @@ if (args[0] === "pull") {
         lane,
         prefix: server.owner,
         statePath,
-        selectedFile: file,
+        selectedFile,
         resources: [server, template],
         env,
       });
@@ -3743,12 +3781,17 @@ if (args[0] === "pull") {
         `import assert from "node:assert/strict";
          const { prepareFile } = await import(process.argv[1]);
          const prepared = await prepareFile({
-           lane: ${JSON.stringify(lane)}, file: ${JSON.stringify(file)}, statePath: process.argv[2],
+           lane: ${JSON.stringify(lane)}, file: ${JSON.stringify(selectedFile)}, statePath: process.argv[2],
          });
          for (const [key, value] of Object.entries(${JSON.stringify(env)})) {
            assert.equal(prepared.env[key], value);
          }
-         assert.equal(new URL(prepared.env.OCC_TEST_DATABASE_URL).username, "occ_app");
+         const application = new URL(prepared.env.OCC_TEST_DATABASE_URL);
+         const migration = new URL(prepared.env.OCC_TEST_OPENSHELL_POLICY_MIGRATION_DATABASE_URL);
+         assert.equal(application.username, "occ_app");
+         assert.equal(migration.username, "occ_migrator");
+         assert.equal(migration.host, application.host);
+         assert.equal(migration.pathname, application.pathname);
          await prepared.cleanup();`,
         statePath,
         { ...baseEnv, ...env },

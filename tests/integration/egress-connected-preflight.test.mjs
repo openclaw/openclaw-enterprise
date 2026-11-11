@@ -106,6 +106,62 @@ test("connected workload binding accepts only the maintained launcher identity a
   assertOpenShellHarnessBinding("workspace", revision, sandbox, perAgent);
   assert.throws(() => check(valid, "unknown"), { code: "ERR_ASSERTION" });
 
+  await t.test(
+    "namespace-shared account preserves exact workload ownership without a token",
+    () => {
+      const configuredAccount = openShellAgentName("first_agent");
+      const shared = structuredClone(valid);
+      shared.spec.serviceAccountName = configuredAccount;
+      const checkShared = (pod, expected = configuredAccount) =>
+        assertOpenShellHarnessBinding(
+          "workspace",
+          revision,
+          sandbox,
+          pod,
+          "namespaceShared",
+          expected,
+        );
+      checkShared(shared);
+      assert.throws(() => checkShared(shared, ""), { code: "ERR_ASSERTION" });
+      assert.throws(
+        () =>
+          assertOpenShellHarnessBinding("workspace", revision, sandbox, shared, "namespaceShared"),
+        { code: "ERR_ASSERTION" },
+      );
+      assert.throws(() => checkShared(shared, "wrong-account"), { code: "ERR_ASSERTION" });
+      assert.throws(() => assertOpenShellHarnessBinding("workspace", revision, sandbox, shared), {
+        code: "ERR_ASSERTION",
+      });
+      for (const mutate of [
+        (pod) => {
+          pod.metadata.labels["openclaw.dev/agent"] = "first_agent";
+        },
+        (pod) => {
+          pod.metadata.labels["openclaw.dev/revision"] = "other_revision";
+        },
+        (pod) => {
+          pod.metadata.ownerReferences[0].uid = "replaced-sandbox";
+        },
+        (pod) => {
+          pod.spec.automountServiceAccountToken = true;
+        },
+        (pod) => {
+          delete pod.spec.automountServiceAccountToken;
+        },
+        (pod) => {
+          pod.spec.volumes.push({
+            name: "unexpected-token",
+            projected: { sources: [{ serviceAccountToken: { path: "token" } }] },
+          });
+        },
+      ]) {
+        const changed = structuredClone(shared);
+        mutate(changed);
+        assert.throws(() => checkShared(changed), { code: "ERR_ASSERTION" });
+      }
+    },
+  );
+
   const rejects = (name, overrides) =>
     t.test(name, () => {
       const pod = { ...valid, ...overrides };

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { isDeepStrictEqual } from "node:util";
+import { createWorkerLogEmitter, resemblesCredential } from "../../apps/controller/src/logging.ts";
 import {
   isCredentialLine,
   maskPrivateKeyLines,
@@ -7,7 +8,11 @@ import {
   redactLogLine,
 } from "../../scripts/ci/failure-redaction.mjs";
 import { compareEvents, eventObservedTime } from "../../scripts/ci/kubernetes-event-time.ts";
-import { diagnosticDeadlinePassed, diagnosticRequestTimeout } from "./kubernetes-real.mjs";
+import {
+  diagnosticDeadlinePassed,
+  diagnosticRequestTimeout,
+  withinDiagnosticDeadline,
+} from "./kubernetes-real.mjs";
 
 // Failure evidence for k3d tests whose own error says too little. Everything here is
 // redacted before it is clipped: a value cut in half could no longer be matched.
@@ -16,6 +21,145 @@ const logLineChars = 400;
 const maxPods = 5;
 const maxLogContainers = 6;
 const credentialLineMarker = "[redacted credential-bearing line]";
+
+// Only worker-owned identifiers and classifications; never provider messages or chat text.
+function summarizeWorkerEvent(event) {
+  return Object.fromEntries(
+    [
+      "event",
+      "operation",
+      "revisionId",
+      "outcome",
+      "code",
+      "attempt",
+      "cause",
+      "failure",
+      "dependency",
+      "method",
+      "grpcStatus",
+      "step",
+      "errorClass",
+      "status",
+      "candidatePreparationReached",
+      "cleanupCause",
+      "validationCategory",
+    ]
+      .map((key) => [key, event[key]])
+      .filter(
+        ([key, value]) =>
+          (typeof value === "string" &&
+            /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u.test(value) &&
+            !resemblesCredential(value) &&
+            ((key === "code" && value === "AUTHORIZATION_DENIED") ||
+              (!isCredentialLine(value) && redactLogLine(value, [], 160) === value))) ||
+          (typeof value === "number" && Number.isSafeInteger(value)) ||
+          (key === "candidatePreparationReached" && typeof value === "boolean"),
+      ),
+  );
+}
+
+// The reporter drops whole lines naming authorization. Preserve the exact code in
+// returned evidence, but render this one fixed worker classification without that keyword.
+function workerEventForOutput(event) {
+  return event.code === "AUTHORIZATION_DENIED" ? { ...event, code: "ACCESS_DENIED" } : event;
+}
+
+export function createOpenShellWorkerLogEmitter(logger) {
+  const emit = createWorkerLogEmitter(logger);
+  return (event) => emit(workerEventForOutput(summarizeWorkerEvent(event)));
+}
+
+export function workerDiagnosticLines({ operation, revisionId, persisted, events }) {
+  if (diagnosticDeadlinePassed()) {
+    return [];
+  }
+  const { queue = [], ...state } = persisted ?? {};
+  return [
+    `OpenShell worker completion diagnostic: ${JSON.stringify({ operation, revisionId, persisted: state })}`,
+    ...queue.map((row) => `OpenShell worker queue: ${JSON.stringify(row)}`),
+    ...[...events]
+      .reverse()
+      .map((event) => `OpenShell worker event: ${JSON.stringify(workerEventForOutput(event))}`),
+  ];
+}
+
+// Replacement failure messages use the same safe spelling as standalone event output.
+export function workerFailureDetail(worker, secrets) {
+  return `Worker: ${redactLogLine(
+    JSON.stringify({
+      ...worker,
+      events: [...(worker?.events ?? [])].reverse().map(workerEventForOutput),
+    }),
+    secrets,
+    2_500,
+  )}`;
+}
+
+function writeFailureEvidence(line) {
+  try {
+    process.stderr.write(`${line}\n`);
+  } catch {
+    // An unavailable output sink must not replace the activation error.
+  }
+}
+
+// Both activation catches share one budget and always preserve the original failure,
+// including when collecting, formatting, or writing diagnostics itself fails.
+export async function rethrowOpenShellFailure(
+  error,
+  diagnose,
+  { provisioningFailure, secrets = [], ...options } = {},
+) {
+  const timedOut = Symbol("diagnostic timeout");
+  try {
+    if (provisioningFailure !== undefined) {
+      writeFailureEvidence(
+        `First OpenShell provisioning failure: ${redactLogLine(provisioningFailure.message, secrets, 800)}`,
+      );
+    }
+  } catch {
+    // Even malformed cached evidence must leave the diagnostic and original error intact.
+  }
+  try {
+    if ((await withinDiagnosticDeadline(diagnose, { ...options, timedOut })) === timedOut) {
+      writeFailureEvidence("OpenShell activation diagnostics timed out");
+    }
+  } catch {
+    // Evidence is best effort; it must not replace the failure being diagnosed.
+  }
+  throw error;
+}
+
+// Identical events collapse into one entry with a count and their first and last receipt
+// times, ordered by last receipt: a namespace.ensure retried every poll (finding 1532) would
+// otherwise fill the list and push the persisted revision and queue state out of the message.
+export function summarizeWorkerEvents(events, revisionId, limit = 40) {
+  const collapsed = new Map();
+  for (const event of events) {
+    const summary = summarizeWorkerEvent(event);
+    if (
+      summary.revisionId !== revisionId &&
+      summary.event !== "worker.completed" &&
+      summary.event !== "worker.error"
+    ) {
+      continue;
+    }
+    const key = JSON.stringify(summary);
+    const previous = collapsed.get(key);
+    collapsed.delete(key);
+    collapsed.set(key, {
+      ...summary,
+      count: (previous?.count ?? 0) + 1,
+      firstAt: previous?.firstAt ?? event.observedAt,
+      lastAt: event.observedAt,
+    });
+  }
+  return [...collapsed.values()]
+    .slice(-limit)
+    .map(({ count, firstAt, lastAt, ...summary }) =>
+      count === 1 ? { ...summary, at: lastAt } : { ...summary, count, firstAt, lastAt },
+    );
+}
 
 function openShellEvent(line) {
   const json = /\bOCSF-JSON (\{.*\})$/.exec(line);

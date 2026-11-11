@@ -49,6 +49,19 @@ that excluded declarations are omitted, not that an old callback was retained an
 denied. The retained/fallback callback paths also have focused OpenClaw owner tests.
 Harness-local configuration, credentials and process protection remain separate work.
 
+The tool-policy proof reports structured worker failures while it runs. If an
+initial or replacement revision fails to activate, it also reports persisted
+work state and a bounded summary of recent worker events before cleanup. Compute
+preparation summaries retain the step, error class, status, and cleanup cause;
+they exclude provider responses and chat text. Its bounded teardown attempts every
+registered cleanup and emits an `openshell-fixture-teardown` outcome, so a failed
+deployment and an incomplete cleanup remain distinguishable.
+Cached provisioning failures print before diagnostic reads; a fixed notice reports budget expiry.
+Both failure paths use one 60-second diagnostic budget and preserve the original
+error if evidence collection fails. Printed `ACCESS_DENIED` means the worker's
+fixed `AUTHORIZATION_DENIED` code; this spelling survives the log exporter's
+credential redaction. Queue rows print separately to avoid line clipping.
+
 ## Credential source and Harness
 
 Both modes compose the `openshell` Backend with the Sandbox and Credential
