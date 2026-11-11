@@ -39,6 +39,7 @@ import {
 export {
   postgresPreparedGitHubProof,
   preparedGitHubLive,
+  preparedGitHubRejectedMaterialMatch,
   readPreparedGitHubMetadata,
 } from "./state/prepared-github-state.ts";
 export type { PreparedGitHubMetadataAdmission } from "./state/prepared-github-state.ts";
