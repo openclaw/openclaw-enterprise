@@ -13,10 +13,6 @@ async function main() {
   const token = "synthetic-startup-transport";
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   let requests = 0;
-  const credentialLabels = new Map([
-    ["Bearer sk-openclaw-runtime-probe-synthetic", "origin-key"],
-    ["Bearer synthetic-uninjected-placeholder", "placeholder"],
-  ]);
   subscribe("http.server.request.start", (message) => {
     const { request } = message as { request: IncomingMessage };
     requests += 1;
@@ -24,7 +20,6 @@ async function main() {
       event: "wire",
       method: request.method === "POST" ? "POST" : "unexpected",
       target: request.url === "/v1/responses" ? "responses" : "unexpected",
-      credential: credentialLabels.get(request.headers.authorization ?? "") ?? "unexpected",
     });
   });
   await startOpenShellModelOrigin({
@@ -35,6 +30,7 @@ async function main() {
       codex: digest("sk-openclaw-runtime-probe-synthetic"),
       openclaw: digest("synthetic-unused-openclaw"),
     },
+    expectedGuestPlaceholder: "synthetic-uninjected-placeholder",
     turns: [],
     tls: { key: readFileSync("/fixture/key.pem"), cert: readFileSync("/fixture/cert.pem") },
     onObservation: (observation) => {
@@ -42,6 +38,16 @@ async function main() {
         event: "origin",
         kind: ["unmarked", "rejected"].includes(observation.kind) ? observation.kind : "unexpected",
         status: "status" in observation ? observation.status : null,
+        auth: ["accepted", "placeholder", "rejected", "missing"].includes(observation.auth)
+          ? observation.auth
+          : "unexpected",
+        ...(observation.harness === undefined
+          ? {}
+          : {
+              harness: ["codex", "openclaw"].includes(observation.harness)
+                ? observation.harness
+                : "unexpected",
+            }),
       });
     },
   });

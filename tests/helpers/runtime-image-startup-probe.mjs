@@ -380,13 +380,16 @@ function protectedProgress(snapshot = {}) {
           ...result,
           method: label(entry.method, ["POST"]),
           target: label(entry.target, ["responses"]),
-          credential: label(entry.credential, ["origin-key", "placeholder"]),
         };
       }
       if (event === "origin") {
         return {
           ...result,
           kind: label(entry.kind, ["unmarked", "rejected"]),
+          auth: label(entry.auth, ["accepted", "placeholder", "rejected", "missing"]),
+          ...(entry.harness === undefined
+            ? {}
+            : { harness: label(entry.harness, ["codex", "openclaw"]) }),
           status: number(entry.status),
         };
       }
@@ -746,7 +749,7 @@ async function runStartupProbeScenarioInternal(
     if (!snapshot.running) {
       if (progress !== undefined) {
         progress.stage = "wrapper-exited";
-        throw protectedFailure(progress, "did not settle");
+        throw new Error("Protected startup did not settle");
       }
       const evidence = await startupProbeEvidence(scenario, snapshot, loop);
       throw startupProbeFailure(
@@ -759,7 +762,7 @@ async function runStartupProbeScenarioInternal(
     if (Date.now() > deadline) {
       if (progress !== undefined) {
         progress.stage = "outer-timeout";
-        throw protectedFailure(progress, "did not settle");
+        throw new Error("Protected startup did not settle");
       }
       const evidence = await startupProbeEvidence(scenario, snapshot, loop);
       throw startupProbeFailure(

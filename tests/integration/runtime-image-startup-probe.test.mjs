@@ -269,7 +269,8 @@ test(
                   message: canary,
                 },
               },
-              { event: "wire", method: canary, target: canary, credential: canary },
+              { event: "wire", method: canary, target: canary },
+              { event: "origin", auth: canary, harness: canary, kind: canary },
             ],
           },
         },
@@ -336,12 +337,13 @@ test(
           assert.equal(origin.length, 1, "exactly one native model probe reaches the origin");
           assert.equal(origin[0].status, accepted ? 200 : 401);
           assert.equal(origin[0].kind, accepted ? "unmarked" : "rejected");
+          assert.equal(origin[0].auth, accepted ? "accepted" : "placeholder");
+          assert.equal(origin[0].harness, accepted ? "codex" : undefined);
           const transport = events.filter((event) => event.event === "transport").at(-1);
           const wire = events.filter((event) => event.event === "wire");
           assert.equal(wire.length, 1);
           assert.equal(wire[0].method, "POST");
           assert.equal(wire[0].target, "responses");
-          assert.equal(wire[0].credential, accepted ? "origin-key" : "placeholder");
           if (accepted) {
             assert.equal(phaseAt(phases, "model-probe")?.outcome, "ok");
             assert.ok(phaseAt(phases, "native-spawn"));
