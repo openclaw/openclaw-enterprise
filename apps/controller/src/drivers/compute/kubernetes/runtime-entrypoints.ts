@@ -2283,14 +2283,28 @@ function probeExitFailure({ error, status, signal }) {
 //
 // The probe is a whole embedded agent run. Its local work (Node and OpenClaw
 // boot, SQLite session state, cleanup) took about 16 CPU-seconds on the runtime
-// image, on one core however many it may use; --probe-timeout bounds the model
-// turn itself. A fixed 30-second cap let the example 500m CPU limit starve that
+// image, on one core however many it may use. --probe-timeout bounds OpenClaw's
+// whole isolated completion, its local agent preparation included, not only the
+// model turn. A fixed 30-second cap let the example 500m CPU limit starve that
 // local work into MODEL_PROBE_TIMEOUT before the turn finished. The cap is now
-// the 15-second turn, 5 seconds of slack, and 45 CPU-seconds of local work at
+// the 15-second timeout, 5 seconds of slack, and 45 CPU-seconds of local work at
 // the container's CPU limit (cgroup cpu.max, at most one core), at most 600 s.
-// A probe that still reaches it after waiting for CPU for over a quarter of the
+// A probe that reaches the cap after waiting for CPU for over a quarter of the
 // time reports MODEL_PROBE_CPU_STARVED: a restart would get the same CPU. The
-// wait is the larger of the cgroup cpu.pressure delta (throttling and node
+// same holds when OpenClaw's own timer fires first (status "timeout"), but its
+// window is only the last 15 s: Node and OpenClaw boot before it start, and at
+// 500m that boot alone is throttled 6-7 s of a ~24 s hung-provider probe, over a
+// quarter of the whole run. So a CLI timeout is judged on its window only, from
+// per-second samples a preload in the CLI takes: it is CPU starvation when over
+// a quarter of the window waited for CPU and no 5 s stretch of it was idle
+// (each second under a tenth waiting). A hung provider leaves the CLI idle for
+// most of the window; its own local work there at the limit still read up to
+// 26% waiting on a remote test VM, so the quarter alone misread 2 of 40 hung
+// probes (finding 2675). Without a window reading it stays MODEL_PROBE_TIMEOUT.
+// The preload (OPENCLAW_PROBE_CPU_WINDOW) samples the cgroup each second on the
+// CLI's main thread with the wrapper's own cpuWaitSample and, at exit, writes
+// the samples from the last one at least 15 s old, then the exit sample.
+// The wait is the larger of the cgroup cpu.pressure delta (throttling and node
 // contention) and the cpu.stat throttled time (throttling only), each used only
 // when both of its samples are valid: on one CI VM pressure read 8x low and hid
 // a starved probe as a timeout (finding 2271). throttled_usec adds up every
@@ -2310,18 +2324,14 @@ const OPENCLAW_AUTH_PROBE_HELPERS = String.raw`
 ${AUTH_PROBE_FAILURE_HELPER}
 function probeOpenClawAuthenticationFailure() {
   const fs = require("node:fs");
-  const cgroup = (name) => { try { return fs.readFileSync("/sys/fs/cgroup/" + name, "utf8"); } catch { return ""; } };
-  const [quota, period] = cgroup("cpu.max").split(" ");
-  const capMs = Math.min(600000, 20000 + Math.ceil(45000 / Math.min(1, quota / period || 1)));
-  const sample = () => { const stat = cgroup("cpu.stat"); return [/^some .*total=(\d+)/m.exec(cgroup("cpu.pressure")), /throttled_usec (\d+)/.exec(stat), /nr_throttled (\d+)/.exec(stat)].map((m, i) => (m?.[1] * (i === 2 ? period : 1)) / 1000); };
-  const startedAt = Date.now(), before = sample();
+  const [quota, period] = cpuCgroupFile(fs, "cpu.max").split(" ");
+  const capMs = Math.min(600000, OPENCLAW_PROBE_TIMEOUT_MS + 5000 + Math.ceil(45000 / Math.min(1, quota / period || 1)));
+  const before = cpuWaitSample(fs);
   const cleanup = {};
   let code = runOpenClawAuthenticationProbe(fs, capMs, cleanup), cause, provider;
   if (typeof code === "object") ({ code, cause, ...provider } = code);
-  const elapsedMs = Date.now() - startedAt, [pressure, throttled, periods] = sample().map((total, i) => { const wait = total - before[i]; return Number.isFinite(wait) && wait >= 0 ? wait : NaN; });
-  const pressureWaitMs = Math.round(pressure), throttledWaitMs = Math.round(Math.min(throttled, periods));
-  const waits = [pressureWaitMs, throttledWaitMs].filter(Number.isFinite), cpuWaitMs = waits.length ? Math.max(...waits) : NaN;
-  if (code === "CAP") code = cpuWaitMs > elapsedMs / 4 ? "MODEL_PROBE_CPU_STARVED" : "MODEL_PROBE_TIMEOUT";
+  const { elapsedMs, cpuWaitMs, pressureWaitMs, throttledWaitMs } = cpuWaitBetween(before, cpuWaitSample(fs));
+  if (code === "CAP") code = cpuStarved(elapsedMs, cpuWaitMs);
   console.error(JSON.stringify({ event: "openclaw.model_probe", elapsedMs, capMs, cpuWaitMs, pressureWaitMs, throttledWaitMs, code: code ?? "READY", cause, ...provider, ...cleanup }));
   return code === undefined ? undefined : { code, cause };
 }
@@ -2397,6 +2407,33 @@ function credentialRejectedUpfront(provider, fragment, key, stage) {
     ...upfrontToken("bodyShape", bodyShape, UPFRONT_BODY_SHAPES), ...upfrontToken("providerErrorCode", errorCode, [...UPFRONT_ERROR_CODES, "other"]), ...upfrontToken("providerErrorType", errorType, [...UPFRONT_ERROR_TYPES, "other"]) };
 }
 
+function cpuCgroupFile(fs, name) { try { return fs.readFileSync("/sys/fs/cgroup/" + name, "utf8"); } catch { return ""; } }
+function cpuWaitSample(fs) {
+  const period = cpuCgroupFile(fs, "cpu.max").split(" ")[1], stat = cpuCgroupFile(fs, "cpu.stat");
+  return [Date.now(), ...[/^some .*total=(\d+)/m.exec(cpuCgroupFile(fs, "cpu.pressure")), /throttled_usec (\d+)/.exec(stat), /nr_throttled (\d+)/.exec(stat)].map((m, i) => (m?.[1] * (i === 2 ? period : 1)) / 1000)];
+}
+function cpuWaitBetween(before, after) {
+  const [elapsedMs, pressure, throttled, periods] = after.map((total, i) => { const wait = total - before[i]; return Number.isFinite(total) && Number.isFinite(before[i]) && wait >= 0 ? wait : NaN; });
+  const pressureWaitMs = Math.round(pressure), throttledWaitMs = Math.round(Math.min(throttled, periods));
+  const waits = [pressureWaitMs, throttledWaitMs].filter(Number.isFinite);
+  return { elapsedMs, cpuWaitMs: waits.length ? Math.max(...waits) : NaN, pressureWaitMs, throttledWaitMs };
+}
+const cpuStarved = (elapsedMs, cpuWaitMs) => (cpuWaitMs > elapsedMs / 4 ? "MODEL_PROBE_CPU_STARVED" : "MODEL_PROBE_TIMEOUT");
+const OPENCLAW_PROBE_TIMEOUT_MS = 15000;
+const OPENCLAW_PROBE_CPU_WINDOW = (file) => "try{if(require(\"node:worker_threads\").isMainThread){const fs=require(\"node:fs\");" + cpuCgroupFile + cpuWaitSample +
+  "const a=[cpuWaitSample(fs)];setInterval(()=>a.push(cpuWaitSample(fs)),1000).unref();process.on(\"exit\",()=>{try{const e=cpuWaitSample(fs);fs.writeFileSync(" +
+  JSON.stringify(file) + ",JSON.stringify([...a.slice(Math.max(0,a.findLastIndex((s)=>s[0]<=e[0]-" + OPENCLAW_PROBE_TIMEOUT_MS + "))),e]))}catch{}})}}catch{}";
+function cpuWindowFailure(samples) {
+  const window = cpuWaitBetween(samples[0], samples.at(-1));
+  let idleMs = 0, stretchMs = 0;
+  for (let i = 1; i < samples.length; i++) {
+    const step = cpuWaitBetween(samples[i - 1], samples[i]);
+    stretchMs = step.cpuWaitMs <= step.elapsedMs / 10 ? stretchMs + step.elapsedMs : 0;
+    idleMs = Math.max(idleMs, stretchMs);
+  }
+  return { code: idleMs < 5000 ? cpuStarved(window.elapsedMs, window.cpuWaitMs) : "MODEL_PROBE_TIMEOUT", timeoutWindowMs: window.elapsedMs, timeoutWindowCpuWaitMs: window.cpuWaitMs, timeoutWindowIdleMs: idleMs };
+}
+
 function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
   const stageStartedAt = Date.now();
   const stage = (stage) => console.error(JSON.stringify({ event: "openclaw.model_probe_stage", stage, elapsedMs: Date.now() - stageStartedAt, capMs }));
@@ -2419,11 +2456,14 @@ function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
     fs.mkdirSync(directory + "/workspace", { mode: 0o700 });
     const configPath = directory + "/openclaw.json";
     fs.writeFileSync(configPath, JSON.stringify(configuration), { mode: 0o600 });
+    const windowPath = directory + "/cpu-window.json";
+    fs.writeFileSync(directory + "/cpu-window.cjs", OPENCLAW_PROBE_CPU_WINDOW(windowPath), { mode: 0o600 });
     stage("spawn");
     const result = spawnSync("node", [
+      "--require", directory + "/cpu-window.cjs",
       "/app/openclaw.mjs", "models", "status", "--json", "--probe",
       "--probe-provider", provider, "--probe-concurrency", "1",
-      "--probe-timeout", "15000", "--probe-max-tokens", "256",
+      "--probe-timeout", String(OPENCLAW_PROBE_TIMEOUT_MS), "--probe-max-tokens", "256",
     ], {
       cwd: directory,
       env: {
@@ -2455,7 +2495,9 @@ function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
     const status = results[0].status;
     if (status === "ok") return undefined;
     if (status === "auth") return "AUTHENTICATION_FAILED";
-    if (status === "timeout") return "MODEL_PROBE_TIMEOUT";
+    if (status === "timeout") {
+      try { return cpuWindowFailure(JSON.parse(fs.readFileSync(windowPath, "utf8"))); } catch { return "MODEL_PROBE_TIMEOUT"; }
+    }
     return { ...probeFailure("PROBE_STATUS", ["format", "rate_limit", "billing", "unknown", "no_model"].includes(status) ? status : "other"), ...providerErrorSummary(results[0].error) };
   } catch {
     return probeFailure("WRAPPER_ERROR");

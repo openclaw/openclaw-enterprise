@@ -46,8 +46,8 @@ credentials. Preflight rejects extra branches, tags, incomplete policy metadata,
 and a missing or enabled bypass flag.
 
 The separate `integration-qa-pr` environment permits `main` and
-`refs/pull/*/merge`. Its `full-qa` and `qa-openshell-compose` labels select
-advisory runs. Keep its two secret values separate from `integration-main`.
+`refs/pull/*/merge`. Its [fixed coverage labels](qa-advisory.md#trigger) select full QA, Compose
+OpenShell, Keycloak installation, or OpenClaw model/browser advisory runs. Keep its two secret values separate from `integration-main`.
 Full Integration preflight does not govern this environment.
 
 Full Integration rejects tags and all branch dispatches outside `main`. Check

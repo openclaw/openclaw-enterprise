@@ -23,7 +23,15 @@ export type OpenShellGitExpiryResult = "withdrawn" | "pending" | "retire-runtime
  * and `timeout` mean what they mean in `OpenShellGitObservationFailure`.
  */
 export type OpenShellGitExpiryFailure =
-  "unconfirmed" | "admission_limit" | "gateway_unavailable" | "timeout" | "failed";
+  | "unconfirmed"
+  | "admission_limit"
+  | "gateway_unavailable"
+  | "timeout"
+  | "failed"
+  | "launch_sandbox_missing"
+  | "launch_workload_unconfirmed"
+  | "launch_contract_mismatch"
+  | "launch_fingerprint_mismatch";
 /** The steps an expiry pass reports: fixed names that operators can alert on. */
 export const OPENSHELL_GIT_EXPIRY_CHECKS = [
   "model-provider",
@@ -59,7 +67,14 @@ export interface OpenShellGitContinuity {
 
 const positive = /^[1-9]\d*$/u;
 const unspecified = "PROVIDER_READINESS_REASON_UNSPECIFIED";
-class Unsafe extends Error {}
+class Unsafe extends Error {
+  readonly failure: OpenShellGitExpiryFailure;
+
+  constructor(failure: OpenShellGitExpiryFailure = "unconfirmed") {
+    super("OpenShell cannot retain this execution after Git expiry.");
+    this.failure = failure;
+  }
+}
 /** The gateway client sanitizes some failures into an error with grpcStatus; others retain
  * gRPC's numeric code. */
 function rawGrpcCode(error: unknown): unknown {
@@ -81,9 +96,12 @@ function expiryFailure(error: unknown, signal: AbortSignal): OpenShellGitExpiryF
   }
   return code === 14 ? "gateway_unavailable" : "failed";
 }
-function requireIdentity(condition: unknown): asserts condition {
+function requireIdentity(
+  condition: unknown,
+  failure?: OpenShellGitExpiryFailure,
+): asserts condition {
   if (!condition) {
-    throw new Unsafe("OpenShell cannot retain this execution after Git expiry.");
+    throw new Unsafe(failure);
   }
 }
 
@@ -96,6 +114,7 @@ function launch(
   modelId: string,
 ) {
   const { providers, provider_attachment_epoch: epoch, ...spec } = box.spec ?? {};
+  requireIdentity(workload, "launch_workload_unconfirmed");
   requireIdentity(
     git.credentialState === "active" &&
       git.executionId &&
@@ -104,7 +123,6 @@ function launch(
       box.name === git.sandbox &&
       box.workspace === git.workspace &&
       box.annotations["openclaw.dev/revision-id"] === git.executionId &&
-      !!workload &&
       !!epoch &&
       [2, "SANDBOX_PHASE_READY"].includes(box.phase as string | number) &&
       (box.restartCount ?? 0) === 0 &&
@@ -117,9 +135,10 @@ function launch(
       owner.model !== git.provider &&
       providers.every((p) => typeof p === "string" && !!p) &&
       new Set(providers).size === providers.length,
+    "launch_contract_mismatch",
   );
   const present = providers.includes(git.provider);
-  requireIdentity(present === (epoch === git.attachmentEpoch));
+  requireIdentity(present === (epoch === git.attachmentEpoch), "launch_contract_mismatch");
   const retained = { ...spec, providers: providers.filter((p) => p !== git.provider) };
   const hash = createHash("sha256")
     .update(
@@ -429,9 +448,9 @@ export async function subtractExpiredOpenShellGit(
     const id = await modelProvider(client, git, owner.model, signal);
     const inspect = async () => {
       const box = await client.getSandbox({ name, workspace }, signal);
-      requireIdentity(box); // not found, including a hidden Sandbox, is never withdrawal
+      requireIdentity(box, "launch_sandbox_missing");
       const value = launch(box, git, owner, await owner.workload(git.sandboxId, signal), id);
-      requireIdentity(retainedLaunchHash === value.hash);
+      requireIdentity(retainedLaunchHash === value.hash, "launch_fingerprint_mismatch");
       return value;
     };
     check = "original-launch-and-pods";
@@ -566,7 +585,7 @@ export async function subtractExpiredOpenShellGit(
         ? "retire-runtime"
         : "pending",
       check,
-      error instanceof Unsafe ? "unconfirmed" : expiryFailure(error, signal),
+      error instanceof Unsafe ? error.failure : expiryFailure(error, signal),
       rawGrpcCode(error),
     );
   }

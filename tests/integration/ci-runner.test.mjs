@@ -7153,6 +7153,22 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   assert.ok(!JSON.stringify(captured).includes(forbidden));
   assert.equal(captured[1].failure, "failed");
   assert.equal(captured[1].grpcStatus, 10);
+  for (const failure of [
+    "launch_sandbox_missing",
+    "launch_workload_unconfirmed",
+    "launch_contract_mismatch",
+    "launch_fingerprint_mismatch",
+  ]) {
+    assert.equal(
+      projectOpenShellGitExpiryObservation({
+        ...expiryObservation,
+        outcome: "retire-runtime",
+        check: "original-launch-and-pods",
+        failure,
+      })?.failure,
+      failure,
+    );
+  }
   for (const grpcStatus of [-1, 0, 17, 1.5, "10", forbidden]) {
     assert.equal(
       projectOpenShellGitExpiryObservation({ ...expiryObservation, grpcStatus }),

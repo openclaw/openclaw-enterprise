@@ -515,10 +515,6 @@ jobs:
             core.setSecret(token);
             core.setOutput('token', token);
             core.setOutput('url', url);
-      - name: Install runtime artifact transport
-        run: |
-          sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get -o Acquire::Retries=3 install --no-install-recommends -y skopeo
       - name: Download shared runtime image
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
