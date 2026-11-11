@@ -231,8 +231,8 @@ admission and session retention and selects an administrative route or a chat
 route capped at `operator.sessions.write` under the shared native identity.
 The runtime enforces that ceiling; OCC does not authorize or audit
 each native command. Users share the selected gateway’s exposed conversations,
-including channel conversations; by default, each channel direct-message sender
-gets a separate session, not the main session browser chat opens. This grants no access to another Agent or platform IAM.
+including channel conversations; this grants no access to another Agent or
+platform IAM.
 
 Operators can provide a separate [human access path](reference/drivers/kubernetes-compute/gateway-authentication.md)
 to the shared Agent. This path does not grant OCC access.

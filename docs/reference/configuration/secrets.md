@@ -261,7 +261,8 @@ later, the next deployment sets the default.
 
 After the next deployment of an Agent with a channel that used `"main"` by
 default, each direct-message sender starts a new session without the earlier
-shared context. The main session keeps its history. Members can still read
+shared context. The main session keeps its history, and new browser chat
+sessions are no longer grouped under it. Members can still read
 channel conversations, as the [native admin pilot exception](../../design.md#native-admin-pilot-exception)
 describes.
 
