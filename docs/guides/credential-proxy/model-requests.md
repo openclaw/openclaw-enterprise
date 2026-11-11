@@ -13,6 +13,11 @@ It does not provide exact dispatch or full-response inspection. Read the
 before choosing this guarantee. Existing strict sources keep their original
 profile; a failed strict admission does not select this path automatically.
 
+During startup, the latest candidate can request model credentials while its
+worker claim is live or while it waits after a successful runtime-readiness
+deferral. An untouched queue entry, retry, expired claim or terminal candidate
+does not qualify. See the [startup authority rules](../../reference/drivers/credential-proxy.md#online-model-requests).
+
 ## Prepare the trusted request path
 
 Use [native IAM](../../reference/drivers/iam.md#native-iam-behavior) backed by

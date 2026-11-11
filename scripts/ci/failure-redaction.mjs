@@ -411,3 +411,220 @@ export function redactOutputLine(line, secrets, root, limit) {
   const redacted = redactText(line, limit, secrets, root) ?? "";
   return namesCredential(redacted) ? "[redacted credential-bearing line]" : redacted;
 }
+
+const workerErrorClasses =
+  "Error TypeError RangeError SyntaxError DependencyUnavailableError TransientDependencyError ConfigurationFailure ConfigurationHarnessError OwnershipFailure KubernetesApiError KubernetesApiUnavailableError KubernetesRequestTimeout KubernetesPreparationFailure OpenShellGatewayFailure OpenShellSandboxConfigurationFailure SandboxGatewayUnavailableError";
+const workerMethods =
+  "GetSandboxConfig ListSandboxes ListWorkspaceMembers GetSandboxPolicyStatus UpdateConfig GetDraftPolicy ConfigureProviderRefresh RotateProviderCredential GetProviderRefreshStatus GetProviderCredentials Health GetGatewayInfo GetWorkspace CreateWorkspace DeleteWorkspace CreateSandbox GetSandbox GetService DeleteService DeleteSandbox GetSandboxLogs GetSandboxProviderStatus CreateProvider UpdateProvider DetachSandboxProvider GetProvider ListProviders DeleteProvider GetProviderProfile ListProviderProfiles LintProviderProfiles ImportProviderProfiles UpdateProviderProfiles DeleteProviderProfile DeleteProviderRefresh ExecSandbox";
+const knownWorkerValue = (value, literals) =>
+  value === undefined ? undefined : literals.split(" ").includes(value) ? value : "other";
+
+/** Canonical, idempotent projection for installed Worker diagnostics; never retain raw log fields. */
+export function projectInstalledWorkerEvent(value) {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    !Number.isSafeInteger(value.budgetAttempt) ||
+    value.budgetAttempt < 1
+  ) {
+    return undefined;
+  }
+  const { event, budgetAttempt } = value;
+  const status =
+    Number.isSafeInteger(value.status) && value.status >= 100 && value.status <= 599
+      ? value.status
+      : undefined;
+  if (event === "preparation") {
+    return {
+      event,
+      budgetAttempt,
+      step: knownWorkerValue(
+        value.step,
+        "prepare_revision sandbox_provision workspace_setup gateway_deployment",
+      ),
+      errorClass: knownWorkerValue(value.errorClass, workerErrorClasses),
+      status,
+      cause: knownWorkerValue(
+        value.cause,
+        "workload-not-terminated harness-transport-unavailable exact-installation-required",
+      ),
+    };
+  }
+  if (event !== "completion") {
+    return undefined;
+  }
+  return {
+    event,
+    budgetAttempt,
+    outcome: knownWorkerValue(value.outcome, "pending retry permanent success"),
+    code: knownWorkerValue(
+      value.code,
+      "DEPENDENCY_UNAVAILABLE AGENT_GATEWAY_UNAVAILABLE KUBERNETES_API_UNAVAILABLE SANDBOX_ADMISSION_LIMIT_REACHED SANDBOX_GATEWAY_UNAVAILABLE RUNTIME_AUTHENTICATION_FAILED",
+    ),
+    check: knownWorkerValue(value.check, "login model-probe"),
+    cause: knownWorkerValue(value.cause, "unreachable timeout unavailable " + workerErrorClasses),
+    dependency: knownWorkerValue(
+      value.dependency,
+      "agent_gateway kubernetes_api sandbox_admission sandbox_gateway",
+    ),
+    method: knownWorkerValue(value.method, workerMethods),
+    grpcStatus:
+      Number.isSafeInteger(value.grpcStatus) && value.grpcStatus >= 0 && value.grpcStatus <= 16
+        ? value.grpcStatus
+        : undefined,
+    validationCategory: knownWorkerValue(
+      value.validationCategory,
+      "POLICY_SAFETY POLICY_MIDDLEWARE_VALIDATION UNKNOWN",
+    ),
+    status,
+    cleanupCause: knownWorkerValue(value.cleanupCause, workerErrorClasses),
+    deployPasses:
+      Number.isSafeInteger(value.deployPasses) && value.deployPasses > 0
+        ? value.deployPasses
+        : undefined,
+  };
+}
+
+const observationRecord = (value) =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+const observationCount = (value) => Number.isSafeInteger(value) && value >= 0;
+const observationChoice = (value, choices, fallback) =>
+  choices.split(" ").includes(value) ? value : fallback;
+
+/** Closed, bounded snapshot shared by terminal capture and public CI reprojection. */
+export function projectInstalledModelOrigin(value) {
+  if (!observationRecord(value) || value.state !== "observed" || !Array.isArray(value.events)) {
+    return { state: "unavailable", truncated: false, events: [] };
+  }
+  const events = value.events.filter(
+    (event) =>
+      observationRecord(event) &&
+      observationCount(event.count) &&
+      Number.isSafeInteger(event.status) &&
+      event.status >= 100 &&
+      event.status <= 599,
+  );
+  if (value.events.length > 0 && events.length === 0) {
+    return { state: "unavailable", truncated: false, events: [] };
+  }
+  return {
+    state: "observed",
+    truncated:
+      value.truncated === true || value.events.length > 8 || events.length !== value.events.length,
+    events: events.slice(0, 8).map((event) => ({
+      kind: observationChoice(event.kind, "probe unmarked rejected turn tool", "other"),
+      status: event.status,
+      count: event.count,
+      harness: observationChoice(event.harness, "codex openclaw", "unknown"),
+      auth: observationChoice(event.auth, "missing placeholder rejected accepted", "unknown"),
+    })),
+  };
+}
+
+/** Preserve only selected approval counts and already-hashed request identifiers. */
+export function projectInstalledModelApprovals(value) {
+  if (
+    !observationRecord(value) ||
+    value.state !== "observed" ||
+    !Array.isArray(value.requestIdHashes) ||
+    !observationCount(value.matched) ||
+    !observationCount(value.consumed) ||
+    !observationCount(value.replayClaimed)
+  ) {
+    return {
+      state: "unavailable",
+      truncated: false,
+      matched: 0,
+      consumed: 0,
+      replayClaimed: 0,
+      requestIdHashes: [],
+    };
+  }
+  const requestIdHashes = value.requestIdHashes.filter(
+    (hash) => typeof hash === "string" && /^[a-f0-9]{64}$/.test(hash),
+  );
+  return {
+    state: "observed",
+    truncated:
+      value.truncated === true ||
+      value.requestIdHashes.length > 4 ||
+      requestIdHashes.length !== value.requestIdHashes.length,
+    matched: value.matched,
+    consumed: value.consumed,
+    replayClaimed: value.replayClaimed,
+    requestIdHashes: requestIdHashes.slice(0, 4),
+  };
+}
+
+/** Keep only bounded Supervisor denial categories, never source log fields. */
+export function projectInstalledModelDenials(value) {
+  const truncated = observationRecord(value) && value.truncated === true;
+  if (!observationRecord(value) || value.state !== "observed" || !Array.isArray(value.events)) {
+    return { state: "unavailable", truncated, events: [] };
+  }
+  const sandboxCategories = [
+    "request-authority-mismatch",
+    "credential-endpoint-mismatch",
+    "credential-unavailable",
+    "credential-placement-mismatch",
+  ];
+  const events = value.events.flatMap((event) => {
+    if (
+      !observationRecord(event) ||
+      !Number.isSafeInteger(event.count) ||
+      event.count < 1 ||
+      event.count > 2000
+    ) {
+      return [];
+    }
+    const category = observationChoice(
+      event.category,
+      "policy-deny-rule policy-not-permitted policy-denied request-credential-denied online-authorization-denied middleware-denied middleware-timeout middleware-chain-timeout middleware-failed " +
+        sandboxCategories.join(" "),
+      "other",
+    );
+    const sandboxCategory = sandboxCategories.includes(category);
+    if (
+      (event.scope === "model" && !sandboxCategory) ||
+      (event.scope === "sandbox" && sandboxCategory)
+    ) {
+      return [{ scope: event.scope, category, count: event.count }];
+    }
+    return [];
+  });
+  if (value.events.length > 0 && events.length === 0) {
+    return { state: "unavailable", truncated, events: [] };
+  }
+  return {
+    state: "observed",
+    truncated: truncated || value.events.length > 8 || events.length !== value.events.length,
+    events: events.slice(0, 8),
+  };
+}
+
+/** Retain only aggregate before-access denial counts, not arbitrary audit details. */
+export function projectInstalledModelAuditDenials(value) {
+  const truncated = observationRecord(value) && value.truncated === true;
+  const codes = [
+    "unsupported_authority",
+    "stale_configuration",
+    "withdrawn",
+    "unsupported_operation",
+    "unauthorized",
+    "other",
+  ];
+  if (
+    !observationRecord(value) ||
+    value.state !== "observed" ||
+    !observationRecord(value.counts) ||
+    !codes.every((code) => observationCount(value.counts[code]))
+  ) {
+    return { state: "unavailable", truncated, counts: {} };
+  }
+  return {
+    state: "observed",
+    truncated,
+    counts: Object.fromEntries(codes.map((code) => [code, value.counts[code]])),
+  };
+}

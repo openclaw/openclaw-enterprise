@@ -223,7 +223,7 @@ offline checks through the actual aggregate CLI. They do not execute an installe
 
 ## Verify OpenShell Git expiry and restart
 
-The [installed retention case](../../tests/integration/openshell-git-retention-real.test.ts)
+The expiry case in the [retention suite](../../tests/integration/openshell-git-retention-real.test.ts)
 uses the ordinary authenticated OpenShell installation, a dedicated Codex Agent,
 and an `openai` CredentialSource. Its native startup probe uses the authorized
 `OPENAI_API_KEY` and `OCC_TEST_OPENAI_MODEL`; model responses are not simulated.
@@ -290,6 +290,34 @@ The existing environment supplies credentials inside the job. The narrower
 `qa-openshell-compose` label does not run this case. A complete, non-skipped pass
 and successful cleanup are required; registration alone is not qualification.
 
+### Mixed model and Git grants
+
+The [mixed-grant case](../../tests/integration/openshell-mixed-grant-real.test.ts)
+uses a deterministic Responses origin, with no live model account. Finite cases
+retain their credential requirements. Use the separate
+[candidate lane](ci/openshell-execution.md#run-the-mixed-grant-candidate-case);
+default pins stay unchanged.
+
+Required outcomes:
+
+- During the first model turn, OCC consumes a fresh Gateway-signed assertion for
+  the exact provider and execution; the origin accepts the marked turn with the
+  expected bearer. These observations do not prove material release for that
+  approval. Git issuance and requests stay zero.
+- Codex `exec_command` fetches an independently published, previously absent
+  commit and exact content through stock Git, with one credential scoped to the
+  selected repository and permissions.
+- Binding removal makes a second fresh commit fetch receive explicit withdrawal
+  or policy denial. Its object stays absent.
+- The original Agent revision, Sandbox and session continue the conversation.
+  The model origin requires the prior assistant answer in forwarded history;
+  the next prompt contains only a new marker.
+
+From immediately before the withdrawal PATCH through the final model turn,
+Git requests and issuance stay unchanged. Only issuer revocation requests may increase.
+Tool polling never replays Git. Qualification requires the complete installed case
+and successful cleanup on selected images; source checks do not establish installed execution.
+
 ## Controller and broker image compatibility probe
 
 Run the `image-pair-qualification` lane using the
@@ -327,19 +355,17 @@ required authorization or inputs fails.
 
 The former direct `repository-credentials-installed` lane has been removed.
 
-Use the maintained [QA matrix](ci/qa-advisory.md) for an authorized installed
-Agent's real Git exact-ref journey. It requires an authorized disposable repository
-and independent provider readback. Verify that the granted branch points to the
-expected commit, that the push outside the granted branch was refused, and that
-credential disposal and cleanup succeeded. Its
-`git-only` grant opens no pull request. A direct container command or ready Pod
-does not prove an Agent model turn.
+Use the [QA matrix](ci/qa-advisory.md) for an authorized installed
+Agent's Git journey, with an authorized disposable repository and independent
+provider readback. Verify the expected commit on the granted branch, refused
+pushes outside that branch, and successful credential disposal and cleanup.
+Its `git-only` grant opens no pull request. A direct container command or ready
+Pod does not prove an Agent model turn.
 
-Separately, use the [installed prepared Git qualification](#verify-prepared-native-git)
-for the real installation with controlled Git and model peers, bound to the selected
-source and image digests. That qualification does not prove live GitHub access;
-QA evidence does not replace its release qualification. Removing the old lane adds
-no new live proof.
+Separately, [installed prepared Git qualification](#verify-prepared-native-git)
+covers a real installation with controlled Git and model peers, bound to selected
+source and image digests. It does not prove live GitHub access; QA evidence
+cannot replace this release qualification.
 
 ## Record each evidence boundary
 

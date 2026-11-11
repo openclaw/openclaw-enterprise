@@ -12,13 +12,46 @@ import { cleanEnvironment, run } from "./repository-credentials/process.mjs";
 import { createTokenAuthority } from "./repository-credentials/github/token-authority.mjs";
 import { fixtureAppId, fixtureInstallationId } from "./repository-credentials/github/metadata.mjs";
 
+/**
+ * @typedef {{
+ *   apiHost: string,
+ *   gitHost: string,
+ *   permissions: Readonly<Record<string, string>>,
+ *   signingPublicKey: import('node:crypto').KeyObject,
+ * }} InstalledGrantOrigin
+ */
+
+/** @param {import('node:http').IncomingMessage} request */
+function gitWireAuthorization(request) {
+  const authorization = request.headers.authorization;
+  if (/^Bearer [a-zA-Z0-9_]+$/.test(authorization ?? "")) {
+    return authorization;
+  }
+  if (/^Basic [a-zA-Z0-9+/]+={0,2}$/.test(authorization ?? "")) {
+    const credentials = Buffer.from(authorization.slice(6), "base64").toString();
+    if (/^x-access-token:[a-zA-Z0-9_]+$/.test(credentials)) {
+      return authorization;
+    }
+  }
+  return undefined;
+}
+
+/** @param {import('node:http').IncomingMessage} request */
+function isOriginRequest(request, name) {
+  const { host } = request.headers;
+  const { localPort, servername } = request.socket;
+  return servername === name && (host === name || host === `${name}:${localPort}`);
+}
+
 // Test-only origin. Callers own close(); no environment credentials or user Git
-// configuration are inherited. Only snapshot() is intended for logged evidence.
+// configuration are inherited. Only snapshot() and gitRequests() are intended for logged evidence.
 export async function startSkipperPrivateGitOrigin({
   host = "127.0.0.1",
   port = 0,
   advertisedHost = host,
-  tls,
+  tls = /** @type {{ key: string | Buffer, cert: string | Buffer, ca?: string | Buffer } | undefined} */ (
+    undefined
+  ),
   repository = `fixture/run-${randomUUID()}`,
   repositoryRef = "private-git",
   approvalRef = "refs/heads/approved",
@@ -26,6 +59,7 @@ export async function startSkipperPrivateGitOrigin({
   teamReview = false,
   seedRefs = 0,
   witnessIssuedGit = false,
+  installedGrant = /** @type {InstalledGrantOrigin | undefined} */ (undefined),
 } = {}) {
   if (!/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/.test(repository)) {
     throw new Error("repository must be owner/name");
@@ -157,15 +191,19 @@ export async function startSkipperPrivateGitOrigin({
         ca: await readFile(certFile),
       };
     }
-    const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const keyPair = installedGrant
+      ? undefined
+      : generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const publicKey = installedGrant?.signingPublicKey ?? keyPair?.publicKey;
     const authority = createTokenAuthority({
       clock: { wallNow: Date.now },
       publicKey,
       lifetimeMs: 3600000,
       repositoryId,
-      additionalPermissions: teamReview
-        ? [{ metadata: "read", contents: "write", pull_requests: "write" }]
-        : [],
+      additionalPermissions: [
+        ...(teamReview ? [{ metadata: "read", contents: "write", pull_requests: "write" }] : []),
+        ...(installedGrant ? [installedGrant.permissions] : []),
+      ],
     });
     const reviewHead = approvalRef.slice("refs/heads/".length);
     const pullRoute = "/repos/" + repository + "/pulls";
@@ -232,6 +270,8 @@ export async function startSkipperPrivateGitOrigin({
       reply(201, await observePullRequest());
     };
     const counts = {};
+    /** @type {{ endpoint: string, tokenIndex: number | null, authorizationScheme: "basic" | "bearer" | "none", status: number }[]} */
+    const gitRequests = [];
     const count = (endpoint, status) => {
       const key = `${endpoint}:${status}`;
       counts[key] = (counts[key] ?? 0) + 1;
@@ -248,8 +288,15 @@ export async function startSkipperPrivateGitOrigin({
     }
     server = createServer({ ...tls, IncomingMessage: OriginRequest }, async (request, response) => {
       let endpoint = "other";
-      const reply = (status, body = {}) => {
+      let gitAttempt;
+      const record = (status) => {
         count(endpoint, status);
+        if (gitAttempt) {
+          gitRequests.push({ ...gitAttempt, status });
+        }
+      };
+      const reply = (status, body = {}) => {
+        record(status);
         response.writeHead(status, {
           "content-type": "application/json",
           ...(status === 401 ? { "www-authenticate": 'Basic realm="private fixture"' } : {}),
@@ -264,6 +311,16 @@ export async function startSkipperPrivateGitOrigin({
         }
         if (url.pathname === tokenPath && request.method === "POST") {
           endpoint = "issue";
+          if (
+            installedGrant &&
+            (!isOriginRequest(request, installedGrant.apiHost) ||
+              url.search ||
+              !request.headers.authorization?.startsWith("Bearer ") ||
+              request.headers["content-type"] !== "application/json")
+          ) {
+            reply(404);
+            return;
+          }
           const chunks = [];
           let size = 0;
           for await (const chunk of request) {
@@ -276,10 +333,14 @@ export async function startSkipperPrivateGitOrigin({
           }
           let issued;
           try {
-            issued = authority.issue(
-              request.headers.authorization,
-              JSON.parse(Buffer.concat(chunks).toString()),
-            );
+            const body = JSON.parse(Buffer.concat(chunks).toString());
+            if (installedGrant) {
+              assert.deepEqual(body, {
+                repository_ids: [Number(repositoryId)],
+                permissions: installedGrant.permissions,
+              });
+            }
+            issued = authority.issue(request.headers.authorization, body);
           } catch {
             reply(403);
             return;
@@ -298,6 +359,15 @@ export async function startSkipperPrivateGitOrigin({
         }
         if (url.pathname === "/installation/token" && request.method === "DELETE") {
           endpoint = "revoke";
+          if (
+            installedGrant &&
+            (!isOriginRequest(request, installedGrant.apiHost) ||
+              url.search ||
+              !request.headers.authorization?.startsWith("Bearer "))
+          ) {
+            reply(404);
+            return;
+          }
           if (!authority.authorize(request.headers.authorization, "retirement")) {
             reply(401);
             return;
@@ -343,11 +413,31 @@ export async function startSkipperPrivateGitOrigin({
           ? service === "git-receive-pack"
           : url.pathname.endsWith("/git-receive-pack");
         endpoint = `${receive ? "receive" : "upload"}-${discovery ? "advertise" : "pack"}`;
-        if (!authority.authorize(request.headers.authorization, "git")) {
+        let authorization = request.headers.authorization;
+        if (installedGrant) {
+          if (!isOriginRequest(request, installedGrant.gitHost)) {
+            reply(404);
+            return;
+          }
+          authorization = gitWireAuthorization(request);
+          /** @type {"basic" | "bearer" | "none"} */
+          let authorizationScheme = "none";
+          if (authorization?.startsWith("Basic ")) {
+            authorizationScheme = "basic";
+          } else if (authorization !== undefined) {
+            authorizationScheme = "bearer";
+          }
+          gitAttempt = {
+            endpoint,
+            authorizationScheme,
+            tokenIndex: authority.tokenIndex(authorization) ?? null,
+          };
+        }
+        if (!authority.authorize(authorization, "git")) {
           reply(401);
           return;
         }
-        const permissions = authority.permissions(request.headers.authorization);
+        const permissions = authority.permissions(authorization);
         if (!permissions.contents || (receive && permissions.contents !== "write")) {
           reply(403);
           return;
@@ -399,7 +489,7 @@ export async function startSkipperPrivateGitOrigin({
                 headers[name] = value;
               }
             }
-            count(endpoint, status);
+            record(status);
             const send = () => response.writeHead(status, headers).end(output.subarray(end + 4));
             if (armedDiscovery && endpoint === "upload-advertise" && status === 200) {
               armedDiscovery = false;
@@ -490,8 +580,12 @@ export async function startSkipperPrivateGitOrigin({
       tls,
       appId: fixtureAppId,
       installationId: fixtureInstallationId,
-      privateKey,
+      get privateKey() {
+        assert.ok(keyPair, "origin was supplied only an App public key");
+        return keyPair.privateKey;
+      },
       createAppJwt() {
+        assert.ok(keyPair, "origin was supplied only an App public key");
         const now = Math.floor(Date.now() / 1000);
         const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString(
           "base64url",
@@ -500,9 +594,10 @@ export async function startSkipperPrivateGitOrigin({
           JSON.stringify({ iss: fixtureAppId, iat: now - 30, exp: now + 300 }),
         ).toString("base64url");
         const input = `${header}.${payload}`;
-        return `${input}.${sign("sha256", Buffer.from(input), privateKey).toString("base64url")}`;
+        return `${input}.${sign("sha256", Buffer.from(input), keyPair.privateKey).toString("base64url")}`;
       },
       snapshot,
+      gitRequests: () => gitRequests.map((request) => ({ ...request })),
       observeReplacementOrigin(indexA, indexB) {
         const before = snapshot();
         const witnesses = witnessRequests;
@@ -663,6 +758,29 @@ export async function startSkipperPrivateGitOrigin({
         return 200;
       },
       readRefs,
+      async publishFreshCommit() {
+        const path = "qualification.txt";
+        const content = `Private qualification object ${randomUUID()}\n`;
+        await writeFile(join(seed, path), content);
+        await git(["-C", seed, "add", path]);
+        await git([
+          "-C",
+          seed,
+          "-c",
+          "user.name=Fixture",
+          "-c",
+          "user.email=fixture@example.test",
+          "commit",
+          "-m",
+          "Publish fresh qualification object",
+        ]);
+        const sha = (await git(["-C", seed, "rev-parse", "HEAD"])).stdout.trim();
+        // The repository owner advances its own default branch locally. Network
+        // clients still use Git's pre-receive hook and cannot update that ref.
+        await git(["-C", bare, "fetch", "--no-tags", seed, `${sha}:refs/heads/main`]);
+        assert.equal((await readRefs())["refs/heads/main"], sha);
+        return { sha, path, content };
+      },
       observePullRequest,
       holdNextDiscovery() {
         if (armedDiscovery || heldDiscovery) {

@@ -1484,8 +1484,12 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
         cwd: root,
         env,
         timeout: timeout.timeoutMs,
-        onProgress: ({ kind, stage, outcome }) => {
-          process.stderr.write(`[run:${lane.name}] ${relativePath}: ${kind} ${stage} ${outcome}\n`);
+        onProgress: (progress) => {
+          const detail =
+            progress.kind === "openshell-mixed-grant-setup"
+              ? `${progress.phase} ${progress.operation}`
+              : `${progress.stage} ${progress.outcome}`;
+          process.stderr.write(`[run:${lane.name}] ${relativePath}: ${progress.kind} ${detail}\n`);
         },
       });
       nodeElapsedMs = Math.round(performance.now() - nodeStarted);

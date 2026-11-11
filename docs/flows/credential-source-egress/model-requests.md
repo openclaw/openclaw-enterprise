@@ -1,7 +1,7 @@
 ---
 created: "2026-11-10"
-updated: 2026-11-10
-last_updated_session: authoring-run/35058d66-8c8f-4762-ab31-00d58e56de3e
+updated: "2026-11-11 14:28"
+last_updated_session: authoring-run/65f55dad-fe22-4033-ba9d-1e73fd0beb87
 ---
 
 # Authorize model credentials per request
@@ -112,6 +112,45 @@ admission/configuration metadata, including `provider_env_revision`. Changes
 confined to that aggregate epoch can preserve this witness; a mixed observation
 cannot. Model provider/profile and full policy changes remain checked. Missing or changed retained evidence refuses. The API does not recompute
 worker-owned Git custody state.
+
+`packages/occ/src/index.ts:checkRequestCredential` accepts the active revision,
+or the latest inactive candidate with eligible startup work. The candidate must
+have a live claim, or queued work with `readiness_deferred` set on its exact
+revision reconciliation row. The queue sets this private marker in the same SQL
+transition only when the original defer code is exactly `REVISION_INCOMPLETE`,
+without refusal or stop. Audit code normalization does not grant this authority.
+Repeated genuine deferrals set it even when duplicate audit evidence is suppressed.
+All other deferrals, claims, retries, completion, failure and recovery clear it.
+New and preexisting rows default to false; historical audit events cannot grant
+authority. The database constrains true to queued lifecycle work with a valid
+Agent/revision owner, the exact reconcile key, and no other target.
+Expired claims and terminal candidate work refuse access.
+
+`packages/occ/src/state/postgres-work-queue.ts:lockRequestCredentialWork` holds
+the exact work row with `FOR SHARE NOWAIT`, only for the latest inactive candidate,
+after OCC locks IAM configuration, Namespace and Agent. Active revisions do not
+access work. Only SQLSTATE `55P03` from this keys-only lock statement raises
+`RequestCredentialWorkBusyError`, before material access or approval insertion.
+State rolls back the entire policy transaction and releases its client before
+`checkRequestCredential` waits up to 25 ms. The next attempt repeats preliminary
+owner, Namespace, revision, installation, plan and Native IAM resolution, and
+live installation verification, before opening a fresh Read Committed transaction.
+Every attempt uses the original signal and absolute deadline. Contention alone
+creates no withdrawal audit. Other errors retain their fail-closed handling.
+A separate statement,
+`requestCredentialCandidateEligible`, reads the current row after the lock and
+checks its marker or live database-clock lease. OCC retains this fence through
+approval or release, and rechecks database lease time before each. Redemption
+runs the same policy checks again. Namespace, source, IAM configuration and Agent
+locks retain the existing withdrawal and ownership fences. Memory state has no
+executing work and cannot establish candidate startup authority.
+
+Retries cover only this pre-effect policy check. They do not repeat approval
+consumption, peer verification, material acquisition or an uncertain approval
+commit. Final release retains the resolver's original source and material
+observations and approval lifetime; rotation cannot replace them during a retry.
+Each conflict costs one rolled-back transaction, another preliminary read and
+live verification, plus the wait. No policy or work lock is held during that wait.
 
 OCC stores a nonsecret approval in PostgreSQL, correlated with recipient,
 request ID, binding, execution, Driver, policy digest and deadline. It stores no
@@ -245,6 +284,12 @@ credential and a reused inspected connection.
 None.
 
 ## Changelog
+
+- 2026-11-11 14:28: Require the original canonical defer code for the queued readiness marker. (authoring-run/65f55dad-fe22-4033-ba9d-1e73fd0beb87 - 8517dbd0eec3a4fc3d2349754d9d62fc919226e6)
+
+- 2026-11-11 13:59: Trace pre-effect candidate contention retry in the accompanying correction. (authoring-run/cb8e0216-1299-47c5-85f5-480a7a4dc586 - a54d4aad97c547fd06765232db07f6c7fefd1a0a)
+
+- 2026-11-11 13:54: Trace candidate readiness deferral eligibility and work fencing in the accompanying fix. (authoring-run/fdb3d41f-3e11-4868-9533-14761f65d83e - 1aafd288a6bd957fdba23d0f09d96dd1da396a47)
 
 - 2026-11-10 13:08: Trace optional online Git withdrawal and observation of the original model execution. (authoring-run/35058d66-8c8f-4762-ab31-00d58e56de3e - e6093eef7ab860968e5e185ca14c8f0b6c2bc5ca)
 

@@ -2492,6 +2492,7 @@ revisionTest(
         data: { runtimeFailure },
       },
     });
+    const unknownCheck = "unlisted-" + randomUUID();
     const cases = [
       {
         label: "held-runtime-0",
@@ -2551,8 +2552,120 @@ revisionTest(
           },
         },
       },
+      ...[
+        { check: "login", expectedCheck: "login" },
+        { check: "model-probe", expectedCheck: "model-probe" },
+        { check: unknownCheck, expectedCheck: "UNRECOGNIZED" },
+      ].map(({ check, expectedCheck }, index) => ({
+        label: "held-auth-" + index,
+        runtimeFailure: {
+          component: "agent",
+          check,
+          checkedAt: "2026-10-01T08:00:00.000Z",
+          code: "AUTHENTICATION_FAILED",
+        },
+        expectedCheck,
+        expected: {
+          error: {
+            code: "RUNTIME_AUTHENTICATION_FAILED",
+            message: MODEL_CREDENTIAL_REJECTED_RECORDED,
+          },
+        },
+      })),
     ];
-    const scenarios = await runRuntimeFailureCases(fixture, cases, 10_000);
+    const scenarios = [];
+    for (const scenario of cases) {
+      scenarios.push({ ...scenario, ...(await fixture.admitInitialRevision(scenario.label)) });
+    }
+    const continuing = await fixture.admitInitialRevision("non-held-runtime");
+    const byRevision = new Map(scenarios.map((scenario) => [scenario.candidate.id, scenario]));
+    const lines = [];
+    const emit = createWorkerLogEmitter(
+      createOccLogger({
+        component: "occ-worker",
+        level: "debug",
+        destination: {
+          write(chunk) {
+            lines.push(
+              ...String(chunk)
+                .split("\n")
+                .filter(Boolean)
+                .map((line) => JSON.parse(line)),
+            );
+            return true;
+          },
+        },
+      }),
+    );
+    let ready = false;
+    // Compute supplies runtime observations; dispatch, persistence and Pino serialization
+    // are real. The same public auth error must retain its distinct bounded startup check.
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision) {
+          const observation = await fixture.compute.prepareRevision(revision);
+          if (revision.id === continuing.candidate.id) {
+            return {
+              ...observation,
+              ready,
+              runtimeFailure: {
+                component: "agent",
+                check: "login",
+                checkedAt: "2026-10-01T08:00:00.000Z",
+                code: ready ? "AUTHENTICATION_FAILED" : "UNLISTED_RUNTIME_FAILURE",
+              },
+            };
+          }
+          return {
+            ...observation,
+            ready: false,
+            runtimeFailure: byRevision.get(revision.id).runtimeFailure,
+          };
+        },
+      },
+      { emit },
+    );
+    for (const scenario of scenarios) {
+      await assertFailedDeployment(fixture, scenario, scenario.expected, 10_000);
+      const line = await completion(
+        lines,
+        "the held failure's serialized completion",
+        (entry) =>
+          entry.event === "worker.completed" &&
+          entry.workId === scenario.candidate.idempotencyKey &&
+          entry.outcome === "permanent",
+      );
+      if (scenario.expectedCheck !== undefined) {
+        assert.equal(line.check, scenario.expectedCheck);
+        assert.equal(line.code, "RUNTIME_AUTHENTICATION_FAILED");
+      }
+    }
+    // Unknown codes remain pending. A later ready observation cannot attach stale
+    // failure context to success, even if the Driver still includes that evidence.
+    const pending = await completion(
+      lines,
+      "the non-held failure's pending completion",
+      (entry) =>
+        entry.event === "worker.completed" &&
+        entry.workId === continuing.candidate.idempotencyKey &&
+        entry.outcome === "pending",
+    );
+    assert.equal(Object.hasOwn(pending, "check"), false);
+    ready = true;
+    await makeWorkDue(fixture.observerPool, continuing.candidate.idempotencyKey);
+    await fixture.work(continuing.candidate, "succeeded");
+    const succeeded = await completion(
+      lines,
+      "the ready revision's completion",
+      (entry) =>
+        entry.event === "worker.completed" &&
+        entry.workId === continuing.candidate.idempotencyKey &&
+        entry.outcome === "success",
+    );
+    assert.equal(Object.hasOwn(succeeded, "check"), false);
+    await fixture.stop();
+    assert.equal(JSON.stringify(lines).includes(unknownCheck), false);
 
     // The database admits only the classified shape: no extra fields, no
     // unknown kind, no free text in the detail, and no cause on another code.

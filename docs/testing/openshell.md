@@ -248,8 +248,8 @@ after preparation or test failures:
 node scripts/ci/cleanup.mjs --state "$OCC_OPENSHELL_TEST_ROOT/state.json"
 ```
 
-The [Git retention case](repository-credentials.md#verify-openshell-git-expiry-and-restart)
-checks finite-grant expiry and worker restart after installation.
+See [Git retention](repository-credentials.md#verify-openshell-git-expiry-and-restart)
+and the separate [mixed model and Git grant case](repository-credentials.md#mixed-model-and-git-grants).
 
 Codex Sandbox and guided native OpenClaw first-Agent tests use production
 Drivers. Neither qualifies a production installation. Run the separate native

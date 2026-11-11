@@ -1,13 +1,15 @@
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
+import { claimIsolatedWork } from "../helpers/postgres-work-claim.mjs";
 import { requestCredentialFixture } from "../helpers/request-credential-fixture.ts";
 import { createOpenAiStaticProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
 import assert from "node:assert/strict";
 import pg from "pg";
 import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import { createServer, request as httpRequest } from "node:http";
 import test, { type TestContext } from "node:test";
-import { isDeepStrictEqual } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import type {
   RequestCredentialInput,
   ProxyPlan,
@@ -40,6 +42,7 @@ import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs"
 import { requestId, staticEgressFixture } from "../helpers/static-egress.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { CREDENTIAL_PROXY_ONE_SOURCE } from "../helpers/refusal-text.mjs";
+import { readModelAuditDenials } from "../helpers/openshell-git-installation.mjs";
 
 test(
   "policy reduction preserves another binding then observes deny-all (PostgreSQL)",
@@ -1314,6 +1317,103 @@ test(
 );
 
 test(
+  "model denial diagnostics count only selected before-access audit events (PostgreSQL)",
+  { ...requiresPostgres, timeout: 30_000 },
+  async (t) => {
+    assert.ok(databaseUrl);
+    const { f, exchange, request, grant, revision } = await requestCredentialFixture(t);
+    const startedAt = new Date(Date.now() - 1).toISOString();
+
+    // The real OCC authorization path creates these audit events. The fixture supplies
+    // external recipient observation, not the authorization decision or audit rows.
+    const approved = request();
+    assert.equal(await exchange.authorizeRequestCredential(approved, t.signal), "credential");
+    const unsupported = request();
+    assert.equal(
+      await exchange.authorizeRequestCredential(
+        {
+          ...unsupported,
+          http: { ...unsupported.http, target: { ...unsupported.http.target, method: "GET" } },
+        },
+        t.signal,
+      ),
+      undefined,
+    );
+    assert.equal(
+      (await f.request("DELETE", `/namespaces/${f.namespace.id}/iam/access-bindings/${f.grant.id}`))
+        .status,
+      204,
+    );
+    assert.equal(await exchange.resolveRequestCredential(grant(approved), t.signal), undefined);
+    assert.equal(await exchange.authorizeRequestCredential(request(), t.signal), undefined);
+    const endedAt = new Date().toISOString();
+    const releaseAudit = await f.pool.query(
+      "SELECT details->>'phase' AS phase FROM occ.audit_events WHERE details->>'requestId' = $1",
+      [approved.requestId],
+    );
+    assert.deepEqual(releaseAudit.rows, [{ phase: "before_release" }]);
+
+    const identity = [f.namespace.id, f.source.id, revision.id, f.agent.servicePrincipalId];
+    const summarize = async (args: string[]) => {
+      // Execute the exact API-container program with the less-privileged application
+      // connection. No query or aggregate implementation is recreated in this test.
+      const { stdout } = await promisify(execFile)(
+        process.execPath,
+        ["--input-type=module", "-e", readModelAuditDenials, ...args],
+        {
+          cwd: new URL("../../", import.meta.url),
+          env: { ...process.env, OCC_DATABASE_URL: databaseUrl },
+          timeout: 15_000,
+          maxBuffer: 64 * 1024,
+          signal: t.signal,
+        },
+      );
+      return JSON.parse(stdout);
+    };
+    const empty = {
+      state: "observed",
+      truncated: false,
+      counts: {
+        unsupported_authority: 0,
+        stale_configuration: 0,
+        withdrawn: 0,
+        unsupported_operation: 0,
+        unauthorized: 0,
+        other: 0,
+      },
+    };
+    assert.deepEqual(await summarize([...identity, startedAt, endedAt]), {
+      ...empty,
+      counts: { ...empty.counts, unsupported_operation: 1, unauthorized: 1 },
+    });
+
+    // Each selector must exclude the existing matching rows independently. A
+    // before-release denial above must not inflate the before-access count.
+    for (let index = 0; index < identity.length; index += 1) {
+      const other = [...identity];
+      other[index] = randomUUID();
+      assert.deepEqual(await summarize([...other, startedAt, endedAt]), empty);
+    }
+    for (const [start, end] of [
+      [
+        new Date(Date.parse(startedAt) - 60_000).toISOString(),
+        new Date(Date.parse(startedAt) - 1).toISOString(),
+      ],
+      [
+        new Date(Date.parse(endedAt) + 1).toISOString(),
+        new Date(Date.parse(endedAt) + 60_000).toISOString(),
+      ],
+    ] as const) {
+      assert.deepEqual(await summarize([...identity, start, end]), empty);
+    }
+    await assert.rejects(
+      summarize([...identity, endedAt, new Date(Date.parse(startedAt) - 1).toISOString()]),
+      { code: 1 },
+    );
+  },
+);
+
+test(
   "online request replay horizons and shared quotas survive API restart (PostgreSQL)",
   { ...requiresPostgres, timeout: 60_000 },
   async (t) => {
@@ -1830,5 +1930,788 @@ test(
       "the next request must observe the configured Role's revoked operate permission",
     );
     assert.equal(f.secretReads, reads);
+  },
+);
+
+test(
+  "pending model authorization survives recorded readiness deferral (PostgreSQL)",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    // Public admission creates the candidate. Only external installation observation is
+    // controlled: this does not prove a workload reached readiness or ran a model turn.
+    const { f, revision, exchange, request, grant } = await requestCredentialFixture(t, {
+      activateRevision: false,
+    });
+    const queue = new PostgresWorkQueue(f.pool);
+    const key = `agent_revision:${revision.id}:reconcile`;
+    const path = `/namespaces/${f.namespace.id}/agents/${f.agent.id}`;
+    const signal = AbortSignal.timeout(50_000);
+    const claim = async () => {
+      const selected = await claimIsolatedWork(f.pool, { workId: key });
+      assert.equal(selected?.idempotencyKey, key);
+      assert.ok(selected);
+      return selected;
+    };
+    const sample = async (
+      phase: string,
+      expected: { status: string; state: string; leased: boolean; approved: boolean },
+    ) => {
+      const work = await queue.findWork(key);
+      assert.ok(work);
+      assert.equal(work.namespaceId, f.namespace.id);
+      assert.equal(work.agentId, f.agent.id);
+      assert.equal(work.revisionId, revision.id);
+      const state = new PostgresPlatformState(f.pool);
+      const source = await state.read((unit) =>
+        unit.credentialSources.findCredentialSource(f.namespace.id, f.source.id),
+      );
+      assert.equal(source?.state, "ready");
+      const latest = await state.read((unit) =>
+        unit.revisions.listRevisionMetadata(f.namespace.id, f.agent.id),
+      );
+      assert.equal(latest.at(-1)?.id, revision.id);
+      assert.equal(work.state, expected.state);
+      assert.equal(work.leaseActive, expected.leased);
+      const marker = (
+        await f.pool.query(
+          "SELECT readiness_deferred FROM occ.controller_work WHERE idempotency_key=$1",
+          [key],
+        )
+      ).rows[0].readiness_deferred;
+      assert.equal(marker, expected.state === "queued" && expected.approved);
+      const agent = await f.request("GET", path);
+      assert.equal(agent.status, 200);
+      assert.equal(agent.data.status, "active");
+      assert.equal(agent.data.desiredRuntimeState, "running");
+      assert.equal(agent.data.activeRevisionId ?? null, null);
+      const deployment = await f.request("GET", `${path}/deployments/${revision.id}`);
+      assert.equal(deployment.status, 200);
+      assert.equal(deployment.data.status, expected.status);
+      const input = request();
+      const counts = async () => {
+        const approvals = await f.pool.query(
+          "SELECT count(*)::int AS count FROM occ.request_credential_approvals WHERE request_id=$1 AND recipient_id=$2",
+          [input.requestId, input.recipient.id],
+        );
+        const denials = await f.pool.query(
+          `SELECT details->>'code' AS code FROM occ.audit_events
+           WHERE namespace_id=$1 AND resource_id=$2 AND actor_id=$3
+             AND kind='authorization_denial' AND action='openclaw.egress.authorize'
+             AND outcome='denied' AND details->>'phase'='before_access'
+             AND details->>'revisionId'=$4 AND details->>'requestId'=$5`,
+          [f.namespace.id, f.source.id, revision.servicePrincipalId, revision.id, input.requestId],
+        );
+        return { approvals: approvals.rows[0].count, denials: denials.rows.map((row) => row.code) };
+      };
+      assert.deepEqual(await counts(), { approvals: 0, denials: [] });
+      const before = await f.pool.query("SELECT clock_timestamp() AS at");
+      const reads = f.secretReads;
+      const result = await exchange.authorizeRequestCredential(input, signal);
+      assert.equal(result, expected.approved ? "credential" : undefined, phase);
+      const after = await counts();
+      const finished = await f.pool.query("SELECT clock_timestamp() AS at");
+      assert.deepEqual(after, {
+        approvals: expected.approved ? 1 : 0,
+        denials: expected.approved ? [] : ["withdrawn"],
+      });
+      const material = await exchange.resolveRequestCredential(grant(input), signal);
+      assert.equal(material?.value, expected.approved ? "synthetic-key-initial" : undefined, phase);
+      assert.equal(f.secretReads, reads + (expected.approved ? 3 : 0));
+      // Authorization must not change the public deployment view or activate the candidate.
+      assert.equal(
+        (await f.request("GET", `${path}/deployments/${revision.id}`)).data.status,
+        expected.status,
+      );
+      assert.equal((await f.request("GET", path)).data.activeRevisionId ?? null, null);
+      t.diagnostic(
+        JSON.stringify({
+          phase,
+          namespaceId: f.namespace.id,
+          agentId: f.agent.id,
+          revisionId: revision.id,
+          sourceId: f.source.id,
+          workId: key,
+          requestId: input.requestId,
+          databaseAt: before.rows[0].at.toISOString(),
+          finishedAt: finished.rows[0].at.toISOString(),
+          sourceState: source.state,
+          state: work.state,
+          leased: work.leaseActive,
+          attempts: work.attemptCount,
+          status: deployment.data.status,
+          progress: deployment.data.progress,
+          activeRevisionId: null,
+          ...after,
+        }),
+      );
+    };
+    await sample("never claimed", {
+      status: "queued",
+      state: "queued",
+      leased: false,
+      approved: false,
+    });
+    const first = await claim();
+    await sample("first lease", {
+      status: "running",
+      state: "claimed",
+      leased: true,
+      approved: true,
+    });
+    // Use the same persisted queue transition and evidence code as the Worker's pending
+    // runtime result. No SQL work projection or fabricated audit row supplies this evidence.
+    await queue.defer(first, { code: "REVISION_INCOMPLETE" }, { delayMs: 1 });
+    const deferred = await queue.findWork(key);
+    assert.equal(deferred?.attemptCount, 0);
+    assert.equal(deferred?.claimToken, undefined);
+    assert.equal(deferred?.leaseExpiresAt, undefined);
+    const view = await f.request("GET", `${path}/deployments/${revision.id}`);
+    assert.equal(view.data.progress.lastAttempt.code, "REVISION_INCOMPLETE");
+    await sample("readiness deferred", {
+      status: "running",
+      state: "queued",
+      leased: false,
+      approved: true,
+    });
+    const reclaimed = await claim();
+    assert.notEqual(reclaimed.claimToken, first.claimToken);
+    await sample("reclaimed", {
+      status: "running",
+      state: "claimed",
+      leased: true,
+      approved: true,
+    });
+    await queue.defer(reclaimed, { code: "REVISION_INCOMPLETE" }, { delayMs: 1 });
+    assert.equal(
+      (await queue.findWorkAttempt(key))?.at.toISOString(),
+      view.data.progress.lastAttempt.at,
+      "duplicate evidence suppression must not remove readiness authority",
+    );
+    await sample("repeat readiness defer", {
+      status: "running",
+      state: "queued",
+      leased: false,
+      approved: true,
+    });
+    // A retry can use the same code; its failure outcome must override prior success.
+    const retryClaim = await claim();
+    await queue.retry(retryClaim, { code: "REVISION_INCOMPLETE" });
+    await sample("same-code retry", {
+      status: "running",
+      state: "queued",
+      leased: false,
+      approved: false,
+    });
+    // Wait for the real backoff; do not rewrite queue timestamps.
+    const retryWork = await queue.findWork(key);
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.max(0, retryWork!.availableAt.getTime() - Date.now()) + 30),
+    );
+    const finalClaim = await claim();
+    // Terminal work is denied while this is still the latest candidate and its
+    // source is still ready, independently of withdrawal or replacement.
+    await queue.fail(finalClaim, { code: "CONVERGENCE_DEADLINE_EXCEEDED" });
+    await sample("terminal", {
+      status: "failed",
+      state: "failed_permanent",
+      leased: false,
+      approved: false,
+    });
+  },
+);
+
+for (const disabling of [
+  "suppressed refusal",
+  "out-of-order history",
+  "noncanonical readiness code",
+] as const) {
+  test(
+    `current queue transition overrides ${disabling} for model credentials (PostgreSQL)`,
+    { ...requiresPostgres, timeout: 30_000 },
+    async (t) => {
+      const { f, revision, exchange, request, grant } = await requestCredentialFixture(t, {
+        activateRevision: false,
+      });
+      const key = `agent_revision:${revision.id}:reconcile`;
+      const queue = new PostgresWorkQueue(f.pool, { random: () => 0 });
+      const signal = t.signal;
+      const claim = async () => {
+        const work = await queue.findWork(key);
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.max(0, work!.availableAt.getTime() - Date.now()) + 20),
+        );
+        const selected = await claimIsolatedWork(f.pool, { workId: key });
+        assert.ok(selected);
+        return selected;
+      };
+      const marker = async () =>
+        (
+          await f.pool.query(
+            "SELECT readiness_deferred FROM occ.controller_work WHERE idempotency_key=$1",
+            [key],
+          )
+        ).rows[0].readiness_deferred;
+      await queue.defer(await claim(), { code: "REVISION_INCOMPLETE" }, { delayMs: 1 });
+      const held = request();
+      assert.equal(await exchange.authorizeRequestCredential(held, signal), "credential");
+      const events = async () =>
+        (
+          await f.pool.query(
+            "SELECT count(*)::int AS count FROM occ.audit_events WHERE details->>'workId'=$1",
+            [key],
+          )
+        ).rows[0].count;
+      const before = await events();
+      const next = await claim();
+      if (disabling === "suppressed refusal") {
+        // The queue accepts this combination. Suppressing audit must not preserve authority.
+        await queue.defer(
+          next,
+          { code: "REVISION_INCOMPLETE", refusal: "CREDENTIAL_WITHDRAWN" },
+          { delayMs: 1, recordEvidence: false },
+        );
+        assert.equal(await events(), before);
+      } else if (disabling === "noncanonical readiness code") {
+        // Audit normalization must not grant readiness authority to a different queue code.
+        await queue.defer(
+          next,
+          { code: "revision-incomplete" },
+          { delayMs: 1, repeatEvidence: true },
+        );
+        assert.equal(await events(), before + 1);
+        assert.equal((await queue.findWorkAttempt(key))?.code, "REVISION_INCOMPLETE");
+      } else {
+        await queue.retry(next, { code: "REVISION_INCOMPLETE" });
+        // Isolated synthetic negative evidence: a historical success appears later than
+        // the real retry. This is not a runtime timestamp or a simulated worker result.
+        await f.pool.query(
+          `INSERT INTO occ.audit_events
+           (id, occurred_at, kind, actor_id, action, namespace_id, resource_kind, resource_id, outcome, details)
+           SELECT $2, clock_timestamp() + interval '1 day', kind, actor_id, action,
+             namespace_id, resource_kind, resource_id, outcome, details
+           FROM occ.audit_events WHERE details->>'workId'=$1 AND outcome='success' LIMIT 1`,
+          [key, `aud_${randomUUID()}`],
+        );
+      }
+      const denied = request();
+      const reads = f.secretReads;
+      assert.equal(await exchange.authorizeRequestCredential(denied, signal), undefined);
+      assert.equal(await exchange.resolveRequestCredential(grant(held), signal), undefined);
+      assert.equal(f.secretReads, reads, "disabled readiness refuses before Secret access");
+      assert.equal(
+        (
+          await f.pool.query(
+            "SELECT count(*)::int AS count FROM occ.request_credential_approvals WHERE request_id=$1",
+            [denied.requestId],
+          )
+        ).rows[0].count,
+        0,
+      );
+      assert.equal(await marker(), false);
+      // Only a new owned claim and plain readiness defer restores queued eligibility.
+      await queue.defer(
+        await claim(),
+        { code: "REVISION_INCOMPLETE" },
+        { delayMs: 1, recordEvidence: false },
+      );
+      assert.equal(await marker(), true);
+      const restored = request();
+      assert.equal(await exchange.authorizeRequestCredential(restored, signal), "credential");
+      assert.equal(
+        (await exchange.resolveRequestCredential(grant(restored), signal))?.value,
+        "synthetic-key-initial",
+      );
+      assert.equal(await exchange.resolveRequestCredential(grant(restored), signal), undefined);
+      t.diagnostic(
+        JSON.stringify({
+          disabling,
+          workId: key,
+          deniedRequestId: denied.requestId,
+          restoredRequestId: restored.requestId,
+          marker: await marker(),
+        }),
+      );
+    },
+  );
+}
+
+test(
+  "a newer public admission refuses the older model candidate despite its live lease (PostgreSQL)",
+  { ...requiresPostgres, timeout: 30_000 },
+  async (t) => {
+    const { f, revision, request, exchange, grant } = await requestCredentialFixture(t, {
+      activateRevision: false,
+    });
+    const key = `agent_revision:${revision.id}:reconcile`;
+    const claim = await claimIsolatedWork(f.pool, { workId: key });
+    assert.equal(claim?.idempotencyKey, key);
+    const signal = AbortSignal.timeout(20_000);
+    const first = request();
+    assert.equal(await exchange.authorizeRequestCredential(first, signal), "credential");
+    const replacement = await f.deployAgent(f.namespace.id, f.agent.id);
+    assert.notEqual(replacement.id, revision.id);
+    // Admission alone supersedes model authority; do not activate either revision,
+    // cancel the older claim, or change the old installation or source.
+    const older = await new PostgresWorkQueue(f.pool).findWork(key);
+    assert.equal(older?.leaseActive, true);
+    const input = request();
+    assert.equal(await exchange.authorizeRequestCredential(input, signal), undefined);
+    const approvals = await f.pool.query(
+      "SELECT request_id FROM occ.request_credential_approvals WHERE request_id = ANY($1::text[])",
+      [[first.requestId, input.requestId]],
+    );
+    assert.deepEqual(
+      approvals.rows.map((row) => row.request_id),
+      [first.requestId],
+    );
+    const denied = await f.pool.query(
+      `SELECT details->>'code' AS code, details->>'phase' AS phase FROM occ.audit_events
+       WHERE namespace_id=$1 AND resource_id=$2 AND actor_id=$3
+         AND kind='authorization_denial' AND action='openclaw.egress.authorize'
+         AND details->>'revisionId'=$4 AND details->>'requestId'=$5`,
+      [f.namespace.id, f.source.id, revision.servicePrincipalId, revision.id, input.requestId],
+    );
+    assert.deepEqual(denied.rows, [{ code: "withdrawn", phase: "before_access" }]);
+    const reads = f.secretReads;
+    assert.equal(await exchange.resolveRequestCredential(grant(first), signal), undefined);
+    assert.equal(f.secretReads, reads, "supersession prevents release of an earlier approval");
+    const path = `/namespaces/${f.namespace.id}/agents/${f.agent.id}`;
+    assert.equal((await f.request("GET", path)).data.activeRevisionId ?? null, null);
+    assert.equal(
+      (await f.request("GET", `${path}/deployments/${revision.id}`)).data.status,
+      "running",
+    );
+    t.diagnostic(
+      JSON.stringify({
+        phase: "newer admission",
+        revisionId: revision.id,
+        replacementId: replacement.id,
+        workId: key,
+        requestId: input.requestId,
+        leased: true,
+        activeRevisionId: null,
+        status: "running",
+        approvals: 0,
+        denials: denied.rows,
+      }),
+    );
+  },
+);
+
+test(
+  "deferred model authority refuses expired recovered and terminal work before activation (PostgreSQL)",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    const { f, revision, exchange, request, grant } = await requestCredentialFixture(t, {
+      activateRevision: false,
+    });
+    const key = `agent_revision:${revision.id}:reconcile`;
+    const queue = new PostgresWorkQueue(f.pool);
+    const signal = AbortSignal.timeout(50_000);
+    const claim = async () => {
+      const work = await queue.findWork(key);
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.max(0, work!.availableAt.getTime() - Date.now()) + 20),
+      );
+      const selected = await claimIsolatedWork(f.pool, { workId: key });
+      assert.ok(selected);
+      return selected;
+    };
+    const approve = async () => {
+      const input = request();
+      assert.equal(await exchange.authorizeRequestCredential(input, signal), "credential");
+      return input;
+    };
+    const refuse = async (held: ReturnType<typeof request>) => {
+      const reads = f.secretReads;
+      const input = request();
+      assert.equal(await exchange.authorizeRequestCredential(input, signal), undefined);
+      assert.equal(await exchange.resolveRequestCredential(grant(held), signal), undefined);
+      assert.equal(await exchange.resolveRequestCredential(grant(input), signal), undefined);
+      assert.equal(f.secretReads, reads, "refusal must occur before any material read");
+    };
+    const first = await claim();
+    await queue.defer(first, { code: "REVISION_INCOMPLETE" }, { delayMs: 1 });
+    const held = await approve();
+    const expiring = await claim();
+    // Real lease expiry after earlier readiness must not fall back to that old success.
+    await new PostgresWorkQueue(f.pool, { leaseDurationMs: 1 }).heartbeat(expiring);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal((await queue.findWork(key))?.leaseActive, false);
+    await refuse(held);
+    await queue.recoverStale();
+    assert.equal((await queue.findWorkAttempt(key))?.code, "LEASE_EXPIRED");
+    assert.equal(
+      (
+        await f.pool.query(
+          "SELECT readiness_deferred FROM occ.controller_work WHERE idempotency_key=$1",
+          [key],
+        )
+      ).rows[0].readiness_deferred,
+      false,
+    );
+    await refuse(request());
+    const recovered = await claim();
+    const recoveredInput = await approve();
+    assert.equal(
+      (await exchange.resolveRequestCredential(grant(recoveredInput), signal))?.value,
+      "synthetic-key-initial",
+    );
+    // A successful deferral with a different reason is not runtime-readiness authority.
+    await queue.defer(recovered, { code: "WORKSPACE_NODE_PENDING" }, { delayMs: 1 });
+    await refuse(request());
+    const completing = await claim();
+    const beforeCompletion = await approve();
+    await queue.complete(completing);
+    await refuse(beforeCompletion);
+    // Terminal work does not revoke a revision that actually became active.
+    await f.activateRevision(f.namespace.id, f.agent.id, revision.id);
+    const active = await approve();
+    assert.equal(
+      (await exchange.resolveRequestCredential(grant(active), signal))?.value,
+      "synthetic-key-initial",
+    );
+  },
+);
+
+test(
+  "queued model approval retains work fencing and observes credential withdrawal on release (PostgreSQL)",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    const fixture = await requestCredentialFixture(t, { activateRevision: false });
+    const { f, revision, exchange, request, grant } = fixture;
+    const key = `agent_revision:${revision.id}:reconcile`;
+    const queue = new PostgresWorkQueue(f.pool);
+    const first = await claimIsolatedWork(f.pool, { workId: key });
+    assert.ok(first);
+    await queue.defer(first, { code: "REVISION_INCOMPLETE" }, { delayMs: 1 });
+    const signal = AbortSignal.timeout(50_000);
+    const input = request();
+    const paused = fixture.pauseNextApprovalCommit();
+    const approving = exchange.authorizeRequestCredential(input, signal);
+    await paused.reached;
+    try {
+      // The real claim path skips work held by the approval transaction.
+      assert.equal(await claimIsolatedWork(f.pool, { workId: key }), undefined);
+    } finally {
+      paused.release();
+    }
+    assert.equal(await approving, "credential");
+    const reclaimed = await claimIsolatedWork(f.pool, { workId: key });
+    assert.ok(reclaimed);
+    await queue.defer(reclaimed, { code: "REVISION_INCOMPLETE" }, { delayMs: 1 });
+    // Withdrawal requires an active revision. Keep the genuine work row queued while
+    // activating, then use the public withdrawal operation; never invent a candidate API.
+    await f.activateRevision(f.namespace.id, f.agent.id, revision.id);
+    const materialPause = fixture.pauseMaterialRead();
+    const resolving = exchange.resolveRequestCredential(grant(input), signal);
+    await materialPause.reached;
+    try {
+      const withdrawn = await f.request(
+        "POST",
+        `/namespaces/${f.namespace.id}/agents/${f.agent.id}/credential-sources/${f.source.id}/withdraw`,
+      );
+      assert.equal(withdrawn.status, 202, JSON.stringify(withdrawn.body));
+    } finally {
+      materialPause.release();
+    }
+    assert.equal(await resolving, undefined);
+    const reads = f.secretReads;
+    assert.equal(await exchange.authorizeRequestCredential(request(), signal), undefined);
+    assert.equal(f.secretReads, reads);
+    assert.equal((await queue.findWork(key))?.state, "queued");
+  },
+);
+
+test(
+  "candidate credential request survives benign work contention (PostgreSQL)",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    const fixture = await requestCredentialFixture(t, { activateRevision: false });
+    const { f, revision, exchange, request, grant } = fixture;
+    const key = `agent_revision:${revision.id}:reconcile`;
+    const claim = await claimIsolatedWork(f.pool, { workId: key });
+    assert.ok(claim);
+    const contender = await f.pool.connect();
+    const pause = fixture.pauseCandidateAttempt();
+    try {
+      await contender.query("BEGIN");
+      await contender.query("SET LOCAL lock_timeout = '2s'");
+      assert.ok(await new PostgresWorkQueue(contender).heartbeat(claim));
+      const input = request();
+      const signal = AbortSignal.timeout(15_000);
+      const approving = exchange.authorizeRequestCredential(input, signal);
+      await pause.reached;
+      // The worker may acquire its owners after heartbeat, while the request backs
+      // off. A retained Namespace lock would deadlock this real worker lock order.
+      await contender.query("SELECT id FROM occ.namespaces WHERE id=$1 FOR UPDATE", [
+        f.namespace.id,
+      ]);
+      await contender.query("SELECT id FROM occ.agents WHERE id=$1 FOR UPDATE", [f.agent.id]);
+      const denials = await f.pool.query(
+        "SELECT id FROM occ.audit_events WHERE details->>'requestId'=$1 AND kind='authorization_denial'",
+        [input.requestId],
+      );
+      assert.equal(denials.rowCount, 0, "busy work is not withdrawn");
+      assert.equal(
+        (
+          await f.pool.query(
+            "SELECT request_id FROM occ.request_credential_approvals WHERE request_id=$1",
+            [input.requestId],
+          )
+        ).rowCount,
+        0,
+      );
+      await contender.query("COMMIT");
+      pause.release();
+      assert.equal(await approving, "credential");
+      assert.equal(
+        (await exchange.resolveRequestCredential(grant(input), signal))?.value,
+        "synthetic-key-initial",
+      );
+      assert.equal(await exchange.resolveRequestCredential(grant(input), signal), undefined);
+    } finally {
+      pause.release();
+      await contender.query("ROLLBACK");
+      contender.release();
+    }
+  },
+);
+
+for (const phase of ["authorization", "consumed approval", "final release"] as const) {
+  for (const outcome of [
+    "benign",
+    "terminal",
+    "superseded",
+    "withdrawn",
+    "aborted",
+    "expired",
+    "rotated",
+    "installation changed",
+  ] as const) {
+    test(
+      `candidate work contention during ${phase}: ${outcome} (PostgreSQL)`,
+      { ...requiresPostgres, timeout: 30_000 },
+      async (t) => {
+        const fixture = await requestCredentialFixture(t, { activateRevision: false });
+        const { f, revision, exchange, request, grant } = fixture;
+        const key = `agent_revision:${revision.id}:reconcile`;
+        const claim = await claimIsolatedWork(f.pool, { workId: key });
+        assert.ok(claim);
+        const input = {
+          ...request(),
+          ...(outcome === "expired" && { deadlineAt: new Date(Date.now() + 1500).toISOString() }),
+        };
+        const controller = new AbortController();
+        const signal = AbortSignal.any([controller.signal, t.signal]);
+        if (phase !== "authorization") {
+          assert.equal(await exchange.authorizeRequestCredential(input, signal), "credential");
+        }
+        const redemption = {
+          ...grant(input),
+          deadlineAt: new Date(Date.now() + 25_000).toISOString(),
+        };
+        const originalExpiry =
+          phase === "authorization"
+            ? undefined
+            : (
+                await f.pool.query(
+                  "SELECT expires_at FROM occ.request_credential_approvals WHERE request_id=$1",
+                  [input.requestId],
+                )
+              ).rows[0].expires_at;
+        if (originalExpiry) {
+          assert.ok(originalExpiry.getTime() < Date.parse(redemption.deadlineAt));
+        }
+        // On final release, preserve both original outside-lock material observations.
+        // Stage contention only after the second read has captured the original value.
+        const materialPause = phase === "final release" ? fixture.pauseMaterialRead(1) : undefined;
+        let operation = materialPause
+          ? exchange.resolveRequestCredential(redemption, signal)
+          : undefined;
+        if (materialPause) {
+          await materialPause.reached;
+        }
+        const pause = fixture.pauseCandidateAttempt();
+        const contender = await f.pool.connect();
+        try {
+          await contender.query("BEGIN");
+          await contender.query("SET LOCAL lock_timeout = '2s'");
+          const queue = new PostgresWorkQueue(contender);
+          assert.ok(await queue.heartbeat(claim));
+          operation ??=
+            phase === "authorization"
+              ? exchange.authorizeRequestCredential(input, signal)
+              : exchange.resolveRequestCredential(redemption, signal);
+          materialPause?.release();
+          await Promise.race([
+            pause.reached,
+            operation.then(() => {
+              throw new Error("request settled before observing contention");
+            }),
+          ]);
+          // The complete policy transaction has rolled back. The worker can now
+          // acquire owners in its real work -> Namespace -> Agent order.
+          await contender.query("SAVEPOINT owner_lock_proof");
+          await contender.query("SELECT id FROM occ.namespaces WHERE id=$1 FOR UPDATE", [
+            f.namespace.id,
+          ]);
+          await contender.query("SELECT id FROM occ.agents WHERE id=$1 FOR UPDATE", [f.agent.id]);
+          const denials = () =>
+            f.pool.query(
+              "SELECT details->>'code' AS code, details->>'phase' AS phase FROM occ.audit_events WHERE details->>'requestId'=$1 AND kind='authorization_denial'",
+              [input.requestId],
+            );
+          assert.deepEqual(
+            (await denials()).rows,
+            [],
+            "contention cannot invent withdrawal evidence",
+          );
+          const approvals = () =>
+            f.pool.query(
+              "SELECT consumed FROM occ.request_credential_approvals WHERE request_id=$1",
+              [input.requestId],
+            );
+          assert.deepEqual(
+            (await approvals()).rows,
+            phase === "authorization" ? [] : [{ consumed: true }],
+          );
+          // Release just the owner-lock proof, retaining the real heartbeat lock.
+          await contender.query("ROLLBACK TO SAVEPOINT owner_lock_proof");
+          const reads = f.secretReads;
+          if (outcome === "aborted" || outcome === "expired") {
+            if (outcome === "aborted") {
+              controller.abort();
+            }
+            if (outcome === "expired" && originalExpiry) {
+              // Hold the external scheduling barrier past the persisted expiry. This
+              // uses real elapsed time; the later grant deadline cannot renew approval.
+              await new Promise((resolve) =>
+                setTimeout(resolve, Math.max(0, originalExpiry.getTime() - Date.now()) + 30),
+              );
+            }
+            pause.release();
+            // The request's real absolute deadline/abort ends the wait while work
+            // is still locked. Neither a restarted budget nor a commit releases it.
+            assert.equal(await operation, undefined);
+            if (outcome === "expired") {
+              assert.ok(
+                Date.now() >= Date.parse(input.deadlineAt) - 50,
+                "busy work must wait for the original deadline, allowing timer rounding",
+              );
+            }
+            assert.deepEqual((await denials()).rows, []);
+            assert.equal(f.secretReads, reads);
+          } else {
+            if (outcome === "terminal") {
+              await queue.fail(claim, { code: "CONVERGENCE_DEADLINE_EXCEEDED" });
+            }
+            await contender.query("COMMIT");
+            if (outcome === "superseded") {
+              await f.deployAgent(f.namespace.id, f.agent.id);
+            } else if (outcome === "withdrawn") {
+              await f.activateRevision(f.namespace.id, f.agent.id, revision.id);
+              const result = await f.request(
+                "POST",
+                `/namespaces/${f.namespace.id}/agents/${f.agent.id}/credential-sources/${f.source.id}/withdraw`,
+              );
+              assert.equal(result.status, 202);
+            } else if (outcome === "rotated") {
+              const result = await f.request(
+                "PATCH",
+                `/namespaces/${f.namespace.id}/secrets/${f.secret.id}`,
+                { body: { value: "synthetic-key-replacement" } },
+              );
+              assert.equal(result.status, 200);
+            } else if (outcome === "installation changed") {
+              fixture.setInstallation({
+                ...fixture.installation,
+                enforcement: { ...fixture.installation.enforcement, policyHash: "b".repeat(64) },
+              });
+            }
+            pause.release();
+            const result = await operation;
+            const allowed =
+              outcome === "benign" || (outcome === "rotated" && phase !== "final release");
+            let expected: string | undefined;
+            if (allowed) {
+              expected =
+                outcome === "rotated" ? "synthetic-key-replacement" : "synthetic-key-initial";
+              if (phase === "authorization") {
+                expected = "credential";
+              }
+            }
+            assert.equal(typeof result === "object" ? result?.value : result, expected);
+            if (outcome === "benign" && originalExpiry && typeof result === "object") {
+              assert.ok(result);
+              assert.ok(Date.parse(result.usableUntil) <= originalExpiry.getTime());
+            }
+            if (!allowed && outcome !== "installation changed") {
+              assert.equal((await denials()).rowCount, 1);
+            }
+          }
+          if (originalExpiry) {
+            const current = (
+              await f.pool.query(
+                "SELECT expires_at, expires_at <= clock_timestamp() AS expired FROM occ.request_credential_approvals WHERE request_id=$1",
+                [input.requestId],
+              )
+            ).rows[0];
+            assert.equal(current.expires_at.getTime(), originalExpiry.getTime());
+            if (outcome === "expired") {
+              assert.equal(current.expired, true);
+              assert.ok(Date.now() < Date.parse(redemption.deadlineAt));
+            }
+          }
+          const expectedApprovals = [];
+          if (phase !== "authorization") {
+            expectedApprovals.push({ consumed: true });
+          } else if (outcome === "benign" || outcome === "rotated") {
+            expectedApprovals.push({ consumed: false });
+          }
+          assert.deepEqual((await approvals()).rows, expectedApprovals);
+          if (phase !== "authorization") {
+            assert.equal(
+              await exchange.resolveRequestCredential(grant(input), AbortSignal.timeout(2000)),
+              undefined,
+              "consumption is never replayed",
+            );
+          }
+        } finally {
+          materialPause?.release();
+          pause.release();
+          await contender.query("ROLLBACK");
+          contender.release();
+          await operation;
+        }
+      },
+    );
+  }
+}
+
+test(
+  "active model authorization ignores busy candidate work (PostgreSQL)",
+  { ...requiresPostgres, timeout: 30_000 },
+  async (t) => {
+    const { f, revision, request, exchange, grant } = await requestCredentialFixture(t);
+    const claim = await claimIsolatedWork(f.pool, {
+      workId: `agent_revision:${revision.id}:reconcile`,
+    });
+    assert.ok(claim);
+    const contender = await f.pool.connect();
+    try {
+      await contender.query("BEGIN");
+      assert.ok(await new PostgresWorkQueue(contender).heartbeat(claim));
+      const input = request();
+      const signal = AbortSignal.timeout(2000);
+      assert.equal(await exchange.authorizeRequestCredential(input, signal), "credential");
+      assert.equal(
+        (await exchange.resolveRequestCredential(grant(input), signal))?.value,
+        "synthetic-key-initial",
+      );
+    } finally {
+      await contender.query("ROLLBACK");
+      contender.release();
+    }
   },
 );

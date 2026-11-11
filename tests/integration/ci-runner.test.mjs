@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import {
   chmod,
   mkdir,
@@ -18,6 +18,10 @@ import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test, { describe } from "node:test";
 import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.mjs";
+import {
+  emitOpenShellGitRetention,
+  projectOpenShellGitRetention,
+} from "../../scripts/ci/openshell-git-retention.mjs";
 import { skipperFailureSummary } from "../../scripts/ci/skipper-release.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -279,7 +283,7 @@ function mixedPrecisionEventBoundary({ namespace, pod, second, laterCount = 199 
 
 // run() without blocking this process, for the waiting tests below, which run side by side.
 // The result has spawnSync's shape, including its ETIMEDOUT error when `timeout` ends the runner.
-function runAsync(root, args, env = {}, { timeout, execArgv = [] } = {}) {
+function runAsync(root, args, env = {}, { timeout, execArgv = [], onStderrLine } = {}) {
   return new Promise((resolvePromise) => {
     const child = spawn(process.execPath, [...execArgv, runnerPath, ...args], {
       cwd: repositoryRoot,
@@ -289,6 +293,8 @@ function runAsync(root, args, env = {}, { timeout, execArgv = [] } = {}) {
     let stdout = "";
     let stderr = "";
     let error;
+    const lines = onStderrLine ? createInterface({ input: child.stderr }) : undefined;
+    lines?.on("line", onStderrLine);
     child.stdout.setEncoding("utf8").on("data", (chunk) => (stdout += chunk));
     child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
     const timer =
@@ -302,6 +308,7 @@ function runAsync(root, args, env = {}, { timeout, execArgv = [] } = {}) {
           }, timeout);
     const settle = (status, signal) => {
       clearTimeout(timer);
+      lines?.close();
       resolvePromise({ status, signal, stdout, stderr, error });
     };
     child.on("error", (spawnError) => {
@@ -733,14 +740,14 @@ test(
   { timeout: 30_000 },
   async (t) => {
     const root = await fixture(t);
-    const file = "tests/integration/progress.test.mjs";
+    const file = "tests/integration/progress.test.ts";
     const resultsPath = join(root, "results/progress.json");
     await writeSingleLaneManifest(root, "progress", [{ path: file }], {});
     await writeFile(
       join(root, file),
       `import { watch } from "node:fs";
 import test from "node:test";
-import { emitOpenShellProgress, openShellProgressPrefix } from ${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/openshell-progress.mjs")).href)};
+import { emitOpenShellProgress, emitOpenShellSetupProgress, openShellProgressPrefix } from ${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/openshell-progress.mjs")).href)};
 const write = (text) => new Promise((resolve, reject) => process.stdout.write(text, (error) => error ? reject(error) : resolve()));
 const record = (value) => openShellProgressPrefix + JSON.stringify(value) + "\\n";
 // The legitimate start/pass record also crosses many reporter pipe chunks.
@@ -776,7 +783,9 @@ test("live progress " + "x".repeat(1024 * 1024), async (context) => {
   emitOpenShellProgress("installation", "started");
   await released;
   emitOpenShellProgress("installation", "passed");
+  emitOpenShellSetupProgress("verification", "model before Git");
   context.diagnostic('openclaw-ci-measurement ' + JSON.stringify({ ...stage, outcome: "passed", elapsedMs: 123 }));
+  context.diagnostic('openclaw-ci-measurement ' + JSON.stringify({ kind: "openshell-git-retention", event: "mixed-grant-setup", phase: "deployment", operation: "agent-admission" }));
 });
 test("failed stage", async () => {
   emitOpenShellProgress("initial-model", "started");
@@ -789,58 +798,31 @@ test("failed stage", async () => {
 });
 `,
     );
-    const child = spawn(
-      process.execPath,
-      [runnerPath, ...laneArgs(root, "progress", "state/progress.jsonl", resultsPath)],
+    const label = `[run:progress] ${file}: `;
+    const progressLines = (stderr) =>
+      stderr
+        .split("\n")
+        .filter((line) => line.startsWith(label))
+        .map((line) => line.slice(label.length));
+    // A final buffered transcript cannot release the fixture in time to pass.
+    const result = await runAsync(
+      root,
+      laneArgs(root, "progress", "state/progress.jsonl", resultsPath),
+      { CI_RUNNER_TEST_TIMEOUT_MS: "10000" },
       {
-        cwd: repositoryRoot,
-        env: runnerEnv({ CI_RUNNER_TEST_TIMEOUT_MS: "10000" }),
-        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 15000,
+        onStderrLine(line) {
+          if (line === `${label}openshell-stage installation started`) {
+            writeFileSync(join(root, "release"), "");
+          }
+        },
       },
     );
-    let stdout = "";
-    let stderr = "";
-    const progress = [];
-    const label = `[run:progress] ${file}: `;
-    const lines = createInterface({ input: child.stderr });
-    const closed = new Promise((resolve, reject) =>
-      child.once("error", reject).once("close", resolve),
-    );
-    const live = new Promise((resolve) => {
-      lines.on("line", (line) => {
-        if (line === `${label}openshell-stage installation started`) {
-          resolve(true);
-        }
-      });
-      child.once("close", () => resolve(false));
-    });
-    t.after(() => {
-      lines.close();
-      if (child.exitCode === null) {
-        child.kill("SIGTERM");
-      }
-    });
-    lines.on("line", (line) => {
-      if (!line.startsWith(label)) {
-        return;
-      }
-      progress.push(line.slice(label.length));
-    });
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
-    // A final buffered transcript cannot satisfy this handshake.
-    assert.ok(await live, "progress must arrive while the child waits for its release file");
-    assert.equal(child.exitCode, null);
-    await writeFile(join(root, "release"), "");
-    const code = await closed;
-    assert.equal(code, 1);
-    assert.deepEqual(progress, [
+    assert.equal(result.status, 1);
+    assert.deepEqual(progressLines(result.stderr), [
       "openshell-stage installation started",
       "openshell-stage installation passed",
+      "openshell-mixed-grant-setup verification model before Git",
       "openshell-stage initial-model started",
       "openshell-stage initial-model failed",
     ]);
@@ -850,6 +832,12 @@ test("failed stage", async () => {
     assert.equal(summary.counts.failed, 1);
     assert.deepEqual(summary.files[0].measurements, [
       { kind: "openshell-stage", stage: "installation", outcome: "passed", elapsedMs: 123 },
+      {
+        kind: "openshell-git-retention",
+        event: "mixed-grant-setup",
+        phase: "deployment",
+        operation: "agent-admission",
+      },
     ]);
     const diagnostics = await readFile(join(root, "state/progress.jsonl.diagnostics.json"), "utf8");
     const tail = JSON.parse(diagnostics).failures[0].output;
@@ -859,7 +847,73 @@ test("failed stage", async () => {
       "stdout: unfinished ordinary output",
     ]);
     assert.equal(tail.omittedLines, 400);
-    for (const output of [stdout, stderr, artifact, diagnostics]) {
+    for (const output of [result.stdout, result.stderr, artifact, diagnostics]) {
+      assert.doesNotMatch(output, /private-\w+-canary/);
+    }
+    // A separate child makes interruption proof independent of completed-test buffering.
+    await writeFile(
+      join(root, file),
+      `
+import { watch, writeFileSync } from "node:fs";
+import test from "node:test";
+import { emitOpenShellSetupProgress, openShellProgressPrefix } from ${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/openshell-progress.mjs")).href)};
+test("blocked setup", async (context) => {
+  const setup = { kind: "openshell-mixed-grant-setup", phase: "installation", operation: "gateway-connect" };
+  for (const invalid of [
+    { ...setup, phase: "private-phase-canary" },
+    { ...setup, operation: "private-operation-canary" },
+    { ...setup, detail: "private-setup-canary" },
+    { ...setup, elapsedMs: 1 },
+    { ...setup, kind: "private-kind-canary" },
+  ]) process.stdout.write(openShellProgressPrefix + JSON.stringify(invalid) + "\\n");
+  context.diagnostic('openclaw-ci-measurement ' + JSON.stringify({ kind: "openshell-git-retention", event: "mixed-grant-setup", phase: setup.phase, operation: setup.operation }));
+  // Subscribe before the marker; acknowledge that the parent released a live child.
+  const released = new Promise((resolve) => {
+    const watcher = watch(${JSON.stringify(root)}, (_event, name) => {
+      if (name === "setup-release") { watcher.close(); resolve(); }
+    });
+    context.after(() => watcher.close());
+  });
+  emitOpenShellSetupProgress(setup.phase, setup.operation);
+  await released;
+  writeFileSync(${JSON.stringify(join(root, "setup-ack"))}, "alive");
+  // The runner's deadline terminates only this disposable blocked test process.
+  await new Promise(() => setInterval(() => {}, 1000));
+});
+`,
+    );
+    const interrupted = await runAsync(
+      root,
+      laneArgs(root, "progress", "state/interrupted.jsonl", resultsPath),
+      { CI_RUNNER_TEST_TIMEOUT_MS: "3000" },
+      {
+        timeout: 10000,
+        onStderrLine(line) {
+          if (line === `${label}openshell-mixed-grant-setup installation gateway-connect`) {
+            writeFileSync(join(root, "setup-release"), "");
+          }
+        },
+      },
+    );
+    assert.equal(await readFile(join(root, "setup-ack"), "utf8"), "alive");
+    assert.equal(interrupted.status, 1);
+    assert.deepEqual(progressLines(interrupted.stderr), [
+      "openshell-mixed-grant-setup installation gateway-connect",
+    ]);
+    const interruptedArtifact = await readFile(resultsPath, "utf8");
+    const interruptedSummary = JSON.parse(interruptedArtifact);
+    assert.ok(interruptedSummary.issues.some((issue) => issue.code === "test-timeout"));
+    assert.equal(interruptedSummary.files[0].measurements, undefined);
+    const interruptedDiagnostics = await readFile(
+      join(root, "state/interrupted.jsonl.diagnostics.json"),
+      "utf8",
+    );
+    for (const output of [
+      interrupted.stdout,
+      interrupted.stderr,
+      interruptedArtifact,
+      interruptedDiagnostics,
+    ]) {
       assert.doesNotMatch(output, /private-\w+-canary/);
     }
   },
@@ -969,6 +1023,647 @@ test("run records a sanitized file failure after all reported cases pass", async
     diagnosticKind: "post-test-async-activity",
   });
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
+});
+
+test("mixed-grant output closes deployment codes and projects before diagnostics", async (t) => {
+  const path = "tests/integration/openshell-mixed-grant-real.test.ts";
+  const retentionUrl = new URL("../../scripts/ci/openshell-git-retention.mjs", import.meta.url)
+    .href;
+  const installationUrl = new URL("../helpers/openshell-git-installation.mjs", import.meta.url)
+    .href;
+  const realTestUrl = new URL("./openshell-mixed-grant-real.test.ts", import.meta.url).href;
+  const collectorUrl = new URL("../helpers/installed-worker-events.ts", import.meta.url).href;
+  const denialCollectorUrl = new URL("../helpers/openshell-model-denial.ts", import.meta.url).href;
+  const gatewayFixtureUrl = new URL("../helpers/openshell-online-git-journey.mjs", import.meta.url)
+    .href;
+  const target = {
+    namespaceId: "PRIVATE_NAMESPACE_CANARY",
+    agentId: "PRIVATE_AGENT_CANARY",
+    id: "PRIVATE_REVISION_CANARY",
+  };
+  const identityHashes = Object.fromEntries(
+    Object.entries({
+      namespaceId: target.namespaceId,
+      agentId: target.agentId,
+      revisionId: target.id,
+      workId: `agent_revision:${target.id}:reconcile`,
+    }).map(([field, value]) => [`${field}Hash`, createHash("sha256").update(value).digest("hex")]),
+  );
+  const workerEvents = [
+    { event: "completion", budgetAttempt: 1, outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" },
+    {
+      event: "completion",
+      budgetAttempt: 1,
+      outcome: "permanent",
+      code: "RUNTIME_AUTHENTICATION_FAILED",
+      check: "login",
+    },
+    {
+      event: "completion",
+      budgetAttempt: 1,
+      outcome: "permanent",
+      code: "RUNTIME_AUTHENTICATION_FAILED",
+      check: "model-probe",
+    },
+    {
+      event: "completion",
+      budgetAttempt: 1,
+      outcome: "permanent",
+      code: "RUNTIME_AUTHENTICATION_FAILED",
+      check: "other",
+    },
+  ];
+  const originEvent = { kind: "probe", status: 200, count: 3, harness: "codex", auth: "accepted" };
+  const modelOriginInput = {
+    state: "observed",
+    truncated: false,
+    events: [
+      { ...originEvent, headers: "PRIVATE_HEADER_CANARY", identity: "PRIVATE_IDENTITY_CANARY" },
+      {
+        kind: "PRIVATE_KIND_CANARY",
+        status: 401,
+        count: 1,
+        harness: "PRIVATE_HARNESS_CANARY",
+        auth: "PRIVATE_AUTH_CANARY",
+      },
+      ...Array.from({ length: 33 }, () => originEvent),
+    ],
+    token: "PRIVATE_ORIGIN_TOKEN_CANARY",
+  };
+  const modelOrigin = {
+    state: "observed",
+    truncated: true,
+    events: [
+      originEvent,
+      { kind: "other", status: 401, count: 1, harness: "unknown", auth: "unknown" },
+      ...Array.from({ length: 6 }, () => originEvent),
+    ],
+  };
+  const requestIdHashes = Array.from({ length: 35 }, (_, index) =>
+    createHash("sha256")
+      .update("request-" + index)
+      .digest("hex"),
+  );
+  const modelApprovalsInput = {
+    state: "observed",
+    truncated: false,
+    matched: 7,
+    consumed: 5,
+    replayClaimed: 2,
+    requestIdHashes: ["PRIVATE_REQUEST_CANARY", ...requestIdHashes],
+    tokenDigest: "PRIVATE_DIGEST_CANARY",
+    requestId: "PRIVATE_REQUEST_ID_CANARY",
+  };
+  const modelApprovals = {
+    state: "observed",
+    truncated: true,
+    matched: 7,
+    consumed: 5,
+    replayClaimed: 2,
+    requestIdHashes: requestIdHashes.slice(0, 4),
+  };
+  const unavailableOrigin = { state: "unavailable", truncated: false, events: [] };
+  const unavailableApprovals = {
+    state: "unavailable",
+    truncated: false,
+    matched: 0,
+    consumed: 0,
+    replayClaimed: 0,
+    requestIdHashes: [],
+  };
+  const modelDenialsInput = {
+    state: "observed",
+    truncated: false,
+    events: [
+      {
+        scope: "model",
+        category: "policy-deny-rule",
+        count: 2,
+        message: "PRIVATE_DENIAL_MESSAGE_CANARY",
+        url: "PRIVATE_DENIAL_URL_CANARY",
+      },
+      { scope: "model", category: "PRIVATE_CATEGORY_CANARY", count: 3 },
+      ...Array.from({ length: 9 }, () => ({
+        scope: "model",
+        category: "online-authorization-denied",
+        count: 1,
+      })),
+      { scope: "model", category: "middleware-failed", count: 2001 },
+    ],
+    identity: "PRIVATE_DENIAL_IDENTITY_CANARY",
+  };
+  const modelDenials = {
+    state: "observed",
+    truncated: true,
+    events: [
+      { scope: "model", category: "policy-deny-rule", count: 2 },
+      { scope: "model", category: "other", count: 3 },
+      ...Array.from({ length: 6 }, () => ({
+        scope: "model",
+        category: "online-authorization-denied",
+        count: 1,
+      })),
+    ],
+  };
+  const auditCounts = {
+    unsupported_authority: 1,
+    stale_configuration: 2,
+    withdrawn: 3,
+    unsupported_operation: 4,
+    unauthorized: 5,
+    other: 6,
+  };
+  const modelAuditDenials = { state: "observed", truncated: false, counts: auditCounts };
+  const modelAuditDenialsInput = {
+    ...modelAuditDenials,
+    requestId: "PRIVATE_AUDIT_REQUEST_CANARY",
+    reason: "PRIVATE_AUDIT_REASON_CANARY",
+    counts: { ...auditCounts, PRIVATE_AUDIT_CODE_CANARY: "PRIVATE_AUDIT_VALUE_CANARY" },
+  };
+  const unavailableAuditDenials = { state: "unavailable", truncated: false, counts: {} };
+  const unavailableDenials = { state: "unavailable", truncated: false, events: [] };
+  const truncatedUnavailableDenials = { state: "unavailable", truncated: true, events: [] };
+  // Malformed projection inputs cannot invent either a model attribution or
+  // an observed zero. These rows do not represent valid collector output.
+  const projectDenials = (modelDenials) =>
+    projectOpenShellGitRetention({
+      kind: "openshell-git-retention",
+      event: "mixed-grant-deployment-failed",
+      ...identityHashes,
+      registrationStage: "before",
+      workerEvents: "unavailable",
+      modelDenials,
+    }).modelDenials;
+  const invalidDenials = [
+    { category: "policy-denied", count: 1 },
+    { scope: "PRIVATE_SCOPE_CANARY", category: "policy-denied", count: 1 },
+    { scope: "model", category: "credential-unavailable", count: 1 },
+    { scope: "sandbox", category: "policy-denied", count: 1 },
+    { scope: "sandbox", category: "PRIVATE_CATEGORY_CANARY", count: 1 },
+    ...[0, -1, 1.5, 2001, NaN].map((count) => ({
+      scope: "model",
+      category: "policy-denied",
+      count,
+    })),
+  ];
+  for (const invalid of invalidDenials) {
+    assert.deepEqual(projectDenials({ state: "observed", events: [invalid] }), unavailableDenials);
+  }
+  const validDenial = { scope: "sandbox", category: "credential-unavailable", count: 1 };
+  assert.deepEqual(
+    projectDenials({ state: "observed", events: [...invalidDenials, validDenial] }),
+    { state: "observed", truncated: true, events: [validDenial] },
+  );
+  assert.deepEqual(projectDenials({ state: "observed", events: [] }), {
+    state: "observed",
+    truncated: false,
+    events: [],
+  });
+  assert.deepEqual(projectDenials(undefined), unavailableDenials);
+  // Maximum-width schema input checks the combined checkpoint budget. This is
+  // a size adversary, not a reachable Worker history or a deployment proof.
+  const maximum = Number.MAX_SAFE_INTEGER;
+  const bounded = projectOpenShellGitRetention({
+    kind: "openshell-git-retention",
+    event: "mixed-grant-deployment-failed",
+    ...identityHashes,
+    registrationStage: "before",
+    workerEvents: Array.from({ length: 32 }, () => ({
+      event: "completion",
+      budgetAttempt: maximum,
+      deployPasses: maximum,
+      outcome: "permanent",
+      code: "SANDBOX_ADMISSION_LIMIT_REACHED",
+      check: "model-probe",
+      cause: "OpenShellSandboxConfigurationFailure",
+      cleanupCause: "OpenShellSandboxConfigurationFailure",
+      dependency: "sandbox_admission",
+      method: "GetSandboxProviderStatus",
+      grpcStatus: 16,
+      validationCategory: "POLICY_MIDDLEWARE_VALIDATION",
+      status: 503,
+    })),
+    modelOrigin: {
+      state: "observed",
+      truncated: false,
+      events: Array.from({ length: 8 }, () => ({
+        kind: "unmarked",
+        status: 401,
+        count: maximum,
+        harness: "openclaw",
+        auth: "placeholder",
+      })),
+    },
+    modelApprovals: {
+      state: "observed",
+      truncated: false,
+      matched: maximum,
+      consumed: maximum,
+      replayClaimed: maximum,
+      requestIdHashes: requestIdHashes.slice(0, 4),
+    },
+    modelAuditDenials: {
+      state: "observed",
+      truncated: false,
+      counts: Object.fromEntries(Object.keys(auditCounts).map((key) => [key, maximum])),
+    },
+    modelDenials: {
+      state: "observed",
+      truncated: false,
+      events: Array.from({ length: 8 }, () => ({
+        scope: "sandbox",
+        category: "credential-placement-mismatch",
+        count: 2000,
+      })),
+    },
+  });
+  assert.ok(bounded);
+  assert.equal(bounded.workerEvents.length, 32);
+  assert.equal(bounded.modelOrigin.events.length, 8);
+  assert.equal(bounded.modelApprovals.requestIdHashes.length, 4);
+  assert.equal(bounded.modelDenials.events.length, 8);
+  const emitted = [];
+  emitOpenShellGitRetention({ diagnostic: (line) => emitted.push(line) }, bounded);
+  assert.equal(emitted.length, 1);
+  assert.ok(
+    Buffer.byteLength(emitted[0]) <= 16_384,
+    "combined emitted diagnostic must fit the existing qualification checkpoint limit",
+  );
+  for (const [code, registrationStage, invalidatedFullRing = false] of [
+    ["PRIVATE_UPPERCASE_CANARY", "before"],
+    ["SANDBOX_GATEWAY_UNAUTHORIZED", "after"],
+    ["RUNTIME_AUTHENTICATION_FAILED", "after", true],
+    [null, null],
+  ]) {
+    const root = await fixture(t);
+    const gatewayFailure = code === null;
+    const message = gatewayFailure
+      ? "PRIVATE_RPC_MESSAGE_CANARY"
+      : `MIXED_GRANT_DEPLOYMENT_FAILED: ${code}; selected revision failed ${registrationStage} provider registration`;
+    const fields = gatewayFailure
+      ? {
+          requestDiagnostic: { method: "GetProviderProfile", grpcStatus: 14 },
+          details: "PRIVATE_RPC_DETAILS_CANARY",
+        }
+      : { code: 14 };
+    const unavailableModelDenials = invalidatedFullRing
+      ? truncatedUnavailableDenials
+      : unavailableDenials;
+    const deploymentReceipts = gatewayFailure
+      ? []
+      : [
+          {
+            kind: "openshell-git-retention",
+            event: "mixed-grant-deployment-failed",
+            ...identityHashes,
+            registrationStage,
+            workerEvents: registrationStage === "before" ? workerEvents : "unavailable",
+            modelOrigin: registrationStage === "before" ? modelOrigin : unavailableOrigin,
+            modelApprovals: registrationStage === "after" ? modelApprovals : unavailableApprovals,
+            modelDenials: registrationStage === "before" ? modelDenials : unavailableModelDenials,
+            modelAuditDenials:
+              registrationStage === "before" ? modelAuditDenials : unavailableAuditDenials,
+          },
+        ];
+    // Control only external observations. The normal test catch invokes the
+    // shared capture, real Worker collector, checkpoint and reporter projections.
+    // Opposite reader failures must not hide the other source's bounded receipt.
+    const failureSource = `
+import assert from "node:assert/strict";
+import { collectInstalledWorkerEvents } from ${JSON.stringify(collectorUrl)};
+import { collectOpenShellModelDenials } from ${JSON.stringify(denialCollectorUrl)};
+import { gitExpiryGateway } from ${JSON.stringify(gatewayFixtureUrl)};
+import { emitOpenShellGitRetention } from ${JSON.stringify(retentionUrl)};
+export function createOpenShellGitInstallation(t) {
+  const original = Object.assign(new Error(${JSON.stringify(message)}), ${JSON.stringify(fields)});
+  const target = ${JSON.stringify(target)};
+  const pod = { metadata: { name: "worker", uid: "worker-uid", labels: { "app.kubernetes.io/component": "worker" } },
+    spec: { containers: [{ name: "worker", image: "controller-selected" }] },
+    status: { containerStatuses: [{ name: "worker", containerID: "container-id", restartCount: 0, state: { running: {} } }] } };
+  let receipts = 0;
+  let reads = 0;
+  let originReads = 0;
+  let approvalReads = 0;
+  let denialReads = 0;
+  let auditReads = 0;
+  let originObservedAt;
+  let denialEndedAt;
+  let auditEndedAt;
+  let tornDown = false;
+  t.after(() => {
+    tornDown = true;
+    assert.equal(receipts, ${gatewayFailure ? 0 : 1}, "capture must emit exactly once before teardown");
+    assert.equal(reads, ${gatewayFailure ? 0 : 1}, "capture must read the selected Worker once");
+    assert.equal(originReads, ${gatewayFailure ? 0 : 1}, "capture snapshots the origin once");
+    assert.equal(approvalReads, ${gatewayFailure ? 0 : 1}, "capture reads approvals once");
+    assert.equal(denialReads, ${gatewayFailure ? 0 : 1}, "capture reads denials once");
+    assert.equal(auditReads, ${gatewayFailure ? 0 : 1}, "capture reads audit denials once");
+    if (${!gatewayFailure}) {
+      assert.ok(Number.isSafeInteger(denialEndedAt));
+      assert.equal(auditEndedAt, denialEndedAt, "both diagnostic readers share one end bound");
+      assert.ok(denialEndedAt <= originObservedAt, "the bound is fixed before the first snapshot");
+    }
+  });
+  return {
+    deployMixedGrantAgent: async () => { throw original; },
+    mixedGrantFailureObservation: {
+        target,
+        collectModelOrigin: () => {
+          originObservedAt = Date.now();
+          assert.equal(tornDown, false);
+          assert.equal(reads, 0, "snapshot origin before asynchronous Worker collection");
+          originReads++;
+          if (${JSON.stringify(registrationStage)} === "after") throw new Error("PRIVATE_ORIGIN_READ_CANARY");
+          return ${JSON.stringify(modelOriginInput)};
+        },
+        collectModelAuditDenials: async (endedAt) => {
+          auditEndedAt = endedAt;
+          assert.equal(tornDown, false);
+          auditReads++;
+          if (${JSON.stringify(registrationStage)} === "after") throw new Error("PRIVATE_AUDIT_READ_CANARY");
+          return ${JSON.stringify(modelAuditDenialsInput)};
+        },
+        collectModelDenials: async (endedAt) => {
+          denialEndedAt = endedAt;
+          assert.equal(tornDown, false);
+          denialReads++;
+          if (${invalidatedFullRing}) {
+            // A full real-codec ring becomes unavailable when the final identity
+            // read changes. Capture and both public projections must keep its loss flag.
+            const sandboxId = "00000000-0000-4000-8000-000000000001";
+            const startedAt = Date.parse("2030-01-01T00:00:00Z");
+            const endpoint = "https://model.example.test:8443/v1/responses";
+            const { client } = await gitExpiryGateway(t, {
+              model: "model", workspace: "workspace", sandbox: "sandbox", revisionId: "revision",
+              deadline: "2030-01-01T00:00:00Z", platformProfile: false,
+              configure(methods) {
+                methods.GetSandboxLogs = (request) => {
+                  assert.equal(request.lines, 2000);
+                  return { buffer_total: 2000, logs: Array.from({ length: 2000 }, () => ({
+                    sandbox_id: sandboxId, event_time: { seconds: startedAt / 1000, nanos: 123000000 },
+                    level: "OCSF", target: "ocsf", source: "sandbox", fields: {},
+                    message: "HTTP:POST [MED] DENIED POST " + endpoint +
+                      " [policy:fixture engine:middleware] [failed:false transformed:false reason:middleware_denied:oce-model:request_credential_denied]",
+                  })) };
+                };
+              },
+            });
+            let supervisorReads = 0;
+            const summary = await collectOpenShellModelDenials({
+              gatewayClient: client, workspace: "workspace", sandbox: "sandbox", sandboxId,
+              modelEndpoint: endpoint, startedAt, endedAt: startedAt + 1000, signal: t.signal,
+              async readSupervisor(signal) {
+                signal.throwIfAborted();
+                supervisorReads++;
+                return { sandboxId, containerId: supervisorReads === 1 ? "selected" : "changed" };
+              },
+            });
+            assert.equal(supervisorReads, 2);
+            assert.deepEqual(summary, ${JSON.stringify(truncatedUnavailableDenials)});
+            return summary;
+          }
+          if (${JSON.stringify(registrationStage)} === "after") throw new Error("PRIVATE_DENIAL_READ_CANARY");
+          return ${JSON.stringify(modelDenialsInput)};
+        },
+        collectModelApprovals: async () => {
+          assert.equal(tornDown, false);
+          approvalReads++;
+          if (${JSON.stringify(registrationStage)} === "before") throw new Error("PRIVATE_APPROVAL_READ_CANARY");
+          return ${JSON.stringify(modelApprovalsInput)};
+        },
+        collect: () => collectInstalledWorkerEvents({
+          target, controllerNamespace: "controller-namespace", controllerImage: "controller-selected",
+          controllerPods: [pod], since: "2026-01-01T00:00:00.000Z",
+          readControllerPods: async () => { assert.equal(tornDown, false); return [pod]; },
+          kubectl: async (...args) => {
+            assert.equal(tornDown, false);
+            assert.deepEqual(args, ["logs", "worker", "-n", "controller-namespace", "-c", "worker",
+              "--since-time=2026-01-01T00:00:00.000Z", "--limit-bytes=1048576", "--request-timeout=8s"]);
+            reads++;
+            if (${JSON.stringify(registrationStage)} === "after") throw new Error("PRIVATE_LOG_CANARY");
+            const event = { event: "worker.completed", namespaceId: target.namespaceId, agentId: target.agentId,
+              revisionId: target.id, workId: "agent_revision:" + target.id + ":reconcile",
+              operation: "agent_revision.reconcile", attempt: 1, outcome: "retry", code: "DEPENDENCY_UNAVAILABLE",
+              message: "PRIVATE_WORKER_MESSAGE_CANARY", details: "PRIVATE_WORKER_DETAILS_CANARY" };
+            // Synthetic projection inputs, not a chronological Worker history.
+            // The reporter reprojects each row; unknown checks cannot survive either pass.
+            return [
+              JSON.stringify({ ...event, revisionId: "other-revision" }),
+              JSON.stringify(event),
+              ...["login", "model-probe", "PRIVATE_CHECK_CANARY"].map((check) => JSON.stringify({
+                ...event, outcome: "permanent", code: "RUNTIME_AUTHENTICATION_FAILED", check,
+              })),
+            ].join("\\n");
+          },
+        }),
+        checkpoint: async (event, data) => {
+          assert.equal(tornDown, false);
+          receipts++;
+          emitOpenShellGitRetention(t, { kind: "openshell-git-retention", event, ...data });
+        },
+    },
+  };
+}`;
+    await writeFile(
+      join(root, path),
+      `
+import test from "node:test";
+import { registerHooks } from "node:module";
+import { emitOpenShellGitRetention } from ${JSON.stringify(retentionUrl)};
+registerHooks({ load(url, context, nextLoad) {
+  if (url === ${JSON.stringify(installationUrl)}) return {
+    format: "module", shortCircuit: true,
+    source: ${JSON.stringify(failureSource)}
+  };
+  return nextLoad(url, context);
+}});
+test("closed diagnostic projection", (t) => {
+  const common = { kind: "openshell-git-retention", phase: "installation", extra: "PRIVATE_FIELD_CANARY" };
+  emitOpenShellGitRetention(t, { ...common, event: "mixed-grant-setup", phase: "verification", operation: "model before Git" });
+  emitOpenShellGitRetention(t, { ...common, event: "mixed-grant-failure", category: "operation", httpStatus: null, method: "GetProviderProfile", grpcStatus: 14, details: "PRIVATE_RPC_DETAILS_CANARY" });
+  // Existing events still supply the original identity for collector-side hashing.
+  emitOpenShellGitRetention(t, { kind: common.kind, event: "mixed-grant-git-fetched", revisionId: "revision-identity", sha: "a".repeat(40), gitIssued: 1, gitRequests: 2 });
+});
+process.env.OCC_TEST_OPENSHELL_MIXED_GRANT_REAL = "1";
+await import(${JSON.stringify(realTestUrl)});
+`,
+    );
+    await writeSingleLaneManifest(root, "closed-output", [{ path }], {});
+    const directEnv = runnerEnv();
+    delete directEnv.NODE_TEST_CONTEXT;
+    const direct = spawnSync(
+      process.execPath,
+      ["--test", "--test-reporter=tap", join(root, path)],
+      {
+        encoding: "utf8",
+        env: directEnv,
+      },
+    );
+    assert.equal(direct.status, 1, direct.stderr);
+    const expectedCode = code === "PRIVATE_UPPERCASE_CANARY" ? "UNKNOWN_DEPLOYMENT_FAILURE" : code;
+    const expectedMessage = `MIXED_GRANT_DEPLOYMENT_FAILED: ${expectedCode}; selected revision failed ${registrationStage} provider registration; verification phase deployment.`;
+    assert.ok(
+      (direct.stdout + direct.stderr).includes(
+        gatewayFailure ? "GetProviderProfile gRPC 14" : expectedMessage,
+      ),
+      direct.stdout + direct.stderr,
+    );
+    const result = run(
+      root,
+      laneArgs(root, "closed-output", "state/closed.json", "results/closed.json"),
+    );
+    assert.equal(result.status, 1, result.stderr);
+    const raw = await readFile(join(root, "results/closed.json"), "utf8");
+    const diagnostics = await readFile(join(root, "state/closed.json.diagnostics.json"), "utf8");
+    assert.doesNotMatch(
+      direct.stdout + direct.stderr + result.stdout + result.stderr + raw + diagnostics,
+      /PRIVATE_[A-Za-z_]+_CANARY/,
+    );
+    const directReceipts = direct.stdout
+      .split("\n")
+      .filter((line) => line.startsWith("# openclaw-ci-measurement "))
+      .map((line) => JSON.parse(line.slice("# openclaw-ci-measurement ".length)))
+      .filter((receipt) => receipt.event === "mixed-grant-deployment-failed");
+    assert.deepEqual(directReceipts, deploymentReceipts);
+    const summary = JSON.parse(raw);
+    const failure = summary.files[0].tests.find(({ name }) => name.startsWith("OpenShell grants"));
+    if (!gatewayFailure) {
+      assert.equal(failure.error.message, expectedMessage);
+    }
+    const receipts = summary.files[0].measurements;
+    assert.deepEqual(receipts, [
+      {
+        kind: "openshell-git-retention",
+        event: "mixed-grant-setup",
+        phase: "verification",
+        operation: "model before Git",
+      },
+      {
+        kind: "openshell-git-retention",
+        event: "mixed-grant-failure",
+        phase: "installation",
+        category: "operation",
+        httpStatus: null,
+        method: "GetProviderProfile",
+        grpcStatus: 14,
+      },
+      {
+        kind: "openshell-git-retention",
+        event: "mixed-grant-git-fetched",
+        revisionIdHash: createHash("sha256").update("revision-identity").digest("hex"),
+        sha: "a".repeat(40),
+        gitIssued: 1,
+        gitRequests: 2,
+      },
+      ...deploymentReceipts,
+      {
+        kind: "openshell-git-retention",
+        event: "mixed-grant-failure",
+        phase: "deployment",
+        category: gatewayFailure ? "operation" : "deployment",
+        httpStatus: null,
+        method: gatewayFailure ? "GetProviderProfile" : null,
+        grpcStatus: gatewayFailure ? 14 : null,
+      },
+    ]);
+    if (!gatewayFailure) {
+      assert.ok(raw.includes(expectedMessage));
+    }
+  }
+  // An unavailable observation can retain only the boolean loss flag, even
+  // when malformed input supplies valid-looking events or a truthy non-boolean.
+  for (const [truncated, expected] of [
+    [true, true],
+    [false, false],
+    ["true", false],
+    [1, false],
+    [undefined, false],
+  ]) {
+    assert.deepEqual(projectDenials({ state: "unavailable", truncated, events: [validDenial] }), {
+      state: "unavailable",
+      truncated: expected,
+      events: [],
+    });
+  }
+});
+
+test("mixed-grant candidate lane requires and forwards all original supplier inputs", async (t) => {
+  const root = await fixture(t);
+  const lane = JSON.parse(
+    await readFile(
+      join(repositoryRoot, "scripts/ci/test-suites/openshell-mixed-grant.json"),
+      "utf8",
+    ),
+  );
+  const inputs = {
+    OCC_TEST_OPENSHELL_GATEWAY_IMAGE: `registry.example/gateway@sha256:${"1".repeat(64)}`,
+    OCC_TEST_OPENSHELL_SANDBOX_IMAGE: `registry.example/sandbox@sha256:${"2".repeat(64)}`,
+    OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: `registry.example/supervisor@sha256:${"3".repeat(64)}`,
+    OCC_TEST_OPENSHELL_SOURCE_REVISION: "a".repeat(40),
+    OCC_TEST_OPENSHELL_HELM_CHART: join(root, "original-gateway-chart"),
+    OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART: join(root, "original-workspace-chart"),
+  };
+  const marker = join(root, "child-started");
+  const path = "tests/integration/openshell-mixed-grant-real.test.ts";
+  const name =
+    "OpenShell grants model and Git on demand and preserves the conversation after Git withdrawal";
+
+  // Use the checked-in lane with the real runner, but a local child that only
+  // checks input forwarding. This proves prerequisite handling, not installation.
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { "openshell-mixed-grant": lane },
+    groups: {},
+  });
+  await writeFile(
+    join(root, path),
+    [
+      'import assert from "node:assert/strict";',
+      'import { writeFileSync } from "node:fs";',
+      'import test from "node:test";',
+      `writeFileSync(${JSON.stringify(marker)}, "started");`,
+      `test(${JSON.stringify(name)}, () => {`,
+      `  for (const [name, value] of Object.entries(${JSON.stringify(inputs)})) {`,
+      "    assert.equal(process.env[name], value, name);",
+      "  }",
+      '  assert.equal(process.env.OCC_TEST_OPENSHELL_MIXED_GRANT_REAL, "1");',
+      '  assert.equal(process.env.OCC_TEST_OPENSHELL_K3D_REAL, "1");',
+      '  assert.equal(process.env.OCC_TEST_LOCAL_FIRST_AGENT_REAL, "1");',
+      "});",
+    ].join("\n"),
+  );
+
+  for (const missing of Object.keys(inputs)) {
+    const resultsPath = join(root, `results/${missing}.json`);
+    const result = run(
+      root,
+      laneArgs(root, "openshell-mixed-grant", "state/candidate.json", resultsPath),
+      { ...inputs, [missing]: "" },
+      { timeout: 20_000 },
+    );
+    assert.equal(result.status, 1, result.stderr);
+    const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+    assert.deepEqual(
+      summary.issues.map((entry) => [entry.code, entry.env]),
+      [["missing-env", missing]],
+    );
+    await assert.rejects(readFile(marker), { code: "ENOENT" });
+  }
+
+  const resultsPath = join(root, "results/complete.json");
+  const result = run(
+    root,
+    laneArgs(root, "openshell-mixed-grant", "state/candidate.json", resultsPath),
+    inputs,
+    { timeout: 20_000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  assert.deepEqual(summary.issues, []);
+  assert.equal(summary.counts.passed, 1);
+  assert.equal(summary.counts.failed, 0);
+  assert.equal(summary.counts.skipped, 0);
+  assert.equal(await readFile(marker, "utf8"), "started");
 });
 
 test("run fails missing expected tests, skipped expected tests, skips, todos, and missing required env", async (t) => {
@@ -6875,7 +7570,88 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       agentPodsAbsent: true,
     },
   ];
+  const mixedGrantPolicy = {
+    event: "mixed-grant-withdrawal-denied",
+    boundary: "supervisor-policy",
+    reason: "transparent_tcp_policy_denied",
+    policyReason: "endpoint-not-admitted",
+    marker: "policy-dns-ineligible",
+    host: "github.com",
+    port: 443,
+    executable: "/usr/lib/git-core/git-remote-http",
+    count: 1,
+    startedAt: 1_800_000_000_000,
+    endedAt: 1_800_000_001_000,
+  };
+  const mixedGrant = [
+    ...[0, 128].map((exitCode) => ({
+      event: "mixed-grant-agent-git-tool",
+      revisionId: opaque,
+      turnId: opaque,
+      sha: "b".repeat(40),
+      exitCode,
+      commandCount: 1,
+    })),
+    {
+      event: "mixed-grant-model-before-git",
+      revisionId: opaque,
+      turnId: opaque,
+      providerId: opaque,
+      sandboxId: opaque,
+      bindingId: opaque,
+      requestId: opaque,
+      assertionConsumed: true,
+      gitIssued: 0,
+    },
+    {
+      event: "mixed-grant-git-fetched",
+      revisionId: opaque,
+      sha: "b".repeat(40),
+      gitIssued: 1,
+      gitRequests: 2,
+    },
+    {
+      event: "mixed-grant-withdrawal-denied",
+      boundary: "signed-access-withdrawn",
+      requestId: opaque,
+      workerUid: uuid,
+    },
+    mixedGrantPolicy,
+    {
+      event: "mixed-grant-git-withdrawn",
+      revisionId: opaque,
+      sha: "b".repeat(40),
+      gitIssued: 1,
+      gitRequests: 2,
+      exitCode: 128,
+    },
+    {
+      event: "mixed-grant-conversation-continued",
+      revisionId: opaque,
+      turnId: opaque,
+      priorTurnObserved: true,
+      gitIssued: 1,
+    },
+  ];
+  const mixedGrantFailures = [
+    { method: null, grpcStatus: null },
+    { method: "GetProviderProfile", grpcStatus: 14 },
+    { method: null, grpcStatus: 14 },
+    { method: "GetWorkspace", grpcStatus: null },
+  ].map((diagnostic) => ({
+    event: "mixed-grant-failure",
+    phase: "deployment",
+    category: "operation",
+    httpStatus: null,
+    ...diagnostic,
+  }));
   const retentionReceipts = [
+    ...mixedGrantFailures.map((receipt) => ({
+      ...receipt,
+      message: forbidden,
+      details: forbidden,
+    })),
+    ...mixedGrant.map((receipt) => ({ ...receipt, credential: forbidden, output: forbidden })),
     ...finiteRemoval.map((receipt) => ({ ...receipt, credential: forbidden, output: forbidden })),
     ...withdrawalWitnesses.map((receipt) => ({ ...receipt, error: forbidden, token: forbidden })),
     { ...withdrawalRetirement, token: forbidden },
@@ -6904,7 +7680,8 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       parent: `ghcr.io/example/stock@sha256:${sha256}`,
       reference: `docker.io/library/test@sha256:${sha256}`,
       binaryHash: sha256,
-      configDigest: `sha256:${sha256}`,
+      manifestDigest: `sha256:${"1".repeat(64)}`,
+      configDigest: `sha256:${"2".repeat(64)}`,
     },
     { event: "finite-git-grant", revisionId: opaque, deadlineWallMs: 1_800_000_000_000 },
     { event: "initial-runtime", ...runtimeReceipt },
@@ -6986,6 +7763,46 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     { event: "cleanup", outcome: "passed" },
   ].map((value) => ({ kind: retentionKind, ...value, unexpected: forbidden }));
   const invalidRetention = [
+    // Diagnostic metadata must stay closed even when the supplier reports an error.
+    ...[undefined, forbidden, 14].map((method) => ({ ...mixedGrantFailures[0], method })),
+    ...[undefined, 0, 17, 1.5, "14"].map((grpcStatus) => ({
+      ...mixedGrantFailures[0],
+      grpcStatus,
+    })),
+    // Each boundary must have a complete receipt. A success-shaped prefix is
+    // not evidence of a model turn, Git request, or withdrawal denial.
+    ...mixedGrant.flatMap((receipt) =>
+      Object.keys(receipt)
+        .filter((field) => field !== "event")
+        .map((field) => ({ ...receipt, [field]: undefined })),
+    ),
+    { ...mixedGrant[0], commandCount: 0 },
+    { ...mixedGrant[0], commandCount: 2 },
+    { ...mixedGrant[0], exitCode: 1 },
+    { ...mixedGrant[0], sha: forbidden },
+    { ...mixedGrant[0], turnId: { credential: forbidden } },
+    { ...mixedGrant[2], gitIssued: 1 },
+    { ...mixedGrant[2], assertionConsumed: false },
+    { ...mixedGrant[2], assertionConsumed: undefined },
+    ...["providerId", "sandboxId", "bindingId", "requestId"].map((field) => ({
+      ...mixedGrant[2],
+      [field]: null,
+    })),
+    { ...mixedGrant[3], gitIssued: 0 },
+    { ...mixedGrant[3], gitRequests: -1 },
+    { ...mixedGrant[3], gitRequests: 0.5 },
+    { ...mixedGrant[3], gitRequests: forbidden },
+    { ...mixedGrant[4], boundary: forbidden },
+    { ...mixedGrant[4], workerUid: forbidden },
+    { ...mixedGrant[4], requestId: null },
+    ...["reason", "policyReason", "marker", "host", "port", "executable", "count"].map((field) => ({
+      ...mixedGrantPolicy,
+      [field]: forbidden,
+    })),
+    { ...mixedGrantPolicy, startedAt: mixedGrantPolicy.endedAt + 1 },
+    { ...mixedGrant[6], exitCode: 0 },
+    { ...mixedGrant[7], priorTurnObserved: false },
+    { ...mixedGrant[7], gitIssued: 0 },
     ...[
       "controllerImageDigest",
       "controllerConfigDigest",
@@ -7561,6 +8378,66 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
   const receipts = summary.files[0].measurements.filter(({ kind }) => kind === retentionKind);
   assert.deepEqual(
+    receipts.filter(({ event }) => event.startsWith("mixed-grant-")),
+    [
+      ...mixedGrantFailures.map((receipt) => ({ kind: retentionKind, ...receipt })),
+      ...[0, 128].map((exitCode) => ({
+        kind: retentionKind,
+        event: "mixed-grant-agent-git-tool",
+        revisionIdHash: opaqueHash,
+        turnIdHash: opaqueHash,
+        sha: "b".repeat(40),
+        exitCode,
+        commandCount: 1,
+      })),
+      {
+        kind: retentionKind,
+        event: "mixed-grant-model-before-git",
+        revisionIdHash: opaqueHash,
+        turnIdHash: opaqueHash,
+        providerIdHash: opaqueHash,
+        sandboxIdHash: opaqueHash,
+        bindingIdHash: opaqueHash,
+        requestIdHash: opaqueHash,
+        assertionConsumed: true,
+        gitIssued: 0,
+      },
+      {
+        kind: retentionKind,
+        event: "mixed-grant-git-fetched",
+        revisionIdHash: opaqueHash,
+        sha: "b".repeat(40),
+        gitIssued: 1,
+        gitRequests: 2,
+      },
+      {
+        kind: retentionKind,
+        event: "mixed-grant-withdrawal-denied",
+        boundary: "signed-access-withdrawn",
+        requestIdHash: opaqueHash,
+        workerUid: uuid,
+      },
+      { kind: retentionKind, ...mixedGrantPolicy },
+      {
+        kind: retentionKind,
+        event: "mixed-grant-git-withdrawn",
+        revisionIdHash: opaqueHash,
+        sha: "b".repeat(40),
+        gitIssued: 1,
+        gitRequests: 2,
+        exitCode: 128,
+      },
+      {
+        kind: retentionKind,
+        event: "mixed-grant-conversation-continued",
+        revisionIdHash: opaqueHash,
+        turnIdHash: opaqueHash,
+        priorTurnObserved: true,
+        gitIssued: 1,
+      },
+    ],
+  );
+  assert.deepEqual(
     receipts.filter(({ event }) => event.startsWith("finite-removal-")),
     [
       {
@@ -7685,7 +8562,8 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       parentDigest: `sha256:${sha256}`,
       imageDigest: `sha256:${sha256}`,
       binaryHash: sha256,
-      configDigest: `sha256:${sha256}`,
+      manifestDigest: `sha256:${"1".repeat(64)}`,
+      configDigest: `sha256:${"2".repeat(64)}`,
     },
   );
   assert.deepEqual(

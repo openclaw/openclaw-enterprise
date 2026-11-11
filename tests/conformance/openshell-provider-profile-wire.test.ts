@@ -1,4 +1,5 @@
 import {
+  modelRequestProviderName,
   openShellModelRequestPolicy,
   verifyModelRequestPolicy,
   verifyModelRequestProfile,
@@ -10,6 +11,7 @@ import test from "node:test";
 import type { ProxyPlan } from "../../packages/contracts/src/index.ts";
 import { OpenShellPreparedGitProvider } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
 import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
+import { registerMixedGrantProviders } from "../helpers/openshell-mixed-grant-setup.ts";
 import { ensureOpenShellProviderProfile } from "../../apps/controller/src/backends/openshell.ts";
 import {
   GrpcOpenShellGatewayClient,
@@ -657,3 +659,160 @@ test("Git grant provider creates an empty attachment for a single repository rea
   );
   assert.deepEqual(calls, ["profile", "create"]);
 });
+
+test(
+  "mixed registration assembles profiles without mutating decoded providers",
+  { timeout: 15000 },
+  async (t) => {
+    const workspace = "mixed-profile-wire";
+    const namespace = { id: "nsp_00000000-0000-4000-8000-000000000001" };
+    const agent = { id: "agt_00000000-0000-4000-8000-000000000002" };
+    const revision = { id: "rev_00000000-0000-4000-8000-000000000003" };
+    const modelName = modelRequestProviderName(revision.id);
+    const fingerprint = "a".repeat(48);
+    const gitName = "oce-github-installation-" + fingerprint.slice(0, 32);
+    const names = [modelName, gitName];
+    const ids = ["00000000-0000-4000-8000-000000000004", "00000000-0000-4000-8000-000000000005"];
+    const sandbox = "mixed-sandbox";
+    const profileReads: string[] = [];
+    let upgraded = false;
+    const { client }: { client: GrpcOpenShellGatewayClient } = await gitExpiryGateway(t, {
+      model: modelName,
+      workspace,
+      sandbox,
+      revisionId: revision.id,
+      deadline: "2030-01-01T00:00:00Z",
+      platformProfile: false,
+      configure(methods: Record<string, (request: Record<string, unknown>) => unknown>) {
+        methods.GetSandbox = () => ({
+          sandbox: {
+            metadata: {
+              id: "sandbox-id",
+              name: sandbox,
+              workspace,
+              resource_version: "1",
+              annotations: {
+                "openclaw.dev/agent-id": agent.id,
+                "openclaw.dev/revision-id": revision.id,
+              },
+            },
+            spec: { providers: names },
+          },
+        });
+        methods.GetProvider = (request) => {
+          assert.ok(typeof request.name === "string");
+          const index = names.indexOf(request.name);
+          assert.notEqual(index, -1);
+          return {
+            provider: {
+              type: request.name,
+              profile_workspace: workspace,
+              metadata: {
+                id: ids[index],
+                name: request.name,
+                workspace,
+                resource_version: "1",
+                labels:
+                  index === 0
+                    ? {
+                        "openclaw.dev/namespace-id": namespace.id,
+                        "openclaw.dev/agent-id": agent.id,
+                        "openclaw.dev/revision-id": revision.id,
+                      }
+                    : { "openclaw.dev/prepared-git-binding": fingerprint },
+              },
+            },
+          };
+        };
+        methods.GetProviderProfile = (request) => {
+          assert.equal(upgraded, true, "Read profiles only after assertion registration");
+          assert.ok(typeof request.id === "string" && names.includes(request.id));
+          profileReads.push(request.id);
+          return {
+            profile: {
+              id: request.id,
+              display_name: "Controlled wire profile",
+              category: "PROVIDER_PROFILE_CATEGORY_OTHER",
+              resource_version: "1",
+              endpoints: [{ host: "origin.example.test", port: 443, protocol: "rest" }],
+            },
+          };
+        };
+      },
+    });
+    assert.ok(client instanceof GrpcOpenShellGatewayClient);
+    const signal = AbortSignal.timeout(10000);
+    const decoded = await Promise.all(
+      names.map((name) => client.getProvider(workspace, name, signal)),
+    );
+    assert.ok(decoded.every(Object.isFrozen), "Exercise the production frozen response contract");
+    const modelEndpoint = "https://model.example.test/token";
+    const gitEndpoint = "https://git.example.test/token";
+    // Only external deployment/Pod observations and the Helm boundary are controlled.
+    // Real protobuf decoding and registration/profile assembly execute unchanged.
+    const selected = await registerMixedGrantProviders({
+      request: async (method, path) => {
+        assert.equal(method, "GET");
+        assert.equal(
+          path,
+          `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`,
+        );
+        return {
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          deploymentId: revision.id,
+          status: "running",
+          cleanup: null,
+          progress: { lastAttempt: null, nextAttemptAt: null },
+          error: null,
+          warnings: [],
+        };
+      },
+      namespace,
+      agent,
+      revision,
+      workspace,
+      gatewayClient: client,
+      kube: async (args) => {
+        assert.deepEqual(args, [
+          "get",
+          "pods",
+          "-n",
+          workspace,
+          "-l",
+          `openclaw.dev/agent=${agent.id},openclaw.dev/revision=${revision.id},openclaw.dev/workload-role=agent`,
+          "-o",
+          "json",
+        ]);
+        return JSON.stringify({
+          items: [{ metadata: { ownerReferences: [{ kind: "Sandbox", name: sandbox }] } }],
+        });
+      },
+      gatewayValues: { gatewayConfig: {} },
+      modelEndpoint,
+      gitEndpoint,
+      upgradeGateway: async (values) => {
+        assert.deepEqual(values.gatewayConfig["openshell.gateway.provider_assertions"], [
+          { provider_id: ids[0], credential_key: "access_token", token_endpoint: modelEndpoint },
+          {
+            provider_id: ids[1],
+            credential_key: "installation_token",
+            token_endpoint: gitEndpoint,
+          },
+        ]);
+        upgraded = true;
+      },
+      signal,
+    });
+    assert.deepEqual(profileReads, names);
+    for (const [index, provider] of [selected.modelProvider, selected.gitProvider].entries()) {
+      assert.equal(provider.id, ids[index]);
+      assert.equal(provider.name, names[index]);
+      assert.ok(provider.profile);
+      assert.equal(provider.profile.definition?.id, names[index]);
+      const original = decoded[index];
+      assert.ok(original);
+      assert.equal(Object.hasOwn(original, "profile"), false);
+    }
+  },
+);

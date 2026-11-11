@@ -36,6 +36,7 @@
     "tests/integration/workspace-setup-api.test.mjs",
     "tests/integration/agent-create-validate-api.test.mjs",
     "tests/integration/model-provider.test.ts",
+    "tests/integration/openshell-model-origin.test.ts",
     "tests/integration/repository-credentials-service-loss.test.mjs",
     "tests/integration/ci-runner.test.mjs",
     "tests/integration/local-first-agent-session-identity.test.ts",
@@ -401,6 +402,14 @@
       "path": "tests/integration/model-provider.test.ts"
     },
     {
+      "path": "tests/integration/openshell-model-origin.test.ts",
+      "expectedTests": [
+        "OpenShell model origin requires assistant history for a continued turn",
+        "OpenShell model origin waits for native tool completion and verifies its output",
+        "OpenShell model turn requires a fresh matching Gateway assertion despite a valid upstream bearer"
+      ]
+    },
+    {
       "path": "tests/conformance/repository-credentials-source-boundary.test.mjs"
     },
     {
@@ -633,7 +642,8 @@
         "connected failed-turn observation rejects partial text without a completed message",
         "connected adversarial wire carries split and nested-JSON material without raw reflection",
         "connected request bytes pass the real Fastify parser and preserve missing-capability refusals",
-        "failed custody deployment preserves worker event order across a reused attempt budget"
+        "failed custody deployment preserves worker event order across a reused attempt budget",
+        "model denial diagnostics preserve endpoint scope and refuse incomplete identity evidence"
       ]
     },
     {

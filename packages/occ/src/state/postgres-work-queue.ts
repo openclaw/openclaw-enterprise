@@ -1,7 +1,11 @@
 import { repositoryRemovalWorkKey, repositoryRetirementWorkKey } from "../repository-withdrawal.ts";
 import { isNonEmptyString, isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 import { createHash, randomUUID } from "node:crypto";
-import { ResourceConflictError, ScopeViolationError } from "../errors.ts";
+import {
+  RequestCredentialWorkBusyError,
+  ResourceConflictError,
+  ScopeViolationError,
+} from "../errors.ts";
 import {
   CREDENTIAL_WITHDRAWAL_TARGET,
   nonempty,
@@ -1093,7 +1097,8 @@ export class PostgresWorkQueue {
              LIMIT 1
            )
            UPDATE occ.controller_work AS work
-           SET state = 'claimed',
+           SET readiness_deferred = false,
+               state = 'claimed',
                attempt_count = CASE WHEN ${repositoryCleanupSql("work")}
                  THEN LEAST(work.attempt_count::bigint + 1, $2::integer)::integer
                  ELSE work.attempt_count + 1 END,
@@ -1175,6 +1180,49 @@ export class PostgresWorkQueue {
       throw new ScopeViolationError("The controller work backlog contains an invalid count.");
     }
     return count;
+  }
+
+  /** Namespace is already held; never wait here on a worker holding work before Agent. */
+  async lockRequestCredentialWork(owner: RepositoryRevisionOwner): Promise<boolean> {
+    try {
+      const locked = await this.client.query(
+        `SELECT idempotency_key FROM occ.controller_work AS work
+       WHERE work.idempotency_key = 'agent_revision:' || $3::text || ':reconcile'
+         AND work.namespace_id = $1 AND work.agent_id = $2 AND work.revision_id = $3
+         AND work.work_kind = 'lifecycle' AND work.namespace_target IS NULL
+         AND work.agent_target IS NULL
+       FOR SHARE OF work NOWAIT`,
+        [owner.namespaceId, owner.agentId, owner.revisionId],
+      );
+      return locked.rows.length === 1;
+    } catch (error) {
+      // Only this exact, pre-effect lock statement can request a policy retry.
+      // Throw through State so the entire transaction releases its owner locks.
+      if (error instanceof Error && "code" in error && error.code === "55P03") {
+        throw new RequestCredentialWorkBusyError();
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Call after locking work. Read the current transition fact under the same lock.
+   * Keep the lock through authorization/release; recheck database lease time before either.
+   */
+  async requestCredentialCandidateEligible(owner: RepositoryRevisionOwner): Promise<boolean> {
+    const found = await this.client.query(
+      `SELECT 1 FROM occ.controller_work AS work
+       WHERE work.idempotency_key = 'agent_revision:' || $3::text || ':reconcile'
+         AND work.namespace_id = $1 AND work.agent_id = $2 AND work.revision_id = $3
+         AND work.work_kind = 'lifecycle' AND work.namespace_target IS NULL
+         AND work.agent_target IS NULL
+         AND (
+           (work.state = 'claimed' AND work.lease_expires_at > clock_timestamp()) OR
+           (work.state = 'queued' AND work.readiness_deferred)
+         )`,
+      [owner.namespaceId, owner.agentId, owner.revisionId],
+    );
+    return found.rows.length === 1;
   }
 
   async findWork(idempotencyKey: string): Promise<ControllerWork | undefined> {
@@ -1327,7 +1375,8 @@ export class PostgresWorkQueue {
     const completed = await this.client.query(
       `WITH transitioned AS (
          UPDATE occ.controller_work
-         SET state = 'succeeded',
+         SET readiness_deferred = false,
+             state = 'succeeded',
              claim_token = NULL,
              lease_expires_at = NULL,
              completed_at = clock_timestamp(),
@@ -1404,7 +1453,13 @@ export class PostgresWorkQueue {
     const deferred = await this.client.query(
       `WITH transitioned AS (
          UPDATE occ.controller_work
-         SET state = 'queued',
+         SET readiness_deferred = (work_kind = 'lifecycle'
+               AND agent_id IS NOT NULL AND revision_id IS NOT NULL
+               AND namespace_target IS NULL AND agent_target IS NULL
+               AND idempotency_key = 'agent_revision:' || revision_id || ':reconcile'
+               AND $14::boolean AND $10::text IS NULL
+               AND NOT $13::boolean),
+             state = 'queued',
              attempt_count = GREATEST(attempt_count - 1, 0),
              available_at = clock_timestamp() +
                COALESCE($8::double precision, ${backoffDelayMsSql("attempt_count", "$5", "$6", "$7")}) * interval '1 millisecond',
@@ -1430,6 +1485,8 @@ export class PostgresWorkQueue {
         pending.refusal === undefined ? null : safeFailureCode(pending.refusal),
         options.repeatEvidence ?? false,
         pending.refusal !== undefined && pending.stopYielded === true,
+        pending.stopYielded === true,
+        pending.code === "REVISION_INCOMPLETE",
       ],
     );
     if (deferred.rows.length === 0) {
@@ -1445,7 +1502,8 @@ export class PostgresWorkQueue {
     const retried = await this.client.query(
       `WITH transitioned AS (
          UPDATE occ.controller_work AS work
-         SET state = CASE
+         SET readiness_deferred = false,
+             state = CASE
                WHEN ${exhausted} THEN 'failed_permanent'
                ELSE 'queued'
              END,
@@ -1546,7 +1604,8 @@ export class PostgresWorkQueue {
            ))
        ), transitioned AS (
          UPDATE occ.controller_work AS work
-         SET state = 'failed_permanent',
+         SET readiness_deferred = false,
+             state = 'failed_permanent',
              claim_token = NULL,
              lease_expires_at = NULL,
              completed_at = clock_timestamp(),
@@ -1611,7 +1670,8 @@ export class PostgresWorkQueue {
           AND work.idempotency_key NOT IN (SELECT idempotency_key FROM recovering_refused_stops)`,
        )} transitioned AS (
          UPDATE occ.controller_work AS work
-         SET state = CASE
+         SET readiness_deferred = false,
+             state = CASE
                WHEN ${exhaustedClaim} THEN 'failed_permanent'
                ELSE 'queued'
              END,
@@ -1686,7 +1746,8 @@ export class PostgresWorkQueue {
        )} transitioned AS (
          -- A requeued row keeps its available_at: it was already queued.
          UPDATE occ.controller_work AS work
-         SET state = CASE WHEN ${predecessorStop} THEN 'queued' ELSE 'failed_permanent' END,
+         SET readiness_deferred = false,
+             state = CASE WHEN ${predecessorStop} THEN 'queued' ELSE 'failed_permanent' END,
              attempt_count = CASE
                WHEN ${predecessorStop} THEN GREATEST($2::integer - 1, 0)
                ELSE work.attempt_count

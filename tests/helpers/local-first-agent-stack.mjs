@@ -493,14 +493,38 @@ async function availablePorts() {
   }
 }
 
-export async function localFirstAgentStack(context, { modelCredential } = {}) {
-  if (modelCredential !== undefined && modelCredential !== "openai") {
+export async function localFirstAgentStack(context, { modelCredential, supplier } = {}) {
+  if (modelCredential !== undefined && !["openai", "controlled"].includes(modelCredential)) {
     throw new Error("Unsupported local first-Agent model credential selection.");
   }
   if (process.env.OCC_TEST_LOCAL_FIRST_AGENT_REAL !== "1") {
     throw new Error("The protected local first-Agent test must be explicitly enabled.");
   }
   const testEnvironment = { ...process.env };
+  if (supplier !== undefined) {
+    if (modelCredential !== "controlled") {
+      throw new Error("An explicit supplier is reserved for the controlled-model fixture.");
+    }
+    // The caller verified image revisions and exact chart contents before creating
+    // the cluster. Pass that owned selection to Local Setup without ambient overrides.
+    const selected = {
+      GATEWAY_IMAGE: supplier.images.gateway,
+      SANDBOX_IMAGE: supplier.images.sandbox,
+      SUPERVISOR_IMAGE: supplier.images.supervisor,
+      SOURCE_REVISION: supplier.sourceRevision,
+      HELM_CHART: supplier.gatewayChart,
+      WORKSPACE_HELM_CHART: supplier.workspaceChart,
+    };
+    for (const [name, value] of Object.entries(selected)) {
+      const variable = `OCC_DEVELOPMENT_OPENSHELL_${name}`;
+      if (process.env[variable] !== undefined) {
+        throw new Error(
+          "Explicit supplier setup cannot accept ambient OpenShell development overrides.",
+        );
+      }
+      testEnvironment[variable] = value;
+    }
+  }
   const sandboxDriver = process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER ?? "none";
   if (!["none", "openshell"].includes(sandboxDriver)) {
     throw new Error("OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER must be none or openshell.");
@@ -528,7 +552,7 @@ export async function localFirstAgentStack(context, { modelCredential } = {}) {
     sandboxDriver === "openshell" && modelCredential !== "openai"
       ? "CODEX_ACCESS_TOKEN"
       : "OPENAI_API_KEY";
-  if (!process.env[credentialVariable]?.trim()) {
+  if (modelCredential !== "controlled" && !process.env[credentialVariable]?.trim()) {
     throw new Error(
       `${credentialVariable} is required to provision the protected local first-Agent test.`,
     );

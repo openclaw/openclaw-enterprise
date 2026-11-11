@@ -182,6 +182,14 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
  */
 export class PersistedStateInvalidError extends DependencyUnavailableError {}
 
+/** Exact candidate work was busy before credential policy performed any effect. */
+export class RequestCredentialWorkBusyError extends DependencyUnavailableError {
+  constructor() {
+    super("Candidate credential work is busy.");
+    this.name = "RequestCredentialWorkBusyError";
+  }
+}
+
 /**
  * A Secret the selected Secret Driver cannot serve, typically one stored through a driver the
  * Installation no longer selects. Each subclass is raised only after the caller's grant and the
