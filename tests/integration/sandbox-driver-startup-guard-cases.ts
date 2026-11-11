@@ -614,7 +614,12 @@ export function createSandboxStartupGuardChecks({
       });
       const [ssh, account, role, binding] = openShellWorkspaceChartResources();
       assert.ok(ssh && account && role && binding);
-      const renamed = <T>(resource: T, path: (string | number)[], from: string, to: string): T => {
+      const renamed = (
+        resource: object,
+        path: (string | number)[],
+        from: string,
+        to: string,
+      ): object => {
         const copy = structuredClone(resource);
         const parent = path.reduce<unknown>((value, key) => {
           assert.ok(typeof value === "object" && value !== null);
