@@ -4,7 +4,7 @@ implementation_status: Partially implemented
 author: uggy-ug
 ---
 
-# Proposal: Native Telegram polling for dedicated Agents
+# Proposal: Native Telegram as a primary channel for dedicated Agents
 
 - **ID:** RFC-0034
 - **Created:** 2026-11-10
