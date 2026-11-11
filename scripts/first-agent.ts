@@ -776,7 +776,7 @@ function assertManagedConfiguration(
     Object.keys(configuration.secretBindings ?? {}).length
   ) {
     throw new Error(
-      "This Agent's Configuration was changed outside this helper. Use a new Agent name or manage this Agent through OCC.",
+      "This Agent's Configuration does not match this version of the helper. Use a new Agent name or manage this Agent through OCC.",
     );
   }
 }
@@ -812,7 +812,7 @@ function assertManagedRevision(
     revision.plugins !== undefined
   ) {
     throw new Error(
-      "This Agent revision was changed outside this helper. Use a new Agent name or manage this Agent through OCC.",
+      "This Agent revision does not match this version of the helper. Use a new Agent name or manage this Agent through OCC.",
     );
   }
   return firstAgentPriorPatPolicy(values, record, revision.id, priorRevisionId);
