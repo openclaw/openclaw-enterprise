@@ -43,7 +43,8 @@ function usage() {
     "Usage:",
     "  node scripts/ci/run-tests.mjs audit [--manifest <file>] [--root <dir>]",
     "  node scripts/ci/run-tests.mjs check-selection <lane> --file <manifest-path> [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--file <manifest-path>] [--manifest <file>] [--root <dir>] [--lifecycle complete]",
+    "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--file <manifest-path>] [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.mjs run <lane> --lifecycle complete --attempt <fresh-directory> [--file <manifest-path>] [--manifest <file>] [--root <dir>]",
     "  node scripts/ci/run-tests.mjs aggregate <group> --results-dir <dir> [--needs <json-file>] [--lanes <json-array>] [--release-selection <file>] [--manifest <file>] [--root <dir>]",
   ].join("\n");
 }
@@ -870,12 +871,24 @@ function runNode(args, { cwd, env, timeout, onProgress }) {
     let error;
     let settled = false;
     let graceTimer;
-    const child = spawn(process.execPath, args, {
-      cwd,
-      env,
-      detached: true,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    // The existing command owner keeps the test group alive until its result
+    // drains and stops that group if the complete-mode phase loses its parent.
+    const supervised = process.env.OPENCLAW_CI_COMPLETE_PHASE === "1";
+    let commandResult;
+    const child = supervised
+      ? fork(new URL("./cleanup-command.mjs", import.meta.url), [], {
+          cwd,
+          env,
+          detached: true,
+          execArgv: [],
+          stdio: ["ignore", "pipe", "pipe", "ipc"],
+        })
+      : spawn(process.execPath, args, {
+          cwd,
+          env,
+          detached: true,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
     const pgid = child.pid;
     if (pgid !== undefined) {
       addLiveGroup(pgid);
@@ -888,7 +901,12 @@ function runNode(args, { cwd, env, timeout, onProgress }) {
       if (error === undefined) {
         error = Object.assign(new Error(`child ${code}`), { code });
         if (code === "ETIMEDOUT") {
-          child.kill("SIGTERM");
+          if (supervised) {
+            // The anchor ignores TERM; the Node runner and its children receive it.
+            killGroup(pgid, "SIGTERM");
+          } else {
+            child.kill("SIGTERM");
+          }
           graceTimer = setTimeout(() => {
             killGroup(pgid, "SIGKILL");
             closePipes();
@@ -903,9 +921,9 @@ function runNode(args, { cwd, env, timeout, onProgress }) {
     };
     const timer = setTimeout(() => stop("ETIMEDOUT"), timeout);
     for (const stream of [child.stdin, child.stdout, child.stderr]) {
-      stream.on("error", () => {});
+      stream?.on("error", () => {});
     }
-    child.stdin.end();
+    child.stdin?.end();
     child.stderr.resume();
     const readProgress = boundedProgressLines((line) => {
       // Only this small closed record reaches the live log. Ordinary reporter
@@ -944,6 +962,16 @@ function runNode(args, { cwd, env, timeout, onProgress }) {
       settled = true;
       clearTimeout(timer);
       clearTimeout(graceTimer);
+      if (supervised) {
+        if (commandResult) {
+          ({ code: status, signal } = commandResult);
+          if (commandResult.error) {
+            error ??= new Error("Node command could not start.");
+          }
+        } else {
+          error ??= new Error("Node command owner exited without a result.");
+        }
+      }
       resolvePromise({
         status,
         signal,
@@ -953,16 +981,33 @@ function runNode(args, { cwd, env, timeout, onProgress }) {
       });
     };
     child.on("exit", () => {
-      // The runner has reported; whatever it left in its group goes now.
-      killGroup(pgid, "SIGKILL");
+      // The anchor stops its own group before exiting. Ordinary runners retain
+      // their existing exit cleanup; never signal a departed anchor's numeric ID.
+      if (!supervised) {
+        killGroup(pgid, "SIGKILL");
+      }
       liveGroups.delete(pgid);
     });
     child.on("error", (spawnError) => {
+      if (supervised && child.pid !== undefined) {
+        stop("EPIPE");
+        return;
+      }
       error ??= spawnError;
       liveGroups.delete(pgid);
       finish(null, null);
     });
     child.on("close", finish);
+    if (supervised) {
+      child.on("message", (result) => {
+        commandResult = result;
+      });
+      child.send({ command: process.execPath, args }, (sendError) => {
+        if (sendError) {
+          stop("EPIPE");
+        }
+      });
+    }
   });
 }
 
@@ -2233,19 +2278,10 @@ async function completePhaseChild() {
       exitCode = await runLane(root, manifest, lane, statePath, resultsPath, file);
       uncertain = abandonedSteps > 0;
     }
-  } catch (caught) {
-    let preparedEnv;
-    try {
-      preparedEnv = JSON.parse(await readFile(request.statePath, "utf8")).env;
-    } catch {
-      // Preparation may fail before it writes state. Generic credential
-      // redaction and inherited values still apply in that case.
-    }
-    error = redactFailure(
-      { message: caught instanceof Error ? caught.message : "Lifecycle phase failed." },
-      failureSecrets([process.env, isObject(preparedEnv) ? preparedEnv : {}]),
-      request.root,
-    );
+  } catch {
+    // Command owners can embed opaque argv and output in Error.message. Only
+    // this closed category crosses the phase boundary, never exception text.
+    error = { code: "phase-failed" };
     exitCode = 1;
   }
   process.send({ type: "ci-lifecycle-result", exitCode, uncertain, error });
@@ -2391,12 +2427,12 @@ async function lifecyclePhase(request, timeoutMs) {
   // Never signal reported nested IDs: their leaders may already have exited.
   // Read-only checks also include descendants which outlived their parent.
   const drainDeadline = Date.now() + 5_000;
-  while (!lifecycleGroupsTerminal(groups) && Date.now() < drainDeadline) {
+  let groupsTerminal = lifecycleGroupsTerminal(groups);
+  while (!groupsTerminal && Date.now() < drainDeadline) {
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+    groupsTerminal = lifecycleGroupsTerminal(groups);
   }
-  const terminal = Boolean(
-    result && !invalid && !timedOut && !result.uncertain && lifecycleGroupsTerminal(groups),
-  );
+  const terminal = Boolean(result && !invalid && !timedOut && !result.uncertain && groupsTerminal);
   return {
     status: timedOut ? "timed-out" : terminal && result.exitCode === 0 ? "passed" : "failed",
     exitCode: result?.exitCode ?? null,
@@ -2408,15 +2444,7 @@ async function lifecyclePhase(request, timeoutMs) {
   };
 }
 
-async function runCompleteLifecycle(
-  root,
-  manifest,
-  manifestPath,
-  lane,
-  statePath,
-  resultsPath,
-  file,
-) {
+async function runCompleteLifecycle(root, manifest, manifestPath, lane, attempt, file) {
   if (process.platform !== "linux") {
     throw new Error("Complete lifecycle mode requires Linux process-group verification.");
   }
@@ -2430,29 +2458,47 @@ async function runCompleteLifecycle(
     logIssues([...selection.issues, ...audit.issues, ...source.issues]);
     return 1;
   }
-  if (statePath === resultsPath) {
-    throw new Error("Lifecycle state and results must use different paths.");
-  }
-  const attempt = `${resultsPath}.lifecycle`;
-  for (const path of [statePath, resultsPath, attempt, `${statePath}.lifecycle-owner`]) {
-    try {
-      await lstat(path);
-    } catch (error) {
-      if (error.code === "ENOENT") {
-        continue;
-      }
-      throw error;
+  // One atomic directory claim owns every path used by this invocation. Its
+  // existing parent must not permit another user to replace the claimed directory.
+  let parent;
+  try {
+    parent = realpathSync(dirname(attempt));
+    const owner = statSync(parent);
+    if (!owner.isDirectory() || owner.uid !== process.getuid() || (owner.mode & 0o022) !== 0) {
+      throw new Error("Uncontrolled parent");
     }
-    throw new Error("Complete lifecycle mode requires fresh state and result paths.");
+  } catch {
+    throw new Error(
+      "Complete lifecycle requires an existing runner-owned parent without group or other write access.",
+    );
   }
-  await mkdir(dirname(statePath), { recursive: true });
-  await mkdir(dirname(resultsPath), { recursive: true });
-  await mkdir(attempt, { mode: 0o700 });
-  await writeFile(
-    `${statePath}.lifecycle-owner`,
-    JSON.stringify({ resultsPath, sourceSha: source.sha }),
-    { flag: "wx", mode: 0o600 },
-  );
+  attempt = join(parent, basename(attempt));
+  try {
+    await mkdir(attempt, { mode: 0o700 });
+  } catch {
+    throw new Error("Complete lifecycle requires a fresh attempt directory.");
+  }
+  const identity = await lstat(attempt);
+  if (
+    !identity.isDirectory() ||
+    identity.uid !== process.getuid() ||
+    (identity.mode & 0o777) !== 0o700
+  ) {
+    throw new Error("Attempt directory ownership is invalid; reconciliation is required.");
+  }
+  const assertAttemptOwned = async () => {
+    try {
+      const current = await lstat(attempt);
+      if (current.isDirectory() && current.dev === identity.dev && current.ino === identity.ino) {
+        return;
+      }
+    } catch {
+      // A missing or replaced owner directory is not authority over another path.
+    }
+    throw new Error("Attempt directory changed; reconciliation is required.");
+  };
+  const statePath = join(attempt, "state.json");
+  const resultsPath = join(attempt, "result.json");
   const startedAt = new Date().toISOString();
   const deadline = laneDeadlineMs() ?? Date.now() + 30 * 60_000;
   const phases = Object.fromEntries(
@@ -2485,16 +2531,23 @@ async function runCompleteLifecycle(
   };
   try {
     if (!interrupted) {
-      phases.prepare = await lifecyclePhase(
-        { ...phaseRequest, phase: "prepare" },
-        deadline - Date.now(),
-      );
+      await assertAttemptOwned();
+      if (!interrupted) {
+        phases.prepare = await lifecyclePhase(
+          { ...phaseRequest, phase: "prepare" },
+          deadline - Date.now(),
+        );
+      }
     }
     if (!interrupted && phases.prepare.status === "passed") {
-      phases.run = await lifecyclePhase({ ...phaseRequest, phase: "run" }, deadline - Date.now());
+      await assertAttemptOwned();
+      if (!interrupted) {
+        phases.run = await lifecyclePhase({ ...phaseRequest, phase: "run" }, deadline - Date.now());
+      }
     }
     const previous = phases.run.status === "not-run" ? phases.prepare : phases.run;
     if (previous.terminal) {
+      await assertAttemptOwned();
       activeDeadline = Date.now() + cleanupAllowanceMs();
       phases.cleanup = await lifecyclePhase(
         { ...phaseRequest, phase: "cleanup" },
@@ -2553,6 +2606,7 @@ async function runCompleteLifecycle(
         ),
       );
     }
+    await assertAttemptOwned();
     await writeFile(
       resultsPath,
       `${JSON.stringify({ ...summary, status: passed ? "passed" : "failed", exitCode, endedAt: new Date().toISOString(), lifecycle }, null, 2)}\n`,
@@ -2578,6 +2632,9 @@ async function main() {
   if (options.lifecycle !== undefined && (command !== "run" || options.lifecycle !== "complete")) {
     throw new Error("--lifecycle supports only run --lifecycle complete.");
   }
+  if (options.attempt !== undefined && (command !== "run" || options.lifecycle !== "complete")) {
+    throw new Error("--attempt requires run --lifecycle complete.");
+  }
 
   if (command === "check-selection") {
     if (!positionals[0] || options.file === undefined) {
@@ -2596,19 +2653,28 @@ async function main() {
 
   if (command === "run") {
     const laneName = positionals[0];
-    if (!laneName || !options.state || !options.results) {
-      throw new Error(`run requires <lane>, --state, and --results\n${usage()}`);
-    }
     if (options.lifecycle === "complete") {
+      if (
+        !laneName ||
+        !options.attempt ||
+        options.state !== undefined ||
+        options.results !== undefined
+      ) {
+        throw new Error(
+          "Complete lifecycle requires <lane> and --attempt, without --state or --results.",
+        );
+      }
       return runCompleteLifecycle(
         root,
         manifest,
         manifestPath,
         laneName,
-        resolve(root, options.state),
-        resolve(root, options.results),
+        resolve(root, options.attempt),
         options.file,
       );
+    }
+    if (!laneName || !options.state || !options.results) {
+      throw new Error(`run requires <lane>, --state, and --results\n${usage()}`);
     }
     return runLane(
       root,

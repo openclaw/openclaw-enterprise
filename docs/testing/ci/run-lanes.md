@@ -96,26 +96,33 @@ lane's same-source evidence, even when other lanes passed.
 
 ### Run a complete local attempt
 
-On Linux, use a fresh private state path and result path to prepare, run and clean
-up one lane with one command:
+On Linux, give the runner one fresh private attempt directory to prepare, run and
+clean up a lane with one command. Its parent directory must already exist, belong
+to the runner's user, and deny group and other write access:
 
 ```sh
-node scripts/ci/run-tests.mjs run <lane> --lifecycle complete \
-  --state <private-state-file> --results <results-file>
+node scripts/ci/run-tests.mjs run checks-baseline-1 --lifecycle complete \
+  --attempt "$HOME/oce-profile-wire-attempt-1" \
+  --file tests/conformance/openshell-provider-profile-wire.test.ts
 ```
 
-Add `--file <manifest-path>` for a focused attempt. The command validates the
-selection before preparation and retains the lane's required inputs and expected
-cases. It does not select images, provide missing credentials, or enable optional
+Choose an unused attempt name. This example runs one existing wire-conformance
+file without preparing services. Omit `--file` to run the whole selected lane.
+The command validates the selection before preparation and retains the lane's
+required inputs and expected cases. It does not select images, provide missing credentials, or enable optional
 wire tests. Follow the selected lane's setup requirements first.
 
-The final result includes separate `lifecycle.phases.prepare`, `run` and `cleanup`
-outcomes. It is written after cleanup, or after the command determines that
-cleanup cannot start safely. Passing tests alone do not make the attempt pass.
-The command reserves `<results-file>.lifecycle` and
-`<private-state-file>.lifecycle-owner`; use new paths for another attempt. The
-ordinary test result, when available, remains in the reserved directory's
-`run.json` even if later cleanup fails.
+Complete mode rejects `--state` and `--results`. It creates the attempt directory
+exclusively with mode `0700`, then owns `state.json`, `run.json` and `result.json`
+inside it. Do not write into an active attempt or reuse its directory. A competing
+invocation that cannot claim the directory starts no phase and cleans nothing.
+
+The final `result.json` includes separate `lifecycle.phases.prepare`, `run` and
+`cleanup` outcomes. It is written after cleanup, or after the command determines
+that cleanup cannot start safely. Passing tests alone do not make the attempt
+pass. The ordinary test result, when available, remains in `run.json` even if later
+cleanup fails. Phase exceptions use closed failure codes; command arguments and
+output are not copied into phase errors.
 
 SIGINT, SIGTERM and SIGHUP request deferred cancellation. The command reports the
 request immediately, waits for the current phase, then cleans up without starting
@@ -125,10 +132,11 @@ millisecond deadline. Cleanup has its own `CI_RUNNER_CLEANUP_TIMEOUT_MS` allowan
 (default 120 seconds). This mode does not promise immediate interruption.
 
 A timeout, lost phase result or unconfirmed process termination produces
-`reconciliation-required` and prevents a later cleanup phase. Retain the state,
-confirm the attempt's processes have stopped, then use the existing cleanup
-command below. Do not remove another attempt's resources. SIGKILL or host failure
-can prevent a final result; a missing result is not cleanup evidence.
+`reconciliation-required` and prevents a later cleanup phase. Command owners stop
+their process groups when their phase loses its parent. Retain the attempt,
+confirm its processes have stopped, then use the existing cleanup command below
+with its `state.json`. Do not remove another attempt's resources. SIGKILL or host
+failure can prevent a final result; a missing result is not cleanup evidence.
 
 This mode covers resources recorded by the selected preparation and test owners.
 It does not add installed-image qualification, verify unrelated resource absence,
