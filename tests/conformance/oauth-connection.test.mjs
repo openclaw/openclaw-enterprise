@@ -3,12 +3,31 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import test from "node:test";
+import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import {
+  OAuthAccountTokens,
+  OAuthGrantStore,
+} from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
+import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
+import { createControllerApp } from "../../apps/controller/src/index.ts";
+import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   startBrowserAuthorization,
   exchangeAuthorizationCode,
 } from "../../packages/occ/src/browser-authorization.ts";
-import { OAuthGrantStore } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
-import { refreshPinnedOAuthGrant } from "../../packages/occ/src/index.ts";
+import {
+  InMemoryPlatformState,
+  OpenClawController,
+  refreshPinnedOAuthGrant,
+} from "../../packages/occ/src/index.ts";
+import {
+  authenticatedHeaders,
+  createTestAuthPrincipal,
+  signInToControllerApp,
+} from "../helpers/auth-session.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
+import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
 test("the browser code exchange passes only granted scopes to refresh", async (t) => {
@@ -558,4 +577,641 @@ test("access-token-only grants deliver usable tokens, omit renewal schedules, an
   assert.equal(postRenewObservation.status.state, "failed");
   assert.equal(postRenewObservation.status.failureCode, "access_token_expired");
   assert.equal(postRenewObservation.status.recoveryAction, "reauthorize");
+});
+
+test("pre-upgrade renewable OAuth custody JSON remains readable, resolvable, and renewable", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-01-01T00:00:00Z") });
+  const refreshedToken = randomUUID();
+  const rotatedGrant = randomUUID();
+  let upstreamCalls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    upstreamCalls++;
+    return Response.json({
+      access_token: refreshedToken,
+      token_type: "Bearer",
+      expires_in: 300,
+      refresh_token: rotatedGrant,
+      scope: "read",
+    });
+  });
+
+  const driver = { ...createTestSecretDriver(), capability: "secret" };
+  const store = new OAuthGrantStore(driver, refreshPinnedOAuthGrant);
+  const custody = await store.reserve({ namespaceId: "ns_legacy", sourceId: "src_legacy" });
+  const resolveClient = async () => ({
+    registration: {
+      issuer: "https://issuer.example.test",
+      tokenUrl: "https://issuer.example.test/token",
+      oauthClientId: "oac_legacy",
+      tokenEndpointAuthMethod: "none",
+      clientId: "legacy-client",
+    },
+    readSecret: async () => assert.fail("public clients have no secret"),
+  });
+
+  // Seed pre-upgrade renewable ready custody JSON directly to verify schema compatibility.
+  const preUpgradeReady = {
+    issuer: "https://issuer.example.test",
+    oauthClientId: "oac_legacy",
+    clientId: "legacy-client",
+    tokenUrl: "https://issuer.example.test/token",
+    tokenEndpointAuthMethod: "none",
+    requestedScopes: ["read"],
+    grantedScopes: ["read"],
+    accessToken: "legacy-access-token",
+    refreshToken: "legacy-refresh-token",
+    renewAt: new Date(Date.now() + 60_000).toISOString(),
+    expiresAt: new Date(Date.now() + 120_000).toISOString(),
+    phase: "ready",
+    sourceId: custody.sourceId,
+    namespaceId: custody.secret.namespaceId,
+    version: "legacy-version-1",
+  };
+  await driver.update(custody.secret, JSON.stringify(preUpgradeReady));
+
+  const readyObs = await store.observe(custody, t.signal, 30_000);
+  assert.equal(readyObs.renewable, true);
+  assert.equal(readyObs.status.state, "ready");
+  assert.equal(readyObs.status.schedule?.version, "legacy-version-1");
+  assert.equal(readyObs.token?.accessToken, "legacy-access-token");
+
+  // Pre-upgrade renewing JSON stays pending without clearing schedule or replaying the grant.
+  await driver.update(
+    custody.secret,
+    JSON.stringify({
+      ...preUpgradeReady,
+      phase: "renewing",
+      renewalDeadline: new Date(Date.now() + 30_000).toISOString(),
+    }),
+  );
+  const renewingObs = await store.observe(custody, t.signal, 0);
+  assert.equal(renewingObs.renewable, true);
+  assert.equal(renewingObs.status.state, "pending");
+  // An in-flight renewal keeps delivering the unexpired access token until terminal commit.
+  assert.equal(renewingObs.token?.accessToken, "legacy-access-token");
+
+  // Pre-upgrade client retry and terminal failed phases preserve their recovery semantics.
+  await driver.update(
+    custody.secret,
+    JSON.stringify({
+      ...preUpgradeReady,
+      phase: "client_unavailable",
+      renewAt: new Date(Date.now() + 10_000).toISOString(),
+    }),
+  );
+  const retryObs = await store.observe(custody, t.signal, 0);
+  assert.equal(retryObs.renewable, true);
+  assert.deepEqual(retryObs.status, {
+    state: "failed",
+    failureCode: "client_unavailable",
+    recoveryAction: "retry",
+    nextRefreshAt: retryObs.status.nextRefreshAt,
+    schedule: {
+      version: "legacy-version-1",
+      nextRefreshAt: retryObs.status.nextRefreshAt,
+      grantedScopes: ["read"],
+    },
+    expiresAt: preUpgradeReady.expiresAt,
+  });
+
+  // Restore ready state inside the renewal window and confirm pre-upgrade grants still renew cleanly.
+  await driver.update(
+    custody.secret,
+    JSON.stringify({
+      ...preUpgradeReady,
+      renewAt: new Date(Date.now() - 1_000).toISOString(),
+    }),
+  );
+  const renewed = await store.renew(custody, t.signal, resolveClient);
+  assert.equal(renewed.state, "ready");
+  assert.equal(upstreamCalls, 1);
+  assert.equal((await store.observe(custody, t.signal, 0)).token?.accessToken, refreshedToken);
+
+  await driver.update(
+    custody.secret,
+    JSON.stringify({
+      phase: "failed",
+      namespaceId: custody.secret.namespaceId,
+      sourceId: custody.sourceId,
+      failureCode: "grant_refused",
+    }),
+  );
+  const failedObs = await store.observe(custody, t.signal, 0);
+  assert.equal(failedObs.renewable, false);
+  assert.deepEqual(failedObs.status, {
+    state: "failed",
+    failureCode: "grant_refused",
+    recoveryAction: "reauthorize",
+  });
+});
+
+test("OAuthAccountTokens stops resolution immediately for short non-renewable lifetimes and clears due schedules", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-01-01T00:00:00Z") });
+  const secretDriver = { ...createTestSecretDriver(), capability: "secret" };
+  const adminId = "principal-nonrenewable-admin";
+  const adminPrincipal = {
+    kind: "principal",
+    id: adminId,
+    subject: adminId,
+    issuer: "https://console.oce.localhost",
+    displayName: "Non-renewable Test Admin",
+  };
+  const iamState = {
+    identities: [adminPrincipal],
+    groups: [],
+    memberships: [],
+    roles: [
+      {
+        id: "role-admin",
+        name: "Administrator",
+        permissions: [
+          { resourceKind: "installation", action: "administer" },
+          { resourceKind: "namespace", action: "create" },
+          { resourceKind: "namespace", action: "read" },
+          { resourceKind: "credential_source", action: "create" },
+          { resourceKind: "credential_source", action: "read" },
+          { resourceKind: "credential_source", action: "operate" },
+          { resourceKind: "credential_source", action: "update" },
+        ],
+      },
+    ],
+    bindings: [
+      {
+        id: "binding-admin",
+        subjectKind: "identity",
+        subjectId: adminId,
+        roleId: "role-admin",
+      },
+    ],
+    restrictions: [],
+  };
+  const iamDriver = new NativeIAMDriver(
+    { loadNativeIAMState: async () => iamState },
+    { id: "iam-oauth-direct-test" },
+  );
+  const state = new InMemoryPlatformState({ iamIdentities: [adminPrincipal] });
+  const installation = {
+    id: "ins_" + randomUUID(),
+    name: "Non-renewable maintenance test",
+    createdAt: new Date().toISOString(),
+  };
+  const preparedTokens = new TokenService();
+  const controller = new OpenClawController(installation, { state, preparedTokens });
+  controller.registerDriver(iamDriver);
+  controller.selectDriver("iam", iamDriver.id);
+  controller.registerDriver(secretDriver);
+  controller.selectDriver("secret", secretDriver.id);
+  controller.registerDriver(createTestConfigurationDriver({ id: "cfg-direct-oauth" }));
+  controller.selectDriver("configuration", "cfg-direct-oauth");
+  controller.registerDriver(createReadyComputeDriver("compute-direct-oauth"));
+  controller.selectDriver("compute", "compute-direct-oauth");
+
+  let resolveCalls = 0;
+  let allowResolve = true;
+  const resolveClient = async (...args) => {
+    resolveCalls++;
+    assert.ok(allowResolve, "non-renewable grant maintenance must not resolve an upstream client");
+    return controller.resolveConnectionClient(...args);
+  };
+  const tokens = new OAuthAccountTokens(state, secretDriver, resolveClient);
+  preparedTokens.registerIssuer(tokens);
+
+  await state.transact((unit) => unit.installations.createInstallation(installation));
+  const namespace = await controller.createNamespace(adminId, { name: "Tokens" });
+  await controller.handleNamespaceLifecycle(adminId, namespace.id, "ready");
+  const namespaceId = namespace.id;
+
+  const issuer = "https://issuer.example.test";
+  const template = await controller.createConnectionTemplate(adminId, {
+    namespaceId,
+    displayName: "Short-lived OAuth",
+    mode: "manual",
+    issuer,
+    authorizationUrl: `${issuer}/authorize`,
+    tokenUrl: `${issuer}/token`,
+    destinations: [{ host: "api.issuer.example.test", port: 443, path: "/v1/**" }],
+    scopes: ["read"],
+  });
+  await controller.createOAuthClient(adminId, {
+    connectionTemplateId: template.id,
+    connectionTemplateVersion: template.current.version,
+    displayName: "Public Client",
+    clientId: "test-client",
+    tokenEndpointAuthMethod: "none",
+  });
+
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json({
+      access_token: "short-lived-access",
+      token_type: "Bearer",
+      expires_in: 120,
+      scope: "read",
+    }),
+  );
+  const sessionId = "sess-" + randomUUID();
+  const started = await controller.startNamespaceConnection(adminId, {
+    namespaceId,
+    connectionTemplateId: template.id,
+    redirectUri: "https://console.oce.localhost/oauth/callback",
+    sessionId,
+  });
+  const stateParam = new URL(started.authorizationUrl).searchParams.get("state");
+  assert.ok(stateParam);
+  const connected = await controller.completeNamespaceConnection(adminId, {
+    state: stateParam,
+    sessionId,
+    code: "code-1",
+  });
+  const sourceId = connected.credentialSourceId;
+  const ref = { kind: "oauth_refresh_token", namespaceId, sourceId };
+  assert.equal(resolveCalls, 1);
+  allowResolve = false;
+
+  // Move to 20s remaining while caller requests 30s minimum validity: must return undefined
+  // in a single pass with zero maintenance transactions or renewal loop iterations.
+  t.mock.timers.tick(100_000);
+  const withValueSpy = t.mock.method(secretDriver, "withValue");
+  const transactSpy = t.mock.method(state, "transact");
+  const insufficient = await tokens.resolve(ref, {
+    signal: t.signal,
+    deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+    minimumValidityMs: 30_000,
+  });
+  assert.equal(insufficient, undefined);
+  assert.equal(withValueSpy.mock.callCount(), 1);
+  assert.equal(transactSpy.mock.callCount(), 0);
+  withValueSpy.mock.restore();
+  transactSpy.mock.restore();
+
+  // Marking a non-renewable grant due must be cleared by maintenance so workers do not re-poll it.
+  await state.transact((unit) =>
+    unit.savedConnections.recordTokenSchedule(namespaceId, sourceId, "due"),
+  );
+  const beforeMaintain = await state.read((view) =>
+    view.savedConnections.listDueConnectionTokens(installation.id, 10),
+  );
+  assert.equal(beforeMaintain.length, 1);
+
+  const maintained = await tokens.maintain(ref, t.signal);
+  assert.equal(maintained?.state, "ready");
+  assert.equal(maintained?.schedule, undefined);
+  const afterMaintain = await state.read((view) =>
+    view.savedConnections.listDueConnectionTokens(installation.id, 10),
+  );
+  assert.deepEqual(afterMaintain, []);
+});
+
+test("shipped OCC HTTP routes enforce callback session custody, non-renewable lifecycle, rotation refusal, expiry reconnect, and disconnect fencing", async (t) => {
+  const origin = "https://console.oce.localhost";
+  const now = new Date("2026-01-01T00:00:00Z");
+  t.mock.timers.enable({ apis: ["Date"], now });
+
+  const installationId = `ins_${randomUUID()}`;
+  const adminAuth = await createTestAuthPrincipal({
+    installationId,
+    baseURL: origin,
+    email: `admin-${randomUUID()}@example.com`,
+    password: `generated-password-${randomUUID()}`,
+    name: "OAuth Test Administrator",
+  });
+  const intruderEmail = `intruder-${randomUUID()}@example.com`;
+  const intruderPassword = `generated-password-${randomUUID()}`;
+  const intruderAccount = await adminAuth.auth.createAccount({
+    email: intruderEmail,
+    password: intruderPassword,
+    name: "Wrong Session User",
+  });
+  const intruderSeed = adminAuth.auth.principalSeed(intruderAccount, { grant: "none" });
+  const iamState = {
+    identities: [adminAuth.seed.principal, intruderSeed.principal],
+    groups: [],
+    memberships: [],
+    roles: adminAuth.seed.roles.map((role) => ({ ...role, permissions: [...role.permissions] })),
+    bindings: [
+      {
+        id: "binding-admin",
+        subjectKind: "identity",
+        subjectId: adminAuth.seed.principal.id,
+        roleId: adminAuth.seed.roles[0].id,
+      },
+    ],
+    restrictions: [],
+  };
+  const iamDriver = new NativeIAMDriver(
+    { loadNativeIAMState: async () => iamState },
+    { id: "iam-oauth-http-test" },
+  );
+  const auditSink = new InMemoryAuditSink();
+  const secretDriver = {
+    ...createTestSecretDriver({ id: "secret-oauth-http" }),
+    capability: "secret",
+  };
+  const state = new InMemoryPlatformState({
+    auditSink,
+    iamIdentities: [adminAuth.seed.principal, intruderSeed.principal],
+  });
+  const preparedTokens = new TokenService();
+  let controller;
+
+  const app = createControllerApp({
+    createController(installation) {
+      controller = new OpenClawController(installation, {
+        state,
+        preparedTokens,
+        recordOperations: false,
+      });
+      preparedTokens.registerIssuer(
+        new OAuthAccountTokens(
+          state,
+          secretDriver,
+          controller.resolveConnectionClient.bind(controller),
+        ),
+      );
+      return controller;
+    },
+    iamDriver,
+    computeDriver: createReadyComputeDriver("compute-oauth-http"),
+    configurationDriver: createTestConfigurationDriver({ id: "config-oauth-http" }),
+    secretDriver,
+    resolveHarness: resolveApprovedDevelopmentHarness,
+    auditSink,
+    publicOrigin: origin,
+    development: {
+      enabled: true,
+      installationId,
+      browserOrigin: origin,
+    },
+    auth: adminAuth.auth,
+  });
+  const adminSession = await signInToControllerApp(app, adminAuth, { origin });
+  const intruderSession = await signInToControllerApp(
+    app,
+    { email: intruderEmail, password: intruderPassword },
+    { origin },
+  );
+
+  const callAs =
+    (session) =>
+    async (method, url, payload, extraHeaders = {}) => {
+      const hasBody = payload !== undefined;
+      const response = await app.fetch(
+        new Request(`${origin}${url}`, {
+          method,
+          headers: {
+            ...authenticatedHeaders(session),
+            ...(hasBody ? { "content-type": "application/json" } : {}),
+            ...extraHeaders,
+          },
+          ...(hasBody ? { body: JSON.stringify(payload) } : {}),
+        }),
+      );
+      const body = response.status === 204 ? "" : await response.text();
+      return {
+        statusCode: response.status,
+        headers: Object.fromEntries(response.headers.entries()),
+        body,
+        json() {
+          return JSON.parse(body);
+        },
+      };
+    };
+  const admin = callAs(adminSession);
+  const intruder = callAs(intruderSession);
+
+  // Bootstrap installation, create a ready namespace, manual template, and public OAuth client.
+  const bootstrapRes = await admin("POST", "/installation/bootstrap", {
+    name: "Non-renewable OAuth Installation",
+  });
+  assert.equal(bootstrapRes.statusCode, 201, bootstrapRes.body);
+  const nsRes = await admin("POST", "/namespaces", { name: "Non-renewable OAuth" });
+  assert.equal(nsRes.statusCode, 201, nsRes.body);
+  const namespaceId = nsRes.json().data.id;
+  await controller.handleNamespaceLifecycle(adminAuth.seed.principal.id, namespaceId, "ready");
+
+  const issuer = "https://provider.example.test";
+  const tplRes = await admin("POST", "/connection-templates", {
+    namespaceId,
+    displayName: "Access-token-only provider",
+    mode: "manual",
+    issuer,
+    authorizationUrl: `${issuer}/authorize`,
+    tokenUrl: `${issuer}/token`,
+    destinations: [{ host: "api.provider.example.test", port: 443, path: "/v1/**" }],
+    scopes: ["read"],
+  });
+  assert.equal(tplRes.statusCode, 201, tplRes.body);
+  const templateId = tplRes.json().data.id;
+
+  const clientRes = await admin("POST", "/oauth-clients", {
+    connectionTemplateId: templateId,
+    connectionTemplateVersion: tplRes.json().data.current.version,
+    displayName: "Public client",
+    clientId: "public-client-1",
+    tokenEndpointAuthMethod: "none",
+  });
+  assert.equal(clientRes.statusCode, 201, clientRes.body);
+
+  // External OAuth token endpoint issues access-token-only grants (no refresh_token).
+  const issuedTokens = [];
+  let nextToken = "access-token-initial-" + randomUUID();
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    if (String(url) !== `${issuer}/token`) {
+      throw new Error(`Unexpected upstream URL: ${String(url)}`);
+    }
+    issuedTokens.push({ url: String(url), body: init?.body?.toString?.() });
+    return Response.json({
+      access_token: nextToken,
+      token_type: "Bearer",
+      expires_in: 120,
+      scope: "read",
+    });
+  });
+
+  // 1) Wrong-session callback must be rejected without redeeming the code or creating custody.
+  const firstAttempt = await admin("POST", `/namespaces/${namespaceId}/connections`, {
+    connectionTemplateId: templateId,
+  });
+  assert.equal(firstAttempt.statusCode, 201, firstAttempt.body);
+  const firstState = new URL(firstAttempt.json().data.authorizationUrl).searchParams.get("state");
+  assert.ok(firstState);
+
+  const hijackedCallback = await intruder(
+    "GET",
+    `/oauth/callback?state=${encodeURIComponent(firstState)}&code=auth-code-1`,
+  );
+  assert.equal(hijackedCallback.statusCode, 303);
+  assert.match(String(hijackedCallback.headers.location), /reason=unknown_session/);
+  assert.equal(issuedTokens.length, 0, "wrong session callback must not redeem authorization code");
+  assert.deepEqual((await admin("GET", `/namespaces/${namespaceId}/connections`)).json().data, []);
+
+  // 2) Legitimate owner consent stores the access-token-only grant without a due schedule.
+  const firstCallback = await admin(
+    "GET",
+    `/oauth/callback?state=${encodeURIComponent(firstState)}&code=auth-code-1`,
+  );
+  assert.equal(firstCallback.statusCode, 303);
+  assert.match(String(firstCallback.headers.location), /connection=connected/);
+  assert.equal(issuedTokens.length, 1);
+
+  const listed = (await admin("GET", `/namespaces/${namespaceId}/connections`)).json().data;
+  assert.equal(listed.length, 1);
+  const sourceId = listed[0].credentialSourceId;
+  const sourceDetail = (
+    await admin("GET", `/namespaces/${namespaceId}/credential-sources/${sourceId}`)
+  ).json().data;
+  assert.equal(sourceDetail.ownerCapability, "token_service");
+  assert.equal(sourceDetail.state, "ready");
+  assert.equal(sourceDetail.status.state, "ready");
+  assert.equal(sourceDetail.status.refresh.state, "ready");
+  assert.equal(sourceDetail.status.refresh.schedule, undefined);
+  assert.deepEqual(
+    await state.read((view) => view.savedConnections.listDueConnectionTokens(installationId, 10)),
+    [],
+  );
+
+  // 3) TokenService resolves the non-renewable bearer while remaining lifetime suffices,
+  // and immediately refuses without contacting upstream when remaining lifetime is shorter.
+  const ref = { kind: "oauth_refresh_token", namespaceId, sourceId };
+  const resolvedInitial = await preparedTokens.resolve(ref, {
+    signal: t.signal,
+    deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+    minimumValidityMs: 0,
+  });
+  assert.equal(resolvedInitial?.accessToken, nextToken);
+  assert.equal(resolvedInitial?.nextRefreshAt, undefined);
+
+  const unrefreshableShort = await preparedTokens.resolve(ref, {
+    signal: t.signal,
+    deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+    minimumValidityMs: 150_000,
+  });
+  assert.equal(unrefreshableShort, undefined);
+  assert.equal(issuedTokens.length, 1);
+
+  // 4) Manual rotation on an unexpired non-renewable account retires any due schedule, rejects
+  // with 409 reconnect guidance, and logs a failure audit rather than falsely reporting 200 OK.
+  const auditCountBeforeRotate = auditSink.events.length;
+  const rotateRes = await admin(
+    "POST",
+    `/namespaces/${namespaceId}/credential-sources/${sourceId}/rotate`,
+  );
+  assert.equal(rotateRes.statusCode, 409, rotateRes.body);
+  assert.match(rotateRes.body, /no refresh grant.*reconnect/i);
+  assert.equal(
+    auditSink.events
+      .slice(auditCountBeforeRotate)
+      .some(
+        (entry) =>
+          entry.resource.id === sourceId &&
+          entry.outcome === "failure" &&
+          entry.reasonCode === "CREDENTIAL_REFRESH_ROTATION_FAILED",
+      ),
+    true,
+  );
+  assert.equal(JSON.stringify(auditSink.events).includes(nextToken), false);
+  assert.deepEqual(
+    await state.read((view) => view.savedConnections.listDueConnectionTokens(installationId, 10)),
+    [],
+  );
+
+  // 5) After access token expiry, status reports access_token_expired/reauthorize, rotation still
+  // rejects 409 with cleared schedule, and reconnecting replaces the grant cleanly.
+  t.mock.timers.tick(130_000);
+  const expiredDetail = (
+    await admin("GET", `/namespaces/${namespaceId}/credential-sources/${sourceId}`)
+  ).json().data;
+  assert.equal(expiredDetail.status.state, "failed");
+  assert.equal(expiredDetail.status.refresh.failureCode, "access_token_expired");
+  assert.equal(expiredDetail.status.refresh.recoveryAction, "reauthorize");
+  assert.equal(
+    await preparedTokens.resolve(ref, {
+      signal: t.signal,
+      deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+      minimumValidityMs: 0,
+    }),
+    undefined,
+  );
+  const expiredRotate = await admin(
+    "POST",
+    `/namespaces/${namespaceId}/credential-sources/${sourceId}/rotate`,
+  );
+  assert.equal(expiredRotate.statusCode, 409, expiredRotate.body);
+  assert.deepEqual(
+    await state.read((view) => view.savedConnections.listDueConnectionTokens(installationId, 10)),
+    [],
+  );
+
+  // Reconnect produces a fresh access-token-only account that resolves the replacement bearer.
+  nextToken = "access-token-reconnected-" + randomUUID();
+  const reconnectAttempt = await admin("POST", `/namespaces/${namespaceId}/connections`, {
+    connectionTemplateId: templateId,
+  });
+  assert.equal(reconnectAttempt.statusCode, 201, reconnectAttempt.body);
+  const reconnectState = new URL(reconnectAttempt.json().data.authorizationUrl).searchParams.get(
+    "state",
+  );
+  const reconnectCallback = await admin(
+    "GET",
+    `/oauth/callback?state=${encodeURIComponent(reconnectState)}&code=auth-code-2`,
+  );
+  assert.equal(reconnectCallback.statusCode, 303);
+  assert.match(String(reconnectCallback.headers.location), /connection=connected/);
+
+  const reconnectedList = (await admin("GET", `/namespaces/${namespaceId}/connections`)).json()
+    .data;
+  const freshId = reconnectedList.find(
+    (row) => row.credentialSourceId !== sourceId,
+  )?.credentialSourceId;
+  assert.ok(freshId);
+  const freshRef = { kind: "oauth_refresh_token", namespaceId, sourceId: freshId };
+  assert.equal(
+    (
+      await preparedTokens.resolve(freshRef, {
+        signal: t.signal,
+        deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+        minimumValidityMs: 0,
+      })
+    )?.accessToken,
+    nextToken,
+  );
+
+  // 6) Disconnect commits mid-read must withhold releasing the already-read access token.
+  const custodyBeforeDisconnect = await state.read((view) =>
+    view.savedConnections.findTokenCustody(namespaceId, freshId),
+  );
+  assert.ok(custodyBeforeDisconnect);
+  assert.equal(secretDriver.has(custodyBeforeDisconnect.secret), true);
+
+  const readStarted = Promise.withResolvers();
+  const releaseRead = Promise.withResolvers();
+  const originalWithValue = secretDriver.withValue.bind(secretDriver);
+  t.mock.method(
+    secretDriver,
+    "withValue",
+    async (...args) => {
+      const value = await originalWithValue(...args);
+      readStarted.resolve();
+      await releaseRead.promise;
+      return value;
+    },
+    { times: 1 },
+  );
+
+  const inFlightResolve = preparedTokens.resolve(freshRef, {
+    signal: t.signal,
+    deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+    minimumValidityMs: 0,
+  });
+  await readStarted.promise;
+
+  const disconnected = await admin("DELETE", `/namespaces/${namespaceId}/connections/${freshId}`);
+  assert.equal(disconnected.statusCode, 204, disconnected.body);
+  releaseRead.resolve();
+
+  assert.equal(
+    await inFlightResolve,
+    undefined,
+    "concurrent disconnect must fence an in-flight resolve before bearer release",
+  );
+  assert.equal(secretDriver.has(custodyBeforeDisconnect.secret), false);
 });

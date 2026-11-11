@@ -288,6 +288,12 @@ export class OAuthGrantStore {
         token:
           minimumValidityMs === undefined ? undefined : eligibleToken(stored, minimumValidityMs),
         phase: stored?.phase,
+        renewable:
+          stored !== undefined &&
+          stored.phase !== "failed" &&
+          (stored.phase === "renewing"
+            ? isNonEmptyString(stored.refreshToken)
+            : isNonEmptyString(stored.refreshToken) && isNonEmptyString(stored.renewAt)),
         version: stored && stored.phase !== "failed" ? stored.version : undefined,
         renewAt:
           stored && stored.phase !== "failed" && stored.renewAt !== undefined
@@ -604,16 +610,20 @@ export class OAuthAccountTokens implements OAuthRefreshTokenIssuer {
             return;
           }
           // Another replica may have advanced custody between the exchange and this schedule write.
-          const actual = (await this.grants.observe(custody, signal)).status;
-          if (actual.schedule || actual.state === "failed") {
+          const actual = await this.grants.observe(custody, signal);
+          if (
+            actual.status.schedule ||
+            actual.status.state === "failed" ||
+            (actual.phase !== undefined && !actual.renewable)
+          ) {
             await unit.savedConnections.recordTokenSchedule(
               ref.namespaceId,
               ref.sourceId,
-              actual.schedule
+              actual.status.schedule
                 ? {
-                    scheduledVersion: actual.schedule.version,
-                    nextRefreshAt: actual.schedule.nextRefreshAt,
-                    grantedScopes: actual.schedule.grantedScopes,
+                    scheduledVersion: actual.status.schedule.version,
+                    nextRefreshAt: actual.status.schedule.nextRefreshAt,
+                    grantedScopes: actual.status.schedule.grantedScopes,
                   }
                 : "stopped",
             );
@@ -661,6 +671,9 @@ export class OAuthAccountTokens implements OAuthRefreshTokenIssuer {
           return undefined;
         }
         if (Date.parse(current.token.expiresAt) <= Date.now() + options.minimumValidityMs) {
+          if (!current.renewable) {
+            return undefined;
+          }
           continue;
         }
         if (
@@ -674,6 +687,7 @@ export class OAuthAccountTokens implements OAuthRefreshTokenIssuer {
         return current.token;
       }
       if (
+        !current.renewable ||
         (firstVersion !== undefined && current.version !== firstVersion) ||
         (current.phase !== "ready" &&
           current.phase !== "renewing" &&

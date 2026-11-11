@@ -9144,6 +9144,14 @@ export class OpenClawController {
         if (!refresh) {
           throw new ResourceStateConflictError("The connected account was retired.");
         }
+        if (
+          (refresh.state === "ready" && !refresh.schedule) ||
+          (refresh.state === "failed" && refresh.failureCode === "access_token_expired")
+        ) {
+          throw new ResourceStateConflictError(
+            "This saved account has no refresh grant and cannot rotate; reconnect it to replace its access token.",
+          );
+        }
         const outcome = refresh.state === "ready" ? audit : failureAudit?.(failureCode);
         if (outcome) {
           await this.transact((unit) => unit.audit.append(outcome));
