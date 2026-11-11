@@ -1,6 +1,5 @@
-import { isAbsolute, resolve } from "node:path";
 import type { ServiceConfig, ServiceLimits } from "./service-contracts.ts";
-import { hasControlCharacter } from "./client-contracts.ts";
+import { hasControlCharacter, isCanonicalUnixSocketPath } from "./client-contracts.ts";
 
 const defaults: ServiceLimits = Object.freeze({
   sessions: 16,
@@ -78,11 +77,7 @@ function validateGateway(gateway: Record<string, unknown>): ServiceConfig["gatew
   }
   const controlSocket = string(gateway.controlSocket);
   // Bytes, not characters: the control client and the Driver schema refuse paths over 103 bytes.
-  if (
-    Buffer.byteLength(controlSocket) > 103 ||
-    !isAbsolute(controlSocket) ||
-    resolve(controlSocket) !== controlSocket
-  ) {
+  if (!isCanonicalUnixSocketPath(controlSocket)) {
     throw new Error("invalid-configuration");
   }
   return Object.freeze({ publicOrigin, listen, controlSocket });

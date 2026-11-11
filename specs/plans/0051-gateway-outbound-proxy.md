@@ -1,5 +1,5 @@
 ---
-rfc: ../rfcs/0033-gateway-outbound-proxy.md
+rfc: ../rfcs/0037-gateway-outbound-proxy.md
 ---
 
 # Implementation plan: one Gateway outbound proxy
@@ -8,7 +8,7 @@ rfc: ../rfcs/0033-gateway-outbound-proxy.md
 - **Delivery status:** In progress
 - **Owner:** OCE contributors
 - **Authority:** [Platform design](../../docs/design.md) and existing Kubernetes Compute/networking owners.
-- **Proposal:** [RFC-0033](../rfcs/0033-gateway-outbound-proxy.md), not yet accepted.
+- **Proposal:** [RFC-0037](../rfcs/0037-gateway-outbound-proxy.md), not yet accepted.
 - **Original experiment baseline:** `80725162a946f80652b939a32a57ee4e922eeb5c`
 - **Refreshed upstream baseline:** `324fbad6f248bce4606e175fbb67ac506cd824ff`
 
@@ -93,7 +93,7 @@ without also granting the default proxy or changing Gateway configuration.
 ## Upstream refresh verification
 
 Refreshed to upstream `324fbad6f248bce4606e175fbb67ac506cd824ff` on 2026-11-05,
-retaining published history through merge commits. RFC-0033 and TASK-0051 avoid
+retaining published history through merge commits. RFC-0037 and TASK-0051 avoid
 upstream's occupied IDs. Typed Driver configuration, structured validation,
 shared model providers, multiple plugin catalogs, and Credential Proxy ownership
 remain intact.

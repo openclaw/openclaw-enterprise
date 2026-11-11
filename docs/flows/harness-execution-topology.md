@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: "2026-11-08 10:00"
-last_updated_session: "agent:main:subagent:060410f5-67b1-4703-b963-741996a862b6"
+updated: 2026-11-11
+last_updated_session: authoring-run/3a3ab457-f2d5-42b7-80c0-30fa67852792
 ---
 
 # Harness Execution Topology Flow
@@ -275,11 +275,14 @@ the previous owner stopped before retained state can be reused.
 [Embedded recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner)
 describes when an operator must confirm termination.
 
-Both Gateway modes persist SQLite, client credentials, media, linked worktrees and common Git metadata
-on their private claim, preserving session paths across replacement. Embedded Gateways
-retain their default workspace; dedicated Harness claims retain node identity. Claims
-precede Pods for `WaitForFirstConsumer`; [Gateway storage](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
-defines initialization and mounts.
+Gateway state survives replacements.
+`apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.gatewayPrivateStateClaim`
+uses `runtime.gatewayStorageSizeGiB`, default 10. `verifyPersistentVolumeClaim`
+compares storage quantities exactly, accepting equivalent units while rejecting
+different capacities during reuse and deletion without resizing. Claims
+precede Pods for `WaitForFirstConsumer`; the
+[storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
+owns sizing, recovery and mounts.
 
 The enrolled Harness node serves workspace files after pairing. Gateway and
 Harness share no workspace, session, skill or image mounts. Codex receives its
@@ -356,6 +359,7 @@ removal. See the [storage contract](../reference/drivers/kubernetes-compute/stor
 
 ## Changelog
 
+- 2026-11-11 06:50: Trace configured Gateway claim capacity and mismatch refusal. (authoring-run/3a3ab457-f2d5-42b7-80c0-30fa67852792 - 036845b2f70f4c5d13b7f180e3642865ca891a8a)
 - 2026-11-08 10:00: Preserve proxy boundaries alongside current upstream lifecycle. (agent:main:subagent:060410f5-67b1-4703-b963-741996a862b6 - 7db5638975981ec1400f1a4ba52da77d5fd33dce)
 
 - 2026-11-06 01:25: Persist Harness settings. (authoring-run/7315b76f-e581-43e4-a73a-06f924640ea0 - 37144f62101a9e99b066f1abbbf75ede787d26dd)
@@ -383,6 +387,5 @@ removal. See the [storage contract](../reference/drivers/kubernetes-compute/stor
 
 - 2026-10-23 17:15: Correct forced-termination recovery. (Codex/01a1558e-c27f-7bc0-a403-af59e9364ddf)
 
-- 2026-10-23 15:51: Rebase the native endpoint trace onto current lifecycle behavior; preserve older entries in linked history. (agent:roboclaw:dashboard:578a8b10-8406-4f5c-a2cc-21ab6524bf68 - 0b326680a7a388de9331c2ae9f0a7cadf2788fe7)
 
 [Harness execution topology documentation history](harness-execution-topology/history.md) preserves the older dated entries.

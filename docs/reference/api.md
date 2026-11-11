@@ -2917,6 +2917,7 @@ Get the singleton Installation
 | `data.capabilities.pluginCatalogs[].pluginPolicies.tools.approval` | `array<"provider_default" or "all_actions" or "write_actions" or "none">` | Yes | — |
 | `data.capabilities.pluginCatalogs[].pluginPolicies.tools.enabled` | `boolean` | Yes | — |
 | `data.capabilities.pluginCatalogs[].pluginPolicies.tools.reviewer` | `array<"human" or "auto">` | Yes | — |
+| `data.capabilities.repositoryAccessRequired` | `true` | No | Present when the selected Credential Proxy confirms it serves only repository Git. Deployment then requires supported repository access. Absence does not guarantee that a deployment will be admitted. |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
 | `data.id` | `string` | Yes | pattern: `^ins_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
@@ -3039,6 +3040,7 @@ Example request
 | `data.capabilities.pluginCatalogs[].pluginPolicies.tools.approval` | `array<"provider_default" or "all_actions" or "write_actions" or "none">` | Yes | — |
 | `data.capabilities.pluginCatalogs[].pluginPolicies.tools.enabled` | `boolean` | Yes | — |
 | `data.capabilities.pluginCatalogs[].pluginPolicies.tools.reviewer` | `array<"human" or "auto">` | Yes | — |
+| `data.capabilities.repositoryAccessRequired` | `true` | No | Present when the selected Credential Proxy confirms it serves only repository Git. Deployment then requires supported repository access. Absence does not guarantee that a deployment will be admitted. |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
 | `data.id` | `string` | Yes | pattern: `^ins_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
@@ -3098,6 +3100,7 @@ Get the complete authorized Agent deployment inventory
 | `data.namespaces[].agents[].desiredRuntimeState` | `"running" or "stopped"` | Yes | — |
 | `data.namespaces[].agents[].executionMode` | `"embedded" or "dedicated"` | Yes | — |
 | `data.namespaces[].agents[].id` | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.namespaces[].agents[].repositoryWorkerRestart` | `"original-worker-required" or "reverification-supported" or "not-applicable" or "unknown"` | No | — |
 | `data.namespaces[].agents[].status` | `"active" or "deleting"` | Yes | — |
 | `data.namespaces[].id` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.namespaces[].status` | `"provisioning" or "ready" or "failed" or "deleting"` | Yes | — |
@@ -3614,6 +3617,7 @@ Report the Installation capabilities that Agent creation in this Namespace needs
 | `data.capabilities.pluginCatalogs[].pluginPolicies.tools.approval` | `array<"provider_default" or "all_actions" or "write_actions" or "none">` | Yes | — |
 | `data.capabilities.pluginCatalogs[].pluginPolicies.tools.enabled` | `boolean` | Yes | — |
 | `data.capabilities.pluginCatalogs[].pluginPolicies.tools.reviewer` | `array<"human" or "auto">` | Yes | — |
+| `data.capabilities.repositoryAccessRequired` | `true` | No | Present when the selected Credential Proxy confirms it serves only repository Git. Deployment then requires supported repository access. Absence does not guarantee that a deployment will be admitted. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -6479,6 +6483,7 @@ Resolve native admin UI launch availability for one Agent
 | `data.host` | `string` | No | — |
 | `data.mode` | `"admin" or "chat"` | No | — |
 | `data.origin` | `string (uri)` | No | — |
+| `data.reason` | `"not-enabled" or "configuration" or "compute"` | No | — |
 | `data.sessionMode` | `"shared-cookie" or "host-only-exchange"` | No | — |
 | `data.status` | `"available" or "disabled" or "stopped" or "unavailable" or "unsupported"` | Yes | — |
 | `data.url` | `string (uri)` | No | — |

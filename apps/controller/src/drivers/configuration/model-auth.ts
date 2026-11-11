@@ -670,7 +670,7 @@ export function validateModelCredentialReferences(
     // cannot read (refuseUnreadableGatewayPassword). Saves refuse a literal password first
     // (validateConfigurationSettings), but deployment does not run that: this call is what refuses
     // a stored document that predates the rule, with the same message.
-    refuseLiteralGatewayPassword(values);
+    refuseLiteralGatewayPassword(values, options);
     const sensitiveSlots: [SettingPath, unknown][] = [
       ...[
         ["gateway", "auth", "token"],

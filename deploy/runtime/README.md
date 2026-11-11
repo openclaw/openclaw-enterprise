@@ -1,7 +1,7 @@
 # Runtime image recipe
 
-Build a public local runtime image for the OpenClaw Enterprise quickstart and
-real-runtime integration tests. The image contains these runtime entrypoints:
+Build a local runtime image for the OpenClaw Enterprise quickstart and
+integration tests. Entrypoints:
 
 - OpenClaw gateway: `node /app/openclaw.mjs`.
 - Dedicated OpenClaw node: `node /app/openclaw.mjs connect --target-file <private-file> --ephemeral --pair-or-reconnect`.
@@ -157,7 +157,8 @@ Local assembly omits broad suites. Run [source verification](../../docs/flows/co
 
 ## Build a local runtime image
 
-After [resolving the build arguments](#resolve-openclaw-build-arguments), run:
+For paired builds, see [QA prebuilds and caching](../../docs/testing/ci/qa-advisory.md#prebuild-local-qa-images).
+Otherwise [resolve build arguments](#resolve-openclaw-build-arguments) and run:
 
 ```bash
 docker build -f deploy/runtime/Dockerfile \

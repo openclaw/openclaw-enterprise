@@ -1,6 +1,10 @@
 import { request } from "node:http";
 import { dirname, join } from "node:path";
-import type { RepositoryCredentialBoundSessionInput, SessionStatus } from "./service-contracts.ts";
+import {
+  hasUnsettledCleanupCounts,
+  type RepositoryCredentialBoundSessionInput,
+  type SessionStatus,
+} from "./service-contracts.ts";
 import { sameBinding } from "./grant-identity.ts";
 
 /** The broker sends only admission identities and already-observed terminal evidence. */
@@ -112,10 +116,7 @@ export class RepositoryReceiptClient {
       status.deadlineWallMs <= 0 ||
       !status.binding ||
       !status.cleanup ||
-      status.activeUses !== 0 ||
-      status.cleanup.active !== 0 ||
-      status.cleanup.pending !== 0 ||
-      status.cleanup.uncertain !== 0 ||
+      hasUnsettledCleanupCounts(status) ||
       status.cleanup.auxiliaryPending !== false ||
       !Number.isSafeInteger(status.cleanup.revoked) ||
       status.cleanup.revoked < 0 ||

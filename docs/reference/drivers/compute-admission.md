@@ -118,7 +118,8 @@ Agent that fails a check still reads; its next update must fix the pair.
   [generated password](kubernetes-compute/storage-and-credentials.md#runtime-credentials);
   without it every activation failed with `AGENT_GATEWAY_UNAUTHORIZED` after
   the running revision stopped. Deployment refuses a stored one with the same
-  `400` before any revision. OpenClaw Agents, and Installations without private
+  `400` before any revision, and the Console Agent page holds **Deploy** with
+  that text. OpenClaw Agents, and Installations without private
   status (the node is then in the pod spec), need no password.
 
 This Compute delivers channel credentials only from Configuration Secret

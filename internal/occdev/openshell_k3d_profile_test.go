@@ -973,7 +973,8 @@ func TestOpenShellCandidateStartupRejectsBeforeResourceEffects(t *testing.T) {
 						response = "echo '<no value>'"
 					}
 					// All external operations are inert subprocess fixtures. Only local
-					// engine reads are permitted; any cluster command is a test failure.
+					// engine reads (including the host port preflight's container
+					// listing) are permitted; any cluster command is a test failure.
 					t.Setenv("PATH", t.TempDir())
 					commands := fakeProfileCommands(t, map[string]string{
 						"docker": `"version --format {{json .Server}}") echo '{"Platform":{"Name":"Docker"}}' ;;
@@ -987,7 +988,7 @@ func TestOpenShellCandidateStartupRejectsBeforeResourceEffects(t *testing.T) {
 						t.Fatalf("expected %q, got %v", want, err)
 					}
 					for _, command := range commands() {
-						if failure == "partial" || failure == "malformed" || (command != "docker version --format {{json .Server}}" && command != "docker info" && command != "docker compose version" && !strings.HasPrefix(command, "docker image inspect --format ")) {
+						if failure == "partial" || failure == "malformed" || (command != "docker version --format {{json .Server}}" && command != "docker info" && command != "docker compose version" && !strings.HasPrefix(command, "docker image inspect --format ") && !strings.HasPrefix(command, "docker ps --format ")) {
 							t.Fatalf("effect before rejection: %s", command)
 						}
 					}
