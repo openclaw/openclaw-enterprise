@@ -241,3 +241,137 @@ describe("runtime image startup model probes", { concurrency: 2 }, () => {
     },
   );
 });
+
+// This is a controlled Compute release, not Supervisor injection or grant redemption.
+// Both inputs run the full provider-owned wrapper against the same credential-checking origin.
+test(
+  "runtime image protected Codex distinguishes an origin key from an uninjected placeholder",
+  { ...imageTestOptions, timeout: 600_000 },
+  async (t) => {
+    // Exercise the real assertion emission boundary with hostile diagnostic fields.
+    // This is a diagnostic control, not a substitute for either runtime case below.
+    const canary = "synthetic-diagnostic-canary";
+    let diagnostic;
+    try {
+      await withStartupProbeEvidence(
+        {
+          protected: true,
+          snapshot: {
+            output: canary,
+            phases: [{ phase: canary, outcome: canary }],
+            events: [
+              {
+                event: "transport",
+                status: 401,
+                failure: {
+                  check: "model-probe",
+                  code: "AUTHENTICATION_FAILED",
+                  message: canary,
+                },
+              },
+              { event: "wire", method: canary, target: canary, credential: canary },
+            ],
+          },
+        },
+        async () => {
+          throw new Error(canary);
+        },
+      );
+    } catch (error) {
+      diagnostic = error;
+    }
+    if (
+      !diagnostic ||
+      String(diagnostic.stack).includes(canary) ||
+      !diagnostic.message.includes("AUTHENTICATION_FAILED") ||
+      !diagnostic.message.includes('"status":401')
+    ) {
+      throw new Error("Protected diagnostic control failed");
+    }
+    t.diagnostic("Protected diagnostic canary suppressed; supported failure and status retained.");
+    for (const accepted of [true, false]) {
+      await t.test(accepted ? "origin key" : "uninjected placeholder", async (subtest) => {
+        const run = await runStartupProbeScenario(subtest, {
+          kind: "codex",
+          mode: "answer",
+          protectedCredential: accepted ? startupProbeApiKey : "synthetic-uninjected-placeholder",
+          // Transport and wrapper phases arrive through independent log followers.
+          until: ({ events, phases }) =>
+            accepted
+              ? phaseAt(phases, "native-spawn") !== undefined &&
+                events.some(
+                  (event) =>
+                    event.event === "transport" &&
+                    Number.isInteger(event.authenticatedUpgrade) &&
+                    Number.isInteger(event.unauthenticatedUpgrade),
+                )
+              : phaseAt(phases, "model-probe")?.outcome === "failed" &&
+                events.some(
+                  (event) =>
+                    event.event === "transport" &&
+                    event.failure?.check === "model-probe" &&
+                    event.failure?.code === "AUTHENTICATION_FAILED" &&
+                    event.ms < 120_000 * imageSmokeTimeoutMultiplier,
+                ),
+        });
+        await withStartupProbeEvidence(run, async () => {
+          const { events, phases } = run.snapshot;
+          assert.ok(
+            events.some(
+              (event) =>
+                event.event === "release" &&
+                event.accepted === 200 &&
+                event.unauthorized === 401 &&
+                event.invalidSignature === 409 &&
+                event.requestsBeforeRelease === 0,
+            ),
+          );
+          assert.equal(phaseAt(phases, "egress-enrollment")?.outcome, "ok");
+          assert.equal(
+            phaseAt(phases, "codex-login")?.outcome,
+            "ok",
+            "both synthetic values permit local login",
+          );
+          const origin = events.filter((event) => event.event === "origin");
+          assert.equal(origin.length, 1, "exactly one native model probe reaches the origin");
+          assert.equal(origin[0].status, accepted ? 200 : 401);
+          assert.equal(origin[0].kind, accepted ? "unmarked" : "rejected");
+          const transport = events.filter((event) => event.event === "transport").at(-1);
+          const wire = events.filter((event) => event.event === "wire");
+          assert.equal(wire.length, 1);
+          assert.equal(wire[0].method, "POST");
+          assert.equal(wire[0].target, "responses");
+          assert.equal(wire[0].credential, accepted ? "origin-key" : "placeholder");
+          if (accepted) {
+            assert.equal(phaseAt(phases, "model-probe")?.outcome, "ok");
+            assert.ok(phaseAt(phases, "native-spawn"));
+            assert.equal(transport.failure, null);
+            assert.equal(transport.status, 400);
+            assert.equal(transport.unauthorized, 400);
+            assert.equal(transport.authenticatedUpgrade, 101);
+            assert.equal(transport.unauthenticatedUpgrade, 401);
+          } else {
+            assert.equal(phaseAt(phases, "model-probe")?.outcome, "failed");
+            assert.equal(phaseAt(phases, "native-spawn"), undefined);
+            assert.equal(transport.status, 200);
+            assert.equal(transport.unauthorized, 401);
+            assert.equal(transport.failure.check, "model-probe");
+            assert.equal(transport.failure.code, "AUTHENTICATION_FAILED");
+            assert.ok(transport.ms < 120_000 * imageSmokeTimeoutMultiplier);
+            assert.equal((await run.collect()).running, true, "failure remains held");
+          }
+          subtest.diagnostic(
+            JSON.stringify({
+              container: run.containerName,
+              release: events.find((event) => event.event === "release"),
+              origin,
+              wire,
+              transport,
+              phases,
+            }),
+          );
+        });
+      });
+    }
+  },
+);

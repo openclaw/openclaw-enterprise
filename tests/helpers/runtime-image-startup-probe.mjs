@@ -4,7 +4,7 @@
 // Startup 2 and 1: one runtime wrapper started with the container command the
 // Compute driver renders, beside a stand-in model provider sidecar.
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { availableParallelism, freemem, loadavg } from "node:os";
 import { join } from "node:path";
@@ -16,9 +16,11 @@ import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
 import { changeSignal, followContainer } from "./docker-follow.ts";
 import {
   COMPUTE_AGENT_RUNTIME_ENTRYPOINT as AGENT_RUNTIME_ENTRYPOINT,
+  PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
   gatewayRuntimeEntrypoint,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { pluginRuntimeEnvironment } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { createModelProbeCertificates } from "./runtime-model-probe-certificates.mjs";
 import { modelProbeDiagnostic } from "./runtime-model-probe-observation.ts";
@@ -53,7 +55,7 @@ const gatewayStartupProbeCpuLimit = "1";
 const startupProbeModel = runtimeImageModel;
 export const startupProbeApiKey = "sk-openclaw-runtime-probe-synthetic";
 
-async function createStartupProbeMaterial(t) {
+async function createStartupProbeMaterial(t, protectedCredential) {
   const directory = await temporaryDirectory(t, "oce-runtime-startup-probe-");
   const file = (name) => join(directory, name);
   // Codex rejects a self-signed end-entity certificate, so sign a leaf.
@@ -70,6 +72,17 @@ async function createStartupProbeMaterial(t) {
     file("endpoint.mjs"),
     await readFile(new URL("../fixtures/runtime-model-probe-endpoint.mjs", import.meta.url)),
   );
+  if (protectedCredential !== undefined) {
+    for (const name of [
+      "protected-startup-origin.ts",
+      "openshell-model-origin.ts",
+      "synthetic-egress-provider.mjs",
+      "skipper-prepared-compute-model.mjs",
+    ]) {
+      await writeFile(file(name), await readFile(new URL("../fixtures/" + name, import.meta.url)));
+      await chmod(file(name), 0o644);
+    }
+  }
   await chmod(directory, 0o755);
   for (const name of ["ca.pem", "cert.pem", "key.pem", "hosts", "resolv.conf", "endpoint.mjs"]) {
     await chmod(file(name), 0o644);
@@ -326,7 +339,105 @@ function startupProbeFailure(headline, reason, evidence, snapshot) {
 // given, replaces the wrapper's /home/node tmpfs, as a Gateway's
 // PersistentVolume does, so a later scenario can start on the same state.
 // `cpus`, if given, replaces the wrapper's CPU limit.
-export async function runStartupProbeScenario(
+// Protected diagnostics accept only fixed labels and numeric progress, never log text.
+function protectedProgress(snapshot = {}) {
+  const label = (value, allowed) => (allowed.includes(value) ? value : "unexpected");
+  const number = (value) => (Number.isFinite(value) ? value : null);
+  return {
+    stage: label(snapshot.stage, [
+      "setup",
+      "origin-start",
+      "wrapper-start",
+      "observing",
+      "wrapper-exited",
+      "outer-timeout",
+      "assertion",
+    ]),
+    running: snapshot.running === true,
+    phases: (snapshot.phases ?? []).map((entry) => ({
+      phase: label(entry.phase, [
+        "egress-enrollment",
+        "codex-login",
+        "model-probe",
+        "native-spawn",
+        "plugin-install",
+      ]),
+      outcome: label(entry.outcome, ["ok", "failed", "start"]),
+      sinceStartMs: number(entry.sinceStartMs),
+    })),
+    events: (snapshot.events ?? []).map((entry) => {
+      const event = label(entry.event, [
+        "wire",
+        "origin",
+        "release",
+        "transport",
+        "listening",
+        "fixture-failed",
+      ]);
+      const result = { event, ms: number(entry.ms) };
+      if (event === "wire") {
+        return {
+          ...result,
+          method: label(entry.method, ["POST"]),
+          target: label(entry.target, ["responses"]),
+          credential: label(entry.credential, ["origin-key", "placeholder"]),
+        };
+      }
+      if (event === "origin") {
+        return {
+          ...result,
+          kind: label(entry.kind, ["unmarked", "rejected"]),
+          status: number(entry.status),
+        };
+      }
+      if (event === "release") {
+        return {
+          ...result,
+          accepted: number(entry.accepted),
+          unauthorized: number(entry.unauthorized),
+          invalidSignature: number(entry.invalidSignature),
+          requestsBeforeRelease: number(entry.requestsBeforeRelease),
+        };
+      }
+      if (event === "transport") {
+        return {
+          ...result,
+          status: number(entry.status),
+          unauthorized: number(entry.unauthorized),
+          authenticatedUpgrade: number(entry.authenticatedUpgrade),
+          unauthenticatedUpgrade: number(entry.unauthenticatedUpgrade),
+          failure:
+            entry.failure === null
+              ? null
+              : {
+                  check: label(entry.failure?.check, ["model-probe"]),
+                  code: label(entry.failure?.code, ["AUTHENTICATION_FAILED"]),
+                },
+        };
+      }
+      return result;
+    }),
+  };
+}
+
+function protectedFailure(progress, reason) {
+  return new Error(`Protected startup ${reason}: ${JSON.stringify(protectedProgress(progress))}`);
+}
+
+export async function runStartupProbeScenario(t, options) {
+  if (options.protectedCredential === undefined) {
+    return runStartupProbeScenarioInternal(t, options);
+  }
+  const progress = { stage: "setup" };
+  try {
+    return await runStartupProbeScenarioInternal(t, options, progress);
+  } catch {
+    // Setup errors can contain Docker argv, credentials, or arbitrary log tails.
+    throw protectedFailure(progress, "failed");
+  }
+}
+
+async function runStartupProbeScenarioInternal(
   t,
   {
     kind,
@@ -340,11 +451,13 @@ export async function runStartupProbeScenario(
     podOwner,
     gatewayManagedMode = false,
     cpus,
+    protectedCredential,
   },
+  progress,
 ) {
   const scenarioStartedAt = Date.now();
   const wrapper = startupProbeWrapper(kind, gatewayManagedMode);
-  const material = await createStartupProbeMaterial(t);
+  const material = await createStartupProbeMaterial(t, protectedCredential);
   if (wrapper.configuration !== undefined) {
     await writeFile(join(material, "openclaw.json"), JSON.stringify(wrapper.configuration));
     await chmod(join(material, "openclaw.json"), 0o644);
@@ -353,9 +466,55 @@ export async function runStartupProbeScenario(
   const sidecar = `oce-runtime-probe-endpoint-${suffix}`;
   const containerName = `oce-runtime-probe-${kind}-${suffix}`;
   t.after(async () => {
-    await runDocker(["rm", "-f", containerName]).catch(() => {});
-    await runDocker(["rm", "-f", sidecar]).catch(() => {});
+    if (protectedCredential !== undefined) {
+      const failures = [];
+      for (const owned of [containerName, sidecar]) {
+        // Exact generated identities only; never broaden cleanup to a prefix match.
+        if (
+          !/^oce-runtime-probe-(?:codex|endpoint)-[a-f0-9]{12}$/.test(owned) ||
+          !owned.endsWith(suffix)
+        ) {
+          failures.push("identity rejected");
+          continue;
+        }
+        try {
+          await runDocker(["rm", "-f", owned]);
+        } catch {
+          failures.push(`${owned}: removal failed`);
+        }
+        try {
+          const remaining = await runDocker([
+            "ps",
+            "-a",
+            "--filter",
+            `name=^${owned}$`,
+            "--format",
+            "{{.Names}}",
+          ]);
+          if (remaining.stdout.trim() !== "") {
+            failures.push(`${owned}: still present`);
+          } else {
+            t.diagnostic(`Absence verified: ${owned}; tmpfs home destroyed.`);
+          }
+        } catch {
+          failures.push(`${owned}: absence verification failed`);
+        }
+      }
+      // A separate teardown failure leaves the primary test outcome intact.
+      if (failures.length > 0) {
+        throw new AggregateError(
+          failures.map((message) => new Error(message)),
+          "Protected startup cleanup failed",
+        );
+      }
+    } else {
+      await runDocker(["rm", "-f", containerName]).catch(() => {});
+      await runDocker(["rm", "-f", sidecar]).catch(() => {});
+    }
   });
+  if (progress !== undefined) {
+    progress.stage = "origin-start";
+  }
   await runDocker([
     "run",
     "--name",
@@ -379,6 +538,8 @@ export async function runStartupProbeScenario(
     "-e",
     `PROBE_ENDPOINT_MODE=${mode}`,
     "-e",
+    `PROBE_MODEL=${startupProbeModel}`,
+    "-e",
     `PROBE_ENDPOINT_DELAY_MS=${delayMs}`,
     "-e",
     `PROBE_OBSERVE_NATIVE_PORT=${wrapper.nativePort}`,
@@ -387,11 +548,58 @@ export async function runStartupProbeScenario(
     "--entrypoint",
     "node",
     image,
-    "/fixture/endpoint.mjs",
+    ...(protectedCredential === undefined
+      ? ["/fixture/endpoint.mjs"]
+      : ["/fixture/protected-startup-origin.ts"]),
   ]);
   await waitForDockerLog(sidecar, /"event":"listening"/);
+  if (protectedCredential !== undefined) {
+    assert.equal(kind, "codex");
+    const logs = await runDocker(["logs", sidecar]);
+    const { publicKey } = jsonLogEntries(logs.stdout).find(({ event }) => event === "listening");
+    wrapper.entrypoint = PROTECTED_CODEX_RUNTIME_ENTRYPOINT;
+    wrapper.environment = wrapper.environment.filter(
+      (entry) =>
+        !/^(APP_SERVER_TOKEN|OPENAI_API_KEY|OPENCLAW_PLUGIN_STATUS_|OPENCLAW_RUNTIME_STATUS_)/.test(
+          entry,
+        ),
+    );
+    wrapper.environment.push(
+      `OPENAI_API_KEY=${protectedCredential}`,
+      `APP_TOKEN_SHA=${createHash("sha256").update("synthetic-startup-transport").digest("hex")}`,
+      "OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID=revision-startup-probe",
+      `OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY=${publicKey}`,
+      `OPENCLAW_PLUGIN_RUNTIME_JSON=${
+        pluginRuntimeEnvironment({
+          kind: "codex",
+          selections: {},
+          providerTools: "none",
+          modelEndpoint: {
+            modelProvider: "openai-compatible",
+            baseUrl: "https://api.openai.com/v1",
+          },
+          egressEnrollment: {
+            inference: true,
+            routeCount: 1,
+            plan: { id: "synthetic-plan", generation: 1 },
+            execution: {
+              installationId: "synthetic-installation",
+              namespaceId: "synthetic-namespace",
+              agentId: "synthetic-agent",
+              servicePrincipalId: "synthetic-principal",
+              revisionId: "revision-startup-probe",
+              executionId: "synthetic-execution",
+            },
+          },
+        }).OPENCLAW_PLUGIN_RUNTIME_JSON
+      }`,
+    );
+  }
   // The container command the Compute driver renders, with the wrapper program
   // in the same bounded pieces: PID 1 is whatever that command starts.
+  if (progress !== undefined) {
+    progress.stage = "wrapper-start";
+  }
   const [command, ...commandArguments] = RUNTIME_WRAPPER_COMMAND;
   await runDocker([
     "run",
@@ -467,7 +675,7 @@ export async function runStartupProbeScenario(
     }));
     const output = `${native.stdout}\n${native.stderr}`;
     const entries = jsonLogEntries(output);
-    return {
+    const snapshot = {
       events,
       output,
       stdout: native.stdout,
@@ -480,6 +688,11 @@ export async function runStartupProbeScenario(
       running: native.running,
       exitCode: native.exitCode,
     };
+    if (progress !== undefined) {
+      Object.assign(progress, protectedProgress({ ...snapshot, stage: "observing" }));
+      return { ...progress, output: "", stdout: "", stderr: "" };
+    }
+    return snapshot;
   };
   // Resolves with when the wrapper exited (epoch ms: when `docker wait` returned,
   // or Docker's FinishedAt when an inspect found the exit),
@@ -508,6 +721,7 @@ export async function runStartupProbeScenario(
   };
   const deadline = Date.now() + 300_000 * imageSmokeTimeoutMultiplier;
   const scenario = {
+    protected: progress !== undefined,
     containerName,
     startedAt,
     setupMs: startedAt - scenarioStartedAt,
@@ -530,6 +744,10 @@ export async function runStartupProbeScenario(
       return { ...scenario, snapshot: await collect() };
     }
     if (!snapshot.running) {
+      if (progress !== undefined) {
+        progress.stage = "wrapper-exited";
+        throw protectedFailure(progress, "did not settle");
+      }
       const evidence = await startupProbeEvidence(scenario, snapshot, loop);
       throw startupProbeFailure(
         `The ${kind} wrapper exited early (${snapshot.exitCode}).`,
@@ -539,6 +757,10 @@ export async function runStartupProbeScenario(
       );
     }
     if (Date.now() > deadline) {
+      if (progress !== undefined) {
+        progress.stage = "outer-timeout";
+        throw protectedFailure(progress, "did not settle");
+      }
       const evidence = await startupProbeEvidence(scenario, snapshot, loop);
       throw startupProbeFailure(
         `The ${kind} startup probe scenario did not settle.`,
@@ -576,6 +798,9 @@ export async function withStartupProbeEvidence(run, check) {
   try {
     await check();
   } catch (error) {
+    if (run.protected) {
+      throw protectedFailure({ ...run.snapshot, stage: "assertion" }, "assertion failed");
+    }
     // Keep the original error, and so its location, which is all CI records.
     // Node's assertion message may already hold much of the output; size the
     // tail so the end of the output still lands inside CI's 16 KiB cut.
