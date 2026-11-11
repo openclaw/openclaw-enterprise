@@ -1030,6 +1030,9 @@ test("mixed-grant output closes deployment codes and projects before diagnostics
     .href;
   const realTestUrl = new URL("./openshell-mixed-grant-real.test.ts", import.meta.url).href;
   const collectorUrl = new URL("../helpers/installed-worker-events.ts", import.meta.url).href;
+  const denialCollectorUrl = new URL("../helpers/openshell-model-denial.ts", import.meta.url).href;
+  const gatewayFixtureUrl = new URL("../helpers/openshell-online-git-journey.mjs", import.meta.url)
+    .href;
   const target = {
     namespaceId: "PRIVATE_NAMESPACE_CANARY",
     agentId: "PRIVATE_AGENT_CANARY",
@@ -1160,6 +1163,7 @@ test("mixed-grant output closes deployment codes and projects before diagnostics
     ],
   };
   const unavailableDenials = { state: "unavailable", truncated: false, events: [] };
+  const truncatedUnavailableDenials = { state: "unavailable", truncated: true, events: [] };
   // Malformed projection inputs cannot invent either a model attribution or
   // an observed zero. These rows do not represent valid collector output.
   const projectDenials = (modelDenials) =>
@@ -1258,9 +1262,10 @@ test("mixed-grant output closes deployment codes and projects before diagnostics
     Buffer.byteLength(JSON.stringify(bounded)) <= 16_384,
     "combined diagnostic must fit the existing qualification checkpoint limit",
   );
-  for (const [code, registrationStage] of [
+  for (const [code, registrationStage, invalidatedFullRing = false] of [
     ["PRIVATE_UPPERCASE_CANARY", "before"],
     ["SANDBOX_GATEWAY_UNAUTHORIZED", "after"],
+    ["RUNTIME_AUTHENTICATION_FAILED", "after", true],
     [null, null],
   ]) {
     const root = await fixture(t);
@@ -1274,6 +1279,9 @@ test("mixed-grant output closes deployment codes and projects before diagnostics
           details: "PRIVATE_RPC_DETAILS_CANARY",
         }
       : { code: 14 };
+    const unavailableModelDenials = invalidatedFullRing
+      ? truncatedUnavailableDenials
+      : unavailableDenials;
     const deploymentReceipts = gatewayFailure
       ? []
       : [
@@ -1285,7 +1293,7 @@ test("mixed-grant output closes deployment codes and projects before diagnostics
             workerEvents: registrationStage === "before" ? workerEvents : "unavailable",
             modelOrigin: registrationStage === "before" ? modelOrigin : unavailableOrigin,
             modelApprovals: registrationStage === "after" ? modelApprovals : unavailableApprovals,
-            modelDenials: registrationStage === "before" ? modelDenials : unavailableDenials,
+            modelDenials: registrationStage === "before" ? modelDenials : unavailableModelDenials,
           },
         ];
     // Control only external observations. The normal test catch invokes the
@@ -1294,6 +1302,8 @@ test("mixed-grant output closes deployment codes and projects before diagnostics
     const failureSource = `
 import assert from "node:assert/strict";
 import { collectInstalledWorkerEvents } from ${JSON.stringify(collectorUrl)};
+import { collectOpenShellModelDenials } from ${JSON.stringify(denialCollectorUrl)};
+import { gitExpiryGateway } from ${JSON.stringify(gatewayFixtureUrl)};
 import { emitOpenShellGitRetention } from ${JSON.stringify(retentionUrl)};
 export function createOpenShellGitInstallation(t) {
   const original = Object.assign(new Error(${JSON.stringify(message)}), ${JSON.stringify(fields)});
@@ -1329,6 +1339,41 @@ export function createOpenShellGitInstallation(t) {
         collectModelDenials: async () => {
           assert.equal(tornDown, false);
           denialReads++;
+          if (${invalidatedFullRing}) {
+            // A full real-codec ring becomes unavailable when the final identity
+            // read changes. Capture and both public projections must keep its loss flag.
+            const sandboxId = "00000000-0000-4000-8000-000000000001";
+            const startedAt = Date.parse("2030-01-01T00:00:00Z");
+            const endpoint = "https://model.example.test:8443/v1/responses";
+            const { client } = await gitExpiryGateway(t, {
+              model: "model", workspace: "workspace", sandbox: "sandbox", revisionId: "revision",
+              deadline: "2030-01-01T00:00:00Z", platformProfile: false,
+              configure(methods) {
+                methods.GetSandboxLogs = (request) => {
+                  assert.equal(request.lines, 2000);
+                  return { buffer_total: 2000, logs: Array.from({ length: 2000 }, () => ({
+                    sandbox_id: sandboxId, event_time: { seconds: startedAt / 1000, nanos: 123000000 },
+                    level: "OCSF", target: "ocsf", source: "sandbox", fields: {},
+                    message: "HTTP:POST [MED] DENIED POST " + endpoint +
+                      " [policy:fixture engine:middleware] [failed:false transformed:false reason:middleware_denied:oce-model:request_credential_denied]",
+                  })) };
+                };
+              },
+            });
+            let supervisorReads = 0;
+            const summary = await collectOpenShellModelDenials({
+              gatewayClient: client, workspace: "workspace", sandbox: "sandbox", sandboxId,
+              modelEndpoint: endpoint, startedAt, endedAt: startedAt + 1000, signal: t.signal,
+              async readSupervisor(signal) {
+                signal.throwIfAborted();
+                supervisorReads++;
+                return { sandboxId, containerId: supervisorReads === 1 ? "selected" : "changed" };
+              },
+            });
+            assert.equal(supervisorReads, 2);
+            assert.deepEqual(summary, ${JSON.stringify(truncatedUnavailableDenials)});
+            return summary;
+          }
           if (${JSON.stringify(registrationStage)} === "after") throw new Error("PRIVATE_DENIAL_READ_CANARY");
           return ${JSON.stringify(modelDenialsInput)};
         },
@@ -1476,6 +1521,21 @@ await import(${JSON.stringify(realTestUrl)});
     if (!gatewayFailure) {
       assert.ok(raw.includes(expectedMessage));
     }
+  }
+  // An unavailable observation can retain only the boolean loss flag, even
+  // when malformed input supplies valid-looking events or a truthy non-boolean.
+  for (const [truncated, expected] of [
+    [true, true],
+    [false, false],
+    ["true", false],
+    [1, false],
+    [undefined, false],
+  ]) {
+    assert.deepEqual(projectDenials({ state: "unavailable", truncated, events: [validDenial] }), {
+      state: "unavailable",
+      truncated: expected,
+      events: [],
+    });
   }
 });
 

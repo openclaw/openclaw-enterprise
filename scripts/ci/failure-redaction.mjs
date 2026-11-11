@@ -559,8 +559,9 @@ export function projectInstalledModelApprovals(value) {
 
 /** Keep only bounded Supervisor denial categories, never source log fields. */
 export function projectInstalledModelDenials(value) {
+  const truncated = observationRecord(value) && value.truncated === true;
   if (!observationRecord(value) || value.state !== "observed" || !Array.isArray(value.events)) {
-    return { state: "unavailable", truncated: false, events: [] };
+    return { state: "unavailable", truncated, events: [] };
   }
   const sandboxCategories = [
     "request-authority-mismatch",
@@ -593,12 +594,11 @@ export function projectInstalledModelDenials(value) {
     return [];
   });
   if (value.events.length > 0 && events.length === 0) {
-    return { state: "unavailable", truncated: false, events: [] };
+    return { state: "unavailable", truncated, events: [] };
   }
   return {
     state: "observed",
-    truncated:
-      value.truncated === true || value.events.length > 8 || events.length !== value.events.length,
+    truncated: truncated || value.events.length > 8 || events.length !== value.events.length,
     events: events.slice(0, 8),
   };
 }
