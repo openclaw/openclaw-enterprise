@@ -263,7 +263,11 @@ async function fakeCommand({
         return finish();
       }
     }
-    if (scenario === "cache-progress" && equals(args.slice(0, 2), ["buildx", "build"])) {
+    if (
+      (scenario === "cache-progress" ||
+        (scenario === "save-failed" && env.CI_FIXTURE_LANE === "k3d-otel")) &&
+      equals(args.slice(0, 2), ["buildx", "build"])
+    ) {
       // Repeated RUN headers model BuildKit switching between active vertices.
       // Probe and load deliberately differ: a load can reuse work from the probe.
       // Include private-looking text to prove the summary never forwards raw output.
