@@ -53,8 +53,9 @@ func TestDevelopmentHostPortPreflightNamesTheLikelyHolder(t *testing.T) {
 		want          []string
 	}{
 		{
+			// The stack holds several ports; the API port is named whatever the listing order.
 			name:    "default Docker-compatible stack",
-			listing: `printf 'openclaw-enterprise-development-postgres-1\t127.0.0.1:55432->5432/tcp\tcom.docker.compose.project=openclaw-enterprise-development\nopenclaw-enterprise-development-controller-1\t127.0.0.1:3000->3000/tcp\tcom.docker.compose.project=openclaw-enterprise-development,com.docker.compose.service=controller\n'`,
+			listing: `printf 'openclaw-enterprise-development-browser-proxy-1\t127.0.0.1:8443->8443/tcp\tcom.docker.compose.project=openclaw-enterprise-development\nopenclaw-enterprise-development-postgres-1\t127.0.0.1:55432->5432/tcp\tcom.docker.compose.project=openclaw-enterprise-development\nopenclaw-enterprise-development-controller-1\t127.0.0.1:3000->3000/tcp\tcom.docker.compose.project=openclaw-enterprise-development,com.docker.compose.service=controller\n'`,
 			want: []string{
 				"host port 127.0.0.1:3000 (OPENCLAW_DEV_PORT) is already published by container openclaw-enterprise-development-controller-1",
 				"a Docker-compatible development stack (Compose project openclaw-enterprise-development) may be running; stop it with OCC_DEVELOPMENT_COMPUTE_DRIVER=docker occ dev down",

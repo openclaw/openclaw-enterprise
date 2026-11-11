@@ -36,17 +36,20 @@ func (r *runner) checkDevelopmentHostPorts(ctx context.Context, ports []developm
 	if err != nil {
 		return nil
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.SplitN(line, "\t", 3)
-		if len(fields) < 2 {
-			continue
-		}
-		name, published := strings.TrimSpace(fields[0]), fields[1]
-		labels := ""
-		if len(fields) == 3 {
-			labels = fields[2]
-		}
-		for _, wanted := range ports {
+	// Check the ports in the order given, so the most telling one (the API
+	// port) is named first when a whole stack holds several.
+	lines := strings.Split(string(data), "\n")
+	for _, wanted := range ports {
+		for _, line := range lines {
+			fields := strings.SplitN(line, "\t", 3)
+			if len(fields) < 2 {
+				continue
+			}
+			name, published := strings.TrimSpace(fields[0]), fields[1]
+			labels := ""
+			if len(fields) == 3 {
+				labels = fields[2]
+			}
 			if publishesLoopbackPort(published, wanted.port) {
 				return developmentHostPortHeld(wanted, name, labels)
 			}
