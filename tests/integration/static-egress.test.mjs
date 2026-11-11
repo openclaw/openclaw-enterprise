@@ -1479,29 +1479,42 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
       mirror: "git@example.invalid:owner/repository.git",
     },
   };
-  inline.request.client_metadata[metadataKey] = JSON.stringify({
-    ...turnMetadata,
-    workspaces: { [repositoryRoot]: workspace },
-  });
-  const captured = f.capture(inline.request);
-  captured.request.headers.push(
-    ...Object.entries(inline.headers).map(([name, value]) => ({ name, value })),
-  );
-  const { ready } = await f.resolve(captured);
-  assert.ok(ready, "native Git metadata and inline tools resolve through the installed provider");
-  assert.ok((await f.authorize(f.permitRequest(captured, ready))).allowed);
-  f.setResponse({ status: 200, contentType: "text/event-stream", rawBody: body });
-  const protectedReply = await f.protect(captured, await f.send(captured, ready));
-  assert.equal(protectedReply.response_complete, true);
-  assert.equal(protectedReply.body.toString(), body);
-  assert.deepEqual(f.providerRequests.at(-1).body, inline.request);
-  assert.equal(f.providerRequests.at(-1).authorization, "Bearer synthetic-key-initial");
+  // Native telemetry names ultra while the Responses wire uses xhigh.
+  for (const [effort, telemetry] of [
+    [inline.request.reasoning.effort, turnMetadata.reasoning_effort],
+    ["high", "high"],
+    ["xhigh", "ultra"],
+    ["max", "max"],
+  ]) {
+    inline.request.reasoning.effort = effort;
+    inline.request.client_metadata[metadataKey] = JSON.stringify({
+      ...turnMetadata,
+      reasoning_effort: telemetry,
+      workspaces: { [repositoryRoot]: workspace },
+    });
+    const captured = f.capture(inline.request);
+    captured.request.headers.push(
+      ...Object.entries(inline.headers).map(([name, value]) => ({ name, value })),
+    );
+    const { ready } = await f.resolve(captured);
+    assert.ok(ready, "native Git metadata and inline tools resolve through the installed provider");
+    assert.ok((await f.authorize(f.permitRequest(captured, ready))).allowed);
+    f.setResponse({ status: 200, contentType: "text/event-stream", rawBody: body });
+    const protectedReply = await f.protect(captured, await f.send(captured, ready));
+    assert.equal(protectedReply.response_complete, true);
+    assert.equal(protectedReply.body.toString(), body);
+    assert.deepEqual(f.providerRequests.at(-1).body, inline.request);
+    assert.equal(f.providerRequests.at(-1).authorization, "Bearer synthetic-key-initial");
+  }
 
   // Inline declarations cannot expand the admitted local-tool grant or let
   // client metadata select authority. Refuse before another Secret read/send.
   const inlineReads = f.secretReads;
   const inlineSends = f.providerRequests.length;
   const mutations = [
+    ...["ultra", "unrecognized"].map((effort) => (request) => {
+      request.reasoning.effort = effort;
+    }),
     ...[
       { status: "none" },
       "null",
