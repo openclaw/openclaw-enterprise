@@ -31,6 +31,7 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import {
   ResourceConflictError,
+  RuntimeDiagnosticsTransportError,
   RuntimeCredentialsForbiddenByClusterError,
   ScopeViolationError,
 } from "../../packages/occ/src/index.ts";
@@ -1195,10 +1196,21 @@ for (const [name, diagnostics] of [
         { diagnosticsError: new DriverError(marker) },
       ] as const,
   ),
+  [
+    "retain only the fixed private Gateway transport category in operator logs",
+    {
+      diagnosticsError: Object.assign(new RuntimeDiagnosticsTransportError(), {
+        message: marker,
+        cause: new Error(marker),
+      }),
+    },
+  ] as const,
   ["reject a null Driver response as unavailable", { diagnosticsResult: null }] as const,
 ]) {
   test(`deployment diagnostics ${name}`, async () => {
+    const lines: LogLine[] = [];
     const fixture = await createFixture({
+      logLines: lines,
       computeDriver: createRuntimeCredentialComputeDriver(diagnostics),
     });
     const { agentPath } = await fixture.bootstrapAgent();
@@ -1217,6 +1229,18 @@ for (const [name, diagnostics] of [
     assertApiError(result, 503, "DEPENDENCY_UNAVAILABLE");
     assert.equal(JSON.stringify(result.body).includes(marker), false);
     assert.equal(JSON.stringify(fixture.auditSink.events).includes(marker), false);
+    assert.equal(JSON.stringify(lines).includes(marker), false);
+    if (diagnostics.diagnosticsError instanceof RuntimeDiagnosticsTransportError) {
+      const logged = lines.find((line) => line.event === "http.dependency_unavailable");
+      assert.ok(logged);
+      assert.equal(logged.errorClass, "RuntimeDiagnosticsTransportError");
+      assert.equal(logged.message, "The private Gateway diagnostics transport is unavailable.");
+      assert.equal(
+        logged.requestId,
+        fixture.fixtureResponse(result, 503, ErrorResponse, "diagnostics failure").meta.requestId,
+      );
+      assert.equal(logged.causes, undefined);
+    }
   });
 }
 

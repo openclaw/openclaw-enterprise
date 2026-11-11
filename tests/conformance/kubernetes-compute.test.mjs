@@ -58,6 +58,7 @@ import {
   ConfigurationHarnessError,
   CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
+  RuntimeDiagnosticsTransportError,
   ResourceConflictError,
   ResourceStateConflictError,
   SandboxGatewayUnavailableError,
@@ -12783,7 +12784,7 @@ test("native channel providers require Secret bindings and project them only to 
   ]);
 });
 
-test("Kubernetes runtime diagnostics read exact private Pod status without native sends", async () => {
+test("Kubernetes runtime diagnostics read exact private Pod status without native sends", async (context) => {
   const driver = createKubernetesComputeDriver(
     options({
       runtime: {
@@ -12847,6 +12848,8 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
     podUid: pods[role].metadata.uid,
   });
   let diagnosticsServing = true;
+  let gatewayTransportFailure = false;
+  let privateProxyRead;
   // Unrun channel checks the Gateway adds to its one socket check (a status report may carry at
   // most 32 checks).
   let extraGatewayChecks = 0;
@@ -12885,10 +12888,16 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
         const role = name.startsWith("agent-") ? "agent" : "gateway";
         assert.equal(namespace, role === "gateway" ? gatewayNamespaceName : namespaceName);
         assert.equal(name, `${pods[role].metadata.name}:18791`);
+        if (privateProxyRead !== undefined) {
+          return privateProxyRead(role, path);
+        }
         if (path === "openclaw/runtime/status") {
           return runtimeStatus(role);
         }
         assert.equal(path, "openclaw/runtime/diagnostics");
+        if (role === "gateway" && gatewayTransportFailure) {
+          throw Object.assign(new Error("private upstream response detail"), { statusCode: 403 });
+        }
         if (!diagnosticsServing) {
           throw Object.assign(new Error("status port not serving"), { code: 503, headers: {} });
         }
@@ -13027,6 +13036,46 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
   assert.equal(capped.at(-1).check, "channel-27");
   extraGatewayChecks = 0;
   runtimeStatus = gatewayHeld;
+
+  // A rejected Gateway diagnostics read names only the transport stage. It does not
+  // report a channel failure or retain the upstream error text or cause.
+  gatewayTransportFailure = true;
+  await assert.rejects(driver.diagnoseAgentDeployment(binding), (error) => {
+    assert.ok(error instanceof RuntimeDiagnosticsTransportError);
+    assert.equal(error.message, "The private Gateway diagnostics transport is unavailable.");
+    assert.equal(error.cause, undefined);
+    return true;
+  });
+  gatewayTransportFailure = false;
+
+  // All four private reads expire at the shared deadline. The Agent reads and
+  // supplementary Gateway read reject first; the Gateway diagnostics failure
+  // still determines the safe transport category.
+  const collectionDeadline = new AbortController();
+  const timeout = context.mock.method(AbortSignal, "timeout", () => collectionDeadline.signal);
+  const pendingProxyReads = new Map();
+  const gatewayDiagnostics = "gateway:openclaw/runtime/diagnostics";
+  privateProxyRead = (role, path) =>
+    new Promise((_resolve, reject) => {
+      pendingProxyReads.set(`${role}:${path}`, reject);
+      if (pendingProxyReads.size === 4) {
+        collectionDeadline.abort(new DOMException("private timeout detail", "TimeoutError"));
+        for (const [key, rejectRead] of pendingProxyReads) {
+          if (key !== gatewayDiagnostics) {
+            rejectRead(collectionDeadline.signal.reason);
+          }
+        }
+        setImmediate(() =>
+          pendingProxyReads.get(gatewayDiagnostics)(collectionDeadline.signal.reason),
+        );
+      }
+    });
+  try {
+    await assert.rejects(driver.diagnoseAgentDeployment(binding), RuntimeDiagnosticsTransportError);
+  } finally {
+    timeout.mock.restore();
+    privateProxyRead = undefined;
+  }
 
   // A status read that is refused or returns another Pod's report adds nothing;
   // the diagnostics read alone decides the observation.
