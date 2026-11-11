@@ -52,7 +52,8 @@ function usage() {
     "  node scripts/ci/run-tests.mjs audit [--manifest <file>] [--root <dir>]",
     "  node scripts/ci/run-tests.mjs check-selection <lane> --file <manifest-path> [--manifest <file>] [--root <dir>]",
     "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--file <manifest-path>] [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs run <lane> --lifecycle complete --attempt <fresh-directory> [--file <manifest-path>] [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.mjs run <lane> --lifecycle complete --attempt <fresh-directory> [--file <manifest-path>] [--manifest scripts/ci/test-suites.json] [--root <dir>]",
+    "    Complete mode requires the canonical manifest under --root; normalized relative or absolute paths are accepted, symlink aliases are not.",
     "  node scripts/ci/run-tests.mjs aggregate <group> --results-dir <dir> [--needs <json-file>] [--lanes <json-array>] [--release-selection <file>] [--manifest <file>] [--root <dir>]",
   ].join("\n");
 }
@@ -2791,6 +2792,15 @@ async function main() {
   const { command, positionals, options } = parseArgs(process.argv.slice(2));
   const root = resolve(options.root ?? repositoryRoot);
   const manifestPath = resolve(root, options.manifest ?? defaultManifestPath);
+  if (
+    command === "run" &&
+    options.lifecycle === "complete" &&
+    manifestPath !== resolve(root, defaultManifestPath)
+  ) {
+    throw new Error(
+      "Complete lifecycle requires the canonical scripts/ci/test-suites.json manifest under --root.",
+    );
+  }
   const manifest = normalizeManifest(
     loadTestSuites(manifestPath, process.env.OCC_CI_SUITE_VIEW),
     manifestPath,

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-11
-last_updated_session: authoring-run/59e3fbae-c2ef-496b-ad18-c965758bee04
+last_updated_session: authoring-run/c4d4109e-2324-46f7-bceb-42e3780475b1
 ---
 
 # GitHub Actions testing flow
@@ -63,6 +63,11 @@ graph TD
 
 `loadTestSuites` assembles `scripts/ci/test-suites.json` and ordered
 `scripts/ci/test-suites/<lane>.json` references. Lanes own tests, inputs and preparation.
+
+For a [complete local attempt](../testing/ci/run-lanes.md#run-a-complete-local-attempt),
+`run-tests.mjs:main` rejects a noncanonical manifest pathname before loading it
+or calling `runCompleteLifecycle`. Selection and `prepare.mjs` therefore read the
+selected root's canonical manifest. Rejection creates no attempt and starts no phase.
 
 `run-tests.mjs:selectLane` validates focused paths before setup. Focused results
 retain cases, environment and cleanup but cannot satisfy full-lane aggregation,
@@ -280,6 +285,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 14:02: Document complete-mode manifest validation before effects. (authoring-run/c4d4109e-2324-46f7-bceb-42e3780475b1 - 6bfff2b8a3a07d91637dac4391affc9dde8e0547)
 
 - 2026-11-11 07:55: Retain selected runtime Codex provenance in CI evidence. (authoring-run/59e3fbae-c2ef-496b-ad18-c965758bee04 - 7fa7a37738bb24b27d9a835e409ea20eafb43cee)
 

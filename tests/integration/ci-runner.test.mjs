@@ -1012,11 +1012,10 @@ async function lifecycleFixture(
       "",
     ].join("\n"),
   );
-  await writeSingleLaneManifest(
+  await writeRunnerManifest(
     root,
-    "lifecycle",
-    [{ path: "tests/integration/lifecycle.test.mjs" }],
-    { ci: ["lifecycle"] },
+    { lanes: { lifecycle: { files: [{ path: "tests/integration/lifecycle.test.mjs" }] } } },
+    "scripts/ci/test-suites.json",
   );
   return {
     root,
@@ -1024,8 +1023,6 @@ async function lifecycleFixture(
     args: [
       "run",
       "lifecycle",
-      "--manifest",
-      "manifest.json",
       "--root",
       root,
       "--lifecycle",
@@ -1309,6 +1306,101 @@ test(
         await assert.rejects(readFile(fixture.trace), { code: "ENOENT" });
         await assert.rejects(readFile(fixture.results), { code: "ENOENT" });
         await assert.rejects(readFile(fixture.owned), { code: "ENOENT" });
+      });
+    }
+  },
+);
+
+test(
+  "complete lifecycle restricts manifest selection before effects",
+  { skip: process.platform !== "linux" && "lifecycle process ownership reads /proc" },
+  async (t) => {
+    for (const scenario of [
+      "relative override",
+      "absolute override",
+      "symlink override",
+      "canonical symlink alias",
+    ]) {
+      await t.test(scenario, async (t) => {
+        const fixture = await lifecycleFixture(t);
+        const canonical = join(fixture.root, "scripts/ci/test-suites.json");
+        const alternate = JSON.parse(await readFile(canonical, "utf8"));
+        // Both definitions select the same real file, but supply different inputs.
+        // Use normal lane selection (no --file) so an override reaches the run owner.
+        alternate.lanes.lifecycle.env = { CI_RUNNER_MANIFEST_SELECTION: "alternate" };
+        await writeJson(join(fixture.root, "alternate.json"), alternate);
+        await symlink("alternate.json", join(fixture.root, "alternate-link.json"));
+        await symlink("scripts/ci/test-suites.json", join(fixture.root, "canonical-link.json"));
+        const paths = {
+          "relative override": "./scripts/../alternate.json",
+          "absolute override": join(fixture.root, "alternate.json"),
+          "symlink override": "alternate-link.json",
+          "canonical symlink alias": "canonical-link.json",
+        };
+        const result = await runAsync(
+          fixture.root,
+          [...fixture.args, "--manifest", paths[scenario]],
+          {},
+          { timeout: 30_000 },
+        );
+        assert.equal(result.error, undefined, result.stderr);
+        assert.equal(result.status, 1, result.stderr);
+        assert.equal(
+          result.stderr.trim(),
+          "Complete lifecycle requires the canonical scripts/ci/test-suites.json manifest under --root.",
+        );
+        for (const path of [fixture.attempt, fixture.trace, fixture.owned, fixture.results]) {
+          await assert.rejects(stat(path), { code: "ENOENT" });
+        }
+
+        if (scenario === "relative override") {
+          // Externally managed run still accepts the alternate definition and uses
+          // its input, rather than silently substituting the canonical manifest.
+          await writeFile(
+            join(fixture.root, "tests/integration/lifecycle.test.mjs"),
+            [
+              'import assert from "node:assert/strict";',
+              'import test from "node:test";',
+              'test("alternate manifest input", () => assert.equal(process.env.CI_RUNNER_MANIFEST_SELECTION, "alternate"));',
+            ].join("\n"),
+          );
+          const ordinary = run(
+            fixture.root,
+            laneArgs(
+              fixture.root,
+              "lifecycle",
+              "state/ordinary.json",
+              "results/ordinary.json",
+              "alternate.json",
+            ),
+          );
+          assert.equal(ordinary.status, 0, ordinary.stderr);
+          const summary = JSON.parse(
+            await readFile(join(fixture.root, "results/ordinary.json"), "utf8"),
+          );
+          assert.equal(summary.counts.passed, 1);
+        }
+      });
+    }
+    for (const form of ["relative", "absolute"]) {
+      await t.test(`explicit canonical ${form} path`, async (t) => {
+        const fixture = await lifecycleFixture(t);
+        const manifest =
+          form === "relative"
+            ? "./scripts/ci/../ci/test-suites.json"
+            : join(fixture.root, "scripts/ci/test-suites.json");
+        const result = await runAsync(
+          fixture.root,
+          [...fixture.args, "--manifest", manifest],
+          {},
+          { timeout: 30_000 },
+        );
+        assert.equal(result.status, 0, result.stderr);
+        const summary = JSON.parse(await readFile(fixture.results, "utf8"));
+        assert.equal(summary.lifecycle.status, "passed");
+        assert.equal(summary.counts.passed, 1);
+        await assert.rejects(stat(fixture.state), { code: "ENOENT" });
+        await assert.rejects(stat(fixture.owned), { code: "ENOENT" });
       });
     }
   },

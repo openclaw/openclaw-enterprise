@@ -205,6 +205,15 @@ The command validates the selection before preparation and retains the lane's
 required inputs and expected cases. It does not select images, provide missing credentials, or enable optional
 wire tests. Follow the selected lane's setup requirements first.
 
+Complete mode uses only `<root>/scripts/ci/test-suites.json`, where `--root`
+selects the checkout and defaults to the runner's checkout. You can omit
+`--manifest` or explicitly supply that canonical path. Relative manifest paths
+resolve from the selected root; normalized relative and absolute paths must equal
+the canonical pathname. Symlink aliases are rejected. A different manifest fails
+before the runner creates an attempt or starts any phase, so selection,
+preparation and execution use the same definitions. Ordinary externally managed
+`run --state ... --results ...` still accepts alternate manifests.
+
 Complete mode rejects `--state` and `--results`. It creates the attempt directory
 exclusively with mode `0700`, then owns `state.json`, `run.json` and `result.json`
 inside it. Do not write into an active attempt or reuse its directory. A competing

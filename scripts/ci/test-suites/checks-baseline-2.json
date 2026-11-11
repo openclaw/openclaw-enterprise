@@ -234,6 +234,7 @@
         "complete lifecycle drains interrupted preparation before cleanup and never starts tests",
         "complete lifecycle retains owned state when preparation exceeds its deadline",
         "complete lifecycle refuses invalid attempts and legacy output paths before starting phases",
+        "complete lifecycle restricts manifest selection before effects",
         "complete lifecycle losing an attempt claim cannot run phases or clean its winner",
         "complete lifecycle owns detached test groups after deadline or coordinator loss"
       ]
