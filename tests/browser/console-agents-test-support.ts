@@ -349,24 +349,26 @@ export function nativeAdminValues(marker: string, origin: string) {
   return withNativeAdminGateway(nativeValues(marker), origin);
 }
 
-// Serve the real native admin status with `fields` removed from its data, as an older API
-// that predates them answers. Returns the URL to pass to page.unroute.
+// Serve the real native admin status, read as the fixture's administrator, with `fields`
+// removed from its data, as an older API that predates them answers. Returns the URL to
+// pass to page.unroute.
 export async function omitNativeAdminStatusFields(
   page: Page,
-  fixture: OriginFixture,
+  fixture: Pick<Fixture, "origin" | "request">,
   namespaceId: string,
   agentId: string,
   fields: readonly string[],
 ) {
-  const url = `${fixture.origin}/namespaces/${namespaceId}/agents/${agentId}/native-admin`;
+  const path = `/namespaces/${namespaceId}/agents/${agentId}/native-admin`;
+  const url = `${fixture.origin}${path}`;
   await page.route(url, async (route) => {
-    const response = await route.fetch();
-    const body: unknown = await response.json();
+    const response = await fixture.request("GET", path);
+    const body: unknown = response.body;
     assert.ok(isRecord(body) && isRecord(body.data), "native admin status must carry data");
     for (const field of fields) {
       delete body.data[field];
     }
-    await route.fulfill({ response, json: body });
+    await route.fulfill({ status: response.status, json: body });
   });
   return url;
 }

@@ -236,8 +236,11 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
       );
       stopConnect = options.clock.schedule(plan.limits.connectMs, () => {
         // A dropped connect (a NetworkPolicy without reject) ends here, not in a socket error.
+        // TLS never completed, so nothing was dispatched: close only the provider side, as a
+        // refused connect does. Destroying the caller's socket would abort the exchange before
+        // it reports this failure, and the Agent would get a dropped connection, not a 503.
         failConnect("connect-timeout");
-        cancel();
+        stopUpstream();
       });
       stopInput = options.clock.schedule(plan.limits.inputMs, cancel);
       await connected;

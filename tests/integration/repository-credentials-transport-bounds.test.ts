@@ -488,8 +488,8 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
       accepted++;
     });
     await listen(fixture.resources, silent, port);
-    const result = await readDiscovery(fixture);
-    assert.notEqual(result.status, 200);
+    // Nothing was dispatched, so the Agent gets the same definite 503 as a refused connect.
+    assertRefused(await readDiscovery(fixture));
     assertConnectFailureLogged(fixture, port, "connect-timeout");
     assert.equal(accepted, 1);
     await released(fixture);
