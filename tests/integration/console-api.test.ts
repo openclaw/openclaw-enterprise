@@ -1900,11 +1900,23 @@ test("console auth routes reject untrusted browser origins and issue production 
   assert.match(clearedSessions[0]!, /^__Secure-openclaw_occ_shared\.session_token=;/);
   assert.match(clearedSessions[0]!, /; Domain=console\.oce\.localhost(?:;|$)/i);
   assert.match(clearedSessions[0]!, /; Max-Age=0(?:;|$)/i);
+  const freshSession = await fixture.signIn();
+  // A stale-cookie probe after a new sign-in must not clear the replacement cookie.
   const signedOut = await fixture.rawRequest("GET", "/api/auth/session", {
-    headers: { cookie: requestCookie },
+    headers: { cookie: requestCookie, "x-occ-session-key": sessionKey },
   });
   assert.equal(signedOut.response.status, 200, signedOut.text);
   assert.equal(JSON.parse(signedOut.text).data, null);
+  assert.equal(signedOut.response.headers.has("set-cookie"), false);
+  assert.equal(signedOut.response.headers.get("cache-control"), "no-store");
+  assert.equal(signedOut.response.headers.get("pragma"), "no-cache");
+  const fresh = await fixture.rawRequest("GET", "/api/auth/session", {
+    headers: authenticatedHeaders(freshSession),
+  });
+  assert.equal(fresh.response.status, 200, fresh.text);
+  const freshBody: unknown = JSON.parse(fresh.text);
+  assert.ok(Check(sessionSchema, freshBody));
+  assert.notEqual(freshBody.data.sessionKey, sessionKey);
 
   // A body that fails the sign-in schema is a 400 before any credential check.
   const malformedSignIn = await fixture.rawRequest("POST", "/api/auth/sign-in/email", {
