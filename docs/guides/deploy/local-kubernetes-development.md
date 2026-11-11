@@ -125,8 +125,6 @@ If the K3s channel lookup fails or times out, follow
 
 ### Start the OpenShell fail-closed profile
 
-Start OpenShell:
-
 ```bash
 go build -trimpath -o bin/occ ./cmd/occ
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
@@ -137,15 +135,15 @@ The CLI creates one k3d cluster with pinned OpenShell `v0.1.6`, Agent Sandbox,
 cert-manager, and Envoy Gateway assets. PostgreSQL, the central OpenShell Gateway,
 and OCE run in `oce-system`; Agent Sandbox runs in `agent-sandbox-system`.
 Tenant Workspaces, Sandboxes, and Agent Pods use OCC-owned `oce-*` Namespaces.
-Startup exposes a loopback proxy, waits for Namespace/Workspace readiness,
-and privately writes kubeconfig and its administrator service key.
+Startup exposes loopback, waits for Namespace/Workspace readiness,
+and privately writes kubeconfig and an administrator key.
 
-Agent Sandbox is imported from the host cache (or pulled
-there first), so its node does not fetch image layers. Custom manifests retain
-their image and pull policy.
+Agent Sandbox imports the node's native image from the host cache, pulling there
+if needed, without node pulls. Custom manifests retain image and pull policy.
 
-Before rollback, Agent Sandbox diagnostics report controller status, image IDs,
-and Warning reasons, excluding messages, environment values, and logs.
+Preload failures report the host import error before controller creation. Rollout
+failures capture controller status, image IDs and Warning reasons when available,
+excluding messages, environment values and logs.
 
 Set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` to run PostgreSQL, OCC, and its
 Kubernetes worker in Compose. Startup installs private Envoy routing in k3d,
@@ -165,7 +163,7 @@ For reviewed local charts and manifests, set
 `OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST` to absolute paths.
 To test a candidate release, [select its OpenShell images by digest](local-openshell-images.md).
 
-For additional binary and endpoint rules, see [startup network policy](local-sandbox-network-policy.md).
+See [startup network policy](local-sandbox-network-policy.md) for binary/endpoint rules.
 
 Set `OCC_DEVELOPMENT_CONTAINER_ENGINE=podman` or `docker` to select the host
 engine. Kubernetes-only startup rejects Compose arguments.

@@ -8654,6 +8654,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
           args: "secretauthvalue-args",
         }),
         measurement({ ...runtimeFailure, nonzeroExitCount: 1, signaledCount: 1 }),
+        measurement({ ...runtimeFailure, stage: "openshell-agent-sandbox-image" }),
         measurement({
           ...runtimeFailure,
           elapsedMs: 201,
@@ -8905,6 +8906,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
         elapsedMs: 100,
       },
       { ...runtimeFailure, nonzeroExitCount: 1, signaledCount: 1 },
+      { ...runtimeFailure, stage: "openshell-agent-sandbox-image" },
       { ...runtimeFailure, elapsedMs: 201 },
       { ...runtimeFailure, elapsedMs: 202 },
       { ...runtimeFailure, elapsedMs: 203, stage: "controller-build" },

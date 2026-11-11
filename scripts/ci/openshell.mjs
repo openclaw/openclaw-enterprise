@@ -280,7 +280,10 @@ async function installAgentSandbox(execFile, kubectl, cluster, directory, regist
     },
     directory,
   });
-  const localManifest = await preloadAgentSandboxController(manifestPath, registerImage);
+  const nodes = JSON.parse(
+    (await execFile(kubectl, kubectlArgs(cluster, ["get", "nodes", "-o", "json"]))).stdout,
+  );
+  const localManifest = await preloadAgentSandboxController(manifestPath, nodes, registerImage);
   await execFile(kubectl, kubectlArgs(cluster, ["apply", "-f", localManifest]));
   await execFile(kubectl, kubectlArgs(cluster, ["get", "crd", "sandboxes.agents.x-k8s.io"]));
   await execFile(

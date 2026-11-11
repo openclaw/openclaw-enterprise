@@ -1281,3 +1281,49 @@ func TestAgentSandboxPreloadPreservesExplicitManifest(t *testing.T) {
 		t.Fatalf("explicit manifest bytes changed: %s, %v", data, err)
 	}
 }
+
+func TestAgentSandboxPreloadSelectsNodeImageBeforeImport(t *testing.T) {
+	for _, tc := range []struct{ arch, digest string }{
+		{"amd64", "c28ca6f2366160f2470013c4588821cf7ebd21538d62c1016b6afc93583830d6"},
+		{"arm64", "7e273b836b1f7e5e33c08c68bcf539959ca2b298cb29153e1fab60fd05851248"},
+	} {
+		t.Run(tc.arch, func(t *testing.T) {
+			state := kubernetesOnlyOpenShellState(t)
+			manifest := filepath.Join(state.directory, "sandbox.yaml")
+			if err := os.WriteFile(manifest, []byte("      - name: agent-sandbox-controller\n        image: registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			// The engine cannot supply the image. Observe which immutable child
+			// the real preload path asks it to acquire, before any apply is possible.
+			commands := fakeProfileCommands(t, map[string]string{
+				"kubectl": `"get nodes -o json") echo '{"items":[{"status":{"nodeInfo":{"operatingSystem":"linux","architecture":"` + tc.arch + `"}}}]}' ;;`,
+				"docker":  `"image inspect "*|"pull "*) exit 1 ;;`,
+			})
+			r := newRunner(Options{Repository: state.Repository})
+			r.engine = "docker"
+			if _, err := r.preloadAgentSandboxController(context.Background(), state, state.directory, manifest); err == nil {
+				t.Fatal("unavailable image must stop preload")
+			}
+			want := "docker pull registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2@sha256:" + tc.digest
+			if !slices.Contains(commands(), want) {
+				t.Fatalf("preload did not acquire the node's native image; want %s, commands %v", want, commands())
+			}
+			if _, err := os.Stat(filepath.Join(state.directory, "agent-sandbox-local.yaml")); !os.IsNotExist(err) {
+				t.Fatal("failed acquisition must not produce deployment input")
+			}
+		})
+	}
+}
+
+func TestAgentSandboxRejectsUnknownOrMixedNodePlatforms(t *testing.T) {
+	for _, nodes := range []string{
+		`{"items":[]}`,
+		`{"items":[{"status":{"nodeInfo":{"operatingSystem":"linux","architecture":"ppc64le"}}}]}`,
+		`{"items":[{"status":{"nodeInfo":{"operatingSystem":"linux","architecture":"amd64"}}},{"status":{"nodeInfo":{"operatingSystem":"linux","architecture":"arm64"}}}]}`,
+		`{"items":[{}]}`,
+	} {
+		if _, err := agentSandboxControllerForNodes([]byte(nodes)); err == nil {
+			t.Fatalf("unsupported node platforms accepted: %s", nodes)
+		}
+	}
+}

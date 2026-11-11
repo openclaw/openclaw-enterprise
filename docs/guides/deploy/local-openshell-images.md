@@ -162,8 +162,9 @@ lines with the build receipt. The source digest identifies the selected engine
 image; containerd may record a different manifest representation after archive
 import. The launcher resolves and registers that containerd digest, then supplies
 it to `gateway.image`, `sandboxRuntime.image`, and `supervisor.image` in Helm,
-and to the default Agent Sandbox manifest, with pull policy `Never`. Source and
-containerd digests can differ.
+and to the default Agent Sandbox manifest, with pull policy `Never`. Agent Sandbox
+uses the pinned release child for the node's architecture. Source and containerd
+digests can differ; their native image config must match.
 
 Before runtime qualification, inspect the actual supervisor container's
 `imageID` in the Agent-owned Pod using the printed kubeconfig and context.

@@ -15,7 +15,11 @@ import {
   selectKubectlAsset,
   validateOpenShellSelection,
 } from "../../scripts/ci/openshell.mjs";
-import { preloadAgentSandboxController } from "../../scripts/ci/agent-sandbox.ts";
+import {
+  agentSandboxControllerForNodes,
+  preloadAgentSandboxController,
+  verifyPreloadedAgentSandbox,
+} from "../../scripts/ci/agent-sandbox.ts";
 import { withEnvironment } from "../helpers/environment.ts";
 import { commandCalls, prependPath, writeCommand } from "../helpers/fake-commands.ts";
 import {
@@ -1762,6 +1766,17 @@ test("prepareOpenShell fails before downloads when the k3d node lacks the select
   }
 });
 
+function controllerNodes(architecture = "amd64") {
+  return {
+    items: [
+      {
+        metadata: { name: "k3d-owned-server-0" },
+        status: { nodeInfo: { operatingSystem: "linux", architecture } },
+      },
+    ],
+  };
+}
+
 // This exercises manifest preparation and its image-registration boundary, not a cluster.
 test("Agent Sandbox preparation uses the imported image and preserves unrelated manifest bytes", async (t) => {
   const directory = await fixture(t);
@@ -1793,10 +1808,10 @@ test("Agent Sandbox preparation uses the imported image and preserves unrelated 
   ].join("\n");
   await writeFile(manifest, source);
   const imported = `localhost/owned/controller@sha256:${"a".repeat(64)}`;
-  const output = await preloadAgentSandboxController(manifest, async (image) => {
+  const output = await preloadAgentSandboxController(manifest, controllerNodes(), async (image) => {
     assert.equal(
       image,
-      "registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2@sha256:dbbad861e6c2cc0df1f7ec37dd0e2827b3d2bc051eb45855e01f94e697440403",
+      "registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2@sha256:c28ca6f2366160f2470013c4588821cf7ebd21538d62c1016b6afc93583830d6",
     );
     await assert.rejects(readFile(join(directory, "agent-sandbox-local.yaml")), { code: "ENOENT" });
     return imported;
@@ -1822,7 +1837,7 @@ test("Agent Sandbox preparation rejects changed manifests and failed imports bef
   for (const invalid of ["kind: Namespace\n", controller + controller]) {
     await writeFile(manifest, invalid);
     await assert.rejects(
-      preloadAgentSandboxController(manifest, async () =>
+      preloadAgentSandboxController(manifest, controllerNodes(), async () =>
         assert.fail("invalid manifest must not import an image"),
       ),
       /exactly one expected controller image/,
@@ -1831,10 +1846,141 @@ test("Agent Sandbox preparation rejects changed manifests and failed imports bef
   await writeFile(manifest, controller);
   const failure = new Error("image import failed");
   await assert.rejects(
-    preloadAgentSandboxController(manifest, async () => {
+    preloadAgentSandboxController(manifest, controllerNodes(), async () => {
       throw failure;
     }),
     (error) => error === failure,
   );
   await assert.rejects(readFile(join(directory, "agent-sandbox-local.yaml")), { code: "ENOENT" });
+});
+
+// The selected native child must follow the node, regardless of the host cache.
+test("Agent Sandbox selects the native node platform and rejects unknown or mixed nodes", () => {
+  assert.equal(
+    agentSandboxControllerForNodes(controllerNodes("arm64")).source,
+    "registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2@sha256:7e273b836b1f7e5e33c08c68bcf539959ca2b298cb29153e1fab60fd05851248",
+  );
+  for (const nodes of [
+    controllerNodes("ppc64le"),
+    { items: [] },
+    { items: [...controllerNodes().items, ...controllerNodes("arm64").items] },
+  ]) {
+    assert.throws(() => agentSandboxControllerForNodes(nodes), /node platform/);
+  }
+});
+
+// Fixture observations exercise the verifier, not image transport or a real cluster.
+// The retained upstream manifest is the actual v0.5.2 linux/amd64 child.
+test("Agent Sandbox installed verification binds readiness and CRI identity to the native release", async () => {
+  const manifest = await readFile(
+    new URL("../fixtures/agent-sandbox-v0.5.2-amd64-manifest.json.txt", import.meta.url),
+    "utf8",
+  );
+  const source =
+    "registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2@sha256:c28ca6f2366160f2470013c4588821cf7ebd21538d62c1016b6afc93583830d6";
+  const reference =
+    "docker.io/owned/controller@sha256:c28ca6f2366160f2470013c4588821cf7ebd21538d62c1016b6afc93583830d6";
+  const config = "sha256:5b6c81129dc7491b3d260940e34ff68323fb6f7f21450d42129be5169e52ab17";
+  const observations = {
+    nodes: controllerNodes(),
+    pods: {
+      items: [
+        {
+          metadata: {
+            name: "agent-sandbox-controller-5cdd-7kr6b",
+            namespace: "agent-sandbox-system",
+          },
+          spec: {
+            nodeName: "k3d-owned-server-0",
+            containers: [
+              { name: "agent-sandbox-controller", image: reference, imagePullPolicy: "Never" },
+            ],
+          },
+          status: {
+            conditions: [{ type: "Ready", status: "True" }],
+            containerStatuses: [
+              {
+                name: "agent-sandbox-controller",
+                ready: true,
+                imageID: config,
+                state: { running: { startedAt: "2026-11-11T21:00:00Z" } },
+              },
+            ],
+          },
+        },
+      ],
+    },
+    content: manifest,
+    cri: { status: { id: config } },
+  };
+  const verify = (data, overrides = {}) =>
+    verifyPreloadedAgentSandbox({
+      source,
+      reference,
+      kubectl: [],
+      engine: "docker",
+      ownedNodes: ["k3d-owned-server-0"],
+      ...overrides,
+      execFile: async (file, args) => {
+        if (file === "kubectl" && args[0] === "get") {
+          return { stdout: JSON.stringify(data[args[1]]) };
+        }
+        if (file === "docker" && args[0] === "exec" && args[2] === "ctr") {
+          return { stdout: data.content };
+        }
+        if (file === "docker" && args[0] === "exec" && args[2] === "crictl") {
+          return { stdout: JSON.stringify(data.cri) };
+        }
+        assert.fail(`unexpected verification command ${file} ${args.join(" ")}`);
+      },
+    });
+  await verify(observations);
+  for (const [change, expected] of [
+    [
+      (data) => {
+        data.pods.items[0].spec.containers[0].image = `docker.io/wrong/controller@sha256:${"a".repeat(64)}`;
+      },
+      /exact imported reference/,
+    ],
+    [
+      (data) => {
+        data.pods.items[0].spec.containers[0].imagePullPolicy = "IfNotPresent";
+      },
+      /exact imported reference/,
+    ],
+    [
+      (data) => {
+        data.pods.items[0].status.conditions[0].status = "False";
+      },
+      /Ready/,
+    ],
+    [
+      (data) => {
+        data.cri.status.id = `sha256:${"a".repeat(64)}`;
+      },
+      /running image/,
+    ],
+    [
+      (data) => {
+        data.content += " ";
+      },
+      /imported manifest/,
+    ],
+    [
+      (data) => {
+        data.pods.items[0].spec.nodeName = "unowned-node";
+      },
+      /owned node/,
+    ],
+  ]) {
+    const changed = structuredClone(observations);
+    change(changed);
+    await assert.rejects(verify(changed), expected);
+  }
+  await assert.rejects(
+    verify(observations, {
+      source: agentSandboxControllerForNodes(controllerNodes("arm64")).source,
+    }),
+    /node platform release/,
+  );
 });

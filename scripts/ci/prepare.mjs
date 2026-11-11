@@ -47,6 +47,7 @@ import { pullImage } from "./image-pull.ts";
 import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.mjs";
 import { imageInventory, laneImagesResourceKind } from "./lane-images.ts";
 import { imageConfigDigest } from "./image-config-digest.ts";
+import { verifyPreloadedAgentSandbox } from "./agent-sandbox.ts";
 import {
   preparationIdentity,
   readImageCodexProvenance,
@@ -3876,6 +3877,26 @@ async function prepareLane({ lane, statePath, file, cleanupOwner }) {
             ),
         }),
       );
+      const agentSandbox = state.resources.find(
+        (resource) =>
+          resource.kind === "k3d-image" &&
+          resource.cluster === cluster.name &&
+          resource.envName === "Agent Sandbox controller" &&
+          resource.status === "ready",
+      );
+      if (!agentSandbox) {
+        throw new Error("Agent Sandbox preparation did not record its imported image.");
+      }
+      await verifyPreloadedAgentSandbox({
+        execFile: (file, args) =>
+          execFile(file, args, { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }),
+        kubectlCommand: process.env.OCC_KUBECTL_BIN ?? "kubectl",
+        kubectl: ["--kubeconfig", cluster.kubeconfig, "--context", cluster.context],
+        engine: process.env.OCC_DOCKER_BIN ?? "docker",
+        ownedNodes: cluster.nodes,
+        source: agentSandbox.sourceImage,
+        reference: agentSandbox.reference,
+      });
       // The OAuth2 refresh proof's Keycloak: pulled here with pullImage's retry and
       // imported, so the cluster never pulls it from the registry.
       env.OCC_TEST_KEYCLOAK_IMAGE = (

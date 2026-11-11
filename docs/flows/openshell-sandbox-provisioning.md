@@ -98,45 +98,42 @@ graph TD
 `internal/occdev/openshell.go:prepareOpenShell`,
 `internal/occdev/kubernetes.go:writeInstallation`
 
-Launchers require Landlock, verify 0.1.6 charts and pin OpenShell images. Node
-and x64/ARM64 Codex run independently of launcher architecture. Importing OCE
-images first prevents k3s collection. `writeInstallation` selects curated Codex
-plugins; Credential Gateway supplies credentials.
+Node and x64/ARM64 Codex run independently of launcher architecture. Importing
+OCE images first prevents k3s collection.
 
 `internal/occdev/openshell_assets.go:downloadVerified` streams archives;
-`internal/occdev/routing_manifest.go` and CI's
-`scripts/ci/routing.mjs:downloadPinnedArtifact` fetch manifests (32 MiB maximum).
-Cancelable downloads retry transient network/HTTP 408/429/5xx errors: eight
-60-second attempts starting within 120 seconds. Other errors fail.
-Archive retries remove failed `0600` files, preserving existing files.
+`internal/occdev/routing_manifest.go` and
+`scripts/ci/routing.mjs:downloadPinnedArtifact` fetch manifests (maximum 32 MiB).
+Cancelable downloads retry network/HTTP 408/429/5xx errors: eight 60-second
+attempts starting within 120 seconds. Other errors fail. Archive retries remove
+failed `0600` files, preserving existing files.
 
-`dev-up` validates Kubernetes/OpenShell. Kubernetes-only uses in-cluster
-authentication, `oce-system`, imported PostgreSQL and [per-Agent HTTPS](../guides/deploy/local-setup.md).
-Startup checks port collisions and records engine, cluster, Namespace, ports and
-key path. Compose runs PostgreSQL/OCC with k3d.
+Kubernetes-only uses PostgreSQL in `oce-system`, in-cluster authentication and
+[per-Agent HTTPS](../guides/deploy/local-setup.md). Startup records engine, cluster,
+Namespace, checked ports and key path. Compose runs PostgreSQL/OCC with k3d.
 
-`prepareOpenShell` and CI's `scripts/ci/openshell.mjs:installAgentSandbox`
-import Agent Sandbox before applying its local manifest with the imported digest
-and `imagePullPolicy: Never`. Import failure stops startup; explicit manifests
-stay unchanged.
+`prepareOpenShell`/`scripts/ci/openshell.mjs:installAgentSandbox` import Agent
+Sandbox's pinned child for the node, then apply its digest with
+`imagePullPolicy: Never`. Failure stops startup; explicit manifests remain unchanged.
 
-On rollout failure, `prepareOpenShell` calls
+Real dev-up and CI checks bind Ready Pods to imported references and release configs.
+
 `internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout`
-once, preserving rollback errors. Diagnostics include Deployment,
-UID-linked ReplicaSets/Pods and Warning reasons, excluding messages, environment,
-full labels and logs. Unavailable, malformed or oversized results are identified.
-Limits: 15-second context; three seconds/256 KiB per command; 32 KiB per record.
-No retries; 200 ms pipe draining cannot terminate descendants.
+reports rollout failures once, preserving rollback errors: Deployment, UID-linked
+ReplicaSets/Pods and Warning reasons, excluding messages, environment, full labels
+and logs. It marks unavailable/malformed/oversized results. Limits: 15-second context;
+three seconds/256 KiB per command; 32 KiB per record; no retries.
+The 200 ms pipe drain cannot terminate descendants.
 
 `network.providerHarness` records Gateway ClusterIP, Pod selector and TCP/8080.
 Agent Gateways alias its hostname, preserving HTTP Host; policy permits only those
-Pods/port. Both launchers install private Envoy routing and operator Workspaces.
+Pods/port. Launchers install private Envoy routing and operator Workspaces.
 `docs/snippets/openshell-quickstart/kubernetes/service-policies.py` uses live
 selectors to admit API, worker, supervisors and Agent Gateways on TCP/8080.
 Supervisor grants accumulate per Namespace; callers must match ownership labels.
-Protected Git preserves Gateway DNS/API egress using Service addresses, DNS
+Protected Git preserves Gateway DNS/API egress through Service addresses, DNS
 selectors/ports and ready API endpoints. Empty discovery warns and removes stale
-backend grants; failed reads abort. Policies are recorded before application and
+grants; failed reads abort. Policies are recorded before application and
 deleted on uninstall. See [local deployment](../guides/deploy/local-kubernetes-development.md)
 and the [retired local protected profile](../guides/deploy/local-openshell-images.md#select-the-protected-profile).
 
@@ -435,6 +432,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 21:41: Bind controller preload to node identity. (authoring-run/6d4239da-0b3c-4a1d-baaf-cd0d1b4646a6 - 7a2f352a44c42459a3a33c784199a47d11d98e1e)
 
 - 2026-11-11 21:12: Preload Agent Sandbox locally. (authoring-run/6d4239da-0b3c-4a1d-baaf-cd0d1b4646a6 - dfbdd7bfa6ccfba7d3d2e6b28f2770988c0cfc0d)
 

@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -122,7 +123,15 @@ func (r *runner) preloadAgentSandboxController(ctx context.Context, state *devel
 	if _, err := agentSandboxControllerManifest(data, agentSandboxControllerImage); err != nil {
 		return "", err
 	}
-	image, err := r.importOpenShellImage(ctx, state, root, "agent-sandbox-controller", agentSandboxControllerImage, false)
+	nodes, err := r.output(ctx, "kubectl", "get", "nodes", "-o", "json")
+	if err != nil {
+		return "", err
+	}
+	source, err := agentSandboxControllerForNodes(nodes)
+	if err != nil {
+		return "", err
+	}
+	image, err := r.importOpenShellImage(ctx, state, root, "agent-sandbox-controller", source, false)
 	if err != nil {
 		return "", err
 	}
@@ -135,6 +144,43 @@ func (r *runner) preloadAgentSandboxController(ctx context.Context, state *devel
 		return "", err
 	}
 	return local, nil
+}
+
+func agentSandboxControllerForNodes(data []byte) (string, error) {
+	var nodes struct {
+		Items []struct {
+			Status struct {
+				NodeInfo struct {
+					OperatingSystem string `json:"operatingSystem"`
+					Architecture    string `json:"architecture"`
+				} `json:"nodeInfo"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(data, &nodes); err != nil {
+		return "", fmt.Errorf("read Agent Sandbox node platform: %w", err)
+	}
+	platform := ""
+	for _, node := range nodes.Items {
+		selected := node.Status.NodeInfo.OperatingSystem + "/" + node.Status.NodeInfo.Architecture
+		if platform != "" && selected != platform {
+			return "", fmt.Errorf("Agent Sandbox requires one node platform")
+		}
+		platform = selected
+	}
+	// These native manifests belong to the pinned v0.5.2 index above. Select
+	// for the actual node, not a possibly foreign-platform host cache entry.
+	var digest string
+	switch platform {
+	case "linux/amd64":
+		digest = "c28ca6f2366160f2470013c4588821cf7ebd21538d62c1016b6afc93583830d6"
+	case "linux/arm64":
+		digest = "7e273b836b1f7e5e33c08c68bcf539959ca2b298cb29153e1fab60fd05851248"
+	default:
+		return "", fmt.Errorf("unsupported Agent Sandbox node platform %q", platform)
+	}
+	name, _, _ := strings.Cut(agentSandboxControllerImage, "@")
+	return name + "@sha256:" + digest, nil
 }
 
 func agentSandboxControllerManifest(data []byte, image string) ([]byte, error) {
