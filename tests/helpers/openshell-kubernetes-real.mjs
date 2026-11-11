@@ -200,7 +200,7 @@ export class OpenShellDeploymentFailedError extends Error {
 
 export function waitForOpenShellRevisionActivation(
   waitFor,
-  { request, agentPath, revisionId, workerEvents },
+  { request, agentPath, revisionId, workerEvents = [] },
 ) {
   return waitFor(`OpenShell revision ${revisionId} activation`, async () => {
     const observed = await request("GET", agentPath);
