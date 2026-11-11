@@ -86,6 +86,8 @@ test("Codex runtime gates startup and readiness on a successful native authentic
   const completedTurn = (...events) => [started, ...events, assistant, completed];
   // The pinned CLI reports the denied upgrade as retry errors and the HTTPS switch
   // as an advisory item. The fixture replays those events through the real wrapper.
+  const threadStarted = { type: "thread.started", thread_id: "fixture-thread" };
+  const completedFallbackTurn = (...events) => [threadStarted, ...completedTurn(...events)];
   const deniedUpgrade =
     'unexpected status 403 Forbidden: {"detail":"HTTP upgrade is not supported for REST endpoints; use a separate protocol: websocket endpoint with explicit message rules","error":"unsupported_l7_protocol"}, url: wss://chatgpt.com/backend-api/codex/responses';
   const reconnectUpgrade = (cause = deniedUpgrade, attempts = "2/5") =>
@@ -151,7 +153,7 @@ test("Codex runtime gates startup and readiness on a successful native authentic
     {
       name: "OpenShell provider PAT is ready after native fallback to HTTPS answers the probe",
       providerPat: true,
-      events: completedTurn(
+      events: completedFallbackTurn(
         ...["2/5", "3/5", "4/5", "5/5"].map((attempts) =>
           reconnectUpgrade(deniedUpgrade, attempts),
         ),
@@ -161,14 +163,14 @@ test("Codex runtime gates startup and readiness on a successful native authentic
     },
     {
       name: "ordinary Codex authentication cannot recover an OpenShell upgrade denial",
-      events: completedTurn(reconnectUpgrade(), httpsFallback),
+      events: completedFallbackTurn(reconnectUpgrade(), httpsFallback),
       expect: forbiddenUpgradeFailure,
     },
     {
       name: "protected PAT authentication cannot recover an OpenShell upgrade denial",
       protectedInference: "signed",
       providerPat: true,
-      events: completedTurn(reconnectUpgrade(), httpsFallback),
+      events: completedFallbackTurn(reconnectUpgrade(), httpsFallback),
       expect: forbiddenUpgradeFailure,
     },
     ...[
@@ -188,7 +190,7 @@ test("Codex runtime gates startup and readiness on a successful native authentic
     ].map(([label, cause]) => ({
       name: "OpenShell provider PAT refuses a reconnect with " + label,
       providerPat: true,
-      events: completedTurn(reconnectUpgrade(cause), httpsFallback),
+      events: completedFallbackTurn(reconnectUpgrade(cause), httpsFallback),
       expect:
         label === "wrong status"
           ? probeFailure({ kind: "PROBE_STATUS", detail: "error-event" }, { status: 401 })
@@ -197,27 +199,49 @@ test("Codex runtime gates startup and readiness on a successful native authentic
     ...[
       [
         "an invalid native retry limit",
-        completedTurn(reconnectUpgrade(deniedUpgrade, "2/11"), httpsFallback),
+        completedFallbackTurn(reconnectUpgrade(deniedUpgrade, "2/11"), httpsFallback),
       ],
       [
         "too many retry events",
-        completedTurn(...Array.from({ length: 11 }, () => reconnectUpgrade()), httpsFallback),
+        completedFallbackTurn(
+          ...Array.from({ length: 11 }, () => reconnectUpgrade()),
+          httpsFallback,
+        ),
       ],
       [
         "an unrelated reconnect",
-        completedTurn(reconnectUpgrade(), httpsFallback, recoveredStreamError),
+        completedFallbackTurn(reconnectUpgrade(), httpsFallback, recoveredStreamError),
       ],
-      ["no fallback advisory", completedTurn(reconnectUpgrade())],
-      ["a different fallback advisory", completedTurn(reconnectUpgrade(), advisory)],
-      ["a second turn", [...completedTurn(reconnectUpgrade(), httpsFallback), ...completedTurn()]],
+      ["no fallback advisory", completedFallbackTurn(reconnectUpgrade())],
+      ["a different fallback advisory", completedFallbackTurn(reconnectUpgrade(), advisory)],
+      [
+        "a second thread",
+        completedFallbackTurn(
+          reconnectUpgrade(),
+          { ...threadStarted, thread_id: "second-thread" },
+          httpsFallback,
+        ),
+      ],
+      ["no thread marker", completedTurn(reconnectUpgrade(), httpsFallback)],
+      [
+        "a reconnect after the fallback advisory",
+        completedFallbackTurn(reconnectUpgrade(), httpsFallback, reconnectUpgrade(), httpsFallback),
+      ],
+      [
+        "a second turn",
+        [...completedFallbackTurn(reconnectUpgrade(), httpsFallback), ...completedTurn()],
+      ],
       [
         "a nonfinal turn completion",
-        [...completedTurn(reconnectUpgrade(), httpsFallback), advisory],
+        [...completedFallbackTurn(reconnectUpgrade(), httpsFallback), advisory],
       ],
-      ["no turn completion", [started, reconnectUpgrade(), httpsFallback, assistant]],
+      [
+        "no turn completion",
+        [threadStarted, started, reconnectUpgrade(), httpsFallback, assistant],
+      ],
       [
         "no answer after the transport failure",
-        [started, assistant, reconnectUpgrade(), httpsFallback, completed],
+        [threadStarted, started, assistant, reconnectUpgrade(), httpsFallback, completed],
       ],
     ].map(([label, events]) => ({
       name: "OpenShell provider PAT remains unready with " + label,
@@ -228,7 +252,7 @@ test("Codex runtime gates startup and readiness on a successful native authentic
     {
       name: "OpenShell provider PAT remains unready after an unsuccessful probe process",
       providerPat: true,
-      events: completedTurn(reconnectUpgrade(), httpsFallback),
+      events: completedFallbackTurn(reconnectUpgrade(), httpsFallback),
       result: { status: 1 },
       expect: forbiddenUpgradeFailure,
     },
@@ -236,6 +260,7 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       name: "OpenShell provider PAT rejects a terminal HTTPS authorization failure",
       providerPat: true,
       events: [
+        threadStarted,
         started,
         reconnectUpgrade(),
         httpsFallback,
@@ -246,7 +271,7 @@ test("Codex runtime gates startup and readiness on a successful native authentic
     {
       name: "OpenShell provider PAT rejects a tool event after fallback",
       providerPat: true,
-      events: completedTurn(reconnectUpgrade(), httpsFallback, {
+      events: completedFallbackTurn(reconnectUpgrade(), httpsFallback, {
         type: "item.completed",
         item: { type: "command_execution" },
       }),

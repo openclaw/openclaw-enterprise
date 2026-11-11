@@ -4514,12 +4514,13 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
       events.at(-1)?.type === "turn.completed" &&
       events.some(isNonemptyProbeAnswer);
     if (openShellPatUpgradeFailure !== undefined) {
-      const afterDenial = events.slice(lastUpgradeDenialIndex + 1);
-      const fallback = afterDenial.findIndex((event) => event.type === "item.completed" &&
+      const fallbackIndex = events.findIndex((event) => event.type === "item.completed" &&
         event.item?.type === "error" && event.item.message === OPENSHELL_PAT_HTTPS_FALLBACK);
-      if (!answered || fallback === -1 || !afterDenial.slice(fallback + 1).some(isNonemptyProbeAnswer) ||
+      if (!answered || events[0]?.type !== "thread.started" ||
+        events.slice(1).some((event) => event.type === "thread.started") ||
+        fallbackIndex <= lastUpgradeDenialIndex || !events.slice(fallbackIndex + 1).some(isNonemptyProbeAnswer) ||
         events.some((event) => event.type === "error" && !isOpenShellPatUpgradeRetry(event.message)) ||
-        result.status !== 0 || result.error) return finish(openShellPatUpgradeFailure);
+        result.status !== 0 || result.error || result.signal) return finish(openShellPatUpgradeFailure);
     }
     if (transientFailure !== undefined &&
       (unrecoveredTransientFailure || !answered || result.status !== 0 || result.error)) return finish(transientFailure);
