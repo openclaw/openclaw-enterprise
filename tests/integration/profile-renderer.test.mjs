@@ -1857,6 +1857,21 @@ test("trusted proxy client address headers render lowercase", async () => {
 
 // The API lowercases both domains at startup, and the chart accepts only lowercase.
 test("native admin domains render lowercase for the chart", async () => {
+  const longest = `${"a.".repeat(97)}oce.example.internal`;
+  assert.equal(longest.length, 214);
+  const boundaryInput = (domain) =>
+    codexInput({
+      controlPlane: { ...baseInput().controlPlane, agentNativeAdminDomain: domain },
+    });
+  assert.equal((await render("codex", boundaryInput(longest))).summary.ok, true);
+  for (const length of [215, 217, 253]) {
+    await assertPreflightFailure(
+      "codex",
+      boundaryInput(`${"a".repeat(length - longest.length)}${longest}`),
+      /controlPlane.agentNativeAdminDomain must not exceed 214 characters/,
+    );
+  }
+
   const output = await render(
     "codex",
     codexInput({
