@@ -3887,10 +3887,24 @@ async function prepareLane({ lane, statePath, file, cleanupOwner }) {
       if (!agentSandbox) {
         throw new Error("Agent Sandbox preparation did not record its imported image.");
       }
+      const maxVerificationOutput = 4 * 1024 * 1024;
       await verifyPreloadedAgentSandbox({
-        execFile: (file, args) =>
-          execFile(file, args, { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }),
-        kubectlCommand: process.env.OCC_KUBECTL_BIN ?? "kubectl",
+        execFile: async (file, args) => {
+          const output = await execFile(file, args, {
+            timeoutMs: imageCommandTimeoutMs,
+            maxOutputChars: maxVerificationOutput,
+          });
+          // This wrapper retains only the tail at its cap. Never validate a
+          // truncated response, even if that tail happens to be valid JSON.
+          if (
+            output.stdout.length >= maxVerificationOutput ||
+            output.stderr.length >= maxVerificationOutput
+          ) {
+            throw new Error("Agent Sandbox verification output exceeded its limit.");
+          }
+          return output;
+        },
+        kubectlCommand: env.OCC_KUBECTL_BIN ?? "kubectl",
         kubectl: ["--kubeconfig", cluster.kubeconfig, "--context", cluster.context],
         engine: process.env.OCC_DOCKER_BIN ?? "docker",
         ownedNodes: cluster.nodes,

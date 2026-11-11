@@ -1301,6 +1301,7 @@ func TestAgentSandboxPreloadSelectsNodeImageBeforeImport(t *testing.T) {
 			})
 			r := newRunner(Options{Repository: state.Repository})
 			r.engine = "docker"
+			delete(r.env, "OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST")
 			if _, err := r.preloadAgentSandboxController(context.Background(), state, state.directory, manifest); err == nil {
 				t.Fatal("unavailable image must stop preload")
 			}

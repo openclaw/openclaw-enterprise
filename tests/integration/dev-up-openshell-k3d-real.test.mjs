@@ -114,11 +114,21 @@ async function verifyDevelopmentAgentSandbox(kubectl, environment, output, state
     ),
   ];
   assert.equal(imports.length, 1, "startup must report the exact Agent Sandbox import");
+  // Match the launcher's recorded endpoint, including Podman's selectors.
+  const engineEnvironment = { ...environment, DOCKER_HOST: state.dockerHost };
+  delete engineEnvironment.DOCKER_CONTEXT;
+  delete engineEnvironment.DOCKER_TLS_VERIFY;
+  delete engineEnvironment.DOCKER_CERT_PATH;
+  if (state.containerEngine === "podman") {
+    engineEnvironment.CONTAINER_HOST = state.dockerHost;
+    engineEnvironment.CONTAINER_CONNECTION = "";
+    engineEnvironment.OCC_CONTAINER_ENGINE_SOCKET = state.dockerHost.replace(/^unix:\/\//, "");
+  }
   await verifyPreloadedAgentSandbox({
     execFile: (file, args) =>
       execute(file, args, {
         cwd: repository,
-        env: { ...environment, DOCKER_HOST: state.dockerHost },
+        env: engineEnvironment,
         timeout: 30_000,
         maxBuffer: 4 * 1024 * 1024,
       }),

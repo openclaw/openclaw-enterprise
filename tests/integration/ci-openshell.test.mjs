@@ -1911,7 +1911,10 @@ test("Agent Sandbox installed verification binds readiness and CRI identity to t
       ],
     },
     content: manifest,
-    cri: { status: { id: config } },
+    cri: {
+      [reference]: { status: { id: config } },
+      [config]: { status: { id: config } },
+    },
   };
   const verify = (data, overrides = {}) =>
     verifyPreloadedAgentSandbox({
@@ -1929,7 +1932,10 @@ test("Agent Sandbox installed verification binds readiness and CRI identity to t
           return { stdout: data.content };
         }
         if (file === "docker" && args[0] === "exec" && args[2] === "crictl") {
-          return { stdout: JSON.stringify(data.cri) };
+          assert.equal(args[3], "inspecti");
+          const image = data.cri[args[4]];
+          assert.ok(image, `unexpected CRI image ${args[4]}`);
+          return { stdout: JSON.stringify(image) };
         }
         assert.fail(`unexpected verification command ${file} ${args.join(" ")}`);
       },
@@ -1956,7 +1962,15 @@ test("Agent Sandbox installed verification binds readiness and CRI identity to t
     ],
     [
       (data) => {
-        data.cri.status.id = `sha256:${"a".repeat(64)}`;
+        data.cri[reference].status.id = `sha256:${"a".repeat(64)}`;
+      },
+      /running image/,
+    ],
+    [
+      (data) => {
+        // The imported alias is still correct; only the running Pod resolves
+        // to the wrong config. Querying the alias twice must not pass.
+        data.cri[config].status.id = `sha256:${"a".repeat(64)}`;
       },
       /running image/,
     ],
