@@ -266,8 +266,8 @@ The protected startup probe also disables retries.
 `apps/controller/src/drivers/egress-proxy/openai-provider.ts:createOpenAiStaticProvider`
 checks [request forms](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
 through `openai-responses.ts:validResponsesRequest` before Secret resolution.
-Separate validators accept `max` for request effort or telemetry; native
-telemetry-only `ultra` accompanies request effort `xhigh`. The admitted grant
+Separate validators accept `max` for request effort or telemetry; only telemetry
+accepts `ultra`. The admitted grant
 selects the model and destination. Replayed assistant text can carry empty
 `annotations` and `logprobs` arrays.
 

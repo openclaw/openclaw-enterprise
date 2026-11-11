@@ -1312,7 +1312,7 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
     );
     return captured;
   };
-  // Native uses "ultra" in telemetry for wire "xhigh". Preserve each field's
+  // Captured native requests paired telemetry "ultra" with wire "xhigh". Preserve each field's
   // supported spelling through authorization and the actual TLS provider request.
   for (const [effort, metadata] of [
     [inline.request.reasoning.effort, turnMetadata],

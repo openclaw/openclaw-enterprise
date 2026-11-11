@@ -103,8 +103,7 @@ still comes from the admitted execution. Request `reasoning.effort` accepts
 `none`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`. The JSON string in
 `client_metadata["x-codex-turn-metadata"]` may include `reasoning_effort` with the value
 `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` or `ultra`.
-Native `ultra` selection sends request effort `xhigh`; `ultra` is accepted only
-in telemetry. The metadata can also include
+The proxy accepts `ultra` only in telemetry; it does not translate effort values. The metadata can also include
 `workspaces` with one absolute Git root. Each entry must include at least one
 of `latest_git_commit_hash` (a lowercase SHA-1 or SHA-256 hash), `has_changes`
 (a Boolean), or `associated_remote_urls` (1–16 named Git remotes).

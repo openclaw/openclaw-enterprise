@@ -254,7 +254,7 @@ const inputItems = array(
 );
 
 const reasoningEffort = oneOf("none", "minimal", "low", "medium", "high", "xhigh", "max");
-// Native ultra is telemetry; its request effort is xhigh.
+// Native telemetry accepts ultra independently of the request effort.
 const nativeReasoningEffort: Validator = (value) => reasoningEffort(value) || value === "ultra";
 const reasoning = optionalFields({
   effort: reasoningEffort,
