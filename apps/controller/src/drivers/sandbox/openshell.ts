@@ -1,3 +1,4 @@
+import { posix } from "node:path";
 import { OpenShellGatewayUnavailableError } from "./openshell-gateway-errors.ts";
 import {
   validateNamespaceGatewayResources,
@@ -353,6 +354,7 @@ const OPENSHELL_SANDBOX_ID_LABEL = "openshell.ai/sandbox-id";
 const OPENSHELL_BOUNDARY_ROLE_LABEL = "openshell.ai/boundary-role";
 const KUBERNETES_LABEL_VALUE = /^[A-Za-z0-9](?:[-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$/;
 const OPENSHELL_RUNTIME_ROOT = "/sandbox/.openclaw-runtime";
+const SCRATCH_WORKSPACE_PATH = "/sandbox/scratch";
 const OPENSHELL_HOME = `${OPENSHELL_RUNTIME_ROOT}/home`;
 const OPENSHELL_WORKSPACE_MOUNTS = "/sandbox/.openclaw-mounts";
 const OPENSHELL_WORKSPACE_STATE_DIRECTORY = "state";
@@ -1684,6 +1686,14 @@ async function prepareNativeWorkspace(
   const paths = workspace.mounts
     .filter((mount) => !mount.read_only)
     .map((mount) => `/workspace-preparation/${mount.name}/${mount.sub_path}`);
+  const scratchPaths = context.requirements.workspaceMounts
+    .filter(
+      (mount) => !mount.readOnly && posix.normalize(mount.mountPath) === SCRATCH_WORKSPACE_PATH,
+    )
+    .map(
+      (mount) => `/workspace-preparation/${workspaceVolumeName(mount.claimName)}/${mount.subPath}`,
+    );
+  const managedPaths = paths.filter((path) => !scratchPaths.includes(path));
   const name = `${sandbox.resourceName}-workspace`;
   const labels = workspacePreparationLabels(context.revision);
   const program = `{
@@ -1697,15 +1707,25 @@ async function prepareNativeWorkspace(
       }
     }
   }
-  ${harnessWorkspacePreparationScript(paths)}
+  ${harnessWorkspacePreparationScript(managedPaths)}
   {
     const fs = require("node:fs");
+    // Scratch is operator-owned: create only its private child, and never migrate
+    // sibling directories or repair existing ownership and permissions.
+    for (const path of ${JSON.stringify(scratchPaths)}) {
+      const created = fs.mkdirSync(path, { recursive: true, mode: 0o700 });
+      // Clear inherited setgid only on the directory this invocation created.
+      if (created !== undefined) {
+        fs.chmodSync(path, 0o700);
+      }
+    }
     for (const path of ${JSON.stringify(paths)}) {
       const stat = fs.lstatSync(path);
       const saved = require("node:path").join(require("node:path").dirname(path),
         "." + require("node:path").basename(path) + ".kubelet-created");
       if (stat.uid !== process.getuid() || (stat.mode & 0o7777) !== 0o700 ||
-          fs.lstatSync(saved, { throwIfNoEntry: false })) {
+          (${JSON.stringify(managedPaths)}.includes(path) &&
+            fs.lstatSync(saved, { throwIfNoEntry: false }))) {
         throw new Error("Private workspace preparation did not complete.");
       }
     }
@@ -1881,6 +1901,23 @@ function sandboxDataMount(
     );
   }
   const claimName = approvedClaimNames[0]!;
+  const scratch = requirements.workspaceMounts.find(
+    (candidate) => posix.normalize(candidate.mountPath) === SCRATCH_WORKSPACE_PATH,
+  );
+  if (scratch !== undefined) {
+    const dataPath = posix.resolve(mount.mountPath);
+    if (
+      claimName === scratch.claimName ||
+      !dataPath.startsWith("/sandbox/") ||
+      dataPath === SCRATCH_WORKSPACE_PATH ||
+      dataPath.startsWith(`${SCRATCH_WORKSPACE_PATH}/`) ||
+      SCRATCH_WORKSPACE_PATH.startsWith(`${dataPath}/`)
+    ) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "OpenShell sandboxDataMount must preserve durable storage separately from the scratch claim and path.",
+      );
+    }
+  }
   const approvedMount = candidates.find((candidate) => candidate.claimName === claimName)!;
   if (approvedMount.readOnly && !mount.readOnly) {
     throw new OpenShellSandboxConfigurationFailure(

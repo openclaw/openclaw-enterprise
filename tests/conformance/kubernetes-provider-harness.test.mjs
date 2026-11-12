@@ -8,7 +8,7 @@ import { createServer as createHttpsServer } from "node:https";
 import { promisify } from "node:util";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
+import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
 import { waitFor } from "../helpers/qa-utils.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { listen } from "../helpers/listen.mjs";

@@ -3,13 +3,19 @@ import { randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 
+import type { InstallationDeploymentInventory } from "@openclaw-enterprise/contracts";
+
 import type {
   OpenShellProviderResponse,
   OpenShellStoredProviderProfile,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { verifyFirstAgentModel } from "../../scripts/first-agent-model.mjs";
 import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.mjs";
-import { deployFiniteAgent, observeUntil } from "../helpers/finite-git-agent.ts";
+import {
+  deployFiniteAgent,
+  deployStandingAgent,
+  observeUntil,
+} from "../helpers/finite-git-agent.ts";
 import { createFiniteGitProviderObservation } from "../helpers/finite-git-providers.ts";
 import { createOpenShellGitInstallation } from "../helpers/openshell-git-installation.mjs";
 import {
@@ -29,6 +35,90 @@ interface OriginToken {
   uses: number;
   revoked: boolean;
 }
+
+test(
+  "OpenShell standing Git remains available when a controller-only upgrade refuses worker replacement",
+  { skip: !selected, timeout: 45 * 60_000 },
+  async (t) => {
+    const fixture = await createOpenShellGitInstallation(t, { allowStandingApprovals: true });
+    const { agent, revision, path, readExecution, original, target } = await deployStandingAgent(
+      t,
+      fixture,
+    );
+    const { namespace, origin } = fixture;
+    const conversation = createFiniteGitConversation({
+      kube: fixture.kube,
+      agent: { id: agent.id, namespaceId: namespace.id, revision: { id: revision.id } },
+      signal: t.signal,
+      readExecution,
+      originalIdentity: original.identity,
+    });
+    const execute = createManagedWorkloadExec(t, {
+      backend: fixture.gatewayBackend,
+      gatewayClient: fixture.gatewayClient,
+      workspace: fixture.workspace,
+      checkpoint: fixture.checkpoint,
+    });
+    assert.match(origin.repository, /^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/);
+    const readGit = async () => {
+      const before = origin.snapshot();
+      const result = await execute(target, [
+        "sh",
+        "-ceu",
+        "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 " +
+          "git -c protocol.version=2 ls-remote --exit-code --refs https://github.com/" +
+          origin.repository +
+          ".git refs/heads/main",
+      ]);
+      assert.equal(result.stdout.toString("utf8").trim(), `${origin.initialSha}\trefs/heads/main`);
+      assert.ok(
+        origin.snapshot().requests > before.requests,
+        "the fresh read reached the private origin",
+      );
+    };
+
+    // Establish both kinds of service before asking the real upgrade helper to
+    // retain the revision. The installation API must classify the live grant.
+    await readGit();
+    const reply = await conversation.turn(undefined, 180_000);
+    await observeUntil("the original worker's standing Git launch evidence", t.signal, async () => {
+      const inventory: InstallationDeploymentInventory = await fixture.request(
+        "GET",
+        "/installation/deployment-inventory",
+      );
+      const retained = inventory.namespaces
+        .find(({ id }) => id === namespace.id)
+        ?.agents.find(({ id }) => id === agent.id);
+      assert.equal(retained?.activeRevisionId, revision.id);
+      assert.equal(retained?.deploymentInProgress, false);
+      return retained?.repositoryWorkerRestart === "original-worker-required" ? true : undefined;
+    });
+
+    const revisionsBefore = await fixture.request("GET", `${path}/revisions`);
+    const upgrade = await fixture.upgradeController();
+    assert.equal(upgrade.code, 1);
+    assert.ok(
+      upgrade.stderr.includes(
+        `Namespace "${namespace.id}", Agent "${agent.id}", revision "${revision.id}": original-worker-required`,
+      ),
+      "the canonical controller-only helper must refuse this exact retained revision",
+    );
+    assert.match(
+      upgrade.stderr,
+      /Stop and settle these Agents under an authorized interruption, or plan a normal revision replacement/u,
+    );
+    assert.deepEqual(
+      upgrade.after,
+      upgrade.before,
+      "Helm and both writer processes must stay unchanged",
+    );
+
+    await conversation.turn(reply, 180_000);
+    await readGit();
+    assert.deepEqual((await readExecution()).identity, original.identity);
+    assert.deepEqual(await fixture.request("GET", `${path}/revisions`), revisionsBefore);
+  },
+);
 
 test(
   "OpenShell retains its runtime after Git expiry and worker restart",

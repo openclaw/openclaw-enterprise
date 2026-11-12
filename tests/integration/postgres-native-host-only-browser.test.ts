@@ -36,7 +36,7 @@ test(
     await ensureBootstrap(t);
     const upstream = await startNativeHttpsUpstream(t);
     trustLocalUpstreamCertificate(t, upstream.cert);
-    // Terminate trusted HTTPS for two public origins at the same real OCC app.
+    // Keep the two public HTTPS origins stable across the API replacement.
     // Only the private native upstream and the OIDC provider are protocol fixtures.
     const ingress = createServer({ key: upstream.key, cert: upstream.cert }, (req, res) => {
       const proxy = request(
@@ -52,6 +52,14 @@ test(
           response.pipe(res);
         },
       );
+      proxy.once("error", () => {
+        if (res.headersSent) {
+          res.destroy();
+        } else {
+          res.writeHead(503, { "content-type": "text/plain", "cache-control": "no-store" });
+          res.end("API temporarily unavailable");
+        }
+      });
       req.pipe(proxy);
     });
     ingress.listen(0, "127.0.0.1");
@@ -84,9 +92,10 @@ test(
     );
     await seed.app.close();
 
-    const api = await createApi(t, "browser", upstream.port, { origin, exchange: true });
+    const startApi = () => createApi(t, "browser", upstream.port, { origin, exchange: true });
+    let api = await startApi();
     t.after(() => api.app.close());
-    const apiPort = await listen(api.app);
+    let apiPort = await listen(api.app);
     const idp = fakeOidc(t, {
       clientId: "native-session-proof",
       clientSecret: "native-session-proof-secret",
@@ -167,9 +176,39 @@ test(
     };
     const firstWindow = launch(page);
     await held.promise;
-    const secondWindow = await launch(second);
-    await secondWindow.getByText("native postgres upstream").waitFor();
-    resume.resolve();
+    try {
+      const secondWindow = await launch(second);
+      await secondWindow.getByText("native postgres upstream").waitFor();
+      const namedUrl = new URL(
+        `/chat/main/test-session-${randomUUID().replaceAll("-", "")}`,
+        native.origin,
+      );
+      const expectedPath = `/namespaces/${namespace.id}/agents/${agent.id}${namedUrl.pathname}`;
+      const reachedNamedPage = (from: number) =>
+        upstream.requests
+          .slice(from)
+          .some(({ method, url }) => method === "GET" && url === expectedPath);
+      const beforeInitial = upstream.requests.length;
+      const initial = await secondWindow.goto(namedUrl.href);
+      assert.equal(initial?.headers()["x-native-upstream"], "reached");
+      assert.ok(reachedNamedPage(beforeInitial), "the incumbent must forward the named path");
+
+      // Tab B has a live host-only handle. Tab A still has an outstanding launch
+      // from the same API. Neither tab signs in again on the replacement.
+      await api.app.close();
+      assert.equal((await secondWindow.reload())?.status(), 503);
+      api = await startApi();
+      apiPort = await listen(api.app);
+      const beforeReload = upstream.requests.length;
+      const reopened = await secondWindow.reload();
+      assert.equal(reopened?.status(), 200);
+      assert.equal(reopened.request().redirectedFrom(), null);
+      assert.equal(reopened.url(), namedUrl.href);
+      assert.equal(reopened.headers()["x-native-upstream"], "reached");
+      assert.ok(reachedNamedPage(beforeReload), "the replacement must forward the named path");
+    } finally {
+      resume.resolve();
+    }
     const popup = await firstWindow;
     await popup.getByText("native postgres upstream").waitFor();
     assert.equal(new URL(popup.url()).origin, native.origin);

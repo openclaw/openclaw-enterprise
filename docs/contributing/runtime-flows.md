@@ -8,6 +8,8 @@ from each trace; for commands to run locally, see [Testing](../testing/README.md
 ## Startup and infrastructure
 
 - [Platform startup](../flows/platform-startup.md) and [production startup](../flows/production-startup.md)
+- [Production image upgrades](../flows/coordinated-production-upgrade.md) and
+  [interrupted preflight cleanup](../flows/coordinated-production-upgrade/preflight-cleanup.md)
 - [Controller worker and durable reconciliation](../flows/controller-worker.md)
 - [Logging](../flows/common-logging.md)
 - [Audit ledger](../flows/audit-ledger.md)

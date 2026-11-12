@@ -3003,12 +3003,22 @@ function pinCodexProviderTransport(config) {
       if (!Array.isArray(provider.models) || !provider.models.every(isPlainObject)) {
         throw new Error("The " + id + " model provider models setting must be a list of objects.");
       }
-      for (const model of provider.models) {
+      pinned.models = provider.models.map((model) => {
+        const kept = keepKeys(model, CODEX_MODEL_KEPT_KEYS);
+        // The pinned native adapter accepts these affirmative capabilities without
+        // declaring a request-transport override. Other compat fields can trigger
+        // a handoff to the Gateway-local runtime, including thinkingLevels.
+        const efforts = isPlainObject(model.compat) ? model.compat.supportedReasoningEfforts : undefined;
+        const keepsEfforts = Array.isArray(efforts) && efforts.length > 0 && efforts.every(
+          (effort) => typeof effort === "string" && /^(minimal|low|medium|high|xhigh|max|ultra)$/u.test(effort),
+        );
+        if (keepsEfforts) kept.compat = { supportedReasoningEfforts: efforts };
         for (const name of Object.keys(model)) {
+          if (name === "compat" && keepsEfforts && Object.keys(model.compat).length === 1) continue;
           if (!CODEX_MODEL_KEPT_KEYS.has(name)) overridden.add(row + "models[]." + name);
         }
-      }
-      pinned.models = provider.models.map((model) => keepKeys(model, CODEX_MODEL_KEPT_KEYS));
+        return kept;
+      });
     }
     // An openai row that names no transport keeps OpenClaw's default, which has
     // no credential in the Gateway, and Codex keeps owning its account's models.

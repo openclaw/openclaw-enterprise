@@ -5,7 +5,7 @@ import {
   type OpenShellBackendConfiguration,
 } from "../../packages/contracts/src/index.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
-import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import { loadInstallationFile } from "../helpers/installation-file.ts";
 
 type RefusalDetail = ConfigurationValidationError["error"]["details"][number];
 

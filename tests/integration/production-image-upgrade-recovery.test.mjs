@@ -37,7 +37,7 @@ import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/driver
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { withoutShellStartup } from "../helpers/environment.ts";
 import { bashString, commandShim, startCommandServer } from "../helpers/fixture-command-server.ts";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { runDeployedCapability } from "../helpers/deployed-repository-capability.ts";
 import { dumpYaml, loadYaml, yamlDocuments } from "../helpers/qa-utils.mjs";
 import {
@@ -49,15 +49,16 @@ import {
   continuityPodReference,
   continuityRevision,
 } from "../helpers/production-upgrade-continuity-fixture.ts";
-import { registerDispatchRestoreTests } from "../helpers/production-upgrade-dispatch-restore.ts";
+import {
+  registerAcceptedAgentDeployNoticeTest,
+  registerDispatchRestoreTests,
+  registerUnknownAgentDeploymentResumeTest,
+} from "../helpers/production-upgrade-dispatch-restore.ts";
 import {
   preflightIdentities,
   registerPreflightCleanupTests,
 } from "../helpers/production-upgrade-preflight-cleanup.ts";
-import {
-  registerRetainedFleetPreflightTests,
-  restartInventory,
-} from "../helpers/production-upgrade-retained-fleet-preflight.ts";
+import { registerRetainedFleetPreflightTests } from "../helpers/production-upgrade-retained-fleet-preflight.ts";
 
 // Every case owns its command server, state, and evidence directory. Two sibling
 // cases can overlap while the existing nested groups keep their own limits.
@@ -747,6 +748,26 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       if (args.includes("create") && args.includes("--raw")) {
         assert.equal(fileArg("--raw"), "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews");
         const review = JSON.parse(await io.readInput());
+        if (review.spec.resourceAttributes.resource === "deployments") {
+          assert.equal(review.apiVersion, "authorization.k8s.io/v1");
+          assert.equal(review.kind, "SelfSubjectAccessReview");
+          assert.deepEqual(review.spec.resourceAttributes, {
+            namespace: "system",
+            verb: "patch",
+            group: "apps",
+            version: "v1",
+            resource: "deployments",
+            name: "openclaw-enterprise-worker",
+          });
+          if (state.reviewUnavailable) {
+            return fail(1, "private self-review diagnostic");
+          }
+          if (state.wrongWorkerReview) {
+            review.spec.resourceAttributes.name = "openclaw-enterprise-api";
+          }
+          out({ ...review, status: { allowed: !state.denyWorkerPatch } });
+          return io.exit(0);
+        }
         assert.deepEqual(review, {
           apiVersion: "authorization.k8s.io/v1",
           kind: "SelfSubjectAccessReview",
@@ -755,6 +776,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
               namespace: "system",
               verb: "update",
               group: "",
+              version: "v1",
               resource: "secrets",
               name: state.secret.metadata.name,
             },
@@ -895,6 +917,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         }
         object.metadata.uid =
           (state.preflightFault?.target === target && state.preflightFault.uid) || randomUUID();
+        if (fault === "delayed-delete" || fault === "retained-dependency") {
+          object.metadata.finalizers = ["fixture.openclaw.invalid/cleanup"];
+        }
         (state.preflight.created ??= []).push({ kind, name, uid: object.metadata.uid });
         if (fault === "evidence-file" || fault === "evidence-symlink") {
           const destination = join(root, "evidence", "preflight-secret-identity.json");
@@ -1003,16 +1028,43 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         assert.ok(named, "delete must identify a preflight resource");
         const [kind, name] = named.split("/");
         const inventory = state.preflight[collection[kind]];
+        const target =
+          kind === "job.batch"
+            ? inventory[name]?.spec?.template?.spec?.containers?.[0]?.name
+            : kind;
+        const fault = state.preflightFault?.target === target ? state.preflightFault.mode : null;
+        if (fault === "already-absent" || fault === "absent-job-retained-child") {
+          // An independently completed deletion wins before this API request.
+          const originalUid = inventory[name]?.metadata.uid;
+          delete inventory[name];
+          if (fault !== "absent-job-retained-child") {
+            for (const [childName, child] of Object.entries(state.preflight.pods)) {
+              if (child.metadata.ownerReferences.some((owner) => owner.uid === originalUid)) {
+                delete state.preflight.pods[childName];
+              }
+            }
+          }
+          save();
+        }
         // Replacement occurs at DELETE, after all client reads, to model the race.
-        if (
-          state.preflightFault?.mode === "replacement" &&
-          state.preflightFault.target ===
-            inventory[name]?.spec?.template?.spec?.containers?.[0]?.name
-        ) {
-          inventory[name] = {
-            metadata: { name, uid: randomUUID() },
+        const replacement = () => {
+          const marker = `replacement-secret-${randomUUID()}`;
+          const original = structuredClone(inventory[name]);
+          return {
+            ...original,
+            metadata: {
+              ...original.metadata,
+              uid: randomUUID(),
+              annotations: { ...original.metadata.annotations, fixture: marker },
+            },
+            ...(kind === "secret"
+              ? { data: { credential: Buffer.from(marker).toString("base64") } }
+              : {}),
             foreign: true,
           };
+        };
+        if (fault === "replacement") {
+          inventory[name] = replacement();
         }
         const current = inventory[name];
         if (!current) {
@@ -1044,7 +1096,29 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
             if (
               child.metadata.ownerReferences.some((owner) => owner.uid === current.metadata.uid)
             ) {
-              if (
+              if (fault === "child-replacement-after-delete") {
+                // The original child is gone; another Job now owns a Pod at
+                // that name. Its absent discovery label leaves only the saved
+                // child identity able to detect the replacement during cleanup.
+                state.preflight.pods[childName] = {
+                  ...child,
+                  metadata: {
+                    ...child.metadata,
+                    uid: randomUUID(),
+                    labels: {},
+                    annotations: { fixture: `replacement-child-${randomUUID()}` },
+                    ownerReferences: [
+                      {
+                        apiVersion: "batch/v1",
+                        kind: "Job",
+                        name: "another-preflight-job",
+                        uid: randomUUID(),
+                        controller: true,
+                      },
+                    ],
+                  },
+                };
+              } else if (
                 state.preflightFault?.mode !== "retained-child" ||
                 state.preflightFault.target !== child.spec.containers[0].name
               ) {
@@ -1053,7 +1127,13 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
             }
           }
         }
-        delete inventory[name];
+        if (fault === "replacement-after-delete") {
+          inventory[name] = replacement();
+        } else if (fault === "delayed-delete" || fault === "retained-dependency") {
+          current.metadata.deletionTimestamp = "2026-11-11T00:00:00Z";
+        } else {
+          delete inventory[name];
+        }
         state.preflight.deleted.push(named);
         save();
         out({
@@ -1082,6 +1162,16 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       } else if (resource && (args.includes("get") || args.includes("logs"))) {
         const [kind, name] = resource.split("/");
         const object = state.preflight[collection[kind]][name];
+        if (object?.metadata.deletionTimestamp && state.preflightFault?.mode === "delayed-delete") {
+          const reads = (state.preflight.deletionReads ??= {});
+          reads[resource] = (reads[resource] ?? 0) + 1;
+          if (reads[resource] === 3) {
+            delete state.preflight[collection[kind]][name];
+            save();
+            return io.exit(0);
+          }
+          save();
+        }
         if (!object) {
           if (args.includes("--ignore-not-found")) {
             return io.exit(0);
@@ -1132,12 +1222,15 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       } else if (
         args.includes("get") &&
         args.includes("pods") &&
-        args.some((arg) => arg.startsWith("batch.kubernetes.io/controller-uid="))
+        (args.some((arg) => arg.startsWith("batch.kubernetes.io/controller-uid=")) ||
+          !args.includes("--selector"))
       ) {
         const selector = args.find((arg) => arg.startsWith("batch.kubernetes.io/controller-uid="));
-        const ownerUid = selector.slice("batch.kubernetes.io/controller-uid=".length);
+        const ownerUid = selector?.slice("batch.kubernetes.io/controller-uid=".length);
         const pods = Object.values(state.preflight.pods).filter(
-          (pod) => pod.metadata.labels["batch.kubernetes.io/controller-uid"] === ownerUid,
+          (pod) =>
+            ownerUid === undefined ||
+            pod.metadata.labels?.["batch.kubernetes.io/controller-uid"] === ownerUid,
         );
         const changing = pods.find(
           (pod) =>
@@ -1170,6 +1263,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
           .find((a) => a.startsWith("deployment/"))
           .split("-")
           .at(-1);
+        if (args.includes("patch") && component === "worker" && state.denyWorkerPatch) {
+          return fail(1, "Forbidden: cannot patch the worker Deployment");
+        }
         if (take("fail-scale-" + component)) {
           if (take("block-failure-receipt")) {
             mkdirSync(join(root, "evidence", "native-command-failures.tsv"));
@@ -2012,14 +2108,14 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       handle: ({ command, args, cwd, io }) => {
         commands.push(command);
         if (
-          preflightFault?.mode === "interrupt" &&
+          ["interrupt", "interrupt-hard"].includes(preflightFault?.mode) &&
           !interrupted &&
           command === "kubectl" &&
           args.includes("get") &&
           args.some((arg) => arg.startsWith("job.batch/oce-upgrade-preflight-"))
         ) {
           interrupted = true;
-          upgradeProcess.kill("SIGTERM");
+          upgradeProcess.kill(preflightFault.mode === "interrupt-hard" ? "SIGKILL" : "SIGTERM");
         }
         return fakeCommand(directory, { command, args, cwd }, io, afterDeploy);
       },
@@ -2322,6 +2418,32 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         });
         upgradeProcess = result.child;
         return result;
+      },
+      cleanup: (...extra) => {
+        // Cleanup is a separate operator command with no deployment credentials,
+        // image selection, or mutable values/Installation inputs.
+        const cleanupEnv = { ...env, ...environment };
+        delete cleanupEnv.OCC_URL;
+        delete cleanupEnv.OCC_SERVICE_KEY_FILE;
+        delete cleanupEnv.OCC_CA_BUNDLE;
+        return execute(
+          script,
+          [
+            "--cleanup-preflight",
+            "--kubeconfig",
+            join(directory, "kubeconfig"),
+            "--context",
+            "selected",
+            "--namespace",
+            "system",
+            "--release",
+            release,
+            "--evidence-dir",
+            evidence,
+            ...extra,
+          ],
+          { cwd: repository, env: cleanupEnv },
+        );
       },
       runWithStderr: (fd) =>
         spawnResult("/bin/bash", ["--", script, ...args], { cwd: repository, env }, fd),
@@ -2901,6 +3023,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
     const result = await f.run();
     assert.match(result.stderr, /Could not verify update access to the Installation Secret/);
+    assert.match(result.stderr, /Could not verify patch access to the worker Deployment/);
     assert.doesNotMatch(result.stderr, /private self-review diagnostic/);
     assert.deepEqual(await f.events(), [
       "scale-api",
@@ -3323,9 +3446,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
 
   test("immutable Installation reference survives same-candidate Helm recovery and acknowledged resume", async (t) => {
     const f = await immutableInstallationSwitch(t, { recoveryHooks: true });
-    await f.failNext("lost-helm-response");
-    await assert.rejects(f.run(), injectedFault);
-    await completedHookInPendingRelease(f);
+    await loseHelmResponseWithCompletedHook(f);
     await f.failNext("fail-rollout-api");
     await assert.rejects(f.run(...recoverHelm), injectedFault);
     assert.equal((await f.state()).version, 3);
@@ -3786,7 +3907,8 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       /worker Deployment changed/,
     );
     assert.equal((await f.state()).helmSubmissions ?? 0, 0);
-    await writeFile(stateFile, JSON.stringify(stopped));
+    // The worker already stopped. Completing the handoff requires no further patch.
+    await writeFile(stateFile, JSON.stringify({ ...stopped, denyWorkerPatch: true }));
     await f.run("--resume", "--migration-history-checked");
     assert.equal((await f.state()).helmSubmissions, 1);
   });
@@ -3821,6 +3943,49 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     ]);
     assert.equal((await f.state()).api, 1);
     assert.equal((await f.state()).worker, 1);
+  });
+
+  test("a named worker patch denial keeps the incumbent API serving", async (t) => {
+    if (!realHelm) {
+      t.skip("helm is unavailable to render the real chart");
+      return;
+    }
+    const f = await fixture(t, {
+      controllerOnly: true,
+      chart: { installation: (installation) => installation },
+    });
+    const initial = await f.state();
+    initial.denyWorkerPatch = true;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(initial));
+    const failure = await f.run().catch((error) => error);
+    const { api, worker, version } = await f.state();
+    const events = await f.events();
+    t.diagnostic(JSON.stringify({ api, worker, version, events }));
+    assert.deepEqual(
+      { api, worker, version, events },
+      { api: 1, worker: 1, version: 1, events: [] },
+    );
+    assert.match(
+      failure.stderr,
+      /Kubernetes denied patch on worker Deployment system\/openclaw-enterprise-worker/,
+    );
+    assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+  });
+
+  test("a mismatched worker review leaves the live patch authoritative", async (t) => {
+    const f = await fixture(t);
+    const state = await f.state();
+    state.denyWorkerPatch = true;
+    state.wrongWorkerReview = true;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    await assert.rejects(f.run(), (error) => {
+      assert.match(error.stderr, /Could not verify patch access to the worker Deployment/);
+      assert.match(error.stderr, /Forbidden: cannot patch the worker Deployment/);
+      return true;
+    });
+    assert.deepEqual(await f.events(), ["scale-api"]);
+    assert.equal((await f.state()).worker, 1);
+    assert.equal(existsSync(join(f.evidence, "helm-started")), false);
   });
 
   test("an interrupted quiescence never starts migration while the worker still runs", async (t) => {
@@ -3911,6 +4076,18 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.deepEqual(await f.events(), ["scale-api"]);
     assert.deepEqual(await readFile(join(f.evidence, "preflight-migration.log")), originalCheck);
     assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+    // A separate cleanup traverses the resumed migration attempt but must not
+    // continue the partially stopped upgrade or erase its original evidence.
+    await f.cleanup("--previous-process-settled", "--evidence-unrestored");
+    const cleaned = await f.state();
+    assert.deepEqual(cleaned.preflight.jobs, {});
+    assert.deepEqual(cleaned.preflight.pods, {});
+    assert.equal(cleaned.api, 0);
+    assert.equal(cleaned.worker, 1);
+    assert.deepEqual(await f.events(), ["scale-api"]);
+    assert.deepEqual(await readFile(join(f.evidence, "preflight-migration.log")), originalCheck);
+    assert.ok(existsSync(join(f.evidence, ".upgrade-lock")));
+    assert.equal(existsSync(join(f.evidence, "completed")), false);
   });
 
   test("a lost resumed migration acknowledgement preserves the original recovery path", async (t) => {
@@ -4084,31 +4261,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.equal((await f.events()).filter((event) => event === "migration").length, 2);
   });
 
-  test("resume stops on an unknown Agent deployment until an accepted revision is confirmed", async (t) => {
-    // A normal runtime upgrade can replace a worker-bound revision, but a lost
-    // response must never turn that planned replacement into a second deployment.
-    const inventory = restartInventory("original-worker-required");
-    const f = await fixture(t, { agent: true, inventoryResponses: [inventory, inventory] });
-    await f.failNext("lost-agent-response");
-    await assert.rejects(f.run(), /deployment outcome is unknown/);
-    const calls = f.commands.length;
-    await assert.rejects(f.run("--resume"), /unknown deployment outcome/);
-    assert.equal(f.commands.length, calls);
-    assert.equal((await f.state()).dispatches, 1);
-    const receipt = join(f.evidence, "dispatch/ns_test--agt_test.json");
-    // An arbitrary or baseline revision cannot resolve the pending dispatch.
-    for (const id of ["rev_missing", "rev_old"]) {
-      await writeFile(receipt, JSON.stringify({ id }), { mode: 0o600 });
-      await assert.rejects(f.run("--resume"), /unknown deployment outcome/);
-      assert.equal((await f.state()).dispatches, 1);
-    }
-    // Simulate the operator confirming this revision in durable history and
-    // recording the accepted request before resuming the readiness checks.
-    await writeFile(receipt, JSON.stringify({ id: "rev_new" }), { mode: 0o600 });
-    await f.run("--resume");
-    assert.equal((await f.state()).dispatches, 1);
-    assert.equal((await f.state()).inventoryReadCount, 2);
-  });
+  registerUnknownAgentDeploymentResumeTest(fixture);
 
   describe("resume evidence directory ownership", { concurrency: 2 }, () => {
     test("resume binds stale prepared copies to the original evidence directory before live access", async (t) => {
@@ -4389,28 +4542,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     });
   }
 
-  // occ's notices about an accepted deploy, such as a revision with no Harness overrides to
-  // retain, must reach the operator in the run output and not only the evidence directory.
-  // A control character in a notice must not reach the terminal.
-  test("an accepted Agent deploy shows occ's notices in the run output", async (t) => {
-    const f = await fixture(t, { agent: true });
-    const notice =
-      "revision rev_old has unreadable saved settings (SAVED_CONFIGURATION_UNREADABLE: configuration) and records no Harness overrides, so none are retained; the deployment uses current Installation defaults.";
-    const state = await f.state();
-    state.deployNotices = { agt_test: `notice: ${notice}\u001b[2J` };
-    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
-    const result = await f.run();
-    assert.ok(
-      result.stderr
-        .split("\n")
-        .includes(`upgrade-production-images: Agent agt_test in Namespace ns_test: ${notice}?[2J`),
-      result.stderr,
-    );
-    assert.equal(
-      await readFile(join(f.evidence, "dispatch/ns_test--agt_test.error"), "utf8"),
-      `notice: ${notice}\u001b[2J\n`,
-    );
-  });
+  registerAcceptedAgentDeployNoticeTest(fixture);
 
   // Doctor shares the serving gateway container's memory limit, and an out-of-memory
   // kill there stops the gateway too (finding 2697). Doctor, with a 384 MiB heap cap,
@@ -4420,11 +4552,17 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     `doctor env NODE_OPTIONS=--max-old-space-size=${heap} node /app/openclaw.mjs doctor --lint --json --severity-min error`;
   const doctorEvents = async (f) =>
     (await f.events()).filter((event) => /^(gateway-memory|doctor) /.test(event));
-  const scriptGatewayMemory = async (f, reads) => {
+  const updateDoctorFixtureState = async (f, fields) => {
     const state = await f.state();
-    state.gatewayFree = reads;
+    Object.assign(state, fields);
     await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
   };
+  const expectUpgradeFailure = (result, message) =>
+    result.then(
+      () => assert.fail(message),
+      (failure) => failure,
+    );
+  const scriptGatewayMemory = (f, reads) => updateDoctorFixtureState(f, { gatewayFree: reads });
 
   // Exit 137 is a kill. Only the gateway container's status, with a restart after the
   // gateway became Ready, shows that the container hit its memory limit.
@@ -4433,9 +4571,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     // Free MiB per read: a low read resets the count of good reads.
     await scriptGatewayMemory(f, ["transient", 700, 300, 700, 640]);
     await f.failNext("doctor-oom");
-    const oom = await f.run().then(
-      () => assert.fail("the upgrade must stop when the gateway is OOM-killed"),
-      (stopped) => stopped,
+    const oom = await expectUpgradeFailure(
+      f.run(),
+      "the upgrade must stop when the gateway is OOM-killed",
     );
     assert.deepEqual(await doctorEvents(f), [
       "gateway-memory transient",
@@ -4455,9 +4593,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     // another reason now: exit 137 again, but no OOM kill. Only the restart after this
     // run's Ready gateway counts; the earlier OOM restart predates it.
     await f.failNext("doctor-killed");
-    const killed = await f.run("--resume").then(
-      () => assert.fail("the upgrade must stop when Doctor is killed"),
-      (stopped) => stopped,
+    const killed = await expectUpgradeFailure(
+      f.run("--resume"),
+      "the upgrade must stop when Doctor is killed",
     );
     assert.match(
       killed.stderr,
@@ -4664,14 +4802,11 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         runs.push(
           t.test(name, async (t) => {
             const f = await fixture(t, { agent: true });
-            const state = await f.state();
-            state.gatewayReady = ready;
-            state.gatewayAfter = after;
-            await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+            await updateDoctorFixtureState(f, { gatewayReady: ready, gatewayAfter: after });
             await f.failNext("doctor-error");
-            const failure = await f.run().then(
-              () => assert.fail("Doctor command failure must stop the upgrade"),
-              (stopped) => stopped,
+            const failure = await expectUpgradeFailure(
+              f.run(),
+              "Doctor command failure must stop the upgrade",
             );
             assert.match(failure.stderr, /OpenClaw Doctor failed \(exit 1\)/);
             if (comparable === "restart") {
@@ -4729,8 +4864,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       evicted.status.reason = "Evicted";
       // On the dogfood cluster the evicted gateway ended with phase Succeeded.
       const ended = pod({ phase: "Succeeded", ready: false });
+      const afterEviction = { revisionPods: [evicted, replacement] };
       const cases = [
-        ["evicted", { revisionPods: [evicted, replacement] }, /was evicted \(phase Failed\)/],
+        ["evicted", afterEviction, /was evicted \(phase Failed\)/],
         [
           "ended",
           { revisionPods: [ended, replacement] },
@@ -4754,12 +4890,10 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         runs.push(
           t.test(name, async (t) => {
             const f = await fixture(t, { agent: true });
-            const state = await f.state();
-            state.afterDoctor = afterDoctor;
-            await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
-            const failure = await f.run().then(
-              () => assert.fail("a gateway changed after Doctor must stop the upgrade"),
-              (stopped) => stopped,
+            await updateDoctorFixtureState(f, { afterDoctor });
+            const failure = await expectUpgradeFailure(
+              f.run(),
+              "a gateway changed after Doctor must stop the upgrade",
             );
             assert.match(
               failure.stderr,
@@ -4783,9 +4917,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       // Resume after the eviction: the ended Pod stays in the API, but the readiness wait
       // ignores it, runs Doctor in the replacement and checks that Pod instead. No new deploy.
       const f = await fixture(t, { agent: true });
-      const state = await f.state();
-      state.afterDoctor = { revisionPods: [evicted, replacement] };
-      await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+      await updateDoctorFixtureState(f, { afterDoctor: afterEviction });
       await assert.rejects(f.run(), /did not stay on the same Ready Pod without restarts/);
       const resumed = await f.run("--resume");
       assert.match(resumed.stdout, /Upgraded runtime image/);
@@ -4805,13 +4937,11 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       // An eviction while Doctor runs kills Doctor (exit 137) without a container restart. The
       // failure must still name the eviction, so it is not read as a Doctor or memory problem.
       const killed = await fixture(t, { agent: true });
-      const killedState = await killed.state();
-      killedState.afterDoctor = { revisionPods: [evicted, replacement] };
-      await writeFile(join(killed.directory, "state.json"), JSON.stringify(killedState));
+      await updateDoctorFixtureState(killed, { afterDoctor: afterEviction });
       await killed.failNext("doctor-evicted");
-      const failure = await killed.run().then(
-        () => assert.fail("a Doctor killed by an eviction must stop the upgrade"),
-        (stopped) => stopped,
+      const failure = await expectUpgradeFailure(
+        killed.run(),
+        "a Doctor killed by an eviction must stop the upgrade",
       );
       assert.match(failure.stderr, /OpenClaw Doctor was killed \(exit 137\)/);
       assert.match(
@@ -4857,19 +4987,19 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
           },
         ],
       });
-      const dedicatedState = await dedicated.state();
-      dedicatedState.revisionPods = [pod(), agentPod()];
-      dedicatedState.afterDoctor = {
-        revisionPods: [
-          pod(),
-          agentPod({ phase: "Failed", ready: false }),
-          agentPod({ name: "agent-2", uid: "agent-2-uid" }),
-        ],
-      };
-      await writeFile(join(dedicated.directory, "state.json"), JSON.stringify(dedicatedState));
-      const agentFailure = await dedicated.run().then(
-        () => assert.fail("an agent Pod evicted during Doctor must stop the upgrade"),
-        (stopped) => stopped,
+      await updateDoctorFixtureState(dedicated, {
+        revisionPods: [pod(), agentPod()],
+        afterDoctor: {
+          revisionPods: [
+            pod(),
+            agentPod({ phase: "Failed", ready: false }),
+            agentPod({ name: "agent-2", uid: "agent-2-uid" }),
+          ],
+        },
+      });
+      const agentFailure = await expectUpgradeFailure(
+        dedicated.run(),
+        "an agent Pod evicted during Doctor must stop the upgrade",
       );
       assert.match(
         agentFailure.stderr,
@@ -4920,9 +5050,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         },
       ],
     });
-    const state = await f.state();
-    state.doctorSpanMs = 500;
-    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    await updateDoctorFixtureState(f, { doctorSpanMs: 500 });
     await f.run();
     assert.deepEqual(
       (await f.events()).filter((event) => /^(gateway-memory|doctor)/.test(event)),
@@ -4965,9 +5093,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     const f = await fixture(t, { agent: true });
     await scriptGatewayMemory(f, ["missing"]);
     await f.failNext("doctor-heap");
-    const failure = await f.run().then(
-      () => assert.fail("the upgrade must stop when Doctor runs out of heap"),
-      (stopped) => stopped,
+    const failure = await expectUpgradeFailure(
+      f.run(),
+      "the upgrade must stop when Doctor runs out of heap",
     );
     assert.match(failure.stderr, /running OpenClaw Doctor without checking its free memory/);
     assert.match(
@@ -6594,6 +6722,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       agent: true,
       chart: { installation: (installation) => installation },
     });
+    const state = await f.state();
+    state.denyWorkerPatch = true;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
     await assert.rejects(f.run("--resume", "--preflight-only"), /cannot be combined/);
     assert.equal(existsSync(f.evidence), false);
     assert.match((await f.run("--preflight-only")).stdout, /Preflight passed/);
@@ -7005,7 +7136,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
 
   // These cases exercise the actual upgrade command against controlled Helm and
   // Kubernetes protocols. The separate disposable-cluster proof checks Helm itself.
-  async function completedHookInPendingRelease(f) {
+  async function loseHelmResponseWithCompletedHook(f, run = f.run) {
+    await f.failNext("lost-helm-response");
+    await assert.rejects(run(), injectedFault);
     const intent = await assertHelmIntent(f, 1, 2);
     const directory = join(f.evidence, "helm-attempts", intent.attempt.nonce);
     const docs = yamlDocuments(await readFile(join(directory, "rendered.yaml"), "utf8")).map(
@@ -7094,15 +7227,13 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
 
   async function interruptedUpgradeWithCompletedHook(t, initializationResources) {
     const f = await fixture(t, { recoveryHooks: true, initializationResources });
-    await f.failNext("lost-helm-response");
-    await assert.rejects(f.run(), injectedFault);
-    const state = await completedHookInPendingRelease(f);
+    const state = await loseHelmResponseWithCompletedHook(f);
     return { f, state };
   }
 
-  async function assertRecoveryRefusedBeforeRollback(f, state, refusal) {
+  async function assertRecoveryRefusedBeforeRollback(f, state, refusal, run = f.run) {
     await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
-    await assert.rejects(f.run(...recoverHelm), refusal);
+    await assert.rejects(run(...recoverHelm), refusal);
     assert.equal((await f.state()).rollbackSubmissions, undefined);
     assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
   }
@@ -7144,9 +7275,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     state.recoveryBaselineResources = selectedProxy ? [] : [policy];
     await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
     const run = (...args) => f.run("--candidate-values", candidatePath, ...args);
-    await f.failNext("lost-helm-response");
-    await assert.rejects(run(), injectedFault);
-    const pending = await completedHookInPendingRelease(f);
+    const pending = await loseHelmResponseWithCompletedHook(f, run);
     return { f, run, pending, policy, key: `${policy.kind}/${policy.metadata.name}` };
   }
 
@@ -7165,15 +7294,14 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
           delete state.recoveryResources[key];
           state.retiredResourceReadError = true;
         }
-        await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
-        await assert.rejects(
-          run(...recoverHelm),
+        await assertRecoveryRefusedBeforeRollback(
+          f,
+          state,
           mode === "forbidden"
             ? /Helm evidence command failed/
             : /predecessor-only resource still exists/,
+          run,
         );
-        assert.equal((await f.state()).rollbackSubmissions, undefined);
-        assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
       });
     }
     const withRetiredEnv = structuredClone(pending);
@@ -7181,10 +7309,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     withRetiredEnv.recoveryResources[
       "Deployment/openclaw-enterprise-api"
     ].spec.template.spec.containers[0].env.push(oldEnv);
-    await writeFile(join(f.directory, "state.json"), JSON.stringify(withRetiredEnv));
-    await assert.rejects(run(...recoverHelm), /live environment differs/);
-    assert.equal((await f.state()).rollbackSubmissions, undefined);
-    assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+    await assertRecoveryRefusedBeforeRollback(f, withRetiredEnv, /live environment differs/, run);
     // Explicit operator reconciliation removes the retired policy and env entry. If a later
     // acceptance step fails, its recreation must also block ordinary resume.
     await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
@@ -7263,15 +7388,14 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     initial.recoveryBaselineResources = [previous];
     initial.recoveryCandidateResources = [candidate];
     await writeFile(join(f.directory, "state.json"), JSON.stringify(initial));
-    await f.failNext("lost-helm-response");
-    await assert.rejects(f.run(), injectedFault);
-    const pending = await completedHookInPendingRelease(f);
+    const pending = await loseHelmResponseWithCompletedHook(f);
     const podSpec = pending.recoveryResources["Deployment/broker-worker"].spec.template.spec;
     podSpec.containers.push(worker);
-    await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
-    await assert.rejects(f.run(...recoverHelm), /retired container placement still exists/);
-    assert.equal((await f.state()).rollbackSubmissions, undefined);
-    assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+    await assertRecoveryRefusedBeforeRollback(
+      f,
+      pending,
+      /retired container placement still exists/,
+    );
     podSpec.containers.pop();
     await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
     await f.failNext("fail-rollout-api");
@@ -7311,17 +7435,16 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     initial.recoveryBaselineResources = [previous];
     initial.recoveryCandidateResources = [candidate];
     await writeFile(join(f.directory, "state.json"), JSON.stringify(initial));
-    await f.failNext("lost-helm-response");
-    await assert.rejects(f.run(), injectedFault);
-    const pending = await completedHookInPendingRelease(f);
+    const pending = await loseHelmResponseWithCompletedHook(f);
     pending.recoveryResources["EnvoyProxy/gateway"].metadata.uid = "envoy-proxy-uid";
     for (const spec of [previous.spec, { ...candidate.spec, admissionDefault: true }]) {
       const state = structuredClone(pending);
       state.recoveryResources["EnvoyProxy/gateway"].spec = spec;
-      await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
-      await assert.rejects(f.run(...recoverHelm), /changed custom-resource spec is not reconciled/);
-      assert.equal((await f.state()).rollbackSubmissions, undefined);
-      assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
+      await assertRecoveryRefusedBeforeRollback(
+        f,
+        state,
+        /changed custom-resource spec is not reconciled/,
+      );
     }
     await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
     await f.failNext("fail-rollout-api");
@@ -7345,9 +7468,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     );
     await assert.rejects(f.run("--recovery-reviewed"), /requires --recover-helm/);
     assert.deepEqual(await f.events(), []);
-    await f.failNext("lost-helm-response");
-    await assert.rejects(f.run(), injectedFault);
-    await completedHookInPendingRelease(f);
+    await loseHelmResponseWithCompletedHook(f);
     const original = await readFile(join(f.evidence, "helm-started"), "utf8");
     // Rollback is acknowledged but ordinary acceptance is interrupted. Resume
     // must finish acceptance without rerunning migration or rollback.
@@ -7433,18 +7554,31 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
   });
 
   test("a staged retry cannot replace the published Helm attempt and an actual retry gets a fresh nonce", async (t) => {
-    const f = await fixture(t);
+    const f = await fixture(t, { controllerOnly: true });
+    const valuesPath = join(f.directory, "values.json");
+    async function assertProtectedValues(evidence, intent, image) {
+      const bytes = await readFile(valuesPath);
+      const values = JSON.parse(bytes.toString("utf8"));
+      assert.equal(values.images.controller, image);
+      assert.equal(values.installation.upgradeAttemptId, intent.attempt.nonce);
+      assert.deepEqual(
+        await readFile(join(evidence, "helm-attempts", intent.attempt.nonce, "values.yaml")),
+        bytes,
+      );
+      assert.equal(createHash("sha256").update(bytes).digest("hex"), intent.attempt.valuesSha256);
+      return bytes;
+    }
     await f.failNext("fail-migration");
     await assert.rejects(f.run(), injectedFault);
     const original = await assertHelmIntent(f, 1, 2);
+    const originalValues = await assertProtectedValues(f.evidence, original, newController);
     const preparation = await readFile(join(f.evidence, "parameters.json"), "utf8");
-    const values = await readFile(join(f.directory, "values.json"), "utf8");
     // The retry's dry-run fails after staging values, before replacing the local
     // values or publishing a new intent. The failed submission stays authoritative.
     await f.failNext("fail-server-dry-run");
     await assert.rejects(f.run("--resume", "--migration-history-checked"), injectedFault);
     assert.deepEqual(await assertHelmIntent(f, 1, 2), original);
-    assert.equal(await readFile(join(f.directory, "values.json"), "utf8"), values);
+    assert.deepEqual(await readFile(valuesPath), originalValues);
     await assert.rejects(f.run("--resume"), /migration --check/);
     assert.equal((await f.state()).helmSubmissions, 1);
     await f.failNext("lost-helm-response");
@@ -7462,6 +7596,13 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     );
     assert.equal(await readFile(join(f.evidence, "parameters.json"), "utf8"), preparation);
     await f.run("--resume");
+    await assertProtectedValues(f.evidence, retry, newController);
+
+    const nextEvidence = join(f.directory, "next-evidence");
+    await f.run("--controller-image", controller, "--evidence-dir", nextEvidence);
+    const next = await assertHelmIntent({ evidence: nextEvidence }, 3, 4);
+    assert.notEqual(next.attempt.nonce, retry.attempt.nonce);
+    await assertProtectedValues(nextEvidence, next, controller);
   });
 
   test("a retry published before Helm accepts it can resume from its exact predecessor", async (t) => {

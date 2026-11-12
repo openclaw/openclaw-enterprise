@@ -23,7 +23,7 @@ import type {
   SandboxNamespaceContext,
 } from "../../packages/contracts/src/index.ts";
 import { SandboxGatewayUnauthorizedError } from "../../packages/occ/src/index.ts";
-import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import { loadInstallationFile } from "../helpers/installation-file.ts";
 import type { buildSandboxInstallation } from "./sandbox-driver-startup-installation-fixture.ts";
 import {
   completeSandboxRevision,

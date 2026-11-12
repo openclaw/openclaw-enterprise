@@ -6,17 +6,17 @@ last_verified: "2026-11-04"
 
 # What the OpenShell Sandbox suite proves
 
-These checks share [OpenShell workflow fixtures](../../tests/helpers/openshell-sandbox-workflows.mjs)
-and run through the separate files listed in [advisory coverage](ci/qa-advisory.md#openshell-file-coverage).
-Prepare and run the suite as described in [OpenShell tests](openshell.md#openshell-sandbox).
-Unless a section says otherwise, the checks run in the default Codex scenario.
+Use [OpenShell tests](openshell.md#openshell-sandbox) to run the files in
+[advisory coverage](ci/qa-advisory.md#openshell-file-coverage). They share
+[workflow fixtures](../../tests/helpers/openshell-sandbox-workflows.mjs).
+Unless stated otherwise, checks use the default Codex scenario.
 
 ## Gateway tool policy
 
 The dedicated Agent policy scenario uses the existing production deployment owner
-for either `OCC_TEST_OPENSHELL_HARNESS=openclaw` or `codex`. With an explicit
-`OCC_TEST_OPENSHELL_MODEL_BASE_URL`, both use `OPENAI_API_KEY`; the full lane still
-requires `CODEX_ACCESS_TOKEN` for its other owners.
+for either `OCC_TEST_OPENSHELL_HARNESS=openclaw` or `codex`. Both use
+`OPENAI_API_KEY`; the full lane still requires `CODEX_ACCESS_TOKEN` for its
+PAT-specific owners.
 
 The scenario deploys the first revision with Gateway managed mode off so a human
 administrator can run the command-job control. The dedicated model tool policy
@@ -49,14 +49,29 @@ that excluded declarations are omitted, not that an old callback was retained an
 denied. The retained/fallback callback paths also have focused OpenClaw owner tests.
 Harness-local configuration, credentials and process protection remain separate work.
 
+The tool-policy proof reports structured worker failures while it runs. If an
+initial or replacement revision fails to activate, it also reports persisted
+work state and a bounded summary of recent worker events before cleanup. Compute
+preparation summaries retain the step, error class, status, and cleanup cause;
+they exclude provider responses and chat text. Its bounded teardown attempts every
+registered cleanup and emits an `openshell-fixture-teardown` outcome, so a failed
+deployment and an incomplete cleanup remain distinguishable.
+Cached provisioning failures print before diagnostic reads; a fixed notice reports budget expiry.
+Both failure paths use one 60-second diagnostic budget and preserve the original
+error if evidence collection fails. Printed `ACCESS_DENIED` means the worker's
+fixed `AUTHORIZATION_DENIED` code; this spelling survives the log exporter's
+credential redaction. Queue rows print separately to avoid line clipping.
+
 ## Credential source and Harness
 
 Both modes compose the `openshell` Backend with the Sandbox and Credential
 Gateway Drivers. Through the production API they register a `codex-pat` source
 from `CODEX_ACCESS_TOKEN` for Codex, or an `openai` source from `OPENAI_API_KEY`
-for native OpenClaw and custom model endpoints. They check its live
+for native OpenClaw and API-key workflows. They check its live
 `ready` status, and bind the Agent with `credential_source`. The Agent service
 principal receives `operate` on the source only, not on the Secret.
+
+The refresh, withdrawal, and Gateway tool-policy files select the API-key endpoint before loading their shared workflow. They retain the native Codex Harness and their lifecycle and policy checks. Credential-route, Sandbox-policy, and curated-plugin files retain PAT coverage.
 
 The default Codex scenario uses the production Driver path. Compute sends only
 `APP_TOKEN_SHA`; OpenShell supplies `runtime.json`, `config.toml`, and the
@@ -101,24 +116,9 @@ ordinary refresh success alone is not evidence of read recovery.
 
 ## Native permission refusals
 
-After the real Driver classifies a Codex PAT permission refusal, the fixture
-collects one diagnostic per revision before rethrowing that failure. One
-connection through the same OpenShell exposure reads requirements and PAT status,
-then requests an ephemeral `:danger-full-access` thread with user review.
-
-The receipt compares approval/profile requirements and the returned profile,
-reviewer, approval policy, ephemeral flag, and legacy sandbox representation.
-`accepted` requires matching permission settings and an ephemeral thread; unknown provenance is
-`unconfirmed`, and different settings are `mismatch`. RPC errors do not establish
-a policy denial. Receipts include the fixture revision ID and fixed phase,
-outcome and cleanup classifications. Peer fields contain known enums and boolean
-or null comparisons; credentials, account details, instructions and peer text are excluded.
-
-No diagnostic model turn or approval response is sent; ordinary runtime startup
-still performs its authentication probe. The exchange has ten seconds, socket
-cleanup two seconds, and output one second. Cancellation preserves an already
-classified Driver failure without changing worker claim-loss handling. Normal
-candidate teardown owns thread cleanup; socket closure does not prove removal.
+A refused Codex PAT revision collects a bounded diagnostic before preserving the
+original failure. See [native permission diagnostics](openshell-permission-diagnostics.md)
+for requirement/grant comparisons, fallback-source observations and proof limits.
 
 ## Agent network policy
 
