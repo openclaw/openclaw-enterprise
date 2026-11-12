@@ -166,19 +166,24 @@ function executionJobName(job: Json): string {
   return name.startsWith(executionPrefix) ? name.slice(executionPrefix.length) : name;
 }
 
-function preparedFullRun(job: Json): boolean {
-  if (executionJobName(job) !== preflight || !Array.isArray(job.steps)) {
+function skippedFullPreparation(job: Json): boolean {
+  if (
+    executionJobName(job) !== preflight ||
+    job.status !== "completed" ||
+    job.conclusion !== "success" ||
+    !Array.isArray(job.steps)
+  ) {
     return false;
   }
-  return job.steps
-    .map(record)
-    .some(
-      (step) =>
-        (step.name === "Prepare fresh lane fallback" ||
-          step.name === "Prepare full admission marker") &&
-        step.status === "completed" &&
-        step.conclusion === "success",
+  const steps = job.steps.map(record);
+  return ["Prepare fresh lane fallback", "Prepare full admission marker"].every((name) => {
+    const matches = steps.filter((step) => step.name === name);
+    return (
+      matches.length === 1 &&
+      matches[0]?.status === "completed" &&
+      matches[0]?.conclusion === "skipped"
     );
+  });
 }
 
 function requireMarkerStep(jobs: Json[], jobName: string, stepName: string): number {
@@ -293,10 +298,10 @@ async function readUnmarkedClock(
         return name === "Runtime Image Fixture" || name.startsWith("Same-SHA ");
       });
       if (!fullSuiteWork) {
-        // Cancellation can skip reuse. Full-only preflight steps can also
-        // establish selection before the reuse job starts.
+        // Cancellation can skip reuse. Only explicit full-only preparation
+        // skips on a successful preflight establish a targeted selection.
         const skippedReuse = reuse?.conclusion === "skipped";
-        if (skippedReuse && run.conclusion !== "cancelled" && !jobs.some(preparedFullRun)) {
+        if (skippedReuse && run.conclusion !== "cancelled" && jobs.some(skippedFullPreparation)) {
           continue;
         }
         selectionUnknown = !reuse || skippedReuse;

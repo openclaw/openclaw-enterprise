@@ -178,7 +178,14 @@ async function fetchGithubJson({ repository, token, path }) {
   if (!response.ok) {
     throw new Error(`GitHub API ${path} returned ${response.status}.`);
   }
-  return response.json();
+  const body = await response.text();
+  try {
+    return JSON.parse(body);
+  } catch {
+    // An unreadable JSON value is invalid metadata, not a failed request.
+    // Discard parser text and response bytes before the caller diagnoses it.
+    return null;
+  }
 }
 
 export async function validateFullIntegrationPreflight({

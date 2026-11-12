@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: "2026-11-11"
-last_updated_session: "authoring-run/fac6c060-7d04-496a-9194-8dfc3ba080e5"
+updated: "2026-11-12"
+last_updated_session: "authoring-run/8403e2bb-cd27-449b-8ae7-ef78b7a05922"
 ---
 
 # GitHub Actions testing flow
@@ -61,7 +61,7 @@ graph TD
 `scripts/ci/full-integration-preflight.mjs:validateFullIntegrationPreflight`, and
 `scripts/ci/test-suites.mjs:loadTestSuites`
 
-`loadTestSuites` reads tests, inputs and preparation from ordered `scripts/ci/test-suites.json` lanes.
+`loadTestSuites` reads ordered `scripts/ci/test-suites.json` lanes: tests, inputs, preparation.
 
 `run-tests.mjs:main` rejects noncanonical manifests before [complete attempts](../testing/ci/run-lanes.md#run-a-complete-local-attempt).
 
@@ -88,10 +88,10 @@ Registered test changes may include docs and their own lane-manifest entries. CI
 the owning lanes from either tree, adds `checks-baseline-2` for TypeScript, and uses
 `checks-baseline-1` if only the fixture job would run. Test-only main pushes, other changes, and remaining event types select full CI. Missing policy or unverifiable source selects full or fails closed.
 
-`CI Required` rechecks the mode and lane selection. Impact, static checks and selected lanes must succeed.
-Other jobs must be skipped. Full and tests modes aggregate same-source results. Docs mode emits no test artifacts.
-The impact summary gives the mode, fixed reason and accepted lanes. It omits paths and raw output.
-Selector errors fail the job. Missing evidence is unavailable.
+`CI Required` rechecks mode and lanes: impact, static checks and selected lanes
+must succeed; other jobs must skip. Full/tests modes aggregate same-source results;
+docs emits no test artifacts. Impact summaries expose mode, fixed reason and
+accepted lanes, excluding paths and raw output. Selector errors fail.
 
 `affected-packages` verifies full-mode PR checkouts and reports dependents without
 selecting tests or gating CI. Base-loaded policy cannot prevent PR workflow changes.
@@ -101,15 +101,20 @@ excluding empty groups. Focused jobs verify SHA and ordered PR parents. QA
 materializes only its selected credential; see
 [inputs and evidence](../testing/ci/qa-advisory.md#trigger).
 
-Full Integration pins `github.sha`; [scheduled admission](../testing/ci/full-integration.md#trigger)
-rechecks main, cadence and receipts under lock.
-Manual dispatch checks dispatcher, team and environment separately.
-Slack serializes channel/app access; installation and Skipper Git serialize per branch. Retries need [approved dispatch](../testing/ci/configuration.md#environments).
+[Full Integration admission](../testing/ci/full-integration.md#trigger) pins
+`github.sha`, then rechecks main, cadence and receipts under lock.
+`scripts/ci/full-integration-schedule-history.ts:readUnmarkedClock` requires explicit
+targeted selection to ignore live shared work.
+`scripts/ci/full-integration-preflight.mjs:fetchGithubJson` distinguishes malformed
+JSON from request failures; diagnostics omit raw content.
+Manual dispatch verifies dispatcher, team and environment.
+Slack serializes channel/app access; installation and Skipper Git serialize branches.
+Retries require [approved dispatch](../testing/ci/configuration.md#environments).
 
 For first-attempt `all`, `scripts/ci/full-integration-reuse.mjs:validateResults`
-requires completed execution. Preflight supplies fresh fallback; successful reuse
-plans select retained artifacts and omit their lanes. Optional reuse failure is nonfatal.
-QA awaits Slack despite failure; cancellation stops it. Selected results are required.
+requires completed execution. Preflight supplies fresh fallback. Successful reuse
+selects artifacts and omits lanes; failure is nonfatal.
+QA awaits Slack despite failure, stops on cancellation, and requires selected results.
 
 PostgreSQL migration and application suites own separate servers; each Kubernetes fixture lane owns its cluster and PostgreSQL server. Before creating k3d nodes, the shared action enables bridge netfilter in the shared runner kernel; missing filtering fails setup. The repository credential platform lane uses Blacksmith for full-image HTTP, PostgreSQL, Unix-control and credential-material proof; NetworkPolicy enforcement remains the fixture lanes' responsibility. State and cleanup stay runner-local; `scripts/ci/run-tests.mjs:runLane` runs files sequentially except audited `parallelFiles`.
 
@@ -285,6 +290,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 04:02: Repair admission diagnostics. (authoring-run/8403e2bb-cd27-449b-8ae7-ef78b7a05922 - 61ec16d5f18a8875213dd072b97384a880f82b25)
 
 - 2026-11-11 16:52: Publish journals atomically. (authoring-run/fac6c060-7d04-496a-9194-8dfc3ba080e5 - 9209a107a78a5850f7f11b68e1763956d65cde3a)
 

@@ -1983,6 +1983,22 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
     job(reuseName, 3, 3, "skipped"),
   ];
 
+  for (const [name, metadata] of [
+    ["absent", {}],
+    ["nonarray", { steps: null }],
+    ["incomplete", { steps: [{ ...steps[0], conclusion: "skipped" }] }],
+  ]) {
+    await t.test(`live shared work with ${name} preparation metadata stays active`, async () => {
+      // Cancellation can skip reuse before the run reaches its final conclusion.
+      // Missing full-only steps do not establish that the caller selected a targeted lane.
+      const jobs = [{ ...preparation, ...metadata }, ...preparedFullJobs.slice(1)];
+      assert.deepEqual(
+        await validateFullIntegrationPreflight({ env, github: manualHistory(jobs) }),
+        skipped("active-full"),
+      );
+    });
+  }
+
   for (const [name, active, result] of [
     ["cancelled", false, { conclusion: "cancelled" }],
     ["missing conclusion", false, {}],
@@ -2063,6 +2079,48 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
       "/git/ref/heads/main",
       "/actions/artifacts?name=full-integration-admitted-v1&per_page=100",
     ]);
+  }
+  for (const [name, kind, response] of [
+    ["malformed JSON", "invalid-metadata", () => new Response(sentinel)],
+    ["HTTP failure", "request-failed", () => new Response(sentinel, { status: 503 })],
+    [
+      "transport SyntaxError",
+      "request-failed",
+      () => {
+        throw new SyntaxError(sentinel);
+      },
+    ],
+    [
+      "body-read SyntaxError",
+      "request-failed",
+      () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new SyntaxError(sentinel));
+            },
+          }),
+        ),
+    ],
+  ]) {
+    await t.test(`default GitHub reader classifies ${name}`, async (t) => {
+      const calls = [];
+      // Supply HTTP responses at the transport boundary so the production
+      // reader must consume and decode the body before history classifies it.
+      t.mock.method(globalThis, "fetch", async (url) => {
+        const { pathname, search } = new URL(url);
+        const path = pathname.slice("/repos/openclaw/openclaw-enterprise".length) + search;
+        calls.push(path);
+        return path === "/git/ref/heads/main" ? Response.json(main()) : response();
+      });
+      await assert.rejects(validateFullIntegrationPreflight({ env }), {
+        message: `Full Integration schedule could not verify admission metadata (admission-markers: ${kind}).`,
+      });
+      assert.deepEqual(calls, [
+        "/git/ref/heads/main",
+        "/actions/artifacts?name=full-integration-admitted-v1&per_page=100",
+      ]);
+    });
   }
   await assert.rejects(
     validateFullIntegrationPreflight({
