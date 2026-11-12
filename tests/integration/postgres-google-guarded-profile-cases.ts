@@ -163,27 +163,44 @@ export async function runGoogleGuardedProfileCases(
       const start = await startGoogle();
       assert.equal(start.statusCode, 200);
       const authorize = authorizationUrl(text(recordData(start.json()).url));
-      assert.equal(
-        `${authorize.origin}${authorize.pathname}`,
-        google.discovery.authorization_endpoint,
+      // Compare the authorization URL without printing provider-supplied values on failure.
+      assert.ok(
+        `${authorize.origin}${authorize.pathname}` === google.discovery.authorization_endpoint,
+        "Google authorization endpoint matches discovery",
       );
-      assert.deepEqual([...authorize.searchParams.keys()].sort(), [
-        "client_id",
-        "code_challenge",
-        "code_challenge_method",
-        "nonce",
-        "redirect_uri",
-        "response_type",
-        "scope",
-        "state",
-      ]);
-      assert.equal(authorize.searchParams.get("client_id"), googleClientId);
-      assert.equal(authorize.searchParams.get("response_type"), "code");
-      assert.equal(authorize.searchParams.get("scope"), "openid email");
-      assert.equal(authorize.searchParams.get("code_challenge_method"), "S256");
-      assert.equal(
-        authorize.searchParams.get("redirect_uri"),
-        `${origin}/api/auth/providers/google/callback`,
+      assert.ok(
+        isDeepStrictEqual([...authorize.searchParams.keys()].sort(), [
+          "client_id",
+          "code_challenge",
+          "code_challenge_method",
+          "nonce",
+          "redirect_uri",
+          "response_type",
+          "scope",
+          "state",
+        ]),
+        "Google authorization query has the expected parameter names",
+      );
+      assert.ok(
+        authorize.searchParams.get("client_id") === googleClientId,
+        "Google authorization uses the configured client ID",
+      );
+      assert.ok(
+        authorize.searchParams.get("response_type") === "code",
+        "Google authorization requests a code",
+      );
+      assert.ok(
+        authorize.searchParams.get("scope") === "openid email",
+        "Google authorization requests the sign-in scopes",
+      );
+      assert.ok(
+        authorize.searchParams.get("code_challenge_method") === "S256",
+        "Google authorization uses the S256 challenge method",
+      );
+      assert.ok(
+        authorize.searchParams.get("redirect_uri") ===
+          `${origin}/api/auth/providers/google/callback`,
+        "Google authorization uses the expected callback URI",
       );
       assert.ok(
         /^__Host-occ_login_attempt=/.test(cookieHeaderFromSetCookie(start.headers["set-cookie"])),
