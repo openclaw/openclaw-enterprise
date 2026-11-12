@@ -5,7 +5,15 @@ import { authenticatedHeaders } from "./auth-session.mjs";
 
 // Send a route-specific opening and 64 KiB, leaving the declared body unfinished.
 // Resolve with null if the controller is still waiting for the rest after the deadline.
-export function partialWrite({ origin, method, path, session, declaredBytes, bodyPrefix }) {
+export function partialWrite({
+  origin,
+  transportOrigin,
+  method,
+  path,
+  session,
+  declaredBytes,
+  bodyPrefix,
+}) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const settle = (callback, value) => {
@@ -16,10 +24,11 @@ export function partialWrite({ origin, method, path, session, declaredBytes, bod
         callback(value);
       }
     };
-    const request = httpRequest(new URL(path, origin), {
+    const request = httpRequest(new URL(path, transportOrigin), {
       method,
       headers: {
         ...authenticatedHeaders(session, { origin }),
+        host: new URL(origin).host,
         "content-type": "application/json",
         "content-length": String(declaredBytes),
       },

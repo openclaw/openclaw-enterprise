@@ -7,6 +7,8 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, writeFile, rm } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { ownPortForward } from "../helpers/port-forward-cleanup.ts";
 import { availablePort } from "../helpers/available-port.mjs";
 import { createProductionTuiRequest } from "../helpers/production-tui-request.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -33,22 +35,42 @@ import {
   writeFixtureObject,
 } from "../helpers/production-rehearsal-custody.ts";
 import {
+  assertInstallationSecretRetained,
+  assertInstallationVolume,
   assertLocalRehearsalSelection,
+  measureUpgradeAvailability,
+  readImmutableInstallationSecret,
   rehearsePopulatedReturn,
   selectRehearsalControllers,
 } from "../helpers/staging-upgrade-return.ts";
+import { rehearseOnlineMigration } from "../helpers/staging-online-migration.ts";
 
 const selected = process.env.OCC_TEST_PRODUCTION_TUI_REAL === "1";
-const rehearsalSelected = process.env.OCC_TEST_PRODUCTION_TUI_REHEARSAL === "1";
+const harnessRoot = fileURLToPath(new URL("../../", import.meta.url));
+const signinSelected = process.env.OCC_TEST_PRODUCTION_SIGNIN_REHEARSAL === "1";
+const returnSelected = process.env.OCC_TEST_PRODUCTION_TUI_REHEARSAL === "1";
+const onlineSelected = process.env.OCC_TEST_PRODUCTION_TUI_ONLINE_MIGRATION === "1";
+const rehearsalSelected = signinSelected || returnSelected || onlineSelected;
 const protectedTuiSelection = {
   kubeconfigPath: process.env.OCC_TEST_KUBERNETES_KUBECONFIG,
   kubernetesContext: process.env.OCC_TEST_KUBERNETES_CONTEXT,
 };
 
+function selectedTestTitle() {
+  if (signinSelected) {
+    return "Owned P/A sign-in receipts survive only the admitted controller transitions";
+  }
+  if (onlineSelected) {
+    return "An incumbent production Helm Installation serves while the candidate migrates PostgreSQL";
+  }
+  if (returnSelected) {
+    return "A populated production Helm Installation retains the acknowledged write after controller return";
+  }
+  return "Helm production installation supports interactive TUI and revision cutover";
+}
+
 test(
-  rehearsalSelected
-    ? "A populated production Helm Installation retains the acknowledged write after controller return"
-    : "Helm production installation supports interactive TUI and revision cutover",
+  selectedTestTitle(),
   {
     skip:
       selected || rehearsalSelected
@@ -57,11 +79,55 @@ test(
     timeout: rehearsalSelected ? 2_700_000 : 1_800_000,
   },
   async (context) => {
-    if (rehearsalSelected) {
+    assert.ok(
+      [signinSelected, onlineSelected, returnSelected].filter(Boolean).length <= 1,
+      "Select exactly one local controller rehearsal",
+    );
+    const preparedHash = process.env.OCC_TEST_SIGNIN_PREPARED_SHA256;
+    const signinReader = signinSelected ? await import("../helpers/signin/staged.mjs") : undefined;
+    if (preparedHash) {
+      assert.ok(signinReader, "the prepared cluster is dedicated to the sign-in case");
+      signinReader.assertHostedSigninJob(process.env);
+      assert.ok(
+        !process.env.OCC_TEST_REHEARSAL_K3D_CLUSTER && !process.env.OCC_TEST_SIGNIN_NODE_UID,
+        "the hosted cluster is selected only by its preparation receipt",
+      );
+    } else if (rehearsalSelected) {
       assertLocalRehearsalSelection(process.env);
     } else {
       await validateExplicitK3dLoopbackContext(protectedTuiSelection);
     }
+    if (signinSelected) {
+      assert.ok(
+        !process.env.KUBECONFIG &&
+          !protectedTuiSelection.kubeconfigPath &&
+          !protectedTuiSelection.kubernetesContext &&
+          !process.env.OCC_TEST_PRODUCTION_TUI_REHEARSAL,
+      );
+      if (!preparedHash) {
+        assert.match(process.env.OCC_TEST_REHEARSAL_K3D_CLUSTER ?? "", /^signin-[a-f0-9]{20}$/);
+        assert.match(process.env.OCC_TEST_SIGNIN_NODE_UID ?? "", /^[a-f0-9-]{36}$/);
+      }
+    }
+    const planHash = process.env.OCC_TEST_SIGNIN_PLAN_SHA256;
+    const stagedSignin =
+      signinReader &&
+      (await signinReader.readStagedSignin({
+        directory: process.env.RUNNER_TEMP,
+        expectedPlanHash: planHash,
+        workflowSha: process.env.GITHUB_WORKFLOW_SHA,
+        installation: process.env.STAGING_INSTALLATION,
+      }));
+    const preparedCluster =
+      preparedHash &&
+      (await signinReader.readPreparedSigninCluster(
+        process.env,
+        preparedHash,
+        planHash,
+        stagedSignin,
+      ));
+    const support = stagedSignin ? await import("../helpers/signin/support-images.mjs") : undefined;
+    const supportReferences = support && (await support.signinSupportReferences());
     const images = Object.fromEntries(
       [
         ["controller", "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE"],
@@ -69,7 +135,17 @@ test(
         ["postgres", "OCC_TEST_PRODUCTION_POSTGRES_IMAGE"],
         ["node", "OCC_TEST_PRODUCTION_NODE_IMAGE"],
       ].map(([name, variable]) => {
-        const value = process.env[variable];
+        const staged =
+          stagedSignin &&
+          (name === "controller"
+            ? stagedSignin.previous.reference
+            : name === "runtime"
+              ? stagedSignin.fixedRuntime.reference
+              : supportReferences[name]);
+        if (staged && process.env[variable]) {
+          assert.equal(process.env[variable], staged);
+        }
+        const value = staged ?? process.env[variable];
         assert.match(
           value ?? "",
           /^\S+@sha256:[a-f0-9]{64}$/,
@@ -160,10 +236,25 @@ test(
       );
     const names = rehearsalSelected ? [system] : [system, foreign];
     let localServiceKeyFile;
-    let forwarding;
+    let operatorForwarder;
+    let providerForwarder;
     let rehearsalComplete = false;
     const run = (command, args, options) =>
       runFixtureCommand(command, args, options, redact, rehearsalSelected);
+    if (stagedSignin) {
+      assert.equal(
+        (await run("git", ["rev-parse", "HEAD"], { cwd: harnessRoot })).trim(),
+        stagedSignin.signinPlan.workflowSha,
+        "staging harness checkout changed",
+      );
+      assert.equal(
+        await run("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: harnessRoot }),
+        "",
+        "staging harness checkout must be clean",
+      );
+    }
+    const supportIdentities =
+      support && (await support.inspectSigninSupport(run, supportReferences));
     if (rehearsalSelected) {
       await run("bash", [
         "-c",
@@ -173,12 +264,14 @@ test(
     const localCluster = rehearsalSelected
       ? await bindLocalRehearsalCluster(
           run,
-          process.env.OCC_TEST_REHEARSAL_K3D_CLUSTER ?? "",
+          preparedCluster?.cluster ?? process.env.OCC_TEST_REHEARSAL_K3D_CLUSTER ?? "",
           rehearsalKubeconfig,
         )
       : undefined;
     const selection = localCluster?.selection ?? protectedTuiSelection;
-    const rehearsal = localCluster ? await selectRehearsalControllers(run, process.env) : undefined;
+    const rehearsal =
+      stagedSignin ??
+      (localCluster ? await selectRehearsalControllers(run, process.env) : undefined);
     const evidence = {
       source: "production Helm",
       cluster: selection.kubernetesContext,
@@ -186,6 +279,7 @@ test(
       model,
       system,
       release,
+      ...(supportIdentities && { supportIdentities }),
       rows: [],
     };
     const record = async (row, details = {}) => {
@@ -193,12 +287,12 @@ test(
       await writeFile(join(directory, "proof.json"), JSON.stringify(evidence, null, 2) + "\n", {
         mode: 0o600,
       });
-      context.diagnostic(`PASS ${row}`);
+      context.diagnostic(`${details.disposition ?? "PASS"} ${row}`);
     };
-    // The rehearsal uses the candidate release's CLI and leaves its source checkout clean.
+    // Sign-in qualifies controller images; host tools and both Helm operations belong to this harness.
     const occCli = rehearsal ? join(directory, "occ") : join(process.cwd(), "bin", "occ");
     await run("go", ["build", "-trimpath", "-o", occCli, "./cmd/occ"], {
-      cwd: rehearsal?.candidate.checkout,
+      cwd: signinSelected ? harnessRoot : rehearsal?.candidate.checkout,
     });
     const kubectl = (...args) => run("kubectl", buildKubectlArguments(selection, args));
     const kubernetes = createKubernetesClient({
@@ -219,26 +313,73 @@ test(
           release,
           suffix,
           cluster: localCluster,
+          requireTLS: signinSelected,
           waitFor,
         })
       : undefined;
+    if (signinSelected) {
+      assert.equal(
+        localCluster.nodeUID,
+        preparedCluster?.nodeUID ?? process.env.OCC_TEST_SIGNIN_NODE_UID,
+      );
+      if (preparedCluster) {
+        assert.equal(localCluster.clusterUID, preparedCluster.clusterUID);
+        assert.equal(localCluster.serverID, preparedCluster.serverID);
+        assert.deepEqual(supportIdentities, preparedCluster.support);
+        for (const image of preparedCluster.release) {
+          await localCluster.assertStagedImage(image);
+        }
+      }
+      for (const identity of Object.values(supportIdentities)) {
+        await localCluster.assertStagedImage(identity);
+      }
+      const namespaces = JSON.parse(await kubectl("get", "namespaces", "-o", "json")).items;
+      assert.deepEqual(namespaces.map((n) => n.metadata.name).sort(), [
+        "default",
+        "kube-node-lease",
+        "kube-public",
+        "kube-system",
+      ]);
+      const pods = JSON.parse(await kubectl("get", "pods", "-A", "-o", "json")).items;
+      assert(pods.every((p) => p.metadata.namespace === "kube-system"));
+    }
+    let materialization;
+    let providerMaterial;
+    let signinSetup;
+    let signinOperator;
+    let signinFailure;
+    let dns;
     const apply = (object) =>
       custody ? custody.create(object) : writeFixtureObject(run, kubeArgs, "apply", object);
     const fixtureRun = async (command, args, options = {}) => {
       if (command === "kubectl" && options.input && args.slice(-3).join(" ") === "apply -f -") {
         const object = protectedJSON(options.input);
+        if (
+          (rehearsalSelected || upgradeSelected) &&
+          object.kind === "Secret" &&
+          object.metadata.name === "occ-installation-startup"
+        ) {
+          object.immutable = true;
+        }
         if (custody) {
           return custody.create(object);
         }
-        return run(command, args, { ...options, protectedInput: object.kind === "Secret" });
+        return run(command, args, {
+          ...options,
+          input: JSON.stringify(object),
+          protectedInput: object.kind === "Secret",
+        });
       }
       if (custody && command === "helm" && args[0] === "upgrade" && args[1] === "--install") {
         await custody.assertPostgres(true);
+        if (signinSelected) {
+          await materialization.assertDatabaseImage();
+        }
         // This fixture owns a newly created namespace and starts revision 1.
         // Helm install cannot adopt an existing release by name.
         const output = await run(command, ["install", ...args.slice(2)], {
           ...options,
-          cwd: rehearsal.previous.checkout,
+          cwd: signinSelected ? harnessRoot : rehearsal.previous.checkout,
         });
         await custody.bindRelease(1);
         return output;
@@ -275,13 +416,55 @@ test(
     };
 
     cleanup = async () => {
-      forwarding?.kill("SIGTERM");
+      const closureErrors = [];
+      for (const forwarder of [operatorForwarder, providerForwarder]) {
+        try {
+          await forwarder?.close();
+        } catch (error) {
+          closureErrors.push(error);
+        }
+      }
+      if (closureErrors.length) {
+        // Keep dependent resources while either forwarder may still be using them.
+        throw new AggregateError(
+          [...(signinFailure ? [signinFailure] : []), ...closureErrors],
+          "Owned sign-in cleanup failed",
+          { cause: closureErrors[0] },
+        );
+      }
+      for (const close of [
+        async () => {
+          if (signinOperator) {
+            await signinOperator(
+              "rm",
+              "-f",
+              "/operator/signin-gate",
+              "/operator/signin-gate.bootstrap",
+              "/operator/signin-gate.retained",
+            );
+          }
+        },
+        async () => providerMaterial?.dispose(),
+        async () => dns?.close(),
+      ]) {
+        try {
+          await close();
+        } catch (error) {
+          closureErrors.push(error);
+        }
+      }
       // Preserve nonsecret proof and attach.sh; delete locally copied credentials.
       for (const file of ["tls.key", "tls.crt"]) {
         await rm(join(directory, file), { force: true });
       }
       if (localServiceKeyFile) {
         await rm(localServiceKeyFile, { force: true });
+      }
+      if (closureErrors.length) {
+        throw new AggregateError(
+          [...(signinFailure ? [signinFailure] : []), ...closureErrors],
+          "Owned sign-in cleanup failed",
+        );
       }
       // These namespaces are unique to this run. Keep is an explicit operator rehearsal mode.
       if (process.env.OCC_TEST_PRODUCTION_TUI_KEEP === "1" || (rehearsal && !rehearsalComplete)) {
@@ -329,6 +512,39 @@ test(
           metadata: { name, labels: { "oce-test": suffix } },
         });
       }
+      if (signinSelected) {
+        const { prepareMaterialization } = await import("../helpers/signin/materialization.mjs");
+        const { providerDns } = await import("../helpers/signin/dns.mjs");
+        dns = providerDns({ system, suffix, custody, localCluster, kubectl, kubeArgs, run });
+        const { createOidcProviderMaterial } =
+          await import("../helpers/oidc-provider-material.mjs");
+        providerMaterial = await createOidcProviderMaterial(directory, {
+          hostname: "idp.signin-rehearsal.test",
+          redirectUri: "https://console.signin-rehearsal.test/api/auth/providers/oidc/callback",
+          run: (command, args) => run(command, args, { protectedInput: true, timeout: 10_000 }),
+        });
+        materialization = await prepareMaterialization({
+          providerMaterial,
+          supportIdentities,
+          chartDirectory: join(harnessRoot, "deploy/helm/openclaw-enterprise"),
+          system,
+          release,
+          directory,
+          suffix,
+          images,
+          apply,
+          kubectl,
+          get,
+          waitFor,
+          run,
+          custody,
+          localCluster,
+          bindProviderDns: dns.bindProviderDns,
+          registerPortForward: (forwarder) => {
+            providerForwarder = forwarder;
+          },
+        });
+      }
       const configuration = createKubernetesInstallationConfiguration({
         authentication: { mode: "inCluster" },
         platformNamespace: system,
@@ -344,7 +560,7 @@ test(
       });
       const port = await availablePort();
       const baseURL = `https://localhost:${port}`;
-      await installProductionHelmControlPlane({
+      const { adminEmail } = await installProductionHelmControlPlane({
         selection,
         images,
         namespace: system,
@@ -352,9 +568,14 @@ test(
         directory,
         suffix,
         configuration,
-        authBaseURL: baseURL,
+        ...materialization?.helmOptions,
+        authBaseURL: signinSelected
+          ? "https://console.signin-rehearsal.test"
+          : `https://console.oce.localhost:${port}`,
+        agentNativeAdminDomain: "agents.oce.localhost",
         installationName: `Production TUI ${suffix}`,
         apiClients: [{ namespace: system, podLabels: { app: "production-tui-proxy" } }],
+        channelDirectoryProxyUrl: returnSelected ? "http://198.51.100.25:3128" : undefined,
         metrics: rehearsal
           ? undefined
           : {
@@ -383,7 +604,9 @@ test(
         "-subj",
         "/CN=localhost",
         "-addext",
-        "subjectAltName=DNS:localhost,IP:127.0.0.1",
+        signinSelected
+          ? "subjectAltName=DNS:console.signin-rehearsal.test,DNS:localhost,IP:127.0.0.1"
+          : "subjectAltName=DNS:localhost,IP:127.0.0.1",
       ]);
       await createSecret("proxy-tls", {
         "tls.key": await readFile(join(directory, "tls.key"), "utf8"),
@@ -400,6 +623,21 @@ test(
           ),
         },
       });
+      if (signinSelected) {
+        await apply({
+          apiVersion: "networking.k8s.io/v1",
+          kind: "NetworkPolicy",
+          metadata: metadata("signin-operator-private"),
+          spec: {
+            podSelector: {
+              matchLabels: {
+                app: "production-tui-proxy",
+              },
+            },
+            policyTypes: ["Ingress"],
+          },
+        });
+      }
       await apply({
         apiVersion: "v1",
         kind: "Pod",
@@ -418,6 +656,15 @@ test(
               securityContext,
               resources,
               env: [
+                ...(signinSelected
+                  ? [
+                      { name: "OCC_SIGNIN_PROXY", value: "1" },
+                      {
+                        name: "OCE_TEST_POD_UID",
+                        valueFrom: { fieldRef: { fieldPath: "metadata.uid" } },
+                      },
+                    ]
+                  : []),
                 { name: "TLS_CERT_FILE", value: "/tls/tls.crt" },
                 { name: "TLS_KEY_FILE", value: "/tls/tls.key" },
                 {
@@ -443,6 +690,25 @@ test(
         },
       });
       await waitPod("operator");
+      if (signinSelected) {
+        const { operatorExecutor } = await import("../helpers/signin/operator.mjs");
+        signinOperator = await operatorExecutor({
+          custody,
+          localCluster,
+          get: async () => get("pod", "operator"),
+          exec: (...args) =>
+            run(
+              "kubectl",
+              [...kubeArgs, "-n", system, "exec", "pod/operator", "-c", "operator", "--", ...args],
+              { protectedInput: true },
+            ),
+        });
+        await signinOperator(
+          "cp",
+          "/operator/signin-gate.generation",
+          "/operator/signin-gate.bootstrap",
+        );
+      }
       const bootstrapFileStats = async () =>
         JSON.parse(
           await kubectl(
@@ -458,7 +724,7 @@ test(
         );
       const beforeRetrievalStats = await bootstrapFileStats();
       assertProtectedBootstrapFileModes(beforeRetrievalStats, "before retrieval");
-      forwarding = spawn(
+      const forwarding = spawn(
         "kubectl",
         [
           ...kubeArgs,
@@ -472,6 +738,7 @@ test(
         ],
         { stdio: ["ignore", "pipe", "pipe"] },
       );
+      operatorForwarder = ownPortForward(forwarding);
       let forwardOutput = "";
       forwarding.stdout.on("data", (data) => {
         forwardOutput += data;
@@ -479,7 +746,16 @@ test(
       forwarding.stderr.on("data", (data) => {
         forwardOutput += data;
       });
-      await waitFor("TLS proxy forwarding", () => forwardOutput.includes("Forwarding from"));
+      await waitFor("TLS proxy forwarding", () => {
+        if (operatorForwarder.error) {
+          throw operatorForwarder.error;
+        }
+        assert(
+          forwarding.exitCode === null && forwarding.signalCode === null,
+          "operator forward exited",
+        );
+        return forwardOutput.includes("Forwarding from");
+      });
       const ca = await readFile(join(directory, "tls.crt"));
       localServiceKeyFile = join(directory, "occ-service-key.json");
       let serviceKey;
@@ -548,6 +824,15 @@ test(
         return result.body;
       };
       const installation = await request("GET", "/installation");
+      if (signinSelected) {
+        signinSetup = {
+          port,
+          ca,
+          adminEmail,
+          installationId: installation.data.id,
+          operator: signinOperator,
+        };
+      }
       assert.equal(stagedServiceKey.installationId, installation.data.id);
       const guideInstallation = await runGuideOcc(["installation", "get"]);
       assert.equal(guideInstallation.id, installation.data.id);
@@ -582,7 +867,14 @@ test(
         const result = await request(method, path, body, expected);
         return result.data;
       };
-      return { api, baseURL, externalRequest, occEnv, runGuideOcc };
+      return {
+        api,
+        baseURL,
+        externalRequest,
+        installationId: installation.data.id,
+        occEnv,
+        runGuideOcc,
+      };
     }
 
     async function provisionNamespace({ api, externalRequest, runGuideOcc }) {
@@ -1248,42 +1540,76 @@ test(
       const sourceRevision = (await run("git", ["rev-parse", "HEAD"], { timeout: 30_000 })).trim();
       const valuesPath = join(directory, "values.json");
       const installationPath = join(directory, "installation.json");
-      const controllerEvidence = join(directory, "controller-upgrade");
-      const controllerOutput = await run(
-        "scripts/upgrade-production-images",
-        [
-          "--kubeconfig",
-          selection.kubeconfigPath,
-          "--context",
-          selection.kubernetesContext,
-          "--namespace",
+      const installationKubeArgs = [...kubeArgs, "--namespace", system];
+      const readInstallation = (name) =>
+        readImmutableInstallationSecret(run, installationKubeArgs, name);
+      const originalSecret = await readInstallation("occ-installation-startup");
+      const assertMountedInstallation = async (name) => {
+        const initialization = await get("job", `${release}-initialization`);
+        assertInstallationVolume(initialization.spec.template.spec, name);
+        const initializationPods = await resourcesFor(
+          "pods",
           system,
-          "--release",
-          release,
-          "--values",
-          valuesPath,
-          "--installation",
-          installationPath,
-          "--controller-image",
-          upgradeImages.controller,
-          "--source-revision",
-          sourceRevision,
-          "--evidence-dir",
-          controllerEvidence,
-          "--occ",
-          occCli,
-          "--timeout-seconds",
-          "600",
-        ],
-        {
-          timeout: 900_000,
-          env: {
-            OCC_URL: baseURL,
-            OCC_SERVICE_KEY_FILE: localServiceKeyFile,
-            OCC_CA_BUNDLE: join(directory, "tls.crt"),
-            OPENAI_API_KEY: undefined,
-          },
-        },
+          "-l",
+          `batch.kubernetes.io/controller-uid=${initialization.metadata.uid}`,
+        );
+        assert.equal(initializationPods.length, 1, "expected the successful initializer Pod");
+        assertInstallationVolume(initializationPods[0].spec, name);
+        for (const component of ["api", "worker"]) {
+          const deployment = await get("deployment", `openclaw-enterprise-${component}`);
+          assertInstallationVolume(deployment.spec.template.spec, name);
+          const pods = await resourcesFor(
+            "pods",
+            system,
+            "-l",
+            `app.kubernetes.io/instance=${release},app.kubernetes.io/component=${component}`,
+          );
+          const running = pods.filter(
+            (pod) => !pod.metadata.deletionTimestamp && pod.status.phase === "Running",
+          );
+          assert.equal(running.length, 1, "expected one serving controller Pod");
+          assertInstallationVolume(running[0].spec, name);
+        }
+      };
+      const controllerEvidence = join(directory, "controller-upgrade");
+      context.diagnostic(
+        `Controller upgrade observations: ${join(directory, "forward-api-availability.json")}`,
+      );
+      const controllerOutput = await measureUpgradeAvailability(
+        externalRequest,
+        installationId,
+        directory,
+        () =>
+          run(
+            "scripts/upgrade-production-images",
+            [
+              "--kubeconfig",
+              selection.kubeconfigPath,
+              "--context",
+              selection.kubernetesContext,
+              "--namespace",
+              system,
+              "--release",
+              release,
+              "--values",
+              valuesPath,
+              "--installation",
+              installationPath,
+              "--controller-image",
+              upgradeImages.controller,
+              "--source-revision",
+              sourceRevision,
+              "--evidence-dir",
+              controllerEvidence,
+              "--occ",
+              occCli,
+              "--timeout-seconds",
+              "600",
+            ],
+            { timeout: 900_000, env: occEnv },
+          ),
+        (details) =>
+          record("Independent controller upgrade API availability observations", details),
       );
       assert.match(controllerOutput, /no Agent deployments were requested/u);
       for (const component of ["api", "worker"]) {
@@ -1299,6 +1625,11 @@ test(
         );
         assert.equal(observed, upgradeImages.controller);
       }
+      assertInstallationSecretRetained(
+        await readInstallation(originalSecret.metadata.name),
+        originalSecret,
+      );
+      await assertMountedInstallation(originalSecret.metadata.name);
       const controllerInventory = await waitFor(
         "fleet inventory after the independent controller upgrade",
         async () => {
@@ -1343,6 +1674,51 @@ test(
           configuration: { catalogSource: "openai-curated" },
         },
       ];
+      // Stage the final runtime configuration before stopping either controller.
+      // The original immutable reference remains available for retained releases.
+      const successorName = "occ-installation-successor";
+      const successorConfiguration = structuredClone(candidateInstallation);
+      successorConfiguration.drivers.compute.configuration.images.gateway = upgradeImages.runtime;
+      successorConfiguration.drivers.compute.configuration.images.agent = upgradeImages.runtime;
+      const successorObject = {
+        apiVersion: "v1",
+        kind: "Secret",
+        metadata: {
+          ...metadata(successorName),
+          annotations: {
+            "openclaw.dev/installation-id":
+              originalSecret.metadata.annotations["openclaw.dev/installation-id"],
+          },
+        },
+        immutable: true,
+        type: originalSecret.type,
+        data: {
+          ...originalSecret.data,
+          "installation.yaml": Buffer.from(JSON.stringify(successorConfiguration)).toString(
+            "base64",
+          ),
+        },
+      };
+      const successorUID = (
+        await writeFixtureObject(
+          run,
+          kubeArgs,
+          "create",
+          successorObject,
+          "jsonpath={.metadata.uid}",
+        )
+      ).trim();
+      const successor = await readInstallation(successorName);
+      assert.equal(successor.metadata.uid, successorUID, "staged Installation Secret was replaced");
+      assert.notEqual(successor.metadata.uid, originalSecret.metadata.uid);
+      candidateValues.installation.secretName = successorName;
+      const retainInstallationSecrets = async () => {
+        assertInstallationSecretRetained(
+          await readInstallation(originalSecret.metadata.name),
+          originalSecret,
+        );
+        assertInstallationSecretRetained(await readInstallation(successorName), successor);
+      };
       await writeFile(candidateValuesPath, JSON.stringify(candidateValues), { mode: 0o600 });
       await writeFile(candidateInstallationPath, JSON.stringify(candidateInstallation), {
         mode: 0o600,
@@ -1383,15 +1759,15 @@ test(
         OPENAI_API_KEY: undefined,
       };
 
-      // Commit the real Secret write, then simulate a lost client response.
-      // Resumption must use the recorded fleet and continue the same release.
+      // Interrupt after real quiescence and local preparation, before the Helm
+      // submission marker. Resume must retain the staged reference and fleet.
       const wrapperDirectory = join(directory, "interrupted-upgrade-bin");
       await mkdir(wrapperDirectory);
-      const realKubectl = (await run("sh", ["-c", "command -v kubectl"])).trim();
-      const wrapper = join(wrapperDirectory, "kubectl");
+      const realHelm = (await run("sh", ["-c", "command -v helm"])).trim();
+      const wrapper = join(wrapperDirectory, "helm");
       await writeFile(
         wrapper,
-        `#!/bin/sh\ncase " $* " in\n  *" replace --filename - "*) ${shellQuote(realKubectl)} "$@" || exit $?; exit 75 ;;\n  *) exec ${shellQuote(realKubectl)} "$@" ;;\nesac\n`,
+        `#!/bin/sh\nif [ "$1" = status ] && [ -f ${shellQuote(join(upgradeEvidence, "quiescence-worker-deployment.json"))} ]; then exit 75; fi\nexec ${shellQuote(realHelm)} "$@"\n`,
         { mode: 0o700 },
       );
       await assert.rejects(
@@ -1404,11 +1780,13 @@ test(
         }),
         /failed \(75\)/u,
       );
-      const installationSecret = await get("secret", "occ-installation-startup");
-      assert.equal(
-        Buffer.from(installationSecret.data["installation.yaml"], "base64").toString(),
-        await readFile(join(upgradeEvidence, "candidate-installation.yaml"), "utf8"),
+      await retainInstallationSecrets();
+      assert.ok(
+        Buffer.from(successor.data["installation.yaml"], "base64").toString() ===
+          (await readFile(join(upgradeEvidence, "candidate-installation.yaml"), "utf8")),
+        "prepared Installation bytes differ from the staged immutable Secret",
       );
+      await assert.rejects(readFile(join(upgradeEvidence, "helm-started")), { code: "ENOENT" });
       for (const component of ["api", "worker"]) {
         assert.equal(
           (await get("deployment", `openclaw-enterprise-${component}`)).spec.replicas,
@@ -1427,6 +1805,8 @@ test(
         output,
         /runtime image; controller image remained unchanged and 2 running Agents selected new revisions/u,
       );
+      await retainInstallationSecrets();
+      await assertMountedInstallation(successorName);
       const apiDeployment = await get("deployment", "openclaw-enterprise-api");
       const apiContainer = apiDeployment.spec.template.spec.containers.find(
         ({ name }) => name === "api",
@@ -1548,7 +1928,13 @@ test(
         assert.ok(!modelOutput.includes(value), "Upgrade TUI output leaked a credential");
       }
       assert.equal(JSON.parse(modelOutput).exitCode, 0);
+      await retainInstallationSecrets();
       await record("Independent runtime image upgrade and fresh model reply", {
+        installationReferences: {
+          original: { name: originalSecret.metadata.name, uid: originalSecret.metadata.uid },
+          successor: { name: successorName, uid: successor.metadata.uid },
+          retained: true,
+        },
         previousRevisionId: finalGateway.revisionId,
         revisionId: upgradedRevision,
         controllerImage: upgradeImages.controller,
@@ -1654,12 +2040,58 @@ test(
       });
     }
 
-    const { api, baseURL, externalRequest, occEnv, runGuideOcc } =
+    const { api, baseURL, externalRequest, installationId, occEnv, runGuideOcc } =
       await installProductionControlPlane();
     if (rehearsal) {
       await custody.assertPostgres();
       await custody.assertRelease();
       const { namespace, tenant } = await provisionNamespace({ api, externalRequest, runGuideOcc });
+      if (signinSelected) {
+        const { rehearseSignin } = await import("../helpers/signin/scenario.mjs");
+        try {
+          await rehearseSignin({
+            rehearsal,
+            system,
+            release,
+            directory,
+            custody,
+            kubectl,
+            kubeArgs,
+            localCluster,
+            waitFor,
+            run,
+            record,
+            api,
+            namespace,
+            tenant,
+            materialization,
+            signinSetup,
+            dns,
+          });
+        } catch (error) {
+          signinFailure = error;
+          throw error;
+        }
+        rehearsalComplete = true;
+        return;
+      }
+      if (onlineSelected) {
+        await rehearseOnlineMigration({
+          controllers: rehearsal,
+          namespace: system,
+          release,
+          directory,
+          run,
+          kubectl,
+          externalRequest,
+          custody,
+          localCluster,
+          waitFor,
+          record,
+        });
+        rehearsalComplete = true;
+        return;
+      }
       await rehearsePopulatedReturn({
         controllers: rehearsal,
         kubeconfig: selection.kubeconfigPath,

@@ -21,6 +21,8 @@ kind: reference/driver
 - [Methods](#methods)
   - [`ensureNamespace`](#method-ensure-namespace)
   - [`deleteNamespace`](#method-delete-namespace)
+  - [`checkNamespaceDeletion`](#method-check-namespace-deletion)
+  - [`resolveSandboxNamespaceContext`](#method-resolve-sandbox-namespace-context)
   - [`prepareRevision`](#method-prepare-revision)
   - [`stopRevision`](#method-stop-revision)
   - [`retireRevision`](#method-retire-revision)
@@ -44,6 +46,7 @@ kind: reference/driver
   - [`requiresStoppedPredecessors`](#method-requires-stopped-predecessors)
   - [`describePrepareRevisionFailure`](#method-describe-prepare-revision-failure)
   - [`getGatewayEndpoint`](#method-get-gateway-endpoint)
+  - [`getGatewayChatEndpoint`](#method-get-gateway-chat-endpoint)
   - [`getAgentRuntimeCredentialStatus`](#method-get-agent-runtime-credential-status)
   - [`provisionAgentRuntimeCredentials`](#method-provision-agent-runtime-credentials)
   - [`deleteAgentRuntimeCredentials`](#method-delete-agent-runtime-credentials)
@@ -51,6 +54,7 @@ kind: reference/driver
   - [`resolveSandboxNamespace`](#method-resolve-sandbox-namespace)
   - [`withdrawCredentialSource`](#method-withdraw-credential-source)
   - [`withdrawHarnessExposure`](#method-withdraw-harness-exposure)
+  - [`repositoryWorkerRestartDisposition`](#method-repository-worker-restart-disposition)
   - [`verifyRepositoryExecution`](#method-verify-repository-execution)
   - [`retireExpiredRepositoryAccess`](#method-retire-expired-repository-access)
   - [`rejectedExecutionWithdrawal`](#method-rejected-execution-withdrawal)
@@ -63,9 +67,8 @@ kind: reference/driver
 
 ## Overview
 
-Compute manages Namespaces, Agent workloads, identity, isolation, and readiness
-for OpenClaw Control Plane (OCC). A paired [Sandbox Driver](sandbox.md) can provision
-Harnesses; Compute retains gateway routing.
+Compute manages Namespace infrastructure, Agent workloads, identity, isolation, readiness, and
+gateway routing. A paired [Sandbox Driver](sandbox.md) can provision Harnesses.
 
 ## Interface
 
@@ -79,7 +82,8 @@ Harnesses; Compute retains gateway routing.
 | <a id="property-capability"></a>`capability`                                              | Required    | Must be `"compute"`.                                                                                                                                                            |
 | <a id="property-activation-order"></a>`activationOrder`                                   | Optional    | Defaults to `"afterCommit"`; controls traffic switching relative to saving the selected revision.                                                                               |
 | <a id="property-agent-provisioning"></a>`agentProvisioning`                               | Optional    | Lists supported execution modes; OCC rejects unlisted modes. Omission does not disable provisioning.                                                                            |
-| <a id="property-compute-lifecycle-hooks"></a>`computeLifecycleHooks`                      | Optional    | Inherited from `Driver`. Installed packages supply hooks on the registration. See [selected-driver hooks](#optional-selected-driver-hooks).                                     |
+| <a id="property-compute-lifecycle-hooks"></a>`computeLifecycleHooks`                      | Optional    | [Workload hooks](#optional-selected-driver-hooks).                                                                                                                              |
+| `namespaceLifecycleHooks`                                                                 | Optional    | [Registration-level Namespace hooks](namespace-lifecycle.md).                                                                                                                   |
 | <a id="property-maintenance-interval-ms"></a>`maintenanceIntervalMs`                      | Optional    | Interval between maintenance passes, in milliseconds; positive safe integer.                                                                                                    |
 | <a id="property-requires-agent-runtime-credentials"></a>`requiresAgentRuntimeCredentials` | Optional    | When `true`, OCC checks transport credentials before deployment and can create them before the first revision. Missing status/provisioning methods mean dependency unavailable. |
 | <a id="property-runtime-logging"></a>`runtimeLogging`                                     | Optional    | Defaults to `"platform"`; `"driver"` gives Compute ownership of native logging configuration and delivery.                                                                      |
@@ -93,8 +97,10 @@ Harnesses; Compute retains gateway routing.
 
 | Method                                                                                                               | Requirement | Caller and behavior                                                                                                                                                                                                                                                                                                                                       |
 | -------------------------------------------------------------------------------------------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| <a id="method-ensure-namespace"></a>`ensureNamespace`                                                                | Required    | Prepare or check isolation for the supplied Namespace, before an Agent exists. Return `namespaceReady` when ready.                                                                                                                                                                                                                                        |
+| <a id="method-ensure-namespace"></a>`ensureNamespace`                                                                | Required    | Prepare or verify Namespace isolation before Agents; return `namespaceReady` when ready.                                                                                                                                                                                                                                                                  |
 | <a id="method-delete-namespace"></a>`deleteNamespace`                                                                | Required    | Remove supported infrastructure for an empty Namespace. Return `namespaceDeleted` only after teardown. Refuse deletion of infrastructure outside the Driver's ownership.                                                                                                                                                                                  |
+| <a id="method-check-namespace-deletion"></a>`checkNamespaceDeletion`                                                 | Conditional | Read-only eligibility before participant cleanup.                                                                                                                                                                                                                                                                                                         |
+| <a id="method-resolve-sandbox-namespace-context"></a>`resolveSandboxNamespaceContext`                                | Conditional | Resolve Sandbox placement and client without provisioning.                                                                                                                                                                                                                                                                                                |
 | <a id="method-prepare-revision"></a>`prepareRevision`                                                                | Required    | Create or reuse the gateway and prepare the Harness. Return readiness for the requested Namespace, Agent, and revision. The worker supplies authorized revision context.                                                                                                                                                                                  |
 | <a id="method-stop-revision"></a>`stopRevision`                                                                      | Required    | Remove inbound routing and stop execution, including applicable Driver hooks and Sandbox cleanup. Keep Agent credentials, workspace data, and saved revisions. Repeated calls must be safe.                                                                                                                                                               |
 | <a id="method-retire-revision"></a>`retireRevision`                                                                  | Required    | Revoke workload access, stop the workload, and complete applicable Sandbox cleanup. Preserve the replacement's gateway.                                                                                                                                                                                                                                   |
@@ -116,7 +122,8 @@ Harnesses; Compute retains gateway routing.
 | <a id="method-activate-revision"></a>`activateRevision`, <a id="method-deactivate-revision"></a>`deactivateRevision` | Optional    | Switch traffic to a ready revision or withdraw an unpublished candidate. Production startup checks for both. A Driver selecting `beforeCommit` must also implement activation in development.                                                                                                                                                             |
 | <a id="method-requires-stopped-predecessors"></a>`requiresStoppedPredecessors`                                       | Optional    | Return `true` to stop older revisions before preparing a replacement. Otherwise the previous route can serve during preparation.                                                                                                                                                                                                                          |
 | <a id="method-describe-prepare-revision-failure"></a>`describePrepareRevisionFailure`                                | Optional    | Supply safe diagnostic fields for a rejected preparation. The worker validates the fields and excludes raw provider errors.                                                                                                                                                                                                                               |
-| <a id="method-get-gateway-endpoint"></a>`getGatewayEndpoint`                                                         | Optional    | Return the selected revision's private WSS address, or `undefined`. Workspace-file access and Agent native admin need this endpoint.                                                                                                                                                                                                                      |
+| <a id="method-get-gateway-endpoint"></a>`getGatewayEndpoint`                                                         | Optional    | Private WSS address for workspace-file access and native administration, or `undefined`.                                                                                                                                                                                                                                                                  |
+| <a id="method-get-gateway-chat-endpoint"></a>`getGatewayChatEndpoint`                                                | Optional    | Revision's WSS chat endpoint and equivalent HTTPS UI. Enforce [`operator.sessions.write`](../agent-native-admin.md#native-authority-and-drift) across HTTP, WebSocket, and device grants. Omission/`undefined` means unsupported; never fall back to `getGatewayEndpoint`.                                                                                |
 | <a id="method-get-agent-runtime-credential-status"></a>`getAgentRuntimeCredentialStatus`                             | Optional    | Report whether the Agent's generated transport credentials are stored. Missing support prevents the status read.                                                                                                                                                                                                                                          |
 | <a id="method-provision-agent-runtime-credentials"></a>`provisionAgentRuntimeCredentials`                            | Optional    | Create initial transport credentials for the approved Agent. Missing support prevents provisioning.                                                                                                                                                                                                                                                       |
 | <a id="method-delete-agent-runtime-credentials"></a>`deleteAgentRuntimeCredentials`                                  | Optional    | Remove Agent-owned credentials after revision retirement. A Driver that provisions them but omits deletion fails Agent deletion permanently.                                                                                                                                                                                                              |
@@ -124,10 +131,11 @@ Harnesses; Compute retains gateway routing.
 | <a id="method-resolve-sandbox-namespace"></a>`resolveSandboxNamespace`                                               | Optional    | Return the Namespace as provisioned by Compute. Paired Sandbox and Credential Gateway operations need this placement.                                                                                                                                                                                                                                     |
 | <a id="method-withdraw-credential-source"></a>`withdrawCredentialSource`                                             | Optional    | Confirm that the revision's attachment was revoked or is absent. Without this method the worker fails withdrawal with `CREDENTIAL_WITHDRAWAL_UNSUPPORTED`.                                                                                                                                                                                                |
 | <a id="method-withdraw-harness-exposure"></a>`withdrawHarnessExposure`                                               | Optional    | Remove dedicated OpenClaw status exposure after enrollment or permanent candidate failure with a Sandbox retained for diagnosis. The sweep makes at most five attempts per revision per worker start. Without this method the worker skips it.                                                                                                            |
+| <a id="method-repository-worker-restart-disposition"></a>`repositoryWorkerRestartDisposition`                        | Optional    | Assess [replacement](../repository-credentials/worker-replacement.md) from existing revision evidence. Omission means `unknown`.                                                                                                                                                                                                                          |
 | <a id="method-verify-repository-execution"></a>`verifyRepositoryExecution`                                           | Optional    | Identify an existing execution without starting or repairing it. Missing support supplies no identity for a repository credential session.                                                                                                                                                                                                                |
-| <a id="method-retire-expired-repository-access"></a>`retireExpiredRepositoryAccess`                                  | Optional    | Report `withdrawn` after verifying Git access is gone and separately authorized inference can continue. Report `pending` while confirmation is outstanding, or `retire-runtime` if it cannot safely continue. Without this method, expiry retires the runtime except for `policyReductionVersion: 2` egress plans, which use policy reduction.            |
+| <a id="method-retire-expired-repository-access"></a>`retireExpiredRepositoryAccess`                                  | Optional    | For expiry or committed standing/finite withdrawal, report `withdrawn` only after verifying revoked Git and the same independently authorized, ready inference runtime; otherwise `pending` or `retire-runtime`. Without this method, expiry retires the runtime except for `policyReductionVersion: 2` egress plans, which use policy reduction.         |
 | <a id="method-rejected-execution-withdrawal"></a>`rejectedExecutionWithdrawal`                                       | Optional    | After release is refused, select a callback to withdraw a previously admitted grant. The worker runs it under the active revision's claim. With no callback, the refusal stands.                                                                                                                                                                          |
-| <a id="method-observe-revision"></a>`observeRevision`                                                                | Optional    | Read the existing Harness state during supervision of an unverified repository execution. A failed or invalid observation yields `unknown`. This read cannot establish the execution identity for Git access.                                                                                                                                             |
+| <a id="method-observe-revision"></a>`observeRevision`                                                                | Optional    | Read Harness state for an unverified repository execution. Failure yields `unknown`. This cannot establish Git execution identity.                                                                                                                                                                                                                        |
 | <a id="method-get-runtime-images"></a>`getRuntimeImages`                                                             | Optional    | Report revision-owned containers, excluding separate Sandbox Driver workloads. Return full lowercase 40-character Git SHAs for known commits and `null` for unknown image IDs or commits; never infer commits from tags. OCC returns entries without validation. Without a selected revision it reports `undeployed`; without this method, `unsupported`. |
 | <a id="method-discover-harness-models"></a>`discoverHarnessModels`                                                   | Optional    | Accept `authMethod`, `provider`, and `apiKey`. Return native model IDs and names. Never persist the credential. If discovery is unavailable, enter the model ID manually.                                                                                                                                                                                 |
 | <a id="method-diagnose-agent-deployment"></a>`diagnoseAgentDeployment`                                               | Optional    | Return current checks for one revision. Without support, OCC reports dependency unavailable.                                                                                                                                                                                                                                                              |
@@ -145,14 +153,12 @@ uses a 10-second timeout and accepts up to 4 MiB per response, ten pages, and
 
 ### Namespace and gateway results
 
-Return the requested `namespaceId`. Failures are `retryable` or `permanent`;
-a true ready or deleted flag succeeds only without a failure. Worker-log
-failure reasons allow up to 256 characters: letters, digits, spaces, and
+Namespace results follow the [shared lifecycle contract](namespace-lifecycle.md).
+Worker-log failure reasons allow up to 256 characters: letters, digits, spaces, and
 `. _ : / @ -`. Exclude provider output and other tenants' values.
 
-Derive a [gateway endpoint](kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
-from trusted settings and the approved resource IDs. Returning an address does
-not establish readiness or authorize a connection.
+Derive [gateway endpoints](kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
+from trusted settings and approved resource IDs, independently of readiness and authorization.
 
 ### Optional initial runtime credential provisioning
 
@@ -184,12 +190,13 @@ belongs to the [Credential Refresh Driver](credential-refresh.md#device-authoriz
 
 An ordinary `ready: false` keeps preparation pending. Return a
 [`pendingReason`](../agents/deployment.md#pending-deployment-progress) if known.
-The worker rejects a readiness result for another revision. For a held startup
+The worker rejects another revision's readiness result. For a held startup
 failure, return validated `runtimeFailure` evidence for this revision:
 `component`, `check`, `checkedAt`, `code`, and an optional
 [`cause`](../agents/deployment.md#model-check-failure-cause). Omit credentials,
 provider messages, and untrusted observations. The [worker flow](../controller/reconciliation.md#deferred-namespace-and-agent-convergence)
-explains which failures end deployment immediately and which wait until its deadline.
+explains which failures end deployment immediately, such as
+[`crash-loop`](kubernetes-compute.md#troubleshooting), and which wait until its deadline.
 
 Throw `ComputePreparationFailedError` for terminal initialization failure.
 The worker records the failed deployment and queues `stopRevision` for that

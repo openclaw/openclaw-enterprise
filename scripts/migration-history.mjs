@@ -169,6 +169,18 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 71 && completedCount > 71) {
     return "preHarnessOverrides";
   }
+  if (count === 72 && completedCount > 72) {
+    return "preAccountAdministrationPolicy";
+  }
+  if (count === 73 && completedCount > 73) {
+    return "preFiniteRepositorySessionWithdrawal";
+  }
+  if (count === 74 && completedCount > 74) {
+    return "preHumanAuthenticationResults";
+  }
+  if (count === 75 && completedCount > 75) {
+    return "preNativeBrowserAccess";
+  }
   if (count === completedCount) {
     return "completed";
   }
@@ -348,7 +360,10 @@ async function preflight(client, manifest) {
   return shape;
 }
 
-export async function migrateWithHistory(pool, { checkOnly = false, expectEmpty = false } = {}) {
+export async function migrateWithHistory(
+  pool,
+  { checkOnly = false, expectEmpty = false, requireCurrent = false } = {},
+) {
   const { manifest, migrations } = await readManifest();
   const client = await pool.connect();
   let locked = false;
@@ -372,7 +387,26 @@ export async function migrateWithHistory(pool, { checkOnly = false, expectEmpty 
       error.code = "MIGRATION_HISTORY_NOT_EMPTY";
       throw error;
     }
+    if (requireCurrent) {
+      if (history !== "completed") {
+        const error = new Error(
+          "The separate database deployment has not completed the candidate migration history. " +
+            "Keep writers stopped, reconcile the migration, and retry the service deployment.",
+        );
+        error.code = "MIGRATION_HISTORY_PENDING";
+        throw error;
+      }
+      return history;
+    }
     if (!checkOnly) {
+      if (history === "completed") {
+        // Keep Drizzle's refusal on read-only sessions, including standbys,
+        // without overriding the operator's transaction mode.
+        const { rows } = await client.query("SHOW transaction_read_only");
+        if (rows[0]?.transaction_read_only === "off") {
+          return history;
+        }
+      }
       // Pass the verified SQL to Drizzle's stock migrator without reading mutable
       // source files again. Its receipt read and transaction share this backend.
       const db = drizzle(client);

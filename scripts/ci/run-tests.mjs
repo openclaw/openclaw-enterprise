@@ -1,8 +1,24 @@
-import { spawn, spawnSync } from "node:child_process";
-import { constants, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { preparationIdentity, readRuntimeProvenance } from "./runtime-provenance.ts";
+import { randomUUID } from "node:crypto";
+import { fork, spawn, spawnSync } from "node:child_process";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  realpathSync,
+  rmdirSync,
+  statSync,
+  unlinkSync,
+} from "node:fs";
 import { availableParallelism, cpus, constants as osConstants } from "node:os";
-import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { access, appendFile, lstat, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
 import { startAgentNamespaceCapture } from "./k3d-diagnostics.mjs";
@@ -15,8 +31,16 @@ import {
   redactLogLine,
   redactOutputLines,
 } from "./failure-redaction.mjs";
-import { qualifySkipperRelease } from "./skipper-release.ts";
+import {
+  exercisedLaneStatus,
+  exercisedAssertionFailures,
+  recordsCoverage,
+} from "./full-integration-coverage.ts";
+import { projectSkipperRunnerReceipt, qualifySkipperRelease } from "./skipper-release.ts";
 import { loadTestSuites } from "./test-suites.mjs";
+import { openShellHarnessError, openShellRequiredEnv } from "./openshell-model-inputs.mjs";
+import { collectInstallationPhases } from "./openshell-installation-phase.ts";
+import { boundedProgressLines, openShellProgress } from "./openshell-progress.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const reporterPath = fileURLToPath(new URL("./reporter.mjs", import.meta.url));
@@ -28,7 +52,10 @@ function usage() {
     "Usage:",
     "  node scripts/ci/run-tests.mjs audit [--manifest <file>] [--root <dir>]",
     "  node scripts/ci/run-tests.mjs check-selection <lane> --file <manifest-path> [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--file <manifest-path>] [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--file <manifest-path> [--test-name <literal>]] [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.mjs run <lane> --lifecycle complete --attempt <fresh-directory> [--file <manifest-path> [--test-name <literal>]] [--manifest scripts/ci/test-suites.json] [--root <dir>]",
+    "    Use --test-name=<literal> for names beginning with --.",
+    "    Complete mode requires the canonical manifest under --root; normalized relative or absolute paths are accepted, symlink aliases are not.",
     "  node scripts/ci/run-tests.mjs aggregate <group> --results-dir <dir> [--needs <json-file>] [--lanes <json-array>] [--release-selection <file>] [--manifest <file>] [--root <dir>]",
   ].join("\n");
 }
@@ -45,6 +72,21 @@ function parseArgs(argv) {
       continue;
     }
 
+    if (token === "--test-name-pattern" || token.startsWith("--test-name-pattern=")) {
+      throw new Error(
+        "--test-name-pattern is unsupported; use --test-name with one literal case name.",
+      );
+    }
+    if (
+      (token === "--test-name" || token.startsWith("--test-name=")) &&
+      Object.hasOwn(options, "test-name")
+    ) {
+      throw new Error("--test-name may only be specified once.");
+    }
+    if (token.startsWith("--test-name=")) {
+      options["test-name"] = token.slice("--test-name=".length);
+      continue;
+    }
     const key = token.slice(2);
     const value = rest[index + 1];
     if (!value || value.startsWith("--")) {
@@ -54,7 +96,7 @@ function parseArgs(argv) {
     index += 1;
   }
 
-  if (!["audit", "check-selection", "run", "aggregate"].includes(command)) {
+  if (!["audit", "check-selection", "run", "aggregate", "prepared-signin"].includes(command)) {
     throw new Error(usage());
   }
 
@@ -94,7 +136,11 @@ function envObject(value, path, issues) {
 
   const env = {};
   for (const [name, envValue] of Object.entries(value)) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || typeof envValue !== "string") {
+    if (
+      name === "__proto__" ||
+      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ||
+      typeof envValue !== "string"
+    ) {
       issues.push(issue("invalid-manifest", `${path}.${name} must be a string env value`));
       continue;
     }
@@ -118,6 +164,7 @@ function normalizeFile(file, laneName, index, issues) {
   return {
     path: file.path,
     expectedTests: stringArray(file.expectedTests, `${path}.expectedTests`, issues),
+    env: envObject(file.env, `${path}.env`, issues),
     requiredEnv: stringArray(file.requiredEnv, `${path}.requiredEnv`, issues),
     optionalEnv: stringArray(file.optionalEnv, `${path}.optionalEnv`, issues),
   };
@@ -259,6 +306,7 @@ function normalizeManifest(raw, manifestPath) {
       env: envObject(lane.env, `lanes.${laneName}.env`, issues),
       requiredEnv: stringArray(lane.requiredEnv, `lanes.${laneName}.requiredEnv`, issues),
       optionalEnv: stringArray(lane.optionalEnv, `lanes.${laneName}.optionalEnv`, issues),
+      focusedEnv: stringArray(lane.focusedEnv, `lanes.${laneName}.focusedEnv`, issues),
       fileConcurrency: fileConcurrencyLimit(
         lane.fileConcurrency,
         `lanes.${laneName}.fileConcurrency`,
@@ -494,6 +542,7 @@ function shouldRemoveInheritedEnv(name) {
     name === "DEBUG" ||
     name === "NODE_TEST_CONTEXT" ||
     name === "NODE_TEST_WORKER_ID" ||
+    name === "OPENCLAW_CI_COMPLETE_PHASE" ||
     name.startsWith("OCC_TEST_") ||
     name.startsWith("OCC_PROBE_") ||
     name.endsWith("_KEEP") ||
@@ -514,6 +563,18 @@ function baseChildEnv(inheritedEnv) {
     }
   }
   return env;
+}
+
+function fileInputEnv(lane, file) {
+  return mergeEnv(
+    baseChildEnv([
+      ...lane.requiredEnv,
+      ...file.requiredEnv,
+      ...lane.optionalEnv,
+      ...file.optionalEnv,
+    ]),
+    lane.env,
+  );
 }
 
 function testTimeoutMs() {
@@ -735,16 +796,21 @@ async function preparationFailureText(error, lane, statePath, root) {
     .filter((line) => /^\s+at\s/u.test(line))
     .map((line) => line.trim())
     .join("\n");
-  let stateEnv;
+  let state;
   try {
-    stateEnv = JSON.parse(await readFile(statePath, "utf8"))?.env;
+    state = JSON.parse(await readFile(statePath, "utf8"));
   } catch {
     // No lane state, or not JSON.
   }
   return (
     redactFailureDetail(
       { message: message.slice(0, failureInputLimit), stack: frames.slice(0, failureInputLimit) },
-      failureSecrets([process.env, lane.env, isObject(stateEnv) ? stateEnv : {}]),
+      failureSecrets([
+        process.env,
+        lane.env,
+        isObject(state?.defaults) ? state.defaults : {},
+        isObject(state?.env) ? state.env : {},
+      ]),
       root,
     ) ?? {}
   );
@@ -758,7 +824,11 @@ function validatePreparedEnv(value) {
     throw new Error("prepareFile env must be an object");
   }
   for (const [name, envValue] of Object.entries(value)) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || typeof envValue !== "string") {
+    if (
+      name === "__proto__" ||
+      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ||
+      typeof envValue !== "string"
+    ) {
       throw new Error("prepareFile env must contain string env values");
     }
   }
@@ -774,6 +844,7 @@ const timeoutGraceMs = 5_000;
 // Process groups of the Node test runners still running, so a signal that ends this
 // runner can end them too: they run detached, out of the terminal's process group.
 const liveGroups = new Set();
+const liveCase2Directories = new Set();
 
 function killGroup(pgid, signal) {
   // Membership is the real guard: only a group this runner spawned and whose
@@ -807,6 +878,9 @@ function forwardSignal(signal) {
   for (const pgid of liveGroups) {
     killGroup(pgid, "SIGKILL");
   }
+  for (const directory of liveCase2Directories) {
+    removeK3dCase2Directory(directory);
+  }
   for (const other of forwardedSignals) {
     process.removeListener(other, forwardSignal);
   }
@@ -826,6 +900,9 @@ function addLiveGroup(pgid) {
     }
   }
   liveGroups.add(pgid);
+  if (process.env.OPENCLAW_CI_COMPLETE_PHASE === "1" && process.send) {
+    process.send({ type: "ci-lifecycle-group", id: pgid });
+  }
 }
 
 // spawnSync's contract, without blocking the runner while other files run: stdout
@@ -840,19 +917,31 @@ function addLiveGroup(pgid) {
 // gets SIGKILL once the grace period is over, and whenever the runner exits:
 // anything still in its group then has outlived its file. ENOBUFS discards the
 // rest of the output, so it kills the group at once.
-function runNode(args, { cwd, env, timeout }) {
+function runNode(args, { cwd, env, timeout, onProgress }) {
   return new Promise((resolvePromise) => {
     const chunks = [];
     let bytes = 0;
     let error;
     let settled = false;
     let graceTimer;
-    const child = spawn(process.execPath, args, {
-      cwd,
-      env,
-      detached: true,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    // The existing command owner keeps the test group alive until its result
+    // drains and stops that group if the complete-mode phase loses its parent.
+    const supervised = process.env.OPENCLAW_CI_COMPLETE_PHASE === "1";
+    let commandResult;
+    const child = supervised
+      ? fork(new URL("./cleanup-command.mjs", import.meta.url), [], {
+          cwd,
+          env,
+          detached: true,
+          execArgv: [],
+          stdio: ["ignore", "pipe", "pipe", "ipc"],
+        })
+      : spawn(process.execPath, args, {
+          cwd,
+          env,
+          detached: true,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
     const pgid = child.pid;
     if (pgid !== undefined) {
       addLiveGroup(pgid);
@@ -865,7 +954,12 @@ function runNode(args, { cwd, env, timeout }) {
       if (error === undefined) {
         error = Object.assign(new Error(`child ${code}`), { code });
         if (code === "ETIMEDOUT") {
-          child.kill("SIGTERM");
+          if (supervised) {
+            // The anchor ignores TERM; the Node runner and its children receive it.
+            killGroup(pgid, "SIGTERM");
+          } else {
+            child.kill("SIGTERM");
+          }
           graceTimer = setTimeout(() => {
             killGroup(pgid, "SIGKILL");
             closePipes();
@@ -880,22 +974,39 @@ function runNode(args, { cwd, env, timeout }) {
     };
     const timer = setTimeout(() => stop("ETIMEDOUT"), timeout);
     for (const stream of [child.stdin, child.stdout, child.stderr]) {
-      stream.on("error", () => {});
+      stream?.on("error", () => {});
     }
-    child.stdin.end();
+    child.stdin?.end();
     child.stderr.resume();
+    const readProgress = boundedProgressLines((line) => {
+      // Only this small closed record reaches the live log. Ordinary reporter
+      // output still waits for final accounting and failure redaction below.
+      try {
+        const event = JSON.parse(line);
+        const progress =
+          event?.type === "test:progress" ? openShellProgress(event.data) : undefined;
+        if (progress) {
+          onProgress(progress);
+        }
+      } catch {
+        // Final parsing owns malformed reporter output and its failure result.
+      }
+    });
     child.stdout.on("data", (chunk) => {
       if (error?.code === "ENOBUFS") {
         return;
       }
       if (bytes + chunk.length > maxReporterBytes) {
-        chunks.push(chunk.subarray(0, maxReporterBytes - bytes));
+        const admitted = chunk.subarray(0, maxReporterBytes - bytes);
+        chunks.push(admitted);
         bytes = maxReporterBytes;
+        readProgress(admitted.toString("utf8"));
         stop("ENOBUFS");
         return;
       }
       chunks.push(chunk);
       bytes += chunk.length;
+      readProgress(chunk.toString("utf8"));
     });
     const finish = (status, signal) => {
       if (settled) {
@@ -904,24 +1015,52 @@ function runNode(args, { cwd, env, timeout }) {
       settled = true;
       clearTimeout(timer);
       clearTimeout(graceTimer);
+      if (supervised) {
+        if (commandResult) {
+          ({ code: status, signal } = commandResult);
+          if (commandResult.error) {
+            error ??= new Error("Node command could not start.");
+          }
+        } else {
+          error ??= new Error("Node command owner exited without a result.");
+        }
+      }
       resolvePromise({
         status,
         signal,
         stdout: Buffer.concat(chunks).toString("utf8"),
+        processGroupId: pgid,
         ...(error ? { error } : {}),
       });
     };
     child.on("exit", () => {
-      // The runner has reported; whatever it left in its group goes now.
-      killGroup(pgid, "SIGKILL");
+      // The anchor stops its own group before exiting. Ordinary runners retain
+      // their existing exit cleanup; never signal a departed anchor's numeric ID.
+      if (!supervised) {
+        killGroup(pgid, "SIGKILL");
+      }
       liveGroups.delete(pgid);
     });
     child.on("error", (spawnError) => {
+      if (supervised && child.pid !== undefined) {
+        stop("EPIPE");
+        return;
+      }
       error ??= spawnError;
       liveGroups.delete(pgid);
       finish(null, null);
     });
     child.on("close", finish);
+    if (supervised) {
+      child.on("message", (result) => {
+        commandResult = result;
+      });
+      child.send({ command: process.execPath, args }, (sendError) => {
+        if (sendError) {
+          stop("EPIPE");
+        }
+      });
+    }
   });
 }
 
@@ -1026,17 +1165,22 @@ function failureDetails(events, absolutePath, secrets, root) {
 }
 
 // Shares the diagnostics file with the k3d capture; keep it out of other setup.
-async function recordFailure(setup, statePath, lane, file, details) {
-  await setup(() => recordFailureDetails(statePath, lane, file, details)).catch(() => {
-    console.error(`[run:${lane}] failure details unavailable for ${file}`);
-  });
+async function recordFailure(setup, statePath, lane, file, details, preparationId) {
+  await setup(() => recordFailureDetails(statePath, lane, file, details, preparationId)).catch(
+    () => {
+      console.error(`[run:${lane}] failure details unavailable for ${file}`);
+    },
+  );
 }
 
-async function recordFailureDetails(statePath, lane, file, details) {
+async function recordFailureDetails(statePath, lane, file, details, preparationId) {
   const diagnosticsPath = `${statePath}.diagnostics.json`;
-  let report = { lane };
+  let report = { lane, preparationId };
   try {
-    report = JSON.parse(await readFile(diagnosticsPath, "utf8"));
+    const previous = JSON.parse(await readFile(diagnosticsPath, "utf8"));
+    if (previous.lane === lane && previous.preparationId === preparationId) {
+      report = previous;
+    }
   } catch {
     // The first failed file (or passing k3d file) starts the report.
   }
@@ -1138,11 +1282,175 @@ function validateExpectedTests(path, expectedTests, tests, issues) {
   }
 }
 
-async function runFile(root, lane, file, statePath, prepareFile, setup = (step) => step()) {
+const case2PhaseEnv = "OCC_TEST_K3D_CASE2_PHASE_FILE";
+
+function sameDirectory(path, identity) {
+  try {
+    const current = lstatSync(path);
+    return (
+      current.isDirectory() &&
+      current.dev === identity.dev &&
+      current.ino === identity.ino &&
+      current.uid === identity.uid &&
+      (current.mode & 0o777) === 0o700
+    );
+  } catch {
+    return false;
+  }
+}
+
+function openK3dCase2Directory(statePath) {
+  if (process.platform !== "linux") {
+    return undefined;
+  }
+  let entry;
+  let parentFd;
+  let fd;
+  let identity;
+  try {
+    const parent = realpathSync(dirname(statePath));
+    parentFd = openSync(parent, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    const parentStatus = fstatSync(parentFd);
+    const uid = process.getuid();
+    // Directory entries must remain under the runner's control through cleanup.
+    if (parentStatus.uid !== uid || (parentStatus.mode & 0o022) !== 0) {
+      throw new Error("case-2 state parent is not private to the runner");
+    }
+    entry = mkdtempSync(`/proc/self/fd/${parentFd}/.k3d-case2-`);
+    const path = join(parent, basename(entry));
+    // Establish ownership from the opened descriptor before checking either name.
+    fd = openSync(entry, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    const opened = fstatSync(fd);
+    if (opened.uid !== uid || (opened.mode & 0o777) !== 0o700 || !sameDirectory(entry, opened)) {
+      throw new Error("case-2 directory identity changed");
+    }
+    identity = opened;
+    if (!sameDirectory(path, identity)) {
+      throw new Error("case-2 directory identity changed");
+    }
+    const directory = { path, entry, parentFd, fd, identity };
+    liveCase2Directories.add(directory);
+    return directory;
+  } catch {
+    if (entry && identity && sameDirectory(entry, identity)) {
+      try {
+        rmdirSync(entry);
+      } catch {
+        console.error("[run:k3d-model] case-2 receipt directory could not be removed");
+      }
+    }
+    for (const descriptor of [fd, parentFd]) {
+      if (descriptor !== undefined) {
+        closeSync(descriptor);
+      }
+    }
+    return undefined;
+  }
+}
+
+function removeK3dCase2Directory(directory) {
+  if (!liveCase2Directories.delete(directory)) {
+    return;
+  }
+  try {
+    // Only unlink the two receipt names in the opened directory. Never chase a
+    // replacement path or recursively remove child-controlled contents.
+    for (const name of ["case-2.json", "case-2.json.tmp"]) {
+      try {
+        unlinkSync(`/proc/self/fd/${directory.fd}/${name}`);
+      } catch (error) {
+        if (error?.code !== "ENOENT") {
+          throw error;
+        }
+      }
+    }
+    if (!sameDirectory(directory.entry, directory.identity)) {
+      throw new Error("case-2 directory identity changed");
+    }
+    rmdirSync(directory.entry);
+  } catch {
+    console.error("[run:k3d-model] case-2 receipt directory could not be removed");
+  } finally {
+    for (const descriptor of [directory.fd, directory.parentFd]) {
+      try {
+        closeSync(descriptor);
+      } catch {
+        console.error("[run:k3d-model] case-2 receipt descriptor could not be closed");
+      }
+    }
+  }
+}
+
+function readK3dCase2Phase(directory) {
+  const limit = 512;
+  if (!sameDirectory(directory.path, directory.identity)) {
+    return undefined;
+  }
+  try {
+    const fd = openSync(
+      `/proc/self/fd/${directory.fd}/case-2.json`,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    try {
+      const initial = fstatSync(fd);
+      if (!initial.isFile() || initial.nlink !== 1 || initial.size > limit) {
+        return undefined;
+      }
+      const bytes = Buffer.alloc(limit + 1);
+      let count = 0;
+      while (count < bytes.length) {
+        const read = readSync(fd, bytes, count, bytes.length - count, count);
+        if (read === 0) {
+          break;
+        }
+        count += read;
+      }
+      const final = fstatSync(fd);
+      if (
+        count > limit ||
+        count !== initial.size ||
+        count !== final.size ||
+        final.nlink !== 1 ||
+        !sameDirectory(directory.path, directory.identity)
+      ) {
+        return undefined;
+      }
+      const row = JSON.parse(bytes.subarray(0, count).toString("utf8"));
+      if (!row || Object.keys(row).length !== 7) {
+        return undefined;
+      }
+      const { version, caseId, setupEntered, setupCompleted, bodyEntered, firstError, teardown } =
+        row;
+      if (
+        version !== 1 ||
+        caseId !== "dedicated-skill-source-policy" ||
+        setupEntered !== true ||
+        typeof setupCompleted !== "boolean" ||
+        typeof bodyEntered !== "boolean" ||
+        (bodyEntered && !setupCompleted) ||
+        (setupCompleted && !bodyEntered && firstError !== "unobserved") ||
+        !["unobserved", "assertion", "timeout", "abort", "aggregate", "other"].includes(
+          firstError,
+        ) ||
+        !["unobserved", "entered", "completed", "failed"].includes(teardown)
+      ) {
+        return undefined;
+      }
+      return { version, caseId, setupEntered, setupCompleted, bodyEntered, firstError, teardown };
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    // A missing or malformed child receipt supplies no phase evidence.
+    return undefined;
+  }
+}
+
+async function runFile(root, lane, file, statePath, prepareFile, setup, preparationId, testName) {
   const issues = [];
   const relativePath = repoRelativePath(root, file.path);
   const absolutePath = resolveRepoPath(root, file.path, issues, relativePath);
-  const prepared = { env: {}, cleanup: null };
+  const prepared = { defaults: {}, env: {}, cleanup: null };
   let cleanupResult = null;
 
   if (!absolutePath || !(await exists(absolutePath))) {
@@ -1171,6 +1479,8 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     return emptyFileResult(relativePath, issues);
   }
 
+  const inputs = fileInputEnv(lane, file);
+  const modelInputs = mergeEnv(inputs, file.env);
   if (prepareFile) {
     try {
       const result =
@@ -1181,15 +1491,22 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
                 lane: { name: lane.name, env: lane.env, requiredEnv: lane.requiredEnv },
                 file,
                 statePath,
+                modelSelectors: {
+                  OCC_TEST_OPENSHELL_HARNESS: modelInputs.OCC_TEST_OPENSHELL_HARNESS,
+                  OCC_TEST_OPENSHELL_MODEL_BASE_URL: modelInputs.OCC_TEST_OPENSHELL_MODEL_BASE_URL,
+                },
               }),
             prepareLimitMs(),
           ),
         )) ?? {};
-      prepared.env = validatePreparedEnv(result.env);
-      prepared.cleanup = result.cleanup ?? null;
-      if (prepared.cleanup !== null && typeof prepared.cleanup !== "function") {
+      const cleanup = result.cleanup ?? null;
+      if (cleanup !== null && typeof cleanup !== "function") {
         throw new Error("prepareFile cleanup must be a function");
       }
+      // A returned resource owner still needs cleanup when its output is invalid.
+      prepared.cleanup = cleanup;
+      prepared.defaults = validatePreparedEnv(result.defaults);
+      prepared.env = validatePreparedEnv(result.env);
     } catch (error) {
       if (error instanceof StepTimeoutError) {
         // Its turn in the setup queue came after the deadline, or it ran into the deadline.
@@ -1211,11 +1528,20 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
           error: sanitized,
         }),
       );
-      await recordFailure(setup, statePath, lane.name, relativePath, {
-        reason: "prepare",
-        error: { ...sanitized, ...(await preparationFailureText(error, lane, statePath, root)) },
-      });
-      return emptyFileResult(relativePath, issues);
+      await recordFailure(
+        setup,
+        statePath,
+        lane.name,
+        relativePath,
+        {
+          reason: "prepare",
+          error: { ...sanitized, ...(await preparationFailureText(error, lane, statePath, root)) },
+        },
+        preparationId,
+      );
+      if (!prepared.cleanup) {
+        return emptyFileResult(relativePath, issues);
+      }
     }
   }
 
@@ -1225,12 +1551,8 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   }
 
   const requiredEnv = [...lane.requiredEnv, ...file.requiredEnv];
-  const env = mergeEnv(
-    baseChildEnv([...requiredEnv, ...lane.optionalEnv, ...file.optionalEnv]),
-    lane.env,
-    prepared.env,
-  );
-  for (const name of requiredEnv) {
+  const env = mergeEnv(inputs, prepared.defaults, file.env, prepared.env);
+  for (const name of openShellRequiredEnv(lane.name, relativePath, requiredEnv, env)) {
     if (env[name] === undefined || env[name] === "") {
       issues.push(
         issue("missing-env", `lane ${lane.name} requires env ${name}`, {
@@ -1245,35 +1567,100 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   let tests = [];
   let skippedSuites = [];
   let fileFailure;
+  let testRunExercised = false;
   let details;
   let nodeElapsedMs;
   let agentActivity;
+  const installationProgress = ["openshell", "openshell-policy"].includes(lane.name);
+  const installationPhases = collectInstallationPhases();
   let measurements = [];
   let timeout;
+  let case2Directory;
+  let case2Phase;
   try {
     if (issues.length === 0) {
-      agentActivity = await startAgentNamespaceCapture({
-        statePath,
-        lane: lane.name,
-        file: relativePath,
-      }).catch(() => {
-        console.error(
-          `[run:${lane.name}] Agent namespace activity unavailable for ${relativePath}`,
-        );
-        return undefined;
-      });
+      // An externally prepared release case has no diagnostic collection state.
+      agentActivity =
+        statePath &&
+        (await startAgentNamespaceCapture({
+          statePath,
+          lane: lane.name,
+          file: relativePath,
+          preparationId,
+        }).catch(() => {
+          console.error(
+            `[run:${lane.name}] Agent namespace activity unavailable for ${relativePath}`,
+          );
+          return undefined;
+        }));
       // The capture names a private directory for the file's container log records.
       Object.assign(env, agentActivity?.env);
+      delete env[case2PhaseEnv];
+      if (
+        lane.name === "k3d-model" &&
+        relativePath === "tests/integration/harness-topology-k3d-real.test.mjs"
+      ) {
+        case2Directory = openK3dCase2Directory(statePath);
+        if (case2Directory) {
+          const { dev, ino } = case2Directory.identity;
+          env[case2PhaseEnv] = JSON.stringify({ path: case2Directory.path, dev, ino });
+        }
+      }
+      if (installationProgress) {
+        env.OCC_TEST_OPENSHELL_INSTALLATION_PROGRESS = "1";
+      }
       const nodeStarted = performance.now();
       timeout = fileTimeout();
-      nodeResult = await runNode(["--test", "--test-reporter", reporterPath, absolutePath], {
+      const args = ["--test", "--test-reporter", reporterPath];
+      if (testName !== undefined) {
+        // Only the Node child needs a regex. Parent accounting uses the literal
+        // name, and rejects any extra cases selected by Node's ancestry rules.
+        const escaped = testName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        args.push("--test-name-pattern", new RegExp(`^${escaped}$`).toString());
+      }
+      args.push(absolutePath);
+      nodeResult = await runNode(args, {
         cwd: root,
         env,
         timeout: timeout.timeoutMs,
+        onProgress: (progress) => {
+          const { kind, stage, outcome } = progress;
+          if (kind === "openshell-installation") {
+            if (installationProgress) {
+              installationPhases.accept(progress);
+            }
+            return;
+          }
+          if (kind === "openshell-stage-failure") {
+            process.stderr.write(
+              `[run:${lane.name}] ${relativePath}: ${kind} ${stage} ${progress.category} code=${progress.code ?? "unknown"} workflow=${progress.location}\n`,
+            );
+            return;
+          }
+          process.stderr.write(`[run:${lane.name}] ${relativePath}: ${kind} ${stage} ${outcome}\n`);
+        },
       });
       nodeElapsedMs = Math.round(performance.now() - nodeStarted);
 
       const events = parseReporter(nodeResult.stdout, nodeResult.error?.code === "ETIMEDOUT");
+      if (
+        testName !== undefined &&
+        events.some(
+          (event) =>
+            ["test:pass", "test:fail"].includes(event.type) &&
+            (event.data?.testType === "suite" || event.data?.nesting > 0),
+        )
+      ) {
+        // Flat required names cannot establish which absent descendants belong
+        // to a selected ancestor. Nested coverage still requires the whole file.
+        issues.push(
+          issue(
+            "unsupported-test-selection",
+            "--test-name supports only standalone top-level test cases; run the whole file for suites or subtests",
+            { file: relativePath },
+          ),
+        );
+      }
       // The job env holds OCC_TEST_* values the child never got; the child env
       // holds prepared values (database URLs) the job never had. Redact both.
       const secrets = failureSecrets([process.env, env]);
@@ -1299,19 +1686,40 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
       measurements = events
         .filter((event) => event.type === "test:diagnostic" && event.data?.kind === "measurement")
         .map((event) => event.data.measurement);
-      tests = events
-        .filter((event) => isRealTestEvent(event, absolutePath))
-        .map((event) => ({
-          name: event.data.name,
-          status: testStatus(event),
-          file: event.data.file ? repoRelativePath(root, event.data.file) : relativePath,
-          line: event.data.line,
-          column: event.data.column,
-          skip: event.data.skip,
-          todo: event.data.todo,
-          error: failureError(event.data.error),
-          durationMs: event.data.durationMs,
-        }));
+      const terminalEvents = events.filter(
+        (event) =>
+          isRealTestEvent(event, absolutePath) ||
+          ((event.type === "test:pass" || event.type === "test:fail") &&
+            event.data?.testType === "suite"),
+      );
+      const caseEvents = terminalEvents.filter((event) => event.data.testType !== "suite");
+      let coverageAssertions;
+      if (
+        recordsCoverage(process.env.GITHUB_WORKFLOW) &&
+        !nodeResult.error &&
+        !nodeResult.signal &&
+        !rootFailure &&
+        !events.some((event) => event.type === "test:interrupted")
+      ) {
+        coverageAssertions = exercisedAssertionFailures(
+          events.filter((event) => event.type === "test:summary").map((event) => event.data),
+          terminalEvents,
+          nodeResult.status,
+        );
+        testRunExercised = coverageAssertions !== undefined;
+      }
+      tests = caseEvents.map((event) => ({
+        name: event.data.name,
+        status: testStatus(event),
+        ...(coverageAssertions?.has(event) ? { assertionFailure: true } : {}),
+        file: event.data.file ? repoRelativePath(root, event.data.file) : relativePath,
+        line: event.data.line,
+        column: event.data.column,
+        skip: event.data.skip,
+        todo: event.data.todo,
+        error: failureError(event.data.error),
+        durationMs: event.data.durationMs,
+      }));
       // A skipped describe() never registers its tests, so only its suite event shows the skip.
       skippedSuites = events
         .filter(
@@ -1331,6 +1739,11 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
       }),
     );
   } finally {
+    delete env[case2PhaseEnv];
+    if (case2Directory) {
+      case2Phase = readK3dCase2Phase(case2Directory);
+      removeK3dCase2Directory(case2Directory);
+    }
     // Capture before cleanup so passing k3d runs keep their Agent Pod timeline.
     // The capture updates the lane's diagnostics file; keep it out of other setup.
     await setup(async () => agentActivity?.finish({ env }));
@@ -1369,9 +1782,25 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     }
   }
 
-  if (nodeResult && tests.length === 0) {
+  if (
+    nodeResult &&
+    (tests.length === 0 ||
+      (testName !== undefined && !tests.some((testCase) => testCase.name === testName)))
+  ) {
     issues.push(
       issue("selected-zero", `selected file produced no test cases: ${relativePath}`, {
+        file: relativePath,
+      }),
+    );
+  }
+
+  if (
+    nodeResult &&
+    testName !== undefined &&
+    (tests.some((testCase) => testCase.name !== testName) || tests.length > 1)
+  ) {
+    issues.push(
+      issue("unexpected-test-selection", "--test-name must execute only one exactly named case", {
         file: relativePath,
       }),
     );
@@ -1427,36 +1856,50 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   const status = nodeExitCode === 0 && issues.length === 0 ? "passed" : "failed";
   // A file the runner timeout stopped always gets a record, even with nothing captured.
   const timedOut = nodeResult?.error?.code === "ETIMEDOUT";
-  if (status === "failed" && (details !== undefined || timedOut)) {
-    await recordFailure(setup, statePath, lane.name, relativePath, {
-      ...(timedOut
-        ? {
-            reason: "timeout",
-            timeoutMs: timeout.timeoutMs,
-            ...(timeout.laneDeadline ? { laneDeadline: true } : {}),
-            elapsedMs: nodeElapsedMs,
-          }
-        : { reason: "failed" }),
-      ...(details ?? { tests: [], omittedTests: 0, output: { lines: [], omittedLines: 0 } }),
-    });
+  if (statePath && status === "failed" && (details !== undefined || timedOut)) {
+    await recordFailure(
+      setup,
+      statePath,
+      lane.name,
+      relativePath,
+      {
+        ...(timedOut
+          ? {
+              reason: "timeout",
+              timeoutMs: timeout.timeoutMs,
+              ...(timeout.laneDeadline ? { laneDeadline: true } : {}),
+              elapsedMs: nodeElapsedMs,
+            }
+          : { reason: "failed" }),
+        ...(details ?? { tests: [], omittedTests: 0, output: { lines: [], omittedLines: 0 } }),
+      },
+      preparationId,
+    );
   }
 
+  const exercised =
+    testRunExercised &&
+    issues.every(({ code, status }) => code === "expected-test-not-passed" && status === "failed");
   return {
     path: relativePath,
     status,
     nodeExitCode,
     signal: nodeResult?.signal ?? null,
+    ...(exercised ? { exercised: true } : {}),
+    ...(nodeResult?.processGroupId ? { processGroupId: nodeResult.processGroupId } : {}),
     ...(fileFailure ? { fileFailure } : {}),
     counts,
     tests,
     ...(measurements.length > 0 ? { measurements } : {}),
+    ...(case2Phase ? { case2Phase } : {}),
+    ...(installationProgress ? { installationPhases: installationPhases.result() } : {}),
     issues,
     cleanup: cleanupResult,
     imageDigests: imageDigests(env),
   };
 }
 
-function selectLane(manifest, laneName, selectedFile) {
+function selectLane(manifest, laneName, selectedFile, testName) {
   let lane = manifest.lanes.get(laneName);
   const issues = [...manifest.issues];
 
@@ -1469,12 +1912,39 @@ function selectLane(manifest, laneName, selectedFile) {
         }),
       );
     } else {
-      // Keep the manifest's expected tests, environment and cleanup requirements.
+      if (
+        testName !== undefined &&
+        selected.expectedTests.filter((name) => name === testName).length !== 1
+      ) {
+        issues.push(
+          issue(
+            "invalid-test-selection",
+            "--test-name must exactly match one required manifest case",
+            { file: selectedFile },
+          ),
+        );
+      }
+      // File-only runs keep every required case. Explicit case selection keeps
+      // the exact required name; the child must still report that passing case.
       lane = {
         ...lane,
-        files: [selected],
+        files: [
+          testName === undefined
+            ? selected
+            : {
+                ...selected,
+                expectedTests: selected.expectedTests.filter((name) => name === testName),
+              },
+        ],
+        optionalEnv: [...lane.optionalEnv, ...lane.focusedEnv],
         parallelFiles: lane.parallelFiles.filter((path) => path === selected.path),
       };
+      const error = openShellHarnessError(laneName, selected.path, fileInputEnv(lane, selected));
+      if (error) {
+        issues.push(
+          issue("invalid-file-selection", error, { lane: laneName, file: selected.path }),
+        );
+      }
     }
   }
 
@@ -1488,13 +1958,24 @@ function selectLane(manifest, laneName, selectedFile) {
   return { lane, issues };
 }
 
-async function runLane(root, manifest, laneName, statePath, resultsPath, selectedFile) {
+async function runLane(root, manifest, laneName, statePath, resultsPath, selectedFile, testName) {
   const source = sourceEvidence(root);
-  const { lane, issues } = selectLane(manifest, laneName, selectedFile);
+  const { lane, issues } = selectLane(manifest, laneName, selectedFile, testName);
   issues.push(...source.issues);
   const files = [];
   let preservedNodeExitCode = 0;
+  let preparationId = randomUUID();
+  try {
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    if (state.lane === laneName) {
+      preparationId = preparationIdentity(state.prefix) ?? preparationId;
+    }
+  } catch {
+    // Stateless runs still share one fresh identity across their files.
+  }
 
+  const identity = { lane: laneName, preparationId };
+  const initialRuntimeProvenance = await readRuntimeProvenance(statePath, identity);
   const prepareFile = await loadPrepare(root);
   const startedAt = new Date().toISOString();
   const laneStarted = performance.now();
@@ -1518,7 +1999,16 @@ async function runLane(root, manifest, laneName, statePath, resultsPath, selecte
     let annotateFailure = process.env.GITHUB_ACTIONS === "true";
     const runAt = async (index, mode) => {
       const fileStarted = performance.now();
-      const result = await runFile(root, lane, lane.files[index], statePath, prepareFile, setup);
+      const result = await runFile(
+        root,
+        lane,
+        lane.files[index],
+        statePath,
+        prepareFile,
+        setup,
+        preparationId,
+        testName,
+      );
       result.mode = mode;
       // Round both ends, so start + duration is the rounded end and never passes a
       // later file's start.
@@ -1575,8 +2065,11 @@ async function runLane(root, manifest, laneName, statePath, resultsPath, selecte
     version: 1,
     command: "run",
     sourceSha: source.sha,
+    runtimeProvenance:
+      (await readRuntimeProvenance(statePath, identity)) ?? initialRuntimeProvenance,
     lane: laneName,
     scope: selectedFile === undefined ? "full" : "focused",
+    ...(testName === undefined ? {} : { testName }),
     status,
     exitCode: preservedNodeExitCode || (status === "passed" ? 0 : 1),
     fileConcurrency: concurrency,
@@ -1678,10 +2171,34 @@ function validateLaneEvidence(summary, laneName, lane, issues) {
     );
   }
 
-  const observedFiles = new Map(summary.files.map((file) => [file.path, file]));
+  const observedFiles = Map.groupBy(summary.files, (file) => file.path);
+  for (const [file, records] of observedFiles) {
+    if (records.length > 1) {
+      const expectedFile = lane.files.find((entry) => entry.path === file);
+      if (expectedFile) {
+        issues.push(
+          issue(
+            "duplicate-lane-file",
+            `lane ${laneName} has duplicate file evidence for ${expectedFile.path}`,
+            { lane: laneName, file: expectedFile.path },
+          ),
+        );
+      } else {
+        issues.push(
+          issue(
+            "duplicate-lane-file",
+            `lane ${laneName} has duplicate file evidence for an unregistered file`,
+            {
+              lane: laneName,
+            },
+          ),
+        );
+      }
+    }
+  }
   for (const expectedFile of lane.files) {
-    const observed = observedFiles.get(expectedFile.path);
-    if (!observed) {
+    const records = observedFiles.get(expectedFile.path);
+    if (!records) {
       issues.push(
         issue("missing-lane-evidence", `lane ${laneName} is missing file evidence`, {
           lane: laneName,
@@ -1690,37 +2207,44 @@ function validateLaneEvidence(summary, laneName, lane, issues) {
       );
       continue;
     }
-    if (observed.status !== "passed") {
-      issues.push(
-        issue("lane-file-failed", `lane ${laneName} file did not pass`, {
-          lane: laneName,
-          file: expectedFile.path,
-          status: observed.status,
-        }),
-      );
-    }
-    if (
-      !observed.counts ||
-      !Number.isInteger(observed.counts.total) ||
-      observed.counts.total < 1 ||
-      !Array.isArray(observed.tests)
-    ) {
-      issues.push(
-        issue("missing-lane-evidence", `lane ${laneName} file has no test evidence`, {
-          lane: laneName,
-          file: expectedFile.path,
-        }),
-      );
-    } else {
-      validateExpectedTests(expectedFile.path, expectedFile.expectedTests, observed.tests, issues);
-    }
-    if (observed.cleanup != null && observed.cleanup.status !== "passed") {
-      issues.push(
-        issue("cleanup-failed", `lane ${laneName} file cleanup did not pass`, {
-          lane: laneName,
-          file: expectedFile.path,
-        }),
-      );
+    for (const observed of records) {
+      if (observed.status !== "passed") {
+        issues.push(
+          issue("lane-file-failed", `lane ${laneName} file did not pass`, {
+            lane: laneName,
+            file: expectedFile.path,
+            status: observed.status,
+          }),
+        );
+      }
+      if (
+        !observed.counts ||
+        !Number.isInteger(observed.counts.total) ||
+        observed.counts.total < 1 ||
+        !Array.isArray(observed.tests)
+      ) {
+        issues.push(
+          issue("missing-lane-evidence", `lane ${laneName} file has no test evidence`, {
+            lane: laneName,
+            file: expectedFile.path,
+          }),
+        );
+      } else {
+        validateExpectedTests(
+          expectedFile.path,
+          expectedFile.expectedTests,
+          observed.tests,
+          issues,
+        );
+      }
+      if (observed.cleanup != null && observed.cleanup.status !== "passed") {
+        issues.push(
+          issue("cleanup-failed", `lane ${laneName} file cleanup did not pass`, {
+            lane: laneName,
+            file: expectedFile.path,
+          }),
+        );
+      }
     }
   }
 }
@@ -1761,6 +2285,16 @@ async function aggregateGroup(
   const issues = [...manifest.issues, ...source.issues];
   let laneNames = laneNamesForTarget(manifest, groupName);
   const lanes = [];
+  const exercised = new Map();
+  const recordFullCoverage =
+    process.env.GITHUB_WORKFLOW === "Full Integration" &&
+    process.env.OCC_CI_SUITE_VIEW === "full-integration" &&
+    groupName === "full" &&
+    selection === undefined &&
+    Boolean(needsPath) &&
+    process.env.GITHUB_REF === "refs/heads/main" &&
+    process.env.GITHUB_RUN_ATTEMPT === "1" &&
+    source.sha === process.env.GITHUB_SHA;
   const currentSha = source.sha;
 
   if (!laneNames) {
@@ -1797,6 +2331,19 @@ async function aggregateGroup(
               }),
             );
           }
+          if (
+            need?.lanes !== undefined &&
+            (!Array.isArray(need.lanes) ||
+              need.lanes.length === 0 ||
+              new Set(need.lanes).size !== need.lanes.length ||
+              !need.lanes.every((lane) => typeof lane === "string" && lane.length > 0))
+          ) {
+            issues.push(
+              issue("invalid-need-lanes", `needs JSON has invalid lanes for ${needName}`, {
+                need: needName,
+              }),
+            );
+          }
         }
       }
     } catch (error) {
@@ -1808,9 +2355,18 @@ async function aggregateGroup(
 
   for (const laneName of laneNames ?? []) {
     if (needs) {
-      const need = needs[laneName];
-      if (!need) {
+      const owners = Object.entries(needs).filter(
+        ([name, need]) =>
+          name === laneName || (Array.isArray(need?.lanes) && need.lanes.includes(laneName)),
+      );
+      if (owners.length === 0) {
         issues.push(issue("missing-need", `needs JSON is missing ${laneName}`, { lane: laneName }));
+      } else if (owners.length > 1) {
+        issues.push(
+          issue("ambiguous-need", `needs JSON has multiple jobs for ${laneName}`, {
+            lane: laneName,
+          }),
+        );
       }
     }
 
@@ -1828,25 +2384,11 @@ async function aggregateGroup(
     try {
       const summary = await readJson(resultPath);
       const lane = manifest.lanes.get(laneName);
-      lanes.push({
-        lane: summary.lane,
-        status: summary.status,
-        exitCode: summary.exitCode,
-        sourceSha: summary.sourceSha,
-      });
       if (summary.lane !== laneName) {
         issues.push(
           issue("lane-output-mismatch", `result file for ${laneName} reports ${summary.lane}`, {
             lane: laneName,
             reportedLane: summary.lane,
-          }),
-        );
-      }
-      if (summary.status !== "passed") {
-        issues.push(
-          issue("lane-failed", `lane ${laneName} did not pass`, {
-            lane: laneName,
-            status: summary.status,
           }),
         );
       }
@@ -1858,6 +2400,38 @@ async function aggregateGroup(
             observedSourceSha: summary.sourceSha,
           }),
         );
+      }
+      if (summary.lane !== laneName || summary.sourceSha !== currentSha) {
+        continue;
+      }
+      lanes.push({
+        lane: summary.lane,
+        status: summary.status,
+        exitCode: summary.exitCode,
+        sourceSha: summary.sourceSha,
+      });
+      if (summary.status !== "passed") {
+        issues.push(
+          issue("lane-failed", `lane ${laneName} did not pass`, {
+            lane: laneName,
+            status: summary.status,
+          }),
+        );
+      }
+      if (recordFullCoverage && lane) {
+        let outcome = exercisedLaneStatus(summary, lane.files);
+        if (outcome && laneName === "skipper-prepared-git-installed") {
+          try {
+            const projected = projectSkipperRunnerReceipt(summary);
+            outcome = exercisedLaneStatus({ ...projected, cleanup: summary.cleanup }, lane.files);
+          } catch {
+            // Its owning contract requires file cleanup even when other lanes do not.
+            outcome = undefined;
+          }
+        }
+        if (outcome) {
+          exercised.set(laneName, outcome);
+        }
       }
       if (lane && summary.status === "passed") {
         validateLaneEvidence(summary, laneName, lane, issues);
@@ -1889,11 +2463,31 @@ async function aggregateGroup(
     }
   }
 
+  const fullCoverageExercised =
+    recordFullCoverage &&
+    laneNames?.length > 0 &&
+    exercised.size === laneNames.length &&
+    issues.every((entry) => {
+      if (entry.code === "lane-failed") {
+        return exercised.get(entry.lane) === "failed";
+      }
+      if (entry.code !== "need-not-success" || entry.result !== "failure") {
+        return false;
+      }
+      const ownedLanes = needs?.[entry.need]?.lanes ?? [entry.need];
+      return (
+        Array.isArray(ownedLanes) &&
+        ownedLanes.length > 0 &&
+        ownedLanes.every((lane) => exercised.has(lane))
+      );
+    });
+
   return {
     version: 1,
     command: "aggregate",
     sourceSha: currentSha,
     group: groupName,
+    ...(fullCoverageExercised ? { fullCoverageExercised: true } : {}),
     ...(releaseQualification && issues.length === 0 ? { releaseQualification } : {}),
     status: issues.length === 0 ? "passed" : "failed",
     lanes,
@@ -1906,11 +2500,449 @@ async function writeSummary(path, summary) {
   await writeFile(path, `${JSON.stringify(summary, null, 2)}\n`);
 }
 
+// Complete mode owns a fresh attempt. Phase children keep their group leader
+// alive until the parent acknowledges the result, so its final signal cannot
+// target a reused group ID. Ordinary externally managed runs keep their behavior.
+async function completePhaseChild() {
+  if (!process.send || process.env.OPENCLAW_CI_COMPLETE_PHASE !== "1") {
+    throw new Error("A lifecycle phase requires its owning IPC channel.");
+  }
+  const stop = () => process.kill(-process.pid, "SIGKILL");
+  process.once("disconnect", stop);
+  process.once("exit", stop);
+  process.on("message", (message) => {
+    if (message?.type === "ci-lifecycle-ack") {
+      stop();
+    }
+  });
+  const request = await new Promise((resolveRequest) => {
+    process.once("message", resolveRequest);
+  });
+  let exitCode = 1;
+  let uncertain = false;
+  let error;
+  try {
+    const { phase, root, lane, statePath, resultsPath, manifestPath, file, testName } = request;
+    if (phase === "prepare") {
+      const owner = await import(pathToFileURL(join(root, "scripts/ci/prepare.mjs")));
+      await owner.prepareLane({ lane, statePath, file });
+      exitCode = 0;
+    } else if (phase === "cleanup") {
+      const owner = await import(pathToFileURL(join(root, "scripts/ci/cleanup.mjs")));
+      await owner.cleanupState(statePath);
+      exitCode = 0;
+    } else if (phase === "run") {
+      const manifest = normalizeManifest(
+        loadTestSuites(manifestPath, process.env.OCC_CI_SUITE_VIEW),
+        manifestPath,
+      );
+      exitCode = await runLane(root, manifest, lane, statePath, resultsPath, file, testName);
+      uncertain = abandonedSteps > 0;
+    }
+  } catch {
+    // Command owners can embed opaque argv and output in Error.message. Only
+    // this closed category crosses the phase boundary, never exception text.
+    error = { code: "phase-failed" };
+    exitCode = 1;
+  }
+  process.send({ type: "ci-lifecycle-result", exitCode, uncertain, error });
+  await new Promise(() => {});
+}
+
+function lifecycleGroupsTerminal(groups) {
+  try {
+    for (const name of readdirSync("/proc")) {
+      if (!/^\d+$/u.test(name)) {
+        continue;
+      }
+      let stat;
+      try {
+        stat = readFileSync(`/proc/${name}/stat`, "utf8");
+      } catch (error) {
+        if (error.code === "ENOENT" || error.code === "ESRCH") {
+          continue;
+        }
+        return false;
+      }
+      const fields = stat
+        .slice(stat.lastIndexOf(")") + 2)
+        .trim()
+        .split(/\s+/u);
+      if (fields.length < 20) {
+        return false;
+      }
+      if (groups.has(Number(fields[2])) && !["Z", "X"].includes(fields[0])) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function lifecyclePhase(request, timeoutMs) {
+  const startedAt = new Date().toISOString();
+  const empty = { status: "not-run", exitCode: null, signal: null, terminal: true, startedAt };
+  if (timeoutMs <= 0) {
+    return { ...empty, reason: "deadline-exhausted", endedAt: new Date().toISOString() };
+  }
+  const groups = new Set();
+  let result;
+  let invalid = false;
+  let timedOut = false;
+  let child;
+  try {
+    child = fork(fileURLToPath(import.meta.url), ["__lifecycle-phase"], {
+      cwd: request.root,
+      env: { ...process.env, OPENCLAW_CI_COMPLETE_PHASE: "1" },
+      detached: true,
+      execArgv: [],
+      stdio: ["ignore", "ignore", "ignore", "ipc"],
+    });
+  } catch {
+    return {
+      ...empty,
+      status: "failed",
+      exitCode: 1,
+      reason: "spawn-failed",
+      endedAt: new Date().toISOString(),
+    };
+  }
+  groups.add(child.pid);
+  let settle;
+  let abandonTimer;
+  const exited = new Promise((resolveExit) => {
+    settle = resolveExit;
+  });
+  const stop = () => {
+    if (child.pid > 1 && child.exitCode === null && child.signalCode === null) {
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch (error) {
+        if (error.code !== "ESRCH") {
+          invalid = true;
+        }
+      }
+    }
+    // Even SIGKILL can wait on uninterruptible kernel work. A missing exit is
+    // unconfirmed termination, never permission to race resource cleanup.
+    abandonTimer ??= setTimeout(() => {
+      invalid = true;
+      if (child.connected) {
+        child.disconnect();
+      }
+      child.unref();
+      settle(null);
+    }, 5_000);
+  };
+  const timer = setTimeout(() => {
+    timedOut = true;
+    stop();
+  }, timeoutMs);
+  child.on("message", (message) => {
+    if (
+      message?.type === "ci-lifecycle-group" &&
+      Number.isInteger(message.id) &&
+      message.id > 1 &&
+      !result
+    ) {
+      groups.add(message.id);
+    } else if (
+      message?.type === "ci-lifecycle-result" &&
+      !result &&
+      Number.isInteger(message.exitCode) &&
+      message.exitCode >= 0 &&
+      typeof message.uncertain === "boolean"
+    ) {
+      result = message;
+      child.send({ type: "ci-lifecycle-ack" }, (error) => {
+        if (error) {
+          invalid = true;
+          stop();
+        }
+      });
+    } else {
+      invalid = true;
+      stop();
+    }
+  });
+  child.on("error", () => {
+    invalid = true;
+    if (child.pid) {
+      stop();
+    } else {
+      settle(null);
+    }
+  });
+  child.once("exit", (_code, signal) => settle(signal));
+  child.send(request, (error) => {
+    if (error) {
+      invalid = true;
+      stop();
+    }
+  });
+  const signal = await exited;
+  clearTimeout(timer);
+  clearTimeout(abandonTimer);
+  // Never signal reported nested IDs: their leaders may already have exited.
+  // Read-only checks also include descendants which outlived their parent.
+  const drainDeadline = Date.now() + 5_000;
+  let groupsTerminal = lifecycleGroupsTerminal(groups);
+  while (!groupsTerminal && Date.now() < drainDeadline) {
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+    groupsTerminal = lifecycleGroupsTerminal(groups);
+  }
+  const terminal = Boolean(result && !invalid && !timedOut && !result.uncertain && groupsTerminal);
+  let status = terminal && result.exitCode === 0 ? "passed" : "failed";
+  if (timedOut) {
+    status = "timed-out";
+  }
+  return {
+    status,
+    exitCode: result?.exitCode ?? null,
+    signal: result ? null : signal,
+    terminal,
+    ...(result?.error ? { error: result.error } : {}),
+    startedAt,
+    endedAt: new Date().toISOString(),
+  };
+}
+
+async function runCompleteLifecycle(root, manifest, manifestPath, lane, attempt, file, testName) {
+  if (process.platform !== "linux") {
+    throw new Error("Complete lifecycle mode requires Linux process-group verification.");
+  }
+  const source = sourceEvidence(root);
+  const selection = selectLane(manifest, lane, file, testName);
+  const audit = await auditManifest(root, manifest);
+  if (selection.lane) {
+    fileConcurrency(selection.lane, selection.issues);
+  }
+  if (selection.issues.length || audit.issues.length || source.issues.length) {
+    logIssues([...selection.issues, ...audit.issues, ...source.issues]);
+    return 1;
+  }
+  // One atomic directory claim owns every path used by this invocation. Its
+  // existing parent must not permit another user to replace the claimed directory.
+  let parent;
+  try {
+    parent = realpathSync(dirname(attempt));
+    const owner = statSync(parent);
+    if (!owner.isDirectory() || owner.uid !== process.getuid() || (owner.mode & 0o022) !== 0) {
+      throw new Error("Uncontrolled parent");
+    }
+  } catch {
+    throw new Error(
+      "Complete lifecycle requires an existing runner-owned parent without group or other write access.",
+    );
+  }
+  attempt = join(parent, basename(attempt));
+  try {
+    await mkdir(attempt, { mode: 0o700 });
+  } catch {
+    throw new Error("Complete lifecycle requires a fresh attempt directory.");
+  }
+  const identity = await lstat(attempt);
+  if (
+    !identity.isDirectory() ||
+    identity.uid !== process.getuid() ||
+    (identity.mode & 0o777) !== 0o700
+  ) {
+    throw new Error("Attempt directory ownership is invalid; reconciliation is required.");
+  }
+  const assertAttemptOwned = async () => {
+    try {
+      const current = await lstat(attempt);
+      if (current.isDirectory() && current.dev === identity.dev && current.ino === identity.ino) {
+        return;
+      }
+    } catch {
+      // A missing or replaced owner directory is not authority over another path.
+    }
+    throw new Error("Attempt directory changed; reconciliation is required.");
+  };
+  const statePath = join(attempt, "state.json");
+  const resultsPath = join(attempt, "result.json");
+  const startedAt = new Date().toISOString();
+  const deadline = laneDeadlineMs() ?? Date.now() + 30 * 60_000;
+  const phases = Object.fromEntries(
+    ["prepare", "run", "cleanup"].map((name) => [
+      name,
+      { status: "not-run", exitCode: null, signal: null, terminal: false },
+    ]),
+  );
+  let interrupted = null;
+  let activeDeadline = deadline;
+  let finalizing = false;
+  const interrupt = (signal) => {
+    if (!finalizing && interrupted === null) {
+      interrupted = signal;
+      process.stderr.write(
+        `run-tests: ${signal} received; cancellation pending, waiting up to ${Math.max(0, Math.ceil((activeDeadline - Date.now()) / 1000))}s for the current phase before owned cleanup.\n`,
+      );
+    }
+  };
+  for (const signal of forwardedSignals) {
+    process.on(signal, interrupt);
+  }
+  const phaseRequest = {
+    root,
+    lane,
+    statePath,
+    resultsPath: join(attempt, "run.json"),
+    manifestPath,
+    file,
+    testName,
+  };
+  try {
+    if (!interrupted) {
+      await assertAttemptOwned();
+      if (!interrupted) {
+        phases.prepare = await lifecyclePhase(
+          { ...phaseRequest, phase: "prepare" },
+          deadline - Date.now(),
+        );
+      }
+    }
+    if (!interrupted && phases.prepare.status === "passed") {
+      await assertAttemptOwned();
+      if (!interrupted) {
+        phases.run = await lifecyclePhase({ ...phaseRequest, phase: "run" }, deadline - Date.now());
+      }
+    }
+    const previous = phases.run.status === "not-run" ? phases.prepare : phases.run;
+    if (previous.terminal) {
+      await assertAttemptOwned();
+      activeDeadline = Date.now() + cleanupAllowanceMs();
+      phases.cleanup = await lifecyclePhase(
+        { ...phaseRequest, phase: "cleanup" },
+        cleanupAllowanceMs(),
+      );
+    }
+    let summary = {
+      version: 1,
+      command: "run",
+      sourceSha: source.sha,
+      lane,
+      scope: file === undefined ? "full" : "focused",
+      ...(testName === undefined ? {} : { testName }),
+      startedAt,
+      counts: { passed: 0, failed: 0, skipped: 0, todo: 0, total: 0 },
+      files: [],
+      issues: [],
+    };
+    if (phases.run.terminal) {
+      try {
+        const candidate = JSON.parse(await readFile(phaseRequest.resultsPath, "utf8"));
+        if (
+          candidate.command !== "run" ||
+          candidate.lane !== lane ||
+          candidate.sourceSha !== source.sha ||
+          candidate.testName !== testName ||
+          !Array.isArray(candidate.issues)
+        ) {
+          throw new Error("Invalid run evidence");
+        }
+        summary = candidate;
+      } catch {
+        phases.run.status = "failed";
+        phases.run.exitCode = 1;
+      }
+    }
+    finalizing = true;
+    const uncertain = Object.values(phases).some(
+      (phase) => phase.status !== "not-run" && !phase.terminal,
+    );
+    const passed =
+      !interrupted &&
+      Object.values(phases).every((phase) => phase.status === "passed") &&
+      summary.status === "passed";
+    let exitCode = passed ? 0 : 1;
+    if (interrupted) {
+      exitCode = 128 + osConstants.signals[interrupted];
+    }
+    let status = passed ? "passed" : "failed";
+    if (uncertain) {
+      status = "reconciliation-required";
+    }
+    const lifecycle = {
+      status,
+      interrupted,
+      phases,
+    };
+    if (!passed) {
+      summary.issues.push(
+        issue(
+          "lifecycle-incomplete",
+          uncertain
+            ? "Phase termination is unconfirmed; retain state for reconciliation."
+            : "Complete lifecycle did not pass.",
+        ),
+      );
+    }
+    await assertAttemptOwned();
+    await writeFile(
+      resultsPath,
+      `${JSON.stringify({ ...summary, status: passed ? "passed" : "failed", exitCode, endedAt: new Date().toISOString(), lifecycle }, null, 2)}\n`,
+      { flag: "wx", mode: 0o600 },
+    );
+    return exitCode;
+  } finally {
+    for (const signal of forwardedSignals) {
+      process.removeListener(signal, interrupt);
+    }
+  }
+}
+
 async function main() {
   const { command, positionals, options } = parseArgs(process.argv.slice(2));
+  if (command === "prepared-signin") {
+    if (positionals.length || Object.keys(options).length) {
+      throw new Error(
+        "prepared-signin accepts no file, command, preparation or manifest overrides",
+      );
+    }
+    const { runPreparedSigninCase } = await import("./prepared-signin-case.mjs");
+    return runPreparedSigninCase(repositoryRoot, runFile);
+  }
   const root = resolve(options.root ?? repositoryRoot);
+  const testName = options["test-name"];
+  if (testName !== undefined) {
+    if (command !== "run" || options.file === undefined) {
+      throw new Error("--test-name requires run with --file.");
+    }
+    if (testName.trim().length === 0 || Buffer.byteLength(testName, "utf8") > 256) {
+      throw new Error("--test-name must be a nonempty literal of at most 256 UTF-8 bytes.");
+    }
+    if (testName === "<root>" || testName === resolve(root, options.file)) {
+      throw new Error("--test-name cannot select Node's reserved root or file-wrapper name.");
+    }
+    process.stderr.write(
+      `run-tests: focused file ${JSON.stringify(options.file)} testName ${JSON.stringify(testName)}\n`,
+    );
+  }
   const manifestPath = resolve(root, options.manifest ?? defaultManifestPath);
-  const manifest = normalizeManifest(loadTestSuites(manifestPath), manifestPath);
+  if (
+    command === "run" &&
+    options.lifecycle === "complete" &&
+    manifestPath !== resolve(root, defaultManifestPath)
+  ) {
+    throw new Error(
+      "Complete lifecycle requires the canonical scripts/ci/test-suites.json manifest under --root.",
+    );
+  }
+  const manifest = normalizeManifest(
+    loadTestSuites(manifestPath, process.env.OCC_CI_SUITE_VIEW),
+    manifestPath,
+  );
+
+  if (options.lifecycle !== undefined && (command !== "run" || options.lifecycle !== "complete")) {
+    throw new Error("--lifecycle supports only run --lifecycle complete.");
+  }
+  if (options.attempt !== undefined && (command !== "run" || options.lifecycle !== "complete")) {
+    throw new Error("--attempt requires run --lifecycle complete.");
+  }
 
   if (command === "check-selection") {
     if (!positionals[0] || options.file === undefined) {
@@ -1929,6 +2961,27 @@ async function main() {
 
   if (command === "run") {
     const laneName = positionals[0];
+    if (options.lifecycle === "complete") {
+      if (
+        !laneName ||
+        !options.attempt ||
+        options.state !== undefined ||
+        options.results !== undefined
+      ) {
+        throw new Error(
+          "Complete lifecycle requires <lane> and --attempt, without --state or --results.",
+        );
+      }
+      return runCompleteLifecycle(
+        root,
+        manifest,
+        manifestPath,
+        laneName,
+        resolve(root, options.attempt),
+        options.file,
+        testName,
+      );
+    }
     if (!laneName || !options.state || !options.results) {
       throw new Error(`run requires <lane>, --state, and --results\n${usage()}`);
     }
@@ -1939,6 +2992,7 @@ async function main() {
       resolve(root, options.state),
       resolve(root, options.results),
       options.file,
+      testName,
     );
   }
 
@@ -1955,6 +3009,21 @@ async function main() {
     options.lanes,
     options["release-selection"] ? resolve(root, options["release-selection"]) : null,
   );
+  if (
+    options["full-coverage-marker"] &&
+    summary.fullCoverageExercised &&
+    process.env.GITHUB_REF === "refs/heads/main" &&
+    process.env.GITHUB_RUN_ATTEMPT === "1" &&
+    summary.sourceSha === process.env.GITHUB_SHA &&
+    process.env.GITHUB_OUTPUT
+  ) {
+    try {
+      await writeFile(options["full-coverage-marker"], "1\n", { flag: "wx" });
+      await appendFile(process.env.GITHUB_OUTPUT, "full_coverage_exercised=true\n");
+    } catch {
+      process.stderr.write("run-tests: full coverage marker could not be written.\n");
+    }
+  }
   process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
   return summary.status === "passed" ? 0 : 1;
 }
@@ -2040,7 +3109,11 @@ function killDescendants() {
 }
 
 try {
-  process.exitCode = await main();
+  if (process.argv[2] === "__lifecycle-phase") {
+    await completePhaseChild();
+  } else {
+    process.exitCode = await main();
+  }
 } catch (error) {
   console.error(error.message);
   process.exitCode = 1;

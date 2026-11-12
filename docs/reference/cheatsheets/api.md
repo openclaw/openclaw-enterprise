@@ -33,7 +33,6 @@
 
 - [`getAuthAccount`](../api.md#get-apiauthaccountsuserid): Inspect current human account state.
 - [`createAuthAccount`](../api.md#post-apiauthaccounts): Create a local auth account as an Installation administrator.
-- [`attachGitHubIdentity`](../api.md#post-apiauthaccountsuseridprovidersgithub): Attach an exact GitHub identity to an existing account.
 - [`attachGoogleIdentity`](../api.md#post-apiauthaccountsuseridprovidersgoogle): Attach an exact Google identity to an existing account.
 - [`attachOidcIdentity`](../api.md#post-apiauthaccountsuseridprovidersoidc): Attach an exact OIDC identity to an existing account.
 - [`detachAuthMethod`](../api.md#post-apiauthaccountsuseridmethodsmethodiddetach): Detach an external sign-in identity from an account.
@@ -55,16 +54,13 @@
 
 ### Authentication
 
-- [`completeGitHubSignIn`](../api.md#get-apiauthprovidersgithubcallback): Complete an enrolled GitHub sign-in.
 - [`completeGoogleSignIn`](../api.md#get-apiauthprovidersgooglecallback): Complete an enrolled Google sign-in.
 - [`completeOidcSignIn`](../api.md#get-apiauthprovidersoidccallback): Complete an enrolled OIDC sign-in.
 - [`getAuthProviders`](../api.md#get-apiauthproviders): List configured browser sign-in methods.
 - [`getAuthRecovery`](../api.md#get-apiauthrecovery): Inspect the recovery account designation.
-- [`confirmGitHubSignIn`](../api.md#post-apiauthprovidersgithubresult): Confirm which session a GitHub sign-in created.
 - [`confirmGoogleSignIn`](../api.md#post-apiauthprovidersgoogleresult): Confirm which session a Google sign-in created.
 - [`confirmOidcSignIn`](../api.md#post-apiauthprovidersoidcresult): Confirm which session an OIDC sign-in created.
 - [`replaceAuthRecovery`](../api.md#post-apiauthrecovery): Move the recovery designation to another Installation administrator.
-- [`startGitHubSignIn`](../api.md#post-apiauthprovidersgithubstart): Start GitHub sign-in for an enrolled account.
 - [`startGoogleSignIn`](../api.md#post-apiauthprovidersgooglestart): Start Google sign-in for an enrolled account.
 - [`startOidcSignIn`](../api.md#post-apiauthprovidersoidcstart): Start OIDC sign-in for an enrolled account.
 
@@ -112,6 +108,7 @@
 - [`updateAgent`](../api.md#patch-namespacesnamespaceidagentsagentid): Replace an exact Namespace-owned Agent's editable draft.
 - [`updateAgentSandboxPolicy`](../api.md#put-namespacesnamespaceidagentsagentidsandboxpolicyfacet): Replace one Agent network policy additions.
 - [`applyAgentSandboxPolicy`](../api.md#post-namespacesnamespaceidagentsagentidsandboxpolicyfacetapply): Apply the saved policy to the running Agent revision.
+- [`confirmAgentNativeAdmin`](../api.md#post-namespacesnamespaceidagentsagentidnativeadminconfirm): Confirm a native Agent browser challenge.
 - [`deployAgent`](../api.md#post-namespacesnamespaceidagentsagentiddeploy): Save an Agent revision from the Agent's saved settings.
 - [`deployAgentFirst`](../api.md#post-namespacesnamespaceidagentsagentiddeployfirst): Admit the first deployment of an exact reviewed Configuration; requires Configuration read.
 - [`discoverAgentModels`](../api.md#post-namespacesnamespaceidagentsmodels): List provider models for Agent creation without storing the supplied credential.
@@ -119,6 +116,7 @@
 - [`discoverAgentPlugins`](../api.md#post-namespacesnamespaceidagentsplugins): List or search available plugins for Agent creation using the selected Driver.
 - [`discoverSavedAgentPluginDetails`](../api.md#post-namespacesnamespaceidagentsagentidpluginsdetails): Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery uses an eligible saved connection. The caller and Agent need operate access to the credential.
 - [`discoverSavedAgentPlugins`](../api.md#post-namespacesnamespaceidagentsagentidplugins): List or search plugins for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants.
+- [`launchAgentNativeAdmin`](../api.md#post-namespacesnamespaceidagentsagentidnativeadminlaunch): Create a browser-bound native Agent launch.
 - [`lookupChannelDirectory`](../api.md#post-namespacesnamespaceidchanneldirectorylookup): Search a channel directory using an authorized Namespace Secret.
 - [`pollAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsdeviceauthorizationssecretidpoll): Experimental: Complete device login without returning credential material.
 - [`pollSavedAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsagentiddeviceauthorizationssecretidpoll): Experimental: Complete device login without returning credential material.

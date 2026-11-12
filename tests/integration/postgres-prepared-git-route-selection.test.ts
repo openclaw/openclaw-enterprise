@@ -6,16 +6,16 @@ import test from "node:test";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
 import { RepositoryReceiptStore } from "../../apps/controller/src/backends/repository-credentials/receipt-store.ts";
-import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
-import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
-import { startListeners } from "../../apps/controller/src/drivers/repo/credentials/server.ts";
+import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
+import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
+import { startListeners } from "../../apps/controller/src/drivers/repo/access/server.ts";
 import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
-import { PreparedRepositoryGitStore } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-repository-git.ts";
+import { PreparedRepositoryGitStore } from "../../apps/controller/src/drivers/repo/github/access/prepared-repository-git.ts";
 import {
   resolveGitHubRepositoryBinding,
   validateGitHubRepositoryRegistry,
-} from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
-import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/credentials/warm-registry-factory.ts";
+} from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/access/warm-registry-factory.ts";
 import { sessionAttempt } from "../conformance/repository-sessions.contract.mjs";
 import { disposeBrokerSession, fixture, prepare } from "../fixtures/prepared-repository-git.mjs";
 import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.mjs";
@@ -225,7 +225,68 @@ test(
       assert.equal(await receipt(first), undefined);
       assert.deepEqual(observations(), { ownerCalls: 0, requests: 0, authenticated: 0 });
       const control = await open(first);
+      // A finite, open session retains its admitted authority when the registry changes.
+      // All routing preconditions still match; only the policy fingerprint is stale.
+      const driftRegistry = validateGitHubRepositoryRegistry({
+        ...registry,
+        maximumDurationSeconds: registry.maximumDurationSeconds + 1,
+      });
+      assert.notEqual(
+        resolveGitHubRepositoryBinding(driftRegistry, {
+          namespaceId,
+          repositoryRef: binding.repositoryRef,
+          profile: binding.profile,
+        }).grant.grantId,
+        binding.grant.grantId,
+      );
+      const savedSession = async () =>
+        (
+          await f.pool.query(
+            `SELECT phase, session_id, cleanup_context, broker_protocol,
+                    deadline_wall_ms > extract(epoch from clock_timestamp()) * 1000 AS unexpired
+             FROM occ.repository_session_attempts WHERE admission_id=$1`,
+            [first],
+          )
+        ).rows;
+      const admitted = await savedSession();
+      assert.deepEqual(admitted, [
+        {
+          phase: "open",
+          session_id: control.sessionId,
+          cleanup_context: {
+            driver: { id: "repository-credentials", implementation: "github" },
+            binding,
+          },
+          broker_protocol: 3,
+          unexpired: true,
+        },
+      ]);
+      assert.equal(Object.hasOwn(revision.repositoryCredentials, "standingApprovalId"), false);
+      const preparedRows = async () =>
+        (
+          await f.pool.query(
+            `SELECT 'family' AS kind FROM occ.prepared_github_families WHERE source_id=$1
+             UNION ALL SELECT 'attempt' AS kind FROM occ.prepared_github_attempts WHERE source_id=$1
+             ORDER BY kind`,
+            ["repository-git:" + first],
+          )
+        ).rows;
+      assert.deepEqual(await preparedRows(), []);
+      const beforeDrift = [...gh.trace];
+      const driftOwner = await f.startOwner({ registry: driftRegistry });
+      await driftOwner.maintain();
+      await driftOwner.maintain();
+      assert.deepEqual(gh.trace, beforeDrift, "stale authority must refuse before provider I/O");
+      assert.deepEqual(
+        await preparedRows(),
+        [],
+        "stale authority must not create preparation state",
+      );
+      assert.deepEqual(await savedSession(), admitted);
+      await driftOwner.close();
+      // The original matching registry prepares and uses this same persisted session.
       await prepare(f);
+      assert.deepEqual(await preparedRows(), [{ kind: "attempt" }, { kind: "family" }]);
       await exchange(first, control, true);
       assert.equal(await discovery(control.bearer, other.repository), 400);
       assert.deepEqual(observations(), { ownerCalls: 1, requests: 1, authenticated: 1 });

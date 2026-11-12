@@ -1,36 +1,32 @@
 # Recover a partial production upgrade
 
-Resume from the original checkout and private
-[upgrade evidence directory](production-upgrade.md). Directory aliases share its
-lock; a different directory identity stops resume before live access.
+Resume from the original checkout and private [evidence directory](production-upgrade.md).
+Aliases share its lock; changed directory identity refuses live access.
 
-For a runtime upgrade, also keep the original private dispatch journal. It is
-`<evidence-directory>.dispatch-state`, beside the resolved evidence directory. Keep the current journal separate from evidence
-backups. A missing or invalid journal stops runtime resume before live access.
-If the journal may have been restored, stop and reconcile from OCC history and
-audit records before starting another run.
+For runtime upgrades, preserve `<evidence-directory>.dispatch-state` separately
+from evidence backups. Missing or invalid journals stop resume before live access.
+After possible restoration, reconcile OCC history and audit records.
 
 `--preflight-only` leaves writers serving without a freeze. It cannot resume;
 reconcile its resources before deploying with fresh evidence and checks.
 
-Keep one operator and the applicable freeze for unfinished deployments. Before
+Keep one operator and the freeze for unfinished deployments. Before
 `prepared`, writers and Helm are unchanged: reconcile, then use fresh evidence.
-Afterward, reconcile processes, release, migration, rollout and dispatch, then
+Then reconcile processes, release, migration, rollout and dispatch;
 add `--resume` with unchanged arguments, protected paths, kubeconfig contents,
 OCC URL, scripts, flow and chart. Keep candidates semantically unchanged.
-The helper rechecks the pair, nodes and live state against baseline or candidate.
+Resume rechecks images, nodes and live state against baseline or candidate.
 
-After verified completion, clean up only: no Helm, Agent rollout, Doctor,
-`--resume` or renewed freeze. The helper writes `completed` after its final
-verification and evidence capture. Any `completed` entry makes `--resume` stop
-before cluster or OCC access. Keep the marker with the original evidence; use a
-new evidence directory for a new upgrade.
+For an [immutable reference switch](immutable-installation-upgrade.md), retain both
+Secrets' recorded UIDs and data; resume refuses replacements.
 
-If the final command output was lost, inspect the completion marker and retained
-evidence before deciding to resume. If writing the marker failed, reconcile the
-live state first: its absence does not prove the upgrade is unfinished.
-`prepared` survives success and alone is not a reason to resume. Older runs may
-have completed without a `completed` marker.
+Resume uses immutable `controller-compatibility-results.json`, when selected.
+Changing or removing this prepared copy refuses recovery.
+
+After verified completion, clean up without repeating rollout or Doctor.
+Any `completed` entry refuses resume before live access; preserve it. New upgrades
+require fresh evidence. Reconcile live state after output or marker failures:
+neither an absent marker nor `prepared` proves unfinished work. Older runs may lack markers.
 
 ## Correct unusable comparison inputs
 
@@ -40,63 +36,52 @@ this does not establish drift.
 
 ## Clean up preflight resources
 
-The release owner assigns one cleanup operator; cleanup needs no freeze.
-Unconfirmed cleanup stops preparation. After interruption (`SIGHUP`, `SIGINT`,
-`SIGTERM`), preserve evidence and `.upgrade-lock`. Confirm helper/children stopped
-and reconcile accepted operations and temporary resources before cleanup,
-retrying, restoring the original directory path or removing `.upgrade-lock`.
-
-Acknowledged creates retain `preflight-<slot>-identity.json` with fields
-`kind`, `name`, `uid`: `networkpolicy` and `secret` identify dependencies;
-`api`/`worker` identify Jobs; `api-pod`/`worker-pod` identify observed children.
-Optional policy, missing children and interrupted creates leave fewer records.
-Match kubeconfig digest to `parameters.json`'s `kubeconfigSha256`, and path,
-context, namespace and release to its first four `arguments`. Confirm ownership;
-preserve original records. They establish create identity, not current identity
-or deletion authority.
-
-Labels `app.kubernetes.io/instance=<release>` and
-`app.kubernetes.io/component=upgrade-preflight` only discover candidates.
-Stop and consult the owner for old helpers without records or missing, changed,
-replaced, conflicting or uncertain evidence. Also stop for refused creates, lost
-acknowledgement, successful creates without usable UIDs, or explicitly failed or uncertain
-identity writes even if a file exists. None permits deletion or replay. Leave replacements alone; reconcile unknown
-outcomes without repeating requests.
-If the original is gone, no deletion remains.
-
-Authorized manual deletion requires Kubernetes API enforcement of
-`DeleteOptions.preconditions.uid`: delete the original kind, namespace and name
-only if its UID matches the original record. Reading then deleting by name
-cannot prevent replacement. Foreground-delete owned Jobs first and confirm their
-children are gone before deleting the candidate Secret or NetworkPolicy. Missing
-Job acknowledgements require reconciling possible children; labels alone do not
-establish ownership.
+Follow [preflight cleanup](production-preflight-cleanup.md) to remove recorded
+Jobs and dependencies after an interrupted preflight. Preserve the original
+evidence and `.upgrade-lock`; first confirm the helper, children and accepted
+remote operations have settled. Successful cleanup does not authorize resume,
+unlock the upgrade or establish database state.
 
 ## Resume an unfinished prepared upgrade
+
+Failed application identity or migration preflight prevents further shutdown and
+Helm submission; writers may already be stopped. Inspect the current
+`upgrade-preflight-resume.*/preflight-{api,worker,migration}.log` and corresponding
+`preflight-*-logs.err`. Reconcile the application connection or migration failure
+and unknown creates; retain the original evidence, lock and dispatch journal for
+`--resume`. Historical `migration-preflight-resume.*` attempts remain valid for
+`--cleanup-preflight` using their original, hash-matching helper checkout.
+
+With `--verify-agent`, inspect `agent-continuity.json` and
+`agent-continuity-after*.json`. The former binds the original revision and workload
+roles; never edit it. Restore that revision's readiness, then resume with the same
+selection. Successful Helm work is not repeated. A replacement revision cannot pass;
+if redeployment is necessary, preserve this incomplete evidence and verify that
+separate recovery. The helper neither redeploys Agents nor rolls back the control plane.
 
 Read `native-command-failures.tsv` for failed scale, Helm or rollout commands:
 rows retain the operation, component (`api`, `worker`, `release`) and exit code.
 Client failures do not establish whether requests took effect; other failures
 may leave no row. Reconcile live state before resuming.
 
-UID, resource-version or replica drift refuses the stop before migration;
-the API may already be stopped. Reconcile `current-<component>-deployment.json`
-and `quiescence-<component>-patch.json` against live state before resuming.
+Both Deployments are validated before stopping either. Later UID/version/replica
+conflicts can leave the API stopped. Reconcile
+`current-<component>-deployment.json` and `quiescence-<component>-patch.json`
+against live state before resuming.
 
 Helm failure or disconnection does not prove migration rollback. Inspect live
-Helm status/history, initialization Job/Pod outcomes and the retained database;
-`current-helm-status.json` may be stale. Keep the operator freeze. Stop and
-reconcile the original Helm client before retry or recovery. Resolve `pending-*`
-releases with the release owner. Revision checks cannot fence concurrent clients.
+Helm status/history, initialization Job/Pod outcomes and the database;
+`current-helm-status.json` may be stale. Keep the freeze. Reconcile the stopped
+Helm client before retry or recovery. Resolve `pending-*` releases with the
+release owner. Revision checks cannot fence concurrent clients.
 
-Resume skips Helm only for `helm-started`'s expected deployed revision with
-matching candidate values and Installation. Invalid intents or revisions outside
-the recorded prior/expected pair refuse resume. `--migration-history-checked`
-bypasses neither refusal nor pending releases.
+Ordinary resume skips Helm at the expected deployed revision with candidate
+values/Installation. It can retry the recorded prior or failed expected revision
+after the checks below. Invalid intents and other revisions refuse.
+For completed initialization, see [same-candidate Helm recovery](production-helm-recovery.md).
 
-If external recovery moves outside this pair, preserve intent and evidence
-unchanged. The release owner must verify the
-recovered manifest, values, Installation, required hook outcomes and migration
+Outside this pair, preserve intent and evidence. The release owner must verify
+the recovered manifest, values, Installation, required hook outcomes and migration
 history, then finish verification separately.
 
 Never start old writers against a migrated database. For a retry within the recorded pair, wait
@@ -105,9 +90,8 @@ image** with `node scripts/migrate-production.mjs --check` against the retained
 database, with its migrator credential and required CA. The Kubernetes
 [maintenance procedure](auth-maintenance.md#run-the-command) supplies these: set
 `CONTROLLER_IMAGE` and args `["scripts/migrate-production.mjs","--check"]`.
-Retain exit-zero `migration.checked` output; follow [migration history](../../reference/settings/operations.md#migration-history).
-After checking the Job outcome, use `--resume --migration-history-checked`.
-This attestation does not run the check. The helper returns OCC to zero replicas
+Retain exit-zero `migration.checked` output. [Separate migrations](separate-database-upgrade.md) require `--require-current`.
+Attest the checked outcome with `--resume --migration-history-checked`. The helper returns OCC to zero replicas
 and records the next expected revision before retrying. Prefer a reviewed forward
 fix; neither Helm rollback nor the helper reverses committed migrations.
 
@@ -160,17 +144,17 @@ For stalled ReplicaSet creation, check [namespace object capacity](upgrade-check
 
 ## Correct a refused Agent deployment
 
-The startup preflight refuses some such drafts before any writer stops. When
+The startup preflight refuses some such drafts before any writer stops. If
 OCC still refuses an Agent's deployment with a 4xx answer, such as
-`HTTP 400 ... must use reviewed task actions` for a saved Configuration that
-the new release refuses, it saved no new version. The command lists each
-refused Agent with OCC's message, keeps the message in `dispatch/*.rejected`,
-and stops. Correct the cause, for example with `occ configuration update`, and
-repeat the command with `--resume`. The resume deploys each refused Agent once,
-so do not deploy it yourself. A 408 or 5xx answer stays an unknown dispatch.
-When OCC rejects the command's own service key, the command says so and lists
-the Agents it did not deploy; get a new key, point `OCC_SERVICE_KEY_FILE` at it,
-and resume.
+`HTTP 400 ... must use reviewed task actions`, it saved no new version. The same
+applies when `occ` sends no request because it cannot establish the active
+revision's Harness overrides. The command lists each such Agent with the
+message, keeps it in `dispatch/*.rejected`, and stops. Correct the cause, for
+example with `occ configuration update`, and repeat the command with `--resume`.
+The resume deploys each refused Agent once; do not deploy it yourself. A 408 or
+5xx answer stays an unknown dispatch. When OCC rejects the command's service
+key, the command lists the Agents it did not deploy; get a new key, point
+`OCC_SERVICE_KEY_FILE` at it, and resume.
 
 ## Correct a Doctor failure
 
@@ -221,7 +205,7 @@ before the maintenance window, run this from the candidate checkout:
 
 ```bash
 occ --output json installation get | node --input-type=module -e '
-import { isName, NAME_RULE } from "./packages/contracts/src/index.ts";
+import { isName, NAME_RULE } from "./packages/contracts/src/api/plain-text.ts";
 let s = ""; for await (const c of process.stdin) s += c;
 if (!isName(JSON.parse(s).name)) { console.error(NAME_RULE); process.exit(1); }'
 ```
@@ -282,11 +266,11 @@ keeping baseline files matched to live state.
 
 | Refused value                                                                                                                                                                     | Correction                                                                                                                                                                                                      |
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `auth.github.allowedOrgs`, `allowedTeams` or `auth.google.allowedDomains` set while that provider is disabled                                                                     | Remove the list.                                                                                                                                                                                                |
+| `auth.google.allowedDomains` set while Google is disabled                                                                                                                         | Remove the list.                                                                                                                                                                                                |
 | `""` or `{}` for those allowlists, or `{}` for a provider's `egressCidrs`                                                                                                         | Write `[]` or remove the key.                                                                                                                                                                                   |
 | An IPv4-mapped `api.trustedProxy.cidrs` entry with a prefix from 97 to 128, such as `::ffff:a00:0/104`                                                                            | Write the IPv4 CIDR with the prefix minus 96: `10.0.0.0/8`. A Compose install's API refuses the same entry in `OCC_AUTH_TRUSTED_PROXY_CIDRS` at startup.                                                        |
 | An IPv6 `api.trustedProxy.cidrs` entry that contains `::ffff:0:0/96`, such as `::ffff:0:0/96`, `::ffff:a00:0/64` or `::/64`                                                       | Such an entry trusts forwarded headers from every IPv4 peer. List your proxies' own CIDRs instead.                                                                                                              |
-| A Unicode `auth.baseUrl` host, such as `https://bücher.example.com`, with a punycode `agentNativeAdmin.sharedCookieDomain`                                                        | Write the host in punycode: `https://xn--bcher-kva.example.com`.                                                                                                                                                |
+| A Unicode `auth.baseUrl` host, such as `https://bücher.example.com`, with a punycode Agent suffix                                                                                 | Write the host in punycode: `https://xn--bcher-kva.example.com`.                                                                                                                                                |
 | An `auth.baseUrl` with a `/.` or `/%2e` path, a short loopback such as `http://127.1`, or U+200B (zero-width space)                                                               | Remove the path and invisible characters; write `127.0.0.1`.                                                                                                                                                    |
 | An `auth.baseUrl` with a path or query, such as `https://example.com/occ`                                                                                                         | Serve OCC at the root of its own origin and set that origin, such as `https://occ.example.com`. Point browsers, CLI and API clients, and your proxy at the new origin.                                          |
 | A `presets.files` Preset `name` with leading or trailing Unicode spaces (such as U+00A0), U+2028, U+2029 or C1 control characters                                                 | Correct the `name` in the file, or remove the entry. Startup adds a Preset with the corrected name; delete any saved copy with the old name you no longer need.                                                 |

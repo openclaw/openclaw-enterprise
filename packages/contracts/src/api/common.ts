@@ -792,6 +792,13 @@ export const CreateAgentBody = Type.Object(
     workspaceDefaultsId: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })),
     name: Name,
     configurationId: ConfigurationId,
+    nativeAdmin: Type.Optional(
+      Type.Boolean({
+        description:
+          "Enable Agent browser access with server-derived settings. Requires Configuration update permission, expectedConfigurationGeneration, and an unreferenced Configuration. Chat requires Agent operate; full administration requires Agent administer.",
+      }),
+    ),
+    expectedConfigurationGeneration: Type.Optional(ConfigurationGeneration),
     backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
     credentialSources: Type.Optional(AgentCredentialSourcesSchema),
@@ -1164,6 +1171,12 @@ export const ErrorResponse = Type.Object(
           Type.Literal("RUNTIME_CREDENTIALS_CLUSTER_RBAC"),
         ]),
         message: Type.String({ minLength: 1, maxLength: 256 }),
+        reason: Type.Optional(
+          Type.Literal("credential_registration_pending", {
+            description:
+              "On credential source DELETE with 503 DEPENDENCY_UNAVAILABLE, registration may still be completing. Retry after the whole seconds in the Retry-After header; the source remains until deletion completes.",
+          }),
+        ),
         details: Type.Optional(Type.Array(ErrorDetail, { maxItems: 32 })),
         remainingResources: Type.Optional(
           Type.Array(

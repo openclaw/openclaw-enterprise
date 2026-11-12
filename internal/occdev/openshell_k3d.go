@@ -54,6 +54,12 @@ func validDevelopmentCodexSeccompResult(mode, profileName string) bool {
 
 func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolicies []any, ceiling []any) (result error) {
 	r := newRunner(opts)
+	defer func() {
+		if result != nil {
+			stage, cleanupFailed := startupFailureDetails(result)
+			fmt.Fprintf(r.opts.Out, "\n[occ-dev-startup] primary_stage=%s cleanup_failed=%t parent_context_done=%t%s\n", stage, cleanupFailed, ctx.Err() != nil, routingFailureSuffix(result))
+		}
+	}()
 	if len(opts.ComposeArgs) != 0 {
 		return fmt.Errorf("the Kubernetes-only profile does not accept Compose options")
 	}
@@ -133,7 +139,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	if err := validateClusterName(state.Cluster); err != nil {
 		return err
 	}
-	if sandboxDriver == "openshell" {
+	{
 		consoleHost, agentDomain, _ := developmentBrowserHosts(state.Cluster)
 		state.BrowserOrigin = developmentBrowserOrigin(consoleHost, browserPort)
 		state.NativeAdminDomain = agentDomain
@@ -167,6 +173,13 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		return err
 	}
 	if err := r.pinEndpoint(ctx); err != nil {
+		return err
+	}
+	if err := r.checkDevelopmentHostPorts(ctx, developmentStack{cluster: state.Cluster}, []developmentHostPort{
+		{apiPort, "OPENCLAW_DEV_PORT"},
+		{browserPort, "OCC_DEVELOPMENT_BROWSER_PORT"},
+		{kubernetesPort, "OCC_DEVELOPMENT_KUBERNETES_API_PORT"},
+	}); err != nil {
 		return err
 	}
 	if err := r.validateOpenShellImageRevisions(ctx, openShellImages); err != nil {
@@ -232,7 +245,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 			}
 		}
 		if cleanupErr != nil {
-			result = errors.Join(result, fmt.Errorf("rollback incomplete; preserving %s for occ dev down: %w", directory, cleanupErr))
+			result = joinStartupCleanup(result, startupError("rollback", fmt.Errorf("rollback incomplete; preserving %s for occ dev down; clean up with %s: %w", directory, kubernetesDownCommand(directory, sandboxDriver, opts.Repository), cleanupErr)))
 		}
 	}()
 	if err := exclusiveWrite(filepath.Join(directory, ".openclaw-development"), []byte(stateMarker), 0600); err != nil {
@@ -264,7 +277,8 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	}
 	clusterAttempted = true
 	if err := r.createK3dCluster(ctx, clusterArgs...); err != nil {
-		clusterCreationFailed = true
+		// A create that k3d fully rolled back leaves nothing to clean up.
+		clusterCreationFailed = !r.k3dRolledBackCleanly(ctx, err, state.Cluster)
 		return err
 	}
 	if err := r.checkDevelopmentNodeDNS(ctx, state); err != nil {
@@ -280,11 +294,11 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	// deferred detach (which runs before the rollback deletes the network)
 	// cover images that were never pulled.
 	if err := r.attachDevelopmentImageRegistry(ctx, state); err != nil {
-		return errors.Join(err, r.detachDevelopmentImageRegistry(ctx))
+		return joinStartupCleanup(err, startupError("registry-detach", r.detachDevelopmentImageRegistry(ctx)))
 	}
 	defer func() {
 		if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
-			result = errors.Join(result, err)
+			result = joinStartupCleanup(result, startupError("registry-detach", err))
 		}
 	}()
 
@@ -318,7 +332,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		fmt.Fprintln(r.opts.Out, "Installing pinned private routing controllers...")
 		routingPodCIDR, err = r.installDevelopmentRoutingControllers(ctx, state, timeout)
 		if err != nil {
-			return fmt.Errorf("install the private routing controllers: %w", err)
+			return startupError("routing", fmt.Errorf("install the private routing controllers: %w", err))
 		}
 		return nil
 	}, func(ctx context.Context, r *runner) error {
@@ -326,7 +340,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		fmt.Fprintln(r.opts.Out, "Importing the controller and PostgreSQL images alongside the cluster checks...")
 		controllerImage, err = r.importDevelopmentController(ctx, state)
 		if err != nil {
-			return fmt.Errorf("import the development controller image: %w", err)
+			return startupError("controller-image-import", fmt.Errorf("import the development controller image: %w", err))
 		}
 		// The probe Pods run the controller image. The check creates its own
 		// Namespaces and policy and no routing resources, and its probes wait on
@@ -359,7 +373,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 				fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
 				assets, err = r.prepareOpenShell(ctx, state, timeout)
 				if err != nil {
-					return err
+					return startupError("openshell-preparation", err)
 				}
 			}
 			return nil
@@ -369,7 +383,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		return err
 	}
 	if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
-		return err
+		return startupError("registry-detach", err)
 	}
 	if err := r.installDevelopmentPlatform(ctx, state, developmentPlatformInputs{
 		openShell: assets, runtimeImage: runtimeImage, controllerImage: controllerImage,
@@ -455,7 +469,7 @@ type developmentPlatformInputs struct {
 
 func (r *runner) installDevelopmentPlatform(ctx context.Context, state *developmentState, inputs developmentPlatformInputs, timeout time.Duration) error {
 	if err := r.ensureKubernetesNamespace(ctx, state.PlatformNamespace); err != nil {
-		return err
+		return startupError("platform-namespace", err)
 	}
 	if state.SandboxDriver == "openshell" {
 		fmt.Fprintf(r.opts.Out, "Installing OpenShell Gateway and OCE in Namespace %s...\n", state.PlatformNamespace)
@@ -807,7 +821,6 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 	values := map[string]any{
 		"images":         map[string]string{"controller": controllerImage},
 		"installation":   map[string]string{"name": "Kubernetes development"},
-		"auth":           map[string]string{"baseUrl": fmt.Sprintf("http://127.0.0.1:%d", state.APIPort)},
 		"bootstrap":      map[string]any{"adminEmail": developmentAdministratorEmail, "password": map[string]string{"claimName": "bootstrap-password"}},
 		"database":       map[string]any{"cidrs": []string{string(postgresIP) + "/32"}},
 		"cluster":        map[string]any{"cidrs": []string{string(clusterIP) + "/32"}, "port": clusterPort},
@@ -818,6 +831,26 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 	if state.authenticatedOpenShell() {
 		values["backend"] = map[string]any{"openshell": map[string]string{"clientSecretName": "openshell-client-tls"}}
 	}
+	if state.BrowserPort != 0 {
+		consoleHost, agentDomain, _ := developmentBrowserHosts(state.Cluster)
+		if err := writeDevelopmentTLS(state.directory, "browser", "OCC development browser CA", []string{consoleHost, "*." + agentDomain}); err != nil {
+			return err
+		}
+		cert, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.crt"))
+		if err != nil {
+			return err
+		}
+		key, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.key"))
+		if err != nil {
+			return err
+		}
+		browserSecret := map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": kubernetesMetadata("occ-development-browser-tls", namespace, labels), "stringData": map[string]string{"tls.crt": string(cert), "tls.key": string(key)}}
+		if err := r.writeAndApply(ctx, state, "browser-tls", browserSecret); err != nil {
+			return err
+		}
+		values["auth"] = map[string]string{"baseUrl": developmentBrowserOrigin(consoleHost, state.BrowserPort)}
+		values["agentNativeAdmin"] = map[string]any{"enabled": routing, "domain": agentDomain}
+	}
 	if routing {
 		gatewayKey, err := randomDevelopmentSecret()
 		if err != nil {
@@ -827,26 +860,7 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		if err := r.writeAndApply(ctx, state, "gateway-api-key", gatewaySecret); err != nil {
 			return err
 		}
-		if state.BrowserPort != 0 {
-			consoleHost, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
-			if err := writeDevelopmentTLS(state.directory, "browser", "OCC development browser CA", []string{consoleHost, "*." + agentDomain}); err != nil {
-				return err
-			}
-			cert, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.crt"))
-			if err != nil {
-				return err
-			}
-			key, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.key"))
-			if err != nil {
-				return err
-			}
-			browserSecret := map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": kubernetesMetadata("occ-development-browser-tls", namespace, labels), "stringData": map[string]string{"tls.crt": string(cert), "tls.key": string(key)}}
-			if err := r.writeAndApply(ctx, state, "browser-tls", browserSecret); err != nil {
-				return err
-			}
-			values["auth"] = map[string]string{"baseUrl": developmentBrowserOrigin(consoleHost, state.BrowserPort)}
-			values["agentNativeAdmin"] = map[string]any{"enabled": true, "domain": agentDomain, "sharedCookieDomain": cookieDomain}
-		}
+
 		values["gatewayRouting"] = map[string]any{"enabled": true, "gatewayClassName": "eg", "apiKeySecretName": "occ-private-gateway-key"}
 		if hostname := developmentRoutingHostname(state); hostname != "" {
 			values["gatewayRouting"].(map[string]any)["hostname"] = hostname

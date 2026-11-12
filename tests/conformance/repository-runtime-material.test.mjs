@@ -12,7 +12,7 @@ import { protectedRepositoryGitRelease } from "../helpers/protected-repository-g
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { SETUP_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { pluginRuntimeSpecForRevision } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
-import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
+import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/access/client/config.ts";
 import { openShellRepositoryAccess } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
@@ -652,6 +652,7 @@ function deepFreeze(value) {
 
 test("Dedicated repository custody and networking belong only to Codex", async () => {
   const f = await fixture("dedicated");
+  f.revision.configuration.tools = { exec: { pathPrepend: ["/operator/bin"] } };
   const original = JSON.stringify(f.revision.configuration);
   await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
   const agent = f.consumer();
@@ -663,6 +664,8 @@ test("Dedicated repository custody and networking belong only to Codex", async (
   delete gatewayConfiguration.plugins.entries.codex.config.appServer.nativeHookRelay;
   const expectedGatewayConfiguration = JSON.parse(original);
   expectedGatewayConfiguration.agents.defaults.workspace = "/home/node/workspace";
+  // Compute requires explicit proxy scopes independently of repository material.
+  expectedGatewayConfiguration.gateway.auth.trustedProxy.requiredHeaders = ["x-openclaw-scopes"];
   // Compute translates the saved API-key destination into Codex's provider-qualified model.
   expectedGatewayConfiguration.agents.defaults.model = "codex/openai-compatible/gpt-5";
   expectedGatewayConfiguration.agents.defaults.models = {
@@ -1801,22 +1804,55 @@ test("API-admitted protected credential-free metadata projects no inference tool
   const r = f.revision;
   assert.deepEqual(r.executionAdmission, { version: 3, mode: "protected" });
   assert.deepEqual(r.egressPlan.driver, f.installedDriver.ref);
-  assert.equal(r.egressPlan.routes[0].binding.grant.kind, "credential_free_repository_metadata");
+  assert.deepEqual(r.harnessAuth, { method: "runtime" });
+  assert.deepEqual(
+    r.egressPlan.routes.map(({ binding }) => binding.grant.kind),
+    ["credential_free_repository_metadata"],
+  );
+  assert.equal(r.egressPlan.repositoryGit, undefined);
   const { driver: ordinary, admission } = await publicReaderAdmission();
   const driver = new KubernetesComputeDriver(ordinary.options, {
     protectedDriver: f.installedDriver,
   });
-  // The production Compute release gate and the exact projection prepareRevisionWorkloads uses.
-  driver.validateRevisionExecution(r, { currentEgressInstallation: async () => f.installation });
-  assert.equal(driver.admitRevision(r), undefined);
-  const { runtime } = driver.pluginRuntimeSnapshot(r);
+  // The API fixture stores the protected plan. Apply the production Compute admission
+  // to that revision and check the release gate and projection with the saved tag.
+  const launchTag = "openshell-codex-launch:v1:";
+  assert.equal(driver.admitRevision(r), launchTag);
+  assert.equal(ordinary.admitRevision(r), undefined);
+  assert.equal(driver.admitRevision({ ...r, sandboxDriverId: "foreign-sandbox" }), undefined);
+  const tagged = { ...r, compute: { ...r.compute, admission: launchTag } };
+  const context = { currentEgressInstallation: async () => f.installation };
+  driver.validateRevisionExecution(tagged, context);
+  assert.deepEqual(driver.codexLaunch(tagged, f.sandboxDriver), {
+    providerOwned: true,
+    protected: false,
+    openShellProgram: "ordinary",
+  });
+  assert.throws(() => driver.codexLaunch(tagged, undefined), /Compute admission is invalid/);
+  const { runtime } = driver.pluginRuntimeSnapshot(tagged);
+  assert.deepEqual(runtime, driver.pluginRuntimeSnapshot(r).runtime);
   assert.equal(runtime.providerTools, "none");
   assert.equal(runtime.egressEnrollment.inference, false);
+  assert.equal(runtime.egressEnrollment.routeCount, 1);
+  assert.equal(runtime.modelEndpoint, undefined);
+  assert.equal(runtime.repositoryBrokerNetworkPolicy, undefined);
   assert.equal(runtime.publicGithubRead, undefined);
-  const borrowedReader = { ...r, compute: { ...r.compute, admission } };
+  const forgedInference = {
+    ...tagged,
+    compute: { ...tagged.compute, admission: launchTag + "protected-codex-no-connection-retry:v1" },
+  };
+  assert.throws(
+    () => driver.pluginRuntimeSnapshot(forgedInference),
+    /Compute admission is invalid/,
+  );
+  const borrowedReader = { ...tagged, compute: { ...tagged.compute, admission } };
+  assert.throws(
+    () => driver.validateRevisionExecution(borrowedReader, context),
+    /saved model provider does not match/,
+  );
   assert.equal(driver.rejectedExecutionWithdrawal(borrowedReader), undefined);
   assert.equal(driver.pluginRuntimeSnapshot(borrowedReader).runtime.publicGithubRead, undefined);
-  const unknown = structuredClone(r);
+  const unknown = structuredClone(tagged);
   unknown.egressPlan.routes[0].binding.grant.kind = "not_an_admitted_grant";
   assert.throws(
     () => driver.pluginRuntimeSnapshot(unknown),
