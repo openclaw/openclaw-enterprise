@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
-updated: 2026-11-10
-last_updated_session: authoring-run/8719abbf-9776-4ebb-970d-9575222fe52b
+updated: 2026-11-12
+last_updated_session: authoring-run/424005d3-ef73-4fd2-82c5-0237e640ba5a
 ---
 
 # Agent runtime logs flow
@@ -78,6 +78,8 @@ the tier action and Agent `read` (plus Agent revision `read` for status only), r
 the version within the exact Agent, then rejects a Driver without
 `describeAgentRuntime` or with `runtimeLogging: "driver"`. `apps/controller/src/http/runtime-logs.ts:RuntimeLogLimiter` admits reads;
 audited denials spend no token; time buckets ignore clock changes.
+The HTTP handler also checks for a disconnect during identity lookup before
+starting Driver work. Later disconnects cancel the same request signal.
 
 ### 2. Describe the runtime
 
@@ -246,6 +248,8 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 23:26: Cover disconnects during identity lookup. (authoring-run/424005d3-ef73-4fd2-82c5-0237e640ba5a - 0dc9387e2521098fa1648d47f6350f1fd52fb46f)
 
 - 2026-11-10: CLI cursor polls keep the initial tailLines; timing stays cursor-owned.
 
