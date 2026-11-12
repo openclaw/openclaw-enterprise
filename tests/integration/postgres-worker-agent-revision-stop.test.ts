@@ -1,10 +1,22 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import test, { after } from "node:test";
+import test, { after, type TestContext, type TestOptions } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import type { QueryResult } from "pg";
+import type {
+  Agent,
+  AgentRevision,
+  ComputeDriver,
+  Namespace,
+} from "../../packages/contracts/src/index.ts";
+import type {
+  RepositorySessionAttempt,
+  RepositorySessionReadRepository,
+} from "../../packages/occ/src/ports/repository-sessions.ts";
+import type { ControllerWorkerOptions } from "../../apps/controller/src/worker.ts";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
 import { createOccLogger, createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
-import { PostgresMetricsSnapshot } from "../../packages/occ/src/index.ts";
+import { PostgresMetricsSnapshot, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
   ComputeStopYieldedError,
   computeStopShouldYield,
@@ -27,8 +39,8 @@ import {
   completedPasses,
   completion,
   makeWorkDue,
-  removeAccessBindings,
-  repositoryAttempts,
+  removeAccessBindings as removeFixtureAccessBindings,
+  repositoryAttempts as readRepositoryAttempts,
   repositoryBoundary,
 } from "../helpers/postgres-worker-revision-support.mjs";
 
@@ -37,10 +49,125 @@ import {
 // the PostgreSQL Application lane. Deployment and dispatch cases, and the persisted deploy, stop
 // and delete lifecycle, are in postgres-worker-agent-revision.test.mjs.
 
-const { setup, cleanup, revisionTest } = createWorkerRevisionFixtures(import.meta.url);
-after(cleanup);
+const fixtures = createWorkerRevisionFixtures(import.meta.url);
+type RawFixture = Awaited<ReturnType<typeof fixtures.setup>>;
+type WorkIdentity = { id: string; idempotencyKey: string };
+type WorkRow = { state: string; claim_token: string | null; attempt_count: number };
+type CleanupWorkRow = {
+  agent_id: string | null;
+  revision_id: string | null;
+  namespace_target: string | null;
+  agent_target: string | null;
+  state: string;
+};
+type AuditRow = { actorId: string; outcome: string; details: unknown; action?: string };
+type WorkerEvent = Readonly<Record<string, unknown>> & {
+  event?: string;
+  workId?: string;
+  outcome?: string;
+  code?: string;
+  stopYields?: number;
+};
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function auditDetails(value: unknown): Readonly<Record<string, unknown>> {
+  assert.ok(isRecord(value), "audit details must be an object");
+  return value;
+}
+function checkedWorkerEvent<T extends Readonly<Record<string, unknown>>>(
+  event: T,
+): T & WorkerEvent {
+  for (const key of ["event", "workId", "outcome", "code"]) {
+    assert.ok(event[key] === undefined || typeof event[key] === "string", `invalid worker ${key}`);
+  }
+  assert.ok(
+    event.stopYields === undefined || typeof event.stopYields === "number",
+    "invalid stop yield count",
+  );
+  return event;
+}
+// The deletion refusal case supplies a Driver with a provisioning marker but no
+// credential deletion capability. Its marker is never called.
+type IncompleteCredentialCompute = Omit<ComputeDriver, "provisionAgentRuntimeCredentials"> & {
+  provisionAgentRuntimeCredentials: () => Promise<void>;
+};
+type Fixture = Omit<
+  RawFixture,
+  | "compute"
+  | "start"
+  | "revision"
+  | "namespace"
+  | "admitInitialRevision"
+  | "work"
+  | "workResult"
+  | "requestStop"
+  | "advanceMaintenance"
+> & {
+  namespace: Namespace;
+  work: (candidate: WorkIdentity, expected: string, timeoutMs?: number) => Promise<WorkRow>;
+  workResult: (
+    candidate: Pick<WorkIdentity, "idempotencyKey">,
+  ) => Promise<QueryResult<{ reason_code: string | null; result_data: unknown }>>;
+  requestStop: (owner: Pick<Agent, "id">) => Promise<WorkIdentity>;
+  advanceMaintenance: (
+    candidate: Pick<AgentRevision, "id">,
+  ) => Promise<QueryResult<{ idempotency_key: string; actor_id: string; attempt_count: number }>>;
+  admitInitialRevision: (...args: Parameters<RawFixture["admitInitialRevision"]>) => Promise<{
+    owner: Agent;
+    candidate: AgentRevision & WorkIdentity;
+  }>;
+  compute: ComputeDriver;
+  start: (
+    compute: ComputeDriver | IncompleteCredentialCompute,
+    options?: Omit<NonNullable<Parameters<RawFixture["start"]>[1]>, "transformDrivers"> &
+      Pick<ControllerWorkerOptions, "convergenceTimeoutMs"> & {
+        transformDrivers?: (
+          drivers: NonNullable<ControllerWorkerOptions["drivers"]>,
+        ) => NonNullable<ControllerWorkerOptions["drivers"]> | undefined;
+      },
+  ) => ReturnType<RawFixture["start"]>;
+  revision: (
+    owner: Agent,
+    number: number,
+    options?: { actorId?: string; repositoryCredentials?: AgentRevision["repositoryCredentials"] },
+  ) => Promise<AgentRevision & WorkIdentity>;
+};
+type SetupOptions = NonNullable<Parameters<typeof fixtures.setup>[1]> &
+  Pick<ControllerWorkerOptions, "metrics"> & {
+    database?: RawFixture["database"];
+    repoDriver?: ReturnType<typeof repositoryBoundary>["driver"];
+  };
+const setup = fixtures.setup as (context: TestContext, options?: SetupOptions) => Promise<Fixture>;
+const revisionTest = fixtures.revisionTest as (
+  name: string,
+  run: (fixture: Fixture, context: TestContext) => Promise<void>,
+  options?: TestOptions,
+) => void;
+after(fixtures.cleanup);
 
-async function coldSshComputeDriver(fixture, operations) {
+function required<T>(value: T | null | undefined): T {
+  assert.ok(value !== null && value !== undefined);
+  return value;
+}
+
+const removeAccessBindings: (
+  fixture: Pick<Fixture, "observerPool">,
+  subjectId: string,
+) => Promise<unknown> = removeFixtureAccessBindings;
+const repositoryAttempts: (
+  fixture: Fixture,
+  revision: Pick<AgentRevision, "namespaceId" | "agentId" | "id">,
+) => ReturnType<RepositorySessionReadRepository["listRevisionAttempts"]> = readRepositoryAttempts;
+
+type SshOperation = { operation: string; namespace: { id: string }; revision: { agentId: string } };
+function assertSshOperation(value: unknown): asserts value is SshOperation {
+  assert.ok(isRecord(value) && typeof value.operation === "string");
+  assert.ok(isRecord(value.namespace) && typeof value.namespace.id === "string");
+  assert.ok(isRecord(value.revision) && typeof value.revision.agentId === "string");
+}
+
+async function coldSshComputeDriver(fixture: Fixture, operations: SshOperation[]) {
   const { SshComputeDriver } =
     await import("../../apps/controller/src/drivers/compute/ssh/index.ts");
   return new SshComputeDriver(
@@ -60,7 +187,11 @@ async function coldSshComputeDriver(fixture, operations) {
       implementation: fixture.compute.implementation,
       executor: {
         async execute(request) {
-          operations.push(JSON.parse(Buffer.from(request.operation, "base64").toString()));
+          const operation: unknown = JSON.parse(
+            Buffer.from(request.operation, "base64").toString(),
+          );
+          assertSshOperation(operation);
+          operations.push(operation);
           return { code: 0, stdout: '{"ok":true}', stderr: "" };
         },
       },
@@ -81,9 +212,9 @@ test(
     const sibling = await fixture.agent("stop-sibling");
     const targetRevision = await fixture.revision(owner, 1);
     const siblingRevision = await fixture.revision(sibling, 1);
-    const stoppedRevisions = [];
+    const stoppedRevisions: string[] = [];
     let failStopOnce = true;
-    let failedCandidate;
+    const scenario: { failedCandidate?: AgentRevision & WorkIdentity } = {};
     await fixture.start(
       {
         ...fixture.compute,
@@ -105,7 +236,7 @@ test(
             before.agents.stopping + 1,
             "stop stays in progress until Compute shutdown commits",
           );
-          const current = await fixture.currentAgent(owner);
+          const current = required(await fixture.currentAgent(owner));
           if (stoppedRevisions.length < 3) {
             assert.equal(
               current.activeRevisionId,
@@ -113,7 +244,7 @@ test(
               "the serving pointer remains until candidate cleanup succeeds",
             );
           }
-          if (revision.id === failedCandidate.id && failStopOnce) {
+          if (revision.id === required(scenario.failedCandidate).id && failStopOnce) {
             failStopOnce = false;
             throw new Error("transient Compute stop failure");
           }
@@ -129,7 +260,8 @@ test(
 
     // The replacement owns resources but never becomes ready. Terminal queue
     // failure must not make it invisible to the real Agent-stop workflow.
-    failedCandidate = await fixture.revision(owner, 2);
+    const failedCandidate = await fixture.revision(owner, 2);
+    scenario.failedCandidate = failedCandidate;
     await fixture.work(failedCandidate, "failed_permanent");
     const firstStop = await fixture.requestStop(owner);
     const completedStop = await fixture.work(firstStop, "succeeded");
@@ -167,6 +299,7 @@ test(
         view.revisions.findRevision(fixture.namespace.id, owner.id, targetRevision.id),
       ]),
     );
+    assert.ok(stopped && unaffected && retainedRevision);
     assert.equal(stopped.desiredRuntimeState, "stopped");
     assert.equal(stopped.activeRevisionId, undefined);
     assert.equal(unaffected.activeRevisionId, siblingRevision.id);
@@ -215,9 +348,23 @@ test(
 // once, inside an Agent's first stop. A record's `drainStartedAt` and `drainEndsAt` are its drain's
 // wall-clock window, set once `onFirstStop` returns, for same-run ordering checks. `record` is the
 // first owner's.
-function gatewayDrainCompute(fixture, owners, { drainMs, onFirstStop }) {
-  const busy = new Set();
-  const records = new Map(
+type DrainRecord = {
+  busy: Set<string>;
+  calls: number;
+  yields: number;
+  harnessStops: string[];
+  pointers: Set<string | null>;
+  waitingWithoutYield: boolean;
+  drainStartedAt: number | undefined;
+  drainEndsAt: number | undefined;
+};
+function gatewayDrainCompute(
+  fixture: Fixture,
+  owners: [{ id: string }, ...{ id: string }[]],
+  { drainMs, onFirstStop }: { drainMs: number; onFirstStop?: () => Promise<void> },
+) {
+  const busy = new Set<string>();
+  const records = new Map<string, DrainRecord>(
     owners.map((owner) => [
       owner.id,
       {
@@ -232,7 +379,7 @@ function gatewayDrainCompute(fixture, owners, { drainMs, onFirstStop }) {
       },
     ]),
   );
-  const compute = {
+  const compute: ComputeDriver = {
     ...fixture.compute,
     async prepareRevision(revision) {
       const observation = await fixture.compute.prepareRevision(revision);
@@ -268,17 +415,19 @@ function gatewayDrainCompute(fixture, owners, { drainMs, onFirstStop }) {
       record.harnessStops.push(revision.id);
     },
   };
-  return { compute, busy, records, record: records.get(owners[0].id) };
+  const record = records.get(owners[0].id);
+  assert.ok(record);
+  return { compute, busy, records, record };
 }
 
-function stopPasses(events, stop) {
+function stopPasses<T extends WorkerEvent>(events: readonly T[], stop: { idempotencyKey: string }) {
   return events.filter(
     ({ event, workId }) => event === "worker.completed" && workId === stop.idempotencyKey,
   );
 }
 
-async function stopAudit(fixture, owner) {
-  const audit = await fixture.observerPool.query(
+async function stopAudit(fixture: Fixture, owner: { id: string }) {
+  const audit = await fixture.observerPool.query<{ reason_code: string }>(
     `SELECT details->>'reasonCode' AS reason_code FROM occ.audit_events
      WHERE namespace_id = $1 AND resource_id = $2
        AND (action = 'openclaw.agents.lifecycle.stop' OR details->>'reasonCode' = 'AGENT_STOP_YIELDED')
@@ -290,13 +439,13 @@ async function stopAudit(fixture, owner) {
 
 // A provisioned caller that keeps every fixture grant except delete, so a refusal comes from the
 // delete-permission check itself rather than from an unknown identity (finding 1888).
-async function deleteDeniedCaller(fixture, label) {
+async function deleteDeniedCaller(fixture: Fixture, label: string) {
   const callerId = `${label}-${randomUUID()}`;
   await fixture.copyActorGrants(callerId, { withoutActions: ["delete"] });
   return callerId;
 }
 
-function deleteDenied(resource) {
+function deleteDenied(resource: { kind: string; id: string; namespaceId?: string }) {
   return {
     name: "AuthorizationDeniedError",
     message: "No explicit scoped binding grants the exact action and resource.",
@@ -312,8 +461,9 @@ test(
     const { owner, candidate } = await fixture.admitInitialRevision("drain-yield");
     const drainMs = 6_000;
     const { compute, record } = gatewayDrainCompute(fixture, [owner], { drainMs });
-    const events = [];
-    const emit = (event) => events.push({ ...event, at: Date.now() });
+    const events: (WorkerEvent & { at: number })[] = [];
+    const emit: NonNullable<ControllerWorkerOptions["emit"]> = (event) =>
+      events.push(checkedWorkerEvent({ ...event, at: Date.now() }));
     await fixture.start(compute, { emit });
     await fixture.work(candidate, "succeeded");
     const busy = await fixture.revision(await fixture.agent("drain-yield-busy"), 1);
@@ -354,8 +504,10 @@ test(
     // after its end: a pass cut short by the restart waits out its 3 s lease, and a deferred stop
     // rechecks within about 1 s. A stop that waited out a drain, a default lease or a long retry
     // backoff of its own would end later.
-    const { drainStartedAt, drainEndsAt } = record;
-    const offset = (time) => (time === undefined ? "none" : `${time - drainStartedAt}`);
+    const drainStartedAt = required(record.drainStartedAt);
+    const drainEndsAt = required(record.drainEndsAt);
+    const offset = (time: number | undefined) =>
+      time === undefined ? "none" : `${time - drainStartedAt}`;
     const otherPasses = events
       .filter(({ event, workId }) => event === "worker.completed" && workId === busy.idempotencyKey)
       .map((event) => event.at);
@@ -377,6 +529,10 @@ test(
       `no other Agent's pass ended during the drain: ${timeline}`,
     );
     assert.ok(
+      stopEnds.every((time): time is number => time !== undefined),
+      timeline,
+    );
+    assert.ok(
       stopEnds.every((time) => time >= drainEndsAt),
       `a stop ended before the drain: ${timeline}`,
     );
@@ -392,7 +548,7 @@ test(
     // The active pointer stays until the Harness is stopped after the drain, then clears.
     assert.deepEqual([...record.pointers], [candidate.id]);
     assert.ok(record.harnessStops.length >= 1);
-    const current = await fixture.currentAgent(owner);
+    const current = required(await fixture.currentAgent(owner));
     assert.equal(current.desiredRuntimeState, "stopped");
     assert.equal(current.activeRevisionId, undefined);
     // A yield is neither audited nor recorded as evidence; each stop records one outcome, and
@@ -411,8 +567,8 @@ revisionTest(
   async (fixture) => {
     const { owner, candidate } = await fixture.admitInitialRevision("drain-candidate");
     const { compute, busy, record } = gatewayDrainCompute(fixture, [owner], { drainMs: 8_000 });
-    const events = [];
-    await fixture.start(compute, { emit: (event) => events.push(event) });
+    const events: WorkerEvent[] = [];
+    await fixture.start(compute, { emit: (event) => events.push(checkedWorkerEvent(event)) });
     await fixture.work(candidate, "succeeded");
     // A replacement that never becomes ready, and another Agent's deployment that keeps Work due.
     const replacement = await fixture.revision(owner, 2);
@@ -432,9 +588,10 @@ revisionTest(
       fixture.work(stop, "succeeded", 30_000),
       fixture.work(replacement, "succeeded", 30_000),
     ]);
-    const [replacementPasses, stopWorkPasses] = await Promise.all(
-      [replacement, stop].map((work) => completedPasses(events, work)),
-    );
+    const [replacementPasses, stopWorkPasses] = await Promise.all([
+      completedPasses(events, replacement),
+      completedPasses(events, stop),
+    ]);
     // The replacement's own work stopped it as a stopped Agent's revision, and yielded while the
     // Gateway drained instead of spending its attempts.
     const replacementCodes = replacementPasses.map(({ code }) => code);
@@ -448,8 +605,8 @@ revisionTest(
       [candidate.id, replacement.id].sort(),
     );
     assert.deepEqual([...record.pointers], [candidate.id]);
-    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, undefined);
-    assert.equal(stopWorkPasses.at(-1).code, "AGENT_STOPPED");
+    assert.equal(required(await fixture.currentAgent(owner)).activeRevisionId, undefined);
+    assert.equal(required(stopWorkPasses.at(-1)).code, "AGENT_STOPPED");
     assert.deepEqual(
       stopWorkPasses.map(({ code }) => code).filter((code) => code !== "AGENT_STOP_YIELDED"),
       ["AGENT_STOPPED"],
@@ -468,8 +625,8 @@ revisionTest(
     const { compute, records } = gatewayDrainCompute(fixture, [first.owner, second.owner], {
       drainMs: 6_000,
     });
-    const events = [];
-    await fixture.start(compute, { emit: (event) => events.push(event) });
+    const events: WorkerEvent[] = [];
+    await fixture.start(compute, { emit: (event) => events.push(checkedWorkerEvent(event)) });
     await Promise.all([
       fixture.work(first.candidate, "succeeded"),
       fixture.work(second.candidate, "succeeded"),
@@ -480,7 +637,13 @@ revisionTest(
     // The drains overlap: one starts before the other ends. Drains taken in turn, each stop
     // holding the serial worker for its whole drain, start the second only after the first ends.
     // Same-run ordering, not a wall-clock total (finding 1344); 30 s only guards against a hang.
-    const drains = [first, second].map(({ owner }) => records.get(owner.id));
+    const drains = [first, second].map(({ owner }) => {
+      const record = required(records.get(owner.id));
+      return {
+        drainStartedAt: required(record.drainStartedAt),
+        drainEndsAt: required(record.drainEndsAt),
+      };
+    });
     const origin = Math.min(...drains.map(({ drainStartedAt }) => drainStartedAt));
     assert.ok(
       Math.max(...drains.map(({ drainStartedAt }) => drainStartedAt)) <
@@ -494,16 +657,19 @@ revisionTest(
     );
     // Taking turns yields about once a second per stop (3 each in a CI mutation run); now only
     // the stop that runs first yields, once, to the other's first pass (2 tolerates one more).
-    const yields = [first, second].map(({ owner }) => records.get(owner.id).yields);
-    assert.ok(yields[0] + yields[1] <= 2, `yields ${yields.join(", ")}`);
+    const yields = [first, second].map(({ owner }) => required(records.get(owner.id)).yields);
+    assert.ok(yields.reduce((sum, count) => sum + count, 0) <= 2, `yields ${yields.join(", ")}`);
     for (const { owner } of [first, second]) {
-      assert.ok(records.get(owner.id).calls <= 3, `calls ${records.get(owner.id).calls}`);
+      assert.ok(
+        required(records.get(owner.id)).calls <= 3,
+        `calls ${required(records.get(owner.id)).calls}`,
+      );
     }
     for (const { owner, candidate } of [first, second]) {
-      const record = records.get(owner.id);
+      const record = required(records.get(owner.id));
       assert.deepEqual(record.harnessStops, [candidate.id]);
       assert.deepEqual([...record.pointers], [candidate.id]);
-      assert.equal((await fixture.currentAgent(owner)).activeRevisionId, undefined);
+      assert.equal(required(await fixture.currentAgent(owner)).activeRevisionId, undefined);
     }
     for (const stopWorkPasses of passes) {
       assert.deepEqual(
@@ -521,8 +687,8 @@ revisionTest(
   async (fixture) => {
     const { owner, candidate } = await fixture.admitInitialRevision("drain-log");
     const { compute, record } = gatewayDrainCompute(fixture, [owner], { drainMs: 6_000 });
-    const events = [];
-    await fixture.start(compute, { emit: (event) => events.push(event) });
+    const events: WorkerEvent[] = [];
+    await fixture.start(compute, { emit: (event) => events.push(checkedWorkerEvent(event)) });
     await fixture.work(candidate, "succeeded");
     // Another Agent's deployment never becomes ready, so its rechecks keep Work due: real Work
     // still preempts the drain each time.
@@ -556,8 +722,8 @@ for (const change of ["redeploy", "deletion"]) {
       const { owner, candidate } = await fixture.admitInitialRevision(`drain-${change}`);
       // The drain outlasts the test: only the change ends the stop.
       const { compute, record } = gatewayDrainCompute(fixture, [owner], { drainMs: 120_000 });
-      const events = [];
-      await fixture.start(compute, { emit: (event) => events.push(event) });
+      const events: WorkerEvent[] = [];
+      await fixture.start(compute, { emit: (event) => events.push(checkedWorkerEvent(event)) });
       await fixture.work(candidate, "succeeded");
       const busy = await fixture.revision(await fixture.agent(`drain-${change}-busy`), 1);
       record.busy.add(busy.id);
@@ -572,7 +738,7 @@ for (const change of ["redeploy", "deletion"]) {
         const redeployed = await fixture.revision(owner, 2);
         await fixture.work(redeployed, "succeeded", 30_000);
         await fixture.work(stop, "succeeded", 30_000);
-        const current = await fixture.currentAgent(owner);
+        const current = required(await fixture.currentAgent(owner));
         assert.equal(current.desiredRuntimeState, "running");
         assert.equal(current.activeRevisionId, redeployed.id);
         assert.equal(record.calls, 1, "the superseded stop is not repeated");
@@ -629,10 +795,10 @@ test(
     await fixture.stop();
     const stop = await fixture.requestStop(owner);
     await delay(1_500);
-    const events = [];
+    const events: WorkerEvent[] = [];
     await fixture.start(compute, {
       convergenceTimeoutMs: 1_000,
-      emit: (event) => events.push(event),
+      emit: (event) => events.push(checkedWorkerEvent(event)),
     });
     await fixture.work(stop, "succeeded", 30_000);
     // Past the deadline the stop no longer yields, so its deferrals cannot outlast a drain that
@@ -644,7 +810,7 @@ test(
       (await completedPasses(events, stop)).map(({ code }) => code),
       ["AGENT_STOPPED"],
     );
-    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, undefined);
+    assert.equal(required(await fixture.currentAgent(owner)).activeRevisionId, undefined);
   },
 );
 
@@ -658,16 +824,16 @@ for (const moment of ["preparation", "commit", "activation"]) {
     async (fixture) => {
       const owner = await fixture.agent(`drain-${moment}`);
       const drain = gatewayDrainCompute(fixture, [owner], { drainMs: 5_000 });
-      let candidate;
-      let stop;
+      const scenario: { candidate?: AgentRevision & WorkIdentity } = {};
+      let stop: Awaited<ReturnType<Fixture["requestStop"]>> | undefined;
       const requestStop = async () => {
         stop ??= await fixture.requestStop(owner);
       };
-      const compute = {
+      const compute: ComputeDriver = {
         ...drain.compute,
         async prepareRevision(revision) {
           const observation = await drain.compute.prepareRevision(revision);
-          if (moment === "preparation" && revision.id === candidate?.id) {
+          if (moment === "preparation" && revision.id === scenario.candidate?.id) {
             await requestStop();
           }
           return observation;
@@ -676,25 +842,26 @@ for (const moment of ["preparation", "commit", "activation"]) {
           ? {
               activationOrder: "beforeCommit",
               async activateRevision(revision) {
-                if (revision.id === candidate?.id) {
+                if (revision.id === scenario.candidate?.id) {
                   await requestStop();
                 }
               },
             }
           : {}),
       };
-      const events = [];
-      await fixture.start(compute, { emit: (event) => events.push(event) });
+      const events: WorkerEvent[] = [];
+      await fixture.start(compute, { emit: (event) => events.push(checkedWorkerEvent(event)) });
       if (moment === "activation") {
         // The stop is admitted right after the pass commits the candidate's pointer.
-        const worker = [...fixture.database.workers].at(-1);
+        const worker: unknown = [...fixture.database.workers].at(-1);
+        assert.ok(isRecord(worker) && worker.state instanceof PostgresPlatformState);
         const transactWithQueue = worker.state.transactWithQueue.bind(worker.state);
         worker.state.transactWithQueue = async (work, options) => {
           const result = await transactWithQueue(work, options);
           if (
-            candidate !== undefined &&
+            scenario.candidate !== undefined &&
             stop === undefined &&
-            (await fixture.currentAgent(owner))?.activeRevisionId === candidate.id
+            (await fixture.currentAgent(owner))?.activeRevisionId === scenario.candidate.id
           ) {
             await requestStop();
           }
@@ -703,7 +870,8 @@ for (const moment of ["preparation", "commit", "activation"]) {
       }
       const busy = await fixture.revision(await fixture.agent(`drain-${moment}-busy`), 1);
       drain.busy.add(busy.id);
-      candidate = await fixture.revision(owner, 1);
+      const candidate = await fixture.revision(owner, 1);
+      scenario.candidate = candidate;
       const done = await fixture.work(candidate, "succeeded", 30_000);
       assert.ok(stop !== undefined, "the stop was admitted during the pass");
       await fixture.work(stop, "succeeded", 30_000);
@@ -716,7 +884,7 @@ for (const moment of ["preparation", "commit", "activation"]) {
       // The Harness stopped only after the drain, and the Agent ends stopped with no pointer.
       assert.ok(drain.record.yields >= 1);
       assert.deepEqual([...new Set(drain.record.harnessStops)], [candidate.id]);
-      const current = await fixture.currentAgent(owner);
+      const current = required(await fixture.currentAgent(owner));
       assert.equal(current.desiredRuntimeState, "stopped");
       assert.equal(current.activeRevisionId, undefined);
     },
@@ -746,7 +914,7 @@ for (const recovery of [false, true]) {
         );
       }
       const stop = await fixture.requestStop(owner);
-      const operations = [];
+      const operations: SshOperation[] = [];
       // Exercise the bundled SSH Driver's actual cold binding validation. Only
       // remote SSH execution is controlled; the queue and worker use PostgreSQL.
       const cold = await coldSshComputeDriver(fixture, operations);
@@ -763,7 +931,7 @@ for (const recovery of [false, true]) {
         assert.equal((await fixture.work(candidate, "succeeded")).attempt_count, 1);
       }
       assert.equal((await fixture.work(stop, "succeeded")).attempt_count, 1);
-      const current = await fixture.currentAgent(owner);
+      const current = required(await fixture.currentAgent(owner));
       assert.equal(current.activeRevisionId, undefined);
       assert.equal(current.desiredRuntimeState, "stopped");
       assert.ok(operations.some((op) => op.operation === "stop-revision"));
@@ -790,7 +958,7 @@ revisionTest("fresh worker binds SSH ownership before Agent deletion", async (fi
   // Deletion is admitted while the Agent is running, then a fresh worker must
   // reconstruct the SSH binding before it can retire the persisted revision.
   await fixture.requestDeletion(owner);
-  const operations = [];
+  const operations: SshOperation[] = [];
   const cold = await coldSshComputeDriver(fixture, operations);
   await fixture.start(
     {
@@ -836,10 +1004,13 @@ test(
     const { owner, candidate } = await fixture.admitInitialRevision("cleanup-invalidated", {
       revision: { repositoryCredentials: repository.snapshot },
     });
-    const events = [];
-    await fixture.start(fixture.compute, { emit: (event) => events.push(event) });
+    const events: WorkerEvent[] = [];
+    await fixture.start(fixture.compute, {
+      emit: (event) => events.push(checkedWorkerEvent(event)),
+    });
     await fixture.work(candidate, "succeeded");
     const [attempt, sibling] = await repositoryAttempts(fixture, candidate);
+    assert.ok(attempt && sibling);
     // An invalidated attempt has no outgoing transition, so no pass can settle this cleanup.
     await fixture.observerPool.query(
       `UPDATE occ.repository_session_attempts
@@ -857,7 +1028,7 @@ test(
           clock_timestamp(), 0, clock_timestamp() - interval '1 day', clock_timestamp())`,
       [cleanupKey, fixture.namespace.id, owner.id, candidate.id, fixture.actor.id],
     );
-    const deferred = async (passes) =>
+    const deferred = async (passes: number) =>
       waitFor(`cleanup pass ${passes} to defer`, async () => {
         const completed = events.filter(
           (event) => event.event === "worker.completed" && event.workId === cleanupKey,
@@ -865,7 +1036,7 @@ test(
         if (completed.length < passes) {
           return undefined;
         }
-        const { rows } = await fixture.observerPool.query(
+        const { rows } = await fixture.observerPool.query<{ state: string; delay_ms: string }>(
           `SELECT state, EXTRACT(EPOCH FROM (available_at - updated_at)) * 1000 AS delay_ms
            FROM occ.controller_work WHERE idempotency_key = $1`,
           [cleanupKey],
@@ -915,7 +1086,7 @@ test(
   async (context) => {
     const repository = repositoryBoundary({ count: 2 });
     // Release blocked broker calls before setup's worker shutdown hook, including on failure.
-    const cleanupBarrier = Promise.withResolvers();
+    const cleanupBarrier = Promise.withResolvers<void>();
     context.after(() => cleanupBarrier.resolve());
     const fixture = await setup(context, { repoDriver: repository.driver });
     const pendingOwner = await fixture.agent("delete-repository-unresolved");
@@ -946,7 +1117,7 @@ test(
       `UPDATE occ.repository_session_attempts
        SET phase = 'invalidated', updated_at = clock_timestamp()
        WHERE admission_id = $1`,
-      [opened[0].admissionId],
+      [required(opened[0]).admissionId],
     );
     // A prepared admission without a broker receipt can be fenced as missing after deletion.
     const missingAdmissionId = `missing-${randomUUID()}`;
@@ -961,7 +1132,7 @@ test(
         fixture.namespace.id,
         pendingOwner.id,
         pendingRevision.id,
-        repository.snapshot.bindings[0].repositoryRef,
+        required(repository.snapshot.bindings[0]).repositoryRef,
         missingAdmissionId,
         repository.snapshot.deadlineWallMs,
       ],
@@ -995,11 +1166,17 @@ test(
     await Promise.all([
       fixture.requestDeletion(pendingOwner).then(
         () => assert.fail("repeated DELETE after completion should not recreate the Agent"),
-        (error) => assert.match(error.message, /exact Namespace/),
+        (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.match(error.message, /exact Namespace/);
+        },
       ),
       fixture.requestDeletion(missingOwner).then(
         () => assert.fail("repeated DELETE after completion should not recreate the Agent"),
-        (error) => assert.match(error.message, /exact Namespace/),
+        (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.match(error.message, /exact Namespace/);
+        },
       ),
     ]);
 
@@ -1014,17 +1191,17 @@ test(
         {
           phase: "invalidated",
           liveRevisionId: null,
-          repositoryRef: repository.snapshot.bindings[0].repositoryRef,
+          repositoryRef: required(repository.snapshot.bindings[0]).repositoryRef,
         },
         {
           phase: "closing",
           liveRevisionId: null,
-          repositoryRef: repository.snapshot.bindings[1].repositoryRef,
+          repositoryRef: required(repository.snapshot.bindings[1]).repositoryRef,
         },
         {
           phase: "closing",
           liveRevisionId: null,
-          repositoryRef: repository.snapshot.bindings[0].repositoryRef,
+          repositoryRef: required(repository.snapshot.bindings[0]).repositoryRef,
         },
       ],
     );
@@ -1067,21 +1244,21 @@ test(
       fixture.actor.id,
     );
     assert.deepEqual(
-      whileClaimed.namespaces.find(({ id }) => id === fixture.namespace.id).agents,
+      required(whileClaimed.namespaces.find(({ id }) => id === fixture.namespace.id)).agents,
       [],
     );
     cleanupBarrier.resolve();
-    let missing;
+    let missing: Readonly<RepositorySessionAttempt> | undefined;
     await waitFor("retained repository cleanup to run after Agent deletion", async () => {
       const afterCleanup = await repositoryAttempts(fixture, pendingRevision);
       missing = await fixture.state.read((view) =>
         view.repositorySessions.findAttempt(missingAdmissionId),
       );
       if (
-        missing.phase !== "closing" &&
+        required(missing).phase !== "closing" &&
         afterCleanup.some(
           ({ phase, repositoryRef, liveRevisionId }) =>
-            repositoryRef === repository.snapshot.bindings[1].repositoryRef &&
+            repositoryRef === required(repository.snapshot.bindings[1]).repositoryRef &&
             phase === "disposed" &&
             liveRevisionId === null,
         )
@@ -1092,6 +1269,7 @@ test(
       await advanceCleanupRetries(fixture, pendingRevision);
       return undefined;
     });
+    assert.ok(missing);
     assert.equal(missing.phase, "invalidated");
     assert.equal(missing.liveRevisionId, null);
     assert.equal(missing.sessionId, undefined);
@@ -1111,7 +1289,10 @@ test(
       { agent_id: null, revision_id: null, state: "queued" },
     ]);
     const inventory = await fixture.controller.getInstallationDeploymentInventory(fixture.actor.id);
-    assert.deepEqual(inventory.namespaces.find(({ id }) => id === fixture.namespace.id).agents, []);
+    assert.deepEqual(
+      required(inventory.namespaces.find(({ id }) => id === fixture.namespace.id)).agents,
+      [],
+    );
     assert.deepEqual(await readCleanup(), cleanupBeforeInventory);
   },
 );
@@ -1148,7 +1329,7 @@ test(
     assert.equal(revision.egressPlan?.repositoryGitAuthorization, undefined);
     assert.equal(revision.compute.id, compute.id);
     assert.equal(revision.compute.implementation, compute.implementation);
-    assert.match(revision.compute.admission, /^model-provider:v1:[a-f0-9]{64}:$/u);
+    assert.match(required(revision.compute.admission), /^model-provider:v1:[a-f0-9]{64}:$/u);
     await fixture.start({
       ...fixture.compute,
       id: compute.id,
@@ -1174,7 +1355,7 @@ test(
     labels["openclaw.dev/namespace"] = namespaceId;
     assert.equal(await inventory.read(), "not-applicable");
     assert.deepEqual(await repositoryRestartState(fixture.observerPool, revision.id), before);
-    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, revision.id);
+    assert.equal(required(await fixture.currentAgent(owner)).activeRevisionId, revision.id);
 
     // A previously accepted plugin enum can remain in an immutable revision after
     // the reader changes. It must not make the entire fleet inventory unavailable.
@@ -1189,7 +1370,7 @@ test(
           ...revision,
           id: historicalId,
           revision: revision.revision + 1,
-          plugins: historicalPlugins,
+          plugins: historicalPlugins as NonNullable<AgentRevision["plugins"]>,
         }),
       ),
       /AgentRevision plugin state is invalid/u,
@@ -1203,7 +1384,7 @@ test(
        FROM occ.agent_revisions WHERE id = $3`,
       [historicalId, JSON.stringify(historicalPlugins), revision.id],
     );
-    const selectRevision = (expected, next) =>
+    const selectRevision = (expected: string, next: string) =>
       fixture.state.transact((unit) =>
         unit.agents.compareAndSetActiveRevision(fixture.namespace.id, owner.id, expected, next),
       );
@@ -1251,11 +1432,12 @@ test(
     const stop = await fixture.requestStop(owner);
     await fixture.work(stop, "succeeded");
     await waitFor("cleanup to complete while its revision still exists", async () => {
-      const cleanup = await fixture.observerPool.query(
+      const cleanup = await fixture.observerPool.query<{ state: string }>(
         `SELECT state FROM occ.controller_work WHERE revision_id = $1 AND idempotency_key LIKE $2`,
         [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:%`],
       );
-      return cleanup.rowCount > 0 && cleanup.rows.every(({ state }) => state === "succeeded")
+      return required(cleanup.rowCount) > 0 &&
+        cleanup.rows.every(({ state }) => state === "succeeded")
         ? true
         : undefined;
     });
@@ -1263,21 +1445,20 @@ test(
       fixture.actor.id,
     );
     assert.deepEqual(
-      beforeDeletion.namespaces
-        .find(({ id }) => id === fixture.namespace.id)
+      required(beforeDeletion.namespaces.find(({ id }) => id === fixture.namespace.id))
         .agents.map(({ id }) => id)
         .sort(),
       [owner.id, sibling.id].sort(),
     );
     await fixture.requestDeletion(owner);
     await waitFor("Agent deletion and its independent cleanup to finish", async () => {
-      const cleanup = await fixture.observerPool.query(
+      const cleanup = await fixture.observerPool.query<CleanupWorkRow>(
         `SELECT agent_id, revision_id, namespace_target, agent_target, state
          FROM occ.controller_work WHERE namespace_id = $1 AND idempotency_key LIKE $2`,
         [fixture.namespace.id, `agent_revision:${candidate.id}:repository_cleanup:%`],
       );
       return (await fixture.currentAgent(owner)) === undefined &&
-        cleanup.rowCount > 0 &&
+        required(cleanup.rowCount) > 0 &&
         cleanup.rows.every((row) => row.state === "succeeded")
         ? cleanup.rows
         : undefined;
@@ -1286,13 +1467,13 @@ test(
 
     // The production deletion finalizer detaches both owners, retaining the
     // immutable cleanup identity and completion. No historical row is fabricated.
-    const retained = await fixture.observerPool.query(
+    const retained = await fixture.observerPool.query<CleanupWorkRow & { idempotency_key: string }>(
       `SELECT idempotency_key, agent_id, revision_id, namespace_target, agent_target, state
        FROM occ.controller_work WHERE namespace_id = $1 AND idempotency_key LIKE $2
        ORDER BY idempotency_key`,
       [fixture.namespace.id, `agent_revision:${candidate.id}:repository_cleanup:%`],
     );
-    assert.ok(retained.rowCount > 0);
+    assert.ok(required(retained.rowCount) > 0);
     assert.ok(
       retained.rows.every(
         (row) =>
@@ -1313,10 +1494,12 @@ test(
         fixture.actor.id,
       );
       assert.equal(inventory.installationId, fixture.installation.id);
-      const namespace = inventory.namespaces.find(({ id }) => id === fixture.namespace.id);
+      const namespace = required(
+        inventory.namespaces.find(({ id }) => id === fixture.namespace.id),
+      );
       assert.equal(namespace.status, "ready");
       assert.equal(namespace.agents.length, 1);
-      return namespace.agents[0];
+      return required(namespace.agents[0]);
     }
     // The selected development Compute Driver cannot assess worker restart safety.
     assert.deepEqual(await inventoryAgent(), {
@@ -1333,7 +1516,7 @@ test(
     const replacement = await fixture.revision(sibling, 2);
     assert.equal((await inventoryAgent()).deploymentInProgress, true);
     let preparing = false;
-    const release = Promise.withResolvers();
+    const release = Promise.withResolvers<void>();
     context.after(() => release.resolve());
     await fixture.start({
       ...fixture.compute,
@@ -1357,7 +1540,9 @@ test(
     await fixture.stop();
     assert.equal((await inventoryAgent()).activeRevisionId, replacement.id);
     assert.equal((await inventoryAgent()).deploymentInProgress, false);
-    const afterInventory = await fixture.observerPool.query(
+    const afterInventory = await fixture.observerPool.query<
+      CleanupWorkRow & { idempotency_key: string }
+    >(
       `SELECT idempotency_key, agent_id, revision_id, namespace_target, agent_target, state
        FROM occ.controller_work WHERE namespace_id = $1 AND idempotency_key LIKE $2
        ORDER BY idempotency_key`,
@@ -1368,18 +1553,18 @@ test(
     // The schema permits this terminal failure state, although the worker
     // normally retries cleanup indefinitely. Inject failure into the real
     // retained record to prove that inventory leaves terminal failure intact.
-    const cleanupKey = retained.rows[0].idempotency_key;
+    const cleanupKey = required(retained.rows[0]).idempotency_key;
     try {
       await fixture.observerPool.query(
         "UPDATE occ.controller_work SET state = 'failed_permanent' WHERE idempotency_key = $1",
         [cleanupKey],
       );
       assert.equal((await inventoryAgent()).deploymentInProgress, false);
-      const failed = await fixture.observerPool.query(
+      const failed = await fixture.observerPool.query<{ state: string }>(
         "SELECT state FROM occ.controller_work WHERE idempotency_key = $1",
         [cleanupKey],
       );
-      assert.equal(failed.rows[0].state, "failed_permanent");
+      assert.equal(required(failed.rows[0]).state, "failed_permanent");
     } finally {
       await fixture.observerPool.query(
         "UPDATE occ.controller_work SET state = 'succeeded' WHERE idempotency_key = $1",
@@ -1393,16 +1578,15 @@ test(
   "Agent deletion retries teardown, removes owned state, and preserves sibling resources",
   requiresPostgres,
   async (context) => {
-    let snapshot;
     const metrics = createOccMetrics("worker", () => snapshot.collect());
     const fixture = await setup(context, { metrics });
-    snapshot = new PostgresMetricsSnapshot(fixture.observerPool);
+    const snapshot = new PostgresMetricsSnapshot(fixture.observerPool);
     const owner = await fixture.agent("delete-target");
     const sibling = await fixture.agent("delete-sibling");
     const targetRevision = await fixture.revision(owner, 1);
     const siblingRevision = await fixture.revision(sibling, 1);
-    const retiredRevisions = [];
-    const deletedCredentialOwners = [];
+    const retiredRevisions: string[] = [];
+    const deletedCredentialOwners: string[] = [];
     let failRetirementOnce = true;
     await fixture.start({
       ...fixture.compute,
@@ -1537,7 +1721,7 @@ test(
   "repeating Agent deletion recovers exhausted teardown without resetting an active claim",
   requiresPostgres,
   async (context) => {
-    const retirement = Promise.withResolvers();
+    const retirement = Promise.withResolvers<void>();
     context.after(() => retirement.resolve());
     const fixture = await setup(context, { maxAttempts: 1 });
     const owner = await fixture.agent("delete-exhausted");
@@ -1565,7 +1749,7 @@ test(
     await fixture.work(deletion, "failed_permanent");
     const observe = () =>
       fixture.state.read((view) => view.operations.findWork(deletion.idempotencyKey));
-    const exhausted = await observe();
+    const exhausted = required(await observe());
     assert.equal(exhausted.attemptCount, 1);
     assert.equal(exhausted.reasonCode, "DEPENDENCY_UNAVAILABLE");
 
@@ -1598,7 +1782,7 @@ test(
 
     unavailable = false;
     await fixture.requestDeletion(owner);
-    const retried = await observe();
+    const retried = required(await observe());
     assert.ok(
       ["queued", "claimed"].includes(retried.state),
       "authorized repeated DELETE must requeue the exhausted teardown",
@@ -1608,12 +1792,12 @@ test(
     assert.equal(retried.createdAt.getTime(), exhausted.createdAt.getTime());
     assert.equal(retried.reasonCode, undefined);
     await waitFor("retried teardown to hold a live claim", async () => {
-      const work = await observe();
+      const work = required(await observe());
       return work.state === "claimed" && retirementAttempts === 2 ? work : undefined;
     });
-    const claimed = await observe();
+    const claimed = required(await observe());
     await Promise.all([fixture.requestDeletion(owner), fixture.requestDeletion(owner)]);
-    const repeated = await observe();
+    const repeated = required(await observe());
     assert.equal(repeated.state, "claimed");
     assert.equal(repeated.claimToken, claimed.claimToken);
     assert.equal(repeated.attemptCount, claimed.attemptCount);
@@ -1624,9 +1808,9 @@ test(
     );
     assert.equal(retirementAttempts, 2);
     assert.equal(await observe(), undefined);
-    const surviving = await fixture.currentAgent(sibling);
+    const surviving = required(await fixture.currentAgent(sibling));
     assert.equal(surviving.activeRevisionId, siblingRevision.id);
-    const { rows: ownedAudit } = await fixture.observerPool.query(
+    const { rows: ownedAudit } = await fixture.observerPool.query<AuditRow>(
       `SELECT action, actor_id AS "actorId", outcome, details FROM occ.audit_events
        WHERE namespace_id = $1 AND resource_id = $2`,
       [fixture.namespace.id, owner.id],
@@ -1640,15 +1824,18 @@ test(
     assert.deepEqual(
       ownedAudit
         .filter((event) => event.action === "openclaw.agents.delete.retry")
-        .map((event) => ({
-          actorId: event.actorId,
-          outcome: event.outcome,
-          details: {
-            workId: event.details.workId,
-            previousAttemptCount: event.details.previousAttemptCount,
-            previousReasonCode: event.details.previousReasonCode,
-          },
-        })),
+        .map((event) => {
+          const details = auditDetails(event.details);
+          return {
+            actorId: event.actorId,
+            outcome: event.outcome,
+            details: {
+              workId: details.workId,
+              previousAttemptCount: details.previousAttemptCount,
+              previousReasonCode: details.previousReasonCode,
+            },
+          };
+        }),
       [
         {
           actorId: fixture.actor.id,
@@ -1687,7 +1874,7 @@ test(
     await fixture.work(deletion, "failed_permanent");
     const observe = () =>
       fixture.state.read((view) => view.operations.findWork(deletion.idempotencyKey));
-    const exhausted = await observe();
+    const exhausted = required(await observe());
     assert.equal(exhausted.actorId, fixture.actor.id);
 
     const otherActor = `delete-successor-${randomUUID()}`;
@@ -1717,18 +1904,21 @@ test(
       (await fixture.currentAgent(owner)) === undefined ? true : undefined,
     );
     assert.equal(retirementAttempts, 2);
-    const { rows: retryAudit } = await fixture.observerPool.query(
+    const { rows: retryAudit } = await fixture.observerPool.query<AuditRow>(
       `SELECT actor_id AS "actorId", outcome, details FROM occ.audit_events
        WHERE namespace_id = $1 AND resource_id = $2 AND action = 'openclaw.agents.delete.retry'`,
       [fixture.namespace.id, owner.id],
     );
     assert.deepEqual(
-      retryAudit.map((event) => ({
-        actorId: event.actorId,
-        outcome: event.outcome,
-        takeover: event.details.takeover,
-        previousActorId: event.details.previousActorId,
-      })),
+      retryAudit.map((event) => {
+        const details = auditDetails(event.details);
+        return {
+          actorId: event.actorId,
+          outcome: event.outcome,
+          takeover: details.takeover,
+          previousActorId: details.previousActorId,
+        };
+      }),
       [
         {
           actorId: otherActor,
@@ -1744,7 +1934,7 @@ test(
 revisionTest(
   "repeating Namespace deletion recovers a teardown that exceeded its convergence deadline",
   async (fixture) => {
-    const namespace = {
+    const namespace: Namespace = {
       id: `ns_${randomUUID()}`,
       name: `delete-exhausted-${randomUUID()}`,
       status: "ready",
@@ -1773,13 +1963,13 @@ revisionTest(
       fixture.state.read((view) => view.operations.findWork(deletion.idempotencyKey));
     await fixture.controller.deleteNamespace(fixture.actor.id, namespace.id);
     await fixture.work(deletion, "failed_permanent");
-    const exhausted = await observe();
+    const exhausted = required(await observe());
     assert.equal(exhausted.reasonCode, "CONVERGENCE_DEADLINE_EXCEEDED");
     assert.equal(deleteAttempts, 1);
     const stranded = await fixture.state.read((view) =>
       view.namespaces.findNamespace(namespace.id),
     );
-    assert.equal(stranded.status, "deleting");
+    assert.equal(required(stranded).status, "deleting");
 
     // A rejected caller cannot replenish the worker's attempt budget.
     await assert.rejects(
@@ -1795,7 +1985,7 @@ revisionTest(
     // fails again after one pass instead of looping.
     const repeated = await fixture.controller.deleteNamespace(fixture.actor.id, namespace.id);
     assert.equal(repeated.status, "deleting");
-    const retried = await observe();
+    const retried = required(await observe());
     assert.ok(
       ["queued", "claimed"].includes(retried.state),
       "authorized repeated DELETE must requeue the failed Namespace teardown",
@@ -1804,7 +1994,7 @@ revisionTest(
     assert.equal(retried.actorId, exhausted.actorId);
     assert.equal(retried.reasonCode, undefined);
     await waitFor("unrepaired retry to fail again", async () => {
-      const work = await observe();
+      const work = required(await observe());
       return deleteAttempts === 2 && work.state === "failed_permanent" ? work : undefined;
     });
 
@@ -1816,19 +2006,22 @@ revisionTest(
       await fixture.state.read((view) => view.namespaces.findNamespace(namespace.id)),
       undefined,
     );
-    const { rows: retryAudit } = await fixture.observerPool.query(
+    const { rows: retryAudit } = await fixture.observerPool.query<AuditRow>(
       `SELECT actor_id AS "actorId", outcome, details FROM occ.audit_events
        WHERE namespace_id = $1 AND action = 'openclaw.namespaces.delete.retry'
        ORDER BY occurred_at, id`,
       [namespace.id],
     );
     assert.deepEqual(
-      retryAudit.map(({ actorId, outcome, details }) => ({
-        actorId,
-        outcome,
-        workId: details.workId,
-        previousReasonCode: details.previousReasonCode,
-      })),
+      retryAudit.map(({ actorId, outcome, details: value }) => {
+        const details = auditDetails(value);
+        return {
+          actorId,
+          outcome,
+          workId: details.workId,
+          previousReasonCode: details.previousReasonCode,
+        };
+      }),
       Array.from({ length: 2 }, () => ({
         actorId: fixture.actor.id,
         outcome: "success",
@@ -1844,7 +2037,7 @@ revisionTest(
   async (fixture) => {
     // D323: each worker pass while Kubernetes namespaces terminated wrote its own
     // lifecycle.delete audit row (38 rows for one deletion).
-    const namespace = {
+    const namespace: Namespace = {
       id: `ns_${randomUUID()}`,
       name: `delete-audit-${randomUUID()}`,
       status: "ready",
@@ -1867,18 +2060,21 @@ revisionTest(
     await fixture.controller.deleteNamespace(fixture.actor.id, namespace.id);
     await fixture.work(deletion, "succeeded");
     assert.equal(deleteAttempts, 4);
-    const { rows } = await fixture.observerPool.query(
+    const { rows } = await fixture.observerPool.query<Pick<AuditRow, "outcome" | "details">>(
       `SELECT outcome, details FROM occ.audit_events
        WHERE namespace_id = $1 AND action = 'openclaw.namespaces.lifecycle.delete'
        ORDER BY occurred_at, id`,
       [namespace.id],
     );
     assert.deepEqual(
-      rows.map(({ outcome, details }) => ({
-        outcome,
-        namespaceDeleted: details.namespaceDeleted,
-        convergencePending: details.convergencePending,
-      })),
+      rows.map(({ outcome, details: value }) => {
+        const details = auditDetails(value);
+        return {
+          outcome,
+          namespaceDeleted: details.namespaceDeleted,
+          convergencePending: details.convergencePending,
+        };
+      }),
       [
         { outcome: "success", namespaceDeleted: false, convergencePending: true },
         { outcome: "success", namespaceDeleted: true, convergencePending: undefined },
@@ -1886,7 +2082,7 @@ revisionTest(
     );
     // The queue's own reconcile evidence follows the same rule: one row for the
     // unchanged waiting state, one for completion.
-    const reconcile = await fixture.observerPool.query(
+    const reconcile = await fixture.observerPool.query<{ outcome: string; code: string | null }>(
       `SELECT outcome, details->>'reasonCode' AS code FROM occ.audit_events
        WHERE namespace_id = $1 AND action = 'reconcile' AND resource_kind = 'namespace'
        ORDER BY occurred_at, id`,
@@ -1911,7 +2107,10 @@ test(
     const reason =
       "Existing Kubernetes namespace customer-support belongs to another tenant: its openclaw.dev/namespace label names a different Namespace.";
     const timedOut = "Kubernetes API request timed out.";
-    const results = [
+    const results: Pick<
+      Awaited<ReturnType<ComputeDriver["ensureNamespace"]>>,
+      "failure" | "reason"
+    >[] = [
       { failure: "retryable", reason: timedOut },
       // Only a failed pass keeps a reason, and only bounded printable text: the worker drops
       // the rest itself, before the logger sees it.
@@ -1922,16 +2121,16 @@ test(
     ];
     let attempts = 0;
     let deletes = 0;
-    const output = [];
-    const events = [];
+    const output: unknown[] = [];
+    const events: WorkerEvent[] = [];
     const logger = createWorkerLogEmitter(
       createOccLogger({
         component: "occ-worker",
         destination: jsonLineDestination(output),
       }),
     );
-    const log = (event) => {
-      events.push(event);
+    const log: NonNullable<ControllerWorkerOptions["emit"]> = (event) => {
+      events.push(checkedWorkerEvent(event));
       logger(event);
     };
     await fixture.start(
@@ -1966,10 +2165,11 @@ test(
       // The retries back off, under 10 s in all; the pending pass uses no attempt.
       40_000,
     );
-    const ensured = (lines) =>
+    const ensured = (lines: readonly unknown[]) =>
       lines.filter(
-        (line) =>
-          line.event === "worker.completed" &&
+        (line): line is WorkerEvent =>
+          isRecord(line) &&
+          checkedWorkerEvent(line).event === "worker.completed" &&
           line.namespaceId === namespace.id &&
           line.operation === "namespace.ensure",
       );
@@ -1993,7 +2193,7 @@ test(
       passes.map(([, reason]) => reason),
     );
     const failed = await fixture.state.read((view) => view.namespaces.findNamespace(namespace.id));
-    assert.equal(failed.status, "failed");
+    assert.equal(required(failed).status, "failed");
     // The reason stays in the operator log: the Namespace and its audit events carry none.
     assert.equal(JSON.stringify(failed).includes("another tenant"), false);
     const { rows } = await fixture.observerPool.query(
@@ -2028,7 +2228,7 @@ test(
 revisionTest(
   "Namespace teardown records the same waiting state again after a retry in between",
   async (fixture) => {
-    const namespace = {
+    const namespace: Namespace = {
       id: `ns_${randomUUID()}`,
       name: `delete-retry-audit-${randomUUID()}`,
       status: "ready",
@@ -2052,7 +2252,7 @@ revisionTest(
       "succeeded",
     );
     assert.equal(deleteAttempts, 6);
-    const { rows } = await fixture.observerPool.query(
+    const { rows } = await fixture.observerPool.query<{ outcome: string; code: string | null }>(
       `SELECT outcome, details->>'reasonCode' AS code FROM occ.audit_events
        WHERE namespace_id = $1 AND action = 'reconcile' AND resource_kind = 'namespace'
        ORDER BY occurred_at, id`,
@@ -2073,7 +2273,7 @@ revisionTest(
 revisionTest(
   "another authorized actor takes over failed Namespace deletion once the initiator loses permission",
   async (fixture) => {
-    const namespace = {
+    const namespace: Namespace = {
       id: `ns_${randomUUID()}`,
       name: `delete-takeover-${randomUUID()}`,
       status: "ready",
@@ -2102,7 +2302,7 @@ revisionTest(
       fixture.state.read((view) => view.operations.findWork(deletion.idempotencyKey));
     await fixture.controller.deleteNamespace(fixture.actor.id, namespace.id);
     await fixture.work(deletion, "failed_permanent");
-    const exhausted = await observe();
+    const exhausted = required(await observe());
     assert.equal(exhausted.actorId, fixture.actor.id);
 
     const otherActor = `delete-successor-${randomUUID()}`;
@@ -2167,31 +2367,39 @@ revisionTest(
       [namespace.id],
     );
     assert.deepEqual(leftover, [{ roles: 0, bindings: 0 }]);
-    const { rows: teardownAudit } = await fixture.observerPool.query(
+    const { rows: teardownAudit } = await fixture.observerPool.query<{ details: unknown }>(
       `SELECT details FROM occ.audit_events
        WHERE namespace_id = $1 AND action = 'openclaw.namespaces.lifecycle.delete'
          AND outcome = 'success'`,
       [namespace.id],
     );
     assert.equal(teardownAudit.length, 1);
-    assert.ok(teardownAudit[0].details.removedRoleIds.includes(policyRole));
+    const details = required(teardownAudit[0]).details;
+    assert.ok(isRecord(details));
+    assert.ok(Array.isArray(details.removedRoleIds));
+    assert.ok(Array.isArray(details.removedAccessBindings));
+    assert.ok(details.removedRoleIds.includes(policyRole));
     assert.ok(
-      teardownAudit[0].details.removedAccessBindings.some(
-        (binding) => binding.id === policyBinding && binding.subjectId === otherActor,
+      details.removedAccessBindings.some(
+        (binding: unknown) =>
+          isRecord(binding) && binding.id === policyBinding && binding.subjectId === otherActor,
       ),
     );
-    const { rows: retryAudit } = await fixture.observerPool.query(
+    const { rows: retryAudit } = await fixture.observerPool.query<AuditRow>(
       `SELECT actor_id AS "actorId", outcome, details FROM occ.audit_events
        WHERE namespace_id = $1 AND action = 'openclaw.namespaces.delete.retry'`,
       [namespace.id],
     );
     assert.deepEqual(
-      retryAudit.map(({ actorId, outcome, details }) => ({
-        actorId,
-        outcome,
-        takeover: details.takeover,
-        previousActorId: details.previousActorId,
-      })),
+      retryAudit.map(({ actorId, outcome, details: value }) => {
+        const details = auditDetails(value);
+        return {
+          actorId,
+          outcome,
+          takeover: details.takeover,
+          previousActorId: details.previousActorId,
+        };
+      }),
       [
         {
           actorId: otherActor,
@@ -2208,10 +2416,9 @@ test(
   "Agent deletion fails closed when a credential-provisioning Driver cannot delete credentials",
   requiresPostgres,
   async (context) => {
-    let snapshot;
     const metrics = createOccMetrics("worker", () => snapshot.collect());
     const fixture = await setup(context, { metrics });
-    snapshot = new PostgresMetricsSnapshot(fixture.observerPool);
+    const snapshot = new PostgresMetricsSnapshot(fixture.observerPool);
     const owner = await fixture.agent("delete-credentials-unsupported");
     const before = await snapshot.collect();
     const deletion = await fixture.requestDeletion(owner);
@@ -2320,7 +2527,7 @@ revisionTest(
 
     // Agent deletion preserves Namespace-owned inputs. Remove the surviving
     // harness Secret through the production controller before offboarding.
-    assert.equal(owner.harnessAuth.method, "api_key");
+    assert.ok(owner.harnessAuth?.method === "api_key");
     await fixture.controller.deleteSecret(
       fixture.actor.id,
       fixture.namespace.id,
@@ -2398,16 +2605,12 @@ test(
     );
     const fixture = await setup(context, { metrics });
     const { owner, candidate: first } = await fixture.admitInitialRevision("stop-then-deploy");
-    const stoppedRevisions = [];
-    let releaseStopAuthorization;
-    const stopAuthorizationReleased = new Promise((resolve) => {
-      releaseStopAuthorization = resolve;
-    });
-    let stopAuthorizationStarted;
-    const stopAuthorizationObserved = new Promise((resolve) => {
-      stopAuthorizationStarted = resolve;
-    });
-    const compute = {
+    const stoppedRevisions: string[] = [];
+    const { promise: stopAuthorizationReleased, resolve: releaseStopAuthorization } =
+      Promise.withResolvers<void>();
+    const { promise: stopAuthorizationObserved, resolve: stopAuthorizationStarted } =
+      Promise.withResolvers<void>();
+    const compute: ComputeDriver = {
       ...fixture.compute,
       async stopRevision(candidate) {
         stoppedRevisions.push(candidate.id);
@@ -2451,7 +2654,7 @@ test(
     releaseStopAuthorization();
 
     await Promise.all([fixture.work(stop, "succeeded"), fixture.work(second, "succeeded")]);
-    const running = await fixture.currentAgent(owner);
+    const running = required(await fixture.currentAgent(owner));
     assert.equal(running.desiredRuntimeState, "running");
     assert.equal(running.activeRevisionId, second.id);
     assert.deepEqual(stoppedRevisions, []);
@@ -2474,7 +2677,7 @@ revisionTest(
   "Agent stop cleans a terminal candidate without an active revision",
   async (fixture) => {
     const { owner, candidate } = await fixture.admitInitialRevision("stop-initial-failure");
-    const stopped = [];
+    const stopped: string[] = [];
     await fixture.start(
       {
         ...fixture.compute,
@@ -2505,7 +2708,7 @@ revisionTest(
     const stop = await fixture.requestStop(owner);
     await fixture.work(stop, "succeeded");
     assert.deepEqual(stopped, [candidate.id]);
-    const current = await fixture.currentAgent(owner);
+    const current = required(await fixture.currentAgent(owner));
     assert.equal(current.desiredRuntimeState, "stopped");
     assert.equal(current.activeRevisionId, undefined);
   },
@@ -2518,16 +2721,16 @@ for (const admissionDuring of ["active", "candidate"]) {
       const { owner, candidate: active } = await fixture.admitInitialRevision(
         `stop-race-${admissionDuring}`,
       );
-      const stopped = [];
-      let candidate;
-      let newer;
-      let activeWhenNewerPrepared;
+      const stopped: string[] = [];
+      const scenario: { candidate?: AgentRevision & WorkIdentity } = {};
+      let newer: (AgentRevision & WorkIdentity) | undefined;
+      let activeWhenNewerPrepared: string | undefined;
       await fixture.start(
         {
           ...fixture.compute,
           async prepareRevision(revision) {
             if (revision.revision === 3) {
-              const current = await fixture.currentAgent(owner);
+              const current = required(await fixture.currentAgent(owner));
               activeWhenNewerPrepared = current.activeRevisionId;
             }
             return {
@@ -2541,7 +2744,10 @@ for (const admissionDuring of ["active", "candidate"]) {
               return fixture.compute.stopRevision(revision);
             }
             stopped.push(revision.id);
-            if (revision.id === (admissionDuring === "active" ? active.id : candidate.id)) {
+            if (
+              revision.id ===
+              (admissionDuring === "active" ? active.id : required(scenario.candidate).id)
+            ) {
               // Admission changes desired state during an exact cleanup call. The
               // old pointer must survive both the next-effect and final-CAS fences.
               newer = await fixture.revision(owner, 3);
@@ -2551,7 +2757,8 @@ for (const admissionDuring of ["active", "candidate"]) {
         { convergenceTimeoutMs: 50 },
       );
       await fixture.work(active, "succeeded");
-      candidate = await fixture.revision(owner, 2);
+      const candidate = await fixture.revision(owner, 2);
+      scenario.candidate = candidate;
       await fixture.work(candidate, "failed_permanent");
       const stop = await fixture.requestStop(owner);
       await fixture.work(stop, "succeeded");
@@ -2566,7 +2773,7 @@ for (const admissionDuring of ["active", "candidate"]) {
         active.id,
         "stale stop must not clear the serving pointer after a later admission",
       );
-      const current = await fixture.currentAgent(owner);
+      const current = required(await fixture.currentAgent(owner));
       assert.equal(current.desiredRuntimeState, "running");
       assert.equal(current.activeRevisionId, newer.id);
     },
@@ -2589,8 +2796,8 @@ for (const { operation, action } of [
       const { owner, candidate: revision } = await fixture.admitInitialRevision(
         `${operation}-reauthorization`,
       );
-      const effects = [];
-      const compute = {
+      const effects: { action: string; agentId: string }[] = [];
+      const compute: ComputeDriver = {
         ...fixture.compute,
         async stopRevision(candidate) {
           effects.push({ action: "stop", agentId: candidate.agentId });
@@ -2635,7 +2842,7 @@ for (const { operation, action } of [
         effects.filter(({ agentId }) => agentId === owner.id),
         [],
       );
-      const current = await fixture.currentAgent(owner);
+      const current = required(await fixture.currentAgent(owner));
       assert.equal(current.activeRevisionId, revision.id);
       assert.equal(current.desiredRuntimeState, "stopped");
       assert.equal(current.status, operation === "delete" ? "deleting" : "active");
@@ -2709,8 +2916,8 @@ revisionTest(
        VALUES ($1, $2, 'operate', 'agent', $3, 'deny')`,
       [`restriction-${randomUUID()}`, fixture.namespace.id, owner.id],
     );
-    const stoppedRevisions = [];
-    const events = [];
+    const stoppedRevisions: string[] = [];
+    const events: WorkerEvent[] = [];
     await fixture.start(
       {
         ...fixture.compute,
@@ -2721,14 +2928,14 @@ revisionTest(
           return fixture.compute.stopRevision(candidate);
         },
       },
-      { emit: (event) => events.push(event), pool: fixture.createWorkerPool() },
+      { emit: (event) => events.push(checkedWorkerEvent(event)), pool: fixture.createWorkerPool() },
     );
 
     await fixture.work(maintenance, "succeeded");
     await fixture.work(stop, "failed_permanent");
     await neighbor.work(neighborStop, "succeeded");
     assert.deepEqual(stoppedRevisions, []);
-    const current = await fixture.currentAgent(owner);
+    const current = required(await fixture.currentAgent(owner));
     assert.equal(current.activeRevisionId, revision.id);
     assert.equal(current.desiredRuntimeState, "stopped");
     await completion(
@@ -2753,12 +2960,10 @@ revisionTest(
     const foreignRevision = await foreign.revision(foreignOwner, 1);
     const foreignStop = await foreign.requestStop(foreignOwner);
     const candidate = await fixture.revision(owner, 1);
-    let releasePreparation;
-    const preparationReleased = new Promise((resolve) => {
-      releasePreparation = resolve;
-    });
+    const { promise: preparationReleased, resolve: releasePreparation } =
+      Promise.withResolvers<void>();
     let preparationStarted = false;
-    const stoppedRevisions = [];
+    const stoppedRevisions: string[] = [];
     await fixture.start({
       ...fixture.compute,
       async prepareRevision(revision) {
@@ -2786,7 +2991,7 @@ revisionTest(
     await foreign.work(foreignRevision, "succeeded");
     await foreign.work(foreignStop, "succeeded");
 
-    const stopped = await fixture.currentAgent(owner);
+    const stopped = required(await fixture.currentAgent(owner));
     assert.equal(stopped.activeRevisionId, undefined);
     assert.equal(stopped.desiredRuntimeState, "stopped");
     // Both the interrupted revision and Agent-stop owner perform exact,
@@ -2823,13 +3028,11 @@ revisionTest(
     // the Agent: the candidate must stay unpublished, and the predecessor is left
     // to the stop instead of being retired by a candidate that never served.
     const candidate = await fixture.revision(owner, 2);
-    let releaseActivation;
-    const activationReleased = new Promise((resolve) => {
-      releaseActivation = resolve;
-    });
+    const { promise: activationReleased, resolve: releaseActivation } =
+      Promise.withResolvers<void>();
     let activationStarted = false;
-    const stoppedRevisions = [];
-    const retiredRevisions = [];
+    const stoppedRevisions: string[] = [];
+    const retiredRevisions: string[] = [];
     await fixture.start({
       ...fixture.compute,
       activationOrder: "beforeCommit",
@@ -2852,7 +3055,7 @@ revisionTest(
       activationStarted ? true : undefined,
     );
 
-    let stop;
+    let stop: Awaited<ReturnType<Fixture["requestStop"]>> | undefined;
     try {
       stop = await fixture.requestStop(owner);
     } finally {
@@ -2861,7 +3064,7 @@ revisionTest(
     await fixture.work(candidate, "succeeded");
     await fixture.work(stop, "succeeded");
 
-    const stopped = await fixture.currentAgent(owner);
+    const stopped = required(await fixture.currentAgent(owner));
     assert.equal(stopped.desiredRuntimeState, "stopped");
     assert.equal(stopped.activeRevisionId, undefined);
     // The candidate stops itself. The stop work then stops the still-serving predecessor
@@ -2883,13 +3086,11 @@ revisionTest(
     const owner = await fixture.agent("stop-after-running-check");
     const sibling = await fixture.agent("stop-after-running-check-sibling");
     const candidate = await fixture.revision(owner, 1);
-    let releaseActivation;
-    const activationReleased = new Promise((resolve) => {
-      releaseActivation = resolve;
-    });
+    const { promise: activationReleased, resolve: releaseActivation } =
+      Promise.withResolvers<void>();
     let activationStarted = false;
-    const stoppedRevisions = [];
-    const compute = {
+    const stoppedRevisions: [string, unknown][] = [];
+    const compute: ComputeDriver = {
       ...fixture.compute,
       // An after-commit Driver activates the published candidate after the worker's last check
       // that the Agent runs. Holding it keeps the revision work claimed past that check.
@@ -2910,7 +3111,7 @@ revisionTest(
       },
     };
     await fixture.start(compute);
-    let stop;
+    let stop: Awaited<ReturnType<Fixture["requestStop"]>> | undefined;
     try {
       await waitFor("candidate activation to start", async () =>
         activationStarted ? true : undefined,
@@ -2924,7 +3125,7 @@ revisionTest(
       // passed over the owner's stop while the revision work held its claim.
       const siblingStop = await fixture.requestStop(sibling);
       await fixture.work(siblingStop, "succeeded");
-      const held = await fixture.observerPool.query(
+      const held = await fixture.observerPool.query<{ idempotency_key: string; state: string }>(
         "SELECT idempotency_key, state FROM occ.controller_work WHERE idempotency_key = ANY($1::text[])",
         [[candidate.idempotencyKey, stop.idempotencyKey]],
       );
@@ -2940,7 +3141,7 @@ revisionTest(
     // candidate, so the Agent ends stopped rather than serving after its owner stopped it.
     await fixture.work(candidate, "succeeded");
     await fixture.work(stop, "succeeded");
-    const stopped = await fixture.currentAgent(owner);
+    const stopped = required(await fixture.currentAgent(owner));
     assert.equal(stopped.desiredRuntimeState, "stopped");
     assert.equal(stopped.activeRevisionId, undefined);
     assert.deepEqual(stoppedRevisions, [[candidate.id, "succeeded"]]);
@@ -2956,13 +3157,13 @@ revisionTest(
     assert.equal(first.repositoryCredentials, undefined);
     const replacementActor = `replacement-actor-${randomUUID()}`;
     await fixture.copyActorGrants(replacementActor);
-    const activationStarted = Promise.withResolvers();
-    const releaseActivation = Promise.withResolvers();
-    const stopAuthorizationStarted = Promise.withResolvers();
-    const releaseStopAuthorization = Promise.withResolvers();
-    const prepared = [];
-    const stopped = [];
-    const compute = {
+    const activationStarted = Promise.withResolvers<void>();
+    const releaseActivation = Promise.withResolvers<void>();
+    const stopAuthorizationStarted = Promise.withResolvers<void>();
+    const releaseStopAuthorization = Promise.withResolvers<void>();
+    const prepared: string[] = [];
+    const stopped: string[] = [];
+    const compute: ComputeDriver = {
       ...fixture.compute,
       maintenanceIntervalMs: 3_600_000,
       async prepareRevision(revision, deploymentContext) {
@@ -3014,11 +3215,11 @@ revisionTest(
       const stop = await fixture.requestStop(owner);
       // The original claim acknowledges while Stop intent is still committed. There
       // is no repository-removal owner to replace its ordinary maintenance chain.
-      assert.equal((await fixture.currentAgent(owner)).desiredRuntimeState, "stopped");
+      assert.equal(required(await fixture.currentAgent(owner)).desiredRuntimeState, "stopped");
       releaseActivation.resolve();
       await fixture.work(first, "succeeded");
       await within(stopAuthorizationStarted.promise, "Stop authorization to start");
-      assert.equal((await fixture.currentAgent(owner)).desiredRuntimeState, "stopped");
+      assert.equal(required(await fixture.currentAgent(owner)).desiredRuntimeState, "stopped");
 
       // Existing admission storage changes intent and queues the replacement. Revoke
       // only its actor before dispatch, so real IAM refuses it before any cutover.
@@ -3028,8 +3229,11 @@ revisionTest(
       await fixture.work(stop, "succeeded");
       assert.deepEqual(await stopAudit(fixture, owner), ["STOP_SUPERSEDED"]);
       await fixture.work(second, "failed_permanent");
-      assert.equal((await fixture.workResult(second)).rows[0].reason_code, "AUTHORIZATION_DENIED");
-      const current = await fixture.currentAgent(owner);
+      assert.equal(
+        required((await fixture.workResult(second)).rows[0]).reason_code,
+        "AUTHORIZATION_DENIED",
+      );
+      const current = required(await fixture.currentAgent(owner));
       assert.equal(current.activeRevisionId, first.id);
       assert.equal(current.desiredRuntimeState, "running");
       assert.deepEqual(prepared, [first.id], "the refused replacement never reaches Compute");
@@ -3037,8 +3241,9 @@ revisionTest(
 
       const due = await fixture.advanceMaintenance(first);
       assert.equal(due.rowCount, 1, "the still-running original retains one maintenance item");
-      assert.equal(due.rows[0].actor_id, fixture.actor.id, "maintenance keeps the original actor");
-      const maintenance = { ...first, idempotencyKey: due.rows[0].idempotency_key };
+      const dueWork = required(due.rows[0]);
+      assert.equal(dueWork.actor_id, fixture.actor.id, "maintenance keeps the original actor");
+      const maintenance = { ...first, idempotencyKey: dueWork.idempotency_key };
       await fixture.work(maintenance, "succeeded");
       assert.deepEqual(prepared, [first.id, first.id], "the original's real maintenance runs");
       assert.deepEqual(stopped, []);
@@ -3048,7 +3253,7 @@ revisionTest(
         [first.id, `agent_revision:${first.id}:maintenance:%`],
       );
       assert.deepEqual(next.rows, [{ actor_id: fixture.actor.id }], "one next observation remains");
-      assert.equal((await fixture.currentAgent(owner)).activeRevisionId, first.id);
+      assert.equal(required(await fixture.currentAgent(owner)).activeRevisionId, first.id);
     } finally {
       // Release worker calls before the fixture joins them during disposal.
       releaseActivation.resolve();
@@ -3086,11 +3291,11 @@ revisionTest(
         replacement.id,
       ),
     );
-    assert.equal(published.activeRevisionId, replacement.id);
+    assert.equal(required(published).activeRevisionId, replacement.id);
     const stop = await fixture.requestStop(owner);
 
-    const stoppedRevisions = [];
-    const retiredRevisions = [];
+    const stoppedRevisions: string[] = [];
+    const retiredRevisions: string[] = [];
     let failRetirement = true;
     await fixture.start(
       {
@@ -3131,6 +3336,7 @@ revisionTest(
           view.revisions.findRevision(fixture.namespace.id, owner.id, replacement.id),
         ]),
     );
+    assert.ok(stopped && retainedPredecessor && retainedReplacement);
     assert.equal(stopped.desiredRuntimeState, "stopped");
     assert.equal(stopped.activeRevisionId, undefined);
     assert.equal(retainedPredecessor.id, predecessor.id);
@@ -3157,7 +3363,7 @@ test(
     const fixture = await setup(context, { metrics, leaseDurationMs: 1_200 });
     const { owner, candidate: first } =
       await fixture.admitInitialRevision("short-retirement-lease");
-    const events = [];
+    const events: WorkerEvent[] = [];
     let completedRetirements = 0;
     await fixture.start(
       {
@@ -3173,15 +3379,15 @@ test(
           return result;
         },
       },
-      { emit: (event) => events.push(event) },
+      { emit: (event) => events.push(checkedWorkerEvent(event)) },
     );
     await fixture.work(first, "succeeded");
     // Admitted intermediate revisions can be superseded before execution. They
     // remain valid predecessors that active-revision maintenance must retire.
     await fixture.state.transact(async (unit) => {
       for (let number = 2; number <= 24; number += 1) {
-        const skipped = { ...first, id: `rev_${randomUUID()}`, revision: number };
-        delete skipped.idempotencyKey;
+        const { idempotencyKey: _idempotencyKey, ...revision } = first;
+        const skipped = { ...revision, id: `rev_${randomUUID()}`, revision: number };
         await unit.revisions.createRevision(skipped);
       }
     });
@@ -3193,7 +3399,7 @@ test(
         false,
         "consecutive short effects must not starve lease renewal",
       );
-      const result = await fixture.observerPool.query(
+      const result = await fixture.observerPool.query<{ state: string; attempt_count: number }>(
         `SELECT state, attempt_count FROM occ.controller_work
          WHERE revision_id = $1 AND idempotency_key LIKE '%:maintenance:%'
            AND state = 'succeeded'`,
@@ -3208,7 +3414,7 @@ test(
       /occ_agent_operation_duration_seconds_count\{[^\n]*operation="deploy"[^\n]*\} 2(?:\n|$)/,
     );
     assert.ok(completedRetirements >= 25, "activation and all predecessors were retired");
-    const active = await fixture.currentAgent(owner);
+    const active = required(await fixture.currentAgent(owner));
     assert.equal(active.activeRevisionId, current.id);
   },
 );
