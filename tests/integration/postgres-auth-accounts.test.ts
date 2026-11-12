@@ -28,6 +28,7 @@ import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mj
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { waitFor } from "../helpers/wait-for.mjs";
 
 const adminEmail = "postgres-admin@openclaw.local";
 const adminPassword = "postgres-development-password";
@@ -475,14 +476,40 @@ test(
       return rows;
     }
 
-    // The request's three earlier read transactions commit first. Drop the reply to
-    // the provisioning COMMIT, after PostgreSQL has committed the account, Principal,
-    // binding and audit.
-    proxy.arm({ skipCommits: 3 });
-    const unknown = await injectJson(faulted, "POST", "/api/auth/accounts", {
-      session,
-      body: payload,
-    });
+    // Wait for the real provisioning INSERT before arming the fault. Admission and
+    // Role-validation reads may use a different number of transactions.
+    const blocker = await observerPool.connect();
+    let creation: ReturnType<typeof injectJson> | undefined;
+    let unknown: InjectedResponse;
+    try {
+      await blocker.query("BEGIN");
+      const blockerPid = (await blocker.query<{ pid: number }>("SELECT pg_backend_pid() AS pid"))
+        .rows[0]?.pid;
+      assert.ok(blockerPid);
+      await blocker.query('LOCK TABLE occ."user" IN SHARE MODE');
+      creation = injectJson(faulted, "POST", "/api/auth/accounts", {
+        session,
+        body: payload,
+      });
+      await waitFor("the account provisioning INSERT to wait on its blocker", async () => {
+        const { rows } = await observerPool.query<{ pid: number }>(
+          `SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND usename=current_user
+           AND state='active' AND wait_event_type='Lock' AND position(lower($1) in lower(query))>0
+           AND $2::int=ANY(pg_blocking_pids(pid))`,
+          ['INSERT INTO occ."user"', blockerPid],
+        );
+        return rows[0]?.pid;
+      });
+      // Drop the real provisioning COMMIT reply only after the account writer has
+      // reached its transaction. PostgreSQL still commits all account records.
+      proxy.arm();
+      await blocker.query("COMMIT");
+      unknown = await creation;
+    } finally {
+      await blocker.query("ROLLBACK");
+      blocker.release();
+      await Promise.allSettled([creation]);
+    }
     assert.equal(proxy.observedCommit, true);
     assertApiError(unknown, 503, "DEPENDENCY_UNAVAILABLE");
     assert.ok(/outcome is unknown/i.test(text(record(record(unknown.json()).error).message)));
