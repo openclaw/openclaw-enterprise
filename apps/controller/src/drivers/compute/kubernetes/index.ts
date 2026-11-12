@@ -6558,24 +6558,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const materialInput = this.repositoryMaterialInput(revision, context);
     const repositoryConsumer =
       materialInput === undefined ? undefined : this.repositoryConsumer(revision);
-    const nativeConfiguration =
-      repositoryConsumer?.role !== "gateway"
-        ? revision.configuration
-        : repositoryNativeConfiguration(revision.configuration);
-    const admittedNativeConfiguration = this.gatewayNativeHookRelayConfiguration(
+    const { nativeConfiguration, admittedRevision } = this.projectGatewayRevision(
       revision,
-      this.gatewaySandboxConfiguration(
-        revision,
-        this.kubernetesGatewayConfigurationDocument(
-          modelProviderConfiguration(
-            nativeConfiguration,
-            revision.harness,
-            savedModelProvider(revision.harness.configuration),
-          ),
-        ),
-      ),
+      repositoryConsumer?.role,
     );
-    const admittedRevision = { ...revision, configuration: admittedNativeConfiguration };
     const embedded = revision.harness.mode === "embedded";
     if (
       (embedded && revision.harness.id !== "openclaw") ||
@@ -7875,24 +7861,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const materialInput = this.repositoryMaterialInput(revision, context);
     const repositoryConsumer =
       materialInput === undefined ? undefined : this.repositoryConsumer(revision);
-    const nativeConfiguration =
-      repositoryConsumer?.role !== "gateway"
-        ? revision.configuration
-        : repositoryNativeConfiguration(revision.configuration);
-    const admittedNativeConfiguration = this.gatewayNativeHookRelayConfiguration(
-      revision,
-      this.gatewaySandboxConfiguration(
-        revision,
-        this.kubernetesGatewayConfigurationDocument(
-          modelProviderConfiguration(
-            nativeConfiguration,
-            revision.harness,
-            savedModelProvider(revision.harness.configuration),
-          ),
-        ),
-      ),
-    );
-    const admittedRevision = { ...revision, configuration: admittedNativeConfiguration };
+    const { admittedRevision } = this.projectGatewayRevision(revision, repositoryConsumer?.role);
     if (this.options.runtime === undefined) {
       return;
     }
@@ -13586,6 +13555,33 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       this.options.runtime !== undefined &&
       this.options.gatewayRouting !== undefined
     );
+  }
+
+  private projectGatewayRevision(
+    revision: AgentRevision,
+    repositoryRole: "gateway" | "agent" | undefined,
+  ): { nativeConfiguration: OpenClawConfigurationDocument; admittedRevision: AgentRevision } {
+    const nativeConfiguration =
+      repositoryRole !== "gateway"
+        ? revision.configuration
+        : repositoryNativeConfiguration(revision.configuration);
+    const admittedNativeConfiguration = this.gatewayNativeHookRelayConfiguration(
+      revision,
+      this.gatewaySandboxConfiguration(
+        revision,
+        this.kubernetesGatewayConfigurationDocument(
+          modelProviderConfiguration(
+            nativeConfiguration,
+            revision.harness,
+            savedModelProvider(revision.harness.configuration),
+          ),
+        ),
+      ),
+    );
+    return {
+      nativeConfiguration,
+      admittedRevision: { ...revision, configuration: admittedNativeConfiguration },
+    };
   }
 
   private gatewayNativeHookRelayConfiguration(

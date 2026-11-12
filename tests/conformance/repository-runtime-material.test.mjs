@@ -652,6 +652,7 @@ function deepFreeze(value) {
 
 test("Dedicated repository custody and networking belong only to Codex", async () => {
   const f = await fixture("dedicated");
+  f.revision.configuration.tools = { exec: { pathPrepend: ["/operator/bin"] } };
   const original = JSON.stringify(f.revision.configuration);
   await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
   const agent = f.consumer();
