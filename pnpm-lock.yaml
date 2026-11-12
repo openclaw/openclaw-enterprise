@@ -124,7 +124,7 @@ importers:
         version: 10.4.0
       tar-stream:
         specifier: 3.2.2
-        version: 3.2.2
+        version: 3.2.2(bare-buffer@3.7.1)
       tldts:
         specifier: 7.4.19
         version: 7.4.19
