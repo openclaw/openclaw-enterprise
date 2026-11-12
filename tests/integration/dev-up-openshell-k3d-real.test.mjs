@@ -957,7 +957,7 @@ test(
 
     const startupArguments = [];
     const controllerImage = environment.OCC_TEST_DEV_UP_COMPOSE_CONTROLLER_IMAGE;
-    if (controllerImage) {
+    if (controllerImage !== undefined) {
       assert.equal(environment.OCC_DEVELOPMENT_CONTAINER_ENGINE, "docker");
       const runtimeImage = environment.OCC_KUBERNETES_RUNTIME_IMAGE;
       assert.match(runtimeImage ?? "", /@sha256:[a-f0-9]{64}$/);
@@ -1022,7 +1022,7 @@ test(
       assert.equal((await stat(join(stateDirectory, path))).mode & 0o077, 0);
     }
     const compose = loadYaml(await readFile(join(stateDirectory, "compose.yaml"), "utf8"));
-    if (controllerImage) {
+    if (controllerImage !== undefined) {
       for (const name of [
         "migrate",
         "bootstrap",

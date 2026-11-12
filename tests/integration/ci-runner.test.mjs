@@ -2879,6 +2879,59 @@ test("OpenShell browser runner retains the destination for refusal before Local 
   }
 });
 
+test("OpenShell Compose rejects an empty prepared selector before Local Setup", async (t) => {
+  for (const selected of [true, false]) {
+    await t.test(
+      selected ? "empty selector" : "absent selector with prepared runtime",
+      async (t) => {
+        const root = await fixture(t);
+        const file = "tests/integration/dev-up-openshell-k3d-real.test.mjs";
+        await writeFile(join(root, file), await readFile(join(repositoryRoot, file)));
+        await symlink(
+          join(repositoryRoot, "scripts/ci/failure-redaction.mjs"),
+          join(root, "scripts/ci/failure-redaction.mjs"),
+        );
+        for (const path of ["apps", "node_modules", "tests/helpers"]) {
+          await symlink(join(repositoryRoot, path), join(root, path), "dir");
+        }
+        await symlink(join(repositoryRoot, "package.json"), join(root, "package.json"));
+        // Satisfy the test's CLI presence check, but leave the launcher absent.
+        // The real input guard must run before startup, without creating a cluster.
+        await mkdir(join(root, "bin"));
+        await writeFile(join(root, "bin/occ"), "");
+        const env = {
+          ...process.env,
+          OCC_TEST_DEV_UP_OPENSHELL_REAL: "",
+          OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL: "1",
+          OCC_TEST_DEV_UP_CONTAINER_ENGINE: "docker",
+          OCC_KUBERNETES_RUNTIME_IMAGE: `runtime.example.test/image@sha256:${"a".repeat(64)}`,
+        };
+        delete env.NODE_TEST_CONTEXT;
+        delete env.OCC_TEST_DEV_UP_COMPOSE_CONTROLLER_IMAGE;
+        if (selected) {
+          env.OCC_TEST_DEV_UP_COMPOSE_CONTROLLER_IMAGE = "";
+        }
+        const result = spawnSync(process.execPath, ["--test", join(root, file)], {
+          cwd: root,
+          env,
+          encoding: "utf8",
+          timeout: 30_000,
+        });
+        assert.equal(result.error, undefined);
+        assert.equal(result.status, 1, result.stdout + result.stderr);
+        const output = result.stdout + result.stderr;
+        if (selected) {
+          assert.match(output, /Prepared Compose controller requires an owned immutable image/);
+          assert.doesNotMatch(output, /OpenShell development startup failed/);
+        } else {
+          assert.match(output, /OpenShell development startup failed/);
+          assert.doesNotMatch(output, /requires an owned immutable image/);
+        }
+      },
+    );
+  }
+});
+
 test("OpenShell selected files retain API-key selection and require the selected credential", async (t) => {
   const root = await fixture(t);
   const lane = JSON.parse(

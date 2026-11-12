@@ -26,7 +26,7 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 ./scripts/dev-up
 ```
 
-Keep one state directory per checkout and retain its environment. The launcher
+Retain one state directory per checkout and its environment. The launcher
 prints the API URL, kubeconfig, context, and service-key file; default Kubernetes
 configuration stays unchanged. Set `OCC_DEVELOPMENT_CONTAINER_ENGINE=docker` or `podman` if selection is ambiguous.
 
@@ -159,8 +159,8 @@ OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL=1 \
 
 Each command selects one case, skipping the other. Both check setup, Workspace
 reconciliation, and cleanup. Kubernetes adds browser access and a real Agent
-reply using an OIDC fixture; Compose uses a synthetic credential without model
-calls. Default: Docker; set
+reply using an OIDC fixture. Compose needs no model credential or call.
+Default: Docker; set
 `OCC_TEST_DEV_UP_CONTAINER_ENGINE=podman` for Podman.
 
 For prepared Docker Compose images, set `OCC_TEST_DEV_UP_COMPOSE_CONTROLLER_IMAGE`
@@ -168,11 +168,11 @@ to an immutable development-controller reference under
 `127.0.0.1:<port>/openclaw-ci-first-images-<id>/controller`, and
 `OCC_KUBERNETES_RUNTIME_IMAGE` to an immutable runtime reference. Both must be
 locally inspectable, built from this checkout, and labeled with its revision.
-Retain provenance; never relabel older images. The extra Compose file replaces
+Retain provenance; never relabel images. The extra Compose file replaces
 all five services' builds, excluding build coverage but preserving assertions.
-Unset the selector for source builds.
+Unset both image variables for full source-build coverage.
 
-Set `OCC_TEST_NATIVE_BROWSER_RECEIPT` to a new file in an existing directory for
+For Kubernetes, set `OCC_TEST_NATIVE_BROWSER_RECEIPT` to a new file in an existing directory for
 source, image identities, and assertion results; otherwise a temporary path is
 printed. Overwrites are refused. CI retains this JSON as
 `native-browser-receipt-*` for seven days, including successes, without cookies,
