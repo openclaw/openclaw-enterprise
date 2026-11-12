@@ -534,12 +534,10 @@ export async function runSharingCases(t: TestContext, fixture: SharingFixture): 
         });
         proxy.resumeCommit();
         const denied = await pending;
+        const responseBody = parsePrivateJson(await denied.text(), "sharing grant response");
         if (denied.status === 201) {
           // Keep the unexpected grant ID so teardown can remove a leaked binding.
-          const responseBody = parsePrivateJson(await denied.text(), "sharing grant response");
           committedBindingId = recordId(record(responseBody).data);
-        } else {
-          await denied.body?.cancel();
         }
         assert.equal(denied.status, 403, "the expired assigning session must be denied");
         const persisted = await pool.query(
