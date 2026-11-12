@@ -138,6 +138,7 @@
     "helpers/codex-runtime-helper-fixture.ts",
     "helpers/controlled-tls-origin.ts",
     "helpers/controlled-tls-origin-scenario.ts",
+    "fixtures/runtime-image-failure-docker.ts",
     "fixtures/runtime-native-worker-restart.ts",
     "fixtures/runtime-google-skill-policy.mts",
     "fixtures/openshell-codex-command.ts",

@@ -351,7 +351,7 @@
     "tests/integration/repository-runtime-volume.test.ts": 1000,
     "tests/integration/runtime-assets.test.mjs": 200,
     "tests/integration/runtime-credentials-api.test.ts": 1500,
-    "tests/integration/runtime-image-failure-output.test.mjs": 2600,
+    "tests/integration/runtime-image-failure-output.test.ts": 2600,
     "tests/integration/model-discovery-shipped-api.test.ts": 2000,
     "tests/integration/secret-api.test.mjs": 1800,
     "tests/integration/secret-driver-startup.test.ts": 600,
