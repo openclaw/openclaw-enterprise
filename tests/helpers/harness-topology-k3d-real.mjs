@@ -1321,6 +1321,30 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     ...options.worker,
   };
   const platformNamespace = `oce-production-${mode}-${hash(identifier)}`;
+  const providerConsumers = new Map([[platformNamespace, "app.kubernetes.io/component=worker"]]);
+  options.controlledModelProvider?.bindConsumers(async ({ deadline }) => {
+    // Failed topology cleanup must not remove DNS or the provider under a
+    // surviving reconciling worker or its Agent-owned workloads.
+    for (const [namespace, selector] of providerConsumers) {
+      for (const kind of ["deployments", "pods"]) {
+        const remainingMs = deadline - Date.now();
+        assert.ok(remainingMs > 0, "Provider consumer inspection deadline elapsed");
+        const remaining = await resources(
+          kind,
+          namespace,
+          "-l",
+          selector,
+          `--request-timeout=${Math.min(10_000, remainingMs)}ms`,
+        );
+        assert.ok(Date.now() < deadline, "Provider consumer inspection deadline elapsed");
+        assert.equal(
+          remaining.length,
+          0,
+          "Provider consumers must be gone before provider cleanup",
+        );
+      }
+    }
+  });
   await kubectl("create", "namespace", platformNamespace);
   context.after(async () => {
     try {
@@ -1736,6 +1760,12 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   placement = kubernetesNamespaceName(namespaceId);
   gatewayRuntimeNamespace = kubernetesNamespaceName(namespaceId);
   gatewayPlacement = mode === "dedicated" ? gatewayRuntimeNamespace : placement;
+  for (const namespace of new Set([placement, gatewayPlacement])) {
+    providerConsumers.set(
+      namespace,
+      `app.kubernetes.io/managed-by=openclaw-enterprise,openclaw.dev/namespace=${namespaceId},openclaw.dev/agent`,
+    );
+  }
   if (workspaceGateway === undefined) {
     workerPool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
     worker = createControllerWorker({
@@ -3632,7 +3662,7 @@ async function inspectGatewayPersistence(topology, imageDigest, sessionKey, sess
         })),
       };
 
-      const media = files("/home/node/.openclaw/media").filter(file =>
+      const media = ${imageDigest === undefined} ? [] : files("/home/node/.openclaw/media").filter(file =>
         createHash("sha256").update(fs.readFileSync(file)).digest("hex") === ${JSON.stringify(imageDigest)});
       process.stdout.write("\\n" + ${JSON.stringify(prefix)} + JSON.stringify({
         databases,
@@ -3648,6 +3678,21 @@ async function inspectGatewayPersistence(topology, imageDigest, sessionKey, sess
   const records = output.split(/\r?\n/).filter((line) => line.startsWith(prefix));
   assert.equal(records.length, 1, "Expected one persistence probe result");
   return JSON.parse(records[0].slice(prefix.length));
+}
+
+// Read durable state independently of the live Gateway's chat.history response.
+async function readGatewayTranscript(topology, sessionKey, sessionId) {
+  const persisted = await withinDiagnosticDeadline(
+    () => inspectGatewayPersistence(topology, undefined, sessionKey, sessionId),
+    { timeoutMs: 60_000, timedOut: null },
+  );
+  assert.ok(persisted, "Stored transcript read must finish within its deadline");
+  for (const database of persisted.databases) {
+    assert.deepEqual(database.integrity, ["ok"], "Persisted Gateway database must be intact");
+  }
+  assert.equal(persisted.transcript.sessionKey, sessionKey);
+  assert.equal(persisted.transcript.sessionId, sessionId);
+  return persisted.transcript;
 }
 
 async function assertRetainedArtifact(
@@ -6268,6 +6313,7 @@ export {
   assertUnboundSecretDeletion,
   hash,
   gatewayCall,
+  readGatewayTranscript,
   inspectProjectedIdentity,
   inspectWorkloadEnvironment,
   kubectl,

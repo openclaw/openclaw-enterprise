@@ -3,8 +3,6 @@ import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { textFromFrame } from "./native-ui-chat.mjs";
-
 function text(message) {
   if (typeof message?.content === "string") {
     return message.content;
@@ -28,8 +26,13 @@ function terminal(message) {
 function decoded(records, page, start = 0) {
   return records
     .slice(start)
-    .filter((record) => record.page === page)
-    .map((record) => ({ record, message: JSON.parse(textFromFrame(record)) }));
+    .map((record, index) => ({ record, index: start + index }))
+    .filter(({ record }) => record.page === page)
+    .map(({ record, index }) => ({
+      record,
+      index,
+      message: record.message,
+    }));
 }
 
 async function until(label, observe) {
@@ -45,26 +48,50 @@ async function until(label, observe) {
 }
 
 /**
- * Records come from Playwright, not injected browser events. Each frame has
- * {payload, socket: numericId, page, at: performance.now()}; socketEvents use
- * {socket, page, type: "open" | "close", at} from the same monotonic clock.
- * The caller owns the provider gate, API restart/forward replacement and cleanup.
- * readHistory(sessionKey) returns the real chat.history payload, not a projection.
- * Provider/history callbacks must have their own bounded I/O deadlines. Await the
- * owned restart to completion; racing its timeout would abandon a live mutation.
+ * Uses only the bounded observer's parsed, redacted frames. The caller owns the
+ * provider gate, API restart/forward replacement and cleanup. readStoredHistory
+ * reads the on-disk transcript in a fresh process, not the Gateway history cache.
+ * All callback I/O has its own deadline; await the owned restart rather than
+ * racing it and abandoning a live mutation.
  */
 export async function assertAcknowledgedTurnAcrossApiRestart({
   page,
   initialReply,
   marker,
-  receivedFrames,
-  sentFrames,
-  socketEvents,
+  observer,
   provider,
   restartControllerApi,
   readHistory,
+  readStoredHistory,
+  signal,
 }) {
-  const initial = JSON.parse(textFromFrame(initialReply));
+  signal?.throwIfAborted();
+  observer.assertHealthy();
+  assert.equal(observer.page, page);
+  const { receivedFrames, sentFrames, socketEvents } = observer;
+  const waitFor = (label, read) =>
+    until(label, () => {
+      signal?.throwIfAborted();
+      observer.assertHealthy();
+      return read();
+    });
+  async function readHistoryAttempt() {
+    try {
+      return await readHistory(sessionKey);
+    } catch (error) {
+      const failure = error?.cause;
+      if (
+        failure?.type === "gateway_request_error" &&
+        failure.code === "UNAVAILABLE" &&
+        failure.retryable === true &&
+        failure.details?.method === "chat.history"
+      ) {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+  const initial = initialReply.message;
   assert.equal(initialReply.page, page);
   assert.equal(initial.type, "event");
   assert.equal(initial.event, "session.message");
@@ -93,6 +120,9 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
   assert.equal(initialAuth?.role, "operator");
   assert.ok(Array.isArray(initialAuth.scopes));
   assert.ok(initialAuth.scopes.includes("operator.admin"));
+  const initialHistory = await waitFor("the seed session's wire history", readHistoryAttempt);
+  const sessionId = initialHistory.sessionId;
+  assert.ok(typeof sessionId === "string" && sessionId.length > 0);
   const sessionUrl = page.url();
   const firstSent = sentFrames.length;
   const firstReceived = receivedFrames.length;
@@ -105,6 +135,8 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
   };
   page.on("framenavigated", onNavigation);
   const unchangedTab = () => {
+    signal?.throwIfAborted();
+    observer.assertHealthy();
     assert.equal(page.isClosed(), false, "the original tab must remain open");
     assert.equal(navigated, false, "the original tab must not navigate or reload");
     assert.equal(page.url(), sessionUrl);
@@ -116,19 +148,25 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
   const promptFor = (token) =>
     `Reply with exactly the token on its own line and no other text: ${token}`;
 
-  async function submit(prompt, expectedCount) {
+  async function submit(prompt, expectedCount, expectedSocket) {
     unchangedTab();
     await composer.fill(prompt, { timeout: 60_000 });
+    const firstReply = receivedFrames.length;
     await page
       .getByRole("button", { name: "Send message", exact: true })
       .click({ timeout: 60_000 });
-    const request = await until("the selected UI chat.send", () =>
+    const request = await waitFor("the selected UI chat.send", () =>
       chatRequests().find(({ message }) => message.params?.message === prompt),
     );
     assert.equal(chatRequests().length, expectedCount, "no automatic or manual resend");
     assert.equal(request.message.type, "req");
+    assert.match(request.message.id, /^[A-Za-z0-9_.:/-]{1,256}$/);
     assert.equal(request.message.params.sessionKey, sessionKey);
-    const ack = await until("the selected chat.send acknowledgement", () =>
+    assert.ok(Number.isFinite(request.record.at));
+    if (expectedSocket !== undefined) {
+      assert.equal(request.record.socket, expectedSocket, "continue on the authenticated socket");
+    }
+    const ack = await waitFor("the selected chat.send acknowledgement", () =>
       received().find(
         ({ record, message }) =>
           record.socket === request.record.socket &&
@@ -140,39 +178,83 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
     assert.ok(
       typeof ack.message.payload?.runId === "string" && ack.message.payload.runId.length > 0,
     );
-    return { request, ack, runId: ack.message.payload.runId };
+    assert.ok(Number.isFinite(ack.record.at) && ack.record.at >= request.record.at);
+    assert.ok(ack.index >= firstReply);
+    return {
+      request,
+      ack,
+      runId: ack.message.payload.runId,
+      replyBoundary: {
+        index: firstReply,
+        at: request.record.at,
+        socket: request.record.socket,
+      },
+    };
   }
 
-  async function proveReply(token, prompt, turn) {
-    const event = await until("the acknowledged run's final chat event", () =>
-      received().find(
-        ({ message }) =>
-          message.type === "event" &&
-          message.event === "chat" &&
-          message.payload?.sessionKey === sessionKey &&
-          message.payload?.runId === turn.runId &&
-          ["final", "error", "aborted"].includes(message.payload.state),
-      ),
+  function terminalFrames(token, turn) {
+    return received().filter(
+      ({ message }) =>
+        message.type === "event" &&
+        message.payload?.sessionKey === sessionKey &&
+        ((message.event === "chat" &&
+          message.payload.runId === turn.runId &&
+          ["final", "error", "aborted"].includes(message.payload.state)) ||
+          (message.event === "session.message" &&
+            terminal(message.payload.message) &&
+            text(message.payload.message).trim() === token)),
     );
-    assert.equal(event.message.payload.state, "final");
-    const reply = await until("the same conversation's terminal assistant message", () =>
-      received().find(
-        ({ message }) =>
-          message.type === "event" &&
-          message.event === "session.message" &&
-          message.payload?.sessionKey === sessionKey &&
-          terminal(message.payload.message) &&
-          text(message.payload.message).trim() === token,
-      ),
-    );
-    const assistant = page
-      .getByRole("log")
+  }
+
+  async function assertVisibleReply(token) {
+    const transcript = page.getByRole("log");
+    const assistant = transcript
       .locator(".chat-group.assistant .chat-bubble")
       .getByText(token, { exact: true });
     await assistant.first().waitFor({ state: "visible", timeout: 60_000 });
     assert.equal(await assistant.count(), 1, "one logical assistant reply in the transcript");
-    await until("one persisted assistant reply and user prompt", async () => {
-      const history = await readHistory(sessionKey);
+  }
+
+  async function proveReply(token, prompt, turn, boundary) {
+    const scopedFrames = () => {
+      const frames = terminalFrames(token, turn);
+      // Reject early/stale or other-socket evidence instead of merely filtering
+      // it out and accepting a later copy of an already-completed reply.
+      for (const { record, index, message } of frames) {
+        if (message.payload.runId !== undefined) {
+          assert.equal(message.payload.runId, turn.runId);
+        }
+        assert.ok(index >= boundary.index, "terminal frame arrived before its phase boundary");
+        assert.ok(
+          Number.isFinite(record.at) && record.at >= boundary.at,
+          "terminal frame timestamp precedes its phase boundary",
+        );
+        assert.equal(
+          record.socket,
+          boundary.socket,
+          "terminal frame must use the authenticated socket",
+        );
+      }
+      return frames;
+    };
+    const event = await waitFor("the acknowledged run's final chat event", () =>
+      scopedFrames().find(({ message }) => message.event === "chat"),
+    );
+    assert.equal(event.message.payload.state, "final");
+    const reply = await waitFor("the same conversation's terminal assistant message", () =>
+      scopedFrames().find(({ message }) => message.event === "session.message"),
+    );
+    await assertVisibleReply(token);
+    await waitFor("one persisted assistant reply and user prompt", async () => {
+      const history = await readHistoryAttempt();
+      if (!history) {
+        return undefined;
+      }
+      assert.equal(
+        history.sessionId,
+        sessionId,
+        "the original persisted session must remain selected",
+      );
       assert.ok(Array.isArray(history.messages));
       const assistants = history.messages.filter(
         (message) => terminal(message) && text(message).trim() === token,
@@ -183,25 +265,75 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
       assert.ok(assistants.length <= 1 && users.length <= 1, "no duplicate persisted turn");
       return assistants.length === 1 && users.length === 1;
     });
+    scopedFrames();
     unchangedTab();
     return reply;
   }
 
+  async function storedTurn(token, prompt) {
+    const stored = await readStoredHistory(sessionKey, sessionId);
+    assert.equal(stored.sessionKey, sessionKey);
+    assert.equal(stored.sessionId, sessionId);
+    assert.ok(Array.isArray(stored.messages));
+    const users = stored.messages.filter(
+      (message) => message.role === "user" && message.text.trim() === prompt,
+    );
+    const assistants = stored.messages.filter(
+      (message) => message.role === "assistant" && message.text.trim() === token,
+    );
+    assert.equal(users.length, 1, "one target user entry in the on-disk transcript");
+    assert.equal(assistants.length, 1, "one target assistant entry in the on-disk transcript");
+    const [user] = users;
+    const [assistant] = assistants;
+    for (const entry of [user, assistant]) {
+      assert.ok(typeof entry.entryId === "string" && entry.entryId.length > 0);
+      assert.ok(Number.isSafeInteger(entry.seq) && entry.seq >= 0);
+      assert.equal(
+        stored.messages.filter((message) => message.entryId === entry.entryId).length,
+        1,
+      );
+      assert.equal(stored.messages.filter((message) => message.seq === entry.seq).length, 1);
+    }
+    assert.notEqual(user.entryId, assistant.entryId);
+    assert.ok(user.seq < assistant.seq);
+    return {
+      user: { entryId: user.entryId, seq: user.seq },
+      assistant: { entryId: assistant.entryId, seq: assistant.seq },
+    };
+  }
+
   try {
     const prompt = promptFor(marker);
+    unchangedTab();
     const gate = await provider.arm({ marker, timeoutMs: 300_000 });
     assert.equal(gate.state, "armed");
     assert.ok(typeof gate.gateId === "string" && gate.gateId.length > 0);
-    const turn = await submit(prompt, 1);
+    const replyToken = gate.replyToken;
+    assert.ok(typeof replyToken === "string" && /^[A-Za-z0-9_-]{1,256}$/.test(replyToken));
+    assert.equal(
+      prompt.includes(replyToken),
+      false,
+      "provider reply token must never appear in the prompt",
+    );
+    observer.expect({ name: "target", prompt, reply: replyToken });
+    const turn = await submit(prompt, 1, initialReply.socket);
     // The successful Gateway ACK and the independently held upstream request
     // are separate prerequisites. Neither a queued UI message nor a timer suffices.
-    const held = await until("the provider independently holding the target response", async () => {
-      const state = await provider.status({ gateId: gate.gateId });
-      assert.notEqual(state.state, "failed");
-      return state.state === "held" ? state : undefined;
-    });
+    const held = await waitFor(
+      "the provider independently holding the target response",
+      async () => {
+        const state = await provider.status({ gateId: gate.gateId });
+        assert.notEqual(state.state, "failed");
+        return state.state === "held" ? state : undefined;
+      },
+    );
     assert.equal(held.matchingRequests, 1);
     assert.equal(held.completedResponses, 0);
+    assert.equal(
+      terminalFrames(replyToken, turn).length,
+      0,
+      "the held turn must not complete before API restart",
+    );
     unchangedTab();
     assert.equal(
       socketEvents
@@ -215,9 +347,10 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
       false,
       "the acknowledged socket must still be open before the API restart",
     );
+    unchangedTab();
     const restartStartedAt = performance.now();
     await restartControllerApi();
-    const closed = await until("the acknowledged request socket closing", () =>
+    const closed = await waitFor("the acknowledged request socket closing", () =>
       socketEvents
         .slice(firstSocketEvent)
         .find(
@@ -228,7 +361,7 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
         ),
     );
     assert.ok(Number.isFinite(closed.at) && closed.at >= restartStartedAt);
-    const reconnected = await until("a new authenticated browser socket", () =>
+    const reconnected = await waitFor("a new authenticated browser socket", () =>
       received().find(({ record, message }) => {
         if (
           record.socket === closed.socket ||
@@ -270,9 +403,21 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
     assert.equal(stillHeld.state, "held");
     assert.equal(stillHeld.matchingRequests, 1);
     assert.equal(stillHeld.completedResponses, 0);
+    assert.equal(
+      terminalFrames(replyToken, turn).length,
+      0,
+      "the held turn must not complete before provider release",
+    );
+    unchangedTab();
+    const releaseBoundary = {
+      index: receivedFrames.length,
+      at: performance.now(),
+      socket: reconnected.record.socket,
+    };
     await provider.release({ gateId: gate.gateId });
-    await proveReply(marker, prompt, turn);
-    const completed = await until("the original provider response completing", async () => {
+    const targetReply = await proveReply(replyToken, prompt, turn, releaseBoundary);
+    const storedTarget = await storedTurn(replyToken, prompt);
+    const completed = await waitFor("the original provider response completing", async () => {
       const state = await provider.status({ gateId: gate.gateId });
       assert.notEqual(state.state, "failed");
       return state.state === "completed" ? state : undefined;
@@ -281,20 +426,42 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
     assert.equal(completed.completedResponses, 1);
     const continuationMarker = `OCC-continuation-${randomUUID()}`;
     const continuationPrompt = promptFor(continuationMarker);
-    const continuation = await submit(continuationPrompt, 2);
+    observer.expect({
+      name: "continuation",
+      prompt: continuationPrompt,
+      reply: continuationMarker,
+    });
+    const continuation = await submit(continuationPrompt, 2, reconnected.record.socket);
     assert.notEqual(continuation.runId, turn.runId);
     assert.notEqual(continuation.request.message.id, turn.request.message.id);
-    await proveReply(continuationMarker, continuationPrompt, continuation);
+    const continuationReply = await proveReply(
+      continuationMarker,
+      continuationPrompt,
+      continuation,
+      continuation.replyBoundary,
+    );
+    const transcript = page.getByRole("log");
+    await transcript.press("ControlOrMeta+Home");
+    await assertVisibleReply(replyToken);
+    await transcript.press("ControlOrMeta+End");
+    await assertVisibleReply(continuationMarker);
+    const storedContinuation = await storedTurn(continuationMarker, continuationPrompt);
+    assert.deepEqual(
+      await storedTurn(replyToken, prompt),
+      storedTarget,
+      "the original stored target entries must survive the continuation unchanged",
+    );
     assert.equal(chatRequests().length, 2);
     const finalProvider = await provider.status({ gateId: gate.gateId });
     assert.equal(finalProvider.state, "completed");
     assert.equal(finalProvider.matchingRequests, 1);
     assert.equal(finalProvider.completedResponses, 1);
-    const finalHistory = await readHistory(sessionKey);
+    const finalHistory = await waitFor("final wire history", readHistoryAttempt);
+    assert.equal(finalHistory.sessionId, sessionId);
     assert.ok(Array.isArray(finalHistory.messages));
     assert.equal(
       finalHistory.messages.filter(
-        (message) => terminal(message) && text(message).trim() === marker,
+        (message) => terminal(message) && text(message).trim() === replyToken,
       ).length,
       1,
     );
@@ -307,6 +474,21 @@ export async function assertAcknowledgedTurnAcrossApiRestart({
     unchangedTab();
     return {
       sessionKey,
+      sessionId,
+      storedTarget,
+      storedContinuation,
+      releaseBoundary,
+      targetReplyArrival: {
+        index: targetReply.index,
+        at: targetReply.record.at,
+        socket: targetReply.record.socket,
+      },
+      continuationBoundary: continuation.replyBoundary,
+      continuationReplyArrival: {
+        index: continuationReply.index,
+        at: continuationReply.record.at,
+        socket: continuationReply.record.socket,
+      },
       requestId: turn.request.message.id,
       gatewayAcknowledged: true,
       ...(typeof turn.ack.message.payload.status === "string" &&

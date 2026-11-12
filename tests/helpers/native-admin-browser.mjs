@@ -20,6 +20,7 @@ import { promisify } from "node:util";
 import { chromium } from "playwright";
 import { prepareNativeModelBarrier } from "./native-model-barrier.mjs";
 import { assertAcknowledgedTurnAcrossApiRestart } from "./native-ui-api-continuity.mjs";
+import { createNativeContinuityObserver } from "./native-ui-continuity-observer.mjs";
 import { withBoundedTeardown } from "./bounded-teardown.ts";
 
 import { nativeAdminTarget } from "../../apps/controller/src/gateway/native-admin.ts";
@@ -27,6 +28,7 @@ import {
   arrangeProductionTopology,
   assertActualModelTurn,
   gatewayCall,
+  readGatewayTranscript,
   kubectl,
   resource,
   resources,
@@ -1084,10 +1086,13 @@ async function assertSharedNativeSessions(
 
 export async function runAcknowledgedChatApiReplacementScenario(testContext) {
   const context = withBoundedTeardown(testContext, { label: "acknowledged chat teardown" });
+  const assertActive = () => context.signal?.throwIfAborted();
+  assertActive();
   const artifacts = await mkdtemp(join(tmpdir(), "oce-native-api-continuity-"));
   context.diagnostic(`acknowledged chat API replacement artifacts: ${artifacts}`);
   const nativeDomain = process.env.OCC_TEST_NATIVE_ADMIN_DOMAIN ?? "native.example.test";
   const ingress = await createNativeIngress(context, { artifacts, nativeDomain });
+  assertActive();
   const kubernetesContext = process.env.OCC_TEST_KUBERNETES_CONTEXT;
   assert.match(kubernetesContext ?? "", /^k3d-.+/);
   const provider = await prepareNativeModelBarrier(context, {
@@ -1103,6 +1108,7 @@ export async function runAcknowledgedChatApiReplacementScenario(testContext) {
       process.env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE ??
       process.env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE,
   });
+  assertActive();
   const topology = await arrangeProductionTopology(context, "dedicated", undefined, {
     publicOrigin: ingress.origin,
     gatewayPassword: true,
@@ -1112,45 +1118,114 @@ export async function runAcknowledgedChatApiReplacementScenario(testContext) {
     workspaceGateway: true,
     controlledModelProvider: provider,
   });
+  assertActive();
   ingress.setUpstream(topology.controllerUrl);
   const status = await nativeAdminStatus(topology);
   assert.equal(status.status, "available");
   assert.equal(status.activeRevisionId, topology.revision.id);
-  const identity = (pod) => ({
-    uid: pod.metadata.uid,
-    containers: pod.status.containerStatuses.map(({ name, containerID, restartCount }) => ({
-      name,
-      containerID,
-      restartCount,
-    })),
-  });
-  const readIdentities = async () => {
-    const workers = await resources(
-      "pods",
-      topology.platformNamespace,
-      "-l",
-      "app.kubernetes.io/component=worker",
+  const identity = (pod) => {
+    assert.equal(pod.metadata.deletionTimestamp, undefined);
+    assert.ok(
+      pod.status.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
     );
-    assert.equal(workers.length, 1);
+    const containers = pod.status.containerStatuses;
+    assert.deepEqual(
+      containers.map(({ name }) => name).sort(),
+      pod.spec.containers.map(({ name }) => name).sort(),
+    );
+    assert.ok(containers.length > 0);
+    for (const container of containers) {
+      assert.equal(container.ready, true);
+      assert.ok(container.state.running?.startedAt);
+      assert.ok(typeof container.containerID === "string" && container.containerID.length > 0);
+      assert.ok(Number.isSafeInteger(container.restartCount) && container.restartCount >= 0);
+    }
+    const owners = pod.metadata.ownerReferences.filter(({ controller }) => controller === true);
+    assert.equal(owners.length, 1);
+    assert.equal(owners[0].kind, "ReplicaSet");
     return {
-      control: await readOceControlState(topology),
-      worker: identity(workers[0]),
-      gateway: identity(
-        await resource("pod", topology.gatewayPod.metadata.name, topology.gatewayPlacement),
+      uid: pod.metadata.uid,
+      replicaSetUid: owners[0].uid,
+      containers: containers
+        .map(({ name, containerID, restartCount, state }) => ({
+          name,
+          containerID,
+          restartCount,
+          startedAt: state.running.startedAt,
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    };
+  };
+  const onePod = async (namespace, labels) => {
+    const pods = await resources(
+      "pods",
+      namespace,
+      "-l",
+      Object.entries(labels)
+        .map(([key, value]) => `${key}=${value}`)
+        .join(","),
+    );
+    assert.equal(pods.length, 1, "The selected workload must have exactly one serving Pod");
+    return pods[0];
+  };
+  const agentLabels = {
+    "app.kubernetes.io/managed-by": "openclaw-enterprise",
+    "openclaw.dev/namespace": topology.agent.namespaceId,
+    "openclaw.dev/agent": topology.agent.id,
+  };
+  const readIdentities = async () => {
+    const [worker, gateway, harness, agent, control] = await Promise.all([
+      onePod(topology.platformNamespace, { "app.kubernetes.io/component": "worker" }),
+      onePod(topology.gatewayPlacement, {
+        ...agentLabels,
+        "openclaw.dev/workload-role": "gateway",
+      }),
+      onePod(topology.placement, { ...agentLabels, "openclaw.dev/workload-role": "agent" }),
+      topology.request(
+        "GET",
+        `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`,
       ),
-      harness: identity(
-        await resource("pod", topology.harnessPod.metadata.name, topology.placement),
-      ),
+      readOceControlState(topology),
+    ]);
+    assert.equal(agent.status, 200);
+    assert.equal(agent.data.configurationId, topology.agent.configurationId);
+    assert.equal(agent.data.activeRevisionId, topology.revision.id);
+    for (const pod of [gateway, harness]) {
+      assert.equal(pod.metadata.labels["openclaw.dev/revision"], topology.revision.id);
+      assert.equal(pod.metadata.annotations["openclaw.dev/agent-id"], topology.agent.id);
+    }
+    assert.equal(
+      gateway.metadata.annotations["openclaw.dev/agent-revision-id"],
+      topology.revision.id,
+    );
+    assert.equal(harness.metadata.annotations["openclaw.dev/revision-id"], topology.revision.id);
+    return {
+      configurationId: agent.data.configurationId,
+      configurationGeneration: control.configuration.generation,
+      activeRevisionId: agent.data.activeRevisionId,
+      worker: identity(worker),
+      gateway: identity(gateway),
+      harness: identity(harness),
     };
   };
   const before = await readIdentities();
+  assert.equal(before.gateway.uid, topology.gatewayPod.metadata.uid);
+  assert.equal(before.harness.uid, topology.harnessPod.metadata.uid);
+  const readApi = () => onePod(topology.platformNamespace, topology.workspaceGateway.apiPodLabels);
   const beforeApi = { uid: topology.controllerApiPod.metadata.uid, url: topology.controllerUrl };
+  const initialApi = identity(await readApi());
+  assert.equal(initialApi.uid, beforeApi.uid);
+  assertActive();
   const browser = await launchBrowser(context, ingress);
   const browserContext = await browser.newContext();
   context.after(() => browserContext.close());
-  const receivedFrames = [];
-  const sentFrames = [];
-  const socketEvents = [];
+  const observer = createNativeContinuityObserver();
+  const seedMarker = `OCC-API-SEED-${randomUUID()}`;
+  observer.expect({
+    name: "seed",
+    prompt: `Reply with exactly the token on its own line and no other text: ${seedMarker}`,
+    reply: seedMarker,
+  });
   let nextSocket = 0;
   browserContext.on("page", (page) => {
     page.on("websocket", (webSocket) => {
@@ -1158,40 +1233,45 @@ export async function runAcknowledgedChatApiReplacementScenario(testContext) {
         return;
       }
       const socket = ++nextSocket;
-      socketEvents.push({ socket, page, type: "open", at: performance.now() });
-      webSocket.on("close", () =>
-        socketEvents.push({ socket, page, type: "close", at: performance.now() }),
-      );
+      observer.open({ socket, page, at: performance.now() });
+      webSocket.on("close", () => observer.close({ socket, page, at: performance.now() }));
       webSocket.on("framereceived", (frame) =>
-        receivedFrames.push({ ...frame, socket, page, at: performance.now() }),
+        observer.frame({ ...frame, socket, page, at: performance.now(), direction: "received" }),
       );
       webSocket.on("framesent", (frame) =>
-        sentFrames.push({ ...frame, socket, page, at: performance.now() }),
+        observer.frame({ ...frame, socket, page, at: performance.now(), direction: "sent" }),
       );
     });
   });
   const page = await browserContext.newPage();
   await page.goto(new URL(agentDetailPath(topology), ingress.origin).href);
   await login(page, topology.credentials);
+  assertActive();
   await page.getByRole("heading", { name: topology.agent.name }).waitFor();
   const nativePage = await openNativeAdminConsole(page, status.origin);
+  assertActive();
   // A real seed turn proves native readiness before we arm the one-request barrier.
   const initialReply = await submitChatTurnWithAssistantProof(
     nativePage,
-    `OCC-API-SEED-${randomUUID()}`,
-    receivedFrames,
-    waitFor,
+    seedMarker,
+    observer.seedFrames,
+    (label, observe) =>
+      waitFor(label, () => {
+        assertActive();
+        observer.assertHealthy();
+        return observe();
+      }),
   );
   let successor;
   const receipt = await assertAcknowledgedTurnAcrossApiRestart({
     page: nativePage,
     initialReply,
     marker: `OCC-API-HELD-${randomUUID()}`,
-    receivedFrames,
-    sentFrames,
-    socketEvents,
+    observer,
+    signal: context.signal,
     provider,
     async restartControllerApi() {
+      assertActive();
       successor = await topology.restartControllerApi();
       assert.notEqual(successor.pod.metadata.uid, beforeApi.uid);
       assert.equal(successor.url, beforeApi.url, "API replacement must preserve the local port");
@@ -1200,8 +1280,30 @@ export async function runAcknowledgedChatApiReplacementScenario(testContext) {
     },
     readHistory: (sessionKey) =>
       gatewayCall(topology, "chat.history", { sessionKey, limit: 100 }, 10_000),
+    readStoredHistory: (sessionKey, sessionId) =>
+      readGatewayTranscript(topology, sessionKey, sessionId),
   });
-  assert.deepEqual(await readIdentities(), before, "only the serving API may be replaced");
+  const after = await readIdentities();
+  assert.deepEqual(after, before, "only the serving API may be replaced");
+  const finalApi = identity(await readApi());
+  assert.equal(finalApi.uid, successor.pod.metadata.uid);
+  assert.notEqual(finalApi.uid, initialApi.uid);
+  assert.deepEqual(
+    finalApi.containers.map(({ name }) => name),
+    initialApi.containers.map(({ name }) => name),
+  );
+  assert.deepEqual(
+    finalApi,
+    identity(successor.pod),
+    "The observed successor API must still serve",
+  );
+  assert.equal(
+    (await resources("pods", topology.platformNamespace)).some(
+      ({ metadata }) => metadata.uid === beforeApi.uid,
+    ),
+    false,
+    "The predecessor API Pod must be gone",
+  );
   assert.equal((await nativeAdminStatus(topology)).origin, status.origin);
   await writeFile(
     join(artifacts, "continuity.json"),
@@ -1212,6 +1314,8 @@ export async function runAcknowledgedChatApiReplacementScenario(testContext) {
         successorApiUid: successor.pod.metadata.uid,
         sameLocalPort: true,
         unchangedAgentGatewayAndRevision: true,
+        workloadIdentities: { before, after, initialApi, finalApi },
+        processScope: "Kubernetes containers; no native child-process continuity assertion",
         provider: "controlled fixture; no external inference",
       },
       null,

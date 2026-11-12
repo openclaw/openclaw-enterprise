@@ -17,6 +17,8 @@ const { WebSocket, WebSocketServer } = createRequire(controller.resolve("@kubern
   "ws",
 );
 const marker = "OCC-API-HELD-6e4afe32-c214-4b11-91ca-303a223f3370";
+const replyToken = "OCC-API-REPLY-990b0987-f71a-4bd2-9112-d6f771601e42";
+const continuation = "OCC-API-HELD-37bc3980-8ac6-4e39-8487-7c228ccdb63b";
 const token = "synthetic-model-fixture-key";
 const user = (text) => ({ role: "user", content: [{ type: "input_text", text }] });
 
@@ -47,7 +49,8 @@ async function fixture(t, overrides = {}) {
     new Promise((resolve, reject) => {
       const socket = connect(socketPath);
       let data = "";
-      socket.setTimeout(5_000, () => socket.destroy(new Error("Control deadline")));
+      const deadline = setTimeout(() => socket.destroy(new Error("Control deadline")), 5_000);
+      socket.once("close", () => clearTimeout(deadline));
       socket.setEncoding("utf8");
       socket.on("data", (chunk) => {
         data += chunk;
@@ -73,7 +76,7 @@ async function fixture(t, overrides = {}) {
     }
     assert.fail(`Barrier did not become ${state}`);
   };
-  const http = (input, authorization = token, withModel = true) => {
+  const http = (input, authorization = token, withModel = true, extra = {}) => {
     let headersReceived = false;
     let req;
     const result = new Promise((resolve) => {
@@ -100,7 +103,7 @@ async function fixture(t, overrides = {}) {
       );
       req.setTimeout(5_000, () => req.destroy(new Error("Model deadline")));
       req.once("error", () => resolve({ error: true }));
-      req.end(JSON.stringify({ ...(withModel ? { model: "fixture" } : {}), input }));
+      req.end(JSON.stringify({ ...(withModel ? { model: "fixture" } : {}), input, ...extra }));
     });
     return { result, abort: () => req.destroy(), headersReceived: () => headersReceived };
   };
@@ -128,8 +131,11 @@ test(
     assert.equal((await f.http([user(marker)], "wrong-key").result).status, 401);
     assert.equal((await f.http([], token, false).result).status, 400);
     assert.equal((await f.control({ op: "release", gateId: "unknown" })).error, "unknown-gate");
-    assert.equal((await f.control({ op: "arm", marker, timeoutMs: 300_001 })).error, "invalid-arm");
-    const armed = await f.control({ op: "arm", marker, timeoutMs: 10_000 });
+    assert.equal(
+      (await f.control({ op: "arm", marker, replyToken, timeoutMs: 300_001 })).error,
+      "invalid-arm",
+    );
+    const armed = await f.control({ op: "arm", marker, replyToken, timeoutMs: 10_000 });
     assert.equal(armed.state, "armed");
     assert.equal((await f.control({ op: "release", gateId: armed.gateId })).error, "not-held");
     const pending = f.http([user(`Return ${marker} exactly.`)]);
@@ -143,10 +149,19 @@ test(
     const response = await pending.result;
     assert.equal(response.status, 200);
     assert.equal(response.body.match(/event: response.completed\n/g)?.length, 1);
-    assert.ok(response.body.includes(marker));
+    assert.ok(response.body.includes(replyToken));
+    assert.ok(!response.body.includes(marker));
+    assert.ok(!JSON.stringify(armed).includes(replyToken));
+    assert.ok(!JSON.stringify(released).includes(replyToken));
     assert.equal((await f.control({ op: "release", gateId: armed.gateId })).error, "not-held");
     // Native continuation carries old user history; it must not consume the gate again.
-    assert.equal((await f.http([user(marker), user("continue")]).result).status, 200);
+    const resumed = await f.http([user(marker), user(`Return ${continuation}.`)], token, true, {
+      metadata: { stale: marker },
+    }).result;
+    assert.equal(resumed.status, 200);
+    assert.ok(resumed.body.includes(continuation));
+    assert.ok(!resumed.body.includes(marker));
+    assert.ok(!resumed.body.includes(replyToken));
     assert.equal((await f.http([user(marker)]).result).error, true);
     const duplicate = await f.control({ op: "status", gateId: armed.gateId });
     assert.equal(duplicate.reason, "duplicate-request");
@@ -161,7 +176,7 @@ test(
   async (t) => {
     const f = await fixture(t);
     const { socket, events } = await f.ws();
-    const armed = await f.control({ op: "arm", marker, timeoutMs: 10_000 });
+    const armed = await f.control({ op: "arm", marker, replyToken, timeoutMs: 10_000 });
     const prewarm = once(socket, "message");
     socket.send(
       JSON.stringify({
@@ -188,7 +203,7 @@ test(
       }),
     );
     assert.equal((await f.control({ op: "release", gateId: armed.gateId })).completedResponses, 1);
-    assert.equal((await completed).response.output[0].content[0].text, marker);
+    assert.equal((await completed).response.output[0].content[0].text, replyToken);
     assert.equal(
       events.filter(
         (event) =>
@@ -212,6 +227,7 @@ test(
         const armed = await f.control({
           op: "arm",
           marker,
+          replyToken,
           timeoutMs: reason === "timeout" ? 3_000 : 10_000,
         });
         const pending = f.http([user(marker)]);
@@ -257,5 +273,113 @@ test(
         }
       });
     }
+  },
+);
+
+// Serialized metadata and older turns must not choose the controlled provider's reply.
+test(
+  "controlled replies use only latest user text and preserve non-control echo behavior",
+  { timeout: 10_000 },
+  async (t) => {
+    for (const controlled of [true, false]) {
+      await t.test(controlled ? "controlled" : "existing-default", async (t) => {
+        const f = await fixture(t, controlled ? {} : { PROBE_ENDPOINT_CONTROL_SOCKET: undefined });
+        const result = await f.http([user(marker), user(`Return ${continuation}.`)], token, true, {
+          metadata: { stale: marker },
+        }).result;
+        assert.equal(result.status, 200);
+        assert.ok(result.body.includes(controlled ? continuation : marker));
+        assert.ok(!result.body.includes(controlled ? marker : continuation));
+      });
+    }
+  },
+);
+
+function nextCompleted(socket) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      clearTimeout(deadline);
+      socket.off("message", message);
+      socket.off("close", closed);
+    };
+    const closed = () => {
+      cleanup();
+      reject(new Error("Original reusable WebSocket closed"));
+    };
+    const message = (data) => {
+      const event = JSON.parse(String(data));
+      if (event.type === "response.completed") {
+        cleanup();
+        resolve(event);
+      }
+    };
+    const deadline = setTimeout(() => {
+      cleanup();
+      reject(new Error("Response deadline"));
+    }, 5_000);
+    socket.on("message", message);
+    socket.once("close", closed);
+    if (socket.readyState !== WebSocket.OPEN) {
+      closed();
+    }
+  });
+}
+
+test(
+  "late cross-socket duplicate does not abort the completed reusable WebSocket",
+  { timeout: 10_000 },
+  async (t) => {
+    const f = await fixture(t);
+    const { socket } = await f.ws();
+    const armed = await f.control({ op: "arm", marker, replyToken, timeoutMs: 8_000 });
+    const first = nextCompleted(socket);
+    socket.send(
+      JSON.stringify({ type: "response.create", model: "fixture", input: [user(marker)] }),
+    );
+    await f.until(armed.gateId, "held");
+    await f.control({ op: "release", gateId: armed.gateId });
+    await first;
+    assert.equal((await f.http([user(marker)]).result).error, true);
+    const status = await f.control({ op: "status", gateId: armed.gateId });
+    assert.equal(status.reason, "duplicate-request");
+    assert.equal(status.completedResponses, 1);
+    assert.equal(status.matchingRequests, 2);
+    // The failed duplicate owns its own transport, not the previously completed one.
+    const resumed = nextCompleted(socket);
+    socket.send(
+      JSON.stringify({ type: "response.create", model: "fixture", input: [user(continuation)] }),
+    );
+    assert.equal((await resumed).response.output[0].content[0].text, continuation);
+    const closed = once(socket, "close");
+    socket.close();
+    await closed;
+  },
+);
+
+test(
+  "control connection deadline expires even while partial bytes keep arriving",
+  { timeout: 10_000 },
+  async (t) => {
+    const f = await fixture(t);
+    const socket = connect(f.socketPath);
+    socket.on("error", () => {});
+    await once(socket, "connect");
+    let sent = 0;
+    const outcome = await new Promise((resolve) => {
+      const finish = (closedByEndpoint) => {
+        clearInterval(writes);
+        clearTimeout(watchdog);
+        resolve(closedByEndpoint);
+      };
+      const writes = setInterval(() => {
+        sent++;
+        socket.write(" ");
+      }, 100);
+      const watchdog = setTimeout(() => finish(false), 6_500);
+      socket.once("close", () => finish(true));
+    });
+    socket.destroy();
+    assert.ok(sent > 1, "the actual socket received repeated partial control input");
+    assert.equal(outcome, true, "partial input must not extend the elapsed control deadline");
   },
 );

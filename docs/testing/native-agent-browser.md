@@ -65,10 +65,13 @@ native-admin browser helper with dedicated Codex and Kubernetes; it is excluded
 from `all` and cannot be combined with other scenarios. There is no new hosted
 job, and the existing `gateway-routing` selection is unchanged.
 
-Prepare an exclusive disposable loopback k3d cluster with enforcing NetworkPolicies,
+On a Linux host, prepare an exclusive disposable loopback k3d cluster with enforcing NetworkPolicies,
 Envoy Gateway and cert-manager, plus the [dedicated PostgreSQL database](postgresql.md#other-postgresql-suites).
 Keep the limited application connection in `OCC_TEST_DATABASE_URL` and select the
 cluster with `OCC_TEST_KUBERNETES_KUBECONFIG` and `OCC_TEST_KUBERNETES_CONTEXT`.
+Set `OPENCLAW_ENTERPRISE_CI_STATE` to its prepared owner state; the selected
+cluster and local Docker daemon must match that state and remain exclusively
+reserved for this run.
 Set these immutable image references and test CA paths using the
 [Kubernetes runtime setup](kubernetes.md#kubernetes-model-turns-and-secrets):
 
@@ -100,14 +103,22 @@ After a seed reply, the test waits for a successful `chat.send` acknowledgement
 and an independently held provider response before replacing only the API Pod.
 The original tab must reconnect without navigation or resending the accepted
 turn, show one reply after the provider releases it, and complete a second turn.
-It checks persisted prompt/reply counts and unchanged worker, Agent, Gateway and
-revision identities. This is a continuity assertion across a socket interruption,
+The held reply contains a nonce supplied only to the provider. A fresh process
+checks stored transcript entries separately from live Gateway history; final
+browser counts and worker, Agent, Gateway and revision identities must agree.
+The close-to-authenticated-reconnect interval includes API and local port-forward
+replacement. This is a continuity assertion across a socket interruption,
 not an uninterrupted connection or successful worker-transfer guarantee.
 
 The helper prints its private artifact directory and writes `continuity.json`
-after the assertions pass. Fixture cleanup owns its temporary resources; retain
+after the assertions pass. The QA stage records assertions and cleanup separately;
+overall success requires both to finish successfully. Fixture cleanup owns its temporary resources; retain
 the result and cleanup outcome, and use the prepared environment's cleanup owner
-for the database and cluster even after failure. Registration or a skipped case
+for the database and cluster even after failure. Unresolved mutations or remaining
+consumers retain the provider and its private journal for reconciliation. The
+state lock covers the stage and its teardown, not an indefinite reservation after
+failure: keep the cluster exclusive until retained resources are reconciled.
+Registration or a skipped case
 is not installed acceptance; this new case still needs an actual qualified run.
 
 ## What the test exercises

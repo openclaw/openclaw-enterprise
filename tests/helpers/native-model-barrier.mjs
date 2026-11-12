@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { lstat, mkdir, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { runFixtureCommand } from "./production-rehearsal-custody.ts";
+import {
+  assertLocalRehearsalDaemon,
+  FixtureCommandError,
+  localRehearsalEnvironment,
+  protectedJSON,
+  runFixtureCommand,
+} from "./production-rehearsal-custody.ts";
 import {
   kubectlArguments,
   validateExplicitK3dLoopbackContext,
@@ -15,6 +22,7 @@ import { createModelProviderFiles, writeModelProviderTrust } from "./runtime-mod
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const idPattern = /^[a-f0-9]{64}$/;
 const ownerLabel = "dev.openclaw.native-model-barrier";
+const clusterLabel = "dev.openclaw.native-model-cluster";
 const pointer = (value) => value.replaceAll("~", "~0").replaceAll("/", "~1");
 
 // This is a controlled provider, not external model acceptance. The caller owns
@@ -32,6 +40,19 @@ export async function prepareNativeModelBarrier(
     assert.match(image, /^\S+@sha256:[a-f0-9]{64}$/);
   }
   const selection = { kubeconfigPath, kubernetesContext };
+  assert.ok(
+    process.env.OPENCLAW_ENTERPRISE_CI_STATE,
+    "Prepared CI state is required before provider acquisition",
+  );
+  const statePath = resolve(process.env.OPENCLAW_ENTERPRISE_CI_STATE);
+  const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
+  let preparedCluster;
+  let clusterUid;
+  let consumers;
+  let consumerOutcome = "not-bound";
+  let dnsProbeUid;
+  const mutations = [];
+  const unsettled = new Set();
   const owner = randomUUID();
   const prefix = `oce-native-model-${owner}`;
   const root = resolve(directory, `model-${owner.slice(0, 8)}`);
@@ -40,18 +61,18 @@ export async function prepareNativeModelBarrier(
   assert.ok(Buffer.byteLength(controlPath) < 104, "Use a short fixture directory for Unix sockets");
   const tag = `docker.io/library/${prefix}:trust`;
   const dnsKey = `${prefix}.server`;
+  const dnsProbeName = `${prefix}-dns`;
   const octets = randomBytes(2);
   const subnet = `11.${octets[0]}.${octets[1]}`;
   const address = `${subnet}.2`;
   const modelKey = `synthetic-${randomBytes(24).toString("hex")}`;
-  const environment = { ...process.env, DOCKER_HOST: "unix:///var/run/docker.sock" };
-  for (const key of ["DOCKER_CONTEXT", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "DOCKER_TLS"]) {
-    environment[key] = undefined;
-  }
-  environment.OPENAI_API_KEY = undefined;
+  const environment = {
+    ...localRehearsalEnvironment(process.env),
+    DOCKER_TLS: undefined,
+    OPENAI_API_KEY: undefined,
+  };
   let rootCreated = false;
   let closing = false;
-  let uncertain = false;
   let armDispatched = false;
   let releaseDispatched = false;
   let cleanupDeadline;
@@ -81,11 +102,7 @@ export async function prepareNativeModelBarrier(
   const command = (program, args, options) => {
     assert.ok(!closing, "Fixture is closing");
     context.signal?.throwIfAborted();
-    return invoke(program, args, options).catch((error) => {
-      uncertain ||=
-        error.outcome?.timedOut || error.outcome?.interrupted || error.outcome?.terminationFailed;
-      throw error;
-    });
+    return invoke(program, args, options);
   };
   const docker = (args, cleanup = false) =>
     (cleanup ? invoke : command)("docker", ["--host=unix:///var/run/docker.sock", ...args]);
@@ -127,6 +144,11 @@ export async function prepareNativeModelBarrier(
           trustedId,
           reference,
           dnsUid,
+          dnsProbeUid,
+          clusterUid,
+          consumerOutcome,
+          mutations,
+          unsettled: [...unsettled],
           nodes: nodes.map(({ id, name, uid }) => ({ id, name, uid })),
           obligations: [...obligations],
         },
@@ -139,6 +161,107 @@ export async function prepareNativeModelBarrier(
     obligations.add(kind);
     await record();
   };
+  // Only dispatched mutations create uncertain resource obligations. A failed read
+  // must not suppress cleanup of unrelated, acknowledged acquisitions.
+  async function mutate(kind, action, { clusterWrite = false } = {}) {
+    if (clusterWrite) {
+      await assertCluster(Boolean(cleanupDeadline));
+    }
+    const mutation = { kind, outcome: "dispatched" };
+    mutations.push(mutation);
+    await record();
+    // Cancellation before dispatch creates no uncertain external mutation.
+    if (!cleanupDeadline && (closing || context.signal?.aborted)) {
+      mutation.outcome = "not-dispatched";
+      await record();
+      assert.fail("Fixture closed before mutation dispatch");
+    }
+    try {
+      const value = await action();
+      mutation.outcome = "acknowledged";
+      await record();
+      return value;
+    } catch (error) {
+      mutation.outcome =
+        error instanceof FixtureCommandError && error.settled ? "settled-failure" : "unsettled";
+      if (mutation.outcome === "unsettled") {
+        unsettled.add(kind);
+      }
+      await record().catch(() => {});
+      throw error;
+    }
+  }
+  async function assertPrepared() {
+    const state = protectedJSON(await readFile(statePath, "utf8"));
+    assert.equal(state.version, 1);
+    assert.equal(resolve(state.repositoryRoot), resolve(repositoryRoot));
+    assert.equal(resolve(state.statePath), statePath);
+    const clusters = state.resources.filter(({ kind }) => kind === "k3d-cluster");
+    assert.equal(clusters.length, 1, "Prepared owner must have exactly one cluster");
+    const selected = clusters[0];
+    assert.equal(selected.status, "ready");
+    assert.equal(selected.owner, state.prefix);
+    assert.ok(typeof selected.owner === "string" && selected.owner.length > 0);
+    assert.equal(selected.name, cluster);
+    assert.equal(resolve(selected.kubeconfig), resolve(kubeconfigPath));
+    assert.equal(selected.context, kubernetesContext);
+    if (preparedCluster) {
+      assert.deepEqual(selected, preparedCluster, "Prepared cluster reservation changed");
+    } else {
+      preparedCluster = selected;
+    }
+  }
+  async function assertCluster(cleanup = false) {
+    await assertPrepared();
+    const run = cleanup ? invoke : command;
+    await assertLocalRehearsalDaemon(run);
+    const external = (
+      await kube(
+        ["get", "namespace", "kube-system", "-o", "jsonpath={.metadata.uid}"],
+        undefined,
+        cleanup,
+      )
+    ).trim();
+    const server = nodes.find(({ name }) => name === `k3d-${cluster}-server-0`);
+    assert.ok(server, "Prepared cluster requires its selected server");
+    const internal = (
+      await docker(
+        [
+          "exec",
+          server.id,
+          "kubectl",
+          "--kubeconfig=/output/kubeconfig.yaml",
+          "--server=https://127.0.0.1:6443",
+          "--request-timeout=15s",
+          "get",
+          "namespace",
+          "kube-system",
+          "-o",
+          "jsonpath={.metadata.uid}",
+        ],
+        cleanup,
+      )
+    ).trim();
+    assert.match(external, /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/);
+    assert.equal(internal, external, "Selected API must belong to the local prepared server");
+    if (clusterUid) {
+      assert.equal(external, clusterUid, "Prepared cluster was replaced");
+    } else {
+      clusterUid = external;
+    }
+    const current = JSON.parse(
+      await kube(["get", "nodes", "-o", "json"], undefined, cleanup),
+    ).items;
+    assert.deepEqual(
+      current
+        .map(({ metadata }) => ({ name: metadata.name, uid: metadata.uid }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+      nodes.map(({ name, uid }) => ({ name, uid })).sort((a, b) => a.name.localeCompare(b.name)),
+    );
+    for (const node of nodes) {
+      await assertNode(node, cleanup);
+    }
+  }
   const nodeCommand = (node, args, cleanup = false) =>
     docker(["exec", node.id, "ctr", "-n", "k8s.io", "images", ...args], cleanup);
   const nodeEntries = async (node, cleanup = false) =>
@@ -152,6 +275,210 @@ export async function prepareNativeModelBarrier(
     assert.equal(current.Name, `/${node.name}`);
     assert.equal(current.Config.Labels["k3d.cluster"], cluster);
     assert.equal(current.State.Running, true);
+    assert.equal(current.Config.Labels.app, "k3d");
+    assert.ok(Number.isSafeInteger(current.State.Pid) && current.State.Pid > 1);
+    const cgroup = await (cleanup ? invoke : command)("cat", [`/proc/${current.State.Pid}/cgroup`]);
+    assert.ok(
+      cgroup.split(/[\n/:]/).some((part) => [node.id, `docker-${node.id}.scope`].includes(part)),
+      "Selected node must run in the local Docker host",
+    );
+  }
+  function assertDnsAvailable(current) {
+    assert.ok(
+      Object.keys(current?.binaryData ?? {}).length === 0 &&
+        !Object.entries(current?.data ?? {}).some(
+          ([key, value]) => key.endsWith(".server") || /api\.openai\.com/i.test(value),
+        ),
+      "Another provider or unsupported custom configuration owns cluster DNS",
+    );
+  }
+  async function refuseRetainedProvider() {
+    assertDnsAvailable(await dns());
+    for (const [kind, args] of [
+      ["containers", ["ps", "-aq", "--filter", `label=${clusterLabel}=${cluster}`]],
+      ["networks", ["network", "ls", "-q", "--filter", `label=${clusterLabel}=${cluster}`]],
+      ["images", ["image", "ls", "-q", "--filter", `label=${clusterLabel}=${cluster}`]],
+    ]) {
+      assert.equal(
+        (await docker(args)).trim(),
+        "",
+        `Retained provider ${kind} require reconciliation before reuse`,
+      );
+    }
+    const probes = JSON.parse(
+      await kube([
+        "get",
+        "pods",
+        "--all-namespaces",
+        "-l",
+        `${clusterLabel}=${cluster}`,
+        "-o",
+        "json",
+      ]),
+    );
+    assert.equal(probes.items.length, 0, "Retained provider probe requires reconciliation");
+    // Earlier attempts had only the owner label. Check selected-node attachments
+    // as well, without scanning or adopting any unrelated network.
+    for (const node of nodes) {
+      const current = await inspect("container", node.id);
+      for (const attachment of Object.values(current.NetworkSettings.Networks)) {
+        const network = await inspect("network", attachment.NetworkID);
+        assert.equal(
+          network.Labels?.[ownerLabel],
+          undefined,
+          "Retained provider network requires reconciliation",
+        );
+      }
+    }
+  }
+  async function dnsProbe(cleanup = false) {
+    const text = await kube(
+      ["get", "pod", dnsProbeName, "-n", "default", "--ignore-not-found", "-o", "json"],
+      undefined,
+      cleanup,
+    );
+    if (!text.trim()) {
+      return undefined;
+    }
+    const pod = JSON.parse(text);
+    assert.equal(pod.metadata.name, dnsProbeName);
+    assert.equal(pod.metadata.namespace, "default");
+    assert.equal(pod.metadata.labels?.[ownerLabel], owner);
+    assert.ok(dnsProbeUid, "Missing acknowledged DNS probe identity");
+    assert.equal(pod.metadata.uid, dnsProbeUid);
+    assert.equal(pod.spec.nodeName, nodes[0].name);
+    assert.equal(pod.spec.containers.length, 1);
+    assert.equal(pod.spec.containers[0].image, reference);
+    assert.equal(pod.spec.automountServiceAccountToken, false);
+    return pod;
+  }
+  async function removeDnsProbe(cleanup = false) {
+    const pod = await dnsProbe(cleanup);
+    if (!pod) {
+      return;
+    }
+    await mutate(
+      "dnsProbe",
+      () =>
+        kube(
+          ["delete", "--raw", `/api/v1/namespaces/default/pods/${dnsProbeName}`, "-f", "-"],
+          {
+            input: JSON.stringify({
+              apiVersion: "v1",
+              kind: "DeleteOptions",
+              preconditions: { uid: dnsProbeUid },
+            }),
+          },
+          cleanup,
+        ),
+      { clusterWrite: true },
+    );
+    const deadline = Math.min(Date.now() + 30_000, cleanupDeadline ?? Infinity);
+    while (await dnsProbe(cleanup)) {
+      assert.ok(Date.now() < deadline, "DNS probe removal did not settle");
+      await delay(100);
+    }
+  }
+  async function verifyDns() {
+    assert.equal(
+      (
+        await kube([
+          "get",
+          "pod",
+          dnsProbeName,
+          "-n",
+          "default",
+          "--ignore-not-found",
+          "-o",
+          "name",
+        ])
+      ).trim(),
+      "",
+    );
+    // No credential, service-account token or model request enters this Pod.
+    // Use the already imported image only for its Node DNS client.
+    const pod = {
+      apiVersion: "v1",
+      kind: "Pod",
+      metadata: {
+        name: dnsProbeName,
+        namespace: "default",
+        labels: { [ownerLabel]: owner, [clusterLabel]: cluster },
+      },
+      spec: {
+        nodeName: nodes[0].name,
+        automountServiceAccountToken: false,
+        restartPolicy: "Never",
+        activeDeadlineSeconds: 30,
+        terminationGracePeriodSeconds: 1,
+        dnsPolicy: "ClusterFirst",
+        securityContext: {
+          runAsUser: 1000,
+          runAsGroup: 1000,
+          runAsNonRoot: true,
+          seccompProfile: { type: "RuntimeDefault" },
+        },
+        containers: [
+          {
+            name: "lookup",
+            image: reference,
+            imagePullPolicy: "Never",
+            command: [
+              "node",
+              "-e",
+              `require("node:dns").promises.lookup("api.openai.com", {family:4}).then(({address}) => { process.stdout.write(address); process.exitCode = address === ${JSON.stringify(address)} ? 0 : 1; }, () => { process.exitCode = 1; });`,
+            ],
+            securityContext: {
+              readOnlyRootFilesystem: true,
+              allowPrivilegeEscalation: false,
+              capabilities: { drop: ["ALL"] },
+            },
+            resources: {
+              requests: { cpu: "10m", memory: "32Mi" },
+              limits: { cpu: "200m", memory: "96Mi" },
+            },
+          },
+        ],
+      },
+    };
+    await reserve("dnsProbe");
+    const created = JSON.parse(
+      await mutate(
+        "dnsProbe",
+        () => kube(["create", "-f", "-", "-o", "json"], { input: JSON.stringify(pod) }),
+        { clusterWrite: true },
+      ),
+    );
+    dnsProbeUid = created.metadata.uid;
+    assert.ok(typeof dnsProbeUid === "string" && dnsProbeUid.length > 0);
+    await record();
+    const deadline = Date.now() + 45_000;
+    for (;;) {
+      const current = await dnsProbe();
+      assert.ok(current && !current.metadata.deletionTimestamp);
+      const terminated = current.status.containerStatuses?.[0]?.state?.terminated;
+      if (terminated) {
+        assert.equal(
+          terminated.exitCode,
+          0,
+          "Unauthenticated cluster DNS lookup must select the fixture",
+        );
+        assert.equal(current.status.phase, "Succeeded");
+        break;
+      }
+      assert.ok(Date.now() < deadline, "Cluster DNS lookup did not finish");
+      await delay(100);
+    }
+    const before = await dnsProbe();
+    assert.ok(before);
+    assert.equal(
+      (
+        await kube(["logs", dnsProbeName, "-n", "default", "-c", "lookup", "--limit-bytes=256"])
+      ).trim(),
+      address,
+    );
+    assert.ok(await dnsProbe(), "DNS probe must keep its identity through log readback");
+    await removeDnsProbe();
   }
   async function control(value) {
     assert.ok(!closing, "Fixture is closing");
@@ -163,7 +490,10 @@ export async function prepareNativeModelBarrier(
       const socket = connect(controlPath);
       let text = "";
       let reply;
-      socket.setTimeout(5_000, () => socket.destroy(new Error("Provider control timed out")));
+      const timer = setTimeout(
+        () => socket.destroy(new Error("Provider control timed out")),
+        5_000,
+      );
       socket.on("connect", () => socket.write(`${JSON.stringify(value)}\n`));
       socket.on("data", (chunk) => {
         text += chunk;
@@ -182,6 +512,7 @@ export async function prepareNativeModelBarrier(
       });
       socket.on("error", reject);
       socket.on("close", () => {
+        clearTimeout(timer);
         if (reply?.ok === true) {
           resolveReply(reply);
         } else {
@@ -197,19 +528,49 @@ export async function prepareNativeModelBarrier(
     if (!rootCreated) {
       return;
     }
-    assert.ok(!uncertain, `Fixture command outcome is uncertain; preserve ${root}`);
     cleanupDeadline = Date.now() + 150_000;
-    const failures = [];
-    const settle = async (operation) => {
+    // The topology installs this guard before creating its first consumer. Failed
+    // workload cleanup must not remove its DNS/provider dependencies underneath it.
+    if (consumers) {
       try {
+        await consumers({ deadline: cleanupDeadline });
+        consumerOutcome = "absent";
+        await record();
+      } catch (error) {
+        consumerOutcome = "unconfirmed";
+        await record().catch(() => {});
+        throw error;
+      }
+    }
+    const failures = [];
+    const retained = new Set(unsettled);
+    const dependencies = {
+      dnsProbe: ["dnsProbe"],
+      dns: ["dns", "dnsProbe"],
+      provider: ["provider", "dns", "dnsProbe"],
+      network: ["network", "provider", "dns", "dnsProbe"],
+      import: ["import", "dnsProbe"],
+      image: ["image", "import", "dnsProbe"],
+    };
+    const settle = async (kind, operation) => {
+      try {
+        assert.ok(
+          !dependencies[kind].some((entry) => retained.has(entry)),
+          `Unsettled ${kind} dependency; retain owned resources`,
+        );
         await operation();
       } catch (error) {
+        retained.add(kind);
         failures.push(error);
       }
     };
+    if (obligations.has("dnsProbe")) {
+      await settle("dnsProbe", () => removeDnsProbe(true));
+    }
     // CAS protects other tests' CoreDNS keys; never restore an old whole ConfigMap.
     if (obligations.has("dns")) {
-      await settle(async () => {
+      await settle("dns", async () => {
+        await assertCluster(true);
         const current = await dns(true);
         if (!current) {
           assert.ok(!dnsUid);
@@ -234,51 +595,70 @@ export async function prepareNativeModelBarrier(
             { op: "test", path: `/data/${pointer(dnsKey)}`, value: dnsValue },
             { op: "remove", path: `/data/${pointer(dnsKey)}` },
           );
-          await kube(
-            [
-              "-n",
-              "kube-system",
-              "patch",
-              "configmap",
-              "coredns-custom",
-              "--type=json",
-              "-p",
-              JSON.stringify(patches),
-            ],
-            undefined,
-            true,
+          await mutate(
+            "dns",
+            () =>
+              kube(
+                [
+                  "-n",
+                  "kube-system",
+                  "patch",
+                  "configmap",
+                  "coredns-custom",
+                  "--type=json",
+                  "-p",
+                  JSON.stringify(patches),
+                ],
+                undefined,
+                true,
+              ),
+            { clusterWrite: true },
           );
         }
         const after = await dns(true);
         assert.equal(after.metadata.uid, current.metadata.uid);
         assert.equal(after.data?.[dnsKey], undefined);
-        if (dnsCreated && Object.keys(after.data ?? {}).length === 0) {
+        if (
+          dnsCreated &&
+          Object.keys(after.data ?? {}).length === 0 &&
+          Object.keys(after.binaryData ?? {}).length === 0
+        ) {
           assert.equal(after.metadata.labels?.[ownerLabel], owner);
-          await kube(
-            [
-              "delete",
-              "--raw",
-              "/api/v1/namespaces/kube-system/configmaps/coredns-custom",
-              "-f",
-              "-",
-            ],
-            {
-              input: JSON.stringify({
-                apiVersion: "v1",
-                kind: "DeleteOptions",
-                preconditions: {
-                  uid: after.metadata.uid,
-                  resourceVersion: after.metadata.resourceVersion,
+          await mutate(
+            "dns",
+            () =>
+              kube(
+                [
+                  "delete",
+                  "--raw",
+                  "/api/v1/namespaces/kube-system/configmaps/coredns-custom",
+                  "-f",
+                  "-",
+                ],
+                {
+                  input: JSON.stringify({
+                    apiVersion: "v1",
+                    kind: "DeleteOptions",
+                    preconditions: {
+                      uid: after.metadata.uid,
+                      resourceVersion: after.metadata.resourceVersion,
+                    },
+                  }),
                 },
-              }),
-            },
-            true,
+                true,
+              ),
+            { clusterWrite: true },
           );
         }
-        await kube(
-          ["-n", "kube-system", "rollout", "restart", "deployment/coredns"],
-          undefined,
-          true,
+        await mutate(
+          "dns",
+          () =>
+            kube(
+              ["-n", "kube-system", "rollout", "restart", "deployment/coredns"],
+              undefined,
+              true,
+            ),
+          { clusterWrite: true },
         );
         await kube(
           ["-n", "kube-system", "rollout", "status", "deployment/coredns", "--timeout=25s"],
@@ -288,7 +668,7 @@ export async function prepareNativeModelBarrier(
       });
     }
     if (obligations.has("provider")) {
-      await settle(async () => {
+      await settle("provider", async () => {
         const ids = (await docker(["ps", "-aq", "--filter", `name=^/${prefix}$`], true)).trim();
         if (!ids) {
           return;
@@ -298,11 +678,11 @@ export async function prepareNativeModelBarrier(
         if (providerId) {
           assert.equal(current.Id, providerId);
         }
-        await docker(["rm", "--force", "--volumes", current.Id], true);
+        await mutate("provider", () => docker(["rm", "--force", "--volumes", current.Id], true));
       });
     }
     if (obligations.has("network")) {
-      await settle(async () => {
+      await settle("network", async () => {
         const ids = (
           await docker(["network", "ls", "-q", "--filter", `name=^${prefix}$`], true)
         ).trim();
@@ -317,16 +697,16 @@ export async function prepareNativeModelBarrier(
         for (const id of Object.keys(current.Containers ?? {})) {
           const node = nodes.find((entry) => entry.id === id);
           assert.ok(node, "Unexpected consumer of fixture network");
-          await assertNode(node, true);
-          await docker(["network", "disconnect", current.Id, id], true);
+          await assertCluster(true);
+          await mutate("network", () => docker(["network", "disconnect", current.Id, id], true));
         }
-        await docker(["network", "rm", current.Id], true);
+        await mutate("network", () => docker(["network", "rm", current.Id], true));
       });
     }
     if (obligations.has("import")) {
       for (const node of nodes) {
-        await settle(async () => {
-          await assertNode(node, true);
+        await settle("import", async () => {
+          await assertCluster(true);
           for (const [name, , digest] of await nodeEntries(node, true)) {
             if (name !== tag && name !== reference) {
               continue;
@@ -335,13 +715,15 @@ export async function prepareNativeModelBarrier(
             if (reference) {
               assert.ok(reference.endsWith(`@${digest}`));
             }
-            await nodeCommand(node, ["rm", name], true);
+            await mutate("import", () => nodeCommand(node, ["rm", name], true), {
+              clusterWrite: true,
+            });
           }
         });
       }
     }
     if (obligations.has("image")) {
-      await settle(async () => {
+      await settle("image", async () => {
         const ids = (await docker(["image", "ls", "--quiet", "--no-trunc", tag], true)).trim();
         if (!ids) {
           return;
@@ -351,7 +733,7 @@ export async function prepareNativeModelBarrier(
         if (trustedId) {
           assert.equal(current.Id, trustedId);
         }
-        await docker(["image", "rm", tag], true);
+        await mutate("image", () => docker(["image", "rm", tag], true));
       });
     }
     if (failures.length) {
@@ -365,6 +747,8 @@ export async function prepareNativeModelBarrier(
     await mkdir(root, { mode: 0o700 });
     rootCreated = true;
     await record();
+    await assertPrepared();
+    await assertLocalRehearsalDaemon(command);
     await validateExplicitK3dLoopbackContext(selection);
     const observed = JSON.parse(await kube(["get", "nodes", "-o", "json"])).items;
     assert.ok(observed.length > 0 && observed.length <= 4);
@@ -385,6 +769,9 @@ export async function prepareNativeModelBarrier(
       nodes.push({ id: container.Id, name: node.metadata.name, uid: node.metadata.uid });
       await assertNode(nodes.at(-1));
     }
+    assert.deepEqual(nodes.map(({ name }) => name).sort(), [...preparedCluster.nodes].sort());
+    await assertCluster();
+    await refuseRetainedProvider();
     await record();
     const platform = `linux/${process.arch === "x64" ? "amd64" : process.arch}`;
     const base = JSON.parse(
@@ -397,38 +784,50 @@ export async function prepareNativeModelBarrier(
     await writeModelProviderTrust({ context: trust, caPath: join(files, "ca.pem") });
     assert.equal((await docker(["image", "ls", "--quiet", tag])).trim(), "");
     await reserve("image");
-    await command(
-      "docker",
-      [
-        "--host=unix:///var/run/docker.sock",
-        "build",
-        "--network=none",
-        "--platform",
-        platform,
-        "--pull=false",
-        "--label",
-        `${ownerLabel}=${owner}`,
-        "--build-arg",
-        `RUNTIME_IMAGE=${codexImage}`,
-        "--tag",
-        tag,
-        trust,
-      ],
-      { timeout: 300_000 },
+    await mutate("image", () =>
+      command(
+        "docker",
+        [
+          "--host=unix:///var/run/docker.sock",
+          "build",
+          "--network=none",
+          "--platform",
+          platform,
+          "--pull=false",
+          "--label",
+          `${ownerLabel}=${owner}`,
+          "--label",
+          `${clusterLabel}=${cluster}`,
+          "--build-arg",
+          `RUNTIME_IMAGE=${codexImage}`,
+          "--tag",
+          tag,
+          trust,
+        ],
+        { timeout: 300_000 },
+      ),
     );
     const built = await inspect("image", tag);
     for (const field of ["User", "Entrypoint", "Cmd", "WorkingDir"]) {
       assert.deepEqual(built.Config[field], base.Config[field]);
     }
     assert.deepEqual(built.RootFS.Layers.slice(0, base.RootFS.Layers.length), base.RootFS.Layers);
-    assert.deepEqual(built.Config.Labels, { ...base.Config.Labels, [ownerLabel]: owner });
+    assert.deepEqual(built.Config.Labels, {
+      ...base.Config.Labels,
+      [ownerLabel]: owner,
+      [clusterLabel]: cluster,
+    });
     trustedId = built.Id;
     assert.match(trustedId, digestPattern);
     for (const node of nodes) {
       assert.ok(!(await nodeEntries(node)).some(([name]) => name === tag));
     }
     await reserve("import");
-    await command("k3d", ["image", "import", "--cluster", cluster, tag], { timeout: 180_000 });
+    await mutate(
+      "import",
+      () => command("k3d", ["image", "import", "--cluster", cluster, tag], { timeout: 180_000 }),
+      { clusterWrite: true },
+    );
     for (const node of nodes) {
       await assertNode(node);
       const entry = (await nodeEntries(node)).find(([name]) => name === tag);
@@ -466,7 +865,9 @@ export async function prepareNativeModelBarrier(
         assert.equal(candidate, reference);
       }
       reference = candidate;
-      await nodeCommand(node, ["tag", tag, reference]);
+      await mutate("import", () => nodeCommand(node, ["tag", tag, reference]), {
+        clusterWrite: true,
+      });
     }
     assert.equal(
       (await docker(["network", "ls", "--quiet", "--filter", `name=^${prefix}$`])).trim(),
@@ -474,72 +875,85 @@ export async function prepareNativeModelBarrier(
     );
     await reserve("network");
     networkId = (
-      await docker([
-        "network",
-        "create",
-        "--internal",
-        "--subnet",
-        `${subnet}.0/28`,
-        "--label",
-        `${ownerLabel}=${owner}`,
-        prefix,
-      ])
+      await mutate("network", () =>
+        docker([
+          "network",
+          "create",
+          "--internal",
+          "--subnet",
+          `${subnet}.0/28`,
+          "--label",
+          `${ownerLabel}=${owner}`,
+          "--label",
+          `${clusterLabel}=${cluster}`,
+          prefix,
+        ]),
+      )
     ).trim();
     assert.match(networkId, idPattern);
     for (let index = 0; index < nodes.length; index++) {
       await assertNode(nodes[index]);
-      await docker([
+      await mutate(
         "network",
-        "connect",
-        "--ip",
-        `${subnet}.${index + 3}`,
-        networkId,
-        nodes[index].id,
-      ]);
+        () =>
+          docker([
+            "network",
+            "connect",
+            "--ip",
+            `${subnet}.${index + 3}`,
+            networkId,
+            nodes[index].id,
+          ]),
+        { clusterWrite: true },
+      );
     }
     assert.equal((await docker(["ps", "-aq", "--filter", `name=^/${prefix}$`])).trim(), "");
     await reserve("provider");
     providerId = (
-      await docker([
-        "run",
-        "--pull=never",
-        "--platform",
-        platform,
-        "--detach",
-        "--name",
-        prefix,
-        "--label",
-        `${ownerLabel}=${owner}`,
-        "--network",
-        networkId,
-        "--ip",
-        address,
-        "--user",
-        `${process.getuid()}:${process.getgid()}`,
-        "--read-only",
-        "--cap-drop=ALL",
-        "--security-opt=no-new-privileges",
-        "--sysctl",
-        "net.ipv4.ip_unprivileged_port_start=0",
-        "--volume",
-        `${files}:/fixture:ro`,
-        "--volume",
-        `${controlDirectory}:/control:rw`,
-        "--env",
-        "PROBE_ENDPOINT_MODE=answer",
-        "--env",
-        "PROBE_ENDPOINT_HOST=0.0.0.0",
-        "--env",
-        "PROBE_ENDPOINT_ECHO_PATTERN=OCC-[A-Za-z0-9_-]+",
-        "--env",
-        "PROBE_ENDPOINT_CONTROL_SOCKET=/control/provider.sock",
-        "--env",
-        `PROBE_ENDPOINT_CREDENTIAL_DIGESTS=${JSON.stringify({ fixture: createHash("sha256").update(modelKey).digest("hex") })}`,
-        "--entrypoint",
-        "node",
-        providerImage,
-        "/fixture/endpoint.mjs",
-      ])
+      await mutate("provider", () =>
+        docker([
+          "run",
+          "--pull=never",
+          "--platform",
+          platform,
+          "--detach",
+          "--name",
+          prefix,
+          "--label",
+          `${ownerLabel}=${owner}`,
+          "--label",
+          `${clusterLabel}=${cluster}`,
+          "--network",
+          networkId,
+          "--ip",
+          address,
+          "--user",
+          `${process.getuid()}:${process.getgid()}`,
+          "--read-only",
+          "--cap-drop=ALL",
+          "--security-opt=no-new-privileges",
+          "--sysctl",
+          "net.ipv4.ip_unprivileged_port_start=0",
+          "--volume",
+          `${files}:/fixture:ro`,
+          "--volume",
+          `${controlDirectory}:/control:rw`,
+          "--env",
+          "PROBE_ENDPOINT_MODE=answer",
+          "--env",
+          "PROBE_ENDPOINT_HOST=0.0.0.0",
+          "--env",
+          "PROBE_ENDPOINT_ECHO_PATTERN=OCC-[A-Za-z0-9_-]+",
+          "--env",
+          "PROBE_ENDPOINT_CONTROL_SOCKET=/control/provider.sock",
+          "--env",
+          `PROBE_ENDPOINT_CREDENTIAL_DIGESTS=${JSON.stringify({ fixture: createHash("sha256").update(modelKey).digest("hex") })}`,
+          "--entrypoint",
+          "node",
+          providerImage,
+          "/fixture/endpoint.mjs",
+        ]),
+      )
     ).trim();
     assert.match(providerId, idPattern);
     await record();
@@ -559,50 +973,72 @@ export async function prepareNativeModelBarrier(
     dnsUid = before?.metadata.uid;
     dnsCreated = !before;
     assert.equal(before?.data?.[dnsKey], undefined);
-    assert.ok(
-      !Object.values(before?.data ?? {}).some((value) => /api\.openai\.com/.test(value)),
-      "Another provider already owns cluster DNS",
-    );
+    assertDnsAvailable(before);
     await reserve("dns");
     if (before) {
-      await kube([
-        "-n",
-        "kube-system",
-        "patch",
-        "configmap",
-        "coredns-custom",
-        "--type=json",
-        "-p",
-        JSON.stringify([
-          { op: "test", path: "/metadata/uid", value: dnsUid },
-          { op: "test", path: "/metadata/resourceVersion", value: before.metadata.resourceVersion },
-          ...(before.data ? [] : [{ op: "add", path: "/data", value: {} }]),
-          { op: "add", path: `/data/${pointer(dnsKey)}`, value: dnsValue },
-        ]),
-      ]);
+      await mutate(
+        "dns",
+        () =>
+          kube([
+            "-n",
+            "kube-system",
+            "patch",
+            "configmap",
+            "coredns-custom",
+            "--type=json",
+            "-p",
+            JSON.stringify([
+              { op: "test", path: "/metadata/uid", value: dnsUid },
+              {
+                op: "test",
+                path: "/metadata/resourceVersion",
+                value: before.metadata.resourceVersion,
+              },
+              ...(before.data ? [] : [{ op: "add", path: "/data", value: {} }]),
+              { op: "add", path: `/data/${pointer(dnsKey)}`, value: dnsValue },
+            ]),
+          ]),
+        { clusterWrite: true },
+      );
     } else {
-      await kube(["create", "-f", "-"], {
-        input: JSON.stringify({
-          apiVersion: "v1",
-          kind: "ConfigMap",
-          metadata: {
-            name: "coredns-custom",
-            namespace: "kube-system",
-            labels: { [ownerLabel]: owner },
-          },
-          data: { [dnsKey]: dnsValue },
-        }),
-      });
+      await mutate(
+        "dns",
+        () =>
+          kube(["create", "-f", "-"], {
+            input: JSON.stringify({
+              apiVersion: "v1",
+              kind: "ConfigMap",
+              metadata: {
+                name: "coredns-custom",
+                namespace: "kube-system",
+                labels: { [ownerLabel]: owner, [clusterLabel]: cluster },
+              },
+              data: { [dnsKey]: dnsValue },
+            }),
+          }),
+        { clusterWrite: true },
+      );
     }
     const after = await dns();
     assert.equal(after.data[dnsKey], dnsValue);
     dnsUid = after.metadata.uid;
     await record();
-    await kube(["-n", "kube-system", "rollout", "restart", "deployment/coredns"]);
+    await mutate(
+      "dns",
+      () => kube(["-n", "kube-system", "rollout", "restart", "deployment/coredns"]),
+      { clusterWrite: true },
+    );
     await kube(["-n", "kube-system", "rollout", "status", "deployment/coredns", "--timeout=120s"], {
       timeout: 150_000,
     });
+    await verifyDns();
     return {
+      bindConsumers(read) {
+        assert.equal(consumers, undefined, "Consumer ownership may be bound only once");
+        assert.equal(typeof read, "function");
+        consumers = read;
+        consumerOutcome = "bound";
+      },
       modelKey,
       codexImage: reference,
       providerImage,
@@ -610,10 +1046,11 @@ export async function prepareNativeModelBarrier(
       async arm({ marker, timeoutMs = 300_000 }) {
         assert.equal(armDispatched, false, "Only one barrier may be armed");
         armDispatched = true;
-        const reply = await control({ op: "arm", marker, timeoutMs });
+        const replyToken = `OCC-response-${randomUUID()}`;
+        const reply = await control({ op: "arm", marker, replyToken, timeoutMs });
         gateId = reply.gateId;
         assert.equal(reply.state, "armed");
-        return reply;
+        return { ...reply, replyToken };
       },
       status: ({ gateId: expected }) => {
         assert.ok(gateId && expected === gateId, "Wrong provider gate");

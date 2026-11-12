@@ -167,6 +167,7 @@ export function selectQaMatrix(env = process.env) {
   }
   if (nativeApiContinuity) {
     requiredEnv.push(
+      "OPENCLAW_ENTERPRISE_CI_STATE",
       "OCC_TEST_KUBERNETES_KUBECONFIG",
       "OCC_TEST_KUBERNETES_CONTEXT",
       "OCC_TEST_DATABASE_URL",

@@ -78,12 +78,17 @@ test(
     if (selection.nativeApiContinuity) {
       const { runAcknowledgedChatApiReplacementScenario } =
         await import("../helpers/native-admin-browser.mjs");
-      await stage(
-        context,
-        "kubernetes/Codex",
-        "acknowledged native chat across API replacement",
-        () => runAcknowledgedChatApiReplacementScenario(context),
-        "native-api-continuity",
+      const { withStateLock } = await import("../../scripts/ci/state-lock.ts");
+      // Keep the prepared owner's reservation through the timed stage and its cleanup.
+      await withStateLock(resolve(process.env.OPENCLAW_ENTERPRISE_CI_STATE), () =>
+        stage(
+          context,
+          "kubernetes/Codex",
+          "acknowledged native chat across API replacement",
+          runAcknowledgedChatApiReplacementScenario,
+          "native-api-continuity",
+          { reportCleanup: true },
+        ),
       );
     }
     if (selection.sandboxPolicy) {

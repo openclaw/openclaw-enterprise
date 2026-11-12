@@ -281,8 +281,10 @@ export async function startModelProbeEndpoint({
     clearTimeout(gate.timer);
     gate.state = "failed";
     gate.reason = reason;
-    gate.pending?.detach();
-    gate.pending?.abort();
+    const pending = gate.pending;
+    gate.pending = undefined;
+    pending?.detach();
+    pending?.abort();
     emit({ event: "barrier-failed", ...gateStatus() });
   }
   async function command(value) {
@@ -297,6 +299,9 @@ export async function startModelProbeEndpoint({
         mode !== "answer" ||
         typeof value.marker !== "string" ||
         !/^[A-Za-z][A-Za-z0-9_-]{15,127}$/.test(value.marker) ||
+        typeof value.replyToken !== "string" ||
+        !/^[A-Za-z][A-Za-z0-9_-]{15,127}$/.test(value.replyToken) ||
+        value.replyToken === value.marker ||
         !Number.isInteger(value.timeoutMs) ||
         value.timeoutMs < 1 ||
         value.timeoutMs > 300_000
@@ -306,6 +311,7 @@ export async function startModelProbeEndpoint({
       gate = {
         id: randomUUID(),
         marker: value.marker,
+        replyToken: value.replyToken,
         state: "armed",
         matchingRequests: 0,
         completedResponses: 0,
@@ -330,15 +336,17 @@ export async function startModelProbeEndpoint({
       return { ok: false, error: "not-held", ...gateStatus() };
     }
     gate.state = "releasing";
+    const pending = gate.pending;
     try {
-      await gate.pending.send();
+      await pending.send();
       if (gate.state === "failed") {
         return { ok: false, error: "release-failed", ...gateStatus() };
       }
       gate.completedResponses++;
       gate.state = "completed";
       clearTimeout(gate.timer);
-      gate.pending.detach();
+      pending.detach();
+      gate.pending = undefined;
       emit({ event: "barrier-completed", ...gateStatus() });
       return { ok: true, ...gateStatus() };
     } catch {
@@ -358,19 +366,31 @@ export async function startModelProbeEndpoint({
     if (mode === "hang") {
       return;
     }
-    const text = answerText(request);
-    const send = async () => {
+    // Controlled replies and hold selection share the same newest-user boundary.
+    // The ordinary endpoint modes keep their existing whole-request echo behavior.
+    let newest = "";
+    if (controlPath !== undefined) {
+      try {
+        newest = newestUserText(request);
+      } catch {
+        // A malformed controlled request has no user text to echo or hold.
+      }
+    }
+    const text = answerText(controlPath === undefined ? request : newest);
+    const send = async (heldReply) => {
       await respond(
-        skipperFixture?.({ model, request, answerEvents, emit }) ??
-          publicReadEvents(model, request) ??
-          answerEvents(model, text),
+        heldReply === undefined
+          ? (skipperFixture?.({ model, request, answerEvents, emit }) ??
+              publicReadEvents(model, request) ??
+              answerEvents(model, text))
+          : answerEvents(model, heldReply),
       );
       emit({
         event: "turn-answered",
         transport,
         status: 200,
         ...(caller === undefined ? {} : { caller }),
-        ...(echoPattern === undefined ? {} : { text }),
+        ...(echoPattern === undefined || heldReply !== undefined ? {} : { text }),
       });
     };
     let target = false;
@@ -392,7 +412,7 @@ export async function startModelProbeEndpoint({
         return;
       }
       gate.pending = {
-        send,
+        send: () => send(gate.replyToken),
         abort,
         closed,
         detach: onClose(() => {
@@ -702,8 +722,11 @@ export async function startModelProbeEndpoint({
       }
       control = createControlServer({ allowHalfOpen: true }, (socket) => {
         controlConnections.add(socket);
-        socket.once("close", () => controlConnections.delete(socket));
-        socket.setTimeout(5_000, () => socket.destroy());
+        const deadline = setTimeout(() => socket.destroy(), 5_000);
+        socket.once("close", () => {
+          clearTimeout(deadline);
+          controlConnections.delete(socket);
+        });
         let input = "";
         let received = false;
         socket.setEncoding("utf8");
