@@ -1909,6 +1909,10 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         if (!status) {
           return fail(1, "deployment not found");
         }
+        if (take("deployment-status-running")) {
+          out({ namespaceId, agentId, deploymentId, status: "running" });
+          return io.exit(0);
+        }
         const response = state.deploymentStatusResponses?.[deploymentId];
         if (response) {
           out(response.stdout);
@@ -4674,6 +4678,34 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       );
     });
   }
+
+  test("a failed deployment poll preserves the last observed Agent status", async (t) => {
+    const f = await fixture(t, { agent: true });
+    // The second poll writes a complete succeeded response before the CLI exits with an error.
+    await f.failNext("deployment-status-running");
+    await f.failNext("fail-deployment-status-after-output");
+    await assert.rejects(f.run(), injectedFault);
+    assert.equal(existsSync(join(f.evidence, "completed")), false);
+    const snapshot = join(f.evidence, "status/ns_test--agt_test--rev_new.json");
+    const identity = { namespaceId: "ns_test", agentId: "agt_test", deploymentId: "rev_new" };
+    const running = JSON.stringify({ ...identity, status: "running" });
+    assert.equal(await readFile(snapshot, "utf8"), running);
+
+    // A successful CLI can also return an invalid state. Shell output capture
+    // strips trailing newlines, so compare the state inside the JSON document.
+    await writeFile(
+      join(f.directory, "state.json"),
+      JSON.stringify({
+        ...(await f.state()),
+        deploymentStatusResponses: {
+          rev_new: { stdout: JSON.stringify({ ...identity, status: "succeeded\n" }) },
+        },
+      }),
+    );
+    await assert.rejects(f.run("--resume"), /invalid deployment status/);
+    assert.equal(await readFile(snapshot, "utf8"), running);
+    assert.equal(existsSync(join(f.evidence, "completed")), false);
+  });
 
   registerAcceptedAgentDeployNoticeTest(fixture);
 
