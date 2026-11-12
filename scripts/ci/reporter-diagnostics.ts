@@ -83,22 +83,19 @@ const probeBooleanFields = [
   "nativeSpawnPhaseObserved",
   "failureObserved",
 ] as const;
-const probeCountFields = [
-  "loadClientsSubmitted",
-  "loadClientsStarted",
-  "loadClientsSettled",
-  "loadClientsRejected",
-] as const;
 const probeDurationFields = ["capMs", "elapsedMs", "cpuWaitMs"] as const;
 
-type ProbeDiagnostic = {
+function isProbeCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 8;
+}
+
+type ProbeDiagnosticFields = {
   kind: "runtime-model-probe";
   reason: string;
   probe: string;
   modelPhase: string;
   probeStage?: string;
 } & Partial<Record<(typeof probeBooleanFields)[number], boolean>> &
-  Partial<Record<(typeof probeCountFields)[number], number>> &
   Partial<Record<(typeof probeDurationFields)[number], number | null | undefined>>;
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -359,7 +356,7 @@ function relayNodeDiagnostic(value: unknown) {
   };
 }
 
-export function failureDiagnostic(
+export function projectFailureDiagnostic(
   error: unknown,
   projectNativeFirstAgentProof: NativeProofProjection,
 ) {
@@ -446,7 +443,7 @@ export function failureDiagnostic(
     ) {
       return undefined;
     }
-    const result: ProbeDiagnostic = {
+    const fields: ProbeDiagnosticFields = {
       kind: "runtime-model-probe",
       reason: diagnostic.reason,
       probe: diagnostic.probe,
@@ -456,30 +453,35 @@ export function failureDiagnostic(
       if (typeof diagnostic[key] !== "boolean") {
         return undefined;
       }
-      result[key] = diagnostic[key];
+      fields[key] = diagnostic[key];
     }
-    for (const key of probeCountFields) {
-      if (
-        typeof diagnostic[key] !== "number" ||
-        !Number.isInteger(diagnostic[key]) ||
-        diagnostic[key] < 0 ||
-        diagnostic[key] > 8
-      ) {
-        return undefined;
-      }
-      result[key] = diagnostic[key];
+    const loadClientsSubmitted = diagnostic.loadClientsSubmitted;
+    if (!isProbeCount(loadClientsSubmitted)) {
+      return undefined;
     }
+    const loadClientsStarted = diagnostic.loadClientsStarted;
+    if (!isProbeCount(loadClientsStarted)) {
+      return undefined;
+    }
+    const loadClientsSettled = diagnostic.loadClientsSettled;
+    if (!isProbeCount(loadClientsSettled)) {
+      return undefined;
+    }
+    const loadClientsRejected = diagnostic.loadClientsRejected;
     if (
-      typeof result.loadClientsSettled !== "number" ||
-      typeof result.loadClientsSubmitted !== "number" ||
-      typeof result.loadClientsStarted !== "number" ||
-      typeof result.loadClientsRejected !== "number" ||
-      result.loadClientsSettled > result.loadClientsSubmitted ||
-      result.loadClientsStarted > result.loadClientsSubmitted ||
-      result.loadClientsRejected > result.loadClientsSettled
+      !isProbeCount(loadClientsRejected) ||
+      loadClientsSettled > loadClientsSubmitted ||
+      loadClientsStarted > loadClientsSubmitted ||
+      loadClientsRejected > loadClientsSettled
     ) {
       return undefined;
     }
+    const result = Object.assign(fields, {
+      loadClientsSubmitted,
+      loadClientsStarted,
+      loadClientsSettled,
+      loadClientsRejected,
+    });
     for (const key of probeDurationFields) {
       if (diagnostic[key] === undefined || (key === "cpuWaitMs" && diagnostic[key] === null)) {
         result[key] = diagnostic[key];

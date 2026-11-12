@@ -1,4 +1,4 @@
-import { failureDiagnostic as projectFailureDiagnostic, isRecord } from "./reporter-diagnostics.ts";
+import { projectFailureDiagnostic, isRecord } from "./reporter-diagnostics.ts";
 import {
   boundedProgressLines,
   openShellProgress,
