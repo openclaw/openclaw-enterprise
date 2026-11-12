@@ -208,7 +208,10 @@ test("full coverage receipts require real case evidence and retain approved same
         "tests/integration/openshell-refresh-real.test.ts",
         "tests/integration/openshell-withdrawal-real.test.ts",
         "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+        "tests/integration/openshell-imported-skill-real.test.ts",
+        "tests/integration/openshell-imported-mcp-real.test.ts",
       ].includes(file.path),
+      file.path,
     );
   }
   const skipperLane = "skipper-prepared-git-installed";
