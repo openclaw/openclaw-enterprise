@@ -1,7 +1,56 @@
-import { spawn } from "node:child_process";
+import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
+const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
+
+// Fixtures live under tmpdir(), which may itself sit inside an unrelated Git
+// checkout. Stop Git's repository search at tmpdir() so the runner never reads
+// that checkout's HEAD as the fixture's source SHA.
+export const fixtureGitEnv = { GIT_CEILING_DIRECTORIES: tmpdir() };
+
+export function currentSha() {
+  const result = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim();
+}
+
+export function runnerEnv(env: NodeJS.ProcessEnv = {}) {
+  const baseEnv = { ...process.env };
+  delete baseEnv.NODE_ENV;
+  return {
+    ...baseEnv,
+    GITHUB_SHA: currentSha(),
+    CI_RUNNER_PARENT_SECRET: "secretauthvalue-parent",
+    // Fixture failures quote this value; the reporter must redact env values.
+    CI_RUNNER_FIXTURE_CREDENTIAL: "secretauthvalue",
+    // The fixture runners never inherit the lane's own deadline.
+    CI_RUNNER_DEADLINE_MS: "",
+    ...fixtureGitEnv,
+    ...env,
+  };
+}
+
+export function runRunnerSync(
+  args: readonly string[],
+  env: NodeJS.ProcessEnv = {},
+  { timeout }: { timeout?: number } = {},
+) {
+  return spawnSync(process.execPath, [runnerPath, ...args], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+    env: runnerEnv(env),
+    timeout,
+  });
+}
 
 export async function writeJson(path: string, value: unknown) {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
