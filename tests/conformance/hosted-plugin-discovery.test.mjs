@@ -548,8 +548,18 @@ test("hosted app-only plugins remain available without legacy executor metadata"
   assert.equal(result.tools[0].id, "connector_fixture/search");
   assert.equal(result.tools[0].available, true);
 
-  // Preserve the existing refusal when the service explicitly reports local components.
-  detail.release.requires_local_executor = true;
-  assert.equal((await driver.discoverCatalog(credential)).plugins[0].available, false);
-  assert.equal((await driver.getCatalogPlugin({ ...credential, pluginId })).available, false);
+  // A missing flag permits an app-only release. A supplied flag must be false to do so.
+  for (const [executor, available] of [
+    [false, true],
+    [true, false],
+    [null, false],
+    ["false", false],
+  ]) {
+    await t.test(`requires_local_executor = ${JSON.stringify(executor)}`, async () => {
+      detail.release.requires_local_executor = executor;
+      const page = await driver.discoverCatalog(credential);
+      const result = await driver.getCatalogPlugin({ ...credential, pluginId });
+      assert.deepEqual([page.plugins[0].available, result.available], [available, available]);
+    });
+  }
 });
