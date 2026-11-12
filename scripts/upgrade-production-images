@@ -2440,6 +2440,22 @@ else
   : >"$deployments"
 fi
 
+# A failing CLI can still print a complete status. Publish the snapshot only
+# after the command succeeds and its output contains one known deployment state.
+poll_deployment_status() (
+  local namespace_id=$1 agent_id=$2 deployment_id=$3 destination=$4
+  local snapshot status
+  snapshot=$(mktemp "${destination}.XXXXXXXX") || return
+  trap 'rm -f "$snapshot"' EXIT
+  "${occ_json[@]}" --namespace "$namespace_id" agent deployment-status "$agent_id" "$deployment_id" \
+    >"$snapshot" || return
+  status=$(jq -ser 'select(length == 1) | .[0].status | select(IN("queued","running","succeeded","failed"))' "$snapshot") ||
+    die "OCC returned an invalid deployment status for $deployment_id."
+  [[ ! -d "$destination" ]] || die "deployment status destination is a directory: $destination"
+  mv -f "$snapshot" "$destination" || return
+  printf '%s\n' "$status"
+)
+
 pending=$target_count
 while ((pending > 0)); do
   ((SECONDS < deadline)) || die "$pending Agent deployments remained incomplete at the upgrade timeout."
@@ -2448,14 +2464,11 @@ while ((pending > 0)); do
   while IFS= read -r deployment; do
     json_fields "$deployment" namespace_id=namespaceId agent_id=agentId deployment_id=deploymentId
     status_file="$evidence_dir/status/$(json_file_name "$namespace_id--$agent_id--$deployment_id").json"
-    "${occ_json[@]}" --namespace "$namespace_id" agent deployment-status "$agent_id" "$deployment_id" \
-      >"$status_file"
-    status=$(jq -er '.status' "$status_file")
+    status=$(poll_deployment_status "$namespace_id" "$agent_id" "$deployment_id" "$status_file")
     case "$status" in
       queued | running) ((pending += 1)) ;;
       succeeded) ;;
       failed) failed=1 ;;
-      *) die "deployment $deployment_id returned unknown status $status." ;;
     esac
   done <"$deployments"
   ((failed == 0)) || die "at least one Agent deployment failed; inspect $evidence_dir/status."
