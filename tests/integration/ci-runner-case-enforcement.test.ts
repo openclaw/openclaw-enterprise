@@ -8,6 +8,7 @@ import {
   createRunnerFixture,
   laneArgs,
   runRunnerSync,
+  writeJson,
   writeRunnerManifest,
 } from "../helpers/ci-runner-fixture.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
@@ -304,6 +305,20 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
   const suppliedValue = "fixture-input";
   const inputFile = { path, expectedTests: ["accepted input"] };
 
+  // A top-level marker distinguishes refusing the input from a child that starts and fails.
+  await writeFile(
+    join(root, path),
+    [
+      'import assert from "node:assert/strict";',
+      'import { readFileSync, writeFileSync } from "node:fs";',
+      'import test from "node:test";',
+      'const inputs = new URL("./required-input.json", import.meta.url);',
+      'const { marker, variable, expectedValue } = JSON.parse(readFileSync(inputs, "utf8"));',
+      'writeFileSync(marker, "started\\n");',
+      'test("accepted input", () => assert.equal(process.env[variable], expectedValue));',
+    ].join("\n"),
+  );
+
   for (const { scope, variable, definition } of [
     {
       scope: "lane",
@@ -317,17 +332,11 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
     },
   ]) {
     const marker = join(root, "state", scope + "-child-started");
-    // A top-level marker distinguishes refusing the input from a child that starts and fails.
-    await writeFile(
-      join(root, path),
-      [
-        'import assert from "node:assert/strict";',
-        'import { writeFileSync } from "node:fs";',
-        'import test from "node:test";',
-        `writeFileSync(${JSON.stringify(marker)}, "started\\n");`,
-        `test("accepted input", () => assert.equal(process.env[${JSON.stringify(variable)}], ${JSON.stringify(suppliedValue)}));`,
-      ].join("\n"),
-    );
+    await writeJson(join(root, "tests/integration/required-input.json"), {
+      marker,
+      variable,
+      expectedValue: suppliedValue,
+    });
     await writeRunnerManifest(root, { lanes: { [lane]: definition } });
 
     const missing = await runCaseLane(root, lane, scope + "-missing", [], clearedInputs);
