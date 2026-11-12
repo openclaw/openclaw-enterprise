@@ -1,6 +1,6 @@
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 import { createHash } from "node:crypto";
-import type { ControllerWork } from "./state/controller-work.ts";
+import type { ControllerWork } from "./controller-work.ts";
 
 export const REPOSITORY_CLEANUP_KEY_PREFIX = "agent_revision:";
 export const REPOSITORY_CLEANUP_KEY_SEPARATOR = ":repository_cleanup:";

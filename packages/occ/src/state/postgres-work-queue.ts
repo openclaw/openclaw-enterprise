@@ -10,19 +10,20 @@ import {
 } from "../repository-withdrawal.ts";
 import { isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 import { randomUUID } from "node:crypto";
-import { ResourceConflictError, ScopeViolationError } from "../errors.ts";
 import {
   CREDENTIAL_WITHDRAWAL_TARGET,
-  WorkClaimLostError,
+  type ClaimedWork,
+  type ControllerWork,
+  type ControllerWorkKind,
+  type ControllerWorkState,
+} from "../controller-work.ts";
+import { ResourceConflictError, ScopeViolationError, WorkClaimLostError } from "../errors.ts";
+import {
   nonempty,
   safeFailureCode,
   validateFailureData,
   validateSuccessResultData,
-  type ClaimedWork,
-  type ControllerWork,
   type ControllerWorkAttempt,
-  type ControllerWorkKind,
-  type ControllerWorkState,
   type DeferredWork,
   type EnqueueWork,
   type PermanentFailure,
@@ -37,11 +38,9 @@ export {
   isRepositoryRuntimeRetirementWork,
   repositoryCleanupRevisionId,
 } from "../repository-withdrawal.ts";
-export { WorkClaimLostError } from "./controller-work.ts";
+export { WorkClaimLostError } from "../errors.ts";
+export type { ClaimedWork, ControllerWork, ControllerWorkState } from "../controller-work.ts";
 export type {
-  ClaimedWork,
-  ControllerWork,
-  ControllerWorkState,
   EnqueueWork,
   PermanentFailure,
   RetryableFailure,
