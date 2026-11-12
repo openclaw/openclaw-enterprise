@@ -190,7 +190,7 @@ function catalogEntry(value: unknown): PluginCatalogEntry {
         unavailableReason =
           "Unavailable for this account. Ask a ChatGPT workspace administrator to review plugin access; the service did not provide a recognized reason.";
     }
-  } else if (release.requires_local_executor !== false && skills.length === 0) {
+  } else if (release.requires_local_executor === true && skills.length === 0) {
     // Skills use the native runtime; details must still check other local components.
     unavailableReason =
       "This plugin requires local components that OCE hosted discovery does not support. Changing ChatGPT access will not enable it here.";

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import test from "node:test";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { PluginDiscoveryError } from "../../packages/occ/src/index.ts";
@@ -508,4 +509,47 @@ test("hosted plugin discovery bounds and cancels an oversized streamed response"
     reason: "invalid_response",
   });
   assert.equal(cancelled, true);
+});
+
+test("hosted app-only plugins remain available without legacy executor metadata", async (t) => {
+  // Codex 0.164.0's RemotePluginReleaseResponse does not require or read
+  // requires_local_executor. Exercise that wire response through the public Driver.
+  const detail = plugin();
+  delete detail.release.requires_local_executor;
+  const server = createServer((request, response) => {
+    response.setHeader("Content-Type", "application/json");
+    response.end(
+      JSON.stringify(
+        request.url.startsWith("/backend-api/ps/plugins/list?")
+          ? { plugins: [detail], pagination: { next_page_token: null } }
+          : request.url === "/backend-api/ps/apps/batch"
+            ? { apps: [app("connector_fixture")] }
+            : detail,
+      ),
+    );
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const fetch = globalThis.fetch;
+  // Change only transport routing; response parsing and availability stay in the Driver.
+  t.mock.method(globalThis, "fetch", (url, init) => {
+    const target = new URL(url);
+    return fetch(
+      `http://127.0.0.1:${server.address().port}${target.pathname}${target.search}`,
+      init,
+    );
+  });
+  const driver = new CodexPluginDriver();
+  const credential = oauthCredential();
+  const page = await driver.discoverCatalog(credential);
+  assert.equal(page.plugins[0].available, true);
+  const result = await driver.getCatalogPlugin({ ...credential, pluginId });
+  assert.equal(result.available, true);
+  assert.equal(result.tools[0].id, "connector_fixture/search");
+  assert.equal(result.tools[0].available, true);
+
+  // Preserve the existing refusal when the service explicitly reports local components.
+  detail.release.requires_local_executor = true;
+  assert.equal((await driver.discoverCatalog(credential)).plugins[0].available, false);
+  assert.equal((await driver.getCatalogPlugin({ ...credential, pluginId })).available, false);
 });
