@@ -2,8 +2,18 @@ import type { KeyObject } from "node:crypto";
 import type { RepositoryBackendFactory, Clock } from "../../access/backend-contracts.ts";
 import type { ServiceLimits } from "../../access/service-contracts.ts";
 
-export type GitHubProfile = "git-read" | "git-write" | "git-full";
-/** The last two scopes are internal; neither is accepted as a user-selected access profile. */
+export const GITHUB_SESSION_PROFILES = Object.freeze([
+  "git-read",
+  "git-write",
+  "git-full",
+] as const);
+export type GitHubProfile = (typeof GITHUB_SESSION_PROFILES)[number];
+
+export function isGitHubProfile(value: unknown): value is GitHubProfile {
+  return GITHUB_SESSION_PROFILES.some((profile) => profile === value);
+}
+
+/** Additional token scopes are internal and cannot be selected for a session. */
 export type GitHubTokenProfile =
   GitHubProfile | "metadata-read" | "git-ref-write" | "git-ref-draft-pr";
 interface GitHubTokenConfigurationBase {

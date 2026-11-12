@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-11-12"
-last_updated_session: "authoring-run/55f350ab-6738-4e2d-9a2b-fb3a3f02ad26"
+last_updated_session: "authoring-run/9f8b5513-b8e6-4dfc-a9d6-6166d530a714"
 ---
 
 # Production Startup Flow
@@ -177,15 +177,16 @@ Job status. Write errors reach `cmd/occ/main.go:main` for stderr diagnostics and
 
 `scripts/migrate-production.mjs:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
-After verifying SQL source, migration checks the server version before locking
-or reading catalogs. PostgreSQL
-before 17 fails with `MIGRATION_SERVER_UNSUPPORTED` and a fixed recovery message;
-the same guard covers first install, upgrade, and `--check`. See
-[server compatibility](../reference/settings/operations.md#postgresql-server-compatibility).
-Migration then verifies the dedicated role, receipts and catalog under
-one advisory lock on Drizzle's transaction connection. For a recognized history, it accepts the native catalog digest or
-the reviewed restore digest bound to it. Unsupported histories fail before
-migration DDL and bootstrap. See [migration history and recovery](../reference/settings/operations.md#migration-history).
+After source verification, all modes reject PostgreSQL before 17 with
+fixed `MIGRATION_SERVER_UNSUPPORTED` recovery guidance, before locking or catalog access
+([compatibility](../reference/settings/operations.md#postgresql-server-compatibility)).
+Under the advisory lock, the same connection verifies roles and receipts,
+then catalogs and grants against native or reviewed restore digests. Unsupported
+history fails before DDL/bootstrap. After option guards, completed apply
+skips Drizzle only when `SHOW transaction_read_only` returns `off`.
+Otherwise Drizzle retains pending migration and read-only refusal.
+`finally` releases the lock and client
+([history](../reference/settings/operations.md#migration-history)).
 
 `scripts/lib/bootstrap-configuration.mjs:authBaseURL` checks HTTP(S) origin before
 database access. Production requires HTTPS except HTTP loopback verification
@@ -342,10 +343,10 @@ until tenant deployment/TUI procedures run.
 
 ## Debugging and Verification
 
-- `scripts/prepare-bootstrap-volume` should exit `0` only for a fresh claim with
-  no bootstrap output files and UID/GID `1000`, mode `0700` root state.
+- `scripts/prepare-bootstrap-volume` exits `0` only for fresh claims without
+  bootstrap output files and UID/GID `1000`, mode `0700` root state.
 - `kubectl -n openclaw-system wait --for=condition=complete job/oce-initialization`
-  should succeed before API and worker rollout checks.
+  must succeed before API/worker rollout checks.
 - `pnpm db:migrate:production --check` reports the accepted database history
   without applying SQL. `MIGRATION_HISTORY_UNSUPPORTED` needs the database
   inspected; initialization never repairs its ledger.
@@ -362,14 +363,14 @@ until tenant deployment/TUI procedures run.
   `/runtime/gatewayStorageClassName` requires a Kubernetes DNS-subdomain name.
   `apps/controller/src/api-startup.mjs:startupFailureFields` passes these diagnostics
   to `server.mjs`.
-- `kubectl -n openclaw-system logs job/oce-initialization -c bootstrap` is the
-  first check for unsafe output storage, existing outputs, database-role
+- Start with `kubectl -n openclaw-system logs job/oce-initialization -c bootstrap`
+  for unsafe output storage, existing outputs, database-role
   failures, auth errors (`AUTH_SECRET_INVALID`, `AUTH_BASE_URL_INVALID`), and
   administrator/IAM mismatch.
-- Changing an external startup Secret alone does not restart the API or worker;
-  run an explicit rollout and repeat readiness plus authenticated proof.
-- `tests/integration/production-kubernetes-packaging.test.mjs` renders the
-  chart; it does not prove deployment or model execution.
+- An external startup Secret change does not restart API/worker; explicitly roll
+  out and repeat readiness and authenticated proof.
+- `tests/integration/production-kubernetes-packaging.test.mjs` renders the chart
+  without proving deployment or model execution.
 - `tests/integration/installation-handoff-k3d-real.test.ts` exercises the CLI with
   rendered Jobs, real named-Job RBAC, and replacement UIDs; suspended Jobs avoid
   migration/bootstrap execution. See [Kubernetes tests](../testing/kubernetes.md).
@@ -391,6 +392,10 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 21:23: Preserve metrics admission and migration history guidance in the merged startup flow. (authoring-run/9f8b5513-b8e6-4dfc-a9d6-6166d530a714 - 32d85576e6ffa0e42af6357e39d5856b8a669921)
+
+- 2026-11-12 09:45: Skip completed writable DDL; preserve read-only refusal. (authoring-run/eedb034b-cdad-4526-af11-0ce3490e267a - 11e22a5dc95b54a4fd7eb05e68a06f732033e7f8)
 
 - 2026-11-12 08:08: Preserve metrics admission while incorporating current startup guidance. (authoring-run/55f350ab-6738-4e2d-9a2b-fb3a3f02ad26 - 818e0a96ef7c7dca60dffb8b7209a0ae36745fcb)
 

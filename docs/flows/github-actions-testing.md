@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: "2026-11-12 04:19"
-last_updated_session: "authoring-run/8af5a8e8-5e42-409d-b53e-989087ed46ce"
+updated: "2026-11-12 11:00"
+last_updated_session: "authoring-run/2f421f2e-6313-4a70-a0e0-821995778b2f"
 ---
 
 # GitHub Actions testing flow
@@ -80,7 +80,7 @@ The second parent must match the event head. Main pushes use `before` policy for
 `before`→verified `after` diff. Missing history,
 forced pushes, and older policies retain full CI.
 Decoding preserves leading UTF-8 BOMs.
-`scripts/ci/impact.mjs:documentationPath` admits allowlisted Markdown, `docs/docs.json`
+`scripts/ci/impact.ts:documentationPath` admits allowlisted Markdown, `docs/docs.json`
 and `specs/rfcs/**/*.png`. Generated API references, other images, executables and
 symlinks require full CI.
 
@@ -186,15 +186,14 @@ owns credential isolation and historical-pair limits.
 `scripts/ci/run-tests.mjs:main`, `scripts/ci/reporter.mjs:jsonLinesReporter` and `scripts/ci/failure-redaction.mjs:redactFailure`
 
 `scripts/ci/run-tests.mjs:normalizeFile` validates `file.env`.
-`runFile` merges, per child: filtered inherited values
-with declared inputs restored, `lane.env`, preparation defaults, `file.env`, then
-generated values. Later values win.
-`scripts/ci/prepare.mjs:prepareFile` separates defaults from generated outputs.
-OpenShell admission includes declared file model selectors:
-`validateLaneInputsBeforeSideEffects` reads the selected manifest entry directly;
-`runFile` forwards inputs overlaid by `file.env`. Unfocused installer admission unions
-the cohort’s credential requirements before setup. Raw custom-destination/provider-file
-guards remain in force. Other file values do not affect preparation.
+`runFile` merges filtered inherited values, restored declared inputs, `lane.env`,
+preparation defaults, `file.env`, then generated values; later values win.
+`scripts/ci/prepare.mjs:prepareFile` separates defaults and outputs.
+For OpenShell model selectors, `validateLaneInputsBeforeSideEffects` reads the
+manifest entry; `runFile` forwards inputs with `file.env` precedence.
+Unfocused `openshell`, `openshell-policy` and `openshell-installers` require both credentials before setup.
+`scripts/k3d` scopes preparation with `--selected-file`.
+Custom-destination/provider-file guards remain; other file values do not affect preparation.
 
 The reporter retains names, locations, outcomes, failure messages (600 characters) and top frames (240). Redaction removes repository paths, substitutes nonpublic job/child values (8+ characters) with `[env:NAME]`, and masks token/key shapes, URL passwords and `password=` as `[redacted]`. Generated values require a matching shape.
 
@@ -277,7 +276,7 @@ awaits an approved resource ledger.
 ## Debugging and Verification
 
 - `node scripts/ci/run-tests.mjs audit` checks checkout inventory against the suite map.
-- `node --test tests/integration/ci-runner.test.mjs 'tests/integration/ci-runner-{failure-output,aggregate,scheduling,redaction,first-agent-startup}.test.ts'` checks subprocess outcomes, redaction, and startup diagnostics.
+- `node --test tests/integration/ci-runner.test.mjs 'tests/integration/ci-runner-{case-enforcement,file-outcomes,deadline,cleanup-allowance,preparation,failure-output,aggregate,scheduling,redaction,first-agent-startup,openshell-progress}.test.ts'` checks runner outcomes, preparation, redaction, startup, and OpenShell reporting.
 - After measured local VM disk/network instability, serialize Kubernetes lanes; GitHub Actions keeps its matrix.
 - Missing prerequisites fail setup; supply approved resources without skipping required tests or substituting fixtures.
 - Retain sanitized results for seven days; exclude private state and credentials from uploads. Recover local teardown using run-owned state on its original host and path.
@@ -294,6 +293,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 11:00: Validate OpenShell cohort credentials. (authoring-run/2f421f2e-6313-4a70-a0e0-821995778b2f - 7040f7a648359a9c43d280b83efbc27be991049c)
 
 - 2026-11-12 04:19: Reconcile admission history. (authoring-run/8af5a8e8-5e42-409d-b53e-989087ed46ce - e17d59871db7fbdf53543e055236a849d33f9efd)
 

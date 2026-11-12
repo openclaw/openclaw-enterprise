@@ -39,6 +39,7 @@ import { OpenClawController, type PlatformStateStore } from "../../packages/occ/
 import {
   AgentCallerPermissionsResponse,
   AgentSecretPermissionsResponse,
+  NamespaceAgentCapabilitiesResponse,
   NamespaceCallerPermissionsResponse,
   NamespaceSecretPermissionsResponse,
   NamespaceListResponse,
@@ -230,6 +231,83 @@ test("console collection APIs keep exact Namespace and Agent IAM boundaries", as
     (await fixture.request("GET", alphaImages, { session: limitedSession })).status,
     403,
   );
+});
+
+test("the Namespace Agent capabilities authorize before resolving the exact Namespace", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const provisioning = await fixture.createNamespace("Provisioning capabilities");
+  const ready = await fixture.createNamespace("Ready capabilities", { ready: true });
+  assert.equal(provisioning.status, "provisioning");
+  assert.equal(ready.status, "ready");
+  const missingId = `ns_${randomUUID()}`;
+  const creator = await fixture.createAccountWithPolicy("capabilities-creator", (principal) => {
+    grantRole(fixture.policy, principal.id, {
+      id: "capabilities-create-only",
+      namespaceId: undefined,
+      resource: undefined,
+      permissions: { agent: ["create"] },
+    });
+  });
+  const creatorSession = await fixture.signIn(creator.credentials);
+  const readCapabilities = (namespaceId: string, session: Session) =>
+    fixture.request("GET", `/namespaces/${namespaceId}/agent-capabilities`, { session });
+
+  // Installation-wide Agent create covers the missing collection too, but grants no
+  // Namespace read. The capability response must preserve that permission distinction.
+  assertApiError(
+    await fixture.request("GET", `/namespaces/${ready.id}`, { session: creatorSession }),
+    403,
+    "FORBIDDEN",
+  );
+  for (const namespace of [provisioning, ready]) {
+    const response = await readCapabilities(namespace.id, creatorSession);
+    const { capabilities } = checkedResponse(
+      fixture,
+      response,
+      NamespaceAgentCapabilitiesResponse,
+    ).data;
+    assert.equal(Object.hasOwn(capabilities, "agentProvisioning"), false);
+  }
+  assertApiError(await readCapabilities(missingId, creatorSession), 404, "NOT_FOUND");
+
+  // A Namespace reader without Agent create cannot distinguish an absent Namespace from
+  // the existing one. Moving the existence check ahead of authorization would expose it.
+  const reader = await fixture.createNamespaceMember("capabilities-reader", ready.id, [
+    ["read", "namespace"],
+  ]);
+  const readerSession = await fixture.signIn(reader.credentials);
+  for (const namespaceId of [ready.id, missingId]) {
+    assertApiError(await readCapabilities(namespaceId, readerSession), 403, "FORBIDDEN");
+  }
+
+  // Reading the advisory capabilities grants no later write authority. A new Restriction
+  // still refuses the real Agent-create request at its Agent collection authorization.
+  const configuration = await fixture.createConfiguration(ready.id);
+  restrict(fixture.policy, "create", "agent", { namespaceId: ready.id });
+  const deniedBefore = fixture.auditSink.events.length;
+  assertApiError(
+    await fixture.request("POST", `/namespaces/${ready.id}/agents`, {
+      session: creatorSession,
+      body: {
+        name: "Refused after capability read",
+        configurationId: configuration.id,
+        harnessAuth: null,
+      },
+    }),
+    403,
+    "FORBIDDEN",
+  );
+  const denial = fixture.auditSink.events
+    .slice(deniedBefore)
+    .find((event) => event.kind === "authorization_denial");
+  assert.ok(denial);
+  assert.equal(denial.action, "openclaw.agents.create");
+  assert.deepEqual(denial.authorization, {
+    principalId: creator.principal.id,
+    action: "create",
+    resource: { kind: "agent", id: ready.id, namespaceId: ready.id },
+  });
 });
 
 // The Secrets page disables Create Secret on a false answer (finding 2365), so the answer must be
@@ -1362,12 +1440,12 @@ test("the Namespace Secret answer names the readable Secrets Agent creation woul
 // native IAM Driver reads its policy once for all of them, as for the Agent Secret answer
 // (finding 2473). The units the answer opens do not grow with the number of Secrets.
 test("the Namespace Secret answer makes its Secret decisions in one read unit", async (t) => {
-  const unit = new AsyncLocalStorage<boolean>();
+  const unit = new AsyncLocalStorage<symbol>();
   let units = 0;
   const wrapState = (state: PlatformStateStore): PlatformStateStore => ({
     read: (work) => {
       units += 1;
-      return unit.run(true, () => state.read(work));
+      return unit.run(Symbol(), () => state.read(work));
     },
     transact: (work) => state.transact(work),
   });
@@ -1383,11 +1461,11 @@ test("the Namespace Secret answer makes its Secret decisions in one read unit", 
     ],
     [],
   );
-  const decisions: { action: PermissionAction; inUnit: boolean }[] = [];
+  const decisions: { action: PermissionAction; unitId: symbol | undefined }[] = [];
   const authorize = fixture.iamDriver.authorize;
   fixture.iamDriver.authorize = async (request) => {
     if (request.resource.kind === "secret") {
-      decisions.push({ action: request.action, inUnit: unit.getStore() === true });
+      decisions.push({ action: request.action, unitId: unit.getStore() });
     }
     return authorize.call(fixture.iamDriver, request);
   };
@@ -1398,18 +1476,26 @@ test("the Namespace Secret answer makes its Secret decisions in one read unit", 
     decisions.length = 0;
     units = 0;
     const denied = await creator.answer();
+    // All Secret decisions for this answer must share the same read unit.
+    const unitId = decisions[0]?.unitId;
+    assert.notEqual(unitId, undefined);
+    assert.ok(decisions.every((decision) => decision.unitId === unitId));
     return { denied, units, decisions: [...decisions] };
   };
   const few = await measure();
-  assert.deepEqual(few.denied, [model.id, bot.id].sort());
+  const expectedDenied = [model.id, bot.id];
+  assert.deepEqual(few.denied, [...expectedDenied].sort());
+  assert.equal(few.decisions.filter(({ action }) => action === "read").length, 2);
+  assert.equal(few.decisions.filter(({ action }) => action === "operate").length, 2);
   for (let index = 0; index < 6; index += 1) {
-    await fixture.createSecret(namespace.id, `Extra key ${index}`, "extra-value");
+    const extra = await fixture.createSecret(namespace.id, `Extra key ${index}`, "extra-value");
+    expectedDenied.push(extra.id);
   }
   const many = await measure();
-  assert.equal(many.denied.length, 8);
-  // Each readable Secret costs a read and an operate decision, all inside a read unit.
+  assert.deepEqual(many.denied, expectedDenied.sort());
+  // Each readable Secret costs a read and an operate decision in the shared read unit.
+  assert.equal(many.decisions.filter(({ action }) => action === "read").length, 8);
   assert.equal(many.decisions.filter(({ action }) => action === "operate").length, 8);
-  assert.ok(many.decisions.every(({ inUnit }) => inUnit));
   assert.equal(many.units, few.units);
 });
 

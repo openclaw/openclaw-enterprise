@@ -205,3 +205,210 @@ test("go-test fails on skips and package failures and passes clean packages", as
     assert.match(result.stdout, /^go-test: 0 passed, 0 failed, 0 skipped$/m);
   });
 });
+
+const splitPackage = "github.com/openclaw/openclaw-enterprise/internal/occdev";
+const splitTarget = "TestOpenShellArchiveBoundsAStalledAttempt";
+
+test("split Go reporting preserves real package selection and failures", async (t) => {
+  for (const scenario of [
+    "pass",
+    "target-fail",
+    "target-skip",
+    "remainder-fail",
+    "remainder-skip",
+    "missing",
+    "build",
+  ]) {
+    await t.test(scenario, async (t) => {
+      const root = await temporaryDirectory(t, "ci-go-split-");
+      // A nested module keeps discovery independent of both the checkout and its
+      // parent module. The sibling's identical test name must remain selected.
+      await writeFile(join(root, "go.mod"), "module example.test/parent\n\ngo 1.21\n");
+      const cwd = join(root, "nested");
+      await mkdir(join(cwd, "internal", "occdev"), { recursive: true });
+      await mkdir(join(cwd, "sibling"));
+      await mkdir(join(cwd, "notests"));
+      await writeFile(
+        join(cwd, "go.mod"),
+        "module github.com/openclaw/openclaw-enterprise\n\ngo 1.21\n",
+      );
+      await writeFile(join(cwd, "notests", "empty.go"), "package notests\n");
+      await writeFile(
+        join(cwd, "sibling", "sibling_test.go"),
+        `package sibling
+import "testing"
+func ${splitTarget}(t *testing.T) {}
+`,
+      );
+      await writeFile(
+        join(cwd, "internal", "occdev", "archive_test.go"),
+        `package occdev
+import (
+  "testing"
+  "os"
+)
+func ${scenario === "missing" ? "TestDifferent" : splitTarget}(t *testing.T) {
+  switch os.Getenv("SPLIT_SCENARIO") {
+  case "target-fail": t.Fatal("target failure evidence")
+  case "target-skip": t.Skip("target skip evidence")
+  }
+  t.Run("child", func(t *testing.T) {})
+}
+func TestRemainder(t *testing.T) {
+  switch os.Getenv("SPLIT_SCENARIO") {
+  case "remainder-fail": t.Fatal("remainder failure evidence")
+  case "remainder-skip": t.Skip("remainder skip evidence")
+  }
+}
+`,
+      );
+      if (scenario === "build") {
+        await writeFile(
+          join(cwd, "sibling", "broken.go"),
+          "package sibling\nvar _ = missingBuildValue\n",
+        );
+      }
+      const result = await goTest(cwd, {
+        args: ["--split-stalled-archive"],
+        env: { SPLIT_SCENARIO: scenario },
+      });
+      assert.equal(result.code, scenario === "pass" ? 0 : 1, result.stdout + result.stderr);
+      if (scenario === "pass") {
+        assert.match(result.stdout, /go-test: 4 passed, 0 failed, 0 skipped/);
+        assert.match(result.stdout, /notests\s+\[no test files\]/);
+      } else if (scenario.endsWith("fail")) {
+        assert.match(result.stdout, /(?:target|remainder) failure evidence/);
+      } else if (scenario.endsWith("skip")) {
+        assert.match(result.stdout, /(?:target|remainder) skip evidence/);
+        assert.match(result.stderr, /skipped test did not run/);
+      } else if (scenario === "build") {
+        assert.match(result.stdout + result.stderr, /undefined: missingBuildValue/);
+      } else {
+        assert.match(result.stderr, /Isolated target/);
+      }
+    });
+  }
+});
+
+test("split Go reporting rejects invalid protocol evidence and observes child failures", async (t) => {
+  for (const scenario of [
+    "pass",
+    "malformed",
+    "malformed-terminal",
+    "wrong",
+    "wrong-package",
+    "duplicate",
+    "missing-terminal",
+    "missing-package",
+    "no-tests",
+    "empty-remainder",
+    "omit-sibling",
+    "duplicate-sibling",
+    "duplicate-remainder",
+    "foreign-terminal",
+    "foreign-sibling",
+    "skip-remainder",
+    "skip-sibling",
+    "remainder-target",
+    "package-fail",
+    "signal",
+    "cancel",
+    "spawn",
+  ]) {
+    await t.test(scenario, async (t) => {
+      const root = await temporaryDirectory(t, "ci-go-split-events-");
+      // This simulates only the Go JSON/process boundary; real selection and
+      // execution are covered by the nested module above.
+      await writeCommand(
+        root,
+        "go",
+        `
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+const pkg = ${JSON.stringify(splitPackage)};
+const target = ${JSON.stringify(splitTarget)};
+const scenario = ${JSON.stringify(scenario)};
+if (args[0] === "list") {
+  if (JSON.stringify(args) !== JSON.stringify(["list", "./..."])) process.exit(9);
+  console.log(pkg + "\\nexample.test/other\\nexample.test/sibling");
+  if (scenario === "spawn") fs.unlinkSync(__filename);
+} else {
+  const isolated = args.includes("-run");
+  const remainder = args.includes("-skip");
+  const packageName = isolated || remainder ? pkg : "example.test/other";
+  const name = isolated || (remainder && scenario === "remainder-target") ? target : "TestOther";
+  const emit = (event) => console.log(JSON.stringify({ Package: packageName, ...event }));
+  // Wait for all three processes before producing records. A serialized runner
+  // cannot complete this handshake. Each child acknowledges cleanup on errors.
+  const role = isolated ? "isolated" : remainder ? "remainder" : "other";
+  fs.writeFileSync(role, "started");
+  process.on("SIGTERM", () => {
+    console.error(role + " observed termination");
+    process.exit(0);
+  });
+  const timer = setInterval(() => {
+    if (!["isolated", "remainder", "other"].every((file) => fs.existsSync(file))) return;
+    clearInterval(timer);
+    console.error(role + " stderr evidence");
+    if (scenario === "cancel") {
+      if (isolated) process.kill(process.ppid, "SIGTERM");
+      // Stay alive until the reporter forwards cancellation to every child.
+      setInterval(() => {}, 1000);
+      return;
+    }
+    if (remainder && scenario === "empty-remainder") return;
+    if (!isolated && !remainder && scenario !== "omit-sibling") {
+      const sibling = scenario === "duplicate-sibling" ? packageName : "example.test/sibling";
+      emit({Action: scenario === "skip-sibling" ? "skip" : "pass", Package: sibling});
+      if (scenario === "foreign-sibling") emit({Action: "pass", Package: pkg, Test: "TestForeign"});
+    }
+    if (remainder && scenario === "skip-remainder") { emit({Action: "skip"}); return; }
+    if (remainder && scenario === "duplicate-remainder") emit({Action: "pass"});
+    if (!isolated && !remainder && scenario === "foreign-terminal") emit({Action: "pass", Package: pkg});
+    if (isolated && scenario === "signal") {
+      process.kill(process.pid, "SIGKILL");
+      return;
+    }
+    if (isolated && scenario === "malformed") { console.log("{broken"); return; }
+    if (isolated && scenario === "malformed-terminal") { emit({Action: "pass", Test: null}); return; }
+    if (isolated && scenario === "wrong-package") { emit({Action: "pass", Package: "wrong/package", Test: target}); return; }
+    if (isolated && scenario === "no-tests") emit({Action: "output", Output: "warning: no tests to run\\n"});
+    if (!(isolated && scenario === "missing-terminal")) {
+      emit({Action: "pass", Test: isolated && scenario === "wrong" ? "TestWrong" : name});
+    }
+    if (isolated && scenario === "duplicate") emit({Action: "pass", Test: name});
+    if (!(isolated && scenario === "missing-package")) {
+      emit({Action: scenario === "package-fail" && !isolated ? "fail" : "pass"});
+    }
+  }, 10);
+}
+`,
+        { interpreter: process.execPath },
+      );
+      const result = await goTest(root, {
+        args: ["--split-stalled-archive"],
+        env: { PATH: root },
+      });
+      assert.equal(result.code, scenario === "pass" ? 0 : 1, result.stdout + result.stderr);
+      if (scenario === "spawn") {
+        assert.equal(result.stderr.match(/Error: spawn go ENOENT/g)?.length, 3, result.stderr);
+      } else {
+        for (const role of ["isolated", "remainder", "other"]) {
+          assert.match(result.stderr, new RegExp(`${role} (stderr evidence|observed termination)`));
+        }
+      }
+      if (scenario === "pass") {
+        assert.match(result.stdout, /go-test: 3 passed, 0 failed, 0 skipped/);
+      }
+    });
+  }
+  await t.test("missing go binary", async (t) => {
+    const root = await temporaryDirectory(t, "ci-go-split-missing-");
+    const result = await goTest(root, {
+      args: ["--split-stalled-archive"],
+      env: { PATH: root },
+    });
+    assert.equal(result.code, 1, result.stdout + result.stderr);
+    assert.match(result.stderr, /ENOENT/);
+  });
+});

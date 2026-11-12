@@ -44,6 +44,7 @@ import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.mjs";
 import { recordLoggingSetupTiming } from "./logging-setup-timing.ts";
 import { ownedName, randomSuffix, slug } from "./resource-names.ts";
+import { registryImage } from "./fixture-support-images.mjs";
 import { pullImage } from "./image-pull.ts";
 import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.mjs";
 import { imageInventory, laneImagesResourceKind } from "./lane-images.ts";
@@ -106,7 +107,7 @@ const disabledK3sAddons = Object.freeze(["traefik", "servicelb", "metrics-server
 // checks they match).
 const defaultK3sImage =
   "docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc";
-const nativeIAMBarrierFile = "tests/integration/postgres-native-iam-policy-barrier.test.mjs";
+const nativeIAMBarrierFile = "tests/integration/postgres-native-iam-policy-barrier.test.ts";
 const productionUpgradeImages = {
   OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE: "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
   OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE: "OCC_TEST_KUBERNETES_RUNTIME_IMAGE",
@@ -1061,7 +1062,7 @@ async function validateLaneInputsBeforeSideEffects(lane, { file, modelSelectors 
     }
   }
   const requiredInputs =
-    name === "openshell-installers" && file === undefined
+    isOpenShellLane(name) && file === undefined
       ? [
           ...new Set(
             laneDefinition(name).files.flatMap((entry) =>
@@ -1709,8 +1710,6 @@ async function prepareFirstAgentImages(statePath, state, env, file) {
   const nodeBaseImage = effectiveLaneEnv(state.lane, env).NODE_BASE_IMAGE;
   assertNodeBaseImage(nodeBaseImage);
   const docker = process.env.OCC_DOCKER_BIN ?? "docker";
-  const registryImage =
-    "docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373";
   const port = await reserveLoopbackPort();
   const registry = addResource(state, "first-agent-image-registry", {
     name: ownedName("openclaw-ci-first-images", state.prefix, { maxLength: 63 }),
@@ -4414,7 +4413,10 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     ) {
       env.OCC_METRICS_TEST_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
-    if (relativeFile.endsWith("auth-maintain.test.mjs")) {
+    if (
+      relativeFile === "tests/integration/auth-maintain.test.ts" ||
+      relativeFile === "tests/integration/postgres-break-glass-auth-maintain.test.ts"
+    ) {
       env.OCC_AUTH_MAINTAIN_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
   }

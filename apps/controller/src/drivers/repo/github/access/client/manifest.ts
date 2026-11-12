@@ -127,27 +127,34 @@ async function validateMaterialFiles(directory: string, hasPublicCa: boolean): P
   }
 }
 
+function assertManifestRootPath(directory: string): void {
+  if (
+    !isAbsolute(directory) ||
+    resolve(directory) !== directory ||
+    directory.length > 4096 ||
+    hasControlCharacter(directory)
+  ) {
+    throw new Error("invalid-repository-material");
+  }
+}
+
+async function readManifestJson(root: string): Promise<unknown> {
+  return JSON.parse(
+    (await readPrivateFile(join(root, "manifest.json"), 256 * 1024)).toString("utf8"),
+  );
+}
+
 /** Read the Compute-owned, immutable Pod generation once for this invocation. */
 export async function readRuntimeRepositoryManifest(
   root = repositoryMaterialRoot,
   finalRoot = root,
 ): Promise<RuntimeRepositoryManifest> {
   for (const directory of [root, finalRoot]) {
-    if (
-      !isAbsolute(directory) ||
-      resolve(directory) !== directory ||
-      directory.length > 4096 ||
-      hasControlCharacter(directory)
-    ) {
-      throw new Error("invalid-repository-material");
-    }
+    assertManifestRootPath(directory);
   }
   await assertPrivateDirectory(root);
   await assertPrivateDirectory(join(root, "sessions"));
-  const parsed = record(
-    JSON.parse((await readPrivateFile(join(root, "manifest.json"), 256 * 1024)).toString("utf8")),
-    ["version", "generation", "bindings"],
-  );
+  const parsed = record(await readManifestJson(root), ["version", "generation", "bindings"]);
   if (
     parsed.version !== 1 ||
     typeof parsed.generation !== "string" ||
@@ -236,17 +243,12 @@ export async function readManifestOrigins(
   root: string,
   generation: string,
 ): Promise<ReadonlySet<string>> {
-  if (
-    !isAbsolute(root) ||
-    resolve(root) !== root ||
-    root.length > 4096 ||
-    hasControlCharacter(root)
-  ) {
-    throw new Error("invalid-repository-material");
-  }
-  const parsed = JSON.parse(
-    (await readPrivateFile(join(root, "manifest.json"), 256 * 1024)).toString("utf8"),
-  ) as { version?: unknown; generation?: unknown; bindings?: unknown } | null;
+  assertManifestRootPath(root);
+  const parsed = (await readManifestJson(root)) as {
+    version?: unknown;
+    generation?: unknown;
+    bindings?: unknown;
+  } | null;
   const bindings = parsed?.bindings;
   // Only the generation the rendered configuration names, which its helper serves.
   if (

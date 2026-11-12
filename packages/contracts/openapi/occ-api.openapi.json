@@ -18931,7 +18931,7 @@
                         "required": ["repositoryRef", "displayName", "allowedProfiles"],
                         "type": "object"
                       },
-                      "maxItems": 1000,
+                      "maxItems": 1001,
                       "type": "array"
                     },
                     "meta": {
@@ -28487,7 +28487,7 @@
                         "required": ["repositoryRef", "displayName", "allowedProfiles"],
                         "type": "object"
                       },
-                      "maxItems": 1000,
+                      "maxItems": 1001,
                       "type": "array"
                     },
                     "meta": {

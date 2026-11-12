@@ -115,22 +115,23 @@ Personal and service-account Codex PATs use `CODEX_ACCESS_TOKEN` over HTTPS:
 - `POST /backend-api/ps/apps/batch` on `chatgpt.com` for app metadata lookup.
 - `POST /backend-api/ps/mcp` on `chatgpt.com` for native hosted-app MCP transport.
 
-`*` matches one path segment; GET includes HEAD. These source-wide routes apply
-to all Agents using the source. The MCP rule does not filter apps or tools or
-enforce read-only access; native managed policy enforces Agent selections and
-approvals. Direct Plugin Service sharing, suggestions and uninstall routes remain
-denied. Package downloads use separate credential-free egress. Other routes remain denied.
+`*` matches one segment. GET includes HEAD. Every Agent using the source shares
+these routes. Native managed policy enforces Agent selections and approvals.
+The MCP rule enforces neither read-only access nor app/tool filtering. Unlisted routes,
+including sharing, suggestions and uninstall, remain denied. Package downloads
+use separate credential-free egress.
 
-The Harness stores only an opaque `personal_access_token`. Readiness requires
-native login and model execution
-([bootstrap flow](../../flows/openshell-sandbox-provisioning.md#2-derive-the-provider-owned-harness-request)).
+The Harness stores an opaque `personal_access_token`. New unprotected revisions
+can complete the native model probe after Codex falls back to HTTPS on the
+[PAT Responses route](../../flows/openshell-sandbox-provisioning.md#2-derive-the-provider-owned-harness-request).
+HTTPS 401 or 403 refusal leaves the Harness unready.
 
 `openai` sources authorize the default OpenAI endpoint unless `authorized_base_url`
 explicitly authorizes another endpoint. The [revision model provider](kubernetes-compute/model-provider.md)
 selects the route; attachment checks it against that authorization. The source
 supplies `api_key`. Authorization is immutable; replace the source when changing it.
-Unknown fields and malformed URLs fail registration before Secret reads. Destination
-mismatches fail deployment and attachment before credential delivery. Existing `base_url` records fail for inference
+Unknown fields and malformed URLs fail before Secret reads. Destination
+mismatches block credential delivery. Existing `base_url` records fail for inference
 but remain readable and deletable under the existing permission and reference checks.
 Gateway destinations retain the exact-DNS, HTTPS, nonzero-port, and `/v1` path rules.
 

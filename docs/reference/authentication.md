@@ -1,18 +1,17 @@
 # Authentication
 
-OpenClaw Control Plane (OCC) authenticates human controller API clients with
-user sessions established through email/password sign-in or an enrolled
+OpenClaw Control Plane (OCC) authenticates human API clients with
+sessions from email/password sign-in or an enrolled
 Google or OIDC identity. OIDC supports opt-in
-[team enrollment](authentication/team-enrollment.md). Programmatic non-Agent automation authenticates with service
+[team enrollment](authentication/team-enrollment.md). Non-Agent automation uses service
 API keys. Better Auth owns
 password verification, revocable session cookies, and hashed API-key storage.
 The selected IAM Driver resolves the authenticated account or service identity
 to an explicitly provisioned Principal or ServicePrincipal and owns
 [authorization](authorization.md).
 
-See
-[human administrator sign-in](authentication/service-api-keys.md#sign-in-as-a-human-administrator).
-For automation, see the [service-key procedure](authentication/service-api-keys.md).
+See [human administrator sign-in](authentication/service-api-keys.md#sign-in-as-a-human-administrator)
+or the [service-key procedure](authentication/service-api-keys.md).
 The [platform console](console.md) at `/console/` uses these session endpoints. Unrestricted public signup, OIDC
 provisioning or claim mapping, and bearer credentials are unsupported; generic OIDC
 sign-in for enrolled accounts is in [OIDC sign-in](../guides/deploy/oidc-sign-in.md).
@@ -262,40 +261,30 @@ activity does not renew the console session.
 
 ## Account provisioning
 
-`POST /api/auth/accounts` requires a human session and `administer` on the
-singleton Installation. One transaction writes the account, Principal, grant and
-enrollment. Attach an external identity explicitly after creation. Unknown
-identities can instead use [OIDC enrollment](authentication/team-enrollment.md).
+`POST /api/auth/accounts` requires a human session and the selected IAM Driver's
+`administer` grant on the server-owned singleton Installation. Emails are
+lowercase and unique. Passwords require 12–128 characters. OCE skips email
+verification. Attach external identities explicitly or use
+[OIDC enrollment](authentication/team-enrollment.md) for unknown identities.
 
-Each controller permits 10 account-creation attempts per administrator Principal,
-refilling one every six seconds, after authorization and before hashing.
+Before hashing, each controller allows 10 attempts per authorized administrator
+Principal across sessions and target emails, refilling one every six seconds.
 Exhaustion returns `429 RATE_LIMITED` with `Retry-After`.
-Changing sessions or target emails cannot reset this budget.
 
-An optional `roleId` binds an existing Installation Role (`400` if unknown,
-Namespace-scoped, or a configured `role_config_` Role); without one the account
-has no grants. It cannot create Roles or infer grants. The same transaction adds
-the account to each
-[configured default Group](authorization/default-users.md#group-membership).
-Audit records `principalId`, `roleId` or `grant: "none"`, and any `groupIds`.
-Creation issues no session.
+Optional `roleId` binds an existing Installation Role. Omit it for no direct
+binding. Unknown, Namespace-scoped, and configured `role_config_` Roles return `400`. The sole non-configured Role,
+`role_admin_<uuid>`, grants only `installation:administer` and `installation:read`
+here. APIs cannot create more Installation Roles. The Namespace policy API omits it.
 
-The built-in Installation administrator (`role_admin_<uuid>`) is the only
-non-configured Installation Role. APIs cannot create others; the Namespace policy
-API omits it. Its Installation-scoped binding grants only
-`installation:administer` and `installation:read`; see
-[Appoint an administrator](../guides/topics/iam.md#appoint-an-administrator).
-Example:
+Creation holds the original session through commit and rechecks the selected IAM
+Driver before inserting the account. With Native IAM, the assigning authority
+must also remain current through commit; otherwise creation rolls back. Creation joins [configured default Groups](authorization/default-users.md#group-membership)
+and issues no session. The success audit records `principalId`, `roleId` or
+`grant: "none"`, and any `groupIds`. A lost `COMMIT` reply returns
+`503 DEPENDENCY_UNAVAILABLE`. Confirm the outcome before retrying or changing grants.
 
-```json
-{
-  "email": "operator@example.invalid",
-  "password": "<generated-random-password>"
-}
-```
-
-Emails use lowercase. Passwords require 12–128 characters.
-Duplicates are rejected; there is no email verification.
+See the [request example](../guides/topics/iam.md#add-a-person) and
+[transaction flow](../flows/local-password-authentication.md#5-provision-additional-accounts).
 
 ## Authorization and failures
 
