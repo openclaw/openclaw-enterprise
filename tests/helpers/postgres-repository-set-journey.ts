@@ -63,7 +63,7 @@ const repositorySetPermissions = {
 } as const;
 import { gitExpiryGateway } from "./openshell-online-git-journey.mjs";
 import { harnessTlsFixture } from "./harness-tls.mjs";
-import { bindReservedPortInProcess, reservePort } from "./available-port.mjs";
+import { bindReservedPortInProcess, reservePort } from "./available-port.ts";
 import { invoke, token, openShellMiddlewareClient } from "./openshell-online-wire.mjs";
 import { exerciseNativeRepositorySet } from "./native-repository-set.ts";
 import {
@@ -349,6 +349,15 @@ async function repositoryGitJourney(
     });
     const owner = new InstalledDriver(selected, {
       capabilities: { sandbox, credential_proxy: proxy },
+      namespaceLifecycleHooks: {
+        // This journey starts with a provisioned Namespace and tests Git authorization.
+        // Reinitializing it during revision execution would be a regression.
+        async ensureNamespace() {
+          assert.fail(
+            "The pre-provisioned Git journey must not initialize Namespace infrastructure.",
+          );
+        },
+      },
     });
     return { runtime, sandbox, proxy, owner };
   };

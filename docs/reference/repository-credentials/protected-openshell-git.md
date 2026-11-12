@@ -220,11 +220,11 @@ Removal during incomplete activation can fail deployment while retaining the ind
 verified runtime; workspace setup stays pending.
 See [withdrawal and retained supervision](../../flows/agent-repository-credentials.md#6-maintain-recover-and-retire-ownership).
 
-For `git-write` grants permitting draft pull requests, `draftPullLimit: one-per-grant` allows one
-draft, and every Agent and version that has the grant shares it. To let Agents open a new
-draft from the same review ref, set `draftPullLimit: none` in the Namespace policy. OCE then
-records each draft use without spending an allowance; the draft-only, head and base checks
-still apply. This changes the grant identity: deploy a new version to use it.
+With `git-write`, the allowed draft POST to `api.github.com` accepts one
+`Time-Zone: Etc/UTC` header. `draftPullLimit: one-per-grant` allows one draft
+across Agents and versions sharing the grant. To allow more drafts from the same
+ref, set `draftPullLimit: none` in the Namespace policy and deploy a new version.
+OCE still records each draft use and checks draft status, head and base.
 
 A one-draft grant spends its allowance at authorization, before
 OCE knows whether GitHub created a draft. On an uncertain push or draft outcome,
@@ -233,14 +233,17 @@ See [Credential Proxy uncertainty](../drivers/credential-proxy.md#cancellation-r
 
 ## Diagnose a refused request
 
+GitHub App `permissions` flags alone prove neither write access nor denial.
+[Verify the authorized operation and remote result](../../guides/credential-proxy.md#verify-use-loss-and-withdrawal);
+Git push success does not prove pull-request API access.
+
 Git hides JSON error bodies. A refused clone, fetch, `ls-remote` or initial push
 reports HTTP 403 (exit 128). Refused push uploads, usually for another branch or
 tag (`request_not_allowed`), report `error: RPC failed; HTTP 403` and
 `fatal: the remote end hung up unexpectedly`. Even with `Everything up-to-date`
 (exit 1), GitHub received nothing.
 
-After a known pre-send refusal, trace a fresh read for the reason. Git redacts
-the authorization header.
+After a known pre-send refusal, trace a fresh read. Git redacts authorization:
 
 ```bash
 GIT_TRACE_CURL=1 git ls-remote origin 2>&1 | sed -n 's/.*<= Recv data: //p' \
@@ -262,10 +265,9 @@ The draft helper reports
 | `route_not_ready`             | The route is starting, verifying or briefly unavailable                                                                      | Retry in a minute                                                                  |
 | `online_authorization_denied` | The worker did not answer in time, matched no route, or had too many decisions in flight for the Sandbox or in total         | Retry once, then ask an operator                                                   |
 
-Retry advice above applies only to a known pre-send refusal, never an uncertain send.
+Retry advice applies only to known pre-send refusals, never uncertain sends.
 
-A deploying version has no credential, so requests answer
-`route_not_ready` until it is active.
+Deploying versions lack credentials; requests answer `route_not_ready` until activation.
 
 ### Worker log
 

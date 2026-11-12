@@ -1,3 +1,13 @@
+import {
+  runBodylessRoutes,
+  runNamespaceIsolation,
+  runResourceRoutes,
+} from "./occ-api-resource-route-cases.ts";
+import {
+  createInjectedControllerFixture,
+  identifier,
+  injectedRequest,
+} from "./occ-api-injected-fixture.ts";
 import { fetchLoopback } from "../helpers/console-fixture-transport.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
@@ -18,15 +28,13 @@ import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { AuthAccountRoleNotFoundError } from "../../apps/controller/src/auth/index.ts";
 import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { listManagedMcpToolNames } from "../../apps/controller/src/connections/mcp-tool-discovery.ts";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
-import { createControllerApp, createFastifyApp } from "../../apps/controller/src/index.ts";
-import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { NativeIAMDriver, validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
 import {
   AgentDeletingError,
@@ -34,17 +42,10 @@ import {
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
   ConfigurationHarnessError,
   DependencyUnavailableError,
-  InMemoryPlatformState,
-  OpenClawController,
   ResourceStateConflictError,
   ScopeViolationError,
 } from "../../packages/occ/src/index.ts";
-import {
-  authenticatedHeaders,
-  createTestAuthPrincipal,
-  signInWithEmailPassword,
-  signInToControllerApp,
-} from "../helpers/auth-session.mjs";
+import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
@@ -85,8 +86,6 @@ import { admittedConfiguration } from "../helpers/admitted-configuration.mjs";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const entrypoint = fileURLToPath(new URL("../../apps/controller/src/server.mjs", import.meta.url));
-const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
-const identifier = (prefix) => new RegExp(`^${prefix}_${uuidV4}$`);
 const missingRevisionId = "rev_3dd29693-ce8b-4b4c-97c4-14b4c68c6e9c";
 const missingAgentId = "agt_6f1c9b2d-8e34-4a1f-9c57-2d0b8e4a71c3";
 
@@ -425,220 +424,17 @@ function assertPolicyOnlyPlugin(selection) {
   }
 }
 
-async function createInjectedFixture(options = {}) {
-  const installationId = "ins_3033697e-6397-4cc6-9b04-8ec17af78cf1";
-  const authFixture = await createTestAuthPrincipal({
-    installationId,
-    email: `admin-${randomUUID()}@example.com`,
-    password: `generated-password-${randomUUID()}`,
-    name: "OCC API Administrator",
+function createInjectedFixture(options = {}) {
+  return createInjectedControllerFixture(options, {
+    wrapPlatformState(baseState) {
+      return options.deploymentWorks === undefined
+        ? baseState
+        : stateWithDeploymentWork(baseState, options.deploymentWorks);
+    },
+    invokeApplication(factory, appOptions) {
+      return factory(appOptions);
+    },
   });
-  const principal = authFixture.seed.principal;
-  const state = {
-    identities: [principal],
-    groups: [],
-    memberships: [],
-    roles: authFixture.seed.roles.map((role) => ({
-      ...role,
-      permissions: [...role.permissions],
-    })),
-    bindings: [
-      {
-        id: "binding-admin",
-        subjectKind: "identity",
-        subjectId: principal.id,
-        roleId: authFixture.seed.roles[0].id,
-      },
-    ],
-    restrictions: [],
-  };
-  const iamDriver =
-    options.iamDriver ??
-    new NativeIAMDriver({ loadNativeIAMState: async () => state }, { id: "iam-integration" });
-  const computeCalls = { ensureNamespace: [], deleteNamespace: [] };
-  const computeDriver =
-    options.computeDriver ??
-    createReadyComputeDriver("compute-integration", {
-      async ensureNamespace(namespace) {
-        computeCalls.ensureNamespace.push(namespace.id);
-        return {
-          namespaceId: namespace.id,
-          namespaceReady: true,
-        };
-      },
-      async deleteNamespace(namespace) {
-        computeCalls.deleteNamespace.push(namespace.id);
-        return {
-          namespaceId: namespace.id,
-          namespaceDeleted: true,
-        };
-      },
-      // OCC API coverage exercises admission; runtime compatibility belongs to Compute suites.
-      validateHarnessAuth() {},
-      async stopRevision() {},
-    });
-  const auditSink = options.auditSink ?? new InMemoryAuditSink();
-  const configurationDriver =
-    options.configurationDriver ??
-    createTestConfigurationDriver({ id: "configuration-integration" });
-  const secretDriver =
-    options.secretDriver ?? createTestSecretDriver({ id: "secret-api-integration" });
-  const sessionsByPrincipalId = new Map();
-  let controller;
-  let platformState;
-  let app;
-
-  async function installAuthSeed(seed, { auditEvent } = {}) {
-    const roleIds = new Set(state.roles.map((role) => role.id));
-    for (const binding of seed.bindings) {
-      if (!roleIds.has(binding.roleId)) {
-        throw new AuthAccountRoleNotFoundError(binding.roleId);
-      }
-    }
-    state.identities.push(seed.principal);
-    state.roles.push(...seed.roles);
-    state.bindings.push(...seed.bindings);
-    if (auditEvent !== undefined) {
-      await auditSink.append(auditEvent);
-    }
-  }
-
-  function createApp(identity = principal, createApplication = createControllerApp) {
-    const created = createApplication({
-      ...(controller
-        ? { controller }
-        : {
-            createController(installation) {
-              const baseState = new InMemoryPlatformState({
-                auditSink,
-                resolveIAMIdentity: (identityId) =>
-                  state.identities.find((identity) => identity.id === identityId),
-              });
-              platformState =
-                options.deploymentWorks === undefined
-                  ? baseState
-                  : stateWithDeploymentWork(baseState, options.deploymentWorks);
-              controller = new OpenClawController(installation, {
-                state: platformState,
-                recordOperations: options.recordOperations ?? false,
-                ...(options.backends === undefined ? {} : { backends: options.backends }),
-              });
-              if (options.channelDriver) {
-                controller.registerDriver(options.channelDriver);
-                controller.selectDriver("channel", options.channelDriver.id);
-              }
-              if (options.backends?.length) {
-                // Association alone must never provision an upstream account or credential.
-                const unexpectedBackendCall = async () => assert.fail("Unexpected Backend call");
-                controller.registerDriver({
-                  id: options.backends[0].drivers.service_account,
-                  implementation: "chatgpt",
-                  capability: "service_account",
-                  backendId: options.backends[0].id,
-                  create: unexpectedBackendCall,
-                  createCredential: unexpectedBackendCall,
-                  delete: unexpectedBackendCall,
-                });
-                controller.selectDriver(
-                  "service_account",
-                  options.backends[0].drivers.service_account,
-                );
-              }
-              return controller;
-            },
-          }),
-      iamDriver,
-      computeDriver,
-      configurationDriver,
-      secretDriver,
-      resolveHarness: resolveApprovedDevelopmentHarness,
-      auditSink,
-      ...(Object.hasOwn(options, "backendSummaries")
-        ? { backendSummaries: options.backendSummaries }
-        : {}),
-      development: {
-        enabled: true,
-        browserOrigin: "https://console.oce.localhost",
-        installationId,
-      },
-      auth: authFixture.auth,
-      ...(options.readManagedMcpToolNames === undefined
-        ? {}
-        : { readManagedMcpToolNames: options.readManagedMcpToolNames }),
-      ...(options.logger === undefined ? {} : { logger: options.logger }),
-      ...(options.provisionAuthAccount === undefined
-        ? {}
-        : {
-            // The memory composition has no State transaction; write the prepared
-            // account first and remove it when the fixture's provisioning fails.
-            provisionAuthAccount: async (seed, auditEvent, prepared) => {
-              await authFixture.auth.writePreparedAccount(prepared);
-              try {
-                await options.provisionAuthAccount(seed, {
-                  installAuthSeed,
-                  state,
-                  auditEvent,
-                });
-              } catch (error) {
-                await authFixture.auth.deleteAccount(prepared);
-                throw error;
-              }
-            },
-          }),
-    });
-    created.defaultSession = sessionsByPrincipalId.get(identity.id);
-    return created;
-  }
-
-  app = createApp();
-  sessionsByPrincipalId.set(principal.id, await signInToControllerApp(app, authFixture));
-  app.defaultSession = sessionsByPrincipalId.get(principal.id);
-
-  return {
-    app,
-    session: app.defaultSession,
-    authFixture,
-    auditSink,
-    computeCalls,
-    createApp,
-    async createAuthPrincipal(name) {
-      const email = `${name}-${randomUUID()}@example.com`;
-      const password = `generated-password-${randomUUID()}`;
-      const account = await authFixture.auth.createAccount({
-        email,
-        password,
-        name,
-      });
-      const seed = authFixture.auth.principalSeed(account, { grant: "none" });
-      sessionsByPrincipalId.set(
-        seed.principal.id,
-        await signInToControllerApp(app, { email, password }),
-      );
-      return {
-        principal: seed.principal,
-        session: sessionsByPrincipalId.get(seed.principal.id),
-      };
-    },
-    get iamDriver() {
-      return iamDriver;
-    },
-    get computeDriver() {
-      return computeDriver;
-    },
-    get configurationDriver() {
-      return configurationDriver;
-    },
-    installationId,
-    principal,
-    state,
-    get platformState() {
-      return platformState;
-    },
-    installAuthSeed,
-    get controller() {
-      return controller;
-    },
-  };
 }
 
 async function configuredController(options = {}) {
@@ -667,39 +463,6 @@ function stateWithDeploymentWork(state, deploymentWorks) {
       state.transactWithQueue((view, queue) => operation(withWork(view), queue), options),
     registerRollback: (rollback) => state.registerRollback(rollback),
   };
-}
-
-async function injectedRequest(app, method, pathname, options = {}) {
-  const headers = {
-    ...(options.identity === false
-      ? {}
-      : authenticatedHeaders(options.session ?? app.defaultSession)),
-    ...options.headers,
-  };
-  const hasBody = Object.hasOwn(options, "body");
-  const hasRawBody = Object.hasOwn(options, "rawBody");
-  if (hasBody || hasRawBody) {
-    headers["content-type"] ??= "application/json";
-  }
-  let payload;
-  if (hasRawBody) {
-    payload = options.rawBody;
-  } else if (hasBody) {
-    payload = JSON.stringify(options.body);
-  }
-  const response = await app.fetch(
-    new Request(`https://console.oce.localhost${pathname}`, {
-      method,
-      headers,
-      ...(payload === undefined ? {} : { body: payload }),
-    }),
-  );
-  if (response.status === 204) {
-    return { status: response.status, headers: response.headers };
-  }
-  const body = await response.json();
-  assert.match(body.meta?.requestId ?? "", identifier("req"));
-  return { status: response.status, headers: response.headers, body, data: body.data };
 }
 
 async function createInjectedConfiguration(fixture, namespaceId, values = {}) {
@@ -2543,163 +2306,21 @@ test("ordinary deploy rejects request bodies and admits the current saved genera
   assert.equal(deployed.data.configuration.temperature, "1");
 });
 
-test("OCC Fastify serves singleton, Namespace, Configuration, and Agent resource routes", async () => {
-  const controller = await configuredController();
-  // Before bootstrap a Preset write, whose grant check runs before its body is read, answers
-  // the same not-found as the handler would.
-  for (const [method, path] of [
-    ["POST", `/namespaces/ns_${randomUUID()}/presets`],
-    ["PATCH", `/namespaces/ns_${randomUUID()}/presets/pre_${randomUUID()}`],
-  ]) {
-    const early = await controller.request(method, path, { body: { name: "early", template: {} } });
-    assertApiError(early, 404, "NOT_FOUND", method);
-  }
-  const installation = await bootstrap(controller);
-
-  const singleton = await controller.request("GET", "/installation");
-  assert.equal(singleton.status, 200);
-  // No Sandbox Driver is selected: Embedded OpenClaw is the one mode admission accepts (#2670).
-  assert.deepEqual(singleton.data, {
-    ...installation,
-    capabilities: { openclaw: { executionModes: ["embedded"] } },
-  });
-  const bootstrappedDefault = await defaultNamespace(controller);
-
-  const namespace = await createNamespace(controller, "research");
-  assert.equal(Object.hasOwn(namespace, "installationId"), false);
-
-  const namespaces = await controller.request("GET", "/namespaces");
-  assert.equal(namespaces.status, 200);
-  assert.deepEqual(namespaces.data, [bootstrappedDefault, namespace]);
-
-  const namespaceDetail = await controller.request("GET", `/namespaces/${namespace.id}`);
-  assert.equal(namespaceDetail.status, 200);
-  assert.deepEqual(namespaceDetail.data, namespace);
-
-  const agent = await createAgent(controller, namespace.id, "research-agent");
-  assert.equal(Object.hasOwn(agent, "installationId"), false);
-
-  const account = await createServiceAccount(controller, namespace.id, "research-account");
-  const serviceAccounts = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/service-accounts`,
-  );
-  assert.equal(serviceAccounts.status, 200);
-  assert.deepEqual(serviceAccounts.data, [account]);
-
-  const agents = await controller.request("GET", `/namespaces/${namespace.id}/agents`);
-  assert.equal(agents.status, 200);
-  assert.deepEqual(agents.data, [agent]);
-
-  const agentDetail = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/agents/${agent.id}`,
-  );
-  assert.equal(agentDetail.status, 200);
-  assert.deepEqual(agentDetail.data, agent);
-
-  const stopped = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.id}/stop`,
-  );
-  assert.equal(stopped.status, 202);
-  assert.equal(stopped.data.desiredRuntimeState, "stopped");
-  assert.equal(stopped.data.id, agent.id);
-  const stopAudit = controller.fixture.auditSink.events.findLast(
-    (event) => event.action === "openclaw.agents.stop",
-  );
-  assert.deepEqual(
-    [stopAudit?.kind, stopAudit?.outcome, stopAudit?.resource.id],
-    ["mutation", "success", agent.id],
-  );
-
-  const deployment = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-  );
-  assertApiError(deployment, 409, "NAMESPACE_NOT_READY");
-
-  const secondDeployment = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-  );
-  assertApiError(secondDeployment, 409, "NAMESPACE_NOT_READY");
-
-  const revisions = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/agents/${agent.id}/revisions`,
-  );
-  assert.equal(revisions.status, 200);
-  assert.deepEqual(revisions.data, []);
-
-  const revisionDetail = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/agents/${agent.id}/revisions/${missingRevisionId}`,
-  );
-  assertApiError(revisionDetail, 404, "NOT_FOUND");
-
-  // Deletion is asynchronous: the route admits the request, moves the Agent to
-  // deleting and queues teardown. It answers 202 rather than 204 because the
-  // Agent and its revisions still exist until the worker finishes.
-  assert.equal(agent.status, "active");
-  const missingDeletion = await controller.request(
-    "DELETE",
-    `/namespaces/${namespace.id}/agents/${missingAgentId}`,
-  );
-  assertApiError(missingDeletion, 404, "NOT_FOUND");
-
-  const deletion = await controller.request(
-    "DELETE",
-    `/namespaces/${namespace.id}/agents/${agent.id}`,
-  );
-  assert.equal(deletion.status, 202);
-  assert.deepEqual(deletion.data, { ...agent, status: "deleting" });
-
-  // Reads keep returning a deleting Agent, so an operator can observe teardown
-  // in progress instead of seeing it vanish before its resources are gone.
-  const deletingDetail = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/agents/${agent.id}`,
-  );
-  assert.equal(deletingDetail.status, 200);
-  assert.equal(deletingDetail.data.status, "deleting");
-
-  // A repeated request converges on the in-flight teardown rather than
-  // conflicting, so a client retry after a lost response is safe.
-  const repeatedDeletion = await controller.request(
-    "DELETE",
-    `/namespaces/${namespace.id}/agents/${agent.id}`,
-  );
-  assert.equal(repeatedDeletion.status, 202);
-  assert.deepEqual(repeatedDeletion.data, deletion.data);
-
-  // The Agent row survives until teardown completes, so its Namespace is still
-  // occupied. Offboarding becomes possible only once the row is removed.
-  const stillOccupied = await controller.request("DELETE", `/namespaces/${namespace.id}`);
-  assertApiError(stillOccupied, 409, "NAMESPACE_NOT_EMPTY");
-
-  const secondBootstrap = await controller.request("POST", "/installation/bootstrap", {
-    body: { name: "another installation" },
-  });
-  assertApiError(secondBootstrap, 409, "INSTALLATION_EXISTS");
-
-  const installationCollection = await controller.request("POST", "/installations", {
-    body: { name: "forbidden collection" },
-  });
-  assert.equal(installationCollection.status, 404);
-
-  const auditEndpoint = await controller.request("GET", "/audit");
-  assert.equal(auditEndpoint.status, 404);
-
-  const unchanged = await controller.request("GET", "/installation");
-  assert.deepEqual(unchanged.data, { ...installation, capabilities: singleton.data.capabilities });
-});
+test("OCC Fastify serves singleton, Namespace, Configuration, and Agent resource routes", () =>
+  runResourceRoutes({
+    configuredController,
+    bootstrap,
+    defaultNamespace,
+    createNamespace,
+    createAgent,
+    createServiceAccount,
+    missingRevisionId,
+    missingAgentId,
+  }));
 
 test("Namespace IAM routes manage exact Role and AccessBinding policy through the selected Driver", async () => {
-  const fixture = await createInjectedFixture();
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
+  const controller = await configuredController();
+  const { fixture } = controller;
   await bootstrap(controller);
 
   const namespace = await createNamespace(controller, "iam-policy");
@@ -2839,12 +2460,10 @@ test("Namespace IAM routes manage exact Role and AccessBinding policy through th
 });
 
 test("Namespace IAM routes bind existing humans to the exact Namespace and Agent", async () => {
-  const fixture = await createInjectedFixture();
+  const controller = await configuredController();
+  const { fixture } = controller;
   const member = await fixture.createAuthPrincipal("assigned-member");
   fixture.state.identities.push(member.principal);
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "human-iam");
   const foreign = await createNamespace(controller, "foreign-human-iam");
@@ -2974,12 +2593,10 @@ test("credential withdrawal routes authorize the Agent, not the credential sourc
 });
 
 test("Namespace IAM refuses bindings whose Role cannot apply to the target", async () => {
-  const fixture = await createInjectedFixture();
+  const controller = await configuredController();
+  const { fixture } = controller;
   const member = await fixture.createAuthPrincipal("inapplicable-role-member");
   fixture.state.identities.push(member.principal);
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "inapplicable-role");
   const agent = await createAgent(controller, namespace.id, "inapplicable-role-agent");
@@ -3451,10 +3068,8 @@ test("Secret values with an unpaired surrogate are refused as an invalid value",
 });
 
 test("Namespace IAM routes bind humans enrolled after bootstrap through the live resolver", async () => {
-  const fixture = await createInjectedFixture();
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
+  const controller = await configuredController();
+  const { fixture } = controller;
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "late-enrolled-iam");
   const foreign = await createNamespace(controller, "late-enrolled-foreign");
@@ -3517,12 +3132,10 @@ test("Namespace IAM routes bind humans enrolled after bootstrap through the live
 });
 
 test("access removed by deleting its target or Namespace is audited and leaves no policy behind", async () => {
-  const fixture = await createInjectedFixture();
+  const controller = await configuredController();
+  const { fixture } = controller;
   const member = await fixture.createAuthPrincipal("side-effect-member");
   fixture.state.identities.push(member.principal);
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "side-effect-access");
   await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
@@ -3802,12 +3415,10 @@ test("Create Agent's preflight refuses what Configuration and Agent create would
 });
 
 test("Namespace IAM reports invalid policy input as 400 with the field and refuses inert Permissions", async () => {
-  const fixture = await createInjectedFixture();
+  const controller = await configuredController();
+  const { fixture } = controller;
   const member = await fixture.createAuthPrincipal("policy-validation-member");
   fixture.state.identities.push(member.principal);
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "policy-validation");
   const other = await createNamespace(controller, "policy-validation-other");
@@ -5597,11 +5208,7 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   assert.deepEqual(saved.data.plugins, initialPlugins);
   assert.deepEqual(saved.data.pluginApprovers, []);
 
-  await controller.fixture.controller.handleNamespaceLifecycle(
-    controller.fixture.principal.id,
-    namespace.id,
-    "ready",
-  );
+  await controller.fixture.markNamespaceReady(namespace.id);
   await bindHarnessKey(controller.fixture, namespace.id, created.data);
   const deployment = await controller.request(
     "POST",
@@ -5915,11 +5522,7 @@ test("the Codex Plugin Driver refuses an automatic reviewer without an on-reques
     body: { configurationId: configuration.id, plugins: automatic },
   });
   assert.equal(restored.status, 200, JSON.stringify(restored.body));
-  await controller.fixture.controller.handleNamespaceLifecycle(
-    controller.fixture.principal.id,
-    namespace.id,
-    "ready",
-  );
+  await controller.fixture.markNamespaceReady(namespace.id);
   await bindHarnessKey(controller.fixture, namespace.id, created.data);
   const store = async (approvalPolicy) => {
     const stored = configurationDriver.stored({ namespaceId: namespace.id, id: configuration.id });
@@ -6014,11 +5617,7 @@ test("Agent save and deployment refuse plugins the Plugin Driver cannot run in t
     }),
     "update",
   );
-  await controller.fixture.controller.handleNamespaceLifecycle(
-    controller.fixture.principal.id,
-    namespace.id,
-    "ready",
-  );
+  await controller.fixture.markNamespaceReady(namespace.id);
   await bindHarnessKey(controller.fixture, namespace.id, embedded.data);
   // Removing an installed catalog prevents another deployment of an Agent that already selected it.
   const openclawPath = `${agents}/${embedded.data.id}`;
@@ -6274,11 +5873,7 @@ test("the OpenClaw Plugin Driver refuses a selection whose every tool the Config
   const unchanged = await controller.request("GET", agentPath);
   assert.equal(unchanged.data.configurationId, configuration.id);
   assert.deepEqual(unchanged.data.plugins, plugins);
-  await controller.fixture.controller.handleNamespaceLifecycle(
-    controller.fixture.principal.id,
-    namespace.id,
-    "ready",
-  );
+  await controller.fixture.markNamespaceReady(namespace.id);
   await bindHarnessKey(controller.fixture, namespace.id, created.data);
   const store = async (values) => {
     const stored = configurationDriver.stored({ namespaceId: namespace.id, id: configuration.id });
@@ -6430,11 +6025,7 @@ test("the OpenClaw Plugin Driver refuses Configuration plugin settings the Gatew
   // the pair again and creates no revision; removing the setting deploys.
   const [agent] = agents;
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
-  await controller.fixture.controller.handleNamespaceLifecycle(
-    controller.fixture.principal.id,
-    namespace.id,
-    "ready",
-  );
+  await controller.fixture.markNamespaceReady(namespace.id);
   await bindHarnessKey(controller.fixture, namespace.id, agent);
   const stored = configurationDriver.stored({
     namespaceId: namespace.id,
@@ -6922,31 +6513,39 @@ test("a forced ServiceAccount delete without a ChatGPT Backend removes an accoun
   assert.equal(Object.hasOwn(nativeEvent.details, "revocation"), false);
 });
 
+function serviceAccountHarnessAuth(sourceNamespaceId, accountId) {
+  return {
+    method: "codex_pat",
+    source: { kind: "service_account", namespaceId: sourceNamespaceId, id: accountId },
+  };
+}
+
 test("native ServiceAccounts keep private credential references and cannot admit Harness authentication", async () => {
   const controller = await configuredController({ recordOperations: true });
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "service-account-lifecycle");
+  const namespacePath = `/namespaces/${namespace.id}`;
+  const accountsPath = `${namespacePath}/service-accounts`;
+  const agentsPath = `${namespacePath}/agents`;
   const account = await createServiceAccount(controller, namespace.id, "model-provider");
-  const accountPath = `/namespaces/${namespace.id}/service-accounts/${account.id}`;
+  const accountPath = `${accountsPath}/${account.id}`;
+  const credentialPath = `${accountPath}/credential`;
 
   const detail = await controller.request("GET", accountPath);
   assert.deepEqual(detail.data, account);
 
   const configuration = await createConfiguration(controller, namespace.id);
-  const agentResult = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+  const agentResult = await controller.request("POST", agentsPath, {
     body: {
       name: "service-account-agent",
       configurationId: configuration.id,
-      harnessAuth: {
-        method: "codex_pat",
-        source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
-      },
+      harnessAuth: serviceAccountHarnessAuth(account.namespaceId, account.id),
     },
   });
   assert.equal(agentResult.status, 201);
   assert.equal(agentResult.data.harnessAuth.source.id, account.id);
-  const agent = agentResult.data;
-  const deploymentPath = `/namespaces/${namespace.id}/agents/${agent.id}/deploy`;
+  const agentPath = `${agentsPath}/${agentResult.data.id}`;
+  const deploymentPath = `${agentPath}/deploy`;
 
   // A ready Namespace is insufficient: associated accounts without credentials cannot admit revisions.
   await controller.fixture.controller.handleNamespaceLifecycle(
@@ -6964,7 +6563,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
   );
   const unknownIssuance = await controller.request(
     "POST",
-    `/namespaces/${namespace.id}/service-accounts/sa_00000000-0000-4000-8000-000000000000/credentials`,
+    `${accountsPath}/sa_00000000-0000-4000-8000-000000000000/credentials`,
     { body: {} },
   );
   assert.equal(unknownIssuance.status, 404, JSON.stringify(unknownIssuance.body));
@@ -6988,7 +6587,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
     kind: "api_key",
     secretRef: { name: "namespace-provider-source", key: "provider-api-key" },
   };
-  const assigned = await controller.request("PATCH", `${accountPath}/credential`, {
+  const assigned = await controller.request("PATCH", credentialPath, {
     body: initialCredential,
   });
   assert.equal(assigned.status, 200);
@@ -7014,7 +6613,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
     kind: "oauth_access_token",
     secretRef: { name: "namespace-oauth-source", key: "access-token" },
   };
-  const oauthUpdate = await controller.request("PATCH", `${accountPath}/credential`, {
+  const oauthUpdate = await controller.request("PATCH", credentialPath, {
     body: oauthCredential,
   });
   assert.equal(oauthUpdate.status, 200);
@@ -7026,7 +6625,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
     kind: "api_key",
     secretRef: { name: "namespace-provider-rotated", key: "rotated-api-key" },
   };
-  const replaced = await controller.request("PATCH", `${accountPath}/credential`, {
+  const replaced = await controller.request("PATCH", credentialPath, {
     body: replacementCredential,
   });
   assert.equal(replaced.status, 200);
@@ -7041,11 +6640,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
     ).credential,
     replacementCredential,
   );
-  assert.deepEqual(
-    (await controller.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}/revisions`))
-      .data,
-    [],
-  );
+  assert.deepEqual((await controller.request("GET", `${agentPath}/revisions`)).data, []);
 
   // The caller holds delete on the account, so the conflict names what still depends on it.
   const boundDeletion = await controller.request("DELETE", accountPath);
@@ -7060,13 +6655,9 @@ test("native ServiceAccounts keep private credential references and cannot admit
   const forbidden = await controller.request("DELETE", accountPath, { session: outsider.session });
   assertApiError(forbidden, 403, "FORBIDDEN");
 
-  const detached = await controller.request(
-    "PATCH",
-    `/namespaces/${namespace.id}/agents/${agent.id}`,
-    {
-      body: { configurationId: configuration.id, harnessAuth: null },
-    },
-  );
+  const detached = await controller.request("PATCH", agentPath, {
+    body: { configurationId: configuration.id, harnessAuth: null },
+  });
   assert.equal(detached.status, 200);
   assert.equal(detached.data.harnessAuth, null);
 
@@ -7080,7 +6671,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
   assert.equal(deletedDetached.status, 204);
 
   const unusedAccount = await createServiceAccount(controller, namespace.id, "unused-provider");
-  const unusedAccountPath = `/namespaces/${namespace.id}/service-accounts/${unusedAccount.id}`;
+  const unusedAccountPath = `${accountsPath}/${unusedAccount.id}`;
   // Successful DELETE is intentionally bodyless, unlike canonical JSON resource responses.
   const deleted = await controller.fixture.app.fetch(
     new Request(`https://console.oce.localhost${unusedAccountPath}`, {
@@ -7122,30 +6713,29 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
   const namespaceB = await createNamespace(controller, "service-account-namespace-b");
   const accountA = await createServiceAccount(controller, namespaceA.id, "account-a");
   const accountB = await createServiceAccount(controller, namespaceA.id, "account-b");
-  const exactAccountPath = `/namespaces/${namespaceA.id}/service-accounts/${accountA.id}`;
+  const namespaceAPath = `/namespaces/${namespaceA.id}`;
+  const namespaceBPath = `/namespaces/${namespaceB.id}`;
+  const accountsPath = `${namespaceAPath}/service-accounts`;
+  const agentsPath = `${namespaceAPath}/agents`;
+  const exactAccountPath = `${accountsPath}/${accountA.id}`;
+  const credentialPath = `${exactAccountPath}/credential`;
 
-  const duplicate = await controller.request(
-    "POST",
-    `/namespaces/${namespaceA.id}/service-accounts`,
-    { body: { name: "account-a" } },
-  );
+  const duplicate = await controller.request("POST", accountsPath, {
+    body: { name: "account-a" },
+  });
   assertApiError(duplicate, 409, "RESOURCE_CONFLICT");
   // The caller chose only the name, so the conflict says the name is taken here.
   assert.equal(duplicate.body.error.message, SERVICE_ACCOUNT_NAME_CONFLICT);
 
   // Account ownership participates in Namespace emptiness even before any Agent is created.
-  const occupiedNamespace = await controller.request("DELETE", `/namespaces/${namespaceA.id}`);
+  const occupiedNamespace = await controller.request("DELETE", namespaceAPath);
   assertApiError(occupiedNamespace, 409, "NAMESPACE_NOT_EMPTY");
 
   for (const invalid of [
     { name: "unrecognized-field", implementation: "native" },
     { name: "cross-namespace", namespaceId: namespaceB.id },
   ]) {
-    const rejected = await controller.request(
-      "POST",
-      `/namespaces/${namespaceA.id}/service-accounts`,
-      { body: invalid },
-    );
+    const rejected = await controller.request("POST", accountsPath, { body: invalid });
     assert.equal(rejected.status, 400);
   }
 
@@ -7154,14 +6744,14 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
     { kind: "api_key", secretRef: { name: "valid-source", key: "credential", namespace: "other" } },
     { kind: "provider_token", secretRef: { name: "valid-source", key: "credential" } },
   ]) {
-    const rejected = await controller.request("PATCH", `${exactAccountPath}/credential`, {
+    const rejected = await controller.request("PATCH", credentialPath, {
       body: invalid,
     });
     assertApiError(rejected, 400, "INVALID_REQUEST");
   }
 
   const credential = { kind: "api_key", secretRef: { name: "account-a-source", key: "api-key" } };
-  const assigned = await controller.request("PATCH", `${exactAccountPath}/credential`, {
+  const assigned = await controller.request("PATCH", credentialPath, {
     body: credential,
   });
   assert.equal(assigned.status, 200);
@@ -7174,7 +6764,7 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
   ]) {
     const crossNamespace = await controller.request(
       method,
-      `/namespaces/${namespaceB.id}/service-accounts/${accountA.id}${suffix}`,
+      `${namespaceBPath}/service-accounts/${accountA.id}${suffix}`,
       options,
     );
     assert.equal(crossNamespace.status, 404);
@@ -7182,56 +6772,36 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
 
   const configurationB = await createConfiguration(controller, namespaceB.id);
   const configurationA = await createConfiguration(controller, namespaceA.id);
-  const crossNamespaceAssociation = await controller.request(
-    "POST",
-    `/namespaces/${namespaceB.id}/agents`,
-    {
-      body: {
-        name: "cross-namespace-agent",
-        configurationId: configurationB.id,
-        harnessAuth: {
-          method: "codex_pat",
-          source: { kind: "service_account", namespaceId: namespaceB.id, id: accountA.id },
-        },
-      },
+  const crossNamespaceAssociation = await controller.request("POST", `${namespaceBPath}/agents`, {
+    body: {
+      name: "cross-namespace-agent",
+      configurationId: configurationB.id,
+      harnessAuth: serviceAccountHarnessAuth(namespaceB.id, accountA.id),
     },
-  );
+  });
   assert.equal(crossNamespaceAssociation.status, 404);
   // A source naming another Namespace is refused as such, even when the route Namespace holds
   // an account with that id: the reference itself must not cross Namespaces.
-  const foreignSourceAssociation = await controller.request(
-    "POST",
-    `/namespaces/${namespaceA.id}/agents`,
-    {
-      body: {
-        name: "foreign-source-agent",
-        configurationId: configurationA.id,
-        harnessAuth: {
-          method: "codex_pat",
-          source: { kind: "service_account", namespaceId: namespaceB.id, id: accountA.id },
-        },
-      },
+  const foreignSourceAssociation = await controller.request("POST", agentsPath, {
+    body: {
+      name: "foreign-source-agent",
+      configurationId: configurationA.id,
+      harnessAuth: serviceAccountHarnessAuth(namespaceB.id, accountA.id),
     },
-  );
+  });
   // The rule reads only the request, before any account lookup, so the API names it as a request
   // error instead of a 404 (finding 2536): the text is the same whether the account exists.
   assert.equal(foreignSourceAssociation.status, 400, JSON.stringify(foreignSourceAssociation.body));
   assert.equal(foreignSourceAssociation.body.error.code, "INVALID_REQUEST");
   assert.equal(foreignSourceAssociation.body.error.message, SERVICE_ACCOUNT_CROSS_NAMESPACE);
-  const missingForeignSource = await controller.request(
-    "POST",
-    `/namespaces/${namespaceA.id}/agents`,
-    {
-      body: {
-        name: "foreign-source-agent",
-        configurationId: configurationA.id,
-        harnessAuth: {
-          method: "codex_pat",
-          source: { kind: "service_account", namespaceId: namespaceB.id, id: `sa_${randomUUID()}` },
-        },
-      },
+  const missingForeignSource = await controller.request("POST", agentsPath, {
+    body: {
+      name: "foreign-source-agent",
+      configurationId: configurationA.id,
+      harnessAuth: serviceAccountHarnessAuth(namespaceB.id, `sa_${randomUUID()}`),
     },
-  );
+  });
+  assert.equal(missingForeignSource.status, 400);
   assert.deepEqual(missingForeignSource.body.error, foreignSourceAssociation.body.error);
 
   // Namespace-wide Agent authority never substitutes for an exact ServiceAccount binding.
@@ -7280,21 +6850,13 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
   const authorizedAccount = await injectedRequest(readerApp, "GET", exactAccountPath);
   assert.equal(authorizedAccount.status, 200);
 
-  const accountList = await injectedRequest(
-    readerApp,
-    "GET",
-    `/namespaces/${namespaceA.id}/service-accounts`,
-  );
+  const accountList = await injectedRequest(readerApp, "GET", accountsPath);
   assert.equal(accountList.status, 200);
   assert.deepEqual(accountList.data, [assigned.data]);
   assert.equal(JSON.stringify(accountList.data).includes(accountB.id), false);
   assert.equal(Object.hasOwn(accountList.data[0], "backendId"), false);
 
-  const denied = await injectedRequest(
-    readerApp,
-    "GET",
-    `/namespaces/${namespaceA.id}/service-accounts/${accountB.id}`,
-  );
+  const denied = await injectedRequest(readerApp, "GET", `${accountsPath}/${accountB.id}`);
   assertApiError(denied, 403, "FORBIDDEN");
   const denial = controller.fixture.auditSink.events.at(-1);
   assert.deepEqual(denial.resource, {
@@ -7305,21 +6867,13 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
   assert.equal(denial.action, "openclaw.service_accounts.read");
 
   // Agent creation still needs read permission on its exact associated account, not a sibling.
-  const deniedAssociation = await injectedRequest(
-    readerApp,
-    "POST",
-    `/namespaces/${namespaceA.id}/agents`,
-    {
-      body: {
-        name: "denied-account-association",
-        configurationId: configurationA.id,
-        harnessAuth: {
-          method: "codex_pat",
-          source: { kind: "service_account", namespaceId: accountB.namespaceId, id: accountB.id },
-        },
-      },
+  const deniedAssociation = await injectedRequest(readerApp, "POST", agentsPath, {
+    body: {
+      name: "denied-account-association",
+      configurationId: configurationA.id,
+      harnessAuth: serviceAccountHarnessAuth(accountB.namespaceId, accountB.id),
     },
-  );
+  });
   assert.equal(deniedAssociation.status, 403);
   const deniedAssociationAudit = controller.fixture.auditSink.events.at(-1);
   assert.equal(deniedAssociationAudit.action, "openclaw.agents.create");
@@ -7329,33 +6883,22 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
     resource: { kind: "service_account", id: accountB.id, namespaceId: namespaceA.id },
   });
 
-  const allowedAssociation = await injectedRequest(
-    readerApp,
-    "POST",
-    `/namespaces/${namespaceA.id}/agents`,
-    {
-      body: {
-        name: "allowed-account-association",
-        configurationId: configurationA.id,
-        harnessAuth: {
-          method: "codex_pat",
-          source: { kind: "service_account", namespaceId: accountA.namespaceId, id: accountA.id },
-        },
-      },
+  const allowedAssociation = await injectedRequest(readerApp, "POST", agentsPath, {
+    body: {
+      name: "allowed-account-association",
+      configurationId: configurationA.id,
+      harnessAuth: serviceAccountHarnessAuth(accountA.namespaceId, accountA.id),
     },
-  );
+  });
   assert.equal(allowedAssociation.status, 201);
   assert.equal(allowedAssociation.data.harnessAuth.source.id, accountA.id);
-  const associatedAgentPath = `/namespaces/${namespaceA.id}/agents/${allowedAssociation.data.id}`;
+  const associatedAgentPath = `${agentsPath}/${allowedAssociation.data.id}`;
 
   // Replacing A with B requires exact read on the new account, not merely authority over A.
   const deniedNewAccount = await injectedRequest(readerApp, "PATCH", associatedAgentPath, {
     body: {
       configurationId: configurationA.id,
-      harnessAuth: {
-        method: "codex_pat",
-        source: { kind: "service_account", namespaceId: accountB.namespaceId, id: accountB.id },
-      },
+      harnessAuth: serviceAccountHarnessAuth(accountB.namespaceId, accountB.id),
     },
   });
   assert.equal(deniedNewAccount.status, 403);
@@ -7366,12 +6909,9 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
   );
   assert.equal(unchangedAfterNewAccountDenial.data.harnessAuth.source.id, accountA.id);
 
-  const deniedCreation = await injectedRequest(
-    readerApp,
-    "POST",
-    `/namespaces/${namespaceA.id}/service-accounts`,
-    { body: { name: "unauthorized-account" } },
-  );
+  const deniedCreation = await injectedRequest(readerApp, "POST", accountsPath, {
+    body: { name: "unauthorized-account" },
+  });
   assert.equal(deniedCreation.status, 403);
   assert.deepEqual(controller.fixture.auditSink.events.at(-1).resource, {
     kind: "service_account",
@@ -7385,7 +6925,7 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
     accountB.id,
   );
 
-  for (const serviceAccountId of [null, accountB.id]) {
+  for (const harnessAuth of [null, serviceAccountHarnessAuth(namespaceA.id, accountB.id)]) {
     const deniedOldAccount = await injectedRequest(
       replacementOnlyApp,
       "PATCH",
@@ -7393,17 +6933,7 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
       {
         body: {
           configurationId: configurationA.id,
-          harnessAuth:
-            serviceAccountId === null
-              ? null
-              : {
-                  method: "codex_pat",
-                  source: {
-                    kind: "service_account",
-                    namespaceId: namespaceA.id,
-                    id: serviceAccountId,
-                  },
-                },
+          harnessAuth,
         },
       },
     );
@@ -8182,6 +7712,15 @@ test("Agent provisioning API validates inline configuration with existing Secret
     body: { name: "provisioning-validation" },
   });
   assert.equal(namespace.status, 201);
+
+  const provision = (options) =>
+    injectedRequest(
+      fixture.app,
+      "POST",
+      `/namespaces/${namespace.data.id}/agents/provision`,
+      options,
+    );
+
   await fixture.controller.handleNamespaceLifecycle(
     fixture.principal.id,
     namespace.data.id,
@@ -8332,12 +7871,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
 
   // Each case must fail on its own rule (the exact message), not on an unrelated one.
   for (const [description, body, message] of invalidBodies) {
-    const result = await injectedRequest(
-      fixture.app,
-      "POST",
-      `/namespaces/${namespace.data.id}/agents/provision`,
-      { body },
-    );
+    const result = await provision({ body });
     assertApiError(result, 400, "INVALID_REQUEST", description);
     if (message instanceof RegExp) {
       assert.match(result.body.error.message, message, description);
@@ -8361,16 +7895,11 @@ test("Agent provisioning API validates inline configuration with existing Secret
       "Configuration setting gateway.trustedProxies must be omitted or match the Installation's network.gatewayTrustedProxyCidrs.",
     ],
   ]) {
-    const refused = await injectedRequest(
-      fixture.app,
-      "POST",
-      `/namespaces/${namespace.data.id}/agents/provision`,
-      {
-        body: provisioningRequestBody(namespace.data.id, secrets, {
-          configuration: { values: { ...model, gateway } },
-        }),
-      },
-    );
+    const refused = await provision({
+      body: provisioningRequestBody(namespace.data.id, secrets, {
+        configuration: { values: { ...model, gateway } },
+      }),
+    });
     assert.equal(refused.status, 409, JSON.stringify(refused.body));
     assert.deepEqual(
       { code: refused.body.error.code, message: refused.body.error.message },
@@ -8379,23 +7908,18 @@ test("Agent provisioning API validates inline configuration with existing Secret
     assert.doesNotMatch(JSON.stringify(refused.body), /10\.99\./);
   }
   // The retired Codex untrusted approval policy is one of those gateway settings (finding 987).
-  const untrustedPolicy = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    {
-      body: provisioningRequestBody(namespace.data.id, secrets, {
-        configuration: {
-          values: {
-            ...model,
-            plugins: {
-              entries: { codex: { config: { appServer: { approvalPolicy: "untrusted" } } } },
-            },
+  const untrustedPolicy = await provision({
+    body: provisioningRequestBody(namespace.data.id, secrets, {
+      configuration: {
+        values: {
+          ...model,
+          plugins: {
+            entries: { codex: { config: { appServer: { approvalPolicy: "untrusted" } } } },
           },
         },
-      }),
-    },
-  );
+      },
+    }),
+  });
   assert.equal(untrustedPolicy.status, 409, JSON.stringify(untrustedPolicy.body));
   assert.deepEqual(
     { code: untrustedPolicy.body.error.code, message: untrustedPolicy.body.error.message },
@@ -8473,12 +7997,9 @@ test("Agent provisioning API validates inline configuration with existing Secret
       'The OpenClaw Gateway needs agents.ownership "explicit" for more than one agents.entries entry: set it, or keep one entry.',
     ],
   ]) {
-    const refused = await injectedRequest(
-      fixture.app,
-      "POST",
-      `/namespaces/${namespace.data.id}/agents/provision`,
-      { body: provisioningRequestBody(namespace.data.id, secrets, { configuration: { values } }) },
-    );
+    const refused = await provision({
+      body: provisioningRequestBody(namespace.data.id, secrets, { configuration: { values } }),
+    });
     assert.equal(refused.status, 400, JSON.stringify(refused.body));
     assert.deepEqual(
       { code: refused.body.error.code, message: refused.body.error.message },
@@ -8489,21 +8010,16 @@ test("Agent provisioning API validates inline configuration with existing Secret
   // never its value, whatever word the rule matched.
   const sentinel = `synthetic-filled-header-${randomUUID()}`;
   for (const name of ["X-Upstream-Pwd", "X-Signature-Sha256"]) {
-    const filled = await injectedRequest(
-      fixture.app,
-      "POST",
-      `/namespaces/${namespace.data.id}/agents/provision`,
-      {
-        body: provisioningRequestBody(namespace.data.id, secrets, {
-          configuration: {
-            values: {
-              ...model,
-              models: { providers: { openai: { headers: { [name]: sentinel } } } },
-            },
+    const filled = await provision({
+      body: provisioningRequestBody(namespace.data.id, secrets, {
+        configuration: {
+          values: {
+            ...model,
+            models: { providers: { openai: { headers: { [name]: sentinel } } } },
           },
-        }),
-      },
-    );
+        },
+      }),
+    });
     assert.equal(filled.status, 400, JSON.stringify(filled.body));
     assert.deepEqual(
       { code: filled.body.error.code, message: filled.body.error.message },
@@ -8527,12 +8043,9 @@ test("Agent provisioning API validates inline configuration with existing Secret
     routed: false,
   });
   computeDriver.validateAgentProvisioning = (input) => unrouted.validateAgentProvisioning(input);
-  const computeRefused = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    { body: provisioningRequestBody(namespace.data.id, secrets) },
-  );
+  const computeRefused = await provision({
+    body: provisioningRequestBody(namespace.data.id, secrets),
+  });
   assert.equal(computeRefused.status, 409, JSON.stringify(computeRefused.body));
   const refusals = logLines.filter((line) => line.event === "agent_provisioning.compute_refused");
   assert.equal(refusals.length, 1, JSON.stringify(refusals));
@@ -8563,12 +8076,9 @@ test("Agent provisioning API validates inline configuration with existing Secret
     action: "create",
     effect: "deny",
   });
-  const refusedUnauthorized = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    { body: provisioningRequestBody(namespace.data.id, secrets) },
-  );
+  const refusedUnauthorized = await provision({
+    body: provisioningRequestBody(namespace.data.id, secrets),
+  });
   assert.equal(refusedUnauthorized.status, 403, JSON.stringify(refusedUnauthorized.body));
   // Authorization also precedes OCC's own plan checks. Each body below draws a 400 from
   // an authorized caller; without the grant it is the same 403, so a caller learns nothing about
@@ -8596,12 +8106,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
   ];
   const assertPlanRefusalsDenied = async (grant) => {
     for (const [description, body] of planRefusals) {
-      const denied = await injectedRequest(
-        fixture.app,
-        "POST",
-        `/namespaces/${namespace.data.id}/agents/provision`,
-        { body },
-      );
+      const denied = await provision({ body });
       assertApiError(denied, 403, "FORBIDDEN", `${grant}, ${description}`);
     }
   };
@@ -8617,12 +8122,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
   await assertPlanRefusalsDenied("without Installation administer");
   fixture.state.restrictions.pop();
   for (const [description, body, status, message] of planRefusals) {
-    const refused = await injectedRequest(
-      fixture.app,
-      "POST",
-      `/namespaces/${namespace.data.id}/agents/provision`,
-      { body },
-    );
+    const refused = await provision({ body });
     assert.equal(refused.status, status, `${description}: ${JSON.stringify(refused.body)}`);
     if (message !== undefined) {
       assert.deepEqual(
@@ -8641,12 +8141,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
       throw thrown;
     };
     const logged = logLines.length;
-    const refused = await injectedRequest(
-      fixture.app,
-      "POST",
-      `/namespaces/${namespace.data.id}/agents/provision`,
-      { body: provisioningRequestBody(namespace.data.id, secrets) },
-    );
+    const refused = await provision({ body: provisioningRequestBody(namespace.data.id, secrets) });
     assert.equal(refused.status, 409, JSON.stringify(refused.body));
     assert.doesNotMatch(JSON.stringify(refused.body), /internal driver detail|r{512}/);
     assert.deepEqual(
@@ -8661,48 +8156,32 @@ test("Agent provisioning API validates inline configuration with existing Secret
   computeDriver.validateAgentProvisioning = () => {
     throw new DependencyUnavailableError("The Compute Driver is unavailable.");
   };
-  const computeUnavailable = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    { body: provisioningRequestBody(namespace.data.id, secrets) },
-  );
+  const computeUnavailable = await provision({
+    body: provisioningRequestBody(namespace.data.id, secrets),
+  });
   computeDriver.validateAgentProvisioning = () => {};
   assert.equal(computeUnavailable.status, 503, JSON.stringify(computeUnavailable.body));
   assert.equal(computeUnavailable.body.error.code, "DEPENDENCY_UNAVAILABLE");
-  const wrongTypeHarnessAuth = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    {
-      body: invalidBodies.find(([description]) =>
-        description.startsWith("Harness authentication"),
-      )[1],
-    },
-  );
+  const wrongTypeHarnessAuth = await provision({
+    body: invalidBodies.find(([description]) =>
+      description.startsWith("Harness authentication"),
+    )[1],
+  });
   assert.deepEqual(wrongTypeHarnessAuth.body.error.details, [
     { path: "/harnessAuth", code: "INVALID_TYPE" },
   ]);
-  const methodWithoutSource = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    {
-      body: invalidBodies.find(([description]) =>
-        description.startsWith("Harness authentication method"),
-      )[1],
-    },
-  );
+  const methodWithoutSource = await provision({
+    body: invalidBodies.find(([description]) =>
+      description.startsWith("Harness authentication method"),
+    )[1],
+  });
   assert.deepEqual(methodWithoutSource.body.error.details, [
     { path: "/harnessAuth/source", code: "REQUIRED" },
   ]);
   // The reserved destination is named by its pointer under the inline Configuration.
-  const reservedProvisioning = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    { body: invalidBodies.find(([description]) => description.startsWith("reserved"))[1] },
-  );
+  const reservedProvisioning = await provision({
+    body: invalidBodies.find(([description]) => description.startsWith("reserved"))[1],
+  });
   assert.deepEqual(reservedProvisioning.body.error.details, [
     { path: "/configuration/secretBindings/OPENCLAW_TOKEN", code: "INVALID_VALUE" },
   ]);
@@ -8714,12 +8193,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     ...badBaseUrl.configuration.values,
     models: { providers: { codex: { baseUrl: "not a url", api: "openai-responses" } } },
   };
-  const refusedBaseUrl = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    { body: badBaseUrl },
-  );
+  const refusedBaseUrl = await provision({ body: badBaseUrl });
   assert.equal(refusedBaseUrl.status, 400, JSON.stringify(refusedBaseUrl.body));
   assert.equal(
     refusedBaseUrl.body.error.message,
@@ -8734,19 +8208,14 @@ test("Agent provisioning API validates inline configuration with existing Secret
   fixture.controller.registerDriver(pluginDriver);
   fixture.controller.selectDriver("plugin", pluginDriver.id);
   // Driver-specific validation must precede durable provisioning and resource creation.
-  const invalidPolicy = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    {
-      body: provisioningRequestBody(namespace.data.id, secrets, {
-        configuration: { values: createHarnessConfiguration("codex", "gpt-6-astra") },
-        plugins: {
-          [linearPluginId]: { enabled: true, tools: { "app/search": { reviewer: "auto" } } },
-        },
-      }),
-    },
-  );
+  const invalidPolicy = await provision({
+    body: provisioningRequestBody(namespace.data.id, secrets, {
+      configuration: { values: createHarnessConfiguration("codex", "gpt-6-astra") },
+      plugins: {
+        [linearPluginId]: { enabled: true, tools: { "app/search": { reviewer: "auto" } } },
+      },
+    }),
+  });
   assertApiError(invalidPolicy, 400, "INVALID_REQUEST");
   assert.equal(
     invalidPolicy.body.error.message,
@@ -8765,12 +8234,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     ...createHarnessConfiguration("codex", "gpt-6-astra"),
     plugins: { entries: { codex: { config: { appServer: { approvalPolicy: "never" } } } } },
   };
-  const refusedReviewer = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    { body: automaticReviewer },
-  );
+  const refusedReviewer = await provision({ body: automaticReviewer });
   assertApiError(refusedReviewer, 400, "INVALID_REQUEST");
   assert.equal(
     refusedReviewer.body.error.message,
@@ -8792,12 +8256,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     ...createHarnessConfiguration("openclaw", "gpt-5.1"),
     tools: { deny: ["*"] },
   };
-  const refusedDenial = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    { body: deniedTools },
-  );
+  const refusedDenial = await provision({ body: deniedTools });
   assertApiError(refusedDenial, 400, "INVALID_REQUEST");
   assert.equal(
     refusedDenial.body.error.message,
@@ -8809,17 +8268,12 @@ test("Agent provisioning API validates inline configuration with existing Secret
   );
   // Its plugins run only in an OpenClaw Harness, and this request provisions dedicated Codex
   // (finding 2348).
-  const codexPlugins = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    {
-      body: provisioningRequestBody(namespace.data.id, secrets, {
-        configuration: { values: createHarnessConfiguration("codex", "gpt-6-astra") },
-        plugins: { [diffsPluginId]: pluginPolicy() },
-      }),
-    },
-  );
+  const codexPlugins = await provision({
+    body: provisioningRequestBody(namespace.data.id, secrets, {
+      configuration: { values: createHarnessConfiguration("codex", "gpt-6-astra") },
+      plugins: { [diffsPluginId]: pluginPolicy() },
+    }),
+  });
   assert.equal(codexPlugins.status, 400, JSON.stringify(codexPlugins.body));
   assert.deepEqual(
     { code: codexPlugins.body.error.code, message: codexPlugins.body.error.message },
@@ -8835,12 +8289,9 @@ test("Agent provisioning API validates inline configuration with existing Secret
   );
   fixture.controller.selectDriver("plugin", pluginDriver.id);
 
-  const durableOnly = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    { body: provisioningRequestBody(namespace.data.id, secrets) },
-  );
+  const durableOnly = await provision({
+    body: provisioningRequestBody(namespace.data.id, secrets),
+  });
   assert.equal(durableOnly.status, 503, JSON.stringify(durableOnly.body));
   assert.equal(durableOnly.body.error.code, "DEPENDENCY_UNAVAILABLE");
   assert.deepEqual(
@@ -8861,7 +8312,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
   );
   const managedSource = { kind: "service_account", namespaceId: namespace.data.id, id: account.id };
   const provisionWithAccount = (source) =>
-    injectedRequest(fixture.app, "POST", `/namespaces/${namespace.data.id}/agents/provision`, {
+    provision({
       body: provisioningRequestBody(namespace.data.id, secrets, {
         harnessAuth: { method: "codex_pat", source },
       }),
@@ -8891,18 +8342,13 @@ test("Agent provisioning API validates inline configuration with existing Secret
   assert.equal(acceptedAccount.status, 503, JSON.stringify(acceptedAccount.body));
   assert.equal(acceptedAccount.body.error.code, "DEPENDENCY_UNAVAILABLE");
 
-  const oversized = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    {
-      rawBody: JSON.stringify(
-        provisioningRequestBody(namespace.data.id, secrets, {
-          configuration: { values: { payload: "x".repeat(448 * 1024) } },
-        }),
-      ),
-    },
-  );
+  const oversized = await provision({
+    rawBody: JSON.stringify(
+      provisioningRequestBody(namespace.data.id, secrets, {
+        configuration: { values: { payload: "x".repeat(448 * 1024) } },
+      }),
+    ),
+  });
   assertApiError(oversized, 413, "PAYLOAD_TOO_LARGE");
 });
 
@@ -8927,84 +8373,12 @@ test("OCC development subprocess requires PostgreSQL-backed startup", async () =
   await assertUnsafeStartupRejected();
 });
 
-test("bodyless OCC routes reject request payloads before IAM or domain side effects", async () => {
-  const fixture = await createInjectedFixture();
-  const installation = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
-    body: { name: "Bodyless-route installation" },
-  });
-  assert.equal(installation.status, 201);
-
-  const namespace = await injectedRequest(fixture.app, "POST", "/namespaces", {
-    body: { name: "bodyless-route-namespace" },
-  });
-  assert.equal(namespace.status, 201);
-
-  const configuration = await createInjectedConfiguration(fixture, namespace.data.id);
-  const agent = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents`,
-    { body: { name: "bodyless-route-agent", configurationId: configuration.id } },
-  );
-  assert.equal(agent.status, 201);
-
-  const originalLookup = fixture.iamDriver.lookupIdentity;
-  const originalAuthorize = fixture.iamDriver.authorize;
-  let identityLookups = 0;
-  let authorizationChecks = 0;
-  fixture.iamDriver.lookupIdentity = async (...args) => {
-    identityLookups += 1;
-    return originalLookup.apply(fixture.iamDriver, args);
-  };
-  fixture.iamDriver.authorize = async (...args) => {
-    authorizationChecks += 1;
-    return originalAuthorize.apply(fixture.iamDriver, args);
-  };
-  const auditCount = fixture.auditSink.events.length;
-  const app = fixture.createApp(fixture.principal, createFastifyApp);
-
-  try {
-    for (const [method, url] of [
-      ["GET", "/installation"],
-      ["GET", "/namespaces"],
-      ["GET", `/namespaces/${namespace.data.id}`],
-      ["GET", `/namespaces/${namespace.data.id}/service-accounts`],
-      ["GET", `/namespaces/${namespace.data.id}/agents`],
-      ["GET", `/namespaces/${namespace.data.id}/agents/${agent.data.id}`],
-      ["GET", `/namespaces/${namespace.data.id}/agents/${agent.data.id}/revisions`],
-      [
-        "GET",
-        `/namespaces/${namespace.data.id}/agents/${agent.data.id}/revisions/${missingRevisionId}`,
-      ],
-      ["POST", `/namespaces/${namespace.data.id}/agents/${agent.data.id}/deploy`],
-      ["POST", `/namespaces/${namespace.data.id}/agents/${agent.data.id}/stop`],
-    ]) {
-      const response = await app.inject({
-        method,
-        url,
-        headers: {
-          ...authenticatedHeaders(app.defaultSession),
-          "content-type": "application/json",
-          host: "console.oce.localhost",
-        },
-        payload: JSON.stringify({ unexpected: "request body" }),
-        remoteAddress: "127.0.0.1",
-      });
-      const body = response.json();
-
-      assert.equal(response.statusCode, 400, url);
-      assert.equal(body.error.code, "INVALID_REQUEST", url);
-      assert.match(body.meta.requestId, identifier("req"));
-      assert.equal(identityLookups, 0, url);
-      assert.equal(authorizationChecks, 0, url);
-      assert.equal(fixture.auditSink.events.length, auditCount, url);
-    }
-  } finally {
-    fixture.iamDriver.lookupIdentity = originalLookup;
-    fixture.iamDriver.authorize = originalAuthorize;
-    await app.close();
-  }
-});
+test("bodyless OCC routes reject request payloads before IAM or domain side effects", () =>
+  runBodylessRoutes({
+    createInjectedFixture,
+    createInjectedConfiguration,
+    missingRevisionId,
+  }));
 
 test("API response serializers keep same-$id shared schemas of sibling plugins apart", async () => {
   // The serializer cache keys shared schemas by identity: two plugins that each add a
@@ -9050,176 +8424,16 @@ test("API serializer compiler is the copy Fastify itself loads", () => {
   );
 });
 
-test("OCC isolates Namespace ownership and filters collections by exact IAM grants", async () => {
-  const controller = await configuredController();
-  await bootstrap(controller);
-
-  const namespaceA = await createNamespace(controller, "namespace-a");
-  const namespaceB = await createNamespace(controller, "namespace-b");
-  const agentA = await createAgent(controller, namespaceA.id, "private-agent-a");
-  const agentB = await createAgent(controller, namespaceB.id, "private-agent-b");
-
-  const listedA = await controller.request("GET", `/namespaces/${namespaceA.id}/agents`);
-  const listedB = await controller.request("GET", `/namespaces/${namespaceB.id}/agents`);
-  assert.deepEqual(listedA.data, [agentA]);
-  assert.deepEqual(listedB.data, [agentB]);
-
-  for (const [method, path, options] of [
-    ["GET", `/namespaces/${namespaceB.id}/agents/${agentA.id}`],
-    ["POST", `/namespaces/${namespaceB.id}/agents/${agentA.id}/deploy`],
-    ["POST", `/namespaces/${namespaceB.id}/agents/${agentA.id}/stop`],
-    [
-      "PATCH",
-      `/namespaces/${namespaceB.id}/agents/${agentA.id}`,
-      { body: { configurationId: agentB.configurationId } },
-    ],
-    ["GET", `/namespaces/${namespaceB.id}/agents/${agentA.id}/revisions`],
-    ["GET", `/namespaces/${namespaceB.id}/agents/${agentA.id}/revisions/${missingRevisionId}`],
-    ["GET", `/namespaces/${namespaceB.id}/agents/${agentB.id}/revisions/${missingRevisionId}`],
-  ]) {
-    const response = await controller.request(method, path, options);
-    assert.ok(
-      [403, 404].includes(response.status),
-      `${method} ${path} must not expose cross-Namespace resources`,
-    );
-    const serialized = JSON.stringify(response.body);
-    assert.ok(!serialized.includes("private-agent-a"));
-    assert.ok(!serialized.includes("namespace-a-only"));
-  }
-
-  const original = await controller.request(
-    "GET",
-    `/namespaces/${namespaceA.id}/agents/${agentA.id}/revisions`,
-  );
-  assert.deepEqual(original.data, []);
-
-  const fixture = await createInjectedFixture();
-  const bootstrapped = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
-    body: { name: "IAM-scoped installation" },
-  });
-  assert.equal(bootstrapped.status, 201);
-
-  const tenantA = await injectedRequest(fixture.app, "POST", "/namespaces", {
-    body: { name: "tenant-a" },
-  });
-  const tenantB = await injectedRequest(fixture.app, "POST", "/namespaces", {
-    body: { name: "tenant-b" },
-  });
-  assert.equal(tenantA.status, 201);
-  assert.equal(tenantB.status, 201);
-
-  const tenantBConfiguration = await createInjectedConfiguration(fixture, tenantB.data.id);
-  const ownAgent = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${tenantB.data.id}/agents`,
-    { body: { name: "tenant-b-agent", configurationId: tenantBConfiguration.id } },
-  );
-  assert.equal(ownAgent.status, 201);
-
-  const { principal: reader } = await fixture.createAuthPrincipal("tenant-b-reader");
-  fixture.state.identities.push(reader);
-  fixture.state.roles.push({
-    id: "role-tenant-b-reader",
-    namespaceId: tenantB.data.id,
-    permissions: [
-      { action: "read", resourceKind: "namespace" },
-      { action: "read", resourceKind: "agent" },
-      { action: "read", resourceKind: "agent_revision" },
-    ],
-  });
-  fixture.state.bindings.push({
-    id: "binding-tenant-b-reader",
-    namespaceId: tenantB.data.id,
-    subjectKind: "identity",
-    subjectId: reader.id,
-    roleId: "role-tenant-b-reader",
-  });
-  const readerApp = fixture.createApp(reader);
-
-  const visibleNamespaces = await injectedRequest(readerApp, "GET", "/namespaces");
-  assert.equal(visibleNamespaces.status, 200);
-  assert.deepEqual(
-    visibleNamespaces.data.map((item) => item.id),
-    [tenantB.data.id],
-  );
-
-  const visibleAgent = await injectedRequest(
-    readerApp,
-    "GET",
-    `/namespaces/${tenantB.data.id}/agents/${ownAgent.data.id}`,
-  );
-  assert.equal(visibleAgent.status, 200);
-
-  const { principal: revisionReader } = await fixture.createAuthPrincipal("revision-only-reader");
-  fixture.state.identities.push(revisionReader);
-  fixture.state.roles.push({
-    id: "role-revision-only-reader",
-    namespaceId: tenantB.data.id,
-    permissions: [{ action: "read", resourceKind: "agent_revision" }],
-  });
-  fixture.state.bindings.push({
-    id: "binding-revision-only-reader",
-    namespaceId: tenantB.data.id,
-    subjectKind: "identity",
-    subjectId: revisionReader.id,
-    roleId: "role-revision-only-reader",
-  });
-  const revisionReaderApp = fixture.createApp(revisionReader);
-  const ownRevisionPath = `/namespaces/${tenantB.data.id}/agents/${ownAgent.data.id}/revisions/${missingRevisionId}`;
-
-  const parentDenied = await injectedRequest(
-    revisionReaderApp,
-    "GET",
-    `/namespaces/${tenantB.data.id}/agents/${ownAgent.data.id}`,
-  );
-  assert.equal(parentDenied.status, 403);
-
-  const exactRevision = await injectedRequest(revisionReaderApp, "GET", ownRevisionPath);
-  assertApiError(exactRevision, 404, "NOT_FOUND");
-
-  // The reader holds no grant in tenant A, so the misplaced parent is refused before any
-  // lookup, as getAgent does; a 404 here would confirm which Agents tenant A lacks.
-  const wrongParent = await injectedRequest(
-    revisionReaderApp,
-    "GET",
-    `/namespaces/${tenantA.data.id}/agents/${ownAgent.data.id}/revisions/${missingRevisionId}`,
-  );
-  assert.equal(wrongParent.status, 403);
-
-  fixture.state.roles.find((role) => role.id === "role-revision-only-reader").permissions.length =
-    0;
-  const deniedRevisionApp = fixture.createApp(revisionReader);
-  const deniedRevision = await injectedRequest(deniedRevisionApp, "GET", ownRevisionPath);
-  assert.equal(deniedRevision.status, 403);
-  const denialEvent = fixture.auditSink.events.at(-1);
-  assert.equal(denialEvent.kind, "authorization_denial");
-  assert.equal(denialEvent.action, "openclaw.agent_revisions.read");
-  assert.deepEqual(denialEvent.resource, {
-    kind: "agent_revision",
-    id: missingRevisionId,
-    namespaceId: tenantB.data.id,
-  });
-  assert.deepEqual(denialEvent.authorization, {
-    principalId: revisionReader.id,
-    action: "read",
-    resource: denialEvent.resource,
-  });
-
-  const refreshedReaderApp = fixture.createApp(reader);
-  for (const [method, pathname, options] of [
-    ["GET", `/namespaces/${tenantA.data.id}`],
-    ["GET", `/namespaces/${tenantA.data.id}/agents`],
-    [
-      "POST",
-      `/namespaces/${tenantA.data.id}/agents`,
-      { body: { name: "unauthorized-agent", configurationId: tenantBConfiguration.id } },
-    ],
-  ]) {
-    const denied = await injectedRequest(refreshedReaderApp, method, pathname, options);
-    assertApiError(denied, 403, "FORBIDDEN", `${method} ${pathname}`);
-  }
-});
+test("OCC isolates Namespace ownership and filters collections by exact IAM grants", () =>
+  runNamespaceIsolation({
+    configuredController,
+    bootstrap,
+    createNamespace,
+    createAgent,
+    createInjectedFixture,
+    createInjectedConfiguration,
+    missingRevisionId,
+  }));
 
 test("two Namespaces become independently ready and deletion tombstones only its exact target", async () => {
   const fixture = await createInjectedFixture();
@@ -10132,10 +9346,10 @@ test("IAM and audit dependency failures fail closed without orphaned state", asy
   assertOnlyDefaultNamespace(stillUnchanged);
 });
 
-test("SSH Compute refuses managed mode at save and deploy and validates runtime authentication and deployment authorization", async () => {
+async function createSshAdmissionFixture(hosts, namespaceName, controllerOptions = {}) {
   const computeDriver = new SshComputeDriver({
     ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
-    hosts: { runtime: { address: "127.0.0.1", user: "root" } },
+    hosts,
     runtime: {
       nodePath: "/usr/bin/node",
       openclawPath: "/opt/openclaw/index.js",
@@ -10144,12 +9358,21 @@ test("SSH Compute refuses managed mode at save and deploy and validates runtime 
     },
     network: { gatewayPortRange: { start: 18800, end: 18899 } },
   });
-  const controller = await configuredController({ computeDriver, recordOperations: true });
+  const controller = await configuredController({ computeDriver, ...controllerOptions });
   await bootstrap(controller);
-  const namespace = await createNamespace(controller, "runtime");
-  // Namespace provisioning is a prerequisite; this test exercises admission, not SSH transport.
+  const namespace = await createNamespace(controller, namespaceName);
+  // Set Namespace readiness directly so these tests can exercise API admission.
   await controller.fixture.platformState.transact((unit) =>
     unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  return { controller, namespace };
+}
+
+test("SSH Compute refuses managed mode at save and deploy and validates runtime authentication and deployment authorization", async () => {
+  const { controller, namespace } = await createSshAdmissionFixture(
+    { runtime: { address: "127.0.0.1", user: "root" } },
+    "runtime",
+    { recordOperations: true },
   );
   const configuration = await createConfiguration(
     controller,
@@ -10263,22 +9486,9 @@ test("SSH Compute refuses managed mode at save and deploy and validates runtime 
 });
 
 test("SSH Compute names a Harness authentication method other than runtime at Agent save", async () => {
-  const computeDriver = new SshComputeDriver({
-    ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
-    hosts: { "auth-method": { address: "127.0.0.1", user: "root" } },
-    runtime: {
-      nodePath: "/usr/bin/node",
-      openclawPath: "/opt/openclaw/index.js",
-      user: "openclaw",
-      root: "/var/lib/ssh-runtime-test",
-    },
-    network: { gatewayPortRange: { start: 18800, end: 18899 } },
-  });
-  const controller = await configuredController({ computeDriver });
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "auth-method");
-  await controller.fixture.platformState.transact((unit) =>
-    unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  const { controller, namespace } = await createSshAdmissionFixture(
+    { "auth-method": { address: "127.0.0.1", user: "root" } },
+    "auth-method",
   );
   const configuration = await createConfiguration(
     controller,
@@ -10306,22 +9516,9 @@ test("SSH Compute names a Harness authentication method other than runtime at Ag
 test("SSH Compute refuses at deploy gateway authentication and Secret bindings it cannot deliver", async () => {
   // Finding 2351: only preparation refused these, so deploy admitted a revision every
   // preparation attempt failed. Deploy now names the setting, without its value.
-  const computeDriver = new SshComputeDriver({
-    ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
-    hosts: { "gateway-auth": { address: "127.0.0.1", user: "root" } },
-    runtime: {
-      nodePath: "/usr/bin/node",
-      openclawPath: "/opt/openclaw/index.js",
-      user: "openclaw",
-      root: "/var/lib/ssh-runtime-test",
-    },
-    network: { gatewayPortRange: { start: 18800, end: 18899 } },
-  });
-  const controller = await configuredController({ computeDriver });
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "gateway-auth");
-  await controller.fixture.platformState.transact((unit) =>
-    unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  const { controller, namespace } = await createSshAdmissionFixture(
+    { "gateway-auth": { address: "127.0.0.1", user: "root" } },
+    "gateway-auth",
   );
   const values = createHarnessConfiguration("openclaw", "gpt-5.1");
   const collection = `/namespaces/${namespace.id}/agents`;
@@ -10514,22 +9711,9 @@ test("SSH Compute refuses at Agent save and deploy a roster or workspace whose m
   // Findings 2285 and 2289: only the host refused these, at deployment, which retried until it
   // failed. The host accepts only a path derived from each Agent's id, which a Configuration
   // cannot name, so any explicit workspace is refused.
-  const computeDriver = new SshComputeDriver({
-    ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
-    hosts: { "workspace-roster": { address: "127.0.0.1", user: "root" } },
-    runtime: {
-      nodePath: "/usr/bin/node",
-      openclawPath: "/opt/openclaw/index.js",
-      user: "openclaw",
-      root: "/var/lib/ssh-runtime-test",
-    },
-    network: { gatewayPortRange: { start: 18800, end: 18899 } },
-  });
-  const controller = await configuredController({ computeDriver });
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "workspace-roster");
-  await controller.fixture.platformState.transact((unit) =>
-    unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  const { controller, namespace } = await createSshAdmissionFixture(
+    { "workspace-roster": { address: "127.0.0.1", user: "root" } },
+    "workspace-roster",
   );
   const values = createHarnessConfiguration("openclaw", "gpt-5.1");
   const withAgents = (agents) => ({ ...values, agents: { ...values.agents, ...agents } });
@@ -11265,414 +10449,6 @@ test("managed MCP discovery refuses private DNS answers and redirects", async ()
     }),
     { reason: "invalid_response" },
   );
-});
-
-test("deploying Google Workspace and Slack together freezes both selections and preserves independent credentials", async (t) => {
-  const sourceConfig = {
-    protocol: "mcp",
-    host: "mcp.slack.com",
-    port: "443",
-    path: "/mcp",
-    env_var: "SLACK_MCP_TOKEN",
-  };
-  // Exercise Agent admission and immutable revision storage. Provider registration and MCP
-  // enforcement are covered at the OpenShell boundary.
-  function unexpectedGatewayCall() {
-    assert.fail("the admission fixture must not access credential material");
-  }
-  const token = "fixture-slack-discovery-token";
-  const upstream = [];
-  let tokenReads = 0;
-  let beforeTokenUse = () => {};
-  let echoToken = false;
-  const peerErrors = [];
-  const peer = createServer(async (request, response) => {
-    try {
-      const chunks = [];
-      for await (const chunk of request) {
-        chunks.push(chunk);
-      }
-      const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined;
-      const method = body?.method ?? request.method;
-      const authenticated = request.headers.authorization === `Bearer ${token}`;
-      upstream.push({ method, authenticated });
-      assert.equal(request.url, "/mcp");
-      assert.equal(authenticated, true);
-      if (method === "GET" || method === "DELETE") {
-        response.writeHead(405).end();
-        return;
-      }
-      if (method !== "initialize") {
-        assert.equal(request.headers["mcp-session-id"], "fixture-session");
-      }
-      if (method === "notifications/initialized") {
-        response.writeHead(202).end();
-        return;
-      }
-      assert.ok(method === "initialize" || method === "tools/list");
-      const result =
-        method === "initialize"
-          ? {
-              protocolVersion: "2025-11-25",
-              capabilities: { tools: {} },
-              serverInfo: { name: "Managed MCP HTTP fixture", version: "1" },
-            }
-          : {
-              tools: [
-                "slack_search_public",
-                "slack_send_message",
-                ...(echoToken ? [token] : []),
-              ].map((name) => ({ name, inputSchema: { type: "object" } })),
-            };
-      response
-        .writeHead(200, {
-          "content-type": "application/json",
-          "mcp-session-id": "fixture-session",
-        })
-        .end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }));
-    } catch (error) {
-      peerErrors.push(error);
-      response.writeHead(500).end();
-    }
-  });
-  t.after(async () => {
-    peer.closeAllConnections();
-    await new Promise((resolve) => peer.close(resolve));
-    assert.deepEqual(peerErrors, []);
-  });
-  peer.listen(0, "127.0.0.1");
-  await once(peer, "listening");
-  const peerUrl = `http://127.0.0.1:${peer.address().port}/mcp`;
-  const secretDriver = createTestSecretDriver({ id: "secret-slack-admission" });
-  const readValue = secretDriver.withValue;
-  secretDriver.withValue = (secret, use) =>
-    readValue(secret, (value) => {
-      tokenReads += 1;
-      beforeTokenUse();
-      return use(value);
-    });
-  const gateway = {
-    id: "credential-gateway-slack-admission",
-    capability: "credential_gateway",
-    implementation: "openshell",
-    validateSourceConfig() {},
-    async listSourceTypes() {
-      return [
-        {
-          type: "openai",
-          config: [],
-          secrets: [],
-          rotation: "none",
-          harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
-        },
-        {
-          type: "bearer-token",
-          config: Object.keys(sourceConfig).map((name) => ({ name, required: true })),
-          secrets: [{ name: "token", required: true }],
-          rotation: "none",
-        },
-      ];
-    },
-    async registerSource() {
-      return { state: "ready" };
-    },
-    updateSource: unexpectedGatewayCall,
-    rotateSource: unexpectedGatewayCall,
-    removeSource: unexpectedGatewayCall,
-    attachForRevision: unexpectedGatewayCall,
-    attachmentStatus: unexpectedGatewayCall,
-    withdraw: unexpectedGatewayCall,
-    async sourceStatus() {
-      return { state: "ready" };
-    },
-    withSourceToken: unexpectedGatewayCall,
-  };
-  const sandbox = {
-    id: "sandbox-slack-admission",
-    capability: "sandbox",
-    implementation: "openshell",
-    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
-    facets: ["networking", "filesystem", "process"],
-    async provisionHarness() {},
-    async cleanup() {},
-  };
-  const compute = createTestKubernetesComputeDriver("compute-slack-admission", {
-    gatewayRuntime: true,
-    sandboxDriver: sandbox,
-    credentialGatewayDriver: gateway,
-  });
-  compute.resolveSandboxNamespace = async (namespace) => namespace;
-  compute.getAgentRuntimeCredentialStatus = async () => ({ transportConfigured: true });
-  const controller = await configuredController({
-    computeDriver: compute,
-    secretDriver,
-    readManagedMcpToolNames(endpoint, accessToken, signal) {
-      return listManagedMcpToolNames(endpoint, accessToken, signal, {
-        async resolveHost(host) {
-          assert.equal(host, "mcp.slack.com");
-          return [{ address: "8.8.8.8", family: 4 }];
-        },
-        fetch(target, request) {
-          assert.equal(target.href, "https://mcp.slack.com/mcp");
-          // The real reader and MCP SDK send HTTP to this counted peer. Only DNS/routing
-          // are controlled: this does not qualify public DNS, TLS, or live Slack access.
-          return fetch(peerUrl, { ...request, dispatcher: undefined });
-        },
-      });
-    },
-  });
-  await bootstrap(controller);
-  const pluginDriver = new OCCPluginDriver();
-  for (const driver of [sandbox, gateway]) {
-    controller.fixture.controller.registerDriver(driver);
-    controller.fixture.controller.selectDriver(driver.capability, driver.id);
-  }
-  // A saved Agent selects the MCP credential and endpoint from its own Harness catalog.
-  controller.fixture.controller.installPluginDrivers([new CodexPluginDriver(), pluginDriver]);
-  const namespace = await createNamespace(controller, "slack-mcp-admission");
-  await controller.fixture.platformState.transact((unit) =>
-    unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
-  );
-  const base = `/namespaces/${namespace.id}`;
-  const secret = await controller.request("POST", `${base}/secrets`, {
-    body: { name: "Slack access token", value: token },
-  });
-  assert.equal(secret.status, 201, JSON.stringify(secret.body));
-  const source = await controller.request("POST", `${base}/credential-sources`, {
-    body: {
-      name: "Slack account",
-      type: "bearer-token",
-      config: sourceConfig,
-      secrets: { token: { kind: "secret", id: secret.data.id, namespaceId: namespace.id } },
-    },
-  });
-  assert.equal(source.status, 201, JSON.stringify(source.body));
-  tokenReads = 0;
-  const model = await controller.request("POST", `${base}/credential-sources`, {
-    body: { name: "Model account", type: "openai" },
-  });
-  assert.equal(model.status, 201, JSON.stringify(model.body));
-  const configuration = await createConfiguration(
-    controller,
-    namespace.id,
-    createHarnessConfiguration("openclaw", "gpt-5.1"),
-  );
-  const credentialSources = [{ sourceId: model.data.id }, { sourceId: source.data.id }];
-  const created = await controller.request("POST", `${base}/agents`, {
-    body: {
-      name: "Slack Agent",
-      executionMode: "dedicated",
-      configurationId: configuration.id,
-      harnessAuth: { method: "credential_source", sourceId: model.data.id },
-      credentialSources,
-    },
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const { state } = controller.fixture;
-  const roleId = `slack-mcp-source-${created.data.id}`;
-  state.roles.push({
-    id: roleId,
-    namespaceId: namespace.id,
-    permissions: [{ action: "operate", resourceKind: "credential_source" }],
-  });
-  state.identities.push({
-    kind: "service_principal",
-    id: created.data.servicePrincipalId,
-    namespaceId: namespace.id,
-    agentId: created.data.id,
-  });
-  for (const { sourceId } of credentialSources) {
-    state.bindings.push({
-      id: `${roleId}-${sourceId}`,
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: created.data.servicePrincipalId,
-      roleId,
-      resourceKind: "credential_source",
-      resourceId: sourceId,
-    });
-  }
-
-  const agentPath = `${base}/agents/${created.data.id}`;
-  const pluginId = "occ-plugin:slack@1.0.0";
-  const discovery = { pluginId, managedConnection: { slot: "account", sourceId: source.data.id } };
-  const discover = (body = discovery) =>
-    controller.request("POST", `${agentPath}/plugins/details`, { body });
-  const detail = await discover();
-  assert.equal(detail.status, 200, JSON.stringify(detail.body));
-  assert.equal(detail.headers.get("cache-control"), "no-store");
-  assert.deepEqual(detail.data.tools, [
-    { id: "slack_search_public", name: "slack_search_public", ownerId: pluginId },
-    { id: "slack_send_message", name: "slack_send_message", ownerId: pluginId },
-  ]);
-  assert.equal(JSON.stringify(detail.body).includes(token), false);
-  assert.deepEqual(
-    upstream.filter(({ method }) => method !== "GET"),
-    ["initialize", "notifications/initialized", "tools/list", "DELETE"].map((method) => ({
-      method,
-      authenticated: true,
-    })),
-  );
-  assert.equal(tokenReads, 1);
-  upstream.length = 0;
-  tokenReads = 0;
-
-  const editor = await controller.fixture.createAuthPrincipal("managed-mcp-editor");
-  state.identities.push(editor.principal);
-  state.roles.push({
-    id: "managed-mcp-editor",
-    namespaceId: namespace.id,
-    permissions: ["read", "update"].map((action) => ({ action, resourceKind: "agent" })),
-  });
-  state.bindings.push({
-    id: "managed-mcp-editor",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: editor.principal.id,
-    roleId: "managed-mcp-editor",
-    resourceKind: "agent",
-    resourceId: created.data.id,
-  });
-  const forbidden = await controller.request("POST", `${agentPath}/plugins/details`, {
-    body: discovery,
-    session: editor.session,
-  });
-  assertApiError(forbidden, 403, "FORBIDDEN");
-  assert.match(forbidden.body.error.message, /CredentialSource operate/);
-  assert.equal(tokenReads, 0);
-  assert.deepEqual(upstream, []);
-  // The editor loses source access while the external Configuration Driver resolves the
-  // pre-dispatch placement. Their grant must be checked again before the peer sees a bearer.
-  const editorSource = {
-    id: "editor-slack",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: editor.principal.id,
-    roleId,
-    resourceKind: "credential_source",
-    resourceId: source.data.id,
-  };
-  state.bindings.push(editorSource);
-  const { configurationDriver } = controller.fixture;
-  const readConfiguration = configurationDriver.read;
-  beforeTokenUse = () => {
-    configurationDriver.read = async (...args) => {
-      const saved = await readConfiguration.apply(configurationDriver, args);
-      configurationDriver.read = readConfiguration;
-      assert.equal(state.bindings.pop(), editorSource);
-      return saved;
-    };
-  };
-  const revoked = await controller.request("POST", `${agentPath}/plugins/details`, {
-    body: discovery,
-    session: editor.session,
-  });
-  assertApiError(revoked, 403, "FORBIDDEN");
-  assert.equal(tokenReads, 1);
-  assert.deepEqual(upstream, []);
-  beforeTokenUse = () => {};
-  tokenReads = 0;
-  state.bindings.pop();
-
-  const agentBinding = state.bindings.pop();
-  assert.equal(agentBinding.resourceId, source.data.id);
-  assertApiError(await discover(), 403, "FORBIDDEN");
-  assert.equal(tokenReads, 0);
-  assert.deepEqual(upstream, []);
-
-  state.bindings.push(agentBinding);
-  assertApiError(
-    await discover({
-      ...discovery,
-      managedConnection: { ...discovery.managedConnection, slot: "wrong" },
-    }),
-    409,
-    "RESOURCE_CONFLICT",
-  );
-  assertApiError(
-    await discover({
-      ...discovery,
-      credentialSource: {
-        kind: "credential_source",
-        id: source.data.id,
-        namespaceId: namespace.id,
-      },
-    }),
-    400,
-    "INVALID_REQUEST",
-  );
-  assert.equal(tokenReads, 0);
-
-  const detached = await controller.request("PATCH", agentPath, {
-    body: {
-      configurationId: configuration.id,
-      credentialSources: [{ sourceId: model.data.id }],
-    },
-  });
-  assert.equal(detached.status, 200, JSON.stringify(detached.body));
-  assertApiError(await discover(), 409, "RESOURCE_CONFLICT");
-  assert.equal(tokenReads, 0);
-  assert.deepEqual(upstream, []);
-  const restored = await controller.request("PATCH", agentPath, {
-    body: { configurationId: configuration.id, credentialSources },
-  });
-  assert.equal(restored.status, 200, JSON.stringify(restored.body));
-
-  // An Agent's grant may change during the backend read. Recheck it before calling Slack.
-  beforeTokenUse = () => state.bindings.pop();
-  assertApiError(await discover(), 403, "FORBIDDEN");
-  assert.equal(tokenReads, 1);
-  assert.deepEqual(upstream, []);
-  beforeTokenUse = () => {};
-  state.bindings.push(agentBinding);
-
-  // A server that echoes the bearer in its inventory must not expose it through the picker.
-  echoToken = true;
-  const echoed = await discover();
-  assertApiError(echoed, 503, "PLUGIN_DISCOVERY_INVALID_RESPONSE");
-  assert.equal(JSON.stringify(echoed.body).includes(token), false);
-  echoToken = false;
-  const capabilities = await controller.request("GET", `${agentPath}/plugins/capabilities`);
-  assert.equal(capabilities.status, 200, JSON.stringify(capabilities.body));
-  const slot = capabilities.data.credentialSlots.find((entry) => entry.pluginId === pluginId);
-  assert.deepEqual(slot.sources, [{ id: source.data.id, name: "Slack account" }]);
-  assert.equal(slot.toolDiscovery, true);
-  const google = { "occ-plugin:google@1.0.0": { enabled: true } };
-  const pluginsFor = (toolNames) => ({
-    ...google,
-    [pluginId]: {
-      enabled: true,
-      driverPolicy: {
-        releaseSha256: slot.releaseSha256,
-        credentials: { account: source.data.id },
-        toolNames,
-      },
-    },
-  });
-  const save = (plugins) =>
-    controller.request("PATCH", agentPath, {
-      body: { configurationId: configuration.id, plugins },
-    });
-  const refused = await save(pluginsFor(["slack_*"]));
-  assertApiError(refused, 400, "INVALID_REQUEST");
-  assert.match(refused.body.error.message, /Select distinct literal Slack tool names/);
-  // Discovery offers both tools. The operator selects one, and deployment freezes that subset.
-  const approved = pluginsFor(["slack_send_message"]);
-  const saved = await save(approved);
-  assert.equal(saved.status, 200, JSON.stringify(saved.body));
-  assert.deepEqual(saved.data.plugins[pluginId].driverPolicy.toolNames, ["slack_send_message"]);
-  const deployed = await controller.request("POST", `${agentPath}/deploy`);
-  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
-  assert.deepEqual(deployed.data.plugins.plugins, approved);
-  assert.deepEqual(deployed.data.credentialSources, credentialSources);
-
-  const cleared = await save(google);
-  assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
-  assert.deepEqual(cleared.data.plugins, google);
-  assert.deepEqual(cleared.data.credentialSources, credentialSources);
-  const revision = await controller.request("GET", `${agentPath}/revisions/${deployed.data.id}`);
-  assert.equal(revision.status, 200, JSON.stringify(revision.body));
-  assert.deepEqual(revision.data.plugins.plugins, approved);
 });
 
 test("saved-Agent discovery offers managed packages only where Agent save admits them", async () => {

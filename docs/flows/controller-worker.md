@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-11-09
-last_updated_session: 01a1becb-641e-7b63-9791-01de09b1cda6
+updated: 2026-11-10
+last_updated_session: authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1
 ---
 
 # Controller Worker Flow
@@ -65,11 +65,9 @@ removes stale readiness, and constructs `ControllerWorker` with an
 application-role pool. Development without `OCC_CONFIG_PATH` preflights Docker;
 production requires explicit configuration.
 
-`start()` loads the bootstrapped Installation, validates native IAM, and attaches
-selected Configuration, Sandbox, and IAM hooks to Compute. Shared composition
-supplies Kubernetes Compute's optional Sandbox Driver. Selected hooks require
-`setLifecycleDrivers`; unsupported capabilities stop startup. Every worker runs
-available Compute preflight before emitting `worker.started` and entering `run()`.
+`start()` loads Installation state, validates IAM, attaches selected workload hooks
+to Compute, and composes Namespace hooks for OCC. Unsupported selections stop
+startup. Compute preflight precedes `worker.started` and `run()`.
 
 Metrics scrapes read lifecycle and backlog state through
 `packages/occ/src/state/postgres-metrics.ts:PostgresMetricsSnapshot.collect`
@@ -177,7 +175,10 @@ and rejects ownership or Compute-Driver mismatches before teardown.
 `apps/controller/src/worker.ts:ControllerWorker.observeRevision`,
 `apps/controller/src/worker.ts:ControllerWorker.withClaimHeartbeat`
 
-Namespace dispatch calls `ensureNamespace` or `deleteNamespace`. Version
+Namespace dispatch uses `OpenClawController.observeNamespaceLifecycle` and
+`packages/occ/src/namespace-lifecycle.ts:reconcileNamespaceLifecycle` for
+[ordered, claim-cancelled setup and cleanup](../reference/drivers/namespace-lifecycle.md).
+Results join claim-protected audit evidence. Version
 dispatch optionally binds the exact Agent, then calls `prepareRevision` with its
 immutable snapshot. A wrong owner or invalid observation fails permanently;
 a pending observation defers convergence.
@@ -232,7 +233,8 @@ failure does not imply lease loss.
 
 The [Kubernetes implementation](../../apps/controller/src/drivers/compute/kubernetes/index.ts)
 and [Docker execution flow](docker-compose-development.md) own infrastructure and
-Sandbox dispatch.
+Sandbox dispatch. Namespace deletion checks Compute eligibility before provider
+hooks; an unclaimed external namespace skips those hooks and is retained by Compute.
 
 When `prepareRevision` rejects, the worker asks Compute for an optional validated
 failure description (Kubernetes names the stage and maps only reviewed
@@ -391,18 +393,20 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
   [credential-sources](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.mjs),
   [health](../../tests/integration/postgres-worker-agent-revision-health.test.mjs),
   [replacement](../../tests/integration/postgres-worker-agent-revision-replacement.test.mjs),
-  [refused-stop](../../tests/integration/postgres-worker-agent-revision-refused-stop.test.mjs),
-  [refused-wait](../../tests/integration/postgres-worker-agent-revision-refused-wait.test.mjs),
-  [yielded-redeploy](../../tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.mjs),
+  [refused-stop](../../tests/integration/postgres-worker-agent-revision-refused-stop.test.ts),
+  [refused-wait](../../tests/integration/postgres-worker-agent-revision-refused-wait.test.ts),
+  [yielded-redeploy](../../tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.ts),
   [teardown](../../tests/integration/postgres-worker-agent-revision-teardown.test.mjs),
-  [stop](../../tests/integration/postgres-worker-agent-revision-stop.test.mjs) and
+  [stop](../../tests/integration/postgres-worker-agent-revision-stop.test.ts) and
   [stale-claim](../../tests/integration/postgres-worker-stale-claim.test.mjs)
   require PostgreSQL; none proves model execution.
 - [OCC API](../../tests/integration/occ-api.test.mjs) checks deploy audit attribution
   and append-failure rollback after an IAM Driver change.
-- [Sandbox startup](../../tests/integration/sandbox-driver-startup.test.mjs) and
-  [k3d](../../tests/helpers/openshell-sandbox-workflows.mjs) tests
-  verify composition and infrastructure.
+- [Sandbox startup](../../tests/integration/sandbox-driver-startup.test.mjs),
+  [Installation configuration](../../tests/integration/sandbox-driver-installation-configuration.test.ts)
+  and [IPv6 endpoints](../../tests/integration/sandbox-driver-ipv6-endpoints.test.ts)
+  check startup. [k3d tests](../../tests/helpers/openshell-sandbox-workflows.mjs)
+  check infrastructure.
 
 ## Related docs
 
@@ -421,10 +425,6 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 ## Changelog
 
-- 2026-11-09 05:35: Stop before claiming. (01a1becb-641e-7b63-9791-01de09b1cda6 - 3b898fdc4a27c5cfcc6cbeb7196d96b02368da8b)
-
-- 2026-11-03 21:08: Reject directory markers. (01a12074-7896-7f63-99fe-9f42e9041d02 - b627f0997c12d10aaa87f764eac1019c67199d2f)
-
-- 2026-10-30 17:22: Shutdown stops the loop before readiness and parts close. (fix-2997)
+- 2026-11-10 16:32: Preserve safe partial Namespace teardown. (authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1 - dde53dee8)
 
 [Controller worker documentation history](controller-worker/history.md) preserves the older dated entries.

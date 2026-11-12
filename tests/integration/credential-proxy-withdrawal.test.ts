@@ -38,7 +38,7 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { requestId, staticEgressFixture } from "../helpers/static-egress.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { CREDENTIAL_PROXY_ONE_SOURCE } from "../helpers/refusal-text.mjs";
 
 test(
@@ -174,7 +174,15 @@ test(
         };
         owner = new InstalledDriver(
           { id: proxy.id, implementation: proxy.implementation, configuration: {} },
-          { capabilities: { sandbox, credential_proxy: proxy } },
+          {
+            capabilities: { sandbox, credential_proxy: proxy },
+            namespaceLifecycleHooks: {
+              // The replacement exercises policy reduction on an already-provisioned execution.
+              async ensureNamespace() {
+                assert.fail("Policy reduction must not reinitialize Namespace infrastructure.");
+              },
+            },
+          },
         );
         app.controller.installDriver(owner, ["sandbox", "credential_proxy"]);
         compute = createTestKubernetesComputeDriver("policy-reduction-compute", {

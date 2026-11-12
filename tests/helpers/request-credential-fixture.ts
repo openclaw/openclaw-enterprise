@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { TestContext } from "node:test";
@@ -144,7 +145,13 @@ export async function requestCredentialFixture(
       };
       owner = new InstalledDriver(
         { id: proxy.id, implementation: proxy.implementation, configuration: {} },
-        { capabilities: { sandbox, credential_proxy: proxy } },
+        {
+          capabilities: { sandbox, credential_proxy: proxy },
+          namespaceLifecycleHooks: sandboxNamespaceLifecycleBinding(
+            app.controller.selectedDriver("compute"),
+            sandbox,
+          ).hooks,
+        },
       );
       app.controller.installDriver(owner, ["sandbox", "credential_proxy"]);
       const createSource = async (name: string, authorization?: "online-request") => {

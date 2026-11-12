@@ -15,20 +15,18 @@ Keep one operator and the freeze for unfinished deployments. Before
 Then reconcile processes, release, migration, rollout and dispatch;
 add `--resume` with unchanged arguments, protected paths, kubeconfig contents,
 OCC URL, scripts, flow and chart. Keep candidates semantically unchanged.
-The helper rechecks images, nodes and live state against baseline or candidate.
+Resume rechecks images, nodes and live state against baseline or candidate.
 
 For an [immutable reference switch](immutable-installation-upgrade.md), retain both
-Secrets with their recorded UIDs and data; resume refuses replacements.
+Secrets' recorded UIDs and data; resume refuses replacements.
 
-When selected, `controller-compatibility-results.json` is immutable prepared
-evidence. Resume uses this copy, not the external file; changing its bytes or
-presence refuses recovery.
+Resume uses immutable `controller-compatibility-results.json`, when selected.
+Changing or removing this prepared copy refuses recovery.
 
-After verified completion, clean up only; do not resume or repeat rollout or Doctor.
-Any `completed` entry refuses resume before live access. Preserve it and use fresh
-evidence for another upgrade. If output or marker writing failed, reconcile live
-state: neither an absent marker nor surviving `prepared` proves unfinished work.
-Older runs may lack a marker.
+After verified completion, clean up without repeating rollout or Doctor.
+Any `completed` entry refuses resume before live access; preserve it. New upgrades
+require fresh evidence. Reconcile live state after output or marker failures:
+neither an absent marker nor `prepared` proves unfinished work. Older runs may lack markers.
 
 ## Correct unusable comparison inputs
 
@@ -38,38 +36,18 @@ this does not establish drift.
 
 ## Clean up preflight resources
 
-One owner-assigned operator cleans up without a freeze. Unconfirmed cleanup stops
-preparation. After interruption (`SIGHUP`, `SIGINT`, `SIGTERM`), preserve evidence
-and `.upgrade-lock`. Confirm helper/children stopped and reconcile accepted
-operations/resources before cleanup, retry, directory restoration or unlocking.
-
-Acknowledged creates retain `preflight-<slot>-identity.json` with fields
-`kind`, `name`, `uid`: `networkpolicy` and `secret` identify dependencies;
-`api`/`worker` identify Jobs; `api-pod`/`worker-pod` identify observed children.
-Optional policy, missing children and interrupted creates leave fewer records.
-Match kubeconfig digest to `parameters.json`'s `kubeconfigSha256`, and path,
-context, namespace and release to its first four `arguments`. Confirm ownership;
-preserve original records. They establish create identity, not current identity
-or deletion authority.
-
-Labels `app.kubernetes.io/instance=<release>` and
-`app.kubernetes.io/component=upgrade-preflight` only discover candidates.
-Stop and consult the owner for old helpers without records or missing, changed,
-replaced, conflicting or uncertain evidence. Also stop for refused creates, lost
-acknowledgement, successful creates without usable UIDs, or explicitly failed or uncertain
-identity writes even if a file exists. None permits deletion or replay. Leave replacements alone; reconcile unknown
-outcomes without repeating requests.
-If the original is gone, no deletion remains.
-
-Authorized manual deletion requires Kubernetes API enforcement of
-`DeleteOptions.preconditions.uid`: delete the original kind, namespace and name
-only if its UID matches the original record. Reading then deleting by name
-cannot prevent replacement. Foreground-delete owned Jobs first and confirm their
-children are gone before deleting the temporary preflight Secret or NetworkPolicy. Missing
-Job acknowledgements require reconciling possible children; labels alone do not
-establish ownership.
+Follow [preflight cleanup](production-preflight-cleanup.md) to remove recorded
+Jobs and dependencies after an interrupted preflight. Preserve the original
+evidence and `.upgrade-lock`; first confirm the helper, children and accepted
+remote operations have settled. Successful cleanup does not authorize resume,
+unlock the upgrade or establish database state.
 
 ## Resume an unfinished prepared upgrade
+
+Failed migration preflight prevents further shutdown; writers may already be stopped.
+Inspect the current `migration-preflight-resume.*/preflight-migration.log` and
+`preflight-migration-logs.err`. Reconcile unknown creates; retain the original
+evidence, lock and dispatch journal for `--resume`.
 
 With `--verify-agent`, inspect `agent-continuity.json` and
 `agent-continuity-after*.json`. The former binds the original revision and workload
@@ -99,9 +77,8 @@ values/Installation. It can retry the recorded prior or failed expected revision
 after the checks below. Invalid intents and other revisions refuse.
 For completed initialization, see [same-candidate Helm recovery](production-helm-recovery.md).
 
-If external recovery moves outside this pair, preserve intent and evidence
-unchanged. The release owner must verify the
-recovered manifest, values, Installation, required hook outcomes and migration
+Outside this pair, preserve intent and evidence. The release owner must verify
+the recovered manifest, values, Installation, required hook outcomes and migration
 history, then finish verification separately.
 
 Never start old writers against a migrated database. For a retry within the recorded pair, wait
@@ -164,17 +141,17 @@ For stalled ReplicaSet creation, check [namespace object capacity](upgrade-check
 
 ## Correct a refused Agent deployment
 
-The startup preflight refuses some such drafts before any writer stops. When
+The startup preflight refuses some such drafts before any writer stops. If
 OCC still refuses an Agent's deployment with a 4xx answer, such as
-`HTTP 400 ... must use reviewed task actions` for a saved Configuration that
-the new release refuses, it saved no new version. The command lists each
-refused Agent with OCC's message, keeps the message in `dispatch/*.rejected`,
-and stops. Correct the cause, for example with `occ configuration update`, and
-repeat the command with `--resume`. The resume deploys each refused Agent once,
-so do not deploy it yourself. A 408 or 5xx answer stays an unknown dispatch.
-When OCC rejects the command's own service key, the command says so and lists
-the Agents it did not deploy; get a new key, point `OCC_SERVICE_KEY_FILE` at it,
-and resume.
+`HTTP 400 ... must use reviewed task actions`, it saved no new version. The same
+applies when `occ` sends no request because it cannot establish the active
+revision's Harness overrides. The command lists each such Agent with the
+message, keeps it in `dispatch/*.rejected`, and stops. Correct the cause, for
+example with `occ configuration update`, and repeat the command with `--resume`.
+The resume deploys each refused Agent once; do not deploy it yourself. A 408 or
+5xx answer stays an unknown dispatch. When OCC rejects the command's service
+key, the command lists the Agents it did not deploy; get a new key, point
+`OCC_SERVICE_KEY_FILE` at it, and resume.
 
 ## Correct a Doctor failure
 

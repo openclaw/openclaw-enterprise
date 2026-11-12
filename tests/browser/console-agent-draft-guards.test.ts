@@ -1984,17 +1984,41 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
       record(record(await response.json()).error).message,
       callerDenied("Secret operate", `Secret ${modelSecret.id}`),
     );
-    const alert = page.getByText(reason, { exact: true });
+    const alert = page.getByRole("alert").filter({ hasText: reason });
     await alert.waitFor();
     assert.equal(await alert.textContent(), reason);
-    // The deployment note says it once and stays refused until a grant is read.
     assert.equal(await page.getByText(reason).count(), 1);
+
+    // Keyboard users can return to Deploy and get the same refusal as its description.
     assert.equal(await deploy.isDisabled(), true);
+    const alertId = await alert.getAttribute("id");
+    assert.ok(alertId);
+    assert.equal(await deploy.getAttribute("aria-describedby"), alertId);
+    assert.equal(await deploy.evaluate((button) => button.tabIndex), 0);
+    await deploy.focus();
+    assert.equal(await hasFocus(deploy), true);
+    assert.equal(await focusedDescription(page), reason);
+
+    // A grant takes effect when the same open draft rechecks its permissions on refocus.
+    await settlePageRequests(page);
+    grantSecretOperate(fixture, namespace.id, operator.principal, [modelSecret.id]);
+    const rechecked = responseTo(page, "GET", `${fixture.origin}${path}/permissions/secrets`);
+    await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+    const summary = await rechecked;
+    assert.equal(summary.status(), 200, "Secret permissions GET status");
+    assert.deepEqual(record(await summary.json()).data, {
+      operateDenied: [],
+      unreadableOperateDenied: 0,
+    });
+    await expectNoText(page, reason, async () => {
+      await waitForEnabled(deploy);
+      await settlePageRequests(page);
+    });
+    assert.equal(pathRequests(requests, "POST", `${path}/deploy`).length, 1);
   }
 
   // With Secret operate on the model Secret, the gate never holds less than the API allows: the
   // same operator deploys.
-  grantSecretOperate(fixture, namespace.id, operator.principal, [modelSecret.id]);
   {
     const { page } = await newPage(t, fixture);
     await login(page, fixture, url, operator.credentials);

@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { readFileSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+import { cleanupState, deleteOwnedK3dCluster } from "../../scripts/ci/cleanup.mjs";
 import { restoreLaneImages } from "../../scripts/ci/lane-images.ts";
 import { postgresSuperuserPassword, runPostgresAdmin } from "../../scripts/ci/postgres-admin.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.ts";
@@ -1553,4 +1554,315 @@ else if (args[1] !== 'rm') { process.exit(99); }
       assert.doesNotMatch(calls, /"rm"/);
     }
   }
+});
+
+// The engine changes ownership after the caller's custody observation. The
+// destructive owner must use that observation instead of resolving the name again.
+test("bound k3d cleanup refuses a replacement before deleting its resources", async () => {
+  const name = "openclaw-k8s-bound-abc123def456";
+  const identity = {
+    cluster: name,
+    serverID: "1".repeat(64),
+    networkID: "2".repeat(64),
+    volumes: [{ name: `k3d-${name}-images`, createdAt: "2026-11-11T00:00:00Z" }],
+  };
+  let replacementDeleted = false;
+  const run = async (command, args) => {
+    if (command === "k3d") {
+      if (args[1] === "delete") {
+        replacementDeleted = true;
+        return { stdout: "" };
+      }
+      return { stdout: JSON.stringify(replacementDeleted ? [] : [{ name }]) };
+    }
+    if (args[0] === "ps" && args.includes("--no-trunc")) {
+      return { stdout: "3".repeat(64) + "\n" };
+    }
+    return { stdout: "" };
+  };
+  await assert.rejects(
+    deleteOwnedK3dCluster({ name }, { execFile: run, identity }),
+    /bound k3d server identity/,
+  );
+  assert.equal(replacementDeleted, false, "replacement must survive the owner's refusal");
+});
+
+// This protocol fixture models Docker responses, not live Docker effects. The
+// real staged-cleanup cases cover the latter through the supported cleanup CLI.
+for (const scenario of ["owned", "replaced-network", "shared-volume", "late-volume-consumer"]) {
+  test(`bound k3d cleanup preserves destructive authority: ${scenario}`, async () => {
+    const name = "openclaw-k8s-bound-abc123def456";
+    const identity = {
+      cluster: name,
+      serverID: "1".repeat(64),
+      networkID: "2".repeat(64),
+      volumes: [{ name: `k3d-${name}-images`, createdAt: "2026-11-11T00:00:00Z" }],
+    };
+    const removed = [];
+    let serverPresent = true;
+    let networkPresent = true;
+    let volumePresent = true;
+    const run = async (command, args) => {
+      assert.equal(command, "docker", "bound cleanup must not resolve a cluster name through k3d");
+      const [kind, action] = args;
+      if (kind === "ps") {
+        const volume = args.some((arg) => arg.startsWith("volume="));
+        const shared =
+          scenario === "shared-volume" || (scenario === "late-volume-consumer" && !serverPresent);
+        return {
+          stdout: [serverPresent ? identity.serverID : "", volume && shared ? "3".repeat(64) : ""]
+            .filter(Boolean)
+            .join("\n"),
+        };
+      }
+      if (kind === "network" && action === "ls") {
+        // Real k3d networks have no k3d.cluster label; names are used only
+        // for the final absence observation, never as deletion authority.
+        return { stdout: networkPresent && !args.includes("--filter") ? `k3d-${name}` : "" };
+      }
+      if (kind === "network" && action === "inspect") {
+        return {
+          stdout: args.includes("{{.Name}}")
+            ? `k3d-${name}`
+            : JSON.stringify({ [identity.serverID]: {} }),
+        };
+      }
+      if (kind === "container" && action === "inspect") {
+        if (args.includes("{{json .NetworkSettings.Networks}}")) {
+          return {
+            stdout: JSON.stringify({
+              [`k3d-${name}`]: {
+                NetworkID: scenario === "replaced-network" ? "4".repeat(64) : identity.networkID,
+              },
+            }),
+          };
+        }
+        return { stdout: identity.volumes[0].name };
+      }
+      if (kind === "volume" && action === "inspect") {
+        return {
+          stdout: JSON.stringify({
+            Name: identity.volumes[0].name,
+            CreatedAt: identity.volumes[0].createdAt,
+            Driver: "local",
+            Scope: "local",
+          }),
+        };
+      }
+      if (kind === "rm") {
+        assert.deepEqual(args, ["rm", "-f", identity.serverID]);
+        serverPresent = false;
+        removed.push("server");
+        return { stdout: identity.serverID };
+      }
+      if (kind === "network" && action === "rm") {
+        assert.equal(args[2], identity.networkID);
+        networkPresent = false;
+        removed.push("network");
+        return { stdout: identity.networkID };
+      }
+      if (kind === "volume" && action === "rm") {
+        assert.deepEqual(args, ["volume", "rm", identity.volumes[0].name]);
+        volumePresent = false;
+        removed.push("volume");
+        return { stdout: identity.volumes[0].name };
+      }
+      if (kind === "volume" && action === "ls") {
+        return { stdout: volumePresent ? identity.volumes[0].name : "" };
+      }
+      throw new Error(`Unexpected Docker operation: ${args.join(" ")}`);
+    };
+    const operation = deleteOwnedK3dCluster({ name }, { execFile: run, identity });
+    if (scenario === "owned") {
+      await operation;
+      assert.deepEqual(removed, ["server", "network", "volume"]);
+    } else {
+      await assert.rejects(
+        operation,
+        scenario === "replaced-network" ? /network identity/ : /volume is shared/,
+      );
+      assert.deepEqual(removed, scenario === "late-volume-consumer" ? ["server", "network"] : []);
+      assert.equal(volumePresent, true, "shared resource must survive refusal");
+    }
+  });
+}
+
+test("bound cleanup refuses changed prepared state before destructive work", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state.json");
+  await writeFile(
+    statePath,
+    JSON.stringify({ version: 1, repositoryRoot, prefix: "openclaw-ci-bound", resources: [] }),
+  );
+  await assert.rejects(
+    cleanupState(statePath, {
+      expectedStateSha256: "0".repeat(64),
+      k3dIdentity: {
+        cluster: "openclaw-k8s-bound",
+        serverID: "1".repeat(64),
+        networkID: "2".repeat(64),
+        volumes: [],
+      },
+    }),
+    /cleanup state changed after preparation/,
+  );
+  assert.ok((await readFile(statePath, "utf8")).includes("openclaw-ci-bound"));
+});
+
+test("parent cleanup retains failed child journals and rejects paths outside its owner", async (t) => {
+  const root = await fixture(t);
+  const prefix = "openclaw-ci-parent-0123456789ab";
+  const name = `${prefix}-child-0123456789ab`;
+  const statePath = join(root, "state.json");
+  const childPath = join(root, `${name}.json`);
+  const id = "child-state-0123456789ab";
+  const child = {
+    version: 1,
+    repositoryRoot,
+    cleanupOwner: id,
+    statePath: childPath,
+    lane: "postgres-auth",
+    prefix: "openclaw-ci-child-0123456789ab",
+    resources: [{ id: "unknown", kind: "unsupported" }],
+  };
+  const parent = {
+    version: 1,
+    repositoryRoot,
+    lane: "postgres",
+    prefix,
+    resources: [{ id, kind: "child-state", owner: prefix, name }],
+  };
+  await writeState(statePath, parent);
+  await writeState(childPath, child);
+  // A child's refused cleanup must keep the parent reference for recovery.
+  await assert.rejects(cleanupState(statePath), /Unknown cleanup resource kind/);
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), parent);
+  assert.deepEqual(JSON.parse(await readFile(childPath, "utf8")), child);
+  await writeState(childPath, { ...child, resources: [] });
+  await cleanupState(statePath);
+  await assert.rejects(stat(statePath), { code: "ENOENT" });
+  await assert.rejects(stat(childPath), { code: "ENOENT" });
+
+  // A correctly named file is not custody: preserve a replaced or foreign journal.
+  for (const cleanupOwner of [undefined, "another-owner"]) {
+    const foreign = { ...child, cleanupOwner, resources: [] };
+    await writeState(statePath, parent);
+    await writeState(childPath, foreign);
+    const before = await readFile(childPath, "utf8");
+    await assert.rejects(cleanupState(statePath), /CI cleanup owner mismatch/);
+    assert.equal(await readFile(childPath, "utf8"), before);
+    assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), parent);
+  }
+
+  // Neither another lane/path nor a symlink can inherit this child's authority.
+  for (const change of [{ lane: "postgres" }, { statePath: join(root, "other.json") }]) {
+    const foreign = { ...child, ...change, resources: [] };
+    await writeState(childPath, foreign);
+    const before = await readFile(childPath, "utf8");
+    await assert.rejects(cleanupState(statePath), /CI cleanup (lane|state path) mismatch/);
+    assert.equal(await readFile(childPath, "utf8"), before);
+  }
+  await rm(childPath);
+  const target = join(root, "linked.json");
+  await writeState(target, { ...child, resources: [] });
+  await symlink(target, childPath);
+  const before = await readFile(target, "utf8");
+  await assert.rejects(cleanupState(statePath), /ELOOP|symbolic link/);
+  assert.equal(await readFile(target, "utf8"), before);
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), parent);
+
+  // Even a dangling link is a refused journal, not an already-cleaned child.
+  await rm(target);
+  await assert.rejects(cleanupState(statePath), /ELOOP|symbolic link/);
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), parent);
+
+  // A forged path cannot redirect the parent's canonical child cleanup.
+  parent.resources[0].name = `${prefix}-child-../../unrelated`;
+  await writeState(statePath, parent);
+  await assert.rejects(cleanupState(statePath), /unowned child state path/);
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), parent);
+});
+
+test("real PostgreSQL test does not adopt state when preparation refuses an existing path", async (t) => {
+  const root = await fixture(t);
+  const prefix = "openclaw-ci-real-parent";
+  const parentPath = join(root, "parent.json");
+  const children = ["0123456789ab", "123456789abc"].map((suffix) => ({
+    id: `child-state-${suffix}`,
+    kind: "child-state",
+    owner: prefix,
+    name: `${prefix}-child-${suffix}`,
+  }));
+  const states = children.map((child) => ({
+    path: join(root, `${child.name}.json`),
+    owner: child.id,
+  }));
+  const foreign = JSON.stringify({
+    version: 1,
+    repositoryRoot,
+    prefix: "openclaw-ci-foreign",
+    lane: "postgres-auth",
+    cleanupOwner: "foreign-owner",
+    resources: [],
+  });
+  for (const state of states) {
+    await writeFile(state.path, foreign);
+  }
+  await writeState(parentPath, {
+    version: 1,
+    repositoryRoot,
+    statePath: parentPath,
+    lane: "postgres",
+    prefix,
+    resources: children,
+  });
+  const log = join(root, "docker.log");
+  const docker = await writeCommand(root, "docker", "exit 97", { log });
+  const env = {
+    ...process.env,
+    OCC_DOCKER_BIN: docker,
+    TMPDIR: root,
+    OCC_TEST_CI_POSTGRES_REAL: "1",
+    OPENCLAW_ENTERPRISE_CI_STATE: parentPath,
+  };
+  delete env.NODE_TEST_CONTEXT;
+  // The actual test refuses preexisting registered children before adopting them,
+  // and rejects foreign/duplicate environment paths before attempting preparation.
+  for (const selected of [
+    states,
+    [states[0], states[0]],
+    [...states, { path: join(root, "extra.json"), owner: "other" }],
+  ]) {
+    const result = spawnSync(
+      process.execPath,
+      ["--test", "tests/integration/ci-prepare-postgres-real.test.ts"],
+      {
+        cwd: repositoryRoot,
+        env: { ...env, OCC_TEST_CI_POSTGRES_STATES: JSON.stringify(selected) },
+        encoding: "utf8",
+        timeout: 30_000,
+      },
+    );
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(
+      result.stdout + result.stderr,
+      /CI state already exists|Managed PostgreSQL states must match/,
+    );
+    for (const state of states) {
+      assert.equal(await readFile(state.path, "utf8"), foreign);
+    }
+  }
+  const missingParent = { ...env, OCC_TEST_CI_POSTGRES_STATES: JSON.stringify(states) };
+  delete missingParent.OPENCLAW_ENTERPRISE_CI_STATE;
+  const refused = spawnSync(
+    process.execPath,
+    ["--test", "tests/integration/ci-prepare-postgres-real.test.ts"],
+    { cwd: repositoryRoot, env: missingParent, encoding: "utf8", timeout: 30_000 },
+  );
+  assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+  assert.match(refused.stdout + refused.stderr, /require their parent journal/);
+  for (const state of states) {
+    assert.equal(await readFile(state.path, "utf8"), foreign);
+  }
+  assert.deepEqual(await commandCalls(log), []);
 });

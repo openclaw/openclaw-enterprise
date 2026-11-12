@@ -3,7 +3,20 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { cp, mkdtemp, mkdir, open, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import {
+  cp,
+  lstat,
+  mkdtemp,
+  mkdir,
+  open,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Readable } from "node:stream";
@@ -16,7 +29,7 @@ import {
   firstAgentRevisionValuesMatch,
   verifyFirstAgentModel,
 } from "../../scripts/first-agent-model.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
 import { servedAs } from "../helpers/agent-identity.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -117,9 +130,12 @@ test("first-Agent starts without installed workspace dependencies", async (t) =>
   for (const path of [
     "package.json",
     "scripts/first-agent.mjs",
+    "scripts/first-agent.ts",
     "scripts/first-agent-database.mjs",
     "scripts/first-agent-api.mjs",
+    "scripts/first-agent-api.ts",
     "scripts/first-agent-diagnostics.mjs",
+    "scripts/first-agent-diagnostics.ts",
     "packages/contracts/src/runtime-failure.mjs",
     "scripts/first-agent-model.mjs",
     "scripts/lib/private-owned-path.mjs",
@@ -255,10 +271,19 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
   );
   // Each admission fill landed separately, so a saved revision can lack any subset of the
   // defaults (finding 2770). Only the identified prior revision gets them filled before comparing.
-  for (let mask = 0; mask < 2 ** GATEWAY_SECURITY_DEFAULTS.length - 1; mask += 1) {
-    const filled = GATEWAY_SECURITY_DEFAULTS.filter((_, index) => mask & (1 << index));
+  // The defaults that apply here: this Configuration enables no channel, so admission fills no
+  // session.dmScope (finding 3191).
+  const unfilled = values("danger-full-access", undefined, []);
+  const applicable = GATEWAY_SECURITY_DEFAULTS.filter(
+    (row) =>
+      JSON.stringify(values("danger-full-access", undefined, [row])) !== JSON.stringify(unfilled),
+  );
+  assert.ok(!applicable.some(({ path }) => path.join(".") === "session.dmScope"));
+  for (let mask = 0; mask < 2 ** applicable.length - 1; mask += 1) {
+    const filled = applicable.filter((_, index) => mask & (1 << index));
     const snapshot = values("danger-full-access", undefined, filled);
-    const missing = `without ${GATEWAY_SECURITY_DEFAULTS.filter((row) => !filled.includes(row))
+    const missing = `without ${applicable
+      .filter((row) => !filled.includes(row))
       .map(({ path }) => path.join("."))
       .join(", ")}`;
     assert.equal(matches(snapshot, "rev_saved"), true, `a prior revision ${missing}`);
@@ -391,19 +416,24 @@ test("first-Agent admits a native admin origin on the default HTTPS port", async
 // A k3d development state whose controller answers the reads first-agent makes before it
 // touches the database: the Installation, a ready default Namespace and its (empty) Agent list.
 // kubectl records the PostgreSQL exec and fails, so a run that gets that far stops there.
-async function k3dFixture(t) {
-  const fixtureState = await fixture(t, "none");
+async function k3dFixture(t, sandboxDriver = "none", handleRequest) {
+  const fixtureState = await fixture(t, sandboxDriver);
   const { directory } = fixtureState;
-  const server = createServer((request, response) => {
-    const data = {
-      "/installation": { id: "ins_test" },
-      "/namespaces": [{ id: "ns_test", name: "default" }],
-      "/namespaces/ns_test": { id: "ns_test", status: "ready" },
-      "/namespaces/ns_test/agents": [],
-    }[request.url];
-    response.writeHead(data === undefined ? 404 : 200, { "content-type": "application/json" });
-    response.end(JSON.stringify(data === undefined ? { error: { code: "NOT_FOUND" } } : { data }));
-  });
+  const server = createServer(
+    handleRequest ??
+      ((request, response) => {
+        const data = {
+          "/installation": { id: "ins_test" },
+          "/namespaces": [{ id: "ns_test", name: "default" }],
+          "/namespaces/ns_test": { id: "ns_test", status: "ready" },
+          "/namespaces/ns_test/agents": [],
+        }[request.url];
+        response.writeHead(data === undefined ? 404 : 200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify(data === undefined ? { error: { code: "NOT_FOUND" } } : { data }),
+        );
+      }),
+  );
   await listen(t, server);
   const state = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
   await writeFile(
@@ -418,10 +448,38 @@ async function k3dFixture(t) {
     { mode: 0o600 },
   );
   const context = "k3d-occ-dev-first-agent-test";
+  await writeFile(
+    join(directory, "kubeconfig"),
+    JSON.stringify({
+      "current-context": context,
+      contexts: [{ name: context, context: { cluster: context } }],
+      clusters: [{ name: context, cluster: { server: "https://127.0.0.1:6443" } }],
+    }),
+    { mode: 0o600 },
+  );
   await writeCommand(
     join(directory, "tools"),
     "kubectl",
-    `case "$*" in
+    `if test -n "$OPENAI_API_KEY$OPENAI_API_KEY_FILE$CODEX_ACCESS_TOKEN$CODEX_ACCESS_TOKEN_FILE"; then
+  echo "Model credentials reached kubectl" >&2; exit 72
+fi
+case "$*" in
+  *" get deployment "*) test "$FIRST_AGENT_TEST_CONTROLLER_UNAVAILABLE" != 1 || exit 1; printf '%s' '${JSON.stringify(
+    {
+      items: [
+        {
+          kind: "Deployment",
+          name: "agent-sandbox-controller",
+          namespace: "agent-sandbox-system",
+          uid: "00000000-0000-4000-8000-000000000002",
+          selectorApp: "agent-sandbox-controller",
+          selectorLabels: 1,
+          readyReplicas: 1,
+          availableReplicas: 1,
+        },
+      ],
+    },
+  )}' ;;
   *" config view "*) printf '%s' '${JSON.stringify({
     "current-context": context,
     clusters: [{ cluster: { server: "https://127.0.0.1:6443" } }],
@@ -450,6 +508,286 @@ async function runFirstAgentAsync(env, ...args) {
   return output;
 }
 
+test("first-Agent deployment failure advice follows the reported cause", async (t) => {
+  for (const code of [
+    "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+    "RUNTIME_AUTHENTICATION_FAILED",
+    "RUNTIME_STARTUP_FAILED",
+  ]) {
+    await t.test(code, async (t) => {
+      const suffix = "00000000-0000-4000-8000-000000000001";
+      const installationId = `ins_${suffix}`;
+      const namespaceId = `ns_${suffix}`;
+      const agentId = `agt_${suffix}`;
+      const configurationId = `cfg_${suffix}`;
+      const revisionId = `rev_${suffix}`;
+      const base = `/namespaces/${namespaceId}`;
+      const agentPath = `${base}/agents/${agentId}`;
+      const name = "state-contract-test";
+      const secret = {
+        id: `sec_${suffix}`,
+        name: "saved-model-key",
+        ref: { kind: "secret", namespaceId: namespaceId, id: `sec_${suffix}` },
+      };
+      let configuration;
+      let agent;
+      let revision;
+      let source;
+      let role;
+      let binding;
+      let transportConfigured = false;
+      let interruptBeforeTransport = code === "RUNTIME_STARTUP_FAILED";
+      let deploymentReads = 0;
+      const unexpected = [];
+      // Run the real helper and HTTP client against supported API envelopes. The
+      // fixture supplies deployment evidence, not policy or credential decisions;
+      // this does not exercise a controller, database, cluster, or model provider.
+      const { directory, engineLog, env } = await k3dFixture(
+        t,
+        "openshell",
+        async (request, response) => {
+          const chunks = [];
+          for await (const chunk of request) {
+            chunks.push(chunk);
+          }
+          const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined;
+          let data;
+          let status = 200;
+          const meta = { requestId: `req_${suffix}` };
+          switch (`${request.method} ${request.url}`) {
+            case "GET /installation":
+              data = { id: installationId };
+              break;
+            case "GET /namespaces":
+              data = [{ id: namespaceId, name: "default" }];
+              break;
+            case `GET ${base}`:
+              data = { id: namespaceId, status: "ready" };
+              break;
+            case `GET ${base}/agents`:
+              data = agent ? [agent] : [];
+              break;
+            case `GET ${base}/credential-sources`:
+              data = source ? [source] : [];
+              break;
+            case `GET ${base}/iam/roles`:
+              data = role ? [role] : [];
+              break;
+            case `GET ${base}/iam/access-bindings`:
+              data = binding ? [binding] : [];
+              break;
+            case `GET ${base}/secrets/${secret.id}`:
+              data = secret;
+              break;
+            case `POST ${base}/credential-sources`:
+              status = 201;
+              source = { ...body, id: `cs_${suffix}`, state: "ready" };
+              data = source;
+              break;
+            case `POST ${base}/configurations`:
+              status = 201;
+              configuration = {
+                ...body,
+                id: configurationId,
+                namespaceId: namespaceId,
+                generation: 1,
+              };
+              data = configuration;
+              break;
+            case `GET ${base}/configurations/${configurationId}`:
+              data = configuration;
+              break;
+            case `POST ${base}/agents`:
+              status = 201;
+              agent = {
+                ...body,
+                id: agentId,
+                namespaceId: namespaceId,
+                servicePrincipalId: "sp_agent",
+                backendId: null,
+                activeRevisionId: null,
+                desiredRuntimeState: "stopped",
+              };
+              data = agent;
+              break;
+            case `GET ${agentPath}`:
+              data = agent;
+              break;
+            case `POST ${base}/iam/roles`:
+              status = 201;
+              role = { ...body, id: "role_test" };
+              data = role;
+              break;
+            case `POST ${base}/iam/access-bindings`:
+              status = 201;
+              binding = { ...body, id: "binding_test" };
+              data = binding;
+              break;
+            case `GET ${agentPath}/runtime-credentials`:
+              if (interruptBeforeTransport) {
+                response.writeHead(503, { "content-type": "application/json" });
+                response.end(JSON.stringify({ error: { code: "DEPENDENCY_UNAVAILABLE" }, meta }));
+                return;
+              }
+              data = { transportConfigured };
+              break;
+            case `POST ${agentPath}/runtime-credentials`:
+              transportConfigured = true;
+              data = { transportConfigured };
+              break;
+            case `GET ${agentPath}/revisions?limit=1`:
+              data = revision ? [{ id: revision.id }] : [];
+              meta.nextCursor = null;
+              break;
+            case `POST ${agentPath}/deploy`: {
+              status = 202;
+              agent.desiredRuntimeState = "running";
+              // Model the admitted snapshot from the helper's actual Configuration,
+              // including the existing OpenShell workspace and permission settings.
+              const values = withGatewaySecurityDefaults(
+                servedAs(structuredClone(configuration.values), name),
+              );
+              values.agents.defaults.workspace = "/sandbox/enterprise";
+              values.plugins.entries.codex.config.appServer.sandbox = "danger-full-access";
+              values.plugins.entries.codex.config.appServer.approvalsReviewer = "user";
+              revision = {
+                id: revisionId,
+                agentId: agent.id,
+                namespaceId: namespaceId,
+                configurationId: configuration.id,
+                configurationKind: "agent",
+                configurationGeneration: 1,
+                configuration: {
+                  ...values,
+                  logging: { level: "info", consoleLevel: "info", consoleStyle: "json" },
+                  diagnostics: { otel: { logs: false } },
+                },
+                harness: { id: "codex", mode: "dedicated" },
+                harnessAuth: agent.harnessAuth,
+                backendId: null,
+              };
+              data = revision;
+              break;
+            }
+            case `GET ${agentPath}/revisions/${revisionId}`:
+              data = revision;
+              break;
+            case `GET ${agentPath}/deployments/${revisionId}`:
+              deploymentReads++;
+              data = {
+                namespaceId: namespaceId,
+                agentId: agent.id,
+                deploymentId: revision.id,
+                status: "failed",
+                cleanup: null,
+                progress: null,
+                warnings: [],
+                error: { code, message: "private-provider-message" },
+              };
+              break;
+            default:
+              unexpected.push(`${request.method} ${request.url}`);
+          }
+          response.writeHead(data === undefined ? 404 : status, {
+            "content-type": "application/json",
+          });
+          response.end(
+            JSON.stringify(
+              data === undefined ? { error: { code: "NOT_FOUND" }, meta } : { data, meta },
+            ),
+          );
+        },
+      );
+      const keyPath = join(directory, "initial-admin-service-key.json");
+      const key = JSON.parse(await readFile(keyPath, "utf8"));
+      key.meta.installationId = installationId;
+      await writeFile(keyPath, JSON.stringify(key));
+      // Resume an interrupted run after it saved its Secret. No model credential
+      // is needed or read, and the real helper creates the remaining resources.
+      const recordPath = join(
+        directory,
+        `first-agent-${createHash("sha256").update(name).digest("hex").slice(0, 32)}.json`,
+      );
+      await writeFile(
+        recordPath,
+        JSON.stringify({
+          version: 3,
+          name,
+          namespaceId: namespaceId,
+          model: "fixture-model",
+          harness: "codex",
+          sandboxDriver: "openshell",
+          controlUi: false,
+          authMethod: "codex_pat",
+          secretId: secret.id,
+          secretName: secret.name,
+          credentialSourceName: "saved-model-source",
+        }),
+        { mode: 0o600 },
+      );
+      for (const key of [
+        "OPENCLAW_FIRST_AGENT_MODEL",
+        "OPENAI_API_KEY",
+        "OPENAI_API_KEY_FILE",
+        "CODEX_ACCESS_TOKEN",
+        "CODEX_ACCESS_TOKEN_FILE",
+      ]) {
+        delete env[key];
+      }
+      // The saved Secret is reused; parent model credentials must never reach kubectl.
+      env.CODEX_ACCESS_TOKEN = "synthetic-parent-model-token";
+      env.CODEX_ACCESS_TOKEN_FILE = join(directory, "unused-model-token");
+      if (interruptBeforeTransport) {
+        // Stop after the draft Agent was saved. A later controller outage must
+        // refuse its retry before creating the missing transport credentials.
+        await runFirstAgentAsync(env, "--harness", "codex");
+        const draft = JSON.parse(await readFile(recordPath, "utf8"));
+        assert.equal(draft.agentId, agentId);
+        assert.equal(draft.revisionId, undefined);
+        assert.equal(transportConfigured, false);
+        interruptBeforeTransport = false;
+        const refused = await runFirstAgentAsync(
+          { ...env, FIRST_AGENT_TEST_CONTROLLER_UNAVAILABLE: "1" },
+          "--harness",
+          "codex",
+        );
+        assert.match(refused, /Agent Sandbox controller readiness could not be verified/);
+        assert.equal(transportConfigured, false, "refused draft retry must not create credentials");
+      }
+      const output = await runFirstAgentAsync(env, "--harness", "codex");
+      assert.match(output, new RegExp(`The Agent deployment failed \\(${code}\\)`));
+      assert.doesNotMatch(output, /private-provider-message/);
+      if (code === "RUNTIME_AUTHENTICATION_FAILED") {
+        assert.match(output, /Check the model key.*--replace-key/);
+      } else {
+        assert.doesNotMatch(output, /Check the model key|--replace-key/);
+        if (code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE") {
+          assert.match(output, /managed permission policy.*incompatible/);
+          assert.match(output, /sandbox.*permission profile.*approval reviewer/);
+        } else {
+          assert.match(
+            output,
+            /Inspect the deployment in the Console and the controller worker logs/,
+          );
+        }
+      }
+      assert.equal(deploymentReads, 1, "terminal failure stops polling immediately");
+      // A later controller outage must not hide the saved revision's own failure.
+      // This is the repeat path; it reads the existing deployment without provisioning.
+      const repeated = await runFirstAgentAsync(
+        { ...env, FIRST_AGENT_TEST_CONTROLLER_UNAVAILABLE: "1" },
+        "--harness",
+        "codex",
+      );
+      assert.ok(repeated.includes(`The Agent deployment failed (${code})`), repeated);
+      assert.doesNotMatch(repeated, /Checking the managed Agent Sandbox controller/);
+      assert.equal(deploymentReads, 2);
+      assert.deepEqual(unexpected, [], "no runtime or model request follows failed deployment");
+      await assert.rejects(readFile(engineLog), { code: "ENOENT" });
+    });
+  }
+});
+
 test("first-Agent runs psql through the k3d PostgreSQL StatefulSet", async (t) => {
   const { engineLog, env, context } = await k3dFixture(t);
 
@@ -461,6 +799,123 @@ test("first-Agent runs psql through the k3d PostgreSQL StatefulSet", async (t) =
       `^--kubeconfig \\S+ --context ${context} -n occ-system exec -i statefulset/postgres -c postgres -- psql `,
     ),
   );
+});
+
+test("first-Agent preserves live and abandoned locks until inspected recovery", async (t) => {
+  let agentReads = 0;
+  let holdOwner = true;
+  const entered = Promise.withResolvers();
+  const { directory, engineLog, env } = await k3dFixture(t, "none", (request, response) => {
+    if (request.url === "/namespaces/ns_test/agents") {
+      agentReads++;
+      if (holdOwner) {
+        entered.resolve();
+        return;
+      }
+    }
+    const data = {
+      "/installation": { id: "ins_test" },
+      "/namespaces": [{ id: "ns_test", name: "default" }],
+      "/namespaces/ns_test": { id: "ns_test", status: "ready" },
+      "/namespaces/ns_test/agents": [],
+    }[request.url];
+    response.writeHead(data === undefined ? 404 : 200, { "content-type": "application/json" });
+    response.end(JSON.stringify(data === undefined ? { error: { code: "NOT_FOUND" } } : { data }));
+  });
+  for (const name of [
+    "CODEX_ACCESS_TOKEN",
+    "CODEX_ACCESS_TOKEN_FILE",
+    "OPENAI_API_KEY",
+    "OPENAI_API_KEY_FILE",
+  ]) {
+    delete env[name];
+  }
+  const recordPath = join(
+    directory,
+    `first-agent-${createHash("sha256").update("state-contract-test").digest("hex").slice(0, 32)}.json`,
+  );
+  const lockPath = `${recordPath}.lock`;
+  // Hold a real CLI invocation after it has acquired its lock and saved its record.
+  const owner = spawn(process.execPath, [firstAgent, "state-contract-test"], {
+    cwd: repository,
+    env,
+    stdio: "ignore",
+    timeout: 10_000,
+  });
+  const ownerClosed = once(owner, "close");
+  t.after(async () => {
+    owner.kill("SIGKILL");
+    await ownerClosed;
+  });
+  await Promise.race([
+    entered.promise,
+    ownerClosed.then(() => {
+      throw new Error("Lock owner exited before its first Agent read");
+    }),
+  ]);
+  const snapshotLock = async () => {
+    const file = await open(lockPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const opened = await file.stat();
+      const named = await lstat(lockPath);
+      assert.equal(named.isFile(), true);
+      assert.equal(named.dev, opened.dev);
+      assert.equal(named.ino, opened.ino);
+      return { dev: opened.dev, ino: opened.ino, pid: await file.readFile("utf8") };
+    } finally {
+      await file.close();
+    }
+  };
+  const lock = await snapshotLock();
+  const record = await readFile(recordPath, "utf8");
+  assert.equal(lock.pid, String(owner.pid));
+  const assertUnchanged = async () => {
+    assert.deepEqual(await snapshotLock(), lock);
+    assert.equal(await readFile(recordPath, "utf8"), record);
+  };
+  const contender = await runFirstAgentAsync(env);
+  assert.match(contender, /lock exists|already using this Agent name/);
+  assert.equal(agentReads, 1);
+  await assertUnchanged();
+
+  // A killed owner leaves a genuine abandoned lock. Concurrent retries must not
+  // guess ownership from its dead PID and unlink a successor's directory entry.
+  owner.kill("SIGKILL");
+  await ownerClosed;
+  holdOwner = false;
+  const retries = await Promise.all([runFirstAgentAsync(env), runFirstAgentAsync(env)]);
+  assert.equal(agentReads, 1, "abandoned-lock retries must not enter the record workflow");
+  for (const output of retries) {
+    assert.match(output, /lock exists/);
+    assert.ok(output.includes(lockPath));
+  }
+  await assertUnchanged();
+  await assert.rejects(readFile(engineLog), { code: "ENOENT" });
+
+  // All children are reaped before the operator removes only the inspected lock.
+  // The preserved record is reused, and an ordinary action error releases the new lock.
+  await unlink(lockPath);
+  const resumed = await runFirstAgentAsync(env);
+  assert.match(resumed, /kubectl did not complete successfully \(exit 23\)/);
+  assert.equal(agentReads, 2);
+  assert.equal(await readFile(recordPath, "utf8"), record);
+  await assert.rejects(lstat(lockPath), { code: "ENOENT" });
+});
+
+test("first-Agent refuses a lock symlink without following or removing it", async (t) => {
+  const { directory, engineLog, env } = await k3dFixture(t);
+  const target = join(directory, "lock-target");
+  const lockPath = join(
+    directory,
+    `first-agent-${createHash("sha256").update("state-contract-test").digest("hex").slice(0, 32)}.json.lock`,
+  );
+  await writeFile(target, "untouched lock target", { mode: 0o600 });
+  await symlink(target, lockPath);
+  const output = await runFirstAgentAsync(env);
+  assert.match(output, /lock exists|must be private and owned/);
+  assert.equal((await lstat(lockPath)).isSymbolicLink(), true);
+  assert.equal(await readFile(target, "utf8"), "untouched lock target");
+  await assert.rejects(readFile(engineLog), { code: "ENOENT" });
 });
 
 test(

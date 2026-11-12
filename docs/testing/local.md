@@ -22,6 +22,7 @@ pnpm format:check
 pnpm typecheck
 pnpm openapi:check
 pnpm test:conformance
+pnpm cli:build
 pnpm test:integration
 ```
 
@@ -36,6 +37,14 @@ Run one file or one named case:
 ```sh
 node --test tests/integration/secret-api.test.mjs
 node --test --test-name-pattern='part of the test name' tests/integration/secret-api.test.mjs
+```
+
+The first-Agent startup suite invokes the checkout's real CLI. Rebuild it from
+current source before running that file by itself:
+
+```sh
+pnpm cli:build
+node --test tests/integration/first-agent-startup.test.mjs
 ```
 
 ## Linting and formatting
@@ -58,9 +67,88 @@ persistence and external sign-in; memory-backed success does not prove them.
 `OCC_HELM_BIN` can select Helm. It exercises loopback TLS trust and callback
 transport, not a live IdP, PostgreSQL authentication, or an installed deployment.
 
+### Synthetic OIDC issuer
+
+With Node.js 24 and OpenSSL available, run the portable issuer checks:
+
+```sh
+node --test tests/integration/oidc-provider.test.ts
+```
+
+The HTTPS fixture and the `fakeOidc` fetch adapter share the
+[OIDC protocol handler](../../tests/helpers/oidc-provider.mjs). The fixture grants
+one synthetic subject without a login screen; keep it on a disposable test network.
+These checks exercise the fixture, not a real identity provider or installed OCE
+sign-in.
+
+[Create run-owned material](../../tests/helpers/oidc-provider-material.mjs) once
+per rehearsal and retain it across controller replacements. It generates the
+client, subject, and TLS material in a private subdirectory and removes partial
+output if setup fails. Stop provider users before calling its returned `dispose`.
+
+The [server entrypoint](../../tests/helpers/oidc-provider-server.mjs) takes that
+material directory as its argument. `OIDC_LISTEN_HOST` and `OIDC_LISTEN_PORT`
+default to loopback and an ephemeral port; select the disposable network's bind
+address and port explicitly for a packaged fixture. The caller owns stopping the
+server and removing its material.
+
+## Staged sign-in cleanup
+
+On an isolated Linux Docker host with Node.js 24, k3d, kubectl, Python 3 and the
+repository's installed dependencies, select the real cleanup fixture:
+
+```sh
+OCC_TEST_STAGED_SIGNIN_CLEANUP_REAL=1 node --test --test-concurrency=1 tests/integration/staged-signin-cleanup-real.test.ts
+```
+
+The `k3d-fixture-configuration` PR lane runs this file serially before its
+shared fixture tests, without preparing a separate database for it. All three
+cases must pass without skips. For the direct Node invocation, set
+`OCC_TEST_STAGED_SIGNIN_CLEANUP_ARTIFACT_DIR` to a fresh directory to
+retain source identity, observed resource identities, refusal output, assertion
+outcomes and final cleanup status. The normal PR lane does not forward this
+optional directory; use its ordinary result and cleanup reports.
+
+Prepare the digest-pinned K3s image selected by `scripts/ci/prepare.mjs` and
+k3d's support images before execution. Allow capacity for one disposable
+single-server cluster and one small volume consumer at a time. The host must
+expose its local Docker socket and the server's PID/cgroup identity. The fixture
+uses private kubeconfigs and loopback API ports; it preserves the default
+kubeconfig and unrelated resources. No controller/runtime build, model
+credential or published release pair is needed.
+
+The cases share a fifteen-minute admission deadline and stop creating resources
+after a failure. The preparer runs in a child with a four-minute test budget.
+Staged creation disables rollback and retains unacknowledged resources after a
+timeout instead of deleting by name or retrying. After hooks stop further stages
+and await the body before cleanup. Final cleanup has a
+separate three-minute budget. A hard-killed runner can prevent those hooks;
+retained private state is diagnostic, and the outer lane does not automatically
+recover it. This suite does not prove recovery from arbitrary runner termination.
+No timeout or uncertain command outcome counts as successful cleanup.
+
+The cleanup CLI must remove the owned resources after a settled
+failed case, and refuse both a replaced cluster and a newly shared volume.
+Assertions inspect those effects before the fixture's separate final cleanup.
+The runner, release and settlement inputs are synthetic; this proves real
+Docker/k3d cleanup effects, not GitHub admission, image publication, child
+settlement or installed sign-in. A failed settled case never qualifies a release.
+
+Staged cleanup passes the prepared state digest and captured Docker custody into
+the cleanup owner. It checks the state under its lock, removes the exact server
+and network IDs, and rechecks volume generation and consumers before non-forced
+removal. A consumer attached after server removal preserves the volume and fails
+cleanup. Docker has no atomic generation condition for named-volume deletion;
+these checks do not protect against a privileged actor recreating an unused
+same-name volume between inspection and removal. Run this proof on an isolated
+host without competing Docker writers. The CLI records mutation intent before
+deletion. Without its completed cleanup receipt, the fixture retains state and
+never retries deletion. Fallback requires a verified pre-mutation refusal.
+Partial or uncertain cleanup never qualifies a release.
+
 ## Packaged-driver integration
 
-`tests/integration/driver-plugin-installation.test.mjs` installs precompiled
+`tests/integration/driver-plugin-installation.test.ts` installs precompiled
 Driver tarballs in an isolated dependency root and exercises production startup
 with in-memory state. It does not prove database persistence, Kubernetes, a real
 gateway, or a model turn.
@@ -201,10 +289,12 @@ It proves collection and dashboard provisioning, not live Agent behavior.
 
 ### Kubernetes observability acceptance
 
-With Node 24+, pinned pnpm and installed dependencies, Helm, kubectl, k3d,
-and Docker or an explicitly selected compatible Podman engine, run the
-credential-free lane on a disposable loopback cluster. NetworkPolicy must be
-enforced. Use a fresh private state directory for each run:
+Use Node matching `package.json`, pinned pnpm and installed dependencies, the Go
+toolchain in `go.mod`, Helm, kubectl, k3d, and the
+[production helper prerequisites](../guides/deploy/production-upgrade.md#prepare-the-release),
+including jq and yq. Run this credential-free lane with Docker or an explicitly
+selected compatible Podman engine on a disposable loopback cluster with enforced
+NetworkPolicy. Use a fresh private state directory for each run:
 
 ```sh
 OBS_LANE=k3d-observability
@@ -233,13 +323,13 @@ traces, or credentials.
 
 For the separate `k3d-otel` model lane, set `OCC_TEST_OPENAI_MODEL`, a
 digest-pinned `NODE_BASE_IMAGE`, and an existing authorized `OPENAI_API_KEY`.
-Use a matching installed dependency graph and a fresh state directory:
+Run from the checkout root with a fresh state directory.
 
 ```sh
 OBS_LANE=k3d-otel
 OBS_RUN_DIR=$(mktemp -d)
-pnpm_config_verify_deps_before_run=false node scripts/ci/prepare.mjs --lane "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" && \
-  pnpm_config_verify_deps_before_run=false node scripts/ci/run-tests.mjs run "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" --results "$OBS_RUN_DIR/results.json"
+corepack pnpm exec node scripts/ci/prepare.mjs --lane "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" && \
+  corepack pnpm exec node scripts/ci/run-tests.mjs run "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" --results "$OBS_RUN_DIR/results.json"
 ```
 
 Inspect results and clean up as above. The model lane checks embedded and
@@ -269,7 +359,7 @@ real native sender image and requires `OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE` in
 its prepared state. To run both installed cases in that environment:
 
 ```sh
-OCC_TEST_PRODUCTION_OBSERVABILITY=1 node --test tests/integration/production-observability-k3d.test.mjs
+OCC_TEST_PRODUCTION_OBSERVABILITY=1 node --test tests/integration/production-observability-k3d.test.ts
 ```
 
 Both cases must pass. The receiver writes decoded OTLP to a temporary volume.

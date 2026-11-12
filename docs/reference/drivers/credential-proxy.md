@@ -83,52 +83,42 @@ this support; they do not qualify stock OpenShell or any installed deployment.
 
 ### Online model requests
 
-Explicit `authorization: "online-request"` selects an offered provider; eligible
-static sources otherwise use strict admission. Updates retain provider ID/generation.
-This profile requires native IAM backed by the same OCC state. Bundled
-`openai-online-request`, generation 1, admits one dedicated Codex HTTPS Responses
-route with an explicit model and no provider-hosted tools.
+Eligible static sources default to strict admission. Explicit `authorization: "online-request"`
+selects an offered provider; updates retain its ID and generation. Bundled
+`openai-online-request` generation 1 requires same-state native IAM and one dedicated
+Codex HTTPS Responses route, an explicit model and no provider-hosted tools.
 
-`ProxyPlan.authorization` preserves that selection. Admission version 8 covers
-the model route; version 9 combines it with independently authorized mandatory
-Git delivery. Neither version changes existing strict admissions. The Driver's
-optional `requestTimeCredentials` capability exposes `assertAvailable` and
-`verifyRequestInstallation(context, installation, recipient)`. The API rechecks
-the recipient against the persisted opaque `requestConfigurationId`. Bundled
-OpenShell retains full policy, model provider/profile and Sandbox/process
-identities in this witness. It excludes only the aggregate `provider_env_revision`
-from stored admission/configuration hashes; each read still requires current
-agreement, including that epoch. Mixed observations refuse.
-The worker independently verifies Git custody when installing; the API does not
-reconstruct that private state. Missing or changed retained evidence refuses
-model credential release.
+`ProxyPlan.authorization` records the profile. Version 8 admits the model route;
+version 9 adds independently authorized mandatory Git delivery. Strict admissions
+retain their guarantees. The optional `requestTimeCredentials` capability provides
+`assertAvailable` and `verifyRequestInstallation(context, installation, recipient)`.
+The API checks the recipient against the persisted opaque `requestConfigurationId`.
+OpenShell binds the full policy, model provider/profile and Sandbox/process identities.
+Only `provider_env_revision` is excluded from stored admission/configuration hashes;
+every read still requires current observations to agree, including that epoch.
+The worker verifies Git custody at installation. The API refuses model releases
+when retained evidence changes or disappears.
 
-Installed proof remains pending: model-source IAM denial must preserve authorized Git. Git authority comes from its repository binding,
-approval, session and registry. Removing [standing approval](../../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent)
-denies fresh Git requests but may retire the entire runtime in version 9;
-inference continuity after that removal is not guaranteed. Version 9 does not
-admit `policyReduction`.
-Removing either binding may stop or redeploy execution; uninterrupted use of the
-other path is not guaranteed.
+Git uses its own binding, approval, session and registry. Version 9 refuses
+`policyReduction`. Removing [standing approval](../../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent)
+denies fresh Git requests and can retire the runtime. Removing either binding can
+stop or redeploy execution. Installed proof that model-source IAM denial preserves
+authorized Git remains pending.
 
-`authorizeRequestCredential` checks the captured request and saves a nonsecret,
-single-use approval. `resolveRequestCredential` authenticates its redemption,
-consumes approval and rechecks authority in explicit `READ COMMITTED` transactions,
-regardless of pool defaults. Two outside-lock Secret observations
-must match a final read under OCC's Namespace rotation lock. External writes
-share no lock; see the [release boundary](../../flows/credential-source-egress/model-requests.md#3-redeem-once-against-current-authority).
-Approvals expire within 30 seconds of database admission, or sooner if requested.
-Required `releaseLifetimeMs` caps monotonic elapsed time from resolver invocation;
-callers subtract elapsed time before release and also enforce absolute `usableUntil`.
-Neither expires the API key. Required middleware and `cache_ttl: 0` prevent approval reuse.
+`authorizeRequestCredential` checks the captured request and records a nonsecret
+single-use approval. `resolveRequestCredential` authenticates redemption, consumes
+approval and rechecks authority under explicit `READ COMMITTED`. Two outside-lock
+Secret observations must match the final read under the Namespace rotation lock;
+external writers are uncoordinated. See the [release boundary](../../flows/credential-source-egress/model-requests.md#3-redeem-once-against-current-authority).
 
-The guest receives a placeholder; the supervisor injects the key. Gateway
-metadata ownership remains, without a Gateway key copy or attachment on this
-path. A request whose credential was already released may finish after
-withdrawal; an approval awaiting redemption cannot. This profile supplies
-neither exact dispatch nor response custody. Its source implementation does not
-qualify an installed runtime pair. See [setup and qualification](../../guides/credential-proxy/model-requests.md)
-and the [request flow](../../flows/credential-source-egress/model-requests.md).
+Approvals last at most 30 seconds from database admission. Callers deduct
+monotonic time elapsed since resolver invocation from `releaseLifetimeMs` and
+enforce `usableUntil`; these deadlines apply to approval, not key expiry.
+Required middleware and `cache_ttl: 0` prevent reuse. The supervisor injects the
+key; the guest gets a placeholder and the Gateway retains only metadata.
+Withdrawal blocks pending redemption; already released requests may finish.
+This profile gives neither exact dispatch nor response custody.
+See [setup and installed qualification](../../guides/credential-proxy/model-requests.md).
 
 ## IAM
 
@@ -190,6 +180,15 @@ live transport custody, not just stored IDs.
 version and request and returns a deadline-bound decision. Match request and
 injection digests and enforce `sendStartBy` at the last controlled send boundary.
 Do not treat resolution as send permission.
+
+A provider's `classify` may synchronously report one stable rule ID (1–255) through
+its optional refusal callback. IDs must not encode request data or be reassigned.
+OCC records `classificationRule` only when no operation matches and exactly one
+refused route reports a valid ID. Accepted operations, missing or repeated reports,
+and ambiguous diagnostics provide no rule. The audit binds the authenticated
+execution, source and exact request ID without inventing an operation or accessing
+credentials. Interpretation belongs to the selected provider; the wire refusal
+remains generic. See the [diagnostic flow](../../flows/credential-source-egress.md#debugging-and-verification).
 
 Response acceptance and lease renewal remain bound to that exchange.
 `protectResponse` processes the complete response, including trailers; an

@@ -89,7 +89,7 @@ Run the following from the repository root with dependencies installed:
 
 ```sh
 pnpm typecheck
-pnpm test:files -- tests/integration/driver-plugin-installation.test.mjs
+pnpm test:files -- tests/integration/driver-plugin-installation.test.ts
 ```
 
 The second command exercises package installation and controller admission for

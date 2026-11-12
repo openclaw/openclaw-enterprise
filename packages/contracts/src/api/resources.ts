@@ -324,6 +324,12 @@ const InstallationPluginDiscoverySchema = Type.Object(
 const InstallationCapabilitiesSchema = Type.Object(
   {
     nativeAdmin: Type.Optional(Type.Literal(true)),
+    repositoryAccessRequired: Type.Optional(
+      Type.Literal(true, {
+        description:
+          "Present when the selected Credential Proxy confirms it serves only repository Git. Deployment then requires supported repository access. Absence does not guarantee that a deployment will be admitted.",
+      }),
+    ),
     credentialSources: Type.Optional(
       Type.Object(
         { types: Type.Array(CredentialSourceCatalogSchema) },

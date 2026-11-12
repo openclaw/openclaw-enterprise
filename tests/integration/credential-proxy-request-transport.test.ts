@@ -450,7 +450,8 @@ test(
     assert.equal(revision.egressPlan.authorization, "online-request");
     assert.equal(revision.egressPlan.repositoryGit, undefined);
 
-    // Selecting request delivery must not make the same registration eligible for strict sources.
+    // The bundled owner retires new strict sources even while explicit online admission works.
+    const reads = f.countSecretReads();
     const strict = await f.request("POST", `/namespaces/${f.namespace.id}/credential-sources`, {
       body: {
         name: "strict-still-refused",
@@ -459,7 +460,9 @@ test(
         secrets: { api_key: f.secret.ref },
       },
     });
-    assert.equal(strict.status, 503, JSON.stringify(strict.body));
+    assert.equal(strict.status, 409, JSON.stringify(strict.body));
+    assert.equal(strict.body.error.code, "RESOURCE_CONFLICT");
+    assert.equal(f.countSecretReads(), reads);
 
     // Request admission still requires the live registered middleware.
     f.observed.available = false;

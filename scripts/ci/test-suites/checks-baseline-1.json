@@ -7,6 +7,7 @@
     "tests/integration/dev-up.test.mjs",
     "tests/integration/dev-up-compose.test.mjs",
     "tests/integration/occ-api.test.mjs",
+    "tests/integration/occ-api-joint-plugin-deployment.test.ts",
     "tests/integration/stored-document-serialization.test.mjs",
     "tests/integration/precompiled-route-compilers.test.mjs",
     "tests/integration/route-header-names.test.ts",
@@ -25,21 +26,21 @@
     "tests/conformance/kubernetes-provider-harness.test.mjs",
     "tests/conformance/kubernetes-harness-workspace-volume.test.mjs",
     "tests/conformance/workspace-node-supervisor.test.mjs",
-    "tests/integration/presets-controller.test.mjs",
+    "tests/integration/presets-controller.test.ts",
     "tests/integration/plugin-discovery-api.test.mjs",
     "tests/integration/openshell-plugin-source-reader.test.ts",
-    "tests/integration/runtime-credentials-api.test.mjs",
+    "tests/integration/runtime-credentials-api.test.ts",
     "tests/integration/secret-api.test.mjs",
     "tests/integration/console-api.test.ts",
     "tests/integration/caller-denial-api.test.ts",
-    "tests/conformance/kubernetes-preflight.test.mjs",
+    "tests/conformance/kubernetes-preflight.test.ts",
     "tests/conformance/kubernetes-client.test.mjs",
-    "tests/conformance/kubernetes-api-read.test.mjs",
+    "tests/conformance/kubernetes-api-read.test.ts",
     "tests/integration/configuration-controller.test.mjs",
     "tests/integration/configuration-body-limits.test.mjs",
     "tests/integration/json-body-depth.test.mjs",
-    "tests/conformance/workspace-files.test.mjs",
-    "tests/conformance/runtime-logs-sandbox.test.mjs",
+    "tests/conformance/workspace-files.test.ts",
+    "tests/conformance/runtime-logs-sandbox.test.ts",
     "tests/integration/device-authorization-api.test.mjs",
     "tests/integration/openshell-device-authorization-api.test.mjs",
     "tests/integration/dependency-unavailable-log.test.mjs",
@@ -51,16 +52,16 @@
     "tests/conformance/node-enrollment-client.test.mjs",
     "tests/integration/startup-ipv6-loopback.test.mjs",
     "tests/docs/generated-api-reference.test.mjs",
-    "tests/integration/service-api-keys.test.mjs",
-    "tests/integration/driver-plugin-installation.test.mjs",
+    "tests/integration/service-api-keys.test.ts",
+    "tests/integration/driver-plugin-installation.test.ts",
     "tests/conformance/workspace-files-configuration.test.mjs",
     "tests/integration/common-logging.test.mjs",
     "tests/docs/docs-length.test.mjs",
-    "tests/integration/production-image-upgrade.test.mjs",
+    "tests/integration/production-image-upgrade.test.ts",
     "tests/integration/production-upgrade-chart-inputs.test.ts",
     "tests/conformance/test-files.test.mjs",
-    "tests/conformance/update-contributors.test.mjs",
-    "tests/conformance/socket-directory.test.mjs",
+    "tests/conformance/update-contributors.test.ts",
+    "tests/conformance/socket-directory.test.ts",
     "tests/conformance/temporary-directory.test.mjs",
     "tests/integration/production-controller-security.test.mjs",
     "tests/conformance/kubernetes-runtime-credentials.test.mjs",
@@ -70,36 +71,36 @@
     "tests/conformance/openshell-oauth-wire.test.mjs",
     "tests/conformance/openshell-codex-device.test.mjs",
     "tests/conformance/openshell-harness-status.test.mjs",
-    "tests/integration/bootstrap-volume.test.mjs",
-    "tests/integration/secret-driver-startup.test.mjs",
+    "tests/integration/bootstrap-volume.test.ts",
+    "tests/integration/secret-driver-startup.test.ts",
     "tests/conformance/kubernetes-configuration.test.mjs",
     "tests/conformance/occ-read.test.mjs",
-    "tests/integration/controller-lifecycle.test.mjs",
+    "tests/integration/controller-lifecycle.test.ts",
     "tests/conformance/configuration-occ.test.mjs",
     "tests/conformance/credential-source-occ.test.mjs",
-    "tests/conformance/kubernetes-real-kubectl.test.mjs",
-    "tests/conformance/k3d-failure-diagnostics.test.mjs",
-    "tests/conformance/secret-occ.test.mjs",
+    "tests/conformance/kubernetes-real-kubectl.test.ts",
+    "tests/conformance/k3d-failure-diagnostics.test.ts",
+    "tests/conformance/secret-occ.test.ts",
     "tests/conformance/http-errors.test.mjs",
     "tests/conformance/docker-compute.test.mjs",
     "tests/conformance/secret-gateway-delivery.test.mjs",
-    "tests/conformance/runtime-logs-replay.test.mjs",
+    "tests/conformance/runtime-logs-replay.test.ts",
     "tests/conformance/codex-seccomp-profile.test.mjs",
     "tests/conformance/kubernetes-ownership.test.mjs",
-    "tests/conformance/service-account-driver.test.mjs",
+    "tests/conformance/service-account-driver.test.ts",
     "tests/conformance/iam.test.mjs",
     "tests/conformance/platform-state-memory.test.mjs",
     "tests/conformance/contracts.test.mjs",
-    "tests/conformance/presets.test.mjs",
+    "tests/conformance/presets.test.ts",
     "tests/integration/production-healthcheck.test.mjs",
     "tests/conformance/pr-status.test.ts",
-    "tests/conformance/codex-stderr-filter.test.mjs",
+    "tests/conformance/codex-stderr-filter.test.ts",
     "tests/docs/docs-server.test.mjs",
     "tests/integration/console-build-metadata.test.ts",
     "tests/conformance/console-design-tokens.test.ts",
     "tests/conformance/audit.test.mjs",
     "tests/conformance/compute-lifecycle-hooks.test.mjs",
-    "tests/conformance/utils.test.mjs",
+    "tests/conformance/utils.test.ts",
     "tests/conformance/workspace-node-setup.test.ts",
     "tests/conformance/console-api-client.test.ts",
     "tests/conformance/console-carry.test.ts",
@@ -108,11 +109,12 @@
     "tests/conformance/console-json-errors.test.ts",
     "tests/integration/bootstrap-output.test.mjs",
     "tests/conformance/slack-configuration.test.mjs",
+    "tests/integration/slack-destination.test.ts",
     "tests/conformance/console-gateway-safety.test.ts",
-    "tests/conformance/grafana-overview-dashboard.test.mjs",
-    "tests/conformance/split-layout-tenants.test.mjs",
-    "tests/conformance/split-layout-adopt.test.mjs",
-    "tests/conformance/url-authority.test.mjs",
+    "tests/conformance/grafana-overview-dashboard.test.ts",
+    "tests/conformance/split-layout-tenants.test.ts",
+    "tests/conformance/split-layout-adopt.test.ts",
+    "tests/conformance/url-authority.test.ts",
     "tests/integration/token-retirement.test.ts",
     "tests/integration/static-egress.test.mjs",
     "tests/integration/credential-proxy-peer-pin.test.ts",
@@ -122,6 +124,7 @@
     "tests/integration/managed-plugin-request-authority.test.ts",
     "tests/integration/egress-stock-online-git-authority.test.mjs",
     "tests/integration/harness-egress-probe-diagnostics.test.ts",
+    "tests/integration/openshell-permission-diagnostic.test.ts",
     "tests/conformance/openshell-prepared-git-provider.test.mjs",
     "tests/conformance/openshell-git-runtime.test.mjs",
     "tests/conformance/openshell-git-denial.test.mjs",
@@ -154,7 +157,7 @@
       "path": "tests/conformance/configuration-occ.test.mjs"
     },
     {
-      "path": "tests/conformance/filesystem-configuration.test.mjs"
+      "path": "tests/conformance/filesystem-configuration.test.ts"
     },
     {
       "path": "tests/conformance/console-agent-name-runs.test.ts"
@@ -178,7 +181,7 @@
       "path": "tests/conformance/contracts.test.mjs"
     },
     {
-      "path": "tests/conformance/update-contributors.test.mjs"
+      "path": "tests/conformance/update-contributors.test.ts"
     },
     {
       "path": "tests/docs/docs-length.test.mjs"
@@ -202,7 +205,7 @@
       "path": "tests/conformance/docker-compute.test.mjs"
     },
     {
-      "path": "tests/conformance/grafana-overview-dashboard.test.mjs"
+      "path": "tests/conformance/grafana-overview-dashboard.test.ts"
     },
     {
       "path": "tests/conformance/iam.test.mjs"
@@ -223,7 +226,7 @@
       "path": "tests/conformance/node-enrollment-client.test.mjs"
     },
     {
-      "path": "tests/conformance/kubernetes-preflight.test.mjs"
+      "path": "tests/conformance/kubernetes-preflight.test.ts"
     },
     {
       "path": "tests/conformance/kubernetes-client.test.mjs"
@@ -232,13 +235,13 @@
       "path": "tests/conformance/kubernetes-network-policy.test.mjs"
     },
     {
-      "path": "tests/conformance/kubernetes-real-kubectl.test.mjs"
+      "path": "tests/conformance/kubernetes-real-kubectl.test.ts"
     },
     {
-      "path": "tests/conformance/kubernetes-api-read.test.mjs"
+      "path": "tests/conformance/kubernetes-api-read.test.ts"
     },
     {
-      "path": "tests/conformance/k3d-failure-diagnostics.test.mjs"
+      "path": "tests/conformance/k3d-failure-diagnostics.test.ts"
     },
     {
       "path": "tests/conformance/kubernetes-runtime-credentials.test.mjs"
@@ -260,13 +263,13 @@
       "path": "tests/conformance/runtime-logs-content.test.mjs"
     },
     {
-      "path": "tests/conformance/runtime-logs-sandbox.test.mjs"
+      "path": "tests/conformance/runtime-logs-sandbox.test.ts"
     },
     {
-      "path": "tests/conformance/runtime-logs-replay.test.mjs"
+      "path": "tests/conformance/runtime-logs-replay.test.ts"
     },
     {
-      "path": "tests/conformance/codex-stderr-filter.test.mjs"
+      "path": "tests/conformance/codex-stderr-filter.test.ts"
     },
     {
       "path": "tests/conformance/occ-read.test.mjs"
@@ -297,34 +300,37 @@
       "path": "tests/conformance/pr-status.test.ts"
     },
     {
-      "path": "tests/conformance/presets.test.mjs"
+      "path": "tests/conformance/presets.test.ts"
     },
     {
       "path": "tests/conformance/secret-gateway-delivery.test.mjs"
     },
     {
-      "path": "tests/conformance/secret-occ.test.mjs"
+      "path": "tests/conformance/secret-occ.test.ts"
     },
     {
       "path": "tests/conformance/slack-configuration.test.mjs"
     },
     {
+      "path": "tests/integration/slack-destination.test.ts"
+    },
+    {
       "path": "tests/conformance/console-gateway-safety.test.ts"
     },
     {
-      "path": "tests/conformance/service-account-driver.test.mjs"
+      "path": "tests/conformance/service-account-driver.test.ts"
     },
     {
       "path": "tests/conformance/test-files.test.mjs"
     },
     {
-      "path": "tests/conformance/socket-directory.test.mjs"
+      "path": "tests/conformance/socket-directory.test.ts"
     },
     {
       "path": "tests/conformance/temporary-directory.test.mjs"
     },
     {
-      "path": "tests/conformance/utils.test.mjs"
+      "path": "tests/conformance/utils.test.ts"
     },
     {
       "path": "tests/conformance/workspace-node-setup.test.ts"
@@ -333,13 +339,13 @@
       "path": "tests/conformance/workspace-files-configuration.test.mjs"
     },
     {
-      "path": "tests/conformance/workspace-files.test.mjs"
+      "path": "tests/conformance/workspace-files.test.ts"
     },
     {
       "path": "tests/conformance/workspace-node-supervisor.test.mjs"
     },
     {
-      "path": "tests/integration/presets-controller.test.mjs"
+      "path": "tests/integration/presets-controller.test.ts"
     },
     {
       "path": "tests/integration/profile-renderer.test.mjs",
@@ -362,7 +368,7 @@
       "path": "tests/integration/bootstrap-output.test.mjs"
     },
     {
-      "path": "tests/integration/bootstrap-volume.test.mjs"
+      "path": "tests/integration/bootstrap-volume.test.ts"
     },
     {
       "path": "tests/integration/configuration-controller.test.mjs"
@@ -392,16 +398,19 @@
       "path": "tests/integration/console-build-metadata.test.ts"
     },
     {
-      "path": "tests/integration/controller-lifecycle.test.mjs"
+      "path": "tests/integration/controller-lifecycle.test.ts"
     },
     {
-      "path": "tests/integration/driver-plugin-installation.test.mjs"
+      "path": "tests/integration/driver-plugin-installation.test.ts"
     },
     {
       "path": "tests/integration/git-hooks.test.mjs"
     },
     {
       "path": "tests/integration/occ-api.test.mjs"
+    },
+    {
+      "path": "tests/integration/occ-api-joint-plugin-deployment.test.ts"
     },
     {
       "path": "tests/integration/stored-document-serialization.test.mjs"
@@ -422,7 +431,7 @@
       "path": "tests/integration/production-healthcheck.test.mjs"
     },
     {
-      "path": "tests/integration/production-image-upgrade.test.mjs"
+      "path": "tests/integration/production-image-upgrade.test.ts"
     },
     {
       "path": "tests/integration/production-upgrade-chart-inputs.test.ts"
@@ -455,13 +464,13 @@
       "path": "tests/integration/dependency-unavailable-log.test.mjs"
     },
     {
-      "path": "tests/integration/runtime-credentials-api.test.mjs"
+      "path": "tests/integration/runtime-credentials-api.test.ts"
     },
     {
-      "path": "tests/integration/secret-driver-startup.test.mjs"
+      "path": "tests/integration/secret-driver-startup.test.ts"
     },
     {
-      "path": "tests/integration/service-api-keys.test.mjs"
+      "path": "tests/integration/service-api-keys.test.ts"
     },
     {
       "path": "tests/integration/startup-ipv6-loopback.test.mjs"
@@ -487,12 +496,17 @@
       "path": "tests/integration/dev-up.test.mjs",
       "expectedTests": [
         "Kubernetes dev-up authenticates the Installation and cleanup uses its saved endpoint and Compose configuration",
-        "Kubernetes Compute defaults to the Compose control plane",
+        "Kubernetes Compute defaults to the Kubernetes control plane",
         "Kubernetes dev-up rejects an unsupported control-plane selection",
         "Kubernetes dev-up rolls back owned resources after node-dns-refused",
         "Kubernetes dev-down preserves recovery state after incomplete cleanup and can retry",
         "cancelling Kubernetes startup during readiness rolls back its owned resources",
-        "launcher case recovery follows real Go rollback after node-dns-refused"
+        "launcher case recovery follows real Go rollback after node-dns-refused",
+        "dev-down from a fresh shell stops the recorded Kubernetes stack",
+        "dev-down from a fresh shell in another checkout refuses the recorded Kubernetes stack",
+        "Kubernetes-only dev-up names a Docker stack holding its API port before creating anything",
+        "Kubernetes-only dev-up removes its state after a cluster create that k3d rolled back",
+        "Kubernetes-only dev-up names the explicit cleanup command when rollback is incomplete"
       ]
     },
     {
@@ -507,7 +521,13 @@
         "dev-up fails closed when the worker exits before readiness",
         "dev-up preserves a copied key when the authenticated installation check is rejected",
         "dev-up rejects an authenticated installation response for a different Installation",
-        "development cleanup defaults to the Compose profile"
+        "development cleanup without selectors stops Docker when no state is recorded",
+        "development cleanup without selectors refuses an unusable state directory",
+        "development cleanup with Compose options keeps the Docker profile",
+        "development cleanup treats a Kubernetes control plane without a Compute selection as Kubernetes",
+        "dev-up refuses Keycloak sign-in for the Docker profile before startup",
+        "Compose shutdown keeps copied service keys and leaves Namespace networks to Docker Compute",
+        "a failed dev-up removes the empty service key directory it created"
       ]
     },
     {
@@ -523,7 +543,7 @@
       "path": "tests/conformance/codex-native-startup.test.mjs"
     },
     {
-      "path": "tests/conformance/native-rollout-provenance.test.mjs",
+      "path": "tests/conformance/native-rollout-provenance.test.ts",
       "expectedTests": [
         "native rollout diagnostics keep only the exact thread and turn policy",
         "native rollout diagnostics preserve uncertainty about opaque code-mode escalation",
@@ -533,13 +553,13 @@
       ]
     },
     {
-      "path": "tests/conformance/split-layout-tenants.test.mjs"
+      "path": "tests/conformance/split-layout-tenants.test.ts"
     },
     {
-      "path": "tests/conformance/split-layout-adopt.test.mjs"
+      "path": "tests/conformance/split-layout-adopt.test.ts"
     },
     {
-      "path": "tests/conformance/url-authority.test.mjs"
+      "path": "tests/conformance/url-authority.test.ts"
     },
     {
       "path": "tests/integration/credential-proxy-peer-pin.test.ts",
@@ -668,6 +688,52 @@
       ]
     },
     {
+      "path": "tests/integration/openshell-permission-diagnostic.test.ts",
+      "expectedTests": [
+        "a confirmed diagnostic grant preserves the actual Driver refusal and redacts the complete receipt",
+        "non-PAT refusals and serving PAT Drivers do not trigger diagnostics",
+        "a native fallback mismatch retains only closed provenance from the Harness log window",
+        "diagnostic wrong-profile retains the classified failure",
+        "diagnostic wrong-reviewer retains the classified failure",
+        "diagnostic wrong-approval retains the classified failure",
+        "diagnostic wrong-legacy-mode retains the classified failure",
+        "diagnostic persistent retains the classified failure",
+        "diagnostic unknown-profile retains the classified failure",
+        "diagnostic missing-profile retains the classified failure",
+        "diagnostic missing-approval retains the classified failure",
+        "diagnostic init-missing retains the classified failure",
+        "diagnostic auth-api-key retains the classified failure",
+        "diagnostic auth-token retains the classified failure",
+        "diagnostic both-envelope retains the classified failure",
+        "diagnostic null-error retains the classified failure",
+        "diagnostic fractional-error retains the classified failure",
+        "diagnostic approval retains the classified failure",
+        "diagnostic trailing-approval retains the classified failure",
+        "diagnostic binary retains the classified failure",
+        "diagnostic single-oversize retains the classified failure",
+        "diagnostic aggregate-oversize retains the classified failure",
+        "diagnostic cancelled retains the classified failure",
+        "diagnostic timeout retains the classified failure",
+        "diagnostic RPC code -32700 is protocol-error, not evidence of policy refusal",
+        "diagnostic RPC code -32600 is protocol-error, not evidence of policy refusal",
+        "diagnostic RPC code -32601 is protocol-error, not evidence of policy refusal",
+        "diagnostic RPC code -32602 is protocol-error, not evidence of policy refusal",
+        "diagnostic RPC code -32603 is server-error, not evidence of policy refusal",
+        "diagnostic RPC code -32000 is rpc-error, not evidence of policy refusal",
+        "diagnostic TLS valid authenticates the endpoint before sending its bearer",
+        "diagnostic TLS wrong-identity authenticates the endpoint before sending its bearer",
+        "diagnostic writer throw cannot replace the Driver refusal",
+        "diagnostic writer reject cannot replace the Driver refusal",
+        "diagnostic writer stall cannot replace the Driver refusal",
+        "a pre-existing cancellation stays cancellation and never opens a diagnostic",
+        "diagnostic records absent approval requirements without their content",
+        "diagnostic records only-never approval requirements without their content",
+        "diagnostic records granular approval requirements without their content",
+        "cancellation after Driver classification retains its failure without opening another connection",
+        "a peer that ignores close is terminated within the diagnostic cleanup budget"
+      ]
+    },
+    {
       "path": "tests/integration/harness-egress-probe-diagnostics.test.ts",
       "expectedTests": [
         "held enrollment distinguishes probe failures without exposing proxy output or retrying"
@@ -785,6 +851,9 @@
         "selected repository response requires exact IDs, names and permissions and refuses broader credentials",
         "ordinary fresh selections resolve one or N repositories without broadening explicit historical grants"
       ]
+    },
+    {
+      "path": "tests/conformance/namespace-lifecycle.test.ts"
     },
     {
       "path": "tests/conformance/topology-controller-manifests.test.ts",

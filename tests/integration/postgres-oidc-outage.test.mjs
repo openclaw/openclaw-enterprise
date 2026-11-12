@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { PostgresHumanAuthentication } from "../../packages/occ/src/index.ts";
 import {
   assertConsoleSignIn,
@@ -117,6 +118,13 @@ test(
         const elapsed = performance.now() - started;
         assert.ok(elapsed >= 9_000 && elapsed < 20_000, `deadline elapsed ${elapsed} ms`);
         await assertFailedClosed(callback, before + 1);
+
+        // A fetch that arrives after cancellation must also reject without waiting for another abort event.
+        const signal = AbortSignal.abort();
+        await assert.rejects(
+          Promise.race([fetch(provider.issuer.tokenUrl, { signal }), nextTurn()]),
+          { name: "AbortError" },
+        );
       },
     );
 

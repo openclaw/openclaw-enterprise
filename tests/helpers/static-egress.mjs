@@ -1,3 +1,6 @@
+import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
+import { createCredentialProxyInstallationConfiguration } from "./installation-driver-configuration.mjs";
+import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import { githubMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
 import {
@@ -33,7 +36,7 @@ import {
   bindOpenShellEgressAuthority,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-authority.ts";
 import { selfSigned } from "./certificates.mjs";
-import { listen } from "./listen.mjs";
+import { listen } from "./listen.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
@@ -82,7 +85,7 @@ export function supervisorBearer(claims, privateKey) {
  * not a Kubernetes API server or an OpenShell supervisor. No authorization/provider logic is mocked.
  * @template {import("node:net").Server} [Provider=never]
  */
-export async function staticEgressFixture(
+async function buildStaticEgressFixture(
   t,
   {
     appFactory = /** @type {(t: import("node:test").TestContext, options?: Parameters<typeof createConsoleAppFixture>[1]) => Promise<Awaited<ReturnType<typeof createConsoleAppFixture>> | Awaited<ReturnType<typeof import("./postgres-egress-app.mjs").postgresApp>>>} */ (
@@ -90,6 +93,9 @@ export async function staticEgressFixture(
     ),
     driverConfigurations = /** @type {readonly import("../../packages/occ/src/index.ts").DriverConfigurationRegistration[]} */ ([]),
     includeLegacy = false,
+    // Admission uses production composition; execution retains an already admitted owner.
+    admissionOnly = false,
+    gatewayOnly = false,
     protectedSourceOnly = false,
     proxyDriverId = "openshell-egress",
     now = () => new Date(),
@@ -242,6 +248,18 @@ export async function staticEgressFixture(
     authentication: { mode: "kubeconfig", kubeconfigPath, context: "fixture" },
   });
 
+  const materialReads = { ordinary: 0, versioned: 0 };
+  for (const [method, counter] of [
+    ["withValue", "ordinary"],
+    ["readCredentialInput", "versioned"],
+  ]) {
+    const original = secretDriver[method].bind(secretDriver);
+    secretDriver[method] = (...args) => {
+      materialReads[counter] += 1;
+      return original(...args);
+    };
+  }
+
   const Gateway = grpc.loadPackageDefinition(loadGatewayDefinition()).openshell.v1.OpenShell;
   const gateway = new grpc.Server();
   const observed = {
@@ -251,6 +269,7 @@ export async function staticEgressFixture(
     deleted: [],
     workspaceVisible: true,
     policyStatusRequests: 0,
+    gatewayInfoRequests: 0,
     policyStatusUnavailable: false,
   };
   // OpenShell reports negotiated capabilities in lexical order, including the base contract.
@@ -260,7 +279,11 @@ export async function staticEgressFixture(
   ].sort();
   const profiles = new Map();
   const providers = new Map();
+  const gatewayRequests = [];
   gateway.addService(Gateway.service, {
+    Health(_call, callback) {
+      callback(null, { status: "SERVICE_STATUS_HEALTHY" });
+    },
     GetProviderProfile(call, callback) {
       const profile = profiles.get(call.request.id);
       callback(profile ? null : { code: grpc.status.NOT_FOUND }, profile ? { profile } : undefined);
@@ -290,12 +313,54 @@ export async function staticEgressFixture(
     },
     GetProvider(call, callback) {
       const provider = providers.get(call.request.name);
+      gatewayRequests.push({ method: "GetProvider", request: call.request, found: !!provider });
       callback(
         provider ? null : { code: grpc.status.NOT_FOUND },
         provider ? { provider } : undefined,
       );
     },
+    UpdateProvider(call, callback) {
+      gatewayRequests.push({ method: "UpdateProvider", request: call.request });
+      const previous = providers.get(call.request.provider.metadata.name);
+      if (!previous) {
+        callback({ code: grpc.status.NOT_FOUND });
+        return;
+      }
+      const provider = {
+        ...previous,
+        metadata: {
+          ...previous.metadata,
+          resource_version: String(Number(previous.metadata.resource_version) + 1),
+        },
+        credentials: { ...previous.credentials, ...call.request.provider.credentials },
+      };
+      providers.set(provider.metadata.name, provider);
+      callback(null, { provider });
+    },
+    DeleteProvider(call, callback) {
+      gatewayRequests.push({ method: "DeleteProvider", request: call.request });
+      const deleted = providers.delete(call.request.name);
+      if (!deleted && !call.request.allow_missing) {
+        callback({ code: grpc.status.NOT_FOUND });
+        return;
+      }
+      callback(null, {
+        outcome: deleted ? "DELETION_OUTCOME_COMPLETED" : "DELETION_OUTCOME_ALREADY_ABSENT",
+      });
+    },
+    DeleteProviderProfile(call, callback) {
+      gatewayRequests.push({ method: "DeleteProviderProfile", request: call.request });
+      const deleted = profiles.delete(call.request.id);
+      if (!deleted && !call.request.allow_missing) {
+        callback({ code: grpc.status.NOT_FOUND });
+        return;
+      }
+      callback(null, {
+        outcome: deleted ? "DELETION_OUTCOME_COMPLETED" : "DELETION_OUTCOME_ALREADY_ABSENT",
+      });
+    },
     GetGatewayInfo(_call, callback) {
+      observed.gatewayInfoRequests += 1;
       callback(null, {
         status: 1,
         extensions: observed.available
@@ -319,7 +384,13 @@ export async function staticEgressFixture(
       }
       callback(null, {
         workspace: {
-          metadata: { name: call.request.name },
+          metadata: {
+            name: call.request.name,
+            labels: {
+              "app.kubernetes.io/managed-by": "openclaw-enterprise",
+              "openclaw.dev/namespace-id": namespace.id,
+            },
+          },
           status: { phase: "WORKSPACE_PHASE_ACTIVE" },
         },
       });
@@ -443,32 +514,87 @@ export async function staticEgressFixture(
       },
     }),
   };
-  const sandbox = new OpenShellSandboxDriver(
-    {
-      egress: egressOptions,
-      gateway: { workspaceMode: "operator" },
-      kubernetes: {
-        runtimeClassName: "openshell-sandbox",
-        serviceAccount: { mode: "gatewayConfigured" },
-        sandboxDataMount: {
-          subPath: "workspace",
-          mountPath: "/sandbox/enterprise",
-          readOnly: false,
+  let admissionDrivers;
+  if (admissionOnly || requestCredentials) {
+    // Exercise startup's retirement selection, not a policy recreated by the fixture.
+    const base = createCredentialProxyInstallationConfiguration();
+    if (requestCredentials) {
+      const proxy = base.drivers.credential_proxy.configuration;
+      Object.assign(proxy.authority, {
+        certificatePath: certPath,
+        privateKeyPath: generated.keyPath,
+        issuerPublicKeyPath: join(directory, "unstarted-authority-issuer.pem"),
+        audience: egressOptions.requestCredentials.audience,
+      });
+      Object.assign(proxy, {
+        tokenGrant: {
+          endpoint: egressOptions.requestCredentials.tokenEndpoint,
+          port: 9445,
+          trustDomain: "fixture.test",
+          bundlePath: join(directory, "unstarted-trust-bundle.json"),
+        },
+      });
+    }
+    const configuration = {
+      ...base,
+      backend: [
+        {
+          ...base.backend[0],
+          id: backend.id,
+          configuration: {
+            ...base.backend[0].configuration,
+            endpoint: `https://127.0.0.1:${gatewayPort}`,
+            rootCertificatePath: certPath,
+          },
+        },
+      ],
+    };
+    const path = join(directory, "installation.json");
+    await writeFile(path, JSON.stringify(configuration));
+    const loaded = await loadInstallationConfiguration({
+      mode: "development",
+      environment: { OCC_CONFIG_PATH: path },
+      createOpenShellBackend: () => backend,
+    });
+    assert.ok(loaded?.protectedDriver);
+    assert.ok(loaded.sandboxDriver instanceof OpenShellSandboxDriver);
+    assert.ok(loaded.proxyDriver instanceof OpenShellCredentialProxyDriver);
+    assert.ok(loaded.credentialGatewayDriver instanceof OpenShellCredentialGatewayDriver);
+    admissionDrivers = {
+      owner: loaded.protectedDriver,
+      sandbox: loaded.sandboxDriver,
+      proxy: loaded.proxyDriver,
+      catalog: loaded.credentialGatewayDriver,
+    };
+  }
+  const sandbox =
+    admissionDrivers?.sandbox ??
+    new OpenShellSandboxDriver(
+      {
+        egress: egressOptions,
+        gateway: { workspaceMode: "operator" },
+        kubernetes: {
+          runtimeClassName: "openshell-sandbox",
+          serviceAccount: { mode: "gatewayConfigured" },
+          sandboxDataMount: {
+            subPath: "workspace",
+            mountPath: "/sandbox/enterprise",
+            readOnly: false,
+          },
+        },
+        policy: {
+          process: { runAsUser: "1000", runAsGroup: "1000" },
+          networkPolicies: [
+            {
+              name: "inference",
+              endpoints: [{ host: "provider.example.test", ports: [443] }],
+              binaries: [{ path: "/usr/bin/model-client" }],
+            },
+          ],
         },
       },
-      policy: {
-        process: { runAsUser: "1000", runAsGroup: "1000" },
-        networkPolicies: [
-          {
-            name: "inference",
-            endpoints: [{ host: "provider.example.test", ports: [443] }],
-            binaries: [{ path: "/usr/bin/model-client" }],
-          },
-        ],
-      },
-    },
-    { id: "openshell-sandbox", backend },
-  );
+      { id: "openshell-sandbox", backend },
+    );
   const preparedTokens = new TokenService();
   const owner = createPreparedGitHub
     ? await createPreparedGitHub({ secretDriver, tokenService: preparedTokens })
@@ -516,44 +642,60 @@ export async function staticEgressFixture(
     protocol: "openai-responses",
     baseUrl: `https://provider.example.test:${providerPort}/v1`,
   };
-  const egress = new OpenShellCredentialProxyDriver(egressOptions, {
-    id: proxyDriverId,
-    preparedProviders: preparedProvider
-      ? [preparedProvider]
-      : owner
-        ? [githubMetadataProvider]
-        : [],
-    backend,
-    sandbox,
-    ...(requestCredentials && {
-      // Admission discovers the registered middleware without starting its release listener.
-      exchangeAuthority: {
-        host: "127.0.0.1",
-        port: 9444,
-        certificatePath: certPath,
-        privateKeyPath: generated.keyPath,
-        issuerPublicKeyPath: join(directory, "unstarted-authority-issuer.pem"),
-        issuer: "openshell-fixture",
-        audience: "oce-authority",
-        keyId: "fixture-key",
-      },
-      tokenGrant: {
-        endpoint: egressOptions.requestCredentials.tokenEndpoint,
-        port: 9445,
-        trustDomain: "fixture.test",
-        bundlePath: join(directory, "unstarted-trust-bundle.json"),
-      },
-    }),
-  });
-  const catalog = new OpenShellCredentialGatewayDriver(
-    { binaries: ["/usr/bin/model-client"] },
-    { id: "openshell-credentials", backend },
-  );
+  const egress =
+    admissionDrivers?.proxy ??
+    new OpenShellCredentialProxyDriver(egressOptions, {
+      id: proxyDriverId,
+      preparedProviders: preparedProvider
+        ? [preparedProvider]
+        : owner
+          ? [githubMetadataProvider]
+          : [],
+      backend,
+      sandbox,
+    });
+  const catalog =
+    admissionDrivers?.catalog ??
+    new OpenShellCredentialGatewayDriver(
+      { binaries: ["/usr/bin/model-client"] },
+      { id: "openshell-credentials", backend },
+    );
+  const gatewayEffects = [];
+  for (const method of ["registerSource", "updateSource", "removeSource"]) {
+    const original = catalog[method].bind(catalog);
+    catalog[method] = (...args) => {
+      gatewayEffects.push(method);
+      return original(...args);
+    };
+  }
   const placement = createTestKubernetesComputeDriver("placement", {
     gatewayRuntime: true,
     modelProvider,
     authentication: { mode: "kubeconfig", kubeconfigPath, context: "fixture" },
   });
+  const computeDriver = {
+    ...createDevelopmentComputeDriver(),
+    normalizeHarnessOverrides: placement.normalizeHarnessOverrides.bind(placement),
+    resolveHarnessConfiguration: placement.resolveHarnessConfiguration.bind(placement),
+    validateHarnessCredentialSources: placement.validateHarnessCredentialSources.bind(placement),
+    // Schema/protocol fixture only: no workload is released by this Compute.
+    validateExecutionAdmission: assertExecutionAdmission,
+    async resolveSandboxNamespace(value) {
+      return physicalPlacement ? placement.resolveSandboxNamespace(value) : value;
+    },
+  };
+  computeDriver.resolveSandboxNamespaceContext = async (value, signal) => ({
+    namespace: await computeDriver.resolveSandboxNamespace(value),
+    kubernetes: {},
+    signal,
+  });
+  const installedDriver =
+    admissionDrivers?.owner ??
+    new InstalledDriver(
+      { id: sandbox.id, implementation: sandbox.implementation, configuration: egressOptions },
+      { capabilities: { sandbox, credential_proxy: egress } },
+      { sandbox: sandbox.id, credential_proxy: egress.id },
+    );
   const app = await appFactory(t, {
     now,
     provisionedPeople: [],
@@ -570,31 +712,30 @@ export async function staticEgressFixture(
     ],
     preparedTokenProof: preparedGitHub && { current: (...args) => owner.current(...args) },
     secretDriver,
-    computeDriver: {
-      ...createDevelopmentComputeDriver(),
-      normalizeHarnessOverrides: placement.normalizeHarnessOverrides.bind(placement),
-      resolveHarnessConfiguration: placement.resolveHarnessConfiguration.bind(placement),
-      validateHarnessCredentialSources: placement.validateHarnessCredentialSources.bind(placement),
-      // Schema/protocol fixture only: no workload is released by this Compute.
-      validateExecutionAdmission: assertExecutionAdmission,
-      async resolveSandboxNamespace(value) {
-        return physicalPlacement ? placement.resolveSandboxNamespace(value) : value;
-      },
-    },
+    computeDriver,
+    namespaceLifecycleBindings: [
+      sandboxNamespaceLifecycleBinding(computeDriver, sandbox, installedDriver),
+    ],
   });
   await app.bootstrap();
   if (!protectedSourceOnly) {
     app.controller.registerDriver(catalog);
     app.controller.selectDriver(catalog.capability, catalog.id);
   }
-  const installedDriver = new InstalledDriver(
-    { id: sandbox.id, implementation: sandbox.implementation, configuration: egressOptions },
-    { capabilities: { sandbox, credential_proxy: egress } },
-    { sandbox: sandbox.id, credential_proxy: egress.id },
-  );
   app.controller.registerDriver(installedDriver);
   app.controller.selectDriver("sandbox", sandbox.id);
-  namespace = await app.createNamespace(`egress-${randomUUID().slice(0, 8)}`, { ready: true });
+  namespace = await app.createNamespace(`egress-${randomUUID().slice(0, 8)}`);
+  runtimeNamespace = physicalPlacement
+    ? await placement.resolveSandboxNamespace(namespace)
+    : namespace;
+  // The protocol's owned Workspace is now addressable before Namespace reconciliation.
+  const ready = await app.controller.handleNamespaceLifecycle(
+    app.principal.id,
+    namespace.id,
+    "ready",
+  );
+  assert.equal(ready.status, "ready");
+  namespace = ready;
   runtimeNamespace = physicalPlacement
     ? await placement.resolveSandboxNamespace(namespace)
     : namespace;
@@ -614,7 +755,32 @@ export async function staticEgressFixture(
       secrets: { api_key: secret.ref },
     });
   }
-  app.controller.selectDriver("credential_proxy", egress.id);
+  if (!gatewayOnly) {
+    app.controller.selectDriver("credential_proxy", egress.id);
+  }
+  const admissionControls = {
+    modelProvider,
+    namespace,
+    secret,
+    path,
+    providers,
+    profiles,
+    gatewayRequests,
+    providerRequests,
+    gatewayEffects,
+    materialReads,
+    legacySource,
+    egress,
+    observed,
+  };
+  if (admissionOnly) {
+    return {
+      ...app,
+      ...admissionControls,
+      fixtureKind: /** @type {const} */ ("admission"),
+      countSecretReads: () => secretReads,
+    };
+  }
   let source = protectedSourceOnly
     ? undefined
     : await post("credential-sources", {
@@ -676,20 +842,17 @@ export async function staticEgressFixture(
   if (!admitRevision) {
     return {
       ...app,
-      namespace,
+      ...admissionControls,
+      fixtureKind: /** @type {const} */ ("undeployed"),
       agent,
       source,
       grant,
-      modelProvider,
-      secret,
-      observed,
+      countSecretReads: () => secretReads,
       credentialProxy: egress,
       egressOptions,
       sandboxDriver: sandbox,
       gatewayClient,
       runtimeNamespace,
-      profiles,
-      providers,
       get secretReads() {
         return secretReads;
       },
@@ -1074,6 +1237,8 @@ export async function staticEgressFixture(
   }
   return {
     ...app,
+    fixtureKind: /** @type {const} */ ("deployed"),
+    gatewayEffects,
     namespace,
     runtimeNamespace,
     modelProvider,
@@ -1175,6 +1340,59 @@ export async function staticEgressFixture(
       assert.equal(result.status, 204, JSON.stringify(result.body));
     },
   };
+}
+
+/** @template {import("node:net").Server} [Provider=never]
+ * @typedef {Awaited<ReturnType<typeof buildStaticEgressFixture<Provider>>>} StaticFixtureResult */
+/** @template {import("node:net").Server} [Provider=never]
+ * @typedef {NonNullable<Parameters<typeof buildStaticEgressFixture<Provider>>[1]>} StaticFixtureOptions */
+/** @template {import("node:net").Server} [Provider=never]
+ * @typedef {Omit<StaticFixtureOptions<Provider>, "admissionOnly" | "gatewayOnly" | "admitRevision">} ExecutionFixtureOptions */
+
+/**
+ * @template {import("node:net").Server} [Provider=never]
+ * @overload
+ * @param {import("node:test").TestContext} t
+ * @param {ExecutionFixtureOptions<Provider> & {admitRevision: false}} options
+ * @returns {Promise<Extract<StaticFixtureResult<Provider>, {fixtureKind: "undeployed"}>>}
+ */
+/**
+ * @template {import("node:net").Server} [Provider=never]
+ * @overload
+ * @param {import("node:test").TestContext} t
+ * @param {ExecutionFixtureOptions<Provider> & {admitRevision?: true}} [options]
+ * @returns {Promise<Extract<StaticFixtureResult<Provider>, {fixtureKind: "deployed"}>>}
+ */
+/**
+ * @template {import("node:net").Server} [Provider=never]
+ * @overload
+ * @param {import("node:test").TestContext} t
+ * @param {ExecutionFixtureOptions<Provider> & {admitRevision?: boolean}} [options]
+ * @returns {Promise<Exclude<StaticFixtureResult<Provider>, {fixtureKind: "admission"}>>}
+ */
+/**
+ * @template {import("node:net").Server} [Provider=never]
+ * @param {import("node:test").TestContext} t
+ * @param {ExecutionFixtureOptions<Provider> & {admitRevision?: boolean}} [options]
+ */
+export async function staticEgressFixture(t, options) {
+  const fixture = await buildStaticEgressFixture(t, options);
+  if (fixture.fixtureKind === "admission") {
+    throw new Error("Expected a static egress fixture.");
+  }
+  return fixture;
+}
+
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {Pick<StaticFixtureOptions, "gatewayOnly" | "includeLegacy" | "now">} [options]
+ */
+export async function staticEgressAdmissionFixture(t, options) {
+  const fixture = await buildStaticEgressFixture(t, { ...options, admissionOnly: true });
+  if (fixture.fixtureKind !== "admission") {
+    throw new Error("Expected an admission fixture.");
+  }
+  return fixture;
 }
 
 /** Explicit trusted acceptance profile for dispatch tests only. The captured owner

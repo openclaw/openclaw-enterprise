@@ -4,7 +4,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { Denied, RequestHead, RequestPlan } from "../../access/backend-contracts.ts";
 import type { JsonValue } from "../../access/json-value.ts";
-import { parseJsonMembers, parseUnambiguousJson } from "../../access/json-members.ts";
+import { parseJsonMembers, parseUnambiguousJson } from "../../../json-members.ts";
 import { isGitHubPullUrl } from "../../access/client-contracts.ts";
 
 export const draftOperationId =

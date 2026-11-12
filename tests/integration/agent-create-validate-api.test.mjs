@@ -172,9 +172,14 @@ test("Agent create preflight refuses a caller without Agent create as Agent crea
 });
 
 test("ordinary creators enable browser access atomically on an unshared Configuration", async (t) => {
+  // A root dot and surrounding whitespace do not consume the DNS hostname budget.
+  const domain = `${"a.".repeat(99)}oce.localhost`;
+  assert.equal(domain.length, 211);
+  const canonicalDomain = `aaa${domain}`;
+  assert.equal(canonicalDomain.length, 214);
   const f = await createConsoleAppFixture(t, {
     publicOrigin: true,
-    nativeAdmin: { enabled: true, domain: "agents.oce.localhost" },
+    nativeAdmin: { enabled: true, domain: `  ${canonicalDomain.toUpperCase()}.  ` },
     nativeAdminGatewayApiKey: "synthetic-browser-create-service-key",
     filesystemConfiguration: true,
   });
@@ -224,7 +229,8 @@ test("ordinary creators enable browser access atomically on an unshared Configur
   assert.equal(saved.data.values.gateway.controlUi.allowedOrigins.length, 1);
   const nativeOrigin = new URL(saved.data.values.gateway.controlUi.allowedOrigins[0]);
   assert.equal(nativeOrigin.protocol, "https:");
-  assert.match(nativeOrigin.hostname, /^agent-[a-f0-9]+\.agents\.oce\.localhost$/);
+  assert.ok(nativeOrigin.hostname.endsWith(`.${canonicalDomain}`));
+  assert.equal(nativeOrigin.hostname.length, 253);
   assert.equal(nativeOrigin.port, new URL(f.origin).port);
   assert.ok(
     saved.data.values.gateway.auth.trustedProxy.requiredHeaders.includes("x-openclaw-scopes"),

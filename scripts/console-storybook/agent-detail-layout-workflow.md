@@ -64,6 +64,13 @@ covers staying on the same source. Both stories use simulated responses. The
 controller-backed browser regression in `tests/browser/console-agent-logs.test.ts`
 checks the source switch through the Console API.
 
+Open **Pages / Agent detail / Deployment regains Secret operate on refocus**
+in its own preview tab. Select **Deploy new version**. Check that the unavailable
+button's accessible description names the Secret in the refusal. Switch to
+another tab and return. The simulated grant clears the refusal and enables
+Deploy on the same draft. Returning to the tab sends no Deploy request.
+Use **Deployment needs Secret operate** to check access that stays denied.
+
 1. Separately, open **Pages / Agent detail / New version activated**
    (`deploymentSucceeded`, Storybook ID `pages-agent-detail--deployment-succeeded`).
    At both widths, confirm its H1 shows a readable Agent name as an independent
@@ -97,6 +104,10 @@ checks the source switch through the Console API.
    selected version's interface directly in a new tab. Review the target and
    Gateway managed-mode warning. Check stopped, unsupported, denied, and failed
    status stories: no enabled launch link appears without available access.
+   In **Browser chat off**, the panel says browser chat is off and offers
+   **Open draft** and **Browser chat settings**. In **Browser chat off,
+   read-only caller**, it asks you to ask someone who can edit the
+   Configuration and offers no settings link.
 5. Open **Components / Workspace / Keep unsaved files**. Choose Instructions and
    User context. Each keeps its edits and Unsaved indicator. Read every file's
    role description. Save one file, then Reload another; each action affects

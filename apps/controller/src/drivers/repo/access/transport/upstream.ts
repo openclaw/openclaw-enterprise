@@ -4,7 +4,7 @@ import type { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 import type { Clock, HeaderFields, RequestHead } from "../backend-contracts.ts";
-import type { ExchangeSender } from "../internal-contracts.ts";
+import type { ExchangeSender, UpstreamConnectFailure } from "../internal-contracts.ts";
 import type { JsonValue } from "../json-value.ts";
 import { ByteLimit, watchdog } from "./streams.ts";
 import { responseHeaders, safeResponseHeaders } from "./response-headers.ts";
@@ -21,6 +21,31 @@ export interface UpstreamSenderOptions {
   readonly upstreamCa?: Uint8Array;
   readonly headerBytes?: number;
   readonly headerPairs?: number;
+}
+
+// A socket or TLS error code (ECONNREFUSED, ETIMEDOUT, CERT_HAS_EXPIRED); never its message.
+function connectErrorCode(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" && /^[A-Z][A-Z0-9_]{1,63}$/.test(code) ? code : "unknown";
+}
+
+const ipv4Literal =
+  /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
+// A resolved or connected address for the operator log, only if it is a plain IP literal.
+// Node supplies it; this file has no node:net capability, so it is checked here, not by isIP.
+function ipLiteral(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > 45) {
+    return undefined;
+  }
+  if (ipv4Literal.test(value)) {
+    return value;
+  }
+  // Only hex digits, colons and dots remain, so the URL parser sees an IPv6 literal or fails.
+  return value.includes(":") &&
+    /^[0-9A-Fa-f:.]+$/.test(value) &&
+    URL.canParse(`https://[${value}]/`)
+    ? value
+    : undefined;
 }
 
 /** One sender owns exactly one exchange; it never retries an upstream request. */
@@ -75,6 +100,34 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
     let failed = false;
     let inputCompleted = false;
     let receivedHeaders = false;
+    // Where the provider connection failed before TLS was established. A stale egress
+    // allowlist (repositoryCredentials.upstreamCidrs) refuses or drops the connect, and
+    // the operator log names this instead of a bare not_dispatched (finding 3169).
+    const hostname = origin.hostname.replace(/^\[|\]$/g, "");
+    const port = Number(origin.port || 443);
+    // Every address the host resolved to, in order: a dual-stack host tries each before the
+    // connect fails. Once TCP connects, only that address matters.
+    let addresses: string[] = [];
+    const noteAddress = (value: unknown) => {
+      const address = ipLiteral(value);
+      if (address !== undefined && !addresses.includes(address) && addresses.length < 16) {
+        addresses.push(address);
+      }
+    };
+    noteAddress(hostname);
+    let tlsEstablished = false;
+    let connectFailure: UpstreamConnectFailure | undefined;
+    const failConnect = (error: string) => {
+      // A local cancel (client gone, deadline) is not a provider connect failure.
+      if (!tlsEstablished && !failed && connectFailure === undefined) {
+        connectFailure = {
+          host: hostname,
+          ...(addresses.length === 0 ? {} : { addresses: [...addresses] }),
+          port,
+          error,
+        };
+      }
+    };
     const pending: Promise<unknown>[] = [];
     const stopUpstream = () => {
       failed = true;
@@ -100,7 +153,16 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
     let stopConnect: (() => void) | undefined;
     let stopHeaders: (() => void) | undefined;
     let stopInput: (() => void) | undefined;
-    const inputStall = watchdog(options.clock, plan.limits.stallMs, cancel);
+    const inputStall = watchdog(options.clock, plan.limits.stallMs, () => {
+      // Before TLS nothing is queued: a stall here is a dropped connect, not a client stall.
+      // With the default limits (connectMs === stallMs) this fires before the connect timer.
+      if (!tlsEstablished && !dispatched) {
+        failConnect("connect-timeout");
+        stopUpstream();
+      } else {
+        cancel();
+      }
+    });
     let responseStall: ReturnType<typeof watchdog> | undefined;
     context.signal.addEventListener("abort", cancel, { once: true });
     try {
@@ -127,8 +189,8 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
         const req = httpsRequest(
           {
             protocol: "https:",
-            hostname: origin.hostname.replace(/^\[|\]$/g, ""),
-            port: origin.port || 443,
+            hostname,
+            port,
             method: plan.method,
             path: plan.target,
             headers,
@@ -143,7 +205,9 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
             resolveResponse(response);
           },
         );
-        req.once("error", () => {
+        req.once("error", (cause) => {
+          noteAddress((cause as { address?: unknown } | null)?.address);
+          failConnect(connectErrorCode(cause));
           const error = new Error("upstream-failed");
           rejectResponse(error);
           tlsFailed(error);
@@ -153,7 +217,20 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
           resolveSocket();
         });
         req.once("socket", (socket) => {
+          // Node emits one lookup event per resolved address.
+          socket.on("lookup", (error: Error | null, address: unknown) => {
+            if (!error) {
+              noteAddress(address);
+            }
+          });
+          socket.once("connect", () => {
+            const connected = ipLiteral(socket.remoteAddress);
+            if (connected !== undefined) {
+              addresses = [connected];
+            }
+          });
           socket.once("secureConnect", () => {
+            tlsEstablished = true;
             stopConnect?.();
             tlsReady();
           });
@@ -166,7 +243,14 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
         Math.max(0, context.deadlineMonoMs - options.clock.monotonicNow()),
         cancel,
       );
-      stopConnect = options.clock.schedule(plan.limits.connectMs, cancel);
+      stopConnect = options.clock.schedule(plan.limits.connectMs, () => {
+        // A dropped connect (a NetworkPolicy without reject) ends here, not in a socket error.
+        // TLS never completed, so nothing was dispatched: close only the provider side, as a
+        // refused connect does. Destroying the caller's socket would abort the exchange before
+        // it reports this failure, and the Agent would get a dropped connection, not a 503.
+        failConnect("connect-timeout");
+        stopUpstream();
+      });
       stopInput = options.clock.schedule(plan.limits.inputMs, cancel);
       await connected;
       const req = outbound;
@@ -309,7 +393,13 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
       if (privateRequest.settle) {
         stopUpstream();
         if (!settling) {
-          return await privateRequest.settle(dispatched ? "outcome_unknown" : "not-submitted");
+          const receipt = await privateRequest.settle(
+            dispatched ? "outcome_unknown" : "not-submitted",
+          );
+          // The receipt body is what the Agent receives; the connect failure is for the log only.
+          return !dispatched && connectFailure !== undefined
+            ? { ...receipt, upstreamConnect: connectFailure }
+            : receipt;
         }
         // A commit may already have happened. Only a same-operation receipt lookup can resolve it.
       }
@@ -326,6 +416,13 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
         } else {
           cancel();
         }
+      }
+      if (!dispatched && connectFailure !== undefined) {
+        return {
+          kind: "not-dispatched",
+          code: "upstream-connect-failed",
+          upstreamConnect: connectFailure,
+        };
       }
       return {
         kind: dispatched ? "possibly-dispatched" : "not-dispatched",

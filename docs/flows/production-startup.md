@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-08"
-last_updated_session: "authoring-run/ef34e45f-633b-49fb-8884-cdf519ed7d40"
+updated: "2026-11-11"
+last_updated_session: "authoring-run/89773c17-5c87-4c2d-aa19-3b5a0af84b68"
 ---
 
 # Production Startup Flow
@@ -76,6 +76,9 @@ graph TD
 Migration, bootstrap, API and worker use
 [`createPostgresPool`](../../packages/occ/src/state/postgres-pool.ts) with
 [password or Azure workload-identity authentication](../reference/settings/operations.md#postgresql-connection-authentication).
+For each password-mode connection, the factory parses the URL before applying
+explicit caller limits and startup options. It retains TLS-file reads and the
+effective IP-host certificate check.
 Failover, maintenance restart, `idle_session_timeout` or proxy reset discards the
 idle client and logs only its error code to stderr as `database.idle-client-error`.
 The process continues; the next query opens a new connection.
@@ -209,12 +212,16 @@ IdP and Gateway roots for `NODE_EXTRA_CA_CERTS`;
 `deploy/helm/openclaw-enterprise/files/check-api-database-ca.mjs` preloads to refuse
 database TLS not pinned to that CA.
 
-After initialization, API readiness requires listener, Better Auth, database,
-Installation YAML, Driver, Backend membership, and Compute preflight validation. Private routes, `/healthz` and
-database-backed `/readyz` use the operator-managed endpoint. The startup probe
-allows 120 one-second failures: two minutes to listen, then readiness within a second.
-The worker's exec probes start Node inside its CPU limit, so each has a 5-second
-timeout; its startup probe allows 24 five-second failures, the same two minutes.
+Startup validates the listener, Better Auth, database, Installation YAML,
+Drivers, Backend membership, and Compute preflight. The operator-managed endpoint
+serves private routes, `/healthz`, and `/readyz`.
+`apps/controller/src/composition/postgres-readiness.ts:createPostgresReadinessCheck`
+shares one application-pool `SELECT 1` per instance across overlapping `GET` and
+implicit `HEAD` probes until PostgreSQL settles. Disconnects cannot release it;
+later probes query afresh.
+The startup probe allows 120 one-second failures; readiness has a one-second
+timeout. Worker exec probes run Node under its CPU limit; 24 five-second startup failures
+allow two minutes.
 
 `apps/controller/src/index.ts:createFastifyApp`
 
@@ -382,6 +389,10 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 17:05: Coalesce database readiness. (authoring-run/89773c17-5c87-4c2d-aa19-3b5a0af84b68 - 755ebc38280f84b3ec420cc0b2a475ed1fb2be0a)
+
+- 2026-11-11 15:06: Preserve explicit PostgreSQL caller options after URL parsing. (authoring-run/8367ab20-ba98-4ec6-9700-296442c6eb96 - ee419a1969d414d4aa934c59b39b868e8777b127)
 
 - 2026-11-07 21:10: Stop install dispatch on intent output failure and return final report write errors. (authoring-run/f573af51-9766-49f8-88ff-2c6294283466 - 9b23338c49448b9fc56d637a53bd0d71ec3be76b)
 

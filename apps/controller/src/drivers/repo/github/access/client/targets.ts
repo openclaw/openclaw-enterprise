@@ -8,6 +8,20 @@ function gitRepositoryPath(value: string): string | undefined {
     : undefined;
 }
 
+function matchGitRepositoryUrl(manifest: RuntimeRepositoryManifest, url: URL) {
+  const path = gitRepositoryPath(url.pathname.slice(1));
+  if (path === undefined) {
+    return [];
+  }
+  return manifest.bindings.filter(({ client }) => {
+    const repository = client.repository.toLowerCase();
+    return (
+      [client.gatewayOrigin, `https://${client.canonicalApiHost}`].includes(url.origin) &&
+      [repository, `${repository}.git`].includes(path)
+    );
+  });
+}
+
 function selectBinding(
   matches: readonly RuntimeRepositoryBinding[],
   pinned?: RuntimeRepositoryBinding,
@@ -109,17 +123,7 @@ function gitPushDestinations(
     }
     return [];
   }
-  const path = gitRepositoryPath(url.pathname.slice(1));
-  if (path === undefined) {
-    return [];
-  }
-  return manifest.bindings.filter(({ client }) => {
-    const repository = client.repository.toLowerCase();
-    return (
-      [client.gatewayOrigin, "https://" + client.canonicalApiHost].includes(url.origin) &&
-      [repository, repository + ".git"].includes(path)
-    );
-  });
+  return matchGitRepositoryUrl(manifest, url);
 }
 
 /**
@@ -191,14 +195,7 @@ export function selectImplicitGhRepository(
       throw new Error("name-one-repository-target");
     }
     const url = new URL(urls[0]!);
-    const matches = manifest.bindings.filter(({ client }) => {
-      const repository = client.repository.toLowerCase();
-      return (
-        [client.gatewayOrigin, `https://${client.canonicalApiHost}`].includes(url.origin) &&
-        [repository, `${repository}.git`].includes(gitRepositoryPath(url.pathname.slice(1)) ?? "")
-      );
-    });
-    const binding = selectBinding(matches);
+    const binding = selectBinding(matchGitRepositoryUrl(manifest, url));
     if (selected && selected !== binding) {
       throw new Error("name-one-repository-target");
     }

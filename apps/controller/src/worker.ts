@@ -1,3 +1,4 @@
+import type { NamespaceLifecycleEvidence } from "@openclaw-enterprise/occ";
 import { reduceCredentialPolicy } from "@openclaw-enterprise/occ";
 import {
   assertExecutionReleaseAllowed,
@@ -374,6 +375,7 @@ function loggedErrorClass(error: unknown): string {
 function revisionFailureLogFields(error: unknown): {
   readonly dependency?: string;
   readonly cause?: string;
+  readonly failure?: string;
   readonly status?: number;
   readonly reason?: string;
   readonly method?: string;
@@ -400,6 +402,7 @@ function computeCleanupLogFields(error: unknown): { readonly cleanupCause?: stri
 function primaryFailureLogFields(error: unknown): {
   readonly dependency?: string;
   readonly cause?: string;
+  readonly failure?: string;
   readonly status?: number;
   readonly reason?: string;
   readonly method?: string;
@@ -411,6 +414,9 @@ function primaryFailureLogFields(error: unknown): {
   }
   const record = error !== null && typeof error === "object" ? error : undefined;
   const errorClass = loggedErrorClass(error);
+  if (error instanceof ActivationFailedError && error.permissionDenials !== undefined) {
+    return { cause: errorClass, failure: error.permissionDenials.join("_") };
+  }
   if (error instanceof DependencyUnavailableError && error.requestDiagnostic !== undefined) {
     const { method, grpcStatus, validationCategory } = error.requestDiagnostic;
     return { cause: errorClass, method, grpcStatus, validationCategory };
@@ -548,6 +554,7 @@ function revisionReadinessRecheckMs(ageMs: number): number {
 }
 
 interface DispatchResult {
+  readonly namespaceParticipants?: readonly NamespaceLifecycleEvidence[];
   readonly outcome: Outcome;
   readonly code: string;
   readonly observation?: Observation;
@@ -964,12 +971,7 @@ function validLifecycleHooks(driver: Driver): boolean {
   if (typeof hooks !== "object" || hooks === null || Array.isArray(hooks)) {
     return false;
   }
-  const phases = new Set([
-    "afterNamespacePrepared",
-    "beforeWorkloadStart",
-    "beforeWorkloadStop",
-    "beforeNamespaceDelete",
-  ]);
+  const phases = new Set(["beforeWorkloadStart", "beforeWorkloadStop"]);
   const candidate = hooks as unknown as Record<string, unknown>;
   return (
     Object.keys(candidate).length > 0 &&
@@ -1096,7 +1098,8 @@ function runtimeFailureFromObservation(observation: unknown): RuntimeFailureEvid
 // for the container's CPU limit; the others are a probe timeout or failure, a
 // failed Codex login, a missing probe configuration, and an invalid plugin
 // approver configuration. Kubernetes Compute reports a workspace setup refusal
-// that every init container restart repeats (finding 1677). Unknown codes stay
+// that every init container restart repeats (finding 1677), and a runtime
+// container in a crash loop as UNAVAILABLE (finding 3041). Unknown codes stay
 // pending until the deadline.
 const HELD_RUNTIME_FAILURE_CODES: Readonly<Record<string, string>> = Object.freeze({
   AUTHENTICATION_FAILED: "RUNTIME_AUTHENTICATION_FAILED",
@@ -1173,6 +1176,7 @@ export class ControllerWorker {
   private readonly policyCeiling: readonly import("@openclaw-enterprise/contracts").SandboxNetworkGrant[];
   private readonly queue: PostgresWorkQueue;
   private readonly compute: ComputeDriver;
+  private readonly namespaceLifecycleBindings: InstallationRuntimeDrivers["namespaceLifecycleBindings"];
   private readonly configuration: ConfigurationDriver | undefined;
   private readonly queueOptions: PostgresWorkQueueOptions;
   private readonly iamDriverId: string;
@@ -1313,6 +1317,7 @@ export class ControllerWorker {
       throw new Error("A before-commit Compute Driver must implement activateRevision.");
     }
     this.compute = computeDriver;
+    this.namespaceLifecycleBindings = drivers?.namespaceLifecycleBindings;
     const selectedSecretDriver = drivers?.secretDriver;
     this.secretDriver = selectedSecretDriver;
     const selectedSecretConfiguration = drivers?.installation.drivers.secret;
@@ -1444,6 +1449,7 @@ export class ControllerWorker {
     validatePersistedNativeIAMState(await this.loadIAMState());
     this.attachLifecycleDrivers(this.iam);
     const provisioningOptions = {
+      namespaceLifecycleBindings: this.namespaceLifecycleBindings,
       preparedTokens: this.preparedTokens,
       state: this.state,
       sandboxNetworkPolicyCeiling: this.policyCeiling,
@@ -5088,7 +5094,14 @@ export class ControllerWorker {
         throw error;
       }
       const pending = error.pending();
-      await this.finalizeRevision(claim, pending.result, pending.logFields);
+      const permissionDenials =
+        result.code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE"
+          ? failureLogFields?.failure
+          : undefined;
+      await this.finalizeRevision(claim, pending.result, {
+        ...pending.logFields,
+        ...(permissionDenials === undefined ? {} : { failure: permissionDenials }),
+      });
     }
   }
 
@@ -6069,7 +6082,7 @@ export class ControllerWorker {
     claim: ClaimedWork,
     namespace: Readonly<Namespace>,
   ): Promise<DispatchResult> {
-    return this.withClaimHeartbeat(claim, async () => {
+    return this.withClaimHeartbeat(claim, async (signal) => {
       if (claim.namespaceTarget === "deleted") {
         const attempts = await this.state.read((view) =>
           view.repositorySessions.listNamespaceAttempts(namespace.id),
@@ -6084,10 +6097,27 @@ export class ControllerWorker {
           }
         }
       }
+      const namespaceParticipants: NamespaceLifecycleEvidence[] = [];
+      const observe = () =>
+        this.provisioningController!.observeNamespaceLifecycle(
+          namespace,
+          claim.namespaceTarget ?? "ready",
+          signal,
+          (evidence) => {
+            namespaceParticipants.push(evidence);
+            this.emit({
+              event: "worker.namespace-participant",
+              actorId: claim.actorId,
+              namespaceId: namespace.id,
+              workId: claim.idempotencyKey,
+              ...evidence,
+            });
+          },
+        );
       const observed =
         claim.namespaceTarget === "ready"
-          ? await captureNamespaceEnsureHint(() => this.compute.ensureNamespace(namespace))
-          : { observation: await this.compute.deleteNamespace(namespace) };
+          ? await captureNamespaceEnsureHint(async () => (await observe()) as NamespaceEnsureResult)
+          : { observation: await observe() };
       const { observation } = observed;
       if (!validObservation(observation, namespace.id, claim.namespaceTarget ?? "ready")) {
         return { outcome: "permanent", code: "INVALID_DRIVER_OBSERVATION" };
@@ -6107,6 +6137,7 @@ export class ControllerWorker {
       return {
         outcome,
         code: complete ? "NAMESPACE_RECONCILED" : "NAMESPACE_INCOMPLETE",
+        namespaceParticipants,
         ...observed,
       };
     });
@@ -7647,6 +7678,9 @@ export class ControllerWorker {
       return;
     }
     const details = {
+      ...(result.namespaceParticipants === undefined
+        ? {}
+        : { participants: result.namespaceParticipants.map((evidence) => ({ ...evidence })) }),
       computeDriverId: this.compute.id,
       ...("namespaceReady" in observation
         ? { namespaceReady: observation.namespaceReady }

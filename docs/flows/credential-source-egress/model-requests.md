@@ -21,7 +21,8 @@ defines the guarantee. Existing strict exchanges retain their
 
 - `packages/occ/src/index.ts:createCredentialSource` selects an explicitly
   requested `authorization: "online-request"` provider after source and Secret
-  permission checks. With Proxy selected, eligible static sources default to strict admission.
+  permission checks. Omitting the profile selects strict admission. The bundled OpenShell owner
+  [refuses new strict OpenAI sources](../../reference/credential-sources/protected-inference.md#bundled-openshell-admission).
 - `packages/occ/src/index.ts:admitProxyPlan` records the selected profile, source,
   grant and execution. The operator and Agent need source `operate` permission.
 - `apps/controller/src/drivers/egress-proxy/openshell-request-credential.ts:authorizeOpenShellRequest`

@@ -27,14 +27,19 @@ paths or app-server settings.
 
 ## Gateway storage
 
-Each real gateway, embedded or dedicated, receives one private `10Gi`
-`ReadWriteOnce` filesystem claim named `gateway-state-<agent-hash>`, where
-`agent-hash` is the first 12 hexadecimal characters of `sha256(agentId)`.
-Claims live in the tenant namespace in a single cluster; dedicated Gateway claims
-use the control-cluster Gateway namespace only with the two-cluster profile. The required
-Kubernetes DNS-subdomain `runtime.gatewayStorageClassName` selects an
-operator-provisioned StorageClass for a local or cloud block disk mounted as a
-filesystem.
+Each real Gateway has a private RWO filesystem claim named
+`gateway-state-<agent-hash>`, using the first 12 hexadecimal characters of
+`sha256(agentId)`. Claims live in the tenant namespace; two-cluster dedicated
+Gateways use the control-cluster Gateway namespace. Required
+`runtime.gatewayStorageClassName` selects an operator-provisioned local or cloud
+block StorageClass by DNS-subdomain name.
+
+Select `runtime.gatewayStorageSizeGiB` before creating claims: integer 1–65536 GiB,
+default 10, subject to provider support. Keep this Installation-wide setting
+fixed until normal Agent deletion removes all claims under their original setting. Reuse and final deletion reject
+different capacities without resizing, replacing or adopting claims. Preparation
+may detect the mismatch after stopping the predecessor. Restore the original setting before creating different-sized claims;
+no single setting supports a mixed population.
 
 The filesystem must support SQLite locking, durable `fsync`, and colocated
 database and WAL/SHM files. The Driver checks claim configuration, not filesystem
@@ -66,8 +71,7 @@ custom lifecycle environment, additional Secret bindings, or repository tooling.
 Replacing the Pod discards its keys. A later container's locks or a missing
 record also require [operator recovery](../../../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
 
-Only the Gateway Pod mounts these writable directories, including SQLite
-databases and their WAL/SHM siblings:
+Only the Gateway Pod mounts these writable directories:
 
 | Private subpath             | Gateway mount                               |
 | --------------------------- | ------------------------------------------- |
@@ -212,30 +216,27 @@ After OCC accepts a newer version that requires earlier workloads to stop, the
 worker stops their reconciliation and maintenance;
 see the [Compute replacement contract](../compute.md#production-revision-stages).
 
-RWX Harness or Gateway claims are rejected during reconciliation and final
-Agent deletion.
+Reconciliation and final Agent deletion refuse RWX workspace or Gateway claims.
+RWO cannot fence writers on a partitioned node. Terminate the Pod and allow safe
+provider detach/attach. The Driver never force-detaches disks. Local-path PVs retain
+node affinity; moving data across nodes requires a portable StorageClass.
 
-As with the Gateway claim, RWO does not fence writers on a partitioned node. Pod
-termination and the storage provider's safe detach/attach behavior remain
-required; the Driver never force detaches a disk. A local-path PV keeps its node
-affinity and cannot move its data to another node. Cross-node rescheduling needs
-an appropriate portable StorageClass, not RWX.
+Both claims retain Namespace and Agent ownership across replacements.
+Reconciliation leaves foreign, terminating or incompatible claims untouched and refuses reuse.
+Create claims before Pods. Waiting for binding would deadlock `WaitForFirstConsumer`.
+Workload readiness gates activation. Stop and retirement retain both claims.
+Agent deletion retires all revisions, then deletes owned claims by UID.
+On cleanup failure, deletion stays pending and the Agent keeps its database identity for retry.
 
-Both claims retain Namespace and Agent owners across version and Gateway Pod
-changes. Reconciliation rejects foreign, terminating, or incompatible claims
-without mutation. Claims precede consumers; readiness uses the Gateway workload.
-Waiting for `Bound` before creating Pods would deadlock `WaitForFirstConsumer`
-storage classes. Stopping or retiring an Agent revision retains
-both claims, including when the gateway has already stopped. Agent deletion
-retires every Agent revision before its final cleanup hook deletes the owned claims
-using their exact Kubernetes UIDs. A cleanup failure keeps deletion pending
-for retry and preserves the Agent's database identity.
+## Optional scratch storage
+
+For `/sandbox/scratch` storage, see [configuration](configuration.md#scratch-volumes)
+and [setup](../../../guides/topics/remote-harness.md#add-operator-owned-scratch-storage).
 
 ## Managed native configuration
 
-How runtime gateways read the managed native configuration, and when native
-admin editing uses a writable copy, is in
-[Managed native configuration](managed-native-configuration.md).
+See [Managed native configuration](managed-native-configuration.md) for Gateway
+configuration reads and writable native-admin copies.
 
 ## Runtime credentials
 
