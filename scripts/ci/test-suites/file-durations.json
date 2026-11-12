@@ -262,7 +262,7 @@
     "tests/integration/postgres-external-protected-git.test.ts": 75000,
     "tests/integration/postgres-oidc-recovery-replacement.test.mjs": 5000,
     "tests/integration/postgres-namespace-iam-policy.test.mjs": 3700,
-    "tests/integration/postgres-native-iam-policy-barrier.test.mjs": 44300,
+    "tests/integration/postgres-native-iam-policy-barrier.test.ts": 44300,
     "tests/integration/postgres-openshell-git-routes.test.ts": 700,
     "tests/integration/postgres-openshell-online-git-journey.test.ts": 8700,
     "tests/integration/postgres-openshell-standing-git-transfer.test.ts": 133000,
