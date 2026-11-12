@@ -1934,7 +1934,10 @@ test(
     );
     if (nativeTest) {
       await nativeTest;
-      await nativeWork;
+      // A timed-out subtest can finish reporting before its body stops. Drain the
+      // body before mutating the dedicated Agent, even when the native proof failed.
+      await Promise.allSettled([nativeWork]);
+      context.signal.throwIfAborted();
       assert.equal(
         first.namespaceId,
         nativeNamespace.id,
@@ -2136,5 +2139,7 @@ test(
         values: original.values,
       });
     }
+    // Preserve the underlying error if the native body rejected after its deadline.
+    await nativeWork;
   },
 );
