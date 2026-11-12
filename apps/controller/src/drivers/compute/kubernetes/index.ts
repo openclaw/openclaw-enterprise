@@ -1,3 +1,7 @@
+import {
+  observeWorkspaceNodeRead,
+  recordWorkspaceNodeObservation,
+} from "../../../gateway/workspace-node-observation.ts";
 import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/contracts";
 import type { OpenShellCredentialAttachments } from "../../sandbox/openshell-credential-attachments.ts";
 import { networkPolicySpecToJson } from "../../kubernetes/network-policy.ts";
@@ -12709,7 +12713,17 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     );
   }
 
-  private async workspaceNodeReady(
+  private workspaceNodeReady(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+    pairingWaitMs = 0,
+  ): Promise<boolean> {
+    return observeWorkspaceNodeRead(revision.id, () =>
+      this.readWorkspaceNodeReady(revision, namespace, pairingWaitMs),
+    );
+  }
+
+  private async readWorkspaceNodeReady(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
     pairingWaitMs = 0,
@@ -12727,6 +12741,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       this.workspaceNodeOwnership(revision),
     );
     if (initialSecret === undefined) {
+      recordWorkspaceNodeObservation("no confirmed device");
       return false;
     }
     let secret: ManagedKubernetesObject<"Secret"> = initialSecret;
@@ -12843,6 +12858,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       if (Number(read("expiresAtMs")) <= Date.now()) {
         throw new Error("Workspace node setup expired without an observed enrollment.");
       }
+      recordWorkspaceNodeObservation("no confirmed device");
       return false;
     }
     const confirmation = await this.confirmWorkspaceNodeSetup(
