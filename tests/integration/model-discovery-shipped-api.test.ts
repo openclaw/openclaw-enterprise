@@ -152,13 +152,18 @@ test("shipped models API lists visible Codex models from a separate catalog proc
   t.after(() => proxy.child.kill());
   const catalog = await readyLine(proxy.child, "catalog.ready");
 
+  const catalogProxy = `http://127.0.0.1:${catalog.port}`;
+  const noProxy = "localhost,127.0.0.1,[::1]";
   const controller = spawnNode(
     controllerScript,
     [],
     {
       ...process.env,
       NODE_USE_ENV_PROXY: "1",
-      HTTPS_PROXY: `http://127.0.0.1:${catalog.port}`,
+      HTTPS_PROXY: catalogProxy,
+      https_proxy: catalogProxy,
+      NO_PROXY: noProxy,
+      no_proxy: noProxy,
       NODE_EXTRA_CA_CERTS: caCert,
     },
     "controller",
