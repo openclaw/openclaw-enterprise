@@ -95,6 +95,10 @@ worker version tests with `OCC_TEST_DATABASE_URL` set. The
 deadline, changed-recipient refusal, successor issuance, and withdrawal. A separate
 issuer with standing permission removed must refuse issuance. It uses the real PostgreSQL worker
 and credential owner with controlled OpenShell and GitHub protocol peers.
+The pending-successor refusal cases run in
+`postgres-openshell-standing-successor-refusal.test.ts`. Separate test processes
+isolate the issuer's global HTTPS transport while real expiry waits overlap;
+cases within each file stay serial.
 These checks do not prove a running Kubernetes Pod or model turn.
 The final custody check moves only stored provider timestamps past verified expiry
 and clock skew; it asserts material erasure without a revocation request.
