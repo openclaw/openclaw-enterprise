@@ -52,6 +52,7 @@ async function fakeCommand({
   const initialState = store.json;
   const state = JSON.parse(initialState);
   const equals = (actual, expected) => JSON.stringify(actual) === JSON.stringify(expected);
+  const postgresContainerId = (project) => createHash("sha256").update(project).digest("hex");
   const configId = "sha256:" + "b".repeat(64);
   const manifestDigest = "sha256:" + "c".repeat(64);
   // The node of this fixture's cluster that a container name refers to, as one of the
@@ -244,6 +245,25 @@ async function fakeCommand({
       state.tag = args[2];
       return finish();
     }
+    if (command === "podman" && equals(args.slice(0, 2), ["ps", "--no-trunc"])) {
+      const project = [...postgresServers.keys()].find((name) =>
+        equals(args, [
+          "ps",
+          "--no-trunc",
+          "--filter",
+          `label=com.docker.compose.project=${name}`,
+          "--filter",
+          "label=com.docker.compose.service=postgres",
+          "--format",
+          "{{.ID}}",
+        ]),
+      );
+      assert.ok(
+        project,
+        "Podman PostgreSQL lookup must match an active Compose project and service",
+      );
+      return finish(postgresContainerId(project) + "\n");
+    }
     if (args[0] === "compose" && args[1] === "-f" && args[3] === "-p") {
       assert.match(args[4], /^openclaw_ci_pg_/);
       if (equals(args.slice(5), ["up", "-d", "--wait"])) {
@@ -266,9 +286,9 @@ async function fakeCommand({
         );
         return finish();
       }
-      if (equals(args.slice(5), ["ps", "-q", "postgres"])) {
+      if (command === "docker" && equals(args.slice(5), ["ps", "-q", "postgres"])) {
         assert.ok(postgresServers.has(args[4]));
-        return finish(createHash("sha256").update(args[4]).digest("hex") + "\n");
+        return finish(postgresContainerId(args[4]) + "\n");
       }
       if (equals(args.slice(5), ["down", "--volumes", "--remove-orphans"])) {
         await postgresServers.get(args[4])?.close();
@@ -288,17 +308,13 @@ async function fakeCommand({
     }
     if (equals(args.slice(0, 3), ["network", "connect", `k3d-${state.cluster}`])) {
       assert.ok(
-        [...postgresServers.keys()].some(
-          (project) => createHash("sha256").update(project).digest("hex") === args[3],
-        ),
+        [...postgresServers.keys()].some((project) => postgresContainerId(project) === args[3]),
       );
       return finish();
     }
     if (equals(args.slice(0, 3), ["inspect", "--format", "{{json .NetworkSettings.Ports}}"])) {
       const [, server] =
-        [...postgresServers].find(
-          ([project]) => createHash("sha256").update(project).digest("hex") === args[3],
-        ) ?? [];
+        [...postgresServers].find(([project]) => postgresContainerId(project) === args[3]) ?? [];
       assert.ok(server);
       return finish(
         JSON.stringify({ "5432/tcp": [{ HostIp: "127.0.0.1", HostPort: String(server.port) }] }),
