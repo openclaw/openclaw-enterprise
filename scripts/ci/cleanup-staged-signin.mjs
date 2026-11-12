@@ -16,7 +16,7 @@ import {
   runFixtureCommand,
 } from "../../tests/helpers/production-rehearsal-custody.ts";
 import { caseName } from "./prepared-signin-case.mjs";
-import { restrictStagingProcess } from "./prepare-staged-signin.mjs";
+import { restrictStagingProcess } from "./prepare-staged-signin.ts";
 
 // Evaluate only after the supervisor has accounted for all descendants. Preserve
 // the first proof failure while still releasing resources with confirmed custody.

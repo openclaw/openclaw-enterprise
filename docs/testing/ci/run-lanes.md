@@ -53,7 +53,9 @@ manually prepared lane has run.
 
 The runner removes inherited test selectors unless the manifest declares them.
 `requiredEnv` fails when an input is missing or empty; `optionalEnv` forwards an
-input only when supplied. Both may be declared on a lane or a file.
+input only when supplied. Both may be declared on a lane or a file. A lane's
+`focusedEnv` extends `optionalEnv` only after `--file` selects an exact file
+in that lane.
 File-specific test selectors do not reach sibling files, and optional inputs do
 not select a file or change its required-case inventory.
 
@@ -216,10 +218,14 @@ wire tests. Follow the selected lane's setup requirements first.
 
 To select one top-level standalone Node.js case, keep `--file` and add
 `--test-name`. With Docker Compose available, this example prepares PostgreSQL,
-runs the idle-backend regression, and cleans up:
+runs the idle-backend regression, and cleans up. Run it from the root of the
+checkout you want to test. The pnpm prefix checks its installed dependencies
+before the runner starts Docker. If pnpm reports a stale installation, run
+`corepack pnpm install --frozen-lockfile` in that checkout and retry. The
+runner’s `--root` option does not change the directory pnpm checks.
 
 ```sh
-node scripts/ci/run-tests.mjs run postgres-platform --lifecycle complete \
+corepack pnpm exec node scripts/ci/run-tests.mjs run postgres-platform --lifecycle complete \
   --attempt "$HOME/oce-postgres-idle-attempt-1" \
   --file tests/integration/postgres-connection-auth.test.mjs \
   --test-name 'the pool survives PostgreSQL terminating an idle backend'
@@ -286,10 +292,11 @@ or restore host settings changed outside those owners.
 
 ### Keep an owned service between file runs
 
-Prepare infrastructure on a disposable host. Keep the private state file until cleanup completes:
+From the checkout root on a disposable host, prepare the lane and keep its private
+state file until cleanup completes.
 
 ```sh
-node scripts/ci/prepare.mjs --lane <lane> --state <private-state-file>
+corepack pnpm exec node scripts/ci/prepare.mjs --lane <lane> --state <private-state-file>
 node scripts/ci/run-tests.mjs run <lane> --state <private-state-file> --results <results-file>
 node scripts/ci/cleanup.mjs --state <private-state-file>
 ```

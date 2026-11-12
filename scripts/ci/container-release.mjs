@@ -20,7 +20,7 @@ const integerPattern = /^[1-9][0-9]*$/;
 // startup files one at a time, since some cases measure timing.
 // container-release.test.mjs pins this list to the lane manifests.
 export const runtimeImageSmokeTests = Object.freeze([
-  "tests/helpers/workspace-gateway-relay-container.test.mjs",
+  "tests/helpers/workspace-gateway-relay-container.test.ts",
   "tests/integration/codex-plugin-stdio-real.test.ts",
   "tests/integration/runtime-image-startup.test.mjs",
   "tests/integration/runtime-image-gateway-workspace.test.ts",
@@ -31,7 +31,7 @@ export const runtimeImageSmokeTests = Object.freeze([
   "tests/integration/runtime-image-startup-probe.test.mjs",
   "tests/integration/runtime-image-codex-readiness.test.ts",
   "tests/integration/runtime-image-startup-termination.test.ts",
-  "tests/integration/runtime-image-gateway-unclean-restart.test.mjs",
+  "tests/integration/runtime-image-gateway-unclean-restart.test.ts",
   "tests/integration/runtime-image-gateway-retained-state.test.mjs",
   "tests/integration/runtime-image-workspace-setup-lock.test.ts",
   "tests/integration/runtime-image-gateway-peer.test.mjs",
@@ -40,6 +40,7 @@ export const runtimeImageSmokeTests = Object.freeze([
   "tests/integration/runtime-image-node-state-lock.test.ts",
   "tests/integration/runtime-image-codex-local-plugins.test.ts",
   "tests/integration/sandbox-driver-startup.test.mjs",
+  "tests/integration/sandbox-driver-startup-validation.test.ts",
   "tests/integration/sandbox-driver-installation-configuration.test.ts",
   "tests/integration/sandbox-driver-ipv6-endpoints.test.ts",
   "tests/integration/sandbox-driver-codex-app-server.test.ts",

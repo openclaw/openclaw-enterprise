@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { failureSecrets } from "../../scripts/ci/failure-redaction.mjs";
-import { podFailureDiagnostic } from "./k3d-failure-diagnostics.mjs";
+import { podFailureDiagnostic } from "./k3d-failure-diagnostics.ts";
 import {
   createKubernetesClient,
   diagnosticDeadlineMs,

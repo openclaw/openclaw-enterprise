@@ -22,6 +22,7 @@ pnpm format:check
 pnpm typecheck
 pnpm openapi:check
 pnpm test:conformance
+pnpm cli:build
 pnpm test:integration
 ```
 
@@ -36,6 +37,14 @@ Run one file or one named case:
 ```sh
 node --test tests/integration/secret-api.test.mjs
 node --test --test-name-pattern='part of the test name' tests/integration/secret-api.test.mjs
+```
+
+The first-Agent startup suite invokes the checkout's real CLI. Rebuild it from
+current source before running that file by itself:
+
+```sh
+pnpm cli:build
+node --test tests/integration/first-agent-startup.test.mjs
 ```
 
 ## Linting and formatting
@@ -314,13 +323,13 @@ traces, or credentials.
 
 For the separate `k3d-otel` model lane, set `OCC_TEST_OPENAI_MODEL`, a
 digest-pinned `NODE_BASE_IMAGE`, and an existing authorized `OPENAI_API_KEY`.
-Use a matching installed dependency graph and a fresh state directory:
+Run from the checkout root with a fresh state directory.
 
 ```sh
 OBS_LANE=k3d-otel
 OBS_RUN_DIR=$(mktemp -d)
-pnpm_config_verify_deps_before_run=false node scripts/ci/prepare.mjs --lane "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" && \
-  pnpm_config_verify_deps_before_run=false node scripts/ci/run-tests.mjs run "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" --results "$OBS_RUN_DIR/results.json"
+corepack pnpm exec node scripts/ci/prepare.mjs --lane "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" && \
+  corepack pnpm exec node scripts/ci/run-tests.mjs run "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" --results "$OBS_RUN_DIR/results.json"
 ```
 
 Inspect results and clean up as above. The model lane checks embedded and
@@ -350,7 +359,7 @@ real native sender image and requires `OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE` in
 its prepared state. To run both installed cases in that environment:
 
 ```sh
-OCC_TEST_PRODUCTION_OBSERVABILITY=1 node --test tests/integration/production-observability-k3d.test.mjs
+OCC_TEST_PRODUCTION_OBSERVABILITY=1 node --test tests/integration/production-observability-k3d.test.ts
 ```
 
 Both cases must pass. The receiver writes decoded OTLP to a temporary volume.

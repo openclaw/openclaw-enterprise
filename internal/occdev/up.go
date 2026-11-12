@@ -226,10 +226,6 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err := r.checkDevelopmentHostPorts(ctx, developmentStack{composeProject: state.ComposeProject, cluster: state.Cluster}, hostPorts); err != nil {
 		return err
 	}
-	snapshot, err := yaml.Marshal(escapeInterpolation(rendered))
-	if err != nil {
-		return err
-	}
 	// The exclusive directory claim is the ownership boundary, including concurrent starts.
 	if err := os.Mkdir(directory, 0700); err != nil {
 		return err
@@ -244,7 +240,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 		if result == nil {
 			return
 		}
-		if os.Getenv("OCC_DEVELOPMENT_KEEP_ON_FAILURE") != "" {
+		if started && os.Getenv("OCC_DEVELOPMENT_KEEP_ON_FAILURE") != "" {
 			// Inspection override: keep the failed stack, the state directory, and
 			// any copied service key for diagnosis; occ dev down with the same
 			// state directory performs the cleanup.
@@ -280,6 +276,13 @@ func Up(ctx context.Context, opts Options) (result error) {
 		return err
 	}
 	if err := exclusiveWrite(filepath.Join(directory, "state.json"), stateData, 0600); err != nil {
+		return err
+	}
+	if err := prepareComposeBootstrapSQL(rendered, state); err != nil {
+		return err
+	}
+	snapshot, err := yaml.Marshal(escapeInterpolation(rendered))
+	if err != nil {
 		return err
 	}
 	if err := exclusiveWrite(filepath.Join(directory, "compose.yaml"), snapshot, 0600); err != nil {

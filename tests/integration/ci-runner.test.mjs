@@ -1,11 +1,11 @@
+import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 import { prepareGatewayRouting } from "../../scripts/ci/routing.mjs";
-import { readRuntimeProvenance } from "../../scripts/ci/runtime-provenance.mjs";
+import { readRuntimeProvenance } from "../../scripts/ci/runtime-provenance.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, watch } from "node:fs";
 import { mkdir, readdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -18,13 +18,17 @@ import {
 } from "../../scripts/ci/skipper-release.ts";
 import {
   aggregateArgs,
+  createRunnerFixture as fixture,
+  currentSha,
+  fixtureGitEnv,
   killRecordedProcessGroupMembers,
   laneArgs,
   lifecycleReady,
   procStat,
   runnerArtifactPaths,
+  runnerEnv,
+  runRunnerSync,
   spawnLifecycleRunner,
-  writeFirstAgentCliFixture,
   writeJson,
   writeRunnerManifest,
   writeSingleFileRunnerLane,
@@ -47,11 +51,6 @@ import {
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
-
-// Fixtures live under tmpdir(), which may itself sit inside an unrelated Git
-// checkout. Stop Git's repository search at tmpdir() so the runner never reads
-// that checkout's HEAD as the fixture's source SHA.
-const fixtureGitEnv = { GIT_CEILING_DIRECTORIES: tmpdir() };
 
 test("runtime provenance excludes structured image identities and invalid native metadata", async (t) => {
   const root = await temporaryDirectory(t, "ci-provenance-projection-");
@@ -180,34 +179,6 @@ projectSkipperRunnerReceipt(JSON.parse(readFileSync(0, "utf8")));`,
   assert.match(result.stderr, /Invalid installed Skipper test result/);
 });
 
-async function fixture(t) {
-  const root = await temporaryDirectory(t, "ci-runner-");
-  await mkdir(join(root, "scripts/ci"), { recursive: true });
-  await mkdir(join(root, "tests/integration"), { recursive: true });
-  await mkdir(join(root, "results"), { recursive: true });
-  await mkdir(join(root, "state"), { recursive: true });
-  return root;
-}
-
-function writePassedBaselineResult(root, sourceSha, filePath) {
-  return writeJson(join(root, "results/baseline.json"), {
-    version: 1,
-    command: "run",
-    sourceSha,
-    lane: "baseline",
-    status: "passed",
-    exitCode: 0,
-    files: [
-      {
-        path: filePath,
-        status: "passed",
-        counts: { passed: 1, failed: 0, skipped: 0, todo: 0, total: 1 },
-        tests: [{ name: "baseline case", status: "passed" }],
-      },
-    ],
-  });
-}
-
 function writeSingleLaneManifest(root, lane, files, groups) {
   return writeJson(join(root, "manifest.json"), {
     version: 1,
@@ -216,29 +187,8 @@ function writeSingleLaneManifest(root, lane, files, groups) {
   });
 }
 
-function runnerEnv(env = {}) {
-  const baseEnv = { ...process.env };
-  delete baseEnv.NODE_ENV;
-  return {
-    ...baseEnv,
-    GITHUB_SHA: currentSha(),
-    CI_RUNNER_PARENT_SECRET: "secretauthvalue-parent",
-    // Fixture failures quote this value; the reporter must redact env values.
-    CI_RUNNER_FIXTURE_CREDENTIAL: "secretauthvalue",
-    // The fixture runners never inherit the lane's own deadline.
-    CI_RUNNER_DEADLINE_MS: "",
-    ...fixtureGitEnv,
-    ...env,
-  };
-}
-
-function run(root, args, env = {}, { timeout } = {}) {
-  return spawnSync(process.execPath, [runnerPath, ...args], {
-    cwd: repositoryRoot,
-    encoding: "utf8",
-    env: runnerEnv(env),
-    timeout,
-  });
+function run(root, args, env = {}, options = {}) {
+  return runRunnerSync(args, env, options);
 }
 
 test("checkout build failures retain safe process details through the CI reporter", async (t) => {
@@ -686,11 +636,11 @@ function waitingTest(...args) {
 }
 
 // Node arguments that give the runner a clock that stands still at holdAt (Unix epoch
-// milliseconds) until every gate path exists (tests/helpers/ci-runner-held-clock.mjs). A test
+// milliseconds) until every gate path exists (tests/helpers/ci-runner-held-clock.ts). A test
 // that needs its fixture in some state before the lane deadline creates a gate there, so a
 // busy host delays the deadline instead of reaching it first (finding 2164).
 function heldClock(holdAt, gates) {
-  const preload = new URL("../helpers/ci-runner-held-clock.mjs", import.meta.url);
+  const preload = new URL("../helpers/ci-runner-held-clock.ts", import.meta.url);
   preload.searchParams.set("hold", String(holdAt));
   for (const gate of gates) {
     preload.searchParams.append("gate", gate);
@@ -700,21 +650,12 @@ function heldClock(holdAt, gates) {
 
 // Node arguments that hold the runner just after it lists /proc, the first time it ends its
 // descendants, until the `forked` path exists. It creates the `window` path when
-// the hold starts (tests/helpers/ci-runner-kill-window.mjs, finding 2182).
+// the hold starts (tests/helpers/ci-runner-kill-window.ts, finding 2182).
 function killWindow(window, forked) {
-  const preload = new URL("../helpers/ci-runner-kill-window.mjs", import.meta.url);
+  const preload = new URL("../helpers/ci-runner-kill-window.ts", import.meta.url);
   preload.searchParams.set("window", window);
   preload.searchParams.set("forked", forked);
   return ["--import", preload.href];
-}
-
-function currentSha() {
-  const result = spawnSync("git", ["rev-parse", "HEAD"], {
-    cwd: repositoryRoot,
-    encoding: "utf8",
-  });
-  assert.equal(result.status, 0, result.stderr);
-  return result.stdout.trim();
 }
 
 async function writePrepare(root) {
@@ -2571,6 +2512,334 @@ test("run records a sanitized file failure after all reported cases pass", async
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
 });
 
+const apiKeyWorkflows = ["upstream", "refresh", "withdrawal", "gateway-tool-policy"];
+
+for (const workflow of apiKeyWorkflows) {
+  test(`OpenShell ${workflow} discovery is opt-in and enabled cases require an API key`, () => {
+    const baseEnv = { PATH: process.env.PATH, HOME: process.env.HOME };
+    const file = join(repositoryRoot, `tests/integration/openshell-${workflow}-real.test.ts`);
+    const discovery = spawnSync(process.execPath, ["--test", file], {
+      env: baseEnv,
+      encoding: "utf8",
+    });
+    assert.equal(discovery.status, 0, discovery.stdout + discovery.stderr);
+    assert.match(discovery.stdout, /skipped 1/u);
+    for (const enabled of ["", "1"]) {
+      // Partial configuration also imports the real shared parser. It must not
+      // echo a malformed private endpoint before prerequisite diagnostics run.
+      const result = spawnSync(process.execPath, ["--test", file], {
+        encoding: "utf8",
+        env: {
+          ...baseEnv,
+          OCC_TEST_OPENSHELL_K3D_REAL: enabled,
+          OCC_TEST_OPENSHELL_MODEL_BASE_URL: "malformed-private-endpoint",
+        },
+      });
+      assert.equal(result.status, 1);
+      assert.match(
+        result.stdout + result.stderr,
+        /The OpenShell model endpoint must be a valid absolute URL/u,
+      );
+      assert.doesNotMatch(result.stdout + result.stderr, /malformed-private-endpoint/u);
+    }
+    // A native provider file belongs to the guided installer. Reject it before
+    // defaulting a foreign provider's key to the public API endpoint.
+    for (const endpoint of ["", "https://custom-model.example.test/v1"]) {
+      const result = spawnSync(process.execPath, ["--test", file], {
+        encoding: "utf8",
+        env: {
+          ...baseEnv,
+          OCC_TEST_OPENSHELL_K3D_REAL: "1",
+          OPENAI_API_KEY: "synthetic-custom-provider-key",
+          OCC_TEST_OPENSHELL_MODEL_BASE_URL: endpoint,
+          OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE: "synthetic-provider-file",
+        },
+      });
+      assert.equal(result.status, 1);
+      assert.match(
+        result.stdout + result.stderr,
+        /The API-key workflow does not accept native provider overrides/u,
+      );
+      assert.doesNotMatch(result.stdout + result.stderr, /synthetic-provider-file/u);
+    }
+    for (const endpoint of ["", "   "]) {
+      for (const credential of ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"]) {
+        // Real wrapper import stops at existing prerequisites before any Helm,
+        // Kubernetes or model operation. A blank override must not select a PAT.
+        const result = spawnSync(process.execPath, ["--test", file], {
+          encoding: "utf8",
+          env: {
+            ...baseEnv,
+            OCC_TEST_OPENSHELL_K3D_REAL: "1",
+            OCC_TEST_OPENSHELL_HARNESS: "codex",
+            OCC_TEST_OPENAI_MODEL: "fixture-model",
+            OCC_TEST_OPENSHELL_MODEL_BASE_URL: endpoint,
+            [credential]: "synthetic-model-credential",
+          },
+        });
+        assert.equal(result.status, 1);
+        assert.match(
+          result.stdout + result.stderr,
+          credential === "OPENAI_API_KEY"
+            ? /OCC_TEST_OPENSHELL_HELM must point/u
+            : /The selected Harness requires OPENAI_API_KEY/u,
+        );
+      }
+    }
+  });
+}
+
+for (const selection of [
+  { name: "declared", error: /must be an immutable image@sha256 reference/u },
+  {
+    name: "inherited Codex",
+    harness: "codex",
+    error: /must be an immutable image@sha256 reference/u,
+  },
+  {
+    name: "custom destination",
+    endpoint: "https://custom-model.example.test/v1",
+    error: /Custom OpenShell model endpoints require a focused gateway workflow file/u,
+  },
+]) {
+  for (const focused of [false, true]) {
+    test(`the Namespace runner selects file model inputs before setup (${selection.name}, focused: ${focused})`, async (t) => {
+      const root = await fixture(t);
+      const suites = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
+      const lane = suites.lanes.openshell;
+      const file = lane.files.find(({ path }) =>
+        path.endsWith("/namespace-driver-openshell-k3d-real.test.ts"),
+      );
+      const statePath = join(root, "state/namespace.json");
+      const resultsPath = join(root, "results/namespace.json");
+      await writeRunnerManifest(root, { lanes: { openshell: { ...lane, files: [file] } } });
+      await writeFile(
+        join(root, "scripts/ci/prepare.mjs"),
+        `export { prepareFile } from ${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.mjs")).href)};`,
+      );
+      // Preserve real metadata and preparation. Only the unstarted model child is
+      // inert; a regression still stops at the immutable-image gate before setup.
+      await writeFile(join(root, file.path), 'throw new Error("unexpected-model-child");');
+      const env = Object.fromEntries(
+        [...lane.requiredEnv, ...file.requiredEnv].map((name) => [name, "synthetic-prerequisite"]),
+      );
+      const result = run(
+        root,
+        [
+          ...laneArgs(root, "openshell", statePath, resultsPath),
+          ...(focused ? ["--file", file.path] : []),
+        ],
+        {
+          ...env,
+          OPENAI_API_KEY: "synthetic-custom-provider-key",
+          CODEX_ACCESS_TOKEN: "",
+          OCC_TEST_OPENSHELL_MODEL_BASE_URL: selection.endpoint ?? "",
+          OCC_TEST_OPENSHELL_HARNESS: selection.harness ?? "",
+          OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE: "",
+          OCC_CI_SUITE_VIEW: "default",
+        },
+      );
+      assert.equal(result.status, 1);
+      const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+      assert.ok(summary.issues.some(({ code }) => code === "prepare-failed"));
+      assert.equal(summary.files[0].nodeExitCode, null);
+      assert.deepEqual(summary.files[0].tests, []);
+      const diagnostics = await readFile(`${statePath}.diagnostics.json`, "utf8");
+      assert.match(diagnostics, selection.error);
+      assert.doesNotMatch(
+        diagnostics + result.stdout + result.stderr,
+        /unexpected-model-child|synthetic-custom-provider-key/u,
+      );
+      await assert.rejects(stat(statePath), { code: "ENOENT" });
+    });
+  }
+}
+
+test("custom native providers require a separate Codex credential before Local Setup", async (t) => {
+  const root = await fixture(t);
+  const file = join(repositoryRoot, "tests/integration/local-first-agent-openshell-real.test.mjs");
+  for (const custom of [false, true]) {
+    for (const pat of [false, true]) {
+      for (const endpoint of [
+        "",
+        "https://custom-model.example.test/v1",
+        "malformed-private-endpoint",
+      ]) {
+        const result = spawnSync(
+          process.execPath,
+          [
+            "--test",
+            "--test-name-pattern=^a local Kubernetes installer can deploy and reuse an Agent",
+            file,
+          ],
+          {
+            encoding: "utf8",
+            env: {
+              PATH: process.env.PATH,
+              HOME: process.env.HOME,
+              OCC_TEST_LOCAL_FIRST_AGENT_REAL: "1",
+              OPENAI_API_KEY: "synthetic-model-credential",
+              OCC_TEST_OPENSHELL_MODEL_BASE_URL: endpoint,
+              ...(pat ? { CODEX_ACCESS_TOKEN: "synthetic-codex-credential" } : {}),
+              ...(custom
+                ? { OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE: join(root, "provider.json") }
+                : {}),
+              // Stop after credential admission, before provisioning a stack.
+              OCC_DEVELOPMENT_STATE_DIRECTORY: join(root, "absent-state"),
+            },
+          },
+        );
+        assert.equal(result.status, 1);
+        let expected =
+          /OCC_DEVELOPMENT_STATE_DIRECTORY must select valid Kubernetes Local Setup state/u;
+        if (endpoint) {
+          expected = /The first-Agent installer requires the public OpenAI endpoint/u;
+        } else if (custom && !pat) {
+          expected = /CODEX_ACCESS_TOKEN is required for the first invocation/u;
+        }
+        assert.match(result.stdout + result.stderr, expected);
+        assert.doesNotMatch(result.stdout + result.stderr, /malformed-private-endpoint/u);
+      }
+    }
+  }
+});
+
+test("the public browser installer rejects custom providers before setup", async (t) => {
+  const root = await fixture(t);
+  for (const [marker, value] of [
+    ["OCC_TEST_OPENSHELL_MODEL_BASE_URL", "https://custom-model.example.test/v1"],
+    ["OCC_TEST_OPENSHELL_MODEL_BASE_URL", "malformed-private-endpoint"],
+    ["OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE", join(root, "provider.json")],
+  ]) {
+    const result = spawnSync(
+      process.execPath,
+      ["--test", join(repositoryRoot, "tests/integration/dev-up-openshell-k3d-real.test.mjs")],
+      {
+        encoding: "utf8",
+        env: {
+          // Even a regressed check cannot find container tools in this fixture.
+          PATH: root,
+          HOME: root,
+          TMPDIR: root,
+          OCC_TEST_DEV_UP_OPENSHELL_REAL: "1",
+          OPENAI_API_KEY: "synthetic-custom-provider-key",
+          [marker]: value,
+        },
+      },
+    );
+    assert.equal(result.status, 1);
+    assert.match(
+      result.stdout + result.stderr,
+      marker.endsWith("BASE_URL")
+        ? /The browser Agent requires the public OpenAI endpoint/u
+        : /The browser Agent does not accept native provider overrides/u,
+    );
+    assert.doesNotMatch(result.stdout + result.stderr, /malformed-private-endpoint/u);
+  }
+});
+
+for (const workflow of apiKeyWorkflows) {
+  test(`the ${workflow} runner preserves the selected provider URL with its API key`, async (t) => {
+    const root = await fixture(t);
+    const suites = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
+    const lane = suites.lanes.openshell;
+    const file = lane.files.find(({ path }) =>
+      path.endsWith(`/openshell-${workflow}-real.test.ts`),
+    );
+    const resultsPath = join(root, "results/provider.json");
+    const endpoint = "https://model-provider.example.test/v1";
+    // Keep canonical input metadata; only replace the model test body. The actual
+    // runner must deliver the selected endpoint and key together to its child.
+    await writeRunnerManifest(root, { lanes: { openshell: lane } });
+    await writeFile(
+      join(root, file.path),
+      `import assert from "node:assert/strict"; import test from "node:test";
+    test(${JSON.stringify(file.expectedTests[0])}, () => {
+      assert.equal(process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL, ${JSON.stringify(endpoint)});
+      assert.equal(process.env.OPENAI_API_KEY, "synthetic-provider-key");
+    });`,
+    );
+    const env = Object.fromEntries(
+      [...lane.requiredEnv, ...file.requiredEnv].map((name) => [name, "synthetic-prerequisite"]),
+    );
+    const result = run(
+      root,
+      [...laneArgs(root, "openshell", "state/provider.json", resultsPath), "--file", file.path],
+      {
+        ...env,
+        OPENAI_API_KEY: "synthetic-provider-key",
+        CODEX_ACCESS_TOKEN: "",
+        OCC_TEST_OPENSHELL_MODEL_BASE_URL: endpoint,
+        OCC_CI_SUITE_VIEW: "default",
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const receipt = JSON.parse(await readFile(resultsPath, "utf8"));
+    assert.equal(receipt.files[0].tests[0].status, "passed");
+  });
+}
+
+for (const view of ["default", "full-integration"]) {
+  for (const selection of ["compose prepared", "compose default", "kubernetes"]) {
+    test(`the ${view} guided installer runner scopes prepared controller inputs (${selection})`, async (t) => {
+      const root = await fixture(t);
+      const suites = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"), view);
+      const laneName = view === "default" ? "openshell" : "openshell-installers";
+      const lane = suites.lanes[laneName];
+      const path =
+        selection === "kubernetes"
+          ? "tests/integration/local-first-agent-openshell-k3d-real.test.mjs"
+          : "tests/integration/local-first-agent-openshell-real.test.mjs";
+      const file = lane.files.find((entry) => entry.path === path);
+      const controller = "registry.example.test/controller@sha256:" + "1".repeat(64);
+      const runtime = "registry.example.test/runtime@sha256:" + "2".repeat(64);
+      const expectedController = selection === "compose prepared" ? controller : undefined;
+      const resultsPath = join(root, "results/prepared-input.json");
+      // Preserve canonical lane/file metadata and the real runner. The child
+      // only observes its environment, so no image pull or installation occurs.
+      await writeRunnerManifest(root, { lanes: { [laneName]: lane } });
+      await writeFile(
+        join(root, path),
+        [
+          'import assert from "node:assert/strict"; import test from "node:test";',
+          ...file.expectedTests.map(
+            (name) => `test(${JSON.stringify(name)}, () => {
+          assert.equal(process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE, ${JSON.stringify(expectedController)});
+          assert.equal(process.env.OCC_KUBERNETES_RUNTIME_IMAGE, ${JSON.stringify(runtime)});
+          assert.equal(process.env.OCC_TEST_UNLISTED_IMAGE, undefined);
+        });`,
+          ),
+        ].join("\n"),
+      );
+      const env = Object.fromEntries(
+        [...lane.requiredEnv, ...(file.requiredEnv ?? [])].map((name) => [
+          name,
+          "synthetic-prerequisite",
+        ]),
+      );
+      const result = run(
+        root,
+        [...laneArgs(root, laneName, "state/prepared-input.json", resultsPath), "--file", path],
+        {
+          ...env,
+          OCC_CI_SUITE_VIEW: "default",
+          OCC_CI_IMAGE_CACHE: "",
+          OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE:
+            selection === "compose default" ? undefined : controller,
+          OCC_KUBERNETES_RUNTIME_IMAGE: runtime,
+          OCC_TEST_UNLISTED_IMAGE: "unlisted-image-selection",
+        },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      const receipt = JSON.parse(await readFile(resultsPath, "utf8"));
+      assert.equal(receipt.status, "passed");
+      assert.equal(receipt.counts.passed, file.expectedTests.length);
+      assert.equal(receipt.counts.failed, 0);
+      assert.equal(receipt.counts.skipped, 0);
+    });
+  }
+}
+
 test("run fails missing expected tests, skipped expected tests, skips, todos, and missing required env", async (t) => {
   const root = await fixture(t);
   const resultsPath = join(root, "results/lane.json");
@@ -2806,6 +3075,289 @@ test("run clears inherited selectors and keep flags while preserving explicit la
   );
 
   assert.equal(result.status, 0, result.stderr);
+});
+
+test("OpenShell browser runner retains the destination for refusal before Local Setup", async (t) => {
+  const lane = JSON.parse(
+    await readFile(join(repositoryRoot, "scripts/ci/test-suites/openshell.json"), "utf8"),
+  );
+  const file = lane.files.find(
+    ({ path }) => path === "tests/integration/dev-up-openshell-k3d-real.test.mjs",
+  );
+  for (const [name, endpoint] of [
+    ["custom", "https://provider.example.invalid/v1"],
+    ["public", "https://api.openai.com/v1"],
+    ["unset", undefined],
+  ]) {
+    await t.test(name, async (t) => {
+      const root = await fixture(t);
+      // Use the real test and its imports. An absent CLI stops accepted selections
+      // before setup; no fixture replaces the destination guard or runner filtering.
+      await writeFile(join(root, file.path), await readFile(join(repositoryRoot, file.path)));
+      for (const path of ["scripts/ci/failure-redaction.mjs", "scripts/ci/agent-sandbox.ts"]) {
+        await symlink(join(repositoryRoot, path), join(root, path));
+      }
+      for (const path of ["apps", "node_modules", "tests/helpers"]) {
+        await symlink(join(repositoryRoot, path), join(root, path), "dir");
+      }
+      await symlink(join(repositoryRoot, "package.json"), join(root, "package.json"));
+      await writeRunnerManifest(root, {
+        lanes: {
+          browser: {
+            env: lane.env,
+            requiredEnv: lane.requiredEnv,
+            optionalEnv: lane.optionalEnv,
+            files: [file],
+          },
+        },
+      });
+      const result = run(
+        root,
+        [
+          ...laneArgs(root, "browser", "state/browser.jsonl", "results/browser.json"),
+          "--file",
+          file.path,
+          "--test-name",
+          file.expectedTests[0],
+        ],
+        {
+          CODEX_ACCESS_TOKEN: "synthetic-browser-pat",
+          OPENAI_API_KEY: "synthetic-browser-api-key",
+          OCC_TEST_OPENAI_MODEL: "synthetic-browser-model",
+          OCC_TEST_OPENSHELL_MODEL_BASE_URL: endpoint,
+          OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE: "",
+        },
+      );
+      assert.notEqual(result.status, 0, "The fixture must stop before cluster setup");
+      const summary = JSON.parse(await readFile(join(root, "results/browser.json"), "utf8"));
+      const failure = summary.files[0].tests.find(({ status }) => status === "failed");
+      assert.ok(failure, JSON.stringify(summary));
+      assert.equal(failure.name, file.expectedTests[0]);
+      if (name === "custom") {
+        assert.match(
+          failure.error.message,
+          /The browser Agent requires the public OpenAI endpoint/,
+        );
+        assert.doesNotMatch(failure.error.message, /ENOENT/);
+      } else {
+        assert.match(failure.error.message, /ENOENT.*bin\/occ/);
+        assert.doesNotMatch(failure.error.message, /requires the public OpenAI endpoint/);
+      }
+    });
+  }
+});
+
+test("OpenShell Compose rejects an empty prepared selector before Local Setup", async (t) => {
+  for (const selected of [true, false]) {
+    await t.test(
+      selected ? "empty selector" : "absent selector with prepared runtime",
+      async (t) => {
+        const root = await fixture(t);
+        const file = "tests/integration/dev-up-openshell-k3d-real.test.mjs";
+        await writeFile(join(root, file), await readFile(join(repositoryRoot, file)));
+        await symlink(
+          join(repositoryRoot, "scripts/ci/failure-redaction.mjs"),
+          join(root, "scripts/ci/failure-redaction.mjs"),
+        );
+        await symlink(
+          join(repositoryRoot, "scripts/ci/agent-sandbox.ts"),
+          join(root, "scripts/ci/agent-sandbox.ts"),
+        );
+        for (const path of ["apps", "node_modules", "tests/helpers"]) {
+          await symlink(join(repositoryRoot, path), join(root, path), "dir");
+        }
+        await symlink(join(repositoryRoot, "package.json"), join(root, "package.json"));
+        // Satisfy the test's CLI presence check, but leave the launcher absent.
+        // The real input guard must run before startup, without creating a cluster.
+        await mkdir(join(root, "bin"));
+        await writeFile(join(root, "bin/occ"), "");
+        const env = {
+          ...process.env,
+          OCC_TEST_DEV_UP_OPENSHELL_REAL: "",
+          OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL: "1",
+          OCC_TEST_DEV_UP_CONTAINER_ENGINE: "docker",
+          OCC_KUBERNETES_RUNTIME_IMAGE: `runtime.example.test/image@sha256:${"a".repeat(64)}`,
+        };
+        delete env.NODE_TEST_CONTEXT;
+        delete env.OCC_TEST_DEV_UP_COMPOSE_CONTROLLER_IMAGE;
+        if (selected) {
+          env.OCC_TEST_DEV_UP_COMPOSE_CONTROLLER_IMAGE = "";
+        }
+        const result = spawnSync(process.execPath, ["--test", join(root, file)], {
+          cwd: root,
+          env,
+          encoding: "utf8",
+          timeout: 30_000,
+        });
+        assert.equal(result.error, undefined);
+        assert.equal(result.status, 1, result.stdout + result.stderr);
+        const output = result.stdout + result.stderr;
+        if (selected) {
+          assert.match(output, /Prepared Compose controller requires an owned immutable image/);
+          assert.doesNotMatch(output, /OpenShell development startup failed/);
+        } else {
+          assert.match(output, /OpenShell development startup failed/);
+          assert.doesNotMatch(output, /requires an owned immutable image/);
+        }
+      },
+    );
+  }
+});
+
+test("OpenShell selected files retain API-key selection and require the selected credential", async (t) => {
+  const root = await fixture(t);
+  const lane = JSON.parse(
+    await readFile(join(repositoryRoot, "scripts/ci/test-suites/openshell.json"), "utf8"),
+  );
+  const scratch = "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts";
+  const gatewayPolicy = "tests/integration/openshell-gateway-tool-policy-real.test.ts";
+  const sibling = "tests/integration/local-first-agent-openshell-real.test.mjs";
+  const inputs = {
+    ...Object.fromEntries(
+      lane.files
+        .find(({ path }) => path === scratch)
+        .requiredEnv.map((name) => [name, "fixture-input"]),
+    ),
+    OPENAI_API_KEY: "synthetic-model-key",
+    CODEX_ACCESS_TOKEN: "",
+    OCC_TEST_OPENAI_MODEL: "fixture-model",
+    OCC_TEST_OPENSHELL_HARNESS: "codex",
+    OCC_TEST_OPENSHELL_MODEL_BASE_URL: "https://api.openai.com/v1",
+  };
+  // Use the shipped manifest and real runner, replacing only the expensive model/cluster
+  // test body with an input consumer. This proves transport and admission, not inference.
+  await writeFile(
+    join(root, scratch),
+    `import assert from "node:assert/strict";
+import test from "node:test";
+test("receives selected model inputs", () => {
+  assert.equal(process.env.OCC_TEST_OPENAI_MODEL, "fixture-model");
+  assert.equal(process.env.OCC_TEST_OPENSHELL_HARNESS, "codex");
+  if (process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL) {
+    assert.equal(process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL, "https://api.openai.com/v1");
+    assert.equal(process.env.OPENAI_API_KEY, "synthetic-model-key");
+  } else {
+    assert.equal(process.env.CODEX_ACCESS_TOKEN, "synthetic-model-token");
+  }
+});
+`,
+  );
+  await writeFile(
+    join(root, gatewayPolicy),
+    `import assert from "node:assert/strict";
+import test from "node:test";
+test("receives selected model inputs", () => {
+  assert.equal(process.env.OCC_TEST_OPENSHELL_HARNESS, "openclaw");
+  assert.equal(process.env.OPENAI_API_KEY, "synthetic-model-key");
+});
+`,
+  );
+  await writeFile(join(root, sibling), 'throw new Error("unselected sibling ran");\n');
+  for (const [index, value] of [
+    { lane: "openshell" },
+    { lane: "openshell-policy" },
+    {
+      file: gatewayPolicy,
+      env: { OCC_TEST_OPENSHELL_HARNESS: "openclaw", OCC_TEST_OPENSHELL_MODEL_BASE_URL: "" },
+    },
+    { env: { OCC_TEST_OPENSHELL_HARNESS: "openclaw" }, unsupportedHarness: true },
+    { env: { OCC_TEST_OPENSHELL_MODEL_BASE_URL: "", CODEX_ACCESS_TOKEN: "synthetic-model-token" } },
+    { env: { OPENAI_API_KEY: "" }, missing: "OPENAI_API_KEY" },
+    { env: { OCC_TEST_OPENSHELL_MODEL_BASE_URL: "" }, missing: "CODEX_ACCESS_TOKEN" },
+    { env: { OCC_TEST_OPENAI_MODEL: "" }, missing: "OCC_TEST_OPENAI_MODEL" },
+    { env: { OCC_TEST_KUBERNETES_CONTEXT: "" }, missing: "OCC_TEST_KUBERNETES_CONTEXT" },
+    { file: sibling, env: { OPENAI_API_KEY: "" }, missing: "OPENAI_API_KEY" },
+    { lane: "other", missing: "CODEX_ACCESS_TOKEN" },
+  ].entries()) {
+    const name = value.lane ?? "openshell";
+    await writeJson(join(root, "manifest.json"), {
+      version: 1,
+      lanes: {
+        [name]: {
+          ...lane,
+          files: lane.files
+            .filter(({ path }) => [scratch, sibling, gatewayPolicy].includes(path))
+            .map((file) => ({
+              ...file,
+              expectedTests: ["receives selected model inputs"],
+            })),
+        },
+      },
+      groups: { ci: [name] },
+    });
+    const resultsPath = join(root, `results/selection-${index}.json`);
+    const result = run(
+      root,
+      [
+        ...laneArgs(root, name, `state/selection-${index}.json`, resultsPath),
+        "--file",
+        value.file ?? scratch,
+      ],
+      { ...inputs, ...value.env },
+    );
+    const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+    if (value.unsupportedHarness) {
+      assert.equal(result.status, 1);
+      assert.match(summary.issues[0]?.message ?? "", /requires OCC_TEST_OPENSHELL_HARNESS=codex/);
+      assert.deepEqual(summary.files, []);
+      continue;
+    }
+    assert.equal(result.status, value.missing ? 1 : 0, result.stderr);
+    assert.deepEqual(
+      summary.issues.map(({ code, env }) => ({ code, env })),
+      value.missing ? [{ code: "missing-env", env: value.missing }] : [],
+    );
+    assert.equal(summary.counts.passed, value.missing ? 0 : 1);
+  }
+});
+
+test("full OpenShell lanes ignore inherited focused model selectors and retain explicit harness settings", async (t) => {
+  const root = await fixture(t);
+  const lane = JSON.parse(
+    await readFile(join(repositoryRoot, "scripts/ci/test-suites/openshell.json"), "utf8"),
+  );
+  const path = "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs";
+  const file = lane.files.find((entry) => entry.path === path);
+  const resultsPath = join(root, "results/full.json");
+  // These are the same exports left by a focused API-key run. A later full run
+  // must retain its PAT policy coverage, even if the manifest contains one file.
+  const env = {
+    ...Object.fromEntries(
+      [...lane.requiredEnv, ...file.requiredEnv].map((name) => [name, "fixture-input"]),
+    ),
+    OCC_TEST_OPENSHELL_HARNESS: "openclaw",
+    OCC_TEST_OPENSHELL_MODEL_BASE_URL: "https://api.openai.com/v1",
+  };
+  for (const explicit of [false, true]) {
+    await writeFile(
+      join(root, path),
+      `import assert from "node:assert/strict";
+import test from "node:test";
+test("full lane model inputs", () => {
+  assert.equal(process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL, undefined);
+  assert.equal(process.env.OCC_TEST_OPENSHELL_HARNESS, ${explicit ? '"codex"' : "undefined"});
+  assert.equal(process.env.CODEX_ACCESS_TOKEN, "fixture-input");
+});
+`,
+    );
+    await writeJson(join(root, "manifest.json"), {
+      version: 1,
+      lanes: {
+        openshell: {
+          ...lane,
+          env: { ...lane.env, ...(explicit ? { OCC_TEST_OPENSHELL_HARNESS: "codex" } : {}) },
+          files: [{ ...file, expectedTests: ["full lane model inputs"] }],
+        },
+      },
+      groups: { ci: ["openshell"] },
+    });
+    const result = run(root, laneArgs(root, "openshell", "state/full.json", resultsPath), env);
+    assert.equal(result.status, 0, result.stderr);
+    const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+    assert.equal(summary.scope, "full");
+    assert.equal(summary.counts.passed, 1);
+    assert.deepEqual(summary.issues, []);
+  }
 });
 
 test("QA lane forwards selected models and observer input and retains outcomes at the requested path", async (t) => {
@@ -4724,416 +5276,6 @@ test("the reporter forwards a failed file's output tail and whole stack only", a
   assert.equal(cutLines[1], "stdout: next line");
 });
 
-test("the redactor removes URL userinfo of any shape and multi-line private keys", async () => {
-  const { failureSecrets, redactFailure, redactLogLine, redactOutputLine, redactOutputLines } =
-    await import("../../scripts/ci/failure-redaction.mjs");
-  const { projectContainerLog } = await import("../../scripts/ci/k3d-diagnostics.mjs");
-  const secrets = failureSecrets([{ JOB_ONLY_KEY: "jobonlyopaque123" }]);
-  // Synthetic userinfo: a password with "/", one with an unescaped "@", a hex one,
-  // and a user-only token.
-  const slash = syntheticCredentialUrl({
-    protocol: "postgresql",
-    username: "occ_app",
-    password: "pa/ss0123456789",
-    host: "postgres",
-    port: 5432,
-    pathname: "/occ",
-  });
-  const at = syntheticCredentialUrl({
-    protocol: "redis",
-    username: "cache",
-    password: "p@ssw0rd-tail",
-    host: "cache",
-    port: 6379,
-  });
-  const hex = syntheticCredentialUrl({
-    protocol: "postgresql",
-    username: "occ_app",
-    password: "0123abcd4567ef89",
-    host: "postgres",
-    pathname: "/occ",
-  });
-  const user = syntheticCredentialUrl({
-    username: "tokenvalue123",
-    password: "",
-    host: "git.example",
-  }).replace(":@", "@");
-  assert.equal(
-    redactLogLine(`db ${slash} down`, secrets, 1_000),
-    "db postgresql://[redacted]@postgres:5432/occ down",
-  );
-  assert.equal(redactLogLine(`cache ${at}`, secrets, 1_000), "cache redis://[redacted]@cache:6379");
-  assert.equal(redactLogLine(hex, secrets, 1_000), "postgresql://[redacted]@postgres/occ");
-  assert.equal(redactLogLine(user, secrets, 1_000), "https://[redacted]@git.example");
-  const failure = redactFailure(
-    { message: `${slash}\n${at}`, frame: `at x (${slash})` },
-    secrets,
-    "",
-  );
-  assert.doesNotMatch(JSON.stringify(failure), /pa\/ss|ssw0rd|0123456789/);
-  // Any scheme's userinfo drops the whole output line, as http(s) did.
-  for (const url of [slash, at, hex, user]) {
-    assert.equal(
-      redactOutputLine(`stderr: connect ${url}`, secrets, "", 1_000),
-      "[redacted credential-bearing line]",
-    );
-  }
-  // A password with both "@" and "/", and a user part with "?" or "#", lose it all.
-  const mixed = syntheticCredentialUrl({
-    username: "u",
-    password: "p@ss/w0rd-tail",
-    host: "host",
-    port: 1,
-    pathname: "/db",
-  });
-  assert.equal(redactLogLine(mixed, secrets, 1_000), "https://[redacted]@host:1/db");
-  for (const odd of ["https://user?x@host/p", "https://user#x@host/p"]) {
-    assert.equal(redactLogLine(odd, secrets, 1_000), "https://[redacted]@host/p");
-  }
-  // A path "@" (an npm scope) is not userinfo, and plain URLs stay readable.
-  for (const line of [
-    "stdout: GET https://registry.npmjs.org/@openclaw/cli 404",
-    "stdout: see https://example.test:8443/docs/install for details",
-  ]) {
-    assert.equal(redactOutputLine(line, secrets, "", 1_000), line);
-  }
-
-  // A plain-text private key loses its body lines too, not only its header and footer.
-  const body = ["MIIEsyntheticBodyLineOneAAAA", "syntheticBodyLineTwoBBBBBBBB"];
-  const key = ["-----BEGIN RSA PRIVATE KEY-----", ...body, "-----END RSA PRIVATE KEY-----"];
-  const marker = "[redacted credential-bearing line]";
-  assert.deepEqual(
-    redactOutputLines(
-      ["stdout: before", ...key.map((line) => `stderr: ${line}`), "stdout: after"],
-      secrets,
-      "",
-      1_000,
-    ),
-    ["stdout: before", marker, marker, marker, marker, "stdout: after"],
-  );
-  // An unterminated key runs to the end; a tail that starts inside a key loses
-  // every line above its END; a control character cannot hide the header.
-  assert.deepEqual(redactOutputLines(["start", ...key.slice(0, 3)], secrets, "", 1_000), [
-    "start",
-    marker,
-    marker,
-    marker,
-  ]);
-  assert.deepEqual(redactOutputLines([...key.slice(1), "after"], secrets, "", 1_000), [
-    marker,
-    marker,
-    marker,
-    "after",
-  ]);
-  assert.deepEqual(
-    redactOutputLines(
-      ["-----BEGIN RSA PRIV\u0000ATE KEY-----", ...body, "-----END RSA PRIVATE KEY-----", "end"],
-      secrets,
-      "",
-      1_000,
-    ),
-    [marker, marker, marker, marker, "end"],
-  );
-  // A PGP key block counts; an element holding "\n" itself keeps the mapping.
-  assert.deepEqual(
-    redactOutputLines(
-      [
-        "x\ny",
-        "-----BEGIN PGP PRIVATE KEY BLOCK-----",
-        ...body,
-        "-----END PGP PRIVATE KEY BLOCK-----",
-        "after",
-      ],
-      secrets,
-      "",
-      1_000,
-    ),
-    ["x\ny", marker, marker, marker, marker, "after"],
-  );
-  // An orphan END masks a bounded number of lines above it, not the whole tail.
-  const orphan = redactOutputLines(
-    [...Array.from({ length: 1_100 }, (_, index) => `line ${index}`), ...key.slice(1)],
-    secrets,
-    "",
-    1_000,
-  );
-  assert.equal(orphan.length, 1_103);
-  assert.equal(orphan[0], "line 0");
-  assert.equal(orphan[1_099], marker);
-  assert.equal(orphan.filter((line) => line === marker).length, 1_025);
-  // Lines without a key keep the per-line behaviour.
-  assert.deepEqual(redactOutputLines(["plain", "key jobonlyopaque123"], secrets, "", 1_000), [
-    "plain",
-    "key [env:JOB_ONLY_KEY]",
-  ]);
-
-  // The container log projection follows the same rules.
-  const projected = projectContainerLog(
-    {
-      lines: ["ready", ...key, `dial ${slash}`, "Authori\u0000zation: synthetic-xyz123", "done"],
-      stream: { error: ["follow failed", ...key].join("\n") },
-    },
-    secrets,
-  );
-  assert.deepEqual(projected.lines, [
-    "ready",
-    marker,
-    marker,
-    marker,
-    marker,
-    marker,
-    marker,
-    "done",
-  ]);
-  assert.doesNotMatch(JSON.stringify(projected), /synthetic|pa\/ss/);
-});
-
-test("the redactor removes secrets inside escaped JSON and keys from filtered log lines", async () => {
-  const {
-    failureSecrets,
-    maskPrivateKeyLines,
-    newestMatchingLogLines,
-    redactOutputLine,
-    redactFailureDetail,
-    redactLogLine,
-  } = await import("../../scripts/ci/failure-redaction.mjs");
-  const secrets = failureSecrets([{}]);
-  // A JSON document embedded in a log string escapes its quotes, once or more (finding 1551).
-  // Synthetic values only; none is in the env or has a known token shape.
-  for (const [line, expected] of [
-    [
-      String.raw`body {\"password\":\"plainvalue123\"} end`,
-      String.raw`body {\"password\":\"[redacted]\"} end`,
-    ],
-    [
-      String.raw`{\"client_secret\":\"syntheticClientValue0123\",\"realm\":\"occ\"}`,
-      String.raw`{\"client_secret\":\"[redacted]\",\"realm\":\"occ\"}`,
-    ],
-    [
-      String.raw`{\\\"api_key\\\":\\\"syntheticApiValue456\\\"}`,
-      String.raw`{\\\"api_key\\\":\\\"[redacted]\\\"}`,
-    ],
-    [
-      String.raw`{\\\\\\\"token\\\\\\\":\\\\\\\"syntheticDeepValue789\\\\\\\"}`,
-      String.raw`{\\\\\\\"token\\\\\\\":\\\\\\\"[redacted]\\\\\\\"}`,
-    ],
-    // Unescaped forms keep their behaviour, and a backslash inside a value is redacted with it.
-    [`{"password":"plainvalue123"}`, `{"password":"[redacted]"}`],
-    [String.raw`password=synthetic\value tail`, "password=[redacted] tail"],
-    // Prose that names a keyword without assigning it is untouched.
-    ["SyntaxError: Unexpected token in JSON at position 3", null],
-    ["SyntaxError: Unexpected token '}'", null],
-  ]) {
-    assert.equal(redactLogLine(line, secrets, 1_000), expected ?? line);
-  }
-  assert.doesNotMatch(
-    redactFailureDetail(
-      { message: String.raw`config {\"password\":\"plainvalue123\"}` },
-      secrets,
-      "/repo",
-    ).message,
-    /plainvalue123/,
-  );
-
-  // A private key's body line that matches the filter is masked before the filter keeps it.
-  const logs = [
-    "worker start",
-    "-----BEGIN RSA PRIVATE KEY-----",
-    "MIIEsyntheticWorkerBodyLineAAAA",
-    "syntheticBodyLineTwoBBBBBBBB",
-    "-----END RSA PRIVATE KEY-----",
-    "worker turn failed: ECONNRESET",
-    // Structured events stay private even when an arbitrary field matches the log filter.
-    '2026-11-07T00:00:00Z OCSF-JSON {"message":"worker failed","detail":"private-value"}',
-    "debug noise",
-  ].join("\n");
-  const shown = newestMatchingLogLines(logs, secrets, {
-    pattern: /worker|turn/iu,
-    exclude: /noise/u,
-    budget: 1_000,
-    lineChars: 400,
-  });
-  assert.equal(shown, "worker start\nworker turn failed: ECONNRESET");
-  for (const structured of [
-    'OCSF-JSON {"early":"private payload","message":"worker failed"}',
-    'OCSF-JSON {"message":"worker failed","late":"private payload"}',
-    'OCSF-JSON {"message":"worker failed","truncated":"private payload',
-  ]) {
-    assert.deepEqual(maskPrivateKeyLines(["before", structured, "after"]), ["before", "", "after"]);
-    assert.equal(redactLogLine(structured, secrets, 12), "");
-    assert.equal(redactOutputLine(structured, secrets, "/repo", 12), "");
-  }
-
-  // Newest lines win the budget, and each kept line is clipped after redaction.
-  assert.equal(
-    newestMatchingLogLines("turn one\nturn two\nturn three", secrets, {
-      pattern: /turn/u,
-      budget: 20,
-      lineChars: 400,
-    }),
-    "turn two\nturn three",
-  );
-  assert.equal(
-    newestMatchingLogLines(`turn password=${"x".repeat(50)}`, secrets, {
-      pattern: /turn/u,
-      budget: 1_000,
-      lineChars: 20,
-    }),
-    "turn password=[redac... [truncated]",
-  );
-});
-
-test("secret redaction preserves JSON quoting, not pieces of the quoted value", async () => {
-  const { redactLogLine, redactFailureDetail } =
-    await import("../../scripts/ci/failure-redaction.mjs");
-  const redacted = "[redacted]";
-  // Serialize actual values instead of guessing how many backslashes the log contains.
-  for (const value of [
-    'first "middle", last',
-    "first, last",
-    "first last",
-    "last\\",
-    "",
-    "é\n🎈",
-  ]) {
-    let input = JSON.stringify({ password: value, phase: "after" });
-    let expected = JSON.stringify({ password: redacted, phase: "after" });
-    for (let depth = 0; depth < 4; depth++) {
-      assert.equal(redactLogLine(input, [], 2_000), expected);
-      assert.equal(redactFailureDetail({ message: input }, [], "/repo").message, expected);
-      input = JSON.stringify(input);
-      expected = JSON.stringify(expected);
-    }
-  }
-  // Logs can end mid-value. Neither a space nor an escaped quote ends the secret.
-  assert.equal(
-    redactLogLine('password="first part, still private', [], 200),
-    'password="[redacted]',
-  );
-  // A failure message need not be JSON. A newline inside an open password is still private.
-  assert.equal(
-    redactLogLine('password="first part\nprivate tail" expected status 503', [], 200),
-    'password="[redacted]" expected status 503',
-  );
-});
-
-test("a quoted auth header keeps the failure text after it", async () => {
-  const { failureSecrets, redactFailure, redactLogLine } =
-    await import("../../scripts/ci/failure-redaction.mjs");
-  const secrets = failureSecrets([{}]);
-  const assertion = "\nexpected status 503, got 200\ndecisive: gateway refused the turn";
-  // Synthetic values. The auth-scheme value used to take the closing quote, so the quoted
-  // value then ran to the end of the text and took the assertion with it (finding 1556).
-  for (const [header, expected] of [
-    ['{"authorization":"Bearer syntheticBearer0123"}', '{"authorization":"[redacted]"}'],
-    [
-      "headers: { authorization: 'Bearer syntheticBearer0123' }",
-      "headers: { authorization: '[redacted]' }",
-    ],
-    ['{"token":"Token syntheticToken0123"}', '{"token":"[redacted]"}'],
-    [
-      String.raw`{\"authorization\":\"Basic c3ludGhldGljOnZhbHVl\"}`,
-      String.raw`{\"authorization\":\"[redacted]\"}`,
-    ],
-    ["map[Authorization:[Basic c3ludGhldGljOnZhbHVl]]", "map[Authorization:[redacted]]"],
-    // A sibling field after the closing quote is not part of the value.
-    [
-      '{"authorization":"Bearer syntheticBearer0123","status":503}',
-      '{"authorization":"[redacted]","status":503}',
-    ],
-    [
-      "headers: { authorization: 'Bearer syntheticBearer0123', status: 503 }",
-      "headers: { authorization: '[redacted]', status: 503 }",
-    ],
-    // Logs can escape or repeat delimiters inside the value. Keep only the actual closing ones.
-    [String.raw`got Bearer synthetic0\"private-tail`, "got [redacted]"],
-    ["map[Authorization:[Basic synthetic0))private-tail]]", "map[Authorization:[redacted]]"],
-    // A quote that opens the value is kept with it.
-    [`curl -H "Authorization: Bearer 'synthetic0'"`, `curl -H "Authorization: '[redacted]'"`],
-    ['Authorization: Bearer "synthetic0"', 'Authorization: "[redacted]"'],
-    [String.raw`Basic c3ludGhldGlj\/dmFsdWU=`, "[redacted]"],
-  ]) {
-    assert.equal(
-      redactLogLine(`request ${header}${assertion}`, secrets, 1_000),
-      `request ${expected}${assertion}`,
-    );
-    assert.equal(
-      redactFailure({ message: `request ${header}${assertion}` }, secrets, "/repo").message,
-      `request ${expected}${assertion}`,
-    );
-  }
-});
-
-test("the redactor removes structured, multi-word and short secret values", async () => {
-  const { failureSecrets, redactLogLine } = await import("../../scripts/ci/failure-redaction.mjs");
-  const secrets = failureSecrets([{}]);
-  // Synthetic values only (finding 1559).
-  for (const [line, expected] of [
-    // An object or array after a credential key, to its close on the same line.
-    [
-      '{"credentials":{"key":"syntheticNested0"},"after":"keep"}',
-      '{"credentials":[redacted],"after":"keep"}',
-    ],
-    [
-      '{"tokens":["syntheticA0","syntheticB0"],"after":"keep"}',
-      '{"tokens":[redacted],"after":"keep"}',
-    ],
-    [
-      JSON.stringify(
-        { credentials: { label: 'a "quote" and } private tail' }, after: "keep" },
-        null,
-        2,
-      ),
-      '{\n  "credentials": [redacted],\n  "after": "keep"\n}',
-    ],
-    ["tokens: [{value: '] private tail'}] status=503", "tokens: [redacted] status=503"],
-    ["secret: { nested: { value: 'synthetic0' } } tail", "secret: [redacted] tail"],
-    ["token: {unclosed synthetic0\nprivate tail", "token: [redacted]"],
-    ["token: [{wrong close]private tail", "token: [redacted]"],
-    // A bracket inside a string does not close the value, and text glued to the close
-    // belongs to it.
-    ['{"credentials":{"password":"ab}synthetic0"}}', '{"credentials":[redacted]}'],
-    ['{"token":{"inner":"a]synthetic0"},"after":1}', '{"token":[redacted],"after":1}'],
-    ["token: [a]synthetic0 tail", "token: [redacted] tail"],
-    // A passphrase in prose or YAML, and an Authorization header, take every word.
-    ["password: synthetic words here\nnext line", "password: [redacted]\nnext line"],
-    ["passphrase: synthetic words, then more", "passphrase: [redacted], then more"],
-    ['{"error":"bad password: synthetic words"}', '{"error":"bad password: [redacted]"}'],
-    ["Authorization: Bearer syn", "Authorization: [redacted]"],
-    // "=" stays one word, as in logfmt and query strings.
-    ["password=synthetic0 next=keep", "password=[redacted] next=keep"],
-    // A key inside the phrase starts its own assignment, so its quoted value is redacted.
-    [
-      'password: synthetic0 token="synthetic1" tail',
-      'password: [redacted] token="[redacted]" tail',
-    ],
-    [
-      "Authorization: Bearer s api_key='synthetic1'",
-      "Authorization: [redacted] api_key='[redacted]'",
-    ],
-    // Short scheme values with a digit, and keys the list did not have.
-    ["sent Bearer s0 upstream", "sent [redacted] upstream"],
-    ["sent Basic ab)synthetic0] upstream", "sent [redacted]] upstream"],
-    [
-      "https://blob.example/x?sv=1&sig=syntheticSig0&se=2",
-      "https://blob.example/x?sv=1&sig=[redacted]&se=2",
-    ],
-    ["pwd=synthetic0", "pwd=[redacted]"],
-    ["passphrase=synthetic0", "passphrase=[redacted]"],
-    ["accessKey=synthetic0", "accessKey=[redacted]"],
-    ["signature: synthetic0", "signature: [redacted]"],
-    // Ordinary diagnostics that name a keyword without a value stay readable.
-    ["Bearer token expired", null],
-    ["token expired", null],
-    ["secretName: occ-gateway-password", null],
-    ["tokenCount: 3", null],
-    ["design=compact", null],
-    ["SyntaxError: Unexpected token '}'", null],
-  ]) {
-    assert.equal(redactLogLine(line, secrets, 1_000), expected ?? line, line);
-  }
-});
-
 test("policy probe diagnostics preserve first-match failure and omit model content", async (t) => {
   const { selectPolicyProbeCommand } = await import("../helpers/openshell-policy-probe.mjs");
   const uri = "http://private-fixture.invalid:8083/policy-probe";
@@ -6917,692 +7059,6 @@ test("k3d diagnostics preserve equal-instant event order across precision varian
   });
 });
 
-async function auditManifest(root, manifest) {
-  await writeRunnerManifest(root, manifest);
-  return run(root, ["audit", "--manifest", "manifest.json", "--root", root]);
-}
-
-test("audit fails when a referenced lane cannot be loaded", async (t) => {
-  const root = await fixture(t);
-  const missing = await auditManifest(root, { lanes: { missing: "./missing-lane.json" } });
-  assert.equal(missing.status, 1);
-  assert.match(missing.stderr, /ENOENT.*missing-lane\.json/);
-  assert.equal(missing.stdout, "");
-});
-
-test("audit rejects prototype keys instead of silently dropping file environment", async (t) => {
-  const root = await fixture(t);
-  await writeFile(join(root, "tests/integration/env.test.mjs"), "import 'node:test';\n");
-  const result = await auditManifest(root, {
-    lanes: {
-      baseline: {
-        files: [
-          {
-            path: "tests/integration/env.test.mjs",
-            env: JSON.parse('{"__proto__":"configured"}'),
-          },
-        ],
-      },
-    },
-  });
-  assert.equal(result.status, 1);
-  const summary = JSON.parse(result.stdout);
-  assert.deepEqual(
-    summary.issues.map(({ code }) => code),
-    ["invalid-manifest"],
-  );
-  assert.match(summary.issues[0].message, /files\.0\.env\.__proto__/);
-});
-
-test("audit rejects obsolete manifest selectors", async (t) => {
-  const root = await fixture(t);
-  await writeFile(join(root, "tests/integration/pattern.test.mjs"), "import 'node:test';\n");
-  const result = await auditManifest(root, {
-    lanes: {
-      obsolete: {
-        files: [
-          {
-            path: "tests/integration/pattern.test.mjs",
-            namePattern: "^selected case$",
-            allowedSkips: ["skipped case"],
-          },
-        ],
-      },
-    },
-  });
-
-  assert.equal(result.status, 1);
-  const summary = JSON.parse(result.stdout);
-  assert.deepEqual(summary.issues.map((entry) => entry.message).sort(), [
-    "lanes.obsolete.files.0.allowedSkips is no longer supported",
-    "lanes.obsolete.files.0.namePattern is no longer supported",
-  ]);
-});
-
-test("audit rejects invalid file concurrency marks", async (t) => {
-  const root = await fixture(t);
-  for (const name of ["one", "two"]) {
-    await writeFile(join(root, `tests/integration/${name}.test.mjs`), "import 'node:test';\n");
-  }
-  const result = await auditManifest(root, {
-    lanes: {
-      marks: {
-        fileConcurrency: 0,
-        parallelFiles: [
-          "tests/integration/one.test.mjs",
-          "tests/integration/one.test.mjs",
-          "tests/integration/two.test.mjs",
-          "tests/integration/other.test.mjs",
-        ],
-        serialFiles: {
-          "tests/integration/two.test.mjs": "shared port",
-          "tests/integration/one.test.mjs": " ",
-          "tests/integration/gone.test.mjs": "moved",
-        },
-        files: [
-          { path: "tests/integration/one.test.mjs" },
-          { path: "tests/integration/two.test.mjs" },
-        ],
-      },
-    },
-  });
-
-  assert.equal(result.status, 1);
-  assert.deepEqual(
-    JSON.parse(result.stdout)
-      .issues.map((entry) => entry.message)
-      .sort(),
-    [
-      "lanes.marks.fileConcurrency must be an integer from 1 to 32",
-      "lanes.marks.parallelFiles lists tests/integration/one.test.mjs twice",
-      "lanes.marks.parallelFiles tests/integration/one.test.mjs is also serial",
-      "lanes.marks.parallelFiles tests/integration/other.test.mjs is not a lane file",
-      "lanes.marks.parallelFiles tests/integration/two.test.mjs is also serial",
-      "lanes.marks.serialFiles.tests/integration/gone.test.mjs is not a lane file",
-      "lanes.marks.serialFiles.tests/integration/one.test.mjs must name a reason",
-    ],
-  );
-});
-
-// Each fixture file holds a marker in `running/` while it runs. A parallel file waits
-// for its partner's marker, so it passes only if both share slots; a file that must
-// run alone fails if any other marker exists. Neither depends on timing.
-function concurrencyProbe(name, partner) {
-  return [
-    'import assert from "node:assert/strict";',
-    'import { existsSync, readdirSync, rmSync, writeFileSync } from "node:fs";',
-    'import { setTimeout as sleep } from "node:timers/promises";',
-    'import test from "node:test";',
-    "const running = process.env.CI_RUNNER_PROBE_DIR;",
-    `test(${JSON.stringify(`${name} probe`)}, async () => {`,
-    `  writeFileSync(running + "/${name}", "");`,
-    "  try {",
-    partner
-      ? [
-          '    const deadline = Date.now() + Number(process.env.CI_RUNNER_PROBE_WAIT_MS ?? "20000");',
-          `    while (!existsSync(running + "/${partner}")) {`,
-          `      assert.ok(Date.now() < deadline, "${partner} never ran beside ${name}");`,
-          "      await sleep(10);",
-          "    }",
-        ].join("\n")
-      : `    assert.deepEqual(readdirSync(running), ["${name}"]);`,
-    "    await sleep(50);",
-    "  } finally {",
-    `    rmSync(running + "/${name}", { force: true });`,
-    "  }",
-    "});",
-    "",
-  ].join("\n");
-}
-
-test("run shares slots only between audited parallel files and runs the rest alone", async (t) => {
-  const root = await fixture(t);
-  const running = join(root, "running");
-  await mkdir(running);
-  const probes = {
-    unmarked: null,
-    left: "right",
-    serial: null,
-    right: "left",
-  };
-  for (const [name, partner] of Object.entries(probes)) {
-    await writeFile(
-      join(root, `tests/integration/${name}.test.mjs`),
-      concurrencyProbe(name, partner),
-    );
-  }
-  await writeRunnerManifest(root, {
-    lanes: {
-      shared: {
-        fileConcurrency: 4,
-        parallelFiles: ["tests/integration/right.test.mjs", "tests/integration/left.test.mjs"],
-        serialFiles: { "tests/integration/serial.test.mjs": "writes a fixed path" },
-        files: [
-          { path: "tests/integration/unmarked.test.mjs" },
-          { path: "tests/integration/left.test.mjs" },
-          { path: "tests/integration/serial.test.mjs" },
-          { path: "tests/integration/right.test.mjs" },
-        ],
-      },
-    },
-  });
-  const args = (name) => laneArgs(root, "shared", `state/${name}.jsonl`, `results/${name}.json`);
-  const env = { CI_RUNNER_PROBE_DIR: running, CI_RUNNER_FILE_CONCURRENCY: "2" };
-
-  const result = run(root, args("shared"), env);
-  assert.equal(result.status, 0, result.stderr);
-  const summary = JSON.parse(await readFile(join(root, "results/shared.json"), "utf8"));
-  assert.equal(summary.fileConcurrency, 2);
-  assert.equal(summary.counts.passed, 4);
-  // Results keep manifest order; serial files ran first, before the shared slots.
-  assert.deepEqual(
-    summary.files.map((file) => [file.path.split("/").at(-1), file.mode]),
-    [
-      ["unmarked.test.mjs", "serial"],
-      ["left.test.mjs", "parallel"],
-      ["serial.test.mjs", "serial"],
-      ["right.test.mjs", "parallel"],
-    ],
-  );
-  const [unmarked, left, serial, right] = summary.files;
-  assert.ok(unmarked.startOffsetMs < serial.startOffsetMs);
-  assert.ok(serial.startOffsetMs + serial.wallDurationMs <= left.startOffsetMs);
-  assert.ok(serial.startOffsetMs + serial.wallDurationMs <= right.startOffsetMs);
-  // Shared slots start in parallelFiles order.
-  assert.ok(right.startOffsetMs <= left.startOffsetMs);
-  assert.match(
-    result.stderr,
-    /^run-tests: passed tests\/integration\/left\.test\.mjs \d+\.\ds \(parallel\)$/m,
-  );
-
-  // One slot runs every file alone; the partners then cannot meet, and the
-  // result says so instead of passing.
-  const alone = run(root, args("alone"), {
-    ...env,
-    CI_RUNNER_FILE_CONCURRENCY: "1",
-    CI_RUNNER_PROBE_WAIT_MS: "300",
-  });
-  assert.equal(alone.status, 1);
-  const aloneSummary = JSON.parse(await readFile(join(root, "results/alone.json"), "utf8"));
-  assert.equal(aloneSummary.fileConcurrency, 1);
-  assert.deepEqual(
-    aloneSummary.files.map((file) => [file.mode, file.status]),
-    [
-      ["serial", "passed"],
-      ["serial", "failed"],
-      ["serial", "passed"],
-      ["serial", "failed"],
-    ],
-  );
-
-  const invalid = run(root, args("invalid"), { ...env, CI_RUNNER_FILE_CONCURRENCY: "many" });
-  assert.equal(invalid.status, 1);
-  const invalidSummary = JSON.parse(await readFile(join(root, "results/invalid.json"), "utf8"));
-  assert.deepEqual(invalidSummary.files, []);
-  assert.deepEqual(
-    invalidSummary.issues.map((entry) => entry.code),
-    ["invalid-env"],
-  );
-});
-
-test("run starts shared files longest first from the measured table, unmeasured first", async (t) => {
-  const root = await fixture(t);
-  const files = ["short", "long", "new", "middle"].map(
-    (name) => `tests/integration/${name}.test.mjs`,
-  );
-  for (const path of files) {
-    await writeFile(join(root, path), 'import test from "node:test";\ntest("case", () => {});\n');
-  }
-  // Rows for files outside the lane are ignored.
-  await writeJson(join(root, "durations.json"), {
-    version: 1,
-    files: {
-      "tests/integration/short.test.mjs": 10,
-      "tests/integration/long.test.mjs": 50_000,
-      "tests/integration/middle.test.mjs": 20,
-      "tests/integration/gone.test.mjs": 90_000,
-    },
-  });
-  const lanes = {
-    shared: { fileConcurrency: 2, parallelFiles: files, files: files.map((path) => ({ path })) },
-  };
-  const starts = async (name, fileDurations) => {
-    const manifestPath = `${name}.json`;
-    await writeRunnerManifest(root, { lanes, fileDurations }, manifestPath);
-    const result = run(
-      root,
-      laneArgs(root, "shared", `state/${name}.jsonl`, `results/${name}.json`, manifestPath),
-      { CI_RUNNER_FILE_CONCURRENCY: "2" },
-    );
-    assert.equal(result.status, 0, result.stderr);
-    const summary = JSON.parse(await readFile(join(root, `results/${name}.json`), "utf8"));
-    return {
-      stderr: result.stderr,
-      ...Object.fromEntries(
-        summary.files.map((file) => [
-          file.path.split("/").at(-1).replace(".test.mjs", ""),
-          file.startOffsetMs,
-        ]),
-      ),
-    };
-  };
-
-  // Two slots: the unmeasured and the longest file start together; the next freed slot
-  // takes the middle file, the last one the shortest.
-  const measured = await starts("measured", "./durations.json");
-  assert.ok(measured.new < measured.middle && measured.long < measured.middle);
-  assert.ok(measured.middle <= measured.short);
-  assert.match(measured.stderr, /longest first \(3 of 4 shared files measured\)/);
-
-  // Without a table, shared files start in parallelFiles order.
-  const listed = await starts("listed");
-  assert.ok(listed.short < listed.new && listed.long < listed.new);
-  assert.ok(listed.new <= listed.middle);
-  assert.doesNotMatch(listed.stderr, /longest first/);
-});
-
-test("audit rejects an unusable file duration table", async (t) => {
-  const root = await fixture(t);
-  await writeFile(join(root, "tests/integration/one.test.mjs"), "import 'node:test';\n");
-  await writeJson(join(root, "durations.json"), {
-    version: 1,
-    files: { "tests/integration/one.test.mjs": -1, "tests/integration/two.test.mjs": 1.5 },
-  });
-  const audit = async (fileDurations) => {
-    const result = await auditManifest(root, {
-      fileDurations,
-      lanes: { one: { files: [{ path: "tests/integration/one.test.mjs" }] } },
-    });
-    assert.equal(result.status, 1, result.stdout);
-    return JSON.parse(result.stdout).issues.map((entry) => entry.message);
-  };
-
-  assert.deepEqual(await audit("./durations.json"), [
-    "fileDurations tests/integration/one.test.mjs must be a whole number of milliseconds",
-    "fileDurations tests/integration/two.test.mjs must be a whole number of milliseconds",
-  ]);
-  assert.deepEqual(await audit("./missing.json"), [
-    "fileDurations ./missing.json is not readable JSON",
-  ]);
-  for (const reference of ["../durations.json", "./../durations.json", "durations.json", 5]) {
-    assert.deepEqual(await audit(reference), ["fileDurations must be a ./relative .json path"]);
-  }
-  await writeJson(join(root, "durations.json"), { version: 2, files: {} });
-  assert.deepEqual(await audit("./durations.json"), [
-    "fileDurations ./durations.json must be version 1 with a files object",
-  ]);
-});
-
-test("audit requires current discovered test files and rejects duplicate ownership", async (t) => {
-  const root = await fixture(t);
-  await writeFile(join(root, "tests/integration/mapped.test.mjs"), "import 'node:test';\n");
-  await writeFile(join(root, "tests/integration/unmapped.test.ts"), "import 'node:test';\n");
-  await mkdir(join(root, "tests/docs"), { recursive: true });
-  await writeFile(join(root, "tests/docs/unmapped.test.mjs"), "import 'node:test';\n");
-  const result = await auditManifest(root, {
-    lanes: {
-      one: {
-        files: [
-          { path: "tests/integration/mapped.test.mjs", expectedTests: ["case a"] },
-          { path: "tests/integration/missing.test.mjs" },
-        ],
-      },
-      two: {
-        files: [{ path: "tests/integration/mapped.test.mjs", expectedTests: ["case b"] }],
-      },
-      broad: {
-        files: [{ path: "tests/integration/mapped.test.mjs", expectedTests: ["case c"] }],
-      },
-      empty: {
-        files: [],
-      },
-    },
-    groups: {
-      ci: ["one", "two", "broad", "empty", "unknown"],
-    },
-  });
-
-  assert.equal(result.status, 1);
-  const summary = JSON.parse(result.stdout);
-  assert.deepEqual(summary.issues.map((entry) => entry.code).sort(), [
-    "duplicate-file",
-    "missing-file",
-    "missing-lane",
-    "selected-zero",
-    "unmapped-file",
-    "unmapped-file",
-  ]);
-  assert.deepEqual(
-    summary.issues
-      .filter((entry) => entry.code === "unmapped-file")
-      .map((entry) => entry.file)
-      .sort(),
-    ["tests/docs/unmapped.test.mjs", "tests/integration/unmapped.test.ts"],
-  );
-});
-
-test("aggregate requires fixed lane outputs, successful needs, and matching source SHA", async (t) => {
-  const root = await fixture(t);
-  const sha = currentSha();
-  const baselinePath = "tests/integration/a.test.mjs";
-  await writeRunnerManifest(root, {
-    lanes: {
-      baseline: { files: [{ path: baselinePath }] },
-      runtime: { files: [{ path: "tests/integration/b.test.mjs" }] },
-      missing: { files: [{ path: "tests/integration/c.test.mjs" }] },
-    },
-    groups: {
-      full: ["baseline", "runtime", "missing"],
-    },
-  });
-  await writePassedBaselineResult(root, sha, baselinePath);
-  await writeJson(join(root, "results/runtime.json"), {
-    version: 1,
-    command: "run",
-    sourceSha: "different-sha",
-    lane: "runtime",
-    status: "failed",
-    exitCode: 1,
-    files: [],
-  });
-  await writeJson(join(root, "needs.json"), {
-    baseline: { result: "success" },
-    runtime: { result: "failure" },
-  });
-
-  const result = run(root, [...aggregateArgs(root, "full"), "--needs", "needs.json"]);
-
-  assert.equal(result.status, 1);
-  const summary = JSON.parse(result.stdout);
-  assert.deepEqual(summary.issues.map((entry) => entry.code).sort(), [
-    "missing-lane-output",
-    "missing-need",
-    "need-not-success",
-    "source-sha-mismatch",
-  ]);
-  // A different revision's failure cannot describe this revision's runtime lane.
-  assert.deepEqual(
-    summary.lanes.map((lane) => lane.lane),
-    ["baseline"],
-  );
-});
-
-test("aggregate accepts a lane as a singleton target and rejects tampered result evidence", async (t) => {
-  const root = await fixture(t);
-  const sha = currentSha();
-  const file = "tests/integration/model.test.mjs";
-  const name = "real model case";
-  await writeSingleLaneManifest(
-    root,
-    "docker-model",
-    [
-      {
-        path: file,
-        expectedTests: [name],
-      },
-    ],
-    {
-      runtime: ["docker-model"],
-    },
-  );
-  await writeJson(join(root, "results/docker-model.json"), {
-    version: 1,
-    command: "run",
-    sourceSha: sha,
-    lane: "docker-model",
-    status: "passed",
-    exitCode: 0,
-    files: [],
-  });
-
-  const args = aggregateArgs(root, "docker-model");
-  const tampered = run(root, args);
-  assert.equal(tampered.status, 1);
-  let summary = JSON.parse(tampered.stdout);
-  assert.deepEqual(
-    summary.issues.map((entry) => entry.code),
-    ["missing-lane-evidence"],
-  );
-
-  // Produce full evidence with a required case and an optional nested case.
-  await writeFile(
-    join(root, file),
-    [
-      'import test from "node:test";',
-      'await test("real model case", async (t) => {',
-      '  await t.test("optional nested case", () => {});',
-      "});",
-      "",
-    ].join("\n"),
-  );
-  const produced = run(
-    root,
-    laneArgs(root, "docker-model", "state/docker-model.json", "results/docker-model.json"),
-  );
-  assert.equal(produced.status, 0, produced.stderr);
-
-  const passed = run(root, args);
-  assert.equal(passed.status, 0, passed.stderr);
-  summary = JSON.parse(passed.stdout);
-  assert.equal(summary.status, "passed");
-  assert.deepEqual(
-    summary.lanes.map((entry) => entry.lane),
-    ["docker-model"],
-  );
-
-  const resultPath = join(root, "results/docker-model.json");
-  const evidence = JSON.parse(await readFile(resultPath, "utf8"));
-  assert.equal(evidence.scope, "full");
-  const fileEvidence = evidence.files[0];
-  const required = fileEvidence.tests.find((testCase) => testCase.name === name);
-  const optional = fileEvidence.tests.find((testCase) => testCase.name === "optional nested case");
-  assert.equal(required?.status, "passed");
-  assert.equal(optional?.status, "passed");
-
-  const failedFileEvidence = {
-    ...fileEvidence,
-    status: "failed",
-    cleanup: { status: "failed" },
-  };
-  const duplicateFileIssue = {
-    code: "duplicate-lane-file",
-    message: `lane docker-model has duplicate file evidence for ${file}`,
-    lane: "docker-model",
-    file,
-  };
-  const failedFileIssues = [
-    {
-      code: "lane-file-failed",
-      message: "lane docker-model file did not pass",
-      lane: "docker-model",
-      file,
-      status: "failed",
-    },
-    {
-      code: "cleanup-failed",
-      message: "lane docker-model file cleanup did not pass",
-      lane: "docker-model",
-      file,
-    },
-  ];
-  for (const [label, files, issues] of [
-    ["duplicate file fails then passes", [failedFileEvidence, fileEvidence], failedFileIssues],
-    ["duplicate file passes then fails", [fileEvidence, failedFileEvidence], failedFileIssues],
-    ["duplicate file passes both times", [fileEvidence, fileEvidence], []],
-  ]) {
-    await t.test(label, async () => {
-      await writeJson(resultPath, { ...evidence, files });
-      const result = run(root, args);
-      assert.equal(result.status, 1, result.stdout || result.stderr);
-      const aggregate = JSON.parse(result.stdout);
-      assert.equal(aggregate.status, "failed");
-      assert.deepEqual(aggregate.issues, [duplicateFileIssue, ...issues]);
-    });
-  }
-
-  await t.test("duplicate unregistered file evidence does not expose its path", async () => {
-    const unregisteredPath = "tests/integration/untrusted-receipt-path-canary.test.mjs";
-    const unregisteredFile = { ...fileEvidence, path: unregisteredPath };
-    await writeJson(resultPath, {
-      ...evidence,
-      files: [fileEvidence, unregisteredFile, unregisteredFile],
-    });
-    const result = run(root, args);
-    assert.equal(result.status, 1, result.stderr);
-    assert.ok(
-      !result.stdout.includes(unregisteredPath) && !result.stderr.includes(unregisteredPath),
-      "aggregate printed an unregistered receipt path",
-    );
-    const aggregate = JSON.parse(result.stdout);
-    assert.equal(aggregate.status, "failed");
-    assert.deepEqual(aggregate.issues, [
-      {
-        code: "duplicate-lane-file",
-        message: "lane docker-model has duplicate file evidence for an unregistered file",
-        lane: "docker-model",
-      },
-    ]);
-  });
-
-  const skipped = { ...required, status: "skipped" };
-  const unpassed = (status) => ({
-    code: "expected-test-not-passed",
-    message: `expected test did not pass: ${name}`,
-    file,
-    name,
-    status,
-  });
-  const marker = "untrusted-case-status-marker";
-  const invalidStatuses = [
-    ["string", marker],
-    ["object", { text: marker }],
-    ["array", [marker]],
-  ];
-
-  // Keep the passing rollups and vary the individual case evidence.
-  for (const [label, cases, issues] of [
-    ["required skip", [skipped], [unpassed("skipped")]],
-    ["skip before duplicate pass", [skipped, required], [unpassed("skipped")]],
-    ["pass before duplicate skip", [required, skipped], [unpassed("skipped")]],
-    ["both duplicates pass", [required, required], []],
-    ["missing status before duplicate pass", [{ name }, required], [unpassed("invalid")]],
-    ...invalidStatuses.map(([type, status]) => [
-      `invalid ${type} status`,
-      [{ ...required, status }],
-      [unpassed("invalid")],
-    ]),
-    [
-      "null row in valid JSON",
-      [required, null],
-      [
-        {
-          code: "invalid-test-evidence",
-          message: "test evidence contains an invalid case entry",
-          file,
-        },
-      ],
-    ],
-  ]) {
-    await t.test(label, async () => {
-      await writeJson(resultPath, {
-        ...evidence,
-        files: [{ ...fileEvidence, tests: [optional, ...cases] }],
-      });
-      const result = run(root, args);
-      assert.ok(
-        !result.stdout.includes(marker) && !result.stderr.includes(marker),
-        "aggregate printed untrusted case status",
-      );
-      assert.equal(result.status, issues.length === 0 ? 0 : 1, result.stdout);
-      const aggregate = JSON.parse(result.stdout);
-      assert.equal(aggregate.status, issues.length === 0 ? "passed" : "failed");
-      assert.deepEqual(aggregate.issues, issues);
-    });
-  }
-});
-
-test("aggregate requires successful job gates and unambiguous lane ownership", async (t) => {
-  const root = await fixture(t);
-  const sha = currentSha();
-  const baselinePath = "tests/integration/baseline.test.mjs";
-  await writeSingleLaneManifest(root, "baseline", [{ path: baselinePath }], {
-    ci: ["baseline"],
-  });
-  await writePassedBaselineResult(root, sha, baselinePath);
-  await writeJson(join(root, "needs.json"), {
-    audit: { result: "failure" },
-    baseline: { result: "success" },
-  });
-
-  const args = [...aggregateArgs(root, "ci"), "--needs", "needs.json"];
-  const result = run(root, args);
-
-  assert.equal(result.status, 1);
-  const summary = JSON.parse(result.stdout);
-  assert.equal(summary.status, "failed");
-  assert.deepEqual(
-    summary.issues.map((entry) => entry.code),
-    ["need-not-success"],
-  );
-  assert.equal(summary.issues[0].need, "audit");
-
-  // A matrix parent carries its job conclusion, never a conclusion for each
-  // child. Unselected siblings may remain in a shared workflow's parent list.
-  for (const state of ["success", "failure", "cancelled", "skipped", undefined]) {
-    await writeJson(join(root, "needs.json"), {
-      matrix: { result: state, lanes: ["baseline", "unselected-sibling"] },
-    });
-    const observed = run(root, args);
-    assert.equal(observed.status, state === "success" ? 0 : 1, observed.stderr);
-    const aggregated = JSON.parse(observed.stdout);
-    assert.deepEqual(
-      aggregated.issues.map((entry) => entry.code),
-      state === "success" ? [] : ["need-not-success"],
-    );
-    assert.equal(aggregated.lanes[0].status, "passed");
-    if (state !== "success") {
-      assert.equal(aggregated.issues[0].need, "matrix");
-    }
-  }
-
-  // Valid artifacts cannot replace missing ownership, and malformed ownership
-  // must fail even when a separate direct job could otherwise satisfy the lane.
-  await writeJson(join(root, "needs.json"), {});
-  const missing = run(root, args);
-  assert.equal(missing.status, 1);
-  assert.deepEqual(
-    JSON.parse(missing.stdout).issues.map((entry) => entry.code),
-    ["missing-need"],
-  );
-  for (const lanes of [null, "baseline", [], [""], ["baseline", "baseline"], [1]]) {
-    await writeJson(join(root, "needs.json"), {
-      baseline: { result: "success" },
-      matrix: { result: "success", lanes },
-    });
-    const malformed = run(root, args);
-    assert.equal(malformed.status, 1);
-    assert.ok(
-      JSON.parse(malformed.stdout).issues.some((entry) => entry.code === "invalid-need-lanes"),
-    );
-  }
-
-  for (const other of [
-    { baseline: { result: "success" } },
-    { another: { result: "success", lanes: ["baseline"] } },
-  ]) {
-    await writeJson(join(root, "needs.json"), {
-      matrix: { result: "success", lanes: ["baseline"] },
-      ...other,
-    });
-    const ambiguous = run(root, args);
-    assert.equal(ambiguous.status, 1);
-    assert.deepEqual(
-      JSON.parse(ambiguous.stdout).issues.map((entry) => entry.code),
-      ["ambiguous-need"],
-    );
-  }
-});
-
 test("first-Agent scenario ownership drains child work before teardown after failure or cancellation", async (t) => {
   for (const mode of ["failure", "cancel"]) {
     const root = await fixture(t);
@@ -7648,311 +7104,6 @@ test('scenario', { signal: controller.signal }, async (t) => {
     assert.equal(result.status, 1, result.stderr);
     assert.equal(await readFile(trace, "utf8"), "settled|cleanup|", mode);
   }
-});
-
-test("first-Agent command timing pairs runtime and manifest outcomes before CI projection", async (t) => {
-  const root = await fixture(t);
-  const resultsPath = join(root, "results/runtime-outcomes.json");
-  const runtime = "[occ-dev-timing] stage=runtime-build elapsed_ms=11 failed=true";
-  const outcome = "[occ-dev-outcome] stage=runtime-build outcome=";
-  const manifest = "openshell-agent-sandbox-manifest";
-  const manifestTiming = `[occ-dev-timing] stage=${manifest} elapsed_ms=13 failed=true`;
-  const manifestOutcome = `[occ-dev-outcome] stage=${manifest} outcome=`;
-  const reasons = [
-    "selected-input",
-    "http-status",
-    "transport",
-    "deadline",
-    "canceled",
-    "integrity",
-    "local-io",
-  ];
-  const lines = [
-    runtime,
-    outcome + "nonzero-exit",
-    outcome + "nonzero-exit",
-    runtime,
-    outcome + "signaled",
-    runtime,
-    outcome + "signaled token=private-outcome-canary",
-    runtime,
-    outcome + "private-outcome-canary",
-    runtime,
-    "unrelated child output",
-    outcome + "signaled",
-    // Legacy timing still counts this row, but its elapsed value is not canonical.
-    "[occ-dev-timing] stage=runtime-build elapsed_ms=00011 failed=true",
-    outcome + "signaled",
-    "[occ-dev-timing] stage=runtime-build elapsed_ms=3 failed=false",
-    outcome + "signaled",
-    "[occ-dev-timing] stage=controller-build elapsed_ms=5 failed=true",
-    outcome + "signaled",
-    "[occ-dev-timing] stage=openshell-workspace-render elapsed_ms=7 failed=true",
-    "[occ-dev-timing] stage=private-outcome-canary elapsed_ms=9 failed=true",
-    ...reasons.flatMap((reason) => [manifestTiming, manifestOutcome + reason]),
-    manifestOutcome + "deadline",
-    manifestTiming,
-    manifestOutcome + "private-outcome-canary",
-    `[occ-dev-timing] stage=${manifest} elapsed_ms=3 failed=false`,
-    manifestOutcome + "deadline",
-    "[occ-dev-startup] primary_stage=routing cleanup_failed=true parent_context_done=false routing_operation=manifest-download routing_controller=cert-manager",
-  ];
-  await writeFirstAgentCliFixture(
-    root,
-    [
-      'if (process.argv[3] === "up") {',
-      "  process.stdout.write(" + JSON.stringify(lines.join("\n") + "\n") + ");",
-      "  process.exitCode = 23;",
-      "}",
-      "",
-    ].join("\n"),
-  );
-  await writeSingleFileRunnerLane(
-    root,
-    "measure",
-    "tests/integration/runtime-outcomes.test.mjs",
-    `import assert from "node:assert/strict";
-import { syncBuiltinESMExports } from "node:module";
-import net from "node:net";
-import test from "node:test";
-// The owned CLI fixture does not bind ports. Only the port reservation is stubbed.
-net.createServer = () => ({
-  once() {},
-  listen(_address, ready) { ready(); },
-  address() { return { port: 3000 }; },
-  close(done) { done(); },
-});
-syncBuiltinESMExports();
-const { localFirstAgentStack } = await import("../helpers/local-first-agent-stack.mjs");
-test("a failed local setup reports only paired outcomes", async (t) => {
-  process.env.OCC_TEST_LOCAL_FIRST_AGENT_REAL = "1";
-  process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE = "compose";
-  process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "none";
-  process.env.OPENAI_API_KEY = "invented-fixture-input";
-  delete process.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
-  delete process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE;
-  await assert.rejects(localFirstAgentStack(t), /Start Local Setup exited with status 23/);
-  const legacy = { kind: "local-first-agent-startup-failure", primaryStage: "routing", cleanupFailed: true, parentContextDone: false };
-  // Old CLI receipts remain valid; projection strips unrelated fields and rejects
-  // invalid detail values instead of retaining arbitrary command output.
-  t.diagnostic('openclaw-ci-measurement ' + JSON.stringify(legacy));
-  t.diagnostic('openclaw-ci-measurement ' + JSON.stringify({ ...legacy, routingOperation: "controller-rollout", routingController: "envoy-gateway", error: "private-outcome-canary" }));
-  t.diagnostic('openclaw-ci-measurement ' + JSON.stringify({ ...legacy, routingOperation: "node-pod-cidr" }));
-  for (const fields of [
-    { primaryStage: "private-outcome-canary" },
-    { routingOperation: "private-outcome-canary" },
-    { routingOperation: null },
-    { routingController: "private-outcome-canary" },
-    { routingController: null },
-    { routingController: "cert-manager" },
-    { routingOperation: "node-pod-cidr", routingController: "cert-manager" },
-    { routingOperation: "node-pod-cidr", routingController: "envoy-gateway" },
-    { primaryStage: "rollback", routingOperation: "manifest-apply" },
-    { primaryStage: "rollback", routingController: "cert-manager" },
-  ]) {
-    t.diagnostic('openclaw-ci-measurement ' + JSON.stringify({ ...legacy, ...fields }));
-  }
-  t.diagnostic('openclaw-ci-measurement {"kind":"local-first-agent-startup-failure","private-outcome-canary":');
-  t.diagnostic('openclaw-ci-measurement private-outcome-canary');
-  t.diagnostic("ordinary setup diagnostic survives");
-  throw new Error("setup failed");
-});
-`,
-  );
-  const result = run(root, laneArgs(root, "measure", "state/runtime-outcomes.jsonl", resultsPath));
-  assert.equal(result.status, 1, result.stderr);
-  const artifact = await readFile(resultsPath, "utf8");
-  const measurements = JSON.parse(artifact).files[0].measurements;
-  assert.deepEqual(
-    measurements.filter(({ kind }) => kind === "local-first-agent-command"),
-    [
-      {
-        kind: "local-first-agent-command",
-        phase: "setup",
-        stage: "runtime-build",
-        count: 7,
-        failed: 6,
-        elapsedMs: 69,
-        nonzeroExitCount: 1,
-        signaledCount: 1,
-      },
-      {
-        kind: "local-first-agent-command",
-        phase: "setup",
-        stage: "controller-build",
-        count: 1,
-        failed: 1,
-        elapsedMs: 5,
-      },
-      {
-        kind: "local-first-agent-command",
-        phase: "setup",
-        stage: "openshell-workspace-render",
-        count: 1,
-        failed: 1,
-        elapsedMs: 7,
-      },
-      {
-        kind: "local-first-agent-command",
-        phase: "setup",
-        stage: manifest,
-        count: reasons.length + 2,
-        failed: reasons.length + 1,
-        elapsedMs: 13 * (reasons.length + 1) + 3,
-      },
-    ],
-  );
-  assert.deepEqual(
-    measurements.filter(({ kind }) => kind === "local-first-agent-manifest-failure"),
-    reasons.map((reason) => ({ kind: "local-first-agent-manifest-failure", reason })),
-  );
-  const expectedRoutingFailure = {
-    kind: "local-first-agent-startup-failure",
-    primaryStage: "routing",
-    cleanupFailed: true,
-    parentContextDone: false,
-  };
-  assert.deepEqual(
-    measurements.filter(({ kind }) => kind === "local-first-agent-startup-failure"),
-    [
-      {
-        ...expectedRoutingFailure,
-        routingOperation: "manifest-download",
-        routingController: "cert-manager",
-      },
-      expectedRoutingFailure,
-      {
-        ...expectedRoutingFailure,
-        routingOperation: "controller-rollout",
-        routingController: "envoy-gateway",
-      },
-      {
-        ...expectedRoutingFailure,
-        routingOperation: "node-pod-cidr",
-      },
-    ],
-  );
-  const diagnostics = await readFile(
-    join(root, "state/runtime-outcomes.jsonl.diagnostics.json"),
-    "utf8",
-  );
-  assert.match(diagnostics, /setup failed/);
-  for (const text of [artifact, diagnostics]) {
-    assert.doesNotMatch(text, /private-outcome-canary|invented-fixture-input/);
-  }
-  assert.match(diagnostics, /ordinary setup diagnostic survives/);
-});
-
-test("startup observations require one terminal record from a failed dev-up", async (t) => {
-  const root = await fixture(t);
-  const legacyRecord =
-    "[occ-dev-startup] primary_stage=routing cleanup_failed=true parent_context_done=false\n";
-  const record =
-    legacyRecord.trimEnd() +
-    " routing_operation=controller-rollout routing_controller=envoy-gateway\n";
-  await writeFirstAgentCliFixture(
-    root,
-    `const record = ${JSON.stringify(record)};
-const legacyRecord = ${JSON.stringify(legacyRecord)};
-const scenario = process.env.OCC_FIXTURE_STARTUP_CASE;
-if (process.argv[3] === "down") {
-  process.stdout.write(record);
-  process.exit(1);
-}
-if (scenario === "legacy") process.stdout.write(legacyRecord);
-else if (scenario === "controller-import") process.stdout.write(legacyRecord.replace("primary_stage=routing", "primary_stage=controller-image-import"));
-else if (scenario === "operation-only") process.stdout.write(legacyRecord.trimEnd() + " routing_operation=node-pod-cidr\\n");
-else if (scenario === "invalid-operation") process.stdout.write(record.replace("controller-rollout", "private-outcome-canary"));
-else if (scenario === "invalid-controller") process.stdout.write(record.replace("envoy-gateway", "private-outcome-canary"));
-else if (scenario === "controller-only") process.stdout.write(record.replace(" routing_operation=controller-rollout", ""));
-else if (scenario === "node-cidr-controller") process.stdout.write(record.replace("controller-rollout", "node-pod-cidr"));
-else if (scenario === "nonrouting") process.stdout.write(record.replace("primary_stage=routing", "primary_stage=rollback"));
-else if (scenario === "stderr") process.stderr.write(record);
-else if (scenario === "duplicate") process.stdout.write(record + record);
-else if (scenario === "malformed") process.stdout.write(record + "[occ-dev-startup] invalid\\n");
-else if (scenario === "early") process.stdout.write(record + "later operation\\n");
-else if (scenario === "truncated") process.stdout.write("[occ-dev-startup\\n" + record);
-else if (scenario === "incomplete") process.stdout.write(record.trimEnd());
-else if (scenario === "overflow") process.stdout.write("x".repeat(4097) + "\\n" + record);
-else process.stdout.write(record);
-if (scenario === "signal") process.kill(process.pid, "SIGTERM");
-else process.exitCode = scenario === "success" ? 0 : 23;
-`,
-  );
-  // Real subprocesses exercise both the streaming runner and execFile's error
-  // envelope, used by the installed refusal caller. No cluster is started.
-  await writeSingleFileRunnerLane(
-    root,
-    "intake",
-    "tests/integration/startup-intake.test.mjs",
-    `
-import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { syncBuiltinESMExports } from "node:module";
-import net from "node:net";
-import test from "node:test";
-net.createServer = () => ({ once() {}, listen(_address, ready) { ready(); }, address() { return { port: 3000 }; }, close(done) { done(); } });
-syncBuiltinESMExports();
-const { localFirstAgentStack, startupFailureObservation } = await import("../helpers/local-first-agent-stack.mjs");
-test("reject ambiguous or non-failure startup records", async (t) => {
-  process.env.OCC_TEST_LOCAL_FIRST_AGENT_REAL = "1";
-  process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE = "compose";
-  process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "none";
-  process.env.OPENAI_API_KEY = "invented-fixture-input";
-  delete process.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
-  delete process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE;
-  for (const scenario of ["invalid-operation", "invalid-controller", "controller-only", "node-cidr-controller", "nonrouting", "stderr", "duplicate", "malformed", "early", "truncated", "incomplete", "overflow", "signal", "success"]) {
-    process.env.OCC_FIXTURE_STARTUP_CASE = scenario;
-    if (scenario === "success") await localFirstAgentStack(t);
-    else await assert.rejects(localFirstAgentStack(t), /Start Local Setup/);
-  }
-  for (const [scenario, details] of [
-    ["valid", { routingOperation: "controller-rollout", routingController: "envoy-gateway" }],
-    ["operation-only", { routingOperation: "node-pod-cidr" }],
-    ["legacy", {}],
-    ["controller-import", { primaryStage: "controller-image-import" }],
-    // Check intake directly so reporter rejection cannot hide an invalid pair.
-    ["node-cidr-controller", null],
-  ]) {
-    process.env.OCC_FIXTURE_STARTUP_CASE = scenario;
-    await assert.rejects(promisify(execFile)(${JSON.stringify(join(root, "bin/occ"))}, ["dev", "up"]), (error) => {
-      const observation = startupFailureObservation();
-      // Deliberately split the genuine stdout across every boundary.
-      for (const character of error.stdout) observation.write(character);
-      assert.deepEqual(observation.finish(error.code, error.signal, error.killed), details === null ? undefined : {
-        kind: "local-first-agent-startup-failure", primaryStage: "routing", cleanupFailed: true, parentContextDone: false,
-        ...details,
-      });
-      // Cancellation takes precedence even when a complete valid line was buffered.
-      assert.equal(observation.finish(error.code, error.signal, true), undefined);
-      return true;
-    });
-  }
-  // The startup stage must survive its Kubernetes streaming caller and CI projection.
-  process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE = "kubernetes";
-  process.env.OCC_FIXTURE_STARTUP_CASE = "controller-import";
-  await assert.rejects(localFirstAgentStack(t), /Start Local Setup exited with status 23/);
-});
-`,
-  );
-  const results = join(root, "results/intake.json");
-  const result = run(root, laneArgs(root, "intake", "state/intake.jsonl", results));
-  assert.equal(result.status, 0, result.stderr + result.stdout);
-  const artifact = JSON.parse(await readFile(results, "utf8"));
-  assert.deepEqual(
-    artifact.files[0].measurements.filter(
-      ({ kind }) => kind === "local-first-agent-startup-failure",
-    ),
-    [
-      {
-        kind: "local-first-agent-startup-failure",
-        primaryStage: "controller-image-import",
-        cleanupFailed: true,
-        parentContextDone: false,
-      },
-    ],
-  );
 });
 
 test("run records only allowlisted measurements from test diagnostics", async (t) => {
@@ -8599,37 +7750,31 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   };
   // These records exercise the same consistency decision used by the real observer.
   // Contradiction stays incomplete even when each field is well-typed.
-  const conflictingSettings = {
-    ...turnContinuity,
-    settingsConsistent: false,
+  const incompleteTurnover = (base, overrides) => ({
+    ...base,
+    ...overrides,
     qualification: "incomplete",
-  };
-  const unchangedProvider = {
-    ...turnContinuity,
+  });
+  const conflictingSettings = incompleteTurnover(turnContinuity, { settingsConsistent: false });
+  const unchangedProvider = incompleteTurnover(turnContinuity, {
     providerEnvAfterSha256: turnContinuity.providerEnvBeforeSha256,
-    qualification: "incomplete",
-  };
-  const missingTurnoverEvent = {
-    ...unexercisedTurnover,
+  });
+  const missingTurnoverEvent = incompleteTurnover(unexercisedTurnover, {
     providerEnvAfterSha256: "e".repeat(64),
-    qualification: "incomplete",
-  };
-  const changedGateway = { ...turnContinuity, stableRuntime: false, qualification: "incomplete" };
-  const earlyRelay = {
-    ...turnContinuity,
-    staleTunnelAtMs: 1_799_999_999_999,
-    qualification: "incomplete",
-  };
-  const lateTurnover = {
-    ...turnContinuity,
-    turnoverAtMs: 1_800_000_010_001,
-    qualification: "incomplete",
-  };
-  await writeFile(
-    join(root, "tests/integration/measurements.test.mjs"),
+  });
+  const changedGateway = incompleteTurnover(turnContinuity, { stableRuntime: false });
+  const earlyRelay = incompleteTurnover(turnContinuity, { staleTunnelAtMs: 1_799_999_999_999 });
+  const lateTurnover = incompleteTurnover(turnContinuity, { turnoverAtMs: 1_800_000_010_001 });
+  await writeSingleFileRunnerLane(
+    root,
+    "measure",
+    "tests/integration/measurements.test.mjs",
     [
       'import test from "node:test";',
-      'test("measures", (t) => {',
+      `import { runOpenShellStage } from ${JSON.stringify(new URL("../helpers/openshell-stage.mjs", import.meta.url).href)};`,
+      'test("measures", async (t) => {',
+      '  await runOpenShellStage(t, "scratch-sibling-isolation", async () => {});',
+      '  await runOpenShellStage(t, "scratch-queued-actor-revocation", async () => {});',
       ...[
         measurement({
           kind: "openshell-stage",
@@ -8654,6 +7799,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
           args: "secretauthvalue-args",
         }),
         measurement({ ...runtimeFailure, nonzeroExitCount: 1, signaledCount: 1 }),
+        measurement({ ...runtimeFailure, stage: "openshell-agent-sandbox-image" }),
         measurement({
           ...runtimeFailure,
           elapsedMs: 201,
@@ -8881,19 +8027,22 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       "",
     ].join("\n"),
   );
-  await writeSingleLaneManifest(
-    root,
-    "measure",
-    [{ path: "tests/integration/measurements.test.mjs" }],
-    { ci: ["measure"] },
-  );
 
   const result = run(root, laneArgs(root, "measure", "state/measurements.jsonl", resultsPath));
   const artifact = await readFile(resultsPath, "utf8");
   const summary = JSON.parse(artifact);
   assert.equal(result.status, 0, result.stderr);
+  const [sibling, revocation, ...otherMeasurements] = summary.files[0].measurements;
+  for (const [receipt, stage] of [
+    [sibling, "scratch-sibling-isolation"],
+    [revocation, "scratch-queued-actor-revocation"],
+  ]) {
+    const { elapsedMs, ...outcome } = receipt;
+    assert.deepEqual(outcome, { kind: "openshell-stage", stage, outcome: "passed" });
+    assert.ok(Number.isSafeInteger(elapsedMs) && elapsedMs >= 0);
+  }
   assert.deepEqual(
-    summary.files[0].measurements.filter(({ kind }) => kind !== retentionKind),
+    otherMeasurements.filter(({ kind }) => kind !== retentionKind),
     [
       { kind: "openshell-stage", stage: "oauth-refresh", outcome: "passed", elapsedMs: 123 },
       {
@@ -8905,6 +8054,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
         elapsedMs: 100,
       },
       { ...runtimeFailure, nonzeroExitCount: 1, signaledCount: 1 },
+      { ...runtimeFailure, stage: "openshell-agent-sandbox-image" },
       { ...runtimeFailure, elapsedMs: 201 },
       { ...runtimeFailure, elapsedMs: 202 },
       { ...runtimeFailure, elapsedMs: 203, stage: "controller-build" },

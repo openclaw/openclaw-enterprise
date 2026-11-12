@@ -10,7 +10,7 @@ import { join, resolve } from "node:path";
 import test, { before } from "node:test";
 import { promisify } from "node:util";
 import { prepareDevUpImage } from "../../scripts/ci/prepare.mjs";
-import { availablePort } from "../helpers/available-port.mjs";
+import { availablePort } from "../helpers/available-port.ts";
 import { runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.mjs";
 
 const { loadYaml } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(

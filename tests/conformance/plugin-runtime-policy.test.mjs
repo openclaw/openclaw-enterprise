@@ -58,6 +58,13 @@ function installedPluginResponses() {
   ];
 }
 
+function nativeGatewaySpawns(calls) {
+  return calls.filter(
+    ({ command, args }) =>
+      command === "node" && args?.[0] === "/app/openclaw.mjs" && args[1] === "gateway",
+  );
+}
+
 test("OpenClaw runtime helper installs exact admitted package pins and verifies the install record", async () => {
   const runtime = openClawRuntime();
   const firstInstallConfig = { path: undefined, config: undefined };
@@ -1588,12 +1595,16 @@ test("deployment admission and the Gateway entrypoint agree on the workspace nod
     }
   };
   const entrypointStarts = async (config) => {
+    const calls = [];
+    const kills = [];
     try {
       await runOpenClawRuntimeHelper(undefined, [], {
         baseConfig: config,
         workspaceNodeId: "enrolled-node",
+        calls,
+        kills,
       });
-      return true;
+      return nativeGatewaySpawns(calls).length === 1 && kills.length === 0;
     } catch (error) {
       assert.match(String(error?.message), /requires the file-transfer plugin|is not a function/);
       return false;
@@ -1641,8 +1652,9 @@ test("Kubernetes admission and the Dedicated Codex Gateway entrypoint agree on t
   // a Configuration that turns it off, and admission accepted each such Configuration. Each row
   // runs the real entrypoint and the real Kubernetes Compute admission: Configuration save (the
   // model policy selects Codex), Agent save (null bindings) and deployment, with and without a
-  // workspace node. Admission must refuse exactly the rows the entrypoint refuses, and an
-  // accepted row must reach Gateway start.
+  // workspace node. Each admission and native spawn must match the intended policy; agreement
+  // alone could hide matching permissive regressions. This observes the generated launcher;
+  // native image tests separately verify the built runtime's enforcement behavior.
   const manifest = { kind: "codex", selections: {} };
   const codexSelected = {
     agents: {
@@ -1662,7 +1674,8 @@ test("Kubernetes admission and the Dedicated Codex Gateway entrypoint agree on t
       "enrolled-node",
     ],
   ];
-  const entrypointStarts = async (plugins, workspaceNodeId) => {
+  const entrypointStarts = async (plugins, workspaceNodeId, observations = {}) => {
+    const { calls = [], kills = [], configValidationResponse } = observations;
     try {
       await runOpenClawRuntimeHelper({ manifest }, [], {
         env: {
@@ -1671,8 +1684,11 @@ test("Kubernetes admission and the Dedicated Codex Gateway entrypoint agree on t
         },
         baseConfig: { gateway: { port: 8080 }, plugins: structuredClone(plugins) },
         workspaceNodeId,
+        calls,
+        kills,
+        configValidationResponse,
       });
-      return true;
+      return nativeGatewaySpawns(calls).length === 1 && kills.length === 0;
     } catch (error) {
       assert.match(
         String(error?.message),
@@ -1690,50 +1706,69 @@ test("Kubernetes admission and the Dedicated Codex Gateway entrypoint agree on t
       return false;
     }
   };
+  for (const [topology, , workspaceNodeId] of topologies) {
+    const calls = [];
+    const kills = [];
+    const validStarts = await entrypointStarts({ allow: ["codex"] }, workspaceNodeId, {
+      calls,
+      kills,
+    });
+    assert.equal(nativeGatewaySpawns(calls).length, 1, `${topology}: valid native spawn`);
+    assert.deepEqual(kills, [], `${topology}: valid launcher must not exit`);
+    assert.equal(validStarts, true, `${topology}: valid Gateway starts`);
+
+    calls.length = 0;
+    const refusedStarts = await entrypointStarts({ allow: ["codex"] }, workspaceNodeId, {
+      calls,
+      kills,
+      configValidationResponse: {
+        status: 1,
+        stdout: JSON.stringify({ valid: false }),
+        stderr: "unsupported gatewayPolicy",
+      },
+    });
+    assert.equal(nativeGatewaySpawns(calls).length, 0, `${topology}: native schema refusal`);
+    assert.deepEqual(kills, [], `${topology}: schema refusal holds the wrapper`);
+    assert.equal(refusedStarts, false, `${topology}: no native Gateway spawn during schema hold`);
+  }
   const rows = [
-    {},
-    { allow: ["codex"] },
-    { allow: [" CODEX ", "slack"], deny: ["slack", "codex-extra"], enabled: true },
+    [{}, true],
+    [{ allow: ["codex"] }, true],
+    [{ allow: [" CODEX ", "slack"], deny: ["slack", "codex-extra"], enabled: true }, true],
     // Blank items are ignored, so this allowlist is empty.
-    { allow: [" ", ""] },
+    [{ allow: [" ", ""] }, true],
     // The overlay turns the codex entry back on.
-    { allow: ["codex"], entries: { codex: { enabled: false } } },
+    [{ allow: ["codex"], entries: { codex: { enabled: false } } }, true],
     // The entrypoint does not read an allowlist that is not an array.
-    { allow: "slack" },
-    { enabled: false },
-    { enabled: false, entries: { codex: { enabled: true } } },
-    { deny: [" Codex "] },
-    { allow: ["slack"] },
-    { allow: ["codex", 1] },
-    { deny: [null] },
+    [{ allow: "slack" }, true],
+    [{ enabled: false }, false],
+    [{ enabled: false, entries: { codex: { enabled: true } } }, false],
+    [{ deny: [" Codex "] }, false],
+    [{ allow: ["slack"] }, false],
+    [{ allow: ["codex", 1] }, false],
+    [{ deny: [null] }, false],
     // Only a workspace node needs file-transfer.
-    { deny: ["file-transfer"] },
+    [{ deny: ["file-transfer"] }, true, false],
   ];
-  const mismatches = [];
-  for (const plugins of rows) {
+  for (const [plugins, withoutWorkspaceNode, withWorkspaceNode = withoutWorkspaceNode] of rows) {
     const configuration = { ...codexSelected, plugins };
     for (const [topology, driver, workspaceNodeId] of topologies) {
       const starts = await entrypointStarts(plugins, workspaceNodeId);
+      const expected = workspaceNodeId === undefined ? withoutWorkspaceNode : withWorkspaceNode;
+      const label = `${topology} ${JSON.stringify(plugins)}`;
+      assert.equal(starts, expected, `${label}: native Gateway start`);
       const admissions = {
         "Agent save": () => driver.validateHarnessAuth(harness, apiKeyAuth, configuration, null),
         deployment: () => driver.validateHarnessAuth(harness, apiKeyAuth, configuration, {}),
       };
       for (const [stage, admit] of Object.entries(admissions)) {
-        if (admits(admit) !== starts) {
-          mismatches.push(
-            `${topology} ${stage} ${JSON.stringify(plugins)}: Gateway starts ${starts}`,
-          );
-        }
+        assert.equal(admits(admit), expected, `${label}: ${stage}`);
       }
-      // Configuration save does not know the workspace node, so it may admit a row that only a
-      // workspace node refuses, and never refuses one that starts.
+      // Configuration save does not know the workspace node.
       const saved = admits(() => driver.validateConfiguration(configuration));
-      if (saved !== starts && !(saved && workspaceNodeId !== undefined)) {
-        mismatches.push(`${topology} save ${JSON.stringify(plugins)}: Gateway starts ${starts}`);
-      }
+      assert.equal(saved, withoutWorkspaceNode, `${label}: Configuration save`);
     }
   }
-  assert.deepEqual(mismatches, []);
 });
 
 test("a timed-out workspace binding probe releases the poll and can recover", async () => {

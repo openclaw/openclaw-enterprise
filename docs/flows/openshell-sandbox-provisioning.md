@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-11
-last_updated_session: authoring-run/04448580-0c4a-4965-8c27-7f586386c885
+last_updated_session: authoring-run/6d4239da-0b3c-4a1d-baaf-cd0d1b4646a6
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -98,42 +98,42 @@ graph TD
 `internal/occdev/openshell.go:prepareOpenShell`,
 `internal/occdev/kubernetes.go:writeInstallation`
 
-Both `openshell` launchers require Landlock, support Node and x64/ARM64 Codex
-independently of launcher architecture, verify 0.1.6 charts and pin
-Gateway/supervisor/sandbox images. Importing OCE images first prevents k3s garbage
-collection. `writeInstallation` selects curated Codex plugins; the selected
-Credential Gateway supplies credentials.
+[downloadVerified](../../internal/occdev/openshell_assets.go) streams archives;
+[Go](../../internal/occdev/routing_manifest.go)/[CI](../../scripts/ci/routing.mjs)
+fetch manifests (32 MiB maximum). Cancelable retries for network/HTTP 408/429/5xx:
+eight 60-second attempts starting within 120 seconds. Other errors fail.
+Retries remove failed `0600` archives, preserving existing files.
 
-`internal/occdev/openshell_assets.go:downloadVerified` streams archives;
-`internal/occdev/routing_manifest.go` and CI's
-`scripts/ci/routing.mjs:downloadPinnedArtifact` fetch manifests (32 MiB maximum).
-Transient network errors and HTTP 408/429/5xx allow eight 60-second attempts,
-starting within 120 seconds. Local downloads honor cancellation. Other errors
-are terminal. Archive retries remove failed `0600` files, preserving existing files.
+Kubernetes-only provides PostgreSQL in `oce-system`, in-cluster authentication and
+[per-Agent HTTPS](../guides/deploy/local-setup.md); Compose uses PostgreSQL/OCC with k3d.
 
-`dev-up` validates Kubernetes/OpenShell before `occ dev up`.
-`OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only: in-cluster
-authentication, `oce-system`, imported PostgreSQL and [per-Agent HTTPS](../guides/deploy/local-setup.md).
-The launcher checks port collisions, recording engine, cluster, Namespace, ports
-and key path. Compose runs PostgreSQL/OCC with a k3d worker.
+`prepareOpenShell`/[installAgentSandbox](../../scripts/ci/openshell.mjs) preserve native/descriptor
+identity through cached child/index or exact-child pull. Manifest/config/CRI checks
+precede apply (`Never`); CRI misses retry. Overrides stay unchanged.
 
-On rollout failure, `prepareOpenShell` calls
-`internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout`
-once, preserving rollback errors. Diagnostics include Deployment,
-UID-linked ReplicaSets/Pods and Warning reasons, excluding messages, environment,
-full labels and logs. Unavailable, malformed or oversized results are identified.
-Limits: 15-second context; three seconds/256 KiB per command; 32 KiB per record.
-No retries; 200 ms pipe draining cannot terminate descendants.
+The [image importer](../../internal/occdev/openshell_image.go) journals tag/engine-ID intent before creation.
+Return/rollback/`dev down` reconcile without clusters/Compose providers;
+incomplete inspection or uncertain/replaced tags retain state.
+
+Before provisioning, [first-agent](../../scripts/first-agent.ts) and the operator hook call
+[Check](../../internal/occdev/check.go), refusing unavailable controllers with shared diagnostics.
+
+[captureAgentSandboxRollout](../../internal/occdev/agent_sandbox_rollout_diagnostics.go)
+reports failures once, preserving rollback errors: Deployment, UID-linked ReplicaSets/Pods
+and Warning reasons; no messages, environment, full labels or logs.
+It marks unavailable/malformed/oversized results. Bounds: 15-second context,
+three seconds/256 KiB per command, 32 KiB per record, no retries.
+The 200 ms pipe drain cannot terminate descendants.
 
 `network.providerHarness` records Gateway ClusterIP, Pod selector and TCP/8080.
 Agent Gateways alias its hostname, preserving HTTP Host; policy permits only those
-Pods/port. Both launchers install private Envoy routing and operator Workspaces.
+Pods/port. Launchers install private Envoy routing and operator Workspaces.
 `docs/snippets/openshell-quickstart/kubernetes/service-policies.py` uses live
 selectors to admit API, worker, supervisors and Agent Gateways on TCP/8080.
 Supervisor grants accumulate per Namespace; callers must match ownership labels.
-Protected Git preserves Gateway DNS/API egress using Service addresses, DNS
+Protected Git preserves Gateway DNS/API egress through Service addresses, DNS
 selectors/ports and ready API endpoints. Empty discovery warns and removes stale
-backend grants; failed reads abort. Policies are recorded before application and
+grants; failed reads abort. Policies are recorded before application and
 deleted on uninstall. See [local deployment](../guides/deploy/local-kubernetes-development.md)
 and the [retired local protected profile](../guides/deploy/local-openshell-images.md#select-the-protected-profile).
 
@@ -210,8 +210,13 @@ selects a named provider and HTTPS Responses transport.
 
 `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 
-`sandboxDataMount` validates mounts; `OpenShellGitRuntime.prepare` supplies process-scoped,
-mount-specific `safe.directory` and `push.negotiate=true`.
+`apps/controller/src/drivers/compute/kubernetes/index.ts:admitRevision` freezes scratch.
+After shutdown, `verifyScratchVolume` checks the claim. `workspaceVolumeMounts`
+preserves writable `/sandbox/scratch`. [Scratch PVCs](../reference/drivers/kubernetes-compute/configuration.md#scratch-volumes)
+survive Agent cleanup.
+
+`sandboxDataMount` rejects scratch selection or overlapping data paths. `OpenShellGitRuntime.prepare` supplies
+process-scoped, mount-specific `safe.directory` and `push.negotiate=true`.
 
 Dedicated Codex/OpenClaw requires Landlock. Kubernetes, filesystem, process and
 [binary-scoped network policy](agent-sandbox-policy.md) use pinned `v0.1.6`.
@@ -240,8 +245,7 @@ Readiness does not attest HMAC plugin status.
 `oce-codex-runtime`/`oce-openclaw-runtime` provide read-only setup and Gateway CA.
 Only Codex accepts `runtime.json`/`config.toml`. `harnessRuntimeCredentials` reads
 the projected Secret; `packages/utils/src/workspace-node-setup.ts:validateWorkspaceNodeSetupSecret`
-checks ownership and setup material without further reads. OpenShell keeps provider
-output private and maps failures to `OpenShellSandboxConfigurationFailure`.
+checks ownership and setup material without further reads. OpenShell keeps provider output private; failures become `OpenShellSandboxConfigurationFailure`.
 Validated setup, including `bootstrapToken`, becomes `node-setup.json`. TLS-pinned setup requires `wss://`
 at admission and supervisor replacement. WebSocket rewriting is unsupported:
 device proofs sign the literal token.
@@ -249,25 +253,22 @@ Renewal requires expired stored setup, later live expiry and unchanged endpoint,
 TLS fingerprint, runtime and CA. Policy permits that Gateway and `/usr/local/bin/node` only;
 foreign ownership/drift prevents creation.
 
-Version state mounts at `/sandbox/.openclaw-runtime`; persistent subpaths mount
-below `/sandbox/.openclaw-mounts`. Admitted `/home/node` paths move under
-`harnessHome` for native hook credentials. Codex hooks use the provider-file
-Gateway CA and node-reachable routing. `OPENCLAW_NODE_STATE_DIR` uses a created
-`state` child to avoid root-owned mounts and symlinks.
+State uses `/sandbox/.openclaw-runtime`; subpaths use `/sandbox/.openclaw-mounts`.
+Admitted `/home/node` paths relocate to `harnessHome` for hooks. Codex hooks
+use provider-file Gateway CA and node-reachable routing.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:agentWithNodeEntrypoint`
-and `NATIVE_WORKER_ENTRYPOINT` apply `0700` before OpenClaw setup or migration,
-clearing inherited setgid. OpenClaw prepares its children on retry; retained state
-and workspace permissions stay unchanged. Permission failures stop startup.
-Workspace, node identity, sessions and images stay separate. The supervisor probes
-`/tmp`; native `TMPDIR` is a private `tmp` child under the runtime home.
+and `NATIVE_WORKER_ENTRYPOINT` set `0700` and clear setgid before setup/migration;
+permission failures stop startup. [Writable runtime state](../reference/drivers/openshell-sandbox.md#writable-runtime-state)
+owns state-child isolation, retained permissions and temporary paths.
 
-`prepareNativeWorkspace` privatizes retained PVC subpaths through a restricted
-revision Deployment. Mode/ownership checks precede UID-fenced foreground deletion;
-completed preparation exits successfully on SIGTERM with normal termination grace.
-Sandbox creation waits for every writer Pod.
-Preparation requires `userNamespaces: false`, at most one operator-mode ServiceAccount
-and the pinned Gateway's default identity, without model credentials, ServiceAccount
-tokens, capabilities, or direct Pod creation. Admission reports these requirements before deployment.
+`prepareNativeWorkspace` creates missing scratch directories; existing ones must
+be process-owned `0700`. Sibling content stays untouched. Other subpaths use
+managed preparation in a restricted revision Deployment. Ownership/mode checks precede UID-fenced foreground deletion;
+completed preparation exits successfully on SIGTERM with normal grace. Sandbox
+creation waits for every writer Pod. Admission requires `userNamespaces: false`,
+one optional operator-mode ServiceAccount and the pinned Gateway's default identity.
+Preparation has no model credentials, ServiceAccount tokens, capabilities or direct
+Pod creation.
 
 After Sandbox readiness, `initializeWorkspace` validates the setup Secret's
 Namespace, Agent and setup identity, then sends initializer/JSON stdin through
@@ -433,7 +434,17 @@ model execution.
 
 ## Changelog
 
+- 2026-11-11 21:41: Bind controller preload to node identity. (authoring-run/6d4239da-0b3c-4a1d-baaf-cd0d1b4646a6 - 7a2f352a44c42459a3a33c784199a47d11d98e1e)
+
+- 2026-11-11 21:12: Preload Agent Sandbox locally. (authoring-run/6d4239da-0b3c-4a1d-baaf-cd0d1b4646a6 - dfbdd7bfa6ccfba7d3d2e6b28f2770988c0cfc0d)
+
+- 2026-11-11 16:37: Check the managed controller before local Agent deployment. (authoring-run/8dc2b49c-caf2-4594-9d69-06d1826b336e - 98da01c910)
+
 - 2026-11-11 06:13: Trace attachment refusals. (authoring-run/04448580-0c4a-4965-8c27-7f586386c885 - fef779767c622b30bab45c7a0a94f16fc04f70ab)
+
+- 2026-11-10 21:21: Guard scratch storage. (authoring-run/77c6dd8e-42d7-4688-9561-cf468610374c - 011cd43b9c88d4123b19f12bd5d7bd0938e905d2)
+
+- 2026-11-10 21:04: Trace scratch PVC admission and mounts. (authoring-run/0029d37a-209b-4105-8242-a8c48c959c81 - 8b0d0518cb8786253d9632ae4beb8a75758a2e61)
 
 - 2026-11-10 20:33: Wait for the native Gateway node binding and rollout before readiness. (authoring-run/01a1b316-df53-7fc0-b967-6e23527300dc - 5b7ee9438050)
 
