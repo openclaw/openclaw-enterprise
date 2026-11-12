@@ -6926,16 +6926,32 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
     pairSummary.files.map(({ mode }) => mode),
     ["parallel", "parallel"],
   );
-  const pairReport = JSON.parse(await readFile(`${pairStatePath}.diagnostics.json`, "utf8"));
-  assert.deepEqual(
-    // Files finish in either order; each appends its own record.
-    pairReport.agentNamespaces
-      .map(({ file, namespaces, pods }) => [file, namespaces, pods.length])
-      .sort(([left], [right]) => left.localeCompare(right)),
-    pairFiles
-      .map((file) => [file, ["occ-agent-a"], 3])
-      .sort(([left], [right]) => left.localeCompare(right)),
+  const pairText = await readFile(`${pairStatePath}.diagnostics.json`, "utf8");
+  const pairReport = JSON.parse(pairText);
+  const captureFields = ({ cluster, namespaces, pods, events, omitted }) => ({
+    cluster,
+    namespaces,
+    pods: pods.map(({ watch, containers }) => [watch, containers[0].ready]),
+    events: events.map(({ reason, count, lastTimestamp }) => [reason, count, lastTimestamp]),
+    omittedEvents: omitted.events,
+  });
+  // Files can finish in either order. Each file must retain its own complete capture.
+  const captures = pairReport.agentNamespaces.toSorted(({ file: left }, { file: right }) =>
+    left.localeCompare(right),
   );
+  assert.deepEqual(
+    captures.map(({ file }) => file),
+    pairFiles.toSorted((left, right) => left.localeCompare(right)),
+  );
+  const singleCapture = captureFields(activity);
+  for (const capture of captures) {
+    assert.deepEqual(
+      captureFields(capture),
+      singleCapture,
+      `parallel capture for ${capture.file} matches the single-file capture`,
+    );
+  }
+  assert.doesNotMatch(pairText, /do-not-publish|unrelated system event/);
   assert.deepEqual(await readdir(clusterDirectory), []);
 
   // A second cluster whose directory is gone fails the capture after the first cluster's
@@ -8735,6 +8751,26 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
   assert.equal(result.status, 1, result.stderr);
   const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
   const summary = JSON.parse(await readFile(join(root, "results/k3d.json"), "utf8"));
+  assert.deepEqual(
+    summary.files.map(({ path, status, tests }) => ({
+      path,
+      status,
+      tests: tests.map(({ name, status }) => [name, status]),
+    })),
+    [
+      {
+        path: "tests/integration/stop.test.mjs",
+        status: "failed",
+        tests: [["gateway stop is confirmed", "failed"]],
+      },
+      {
+        path: "tests/integration/pass.test.mjs",
+        status: "passed",
+        tests: [["passes", "passed"]],
+      },
+    ],
+    "the failed wait and the passing control have distinct runner outcomes",
+  );
   assert.deepEqual(summary.runtimeProvenance, runtimeProvenance);
   assert.deepEqual(JSON.parse(text).runtimeProvenance, runtimeProvenance);
   assert.equal(
