@@ -303,6 +303,7 @@ import {
   requireFallbackProviders,
   resolveConfiguredHarnessId,
 } from "./configured-harness.ts";
+import type { ClaimedWork } from "./controller-work.ts";
 import { requireDeployableRoster, withAgentIdentityName } from "./openclaw-roster.ts";
 import {
   capability,
@@ -380,6 +381,7 @@ import {
   SecretReferencedError,
   SecretStorageDriverError,
   SecretValueError,
+  WorkClaimLostError,
 } from "./errors.ts";
 import { admitGatewaySecurityDefaults } from "./gateway-security-defaults.ts";
 import {
@@ -431,7 +433,6 @@ import {
   type DeploymentStatusResult,
 } from "./state/controller-work.ts";
 import { PostgresCommitOutcomeUnknownError } from "./state/postgres-state.ts";
-import { WorkClaimLostError, type ClaimedWork } from "./state/postgres-work-queue.ts";
 import {
   validAdmittedRepositoryBindings,
   validRepositoryAccess,
@@ -573,6 +574,7 @@ export {
   SecretValueError,
   StoredCredentialSourceConfigError,
   TransientDependencyError,
+  WorkClaimLostError,
   type ActivationFailedCode,
   type ActivationPendingCode,
   type CodexPermissionDenial,
@@ -750,17 +752,15 @@ export {
   type PostgresPool,
 } from "./state/postgres-state.ts";
 export {
-  PostgresWorkQueue,
-  WorkClaimLostError,
   isRepositoryCleanupWork,
   isRepositoryExpiryCleanupWork,
-  repositoryWithdrawalStateSql,
-  repositoryCleanupRevisionId,
   isRepositoryRuntimeRetirementWork,
-  type ClaimedWork,
+  repositoryCleanupRevisionId,
+} from "./repository-withdrawal.ts";
+export {
+  PostgresWorkQueue,
+  repositoryWithdrawalStateSql,
   type ClaimRequest,
-  type ControllerWork,
-  type ControllerWorkState,
   type EnqueueWork,
   type PermanentFailure,
   type PostgresQueryClient,
@@ -771,8 +771,9 @@ export {
   type WorkClaim,
   type WorkResult,
 } from "./state/postgres-work-queue.ts";
+export { CREDENTIAL_WITHDRAWAL_TARGET } from "./controller-work.ts";
+export type { ClaimedWork, ControllerWork, ControllerWorkState } from "./controller-work.ts";
 export {
-  CREDENTIAL_WITHDRAWAL_TARGET,
   controllerWorkDeploymentStatus,
   credentialWithdrawalWorkKey,
   isCredentialWithdrawalWork,
