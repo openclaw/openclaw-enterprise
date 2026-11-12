@@ -52,7 +52,7 @@ single-label wildcards, and union coverage across matching rules. A full-size
 Agent policy against a full-size ceiling must complete through regular HTTP
 admission without the previous repeated full-ceiling scans.
 
-The count change does not alter policy ownership, persistence, version checks,
+The count change does not alter policy ownership, persistence format, version checks,
 application recovery, protected execution, or authorization. Provider byte and
 port limits still apply. No deployed Installation changes merely because this
 proposal or its implementation is published.
@@ -70,6 +70,7 @@ same requested capacity and share their validation contract.
   and reject 16,385.
 - The regular HTTP preview and save paths accept a policy beyond the former
   64 KiB request limit and preserve every submitted rule.
+- PostgreSQL persists 16,384 additions and atomically rejects 16,385 or invalid grants.
 - Invalid grants and grants outside the Installation ceiling remain refused.
 - Generated API schemas and the supported reference describe the new maximum.
 - Large requests retain a finite byte limit; unrelated routes retain theirs.

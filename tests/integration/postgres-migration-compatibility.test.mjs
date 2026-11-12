@@ -2192,6 +2192,7 @@ test(
       [73, "preFiniteRepositorySessionWithdrawal"],
       [74, "preHumanAuthenticationResults"],
       [75, "preNativeBrowserAccess"],
+      [76, "preSandboxPolicyCapacity"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2685,6 +2686,7 @@ test(
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
       [75, "preNativeBrowserAccess"],
+      [76, "preSandboxPolicyCapacity"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2880,20 +2882,26 @@ test(
     for (const [prefix, history] of [
       [74, "preHumanAuthenticationResults"],
       [75, "preNativeBrowserAccess"],
+      [76, "preSandboxPolicyCapacity"],
     ]) {
-      const previous = await historyDatabase(context, fixture, "previous", { prefix });
-      const restored = await restoreHistoryArchive(
-        context,
-        fixture,
-        await dumpHistoryArchive(fixture, previous),
-      );
-      assert.deepEqual(await runHistoryMigration(restored, "production"), {
-        ok: true,
-        history,
-      });
-      assert.deepEqual(await runHistoryMigration(restored, "production", "--check"), {
-        ok: true,
-        history: "completed",
+      await context.test(`upgraded restored ${history}`, async (child) => {
+        const previous = await historyDatabase(child, fixture, "previous", { prefix });
+        const restored = await restoreHistoryArchive(
+          child,
+          fixture,
+          await dumpHistoryArchive(fixture, previous),
+        );
+        assert.deepEqual(await runHistoryMigration(restored, "production"), {
+          ok: true,
+          history,
+        });
+        child.diagnostic(
+          `Completed restore ${history}: ${catalogDigest(await migrationCatalog(restored.migrator))}`,
+        );
+        assert.deepEqual(await runHistoryMigration(restored, "production", "--check"), {
+          ok: true,
+          history: "completed",
+        });
       });
     }
   },
@@ -2969,6 +2977,7 @@ test(
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
       [75, "preNativeBrowserAccess"],
+      [76, "preSandboxPolicyCapacity"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2991,7 +3000,9 @@ test(
         // Fail the common reduction grant after admission backfill and repository authority.
         // All three pending receipts, schema changes and main-row annotations roll back.
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
+        // Abort 0077 at constraint revalidation after replacing the grant validator.
         const rollbackTag = [
+          [76, "ALTER TABLE"],
           [75, "CREATE TRIGGER"],
           [58, "GRANT"],
           [57, "CREATE TABLE"],
@@ -3938,3 +3949,62 @@ if (
     },
   );
 }
+
+test(
+  "Policy capacity upgrade preserves a populated 32-addition row and admits 16,384",
+  requiresHistoryPostgres,
+  async (t) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(t, fixture, "policycapacity", { prefix: 76 });
+    const namespaceId = await seedCanonicalData(db, {
+      preset: true,
+      computeAdmission: true,
+      executionAdmission: true,
+      harnessSettings: true,
+    });
+    const additions = Array.from({ length: 16_385 }, (_, index) => ({
+      id: `capacity-${index}`,
+      binary: "/usr/bin/curl",
+      host: "example.org",
+      ports: [{ from: 443, to: 443 }],
+    }));
+    const read = async () =>
+      (
+        await db.app.query("SELECT * FROM occ.sandbox_policies WHERE namespace_id=$1 ORDER BY id", [
+          namespaceId,
+        ])
+      ).rows;
+    const write = (count) =>
+      db.app.query(
+        "UPDATE occ.sandbox_policies SET version=version+1, document=jsonb_set(jsonb_set(document,'{version}',to_jsonb(version+1)),'{additions}',$2::jsonb) WHERE namespace_id=$1",
+        [namespaceId, JSON.stringify(additions.slice(0, count))],
+      );
+    assert.ok((await read()).length > 0);
+    await write(32);
+    const retained = await read();
+    await assert.rejects(write(33), {
+      code: "23514",
+      constraint: "sandbox_policies_document_valid",
+    });
+    assert.deepEqual(await read(), retained);
+    // Exercise the supported production migrator on populated released history, not selected SQL.
+    assert.deepEqual(await runHistoryMigration(db), {
+      ok: true,
+      history: "preSandboxPolicyCapacity",
+    });
+    assert.deepEqual(await read(), retained, "upgrade must preserve every policy column");
+    await write(33);
+    await write(16_384);
+    const maximum = await read();
+    assert.ok(maximum.every((row) => row.document.additions.length === 16_384));
+    await assert.rejects(write(16_385), {
+      code: "23514",
+      constraint: "sandbox_policies_document_valid",
+    });
+    assert.deepEqual(await read(), maximum);
+    assert.deepEqual(await runHistoryMigration(db, "production", "--check"), {
+      ok: true,
+      history: "completed",
+    });
+  },
+);

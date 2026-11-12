@@ -22,7 +22,7 @@ import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs"
 import { expireWorkLease } from "../helpers/postgres-worker-revision-support.mjs";
 import { callerDenied, GRANT_EXCEEDS_CEILING } from "../helpers/refusal-text.mjs";
 
-async function createPolicyApp(t, recordOperations = false, { laxDriver = false } = {}) {
+async function createPolicyApp(t, recordOperations = false, { laxDriver = false, ceiling } = {}) {
   const grant = {
     id: "python-demo",
     binary: "/usr/bin/python3.11",
@@ -100,7 +100,7 @@ async function createPolicyApp(t, recordOperations = false, { laxDriver = false 
     authSecret: "sandbox-policy-postgres-session-secret-32-characters",
     sandboxDriver,
     controllerOptions: {
-      sandboxNetworkPolicyCeiling: [grant, providerRefusalGrant],
+      sandboxNetworkPolicyCeiling: ceiling ?? [grant, providerRefusalGrant],
       recordOperations,
       driverConfigurations: [
         {
@@ -1140,5 +1140,80 @@ test(
       ).rows,
       jobs.rows,
     );
+  },
+);
+
+test(
+  "PostgreSQL policy writes persist 16,384 additions and atomically reject excess or invalid grants",
+  requiresPostgres,
+  async (t) => {
+    const additions = Array.from({ length: 16_384 }, (_, index) => ({
+      id: `capacity-${index}`,
+      binary: "/usr/bin/python3.11",
+      host: "example.org",
+      ports: [{ from: 443, to: 443 }],
+    }));
+    const { inject, pool, deployAgent, state } = await createPolicyApp(t, false, {
+      ceiling: additions,
+    });
+    let namespace;
+    let agent;
+    let path;
+    let version;
+    // Cross the former SQL-only boundary, then save the maximum on independently admitted Agents.
+    for (const count of [32, 33, 16_384]) {
+      const deployed = await deployAgent(`Policy capacity ${count}`);
+      ({ namespace, agent } = deployed);
+      // As in the other admission cases, mark the admitted revision active without claiming provider execution.
+      await state.transact(async (unit) => {
+        await unit.namespaces.lockNamespace(namespace.id);
+        await unit.agents.compareAndSetActiveRevision(
+          namespace.id,
+          agent.id,
+          undefined,
+          deployed.revision.id,
+        );
+      });
+      path = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
+      const enabled = await inject("PATCH", `${path}/editing`, { enabled: true });
+      assert.equal(enabled.statusCode, 200, enabled.body);
+      const saved = await inject("PUT", path, {
+        expectedVersion: 1,
+        additions: additions.slice(0, count),
+      });
+      assert.equal(saved.statusCode, 200, `capacity ${count}: ${saved.body}`);
+      version = saved.json().data.version;
+      const read = await inject("GET", path);
+      assert.equal(read.statusCode, 200, read.body);
+      assert.deepEqual(read.json().data.policy.additions, additions.slice(0, count));
+    }
+    const rows = async () =>
+      (
+        await pool.query(
+          "SELECT * FROM occ.sandbox_policies WHERE namespace_id=$1 AND agent_id=$2",
+          [namespace.id, agent.id],
+        )
+      ).rows;
+    const before = await rows();
+    assert.equal(before.length, 1);
+    const excess = [...additions, { ...additions[0], id: "capacity-excess" }];
+    const refused = await inject("PUT", path, { expectedVersion: version, additions: excess });
+    assert.equal(refused.statusCode, 400, refused.body);
+    assert.deepEqual(await rows(), before);
+    // Direct application-role SQL must retain both the finite bound and all per-grant checks.
+    for (const invalid of [
+      excess,
+      [...additions.slice(0, -1), { ...additions.at(-1), ports: [{ from: 444, to: 443 }] }],
+      [...additions.slice(0, -1), additions[0]],
+    ]) {
+      await assert.rejects(
+        pool.query(
+          "UPDATE occ.sandbox_policies SET version=version+1, document=jsonb_set(jsonb_set(document,'{version}',to_jsonb(version+1)),'{additions}',$3::jsonb) WHERE namespace_id=$1 AND agent_id=$2",
+          [namespace.id, agent.id, JSON.stringify(invalid)],
+        ),
+        { code: "23514", constraint: "sandbox_policies_document_valid" },
+      );
+      assert.deepEqual(await rows(), before, "rejected SQL must preserve every saved column");
+    }
   },
 );
