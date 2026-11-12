@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: 2026-11-10
-last_updated_session: authoring-run/0a21b7ac-a801-4bfa-991f-4703fe578258
+updated: "2026-11-12 09:44"
+last_updated_session: "authoring-run/81887682-43d3-40dc-8b07-8d733efb02e6"
 ---
 
 # Console sign-in and destination recovery
@@ -72,8 +72,8 @@ and withholds private content and reads. **Retry** repeats the session check.
 
 `showLogin` reads `GET /api/auth/providers`. A true `google` flag adds **Continue
 with Google**. `oidcProviders` supplies a button label and route for each named
-provider. A single-provider installation supplies the `oidc` flag and
-`oidcSignIn`. The start URL must match the provider's configured HTTPS origin and
+provider. A provider on the legacy route supplies its label and authorization
+URL in `oidcSignIn`. The start URL must match the provider's configured HTTPS origin and
 path. Discovery failure keeps password sign-in.
 An explicit `password: false` makes the form recovery-only and changes the
 provider-error advice from "use your password" to asking an administrator. The
@@ -197,6 +197,8 @@ for one user.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 09:44: Distinguish discovery for named providers and the legacy route. (authoring-run/81887682-43d3-40dc-8b07-8d733efb02e6 - d3da453e6b84907f013c52c0391b3eb32e177d63)
 
 - 2026-11-10 14:49: Trace provider opt-in for self-service linking. (authoring-run/0a21b7ac-a801-4bfa-991f-4703fe578258 - 3488c97f215ae3f80beb14ca3d11a6a6b8f011)
 

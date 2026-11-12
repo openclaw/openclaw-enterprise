@@ -289,6 +289,14 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- range $key, $provider := $oidcProviders -}}
 {{- $label := "auth.oidc" -}}
 {{- if $key -}}{{- $label = printf "auth.oidc.providers.%s" $key -}}{{- end -}}
+{{- if hasKey $provider "enrollment" -}}
+{{- if not (kindIs "map" $provider.enrollment) -}}{{- fail (printf "%s.enrollment must be an object" $label) -}}{{- end -}}
+{{- if hasKey $provider.enrollment "createAccount" -}}
+{{- $create := $provider.enrollment.createAccount -}}
+{{- if not (kindIs "map" $create) -}}{{- fail (printf "%s.enrollment.createAccount must be an object" $label) -}}{{- end -}}
+{{- if and (hasKey $create "requireVerifiedEmail") (not (kindIs "bool" $create.requireVerifiedEmail)) -}}{{- fail (printf "%s.enrollment.createAccount.requireVerifiedEmail must be a boolean" $label) -}}{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- if or (not $provider.secretName) (not $provider.clientIdKey) (not $provider.clientSecretKey) -}}{{- fail (printf "%s requires a dedicated operator-created Secret name, client ID key, and client secret key" (ternary $label "auth.oidc.enabled" (ne $key ""))) -}}{{- end -}}
 {{- include "openclaw.validateSecretKey" (dict "label" (printf "%s.clientIdKey" $label) "value" $provider.clientIdKey) -}}
 {{- include "openclaw.validateSecretKey" (dict "label" (printf "%s.clientSecretKey" $label) "value" $provider.clientSecretKey) -}}
@@ -362,6 +370,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- end -}}
 {{- if hasKey .Values.agentNativeAdmin "sharedCookieDomain" -}}{{- fail "agentNativeAdmin.sharedCookieDomain is no longer supported; session cookie scope is derived from auth.baseUrl and agentNativeAdmin.domain" -}}{{- end -}}
+{{- if and .Values.agentNativeAdmin.enabled (gt (len .Values.agentNativeAdmin.domain) 214) -}}{{- fail "agentNativeAdmin.domain must not exceed 214 characters, leaving room for the Agent hostname prefix" -}}{{- end -}}
 {{- if not .Values.agentNativeAdmin.domain -}}{{- fail "agentNativeAdmin.domain is required for shared browser sessions, including when native browser access is disabled" -}}{{- end -}}
 {{- if not (regexMatch "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$" .Values.agentNativeAdmin.domain) -}}{{- fail "agentNativeAdmin.domain must be a DNS hostname without a wildcard, port, scheme, or path" -}}{{- end -}}
 {{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.baseUrl must use HTTPS for browser sessions" -}}{{- end -}}

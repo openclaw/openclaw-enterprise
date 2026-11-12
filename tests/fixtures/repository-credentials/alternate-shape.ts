@@ -27,6 +27,25 @@ export type AlternateFixtureFactory = RepositoryBackendFactory & {
   drivers: readonly unknown[];
 };
 
+type FixtureEvent = { kind: string; sessionId: string; attemptId?: string };
+function isFixtureEvent(value: unknown): value is FixtureEvent {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    typeof value.kind === "string" &&
+    "sessionId" in value &&
+    typeof value.sessionId === "string" &&
+    (!("attemptId" in value) || typeof value.attemptId === "string")
+  );
+}
+export function fixtureEvents(factory: AlternateFixtureFactory): FixtureEvent[] {
+  return factory.events.map((value) => {
+    assert.ok(isFixtureEvent(value));
+    return value;
+  });
+}
+
 export function isBackendFactory(value: unknown): value is RepositoryBackendFactory {
   return (
     typeof value === "object" &&

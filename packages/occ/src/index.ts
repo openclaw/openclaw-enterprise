@@ -39,6 +39,7 @@ import {
 export {
   postgresPreparedGitHubProof,
   preparedGitHubLive,
+  preparedGitHubRejectedMaterialMatch,
   readPreparedGitHubMetadata,
 } from "./state/prepared-github-state.ts";
 export type { PreparedGitHubMetadataAdmission } from "./state/prepared-github-state.ts";
@@ -281,6 +282,7 @@ import {
   normalizePluginApprovers,
   normalizePresetTemplate,
   presetTemplateDefaultsWithPlaceholders,
+  presetValueHasVariables,
   PresetValidationError,
   normalizeSecretBindings,
   normalizeHarnessAuthBinding,
@@ -301,6 +303,7 @@ import {
   requireFallbackProviders,
   resolveConfiguredHarnessId,
 } from "./configured-harness.ts";
+import type { ClaimedWork } from "./controller-work.ts";
 import { requireDeployableRoster, withAgentIdentityName } from "./openclaw-roster.ts";
 import {
   capability,
@@ -319,6 +322,7 @@ import {
   DedicatedOpenClawSandboxError,
   DeletionRetryOwnedError,
   DependencyUnavailableError,
+  RuntimeDiagnosticsTransportError,
   DeviceAuthorizationStartError,
   DriverSelectionError,
   ModelDiscoveryError,
@@ -377,6 +381,7 @@ import {
   SecretReferencedError,
   SecretStorageDriverError,
   SecretValueError,
+  WorkClaimLostError,
 } from "./errors.ts";
 import { admitGatewaySecurityDefaults } from "./gateway-security-defaults.ts";
 import {
@@ -428,7 +433,6 @@ import {
   type DeploymentStatusResult,
 } from "./state/controller-work.ts";
 import { PostgresCommitOutcomeUnknownError } from "./state/postgres-state.ts";
-import { WorkClaimLostError, type ClaimedWork } from "./state/postgres-work-queue.ts";
 import {
   validAdmittedRepositoryBindings,
   validRepositoryAccess,
@@ -489,6 +493,7 @@ export {
   DedicatedOpenClawSandboxError,
   DeletionRetryOwnedError,
   DependencyUnavailableError,
+  RuntimeDiagnosticsTransportError,
   PersistedStateInvalidError,
   DeviceAuthorizationStartError,
   DriverSelectionError,
@@ -569,6 +574,7 @@ export {
   SecretValueError,
   StoredCredentialSourceConfigError,
   TransientDependencyError,
+  WorkClaimLostError,
   type ActivationFailedCode,
   type ActivationPendingCode,
   type CodexPermissionDenial,
@@ -747,17 +753,15 @@ export {
   type PostgresPool,
 } from "./state/postgres-state.ts";
 export {
-  PostgresWorkQueue,
-  WorkClaimLostError,
   isRepositoryCleanupWork,
   isRepositoryExpiryCleanupWork,
-  repositoryWithdrawalStateSql,
-  repositoryCleanupRevisionId,
   isRepositoryRuntimeRetirementWork,
-  type ClaimedWork,
+  repositoryCleanupRevisionId,
+} from "./repository-withdrawal.ts";
+export {
+  PostgresWorkQueue,
+  repositoryWithdrawalStateSql,
   type ClaimRequest,
-  type ControllerWork,
-  type ControllerWorkState,
   type EnqueueWork,
   type PermanentFailure,
   type PostgresQueryClient,
@@ -768,8 +772,9 @@ export {
   type WorkClaim,
   type WorkResult,
 } from "./state/postgres-work-queue.ts";
+export { CREDENTIAL_WITHDRAWAL_TARGET } from "./controller-work.ts";
+export type { ClaimedWork, ControllerWork, ControllerWorkState } from "./controller-work.ts";
 export {
-  CREDENTIAL_WITHDRAWAL_TARGET,
   controllerWorkDeploymentStatus,
   credentialWithdrawalWorkKey,
   isCredentialWithdrawalWork,
@@ -2590,6 +2595,7 @@ export class OpenClawController {
   ): Promise<Readonly<Omit<InstallationCapabilities, "agentProvisioning">>> {
     this.namespaceIdentity(namespaceId);
     await this.authorize(principalId, "create", { kind: "agent", namespaceId, id: namespaceId });
+    await this.read((state) => this.exactNamespace(state, namespaceId));
     const { agentProvisioning: _administratorOnly, ...capabilities } = await this.capabilities();
     return immutableCopy(capabilities);
   }
@@ -3329,7 +3335,7 @@ export class OpenClawController {
     if (
       !result ||
       !Array.isArray(result.options) ||
-      result.options.length > 1000 ||
+      result.options.length > 1001 ||
       !result.options.every(validRepositoryOption) ||
       new Set(result.options.map((option) => option.repositoryRef)).size !==
         result.options.length ||
@@ -4395,8 +4401,11 @@ export class OpenClawController {
     let collected: AgentDeploymentDiagnostics;
     try {
       collected = await driver.diagnoseAgentDeployment!(binding);
-    } catch {
+    } catch (error) {
       observation.abort();
+      if (error instanceof RuntimeDiagnosticsTransportError) {
+        throw new RuntimeDiagnosticsTransportError();
+      }
       // Native Driver failures can contain private runtime or credential details.
       throw new DependencyUnavailableError("Runtime diagnostics are unavailable.");
     }
@@ -7264,7 +7273,7 @@ export class OpenClawController {
     const template = normalizePresetTemplate(input, namespaceId);
     const { settings, unresolved, unresolvedType } =
       presetTemplateDefaultsWithPlaceholders(template);
-    this.validatePresetLaunchFields(template.agent);
+    this.validatePresetLaunchFields(template);
     const values = settings.configuration?.values;
     if (values !== undefined) {
       const driver = this.configurationDriver();
@@ -7294,12 +7303,14 @@ export class OpenClawController {
    * differently. Plugin approvers are checked only while a Plugin Driver is selected, as
    * Agent create needs one for them.
    */
-  private validatePresetLaunchFields(agent: PresetTemplate["agent"]): void {
+  private validatePresetLaunchFields(template: PresetTemplate): void {
+    const agent = template.agent;
     if (agent === undefined) {
       return;
     }
     const literal = (field: string) =>
-      Object.hasOwn(agent, field) && !JSON.stringify(agent[field]).includes("{{");
+      Object.hasOwn(agent, field) &&
+      !presetValueHasVariables(agent[field], template.variables ?? {}, `agent.${field}`);
     const refuse = (field: string, requirement: string): never => {
       throw new PresetValidationError(`Preset agent.${field}: ${requirement}`);
     };
@@ -7640,6 +7651,19 @@ export class OpenClawController {
           }
           return registeredCredentialProvider(control.providers, route.binding.source.provider);
         },
+        classificationRefused: async (use, rule) => {
+          const execution = use.route.binding.execution;
+          if (
+            this.transactionContext.getStore() !== undefined ||
+            execution.installationId !== this.installation.id ||
+            !isDeepStrictEqual(execution, use.installation.plan.execution)
+          ) {
+            throw new DependencyUnavailableError("Classification audit scope is unavailable.");
+          }
+          await this.transact((state) =>
+            this.denyEgressUse(state, use, "unsupported_operation", undefined, undefined, rule),
+          );
+        },
         check: (use, material, stream, provider) =>
           this.checkEgressUse(use, material, stream, provider),
         read: async (source, lifetime, isProviderCurrent) => {
@@ -7884,10 +7908,11 @@ export class OpenClawController {
 
   private async denyEgressUse(
     state: PlatformUnitOfWork,
-    use: CapturedEgressUse,
+    use: Pick<CapturedEgressUse, "id" | "route">,
     code: Extract<EgressRefusal, { kind: "denied" }>["code"],
     material?: EgressSelectionEvidence,
     stream?: { readonly until: string },
+    classificationRule?: number,
   ): Promise<EgressRefusal> {
     const execution = use.route.binding.execution;
     await state.audit.append({
@@ -7914,6 +7939,7 @@ export class OpenClawController {
             : "before_send",
         requestId: use.id,
         revisionId: execution.revisionId,
+        ...(classificationRule === undefined ? {} : { classificationRule }),
       },
     });
     return { kind: "denied", code };
@@ -8288,6 +8314,7 @@ export class OpenClawController {
 
   private staticEgressProvider(type: string, previous?: EgressRef) {
     const driver = this.selectedDriver("credential_proxy");
+    const owner = this.selections.get("credential_proxy")?.owner;
     const control = driver.sourceControl;
     // A new admission uses catalog order. An existing approval names a specific registration.
     const resolve = () => {
@@ -8309,6 +8336,8 @@ export class OpenClawController {
     const assertCurrent = () => {
       if (
         this.selectedDriver("credential_proxy") !== driver ||
+        this.selections.get("credential_proxy")?.owner !== owner ||
+        (owner !== undefined && owner.require("credential_proxy") !== driver) ||
         driver.sourceControl !== control ||
         resolve() !== provider ||
         !isDeepStrictEqual(provider.ref, ref) ||
@@ -8319,6 +8348,7 @@ export class OpenClawController {
           "The selected credential provider changed during admission. Check the Installation's provider configuration before retrying this credential-source request.",
         );
       }
+      owner?.assertNewStaticProviderUse(ref);
     };
     return { provider, ref, inject, normalizeConfig, assertCurrent };
   }
@@ -8457,6 +8487,12 @@ export class OpenClawController {
     const sourceCount = sources.length + (harnessCredentialSource ? 1 : 0);
     const owner = this.selectedProxyOwner();
     const driver = owner.require("credential_proxy");
+    // Retirement is permanent; an unavailable counterpart cannot make this deployment retryable.
+    for (const source of sources) {
+      if (source.egress?.adoption === "live") {
+        owner.assertNewStaticProviderUse(source.egress.key.provider);
+      }
+    }
     if ((agent.credentialSources?.length ?? 0) !== sourceCount) {
       if (repositoryGit === undefined) {
         // Finding 2360: when the Proxy serves only repository Git, replacing the source cannot
@@ -17308,9 +17344,10 @@ export class OpenClawController {
 
   /**
    * Re-checks the admitted actor inside the policy write's transaction and holds that
-   * authority until COMMIT. The Namespace lock orders this write after, or before, every
-   * other policy write and deletion in the Namespace, so a revocation there cannot commit
-   * in between; the account hold does the same for a disable. The actor's Installation
+   * authority until COMMIT. The shared IAM configuration fence comes before the Namespace
+   * lock, so a configured read grant cannot change between authorization and COMMIT. The
+   * Namespace lock orders this write with other policy writes and deletion there; the
+   * account hold does the same for a disable. The actor's Installation
    * grants have no runtime writer that removes them.
    */
   private async holdIAMPolicyAuthority(
@@ -17319,6 +17356,7 @@ export class OpenClawController {
     namespaceId: string,
     target?: ResourceRef,
   ): Promise<void> {
+    await this.holdAuthority(state);
     await this.lockNamespace(state, namespaceId);
     await this.holdNamespacePolicyActor(state, principalId);
     await this.authorize(principalId, "administer", {

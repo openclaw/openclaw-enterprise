@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: "2026-11-10 14:49"
-last_updated_session: "authoring-run/0a21b7ac-a801-4bfa-991f-4703fe578258"
+updated: "2026-11-12 09:44"
+last_updated_session: "authoring-run/81887682-43d3-40dc-8b07-8d733efb02e6"
 ---
 
 # Bootstrap and human authentication flow
@@ -54,7 +54,8 @@ graph TD
     N -->|No| K["Resolve current IAM identity and exact authority"]
     O -->|Trusted| K
     O -->|Rejected| M
-    K -->|Allowed| L["Run and audit OCC operation"]
+    K -->|Other allowed| L["Run and audit OCC operation"]
+    K -->|Create account| U["Hold session; recheck selected IAM; commit account"]
     K -->|Invalid session or denied authority| M["Return 401 or 403"]
   end
 ```
@@ -93,9 +94,8 @@ contains the key response and attempt Installation ID; production also writes it
 password file on the same protected PVC, and development writes to its
 bootstrap-only volume or explicit direct-initialization path. No plaintext reaches logs, audit, bootstrap HTTP responses or the worker.
 
-Each initializer creates accounts, issues keys, writes output and atomically commits
-Installation/IAM/audit once. The API loads committed state without
-calling the human-session-only `POST /installation/bootstrap`. Singleton
+The initializer commits Installation, IAM and audit once. API startup verifies
+committed state without calling `POST /installation/bootstrap`. Singleton
 constraints reject competing initializers.
 
 Errors record `installation.bootstrap-failed` with available non-secret IDs and
@@ -151,6 +151,10 @@ Malformed, duplicated or foreign keys return `401` without revoking or clearing
 sessions. This optional header narrows but never selects a session; the native
 admin proxy strips it upstream.
 
+For `GET /api/auth/session`, `apps/controller/src/auth/index.ts:session` sends the
+Better Auth result without its cookie headers. A late response for an invalid
+session leaves any cookie set by a newer sign-in in place.
+
 When external sign-in is configured, `apps/controller/src/auth/human-login.ts:createHumanLogin`
 provides password, provider, and logout endpoints through a guarded Better Auth adapter.
 `packages/occ/src/state/human-authentication.ts:PostgresHumanAuthentication` owns
@@ -168,32 +172,21 @@ policy with default Groups resolved. The attempt stores state and browser-secret
 digests, callback, and PKCE verifier. A host-only HttpOnly cookie binds the
 browser. The callback consumes the attempt before code exchange.
 
-At API startup, `apps/controller/src/auth/index.ts:createPostgresControllerAuth`
-calls
-`packages/occ/src/state/human-authentication.ts:retireUnconfiguredProviders`
-to end and audit active sessions for removed providers. The transaction
-deletes obsolete attempts and links. Attached methods remain.
+At startup, `apps/controller/src/auth/index.ts:createPostgresControllerAuth` calls
+`packages/occ/src/state/human-authentication.ts:retireUnconfiguredProviders`.
+State ends and audits removed providers' sessions and deletes obsolete attempts
+and links. Attached methods remain.
 
-`apps/controller/src/auth/oidc.ts:exchangeOidcSubject` verifies the ID token and,
-when configured, its admission claim. A matching claim reaches account lookup;
-a missing, malformed or unmatched claim is refused. The signed `sub` selects the
-identity. Profile claims are read only for an eligible unknown identity; see
-[enrollment](#6-enroll-an-oidc-identity). No provider token enters State.
+`apps/controller/src/auth/oidc.ts:exchangeOidcSubject` verifies the ID token.
+When admission is configured, an exact group match allows account lookup.
+See [claim rules](../reference/authentication/team-enrollment.md#select-admission-and-initial-access).
+The signed `sub` selects the identity. Only eligible unknown identities use
+profile claims for [enrollment](#6-enroll-an-oidc-identity). State stores no
+provider tokens.
 
-`attemptId` authenticates the attempt-state digest with HMAC. State records the
-result and its two-minute deadline with the session. The signed `SameSite=Strict`
-v3 receipt binds provider, session and attempt. With matching origin, attempt
-and session cookie, any compatible instance can consume the result through State.
-After commit, the handler clears the receipt and returns the current session’s
-key without extending it. Incompatible receipts require fresh sign-in. Password sign-in returns that key directly.
-`refuseUnmatched` rejects malformed, unbound, replayed or expired callbacks without
-audit, incrementing
-[`occ_sign_in_unmatched_callbacks_total`](../reference/metrics.md#application-families).
-The callback audit records the attempt ID and, after identity verification, its
-subject. Matched refusals use `PROVIDER_UNAVAILABLE`, `EXTERNAL_IDENTITY_REJECTED`
-or `ACCOUNT_DISABLED`. The route maps the first and last to specific Console
-reasons. Internal dependency failures and uncertain commits use
-`authReason=unavailable`; they are not identity denials and are not retried.
+The signed login receipt binds provider, session and attempt. The Console
+consumes it once with the matching origin and session cookie; see the
+[result contract](../reference/authentication/external-sign-in.md).
 
 Google reuses `auth/human-login.ts:externalProviderEndpoints`.
 `apps/controller/src/auth/google.ts:exchangeGoogleSubject` verifies its ID token,
@@ -205,19 +198,16 @@ IPv4-mapped addresses before prefix validation, refusing entries covering every
 IPv4 or IPv6 address. `resolveClientAddress` uses dotted IPv4 for mapped peers and
 header hops.
 
-Password sign-in rejects unstorable email inside controller admission before
-known-device verification or account State reads, preserving budget accounting. Password-only uses `passwordSignInAudit`;
-guarded and recovery-only use `human-login.ts:recordPasswordDenial`, the same owner as
-credential refusals. Both return `400 INVALID_REQUEST` after the denial audit;
-a failed audit is a counted `503`. An exhausted shared lane rejects the invalid
-email without a reserved-account lookup. Password text is not checked.
-Valid email enters controller admission before `/oce/password`, with the
-recovery email reserved like an administrator's. `keyedAdmission` shares rate
-and concurrency limits across providers for each sign-in step. It keys on a
-trusted client address or a browser cookie. With multiple providers, each can
-use half the callback slots. Provider HTTP has a deadline and byte limit.
-State persists attempt and session deadlines; cookie Max-Age subtracts monotonic
-elapsed work. Expired completion releases no cookie.
+Password admission validates email before known-device or State reads. Both
+password-only and guarded profiles audit refusals. See [session lifecycle](../reference/authentication.md#session-lifecycle)
+for error responses and failure accounting.
+
+`keyedAdmission` shares rate and concurrency limits across providers for each step.
+Without a trusted client address, callback and result admission use browser
+cookies. With multiple providers, each can use half the callback slots.
+Provider HTTP has a deadline and byte limit. State bounds pending attempts and
+expired cleanup. Cookie Max-Age subtracts monotonic elapsed work from State's
+deadline. Expired completion releases no cookie.
 
 `scripts/auth-maintain.mjs` parses arguments with
 `scripts/lib/auth-maintain-arguments.mjs:parseAuthMaintainArguments` before
@@ -272,25 +262,30 @@ closed. Bearer credentials and caller-supplied identity headers are rejected.
 
 ### 5. Provision additional accounts
 
-`apps/controller/src/index.ts:createFastifyApp` lets an authorized human Installation
-administrator create accounts. After authorization, the route's `RequestRateLimiter`
-charges the administrator Principal before `prepareAccount` validates and hashes the
-password. Exhaustion returns `429` with `Retry-After`, without writes. See the
-[account-creation limit](../reference/authentication.md#account-provisioning). `provisionPasswordAccount` writes the user,
-password method, Principal, optional existing-role binding, configured
-[default Group memberships](../reference/authorization/default-users.md#group-membership),
-enrollment and audit atomically, without subsequent compensation. A lost COMMIT reply returns `503`
-with unknown outcome: retrying the same email creates an account only if the first
-attempt did not commit; otherwise it returns `409`. Creation issues no session.
+After [admission and throttling](../reference/authentication.md#account-provisioning)
+and password hashing, `apps/controller/src/auth/index.ts:createPostgresAuthAccountProvisioner` uses
+the original State `READ COMMITTED` transaction. It
+holds the original session, shared IAM configuration, and Native IAM
+account-administration policy through commit, in that order. The originally
+selected IAM Driver rechecks `administer` on the same Installation. State revalidates the requested Role and atomically writes the
+account, password method, Principal, grants, enrollment, and final success audit.
+Earlier session revocation, expiry by `COMMIT`, or a denied final IAM decision
+rolls back creation. With Native IAM, a policy withdrawal that commits first is
+visible to that decision.
+Sign-out waits behind creation's session hold. Lost `COMMIT` replies remain `503` with unknown outcome; no compensation or replay.
 
 ### 6. Enroll an OIDC identity
 
 `auth/oidc-enrollment.ts:oidcEnrollmentPolicy` validates and canonicalizes the
 operator policy. `resolveOidcEnrollmentPolicy` resolves default Groups and computes
-the policy fingerprint once during composition. Composition applies configured
+the policy fingerprint once during composition, including the resolved
+`createAccount.requireVerifiedEmail` boolean. Composition applies configured
 IAM first, then verifies Role, Namespace and Group references.
-`auth/oidc.ts:oidcEnrollmentProfile` returns a profile only for a standard verified
-email. The callback receives that profile as data.
+`auth/oidc.ts:oidcEnrollmentProfile` validates the standard email and the configured
+verification requirement. It rejects present non-boolean verification claims.
+With `requireVerifiedEmail: false`, absent or false verification is accepted,
+and the profile carries `emailVerified: false`. The callback uses that profile
+only when creating an account; existing identities keep their saved profile.
 
 `snapshotExternal` distinguishes missing identities from refused existing
 identities. Only a missing identity can start account creation, and creation
@@ -302,15 +297,16 @@ serializes the provider/subject, holds the shared IAM configuration lock, valida
 references and resolves the identity again. Existing identities retain their
 attempt-currentness and disabled-account checks. New identities reuse
 `insertPasswordAccount`; only the transaction that inserted them can snapshot
-those new methods without an older attempt timestamp. Account, Principal,
+those new methods without an older attempt timestamp. The prepared account carries
+the actual verification boolean into the `email_verified` database column. Account, Principal,
 external method, initial Role binding, Group memberships and audits commit together.
 Existing accounts receive only missing Group memberships. The session transaction
 rechecks the resulting proof before issuing its cookie.
 
 ## Debugging and Verification
 
-Run `tests/integration/` files with `node --test`.
-
+- `tests/integration/postgres-auth-account-session.test.ts` covers provisioning
+  races and uncertain commits in the `postgres-auth` lane.
 - `node --test tests/integration/postgres-oidc-enrollment.test.ts` uses
   production authentication, PostgreSQL and IAM through the ordinary Agent API.
   Upstream OIDC responses and Compute are fixtures; it does not verify live
@@ -318,9 +314,9 @@ Run `tests/integration/` files with `node --test`.
   real Keycloak, a deployed Agent and a model reply.
 - `node --test tests/integration/native-admin-access.test.mjs` covers trusted and
   untrusted origins on session mutations and sign-out, plus service-key admission.
-- `postgres-production-wireup.test.mjs` with `OCC_PRODUCTION_WIREUP_DATABASE_URL`
+- `postgres-production-wireup.test.ts` with `OCC_PRODUCTION_WIREUP_DATABASE_URL`
   proves bootstrap, protected password/key delivery, human/service access and no reissue.
-- `postgres-auth-accounts.test.mjs` with `OCC_TEST_DATABASE_URL` covers provisioning,
+- `postgres-auth-accounts.test.ts` with `OCC_TEST_DATABASE_URL` covers provisioning,
   rollback, lost COMMIT replies and password-only logout under contention. Its
   fresh-bootstrap case verifies service identity, output and access, skipping
   existing Installations.
@@ -357,6 +353,15 @@ Run `tests/integration/` files with `node --test`.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 09:44: Reconcile named-provider admission and enrollment with main. (authoring-run/81887682-43d3-40dc-8b07-8d733efb02e6 - d3da453e6b84907f013c52c0391b3eb32e177d63)
+
+- 2026-11-12 09:36: Clarify the Native IAM account-creation guarantee. (authoring-run/a948a3cb-f16f-4bfd-bcb8-6dcebafc7e37 - affc6f39cf54a1da65b7f1121c83fb74f55c433e)
+- 2026-11-12 09:25: Retain account authority through commit. (authoring-run/276118f6-2838-4088-8f68-2deba06ca89d - affc6f39cf54a1da65b7f1121c83fb74f55c433e)
+
+- 2026-11-11 10:23: Document exact scalar group admission and creation-only email verification policy. (authoring-run/4ed1deac-0365-4912-90fb-946108b6abaa - 1fefb0644)
+
+- 2026-11-11 09:25: Document how a session check preserves a newer browser cookie. (authoring-run/020599f2-46fb-4eca-94b0-53f51af3deca - f0b9c002c0577bcc8854913b0eafa5449bd5fbe3)
 
 - 2026-11-10 14:49: Trace session retirement on API replacement and callback limits for each provider. (authoring-run/0a21b7ac-a801-4bfa-991f-4703fe578258 - 3488c97f215ae3f80beb14ca3d11a6a6b8f011)
 

@@ -11,6 +11,7 @@ import {
   assertConnectedResponse,
   takeConnectedControllerBinding,
   validateConnectedInputs,
+  assertConnectedCheckout,
   validateConnectedDatabaseUrl,
   serializeConnectedRequest,
   sendConnectedRequest,
@@ -51,6 +52,7 @@ export async function arrangeRealPrerequisites(t, progress, inputsPath, profile 
     controller,
     profile,
   );
+  assertConnectedCheckout(input);
   const databaseUrl = validateConnectedDatabaseUrl(process.env.OCC_TEST_DATABASE_URL);
   const selection = {
     kubeconfigPath: input.kubeconfigPath,
@@ -86,8 +88,10 @@ export async function createRunEvidence(t, setup, progress) {
     runId,
     startedAt: new Date().toISOString(),
     oceCommit: input.oceCommit,
+    harnessCommit: input.harnessCommit,
     supplierCommit: input.supplierCommit,
     images: input.images,
+    ...(input.controllerUpgrade && { controllerUpgrade: input.controllerUpgrade }),
     namespaceId: controller.namespaceId,
     resources: [],
     apiOperations: [],
@@ -348,6 +352,7 @@ export async function observePreparedStack(t, setup, evidence, progress) {
     namespace,
     placement,
     controllerPods,
+    supplierPods,
     gatewayClient,
     pool,
     installation,

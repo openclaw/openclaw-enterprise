@@ -68,6 +68,7 @@ the paths.
 | `error.details[].message` | `string` | No | max length: 512 |
 | `error.details[].path` | `string` | Yes | max length: 512; pattern: `^(?:/(?:[^~/]\|~0\|~1)*)*$` |
 | `error.message` | `string` | Yes | min length: 1; max length: 256 |
+| `error.reason` | `"credential_registration_pending"` | No | On credential source DELETE with 503 DEPENDENCY_UNAVAILABLE, registration may still be completing. Retry after the whole seconds in the Retry-After header; the source remains until deletion completes. |
 | `error.remainingResources` | `array<object>` | No | max items: 7; Present for NAMESPACE_NOT_EMPTY. Each remaining resource kind reports its total count and up to 20 IDs, only of resources the caller can read. Pending Agent provisioning has no resource IDs. Remove the listed resources and retry to discover any others. |
 | `error.remainingResources[].count` | `integer` | Yes | minimum: 0 |
 | `error.remainingResources[].ids` | `array<string>` | Yes | max items: 20 |
@@ -5291,7 +5292,7 @@ List approved repository choices for Agent creation in one Namespace
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `array<object>` | Yes | max items: 1000 |
+| `data` | `array<object>` | Yes | max items: 1001 |
 | `data[].allowedProfiles` | `array<string>` | Yes | min items: 1; max items: 16 |
 | `data[].description` | `string` | No | min length: 1; max length: 512 |
 | `data[].displayName` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
@@ -6744,6 +6745,7 @@ Resolve native admin UI launch availability for one Agent
 | `data.host` | `string` | No | — |
 | `data.mode` | `"admin" or "chat"` | No | — |
 | `data.origin` | `string (uri)` | No | — |
+| `data.reason` | `"not-enabled" or "configuration" or "compute"` | No | — |
 | `data.sessionMode` | `"shared-cookie" or "host-only-exchange"` | No | — |
 | `data.status` | `"available" or "disabled" or "stopped" or "unavailable" or "unsupported"` | Yes | — |
 | `data.url` | `string (uri)` | No | — |
@@ -7573,7 +7575,7 @@ List approved repository choices for updating one Agent
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `array<object>` | Yes | max items: 1000 |
+| `data` | `array<object>` | Yes | max items: 1001 |
 | `data[].allowedProfiles` | `array<string>` | Yes | min items: 1; max items: 16 |
 | `data[].description` | `string` | No | min length: 1; max length: 512 |
 | `data[].displayName` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |

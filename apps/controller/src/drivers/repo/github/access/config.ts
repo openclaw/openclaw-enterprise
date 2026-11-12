@@ -2,32 +2,40 @@ import { isAbsolute } from "node:path";
 import type { GitHubTokenConfiguration } from "./types.ts";
 import { hasControlCharacter, normalizePushRefAllowlist } from "../../access/client-contracts.ts";
 
-const commonFields = [
+const tokenStringFields = [
   "kind",
   "providerInstanceId",
   "configVersion",
   "repositoryId",
   "repository",
+  "tokenFile",
 ] as const;
-const tokenStringFields = [...commonFields, "tokenFile"] as const;
-const tokenOptionalFields = ["allowGraphql", "leaseSeconds"];
 const tokenFields = [
   ...tokenStringFields,
   "developmentOnly",
   "pushRefAllowlist",
-  ...tokenOptionalFields,
+  "allowGraphql",
+  "leaseSeconds",
 ];
 export const defaultTokenLeaseSeconds = 3600;
 
-function parseFields(value: unknown, allowed: readonly string[], strings: readonly string[]) {
+function validNumericId(value: string): boolean {
+  return /^[1-9][0-9]{0,15}$/.test(value) && Number.isSafeInteger(Number(value));
+}
+
+export function validateGitHubConfiguration(value: unknown): GitHubTokenConfiguration {
+  const kind = value && typeof value === "object" ? (value as { kind?: unknown }).kind : undefined;
+  if (kind !== "github-token") {
+    throw new Error("invalid-backend");
+  }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("invalid-backend");
   }
   const input = value as Record<string, unknown>;
-  if (Object.keys(input).some((key) => !allowed.includes(key))) {
+  if (Object.keys(input).some((key) => !tokenFields.includes(key))) {
     throw new Error("invalid-backend");
   }
-  for (const key of strings) {
+  for (const key of tokenStringFields) {
     const field = input[key];
     if (
       typeof field !== "string" ||
@@ -38,14 +46,6 @@ function parseFields(value: unknown, allowed: readonly string[], strings: readon
       throw new Error("invalid-backend");
     }
   }
-  return input;
-}
-
-function validNumericId(value: string): boolean {
-  return /^[1-9][0-9]{0,15}$/.test(value) && Number.isSafeInteger(Number(value));
-}
-
-function validateCommon(input: Record<string, unknown>) {
   const { providerInstanceId, configVersion, repositoryId, repository } = input as Record<
     string,
     string
@@ -58,17 +58,6 @@ function validateCommon(input: Record<string, unknown>) {
   ) {
     throw new Error("invalid-backend");
   }
-  return {
-    providerInstanceId: providerInstanceId!,
-    configVersion: configVersion!,
-    repositoryId: repositoryId!,
-    repository: repository!,
-  };
-}
-
-function validateTokenConfiguration(value: unknown): GitHubTokenConfiguration {
-  const input = parseFields(value, tokenFields, tokenStringFields);
-  const common = validateCommon(input);
   const leaseSeconds = input.leaseSeconds ?? defaultTokenLeaseSeconds;
   // The literal is one of two explicit development opt-ins; the process flag is the other.
   if (
@@ -90,19 +79,14 @@ function validateTokenConfiguration(value: unknown): GitHubTokenConfiguration {
   }
   return Object.freeze({
     kind: "github-token",
-    ...common,
+    providerInstanceId: providerInstanceId!,
+    configVersion: configVersion!,
+    repositoryId: repositoryId!,
+    repository: repository!,
     tokenFile: input.tokenFile as string,
     developmentOnly: true,
     pushRefAllowlist,
     allowGraphql: input.allowGraphql === true,
     leaseSeconds,
   });
-}
-
-export function validateGitHubConfiguration(value: unknown): GitHubTokenConfiguration {
-  const kind = value && typeof value === "object" ? (value as { kind?: unknown }).kind : undefined;
-  if (kind === "github-token") {
-    return validateTokenConfiguration(value);
-  }
-  throw new Error("invalid-backend");
 }

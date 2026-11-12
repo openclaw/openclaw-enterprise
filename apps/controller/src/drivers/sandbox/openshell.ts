@@ -1,3 +1,4 @@
+import { posix } from "node:path";
 import { OpenShellGatewayUnavailableError } from "./openshell-gateway-errors.ts";
 import {
   validateNamespaceGatewayResources,
@@ -23,11 +24,13 @@ import {
   type OpenShellProxyOptions,
 } from "../egress-proxy/openshell.ts";
 import { deleteOpenShellPreparedGitProviders } from "../egress-proxy/openshell-prepared-git-provider.ts";
-import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import {
-  requireConfiguration,
-  SandboxNetworkPolicyConfiguration,
+  AgentId,
   ConfigurationValidationError,
+  NamespaceId,
+  SandboxNetworkPolicyConfiguration,
+  requireConfiguration,
+  type ErrorDetail,
 } from "@openclaw-enterprise/contracts";
 import {
   assertPluginNetworkInspection,
@@ -158,6 +161,7 @@ import {
   compareResourceQuantities,
   isResourceQuantity,
 } from "../compute/kubernetes/resource-quantities.ts";
+import { isKubernetesResourceName } from "../compute/kubernetes/resource-name.ts";
 import { nodeProgramArguments, prependNodeProgramArguments } from "../compute/node-program.ts";
 import {
   requireWorkspaceSetupConfiguration,
@@ -198,6 +202,16 @@ export interface OpenShellNetworkBinary {
   readonly path: string;
 }
 
+type AgentResourceQuantities = Readonly<Partial<Record<"cpu" | "memory", string>>>;
+
+interface OpenShellAgentResourceOverride {
+  readonly namespaceId: string;
+  readonly agentId: string;
+  readonly requests: AgentResourceQuantities;
+  readonly limits: AgentResourceQuantities;
+  readonly runtimeClassName?: string;
+}
+
 export interface OpenShellSandboxDriverOptions {
   readonly egress?: OpenShellProxyOptions;
   /** Workspace and readiness policy; the `openshell` Backend owns the gateway connection. */
@@ -226,6 +240,7 @@ export interface OpenShellSandboxDriverOptions {
       readonly readOnly: boolean;
     };
     readonly agentResources?: ConfigurationRecord;
+    readonly agentResourceOverrides?: readonly OpenShellAgentResourceOverride[];
     readonly userNamespaces?: boolean;
   };
   readonly policy: {
@@ -339,6 +354,7 @@ const OPENSHELL_SANDBOX_ID_LABEL = "openshell.ai/sandbox-id";
 const OPENSHELL_BOUNDARY_ROLE_LABEL = "openshell.ai/boundary-role";
 const KUBERNETES_LABEL_VALUE = /^[A-Za-z0-9](?:[-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$/;
 const OPENSHELL_RUNTIME_ROOT = "/sandbox/.openclaw-runtime";
+const SCRATCH_WORKSPACE_PATH = "/sandbox/scratch";
 const OPENSHELL_HOME = `${OPENSHELL_RUNTIME_ROOT}/home`;
 const OPENSHELL_WORKSPACE_MOUNTS = "/sandbox/.openclaw-mounts";
 const OPENSHELL_WORKSPACE_STATE_DIRECTORY = "state";
@@ -607,7 +623,7 @@ function environment(
     if ("valueFrom" in entry) {
       throw new SandboxRevisionUnsupportedError(
         "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED",
-        `OpenShell v0.1.5 cannot receive secretKeyRef environment ${entry.name}; upstream Secret projection support is required.`,
+        `OpenShell cannot receive secretKeyRef environment ${entry.name}; upstream Secret projection support is required.`,
       );
     }
     // Account claims are opaque data, not paths inside the Harness filesystem.
@@ -1338,8 +1354,8 @@ function sandboxCommand(
     prelude + loader,
     ...command.slice(loaderIndex + 1),
   ];
-  // Preserve existing immutable Sandbox commands that fit. Larger preludes use
-  // the same codec as the Harness so the complete command retains its 64 KiB budget.
+  // Keep the existing command encoding. Pack larger preludes with the program
+  // to reduce their size, including for revisions above the 64 KiB design target.
   return Buffer.byteLength(JSON.stringify(composed)) <= 65_536
     ? composed
     : [
@@ -1670,6 +1686,14 @@ async function prepareNativeWorkspace(
   const paths = workspace.mounts
     .filter((mount) => !mount.read_only)
     .map((mount) => `/workspace-preparation/${mount.name}/${mount.sub_path}`);
+  const scratchPaths = context.requirements.workspaceMounts
+    .filter(
+      (mount) => !mount.readOnly && posix.normalize(mount.mountPath) === SCRATCH_WORKSPACE_PATH,
+    )
+    .map(
+      (mount) => `/workspace-preparation/${workspaceVolumeName(mount.claimName)}/${mount.subPath}`,
+    );
+  const managedPaths = paths.filter((path) => !scratchPaths.includes(path));
   const name = `${sandbox.resourceName}-workspace`;
   const labels = workspacePreparationLabels(context.revision);
   const program = `{
@@ -1683,15 +1707,25 @@ async function prepareNativeWorkspace(
       }
     }
   }
-  ${harnessWorkspacePreparationScript(paths)}
+  ${harnessWorkspacePreparationScript(managedPaths)}
   {
     const fs = require("node:fs");
+    // Scratch is operator-owned: create only its private child, and never migrate
+    // sibling directories or repair existing ownership and permissions.
+    for (const path of ${JSON.stringify(scratchPaths)}) {
+      const created = fs.mkdirSync(path, { recursive: true, mode: 0o700 });
+      // Clear inherited setgid only on the directory this invocation created.
+      if (created !== undefined) {
+        fs.chmodSync(path, 0o700);
+      }
+    }
     for (const path of ${JSON.stringify(paths)}) {
       const stat = fs.lstatSync(path);
       const saved = require("node:path").join(require("node:path").dirname(path),
         "." + require("node:path").basename(path) + ".kubelet-created");
       if (stat.uid !== process.getuid() || (stat.mode & 0o7777) !== 0o700 ||
-          fs.lstatSync(saved, { throwIfNoEntry: false })) {
+          (${JSON.stringify(managedPaths)}.includes(path) &&
+            fs.lstatSync(saved, { throwIfNoEntry: false }))) {
         throw new Error("Private workspace preparation did not complete.");
       }
     }
@@ -1710,7 +1744,9 @@ async function prepareNativeWorkspace(
         "openshell-sandbox",
       "OpenShell Sandbox ServiceAccount",
     ),
-    runtimeClassName: options.kubernetes.runtimeClassName,
+    runtimeClassName:
+      agentResourceOverride(options, context.revision)?.runtimeClassName ??
+      options.kubernetes.runtimeClassName,
     securityContext: {
       runAsUser: uid,
       runAsGroup: gid,
@@ -1865,6 +1901,23 @@ function sandboxDataMount(
     );
   }
   const claimName = approvedClaimNames[0]!;
+  const scratch = requirements.workspaceMounts.find(
+    (candidate) => posix.normalize(candidate.mountPath) === SCRATCH_WORKSPACE_PATH,
+  );
+  if (scratch !== undefined) {
+    const dataPath = posix.resolve(mount.mountPath);
+    if (
+      claimName === scratch.claimName ||
+      !dataPath.startsWith("/sandbox/") ||
+      dataPath === SCRATCH_WORKSPACE_PATH ||
+      dataPath.startsWith(`${SCRATCH_WORKSPACE_PATH}/`) ||
+      SCRATCH_WORKSPACE_PATH.startsWith(`${dataPath}/`)
+    ) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "OpenShell sandboxDataMount must preserve durable storage separately from the scratch claim and path.",
+      );
+    }
+  }
   const approvedMount = candidates.find((candidate) => candidate.claimName === claimName)!;
   if (approvedMount.readOnly && !mount.readOnly) {
     throw new OpenShellSandboxConfigurationFailure(
@@ -1930,6 +1983,68 @@ function isSandboxIdentity(value: unknown): boolean {
   return id >= 1 && id <= MAX_SANDBOX_IDENTITY;
 }
 
+function agentResourceOverride(
+  options: OpenShellSandboxDriverOptions,
+  revision: Readonly<AgentRevision>,
+): OpenShellAgentResourceOverride | undefined {
+  return options.kubernetes.agentResourceOverrides?.find(
+    (entry) => entry.namespaceId === revision.namespaceId && entry.agentId === revision.agentId,
+  );
+}
+
+function agentResourceMaps(
+  options: OpenShellSandboxDriverOptions,
+  override?: OpenShellAgentResourceOverride,
+): { requests: ConfigurationRecord; limits: ConfigurationRecord } {
+  const defaults = options.kubernetes.agentResources;
+  return {
+    requests: { ...asRecord(defaults?.requests), ...override?.requests },
+    limits: { ...asRecord(defaults?.limits), ...override?.limits },
+  };
+}
+
+function validateAgentResources(
+  agentResources: ReturnType<typeof agentResourceMaps>,
+  path: string,
+  details: ErrorDetail[],
+): void {
+  const quantitiesValid = { requests: true, limits: true };
+  for (const section of ["requests", "limits"] as const) {
+    if (
+      Object.values(agentResources[section]).some(
+        (quantity) =>
+          typeof quantity !== "string" ||
+          !isResourceQuantity(quantity) ||
+          (compareResourceQuantities(quantity, "0") ?? 0) < 0,
+      )
+    ) {
+      quantitiesValid[section] = false;
+      details.push({
+        path: `${path}/${section}`,
+        code: "INVALID_VALUE",
+        message:
+          "Each value must be a quoted, non-negative Kubernetes quantity, such as 500m or 1Gi.",
+      });
+    }
+  }
+  if (quantitiesValid.requests && quantitiesValid.limits) {
+    for (const [resource, request] of Object.entries(agentResources.requests)) {
+      const limit = agentResources.limits[resource];
+      if (
+        typeof request === "string" &&
+        typeof limit === "string" &&
+        (compareResourceQuantities(request, limit) ?? 0) > 0
+      ) {
+        details.push({
+          path: `${path}/requests`,
+          code: "INVALID_RANGE",
+          message: `The ${resource} request (${request}) cannot exceed its limit (${limit}).`,
+        });
+      }
+    }
+  }
+}
+
 /**
  * Settings the gateway refuses only in CreateSandbox, which a dedicated deploy reaches after
  * its predecessors have stopped, so startup refuses them first (findings 2331, 2332).
@@ -1970,43 +2085,33 @@ function validatePolicySettings(options: OpenShellSandboxDriverOptions): void {
   }
   // The API server refuses the Sandbox Pod otherwise, after a deploy stopped its predecessors.
   // Startup reports problems under each map's own path, so messages name the resource.
-  const agentResources = {
-    requests: asRecord(options.kubernetes.agentResources?.requests) ?? {},
-    limits: asRecord(options.kubernetes.agentResources?.limits) ?? {},
-  };
-  const quantitiesValid = { requests: true, limits: true };
-  for (const section of ["requests", "limits"] as const) {
-    if (
-      Object.values(agentResources[section]).some(
-        (quantity) =>
-          typeof quantity !== "string" ||
-          !isResourceQuantity(quantity) ||
-          (compareResourceQuantities(quantity, "0") ?? 0) < 0,
-      )
-    ) {
-      quantitiesValid[section] = false;
+  const resourceErrors = details.length;
+  validateAgentResources(agentResourceMaps(options), "/kubernetes/agentResources", details);
+  const validDefaults = resourceErrors === details.length;
+  const scopes = new Set<string>();
+  for (const [index, override] of (options.kubernetes.agentResourceOverrides ?? []).entries()) {
+    const path = `/kubernetes/agentResourceOverrides/${index}`;
+    const scope = JSON.stringify([override.namespaceId, override.agentId]);
+    if (scopes.has(scope)) {
       details.push({
-        path: `/kubernetes/agentResources/${section}`,
+        path,
         code: "INVALID_VALUE",
-        message:
-          "Each value must be a quoted, non-negative Kubernetes quantity, such as 500m or 1Gi.",
+        message: "An Agent can have only one resource override.",
       });
     }
-  }
-  if (quantitiesValid.requests && quantitiesValid.limits) {
-    for (const [resource, request] of Object.entries(agentResources.requests)) {
-      const limit = agentResources.limits[resource];
-      if (
-        typeof request === "string" &&
-        typeof limit === "string" &&
-        (compareResourceQuantities(request, limit) ?? 0) > 0
-      ) {
-        details.push({
-          path: "/kubernetes/agentResources/requests",
-          code: "INVALID_RANGE",
-          message: `The ${resource} request (${request}) cannot exceed its limit (${limit}).`,
-        });
-      }
+    scopes.add(scope);
+    if (
+      override.runtimeClassName !== undefined &&
+      !isKubernetesResourceName(override.runtimeClassName)
+    ) {
+      details.push({
+        path: `${path}/runtimeClassName`,
+        code: "INVALID_VALUE",
+        message: "Use a Kubernetes RuntimeClass resource name.",
+      });
+    }
+    if (validDefaults) {
+      validateAgentResources(agentResourceMaps(options, override), path, details);
     }
   }
   const policies: readonly OpenShellNetworkPolicyRule[] = Array.isArray(
@@ -2213,29 +2318,16 @@ function sandboxSpec(
   const dataMount = sandboxDataMount(options, requirements);
   const workspace = workspaceVolumeMounts(requirements, dataMount, revision.id);
   const volumeMounts = workspace.mounts;
-  const podConfig: Record<string, unknown> = {
-    runtime_class_name: options.kubernetes.runtimeClassName,
-  };
+  const override = agentResourceOverride(options, revision);
+  const runtimeClassName = override?.runtimeClassName ?? options.kubernetes.runtimeClassName;
+  const resources = agentResourceMaps(options, override);
   const driverConfig = {
-    pod: podConfig,
+    pod: { runtime_class_name: runtimeClassName },
     containers: {
       agent: {
         resources: {
-          ...(options.kubernetes.agentResources ?? {}),
-          requests: {
-            ...configurationObject(
-              options.kubernetes.agentResources?.requests ?? {},
-              "OpenShell Agent resource requests",
-            ),
-            "ephemeral-storage": "256Mi",
-          },
-          limits: {
-            ...configurationObject(
-              options.kubernetes.agentResources?.limits ?? {},
-              "OpenShell Agent resource limits",
-            ),
-            "ephemeral-storage": "1Gi",
-          },
+          requests: { ...resources.requests, "ephemeral-storage": "256Mi" },
+          limits: { ...resources.limits, "ephemeral-storage": "1Gi" },
         },
         volume_mounts: volumeMounts,
       },
@@ -2255,7 +2347,7 @@ function sandboxSpec(
     },
     template: {
       image: requirements.image,
-      runtime_class_name: options.kubernetes.runtimeClassName,
+      runtime_class_name: runtimeClassName,
       labels: { ...requirements.labels },
       driver_config: { fields: toProtobufStruct({ kubernetes: driverConfig }) },
       ...(options.kubernetes.userNamespaces === undefined
@@ -2470,6 +2562,12 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
   }
 }
 
+const agentResourceQuantitySchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: { cpu: { type: "string" }, memory: { type: "string" } },
+} as const;
+
 export const configurationSchema = Object.freeze({
   type: "object",
   required: ["gateway", "kubernetes", "policy"],
@@ -2528,6 +2626,21 @@ export const configurationSchema = Object.freeze({
           type: "object",
           additionalProperties: false,
           properties: { requests: { type: "object" }, limits: { type: "object" } },
+        },
+        agentResourceOverrides: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["namespaceId", "agentId", "requests", "limits"],
+            properties: {
+              namespaceId: NamespaceId,
+              agentId: AgentId,
+              requests: agentResourceQuantitySchema,
+              limits: agentResourceQuantitySchema,
+              runtimeClassName: { type: "string" },
+            },
+          },
         },
       },
     },
@@ -3301,7 +3414,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (context.requirements.workloadIdentity !== undefined) {
       throw new SandboxRevisionUnsupportedError(
         "SANDBOX_HARNESS_UNSUPPORTED",
-        "OpenShell v0.1.5 cannot preserve an Agent ServiceAccount and projected identity token; disable ServicePrincipal credentials or select another Sandbox Driver.",
+        "OpenShell cannot preserve an Agent ServiceAccount and projected identity token; disable ServicePrincipal credentials or select another Sandbox Driver.",
       );
     }
     labels(context.requirements.labels, "Harness workload labels");

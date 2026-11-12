@@ -54,7 +54,7 @@ jobs:
         run: |
           # The workflow itself is PR-controlled; independent required-workflow
           # enforcement is needed to protect this bootstrap from workflow edits.
-          policy=$(mktemp "$RUNNER_TEMP/ci-impact-policy.XXXXXX.mjs")
+          policy=$(mktemp "$RUNNER_TEMP/ci-impact-policy.XXXXXX.ts")
           trap 'rm -f "$policy"' EXIT
           trusted_policy() {
             reason=bootstrap_non_pr_event
@@ -98,9 +98,9 @@ jobs:
               fi
             fi
             reason=bootstrap_git_inspection_failed
-            entry=$(git ls-tree "$merge_base" -- scripts/ci/impact.mjs) || return 1
+            entry=$(git ls-tree "$merge_base" -- scripts/ci/impact.ts) || return 1
             reason=bootstrap_policy_unavailable
-            [[ $entry =~ ^100644\ blob\ ([0-9a-f]{40}|[0-9a-f]{64})[[:space:]]scripts/ci/impact\.mjs$ ]] || return 1
+            [[ $entry =~ ^100644\ blob\ ([0-9a-f]{40}|[0-9a-f]{64})[[:space:]]scripts/ci/impact\.ts$ ]] || return 1
             reason=bootstrap_git_inspection_failed
             git cat-file blob "${BASH_REMATCH[1]}" > "$policy" || return 1
             reason=bootstrap_policy_unavailable
@@ -292,7 +292,7 @@ jobs:
       - name: Run workspace boundary check
         run: pnpm check:workspace
       - name: Run lint check
-        run: pnpm lint
+        run: pnpm lint --concurrency 2
       - name: Set up formatter
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
@@ -310,7 +310,7 @@ jobs:
           lockfile-path: scripts/docs-site/pnpm-lock.yaml
           cache-mode: read-write
       - name: Check and build documentation
-        run: pnpm docs:install && pnpm openapi:lint && pnpm exec tsc --project scripts/docs-site/tsconfig.json --pretty false && pnpm docs:check && pnpm docs:build
+        run: pnpm docs:install && pnpm openapi:lint && pnpm exec tsc --project scripts/docs-site/tsconfig.json --pretty false && pnpm docs:check-length && node scripts/check-specs.mjs && pnpm docs:build
       - name: Save documentation dependencies
         # This job owns the docs cache. The build must run Pagefind successfully
         # before saving: installation can succeed without its optional binary.
@@ -339,14 +339,24 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache-mode: "off"
       - name: Report affected workspace packages
+        env:
+          SHADOW_WORKFLOW_SHA: ${{ github.workflow_sha }}
         if: ${{ always() }}
         run: |
           # Print to the log too: step summaries are not readable through the API.
-          report=$(node scripts/ci/pnpm-impact.ts --summary) || report='Affected workspace packages: unavailable.'
+          report=$(node scripts/ci/pnpm-impact.ts --summary "$RUNNER_TEMP/affected-lanes.json") || report='Affected workspace packages: unavailable.'
           printf '%s\n' "$report"
           if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
             printf '%s\n' "$report" >> "$GITHUB_STEP_SUMMARY" || true
           fi
+      - name: Upload shadow lane prediction
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: affected-lanes-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/affected-lanes.json
+          if-no-files-found: ignore
+          retention-days: 14
 
   pr-safe:
     name: ${{ matrix.title }}
@@ -363,6 +373,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          # Sign-in profile tests compare real historical controller/catalog inputs.
+          fetch-depth: ${{ matrix.lane == 'checks-baseline-2' && '0' || '1' }}
           persist-credentials: false
       - uses: ./.github/actions/run-ci-lane
         with:
@@ -515,10 +527,6 @@ jobs:
             core.setSecret(token);
             core.setOutput('token', token);
             core.setOutput('url', url);
-      - name: Install runtime artifact transport
-        run: |
-          sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get -o Acquire::Retries=3 install --no-install-recommends -y skopeo
       - name: Download shared runtime image
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
@@ -595,7 +603,7 @@ jobs:
         run: |
           # The workflow itself is PR-controlled; independent required-workflow
           # enforcement is needed to protect this bootstrap from workflow edits.
-          policy=$(mktemp "$RUNNER_TEMP/ci-impact-policy.XXXXXX.mjs")
+          policy=$(mktemp "$RUNNER_TEMP/ci-impact-policy.XXXXXX.ts")
           trap 'rm -f "$policy"' EXIT
           trusted_policy() {
             reason=bootstrap_non_pr_event
@@ -639,9 +647,9 @@ jobs:
               fi
             fi
             reason=bootstrap_git_inspection_failed
-            entry=$(git ls-tree "$merge_base" -- scripts/ci/impact.mjs) || return 1
+            entry=$(git ls-tree "$merge_base" -- scripts/ci/impact.ts) || return 1
             reason=bootstrap_policy_unavailable
-            [[ $entry =~ ^100644\ blob\ ([0-9a-f]{40}|[0-9a-f]{64})[[:space:]]scripts/ci/impact\.mjs$ ]] || return 1
+            [[ $entry =~ ^100644\ blob\ ([0-9a-f]{40}|[0-9a-f]{64})[[:space:]]scripts/ci/impact\.ts$ ]] || return 1
             reason=bootstrap_git_inspection_failed
             git cat-file blob "${BASH_REMATCH[1]}" > "$policy" || return 1
             reason=bootstrap_policy_unavailable

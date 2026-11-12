@@ -132,6 +132,7 @@ test(
         email: `${label}-${suffix}@example.test`,
         name: label,
         passwordHash: await authContext.password.hash(password),
+        emailVerified: true,
         credentialId: randomUUID(),
       };
     }

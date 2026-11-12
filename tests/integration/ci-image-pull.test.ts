@@ -12,7 +12,7 @@ import {
   fetchPinnedBytes,
   isTransientFetchError,
 } from "../../scripts/ci/routing.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const image =

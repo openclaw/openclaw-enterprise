@@ -32,14 +32,16 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AUTH_SECRET` — Production requires a high-entropy session-signing secret; development has a local-only fallback.
 - `OCC_AUTH_BASE_URL` — Authentication, cookie, and exact development browser origin; required in production; default in development: `http://127.0.0.1:3000`.
 - `OCC_AUTH_RECOVERY_USER_ID` — Existing local password administrator protected for recovery when Google or OIDC sign-in is enabled.
-- `OCC_AUTH_OIDC_ENROLLMENT` — Optional JSON admission and account creation policy; see [OIDC enrollment](../authentication/team-enrollment.md).
+- `OCC_AUTH_OIDC_PROVIDERS` — Comma-separated named provider keys. Set each provider's variables with the `OCC_AUTH_OIDC_<KEY>_` prefix. See [OIDC settings](../settings/oidc.md).
+- `OCC_AUTH_OIDC_ENROLLMENT`, `OCC_AUTH_OIDC_<KEY>_ENROLLMENT` — Optional JSON admission and account creation policy. `createAccount.requireVerifiedEmail` defaults to `true`. See [OIDC enrollment](../authentication/team-enrollment.md).
 - `OCC_AUTH_OIDC_<KEY>_ALLOW_SELF_LINK` — Named provider opt-in for self-service linking, `true` or `false` (default). See [OIDC settings](../settings/oidc.md).
+- `OCC_AUTH_OIDC_<KEY>_LEGACY_CALLBACK` — Set to `true` on one named provider to keep the legacy callback path. See [OIDC settings](../settings/oidc.md).
 - `OCC_AUTH_PASSWORD_SIGN_IN` — `all` (default) or `recovery-only`, which lets only the recovery account sign in with a password; requires Google or OIDC sign-in. See [recovery-only password sign-in](../authentication/external-sign-in.md#recovery-only-password-sign-in).
 - `OCC_AUTH_GOOGLE_CLIENT_ID` — Optional Google OAuth web client ID; selects the provider instance. Requires the client secret and the recovery user ID; see [Google sign-in](../../guides/deploy/google-sign-in.md).
 - `OCC_AUTH_GOOGLE_CLIENT_SECRET` — Protected server-side client secret for the configured Google OAuth client.
 - `OCC_AUTH_GOOGLE_ALLOWED_DOMAINS` — Optional comma-separated Google Workspace hosted domains; when set, sign-in requires a matching `hd` claim and a verified email.
 - `OCC_AUTH_OIDC_ISSUER`, `OCC_AUTH_OIDC_AUTHORIZATION_URL`, `OCC_AUTH_OIDC_TOKEN_URL`, `OCC_AUTH_OIDC_JWKS_URL` — Optional generic OIDC issuer and its URLs, copied from the discovery document: `https:` on port 443, one DNS host, no query or fragment. Set all of them with the client ID, client secret and recovery user ID, or none; see [OIDC sign-in](../../guides/deploy/oidc-sign-in.md) and, for Keycloak, [Keycloak sign-in](../../guides/deploy/oidc-keycloak.md).
-- `OCC_AUTH_OIDC_CLIENT_ID`, `OCC_AUTH_OIDC_CLIENT_SECRET` — The OIDC client; with the issuer, they select the provider instance.
+- `OCC_AUTH_OIDC_CLIENT_ID`, `OCC_AUTH_OIDC_CLIENT_SECRET` — The OIDC client credentials. The issuer and client ID identify the provider instance.
 - `OCC_AUTH_OIDC_TOKEN_AUTH` — `client_secret_post` (default) or `client_secret_basic`.
 - `OCC_AUTH_OIDC_DISPLAY_NAME` — Optional Console button label, 1–40 printable characters; default `single sign-on`.
 - `OCC_AUTH_TRUSTED_PROXY_CIDRS` — Production-only, off by default: comma-separated ingress or load balancer CIDRs. IPv4-mapped IPv6 counts as IPv4 (prefix 1–32); entries covering every IPv4 or every IPv6 address are refused. Trusted peers may report client addresses for sign-in limits; see [trusted proxies](../settings/production.md#external-sign-in-and-trusted-proxies).
@@ -109,9 +111,9 @@ These settings belong to the checkout's development stack. See
 [development settings](../settings/development.md#required-development-controller-environment)
 for supported engines, images, and security restrictions.
 
-- `OCC_DEVELOPMENT_COMPUTE_DRIVER` — `docker` (default) or `kubernetes`; the Docker preview cannot deploy Agents.
+- `OCC_DEVELOPMENT_COMPUTE_DRIVER` — `kubernetes` (default) or `docker`; the Docker preview cannot deploy Agents.
 - `OCC_DEVELOPMENT_SANDBOX_DRIVER` — `none` (default) or `openshell`; OpenShell requires Kubernetes Compute.
-- `OCC_DEVELOPMENT_CONTROL_PLANE` — `compose` (default) or `kubernetes`; Kubernetes control plane requires Kubernetes Compute. Compose mode keeps PostgreSQL and OCC in Compose while Kubernetes Compute runs in k3d.
+- `OCC_DEVELOPMENT_CONTROL_PLANE` — `kubernetes` or `compose`; the default follows the Compute Driver (`kubernetes` on Kubernetes Compute, `compose` on Docker Compute). Kubernetes control plane requires Kubernetes Compute. Compose mode keeps PostgreSQL and OCC in Compose while Kubernetes Compute runs in k3d.
 - `OCC_DEVELOPMENT_PROTECTED_EGRESS` — Unset, empty or `0` preserves ordinary startup; `1` is retired and rejected before effects, including with Kubernetes/OpenShell. Other values are invalid. See the [retirement notice](../../guides/deploy/local-openshell-images.md#select-the-protected-profile). Gateway authentication remains enabled independently.
 - `OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` — Retired; any presence, including an empty value, is rejected. Remove it from the environment; see [development settings](../settings/development.md).
 - `OCC_DEVELOPMENT_DATABASE_NAME` — Optional disposable `openclaw_k8s_` database for the Kubernetes control plane; see [development settings](../settings/development.md).
@@ -138,7 +140,7 @@ for supported engines, images, and security restrictions.
 - `OCC_DEVELOPMENT_KUBERNETES_NAMESPACE` — Kubernetes namespace that runs the control plane in the Kubernetes-only profile; default: `oce-system`.
 - `OCC_DEVELOPMENT_KUBERNETES_CLUSTER` — Disposable k3d cluster; default: a generated name beginning with `occ-dev-`.
 - `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` — Kubernetes profile cluster and service readiness timeout; default: `600` seconds per wait in Kubernetes-only mode, `300` in Compose mode.
-- `OCC_DEVELOPMENT_KEEP_ON_FAILURE` — Unset by default; any nonempty value keeps a failed `occ dev up` stack, state directory, and copied service key for inspection; see [development settings](../settings/development.md).
+- `OCC_DEVELOPMENT_KEEP_ON_FAILURE` — Unset by default; any nonempty value keeps a failed `occ dev up` stack, state directory, and copied service key for inspection. Compose preparation failures before resource startup remove incomplete state; see [development settings](../settings/development.md).
 - `OCC_DEVELOPMENT_KUBERNETES_API_PORT` — Local Kubernetes API port; default: `6443`.
 - `OCC_DEVELOPMENT_K3D_DNS_RESOLVER` — Optional IPv4 resolver for either local k3d profile, or `k3d` for k3d's default; Linux Docker defaults to the host's upstream resolver.
 - `OCC_DEVELOPMENT_K3S_IMAGE` — K3s node image or channel for Compose control plane without OpenShell; default: `+v1.35`. Kubernetes-only and OpenShell profiles use their pinned image.

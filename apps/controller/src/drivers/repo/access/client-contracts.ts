@@ -1,5 +1,7 @@
 import { isAbsolute, resolve } from "node:path";
 
+export const repositorySessionBearerSource = "[A-Za-z0-9_-]{43,256}";
+
 /** Check a Unix socket path's lexical form and UTF-8 byte limit. */
 export function isCanonicalUnixSocketPath(path: string): boolean {
   return isAbsolute(path) && resolve(path) === path && Buffer.byteLength(path) <= 103;
@@ -33,6 +35,24 @@ export function isValidGitClientConnection(
     !remote.password &&
     !remote.search &&
     !remote.hash
+  );
+}
+
+const gitClientHostPattern = /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/;
+
+/** Check the client username and hosts against the parsed gateway hostname. */
+export function isValidGitClientUsernameAndHosts(
+  origin: URL,
+  client: Pick<
+    RepositoryCredentialClientConfiguration,
+    "gitUsername" | "apiHost" | "canonicalApiHost"
+  >,
+): boolean {
+  return (
+    /^[A-Za-z0-9._-]{1,128}$/.test(client.gitUsername) &&
+    gitClientHostPattern.test(client.apiHost) &&
+    gitClientHostPattern.test(client.canonicalApiHost) &&
+    client.apiHost === origin.hostname
   );
 }
 

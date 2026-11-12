@@ -29,6 +29,8 @@ const failureLocation = "tests/helpers/openshell-sandbox-workflows.mjs";
 const openShellStages = new Set([
   "exposure-auth",
   "installation",
+  "scratch-sibling-isolation",
+  "scratch-queued-actor-revocation",
   "initial-model",
   "filesystem-network",
   "network-policy",

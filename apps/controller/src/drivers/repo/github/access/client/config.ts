@@ -4,16 +4,25 @@ import type { RepositoryCredentialSessionFiles } from "@openclaw-enterprise/cont
 import type { RepositoryCredentialClientConfiguration } from "../../../access/client-contracts.ts";
 import {
   isValidGitClientConnection,
+  isValidGitClientUsernameAndHosts,
   normalizePushRefAllowlist,
 } from "../../../access/client-contracts.ts";
 import type { RepositoryCredentialSessionResult } from "../../../access/service-contracts.ts";
-import { assertPrivateDirectory, readPrivateFile } from "./private-files.ts";
+import {
+  assertPrivateDirectory,
+  clientSessionFileMaxBytes,
+  readPrivateFile,
+} from "./private-files.ts";
 
 export interface ClientFiles {
   readonly sessionId: string;
   readonly deadlineWallMs: number;
   readonly client: RepositoryCredentialClientConfiguration;
   readonly hasPublicCa: boolean;
+}
+
+export function isClientBearer(bearer: string): boolean {
+  return /^[A-Za-z0-9_-]{32,256}$/.test(bearer);
 }
 
 function ghHosts(client: RepositoryCredentialClientConfiguration, bearer: string): string {
@@ -25,15 +34,21 @@ export async function requireGhMaterial(
   configuration: ClientFiles,
   directory: string,
 ): Promise<void> {
-  const credential = await readPrivateFile(join(directory, "bearer"), 256);
+  const credential = await readPrivateFile(
+    join(directory, "bearer"),
+    clientSessionFileMaxBytes.bearer,
+  );
   let hosts: Buffer | undefined;
   let expected: Buffer | undefined;
   try {
     const bearer = credential.toString("utf8");
-    if (!/^[A-Za-z0-9_-]{32,256}$/.test(bearer)) {
+    if (!isClientBearer(bearer)) {
       throw new Error("invalid-client-gh-material");
     }
-    hosts = await readPrivateFile(join(directory, "gh", "hosts.yml"), 16 * 1024);
+    hosts = await readPrivateFile(
+      join(directory, "gh", "hosts.yml"),
+      clientSessionFileMaxBytes["gh/hosts.yml"],
+    );
     expected = Buffer.from(ghHosts(configuration.client, bearer));
     if (!hosts.equals(expected)) {
       throw new Error("invalid-client-gh-material");
@@ -55,10 +70,7 @@ function validateClient(client: RepositoryCredentialClientConfiguration): void {
     !isValidGitClientConnection(origin, remote, client) ||
     !/^\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\.git$/.test(remote.pathname) ||
     remote.pathname.includes("..") ||
-    !/^[A-Za-z0-9._-]{1,128}$/.test(client.gitUsername) ||
-    !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(client.apiHost) ||
-    !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(client.canonicalApiHost) ||
-    client.apiHost !== origin.hostname ||
+    !isValidGitClientUsernameAndHosts(origin, client) ||
     !/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(client.repository) ||
     client.repository.length > 512 ||
     client.repository.includes("..") ||
@@ -75,10 +87,10 @@ export function encodeRepositoryCredentialSessionFiles(
 ): RepositoryCredentialSessionFiles {
   validateClient(opened.client);
   if (
-    !/^[A-Za-z0-9_-]{32,256}$/.test(opened.bearer) ||
+    !isClientBearer(opened.bearer) ||
     !/^[A-Za-z0-9_-]{1,128}$/.test(opened.session.sessionId) ||
     !Number.isFinite(opened.session.deadlineWallMs) ||
-    (publicCa && publicCa.byteLength > 64 * 1024)
+    (publicCa && publicCa.byteLength > clientSessionFileMaxBytes["ca.pem"])
   ) {
     throw new Error("invalid-client-configuration");
   }
@@ -90,7 +102,7 @@ export function encodeRepositoryCredentialSessionFiles(
   };
   const clientJson = JSON.stringify(files) + "\n";
   // Apply the existing reader limit to the complete document, not individual rules.
-  if (Buffer.byteLength(clientJson) > 16 * 1024) {
+  if (Buffer.byteLength(clientJson) > clientSessionFileMaxBytes["client.json"]) {
     throw new Error("client-configuration-too-large");
   }
   return {
@@ -100,9 +112,11 @@ export function encodeRepositoryCredentialSessionFiles(
       "[credential]\n\thelper =\n\tuseHttpPath = true\n[http]\n\tfollowRedirects = false\n\tsslVerify = true\n",
     "gh/hosts.yml": ghHosts(opened.client, opened.bearer),
     "gh/config.yml": "version: 1\nprompt: disabled\ngit_protocol: https\n",
+    // Git loads this file as sslCAInfo. A leading UTF-8 BOM is not part of the
+    // certificate; keeping it makes Git reject the file before the handshake.
     ...(publicCa === undefined
       ? {}
-      : { "ca.pem": new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(publicCa) }),
+      : { "ca.pem": new TextDecoder("utf-8", { fatal: true }).decode(publicCa) }),
   };
 }
 
@@ -168,7 +182,12 @@ export async function writeClientConfiguration(
 
 export async function readClientConfiguration(directory: string): Promise<ClientFiles> {
   const value = JSON.parse(
-    (await readPrivateFile(join(resolve(directory), "client.json"), 16 * 1024)).toString("utf8"),
+    (
+      await readPrivateFile(
+        join(resolve(directory), "client.json"),
+        clientSessionFileMaxBytes["client.json"],
+      )
+    ).toString("utf8"),
   ) as ClientFiles;
   validateClient(value.client);
   if (

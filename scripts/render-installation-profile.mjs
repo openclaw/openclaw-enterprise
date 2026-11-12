@@ -976,9 +976,15 @@ function renderOidcProvider(source, path, diagnostics) {
   }
   if (source.enrollment !== undefined) {
     try {
-      // Validate the policy but keep its input shape for the API's parser.
-      oidcEnrollmentPolicy(source.enrollment);
-      rendered.enrollment = source.enrollment;
+      const policy = oidcEnrollmentPolicy(source.enrollment);
+      rendered.enrollment = {
+        ...policy,
+        // The resolved disabled policy has no Role; omit the internal null so
+        // the rendered operator input still passes the same configuration parser.
+        createAccount: policy.createAccount.enabled
+          ? policy.createAccount
+          : { enabled: false, requireVerifiedEmail: policy.createAccount.requireVerifiedEmail },
+      };
     } catch (error) {
       diagnostics.errors.push(`${path.join(".")}.enrollment: ${error.message}`);
     }
@@ -1575,6 +1581,11 @@ function buildRendered(profile, parsed, diagnostics) {
   ) {
     diagnostics.errors.push(
       "controlPlane.agentNativeAdminSessionMode host-only-exchange requires OIDC sign-in without Google.",
+    );
+  }
+  if (controlPlane.google === undefined && agentNativeAdminDomain.length > 214) {
+    diagnostics.errors.push(
+      "controlPlane.agentNativeAdminDomain must not exceed 214 characters, leaving room for the Agent hostname prefix.",
     );
   }
   const agentNativeAdmin = {

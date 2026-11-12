@@ -5,7 +5,12 @@ const installerFiles = new Set([
   "tests/integration/local-first-agent-openshell-real.test.mjs",
   "tests/integration/dev-up-openshell-k3d-real.test.mjs",
   "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
+  "tests/integration/openshell-git-finite-removal-real.test.ts",
 ]);
+
+export function isOpenShellInstallerFile(file: string | undefined) {
+  return file !== undefined && installerFiles.has(file);
+}
 
 export function isOpenShellLane(lane: string) {
   return lane === "openshell" || lane === policyLane || lane === installerLane;
@@ -44,8 +49,8 @@ export function projectFullIntegrationOpenShell(manifest: {
     throw new Error("Full Integration requires the canonical OpenShell lane exactly once.");
   }
   const paths = new Set(original.files.map(({ path }) => path));
-  const installers = original.files.filter(({ path }) => installerFiles.has(path));
-  const shared = original.files.filter(({ path }) => !installerFiles.has(path));
+  const installers = original.files.filter(({ path }) => isOpenShellInstallerFile(path));
+  const shared = original.files.filter(({ path }) => !isOpenShellInstallerFile(path));
   if (
     paths.size !== original.files.length ||
     installers.length !== installerFiles.size ||

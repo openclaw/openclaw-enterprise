@@ -5,6 +5,7 @@ const scenarioPresets = {
   "oidc-agent-chat": ["OpenClaw"],
   "helm-oidc-agent-chat": ["OpenClaw"],
   "sandbox-policy": ["Codex"],
+  "scratch-volume": ["Codex"],
   "plugin-install": ["Codex"],
   "openshell-linear-read": ["Codex"],
   "model-ui": ["OpenClaw"],
@@ -35,6 +36,7 @@ export function selectQaMatrix(env = process.env) {
         "oidc-agent-chat",
         "helm-oidc-agent-chat",
         "sandbox-policy",
+        "scratch-volume",
         "plugin-install",
         "openshell-linear-read",
         "codex-search-config",
@@ -78,6 +80,7 @@ export function selectQaMatrix(env = process.env) {
           ![
             "namespace-lifecycle",
             "sandbox-policy",
+            "scratch-volume",
             "plugin-install",
             "openshell-linear-read",
             "harness-overrides",
@@ -90,6 +93,7 @@ export function selectQaMatrix(env = process.env) {
           ![
             "namespace-lifecycle",
             "sandbox-policy",
+            "scratch-volume",
             "plugin-install",
             "openshell-linear-read",
             "harness-overrides",
@@ -104,6 +108,7 @@ export function selectQaMatrix(env = process.env) {
           ![
             "namespace-lifecycle",
             "sandbox-policy",
+            "scratch-volume",
             "plugin-install",
             "openshell-linear-read",
             "harness-overrides",
@@ -171,6 +176,7 @@ export function selectQaMatrix(env = process.env) {
   }
   const namespaceLifecycle = scenarios.includes("namespace-lifecycle");
   const sandboxPolicy = scenarios.includes("sandbox-policy");
+  const scratchVolume = scenarios.includes("scratch-volume");
   const pluginInstall = scenarios.includes("plugin-install");
   const linearRead = scenarios.includes("openshell-linear-read");
   const harnessOverrides = scenarios.includes("harness-overrides");
@@ -193,6 +199,7 @@ export function selectQaMatrix(env = process.env) {
       activeScenarios.length > 0 ||
       namespaceLifecycle ||
       sandboxPolicy ||
+      scratchVolume ||
       pluginInstall ||
       linearRead ||
       harnessOverrides,
@@ -218,7 +225,19 @@ export function selectQaMatrix(env = process.env) {
       }
     }
   }
-  if (namespaceLifecycle || sandboxPolicy || pluginInstall) {
+  if (scratchVolume) {
+    assert.notEqual(
+      installation,
+      "compose",
+      "Scratch volume proof requires Kubernetes with OpenShell",
+    );
+    for (const key of ["OCC_TEST_QA_OPENAI_KEY_FILE", "OCC_TEST_QA_OPENAI_MODEL"]) {
+      if (!requiredEnv.includes(key)) {
+        requiredEnv.push(key);
+      }
+    }
+  }
+  if (namespaceLifecycle || sandboxPolicy || pluginInstall || scratchVolume) {
     if ((sandboxPolicy || pluginInstall) && !requiredEnv.includes("OCC_TEST_QA_CODEX_TOKEN_FILE")) {
       requiredEnv.push("OCC_TEST_QA_CODEX_TOKEN_FILE");
     }
@@ -251,6 +270,7 @@ export function selectQaMatrix(env = process.env) {
     oidcAgentChat,
     helmOidcAgentChat,
     sandboxPolicy,
+    scratchVolume,
     pluginInstall,
     linearRead,
     harnessOverrides,

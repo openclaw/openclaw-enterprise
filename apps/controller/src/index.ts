@@ -51,7 +51,6 @@ import {
   AuthAccountRoleInvalidError,
   AuthAccountRoleNotFoundError,
   NativeIAMDriver,
-  type AuthPrincipalSeed,
 } from "@openclaw-enterprise/iam";
 import {
   AgentPrincipalAuthorizationError,
@@ -96,7 +95,7 @@ import {
   ServiceKeyNameRefused,
   type ClientAddressConfiguration,
   type ControllerAuth,
-  type PreparedAuthAccount,
+  type ProvisionAuthAccount,
 } from "./auth/index.ts";
 import { CONSOLE_CONTENT_SECURITY_POLICY, readConsoleAsset } from "./console-assets.ts";
 import { createBootstrapResources } from "./composition/installation-bootstrap.ts";
@@ -228,12 +227,7 @@ export interface ControllerAppOptions {
   readonly agentRuntimeLogs?: AgentRuntimeLogsConfig;
   readonly publicOrigin?: string;
   /** Writes the prepared account with its Principal, bindings and enrolment atomically. */
-  readonly provisionAuthAccount?: (
-    seed: AuthPrincipalSeed,
-    auditEvent: AuditEvent,
-    prepared: PreparedAuthAccount,
-    external?: { readonly providerId: string; readonly subject: string },
-  ) => Promise<void>;
+  readonly provisionAuthAccount?: ProvisionAuthAccount;
   readonly auditEventFactory?: AuditEventFactory;
   readonly logger?: FastifyBaseLogger;
   /** Production proxies allowed to send forwarded headers; admission ignores those headers. */
@@ -547,6 +541,7 @@ function operationTarget(
   if (
     (operation.operationId === "createAgent" ||
       operation.operationId === "validateAgentCreate" ||
+      operation.operationId === "getNamespaceAgentCapabilities" ||
       operation.operationId === "provisionAgent" ||
       operation.operationId === "listRepositoryOptions") &&
     namespaceId
@@ -1719,12 +1714,28 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     context: RequestContext,
   ) {
     const target: ResourceRef = { kind: "installation", id: installationId };
-    let selected: IAMDriver;
+    const selected = selectedIAMDriver();
+    const decision = await installationAdminDecision(selected, context.actorId, target);
+    if (!decision.allowed) {
+      await denial(operation, request, "authorization_denial", context, decision.evidence);
+      throw failure(
+        403,
+        "FORBIDDEN",
+        callerDenialMessage({ action: "administer", resource: target }),
+      );
+    }
+    return { selected, target, decision };
+  }
+
+  async function installationAdminDecision(
+    selected: IAMDriver,
+    actorId: string,
+    target: ResourceRef,
+  ) {
     let decision;
     try {
-      selected = selectedIAMDriver();
       decision = await selected.authorize({
-        principalId: context.actorId,
+        principalId: actorId,
         action: "administer",
         resource: target,
       });
@@ -1740,15 +1751,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     ) {
       throw dependencyUnavailable();
     }
-    if (!decision.allowed) {
-      await denial(operation, request, "authorization_denial", context, decision.evidence);
-      throw failure(
-        403,
-        "FORBIDDEN",
-        callerDenialMessage({ action: "administer", resource: target }),
-      );
-    }
-    return { selected, target, decision };
+    return decision;
   }
 
   // Report the primary IAM decision without auditing a mutation the caller never attempted.
@@ -1909,6 +1912,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       method: request.method,
       route: request.routeOptions.url ?? "unmatched",
       status: reply.statusCode,
+      nativeAdmissionReason: nativeAdmin.httpAdmissionReason(request),
       ...(durationMs === undefined ? {} : { durationMs: Math.round(durationMs * 1000) / 1000 }),
     });
   });
@@ -4600,7 +4604,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           );
         }
 
-        const { target, decision } = await requireInstallationAdmin(
+        const { selected, target, decision } = await requireInstallationAdmin(
           request,
           createAuthAccountOperation,
           context,
@@ -4641,22 +4645,59 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           decision.evidence,
         );
         // Record who was enrolled and what they were granted; never the email or password.
+        const accountDetails = {
+          principalId: seed.principal.id,
+          ...(roleId === undefined ? { grant: "none" } : { roleId }),
+          ...(groupIds.length === 0 ? {} : { groupIds }),
+        };
         const auditEvent: AuditEvent = {
           ...baseAuditEvent,
-          details: {
-            ...baseAuditEvent.details,
-            principalId: seed.principal.id,
-            ...(roleId === undefined ? { grant: "none" } : { roleId }),
-            ...(groupIds.length === 0 ? {} : { groupIds }),
-          },
+          details: { ...baseAuditEvent.details, ...accountDetails },
         };
         try {
-          await options.provisionAuthAccount(seed, auditEvent, prepared);
+          const admitted = admissions.get(request);
+          if (admitted === undefined) {
+            throw dependencyUnavailable();
+          }
+          if (admitted.method !== "session") {
+            throw failure(401, "UNAUTHENTICATED", "A human controller session is required.");
+          }
+          const session = admitted.session;
+          const provision = () =>
+            options.provisionAuthAccount!(seed, auditEvent, prepared, undefined, {
+              holdSession: (unit: PlatformUnitOfWork) =>
+                options.auth.holdSession(unit, session, request),
+              authorize: async () => {
+                // State calls this after its authority locks, on the account's original unit.
+                // Let the HTTP error handler audit a denial after that unit rolls back.
+                const current = await installationAdminDecision(selected, context.actorId, target);
+                if (!current.allowed) {
+                  throw new AuthorizationDeniedError(
+                    current.reason,
+                    current.evidence,
+                    { action: "administer", resource: target },
+                    context.actorId,
+                  );
+                }
+                return event(
+                  createAuthAccountOperation,
+                  request,
+                  target,
+                  "mutation",
+                  context,
+                  current.evidence,
+                  { outcome: "success", details: accountDetails },
+                );
+              },
+            });
+          await options.auth.withSessionAuthority(session, provision);
         } catch (error) {
           // The account, Principal and audit commit in one transaction, so nothing is
           // compensated here. Dependency errors keep their class: an unknown COMMIT
           // outcome must reach the caller as unknown, never as a plain outage.
-          throw error instanceof RequestFailure || error instanceof DependencyUnavailableError
+          throw error instanceof RequestFailure ||
+            error instanceof AuthorizationDeniedError ||
+            error instanceof DependencyUnavailableError
             ? error
             : error instanceof UserAlreadyExistsError
               ? failure(409, "RESOURCE_CONFLICT", "The requested platform resource already exists.")
@@ -4745,7 +4786,24 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         getController: () => controller,
         getContext: (request) => contexts.get(request),
         auditEvent: (request, context, target) =>
-          event(connectionCallbackOperation, request, target, "mutation", context),
+          event(
+            connectionCallbackOperation,
+            request,
+            target,
+            "mutation",
+            context,
+            undefined,
+            undefined,
+            {
+              action: "create",
+              // OCC supplies the saved connection after consuming and authorizing its attempt.
+              resource: {
+                kind: "credential_source",
+                id: target.namespaceId!,
+                namespaceId: target.namespaceId!,
+              },
+            },
+          ),
         auditFailure: (request, context, reasonCode) =>
           rejectedMutation(connectionCallbackOperation, request, context, reasonCode),
       }),

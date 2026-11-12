@@ -1540,7 +1540,7 @@ test(
     await setAdminDisabled(false);
 
     // Inside the transaction, the actor's account and Namespace stay locked until
-    // COMMIT: a disable or a policy write in that Namespace cannot slip in.
+    // COMMIT: a disable, Namespace policy write, or configuration change cannot slip in.
     const blocked = [];
     let inTransaction = 0;
     pending = {
@@ -1552,6 +1552,7 @@ test(
             admin.userId,
           ],
           ["SELECT 1 FROM occ.namespaces WHERE id = $1 FOR UPDATE", namespace.id],
+          ["SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", "occ:iam-configuration"],
         ]) {
           const client = await pool.connect();
           try {
@@ -1573,7 +1574,7 @@ test(
       permissions: [{ action: "read", resourceKind: "agent" }],
     });
     assert.equal(pending, undefined, "the in-transaction check ran");
-    assert.deepEqual(blocked, [true, true]);
+    assert.deepEqual(blocked, [true, true, true]);
     assert.ok((await roleIds()).includes(kept.id));
   },
 );

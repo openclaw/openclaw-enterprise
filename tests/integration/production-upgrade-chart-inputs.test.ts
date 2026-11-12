@@ -36,13 +36,15 @@ test("production upgrades check the stock chart before recording evidence or con
   // are read by the command before the first cluster call.
   for (const path of [
     upgradeScript,
-    "scripts/lib/image-reference-problem.mjs",
+    "scripts/lib/image-reference-problem.ts",
     "packages/occ/src/image-reference.ts",
     "scripts/upgrade-repository-image-probe.mjs",
     "scripts/upgrade-image-identity.py",
     "scripts/upgrade-node-platform.py",
     "scripts/upgrade-deployment-identity.py",
     "scripts/upgrade-startup-preflight.mjs",
+    "scripts/upgrade-preflight-state.py",
+    "scripts/lib/upgrade-preflight-cleanup.sh",
     "scripts/upgrade-evidence.py",
     "scripts/upgrade-helm-state.py",
     "apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts",

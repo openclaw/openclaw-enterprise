@@ -31,6 +31,7 @@ jobs:
     outputs:
       run_all: ${{ steps.select.outputs.run_all }}
       selected_lane: ${{ steps.select.outputs.selected_lane }}
+      matrix: ${{ steps.fresh-plan.outputs.matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -49,6 +50,15 @@ jobs:
           INPUT_LANE: ${{ inputs.lane }}
         run: |
           node scripts/ci/full-integration-preflight.mjs
+      - name: Prepare fresh lane fallback
+        id: fresh-plan
+        if: steps.select.outputs.run_all == 'true'
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+          const matrix = JSON.parse(fs.readFileSync("scripts/ci/full-integration-lanes.json", "utf8"));
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify(matrix)}\n`);
+          NODE
       - name: Prepare full admission marker
         id: prepare-admission-marker
         if: steps.select.outputs.run_all == 'true' && github.run_attempt == '1'
@@ -80,8 +90,9 @@ jobs:
     needs: preflight
     if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.preflight.result == 'success' && needs.preflight.outputs.run_all == 'true' }}
     timeout-minutes: 16
+    continue-on-error: true
     outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
+      matrix: ${{ steps.plan.outcome == 'success' && steps.plan.outputs.matrix || '' }}
       lanes: ${{ steps.plan.outputs.lanes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -119,7 +130,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: full-results-reused
+          name: full-ci-reused-results
           path: ${{ runner.temp }}/ci-reuse/accepted/*.json
           if-no-files-found: error
           retention-days: 7
@@ -135,18 +146,20 @@ jobs:
     name: Same-SHA ${{ matrix.title }}
     # Match ordinary CI's physical capacities. Keep Blacksmith for the
     # k3d kernel and PostgreSQL Authentication's Chromium sandbox.
-    runs-on: ${{ (startsWith(matrix.lane, 'checks-browser') || (startsWith(matrix.lane, 'k3d-fixture-') && matrix.lane != 'k3d-fixture-network' && matrix.lane != 'k3d-fixture-plugins' && matrix.lane != 'k3d-fixture-configuration') || startsWith(matrix.lane, 'images-runtime-startup') || matrix.lane == 'postgres-application' || startsWith(matrix.lane, 'checks-baseline-')) && 'blacksmith-8vcpu-ubuntu-2404' || matrix.lane == 'k3d-observability-demo' && 'ubuntu-22.04' || (matrix.lane == 'postgres-auth' || matrix.lane == 'k3d-fixture-network' || matrix.lane == 'k3d-fixture-plugins' || matrix.lane == 'k3d-fixture-configuration' || matrix.lane == 'images-packaging' || matrix.lane == 'k3d-observability') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    runs-on: ${{ (startsWith(matrix.lane, 'checks-browser') || (startsWith(matrix.lane, 'k3d-fixture-') && matrix.lane != 'k3d-fixture-network' && matrix.lane != 'k3d-fixture-plugins' && matrix.lane != 'k3d-fixture-configuration') || startsWith(matrix.lane, 'images-runtime-startup') || matrix.lane == 'postgres-application' || startsWith(matrix.lane, 'checks-baseline-')) && 'blacksmith-8vcpu-ubuntu-2404' || (matrix.lane == 'postgres-auth' || matrix.lane == 'k3d-fixture-network' || matrix.lane == 'k3d-fixture-plugins' || matrix.lane == 'k3d-fixture-configuration' || matrix.lane == 'images-packaging' || matrix.lane == 'k3d-observability' || matrix.lane == 'k3d-observability-demo') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     needs: [preflight, ci-reuse]
     if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.preflight.result == 'success' && (needs.preflight.outputs.run_all == 'true') }}
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.ci-reuse.outputs.matrix) }}
+        include: ${{ fromJSON(needs.ci-reuse.result == 'success' && needs.ci-reuse.outputs.matrix != '' && needs.ci-reuse.outputs.matrix || needs.preflight.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
+          # Sign-in profile tests compare real historical controller/catalog inputs.
+          fetch-depth: ${{ matrix.lane == 'checks-baseline-2' && '0' || '1' }}
           persist-credentials: false
       - uses: ./.github/actions/run-ci-lane
         with:
@@ -164,10 +177,36 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  gateway-image-selection:
+    name: Select Gateway images
+    needs: preflight
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'gateway-routing') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    environment: integration-main
+    outputs:
+      gateway-image: ${{ steps.select.outputs.gateway-image }}
+      agent-image: ${{ steps.select.outputs.agent-image }}
+      use-runtime-artifact: ${{ steps.select.outputs.use-runtime-artifact }}
+    steps:
+      - id: select
+        env:
+          GATEWAY_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_GATEWAY_IMAGE }}
+          AGENT_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_AGENT_IMAGE }}
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+          const gateway = process.env.GATEWAY_IMAGE || "";
+          const agent = process.env.AGENT_IMAGE || "";
+          if (/[\r\n]/.test(gateway + agent)) throw new Error("Gateway image selections must be single-line values.");
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `gateway-image=${gateway}\nagent-image=${agent}\nuse-runtime-artifact=${!gateway && !agent}\n`);
+          NODE
+
   runtime-artifact:
     name: Shared Runtime Image
-    needs: preflight
-    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.preflight.result == 'success' && (needs.preflight.outputs.run_all == 'true') }}
+    needs: [preflight, gateway-image-selection]
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.preflight.result == 'success' && (needs.preflight.outputs.run_all == 'true' || (needs.preflight.outputs.selected_lane == 'gateway-routing' && needs.gateway-image-selection.outputs.use-runtime-artifact == 'true') || needs.preflight.outputs.selected_lane == 'production-tui') }}
     uses: ./.github/workflows/ci-runtime-artifact.yml
 
   image-lanes-same-sha:
@@ -303,21 +342,41 @@ jobs:
   gateway-routing:
     name: Gateway Routing
     runs-on: blacksmith-8vcpu-ubuntu-2404
-    needs: preflight
-    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'gateway-routing') }}
+    needs: [preflight, gateway-image-selection, runtime-artifact]
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.preflight.result == 'success' && needs.gateway-image-selection.result == 'success' && (needs.gateway-image-selection.outputs.use-runtime-artifact == 'false' || needs.runtime-artifact.result == 'success') && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'gateway-routing') }}
     timeout-minutes: 35
     environment: integration-main
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
-      OCC_TEST_KUBERNETES_GATEWAY_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_GATEWAY_IMAGE }}
-      OCC_TEST_KUBERNETES_AGENT_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_AGENT_IMAGE }}
+      OCC_TEST_KUBERNETES_GATEWAY_IMAGE: ${{ needs.gateway-image-selection.outputs.gateway-image }}
+      OCC_TEST_KUBERNETES_AGENT_IMAGE: ${{ needs.gateway-image-selection.outputs.agent-image }}
       NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Verify Gateway runtime selection
+        env:
+          RUNTIME_ARTIFACT_MODE: ${{ needs.gateway-image-selection.outputs.use-runtime-artifact }}
+          RUNTIME_ARTIFACT_ID: ${{ needs.runtime-artifact.outputs.artifact-id }}
+        run: |
+          case "$RUNTIME_ARTIFACT_MODE" in
+            true)
+              test -z "$OCC_TEST_KUBERNETES_GATEWAY_IMAGE"
+              test -z "$OCC_TEST_KUBERNETES_AGENT_IMAGE"
+              test -n "$RUNTIME_ARTIFACT_ID"
+              ;;
+            false)
+              test -n "$OCC_TEST_KUBERNETES_GATEWAY_IMAGE"
+              test -n "$OCC_TEST_KUBERNETES_AGENT_IMAGE"
+              ;;
+            *)
+              echo "::error::Missing or invalid Gateway runtime selection."
+              exit 1
+              ;;
+          esac
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: gateway-routing
@@ -325,12 +384,17 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
           job-timeout-minutes: 35
+          runtime-artifact-id: ${{ needs.gateway-image-selection.outputs.use-runtime-artifact == 'true' && needs.runtime-artifact.outputs.artifact-id || '' }}
+          runtime-artifact-sha256: ${{ needs.gateway-image-selection.outputs.use-runtime-artifact == 'true' && needs.runtime-artifact.outputs.archive-sha256 || '' }}
+          runtime-artifact-source-sha: ${{ needs.gateway-image-selection.outputs.use-runtime-artifact == 'true' && needs.runtime-artifact.outputs.source-sha || '' }}
+          runtime-artifact-run-id: ${{ needs.gateway-image-selection.outputs.use-runtime-artifact == 'true' && needs.runtime-artifact.outputs.run-id || '' }}
+          runtime-artifact-attempt: ${{ needs.gateway-image-selection.outputs.use-runtime-artifact == 'true' && needs.runtime-artifact.outputs.producer-attempt || '' }}
 
   production-tui:
     name: Production TUI
     runs-on: ubuntu-24.04
-    needs: preflight
-    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'production-tui') }}
+    needs: [preflight, runtime-artifact]
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.preflight.result == 'success' && needs.runtime-artifact.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'production-tui') }}
     timeout-minutes: 50
     environment: integration-main
     env:
@@ -346,6 +410,10 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Verify successful runtime producer has an artifact
+        env:
+          RUNTIME_ARTIFACT_ID: ${{ needs.runtime-artifact.outputs.artifact-id }}
+        run: test -n "$RUNTIME_ARTIFACT_ID"
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: production-tui
@@ -353,6 +421,11 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
           job-timeout-minutes: 50
+          runtime-artifact-id: ${{ needs.runtime-artifact.outputs.artifact-id }}
+          runtime-artifact-sha256: ${{ needs.runtime-artifact.outputs.archive-sha256 }}
+          runtime-artifact-source-sha: ${{ needs.runtime-artifact.outputs.source-sha }}
+          runtime-artifact-run-id: ${{ needs.runtime-artifact.outputs.run-id }}
+          runtime-artifact-attempt: ${{ needs.runtime-artifact.outputs.producer-attempt }}
 
   slack:
     name: Slack Live
@@ -388,11 +461,40 @@ jobs:
           artifact-prefix: full-results
           job-timeout-minutes: 50
 
-  openshell:
-    name: OpenShell (${{ matrix.lane }})
+  openshell-build-inputs:
+    name: OpenShell Build Inputs
     runs-on: ubuntu-24.04
     needs: preflight
     if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'openshell') }}
+    permissions: {}
+    environment: integration-main
+    timeout-minutes: 5
+    outputs:
+      node-base-image: ${{ steps.inputs.outputs.node-base-image }}
+    steps:
+      - name: Resolve the protected controller base
+        id: inputs
+        env:
+          NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+        run: |
+          # Full image validation belongs to the warmer, before it builds anything.
+          [[ -n "$NODE_BASE_IMAGE" && "$NODE_BASE_IMAGE" != *$'\n'* && "$NODE_BASE_IMAGE" != *$'\r'* ]]
+          echo "node-base-image=$NODE_BASE_IMAGE" >> "$GITHUB_OUTPUT"
+
+  openshell-image-cache:
+    name: OpenShell Image Cache
+    needs: [preflight, openshell-build-inputs]
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'openshell') && needs.openshell-build-inputs.result == 'success' }}
+    uses: ./.github/workflows/ci-image-cache.yml
+    with:
+      require-export: true
+      node-base-image: ${{ needs.openshell-build-inputs.outputs.node-base-image }}
+
+  openshell:
+    name: OpenShell (${{ matrix.lane }})
+    runs-on: ubuntu-24.04
+    needs: [preflight, openshell-build-inputs, openshell-image-cache]
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'openshell') && needs.openshell-image-cache.result == 'success' && needs.openshell-image-cache.outputs.source-sha == github.sha }}
     timeout-minutes: 150
     environment: integration-main
     strategy:
@@ -402,7 +504,8 @@ jobs:
     env:
       # The packaged browser has Ubuntu's AppArmor user-namespace permission.
       OCC_TEST_BROWSER_EXECUTABLE: /usr/bin/google-chrome
-      NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+      NODE_BASE_IMAGE: ${{ needs.openshell-build-inputs.outputs.node-base-image }}
+      OCC_DEVELOPMENT_NODE_BASE_IMAGE: ${{ needs.openshell-build-inputs.outputs.node-base-image }}
       CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
@@ -598,6 +701,7 @@ jobs:
         timeout-minutes: 1
         run: node scripts/ci/first-agent-smoke.mjs release-selection "$RUNNER_TEMP/skipper-release-selection.json"
       - name: Prove native private Git and withdrawal on the same installed Agent
+        id: installed-skipper-proof
         env:
           OCC_DEVELOPMENT_K3S_IMAGE: docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc
         run: |
@@ -605,6 +709,29 @@ jobs:
           OCC_DEVELOPMENT_PREPARED_GIT_HOST_IP="$host" \
             node scripts/qualification/skipper-private-git-fixture.mjs --team-review -- node scripts/ci/skipper-prepared-git-installed.mjs
           echo 'Private Git origin, synthetic issuer and credential inputs removed.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Record sanitized installed Skipper failure
+        id: installed-skipper-failure
+        if: ${{ !cancelled() && steps.installed-skipper-proof.outcome == 'failure' }}
+        env:
+          SKIPPER_PROOF_OUTCOME: ${{ steps.installed-skipper-proof.outcome }}
+          SKIPPER_STAGE: ${{ steps.installed-skipper-proof.outputs.skipper_stage }}
+          SKIPPER_TEST_OPERATION: ${{ steps.installed-skipper-proof.outputs.skipper_test_operation }}
+          SKIPPER_GATEWAY_CHAT_PHASE: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_chat_phase }}
+          SKIPPER_HTTP_STATUS: ${{ steps.installed-skipper-proof.outputs.skipper_http_status }}
+          SKIPPER_GATEWAY_CATEGORY: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_category }}
+          SKIPPER_RUNTIME_SIGNAL: ${{ steps.installed-skipper-proof.outputs.skipper_runtime_signal }}
+          SKIPPER_MODEL_REQUEST_OBSERVATION: ${{ steps.installed-skipper-proof.outputs.skipper_model_request_observation }}
+          SKIPPER_LAST_TEST_CHECKPOINT: ${{ steps.installed-skipper-proof.outputs.skipper_last_test_checkpoint }}
+          SKIPPER_INSTALLED_CLEANUP: ${{ steps.installed-skipper-proof.outputs.skipper_installed_cleanup }}
+        run: node scripts/ci/skipper-failure-receipt.ts "$RUNNER_TEMP/skipper-installed-failure.json"
+      - name: Upload sanitized installed Skipper failure
+        if: ${{ !cancelled() && steps.installed-skipper-failure.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: attempt-${{ github.run_attempt }}-full-failure-skipper-prepared-git-installed
+          path: ${{ runner.temp }}/skipper-installed-failure.json
+          if-no-files-found: error
+          retention-days: 7
       - name: Qualify installed Skipper image selection
         timeout-minutes: 1
         run: node scripts/ci/run-tests.mjs aggregate skipper-prepared-git-installed --release-selection "$RUNNER_TEMP/skipper-release-selection.json" --results-dir "$RUNNER_TEMP/results"
@@ -628,6 +755,7 @@ jobs:
       - pr-safe-same-sha
       - ci-reuse
       - image-lanes-same-sha
+      - gateway-image-selection
       - runtime-artifact
       - runtime-image-fixture
       - docker-model
@@ -662,6 +790,18 @@ jobs:
         with:
           pattern: full-results-*
           path: ${{ runner.temp }}/results
+      # Reuse uploads can outlive a timed-out planner. Read them only when its
+      # completed plan also selected the reduced matrix above.
+      - name: Download committed reused results
+        id: reused-results
+        if: needs.ci-reuse.result == 'success' && needs.ci-reuse.outputs.matrix != '' && needs.ci-reuse.outputs.lanes != '[]'
+        uses: ./.github/actions/download-results
+        with:
+          pattern: full-ci-reused-results
+          path: ${{ runner.temp }}/reused-results
+      - name: Combine committed reused results
+        if: steps.reused-results.outcome == 'success'
+        run: cp "$RUNNER_TEMP/reused-results/"*.json "$RUNNER_TEMP/results/"
       - name: Write selected job state
         env:
           NEEDS_JSON: ${{ toJson(needs) }}
@@ -673,7 +813,13 @@ jobs:
           const needs = JSON.parse(process.env.NEEDS_JSON);
           const lane = process.env.SELECTED_LANE;
           const out = { preflight: needs.preflight };
-          const reused = needs["ci-reuse"]?.result === "success" ? JSON.parse(process.env.REUSED_LANES || "[]") : [];
+          const reused = needs["ci-reuse"]?.result === "success" && needs["ci-reuse"].outputs?.matrix ? JSON.parse(process.env.REUSED_LANES || "[]") : [];
+          if (lane === "all" || lane === "gateway-routing") {
+            out["gateway-image-selection"] = needs["gateway-image-selection"] ?? { result: "missing" };
+          }
+          if (lane === "production-tui" || (lane === "gateway-routing" && needs["gateway-image-selection"]?.outputs?.["use-runtime-artifact"] === "true")) {
+            out["runtime-artifact"] = needs["runtime-artifact"] ?? { result: "missing" };
+          }
           if (lane === "all") {
             out["runtime-artifact"] = needs["runtime-artifact"] ?? { result: "missing" };
             out["runtime-image-fixture"] = needs["runtime-image-fixture"] ?? { result: "missing" };

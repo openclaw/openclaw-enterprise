@@ -1,6 +1,6 @@
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readClientConfiguration } from "./config.ts";
+import { isClientBearer, readClientConfiguration } from "./config.ts";
 import {
   buildOperatorRepositoryManifest,
   inheritedRepositoryBinding,
@@ -8,7 +8,7 @@ import {
   requireCurrentBinding,
   type RuntimeRepositoryBinding,
 } from "./manifest.ts";
-import { readPrivateFile } from "./private-files.ts";
+import { clientSessionFileMaxBytes, readPrivateFile } from "./private-files.ts";
 import { selectGitCredential } from "./targets.ts";
 
 async function readCredentialRequest(): Promise<ReadonlyMap<string, string>> {
@@ -104,11 +104,14 @@ async function run(): Promise<void> {
     );
   }
   requireCurrentBinding(binding);
-  const bytes = await readPrivateFile(join(binding.directory, "bearer"), 256);
+  const bytes = await readPrivateFile(
+    join(binding.directory, "bearer"),
+    clientSessionFileMaxBytes.bearer,
+  );
   try {
     requireCurrentBinding(binding);
     const bearer = bytes.toString("utf8");
-    if (!/^[A-Za-z0-9_-]{32,256}$/.test(bearer)) {
+    if (!isClientBearer(bearer)) {
       throw new Error("invalid-client-bearer");
     }
     process.stdout.write(`username=${binding.client.gitUsername}\npassword=${bearer}\n\n`);

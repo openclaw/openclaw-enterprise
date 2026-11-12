@@ -13,7 +13,7 @@ import { oidcLoginConfigurations } from "../../apps/controller/src/auth/oidc.ts"
 import { createKubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.mjs";
+import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.ts";
 import {
   RenderRefusal,
   renderInstallationProfile,
@@ -1402,6 +1402,21 @@ test("invalid named OIDC provider settings fail preflight and Helm", { skip: hel
         },
       },
       /distinct button labels/,
+    ],
+    [
+      "non-boolean enrollment email verification",
+      {
+        providers: {
+          keycloak: {
+            ...keycloak,
+            enrollment: {
+              admission: { groupsClaim: "groups", anyOf: ["employees"] },
+              createAccount: { requireVerifiedEmail: "false" },
+            },
+          },
+        },
+      },
+      /auth\.oidc\.providers\.keycloak\.enrollment\.createAccount\.requireVerifiedEmail must be a boolean/,
     ],
     [
       "missing Secret name",

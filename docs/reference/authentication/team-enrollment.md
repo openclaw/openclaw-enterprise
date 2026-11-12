@@ -24,6 +24,7 @@ auth:
           additionalScopes: [groups]
           createAccount:
             enabled: true
+            requireVerifiedEmail: true
             role:
               id: role_config_agent_creator
               scope:
@@ -37,11 +38,12 @@ transaction checks them again. Unknown fields and invalid policy combinations
 fail activation.
 
 `admission` is required. The verified ID token must contain the named top-level
-claim as an array of strings, with at least one exact `anyOf` value. Values and
-claim names are case-sensitive; the allowlist cannot be empty. Missing or malformed
-claims refuse sign-in for both new and attached identities. This is an admission
-rule, not a mapping from IdP groups to Roles. Configure the IdP to emit the claim
-in its signed ID token.
+claim as a string or an array of strings, with at least one exact `anyOf` value.
+A string is one group. OCE matches exact values, including commas and spaces.
+Values and claim names are case-sensitive. The allowlist cannot be empty.
+OCE refuses sign-in for new and attached identities if the claim is missing or
+malformed. The claim controls sign-in. The configured Role and Groups control
+initial access. Configure the IdP to include the claim in its signed ID token.
 
 With enrollment configured, OCE requests `openid email profile` and any explicit
 `additionalScopes`. It does not call UserInfo. Without enrollment it requests only
@@ -74,10 +76,15 @@ OCE user ID, Principal, name, email, resource ownership and grants. To add the
 first provider to a manually created account, an administrator can
 [attach its OIDC identity](../../guides/deploy/oidc-sign-in.md#attach-and-detach).
 
-An unknown identity can create an account only when creation is enabled. Its
-standard `email` must be valid, `email_verified` must be boolean `true`, and the
-trimmed, lowercased email must be unused in OCE. The optional `name` supplies the
-display name; otherwise OCE uses the email. Alternative email claims are not read.
+An unknown identity can create an account only when creation is enabled. OCE
+reads only the standard `email` claim. It must be valid, and the trimmed, lowercased email must be unused
+in OCE. `createAccount.requireVerifiedEmail` defaults to `true` and requires
+`email_verified` to be boolean `true`. Set it to `false` to accept boolean `true`,
+boolean `false`, or an absent claim. A present non-boolean claim always refuses
+creation. The stored email verification is true only for a true claim.
+This policy applies only to first-login account creation. Returning identities
+keep their stored profile and verification status. OCE uses `name` for the
+display name when it contains text. Otherwise it uses the email.
 Perform profile mapping at the IdP. Configure verified email only when the IdP can
 vouch for that address. If the email already exists, the user can
 [link the new provider](../../guides/deploy/oidc-sign-in.md#link-an-existing-account)
@@ -97,7 +104,7 @@ another callback's creation or an administrator's account change can be refused;
 start a new login. Only the transaction that creates an identity may issue its
 initial proof without an older account snapshot. Disabled or stale accounts are
 never repaired by enrollment. Changing the effective policy invalidates pending
-attempts, including changes to inherited default Groups.
+attempts, including changes to `requireVerifiedEmail` and inherited default Groups.
 
 ## Link a provider to an existing account
 

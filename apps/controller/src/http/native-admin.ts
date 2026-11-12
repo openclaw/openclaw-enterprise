@@ -20,7 +20,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest, FastifySchema } fro
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Socket } from "node:net";
-import type { AdmittedCaller } from "../admission/admission-verifier.ts";
+import { AdmissionFailure, type AdmittedCaller } from "../admission/admission-verifier.ts";
 import { hostnameMatchesSharedCookieDomain, type ControllerAuth } from "../auth/index.ts";
 import {
   proxyNativeAdminWebSocket,
@@ -31,6 +31,7 @@ import {
 } from "../gateway/native-admin-proxy.ts";
 import {
   deriveNativeAdminHost,
+  nativeAdminBrowserChatTurnedOn,
   nativeAdminConfigurationSupported,
   nativeAdminGatewayHttpBase,
   nativeAdminTarget,
@@ -166,6 +167,7 @@ const nativeAdminStatusDataSchema = {
     url: { type: "string", format: "uri" },
     sessionMode: { type: "string", enum: ["shared-cookie", "host-only-exchange"] },
     mode: { type: "string", enum: ["admin", "chat"] },
+    reason: { type: "string", enum: ["not-enabled", "configuration", "compute"] },
   },
 };
 export const nativeAdminStatusSchema = {
@@ -472,6 +474,10 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
   }
 
   const nativeAdminSockets = new Set<Socket>();
+  const httpAdmissionReasons = new WeakMap<
+    FastifyRequest,
+    NativeAdminWebSocketCloseReason | "admission_unavailable" | "denial_audit_failed"
+  >();
   const nativeAdminPendingWork = new Set<Promise<unknown>>();
   let nativeAdminShuttingDown = false;
   // Status polls, proxied requests and WebSocket lease renewals all re-check ownership, and a
@@ -783,7 +789,13 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     let timeout: NodeJS.Timeout | undefined;
     try {
       await Promise.race([
-        Promise.allSettled([...nativeAdminPendingWork]),
+        (async () => {
+          // A connect audit can settle after socket closure and start its close audit.
+          // Drain that follow-on work under the same shutdown deadline.
+          while (nativeAdminPendingWork.size > 0) {
+            await Promise.allSettled([...nativeAdminPendingWork]);
+          }
+        })(),
         new Promise<void>((resolve) => {
           const timer = setTimeout(resolve, NATIVE_ADMIN_WORK_DRAIN_MS);
           timeout = timer;
@@ -834,7 +846,14 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
   };
   type NativeAdminAvailability =
     | { readonly status: "disabled" | "stopped" | "unavailable" }
-    | ({ readonly status: "stopped" | "unsupported" } & NativeAdminTargetStatus)
+    | ({ readonly status: "stopped" } & NativeAdminTargetStatus)
+    // not-enabled: the Configuration never turned on the browser UI (Create Agent's Enable
+    // browser chat sets it); configuration: another native setting refuses it; compute: the
+    // Compute Driver gives no usable gateway endpoint. The console names the cause (finding 3168).
+    | ({
+        readonly status: "unsupported";
+        readonly reason: "not-enabled" | "configuration" | "compute";
+      } & NativeAdminTargetStatus)
     | ({ readonly status: "available"; readonly gatewayBase: string } & NativeAdminTargetStatus);
 
   // An exclusive Compute Driver stops the active revision's workload before a newer
@@ -890,6 +909,9 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       }
       throw error;
     }
+    if (nativeAdminDomain.length > 214) {
+      return { status: "unavailable" };
+    }
     const { agent, revision, successor, mode } = selection;
     const target = nativeAdminTarget({
       publicOrigin,
@@ -905,7 +927,10 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       return { status: "unavailable" };
     }
     if (!nativeAdminConfigurationSupported(revision, target.origin)) {
-      return { status: "unsupported", agent, revision, target, mode };
+      const reason = nativeAdminBrowserChatTurnedOn(revision, target.origin)
+        ? "configuration"
+        : "not-enabled";
+      return { status: "unsupported", reason, agent, revision, target, mode };
     }
     let compute: ComputeDriver;
     try {
@@ -927,7 +952,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         : compute.getGatewayChatEndpoint?.(revision);
     const gatewayBase = nativeAdminGatewayHttpBase(endpoint ?? "");
     if (gatewayBase === undefined) {
-      return { status: "unsupported", agent, revision, target, mode };
+      return { status: "unsupported", reason: "compute", agent, revision, target, mode };
     }
     return { status: "available", agent, revision, target, gatewayBase, mode };
   }
@@ -937,7 +962,13 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
   ): Promise<Pick<Agent, "id" | "namespaceId"> | undefined> {
     const controller = getController();
     const domain = nativeAdminDomain;
-    if (!controller || domain === undefined) {
+    const agentKey = /^agent-([0-9a-f]{32})\./.exec(hostname)?.[1];
+    if (
+      !controller ||
+      domain === undefined ||
+      agentKey === undefined ||
+      hostname !== `agent-${agentKey}.${domain}`
+    ) {
       return undefined;
     }
     return controller.resolveAgentReference(
@@ -957,6 +988,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       activeRevisionId: availability.revision.id,
       url: availability.target.url,
       ...(exchangeMode ? { sessionMode: "host-only-exchange" } : {}),
+      ...(availability.status === "unsupported" ? { reason: availability.reason } : {}),
     };
   }
 
@@ -1440,7 +1472,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     if (mapped.code === "DEPENDENCY_UNAVAILABLE") {
       return "agent_unavailable";
     }
-    if (mapped.code === "FORBIDDEN") {
+    if (mapped.code === "FORBIDDEN" || mapped.code === "NOT_FOUND") {
       return options.nativeAdmin?.enabled === true ? "authorization_denied" : "disabled";
     }
     return "dependency_failure";
@@ -1494,8 +1526,16 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
           headers: request.headers,
         });
       }
-    } catch {
-      return nativeAdminProxyDenial(exchangeMode ? "dependency_failure" : "session_invalid");
+    } catch (error) {
+      if (!exchangeMode && error instanceof AdmissionFailure) {
+        if (error.status === 401) {
+          return nativeAdminProxyDenial("session_invalid");
+        }
+        if (error.status === 403) {
+          return nativeAdminProxyDenial("admission_forbidden");
+        }
+      }
+      return nativeAdminProxyDenial("dependency_failure");
     }
     if (
       admitted.method !== "session" ||
@@ -1616,7 +1656,13 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     const operation = startNativeAdminAdmission(request.raw, hostname, "http");
     const admission = await boundedNativeAdminAdmission(operation.result);
     if (!isNativeAdminProxyResolution(admission)) {
-      if (admission !== undefined && !(await operation.audit)) {
+      httpAdmissionReasons.set(request, admission?.reason ?? "admission_unavailable");
+      if (admission === undefined || admission.reason === "dependency_failure") {
+        canonicalFailure(reply, dependencyUnavailable());
+        return true;
+      }
+      if (!(await operation.audit)) {
+        httpAdmissionReasons.set(request, "denial_audit_failed");
         canonicalFailure(reply, dependencyUnavailable());
         return true;
       }
@@ -1691,15 +1737,13 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       // platform identity had no grant checked and gets the generic text (finding 2589).
       canonicalFailure(
         reply,
-        admission === undefined
-          ? dependencyUnavailable()
-          : failure(
-              403,
-              "FORBIDDEN",
-              admission.reason === "authorization_denied" && admission.unprovisioned !== true
-                ? NATIVE_ADMIN_DENIAL
-                : GENERIC_DENIAL,
-            ),
+        failure(
+          403,
+          "FORBIDDEN",
+          admission.reason === "authorization_denied" && admission.unprovisioned !== true
+            ? NATIVE_ADMIN_DENIAL
+            : GENERIC_DENIAL,
+        ),
       );
       return true;
     }
@@ -1804,7 +1848,13 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         return undefined;
       },
       onConnect: async () => {
-        await appendNativeAdminSocketAudit("connect", admission, { connectionId });
+        const connectAudit = appendNativeAdminSocketAudit("connect", admission, { connectionId });
+        nativeAdminPendingWork.add(connectAudit);
+        try {
+          await connectAudit;
+        } finally {
+          nativeAdminPendingWork.delete(connectAudit);
+        }
       },
       onClose: (cause: NativeAdminWebSocketCloseCause) => {
         const closeReason = nativeAdminShuttingDown ? "shutdown" : cause.reason;
@@ -1846,6 +1896,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
   });
   return {
     interceptHttp: interceptNativeAdminHttp,
+    httpAdmissionReason: (request: FastifyRequest) => httpAdmissionReasons.get(request),
     status: getNativeAdminStatus,
     resolveReturn: resolveNativeAdminReturn,
     launch,

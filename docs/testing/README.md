@@ -33,6 +33,7 @@ the Go version in [`go.mod`](../../go.mod), Git, and `tar`:
 
 ```sh
 pnpm install --frozen-lockfile
+pnpm cli:build
 ```
 
 Browser tests also need Chromium; see [browser setup](local.md#console-browser-checks).
