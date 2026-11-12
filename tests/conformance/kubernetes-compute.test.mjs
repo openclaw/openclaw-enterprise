@@ -37,6 +37,7 @@ import {
   gatewayRuntimeEntrypoint,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
+  compactNodeChildArguments,
   nodeProgramArguments,
   withoutLineComments,
 } from "../../apps/controller/src/drivers/compute/node-program.ts";
@@ -20156,17 +20157,27 @@ test(
     required: typeof require("node:fs").readFileSync };
 process.stdout.write(JSON.stringify(observed));
 process.exitCode = 3;`;
-    const pieces = nodeProgramArguments(program);
-    assert.ok(pieces.length > 2);
     assert.equal(spawnSync(process.execPath, ["-e", program]).error?.code, "E2BIG");
-    const loaded = spawnSync(process.execPath, ["-e", ...pieces], { encoding: "utf8" });
     const direct = spawnSync(process.execPath, ["-e", program.slice(padding.length)], {
       encoding: "utf8",
     });
-    assert.equal(loaded.stderr, "");
-    assert.deepEqual([loaded.status, loaded.stdout], [direct.status, direct.stdout]);
-    assert.deepEqual(JSON.parse(loaded.stdout), { argv: [], file: "[eval]", required: "function" });
-    assert.equal(loaded.status, 3);
+    for (const pack of [nodeProgramArguments, compactNodeChildArguments]) {
+      const [loader, ...pieces] = pack(program);
+      assert.ok(pieces.length > 1, pack.name);
+      assert.ok(
+        pieces.every((piece) => Buffer.byteLength(piece) <= 32 * 1024),
+        pack.name,
+      );
+      const loaded = spawnSync(process.execPath, ["-e", loader, ...pieces], { encoding: "utf8" });
+      assert.equal(loaded.stderr, "", pack.name);
+      assert.deepEqual([loaded.status, loaded.stdout], [direct.status, direct.stdout], pack.name);
+      assert.deepEqual(JSON.parse(loaded.stdout), {
+        argv: [],
+        file: "[eval]",
+        required: "function",
+      });
+      assert.equal(loaded.status, 3);
+    }
   },
 );
 

@@ -1,18 +1,12 @@
 # OpenShell SandboxDriver
 
-The Driver pairs its Gateway, dedicated Codex/native OpenClaw
-Harnesses, and [Kubernetes Compute](kubernetes-compute.md). OCC owns Agents,
-Agent revisions, Namespaces, routing, credentials, and authorization.
-
-Development supports dedicated native OpenClaw and Codex with
-[`v0.1.6`](https://github.com/NVIDIA/OpenShell/tree/v0.1.6) and the pinned OCE runtime.
-[Credential Gateway](openshell-credential-gateway.md) delivers model credentials;
-Agent revision providers supply node enrollment and Codex files. These APIs are
-unqualified for production.
-
-Embedded OpenClaw is unsupported. See native OpenClaw
-[containment facets](#openshell-containment-facets) and
-[qualification](#qualification-contract).
+For development, use [OpenShell v0.1.8](https://github.com/NVIDIA/OpenShell/tree/v0.1.8),
+the pinned OCE runtime, [Kubernetes Compute](kubernetes-compute.md) and dedicated
+Codex or native OpenClaw. Embedded OpenClaw is unsupported.
+OCC owns Agents, revisions, Namespaces, routing, credentials and authorization.
+The [Credential Gateway](openshell-credential-gateway.md) delivers model credentials.
+Revision providers supply node enrollment and Codex files.
+[Production qualification](#qualification-contract) remains open.
 
 Namespace-owned gateways use [setup](openshell-sandbox/namespace-gateway.md); Gateway settings below describe operator-owned gateways.
 
@@ -47,9 +41,8 @@ routing, and the per-Agent Gateway. Sandbox owns:
   removes the Workspace and configured resources before Compute deletes the
   Kubernetes namespace.
 
-Compute trusts OpenShell to enforce its Pod, but requires workload readiness and
-routing matching the running Agent revision ID before serving traffic. Each Agent revision stores only
-`sandboxDriverId`; workers resolve it for provisioning and cleanup.
+Compute requires workload readiness and routes matching the running Agent revision
+before serving traffic. Workers resolve its stored `sandboxDriverId` for provisioning and cleanup.
 
 ## OpenShell containment facets
 
@@ -142,8 +135,7 @@ Sandbox processes as the workload identity, normally `10001:10001`.
 The credential provider already configures TLS inspection for `api.openai.com`.
 An uninspected rule for that host conflicts.
 
-v0.1.6 requires unique network policy names and nonempty executable
-paths. `workspace-node-enrollment` is reserved. Options include `enforcement: enforce|audit`
+Use unique network policy names and nonempty executable paths. `workspace-node-enrollment` is reserved. Options include `enforcement: enforce|audit`
 and `access: read_only|read_write|full`. Omit `tls` for automatic TLS inspection;
 `tls: skip` bypasses inspection. The pinned gateway rejects explicit `terminate`
 and `passthrough`. An endpoint `protocol` is `tcp`, `rest`, `websocket`, `graphql` or
@@ -164,8 +156,8 @@ one existing `policy.networkPolicies` rule. Omission grants no artifact access.
 
 Selected rules require the bundled Codex executable paths, exact DNS hosts,
 port 443, `protocol: rest`, `enforcement: enforce` and `access: read_only`.
-Omit `tls`: stock OpenShell 0.1.6 verifies and inspects REST TLS by default;
-explicit skip and deprecated termination modes are refused. Wildcards, numeric
+Omit `tls` for verified REST TLS inspection. Admission refuses explicit skip and
+deprecated termination modes. Wildcards, numeric
 addresses, GitHub repository hosts, reserved names and credential/provider fields are refused.
 
 Admission freezes only that qualified map with empty Agent additions. Preparation
@@ -232,10 +224,6 @@ share that boundary. Kubernetes defaults to eight native workers;
 `runtime.nativeOpenClawSessionCapacity` accepts `1` through `1024`. Stopping a
 session releases its slot; idle workers are not retired automatically.
 
-[Harness providers and exposure](openshell-sandbox/harness-providers.md)
-covers credential attachments, the dedicated runtime providers and the
-create-time app-server exposure.
-
 ## Kubernetes and admission requirements
 
 OpenShell's trusted privileged components require an operator-installed RuntimeClass
@@ -245,15 +233,18 @@ ServiceAccounts, Namespaces, labels, and capabilities.
 
 ### Gateway Kubernetes authority
 
-Stock OpenShell v0.1.6 operator mode
-[watches Sandboxes cluster-wide](https://github.com/NVIDIA/OpenShell/blob/ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47/crates/openshell-driver-kubernetes/src/driver.rs#L5264-L5383).
+Stock OpenShell v0.1.8 operator mode
+[watches Sandboxes cluster-wide](https://github.com/NVIDIA/OpenShell/blob/f3d976590d3eb1379690a2abaf0f0e26c21d487d/crates/openshell-driver-kubernetes/src/driver.rs#L5819-L5831).
 Selectors filter discovery, not RBAC. Sandbox `list`/`watch` exposes Pod templates,
 literal values and Secret references, without granting Secret payload access.
 
-The [stock chart](https://github.com/NVIDIA/OpenShell/blob/ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47/deploy/helm/openshell/templates/clusterrole.yaml#L66-L99)
-also permits cluster-wide Sandbox/Pod mutations. Review rendered RBAC.
-Namespace labels/NetworkPolicies do not limit this authority.
-OCE does not support upstream's namespaced `shared` mode.
+The [operator ClusterRole](https://github.com/NVIDIA/OpenShell/blob/f3d976590d3eb1379690a2abaf0f0e26c21d487d/deploy/helm/openshell/templates/clusterrole.yaml#L67-L126)
+permits cluster-wide Sandbox and Pod mutations. The
+[0.1.8 Workspace Role](https://github.com/NVIDIA/OpenShell/blob/f3d976590d3eb1379690a2abaf0f0e26c21d487d/deploy/helm/openshell-workspace/templates/role.yaml#L39-L57)
+adds Pod create/delete/list/patch/watch and Service/NetworkPolicy create/get.
+The 0.1.6 operator ClusterRole already granted these verbs cluster-wide.
+Disabling sandbox updates, namespace labels and NetworkPolicies
+do not limit Kubernetes permissions. OCE requires operator mode.
 
 OCE controller/worker grants remain separate: Compute access, namespace-scoped
 policy apply and Gateway readiness, without Sandbox custom-resource permission.
@@ -276,8 +267,6 @@ and this scoping. See the
 [network profile reference](kubernetes-compute/networking-and-isolation.md#explicit-network-profiles).
 
 ## Qualification contract
-
-Local contracts are implemented; protected cluster proof remains.
 
 ### Workload identity
 
@@ -320,12 +309,11 @@ and `/tmp` `emptyDir` volumes limited to `1Gi` and `64Mi`.
 
 ### Remaining qualification work
 
-Production qualification is blocked until upstream OpenShell serves
-provider-advertised Harness traffic on a port separate from control-plane and
-management RPCs. OCE must then route Agent Gateways only to the service port and
-reserve the control-plane port for authenticated Sandbox and Credential Gateway
-callers. Real-cluster proof must show a model turn through the service port and
-rejection of Agent Gateway management operations.
+OpenShell's optional [supervisor application listener](https://github.com/NVIDIA/OpenShell/blob/f3d976590d3eb1379690a2abaf0f0e26c21d487d/docs/how-it-works/gateways/configuration.mdx#supervisor-application-listener)
+serves HTTP and WebSocket traffic on a separate port. OCE still needs routing to
+the owning supervisor and application authentication. Verify a real model turn
+there, deny management RPCs from Agent Gateways, and reserve control-plane
+access for authenticated Sandbox and Credential Gateway callers.
 
 OpenShell gateway authentication must bind each trusted control-plane caller to
 the requested Sandbox or Pod identity. Provider-managed files require real

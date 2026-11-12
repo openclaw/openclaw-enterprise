@@ -136,6 +136,7 @@
     "helpers/controlled-tls-origin-scenario.ts",
     "fixtures/runtime-native-worker-restart.ts",
     "fixtures/runtime-google-skill-policy.mts",
+    "fixtures/openshell-codex-command.ts",
     "fixtures/staging-qualification-seccomp-child.ts",
     "fixtures/codex-local-plugins/probe.ts",
     "fixtures/codex-local-plugins/enrollment.ts",

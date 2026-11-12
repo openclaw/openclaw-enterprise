@@ -151,8 +151,8 @@ function safeKubectlFailure(error, child, signal, nativeTag) {
 
 // The pinned Kubernetes driver, not policy.process, owns workload identity.
 // This k3d fixture leaves sandbox_uid/gid and OpenShift namespace ranges unset:
-// NVIDIA/OpenShell ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47
-// crates/openshell-driver-kubernetes/src/config.rs:425-455,731-758.
+// NVIDIA/OpenShell f3d976590d3eb1379690a2abaf0f0e26c21d487d
+// crates/openshell-driver-kubernetes/src/config.rs:476,754-785.
 export const OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY = Object.freeze({ uid: 10001, gid: 10001 });
 
 // Compute's dedicated Codex Harness categories: the workspace, generated images, and Codex
@@ -792,7 +792,7 @@ function openShellGatewayServiceName(namespace) {
   return `openshell-${openshellHash(namespace, 10)}`;
 }
 
-// OpenShell v0.1.6 runs a separate supervisor Pod per Sandbox; it (not the Harness workload) calls
+// OpenShell runs a separate supervisor Pod per Sandbox; it (not the Harness workload) calls
 // the gateway back. Mirrors internal/occdev/kubernetes.go and OpenShell sandbox_runtime.rs labels.
 export const openShellSupervisorLabels = Object.freeze({
   "openshell.ai/managed-by": "openshell",
@@ -916,7 +916,7 @@ export function createOpenShellKubernetesFixture({
   openShellHelmPath,
   openShellHelmChart,
   openShellWorkspaceHelmChart,
-  openShellChartVersion = "0.1.6",
+  openShellChartVersion = "0.1.8",
   commandTimeoutMs,
   signal,
 }) {
@@ -1639,7 +1639,7 @@ export function createOpenShellKubernetesFixture({
     assert.deepEqual(
       [...initCapabilities],
       [],
-      "OpenShell v0.1.6 must not add capabilities to workload Pod init containers.",
+      "OpenShell must not add capabilities to workload Pod init containers.",
     );
     const networkSidecar = pod.spec.containers.find(({ name }) =>
       ["openshell-network", "openshell-supervisor-network"].includes(name),
@@ -1647,7 +1647,7 @@ export function createOpenShellKubernetesFixture({
     assert.equal(
       networkSidecar,
       undefined,
-      "OpenShell v0.1.6 must keep its network supervisor outside the workload Pod.",
+      "OpenShell must keep its network supervisor outside the workload Pod.",
     );
     const container = pod.spec.containers.find(({ name }) => name === "agent");
     assert.ok(container, "the provider-owned Pod must contain its Agent container.");

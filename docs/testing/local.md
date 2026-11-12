@@ -47,6 +47,23 @@ pnpm cli:build
 node --test tests/integration/first-agent-startup.test.mjs
 ```
 
+## Check packaged OpenShell Workspace resources
+
+With Helm and `jq` installed, point the test at a directory containing the
+stock OpenShell `0.1.8` packages `helm-chart-0.1.8.tgz` and
+`openshell-workspace-0.1.8.tgz`.
+
+```sh
+OCC_TEST_OPENSHELL_STOCK_CHART_DIRECTORY=/path/to/stock/charts \
+  go test -count=1 -tags openshell_chart_integration ./internal/occdev \
+  -run '^TestOpenShellPackagedWorkspaceResources$'
+```
+
+The test checks both package versions and compares the Workspace chart rendered
+by the launcher with the quickstart resources, including RBAC and RoleBinding.
+The tagged run fails if its inputs are missing. It uses local files and Helm
+rendering without a cluster. The baseline Go lane runs without this build tag.
+
 ## Linting and formatting
 
 Use `pnpm lint:fix` and `pnpm format:fix` to apply fixes; review the diff and

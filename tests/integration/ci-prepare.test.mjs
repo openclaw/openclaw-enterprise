@@ -4009,7 +4009,7 @@ if (args[0] === "pull") {
       OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: immutableImage,
     };
     for (const [name, version] of [
-      ["stock", { OCC_TEST_OPENSHELL_CHART_VERSION: "0.1.6" }],
+      ["stock", { OCC_TEST_OPENSHELL_CHART_VERSION: "0.1.8" }],
       [
         "candidate",
         {
