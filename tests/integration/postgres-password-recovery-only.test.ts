@@ -17,12 +17,23 @@ import {
   googleUpgradeSettings,
   loginDenialCount,
   memoryLogger,
-  passwordSignIn,
   readAccount,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
-import { injectLocalhost } from "../helpers/inject-json.mjs";
+import {
+  account,
+  responseData,
+  events,
+  first,
+  injectLocalhost,
+  number,
+  passwordSignIn,
+  record,
+  response,
+  text,
+  type App,
+} from "../helpers/postgres-sign-in-test-boundaries.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
@@ -34,11 +45,17 @@ const strandedSubject = 8_100_002;
 const operatorSubject = 8_100_003;
 const googleMemberSubject = "118100000000000000001";
 
-const recoveryOnly = (settings) =>
+const recoveryOnly = (settings: Record<string, unknown>) =>
   Object.freeze({ ...settings, OCC_AUTH_PASSWORD_SIGN_IN: "recovery-only" });
-const providers = async (app) => (await app.inject({ url: "/api/auth/providers" })).json().data;
-const warnings = (log) =>
-  log.events.filter(({ event }) => event === "authentication.password-sign-in-warning");
+const providers = async (app: App) =>
+  responseData(await app.inject({ url: "/api/auth/providers" }));
+function stringArray(value: unknown): string[] {
+  assert.ok(Array.isArray(value));
+  return value.map((item: unknown) => text(item));
+}
+
+const warnings = (log: ReturnType<typeof memoryLogger>) =>
+  events(log.events).filter(({ event }) => event === "authentication.password-sign-in-warning");
 
 // OCC_AUTH_PASSWORD_SIGN_IN=recovery-only in the guarded profile: only the recovery account
 // signs in with a password; every other account uses its external identity. The provider
@@ -47,7 +64,11 @@ test(
   "recovery-only password sign-in admits only the recovery account's password",
   requiresPostgres,
   async (t) => {
-    let app;
+    let app: App | undefined;
+    const activeApp = () => {
+      assert.ok(app);
+      return app;
+    };
     const { pool, state, oidc, onboard, composeApp } = await preparePostgresSignInInstallation(
       t,
       () => [app],
@@ -67,7 +88,7 @@ test(
     const google = fakeGoogle(t, { clientId: googleClientId, clientSecret: googleClientSecret });
     const address = clientAddresses("198.20");
     // Password onboarding on the default install.
-    const { admin, roles, accounts } = await onboard({
+    const onboarded = await onboard({
       remoteAddress: address(),
       accounts: Object.fromEntries(
         ["member", "stranded", "disabled", "operator"].map((name) => [
@@ -80,11 +101,23 @@ test(
         ]),
       ),
     });
-    const { member, stranded, disabled, operator } = accounts;
-    let adminHeaders;
+    const admin = account(onboarded.admin);
+    const { roles } = onboarded;
+    const accounts = record(onboarded.accounts);
+    const member = account(accounts.member);
+    const stranded = account(accounts.stranded);
+    const disabled = account(accounts.disabled);
+    const operator = account(accounts.operator);
+    let adminHeaders: { cookie: string; origin: string };
 
-    async function attach(provider, account, subject) {
-      await assertProviderAttached(app, adminHeaders, account.id, provider, String(subject));
+    async function attach(provider: string, account: { id: string }, subject: string | number) {
+      await assertProviderAttached(
+        activeApp(),
+        adminHeaders,
+        account.id,
+        provider,
+        String(subject),
+      );
     }
 
     await t.test("the default setting keeps every enrolled account's password", async () => {
@@ -92,7 +125,7 @@ test(
       app = await composeApp(oidcUpgradeSettings(admin.id), {
         logger: log.logger,
       });
-      assert.deepEqual(await providers(app), {
+      assert.deepEqual(await providers(activeApp()), {
         oidc: true,
         oidcSignIn: {
           label: "single sign-on",
@@ -102,20 +135,22 @@ test(
         password: true,
         sessionBinding: true,
       });
-      adminHeaders = await signedInHeaders(app, origin, admin, address());
-      const signedIn = await passwordSignIn(app, origin, member, address());
+      adminHeaders = await signedInHeaders(activeApp(), origin, admin, address());
+      const signedIn = await passwordSignIn(activeApp(), origin, member, address());
       assert.equal(signedIn.statusCode, 200, signedIn.body);
       assert.deepEqual(warnings(log), [], "no warning without recovery-only");
       // The member and the operator get OIDC identities; the disabled account is switched off.
       await attach("oidc", member, memberSubject);
       await attach("oidc", operator, operatorSubject);
-      const changed = await changeAccount(app, adminHeaders, disabled.id, "disable");
+      const changed = response(
+        await changeAccount(activeApp(), adminHeaders, disabled.id, "disable"),
+      );
       assert.equal(changed.statusCode, 200, changed.body);
-      await app.close();
+      await activeApp().close();
       app = undefined;
     });
 
-    let log;
+    let log: ReturnType<typeof memoryLogger>;
     await t.test("startup warns about enabled accounts without an external identity", async () => {
       log = memoryLogger();
       app = await composeApp(recoveryOnly(oidcUpgradeSettings(admin.id)), {
@@ -125,11 +160,12 @@ test(
       // are not listed.
       const [warning, ...rest] = warnings(log);
       assert.deepEqual(rest, []);
+      assert.ok(warning);
       assert.equal(warning.severity, "WARN");
       assert.equal(warning.code, "EXTERNAL_IDENTITY_MISSING");
       assert.deepEqual(warning.skippedUserIds, [stranded.id]);
       assert.equal(warning.skippedUserCount, 1);
-      assert.deepEqual(await providers(app), {
+      assert.deepEqual(await providers(activeApp()), {
         oidc: true,
         oidcSignIn: {
           label: "single sign-on",
@@ -141,16 +177,16 @@ test(
       });
     });
 
-    const denials = () => loginDenialCount(state, "INVALID_CREDENTIALS");
+    const denials = async () => number(await loginDenialCount(state, "INVALID_CREDENTIALS"));
     await t.test("ordinary passwords get the bad-credential answer", async () => {
       const before = await denials();
       const unknown = { email: "recovery-only-nobody@example.test", password };
       const bodies = [];
       for (const account of [member, stranded, unknown, { ...member, password: "x".repeat(20) }]) {
-        const refused = await passwordSignIn(app, origin, account, address());
+        const refused = await passwordSignIn(activeApp(), origin, account, address());
         assert.equal(refused.statusCode, 401, account.email);
         assert.equal(refused.headers["set-cookie"], undefined);
-        const { error } = refused.json();
+        const error = record(record(refused.json()).error);
         bodies.push({ code: error.code, message: error.message });
       }
       // No answer distinguishes an existing account, or a right password, from anything else.
@@ -164,10 +200,10 @@ test(
       // audited failures, and the eleventh never reaches the password endpoint.
       const before = await denials();
       for (let attempt = 0; attempt < 10; attempt += 1) {
-        const refused = await passwordSignIn(app, origin, operator, address());
+        const refused = await passwordSignIn(activeApp(), origin, operator, address());
         assert.equal(refused.statusCode, 401, refused.body);
       }
-      const limited = await passwordSignIn(app, origin, operator, address());
+      const limited = await passwordSignIn(activeApp(), origin, operator, address());
       assert.equal(limited.statusCode, 429, limited.body);
       assert.equal(
         (await denials()) - before,
@@ -177,59 +213,68 @@ test(
     });
 
     await t.test("the recovery account still signs in with its password", async () => {
-      const signedIn = await passwordSignIn(app, origin, admin, address());
+      const signedIn = await passwordSignIn(activeApp(), origin, admin, address());
       assert.equal(signedIn.statusCode, 200, signedIn.body);
-      const cookie = await assertSessionUser(app, signedIn, admin.id);
+      const cookie = text(await assertSessionUser(activeApp(), signedIn, admin.id));
       assert.equal(
-        (await passwordSignIn(app, origin, { ...admin, password: "x".repeat(20) }, address()))
-          .statusCode,
+        (
+          await passwordSignIn(
+            activeApp(),
+            origin,
+            { ...admin, password: "x".repeat(20) },
+            address(),
+          )
+        ).statusCode,
         401,
       );
       adminHeaders = { cookie, origin };
     });
 
     await t.test("an ordinary account signs in with its OIDC identity", async () => {
-      const { callback } = await oidcSignIn(
-        app,
+      const login = await oidcSignIn(
+        activeApp(),
         origin,
         oidc,
         { subject: String(memberSubject) },
         address(),
       );
-      await assertConsoleSignIn(app, callback, member.id);
+      const callback = response(login.callback);
+      await assertConsoleSignIn(activeApp(), callback, member.id);
     });
 
     await t.test("attaching an identity unstrands an account without a restart", async () => {
-      const { callback } = await oidcSignIn(
-        app,
+      const login = await oidcSignIn(
+        activeApp(),
         origin,
         oidc,
         { subject: String(strandedSubject) },
         address(),
       );
+      const callback = response(login.callback);
       assert.equal(callback.headers.location, "/console/?authError=oidc");
       await attach("oidc", stranded, strandedSubject);
       const retried = await oidcSignIn(
-        app,
+        activeApp(),
         origin,
         oidc,
         { subject: String(strandedSubject) },
         address(),
       );
-      assert.equal(retried.callback.headers.location, "/console/", retried.callback.body);
+      const retriedCallback = response(retried.callback);
+      assert.equal(retriedCallback.headers.location, "/console/", retriedCallback.body);
       assert.equal(
-        (await passwordSignIn(app, origin, stranded, address())).statusCode,
+        (await passwordSignIn(activeApp(), origin, stranded, address())).statusCode,
         401,
         "the password stays refused",
       );
-      await app.close();
+      await activeApp().close();
       app = undefined;
       const restarted = memoryLogger();
       app = await composeApp(recoveryOnly(oidcUpgradeSettings(admin.id)), {
         logger: restarted.logger,
       });
       assert.deepEqual(warnings(restarted), [], "every enabled account has an identity");
-      await app.close();
+      await activeApp().close();
       app = undefined;
     });
 
@@ -240,28 +285,30 @@ test(
         logger: googleLog.logger,
       });
       const [warning] = warnings(googleLog);
+      assert.ok(warning);
       // State orders ids by database collation, which need not match JavaScript's sort.
       assert.deepEqual(
-        [...warning.skippedUserIds].sort(),
+        Array.from(stringArray(warning.skippedUserIds)).sort(),
         [member.id, stranded.id, operator.id].sort(),
       );
-      assert.deepEqual(await providers(app), {
+      assert.deepEqual(await providers(activeApp()), {
         oidc: false,
         google: true,
         password: false,
         sessionBinding: true,
       });
-      assert.equal((await passwordSignIn(app, origin, member, address())).statusCode, 401);
-      adminHeaders = await signedInHeaders(app, origin, admin, address());
+      assert.equal((await passwordSignIn(activeApp(), origin, member, address())).statusCode, 401);
+      adminHeaders = await signedInHeaders(activeApp(), origin, admin, address());
       await attach("google", member, googleMemberSubject);
-      const { callback } = await googleSignIn(
-        app,
+      const login = await googleSignIn(
+        activeApp(),
         origin,
         google,
         { subject: googleMemberSubject },
         address(),
       );
-      await assertConsoleSignIn(app, callback, member.id);
+      const callback = response(login.callback);
+      await assertConsoleSignIn(activeApp(), callback, member.id);
     });
     await t.test(
       "guarded and recovery-only expose unsupported stored email and preserve password and denial behavior",
@@ -270,43 +317,50 @@ test(
         const storedEmail = "legacy-recovery-\ufffd@example.test";
         const supportedEmail = "supported-legacy-recovery@example.test";
         const legacyPassword = "legacy-password-\u0000-\ud800-\ufffd";
-        const headers = await signedInHeaders(app, origin, admin, address());
-        const { id: userId } = await createAccount(app, headers, {
-          email: supportedEmail,
-          password: legacyPassword,
-          roleId: roles.admin.id,
-        });
-        const target = await readAccount(app, headers, userId);
-        const recovery = await app.inject({ url: "/api/auth/recovery", headers });
+        const headers = await signedInHeaders(activeApp(), origin, admin, address());
+        const userId = text(
+          (
+            await createAccount(activeApp(), headers, {
+              email: supportedEmail,
+              password: legacyPassword,
+              roleId: roles.admin.id,
+            })
+          ).id,
+        );
+        const target = record(await readAccount(activeApp(), headers, userId));
+        const recovery = await activeApp().inject({ url: "/api/auth/recovery", headers });
         assert.equal(recovery.statusCode, 200, recovery.body);
-        const replaced = await injectLocalhost(app, "POST", "/api/auth/recovery", {
+        const replaced = await injectLocalhost(activeApp(), "POST", "/api/auth/recovery", {
           session: headers,
           body: {
             userId,
-            expectedCurrentUserId: recovery.json().data.userId,
+            expectedCurrentUserId: record(responseData(recovery)).userId,
             expectedVersion: target.version,
           },
         });
         assert.equal(replaced.statusCode, 200, replaced.body);
-        await app.close();
+        await activeApp().close();
         app = undefined;
         // Seed the historical text encoding through PostgreSQL, keeping the API-created
         // recovery identity and password method. Authentication and audit remain production code.
         await pool.query('UPDATE occ."user" SET email = $1 WHERE id = $2', [legacyEmail, userId]);
 
-        const stored = await pool.query('SELECT email FROM occ."user" WHERE id = $1', [userId]);
-        assert.equal(stored.rows[0].email, storedEmail);
+        const stored = await pool.query<{ email: string }>(
+          'SELECT email FROM occ."user" WHERE id = $1',
+          [userId],
+        );
+        assert.equal(first(stored.rows).email, storedEmail);
         for (const settings of [
           oidcUpgradeSettings(userId),
           recoveryOnly(oidcUpgradeSettings(userId)),
         ]) {
           app = await composeApp(settings);
-          const sessionsBefore = await pool.query(
+          const sessionsBefore = await pool.query<{ count: number }>(
             "SELECT count(*)::int AS count FROM occ.session WHERE user_id = $1",
             [userId],
           );
           const accepted = await passwordSignIn(
-            app,
+            activeApp(),
             origin,
             { email: storedEmail, password: legacyPassword },
             address(),
@@ -314,21 +368,26 @@ test(
           assert.equal(accepted.statusCode, 200, accepted.body);
           const cookie = cookieHeaderFromSetCookie(accepted.headers["set-cookie"]);
           assert.ok(cookie, "the guarded credential endpoint issued a session cookie");
-          const sessionsAfter = await pool.query(
+          const sessionsAfter = await pool.query<{ count: number }>(
             "SELECT count(*)::int AS count FROM occ.session WHERE user_id = $1",
             [userId],
           );
-          assert.equal(sessionsAfter.rows[0].count, sessionsBefore.rows[0].count + 1);
+          assert.equal(first(sessionsAfter.rows).count, first(sessionsBefore.rows).count + 1);
           // Credential admission is not usable Console access: the existing session
           // response contract rejects this unsupported stored email spelling.
-          const unsupportedSession = await injectLocalhost(app, "GET", "/api/auth/session", {
-            headers: { cookie },
-          });
+          const unsupportedSession = await injectLocalhost(
+            activeApp(),
+            "GET",
+            "/api/auth/session",
+            {
+              headers: { cookie },
+            },
+          );
           assertApiError(unsupportedSession, 500, "INTERNAL_ERROR");
-          assert.equal(unsupportedSession.json().data, undefined);
+          assert.equal(responseData(unsupportedSession), undefined);
           const before = await denials();
           for (const email of [legacyEmail, "recovery-nul\u0000@example.test"]) {
-            const refused = await injectLocalhost(app, "POST", "/api/auth/sign-in/email", {
+            const refused = await injectLocalhost(activeApp(), "POST", "/api/auth/sign-in/email", {
               remoteAddress: address(),
               session: { cookie, origin },
               body: { email, password: legacyPassword },
@@ -337,7 +396,7 @@ test(
             assert.equal(refused.headers["set-cookie"], undefined);
           }
           assert.equal(await denials(), before + 2);
-          await app.close();
+          await activeApp().close();
           app = undefined;
           // This direct SQL change is fixture preparation, not a supported account
           // repair operation. Prove the identical password on a supported address.
@@ -347,14 +406,14 @@ test(
           ]);
           app = await composeApp(settings);
           const ordinary = await passwordSignIn(
-            app,
+            activeApp(),
             origin,
             { email: supportedEmail, password: legacyPassword },
             address(),
           );
           assert.equal(ordinary.statusCode, 200, ordinary.body);
-          await assertSessionUser(app, ordinary, userId);
-          await app.close();
+          await assertSessionUser(activeApp(), ordinary, userId);
+          await activeApp().close();
           app = undefined;
           await pool.query('UPDATE occ."user" SET email = $1 WHERE id = $2', [storedEmail, userId]);
         }

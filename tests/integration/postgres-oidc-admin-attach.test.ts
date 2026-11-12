@@ -2,23 +2,31 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { assertApiError } from "../helpers/api-error.mjs";
 import {
-  accountPrincipalId,
   assertConsoleSignIn,
-  changeAccount,
   clientAddresses,
   consoleOrigin as origin,
-  createAccount,
   currentSession,
-  oidcSignIn,
   oidcUpgradeSettings,
-  passwordSignIn,
-  readAccount,
-  signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
-import { injectLocalhost } from "../helpers/inject-json.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
+import {
+  onboarded,
+  readAccount,
+  type SignInApp,
+  accountPrincipalId,
+  changeAccount,
+  createAccount,
+  oidcSignIn,
+  passwordSignIn,
+  signedInHeaders,
+  injectLocalhost,
+  recordData,
+  record,
+  integer,
+  type SessionHeaders,
+} from "../helpers/postgres-sign-in-test-boundaries.ts";
 
 const password = "attach-member-password";
 const adminSubject = "9100001";
@@ -30,10 +38,10 @@ test(
   "Installation administrators attach, detach and re-attach OIDC identities and disable accounts",
   requiresPostgres,
   async (t) => {
-    let app;
+    const apps: SignInApp[] = [];
     const { pool, state, oidc, onboard, composeApp } = await preparePostgresSignInInstallation(
       t,
-      () => [app],
+      () => apps,
       {
         oidc: true,
         email: "attach-recovery@example.test",
@@ -45,43 +53,54 @@ test(
         },
       },
     );
+    assert.ok(oidc);
+    const provider = oidc;
     const address = clientAddresses();
     // Password onboarding on the default install: a second administrator and a reader.
     const {
       admin,
       roles,
       accounts: { second, member },
-    } = await onboard({
-      remoteAddress: address(),
-      accounts: {
-        second: { email: "attach-second@example.test", role: "admin" },
-        member: { email: "attach-member@example.test" },
-      },
-    });
-    let adminHeaders;
-    app = await composeApp(oidcUpgradeSettings(admin.id));
-    const attach = (headers, userId, subject, expectedVersion) =>
+    } = onboarded(
+      await onboard({
+        remoteAddress: address(),
+        accounts: {
+          second: { email: "attach-second@example.test", role: "admin" },
+          member: { email: "attach-member@example.test" },
+        },
+      }),
+      ["second", "member"],
+    );
+    let adminHeaders: SessionHeaders;
+    const app = await composeApp(oidcUpgradeSettings(admin.id));
+    apps.push(app);
+    const attach = (
+      headers: Record<string, string>,
+      userId: string,
+      subject: string,
+      expectedVersion: number,
+    ) =>
       injectLocalhost(app, "POST", `/api/auth/accounts/${userId}/providers/oidc`, {
         headers,
         body: { subject, expectedVersion },
       });
-    const change = (userId, operation, expectedVersion) =>
+    const change = (userId: string, operation: string, expectedVersion: number) =>
       changeAccount(app, adminHeaders, userId, operation, expectedVersion);
-    async function assertOIDCSignIn(subject, userId) {
+    async function assertOIDCSignIn(subject: string, userId: string) {
       const { callback } = await oidcSignIn(
         app,
         origin,
-        oidc,
+        provider,
         { subject: String(subject) },
         address(),
       );
       return assertConsoleSignIn(app, callback, userId);
     }
-    async function assertOIDCRefused(subject, consoleReason) {
+    async function assertOIDCRefused(subject: string, consoleReason?: string) {
       const { callback } = await oidcSignIn(
         app,
         origin,
-        oidc,
+        provider,
         { subject: String(subject) },
         address(),
       );
@@ -135,7 +154,7 @@ test(
       adminHeaders = await signedInHeaders(app, origin, admin, address());
     });
 
-    let secondOIDCCookie;
+    let secondOIDCCookie: string;
     await t.test(
       "a second administrator attaches their own identity; taken and unauthorized attaches are refused",
       async () => {
@@ -147,11 +166,13 @@ test(
         secondOIDCCookie = await assertOIDCSignIn(secondSubject, second.id);
         // A OIDC session carries the account's Installation authority.
         assert.equal(
-          (
-            await injectLocalhost(app, "GET", "/api/auth/recovery", {
-              session: { cookie: secondOIDCCookie, origin },
-            })
-          ).json().data.userId,
+          recordData(
+            (
+              await injectLocalhost(app, "GET", "/api/auth/recovery", {
+                session: { cookie: secondOIDCCookie, origin },
+              })
+            ).json(),
+          ).userId,
           admin.id,
         );
 
@@ -160,7 +181,7 @@ test(
         // One OIDC identity signs in to one account. The conflict is named: the caller is an
         // Installation administrator, who can already list every account's sign-in methods.
         assert.equal(taken.statusCode, 409, "one OIDC identity signs in to one account");
-        assert.deepEqual(taken.json().error, {
+        assert.deepEqual(record(taken.json()).error, {
           code: "RESOURCE_CONFLICT",
           message: "The external identity is already assigned.",
         });
@@ -183,7 +204,9 @@ test(
         const account = await readAccount(app, adminHeaders, second.id);
         const credential = account.methods.find(({ providerId }) => providerId === "credential");
         const external = account.methods.find(({ providerId }) => providerId !== "credential");
-        const detach = (methodId, version) =>
+        assert.ok(credential);
+        assert.ok(external);
+        const detach = (methodId: string, version: number) =>
           change(second.id, `methods/${methodId}/detach`, version);
         assert.equal(
           (await detach(credential.methodId, account.version)).statusCode,
@@ -264,7 +287,7 @@ test(
         .filter(({ action }) =>
           /^authentication\.(method\.(attach|detach)|account\.(disable|enable))$/.test(action),
         )
-        .map(({ action, actorId, details }) => [action, actorId, details.userId]);
+        .map(({ action, actorId, details }) => [action, actorId, record(details).userId]);
       assert.deepEqual(audits, [
         ["authentication.method.attach", adminPrincipal, admin.id],
         ["authentication.method.attach", secondPrincipal, second.id],
@@ -284,13 +307,16 @@ test(
         const external = adminAccount.methods.find(({ providerId }) => providerId !== "credential");
         assert.ok(external);
         const users = async () =>
-          (await pool.query('SELECT count(*)::int AS count FROM occ."user"')).rows[0].count;
+          integer(
+            (await pool.query<{ count: unknown }>('SELECT count(*)::int AS count FROM occ."user"'))
+              .rows[0]?.count,
+          );
         const usersBefore = await users();
-        const recoveryBefore = (
-          await app.inject({ url: "/api/auth/recovery", headers: adminHeaders })
-        ).json().data;
+        const recoveryBefore = recordData(
+          (await app.inject({ url: "/api/auth/recovery", headers: adminHeaders })).json<unknown>(),
+        );
         const version = adminAccount.version;
-        const requests = [
+        const requests: Array<["GET" | "POST", string, Record<string, unknown>?]> = [
           ["GET", `/api/auth/accounts/${admin.id}`],
           ["GET", `/api/auth/accounts/${member.id}`],
           [
@@ -334,14 +360,23 @@ test(
           ],
         ];
         for (const [method, url, payload] of requests) {
-          const refused = await app.inject({ method, url, headers: memberHeaders, payload });
+          const refused = await app.inject({
+            method,
+            url,
+            headers: memberHeaders,
+            ...(payload === undefined ? {} : { payload }),
+          });
           assertApiError(refused, 403, "FORBIDDEN", `${method} ${url}`);
         }
         assert.deepEqual(await readAccount(app, adminHeaders, admin.id), adminAccount);
         assert.deepEqual(await readAccount(app, adminHeaders, member.id), memberAccount);
         assert.equal(await users(), usersBefore);
         assert.deepEqual(
-          (await app.inject({ url: "/api/auth/recovery", headers: adminHeaders })).json().data,
+          recordData(
+            (
+              await app.inject({ url: "/api/auth/recovery", headers: adminHeaders })
+            ).json<unknown>(),
+          ),
           recoveryBefore,
         );
         assert.ok(
@@ -356,7 +391,7 @@ test(
     await t.test(
       "concurrent OIDC attaches return retryable contention, then an identity conflict",
       async () => {
-        const createReader = (email) =>
+        const createReader = (email: string) =>
           createAccount(app, adminHeaders, { email, password, roleId: roles.reader.id });
         const third = await createReader("attach-third@example.test");
         // The blocking row's owner is locked by neither attach: its foreign key share
@@ -364,13 +399,17 @@ test(
         const bystander = await createReader("attach-bystander@example.test");
         const secondHeaders = await signedInHeaders(app, origin, second, address());
         const racedSubject = "9100004";
-        const { providerId } = (await readAccount(app, adminHeaders, admin.id)).methods.find(
+        const method = (await readAccount(app, adminHeaders, admin.id)).methods.find(
           (method) => method.subject === adminSubject,
         );
-        const targets = [member, third];
+        assert.ok(method);
+        const { providerId } = method;
+        const targets = [member, third] as const;
         const before = await Promise.all(
           targets.map((target) => readAccount(app, adminHeaders, target.id)),
         );
+        assert.ok(before[0]);
+        assert.ok(before[1]);
         const targetCookies = await Promise.all(
           targets.map(
             async (target) => (await signedInHeaders(app, origin, target, address())).cookie,
@@ -379,10 +418,12 @@ test(
         // Hold the first attach at the unique identity insert while it retains its
         // authorization fence. A second administrator must retry rather than queue behind it.
         const blocker = await pool.connect();
-        let firstAttach;
+        let firstAttach: Promise<Awaited<ReturnType<typeof attach>>> | undefined;
         try {
           await blocker.query("BEGIN");
-          const blockerPid = (await blocker.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+          const blockerPid = integer(
+            (await blocker.query<{ pid: unknown }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid,
+          );
           await blocker.query(
             `INSERT INTO occ.account (id, account_id, provider_id, user_id, created_at, updated_at, identity_only)
              VALUES ('race-blocker', $1, $2, $3, clock_timestamp(), clock_timestamp(), true)`,
@@ -406,12 +447,13 @@ test(
           await blocker.query("ROLLBACK");
           blocker.release();
         }
+        assert.ok(firstAttach);
         const attached = await firstAttach;
         assert.equal(attached.statusCode, 200, attached.body);
         // Once contention clears, the retry must observe the identity's committed owner.
         const conflict = await attach(secondHeaders, third.id, racedSubject, before[1].version);
         assert.equal(conflict.statusCode, 409, conflict.body);
-        assert.deepEqual(conflict.json().error, {
+        assert.deepEqual(record(conflict.json()).error, {
           code: "RESOURCE_CONFLICT",
           message: "The external identity is already assigned.",
         });
@@ -427,10 +469,10 @@ test(
         const raceAudits = (await state.transact((unit) => unit.audit.list())).filter(
           ({ action, details }) =>
             action === "authentication.method.attach" &&
-            targets.some(({ id }) => id === details.userId),
+            targets.some(({ id }) => id === record(details).userId),
         );
         assert.deepEqual(
-          raceAudits.map(({ actorId, details }) => [actorId, details.userId]),
+          raceAudits.map(({ actorId, details }) => [actorId, record(details).userId]),
           [[await accountPrincipalId(pool, admin.id), member.id]],
         );
         await assertOIDCSignIn(racedSubject, member.id);

@@ -12,13 +12,21 @@ import {
   currentSession,
   defaultInstallSettings,
   installationRoles,
-  passwordSignIn,
-  postgresSignInState,
   productionSignInConfiguration,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
-import { injectLocalhost } from "../helpers/inject-json.mjs";
+import {
+  app as validatedApp,
+  responseData,
+  first,
+  injectLocalhost,
+  passwordSignIn,
+  postgresState,
+  record,
+  text,
+  type App,
+} from "../helpers/postgres-sign-in-test-boundaries.ts";
 import { testPasswordHasher } from "../helpers/password-hasher.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
@@ -34,44 +42,48 @@ test(
   "a password-only install onboards, signs in and out, and refuses external sign-in",
   requiresPostgres,
   async (t) => {
-    let app;
-    const { pool } = postgresSignInState(t, () => [app]);
+    const apps: { app?: App } = {};
+    const { pool } = postgresState(t, () => [apps.app]);
     const adminPassword = await bootstrapProductionInstallation(t, {
       databaseUrl,
       email: adminEmail,
       authSecret,
     });
-    app = await composeProductionSignIn(t, {
+    const app = (apps.app = await composeProductionSignIn(t, {
       databaseUrl,
+      passwordHasher: undefined,
       settings: defaultInstallSettings,
       secrets: { "occ-auth/secret": authSecret },
-    });
+    }));
     await app.ready();
 
     const providers = await app.inject({ url: "/api/auth/providers" });
     assert.equal(providers.statusCode, 200);
-    assert.deepEqual(providers.json().data, {
+    assert.deepEqual(responseData(providers), {
       google: false,
       oidc: false,
       password: true,
       sessionBinding: false,
     });
 
-    const signIn = (email, password, remoteAddress) =>
+    const signIn = (email: string, password: string, remoteAddress?: string) =>
       passwordSignIn(app, origin, { email, password }, remoteAddress);
-    const sessionOf = (cookie) => currentSession(app, cookie);
+    const sessionOf = async (cookie: string) => {
+      const value: unknown = await currentSession(app, cookie);
+      return value;
+    };
     const adminHeaders = () =>
       signedInHeaders(app, origin, { email: adminEmail, password: adminPassword });
 
     await t.test("the bootstrap administrator signs in with the generated password", async () => {
       const response = await signIn(adminEmail, adminPassword);
       assert.equal(response.statusCode, 200, response.body);
-      assert.equal(response.json().data.authenticated, true);
+      assert.equal(record(responseData(response)).authenticated, true);
       const cookie = cookieHeaderFromSetCookie(response.headers["set-cookie"]);
-      assert.equal((await sessionOf(cookie)).user.email, adminEmail);
+      assert.equal(record(record(await sessionOf(cookie)).user).email, adminEmail);
     });
 
-    let member;
+    let member: { id: string; email: string };
     await t.test("the administrator creates a password account with the exact Origin", async () => {
       const headers = await adminHeaders();
       const { reader: role } = await installationRoles(new PostgresPlatformState(pool), pool);
@@ -91,7 +103,8 @@ test(
         body: payload,
       });
       assert.equal(created.statusCode, 201, created.body);
-      member = created.json().data;
+      const createdAccount = record(responseData(created));
+      member = { id: text(createdAccount.id), email: text(createdAccount.email) };
       assert.equal(member.email, memberEmail);
       const withGitHub = await injectLocalhost(app, "POST", "/api/auth/accounts", {
         session: headers,
@@ -108,12 +121,16 @@ test(
       const response = await signIn(memberEmail, memberPassword);
       assert.equal(response.statusCode, 200, response.body);
       const cookie = cookieHeaderFromSetCookie(response.headers["set-cookie"]);
-      assert.equal((await sessionOf(cookie)).user.id, member.id);
+      assert.equal(record(record(await sessionOf(cookie)).user).id, member.id);
       for (const headers of [{ cookie }, { cookie, origin: "https://attacker.example.test" }]) {
         const refused = await app.inject({ method: "POST", url: "/api/auth/sign-out", headers });
         assert.equal(refused.statusCode, 403, refused.body);
         assert.equal(refused.headers["set-cookie"], undefined);
-        assert.equal((await sessionOf(cookie)).user.id, member.id, "the session stays current");
+        assert.equal(
+          record(record(await sessionOf(cookie)).user).id,
+          member.id,
+          "the session stays current",
+        );
       }
       const signedOut = await injectLocalhost(app, "POST", "/api/auth/sign-out", {
         session: { cookie, origin },
@@ -139,6 +156,7 @@ test(
       assert.equal(unknown.statusCode, 401, unknown.body);
       const recorded = (await logins()).slice(before);
       const installation = await state.loadInstallation();
+      assert.ok(installation);
       const principal = (await state.loadNativeIAMState(installation.id)).identities.find(
         (identity) => identity.kind === "principal" && identity.subject === member.id,
       );
@@ -173,9 +191,10 @@ test(
       assert.ok(!stored.includes("nobody@example.test"));
       assert.ok(!stored.includes("wrong-member-password"));
       assert.deepEqual(
-        warn.mock.calls.filter(({ arguments: [message] }) =>
-          String(message).includes("[Better Auth]"),
-        ),
+        warn.mock.calls.filter((call) => {
+          const message: unknown = call.arguments[0];
+          return String(message).includes("[Better Auth]");
+        }),
         [],
       );
     });
@@ -187,10 +206,14 @@ test(
         const memberSession = cookieHeaderFromSetCookie(
           (await signIn(memberEmail, memberPassword)).headers["set-cookie"],
         );
-        const requests = [
+        const requests: {
+          method: "GET" | "POST";
+          url: string;
+          payload?: Record<string, unknown>;
+        }[] = [
           { method: "GET", url: `/api/auth/accounts/${member.id}` },
           ...["disable", "enable", "revoke"].map((operation) => ({
-            method: "POST",
+            method: "POST" as const,
             url: `/api/auth/accounts/${member.id}/${operation}`,
             payload: { expectedVersion: 1 },
           })),
@@ -205,21 +228,32 @@ test(
         for (const request of requests) {
           const response = await app.inject({ ...request, headers });
           assertApiError(response, 409, "RESOURCE_CONFLICT", request.url);
-          assert.match(response.json().error.message, /password-only/);
+          assert.match(
+            text(record(record(response.json<unknown>()).error).message),
+            /password-only/,
+          );
           const untrusted = await app.inject({ ...request, headers: { cookie: headers.cookie } });
           assert.equal(untrusted.statusCode, 403, "the Origin check still precedes the profile");
         }
-        assert.equal((await sessionOf(memberSession)).user.id, member.id, "nothing was revoked");
+        assert.equal(
+          record(record(await sessionOf(memberSession)).user).id,
+          member.id,
+          "nothing was revoked",
+        );
       },
     );
 
     await t.test("unconfigured external routes refuse without contacting a provider", async () => {
       let providerCalls = 0;
       const originalFetch = globalThis.fetch;
-      t.mock.method(globalThis, "fetch", (input, init) => {
-        providerCalls += 1;
-        return originalFetch(input, init);
-      });
+      t.mock.method(
+        globalThis,
+        "fetch",
+        (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+          providerCalls += 1;
+          return originalFetch(input, init);
+        },
+      );
       const { cookie } = await adminHeaders();
       for (const provider of ["google", "oidc"]) {
         const start = await injectLocalhost(app, "POST", `/api/auth/providers/${provider}/start`, {
@@ -243,8 +277,13 @@ test(
       }
       assert.equal(providerCalls, 0);
       assert.equal(
-        (await pool.query("SELECT count(*)::int AS count FROM occ.human_authentication_recovery"))
-          .rows[0].count,
+        first(
+          (
+            await pool.query<{ count: number }>(
+              "SELECT count(*)::int AS count FROM occ.human_authentication_recovery",
+            )
+          ).rows,
+        ).count,
         0,
         "the password-only profile never activates external sign-in",
       );
@@ -265,7 +304,7 @@ test(
         "a wrong administrator password is refused",
       );
       // These failures stay under the password-only profile's limits
-      // (postgres-password-sign-in-limit.test.mjs); what it must never do is lock the only
+      // (postgres-password-sign-in-limit.test.ts); what it must never do is lock the only
       // administrator out.
       const admin = await signIn(adminEmail, adminPassword, guesser);
       assert.equal(admin.statusCode, 200, admin.body);
@@ -282,36 +321,49 @@ test(
         // Reproduce a previously accepted account's encoding with the real PostgreSQL
         // parameter path; the API now rejects malformed input before it reaches State.
         const headers = await adminHeaders();
-        const { id: userId } = await createAccount(app, headers, {
-          email: "supported-legacy-default@example.test",
-          password: legacyPassword,
-        });
+        const userId = text(
+          (
+            await createAccount(app, headers, {
+              email: "supported-legacy-default@example.test",
+              password: legacyPassword,
+              roleId: undefined,
+            })
+          ).id,
+        );
         await pool.query('UPDATE occ."user" SET email = $1 WHERE id = $2', [legacyEmail, userId]);
 
-        const stored = await pool.query('SELECT email FROM occ."user" WHERE id = $1', [userId]);
-        assert.equal(stored.rows[0].email, storedEmail);
+        const stored = await pool.query<{ email: string }>(
+          'SELECT email FROM occ."user" WHERE id = $1',
+          [userId],
+        );
+        assert.equal(first(stored.rows).email, storedEmail);
         // Better Auth's existing password-only validator rejects this stored spelling.
         // The SQL assertion above proves encoding, not successful account access.
         const unsupported = await signIn(storedEmail, legacyPassword);
         assertApiError(unsupported, 400, "FORBIDDEN");
         assert.equal(unsupported.headers["set-cookie"], undefined);
-        const sessions = await pool.query(
+        const sessions = await pool.query<{ count: number }>(
           "SELECT count(*)::int AS count FROM occ.session WHERE user_id = $1",
           [userId],
         );
-        assert.equal(sessions.rows[0].count, 0);
+        assert.equal(first(sessions.rows).count, 0);
 
         // The identical unusual password remains usable with a supported email address.
         const ordinaryEmail = "ordinary-unusual-default@example.test";
-        const { id: ordinaryId } = await createAccount(app, headers, {
-          email: ordinaryEmail,
-          password: legacyPassword,
-        });
+        const ordinaryId = text(
+          (
+            await createAccount(app, headers, {
+              email: ordinaryEmail,
+              password: legacyPassword,
+              roleId: undefined,
+            })
+          ).id,
+        );
 
         const accepted = await signIn(ordinaryEmail, legacyPassword);
         assert.equal(accepted.statusCode, 200, accepted.body);
         const cookie = cookieHeaderFromSetCookie(accepted.headers["set-cookie"]);
-        assert.equal((await sessionOf(cookie)).user.id, ordinaryId);
+        assert.equal(record(record(await sessionOf(cookie)).user).id, ordinaryId);
         const state = new PostgresPlatformState(pool);
         const denials = async () =>
           (await state.transact((unit) => unit.audit.list())).filter(
@@ -337,14 +389,21 @@ test(
         // api-startup.mjs composes from its configuration alone. A hasher placed in that
         // configuration, as a parsed setting would be, is ignored: only the code-only
         // dependencies argument (which the server never passes) replaces scrypt.
-        const production = await composeProduction({
+        const configuration = {
           ...(await productionSignInConfiguration(t, {
             databaseUrl,
+            iamConfiguration: undefined,
+            logger: undefined,
+            metrics: undefined,
+            passwordSlowLaneFloors: undefined,
             settings: defaultInstallSettings,
             secrets: { "occ-auth/secret": authSecret },
           })),
           passwordHasher: testPasswordHasher,
-        });
+        };
+        const production = validatedApp(
+          await Reflect.apply(composeProduction, undefined, [configuration]),
+        );
         t.after(() => production.close());
         const email = "password-default-scrypt@example.test";
         const password = "password-default-scrypt-password";
@@ -353,23 +412,31 @@ test(
           password: adminPassword,
         });
         const { reader: role } = await installationRoles(new PostgresPlatformState(pool), pool);
-        const { id: userId } = await createAccount(production, headers, {
-          email,
-          password,
-          roleId: role.id,
-        });
-        const adminId = (await currentSession(production, headers.cookie)).user.id;
+        const userId = text(
+          (
+            await createAccount(production, headers, {
+              email,
+              password,
+              roleId: role.id,
+            })
+          ).id,
+        );
+        const adminId = text(
+          record(record(await currentSession(production, headers.cookie)).user).id,
+        );
         // The initialization Job's administrator (scripts/bootstrap-installation.mjs) and an
         // account the API created: both stored as Better Auth's `<salt>:<key>` scrypt hash.
         for (const [id, secret] of [
           [adminId, adminPassword],
           [userId, password],
-        ]) {
-          const stored = await pool.query(
+        ] as const) {
+          const stored = await pool.query<{ password: string }>(
             "SELECT password FROM occ.account WHERE user_id = $1 AND provider_id = 'credential'",
             [id],
           );
-          const [salt, key, ...rest] = stored.rows[0].password.split(":");
+          const [salt, key, ...rest] = first(stored.rows).password.split(":");
+          assert.ok(salt !== undefined);
+          assert.ok(key !== undefined);
           assert.match(salt, /^[0-9a-f]{32}$/);
           assert.match(key, /^[0-9a-f]{128}$/);
           assert.deepEqual(rest, []);
@@ -393,11 +460,11 @@ test(
         const refused = await passwordSignIn(production, origin, { email, password });
         assert.equal(refused.statusCode, 401, refused.body);
         // The fixtures' app above hashed with their cheap hasher (password-hasher.mjs).
-        const fixtureHash = await pool.query(
+        const fixtureHash = await pool.query<{ password: string }>(
           "SELECT password FROM occ.account WHERE user_id = $1 AND provider_id = 'credential'",
           [member.id],
         );
-        assert.match(fixtureHash.rows[0].password, /^test-sha256:/);
+        assert.match(first(fixtureHash.rows).password, /^test-sha256:/);
       },
     );
   },

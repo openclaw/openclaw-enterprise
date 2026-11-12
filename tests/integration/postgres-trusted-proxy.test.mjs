@@ -132,6 +132,6 @@ test(
       assert.equal((await read(outsider, { forwarded: "for=1.2.3.4" })).statusCode, 403);
     });
 
-    // postgres-password-sign-in-limit.test.mjs proves the same keying with Google off.
+    // postgres-password-sign-in-limit.test.ts proves the same keying with Google off.
   },
 );
