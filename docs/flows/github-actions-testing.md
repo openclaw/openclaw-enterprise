@@ -191,7 +191,7 @@ preparation defaults, `file.env`, then generated values; later values win.
 `scripts/ci/prepare.mjs:prepareFile` separates defaults and outputs.
 For OpenShell model selectors, `validateLaneInputsBeforeSideEffects` reads the
 manifest entry; `runFile` forwards inputs with `file.env` precedence.
-Whole OpenShell lanes require each selected file’s credentials before setup.
+Unfocused `openshell`, `openshell-policy` and `openshell-installers` require both credentials before setup.
 `scripts/k3d` scopes preparation with `--selected-file`.
 Custom-destination/provider-file guards remain; other file values do not affect preparation.
 
