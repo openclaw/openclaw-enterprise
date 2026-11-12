@@ -131,7 +131,7 @@ export const callbackState = "s".repeat(43);
  */
 export function providerInstanceId(
   kind: ExternalProviderName,
-  { clientId, issuer }: { clientId: string; issuer?: string },
+  { clientId, issuer }: { clientId: string; issuer?: string | undefined },
 ) {
   assert.ok(["google", "oidc"].includes(kind), "unknown provider kind");
   assert.equal(issuer === undefined, kind !== "oidc", "only OIDC instances include the issuer");
