@@ -73,8 +73,11 @@ It must name a ready, owned, non-template `openclaw_k8s_*` database recorded in
 `127.0.0.1` port. A separately created database or a `localhost` alias does not
 meet this fixture's ownership check. Select the matching prepared cluster with
 `OCC_TEST_KUBERNETES_KUBECONFIG` and `OCC_TEST_KUBERNETES_CONTEXT`. The selected
-cluster and local Docker context must match that state and remain exclusively
+cluster and local Docker daemon must match that state and remain exclusively
 reserved for this run.
+Use the model/routing preparation path so PostgreSQL is already attached to the
+selected cluster's network. This case verifies that prepared attachment by its
+container and network IDs; its preparation owner retains it through teardown.
 Set these immutable image references and test CA paths using the
 [Kubernetes runtime setup](kubernetes.md#kubernetes-model-turns-and-secrets):
 

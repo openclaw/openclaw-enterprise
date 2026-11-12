@@ -1358,33 +1358,60 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     ...options.worker,
   };
   const platformNamespace = `oce-production-${mode}-${hash(identifier)}`;
+  let platformNamespaceCreation = "not-started";
   const providerConsumers = new Map([[platformNamespace, "app.kubernetes.io/component=worker"]]);
   options.controlledModelProvider?.bindConsumers(async ({ deadline }) => {
-    // Failed topology cleanup must not remove DNS or the provider under a
-    // surviving reconciling worker or its Agent-owned workloads.
-    for (const [namespace, selector] of providerConsumers) {
-      for (const kind of ["deployments", "pods"]) {
-        const remainingMs = deadline - Date.now();
-        assert.ok(remainingMs > 0, "Provider consumer inspection deadline elapsed");
-        const remaining = await resources(
-          kind,
-          namespace,
-          "-l",
-          selector,
-          `--request-timeout=${Math.min(10_000, remainingMs)}ms`,
-        );
-        assert.ok(Date.now() < deadline, "Provider consumer inspection deadline elapsed");
-        assert.equal(
-          remaining.length,
-          0,
-          "Provider consumers must be gone before provider cleanup",
-        );
-      }
+    if (platformNamespaceCreation === "not-started") {
+      return;
     }
+    assert.notEqual(
+      platformNamespaceCreation,
+      "pending",
+      `Namespace creation is unconfirmed for ${platformNamespace}; retain dependencies for reconciliation`,
+    );
+    const timeoutMs = deadline - Date.now();
+    assert.ok(timeoutMs > 0, "Provider consumer inspection deadline elapsed");
+    const completed = await withinDiagnosticDeadline(
+      async () => {
+        // Failed topology cleanup must not remove DNS or the provider under a
+        // surviving reconciling worker or its Agent-owned workloads.
+        for (const [namespace, selector] of providerConsumers) {
+          for (const kind of ["deployments", "pods"]) {
+            const remainingMs = deadline - Date.now();
+            assert.ok(remainingMs > 0, "Provider consumer inspection deadline elapsed");
+            const remaining = await resources(
+              kind,
+              namespace,
+              "-l",
+              selector,
+              `--request-timeout=${Math.min(10_000, remainingMs)}ms`,
+            );
+            assert.ok(Date.now() < deadline, "Provider consumer inspection deadline elapsed");
+            assert.equal(
+              remaining.length,
+              0,
+              "Provider consumers must be gone before provider cleanup",
+            );
+          }
+        }
+        return true;
+      },
+      { timeoutMs, timedOut: false },
+    );
+    assert.ok(
+      completed === true && Date.now() < deadline,
+      "Provider consumer inspection deadline elapsed",
+    );
   });
-  assertActive();
-  await kubectl("create", "namespace", platformNamespace);
   context.after(async () => {
+    if (platformNamespaceCreation === "not-started") {
+      return;
+    }
+    assert.notEqual(
+      platformNamespaceCreation,
+      "pending",
+      `Namespace creation is unconfirmed for ${platformNamespace}; retain dependencies for reconciliation`,
+    );
     try {
       await inClusterWorker?.stop();
     } finally {
@@ -1398,6 +1425,12 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       );
     }
   });
+  assertActive();
+  // A missing create acknowledgement proves neither absence nor ownership.
+  // Keep cleanup uncertain until an acknowledged create permits deletion.
+  platformNamespaceCreation = "pending";
+  await kubectl("create", "namespace", platformNamespace);
+  platformNamespaceCreation = "acknowledged";
   const controller = await createScopedController(
     context,
     identifier,
@@ -1669,19 +1702,18 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     },
   });
 
-  // Docker may replace published-port connections when another network attaches.
-  // Complete that topology change before opening the observer/bootstrap pools;
-  // its registered cleanup runs only after those pools and the workers stop.
+  // Ordinary callers attach before opening database pools. The controlled case
+  // consumes the already-bound prepared network without taking ownership of it.
   if (workspaceGateway !== undefined) {
     assertActive();
-    databaseAddress = await attachPostgresToK3d(
-      (cleanup) => {
+    if (options.controlledModelProvider === undefined) {
+      databaseAddress = await attachPostgresToK3d((cleanup) => {
         detachPostgres = cleanup;
-      },
-      options.controlledModelProvider === undefined ? undefined : { signal, strictCleanup: true },
-    );
+      });
+    } else {
+      databaseAddress = await options.controlledModelProvider.assertPostgresBinding();
+    }
     assertActive();
-    await options.controlledModelProvider?.assertPostgresBinding();
   }
   if (options.oidc !== undefined) {
     assert.ok(

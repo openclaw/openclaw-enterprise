@@ -255,6 +255,7 @@ async function readOceControlState(topology) {
   assert.equal(agent.status, 200, JSON.stringify(agent.error));
   assert.equal(configuration.status, 200, JSON.stringify(configuration.error));
   return {
+    configurationId: agent.data.configurationId,
     activeRevisionId: agent.data.activeRevisionId,
     revisionId: topology.revision.id,
     configuration: configuration.data,
@@ -1177,22 +1178,17 @@ export async function runAcknowledgedChatApiReplacementScenario(testContext) {
     "openclaw.dev/agent": topology.agent.id,
   };
   const readIdentities = async () => {
-    const [worker, gateway, harness, agent, control] = await Promise.all([
+    const [worker, gateway, harness, control] = await Promise.all([
       onePod(topology.platformNamespace, { "app.kubernetes.io/component": "worker" }),
       onePod(topology.gatewayPlacement, {
         ...agentLabels,
         "openclaw.dev/workload-role": "gateway",
       }),
       onePod(topology.placement, { ...agentLabels, "openclaw.dev/workload-role": "agent" }),
-      topology.request(
-        "GET",
-        `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`,
-      ),
       readOceControlState(topology),
     ]);
-    assert.equal(agent.status, 200);
-    assert.equal(agent.data.configurationId, topology.agent.configurationId);
-    assert.equal(agent.data.activeRevisionId, topology.revision.id);
+    assert.equal(control.configurationId, topology.agent.configurationId);
+    assert.equal(control.activeRevisionId, topology.revision.id);
     for (const pod of [gateway, harness]) {
       assert.equal(pod.metadata.labels["openclaw.dev/revision"], topology.revision.id);
       assert.equal(pod.metadata.annotations["openclaw.dev/agent-id"], topology.agent.id);
@@ -1203,9 +1199,9 @@ export async function runAcknowledgedChatApiReplacementScenario(testContext) {
     );
     assert.equal(harness.metadata.annotations["openclaw.dev/revision-id"], topology.revision.id);
     return {
-      configurationId: agent.data.configurationId,
+      configurationId: control.configurationId,
       configurationGeneration: control.configuration.generation,
-      activeRevisionId: agent.data.activeRevisionId,
+      activeRevisionId: control.activeRevisionId,
       worker: identity(worker),
       gateway: identity(gateway),
       harness: identity(harness),
@@ -1284,9 +1280,12 @@ export async function runAcknowledgedChatApiReplacementScenario(testContext) {
     const timer = setTimeout(stop, 10_000);
     context.signal?.addEventListener("abort", stop, { once: true });
     try {
+      // Bound server execution even if it does not notice a disconnected client.
+      const connectionUrl = new URL(process.env.OCC_TEST_DATABASE_URL);
+      connectionUrl.searchParams.set("statement_timeout", "10000");
       // Own this read's transport: a shared pool checkout cannot be cancelled.
       client = new pg.Client({
-        connectionString: process.env.OCC_TEST_DATABASE_URL,
+        connectionString: connectionUrl.href,
         stream,
       });
       client.on("error", stop);
@@ -1305,8 +1304,8 @@ export async function runAcknowledgedChatApiReplacementScenario(testContext) {
     } finally {
       clearTimeout(timer);
       context.signal?.removeEventListener("abort", stop);
-      // Closing the owned socket also ends a stalled handshake or query; merely
-      // racing its promise would leave database work alive after cancellation.
+      // Stop waiting locally on cancellation. Server execution has the separate
+      // startup statement timeout; closing this socket is not a query-cancel ACK.
       stream.destroy();
       await client?.end().catch(() => {
         interrupted = true;

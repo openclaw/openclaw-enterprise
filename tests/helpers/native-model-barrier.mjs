@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { connect } from "node:net";
+import { connect, isIP } from "node:net";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -61,6 +61,8 @@ export async function prepareNativeModelBarrier(
   let preparedPostgres;
   let preparedDatabase;
   let postgresContainerId;
+  let postgresNetworkId;
+  let postgresAddress;
   let dnsRolloutPending = false;
   let clusterUid;
   let consumers;
@@ -162,6 +164,8 @@ export async function prepareNativeModelBarrier(
       mutations,
       dnsRolloutPending,
       postgresContainerId,
+      postgresNetworkId,
+      postgresAddress,
       postgresResourceId: preparedPostgres?.id,
       databaseResourceId: preparedDatabase?.id,
       unsettled: [...unsettled],
@@ -289,38 +293,7 @@ export async function prepareNativeModelBarrier(
     context.signal?.throwIfAborted();
     assert.ok(!closing, "Fixture is closing");
     await assertPrepared();
-    assert.ok(
-      !process.env.OCC_DOCKER_BIN || process.env.OCC_DOCKER_BIN === "docker",
-      "Attachment requires the verified Docker client",
-    );
-    assert.ok(
-      !process.env.DOCKER_HOST || process.env.DOCKER_HOST === "unix:///var/run/docker.sock",
-      "Attachment Docker host must be local",
-    );
-    for (const key of ["DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"]) {
-      assert.ok(!process.env[key], "Attachment must not use Docker TLS overrides");
-    }
-    // The attachment helper inherits ambient configuration, unlike command().
-    const ambient = (args) =>
-      runFixtureCommand(
-        "docker",
-        args,
-        { timeout: 15_000 },
-        () => "attachment metadata unavailable (output withheld)",
-        true,
-      );
-    const endpoint = protectedJSON(
-      await ambient(["context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"]),
-    );
-    assert.ok(
-      endpoint === "unix:///var/run/docker.sock",
-      "Attachment context must select the verified local daemon",
-    );
-    const localDaemon = (await docker(["info", "--format", "{{.ID}}"])).trim();
-    assert.ok(
-      localDaemon && (await ambient(["info", "--format", "{{.ID}}"])).trim() === localDaemon,
-      "Ambient attachment daemon differs from provider daemon",
-    );
+    await assertLocalRehearsalDaemon(command);
     const ids = (
       await docker([
         "ps",
@@ -338,7 +311,7 @@ export async function prepareNativeModelBarrier(
     assert.equal(ids.length, 1, "Prepared PostgreSQL must have one container");
     assert.match(ids[0], idPattern);
     const format =
-      '{"id":{{json .Id}},"running":{{json .State.Running}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"ports":{{json .NetworkSettings.Ports}}}';
+      '{"id":{{json .Id}},"running":{{json .State.Running}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"ports":{{json .NetworkSettings.Ports}},"networks":{{json .NetworkSettings.Networks}}}';
     const postgres = protectedJSON(await docker(["inspect", "--format", format, ids[0]]));
     assert.ok(
       postgres.running &&
@@ -351,16 +324,8 @@ export async function prepareNativeModelBarrier(
       [{ HostIp: "127.0.0.1", HostPort: String(preparedPostgres.port) }],
       "Prepared PostgreSQL published port changed",
     );
-    assert.ok(
-      (await ambient(["inspect", "--format", "{{.Id}}", ids[0]])).trim() === postgres.id,
-      "Ambient PostgreSQL attachment identity differs",
-    );
     const server = nodes.find(({ name }) => name === `k3d-${cluster}-server-0`);
     assert.ok(server);
-    assert.ok(
-      (await ambient(["inspect", "--format", "{{.Id}}", server.name])).trim() === server.id,
-      "Ambient selected server differs from provider server",
-    );
     const networks = protectedJSON(
       await docker(["inspect", "--format", "{{json .NetworkSettings.Networks}}", server.id]),
     );
@@ -370,11 +335,46 @@ export async function prepareNativeModelBarrier(
       [`k3d-${cluster}`],
       "PostgreSQL attachment network must be unambiguous",
     );
+    const networkName = matching[0];
+    const networkId = networks[networkName].NetworkID;
+    assert.match(networkId, idPattern);
+    const attachment = postgres.networks?.[networkName];
+    assert.ok(
+      attachment?.NetworkID === networkId,
+      "Prepared PostgreSQL must already be attached to the selected network",
+    );
+    const address = attachment.IPAddress;
+    assert.equal(isIP(address), 4, "Prepared PostgreSQL attachment requires IPv4");
+    const network = protectedJSON(
+      await docker([
+        "network",
+        "inspect",
+        "--format",
+        '{"id":{{json .Id}},"name":{{json .Name}},"containers":{{json .Containers}}}',
+        networkId,
+      ]),
+    );
+    assert.equal(network.id, networkId);
+    assert.equal(network.name, networkName);
+    assert.ok(
+      network.containers?.[server.id],
+      "Prepared server must belong to the selected network",
+    );
+    assert.ok(
+      network.containers?.[postgres.id]?.IPv4Address?.split("/")[0] === address,
+      "Prepared PostgreSQL network endpoint must match its container attachment",
+    );
+    assert.equal(postgres.id, ids[0]);
     if (postgresContainerId) {
       assert.equal(postgres.id, postgresContainerId, "Prepared PostgreSQL container was replaced");
+      assert.equal(networkId, postgresNetworkId, "Prepared PostgreSQL network was replaced");
+      assert.equal(address, postgresAddress, "Prepared PostgreSQL address changed");
     } else {
       postgresContainerId = postgres.id;
+      postgresNetworkId = networkId;
+      postgresAddress = address;
     }
+    return address;
   }
   async function assertCluster(cleanup = false) {
     await assertPrepared();
@@ -1253,8 +1253,6 @@ const deadline = setTimeout(() => process.exit(1), 25000);
       modelKey,
       assertPostgresBinding,
       codexImage: reference,
-      providerImage,
-      directory: root,
       async arm({ marker, timeoutMs = 300_000 }) {
         assert.equal(armDispatched, false, "Only one barrier may be armed");
         armDispatched = true;
