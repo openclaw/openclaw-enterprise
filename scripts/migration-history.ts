@@ -1,3 +1,5 @@
+import type { Pool, PoolClient } from "pg";
+import type canonicalHistory from "../migrations/meta/_canonical-history.json";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -7,8 +9,48 @@ import { catalogDigest, initialSchemaState, migrationCatalog } from "./migration
 
 const directory = fileURLToPath(new URL("../migrations", import.meta.url));
 const dependency = createRequire(new URL("../packages/occ/package.json", import.meta.url));
-const { drizzle } = dependency("drizzle-orm/node-postgres");
-const { readMigrationFiles } = dependency("drizzle-orm/migrator");
+type Manifest = typeof canonicalHistory;
+type MigrationEntry = Manifest["entries"][number];
+type History = keyof Manifest["catalogs"];
+interface MigrationReceipt {
+  id: number;
+  hash: string;
+  created_at: string | number;
+}
+type HistoryError = Error & {
+  code?:
+    "MIGRATION_HISTORY_UNSUPPORTED" | "MIGRATION_HISTORY_NOT_EMPTY" | "MIGRATION_HISTORY_PENDING";
+};
+interface MigrationOptions {
+  checkOnly?: boolean;
+  expectEmpty?: boolean;
+  requireCurrent?: boolean;
+}
+interface Migration {
+  sql: string[];
+  folderMillis: number;
+  hash: string;
+  bps: boolean;
+}
+// These CommonJS dependencies resolve from OCC, which owns the pinned Drizzle package.
+// The stock migrator consumes the verified SQL and the same connected session.
+interface MigrationDatabase {
+  dialect: {
+    migrate(
+      migrations: Migration[],
+      session: unknown,
+      config: { migrationsFolder: string },
+    ): Promise<void>;
+  };
+  session: unknown;
+}
+const { drizzle }: { drizzle(client: PoolClient): MigrationDatabase } = dependency(
+  "drizzle-orm/node-postgres",
+);
+const {
+  readMigrationFiles,
+}: { readMigrationFiles(config: { migrationsFolder: string }): Migration[] } =
+  dependency("drizzle-orm/migrator");
 const lock = [1868785005, 1835624306];
 
 export class UnsupportedPostgresVersionError extends Error {
@@ -20,17 +62,19 @@ export class UnsupportedPostgresVersionError extends Error {
   }
 }
 
-function refuse(reason) {
-  const error = new Error(`Unsupported migration history: ${reason}.`);
+function refuse(reason: string): never {
+  const error: HistoryError = new Error(`Unsupported migration history: ${reason}.`);
   error.code = "MIGRATION_HISTORY_UNSUPPORTED";
   throw error;
 }
 
 async function readManifest() {
-  const manifest = JSON.parse(
+  const manifest: Manifest = JSON.parse(
     await readFile(join(directory, "meta/_canonical-history.json"), "utf8"),
   );
-  const journal = JSON.parse(await readFile(join(directory, "meta/_journal.json"), "utf8"));
+  const journal: { version: unknown; dialect: unknown; entries: unknown } = JSON.parse(
+    await readFile(join(directory, "meta/_journal.json"), "utf8"),
+  );
   const expected = manifest.entries.map(({ sha256: _hash, ...entry }) => entry);
   if (
     manifest.version !== 1 ||
@@ -48,17 +92,20 @@ async function readManifest() {
     refuse("the migration source set differs");
   }
   for (const [index, entry] of manifest.entries.entries()) {
-    if (index > 0 && entry.when <= manifest.entries[index - 1].when) {
+    if (index > 0 && entry.when <= manifest.entries[index - 1]!.when) {
       refuse(`migration timestamp does not advance for ${entry.tag}`);
     }
-    if (migrations[index].hash !== entry.sha256 || migrations[index].folderMillis !== entry.when) {
+    if (
+      migrations[index]!.hash !== entry.sha256 ||
+      migrations[index]!.folderMillis !== entry.when
+    ) {
       refuse(`source bytes differ for ${entry.tag}`);
     }
   }
   return { manifest, migrations };
 }
 
-async function requireInitialSchema(client, schema, manifest) {
+async function requireInitialSchema(client: PoolClient, schema: string, manifest: Manifest) {
   const state = await initialSchemaState(client, schema);
   if (
     !isDeepStrictEqual(state, manifest.initialSchemaStates.absent) &&
@@ -68,8 +115,8 @@ async function requireInitialSchema(client, schema, manifest) {
   }
 }
 
-async function requireMigrationRoles(client) {
-  const { rows: roles } = await client.query(`
+async function requireMigrationRoles(client: PoolClient) {
+  const { rows: roles } = await client.query<{ limited: boolean }>(`
     SELECT current_user = 'occ_migrator' AND session_user = current_user
       AND pg_catalog.has_database_privilege(current_user, pg_catalog.current_database(), 'CREATE')
       AND NOT pg_catalog.has_database_privilege('occ_app', pg_catalog.current_database(), 'CREATE')
@@ -81,7 +128,11 @@ async function requireMigrationRoles(client) {
   if (roles[0]?.limited !== true) {
     refuse("the application and migration roles are not separated");
   }
-  const { rows: schemas } = await client.query(`
+  const { rows: schemas } = await client.query<{
+    owned: boolean;
+    app_create: boolean;
+    other_create: boolean;
+  }>(`
     SELECT nspowner = current_user::pg_catalog.regrole AS owned,
       pg_catalog.has_schema_privilege('occ_app', oid, 'CREATE') AS app_create,
       EXISTS (SELECT 1 FROM pg_catalog.aclexplode(nspacl) x
@@ -92,7 +143,10 @@ async function requireMigrationRoles(client) {
   }
 }
 
-function receiptsMatchEntries(receipts, entries) {
+function receiptsMatchEntries(
+  receipts: readonly MigrationReceipt[],
+  entries: readonly MigrationEntry[],
+) {
   let previousId = 0;
   for (const [index, receipt] of receipts.entries()) {
     const entry = entries[index];
@@ -110,7 +164,10 @@ function receiptsMatchEntries(receipts, entries) {
   return receipts.length <= entries.length;
 }
 
-function requireReceiptsMatchEntries(receipts, entries) {
+function requireReceiptsMatchEntries(
+  receipts: readonly MigrationReceipt[],
+  entries: readonly MigrationEntry[],
+) {
   if (!receiptsMatchEntries(receipts, entries)) {
     refuse(
       "the applied receipts differ from canonical history; pre-merge preview histories are unsupported; preserve the database with its matching release or explicitly reset a disposable preview",
@@ -118,7 +175,7 @@ function requireReceiptsMatchEntries(receipts, entries) {
   }
 }
 
-function classifyReceipts(receipts, manifest) {
+function classifyReceipts(receipts: readonly MigrationReceipt[], manifest: Manifest): History {
   const expected = manifest.entries;
   const providerCompleted = manifest.compatibleLineages?.providerCompleted;
   const providerCount = providerCompleted?.entries.length ?? 0;
@@ -138,7 +195,7 @@ function classifyReceipts(receipts, manifest) {
   return catalogAtMigrationCount(receipts.length, expected.length);
 }
 
-function catalogAtMigrationCount(count, completedCount) {
+function catalogAtMigrationCount(count: number, completedCount: number): History {
   if (count === 0) {
     return "empty";
   }
@@ -295,8 +352,8 @@ function catalogAtMigrationCount(count, completedCount) {
   refuse("an incomplete or unsupported development history is installed");
 }
 
-async function requireUnambiguousTerminologyData(client) {
-  const { rows } = await client.query(`
+async function requireUnambiguousTerminologyData(client: PoolClient) {
+  const { rows } = await client.query<{ compatible: boolean }>(`
     SELECT NOT (
       EXISTS (
         SELECT 1 FROM occ.agents
@@ -328,15 +385,15 @@ async function requireUnambiguousTerminologyData(client) {
   }
 }
 
-async function preflight(client, manifest) {
+async function preflight(client: PoolClient, manifest: Manifest): Promise<History> {
   await requireMigrationRoles(client);
   const ledger = catalogDigest(await migrationCatalog(client, "drizzle"));
-  let receipts = [];
+  let receipts: MigrationReceipt[] = [];
   if (
     ledger === manifest.ledgerCatalogs.initialized ||
     ledger === manifest.ledgerCatalogs.completed
   ) {
-    ({ rows: receipts } = await client.query(
+    ({ rows: receipts } = await client.query<MigrationReceipt>(
       "SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id",
     ));
   } else {
@@ -350,7 +407,9 @@ async function preflight(client, manifest) {
   }
   const native = manifest.catalogs[shape];
   const actual = catalogDigest(await migrationCatalog(client));
-  const aliases = manifest.logicalRestoreCatalogs?.[native];
+  const aliases = (
+    manifest.logicalRestoreCatalogs as Record<string, readonly string[]> | undefined
+  )?.[native];
   if (actual !== native && !(Array.isArray(aliases) && aliases.includes(actual))) {
     refuse(`catalog objects or effective grants differ for ${shape}`);
   }
@@ -361,14 +420,14 @@ async function preflight(client, manifest) {
 }
 
 export async function migrateWithHistory(
-  pool,
-  { checkOnly = false, expectEmpty = false, requireCurrent = false } = {},
-) {
+  pool: Pool,
+  { checkOnly = false, expectEmpty = false, requireCurrent = false }: MigrationOptions = {},
+): Promise<History> {
   const { manifest, migrations } = await readManifest();
   const client = await pool.connect();
   let locked = false;
   try {
-    const { rows } = await client.query(
+    const { rows } = await client.query<{ compatible: boolean }>(
       "SELECT pg_catalog.current_setting('server_version_num')::pg_catalog.int4 >= 170000 AS compatible",
     );
     if (rows[0]?.compatible !== true) {
@@ -380,7 +439,7 @@ export async function migrateWithHistory(
     // Check first-install intent while holding the migration lock. A separate --check
     // could observe empty history and then lose a race to another installer.
     if (expectEmpty && history !== "empty") {
-      const error = new Error(
+      const error: HistoryError = new Error(
         "First installation requires empty migration history; this database already has recognized OCE migrations. " +
           "Preserve the database, inspect the original installation attempt, and use --check to inspect migration history without applying changes.",
       );
@@ -389,7 +448,7 @@ export async function migrateWithHistory(
     }
     if (requireCurrent) {
       if (history !== "completed") {
-        const error = new Error(
+        const error: HistoryError = new Error(
           "The separate database deployment has not completed the candidate migration history. " +
             "Keep writers stopped, reconcile the migration, and retry the service deployment.",
         );
@@ -402,7 +461,9 @@ export async function migrateWithHistory(
       if (history === "completed") {
         // Keep Drizzle's refusal on read-only sessions, including standbys,
         // without overriding the operator's transaction mode.
-        const { rows } = await client.query("SHOW transaction_read_only");
+        const { rows } = await client.query<{ transaction_read_only: string }>(
+          "SHOW transaction_read_only",
+        );
         if (rows[0]?.transaction_read_only === "off") {
           return history;
         }

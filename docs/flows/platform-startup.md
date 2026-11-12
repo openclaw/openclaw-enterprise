@@ -82,7 +82,7 @@ graph TD
 
 Before launch, the operator runs the supported migration command using the
 separate migrator role. Its
-[history preflight](../../scripts/migration-history.mjs) accepts only reviewed
+[history preflight](../../scripts/migration-history.ts) accepts only reviewed
 receipt and catalog prefixes, including the two published 31-receipt completed
 lineages: the current Backend terminology history and the historical Provider
 terminology history. The append-only compatibility migration converts the

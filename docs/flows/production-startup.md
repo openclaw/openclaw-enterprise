@@ -174,7 +174,7 @@ the checkpoint unknown. Doctor separately reports Helm's outcome; plan adds
 read-only recovery. Both check the buffered report's `WriteTo` before returning
 Job status. Write errors reach `cmd/occ/main.go:main` for stderr diagnostics and exit `1`.
 
-`scripts/migrate-production.mjs:1`, `scripts/migration-history.mjs:migrateWithHistory`
+`scripts/migrate-production.mjs:1`, `scripts/migration-history.ts:migrateWithHistory`
 
 After source verification, all modes reject PostgreSQL before 17 with
 fixed `MIGRATION_SERVER_UNSUPPORTED` recovery guidance, before locking or catalog access

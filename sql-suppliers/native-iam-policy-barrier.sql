@@ -2,7 +2,7 @@
 -- migration and has no production caller; do not apply it to a deployed
 -- database. Until it is registered as a migration, installing it adds an
 -- object to the occ schema, so the catalog digest checked by
--- scripts/migration-history.mjs no longer matches and migrations refuse to run
+-- scripts/migration-history.ts no longer matches and migrations refuse to run
 -- until the function is dropped again.
 BEGIN;
 

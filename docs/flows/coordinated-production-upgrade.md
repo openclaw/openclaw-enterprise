@@ -142,7 +142,7 @@ Job failure overrides child success.
 
 `scripts/migrate-production.mjs --check` uses the initializer's migration container,
 environment, mounts and Pod identity before preflight success or shutdown.
-`scripts/migration-history.mjs:migrateWithHistory` checks receipts/catalog/grants under
+`scripts/migration-history.ts:migrateWithHistory` checks receipts/catalog/grants under
 lock without applying migrations. Pending canonical history is allowed. Helm rechecks.
 
 API `apps/controller/src/composition/console-theme.ts:loadConsoleTheme` rejects invalid
@@ -267,7 +267,7 @@ and the initializer Pod receive the fresh `installation.upgradeAttemptId`.
 Upgrade and recovery preserve `.json` format.
 `record_submission` saves intent and predecessor before publishing `helm-started`.
 Identical interrupted staging can finish. Published intent survives staged retries.
-In separate mode, `scripts/migration-history.mjs:migrateWithHistory` verifies the
+In separate mode, `scripts/migration-history.ts:migrateWithHistory` verifies the
 completed candidate ledger, catalog and grants under lock. Pending or unsupported
 history fails the hook. Hook mode applies pending SQL.
 

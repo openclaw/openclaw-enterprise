@@ -1,4 +1,4 @@
-import { migrateWithHistory, UnsupportedPostgresVersionError } from "./migration-history.mjs";
+import { migrateWithHistory, UnsupportedPostgresVersionError } from "./migration-history.ts";
 import { createPostgresPool } from "../packages/occ/src/state/postgres-pool.ts";
 import { createOccLogger, emitOccLogEvent } from "../apps/controller/src/logging.ts";
 // Not installation-config.ts: it loads every Driver, and this command runs once per migrated database.

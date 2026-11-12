@@ -22,7 +22,7 @@ import {
   initialSchemaState,
   migrationCatalog,
 } from "../../scripts/migration-catalog.mjs";
-import { migrateWithHistory } from "../../scripts/migration-history.mjs";
+import { migrateWithHistory } from "../../scripts/migration-history.ts";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
