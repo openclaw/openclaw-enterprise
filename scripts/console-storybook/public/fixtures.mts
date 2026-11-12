@@ -725,6 +725,17 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         }
         if (method === "POST") {
           if (
+            scenario.credentialRegistrationOutcome === "refused" &&
+            !credentialRegistrationFailed
+          ) {
+            credentialRegistrationFailed = true;
+            return error(
+              409,
+              "RESOURCE_CONFLICT",
+              "Model source registration is unavailable for this Installation.",
+            );
+          }
+          if (
             scenario.credentialRegistrationOutcome === "invalid-config" &&
             !credentialRegistrationFailed
           ) {
