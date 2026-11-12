@@ -5061,6 +5061,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
         });
       }
 
+      const confirmed = await this.readRuntimeCredentialSecret(context);
+      if (
+        confirmed.transport === undefined ||
+        (context.gatewayPassword !== undefined && confirmed.gatewayPassword === undefined)
+      ) {
+        throw new DependencyUnavailableError(
+          "The Kubernetes runtime credential backend did not confirm the stored credentials.",
+        );
+      }
       return { transportConfigured: true };
     });
   }

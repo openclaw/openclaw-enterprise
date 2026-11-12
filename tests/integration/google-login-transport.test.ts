@@ -6,21 +6,30 @@ import { createHumanLogin } from "../../apps/controller/src/auth/human-login.ts"
 import { googleNonce } from "../../apps/controller/src/auth/google.ts";
 import { humanLoginConfiguration } from "../../apps/controller/src/auth/index.ts";
 import {
+  assertSafeEqual,
+  assertSafeRejects,
+  assertSafeThrows,
   callbackState,
   cookiePairs,
   createIdTokenSigner,
   createLoginFixture,
+  createLoginState,
   expectDenied,
   expectProviderUnavailable,
   loginOrigin as origin,
   loginSecret as secret,
+  parseAuthorizationUrl,
   providerAttemptId,
   providerInstanceId,
+  readProviderRequestBody,
   redirectProviderFetch,
+  responseFields,
   startProviderServer,
   testOversizedProviderBodies,
   until,
-} from "../helpers/human-login-transport.mjs";
+  type LoginFixtureOptions,
+  type ProviderHandler,
+} from "../helpers/human-login-transport.ts";
 
 const clientId = "fixture-client.apps.googleusercontent.com";
 const clientSecret = "fixture-google-client-secret";
@@ -34,8 +43,8 @@ const googleURLs = new Set([
 const providerId = providerInstanceId("google", { clientId });
 
 const signer = createIdTokenSigner();
-const minted = [];
-function idToken(state = callbackState, overrides = {}) {
+const minted: string[] = [];
+function idToken(state = callbackState, overrides: Record<string, unknown> = {}) {
   const now = Math.floor(Date.now() / 1000);
   const token = signer.sign({
     iss: "https://accounts.google.com",
@@ -53,7 +62,14 @@ function idToken(state = callbackState, overrides = {}) {
   return token;
 }
 
-function loginFixture(state = {}, providers = {}, options = {}) {
+function loginFixture(
+  state: LoginFixtureOptions["state"] = {},
+  providers: LoginFixtureOptions["providers"] = {},
+  options: Pick<
+    LoginFixtureOptions,
+    "providerDeadlineMs" | "recoveryEmail" | "trustedClientAddress"
+  > = {},
+) {
   return createLoginFixture({
     provider: "google",
     providers: { google: { clientId, clientSecret, allowedDomains: [] }, ...providers },
@@ -68,25 +84,29 @@ test("Google sign-in configuration uses the shared recovery user", () => {
     OCC_AUTH_GOOGLE_CLIENT_SECRET: clientSecret,
   };
   const recovery = { OCC_AUTH_RECOVERY_USER_ID: "recovery-user" };
-  assert.deepEqual(humanLoginConfiguration({}), {});
-  assert.deepEqual(humanLoginConfiguration({ ...google, ...recovery }), {
-    google: { clientId, clientSecret, allowedDomains: [], recoveryUserId: "recovery-user" },
-  });
-  assert.throws(
+  assertSafeEqual(humanLoginConfiguration({}), {}, "sign-in configuration did not match");
+  assertSafeEqual(
+    humanLoginConfiguration({ ...google, ...recovery }),
+    {
+      google: { clientId, clientSecret, allowedDomains: [], recoveryUserId: "recovery-user" },
+    },
+    "sign-in configuration did not match",
+  );
+  assertSafeThrows(
     () => humanLoginConfiguration(google),
     /Google sign-in requires client ID, client secret and recovery user ID/,
   );
-  assert.throws(
+  assertSafeThrows(
     () => humanLoginConfiguration({ ...google, OCC_AUTH_RECOVERY_USER_ID: " " }),
     /Google sign-in requires client ID, client secret and recovery user ID/,
   );
 
-  assert.throws(
+  assertSafeThrows(
     () => humanLoginConfiguration(recovery),
     /requires client ID, client secret and recovery user ID/,
   );
-  assert.throws(
-    () => createHumanLogin({}, { recoveryUserId: "recovery-user" }, origin),
+  assertSafeThrows(
+    () => createHumanLogin(createLoginState(), { recoveryUserId: "recovery-user" }, origin),
     /requires a configured external sign-in provider/,
   );
 });
@@ -95,21 +115,20 @@ test(
   "Google login bounds actual provider HTTP transport and binds the ID token to its attempt",
   { timeout: 60_000 },
   async (t) => {
-    let serve;
+    let serve: ProviderHandler = () => {
+      throw new Error("Provider handler was not selected");
+    };
     const { requests, port } = await startProviderServer(t, (request, response) =>
       serve(request, response),
     );
     const providerOrigin = `http://127.0.0.1:${port}`;
     redirectProviderFetch(t, googleURLs, providerOrigin);
-    let exchange;
-    function provider(token = idToken()) {
+    let exchange: URLSearchParams | undefined;
+    function provider(token = idToken()): ProviderHandler {
       return async (request, response) => {
         response.setHeader("content-type", "application/json");
         if (request.url === "/token") {
-          let body = "";
-          for await (const chunk of request) {
-            body += chunk;
-          }
+          const body = await readProviderRequestBody(request);
           exchange = new URLSearchParams(body);
           response.end(
             JSON.stringify({
@@ -121,22 +140,21 @@ test(
             }),
           );
         } else {
-          assert.equal(request.url, "/oauth2/v3/certs");
+          assertSafeEqual(request.url, "/oauth2/v3/certs", "unexpected provider endpoint");
           assert.equal(request.method, "GET");
           response.end(JSON.stringify(signer.jwks));
         }
       };
     }
     // Neither the client secret nor any provider token may reach logs or errors.
-    function assertNoSecrets(login, ...bodies) {
-      const text = JSON.stringify([
-        login.authLogs,
-        login.operationalLogs(),
-        login.errors.map(String),
-        ...bodies,
-      ]);
+    function assertNoSecrets(login: ReturnType<typeof loginFixture>, ...bodies: string[]) {
+      const text = JSON.stringify([login.authLogs, login.operationalLogs(), ...bodies]);
       for (const value of [clientSecret, accessToken, ...minted]) {
-        assert.equal(text.includes(value), false, "a credential reached logs or errors");
+        assert.equal(
+          text.includes(value) || login.recordedErrorIncludes(value),
+          false,
+          "a credential reached logs or errors",
+        );
       }
     }
 
@@ -144,52 +162,105 @@ test(
       const login = loginFixture();
       const response = await login.start();
       assert.equal(response.status, 200);
-      const { url, attemptId } = await response.json();
-      assert.match(attemptId, /^[A-Za-z0-9_-]{43}$/);
-      const authorization = new URL(url);
-      assert.equal(
+      const fields = await responseFields(response);
+      const url = fields.get("url");
+      const attemptId = fields.get("attemptId");
+      assert.equal(/^[A-Za-z0-9_-]{43}$/.test(attemptId), true, "attempt ID was invalid");
+      const authorization = parseAuthorizationUrl(url);
+      assertSafeEqual(
         `${authorization.origin}${authorization.pathname}`,
         "https://accounts.google.com/o/oauth2/v2/auth",
+        "authorization attempt did not match",
       );
       const parameters = authorization.searchParams;
-      assert.deepEqual([...parameters.keys()].sort(), [
-        "client_id",
-        "code_challenge",
-        "code_challenge_method",
-        "nonce",
-        "redirect_uri",
-        "response_type",
-        "scope",
-        "state",
-      ]);
-      assert.equal(parameters.get("response_type"), "code");
-      assert.equal(parameters.get("client_id"), clientId);
-      assert.equal(parameters.get("scope"), "openid email");
-      assert.equal(parameters.get("redirect_uri"), `${origin}/api/auth/providers/google/callback`);
-      assert.equal(parameters.get("code_challenge_method"), "S256");
+      assertSafeEqual(
+        [...parameters.keys()].sort(),
+        [
+          "client_id",
+          "code_challenge",
+          "code_challenge_method",
+          "nonce",
+          "redirect_uri",
+          "response_type",
+          "scope",
+          "state",
+        ],
+        "authorization attempt did not match",
+      );
+      assertSafeEqual(
+        parameters.get("response_type"),
+        "code",
+        "authorization attempt did not match",
+      );
+      assertSafeEqual(parameters.get("client_id"), clientId, "authorization attempt did not match");
+      assertSafeEqual(
+        parameters.get("scope"),
+        "openid email",
+        "authorization attempt did not match",
+      );
+      assertSafeEqual(
+        parameters.get("redirect_uri"),
+        `${origin}/api/auth/providers/google/callback`,
+        "authorization attempt did not match",
+      );
+      assertSafeEqual(
+        parameters.get("code_challenge_method"),
+        "S256",
+        "authorization attempt did not match",
+      );
       const attemptState = parameters.get("state");
-      assert.match(attemptState, /^[A-Za-z0-9_-]{43}$/);
-      assert.equal(parameters.get("nonce"), googleNonce(secret, attemptState));
+      assert.equal(
+        typeof attemptState === "string" && /^[A-Za-z0-9_-]{43}$/.test(attemptState),
+        true,
+        "attempt state was invalid",
+      );
+      assert.ok(attemptState !== null);
+      assertSafeEqual(
+        parameters.get("nonce"),
+        googleNonce(secret, attemptState),
+        "authorization attempt did not match",
+      );
       assert.equal(url.includes(attemptId), false, "the provider never sees the attemptId");
       const [attempt] = login.attempts;
-      assert.equal(attempt.providerId, providerAttemptId(providerId, clientSecret));
-      assert.equal(attempt.callbackURL, `${origin}/api/auth/providers/google/callback`);
-      assert.equal(
+      assert.ok(attempt && "codeVerifier" in attempt, "start attempt was not recorded");
+      assertSafeEqual(
+        attempt.providerId,
+        providerAttemptId(providerId, clientSecret),
+        "authorization attempt did not match",
+      );
+      assertSafeEqual(
+        attempt.callbackURL,
+        `${origin}/api/auth/providers/google/callback`,
+        "authorization attempt did not match",
+      );
+      assertSafeEqual(
         parameters.get("code_challenge"),
         createHash("sha256").update(attempt.codeVerifier).digest("base64url"),
+        "authorization attempt did not match",
       );
       const cookie = response.headers.get("set-cookie");
-      assert.match(cookie, /^__Host-occ_login_attempt=/);
-      assert.match(cookie, /HttpOnly/i);
-      assert.match(cookie, /Secure/i);
-      assert.match(cookie, /SameSite=Lax/i);
+      assert.equal(
+        /^__Host-occ_login_attempt=/.test(cookie ?? ""),
+        true,
+        "attempt cookie was missing",
+      );
+      assert.equal(/HttpOnly/i.test(cookie ?? ""), true, "attempt cookie was not HttpOnly");
+      assert.equal(/Secure/i.test(cookie ?? ""), true, "attempt cookie was not Secure");
+      assert.equal(
+        /SameSite=Lax/i.test(cookie ?? ""),
+        true,
+        "attempt cookie did not use SameSite=Lax",
+      );
       assertNoSecrets(login, url);
     });
 
     await t.test("only the configured providers have routes", async () => {
       const googleOnly = loginFixture();
       assert.equal(googleOnly.login.googleProviderId, providerId);
-      assert.equal(googleOnly.login.githubProviderId, undefined);
+      assert.equal(
+        "githubProviderId" in googleOnly.login ? googleOnly.login.githubProviderId : undefined,
+        undefined,
+      );
       assert.equal((await googleOnly.start("10.0.0.1", "github")).status, 404);
     });
 
@@ -202,15 +273,31 @@ test(
           name: "Existing user",
           email: "existing@example.test",
           emailVerified: false,
+          image: null,
           createdAt,
           updatedAt: createdAt,
         };
-        let issued;
-        const snapshots = [];
+        let issued:
+          | Awaited<
+              ReturnType<NonNullable<NonNullable<LoginFixtureOptions["state"]>["issueSession"]>>
+            >
+          | undefined;
+        const snapshots: [string, string][] = [];
         const login = loginFixture({
           snapshotExternal: async (snapshotProviderId, snapshotSubject) => {
             snapshots.push([snapshotProviderId, snapshotSubject]);
-            return { user, proof: { userId: user.id } };
+            return {
+              user,
+              proof: {
+                userId: user.id,
+                principalId: "fixture-principal",
+                methodId: "fixture-method",
+                version: 1,
+                methodVersion: 1,
+                providerId,
+                subject,
+              },
+            };
           },
           issueSession: async (_proof, session) => {
             issued = {
@@ -223,36 +310,73 @@ test(
             return issued;
           },
           consumeLoginResult: async (token, receipt) =>
+            issued !== undefined &&
             issued.token === token &&
             issued.id === receipt.sessionId &&
             issued.resultExpiresAt === receipt.expiresAt,
         });
         const started = await login.start();
-        const { url, attemptId } = await started.json();
-        const attemptState = new URL(url).searchParams.get("state");
+        const fields = await responseFields(started);
+        const url = fields.get("url");
+        const attemptId = fields.get("attemptId");
+        const attemptState = parseAuthorizationUrl(url).searchParams.get("state");
+        assert.ok(attemptState !== null, "attempt state was missing");
         serve = provider(idToken(attemptState));
         const before = requests.length;
         const callback = await login.callback(`state=${attemptState}&code=fixture-code`);
         assert.equal(callback.status, 200);
-        assert.deepEqual(requests.slice(before), ["/token", "/oauth2/v3/certs"]);
-        assert.equal(exchange.get("client_id"), clientId);
-        assert.equal(exchange.get("client_secret"), clientSecret);
-        assert.equal(exchange.get("code"), "fixture-code");
-        assert.equal(exchange.get("redirect_uri"), `${origin}/api/auth/providers/google/callback`);
-        assert.equal(exchange.get("code_verifier"), "v".repeat(43));
-        assert.equal(exchange.get("grant_type"), "authorization_code");
+        assertSafeEqual(
+          requests.slice(before),
+          ["/token", "/oauth2/v3/certs"],
+          "provider request paths did not match",
+        );
+        assert.ok(exchange, "provider exchange was not observed");
+        assertSafeEqual(exchange.get("client_id"), clientId, "provider exchange did not match");
+        assertSafeEqual(
+          exchange.get("client_secret"),
+          clientSecret,
+          "exchange client secret did not match",
+        );
+        assertSafeEqual(exchange.get("code"), "fixture-code", "exchange code did not match");
+        assertSafeEqual(
+          exchange.get("redirect_uri"),
+          `${origin}/api/auth/providers/google/callback`,
+          "provider exchange did not match",
+        );
+        assertSafeEqual(
+          exchange.get("code_verifier"),
+          "v".repeat(43),
+          "provider exchange did not match",
+        );
+        assertSafeEqual(
+          exchange.get("grant_type"),
+          "authorization_code",
+          "provider exchange did not match",
+        );
         // The identity is the provider-instance key and "sub", never the email.
-        assert.deepEqual(snapshots, [[providerId, subject]]);
-        assert.equal(login.attempts[1].providerId, providerAttemptId(providerId, clientSecret));
+        assertSafeEqual(
+          snapshots,
+          [[providerId, subject]],
+          "recorded identity observation did not match",
+        );
+        assertSafeEqual(
+          login.attempts[1]?.providerId,
+          providerAttemptId(providerId, clientSecret),
+          "authorization attempt did not match",
+        );
         const receipt = callback.headers
           .getSetCookie()
           .find((value) => value.startsWith("__Host-occ_login_receipt="));
-        assert.match(receipt, /SameSite=Strict/i);
+        assert.equal(
+          /SameSite=Strict/i.test(receipt ?? ""),
+          true,
+          "receipt cookie did not use SameSite=Strict",
+        );
         const cookies = cookiePairs(callback);
         const exchanged = await login.result(attemptId, cookies);
         assert.equal(exchanged.status, 200);
-        const { sessionKey } = await exchanged.json();
-        assert.match(sessionKey, /^[A-Za-z0-9_-]{43}$/);
+        const sessionKey = (await responseFields(exchanged)).get("sessionKey");
+        assert.equal(/^[A-Za-z0-9_-]{43}$/.test(sessionKey), true, "session key was invalid");
         assertNoSecrets(login, cookies, sessionKey);
       },
     );
@@ -261,13 +385,18 @@ test(
       const login = loginFixture();
       serve = provider(idToken("o".repeat(43)));
       await expectDenied(await login.callback());
-      assert.equal(exchange.get("code"), "fixture-code");
-      assert.deepEqual(login.subjects, []);
-      assert.deepEqual(login.denials, [["EXTERNAL_IDENTITY_REJECTED", "google"]]);
+      assert.ok(exchange, "provider exchange was not observed");
+      assertSafeEqual(exchange.get("code"), "fixture-code", "exchange code did not match");
+      assertSafeEqual(login.subjects, [], "recorded identity observation did not match");
+      assertSafeEqual(
+        login.denials,
+        [["EXTERNAL_IDENTITY_REJECTED", "google"]],
+        "recorded identity observation did not match",
+      );
       // A token without any nonce is rejected the same way.
       serve = provider(idToken(callbackState, { nonce: undefined }));
       await expectDenied(await login.callback());
-      assert.deepEqual(login.subjects, []);
+      assertSafeEqual(login.subjects, [], "recorded identity observation did not match");
       assertNoSecrets(login);
     });
 
@@ -284,7 +413,7 @@ test(
       const response = await login.callback();
       const body = await response.clone().text();
       await expectDenied(response);
-      assert.deepEqual(login.subjects, []);
+      assertSafeEqual(login.subjects, [], "recorded identity observation did not match");
       assert.equal(body.includes("fixture-sensitive-error"), false);
       assertNoSecrets(login, body);
     });
@@ -303,7 +432,7 @@ test(
         const before = requests.length;
         await expectProviderUnavailable(await login.callback());
         assert.equal(requests.slice(before).includes("/redirect-target"), false);
-        assert.deepEqual(login.subjects, []);
+        assertSafeEqual(login.subjects, [], "recorded identity observation did not match");
         assertNoSecrets(login);
       });
     }
@@ -345,8 +474,12 @@ test(
         `Elapsed: ${elapsed}`,
       );
       await until(() => closed);
-      assert.deepEqual(login.subjects, []);
-      assert.deepEqual(login.denials, [["PROVIDER_UNAVAILABLE", "google"]]);
+      assertSafeEqual(login.subjects, [], "recorded identity observation did not match");
+      assertSafeEqual(
+        login.denials,
+        [["PROVIDER_UNAVAILABLE", "google"]],
+        "recorded identity observation did not match",
+      );
     });
 
     await t.test("Google keeps independent external step admission budgets", async () => {
@@ -392,8 +525,16 @@ test("guarded adapter never lists, counts or mutates raw session rows", async ()
     updatedAt: now,
   });
   const context = await login.auth.$context;
-  assert.deepEqual(await context.internalAdapter.listSessions("stale-user"), []);
-  assert.deepEqual(await context.adapter.findMany({ model: "session" }), []);
+  assertSafeEqual(
+    await context.internalAdapter.listSessions("stale-user"),
+    [],
+    "guarded session rows were visible",
+  );
+  assertSafeEqual(
+    await context.adapter.findMany({ model: "session" }),
+    [],
+    "guarded session rows were visible",
+  );
   assert.equal(await context.adapter.count({ model: "session" }), 0);
   const where = [{ field: "id", value: "stale-session" }];
   const refused = {
@@ -401,8 +542,8 @@ test("guarded adapter never lists, counts or mutates raw session rows", async ()
     status: "UNAUTHORIZED",
     message: "Authentication was not accepted.",
   };
-  await assert.rejects(context.adapter.consumeOne({ model: "session", where }), refused);
-  await assert.rejects(
+  await assertSafeRejects(context.adapter.consumeOne({ model: "session", where }), refused);
+  await assertSafeRejects(
     context.adapter.incrementOne({ model: "session", where, increment: { version: 1 } }),
     refused,
   );

@@ -72,18 +72,18 @@
   "devDependencies": {
     "@eslint/js": "10.0.1",
     "@stylistic/eslint-plugin": "5.10.0",
-    "@types/node": "26.6.5",
+    "@types/node": "26.6.6",
     "@types/pg": "8.23.1",
     "@typescript/native": "npm:typescript@7.0.2",
     "drizzle-kit": "0.31.11",
-    "eslint": "10.13.0",
-    "globals": "17.13.0",
+    "eslint": "10.14.0",
+    "globals": "17.14.0",
     "pg": "8.23.1",
     "playwright": "1.64.1",
     "prettier": "3.9.10",
-    "typebox": "1.4.3",
+    "typebox": "1.4.4",
     "typescript": "npm:@typescript/typescript6@6.0.2",
     "typescript-compiler-api": "npm:typescript@6.0.3",
-    "typescript-eslint": "8.72.0"
+    "typescript-eslint": "8.72.1"
   }
 }
