@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import pg from "pg";
 import {
@@ -31,6 +32,7 @@ import {
 
 type DevelopmentApp = Awaited<ReturnType<typeof composePostgresDevelopmentApp>>;
 type IssuedServiceKey = Awaited<ReturnType<ControllerAuth["createServiceKey"]>>;
+type ServiceKeyVerification = Awaited<ReturnType<ControllerAuth["admissionVerifier"]["verify"]>>;
 
 function stringField(value: unknown, field: string): string {
   return text(record(value)[field]);
@@ -61,14 +63,50 @@ function issuedKey(response: InjectedResponse): { id: string; key: string; names
   };
 }
 
+async function blockedKeyUpdate(
+  pool: pg.Pool,
+  applicationName: string,
+  blockerPid: number,
+): Promise<number> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const result = await pool.query<{ pid: number }>(
+      `SELECT pid FROM pg_stat_activity
+       WHERE datname = current_database() AND application_name = $1
+         AND state = 'active' AND wait_event_type = 'Lock'
+         AND $2::integer = ANY(pg_blocking_pids(pid))
+         AND query LIKE 'update "occ"."apikey"%'`,
+      [applicationName, blockerPid],
+    );
+    if (result.rows.length === 1) {
+      return result.rows[0]!.pid;
+    }
+    await delay(10);
+  }
+  assert.fail("the real key-use update must wait for its owned deletion transaction");
+}
+
 // Storage/admission integration only: the HTTP suite separately proves IAM
 // authorization. These server-only operations model an already authorized key
 // manager; referenceId can belong to an external IAM Driver, not a local user.
 test(
   "PostgreSQL Better Auth keys remain hashed, scoped, and revocable across instances",
-  requiresPostgres,
+  { ...requiresPostgres, timeout: 120_000 },
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl, max: 2 });
+    const authApplicationName = `service-key-revocation-${randomUUID()}`;
+    const pool = new pg.Pool({
+      connectionString: databaseUrl,
+      max: 2,
+      application_name: authApplicationName,
+      connectionTimeoutMillis: 5_000,
+      statement_timeout: 30_000,
+    });
+    const lockPool = new pg.Pool({
+      connectionString: databaseUrl,
+      max: 2,
+      connectionTimeoutMillis: 5_000,
+      statement_timeout: 30_000,
+    });
     const cleanup: { key?: IssuedServiceKey } = {};
     t.after(async () => {
       try {
@@ -76,7 +114,7 @@ test(
           await issuer.revokeServiceKey(cleanup.key);
         }
       } finally {
-        await pool.end();
+        await Promise.all([pool.end(), lockPool.end()]);
       }
     });
     const installationId = `ins_${randomUUID()}`;
@@ -152,14 +190,8 @@ test(
       "foreign installation must not read the key",
     );
 
-    // Deletion cannot be undone by the plugin's concurrent verification updates.
-    const inFlight = Array.from({ length: 4 }, () =>
-      verifier.admissionVerifier.verify(request).catch((error: unknown) => {
-        assert.ok(record(error).status === 401, "concurrent verification must reject with 401");
-      }),
-    );
+    // Ordinary server-managed revocation removes the credential across instances.
     await issuer.revokeServiceKey(key);
-    await Promise.all(inFlight);
     assert.equal(
       (await pool.query("SELECT id FROM occ.apikey WHERE id = $1", [key.id])).rowCount,
       0,
@@ -169,6 +201,83 @@ test(
       (await verifier.getServiceKey(key.id)) === undefined,
       "revoked key must not be readable",
     );
+
+    const racingKey = await issuer.createServiceKey({ principal, name: "revocation-race" });
+    cleanup.key = racingKey;
+    const racingRequest = {
+      ...request,
+      requestId: `req_${randomUUID()}`,
+      headers: { "x-api-key": racingKey.key },
+    };
+    const racingControl = await verifier.admissionVerifier.verify(racingRequest);
+    assert.ok(racingControl.method === "api_key");
+    assert.equal(racingControl.serviceKeyId, racingKey.id);
+    assert.equal(racingControl.externalIdentity.subject, principal.id);
+
+    // An uncommitted DELETE leaves the old row visible to the verifier's MVCC
+    // read, then holds its real usage UPDATE. Commit only after PostgreSQL proves
+    // that UPDATE is waiting on this transaction, so it settles against deletion.
+    const deletion = await lockPool.connect();
+    let deletionTransactionOpen = false;
+    let verificationSettled = false;
+    let inFlight: Promise<PromiseSettledResult<ServiceKeyVerification>> | undefined;
+    try {
+      await deletion.query("BEGIN");
+      deletionTransactionOpen = true;
+      const blocker = await deletion.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+      const removed = await deletion.query("DELETE FROM occ.apikey WHERE id = $1", [racingKey.id]);
+      assert.equal(removed.rowCount, 1, "the owned transaction must delete the live key");
+      inFlight = verifier.admissionVerifier.verify(racingRequest).then(
+        (value) => {
+          verificationSettled = true;
+          return { status: "fulfilled" as const, value };
+        },
+        (reason: unknown) => {
+          verificationSettled = true;
+          return { status: "rejected" as const, reason };
+        },
+      );
+      const blockedPid = await blockedKeyUpdate(
+        lockPool,
+        authApplicationName,
+        blocker.rows[0]!.pid,
+      );
+      assert.notEqual(blockedPid, blocker.rows[0]!.pid);
+      assert.equal(verificationSettled, false, "verification must still await its usage update");
+      await deletion.query("COMMIT");
+      deletionTransactionOpen = false;
+    } finally {
+      try {
+        if (deletionTransactionOpen) {
+          await deletion.query("ROLLBACK");
+          deletionTransactionOpen = false;
+        }
+      } finally {
+        // Destroy the connection if rollback failed, then drain the verification
+        // after releasing its blocker. Both pools have bounded SQL waits.
+        deletion.release(deletionTransactionOpen);
+        if (inFlight !== undefined) {
+          await inFlight;
+        }
+      }
+    }
+    assert.ok(inFlight);
+    const outcome = await inFlight;
+    if (outcome.status === "rejected") {
+      assert.equal(record(outcome.reason).status, 401, "stale verification may reject with 401");
+    } else {
+      assert.ok(outcome.value.method === "api_key");
+      assert.equal(outcome.value.serviceKeyId, racingKey.id);
+      assert.equal(outcome.value.externalIdentity.subject, principal.id);
+      assert.deepEqual(outcome.value.admittedScope, { installationId, namespaceId });
+    }
+    assert.equal(
+      (await pool.query("SELECT id FROM occ.apikey WHERE id = $1", [racingKey.id])).rowCount,
+      0,
+      "the stale usage update must not restore the deleted key",
+    );
+    await assert.rejects(verifier.admissionVerifier.verify(racingRequest), { status: 401 });
+    assert.equal(await verifier.getServiceKey(racingKey.id), undefined);
   },
 );
 
