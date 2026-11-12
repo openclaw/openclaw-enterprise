@@ -747,6 +747,26 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       if (args.includes("create") && args.includes("--raw")) {
         assert.equal(fileArg("--raw"), "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews");
         const review = JSON.parse(await io.readInput());
+        if (review.spec.resourceAttributes.resource === "deployments") {
+          assert.equal(review.apiVersion, "authorization.k8s.io/v1");
+          assert.equal(review.kind, "SelfSubjectAccessReview");
+          assert.deepEqual(review.spec.resourceAttributes, {
+            namespace: "system",
+            verb: "patch",
+            group: "apps",
+            version: "v1",
+            resource: "deployments",
+            name: "openclaw-enterprise-worker",
+          });
+          if (state.reviewUnavailable) {
+            return fail(1, "private self-review diagnostic");
+          }
+          if (state.wrongWorkerReview) {
+            review.spec.resourceAttributes.name = "openclaw-enterprise-api";
+          }
+          out({ ...review, status: { allowed: !state.denyWorkerPatch } });
+          return io.exit(0);
+        }
         assert.deepEqual(review, {
           apiVersion: "authorization.k8s.io/v1",
           kind: "SelfSubjectAccessReview",
@@ -755,6 +775,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
               namespace: "system",
               verb: "update",
               group: "",
+              version: "v1",
               resource: "secrets",
               name: state.secret.metadata.name,
             },
@@ -1241,6 +1262,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
           .find((a) => a.startsWith("deployment/"))
           .split("-")
           .at(-1);
+        if (args.includes("patch") && component === "worker" && state.denyWorkerPatch) {
+          return fail(1, "Forbidden: cannot patch the worker Deployment");
+        }
         if (take("fail-scale-" + component)) {
           if (take("block-failure-receipt")) {
             mkdirSync(join(root, "evidence", "native-command-failures.tsv"));
@@ -2998,6 +3022,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
     const result = await f.run();
     assert.match(result.stderr, /Could not verify update access to the Installation Secret/);
+    assert.match(result.stderr, /Could not verify patch access to the worker Deployment/);
     assert.doesNotMatch(result.stderr, /private self-review diagnostic/);
     assert.deepEqual(await f.events(), [
       "scale-api",
@@ -3881,7 +3906,8 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       /worker Deployment changed/,
     );
     assert.equal((await f.state()).helmSubmissions ?? 0, 0);
-    await writeFile(stateFile, JSON.stringify(stopped));
+    // The worker already stopped. Completing the handoff requires no further patch.
+    await writeFile(stateFile, JSON.stringify({ ...stopped, denyWorkerPatch: true }));
     await f.run("--resume", "--migration-history-checked");
     assert.equal((await f.state()).helmSubmissions, 1);
   });
@@ -3916,6 +3942,49 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     ]);
     assert.equal((await f.state()).api, 1);
     assert.equal((await f.state()).worker, 1);
+  });
+
+  test("a named worker patch denial keeps the incumbent API serving", async (t) => {
+    if (!realHelm) {
+      t.skip("helm is unavailable to render the real chart");
+      return;
+    }
+    const f = await fixture(t, {
+      controllerOnly: true,
+      chart: { installation: (installation) => installation },
+    });
+    const initial = await f.state();
+    initial.denyWorkerPatch = true;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(initial));
+    const failure = await f.run().catch((error) => error);
+    const { api, worker, version } = await f.state();
+    const events = await f.events();
+    t.diagnostic(JSON.stringify({ api, worker, version, events }));
+    assert.deepEqual(
+      { api, worker, version, events },
+      { api: 1, worker: 1, version: 1, events: [] },
+    );
+    assert.match(
+      failure.stderr,
+      /Kubernetes denied patch on worker Deployment system\/openclaw-enterprise-worker/,
+    );
+    assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+  });
+
+  test("a mismatched worker review leaves the live patch authoritative", async (t) => {
+    const f = await fixture(t);
+    const state = await f.state();
+    state.denyWorkerPatch = true;
+    state.wrongWorkerReview = true;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    await assert.rejects(f.run(), (error) => {
+      assert.match(error.stderr, /Could not verify patch access to the worker Deployment/);
+      assert.match(error.stderr, /Forbidden: cannot patch the worker Deployment/);
+      return true;
+    });
+    assert.deepEqual(await f.events(), ["scale-api"]);
+    assert.equal((await f.state()).worker, 1);
+    assert.equal(existsSync(join(f.evidence, "helm-started")), false);
   });
 
   test("an interrupted quiescence never starts migration while the worker still runs", async (t) => {
@@ -6697,6 +6766,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       agent: true,
       chart: { installation: (installation) => installation },
     });
+    const state = await f.state();
+    state.denyWorkerPatch = true;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
     await assert.rejects(f.run("--resume", "--preflight-only"), /cannot be combined/);
     assert.equal(existsSync(f.evidence), false);
     assert.match((await f.run("--preflight-only")).stdout, /Preflight passed/);
