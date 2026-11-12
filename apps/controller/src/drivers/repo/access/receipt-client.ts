@@ -1,4 +1,5 @@
 import { request } from "node:http";
+import { readPrivateJsonResponse } from "./private-json-response.ts";
 import { dirname, join } from "node:path";
 import {
   hasUnsettledCleanupCounts,
@@ -128,8 +129,6 @@ export class RepositoryReceiptClient {
       throw new Error("RECEIPT_UNAVAILABLE");
     }
     return new Promise((done, reject) => {
-      const chunks: Buffer[] = [];
-      let size = 0;
       const outgoing = request(
         {
           socketPath: this.path,
@@ -145,35 +144,24 @@ export class RepositoryReceiptClient {
           },
         },
         (incoming) => {
-          incoming.on("data", (chunk: Buffer) => {
-            size += chunk.length;
-            if (size > 16384) {
-              // destroy() without an error emits neither "end" nor "error": settle first.
-              reject(new Error("RECEIPT_UNAVAILABLE"));
-              incoming.destroy();
-            } else {
-              chunks.push(chunk);
-            }
-          });
-          incoming.once("error", reject);
-          incoming.once("end", () => {
-            try {
-              if (
-                !incoming.complete ||
-                incoming.statusCode !== 200 ||
-                incoming.headers["content-type"] !== "application/json"
-              ) {
-                throw new Error("RECEIPT_UNAVAILABLE");
+          readPrivateJsonResponse(
+            incoming,
+            (bytes) => {
+              try {
+                if (bytes === undefined || incoming.statusCode !== 200) {
+                  throw new Error("RECEIPT_UNAVAILABLE");
+                }
+                const value: unknown = JSON.parse(bytes.toString("utf8"));
+                if (!value || typeof value !== "object" || Array.isArray(value)) {
+                  throw new Error("RECEIPT_UNAVAILABLE");
+                }
+                done(value as Record<string, unknown>);
+              } catch {
+                reject(new Error("RECEIPT_UNAVAILABLE"));
               }
-              const value: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-              if (!value || typeof value !== "object" || Array.isArray(value)) {
-                throw new Error("RECEIPT_UNAVAILABLE");
-              }
-              done(value as Record<string, unknown>);
-            } catch {
-              reject(new Error("RECEIPT_UNAVAILABLE"));
-            }
-          });
+            },
+            reject,
+          );
         },
       );
       outgoing.once("error", reject);
