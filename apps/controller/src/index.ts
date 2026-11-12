@@ -541,6 +541,7 @@ function operationTarget(
   if (
     (operation.operationId === "createAgent" ||
       operation.operationId === "validateAgentCreate" ||
+      operation.operationId === "getNamespaceAgentCapabilities" ||
       operation.operationId === "provisionAgent" ||
       operation.operationId === "listRepositoryOptions") &&
     namespaceId
