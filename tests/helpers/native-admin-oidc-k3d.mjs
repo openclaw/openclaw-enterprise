@@ -264,6 +264,45 @@ process.stdout.write(resources.map(item => JSON.stringify(item)).join("\\n---\\n
     parentCookieName: "__Host-openclaw_occ.session_token",
     releaseRevision: status.version,
     controllerImage: api.image,
+    async replaceApiPod(agentId, revisionId) {
+      const uid = async (scope, selector) => {
+        const { stdout } = await run("kubectl", [
+          ...kubectl,
+          ...scope,
+          "get",
+          "pods",
+          "-l",
+          selector,
+          "-o",
+          "jsonpath={.items[*].metadata.uid}",
+        ]);
+        const ids = stdout.trim().split(/\s+/);
+        assert.equal(ids.length, 1);
+        assert.match(ids[0], /^[0-9a-f-]{36}$/);
+        return ids[0];
+      };
+      const apiScope = ["-n", namespace];
+      const apiSelector = Object.entries(deployment.spec.selector.matchLabels)
+        .map(([name, value]) => name + "=" + value)
+        .join(",");
+      const gatewaySelector = `openclaw.dev/agent=${agentId},openclaw.dev/revision=${revisionId},openclaw.dev/workload-role=gateway`;
+      const apiBefore = await uid(apiScope, apiSelector);
+      const gateway = await uid(["-A"], gatewaySelector);
+      const target = `deployment/${release}-api`;
+      await run("kubectl", [...kubectl, ...apiScope, "rollout", "restart", target]);
+      await run("kubectl", [
+        ...kubectl,
+        ...apiScope,
+        "rollout",
+        "status",
+        target,
+        "--timeout=120s",
+      ]);
+      const apiAfter = await uid(apiScope, apiSelector);
+      assert.notEqual(apiAfter, apiBefore);
+      assert.equal(await uid(["-A"], gatewaySelector), gateway);
+      return { apiBefore, apiAfter, gateway };
+    },
     async authorizeRoute(route) {
       const url = new URL(route.request().url());
       assert.equal(url.origin + url.pathname, `${issuer}/authorize`);

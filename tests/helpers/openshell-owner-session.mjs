@@ -536,23 +536,26 @@ export async function verifyOpenShellOwnerSession({
   });
   const consolePage = await guarded.newPage();
   await consolePage.route("https://idp.example.test/authorize*", oidc.authorizeRoute);
-  await consolePage.goto(consoleOrigin + "/console/");
-  const callback = consolePage.waitForResponse(
-    (res) => new URL(res.url()).pathname === "/api/auth/providers/oidc/callback",
-  );
-  await consolePage.getByRole("button", { name: "Continue with Test SSO", exact: true }).click();
-  assert.equal((await callback).status(), 302);
-  await consolePage.waitForURL(consoleOrigin + "/console/");
-  const session = await consoleRequest(consolePage, "GET", "/api/auth/session");
-  assert.equal(session.data.user.id, account.id, "OIDC authenticated the attached collaborator");
-  const parent = (await guarded.cookies(consoleOrigin)).find(
-    (cookie) => cookie.name === oidc.parentCookieName,
-  );
-  assert.ok(parent?.secure && parent.httpOnly);
-  assert.equal(parent.domain, consoleHost, "the guarded parent cookie is host-only");
-  await consolePage.goto(
-    `${consoleOrigin}/console/agents/${agent.id}?namespace=${namespaceId}&revision=${rev.id}`,
-  );
+  async function openGuardedConsole() {
+    await consolePage.goto(consoleOrigin + "/console/");
+    const callback = consolePage.waitForResponse(
+      (res) => new URL(res.url()).pathname === "/api/auth/providers/oidc/callback",
+    );
+    await consolePage.getByRole("button", { name: "Continue with Test SSO", exact: true }).click();
+    assert.equal((await callback).status(), 302);
+    await consolePage.waitForURL(consoleOrigin + "/console/");
+    const session = await consoleRequest(consolePage, "GET", "/api/auth/session");
+    assert.equal(session.data.user.id, account.id, "OIDC authenticated the attached collaborator");
+    const parent = (await guarded.cookies(consoleOrigin)).find(
+      (cookie) => cookie.name === oidc.parentCookieName,
+    );
+    assert.ok(parent?.secure && parent.httpOnly);
+    assert.equal(parent.domain, consoleHost, "the guarded parent cookie is host-only");
+    await consolePage.goto(
+      `${consoleOrigin}/console/agents/${agent.id}?namespace=${namespaceId}&revision=${rev.id}`,
+    );
+  }
+  await openGuardedConsole();
 
   async function waitFor(description, observe) {
     const deadline = Date.now() + 120_000;
@@ -590,7 +593,9 @@ export async function verifyOpenShellOwnerSession({
     return page;
   }
   const first = await launch();
-  assert.ok(!(await guarded.cookies(origin)).some((cookie) => cookie.name === parent.name));
+  assert.ok(
+    !(await guarded.cookies(origin)).some((cookie) => cookie.name === oidc.parentCookieName),
+  );
   const handle = (await guarded.cookies(origin)).find(
     (cookie) => cookie.name === "__Host-occ_agent_access",
   );
@@ -609,6 +614,14 @@ export async function verifyOpenShellOwnerSession({
   assert.match(new URL(conversation).pathname, /^\/chat\//);
   assert.equal(sends.length, 1, "one real turn was submitted");
 
+  async function waitForSavedReply(page) {
+    await page.waitForFunction((key) => {
+      const view = globalThis.openclawControlUi?.snapshot();
+      return view?.routeReady === true && view.sessionKey === key;
+    }, sessionKey);
+    await page.locator(replySelector).waitFor({ state: "visible" });
+  }
+
   // A repeated exchange for the same binding must preserve the first tab's
   // already-authorized socket through its next renewal.
   const second = await launch();
@@ -617,13 +630,7 @@ export async function verifyOpenShellOwnerSession({
   await waitForStockUi(second);
   const secondHello = await hello(second, beforeReopen);
   assert.notEqual(secondHello.socket, terminal.socket, "each tab owns its Gateway socket");
-  await second.locator(replySelector).waitFor({ state: "visible" });
-  // The UI can add a display-name slug when it resolves the saved URL. Verify
-  // the committed conversation identity, not that mutable presentation text.
-  await second.waitForFunction((key) => {
-    const snapshot = globalThis.openclawControlUi?.snapshot();
-    return snapshot?.routeReady === true && snapshot.sessionKey === key;
-  }, sessionKey);
+  await waitForSavedReply(second);
   assert.equal(new URL(second.url()).origin, origin);
   assert.match(new URL(second.url()).pathname, /^\/chat\//);
   // The production native proxy renews every 25 seconds. Keep both exact
@@ -653,6 +660,84 @@ export async function verifyOpenShellOwnerSession({
   const refused = await second.goto(origin + "/settings/advanced");
   assert.equal(refused.status(), 403, "a revoked parent cannot reuse its native handle");
   assert.equal(sends.length, 1);
+  // The preceding logout proves revocation on the original sockets. Begin a fresh
+  // browser login for replacement and reuse the saved conversation without another turn.
+  await Promise.all([first.close(), second.close()]);
+  await openGuardedConsole();
+  const existing = await launch();
+  await existing.goto(conversation);
+  await waitForSavedReply(existing);
+  const savedId = sessionKey.split(":").at(-1).replaceAll("-", "");
+  assert.match(savedId, /^[0-9a-f]{32}$/);
+  await existing.waitForURL(
+    (url) =>
+      url.origin === origin &&
+      url.pathname.startsWith("/chat/main/") &&
+      url.pathname.endsWith("-" + savedId),
+    { timeout: 30_000 },
+  );
+  const namedUrl = existing.url();
+  const redeem = new URL("/__occ/native-admin/redeem", origin).href;
+  const release = Promise.withResolvers();
+  let redeemRequests = 0;
+  const pauseRedemption = async (route) => {
+    if (route.request().method() !== "POST" || ++redeemRequests !== 1) {
+      return route.abort();
+    }
+    if (await release.promise) {
+      return route.fallback();
+    }
+    return route.abort();
+  };
+  await guarded.route(redeem, pauseRedemption);
+  let replacement;
+  let launchToReleaseMs;
+  const launchStarted = performance.now();
+  try {
+    const [popup] = await Promise.all([
+      consolePage.waitForEvent("popup"),
+      consolePage.getByRole("link", { name: "Open Agent UI", exact: true }).click(),
+    ]);
+    // The browser owns the outstanding POST. Only its arrival crosses the test boundary.
+    await waitFor("the incumbent launch reached browser redemption", () => redeemRequests === 1);
+    replacement = await oidc.replaceApiPod(agent.id, rev.id);
+    // Exercise the old handle before redemption can set a fresh host cookie.
+    const firstFreshFrame = received.length;
+    const reloaded = await existing.reload({ waitUntil: "commit" });
+    assert.equal(reloaded?.url(), namedUrl);
+    assert.equal(reloaded.status(), 200);
+    assert.equal(reloaded.request().redirectedFrom(), null);
+    await hello(existing, firstFreshFrame);
+    const redemption = popup.waitForResponse(
+      (res) =>
+        res.request().isNavigationRequest() &&
+        res.request().method() === "POST" &&
+        res.url() === redeem,
+    );
+    launchToReleaseMs = Math.ceil(performance.now() - launchStarted);
+    t.diagnostic(
+      `Outstanding browser launch released ${launchToReleaseMs} ms after click; intent lifetime 60 seconds.`,
+    );
+    release.resolve(true);
+    assert.equal(
+      (await redemption).status(),
+      200,
+      `outstanding launch released after ${launchToReleaseMs} ms`,
+    );
+    await hello(popup);
+    await waitForStockUi(popup);
+    assert.equal(new URL(popup.url()).origin, origin);
+    await waitForSavedReply(existing);
+    assert.equal(
+      (await consoleRequest(consolePage, "GET", agentPath)).data.activeRevisionId,
+      rev.id,
+    );
+    assert.equal(sends.length, 1, "replacement and reload must not send the original turn again");
+    assert.equal(redeemRequests, 1);
+  } finally {
+    release.resolve(false);
+    await guarded.unroute(redeem, pauseRedemption);
+  }
   await guarded.close();
   const source = await execute("git", ["rev-parse", "HEAD"], { cwd: import.meta.dirname });
   const changes = await execute("git", ["diff", "--name-only", "HEAD"], {
@@ -680,6 +765,11 @@ export async function verifyOpenShellOwnerSession({
         renewalObservationMs: 55_000,
         distinctSocketsClosedOnParentSignOut: true,
         revokedNativeRequestStatus: refused.status(),
+        namedDocumentAndPendingLaunchAfterApiReplacement: {
+          ...replacement,
+          launchToReleaseMs,
+          redeemRequests,
+        },
       },
       null,
       2,
