@@ -76,9 +76,8 @@ export async function createFixture(
     now: () => clock.wallNow(),
     ...gatewayOptions,
   });
-  // The shared JavaScript fixture widens the capability and state literals.
-  const gateway = drivers.gateway as DeviceGateway;
-  const refresh = drivers.refresh as CredentialRefreshDriver;
+  const gateway = drivers.gateway satisfies DeviceGateway;
+  const refresh = drivers.refresh satisfies CredentialRefreshDriver;
   const fixture = await createConsoleAppFixture(t, {
     auditSink,
     secretDriver,
