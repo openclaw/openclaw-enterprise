@@ -7,16 +7,17 @@ import { selectComposeSubnet } from "../helpers/compose-network.mjs";
 import { writeFirstAgentCliFixture } from "../helpers/ci-runner-fixture.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
-function inventory(subnets) {
-  return JSON.stringify([{ IPAM: { Config: subnets.map((Subnet) => ({ Subnet })) } }]);
+function inventory(subnets: string[]) {
+  return subnets.map((Subnet) => JSON.stringify([{ Subnet }])).join("\n") + "\n";
 }
 
-function runner(subnets) {
-  return async (args) => {
+function runner(subnets: string[]) {
+  const ids = subnets.map((_, index) => `network-${index}`);
+  return async (args: string[]) => {
     if (args.join(" ") === "network ls -q") {
-      return "network-id\n";
+      return ids.join("\n") + "\n";
     }
-    assert.deepEqual(args, ["network", "inspect", "network-id"]);
+    assert.deepEqual(args, ["network", "inspect", "--format", "{{json .IPAM.Config}}", ...ids]);
     return inventory(subnets);
   };
 }
@@ -43,6 +44,14 @@ test("Compose fixtures preserve explicit selection without inspecting another en
       runDocker: () => assert.fail("explicit selection must not inspect Docker"),
     }),
     "10.253.4.0/24",
+  );
+  // A misplaced private value must fail before the QA caller can record it.
+  await assert.rejects(
+    selectComposeSubnet({
+      subnet: "private-value-in-the-wrong-setting",
+      runDocker: async () => assert.fail("invalid override must not inspect Docker"),
+    }),
+    { message: "Compose selection received an invalid IPv4 subnet." },
   );
 });
 
@@ -106,9 +115,9 @@ import assert from "node:assert/strict";
 assert.equal(process.env.DOCKER_HOST, ${JSON.stringify(endpoint)});
 assert.equal(process.env.OPENAI_API_KEY, undefined);
 const args = process.argv.slice(2);
-if (args.join(" ") === "network ls -q") console.log("network-id");
+if (args.join(" ") === "network ls -q") console.log("network-0\\nnetwork-1");
 else {
-  assert.deepEqual(args, ["network", "inspect", "network-id"]);
+  assert.deepEqual(args, ["network", "inspect", "--format", "{{json .IPAM.Config}}", "network-0", "network-1"]);
   console.log(${JSON.stringify(inventory(["172.16.0.0/12", "10.254.1.0/24"]))});
 }
 `,

@@ -3,7 +3,7 @@ import { isIPv4, isIPv6 } from "node:net";
 function ipv4Range(cidr) {
   const [address, bits, extra] = cidr.split("/");
   if (!isIPv4(address) || !/^([0-9]|[12][0-9]|3[0-2])$/.test(bits) || extra !== undefined) {
-    throw new Error("Docker network inventory contains an invalid IPv4 subnet.");
+    throw new Error("Compose selection received an invalid IPv4 subnet.");
   }
   const number = address.split(".").reduce((value, octet) => (value << 8n) + BigInt(octet), 0n);
   const size = 1n << (32n - BigInt(bits));
@@ -13,14 +13,20 @@ function ipv4Range(cidr) {
 
 // Use the caller's Docker runner so inventory and startup use the same endpoint.
 // This is an inventory check, not a reservation; Docker still arbitrates races.
+/** @param {{ runDocker: (args: string[]) => Promise<string>, subnet?: string }} options */
 export async function selectComposeSubnet({ runDocker, subnet }) {
   if (subnet) {
+    ipv4Range(subnet);
     return subnet;
   }
   const ids = (await runDocker(["network", "ls", "-q"])).trim().split(/\s+/).filter(Boolean);
-  const networks = ids.length ? JSON.parse(await runDocker(["network", "inspect", ...ids])) : [];
-  const occupied = networks
-    .flatMap((network) => network.IPAM?.Config ?? [])
+  const configurations = ids.length
+    ? (await runDocker(["network", "inspect", "--format", "{{json .IPAM.Config}}", ...ids]))
+        .trim()
+        .split(/\r?\n/)
+        .flatMap((record) => JSON.parse(record) ?? [])
+    : [];
+  const occupied = configurations
     .map((config) => config.Subnet)
     .filter((cidr) => cidr && !isIPv6(cidr.split("/")[0]))
     .map(ipv4Range);

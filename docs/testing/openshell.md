@@ -375,10 +375,9 @@ an API-key Secret; the Codex PAT used by the starter is a separate credential.
 
 ## Troubleshooting
 
-- Compose first-Agent and QA fixtures select from Docker's inventory
-  unless `OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR` overrides. Selection neither reserves
-  subnets nor checks host routes. After overlap, clean owned resources
-  with `dev-down`.
+- First-Agent and QA Compose fixtures avoid occupied Docker ranges without
+  reserving subnets or checking host routes. On overlap, clean owned resources
+  with `dev-down`, select an unused `OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR`, and retry.
 - If setup times out, inspect the Pods and events in `openshell-system` and
   `agent-sandbox-system`, then clean up the owned environment before retrying.
 - If the model turn fails, check that the key can access the selected model and

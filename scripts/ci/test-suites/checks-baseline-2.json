@@ -70,7 +70,7 @@
     "tests/conformance/slack-proxy-tunnel.test.mjs",
     "tests/conformance/native-admin-websocket-relay.test.mjs",
     "tests/integration/qa-fixture-inputs.test.mjs",
-    "tests/integration/compose-network.test.mjs",
+    "tests/integration/compose-network.test.ts",
     "tests/integration/qa-repository-installation.test.ts",
     "tests/integration/repository-runtime-materialization.test.mjs",
     "tests/conformance/repository-credentials-contracts.test.ts",
@@ -182,7 +182,7 @@
       "path": "tests/integration/qa-fixture-inputs.test.mjs"
     },
     {
-      "path": "tests/integration/compose-network.test.mjs"
+      "path": "tests/integration/compose-network.test.ts"
     },
     {
       "path": "tests/integration/qa-repository-installation.test.ts"
