@@ -122,6 +122,7 @@ test(
         `wire proof missing or not passed: "${wireName}"`,
         ["prepare", "test", "cleanup"],
       ],
+      ["missing-state-before-cleanup", 1, "cleanup skipped (no state)", ["prepare", "test"]],
       ["cleanup", 1, "cleanup failed", ["prepare", "test", "cleanup"]],
       ["cleanup-no-state", 1, "cleanup failed", ["prepare", "test", "cleanup"]],
       ["interrupt-prepare", 130, "SIGINT", ["prepare"]],
@@ -280,6 +281,10 @@ test(
                   { name: ${JSON.stringify(wireName)}, status: "passed" },
                 ] }],
               }));
+              // The test passed, but the cleanup subprocess can no longer use its state.
+              if (scenario === "missing-state-before-cleanup") {
+                unlinkSync(state);
+              }
             }
             const cleanupFailure = scenario === "cleanup" || scenario === "prepare-and-cleanup";
             if (stage === "cleanup" && !cleanupFailure) {
@@ -310,8 +315,9 @@ test(
         });
         assert.equal(result.error, undefined);
         assert.equal(result.signal, null);
-        assert.equal(result.status, code, result.stderr);
         const output = result.stdout + result.stderr;
+        assert.equal(result.status, code, output);
+        assert.equal(output.includes("cleanup passed"), code === 0);
         const unresolved = output.includes("unresolved preparation operation");
         const unknownOutcome = stuck || lostSupervisor || scenario === "interrupt-prepare";
         const expectedStages = stages;
@@ -376,6 +382,7 @@ test(
           const retained = await readdir(join(root, directories[0]));
           assert.equal(retained.includes("state.json"), cleanupFailure || unknownOutcome);
           assert.ok(retained.includes("prepare.log"));
+          assert.equal(retained.includes("results.json"), expectedStages.includes("test"));
         }
         if (daemon) {
           assert.ok(

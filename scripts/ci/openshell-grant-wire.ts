@@ -282,7 +282,8 @@ async function main() {
         console.error("openshell-grant-wire: cleanup failed; inspect the private cleanup.log.");
       }
     } else {
-      console.log("openshell-grant-wire: cleanup skipped (no state).");
+      failed = true;
+      console.error("openshell-grant-wire: cleanup skipped (no state).");
     }
   }
   if (failed || cleanupFailed || interruption) {
