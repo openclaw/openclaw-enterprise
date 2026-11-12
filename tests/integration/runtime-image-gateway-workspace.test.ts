@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
+import { stripTypeScriptTypes } from "node:module";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
@@ -296,9 +297,11 @@ describe("runtime image Gateway workspace", { concurrency: 3 }, () => {
         waitUntilReady: false,
         extraEnvironment: ["APP_SERVER_URL=ws://127.0.0.1:4500", "OPENCLAW_DEBUG=1"],
       });
-      const fixture = await readFile(
-        new URL("../fixtures/runtime-codex-subagent-model.mjs", import.meta.url),
-        "utf8",
+      const fixture = stripTypeScriptTypes(
+        await readFile(
+          new URL("../fixtures/runtime-codex-subagent-model.ts", import.meta.url),
+          "utf8",
+        ),
       );
       const { commit } = await readOpenclawSource();
       const cases = (["main", "string", "object", "alias"] as const).map((agentId) => ({
@@ -375,9 +378,11 @@ describe("runtime image Gateway workspace", { concurrency: 3 }, () => {
         waitUntilReady: false,
         extraEnvironment: ["APP_SERVER_URL=ws://127.0.0.1:4500"],
       });
-      const fixture = await readFile(
-        new URL("../fixtures/runtime-codex-command-approval.mjs", import.meta.url),
-        "utf8",
+      const fixture = stripTypeScriptTypes(
+        await readFile(
+          new URL("../fixtures/runtime-codex-command-approval.ts", import.meta.url),
+          "utf8",
+        ),
       );
       const { commit } = await readOpenclawSource();
       // A single command without shell separators: the approval bridge can bind it, so it

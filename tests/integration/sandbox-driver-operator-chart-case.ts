@@ -9,6 +9,8 @@ type GatewayEvent = Parameters<
 >[0];
 type OperatorEvent =
   GatewayEvent | ["kubernetes", "patch" | "delete", "ServiceAccount", "openshell-sandbox", string];
+type NamespaceContext = Parameters<OpenShellSandboxDriver["ensureNamespace"]>[0];
+type OperatorFixture = ReturnType<typeof operatorWorkspaceChartFixture>;
 
 function operatorWorkspaceChartFixture() {
   const events: OperatorEvent[] = [];
@@ -26,19 +28,29 @@ function operatorWorkspaceChartFixture() {
   return { gatewayClient, configuration, events };
 }
 
-export async function verifyOperatorWorkspaceChart(
-  setup: (fixture: ReturnType<typeof operatorWorkspaceChartFixture>) => {
-    namespaceName: Parameters<OpenShellSandboxDriver["ensureNamespace"]>[0]["namespace"]["name"];
-    ensureNamespace: () => ReturnType<OpenShellSandboxDriver["ensureNamespace"]>;
-    cleanup: () => ReturnType<OpenShellSandboxDriver["cleanup"]>;
-  },
-): Promise<void> {
+export async function verifyOperatorWorkspaceChart({
+  openShellDriver,
+  namespaceContext,
+  kubernetesObjectClient,
+}: {
+  openShellDriver: (
+    gatewayClient: OperatorFixture["gatewayClient"],
+    configuration: OperatorFixture["configuration"],
+  ) => Pick<OpenShellSandboxDriver, "ensureNamespace" | "cleanup">;
+  namespaceContext: () => Omit<NamespaceContext, "kubernetes"> & {
+    kubernetes: NamespaceContext["kubernetes"];
+  };
+  kubernetesObjectClient: (events: OperatorFixture["events"]) => NamespaceContext["kubernetes"];
+}): Promise<void> {
   const fixture = operatorWorkspaceChartFixture();
-  const { namespaceName, ensureNamespace, cleanup } = setup(fixture);
+  const driver = openShellDriver(fixture.gatewayClient, fixture.configuration);
+  const context = namespaceContext();
+  context.kubernetes = kubernetesObjectClient(fixture.events);
+  const namespaceName = context.namespace.name;
 
   // The Gateway must not observe a Workspace until its operator-mode RBAC and
   // ServiceAccount resources have converged in the Compute-owned namespace.
-  await ensureNamespace();
+  await driver.ensureNamespace(context);
   assert.deepEqual(fixture.events, [
     ["kubernetes", "patch", "ServiceAccount", "openshell-sandbox", namespaceName],
     ["gateway", "health"],
@@ -47,7 +59,7 @@ export async function verifyOperatorWorkspaceChart(
   ]);
 
   fixture.events.length = 0;
-  await cleanup();
+  await driver.cleanup(context);
   assert.deepEqual(fixture.events, [
     ["gateway", "getWorkspace", namespaceName],
     ["gateway", "deleteWorkspace", namespaceName],

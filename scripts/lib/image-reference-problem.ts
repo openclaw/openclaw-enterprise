@@ -4,8 +4,9 @@
 // call this so they share the rule of profile preflight, Compute and the chart.
 import { imageReferenceProblem } from "../../packages/occ/src/image-reference.ts";
 
-if (process.argv.length !== 3) {
-  process.stderr.write("usage: image-reference-problem.mjs IMAGE\n");
+const image = process.argv[2];
+if (process.argv.length !== 3 || image === undefined) {
+  process.stderr.write("usage: image-reference-problem.ts IMAGE\n");
   process.exit(2);
 }
-process.stdout.write(imageReferenceProblem(process.argv[2]) ?? "");
+process.stdout.write(imageReferenceProblem(image) ?? "");

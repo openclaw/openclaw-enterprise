@@ -87,7 +87,7 @@ require_immutable_image() {
   local LC_ALL=C
   [[ "$image" =~ @sha256:[a-f0-9]{64}$ ]] ||
     die "$flag must be an approved immutable SHA-256 image reference."
-  local helper=$script_dir/lib/image-reference-problem.mjs
+  local helper=$script_dir/lib/image-reference-problem.ts
   [[ -f "$helper" ]] || die "could not find $helper to check $flag."
   problem=$(node "$helper" "$image") ||
     die "could not run the image reference check for $flag (it needs Node.js 24 or later)."

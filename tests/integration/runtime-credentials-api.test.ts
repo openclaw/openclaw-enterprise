@@ -54,7 +54,7 @@ import { selfSigned } from "../helpers/certificates.mjs";
 import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { reservePort } from "../helpers/available-port.mjs";
+import { reservePort } from "../helpers/available-port.ts";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import { EMBEDDED_API_KEY_REQUIRED } from "../helpers/refusal-text.mjs";
 

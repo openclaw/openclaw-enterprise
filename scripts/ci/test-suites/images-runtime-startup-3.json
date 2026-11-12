@@ -12,7 +12,7 @@
     "tests/integration/runtime-image-state-migration.test.mjs",
     "tests/integration/runtime-image-native-listener.test.mjs",
     "tests/integration/runtime-image-codex-local-plugins.test.ts",
-    "tests/helpers/workspace-gateway-relay-container.test.mjs"
+    "tests/helpers/workspace-gateway-relay-container.test.ts"
   ],
   "files": [
     {
@@ -73,7 +73,7 @@
       ]
     },
     {
-      "path": "tests/helpers/workspace-gateway-relay-container.test.mjs",
+      "path": "tests/helpers/workspace-gateway-relay-container.test.ts",
       "expectedTests": [
         "relay startup retains exit evidence and redacts bounded container logs",
         "relay startup omits container output cut at the capture limit",

@@ -645,11 +645,11 @@ function waitingTest(...args) {
 }
 
 // Node arguments that give the runner a clock that stands still at holdAt (Unix epoch
-// milliseconds) until every gate path exists (tests/helpers/ci-runner-held-clock.mjs). A test
+// milliseconds) until every gate path exists (tests/helpers/ci-runner-held-clock.ts). A test
 // that needs its fixture in some state before the lane deadline creates a gate there, so a
 // busy host delays the deadline instead of reaching it first (finding 2164).
 function heldClock(holdAt, gates) {
-  const preload = new URL("../helpers/ci-runner-held-clock.mjs", import.meta.url);
+  const preload = new URL("../helpers/ci-runner-held-clock.ts", import.meta.url);
   preload.searchParams.set("hold", String(holdAt));
   for (const gate of gates) {
     preload.searchParams.append("gate", gate);
@@ -659,9 +659,9 @@ function heldClock(holdAt, gates) {
 
 // Node arguments that hold the runner just after it lists /proc, the first time it ends its
 // descendants, until the `forked` path exists. It creates the `window` path when
-// the hold starts (tests/helpers/ci-runner-kill-window.mjs, finding 2182).
+// the hold starts (tests/helpers/ci-runner-kill-window.ts, finding 2182).
 function killWindow(window, forked) {
-  const preload = new URL("../helpers/ci-runner-kill-window.mjs", import.meta.url);
+  const preload = new URL("../helpers/ci-runner-kill-window.ts", import.meta.url);
   preload.searchParams.set("window", window);
   preload.searchParams.set("forked", forked);
   return ["--import", preload.href];

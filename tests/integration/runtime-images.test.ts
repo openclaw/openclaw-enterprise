@@ -9,7 +9,8 @@ import { promisify } from "node:util";
 import test from "node:test";
 import { DockerComputeDriver } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import { sha256Hex } from "../../packages/utils/src/index.ts";
+import type { AgentRevision } from "../../packages/contracts/src/index.ts";
+import { asRecord, sha256Hex } from "../../packages/utils/src/index.ts";
 import {
   isRuntimeImageJob,
   localDockerCli,
@@ -24,7 +25,7 @@ const selected = {
     ? false
     : "Run through the dedicated GitHub-hosted runtime-image-fixture job.",
 };
-const docker = localDockerCli(execute);
+const docker = localDockerCli<{ stdout: string; stderr: string }>(execute);
 
 // This suite is routed only to its dedicated GitHub-hosted job. The job owns
 // the VM; preparation, builds, tests and cleanup are sequential in this process.
@@ -60,7 +61,8 @@ test("runtime image fixture", selected, async (t) => {
               join(directory, "Dockerfile"),
               `FROM ${base}\nARG FIXTURE_NONCE\nLABEL org.opencontainers.image.revision=${commit}\nLABEL org.openclaw.image.revision=${openclawCommit}\nLABEL private.fixture=must-not-leak\nLABEL private.fixture.nonce=${"${FIXTURE_NONCE}"}\n`,
             );
-            const baseId = (await fixture.inspectImage(base)).Id;
+            const baseId = asRecord(await fixture.inspectImage(base))?.Id;
+            assert.ok(typeof baseId === "string", "runtime base image must have an immutable ID");
             const imageId = await fixture.build(
               tag,
               join(directory, "image.iid"),
@@ -76,11 +78,29 @@ test("runtime image fixture", selected, async (t) => {
             const compute = new DockerComputeDriver({ images: { gateway: tag, agent: base } });
             const namespace = { id: `ns_${randomUUID()}` };
             const agent = { id: `agt_${randomUUID()}` };
-            const revision = {
+            const revision: AgentRevision = {
               id: `rev_${randomUUID()}`,
               namespaceId: namespace.id,
               agentId: agent.id,
+              revision: 1,
+              backendId: null,
+              configurationId: `cfg_${randomUUID()}`,
+              configurationKind: "agent",
+              configurationGeneration: 1,
+              configuration: {},
+              gatewayManagedMode: true,
+              harness: {
+                id: "openclaw",
+                version: "1.0.0",
+                mode: "embedded",
+                overrides: {},
+                configuration: {},
+              },
               compute: { id: compute.id, implementation: compute.implementation },
+              executionAdmission: { version: 2, mode: "unprotected" },
+              harnessAuth: { method: "runtime" },
+              servicePrincipalId: `sp_${randomUUID()}`,
+              createdAt: new Date().toISOString(),
             };
             const name = `oce-${sha256Hex(namespace.id, 12)}-gateway-${sha256Hex(agent.id, 12)}`;
             const labels = {

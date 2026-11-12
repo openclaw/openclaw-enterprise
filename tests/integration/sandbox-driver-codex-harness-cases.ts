@@ -27,7 +27,7 @@ import type {
   SandboxNamespaceContext,
 } from "../../packages/contracts/src/index.ts";
 import { SandboxRevisionUnsupportedError } from "../../packages/occ/src/index.ts";
-import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
+import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import {
   completeSandboxRevision,

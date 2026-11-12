@@ -5,7 +5,10 @@ import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
-import { assertHostedSigninJob, readStagedSignin } from "../../tests/helpers/signin/staged.mjs";
+import {
+  assertHostedSigninJob as validateHostedSigninJob,
+  readStagedSignin,
+} from "../../tests/helpers/signin/staged.mjs";
 import {
   inspectSigninSupport,
   signinSupportReferences,
@@ -14,13 +17,30 @@ import {
   assertLocalRehearsalDaemon,
   bindLocalRehearsalCluster,
   runFixtureCommand,
+  type FixtureRun,
 } from "../../tests/helpers/production-rehearsal-custody.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
-const run = (command, args, options) => runFixtureCommand(command, args, options, String, true);
+const run: FixtureRun = (command, args, options) =>
+  runFixtureCommand(command, args, options, String, true);
 const platform = "linux/amd64";
+const assertHostedSigninJob: (
+  environment: NodeJS.ProcessEnv,
+) => asserts environment is NodeJS.ProcessEnv & { GITHUB_WORKSPACE: string; RUNNER_TEMP: string } =
+  validateHostedSigninJob;
 
-export function restrictStagingProcess(e) {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function hasStringField<Key extends string>(
+  value: unknown,
+  key: Key,
+): value is Record<Key, string> {
+  return isRecord(value) && typeof value[key] === "string";
+}
+
+export function restrictStagingProcess(e: NodeJS.ProcessEnv) {
   // This command runs in its own process; spawned tools inherit only the runner
   // facts they need. Registry, model and Actions service credentials stay out.
   const keep = new Set([
@@ -62,18 +82,19 @@ export function restrictStagingProcess(e) {
   });
 }
 
-async function prepare(expectedPlanHash) {
+async function prepare(expectedPlanHash: string | undefined) {
   const e = process.env;
   assertHostedSigninJob(e);
   restrictStagingProcess(e);
   assert.equal(await realpath(root), await realpath(e.GITHUB_WORKSPACE));
   assert.equal(await realpath(root), await realpath(process.cwd()));
-  const picked = await readStagedSignin({
-    directory: e.RUNNER_TEMP,
-    expectedPlanHash,
-    workflowSha: e.GITHUB_WORKFLOW_SHA,
-    installation: e.STAGING_INSTALLATION,
-  });
+  const picked: { previous: unknown; candidate: unknown; fixedRuntime: unknown } =
+    await readStagedSignin({
+      directory: e.RUNNER_TEMP,
+      expectedPlanHash,
+      workflowSha: e.GITHUB_WORKFLOW_SHA,
+      installation: e.STAGING_INSTALLATION,
+    });
   assert.equal((await run("git", ["rev-parse", "HEAD"])).trim(), e.GITHUB_WORKFLOW_SHA);
   assert.equal(await run("git", ["status", "--porcelain", "--untracked-files=no"]), "");
   const { ghcrPackageName } = await import("./container-release.mjs");
@@ -81,9 +102,11 @@ async function prepare(expectedPlanHash) {
   const release = [picked.previous, picked.candidate, picked.fixedRuntime].map((item, i) => {
     const repository = i < 2 ? e.GHCR_CONTROLLER_IMAGE : e.GHCR_RUNTIME_IMAGE;
     ghcrPackageName(repository);
+    assert.ok(isRecord(item));
     assert.equal(item.reference, repository + "@" + item.rootDigest);
     assert.equal(item.platform, platform);
     for (const digest of [item.rootDigest, item.manifestDigest, item.configDigest]) {
+      assert.ok(typeof digest === "string");
       assert.match(digest, /^sha256:[a-f0-9]{64}$/);
     }
     return {
@@ -111,13 +134,14 @@ async function prepare(expectedPlanHash) {
       timeout: 600_000,
     });
   }
-  const support = await inspectSigninSupport(run, refs);
+  const support: Record<string, unknown> = await inspectSigninSupport(run, refs);
   const { prepareStagingSigninCluster } = await import("./prepare.mjs");
   const statePath = join(directory, "cluster-state.json");
   const existingVolumes = new Set(
     (await run("docker", ["volume", "ls", "-q"])).trim().split(/\r?\n/u),
   );
-  const created = await prepareStagingSigninCluster(statePath);
+  const created: unknown = await prepareStagingSigninCluster(statePath);
+  assert.ok(hasStringField(created, "name"));
   const bound = await bindLocalRehearsalCluster(
     run,
     created.name,
@@ -129,7 +153,13 @@ async function prepare(expectedPlanHash) {
     "fixture mounted a preexisting volume",
   );
   for (const image of [...release, support.node, support.postgres]) {
+    assert.ok(hasStringField(image, "image"));
     await bound.pullPublishedImage(image.image);
+    assert.ok(
+      hasStringField(image, "rootDigest") &&
+        hasStringField(image, "manifestDigest") &&
+        hasStringField(image, "configDigest"),
+    );
     await bound.assertStagedImage(image);
   }
   assert.deepEqual(await bound.cleanupIdentity(), membership);

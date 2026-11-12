@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, type ExecFileOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
-import { waitForRelayFile } from "../fixtures/workspace-relay-engine.mjs";
+import { waitForRelayFile } from "../fixtures/workspace-relay-engine.ts";
 import { boundedTeardown } from "./bounded-teardown.ts";
 import { registerQaSecret } from "./qa-secrets.mjs";
 import { fileTemporaryDirectory } from "./temporary-directory.mjs";
-import { startWorkspaceGatewayRelayContainer } from "./workspace-gateway-relay-container.mjs";
+import { startWorkspaceGatewayRelayContainer } from "./workspace-gateway-relay-container.ts";
 
 const executeFile = promisify(execFile);
 const containerEngine = process.env.OCC_DOCKER_BIN ?? "docker";
@@ -17,13 +17,30 @@ const image = process.env.OCC_TEST_RUNTIME_IMAGE;
 // Allow two bounded 120s fixture launches, a 30s wait, the helper's 120s
 // launch, its 5s diagnostic/cleanup commands, and final verification.
 const options = { skip: !image && "OCC_TEST_RUNTIME_IMAGE is required", timeout: 480_000 };
-const commandOptions = { timeout: 5_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 };
+const commandOptions = {
+  timeout: 5_000,
+  killSignal: "SIGKILL",
+  maxBuffer: 64 * 1024,
+} satisfies ExecFileOptions;
 const root = fileTemporaryDirectory("oce-workspace-relay-");
-const helperUrl = new URL("./workspace-gateway-relay-container.mjs", import.meta.url).href;
+const helperUrl = new URL("./workspace-gateway-relay-container.ts", import.meta.url).href;
 const teardownUrl = new URL("./bounded-teardown.ts", import.meta.url).href;
-const fixtureUrl = new URL("../fixtures/workspace-relay-engine.mjs", import.meta.url).href;
+const fixtureUrl = new URL("../fixtures/workspace-relay-engine.ts", import.meta.url).href;
 
-async function engineWrapper(mode, partialOutput, launchFiles) {
+type LaunchFiles = { ready: string; release: string; finished: string };
+type RelayContext = { after(hook: () => Promise<void>): unknown };
+
+function commandError(error: unknown) {
+  return {
+    code: error && typeof error === "object" && "code" in error ? error.code : undefined,
+    signal: error && typeof error === "object" && "signal" in error ? error.signal : undefined,
+    killed: error && typeof error === "object" && "killed" in error ? error.killed : undefined,
+    stdout: error && typeof error === "object" && "stdout" in error ? error.stdout : undefined,
+    stderr: error && typeof error === "object" && "stderr" in error ? error.stderr : undefined,
+  };
+}
+
+async function engineWrapper(mode: string, partialOutput?: string, launchFiles?: LaunchFiles) {
   const path = join(root, `${randomUUID()}.mjs`);
   await writeFile(
     path,
@@ -35,23 +52,32 @@ async function engineWrapper(mode, partialOutput, launchFiles) {
 
 // Direct fixture commands deliberately report only stage/status: raw execFile
 // errors include the selected private image and inline program in their argv.
-async function engineCommand(stage, args, options = {}) {
+async function engineCommand(stage: string, args: string[], options: ExecFileOptions = {}) {
   try {
-    return await executeFile(containerEngine, args, { ...commandOptions, ...options });
-  } catch (error) {
-    const failure = new Error(
-      `Relay fixture ${stage} failed: exit=${error.code ?? "unknown"} signal=${error.signal ?? "none"}`,
-    );
-    failure.indeterminate = Boolean(
-      error.killed || error.signal || error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+    return await executeFile(containerEngine, args, {
+      ...commandOptions,
+      ...options,
+      encoding: "utf8",
+    });
+  } catch (value) {
+    const error = commandError(value);
+    const failure = Object.assign(
+      new Error(
+        `Relay fixture ${stage} failed: exit=${error.code ?? "unknown"} signal=${error.signal ?? "none"}`,
+      ),
+      {
+        indeterminate: Boolean(
+          error.killed || error.signal || error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+        ),
+      },
     );
     throw failure;
   }
 }
 
-function ownedFixture(context) {
+function ownedFixture(context: RelayContext) {
   const label = `org.openclaw.test.relay-fixture=${randomUUID()}`;
-  let launch = Promise.resolve();
+  let launch: Promise<unknown> = Promise.resolve();
   let indeterminate = false;
   const find = async () => {
     const { stdout } = await engineCommand("ownership", [
@@ -82,11 +108,12 @@ function ownedFixture(context) {
   return {
     label,
     find,
-    run(args) {
+    run(args: string[]) {
       launch = engineCommand("launch", ["run", "-d", "--label", label, ...args], {
         timeout: 120_000,
-      }).catch((error) => {
-        indeterminate = error.indeterminate;
+      }).catch((error: unknown) => {
+        indeterminate =
+          error instanceof Error && "indeterminate" in error && error.indeterminate === true;
         throw error;
       });
       return launch;
@@ -94,14 +121,15 @@ function ownedFixture(context) {
   };
 }
 
-async function runChildTest(source) {
+async function runChildTest(source: string) {
   try {
     await executeFile(process.execPath, ["--input-type=module", "-e", source], {
       ...commandOptions,
       timeout: 190_000,
       env: { ...process.env, NODE_TEST_CONTEXT: undefined },
     });
-  } catch (error) {
+  } catch (value) {
+    const error = commandError(value);
     // Never leak the inline test source or incomplete output on a failed child.
     assert.ok(
       !error.killed && !error.signal && error.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
@@ -113,11 +141,12 @@ async function runChildTest(source) {
   assert.fail("child test must report its expected failure");
 }
 
-function runArguments(entrypoint, args) {
+function runArguments(entrypoint: string, args: string[]) {
+  assert.ok(image, "OCC_TEST_RUNTIME_IMAGE is required");
   return ["--pull=never", "--network=none", "--entrypoint", entrypoint, image, ...args];
 }
 
-function relay(t, entrypoint, args, engine = containerEngine) {
+function relay(t: TestContext, entrypoint: string, args: string[], engine = containerEngine) {
   const relayName = `oce-relay-diagnostic-${randomUUID()}`;
   const started = startWorkspaceGatewayRelayContainer(t, {
     containerEngine: engine,
@@ -151,7 +180,8 @@ test(
     const logOutput = `${"x".repeat(10000)}\n${secret}\nrelay startup diagnostic marker\n`;
     await assert.rejects(
       relay(t, "node", ["-e", program, logOutput], await engineWrapper("wait-for-exit")),
-      (error) => {
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
         assert.match(error.message, /not observed running/);
         assert.match(error.message, /status=exited running=false exit=23/);
         assert.match(error.message, /relay startup diagnostic marker/);
@@ -171,7 +201,8 @@ test("relay startup omits container output cut at the capture limit", options, a
   const program = `require("node:fs").writeSync(2, "x".repeat(65509) + "\\nWITNESS:" + ${JSON.stringify(secret)} + "tail"); process.exit(24);`;
   await assert.rejects(
     relay(t, "node", ["-e", program], await engineWrapper("wait-for-exit")),
-    (error) => {
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
       assert.match(error.message, /status=exited running=false exit=24/);
       assert.match(error.message, /Output exceeded the 64 KiB capture limit/);
       assert.doesNotMatch(error.message, /WITNESS:/);
@@ -185,7 +216,8 @@ test("relay startup omits interrupted diagnostic output", options, async (t) => 
   const secret = randomUUID();
   registerQaSecret(secret);
   const wrapper = await engineWrapper("interrupted-logs", `WITNESS:${secret.slice(0, 16)}`);
-  await assert.rejects(relay(t, "node", ["-e", "process.exit(25)"], wrapper), (error) => {
+  await assert.rejects(relay(t, "node", ["-e", "process.exit(25)"], wrapper), (error: unknown) => {
+    assert.ok(error instanceof Error);
     assert.match(error.message, /exit=25/);
     assert.match(error.message, /Interrupted command output omitted/);
     assert.doesNotMatch(error.message, /WITNESS:/);
@@ -196,7 +228,8 @@ test("relay startup omits interrupted diagnostic output", options, async (t) => 
 
 test("relay startup preserves engine launch errors before cleanup", options, async (t) => {
   // The run command itself rejects and leaves a created container.
-  await assert.rejects(relay(t, "/missing-oce-relay-entrypoint", []), (error) => {
+  await assert.rejects(relay(t, "/missing-oce-relay-entrypoint", []), (error: unknown) => {
+    assert.ok(error instanceof Error);
     assert.match(error.message, /run: exit=/);
     assert.match(error.message, /missing-oce-relay-entrypoint/);
     assert.match(error.message, /state:/);
@@ -257,7 +290,8 @@ test(
       relayName,
       runArguments: runArguments("node", ["-e", "process.exit(27)"]),
     });
-    await assert.rejects(started, (error) => {
+    await assert.rejects(started, (error: unknown) => {
+      assert.ok(error instanceof Error);
       assert.match(error.message, /run: exit=/);
       assert.match(error.message, /No verified owned container; state and logs were not read/);
       assert.doesNotMatch(error.message, new RegExp(unrelatedMarker));
@@ -294,7 +328,8 @@ test(
   async (t) => {
     await assert.rejects(
       relay(t, "node", ["-e", "process.exit(29)"], await engineWrapper("lost-removal-ack")),
-      (error) => {
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
         assert.match(error.message, /exit=29/);
         return true;
       },
@@ -309,7 +344,8 @@ test("fixture cleanup owns containers left by a rejected launch", options, async
   });
   await assert.rejects(
     fixture.run(runArguments("/missing-oce-relay-fixture-entrypoint", [])),
-    (error) => {
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
       assert.match(error.message, /^Relay fixture launch failed: exit=\d+ signal=none$/);
       assert.doesNotMatch(error.message, /missing-oce-relay-fixture-entrypoint/);
       assert.equal(error.cause, undefined);
@@ -319,12 +355,18 @@ test("fixture cleanup owns containers left by a rejected launch", options, async
   assert.ok(await fixture.find(), "a failed run still creates a container requiring disposal");
 });
 
-async function delegatedLaunchTest(t, mode) {
+async function delegatedLaunchTest(
+  t: TestContext,
+  mode: "cancelled-launch" | "interrupted-launch",
+) {
   const context = boundedTeardown(t).context;
   const fixture = ownedFixture(context);
-  const launchFiles = Object.fromEntries(
-    ["ready", "release", "finished"].map((name) => [name, join(root, `${randomUUID()}-${name}`)]),
-  );
+  const launchFile = (name: string) => join(root, `${randomUUID()}-${name}`);
+  const launchFiles = {
+    ready: launchFile("ready"),
+    release: launchFile("release"),
+    finished: launchFile("finished"),
+  };
   // Always release and await the delegated engine call before parent disposal,
   // including when the assertion or the child test fails unexpectedly.
   context.after(async () => {
