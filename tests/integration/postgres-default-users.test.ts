@@ -4,10 +4,16 @@ import test from "node:test";
 
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
 import type { ControllerAppOptions } from "../../apps/controller/src/index.ts";
+import type {
+  AuthorizationRequest,
+  PresetDraftDefinition,
+  PresetSummary,
+} from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver, validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
 import {
   OpenClawController,
   PostgresHumanAuthentication,
+  type ControllerOptions,
   type PostgresPlatformState,
 } from "../../packages/occ/src/index.ts";
 import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mjs";
@@ -31,14 +37,20 @@ async function defaultUsersApp(
   t: test.TestContext,
   label: string,
   iam: ReturnType<typeof defaultUsersIAM> = defaultUsersIAM(),
+  controllerOptions: Pick<ControllerOptions, "defaultPresets" | "recordOperations"> = {},
+  appOptions: Pick<
+    ControllerAppOptions,
+    "nativeAdmin" | "nativeAdminGatewayApiKey" | "publicOrigin"
+  > = {},
 ) {
   type ProvisionAuthAccount = NonNullable<ControllerAppOptions["provisionAuthAccount"]>;
   const accounts: { provision?: ProvisionAuthAccount } = {};
   const agentApp = await createPostgresAgentApp(t, {
     label,
     authSecret: "default-users-postgres-auth-secret-minimum-32-chars",
-    controllerOptions: { iamConfiguration: controllerIAMConfiguration(iam) },
+    controllerOptions: { ...controllerOptions, iamConfiguration: controllerIAMConfiguration(iam) },
     appOptions: {
+      ...appOptions,
       provisionAuthAccount: ((...args) =>
         accounts.provision!(...args)) satisfies ProvisionAuthAccount,
     },
@@ -120,7 +132,20 @@ test(
   "Default users create Agents in the default Namespace and own what they create",
   requiresPostgres,
   async (t) => {
-    const agentApp = await defaultUsersApp(t, "default-users");
+    // Enable browser-access reporting without making any Agent gateway request.
+    const agentApp = await defaultUsersApp(
+      t,
+      "default-users",
+      defaultUsersIAM(),
+      {},
+      {
+        publicOrigin: "https://console.oce.localhost",
+        nativeAdmin: { enabled: true, domain: "agents.oce.localhost" },
+        nativeAdminGatewayApiKey: async () => {
+          assert.fail("Capability reporting must not request the private gateway API key.");
+        },
+      },
+    );
     const { inject, pool, account } = agentApp;
     const namespaceId = await defaultNamespace(agentApp);
     const base = `/namespaces/${namespaceId}`;
@@ -169,19 +194,19 @@ test(
     assert.deepEqual(accountAudit.rows, [{ group_ids: [DEFAULT_USER_GROUP] }]);
 
     // A Default user cannot read the Installation, so the console's Create Agent reads the
-    // capabilities it needs from the Namespace where the member may create Agents. Guided
-    // provisioning and its native admin option need Installation administration, so the answer
-    // omits both.
+    // capabilities it needs from the Namespace where the member may create Agents. Browser
+    // access remains available to ordinary creators; only guided provisioning requires
+    // Installation administration.
     assert.equal((await alice.request("GET", "/installation")).status, 403);
     const memberCapabilities = await alice.request("GET", `${base}/agent-capabilities`);
     assert.equal(memberCapabilities.status, 200);
     const administratorView = await inject("GET", "/installation");
     assert.equal(administratorView.statusCode, 200, administratorView.body);
-    const {
-      nativeAdmin: _provisioningOnly,
-      agentProvisioning: _administratorOnly,
-      ...expectedCapabilities
-    } = administratorView.json().data.capabilities ?? {};
+    const installationCapabilities = administratorView.json().data.capabilities;
+    assert.equal(installationCapabilities?.nativeAdmin, true);
+    assert.equal(memberCapabilities.data.capabilities.nativeAdmin, true);
+    const { agentProvisioning: _administratorOnly, ...expectedCapabilities } =
+      installationCapabilities ?? {};
     assert.deepEqual(memberCapabilities.data, { capabilities: expectedCapabilities });
 
     // Alice completes the Agent workflow in default with no administrator action. Each create
@@ -387,14 +412,20 @@ test(
   "an iam configuration change at restart revokes Group grants and keeps what members created",
   requiresPostgres,
   async (t) => {
+    const defaultPreset = {
+      name: "Default users Preset",
+      template: { agent: { name: "Default users Agent", executionMode: "dedicated" } },
+    } satisfies PresetDraftDefinition;
     const agentApp = await defaultUsersApp(
       t,
       "default-users-configuration",
       defaultUsersIAM({ namespaceCreate: true }),
+      { defaultPresets: [defaultPreset], recordOperations: true },
     );
     const { controller, pool, principal, state, account } = agentApp;
     const alice = await account("alice");
     const bob = await account("bob");
+    assert.equal((await alice.request("GET", "/installation")).status, 403);
 
     // With the Namespace Creator binding configured, a member creates a Namespace and owns all of
     // it: a Namespace-wide Owner binding, which also let the same unit create the default Presets.
@@ -410,15 +441,96 @@ test(
       (await bob.request("GET", `/namespaces/${namespace.id}/agent-capabilities`)).status,
       403,
     );
+    const presets = await alice.request("GET", `/namespaces/${namespace.id}/presets`);
+    assert.equal(presets.status, 200);
+    assert.equal(presets.data.length, 1);
+    const preset = presets.data[0] as PresetSummary;
+    assert.equal(preset.name, defaultPreset.name);
+    assert.equal(preset.namespaceId, namespace.id);
+    const exactPreset = await alice.request(
+      "GET",
+      `/namespaces/${namespace.id}/presets/${preset.id}`,
+    );
+    assert.equal(exactPreset.status, 200);
+    assert.deepEqual(exactPreset.data, { ...preset, template: defaultPreset.template });
+    const persistedPreset = await pool.query(
+      "SELECT id, name, template FROM occ.presets WHERE namespace_id = $1",
+      [namespace.id],
+    );
+    assert.deepEqual(persistedPreset.rows, [
+      { id: preset.id, name: defaultPreset.name, template: defaultPreset.template },
+    ]);
     const owners = await pool.query(
-      `SELECT identity_subject_id, resource_kind FROM occ.iam_access_bindings
-       WHERE namespace_id = $1 AND role_id = $2`,
+      `SELECT id, identity_subject_id, resource_kind, resource_id FROM occ.iam_access_bindings
+       WHERE namespace_id = $1 AND role_id = $2 ORDER BY resource_kind NULLS FIRST`,
       [namespace.id, OWNER_ROLE],
     );
     assert.deepEqual(owners.rows, [
-      { identity_subject_id: alice.principalId, resource_kind: null },
+      {
+        id: `binding_owner_${namespace.id}`,
+        identity_subject_id: alice.principalId,
+        resource_kind: null,
+        resource_id: null,
+      },
+      {
+        id: `binding_owner_${preset.id}`,
+        identity_subject_id: alice.principalId,
+        resource_kind: "preset",
+        resource_id: preset.id,
+      },
     ]);
-    assert.equal((await alice.request("GET", `/namespaces/${namespace.id}/presets`)).status, 200);
+    const ownerAudit = await pool.query(
+      `SELECT resource_kind, resource_id, outcome, details->>'bindingId' AS binding_id,
+              details->>'subjectId' AS subject_id, details->>'roleId' AS role_id
+       FROM occ.audit_events WHERE namespace_id = $1 AND actor_id = $2
+         AND action = 'openclaw.iam.access_bindings.create' AND details->>'reason' = 'creator'
+       ORDER BY resource_kind`,
+      [namespace.id, alice.principalId],
+    );
+    assert.deepEqual(ownerAudit.rows, [
+      {
+        resource_kind: "namespace",
+        resource_id: namespace.id,
+        outcome: "success",
+        binding_id: `binding_owner_${namespace.id}`,
+        subject_id: alice.principalId,
+        role_id: OWNER_ROLE,
+      },
+      {
+        resource_kind: "preset",
+        resource_id: preset.id,
+        outcome: "success",
+        binding_id: `binding_owner_${preset.id}`,
+        subject_id: alice.principalId,
+        role_id: OWNER_ROLE,
+      },
+    ]);
+    const presetAudit = await pool.query(
+      `SELECT actor_id, resource_id, outcome, details->>'source' AS source FROM occ.audit_events
+       WHERE namespace_id = $1 AND action = 'openclaw.presets.create'`,
+      [namespace.id],
+    );
+    assert.deepEqual(presetAudit.rows, [
+      {
+        actor_id: alice.principalId,
+        resource_id: preset.id,
+        outcome: "success",
+        source: "installation-defaults",
+      },
+    ]);
+    const namespaceAudit = await pool.query(
+      `SELECT actor_id, resource_id, outcome FROM occ.audit_events
+       WHERE namespace_id = $1 AND action = 'openclaw.namespaces.create'`,
+      [namespace.id],
+    );
+    assert.deepEqual(namespaceAudit.rows, [
+      { actor_id: alice.principalId, resource_id: namespace.id, outcome: "success" },
+    ]);
+    const work = await pool.query(
+      "SELECT actor_id, namespace_target FROM occ.controller_work WHERE namespace_id = $1",
+      [namespace.id],
+    );
+    assert.deepEqual(work.rows, [{ actor_id: alice.principalId, namespace_target: "ready" }]);
     // Bob, also a member, cannot see Alice's Namespace.
     assert.equal((await bob.request("GET", `/namespaces/${namespace.id}`)).status, 403);
 
@@ -471,6 +583,55 @@ test(
     );
     const ownerRole = await pool.query("SELECT 1 FROM occ.iam_roles WHERE id = $1", [OWNER_ROLE]);
     assert.equal(ownerRole.rowCount, 1);
+
+    // Namespace create still passes, but its newly written Owner binding cannot create a
+    // Preset after a restart removes only that permission. The denied authorization identifies
+    // the attempted Namespace, so check every part of that exact bundle after rollback.
+    const withoutPresetCreate = defaultUsersIAM({ namespaceCreate: true });
+    withoutPresetCreate.roles = withoutPresetCreate.roles.map((role) =>
+      role.id === "owner"
+        ? { ...role, permissions: role.permissions.filter((value) => value !== "preset:create") }
+        : role,
+    );
+    await restartedController(controller, state, withoutPresetCreate).applyIAMConfiguration();
+    try {
+      const refusedName = `bob refused ${randomUUID()}`;
+      const refused = await bob.request("POST", "/namespaces", { name: refusedName });
+      assert.equal(refused.status, 403, JSON.stringify(refused.error));
+      assert.equal(refused.error?.code, "FORBIDDEN");
+      const denial = await pool.query<{ authorization: AuthorizationRequest }>(
+        `SELECT details->'__occAuditMetadata'->'authorization' AS authorization
+         FROM occ.audit_events WHERE actor_id = $1 AND action = 'openclaw.namespaces.create'
+           AND kind = 'authorization_denial' AND outcome = 'denied'
+           AND details->'__occAuditMetadata'->>'requestId' = $2`,
+        [bob.principalId, refused.meta.requestId],
+      );
+      assert.equal(denial.rowCount, 1);
+      const authorization = denial.rows[0]?.authorization;
+      assert.ok(authorization);
+      const refusedNamespaceId = authorization.resource.namespaceId;
+      assert.ok(refusedNamespaceId);
+      assert.deepEqual(authorization, {
+        principalId: bob.principalId,
+        action: "create",
+        resource: { kind: "preset", id: refusedNamespaceId, namespaceId: refusedNamespaceId },
+      });
+      const residue = await pool.query(
+        `SELECT
+           (SELECT count(*)::int FROM occ.namespaces WHERE id = $1 OR name = $2) AS namespaces,
+           (SELECT count(*)::int FROM occ.presets WHERE namespace_id = $1) AS presets,
+           (SELECT count(*)::int FROM occ.iam_access_bindings WHERE namespace_id = $1) AS bindings,
+           (SELECT count(*)::int FROM occ.controller_work WHERE namespace_id = $1) AS work,
+           (SELECT count(*)::int FROM occ.audit_events
+            WHERE namespace_id = $1 AND outcome = 'success') AS success_audits`,
+        [refusedNamespaceId, refusedName],
+      );
+      assert.deepEqual(residue.rows, [
+        { namespaces: 0, presets: 0, bindings: 0, work: 0, success_audits: 0 },
+      ]);
+    } finally {
+      await restartedController(controller, state, narrowed).applyIAMConfiguration();
+    }
   },
 );
 
