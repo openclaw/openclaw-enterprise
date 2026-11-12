@@ -1460,6 +1460,7 @@ function workflowBootstrap(step: string) {
 
 const bootstrapSteps = {
   select: "      - id: select\n",
+  advisory: "      - name: Report main test advisory\n",
   verify: "      - name: Verify selected mode\n",
 };
 
@@ -3079,6 +3080,95 @@ async function suiteFixture(
   const f = await fixture(t, change, { ...suiteFiles(), ...extra }, {}, options);
   return [f, await shallowBootstrap(f)] as const;
 }
+
+test("main test advisory reports only a verified single modification and leaves selection full", async (t) => {
+  const path = "tests/integration/postgres-a.test.mjs";
+  const broad: string[] = [];
+  const narrow = ["postgres"];
+  const extraLane = present(suiteFiles()["scripts/ci/test-suites.json"]).replaceAll(
+    "postgres",
+    "unknown-lane",
+  );
+  const cases: [Change, Files, string[], boolean?][] = [
+    [editTest(path), {}, narrow],
+    [postgresEdit(({ put }) => put("docs/change.md")), {}, broad],
+    [postgresEdit(editTest("tests/integration/postgres-b.test.mjs")), {}, broad],
+    [({ repo }) => chmodSync(join(repo, path), 0o755), {}, broad],
+    [
+      editTest(path),
+      {
+        "scripts/reader.mjs": 'import "../tests/integration/postgres-a.test.mjs";',
+      },
+      broad,
+    ],
+    [editTest(path), { "scripts/ci/test-suites/postgres.json": laneManifest([]) }, broad],
+    [
+      editTest(path),
+      {
+        "scripts/ci/test-suites.json": extraLane,
+        "scripts/ci/test-suites/unknown-lane.json": laneManifest([path]),
+      },
+      broad,
+      false,
+    ],
+    [
+      postgresEdit(({ put }) => put("scripts/ci/test-suites/postgres.json", laneManifest([path]))),
+      {},
+      broad,
+    ],
+    [({ git }) => git("rm", path), {}, broad],
+  ];
+  const matrix = await buildMatrix(t, "full", "");
+  assert.equal(matrix.status, 0, matrix.stderr);
+  assert.ok(matrix.matrix?.some((row) => row.lane === "postgres-application"));
+  await each(cases, async ([change, extra, expected, bound = true], i) => {
+    const [f, checkout] = await suiteFixture(t, change, extra);
+    const check = async (
+      lanes: string[],
+      event: Record<string, string | boolean | null> = {},
+      environment: NodeJS.ProcessEnv = {},
+    ) => {
+      mainPushEvent(f, event);
+      const env = { ...mainPushEnvironment, ...environment };
+      const selected = await checkout.select(env);
+      assert.match(selected, /^mode=full\nreason=[a-z_]+\n$/);
+      const result = await checkout.run("advisory", "", {
+        ...env,
+        SELECTION: "success-full-" + present(selected.split("reason=")[1]).trim(),
+        MATRIX_OUTCOME: "success",
+        MATRIX: JSON.stringify(matrix.matrix),
+        IMAGES: JSON.stringify(matrix.images),
+      });
+      const prediction = {
+        prediction: lanes.length ? "one_modified_test" : "broad",
+        lanes,
+        ...(bound && selected === "mode=full\nreason=ineligible_change\n"
+          ? { before: f.base, after: f.tested }
+          : {}),
+      };
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(
+        result.stdout,
+        `::notice title=CI main test advisory v2::${JSON.stringify(prediction)}\n`,
+      );
+      assert.equal(result.output, "");
+    };
+    await check(expected);
+    if (i === 0) {
+      await checkout.expect("full", mainPushEnvironment, "ineligible_change");
+      for (const event of [
+        { forced: true },
+        { deleted: true },
+        { created: true },
+        { after: f.base },
+        { before: "1".repeat(40) },
+      ]) {
+        await check(broad, event);
+      }
+      await check(broad, {}, { GITHUB_REPOSITORY: "another/repository" });
+    }
+  });
+});
 
 test("a test-only change selects the lanes that list its files", async (t) => {
   await each(
