@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-11-05
-last_updated_session: authoring-run/ead82952-8ee4-4f4a-82fe-148da7fa2edc
+updated: 2026-11-09
+last_updated_session: authoring-run/63986e9a-782b-42e3-80fe-95238fd54493
 ---
 
 # Agent Plugin Deployment Flow
@@ -93,7 +93,9 @@ and approvers. Hosted reads bound size/time, reject redirects and credential ech
 and return safe metadata with `Cache-Control: no-store`.
 See [catalog browsing](../reference/drivers/plugin-bundled.md#selection-and-catalogs).
 The optional `NativeCodexPluginCatalogReader` uses stdio `plugin/list`, rejects
-invalid results and stops the child on teardown. HTTP uses the hosted reader.
+invalid results and releases its pipes on teardown. On POSIX, it sends SIGTERM to
+its owned process group, then SIGKILL after one second when that group still
+exists. Windows retains direct-child teardown. HTTP uses the hosted reader.
 
 ### 1. Validate desired state under exact-Agent authority
 
@@ -368,6 +370,8 @@ timeout is starved only if over a quarter of its last 15 s is CPU wait and no 5 
 
 ## Changelog
 
+- 2026-11-09 19:15: Trace native catalog process-group teardown. (authoring-run/63986e9a-782b-42e3-80fe-95238fd54493 - fc3213bd0df5f24bf360b8cf1acd16f41c077c9c)
+
 - 2026-11-05 21:02: Trace plugin JSON refusal. (authoring-run/ead82952-8ee4-4f4a-82fe-148da7fa2edc - 3768cfd0d640f450f485cb334b6753ac1e5ea1c3)
 
 - 2026-11-05 13:37: Trace plugin-policy refusal recovery. (authoring-run/9cb771c4-f1a8-44ec-a4ef-7c914a5ddb6e - a8259883139ac831b32c0a7b0fe872f6db4ee290)
@@ -385,10 +389,5 @@ timeout is starved only if over a quarter of its last 15 s is CPU wait and no 5 
 - 2026-11-02 23:45: Describe discovery and deployment from a managed MCP release. (authoring-run/39268f6b-739c-4af1-82dd-3ecfe85d6ffa - 5d58446a2a6e200510da738698ef832612aab50d)
 
 - 2026-11-02 22:29: Trace the Slack account and tool selection through dedicated Agent deployment. (authoring-run/84451153-a081-4e74-aa29-e1a4acecddad - 5c0623f136d881356cec3c104b8657c761c14782)
-
-- 2026-10-31 05:52: Classify native install failures. (authoring-run/86b48c89-0c80-493f-b48a-6999988d4766 - 6d941c15081e95ef36b4ba1ffbbbc0b117972c0a)
-- 2026-10-31 03:36: Restore experimental plugin search with the upstream Codex version. (authoring-run/dc99918c-2f5c-4141-bffd-b216830017d0 - 25364fcfdc905e95b5a813a6cd7b2de47b66ca71)
-
-- 2026-10-28 14:40: Trace worker installation and discovery of Slack MCP tools. (authoring-run/55da35a7-f123-436e-9c32-65036b85894d - 0ba3c0fd5a26a82dba6551f04b74a697c5324fdd)
 
 [Agent plugin deployment documentation history](agent-plugins/history.md) preserves the older dated entries.

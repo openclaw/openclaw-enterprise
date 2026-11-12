@@ -131,6 +131,7 @@ export class NativeCodexPluginCatalogReader implements CodexPluginCatalogReader 
         {
           env: { ...process.env, CODEX_HOME: this.codexHome },
           stdio: ["pipe", "pipe", "pipe"],
+          detached: process.platform !== "win32",
         },
       );
       const results: unknown[] = [];
@@ -161,14 +162,36 @@ export class NativeCodexPluginCatalogReader implements CodexPluginCatalogReader 
         settled = true;
         clearTimeout(timeout);
         signal?.removeEventListener("abort", abort);
-        if (child.exitCode === null && child.signalCode === null) {
-          // A Codex that ignores SIGTERM would otherwise outlive the request and keep
-          // this process's stdio pipes open.
+        // The configured executable can be a launcher with an app-server descendant.
+        // Own the POSIX group until escalation, even if that launcher exits first.
+        if (process.platform !== "win32" && child.pid !== undefined) {
+          const pid = child.pid;
+          const signalGroup = (name: NodeJS.Signals): string | undefined => {
+            try {
+              process.kill(-pid, name);
+              return undefined;
+            } catch (error) {
+              return (error as NodeJS.ErrnoException).code;
+            }
+          };
+          // ESRCH means the group is already gone, so a later SIGKILL would only
+          // hold the caller. A launcher that exited and left a descendant still
+          // has a live group, and that group still escalates.
+          if (signalGroup("SIGTERM") !== "ESRCH") {
+            // Keep this timer referenced: closing pipes must not let the caller exit
+            // before an unresponsive descendant receives SIGKILL.
+            setTimeout(() => signalGroup("SIGKILL"), CHILD_KILL_GRACE_MS);
+          }
+        } else if (child.exitCode === null && child.signalCode === null) {
           const kill = setTimeout(() => child.kill("SIGKILL"), CHILD_KILL_GRACE_MS);
           kill.unref();
           child.once("exit", () => clearTimeout(kill));
           child.kill("SIGTERM");
         }
+        lines.close();
+        child.stdin.destroy();
+        child.stdout.destroy();
+        child.stderr.destroy();
         if (error) {
           reject(error);
         } else {
@@ -201,7 +224,11 @@ export class NativeCodexPluginCatalogReader implements CodexPluginCatalogReader 
         );
       });
 
-      createInterface({ input: child.stdout }).on("line", (line) => {
+      const lines = createInterface({ input: child.stdout });
+      lines.on("line", (line) => {
+        if (settled) {
+          return;
+        }
         let message: Record<string, unknown> | undefined;
         try {
           message = asRecord(JSON.parse(line));

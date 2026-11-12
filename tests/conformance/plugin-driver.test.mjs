@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1298,6 +1299,233 @@ setInterval(() => {}, 1_000);
     { timeoutMs: 5_000, intervalMs: 50 },
   );
 });
+
+// The npm Codex launcher forwards signals to a separate binary over inherited stdio.
+// A direct-child exit does not prove that binary stopped or released our pipes.
+test(
+  "native Codex catalog tears down its owned launcher group",
+  { skip: process.platform === "win32" },
+  async (t) => {
+    for (const mode of ["abort-forward", "abort-exit", "timeout", "success"]) {
+      await t.test(mode, async (t) => {
+        const directory = await temporaryDirectory(t, "oce-codex-catalog-group-");
+        const pidFile = join(directory, "pids.json");
+        let pids;
+        t.after(() => {
+          for (const pid of Object.values(pids ?? {})) {
+            try {
+              process.kill(pid, "SIGKILL");
+            } catch {
+              /* already stopped */
+            }
+          }
+        });
+        const binary = join(directory, "binary.mjs");
+        await writeFile(
+          binary,
+          `
+import { writeFileSync, renameSync } from "node:fs";
+import { createInterface } from "node:readline";
+process.on("SIGTERM", () => {});
+writeFileSync(${JSON.stringify(`${pidFile}.tmp`)}, JSON.stringify({ launcher: process.ppid, binary: process.pid }));
+renameSync(${JSON.stringify(`${pidFile}.tmp`)}, ${JSON.stringify(pidFile)});
+createInterface({ input: process.stdin }).on("line", line => {
+  const request = JSON.parse(line);
+  if (${JSON.stringify(mode)} !== "success" || !request.id) return;
+  const result = request.method === "account/read"
+    ? { account: { type: "chatgpt", email: "fixture@example.test", planType: "team" }, requiresOpenaiAuth: true, workspaceRouting: null }
+    : request.method === "plugin/list"
+      ? { marketplaces: [], marketplaceLoadErrors: [], featuredPluginIds: [] }
+      : { userAgent: "codex-fixture", codexHome: process.env.CODEX_HOME, platformFamily: "unix", platformOs: process.platform === "darwin" ? "macos" : process.platform };
+  console.log(JSON.stringify({ id: request.id, result }));
+});
+setInterval(() => {}, 1000);
+`,
+        );
+        const executable = join(directory, "codex.mjs");
+        await writeFile(
+          executable,
+          `#!/usr/bin/env node
+import { spawn } from "node:child_process";
+const child = spawn(process.execPath, [${JSON.stringify(binary)}], { stdio: "inherit" });
+process.on("SIGTERM", () => {
+  if (${JSON.stringify(mode)} === "abort-forward") child.kill("SIGTERM");
+  else process.exit(0);
+});
+child.on("exit", () => process.exit(0));
+`,
+        );
+        await chmod(executable, 0o755);
+        const controller = new AbortController();
+        const driver = new CodexPluginDriver({
+          codexExecutable: executable,
+          codexHome: directory,
+          requestTimeoutMs: 5_000,
+        });
+        const listed = driver.listCatalog({ ...context("dedicated"), signal: controller.signal });
+        listed.catch(() => {});
+        pids = await waitFor(
+          "the launched binary to install its termination handler",
+          () => readFile(pidFile, "utf8").then(JSON.parse, () => undefined),
+          30_000,
+        );
+        if (mode.startsWith("abort")) {
+          controller.abort();
+        }
+        if (mode === "success") {
+          assert.deepEqual(await listed, []);
+        } else {
+          await assert.rejects(listed, mode === "timeout" ? /timed out/ : /aborted/);
+        }
+        await waitUntil(
+          "both catalog processes to stop",
+          () => Object.values(pids).every((pid) => catalogProcessStopped(pid)),
+          { timeoutMs: 5_000, intervalMs: 50 },
+        );
+      });
+    }
+  },
+);
+
+// ESRCH is a reaped process. A zombie still has a process-table entry, so only ps
+// can identify it. ps failing after a live probe is not proof that it stopped.
+function catalogProcessStopped(pid, env = process.env) {
+  const exited = () => {
+    try {
+      process.kill(pid, 0);
+      return false;
+    } catch (error) {
+      return error?.code === "ESRCH";
+    }
+  };
+  if (exited()) {
+    return true;
+  }
+  try {
+    return execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8", env })
+      .trim()
+      .startsWith("Z");
+  } catch (error) {
+    if (exited()) {
+      return true;
+    }
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`could not observe catalog process ${pid}: ${detail}`, { cause: error });
+  }
+}
+
+test(
+  "catalog stop observation does not treat a live unobservable process as stopped",
+  { skip: process.platform === "win32" },
+  async () => {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"]);
+    const blind = { ...process.env, PATH: "" };
+    try {
+      assert.ok(child.pid > 0);
+      assert.throws(
+        () => catalogProcessStopped(child.pid, blind),
+        /could not observe catalog process/,
+      );
+      child.kill("SIGKILL");
+      await waitUntil("the observation fixture to be reaped", () => {
+        try {
+          process.kill(child.pid, 0);
+          return false;
+        } catch (error) {
+          return error?.code === "ESRCH";
+        }
+      });
+      assert.equal(catalogProcessStopped(child.pid, blind), true);
+    } finally {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // The reaped fixture has nothing left to signal.
+      }
+    }
+  },
+);
+
+test(
+  "native Codex catalog does not linger after its process group is already gone",
+  { skip: process.platform === "win32" },
+  async (t) => {
+    const directory = await temporaryDirectory(t, "oce-codex-catalog-gone-");
+    const executable = join(directory, "codex.mjs");
+    const requestFile = join(directory, "request.json");
+    await writeFile(
+      executable,
+      `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
+import { createInterface } from "node:readline";
+createInterface({ input: process.stdin }).once("line", (line) => {
+  writeFileSync(${JSON.stringify(requestFile)}, JSON.stringify({ pid: process.pid, request: JSON.parse(line) }));
+  process.exit(0);
+});
+`,
+    );
+    await chmod(executable, 0o755);
+    const driverModule = join(
+      import.meta.dirname,
+      "../../apps/controller/src/drivers/plugin/index.ts",
+    );
+    const script = `
+      import assert from "node:assert/strict";
+      import { readFileSync } from "node:fs";
+      import { CodexPluginDriver } from ${JSON.stringify(driverModule)};
+      const driver = new CodexPluginDriver({
+        codexExecutable: ${JSON.stringify(executable)},
+        codexHome: ${JSON.stringify(directory)},
+        requestTimeoutMs: 5_000,
+      });
+      // Observe real OS signals without replacing their outcomes. This subprocess
+      // owns the wrapper, so other tests cannot see it.
+      const kill = process.kill.bind(process);
+      const groupSignals = [];
+      process.kill = (pid, signal) => {
+        try {
+          const result = kill(pid, signal);
+          if (pid < 0) groupSignals.push({ pid, signal, code: null });
+          return result;
+        } catch (error) {
+          if (pid < 0) groupSignals.push({ pid, signal, code: error.code });
+          throw error;
+        }
+      };
+      const listed = driver.listCatalog({
+        namespace: { id: "ns_plugin", name: "Plugin conformance", status: "ready", createdAt: "2026-09-08T00:00:00.000Z" },
+        agent: { id: "agent_plugin", namespaceId: "ns_plugin", name: "Plugin agent", configurationId: "cfg_plugin", executionMode: "dedicated", servicePrincipalId: "sp_plugin", createdAt: "2026-09-08T00:00:00.000Z" },
+        harness: { id: "codex", version: "2026.9.0", mode: "dedicated" },
+        configuration: {},
+        signal: new AbortController().signal,
+      });
+      await assert.rejects(listed, {
+        name: "NotImplementedError",
+        message: "Codex plugin catalog discovery exited before responding with status 0.",
+      });
+      const consumed = JSON.parse(readFileSync(${JSON.stringify(requestFile)}, "utf8"));
+      assert.equal(consumed.request.method, "initialize");
+      assert.ok(consumed.request.id);
+      assert.deepEqual(groupSignals, [{ pid: -consumed.pid, signal: "SIGTERM", code: "ESRCH" }]);
+      process.kill = kill;
+      process.stdout.write(String(Date.now()));
+    `;
+    const started = Date.now();
+    const result = spawnSync(
+      process.execPath,
+      ["--experimental-strip-types", "--input-type=module", "--eval", script],
+      { encoding: "utf8", timeout: 4_000 },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const settledAt = Number(result.stdout);
+    assert.ok(Number.isFinite(settledAt), result.stdout);
+    const tail = Date.now() - settledAt;
+    assert.ok(
+      tail < 800 && settledAt >= started,
+      `the caller stayed ${tail}ms after discovery settled`,
+    );
+  },
+);
 
 test("Codex native catalog rejects a non-object response without escaping discovery", async (t) => {
   const directory = await temporaryDirectory(t, "oce-codex-catalog-shape-");
