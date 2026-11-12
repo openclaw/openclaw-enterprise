@@ -2112,7 +2112,7 @@ test(
         `${refused.stdout}\n${refused.stderr}`,
         selectedControlUi
           ? /Configuration generation changed outside this helper/
-          : /Configuration was changed outside this helper/,
+          : /This Agent's Configuration does not match this version of the helper\./,
       );
       assert.equal(
         refused.containedForbiddenOutput,
