@@ -532,8 +532,9 @@ func (client *Client) ListAgentRevisions(namespaceID, agentID string, limit int,
 // a later page may be empty if access changes. The loop also supports older servers.
 func (client *Client) LatestAgentRevision(namespaceID, agentID string) (any, error) {
 	cursor := ""
+	limit := 1
 	for {
-		page, err := client.ListAgentRevisions(namespaceID, agentID, 1, cursor)
+		page, err := client.ListAgentRevisions(namespaceID, agentID, limit, cursor)
 		if err != nil {
 			return nil, err
 		}
@@ -544,6 +545,8 @@ func (client *Client) LatestAgentRevision(namespaceID, agentID string) (any, err
 			return nil, nil
 		}
 		cursor = page.NextCursor
+		// Older servers may return empty pages across a gap in readable revisions.
+		limit = 100
 	}
 }
 

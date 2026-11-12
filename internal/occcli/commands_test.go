@@ -1513,7 +1513,7 @@ func TestDefaultRevisionLookupStopsAtARepeatedCursor(t *testing.T) {
 	if err == nil || !strings.HasPrefix(err.Error(), "agent "+testAgentID+" has no revision you can read") {
 		t.Fatalf("error = %v, want the no readable revision refusal", err)
 	}
-	if want := []string{"limit=1", "cursor=v1.2&limit=1"}; !slices.Equal(lists, want) {
+	if want := []string{"limit=1", "cursor=v1.2&limit=100"}; !slices.Equal(lists, want) {
 		t.Fatalf("revision list queries = %q, want %q", lists, want)
 	}
 }
