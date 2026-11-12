@@ -2,6 +2,17 @@ import { registerCredentialFixtureRegressions } from "../fixtures/repository-cre
 import assert from "node:assert/strict";
 import test from "node:test";
 import { request } from "node:https";
+import type {
+  RepositoryBackendFactory,
+  RequestHead,
+} from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
+import type {
+  CredentialServiceOwner,
+  ExchangeSender,
+  RunningListeners,
+} from "../../apps/controller/src/drivers/repo/access/internal-contracts.ts";
+import type { ServiceConfig } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
+import type { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { writeFile } from "node:fs/promises";
@@ -15,7 +26,7 @@ import {
   eventually,
   gatewayRequest,
 } from "../fixtures/repository-credentials/service.mjs";
-import { runInFixtureContainer } from "../fixtures/repository-credentials/container.mjs";
+import { runInFixtureContainer } from "../fixtures/repository-credentials/container.ts";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
 import { run, temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
 import { removeRemoteBranches } from "../fixtures/repository-credentials/workflows.mjs";
@@ -23,13 +34,35 @@ import { createResourceScope } from "../fixtures/repository-credentials/resource
 import { startServiceListeners } from "../fixtures/repository-credentials/service-resources.mjs";
 import { requestHead } from "../fixtures/repository-credentials/builders.mjs";
 
+type AlternateFactory = RepositoryBackendFactory & {
+  events: { kind: string }[];
+  drivers: {
+    settle(original: object): Promise<void>;
+    prepareAuthentication(credential: object, plan: object): void;
+  }[];
+};
+
+type AlternateUpstream = {
+  origin: string;
+  tls: Awaited<ReturnType<typeof createTlsMaterial>>;
+  accepted: Map<string, number>;
+  trace: {
+    method: string;
+    path: string;
+    authorizationPresent: boolean;
+    cookiePresent: boolean;
+    bodyBytes?: number;
+    committed?: boolean;
+  }[];
+};
+
 registerCredentialFixtureRegressions();
 
 test("controlled Git fixture runs real smart HTTP and records an accepted push before disconnect", async (t) => {
   const upstream = await startGitSmartHttpFixture(t);
   const directory = await temporaryDirectory(t);
   const checkout = join(directory, "checkout");
-  const git = (args, options = {}) =>
+  const git = (args: string[], options: { cwd?: string; allowFailure?: boolean } = {}) =>
     run("git", ["-c", `http.sslCAInfo=${upstream.tls.certFile}`, ...args], options);
   await git(["clone", `${upstream.origin}/fixture/repository.git`, checkout]);
   await git(["config", "user.name", "Fixture"], { cwd: checkout });
@@ -46,7 +79,8 @@ test("controlled Git fixture runs real smart HTTP and records an accepted push b
   assert.notEqual(pushed.code, 0);
   assert.equal(await upstream.ref("refs/heads/accepted"), head);
   assert.equal(
-    upstream.trace.filter((entry) => entry.path.endsWith("/git-receive-pack")).length,
+    upstream.trace.filter((entry: { path: string }) => entry.path.endsWith("/git-receive-pack"))
+      .length,
     1,
   );
   // Cleanup must find an accepted write even when its response was lost, and
@@ -61,21 +95,30 @@ test("controlled Git fixture runs real smart HTTP and records an accepted push b
 
 test("second backend retains renewal through expiry and finalizes through the real common owner", async (t) => {
   const clock = createControlledClock();
-  const config = await createServiceConfiguration(t);
+  const config: ServiceConfig = await createServiceConfiguration(t);
   const factory = createAlternateDriverFactory({
     origin: "https://forge.example.test",
     gatewayOrigin: config.gateway.publicOrigin,
     clock,
-  });
+  }) as AlternateFactory;
   const { createCredentialService } = await import("../fixtures/repository-credentials/service.ts");
-  const service = createCredentialService({ config, factory, clock });
+  const service = createCredentialService({
+    config,
+    factory,
+    clock,
+  });
   t.after(() => service.shutdown(1000));
   const opened = service.open({ durationSeconds: 86400, profile: "git-write" });
   const head = () =>
-    requestHead("GET", "/team/nested/project", {}, { receivedMonoMs: clock.monotonicNow() });
-  const perform = async (sender) => {
+    requestHead(
+      "GET",
+      "/team/nested/project",
+      {},
+      { receivedMonoMs: clock.monotonicNow() },
+    ) as RequestHead;
+  const perform = async (sender?: ExchangeSender) => {
     const exchange = service.reserve(opened.bearer, head(), new AbortController().signal);
-    assert.notEqual(exchange.kind, "denied");
+    assert.ok(!("kind" in exchange));
     return service.execute(
       exchange,
       sender ??
@@ -91,7 +134,7 @@ test("second backend retains renewal through expiry and finalizes through the re
   const firstIdentity = opened.session.binding;
   await clock.advance(13 * 3600000 + 1000);
   assert.equal((await perform()).kind, "completed");
-  assert.deepEqual(service.status(opened.session.sessionId).binding, firstIdentity);
+  assert.deepEqual(service.status(opened.session.sessionId)?.binding, firstIdentity);
   assert.equal(factory.events.filter((event) => event.kind === "rotate").length, 2);
   for (let iteration = 0; iteration < 4; iteration++) {
     await clock.advance(100000);
@@ -103,13 +146,17 @@ test("second backend retains renewal through expiry and finalizes through the re
   service.close(opened.session.sessionId);
   await eventually(() => service.status(opened.session.sessionId)?.state === "DISPOSED");
   assert.equal(factory.events.filter((event) => event.kind === "finalize").length, 1);
-  assert.equal(service.reserve(opened.bearer, head(), new AbortController().signal).kind, "denied");
+  const denied = service.reserve(opened.bearer, head(), new AbortController().signal);
+  assert.ok("kind" in denied);
+  assert.equal(denied.kind, "denied");
+  const driver = factory.drivers[0];
+  assert.ok(driver);
   await assert.rejects(
-    factory.drivers[0].settle(Object.freeze({ kind: "finalized", attemptId: "foreign" })),
+    driver.settle(Object.freeze({ kind: "finalized", attemptId: "foreign" })),
     /foreign/,
   );
   assert.throws(
-    () => factory.drivers[0].prepareAuthentication(Object.freeze({}), Object.freeze({})),
+    () => driver.prepareAuthentication(Object.freeze({}), Object.freeze({})),
     /foreign/,
   );
 });
@@ -118,7 +165,7 @@ test("second backend uses the production HTTPS sender and distinct native authen
   if (
     await runInFixtureContainer(
       t,
-      "tests/conformance/repository-credentials-backend-conformance.test.mjs",
+      "tests/conformance/repository-credentials-backend-conformance.test.ts",
     )
   ) {
     return;
@@ -126,21 +173,23 @@ test("second backend uses the production HTTPS sender and distinct native authen
   const resources = createResourceScope();
   t.after(() => resources.close());
   const clock = createControlledClock();
-  const config = await createServiceConfiguration(resources);
-  const upstream = await startAlternateUpstream(resources, { clock });
+  const config: ServiceConfig = await createServiceConfiguration(resources);
+  const upstream: AlternateUpstream = await startAlternateUpstream(resources, { clock });
   const factory = createAlternateDriverFactory({
     origin: upstream.origin,
     gatewayOrigin: config.gateway.publicOrigin,
     clock,
     accepted: upstream.accepted,
-  });
-  const { service, listeners } = await startServiceListeners(resources, {
-    config,
-    tls: upstream.tls,
-    factory,
-    clock,
-    upstreamOrigins: [upstream.origin],
-  });
+  }) as AlternateFactory;
+  const { service, listeners }: { service: CredentialServiceOwner; listeners: RunningListeners } =
+    await startServiceListeners(resources, {
+      config,
+      tls: upstream.tls,
+      factory,
+      clock,
+      upstreamOrigins: [upstream.origin],
+      log: undefined,
+    });
   const opened = service.open({ durationSeconds: 86400, profile: "git-write" });
   const fixture = { config, opened, listeners, tls: upstream.tls };
   const headers = {
@@ -151,7 +200,7 @@ test("second backend uses the production HTTPS sender and distinct native authen
   await clock.advance(13 * 3600000 + 1);
   assert.equal((await gatewayRequest(fixture, "/team/nested/project", { headers })).status, 200);
   assert.equal(upstream.trace.length, 2);
-  assert.equal(upstream.trace[1].path, "/v2/projects/team%2Fnested%2Fproject");
+  assert.equal(upstream.trace[1]?.path, "/v2/projects/team%2Fnested%2Fproject");
   // Native-key acceptance must not carry either caller credential header upstream.
   for (const entry of upstream.trace) {
     assert.equal(entry.authorizationPresent, false, "caller Authorization reached upstream");
@@ -163,7 +212,7 @@ test("drain-before rotation waits for a streamed upstream write and preserves th
   if (
     await runInFixtureContainer(
       t,
-      "tests/conformance/repository-credentials-backend-conformance.test.mjs",
+      "tests/conformance/repository-credentials-backend-conformance.test.ts",
     )
   ) {
     return;
@@ -171,16 +220,15 @@ test("drain-before rotation waits for a streamed upstream write and preserves th
   const resources = createResourceScope();
   t.after(() => resources.close());
   const clock = createControlledClock();
-  const config = await createServiceConfiguration(resources, { credentialMarginMs: 100 });
-  let release;
-  const held = new Promise((resolve) => {
-    release = resolve;
+  const config: ServiceConfig = await createServiceConfiguration(resources, {
+    credentialMarginMs: 100,
   });
-  const upstream = await startAlternateUpstream(resources, {
+  const { promise: held, resolve: release } = Promise.withResolvers<void>();
+  const upstream: AlternateUpstream = await startAlternateUpstream(resources, {
     clock,
     controls: { beforeWriteChunk: () => held },
   });
-  const observations = [];
+  const observations: { kind: string; method?: string }[] = [];
   const factory = createAlternateDriverFactory({
     origin: upstream.origin,
     gatewayOrigin: config.gateway.publicOrigin,
@@ -188,46 +236,46 @@ test("drain-before rotation waits for a streamed upstream write and preserves th
     accepted: upstream.accepted,
     lifetimeMs: 90000,
     operationMs: 60000,
-    controls: { observe: (event) => observations.push(event) },
-  });
-  const { service, listeners } = await startServiceListeners(resources, {
-    config,
-    tls: upstream.tls,
-    factory,
-    clock,
-    upstreamOrigins: [upstream.origin],
-  });
+    controls: { observe: (event: { kind: string; method?: string }) => observations.push(event) },
+  }) as AlternateFactory;
+  const { service, listeners }: { service: CredentialServiceOwner; listeners: RunningListeners } =
+    await startServiceListeners(resources, {
+      config,
+      tls: upstream.tls,
+      factory,
+      clock,
+      upstreamOrigins: [upstream.origin],
+      log: undefined,
+    });
   resources.after(release);
   const opened = service.open({ durationSeconds: 86400, profile: "git-write" });
   const fixture = { config, opened, listeners, tls: upstream.tls };
   const body = Buffer.concat([Buffer.alloc(256, "a"), Buffer.alloc(256, "b")]);
-  let outgoing;
   let completed = false;
-  const write = new Promise((resolve, reject) => {
-    outgoing = request(
-      `${config.gateway.publicOrigin}/team/nested/project`,
-      {
-        method: "POST",
-        ca: upstream.tls.ca,
-        headers: {
-          authorization: `Bearer ${opened.bearer}`,
-          "content-type": "application/octet-stream",
-          "content-length": body.length,
-        },
+  const { promise: write, resolve, reject } = Promise.withResolvers<number | undefined>();
+  const outgoing = request(
+    `${config.gateway.publicOrigin}/team/nested/project`,
+    {
+      method: "POST",
+      ca: upstream.tls.ca,
+      headers: {
+        authorization: `Bearer ${opened.bearer}`,
+        "content-type": "application/octet-stream",
+        "content-length": body.length,
       },
-      (incoming) => {
-        incoming.resume();
-        incoming.once("error", reject);
-        incoming.once("end", () => {
-          completed = true;
-          resolve(incoming.statusCode);
-        });
-      },
-    );
-    outgoing.once("error", reject);
-    outgoing.setTimeout(5000, () => outgoing.destroy(new Error("streamed write timed out")));
-    outgoing.write(body.subarray(0, 256));
-  });
+    },
+    (incoming) => {
+      incoming.resume();
+      incoming.once("error", reject);
+      incoming.once("end", () => {
+        completed = true;
+        resolve(incoming.statusCode);
+      });
+    },
+  );
+  outgoing.once("error", reject);
+  outgoing.setTimeout(5000, () => outgoing.destroy(new Error("streamed write timed out")));
+  outgoing.write(body.subarray(0, 256));
   void write.catch(() => {});
   resources.after(async () => {
     release();
@@ -237,7 +285,9 @@ test("drain-before rotation waits for a streamed upstream write and preserves th
   await eventually(() => upstream.trace[0]?.bodyBytes === 256);
   const predecessor = [...upstream.accepted.keys()];
   assert.equal(predecessor.length, 1);
-  assert.equal(service.status(opened.session.sessionId).activeUses, 1);
+  const predecessorKey = predecessor[0];
+  assert.ok(predecessorKey);
+  assert.equal(service.status(opened.session.sessionId)?.activeUses, 1);
 
   // The first body is incomplete at the upstream. A new exchange now needs
   // longer validity than this key has left, forcing drain-before replacement.
@@ -253,7 +303,7 @@ test("drain-before rotation waits for a streamed upstream write and preserves th
     observations.some((event) => event.kind === "plan" && event.method === "GET"),
   );
   assert.equal(completed, false);
-  assert.equal(upstream.trace[0].committed, false);
+  assert.equal(upstream.trace[0]?.committed, false);
   assert.equal(upstream.trace.length, 1, "replacement request remains undispatched during drain");
   assert.deepEqual([...upstream.accepted.keys()], predecessor);
   assert.equal(factory.events.filter((event) => event.kind === "rotate").length, 1);
@@ -265,7 +315,7 @@ test("drain-before rotation waits for a streamed upstream write and preserves th
   assert.equal((await replacementRead).status, 200);
   assert.equal((await gatewayRequest(fixture, "/team/nested/project")).status, 200);
   assert.equal(factory.events.filter((event) => event.kind === "rotate").length, 2);
-  assert.equal(upstream.accepted.has(predecessor[0]), false);
+  assert.equal(upstream.accepted.has(predecessorKey), false);
   assert.equal(upstream.accepted.size, 1);
   assert.deepEqual(
     upstream.trace.filter((entry) => entry.method === "POST"),
@@ -284,7 +334,7 @@ test("drain-before rotation waits for a streamed upstream write and preserves th
   );
   assert.equal(upstream.trace.length, 3);
   service.close(opened.session.sessionId);
-  await eventually(() => service.status(opened.session.sessionId).state === "DISPOSED");
+  await eventually(() => service.status(opened.session.sessionId)?.state === "DISPOSED");
   assert.equal(upstream.accepted.size, 0);
   assert.equal(factory.events.filter((event) => event.kind === "finalize").length, 1);
 });

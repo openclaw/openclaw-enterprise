@@ -1,13 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { runInFixtureContainer } from "../fixtures/repository-credentials/container.mjs";
+import { runInFixtureContainer } from "../fixtures/repository-credentials/container.ts";
 import { repositoryRoot } from "../fixtures/repository-credentials/runtime.mjs";
 import {
   cleanEnvironment,
   run,
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.mjs";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 test("emitted native service and client enforce development token routing without issuance", async (t) => {
   await runInFixtureContainer(t, "tests/integration/repository-credentials-github-token.test.mjs", {
@@ -21,7 +25,7 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD !== "1") {
     test(`emitted service and client qualify the real ${workflow} workflow`, async (t) => {
       await runInFixtureContainer(
         t,
-        `tests/integration/repository-credentials-${workflow}.test.mjs`,
+        `tests/integration/repository-credentials-${workflow}.test.ts`,
         { packaged: true },
       );
     });
@@ -30,7 +34,7 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD !== "1") {
   test("emitted common owners qualify alternate-backend renewal, authentication and streamed drain", async (t) => {
     await runInFixtureContainer(
       t,
-      "tests/conformance/repository-credentials-backend-conformance.test.mjs",
+      "tests/conformance/repository-credentials-backend-conformance.test.ts",
       { packaged: true },
     );
   });
@@ -67,31 +71,49 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD !== "1") {
         }),
       },
     );
-    const composed = JSON.parse(result.stdout);
+    const composed: unknown = JSON.parse(result.stdout);
+    assert.ok(isRecord(composed));
+    assert.ok(isRecord(composed.services));
+    const { service, client } = composed.services;
+    assert.ok(isRecord(service));
+    assert.ok(isRecord(client));
     // The client resolves the gateway to the private address publishing HTTPS.
-    const ports = composed.services.service.ports;
+    assert.ok(Array.isArray(service.ports));
+    const ports: unknown[] = service.ports;
     assert.equal(ports.length, 1);
-    assert.equal(ports[0].host_ip, privateAddress);
-    assert.equal(ports[0].target, 8443);
-    assert.equal(ports[0].published, "443");
-    assert.equal(ports[0].protocol, "tcp");
-    assert.deepEqual(composed.services.client.extra_hosts, [
-      `${gatewayHostname}=${privateAddress}`,
-    ]);
-    const volumes = composed.services.client.volumes;
+    const port = ports[0];
+    assert.ok(isRecord(port));
+    assert.equal(port.host_ip, privateAddress);
+    assert.equal(port.target, 8443);
+    assert.equal(port.published, "443");
+    assert.equal(port.protocol, "tcp");
+    assert.deepEqual(client.extra_hosts, [`${gatewayHostname}=${privateAddress}`]);
+    assert.ok(Array.isArray(client.volumes));
+    const volumes: unknown[] = client.volumes;
     assert.deepEqual(
-      volumes.map((volume) => volume.source).sort(),
+      volumes
+        .map((volume) => {
+          assert.ok(isRecord(volume));
+          return volume.source;
+        })
+        .sort(),
       [paths.CREDENTIAL_CLIENT_SESSION, paths.CREDENTIAL_CLIENT_WORKSPACE].sort(),
     );
-    assert.equal(volumes.find((volume) => volume.target === "/session").read_only, true);
+    const sessionVolume = volumes.find(
+      (volume) => isRecord(volume) && volume.target === "/session",
+    );
+    assert.ok(isRecord(sessionVolume));
+    assert.equal(sessionVolume.read_only, true);
+    assert.ok(Array.isArray(service.volumes));
+    const serviceVolumes: unknown[] = service.volumes;
     assert.ok(
-      composed.services.service.volumes.some(
-        (volume) => volume.source === paths.CREDENTIAL_SERVICE_INPUTS,
+      serviceVolumes.some(
+        (volume) => isRecord(volume) && volume.source === paths.CREDENTIAL_SERVICE_INPUTS,
       ),
     );
     assert.ok(
-      composed.services.service.volumes.some(
-        (volume) => volume.source === paths.CREDENTIAL_SERVICE_CONTROL,
+      serviceVolumes.some(
+        (volume) => isRecord(volume) && volume.source === paths.CREDENTIAL_SERVICE_CONTROL,
       ),
     );
   });

@@ -29,7 +29,7 @@
     "tests/integration/production-image-startup.test.mjs",
     "tests/integration/container-registry-real.test.mjs",
     "tests/integration/logging-packaging.test.mjs",
-    "tests/integration/repository-runtime-volume.test.mjs",
+    "tests/integration/repository-runtime-volume.test.ts",
     "tests/integration/production-image-qualification.test.ts",
     "tests/integration/development-packaging.test.mjs",
     "tests/integration/container-publication-workflow.test.ts",
@@ -56,7 +56,7 @@
       ]
     },
     {
-      "path": "tests/integration/repository-runtime-volume.test.mjs",
+      "path": "tests/integration/repository-runtime-volume.test.ts",
       "expectedTests": [
         "repository init uses a private subPath of a root-owned fsGroup memory volume"
       ]

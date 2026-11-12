@@ -73,7 +73,7 @@
     "tests/integration/qa-fixture-inputs.test.mjs",
     "tests/integration/compose-network.test.ts",
     "tests/integration/qa-repository-installation.test.ts",
-    "tests/integration/repository-runtime-materialization.test.mjs",
+    "tests/integration/repository-runtime-materialization.test.ts",
     "tests/conformance/repository-credentials-contracts.test.ts",
     "tests/integration/plugin-driver-startup.test.ts",
     "tests/integration/repository-credentials-config.test.mjs",
@@ -581,7 +581,7 @@
       "path": "tests/integration/repository-credentials-restart.test.ts"
     },
     {
-      "path": "tests/integration/repository-runtime-materialization.test.mjs"
+      "path": "tests/integration/repository-runtime-materialization.test.ts"
     },
     {
       "path": "tests/integration/codex-plugin-startup-reads.test.mjs"

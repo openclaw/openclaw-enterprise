@@ -1,52 +1,72 @@
 import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
 import { request } from "node:https";
+import type { IncomingHttpHeaders } from "node:http";
 import { join } from "node:path";
 import test from "node:test";
-import { runPinnedClients } from "../fixtures/repository-credentials/clients.mjs";
+import type {
+  ClientCommand,
+  CredentialClientFixture,
+  StartCredentialClientFixture,
+} from "../fixtures/repository-credentials/clients.ts";
+import { runPinnedClients } from "../fixtures/repository-credentials/clients.ts";
 import { runInFixtureContainer } from "../fixtures/repository-credentials/container.mjs";
-import { run } from "../fixtures/repository-credentials/process.mjs";
+import { run as runProcess } from "../fixtures/repository-credentials/process.mjs";
 import {
-  gatewayRequest,
-  startCredentialServiceFixture,
+  gatewayRequest as requestGateway,
+  startCredentialServiceFixture as startService,
 } from "../fixtures/repository-credentials/service.mjs";
+
+const run = runProcess as ClientCommand;
+const startCredentialServiceFixture = startService as StartCredentialClientFixture;
+const gatewayRequest: (
+  fixture: CredentialClientFixture,
+  target: string,
+) => Promise<{ status: number; body: string }> = requestGateway;
+type RawRequestOptions = { method?: string; headers?: Record<string, string> };
 
 // Passing path separately preserves escapes and dot segments for the real listener.
 // This client sends no invented Git wire body; stock Git owns every allowed RPC.
-function rawRequest(fixture, path, { method = "GET", headers = {} } = {}) {
+function rawRequest(
+  fixture: CredentialClientFixture,
+  path: string,
+  { method = "GET", headers = {} }: RawRequestOptions = {},
+) {
   const origin = new URL(fixture.config.gateway.publicOrigin);
-  return new Promise((resolve, reject) => {
-    const outgoing = request(
-      {
-        hostname: origin.hostname,
-        port: origin.port,
-        path,
-        method,
-        ca: fixture.tls.ca,
-        headers,
-        agent: false,
-      },
-      (incoming) => {
-        incoming.resume();
-        incoming.once("end", () =>
-          resolve({ status: incoming.statusCode, headers: incoming.headers }),
-        );
-        incoming.once("error", reject);
-      },
-    );
-    outgoing.setTimeout(10000, () => outgoing.destroy(new Error("fixture request timeout")));
-    outgoing.once("error", reject);
-    outgoing.end();
-  });
+  return new Promise<{ status: number | undefined; headers: IncomingHttpHeaders }>(
+    (resolve, reject: (reason: Error) => void) => {
+      const outgoing = request(
+        {
+          hostname: origin.hostname,
+          port: origin.port,
+          path,
+          method,
+          ca: fixture.tls.ca,
+          headers,
+          agent: false,
+        },
+        (incoming) => {
+          incoming.resume();
+          incoming.once("end", () =>
+            resolve({ status: incoming.statusCode, headers: incoming.headers }),
+          );
+          incoming.once("error", reject);
+        },
+      );
+      outgoing.setTimeout(10000, () => outgoing.destroy(new Error("fixture request timeout")));
+      outgoing.once("error", reject);
+      outgoing.end();
+    },
+  );
 }
 
-function gitAuthorization(fixture) {
+function gitAuthorization(fixture: CredentialClientFixture) {
   return `Basic ${Buffer.from(
     `${fixture.opened.client.gitUsername}:${fixture.opened.bearer}`,
   ).toString("base64")}`;
 }
 
-function assertCold(fixture) {
+function assertCold(fixture: CredentialClientFixture) {
   assert.equal(fixture.github.issuesOfTokens.length, 0);
   assert.equal(fixture.github.trace.length, 0);
   assert.equal(fixture.github.authenticationAttempts.length, 0);
@@ -58,7 +78,7 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD !== "1") {
     assert.equal(
       await runInFixtureContainer(
         t,
-        "tests/integration/repository-credentials-native-paths.test.mjs",
+        "tests/integration/repository-credentials-native-paths.test.ts",
       ),
       true,
     );
@@ -71,6 +91,7 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD !== "1") {
         profile: "git-write",
         configuration: { pushRefAllowlist: ["refs/heads/native-path"] },
       });
+      assert.ok(fixture);
       // Both unauthenticated discovery shapes must challenge before any upstream dispatch.
       for (const service of ["git-upload-pack", "git-receive-pack"]) {
         const response = await rawRequest(fixture, `${spelling}/info/refs?service=${service}`);
@@ -168,6 +189,7 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD !== "1") {
 
     test(`cold git-read denies receive-pack through ${spelling}`, async (t) => {
       const fixture = await startCredentialServiceFixture(t, { profile: "git-read" });
+      assert.ok(fixture);
       const authorization = gitAuthorization(fixture);
       const refs = () =>
         run("/usr/bin/git", ["for-each-ref", "--format=%(refname) %(objectname)"], {
@@ -183,7 +205,7 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD !== "1") {
             headers: { "content-type": "application/x-git-receive-pack-request" },
           },
         ],
-      ]) {
+      ] satisfies [string, RawRequestOptions][]) {
         const response = await rawRequest(fixture, path, {
           ...options,
           headers: { ...options.headers, authorization },
@@ -198,6 +220,7 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD !== "1") {
 
   test("native path normalization preserves raw-target denials and exact API routes", async (t) => {
     const fixture = await startCredentialServiceFixture(t, { profile: "git-full" });
+    assert.ok(fixture);
     const authorization = `Bearer ${fixture.opened.bearer}`;
     // Non-Git shapes use the API authentication scheme; the real planner must still deny them.
     for (const [path, options] of [
@@ -213,7 +236,7 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD !== "1") {
       ],
       ["/repos/FiXtUrE/RePoSiToRy", {}],
       ["/repos/fixture/repository.git", {}],
-    ]) {
+    ] satisfies [string, RawRequestOptions][]) {
       const response = await rawRequest(fixture, path, {
         ...options,
         headers: { ...options.headers, authorization },
@@ -223,7 +246,9 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD !== "1") {
     }
     const metadata = await gatewayRequest(fixture, "/repos/fixture/repository");
     assert.equal(metadata.status, 200);
-    assert.equal(JSON.parse(metadata.body).full_name, "fixture/repository");
+    const body: unknown = JSON.parse(metadata.body);
+    assert.ok(body !== null && typeof body === "object" && "full_name" in body);
+    assert.equal(body.full_name, "fixture/repository");
     assert.ok(fixture.github.trace.some(({ target }) => target === "/repos/fixture/repository"));
     assert.equal(fixture.github.issuesOfTokens.length, 0);
     assert.equal(fixture.git.trace.length, 0);

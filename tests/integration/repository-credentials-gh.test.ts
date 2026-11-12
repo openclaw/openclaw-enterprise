@@ -2,23 +2,70 @@ import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import test from "node:test";
+import type {
+  ClientCommand,
+  CredentialClientFixture,
+  StartCredentialClientFixture,
+} from "../fixtures/repository-credentials/clients.ts";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
-import { appRoot, appExtension, appModule } from "../fixtures/repository-credentials/runtime.mjs";
-import { cleanEnvironment, run } from "../fixtures/repository-credentials/process.mjs";
+import type { JsonValue } from "../../apps/controller/src/drivers/repo/access/json-value.ts";
 import {
-  startCredentialServiceFixture,
-  gatewayRequest,
+  createNativeClientMaterial,
+  loadRepositoryClientModule,
+} from "../fixtures/repository-credentials/clients.ts";
+import { appRoot, appExtension } from "../fixtures/repository-credentials/runtime.mjs";
+import {
+  cleanEnvironment,
+  run as runProcess,
+} from "../fixtures/repository-credentials/process.mjs";
+import {
+  startCredentialServiceFixture as startService,
+  gatewayRequest as requestGateway,
 } from "../fixtures/repository-credentials/service.mjs";
 import { exerciseGit, exerciseGh } from "../fixtures/repository-credentials/workflows.mjs";
 import { runInFixtureContainer } from "../fixtures/repository-credentials/container.mjs";
-import { registerResourceCleanup } from "../fixtures/repository-credentials/cleanup.mjs";
+import { registerResourceCleanup as registerCleanup } from "../fixtures/repository-credentials/cleanup.mjs";
+
+const startCredentialServiceFixture = startService as StartCredentialClientFixture;
+type GatewayOptions = {
+  method?: string;
+  body?: JsonValue | undefined;
+  headers?: Record<string, string>;
+};
+const gatewayRequest: (
+  fixture: CredentialClientFixture,
+  target: string,
+  options?: GatewayOptions,
+) => Promise<{ status: number; body: string }> = requestGateway;
+const run = runProcess as ClientCommand;
+type Cleanup = (signal: AbortSignal) => Promise<void>;
+type CleanupRequest = { method: string; path: string; body?: JsonValue };
+const registerResourceCleanup = registerCleanup as (
+  cleanups: Cleanup[],
+  options: {
+    request: (request: CleanupRequest) => Promise<unknown>;
+    repository: string;
+    kind: string;
+    marker: string;
+    head: string;
+  },
+) => void;
+
+function jsonObject(value: unknown): Record<string, unknown> {
+  assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
+  return value as Record<string, unknown>;
+}
+
+function parseJsonObject(text: string): Record<string, unknown> {
+  const value: unknown = JSON.parse(text);
+  return jsonObject(value);
+}
 
 test("pinned gh uses selected development token routing for repository, issue and pull-request REST commands", async (t) => {
   // The production launcher requires installed hooks for a push-policy session.
   if (
-    await runInFixtureContainer(t, "tests/integration/repository-credentials-gh.test.mjs", {
+    await runInFixtureContainer(t, "tests/integration/repository-credentials-gh.test.ts", {
       packaged: true,
     })
   ) {
@@ -27,15 +74,17 @@ test("pinned gh uses selected development token routing for repository, issue an
   const fixture = await startCredentialServiceFixture(t, {
     configuration: { pushRefAllowlist: ["refs/heads/agent-feature", "refs/heads/native-feature"] },
   });
+  assert.ok(fixture);
   const singleHostsPath = join(fixture.clientDirectory, "gh", "hosts.yml");
   const originalSingleHosts = await readFile(singleHostsPath);
   const { client, checkout } = await exerciseGit(t, fixture);
   await client.git(["push", "origin", "HEAD:refs/heads/native-feature"], { cwd: checkout });
-  const { issue } = await exerciseGh(fixture, client);
+  const { issue: issuedIssue }: { issue: unknown } = await exerciseGh(fixture, client);
+  const issue = jsonObject(issuedIssue);
   // GitHub returns repository-ID links, and issue collections also carry opaque cursors.
   // The actual CLI must follow those links through the canonical gateway route.
   const issueInput = await client.json("pagination-issue.json", { title: "Second issue" });
-  const secondIssue = JSON.parse(
+  const secondIssue = parseJsonObject(
     (
       await client.gh([
         "api",
@@ -47,7 +96,7 @@ test("pinned gh uses selected development token routing for repository, issue an
       ])
     ).stdout,
   );
-  const pages = JSON.parse(
+  const pages: unknown = JSON.parse(
     (
       await client.gh([
         "api",
@@ -57,8 +106,12 @@ test("pinned gh uses selected development token routing for repository, issue an
       ])
     ).stdout,
   );
+  assert.ok(Array.isArray(pages));
   assert.deepEqual(
-    pages.map((page) => page.map(({ number }) => number)),
+    pages.map((page: unknown) => {
+      assert.ok(Array.isArray(page));
+      return page.map((entry: unknown) => jsonObject(entry).number);
+    }),
     [[issue.number], [secondIssue.number]],
   );
   assert.ok(
@@ -80,12 +133,16 @@ test("pinned gh uses selected development token routing for repository, issue an
   // Reconcile the exact marker through the same admitted session without replaying creation.
   const marker = "<!-- regression-run:gh-uncertain -->";
   const pullPath = "repos/fixture/repository/pulls";
-  const cleanups = [];
+  const cleanups: Cleanup[] = [];
   registerResourceCleanup(cleanups, {
-    request: async ({ method, path, body }) => {
+    request: async ({ method, path, body }: CleanupRequest): Promise<unknown> => {
       const response = await gatewayRequest(fixture, `/${path}`, { method, body });
       assert.ok(response.status < 400);
-      return response.body ? JSON.parse(response.body) : undefined;
+      if (!response.body) {
+        return undefined;
+      }
+      const data: unknown = JSON.parse(response.body);
+      return data;
     },
     repository: "fixture/repository",
     kind: "pulls",
@@ -115,12 +172,16 @@ test("pinned gh uses selected development token routing for repository, issue an
     .slice(beforeUncertain)
     .filter((entry) => entry.method === "POST" && entry.target === `/${pullPath}`);
   assert.equal(writes.length, 1, "gh must not replay an uncertain pull-request creation");
-  assert.ok(writes[0].tokenIndex, "the controlled provider must authenticate the write");
-  const accepted = [...fixture.github.pulls.values()].filter((pull) => pull.body === marker);
+  assert.ok(writes[0]?.tokenIndex, "the controlled provider must authenticate the write");
+  const pulls = fixture.github.pulls;
+  const accepted = [...pulls.values()].filter((pull) => pull.body === marker);
   assert.equal(accepted.length, 1, "the provider must accept the marked pull request once");
-  assert.equal(accepted[0].draft, true);
+  const acceptedPull = accepted[0];
+  assert.ok(acceptedPull);
+  assert.equal(acceptedPull.draft, true);
+  assert.ok(cleanups[0]);
   await cleanups[0](AbortSignal.timeout(5000));
-  assert.equal(fixture.github.pulls.get(accepted[0].number).state, "closed");
+  assert.equal(pulls.get(acceptedPull.number)?.state, "closed");
   // All fixed runtime paths below live only inside the disposable fixture
   // container. Private HOME configuration proves real child Git is preserved;
   // image-owned system include qualification belongs to the platform tests.
@@ -133,11 +194,15 @@ test("pinned gh uses selected development token routing for repository, issue an
     [{ opened: fixture.opened, repositoryRef: "fixture" }],
     { root: materialRoot, ca: fixture.tls.ca },
   );
-  const hostsPath = join(material.manifest.bindings[0].directory, "gh", "hosts.yml");
+  const binding = material.manifest.bindings[0];
+  assert.ok(binding);
+  const hostsPath = join(binding.directory, "gh", "hosts.yml");
   const originalHosts = await readFile(hostsPath, "utf8");
   const mismatchedHosts = originalHosts.replace(fixture.opened.bearer, "x".repeat(48));
   assert.ok(mismatchedHosts !== originalHosts, "fixture bearer must appear in gh material");
-  const { routeRepositoryClient } = await appModule("drivers/repo/github/access/client/router");
+  const { routeRepositoryClient } = await loadRepositoryClientModule<
+    typeof import("../../apps/controller/src/drivers/repo/github/access/client/router.ts")
+  >("router", ["routeRepositoryClient"]);
   const spawn = childProcess.spawn;
   const spawnSync = childProcess.spawnSync;
   const now = Date.now;
@@ -155,7 +220,7 @@ test("pinned gh uses selected development token routing for repository, issue an
     );
     assert.equal(attempts, 0);
     await writeFile(hostsPath, originalHosts);
-    const deadline = material.manifest.bindings[0].deadlineWallMs;
+    const deadline = binding.deadlineWallMs;
     let checks = 0;
     Date.now = () => (checks++ === 0 ? deadline - 1 : deadline);
     await assert.rejects(
@@ -202,9 +267,10 @@ test("pinned gh uses selected development token routing for repository, issue an
   );
   assert.equal(routed.code, 0, routed.stderr);
   assert.equal(routed.stderr.includes("ambient-token-marker"), false);
-  const pull = JSON.parse(routed.stdout);
-  assert.equal(fixture.github.pulls.get(pull.number).title, "Routed pull request");
-  const routedGh = async (args) => {
+  const pull = parseJsonObject(routed.stdout);
+  assert.ok(typeof pull.number === "number");
+  assert.equal(pulls.get(pull.number)?.title, "Routed pull request");
+  const routedGh = async (args: string[]) => {
     const result = await run(process.execPath, [router, "gh", ...args], {
       cwd: checkout,
       env: cleanEnvironment({ HOME: client.directory, OCE_REPOSITORY_REF: "fixture" }),
@@ -213,9 +279,9 @@ test("pinned gh uses selected development token routing for repository, issue an
     assert.equal(result.code, 0, `gh ${args.slice(0, 2).join(" ")}: ${result.stderr}`);
     return result;
   };
-  const repository = JSON.parse((await routedGh(["api", "repos/fixture/repository"])).stdout);
+  const repository = parseJsonObject((await routedGh(["api", "repos/fixture/repository"])).stdout);
   assert.equal(repository.full_name, "fixture/repository");
-  const viewed = JSON.parse(
+  const viewed = parseJsonObject(
     (await routedGh(["api", `repos/fixture/repository/pulls/${pull.number}`])).stdout,
   );
   assert.equal(viewed.number, pull.number);
@@ -261,23 +327,24 @@ test("pinned gh uses selected development token routing for repository, issue an
 if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
   test("uncertain API POST, PATCH and DELETE requests are sent once", async (t) => {
     const fixture = await startCredentialServiceFixture(t);
+    assert.ok(fixture);
     const prefix = "/repos/fixture/repository";
     const issued = await gatewayRequest(fixture, `${prefix}/issues`, {
       method: "POST",
       body: { title: "Replay fixture" },
     });
-    const issue = JSON.parse(issued.body);
+    const issue = parseJsonObject(issued.body);
     const commented = await gatewayRequest(fixture, `${prefix}/issues/${issue.number}/comments`, {
       method: "POST",
       body: { body: "Replay fixture" },
     });
-    const comment = JSON.parse(commented.body);
+    const comment = parseJsonObject(commented.body);
     for (const [method, target, body] of [
       ["POST", `${prefix}/issues`, { title: "Accepted once" }],
       ["PATCH", `${prefix}/issues/${issue.number}`, { title: "Updated once" }],
       ["DELETE", `${prefix}/issues/comments/${comment.id}`, undefined],
-    ]) {
-      const count = () =>
+    ] satisfies [string, string, JsonValue | undefined][]) {
+      const count = (): number =>
         fixture.github.trace.filter((entry) => entry.method === method && entry.target === target)
           .length;
       const before = count();
@@ -286,7 +353,9 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
         const response = await gatewayRequest(fixture, target, { method, body });
         assert.ok(response.status >= 400);
       } catch (error) {
-        assert.match(error.code ?? error.message, /ECONNRESET|aborted|socket hang up/);
+        assert.ok(error instanceof Error);
+        const code = "code" in error && typeof error.code === "string" ? error.code : error.message;
+        assert.match(code, /ECONNRESET|aborted|socket hang up/);
       }
       assert.equal(count(), before + 1);
     }
