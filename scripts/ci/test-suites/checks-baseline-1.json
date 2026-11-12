@@ -42,7 +42,7 @@
     "tests/integration/json-body-depth.test.mjs",
     "tests/conformance/workspace-files.test.ts",
     "tests/conformance/runtime-logs-sandbox.test.ts",
-    "tests/integration/device-authorization-api.test.mjs",
+    "tests/integration/device-authorization-api.test.ts",
     "tests/integration/openshell-device-authorization-api.test.mjs",
     "tests/integration/dependency-unavailable-log.test.mjs",
     "tests/integration/git-hooks.test.mjs",
@@ -463,7 +463,7 @@
       ]
     },
     {
-      "path": "tests/integration/device-authorization-api.test.mjs"
+      "path": "tests/integration/device-authorization-api.test.ts"
     },
     {
       "path": "tests/integration/openshell-device-authorization-api.test.mjs"
