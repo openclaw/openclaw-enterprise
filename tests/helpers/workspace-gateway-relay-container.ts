@@ -1,18 +1,37 @@
-import { execFile } from "node:child_process";
+import { execFile, type ExecFileOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { redactedQaTail } from "./qa-secrets.mjs";
 
 const executeFile = promisify(execFile);
-const diagnosticOptions = { timeout: 5_000, maxBuffer: 64 * 1024, killSignal: "SIGKILL" };
+const diagnosticOptions = {
+  timeout: 5_000,
+  maxBuffer: 64 * 1024,
+  killSignal: "SIGKILL",
+} satisfies ExecFileOptions;
 const ownerLabel = "org.openclaw.test.workspace-relay";
 
-function outputTail(value) {
+type RelayContext = { after(hook: () => Promise<void>): unknown };
+type RelayOptions = { containerEngine: string; relayName: string; runArguments: string[] };
+
+function commandError(error: unknown) {
+  return {
+    code: error && typeof error === "object" && "code" in error ? error.code : undefined,
+    signal: error && typeof error === "object" && "signal" in error ? error.signal : undefined,
+    killed: error && typeof error === "object" && "killed" in error ? error.killed : undefined,
+    name: error && typeof error === "object" && "name" in error ? error.name : undefined,
+    stdout: error && typeof error === "object" && "stdout" in error ? error.stdout : undefined,
+    stderr: error && typeof error === "object" && "stderr" in error ? error.stderr : undefined,
+  };
+}
+
+function outputTail(value: string) {
   return redactedQaTail(value, process.env, { lines: 8, lineChars: 256 }).join("\n");
 }
 
-function commandFailure(error) {
+function commandFailure(value: unknown) {
+  const error = commandError(value);
   // execFile's message includes command arguments. Partial captures can bisect
   // a secret before redaction, so only completed command output is eligible.
   const status = `exit=${error.code ?? "unknown"} signal=${error.signal ?? "none"}`;
@@ -26,18 +45,18 @@ function commandFailure(error) {
 }
 
 export async function startWorkspaceGatewayRelayContainer(
-  context,
-  { containerEngine, relayName, runArguments },
+  context: RelayContext,
+  { containerEngine, relayName, runArguments }: RelayOptions,
 ) {
   const ownership = `${ownerLabel}=${randomUUID()}`;
   const abort = new AbortController();
-  let containerId;
-  let startupFailure;
+  let containerId: string | undefined;
+  let startupFailure: Error | undefined;
   let launchIndeterminate = false;
   let startup = Promise.resolve();
-  const execute = (args, options = {}) =>
-    executeFile(containerEngine, args, { ...diagnosticOptions, ...options });
-  const findOwnedContainer = async (signal) => {
+  const execute = (args: string[], options: ExecFileOptions = {}) =>
+    executeFile(containerEngine, args, { ...diagnosticOptions, ...options, encoding: "utf8" });
+  const findOwnedContainer = async (signal?: AbortSignal) => {
     const { stdout } = await execute(
       ["ps", "--all", "--quiet", "--no-trunc", "--filter", `label=${ownership}`],
       { signal },
@@ -53,7 +72,7 @@ export async function startWorkspaceGatewayRelayContainer(
     }
     return id;
   };
-  const cleanupFailure = (detail) => {
+  const cleanupFailure = (detail: string) => {
     const error = new Error(`Host routing relay cleanup failed.\n${detail}`);
     return startupFailure
       ? new AggregateError(
@@ -68,7 +87,7 @@ export async function startWorkspaceGatewayRelayContainer(
     // ownership. Aborting a delegating CLI does not join its engine child.
     abort.abort();
     await startup.catch(() => undefined);
-    let target;
+    let target: string | undefined;
     try {
       target = containerId ?? (await findOwnedContainer());
     } catch (error) {
@@ -86,7 +105,7 @@ export async function startWorkspaceGatewayRelayContainer(
     } catch (error) {
       // A lost removal acknowledgement is safe only if the engine confirms
       // absence. Query the verified ID, never a reusable container name.
-      let remaining;
+      let remaining: string;
       try {
         ({ stdout: remaining } = await execute([
           "ps",
@@ -111,7 +130,7 @@ export async function startWorkspaceGatewayRelayContainer(
   });
 
   startup = (async () => {
-    let failure;
+    let failure: string;
     let stage = "run";
     try {
       // Retain exited containers until cleanup so a fast failure cannot erase logs.
@@ -134,7 +153,8 @@ export async function startWorkspaceGatewayRelayContainer(
         }
         failure = "inspect: running=false";
       }
-    } catch (error) {
+    } catch (value) {
+      const error = commandError(value);
       launchIndeterminate =
         stage === "run" &&
         Boolean(error.killed || error.signal || error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER");
@@ -159,17 +179,19 @@ export async function startWorkspaceGatewayRelayContainer(
     } else {
       diagnostics.push(
         ...(await Promise.all(
-          [
+          (
             [
-              "state",
               [
-                "inspect",
-                "--format=status={{.State.Status}} running={{.State.Running}} exit={{.State.ExitCode}} oomKilled={{.State.OOMKilled}} error={{json .State.Error}}",
-                containerId,
+                "state",
+                [
+                  "inspect",
+                  "--format=status={{.State.Status}} running={{.State.Running}} exit={{.State.ExitCode}} oomKilled={{.State.OOMKilled}} error={{json .State.Error}}",
+                  containerId,
+                ],
               ],
-            ],
-            ["logs", ["logs", "--tail", "30", containerId]],
-          ].map(async ([label, args]) => {
+              ["logs", ["logs", "--tail", "30", containerId]],
+            ] satisfies [string, string[]][]
+          ).map(async ([label, args]) => {
             try {
               const { stdout, stderr } = await execute(args, { signal: abort.signal });
               return `${label}:\n${outputTail(`${stdout}\n${stderr}`)}`;

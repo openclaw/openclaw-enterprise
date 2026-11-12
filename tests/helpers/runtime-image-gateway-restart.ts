@@ -1,5 +1,5 @@
 // The embedded Gateway restart after an unclean stop, shared by
-// runtime-image-gateway-unclean-restart.test.mjs (Docker and Kubernetes recovery,
+// runtime-image-gateway-unclean-restart.test.ts (Docker and Kubernetes recovery,
 // Image Runtime Startup 2) and runtime-image-gateway-retained-state.test.mjs
 // (operator-confirmed recovery, Image Runtime Startup). Each case takes about a
 // minute of Gateway starts and first turns, so CI runs them in two lanes rather
@@ -7,9 +7,13 @@
 // helper as the startup probe files.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { INITIALIZE_EMBEDDED_GATEWAY_OWNER } from "../../apps/controller/src/drivers/compute/embedded-gateway-owner.ts";
+import {
+  INITIALIZE_EMBEDDED_GATEWAY_OWNER,
+  type GatewayPidNamespace,
+} from "../../apps/controller/src/drivers/compute/embedded-gateway-owner.ts";
+import type { EmbeddedContainerInspect } from "../../apps/controller/src/drivers/compute/docker/embedded-gateway-recovery.ts";
 import { DockerComputeDriver } from "../../apps/controller/src/drivers/compute/docker/index.ts";
-import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
+import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.ts";
 import {
   assertGatewayFirstTurnMemory,
   gatewayMemoryPeak,
@@ -29,10 +33,19 @@ import {
 // cases; the production example allows up to four cores.
 const restartGatewayCpus = "2";
 
+type Recovery = "Docker" | "Kubernetes" | "operator";
+type FirstTurnResult =
+  | { status: number; content?: string; body: string; error?: never }
+  | { error: string; status?: never; content?: never; body?: never };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 // Runs in the Gateway container: waits for the runtime readiness endpoint the
 // kubelet probes, then sends one chat turn at once, as a client does on the
 // first message after Start. Prints the turn's outcome as JSON.
-async function firstTurnAfterReadiness({ budgetMs }) {
+async function firstTurnAfterReadiness({ budgetMs }: { budgetMs: number }): Promise<void> {
   const deadline = Date.now() + budgetMs;
   for (;;) {
     try {
@@ -65,9 +78,26 @@ async function firstTurnAfterReadiness({ budgetMs }) {
     signal: AbortSignal.timeout(120_000),
   });
   const text = await response.text();
-  let content;
+  let content: string | undefined;
   try {
-    content = JSON.parse(text).choices?.[0]?.message?.content;
+    const payload: unknown = JSON.parse(text);
+    if (typeof payload === "object" && payload !== null && "choices" in payload) {
+      const choices: unknown = payload.choices;
+      if (Array.isArray(choices)) {
+        const choice: unknown = choices[0];
+        if (typeof choice === "object" && choice !== null && "message" in choice) {
+          const message: unknown = choice.message;
+          if (
+            typeof message === "object" &&
+            message !== null &&
+            "content" in message &&
+            typeof message.content === "string"
+          ) {
+            content = message.content;
+          }
+        }
+      }
+    }
   } catch {
     // A refused turn's body need not be JSON; the status and body are reported.
   }
@@ -76,7 +106,7 @@ async function firstTurnAfterReadiness({ budgetMs }) {
   );
 }
 
-async function sendFirstTurn(containerName) {
+async function sendFirstTurn(containerName: string): Promise<FirstTurnResult> {
   const budgetMs = 240_000 * imageSmokeTimeoutMultiplier;
   const { stdout } = await runDocker(
     [
@@ -89,10 +119,23 @@ async function sendFirstTurn(containerName) {
     ],
     { timeout: budgetMs + 150_000 },
   );
-  return JSON.parse(stdout);
+  const result: unknown = JSON.parse(stdout);
+  assert.ok(isRecord(result), "the first-turn probe must return a JSON object");
+  if (typeof result.error === "string") {
+    return { error: result.error };
+  }
+  assert.ok(typeof result.status === "number", "the first-turn probe must report an HTTP status");
+  assert.ok(typeof result.body === "string", "the first-turn probe must report the response body");
+  assert.ok(
+    result.content === undefined || typeof result.content === "string",
+    "the first-turn probe content must be a string",
+  );
+  return result.content === undefined
+    ? { status: result.status, body: result.body }
+    : { status: result.status, content: result.content, body: result.body };
 }
 
-async function recoverStoppedGateway(gatewayId) {
+async function recoverStoppedGateway(gatewayId: string): Promise<void> {
   // The test owns this private volume. Act as its operator only after Docker
   // confirms the exact former owner stopped. Reuse its read-only fixture config
   // and writable state so OC inspects the same locks the replacement will see.
@@ -127,11 +170,24 @@ async function recoverStoppedGateway(gatewayId) {
     "--json",
   ];
   const { stdout: inspection } = await runDocker(command);
-  const { present, confirmation } = JSON.parse(inspection);
+  const inspected: unknown = JSON.parse(inspection);
+  assert.ok(isRecord(inspected), "Gateway lock inspection must return a JSON object");
+  const { present, confirmation } = inspected;
   assert.equal(present, true, "the hard stop must leave Gateway ownership records");
+  assert.ok(typeof confirmation === "string", "Gateway lock inspection must report a confirmation");
   assert.match(confirmation, /^[a-f0-9]{64}$/);
   const { stdout: recovery } = await runDocker([...command, "--confirm", confirmation]);
-  assert.equal(JSON.parse(recovery).recovered, true);
+  const recovered: unknown = JSON.parse(recovery);
+  assert.ok(isRecord(recovered), "Gateway lock recovery must return a JSON object");
+  assert.equal(recovered.recovered, true);
+}
+
+// This scenario exercises the Docker Compute handoff on the real container
+// started by the probe helper, so it uses the driver's internal handoff methods.
+async function gatewayContainer(compute: DockerComputeDriver, containerName: string) {
+  const container: EmbeddedContainerInspect | undefined = await compute["container"](containerName);
+  assert.ok(container, "Docker must confirm the Gateway container exists");
+  return container;
 }
 
 // Finding 2185: a Gateway Pod went Ready while OpenClaw was still inspecting
@@ -143,11 +199,15 @@ async function recoverStoppedGateway(gatewayId) {
 // `recovery` selects how the restart recovers the killed owner: "Docker" (the
 // Docker Compute handoff), "Kubernetes" (a restarted container in the same Pod)
 // or "operator" (operator-confirmed lock recovery).
-export function uncleanStopRestartTest(recovery, title) {
+export function uncleanStopRestartTest(recovery: Recovery, title: string): void {
   test(title, { ...imageTestOptions, timeout: 900_000 }, async (t) => {
+    assert.ok(image !== undefined, "the runtime image must be selected");
     const mountPath = recovery === "Docker" ? "/home/node/.openclaw" : "/home/node";
     const volume = await gatewayStateVolume(t, mountPath);
-    const stateMount = recovery === "Docker" ? { stateVolume: volume } : { homeVolume: volume };
+    const stateMount =
+      recovery === "Docker"
+        ? { stateVolume: volume, homeVolume: undefined }
+        : { stateVolume: undefined, homeVolume: volume };
     // The named mounts give two Docker containers the lifetime and mount
     // permissions of one Pod's two emptyDirs. A real PID namespace dies on kill.
     const podOwner =
@@ -183,35 +243,36 @@ export function uncleanStopRestartTest(recovery, title) {
     }
     // The first Gateway answers a turn, so its agent database holds a lease,
     // and is then killed with no chance to release it.
-    let firstTurn;
-    let terminatedGatewayNamespace;
+    let firstTurn: FirstTurnResult | undefined;
+    let terminatedGatewayNamespace: GatewayPidNamespace | undefined;
     const compute =
       recovery === "Docker"
         ? new DockerComputeDriver({ images: { gateway: image, agent: image } })
         : undefined;
     const gatewayManagedMode = recovery === "Kubernetes";
     const first = await runStartupProbeScenario(t, {
+      terminatedGatewayNamespace: undefined,
       kind: "gateway",
       mode: "answer",
       ...stateMount,
       podOwner,
       gatewayManagedMode,
       cpus: restartGatewayCpus,
-      until: ({ events }) => events.some(observedValue("ready", true)),
-      act: async ({ containerName }) => {
+      until: ({ events }: { events: unknown[] }) => events.some(observedValue("ready", true)),
+      act: async ({ containerName }: { containerName: string }) => {
         firstTurn = await sendFirstTurn(containerName);
         if (compute) {
-          await compute.rememberEmbeddedGateway(
+          await compute["rememberEmbeddedGateway"](
             containerName,
-            await compute.container(containerName),
+            await gatewayContainer(compute, containerName),
             volume,
           );
         }
       },
     });
     await withStartupProbeEvidence(first, async () => {
-      assert.equal(firstTurn.status, 200, `first Gateway turn: ${JSON.stringify(firstTurn)}`);
-      assert.equal(firstTurn.content, "READY");
+      assert.equal(firstTurn?.status, 200, `first Gateway turn: ${JSON.stringify(firstTurn)}`);
+      assert.equal(firstTurn?.content, "READY");
     });
     // OpenClaw starts most of its worker threads on the first turn, which sets
     // the Gateway's memory high-water mark (finding 2700). The peak includes the
@@ -223,11 +284,11 @@ export function uncleanStopRestartTest(recovery, title) {
     const stopped = await runDocker(["wait", gatewayId]);
     assert.equal(stopped.stdout.trim(), "137", "Docker must confirm the killed Gateway exited");
     if (compute) {
-      await compute.removeGateway(
+      await compute["removeGateway"](
         first.containerName,
-        await compute.container(first.containerName),
+        await gatewayContainer(compute, first.containerName),
       );
-      terminatedGatewayNamespace = await compute.takeEmbeddedGatewayHandoff(
+      terminatedGatewayNamespace = await compute["takeEmbeddedGatewayHandoff"](
         first.containerName,
         volume,
       );
@@ -236,7 +297,7 @@ export function uncleanStopRestartTest(recovery, title) {
       await recoverStoppedGateway(gatewayId);
     }
     // The restart's first turn goes out as soon as the runtime reports ready.
-    let turn;
+    let turn: FirstTurnResult | undefined;
     const restarted = await runStartupProbeScenario(t, {
       terminatedGatewayNamespace,
       kind: "gateway",
@@ -245,16 +306,18 @@ export function uncleanStopRestartTest(recovery, title) {
       podOwner,
       gatewayManagedMode,
       cpus: restartGatewayCpus,
-      until: ({ phases }) => phaseAt(phases, "native-spawn") !== undefined,
-      act: async ({ containerName }) => {
+      until: ({ phases }: { phases: unknown[] }) => phaseAt(phases, "native-spawn") !== undefined,
+      act: async ({ containerName }: { containerName: string }) => {
         // A failed exec is reported with the wrapper output below.
-        turn = await sendFirstTurn(containerName).catch((error) => ({ error: error.message }));
+        turn = await sendFirstTurn(containerName).catch((error: unknown) => ({
+          error: error instanceof Error ? error.message : String(error),
+        }));
       },
     });
     await withStartupProbeEvidence(restarted, async () => {
       // Before the fix: HTTP 500 {"error":{"message":"internal error"}}.
-      assert.equal(turn.status, 200, `first turn after restart: ${JSON.stringify(turn)}`);
-      assert.equal(turn.content, "READY");
+      assert.equal(turn?.status, 200, `first turn after restart: ${JSON.stringify(turn)}`);
+      assert.equal(turn?.content, "READY");
       if (recovery !== "operator") {
         assert.match(restarted.snapshot.output, /"recovered"\s*:\s*true/);
       }

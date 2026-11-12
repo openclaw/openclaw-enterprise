@@ -29,7 +29,7 @@ import {
   withBoundedTeardown,
   withinDiagnosticDeadline,
 } from "../helpers/kubernetes-real.mjs";
-import { refusingPort } from "../helpers/available-port.mjs";
+import { refusingPort } from "../helpers/available-port.ts";
 import { listen } from "../helpers/listen.ts";
 import { withEnvironment } from "../helpers/environment.ts";
 import { commandPath, prependPath, writeCommand } from "../helpers/fake-commands.ts";

@@ -650,16 +650,19 @@ describe("CI k3d preparation", { concurrency: true }, () => {
 
   // Only external commands are substituted: the preparation CLI owns child deadlines,
   // cleanup inventory, and publication. These cases do not exercise Docker or Kubernetes.
-  for (const stage of ["fixture-engine-version", "fixture-image-build"]) {
+  const fixtureImageStages = ["fixture-engine-version", "fixture-image-build"];
+  for (const stage of fixtureImageStages) {
     test(`fixture preparation bounds ${stage} before publishing test inputs`, async (t) => {
       const version = stage === "fixture-engine-version";
-      const commands = await fixtureImageCommands(t, "success", "k3d-fixture-network", {
+      const buildBudgetMs = 8_000;
+      const reserveMs = 2_000;
+      const lane = "k3d-fixture-network";
+      const commands = await fixtureImageCommands(t, "success", lane, {
         OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS: version ? "3000" : "30000",
         OPENCLAW_CI_COMMAND_KILL_GRACE_MS: version ? "3000" : "100",
-        OPENCLAW_CI_IMAGE_BUILD_TEST_RESERVE_MS: "2000",
-        // Invalid deadlines still need a finite engine-probe limit. The build uses
-        // the real remaining lane budget rather than waiting for its full command limit.
-        CI_RUNNER_DEADLINE_MS: version ? "invalid" : String(Date.now() + 8_000),
+        OPENCLAW_CI_IMAGE_BUILD_TEST_RESERVE_MS: String(reserveMs),
+        // Invalid deadlines still need a finite engine-probe limit.
+        ...(version ? { CI_RUNNER_DEADLINE_MS: "invalid" } : {}),
       });
       const pidFile = join(dirname(commands.statePath), "fixture-command-pids");
       const privateUrl = syntheticCredentialUrl({
@@ -720,14 +723,50 @@ describe("CI k3d preparation", { concurrency: true }, () => {
         }
         return undefined;
       });
-      const result = await commands.prepare();
+      // Start the build budget at CLI launch, after synthetic shim setup.
+      const result = version
+        ? await commands.prepare()
+        : await commands.prepare([], {
+            env: { CI_RUNNER_DEADLINE_MS: String(Date.now() + buildBudgetMs) },
+          });
       assert.equal(
         result.error,
         undefined,
         "the outer test watchdog must not enforce the deadline",
       );
-      assert.equal(result.status, 1, result.stderr);
-      const pids = (await readFile(pidFile, "utf8")).trim().split("\n").map(Number);
+      assert.equal(result.status, 1, "fixture preparation must fail");
+      const pidText = await readFile(pidFile, "utf8").catch((error) => {
+        if (version || error.code !== "ENOENT") {
+          throw error;
+        }
+        const lines = result.stderr.split("\n");
+        const refused = fixtureImageStages.find((candidate) =>
+          lines.includes(
+            `Fixture image preparation ${candidate} was not started: the lane keeps ` +
+              `${reserveMs} ms before its deadline for remaining preparation and tests.`,
+          ),
+        );
+        if (refused) {
+          assert.fail(`missing build PID witness: ${refused} refused the remaining lane budget`);
+        }
+        let metrics;
+        try {
+          metrics = fixturePreparationMetrics(result.stderr, lane);
+        } catch {
+          assert.fail("missing build PID witness: invalid CI preparation metric");
+        }
+        const failedAttempt = metrics.findLast(
+          (metric) =>
+            metric.status === "failed" &&
+            (fixtureImageStages.includes(metric.stage) || metric.stage === "k3d-create"),
+        );
+        assert.fail(
+          failedAttempt
+            ? `missing build PID witness: ${failedAttempt.stage} reported a failed attempt`
+            : "missing build PID witness: prepare stage unknown",
+        );
+      });
+      const pids = pidText.trim().split("\n").map(Number);
       t.after(() => {
         for (const pid of pids) {
           if (processRunning(pid)) {
@@ -741,32 +780,49 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       for (const pid of pids) {
         assert.equal(processRunning(pid), false, `fixture command process ${pid} must stop`);
       }
-      assertStderrMatch(
-        result.stderr,
-        new RegExp(`Fixture image preparation ${stage} timed out after [0-9]+ ms`),
+      const timeout = result.stderr.match(
+        new RegExp(`Fixture image preparation ${stage} timed out after ([0-9]+) ms`),
       );
-      assertStderrMatch(result.stderr, new RegExp(`"stage":"${stage}","status":"started"`));
-      assertStderrMatch(result.stderr, new RegExp(`"stage":"${stage}","status":"failed"`));
+      assert.ok(timeout, "expected fixture command timeout");
+      if (!version) {
+        const timeoutMs = Number(timeout[1]);
+        assert.ok(
+          timeoutMs > 0 && timeoutMs <= buildBudgetMs - reserveMs,
+          "reported build timeout must leave the reserve for remaining preparation and tests",
+        );
+      }
+      const metrics = fixturePreparationMetrics(result.stderr, lane);
+      assert.ok(
+        metrics.some((metric) => metric.stage === stage && metric.status === "started"),
+        "expected fixture command start",
+      );
+      const failed = metrics.find((metric) => metric.stage === stage && metric.status === "failed");
+      assert.ok(failed, "expected fixture command failure");
       if (version) {
-        const failed = result.stderr
-          .split("\n")
-          .find((line) => line.includes(`"stage":"${stage}","status":"failed"`));
-        const { elapsedMs } = JSON.parse(failed.slice(failed.indexOf("{")));
+        const { elapsedMs } = failed;
         // A prompt child exit releases its supervisor; do not wait on a stale
         // group number until the three-second escalation grace expires.
         // Two seconds of scheduling margin still excludes deadline + full grace.
         assert.ok(elapsedMs < 5000, `prompt timeout settlement took ${elapsedMs} ms`);
       }
       if (!version) {
-        assertStderrMatch(
-          result.stderr,
-          /Fixture image build steps \(captured tail\): #1 \[1\/4\] FROM DONE; #2 \[2\/4\] RUN$/m,
+        assert.ok(
+          /Fixture image build steps \(captured tail\): #1 \[1\/4\] FROM DONE; #2 \[2\/4\] RUN$/m.test(
+            result.stderr,
+          ),
+          "expected sanitized build steps",
         );
       }
       assert.ok(!result.stderr.includes(privateUrl));
-      assert.doesNotMatch(result.stderr, /fixture-password|private terminal text/);
+      assert.ok(
+        !/fixture-password|private terminal text/.test(result.stderr),
+        "build progress must omit private text",
+      );
       assert.ok(!result.stderr.includes("\u001b"));
-      assert.doesNotMatch(result.stderr, /private build output/);
+      assert.ok(
+        !result.stderr.includes("private build output"),
+        "build progress must omit raw output",
+      );
       const state = await commands.readState();
       const image = state.resources.find(({ kind }) => kind === "image-tag");
       if (version) {

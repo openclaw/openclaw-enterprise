@@ -111,7 +111,7 @@ require_immutable_image() {
   local LC_ALL=C
   [[ "$image" =~ @sha256:[a-f0-9]{64}$ ]] ||
     die "$flag must be an approved immutable SHA-256 image reference."
-  local helper=scripts/lib/image-reference-problem.mjs
+  local helper=scripts/lib/image-reference-problem.ts
   [[ -f "$helper" ]] || die "could not find $helper; run this command from the repository root."
   problem=$(node "$helper" "$image") ||
     die "could not run the image reference check for $flag (it needs Node.js 24 or later)."
@@ -307,14 +307,24 @@ require_mutable_installation_secret() {
 }
 
 check_installation_update_access() {
-  local request decision
-  request=$(jq -n --arg namespace "$namespace" --arg name "$installation_secret" '{
+  local decision
+  if decision=$(named_access_review update "" secrets "$installation_secret" 15); then
+    [[ "$decision" == true ]] ||
+      die "Kubernetes denied update on Installation Secret $namespace/$installation_secret. Obtain update access before upgrading."
+  else
+    warn "Could not verify update access to the Installation Secret. The upgrade requires update permission on that Secret."
+  fi
+}
+
+# Print true or false only for a complete decision about this exact operation.
+named_access_review() {
+  local request
+  request=$(jq -n --arg namespace "$namespace" --arg verb "$1" --arg group "$2" --arg resource "$3" --arg name "$4" '{
     apiVersion: "authorization.k8s.io/v1", kind: "SelfSubjectAccessReview",
-    spec: {resourceAttributes: {namespace: $namespace, verb: "update", group: "", resource: "secrets", name: $name}}
-  }')
-  # A failed or incomplete self-review says nothing about the real update.
-  if decision=$(printf '%s\n' "$request" |
-    "${kube[@]}" --request-timeout=15s create --raw /apis/authorization.k8s.io/v1/selfsubjectaccessreviews --filename - 2>/dev/null |
+    spec: {resourceAttributes: {$namespace, $verb, $group, version: "v1", $resource, $name}}
+  }') || return 1
+  printf '%s\n' "$request" |
+    "${kube[@]}" --request-timeout="${5}s" create --raw /apis/authorization.k8s.io/v1/selfsubjectaccessreviews --filename - 2>/dev/null |
     jq -ers --argjson request "$request" '
       select(length == 1) | .[0] |
       select(.apiVersion == $request.apiVersion and .kind == $request.kind) |
@@ -323,12 +333,7 @@ check_installation_update_access() {
         ((has("denied") | not) or (.denied | type == "boolean")) and
         ((has("reason") | not) or (.reason | type == "string")) and
         ((has("evaluationError") | not) or .evaluationError == "") and
-        ((.allowed and .denied) | not)) | .allowed | tostring' 2>/dev/null); then
-    [[ "$decision" == true ]] ||
-      die "Kubernetes denied update on Installation Secret $namespace/$installation_secret. Obtain update access before upgrading."
-  else
-    warn "Could not verify update access to the Installation Secret. The upgrade requires update permission on that Secret."
-  fi
+        ((.allowed and .denied) | not)) | .allowed | tostring' 2>/dev/null
 }
 
 # Versioned Secrets are operator-staged. Neither reference may be replaced or
@@ -794,7 +799,7 @@ def digest(path):
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
 evidence = os.stat(sys.argv[16])
-print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "agentContinuity": sys.argv[18:20], "controllerCompatibilityResults": sys.argv[20], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.mjs"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.mjs"), "preflightStateSha256": digest("scripts/upgrade-preflight-state.py"), "preflightCleanupSha256": digest("scripts/lib/upgrade-preflight-cleanup.sh"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.mjs"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "helmStateSha256": digest("scripts/upgrade-helm-state.py"), "resourceQuantitiesSha256": digest("apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
+print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "agentContinuity": sys.argv[18:20], "controllerCompatibilityResults": sys.argv[20], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.mjs"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.mjs"), "preflightStateSha256": digest("scripts/upgrade-preflight-state.py"), "preflightCleanupSha256": digest("scripts/lib/upgrade-preflight-cleanup.sh"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.ts"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "helmStateSha256": digest("scripts/upgrade-helm-state.py"), "resourceQuantitiesSha256": digest("apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
 PYTHON
 )
 if ((resume)); then
@@ -2053,6 +2058,13 @@ if ((helm_complete == 0)); then
   # Refresh before the first stop, including resume when the worker still runs.
   # This detects changed selections; exclusive maintenance ownership is still required.
   if jq -e '.spec.replicas == 1' "$evidence_dir/current-worker-deployment.json" >/dev/null; then
+    quiescence_remaining
+    if decision=$(named_access_review patch apps deployments openclaw-enterprise-worker "$((remaining_seconds < 15 ? remaining_seconds : 15))"); then
+      [[ "$decision" == true ]] ||
+        die "Kubernetes denied patch on worker Deployment $namespace/openclaw-enterprise-worker. Obtain patch access before resuming."
+    else
+      warn "Could not verify patch access to the worker Deployment. The upgrade requires patch permission to stop it."
+    fi
     read_restart_inventory "$evidence_dir/inventory/before-stop.json"
     normalize_restart_inventory "$evidence_dir/inventory/before-stop.json" >"$evidence_dir/inventory/before-stop-selection.json"
     cmp -s "$evidence_dir/inventory/restart-preflight.json" "$evidence_dir/inventory/before-stop-selection.json" ||

@@ -1,6 +1,9 @@
 // Run the same bounded TCP client in the owned operator and ordinary probe Pod.
 // A transport rejection is evidence only alongside live-listener and egress controls.
-export function tcpProbeCommand(targets, { waitForInitialEgress = false } = {}) {
+export function tcpProbeCommand(
+  targets: { label: string; host: string; port: number; expect: string }[],
+  { waitForInitialEgress = false }: { waitForInitialEgress?: boolean } = {},
+) {
   return [
     "node",
     "--input-type=module",
@@ -49,7 +52,7 @@ for (const [index, target] of targets.entries()) {
   ];
 }
 
-export function tcpControlCommand(port) {
+export function tcpControlCommand(port: number) {
   return [
     "node",
     "--input-type=module",

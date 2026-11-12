@@ -1018,7 +1018,10 @@ async function validateLaneInputsBeforeSideEffects(lane, { file, modelSelectors 
   const name = laneName(lane);
   const prepare = lanePrepare(name);
   const effectiveEnv = effectiveLaneEnv(name);
-  const modelEnv = modelSelectors ?? effectiveEnv;
+  const modelEnv = modelSelectors ?? {
+    ...effectiveEnv,
+    ...laneDefinition(name).files?.find((entry) => entry.path === file)?.env,
+  };
   const harnessError = openShellHarnessError(name, file, modelEnv);
   if (harnessError) {
     throw new Error(harnessError);
@@ -1026,7 +1029,50 @@ async function validateLaneInputsBeforeSideEffects(lane, { file, modelSelectors 
   if (prepare.k3d && !isOpenShellLane(name) && effectiveEnv.OPENCLAW_CI_K3S_IMAGE) {
     assertImmutableImageReference(effectiveEnv.OPENCLAW_CI_K3S_IMAGE, "OPENCLAW_CI_K3S_IMAGE");
   }
-  requireEnv(openShellRequiredEnv(name, file, prepare.requireEnv ?? [], modelEnv), effectiveEnv);
+  const openShellApiKeyWorkflowFile = [
+    "tests/integration/openshell-upstream-real.test.ts",
+    "tests/integration/openshell-refresh-real.test.ts",
+    "tests/integration/openshell-withdrawal-real.test.ts",
+    "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+  ].includes(file);
+  // Custom keys must not reach sibling tests that register the public provider.
+  if (isOpenShellLane(name)) {
+    const endpoint = effectiveEnv.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim();
+    const parsedEndpoint = endpoint ? URL.parse(endpoint) : null;
+    if (endpoint && !parsedEndpoint) {
+      throw new Error("The OpenShell model endpoint must be a valid absolute URL.");
+    }
+    const customEndpoint =
+      parsedEndpoint && parsedEndpoint.href.replace(/\/$/u, "") !== "https://api.openai.com/v1";
+    if (customEndpoint && !openShellApiKeyWorkflowFile) {
+      throw new Error("Custom OpenShell model endpoints require a focused gateway workflow file.");
+    }
+    if (effectiveEnv.OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE) {
+      if (
+        ![
+          "tests/integration/local-first-agent-openshell-real.test.mjs",
+          "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
+        ].includes(file)
+      ) {
+        throw new Error("Custom native providers require a focused first-Agent file.");
+      }
+      requireEnv(["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"], effectiveEnv);
+    }
+  }
+  const requiredInputs =
+    name === "openshell-installers" && file === undefined
+      ? [
+          ...new Set(
+            laneDefinition(name).files.flatMap((entry) =>
+              openShellRequiredEnv(name, entry.path, prepare.requireEnv ?? [], {
+                ...modelEnv,
+                ...entry.env,
+              }),
+            ),
+          ),
+        ]
+      : openShellRequiredEnv(name, file, prepare.requireEnv ?? [], modelEnv);
+  requireEnv(requiredInputs, effectiveEnv);
   if (prepare.nodeBaseImage) {
     assertNodeBaseImage(effectiveEnv.NODE_BASE_IMAGE);
   }

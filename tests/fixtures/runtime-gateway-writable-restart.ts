@@ -3,9 +3,11 @@ import { randomBytes } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import {
   containerLogTail,
@@ -17,19 +19,120 @@ import {
 } from "../helpers/runtime-image-startup.mjs";
 import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
 
+interface GatewayState {
+  ready: boolean;
+  readyStatus: number;
+  prefix?: string;
+  bridge?: { plugins?: { linear?: { enabled: boolean } } };
+  journalMode: number | null;
+}
+
+interface ContainerInspection {
+  State: { StartedAt: string; Running: boolean; ExitCode: number };
+  RestartCount: number;
+}
+
+interface HeldState {
+  ready: number;
+  failure?: { check: string; code: string };
+}
+
+interface PeerStatus {
+  revisionId: string;
+  container: string;
+  startupId: string;
+  podUid: string;
+  phase: string;
+  successfulPluginIds: string[];
+  failures: { pluginId: string; code: string }[];
+}
+
+function requireRecord(value: unknown, label: string): Record<string, unknown> {
+  const record = asRecord(value);
+  assert.ok(record, `${label} must be an object`);
+  return record;
+}
+
+function optionalRecord(value: unknown, label: string) {
+  return value === undefined ? undefined : requireRecord(value, label);
+}
+
+function isHttpStatus(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 599;
+}
+
+function assertGatewayState(value: unknown): asserts value is GatewayState {
+  const state = requireRecord(value, "Gateway state");
+  assert.ok(
+    typeof state.ready === "boolean" && isHttpStatus(state.readyStatus),
+    "Gateway readiness must include an HTTP status",
+  );
+  assert.ok(
+    state.prefix === undefined || typeof state.prefix === "string",
+    "Gateway response prefix must be a string",
+  );
+  assert.ok(
+    state.journalMode === null ||
+      (typeof state.journalMode === "number" && Number.isInteger(state.journalMode)),
+    "Gateway journal mode must be numeric or null",
+  );
+  const bridge = optionalRecord(state.bridge, "Gateway bridge");
+  const plugins = optionalRecord(bridge?.plugins, "Gateway bridge plugins");
+  const linear = optionalRecord(plugins?.linear, "Gateway Linear plugin");
+  assert.ok(
+    !linear || typeof linear.enabled === "boolean",
+    "Gateway Linear plugin enabled state must be boolean",
+  );
+}
+
+function assertHeldState(value: unknown): asserts value is HeldState {
+  const state = requireRecord(value, "held Gateway state");
+  assert.ok(isHttpStatus(state.ready), "held Gateway readiness must include an HTTP status");
+  const failure = optionalRecord(state.failure, "Gateway runtime failure");
+  assert.ok(
+    !failure || (typeof failure.check === "string" && typeof failure.code === "string"),
+    "Gateway runtime failure must include a check and code",
+  );
+}
+
+async function inspectContainer(name: string): Promise<ContainerInspection> {
+  const raw: unknown = JSON.parse((await runDocker(["inspect", name])).stdout);
+  assert.ok(Array.isArray(raw) && raw.length === 1, "Docker inspect must return one container");
+  const inspection = requireRecord(raw[0], "Docker container inspection");
+  const state = requireRecord(inspection.State, "Docker container state");
+  const { StartedAt, Running, ExitCode } = state;
+  const { RestartCount } = inspection;
+  assert.ok(
+    typeof StartedAt === "string" && typeof Running === "boolean",
+    "Docker inspect must report start time and running state",
+  );
+  assert.ok(
+    typeof ExitCode === "number" && Number.isInteger(ExitCode),
+    "Docker inspect must report an exit code",
+  );
+  assert.ok(
+    typeof RestartCount === "number" && Number.isInteger(RestartCount) && RestartCount >= 0,
+    "Docker inspect must report a restart count",
+  );
+  return { State: { StartedAt, Running, ExitCode }, RestartCount };
+}
+
 // An owned Docker volume models the native-admin copy's Pod-local lifetime.
 // The production init script copies once; restarting the actual Gateway
 // container preserves that copy. Its HTTP Harness-status peer is synthetic.
-export async function runWritableGatewayRestart(t) {
+export async function runWritableGatewayRestart(t: TestContext) {
+  assert.ok(image);
   const suffix = randomBytes(6).toString("hex");
   const owner = `oce-peer-restart-${suffix}`;
   const network = `${owner}-network`;
   const peerName = `${owner}-peer`;
   const directory = await mkdtemp(join(tmpdir(), "oce-peer-restart-"));
-  const ownedContainers = [];
-  const cleanup = [() => rm(directory, { recursive: true, force: true })];
+  const ownedContainers: string[] = [];
+  const cleanup: (() => Promise<unknown>)[] = [
+    () => rm(directory, { recursive: true, force: true }),
+  ];
   const scope = {
-    after(fn) {
+    after(fn: () => Promise<unknown>) {
       cleanup.push(fn);
     },
   };
@@ -79,7 +182,7 @@ export async function runWritableGatewayRestart(t) {
   cleanup.push(() => runDocker(["network", "rm", network]));
   const revisionId = "revision-writable-peer-restart";
   const pluginId = "codex-plugin:linear@openai-curated-remote";
-  let peer = {
+  let peer: PeerStatus = {
     revisionId,
     container: "agent",
     startupId: "startup-1",
@@ -132,18 +235,30 @@ export async function runWritableGatewayRestart(t) {
       },
     },
   };
-  const driver = new KubernetesComputeDriver(
-    conformanceKubernetesOptions({
-      gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
-      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
-    }),
-  );
-  const init = driver.privateStateInitContainer("gateway", image, false, true);
+  const options = conformanceKubernetesOptions({
+    gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
+    runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+  });
+  assert.equal(options.authentication.mode, "kubeconfig");
+  assert.equal(options.servicePrincipalCredentials.mode, "disabled");
+  const driver = new KubernetesComputeDriver({
+    ...options,
+    authentication: { ...options.authentication, mode: options.authentication.mode },
+    servicePrincipalCredentials: {
+      ...options.servicePrincipalCredentials,
+      mode: options.servicePrincipalCredentials.mode,
+    },
+  });
+  const init: unknown = driver["privateStateInitContainer"]("gateway", image, false, true);
+  assert.ok(init !== null && typeof init === "object" && "args" in init);
+  assert.ok(Array.isArray(init.args));
+  const initScript: unknown = init.args[0];
+  assert.ok(typeof initScript === "string");
   assert.match(
-    init.args[0],
+    initScript,
     /copyFileSync\("\/etc\/openclaw-managed\/openclaw.json", "\/runtime-state\/home\/\.openclaw\/openclaw.json"\)/,
   );
-  async function startPodCopy(label) {
+  async function startPodCopy(label: string) {
     const volume = `${owner}-${label}`;
     await runDocker(["volume", "create", "--label", `oce.proof.owner=${owner}`, volume]);
     cleanup.push(() => runDocker(["volume", "rm", volume]));
@@ -186,7 +301,7 @@ export async function runWritableGatewayRestart(t) {
       "node",
       image,
       "-e",
-      init.args[0],
+      initScript,
     ]);
     const result = await runGatewaySmoke(scope, "codex", {
       configurationPath: "/home/node/.openclaw/openclaw.json",
@@ -214,7 +329,7 @@ export async function runWritableGatewayRestart(t) {
     ownedContainers.push(result.containerName);
     return { ...result, volume };
   }
-  async function state(name) {
+  async function state(name: string): Promise<GatewayState> {
     const result = await runDocker([
       "exec",
       name,
@@ -230,20 +345,26 @@ export async function runWritableGatewayRestart(t) {
         journalMode:fs.existsSync(journal)?fs.statSync(journal).mode&0o777:null,
       }))).catch((error)=>{console.error(String(error?.cause?.code??error));process.exit(1);});`,
     ]);
-    return JSON.parse(result.stdout.trim());
+    const raw: unknown = JSON.parse(result.stdout.trim());
+    assertGatewayState(raw);
+    return raw;
   }
   // Polls until `predicate` holds. On a timeout or an exit, the error starts with what the
   // wrapper's readiness was waiting on (gatewayReadinessReport) and ends with the newest logs:
   // a same-peer restart once stayed unready for 90 s and only the oldest log lines and a
   // boolean were kept, so the failed readiness condition was unknown (finding 2784).
-  async function waitState(name, label, predicate) {
+  async function waitState(
+    name: string,
+    label: string,
+    predicate: (state: GatewayState) => boolean,
+  ): Promise<GatewayState> {
     const startedAt = Date.now();
     const deadline = startedAt + 90_000;
-    let last;
-    let lastAt;
+    let last: GatewayState | undefined;
+    let lastAt: number | undefined;
     let polls = 0;
     let probeFailures = 0;
-    let lastProbeError;
+    let lastProbeError: string | undefined;
     // The deadline is checked after each poll, so the last poll happens at or past it.
     for (;;) {
       polls += 1;
@@ -255,8 +376,12 @@ export async function runWritableGatewayRestart(t) {
         }
       } catch (error) {
         probeFailures += 1;
-        lastProbeError = error.message.split("\n").slice(0, 3).join(" | ").slice(0, 400);
-        const observed = JSON.parse((await runDocker(["inspect", name])).stdout)[0];
+        lastProbeError = (error instanceof Error ? error.message : String(error))
+          .split("\n")
+          .slice(0, 3)
+          .join(" | ")
+          .slice(0, 400);
+        const observed = await inspectContainer(name);
         if (!observed.State.Running) {
           throw new Error(
             `${label}: Gateway exited ${observed.State.ExitCode}\n${await containerLogTail(name)}`,
@@ -280,7 +405,7 @@ export async function runWritableGatewayRestart(t) {
       ].join("\n"),
     );
   }
-  async function edit(name, code) {
+  async function edit(name: string, code: string) {
     await runDocker([
       "exec",
       name,
@@ -291,8 +416,8 @@ export async function runWritableGatewayRestart(t) {
   }
   const first = await startPodCopy("home-1");
   const before = await waitState(first.containerName, "initial Gateway", (s) => s.ready);
-  const beforeInspect = JSON.parse((await runDocker(["inspect", first.containerName])).stdout)[0];
-  assert.equal(before.bridge.plugins.linear.enabled, false);
+  const beforeInspect = await inspectContainer(first.containerName);
+  assert.equal(before.bridge?.plugins?.linear?.enabled, false);
   await edit(first.containerName, 'c.messages={...c.messages,responsePrefix:"Native admin edit"}');
   // Docker restart keeps the volume, like a container restart under the same Pod.
   await runDocker(["restart", "--time", "350", first.containerName], { timeout: 360_000 });
@@ -301,9 +426,7 @@ export async function runWritableGatewayRestart(t) {
     "same-peer container restart",
     (s) => s.ready,
   );
-  const afterRestartInspect = JSON.parse(
-    (await runDocker(["inspect", first.containerName])).stdout,
-  )[0];
+  const afterRestartInspect = await inspectContainer(first.containerName);
   assert.notEqual(afterRestartInspect.State.StartedAt, beforeInspect.State.StartedAt);
   assert.equal(afterRestart.prefix, "Native admin edit");
   peer = {
@@ -329,7 +452,7 @@ export async function runWritableGatewayRestart(t) {
   );
   assert.equal(recovered.prefix, "Native admin edit");
   assert.equal(recovered.journalMode, 0o600);
-  const inspect = JSON.parse((await runDocker(["inspect", first.containerName])).stdout)[0];
+  const inspect = await inspectContainer(first.containerName);
   assert.equal(
     inspect.State.StartedAt,
     afterRestartInspect.State.StartedAt,
@@ -369,7 +492,7 @@ export async function runWritableGatewayRestart(t) {
   const stopped = await waitFor(
     "the Gateway to stop (an explicitly edited bridge must retain refusal)",
     async () => {
-      const observed = JSON.parse((await runDocker(["inspect", first.containerName])).stdout)[0];
+      const observed = await inspectContainer(first.containerName);
       return observed.State.Running ? undefined : observed;
     },
     { timeoutMs: 30_000, intervalMs: 250 },
@@ -379,18 +502,18 @@ export async function runWritableGatewayRestart(t) {
   const replacement = await startPodCopy("home-2");
   const fresh = await waitState(replacement.containerName, "fresh Pod-local copy", (s) => s.ready);
   assert.equal(fresh.prefix, undefined, "a fresh Pod-local copy restores the admitted snapshot");
-  assert.equal(fresh.bridge.plugins.linear.enabled, false);
+  assert.equal(fresh.bridge?.plugins?.linear?.enabled, false);
   // Polls the wrapper's own status port until it publishes a held failure; a hold keeps
   // the container running. The deadline is checked after each poll, so the last poll
   // happens at or past it.
-  async function waitHeld(name, label) {
+  async function waitHeld(name: string, label: string): Promise<HeldState | undefined> {
     const heldDeadline = Date.now() + 60_000;
-    let observedHold;
+    let observedHold: HeldState | undefined;
     for (;;) {
-      const observed = JSON.parse((await runDocker(["inspect", name])).stdout)[0];
+      const observed = await inspectContainer(name);
       assert.equal(observed.State.Running, true, `${label} holds instead of exiting`);
       try {
-        observedHold = JSON.parse(
+        const raw: unknown = JSON.parse(
           (
             await runDocker([
               "exec",
@@ -401,6 +524,8 @@ export async function runWritableGatewayRestart(t) {
             ])
           ).stdout.trim(),
         );
+        assertHeldState(raw);
+        observedHold = raw;
       } catch {
         observedHold = undefined;
       }
@@ -410,11 +535,11 @@ export async function runWritableGatewayRestart(t) {
       await delay(250);
     }
   }
-  async function killContainer(name) {
+  async function killContainer(name: string) {
     await runDocker(["kill", name]);
     await waitUntil(
       `${name} to stop after docker kill`,
-      async () => !JSON.parse((await runDocker(["inspect", name])).stdout)[0].State.Running,
+      async () => !(await inspectContainer(name)).State.Running,
       { timeoutMs: 30_000, intervalMs: 250 },
     );
   }
@@ -423,7 +548,7 @@ export async function runWritableGatewayRestart(t) {
   // namespace and cannot verify that the holder stopped, so OpenClaw refuses to read the
   // configuration. The wrapper must hold that refusal under its own check and name the
   // lock, not report a tool policy failure (finding 2864). Recovery stays with the operator.
-  const pidNamespace = async (name) =>
+  const pidNamespace = async (name: string) =>
     (await runDocker(["exec", name, "readlink", "/proc/1/ns/pid"])).stdout.trim();
   const killedNamespace = await pidNamespace(replacement.containerName);
   await killContainer(replacement.containerName);
@@ -463,6 +588,7 @@ export async function runWritableGatewayRestart(t) {
   }
   const lockHeld = await waitHeld(replacement.containerName, "a stale Gateway state lock");
   assert.equal(lockHeld?.failure?.check, "gateway-state-lock", JSON.stringify(lockHeld));
+  assert.ok(lockHeld?.failure);
   assert.equal(lockHeld.failure.code, "UNAVAILABLE");
   assert.notEqual(lockHeld.ready, 200);
   const lockLogs = await runDocker(["logs", replacement.containerName]);
@@ -489,6 +615,7 @@ export async function runWritableGatewayRestart(t) {
   await runDocker(["start", replacement.containerName]);
   const held = await waitHeld(replacement.containerName, "an unreadable record");
   assert.equal(held?.failure?.check, "peer-bridge-record", JSON.stringify(held));
+  assert.ok(held?.failure);
   assert.equal(held.failure.code, "UNAVAILABLE");
   assert.notEqual(held.ready, 200);
   const heldLogs = await runDocker(["logs", replacement.containerName]);
@@ -500,9 +627,7 @@ export async function runWritableGatewayRestart(t) {
   const stopStartedAt = Date.now();
   await runDocker(["stop", "--time", "60", replacement.containerName], { timeout: 90_000 });
   const heldStopMs = Date.now() - stopStartedAt;
-  const heldStopped = JSON.parse(
-    (await runDocker(["inspect", replacement.containerName])).stdout,
-  )[0];
+  const heldStopped = await inspectContainer(replacement.containerName);
   assert.equal(heldStopped.State.ExitCode, 0);
   assert.ok(heldStopMs < 30_000, `held wrapper stop took ${heldStopMs} ms`);
   const logs = await runDocker(["logs", first.containerName]);

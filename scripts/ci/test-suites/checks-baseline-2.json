@@ -38,6 +38,7 @@
     "tests/integration/model-provider.test.ts",
     "tests/integration/repository-credentials-service-loss.test.ts",
     "tests/integration/ci-runner.test.mjs",
+    "tests/integration/ci-runner-aggregate.test.ts",
     "tests/integration/ci-runner-redaction.test.ts",
     "tests/integration/k3d-quickstart-diagnostics.test.ts",
     "tests/integration/local-first-agent-session-identity.test.ts",
@@ -70,6 +71,7 @@
     "tests/conformance/slack-proxy-tunnel.test.mjs",
     "tests/conformance/native-admin-websocket-relay.test.mjs",
     "tests/integration/qa-fixture-inputs.test.mjs",
+    "tests/integration/compose-network.test.ts",
     "tests/integration/qa-repository-installation.test.ts",
     "tests/integration/repository-runtime-materialization.test.mjs",
     "tests/conformance/repository-credentials-contracts.test.ts",
@@ -181,6 +183,9 @@
       "path": "tests/integration/qa-fixture-inputs.test.mjs"
     },
     {
+      "path": "tests/integration/compose-network.test.ts"
+    },
+    {
       "path": "tests/integration/qa-repository-installation.test.ts"
     },
     {
@@ -246,6 +251,9 @@
         "complete lifecycle losing an attempt claim cannot run phases or clean its winner",
         "complete lifecycle owns detached test groups after deadline or coordinator loss"
       ]
+    },
+    {
+      "path": "tests/integration/ci-runner-aggregate.test.ts"
     },
     {
       "path": "tests/integration/ci-runner-redaction.test.ts"

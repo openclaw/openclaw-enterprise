@@ -7,7 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.mjs";
+import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.ts";
 import { writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { withoutShellStartup } from "../helpers/environment.ts";
@@ -681,7 +681,10 @@ fi
   await writeCommand(
     bin,
     "jq",
-    `${dispatchJson}if [[ "$*" == '-S '* || "$*" == '-eS '* ]]; then
+    `${dispatchJson}if [[ "$*" == *'resourceAttributes'* ]]; then
+  PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
+fi
+if [[ "$*" == '-S '* || "$*" == '-eS '* ]]; then
   cat
   exit 0
 fi
@@ -807,6 +810,11 @@ case "$*" in
     fi
     printf '%s\\n' '{"status":"ok"}'
     ;;
+  *' create --raw /apis/authorization.k8s.io/v1/selfsubjectaccessreviews --filename -')
+    PATH="$ORIGINAL_TOOL_PATH" exec jq '.status = {allowed: (.spec.resourceAttributes == {
+      namespace: "openclaw-system", verb: "patch", group: "apps", version: "v1",
+      resource: "deployments", name: "openclaw-enterprise-worker"
+    })}' ;;
   *' create --filename'*|*' get job.batch/'*|*'batch.kubernetes.io/controller-uid='*|*' get pods -o json'*|*' get secret/oce-upgrade-preflight-'*|*' get networkpolicy.networking.k8s.io/oce-upgrade-preflight-'*|*' get pod/oce-upgrade-preflight-'*|*' logs pod/oce-upgrade-preflight-'*|*'delete --raw='*)
     exec "$(dirname "$0")/preflight-kubectl" "$@" ;;
 

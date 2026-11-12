@@ -1480,6 +1480,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup, preparat
   }
 
   const inputs = fileInputEnv(lane, file);
+  const modelInputs = mergeEnv(inputs, file.env);
   if (prepareFile) {
     try {
       const result =
@@ -1491,8 +1492,8 @@ async function runFile(root, lane, file, statePath, prepareFile, setup, preparat
                 file,
                 statePath,
                 modelSelectors: {
-                  OCC_TEST_OPENSHELL_HARNESS: inputs.OCC_TEST_OPENSHELL_HARNESS,
-                  OCC_TEST_OPENSHELL_MODEL_BASE_URL: inputs.OCC_TEST_OPENSHELL_MODEL_BASE_URL,
+                  OCC_TEST_OPENSHELL_HARNESS: modelInputs.OCC_TEST_OPENSHELL_HARNESS,
+                  OCC_TEST_OPENSHELL_MODEL_BASE_URL: modelInputs.OCC_TEST_OPENSHELL_MODEL_BASE_URL,
                 },
               }),
             prepareLimitMs(),

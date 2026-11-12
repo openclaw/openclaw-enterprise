@@ -2,7 +2,7 @@
 // runtime-image-startup-probe.test.mjs so CI runs it beside the startup model
 // probes. Both files start the wrapper through the same scenario helper. The
 // Gateway restart after an unclean stop is in
-// runtime-image-gateway-unclean-restart.test.mjs.
+// runtime-image-gateway-unclean-restart.test.ts.
 import assert from "node:assert/strict";
 import { describe, test, type TestContext } from "node:test";
 import type { ProbeSnapshot } from "../helpers/runtime-image-model-probe.ts";

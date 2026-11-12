@@ -7,8 +7,8 @@ import { connect } from "node:net";
 import { basename } from "node:path";
 import { connect as connectTls } from "node:tls";
 import { withBoundedTeardown } from "./bounded-teardown.ts";
-import { availablePort } from "./available-port.mjs";
-import { startWorkspaceGatewayRelayContainer } from "./workspace-gateway-relay-container.mjs";
+import { availablePort } from "./available-port.ts";
+import { startWorkspaceGatewayRelayContainer } from "./workspace-gateway-relay-container.ts";
 import { request as requestHttps } from "node:https";
 import { promisify } from "node:util";
 
