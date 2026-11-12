@@ -321,13 +321,16 @@ export function validateGitHubRepositoryRegistry(
 }
 
 function repositoryTransportPermissions(
-  transport: GitHubRepositoryRegistration["namespaces"][number]["transport"],
-  profile: GitHubProfile,
-): Readonly<Record<string, string>> {
-  if (transport === "git-only") {
+  policy: GitHubRepositoryRegistration["namespaces"][number],
+  profile: GitHubProfile | "github-repository",
+): Readonly<Record<string, string>> | undefined {
+  if (profile === "github-repository") {
+    return policy.permissions;
+  }
+  if (policy.transport === "git-only") {
     return permissionsForProfile("git-ref-write");
   }
-  if (transport === "git-and-draft-pr") {
+  if (policy.transport === "git-and-draft-pr") {
     return permissionsForProfile("git-ref-draft-pr");
   }
   return permissionsForProfile(profile);
@@ -421,10 +424,7 @@ export function resolveGitHubRepositoryBinding(
           ? {}
           : { pullRequestBase: policy.pullRequestBase }),
         ...(policy.draftPullLimit === undefined ? {} : { draftPullLimit: policy.draftPullLimit }),
-        permissions:
-          selectedProfile === "github-repository"
-            ? policy.permissions
-            : repositoryTransportPermissions(policy.transport, selectedProfile),
+        permissions: repositoryTransportPermissions(policy, selectedProfile),
         capabilityPolicy:
           policy.transport === "git-only"
             ? gitOnlyCapabilityPolicy
@@ -516,10 +516,10 @@ function standingApprovalScope(
     pullRequestBase: policy.pullRequestBase ?? null,
     draftPullLimit:
       policy.transport === "git-and-draft-pr" ? (policy.draftPullLimit ?? "one-per-grant") : null,
-    apiPermissions:
-      input.binding.profile === "github-repository"
-        ? policy.permissions!
-        : repositoryTransportPermissions(policy.transport, input.binding.profile as GitHubProfile),
+    apiPermissions: repositoryTransportPermissions(
+      policy,
+      input.binding.profile as GitHubProfile | "github-repository",
+    )!,
     maximumSessionDurationSeconds: registry.maximumDurationSeconds,
     installationPolicyAllowsStanding: true,
     namespacePolicyAllowsStanding: true,
