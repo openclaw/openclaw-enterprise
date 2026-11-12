@@ -105,8 +105,8 @@ and scoped Kubernetes SDK cases have passed locally. Live Argo adoption,
 Git updates, stopped intent and Retain prune/re-adoption have also passed;
 running-state Operator restart and a Git settings rollback have passed. A real
 model turn and native Telegram outbound delivery passed before and after the
-rollback. Inbound user confirmation remains separate. Document checks are not
-product proof.
+rollback. The user also confirmed a reply to their Telegram input after
+restoration. Document checks are not product proof.
 Use [enterprise-testing](../../.agents/skills/enterprise-testing/SKILL.md) and
 [test-audit](../../.agents/skills/test-audit/SKILL.md) when implementing tests.
 Register TypeScript integration tests in the CI lane that actually runs them.
@@ -167,7 +167,8 @@ Configuration generation and revision. Genuine model turns returned unique
 markers and native Telegram reported one successful outbound delivery before
 and after rollback. Running-state Operator restart preserved the source,
 management receipt and revision count. The Telegram bridge remained scaled to
-zero. Inbound confirmation by the operator remains separate.
+zero. The user confirmed that the bot replied to their Telegram input after
+restoration; this is user-reported inbound proof.
 
 This proof exposed that current Gateway configuration/authentication/connectivity
 diagnostics describe Slack. The Operator now requires those checks only when
