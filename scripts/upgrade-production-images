@@ -307,14 +307,24 @@ require_mutable_installation_secret() {
 }
 
 check_installation_update_access() {
-  local request decision
-  request=$(jq -n --arg namespace "$namespace" --arg name "$installation_secret" '{
+  local decision
+  if decision=$(named_access_review update "" secrets "$installation_secret" 15); then
+    [[ "$decision" == true ]] ||
+      die "Kubernetes denied update on Installation Secret $namespace/$installation_secret. Obtain update access before upgrading."
+  else
+    warn "Could not verify update access to the Installation Secret. The upgrade requires update permission on that Secret."
+  fi
+}
+
+# Print true or false only for a complete decision about this exact operation.
+named_access_review() {
+  local request
+  request=$(jq -n --arg namespace "$namespace" --arg verb "$1" --arg group "$2" --arg resource "$3" --arg name "$4" '{
     apiVersion: "authorization.k8s.io/v1", kind: "SelfSubjectAccessReview",
-    spec: {resourceAttributes: {namespace: $namespace, verb: "update", group: "", resource: "secrets", name: $name}}
-  }')
-  # A failed or incomplete self-review says nothing about the real update.
-  if decision=$(printf '%s\n' "$request" |
-    "${kube[@]}" --request-timeout=15s create --raw /apis/authorization.k8s.io/v1/selfsubjectaccessreviews --filename - 2>/dev/null |
+    spec: {resourceAttributes: {$namespace, $verb, $group, version: "v1", $resource, $name}}
+  }') || return 1
+  printf '%s\n' "$request" |
+    "${kube[@]}" --request-timeout="${5}s" create --raw /apis/authorization.k8s.io/v1/selfsubjectaccessreviews --filename - 2>/dev/null |
     jq -ers --argjson request "$request" '
       select(length == 1) | .[0] |
       select(.apiVersion == $request.apiVersion and .kind == $request.kind) |
@@ -323,12 +333,7 @@ check_installation_update_access() {
         ((has("denied") | not) or (.denied | type == "boolean")) and
         ((has("reason") | not) or (.reason | type == "string")) and
         ((has("evaluationError") | not) or .evaluationError == "") and
-        ((.allowed and .denied) | not)) | .allowed | tostring' 2>/dev/null); then
-    [[ "$decision" == true ]] ||
-      die "Kubernetes denied update on Installation Secret $namespace/$installation_secret. Obtain update access before upgrading."
-  else
-    warn "Could not verify update access to the Installation Secret. The upgrade requires update permission on that Secret."
-  fi
+        ((.allowed and .denied) | not)) | .allowed | tostring' 2>/dev/null
 }
 
 # Versioned Secrets are operator-staged. Neither reference may be replaced or
@@ -2053,6 +2058,13 @@ if ((helm_complete == 0)); then
   # Refresh before the first stop, including resume when the worker still runs.
   # This detects changed selections; exclusive maintenance ownership is still required.
   if jq -e '.spec.replicas == 1' "$evidence_dir/current-worker-deployment.json" >/dev/null; then
+    quiescence_remaining
+    if decision=$(named_access_review patch apps deployments openclaw-enterprise-worker "$((remaining_seconds < 15 ? remaining_seconds : 15))"); then
+      [[ "$decision" == true ]] ||
+        die "Kubernetes denied patch on worker Deployment $namespace/openclaw-enterprise-worker. Obtain patch access before resuming."
+    else
+      warn "Could not verify patch access to the worker Deployment. The upgrade requires patch permission to stop it."
+    fi
     read_restart_inventory "$evidence_dir/inventory/before-stop.json"
     normalize_restart_inventory "$evidence_dir/inventory/before-stop.json" >"$evidence_dir/inventory/before-stop-selection.json"
     cmp -s "$evidence_dir/inventory/restart-preflight.json" "$evidence_dir/inventory/before-stop-selection.json" ||

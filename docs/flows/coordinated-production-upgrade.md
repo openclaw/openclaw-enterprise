@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-11-11"
-last_updated_session: "authoring-run/9239da57-dcad-427a-82aa-c7d64376fdc5"
+updated: "2026-11-12"
+last_updated_session: "authoring-run/db7ef311-7726-453b-b06c-e048bc6054ac"
 ---
 
 # Production image upgrade flow
@@ -226,19 +226,20 @@ remain operator attestations.
 ### 3. Quiesce writers and run the candidate release
 
 `scripts/upgrade-production-images:quiescence_remaining` bounds shutdown.
-Validate both Deployments. While the worker runs, compare the complete inventory
-with preparation before either stop, including resume; changes refuse. Restore
-a stopped API’s access under exclusive maintenance ownership before retry. Skip
-stopped writers; stopped workers have no prospective guarantee. Sequential JSON
-patches test UID, resource version and replicas; conflicts can leave the API stopped.
-Pods must disappear and original Deployments remain at zero. Operators stop other
-writers/autoscalers and keep nodes reachable. With `database.upgradeMigration: separate`,
-the helper records stopped Deployment UIDs and generations, then exits 3. Resume requires
-those same stopped writers and checked history.
+Validate both Deployments. Before either stop, check named patch permission for
+a running worker. Refuse confirmed denial. Warn on inconclusive review.
+Recheck inventory while the worker runs, including resume. Refuse changes. Restore
+stopped API access under exclusive maintenance ownership before retry.
+Skip stopped writers. Stopped workers have no prospective guarantee.
+Sequential patches test UID, resource version and replicas. Conflicts can leave
+the API stopped. Verify Pod absence and original Deployments at zero. Operators
+stop other writers/autoscalers and keep nodes reachable.
+`database.upgradeMigration: separate` records both stopped UIDs and generations
+and exits 3. Resume requires matching writers and checked history.
 
-Protected files adopt candidates atomically. Mutable Secret updates preserve
-unrelated data with a resource-version precondition; reference switches leave both
-Secrets unchanged. Both OCC templates select successor and checksum.
+Protected files change atomically. Resource-version checks preserve unrelated
+mutable Secret data. Reference switches preserve both Secrets; both OCC templates
+select the successor and checksum.
 
 `upgrade-helm-state.py:new_attempt` renders and dry-runs immutable values with a
 fresh `installation.upgradeAttemptId`, copied to hooks and the initializer Pod.
@@ -366,6 +367,8 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 00:11: Precheck worker patch access. (authoring-run/db7ef311-7726-453b-b06c-e048bc6054ac - 8cd9b5d944e1c25191c6622cf5b6cf1fe7b33054)
 
 - 2026-11-11 12:30: Record preflight creation plans and link the separate cleanup-only recovery path. (authoring-run/9239da57-dcad-427a-82aa-c7d64376fdc5 - e961361d56537b17f361347b097d075f5e608fb1)
 
