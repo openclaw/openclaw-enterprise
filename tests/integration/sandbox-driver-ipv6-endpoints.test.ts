@@ -11,7 +11,7 @@ import {
 } from "../../apps/controller/node_modules/@grpc/grpc-js/build/src/index.js";
 import { load } from "../../apps/controller/node_modules/@grpc/proto-loader/build/src/index.js";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
-import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { buildEndpointInstallation } from "./sandbox-driver-installation-fixture.ts";
 
 type HealthResponse = { status: string };

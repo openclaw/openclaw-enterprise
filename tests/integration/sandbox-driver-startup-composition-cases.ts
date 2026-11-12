@@ -13,10 +13,13 @@ import {
 import type {
   AgentRevision,
   ConfigurationValidationError,
+  CredentialSourceControl,
+  RepositoryGitDeliveryProfile,
+  RevisionHarnessDescriptor,
   SandboxNamespaceContext,
 } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import type { openShellWorkspaceChartResources as chartResources } from "../fixtures/openshell-workspace-chart.mjs";
 import type { makeStructuralRefusal } from "./sandbox-driver-installation-fixture.ts";
@@ -353,4 +356,31 @@ export async function prepareStockWorkspaceChart({
   });
   await loadInstallationFile(t, installation);
   return { chart, forms, crd, installation };
+}
+
+export async function verifyProtectedGatewayAdmission({
+  signal,
+  setGatewayVersion,
+  sourceControl,
+  validateRepositoryCredentials,
+}: {
+  signal: AbortSignal;
+  setGatewayVersion: (version: string) => void;
+  sourceControl: Pick<CredentialSourceControl, "assertAvailable">;
+  validateRepositoryCredentials: (harness: Pick<RevisionHarnessDescriptor, "id" | "mode">) => void;
+}) {
+  setGatewayVersion("unknown");
+  const profiles: readonly RepositoryGitDeliveryProfile[] = ["repository_git", "github_repository"];
+  for (const profile of profiles) {
+    assert.deepEqual(await sourceControl.assertAvailable(signal, profile), {
+      profile,
+      authorization: "online-request",
+    });
+  }
+
+  setGatewayVersion("0.1.5");
+  validateRepositoryCredentials({ id: "codex", mode: "dedicated" });
+  assert.throws(() => validateRepositoryCredentials({ id: "openclaw", mode: "embedded" }), {
+    message: /[Rr]epository credentials require/,
+  });
 }

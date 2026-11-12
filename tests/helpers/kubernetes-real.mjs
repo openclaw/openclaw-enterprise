@@ -11,7 +11,7 @@ import { promisify } from "node:util";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
 import { kubectlGetJson } from "./kubernetes-api-read.mjs";
 import { waitFor as pollFor } from "./wait-for.mjs";
-import { followContainerLog } from "./container-log-capture.mjs";
+import { followContainerLog } from "./container-log-capture.ts";
 
 const execute = promisify(execFile);
 
@@ -887,6 +887,7 @@ export function createRealKubernetesFixture({
       child.once("error", onError);
       child.once("exit", onExit);
     });
+    /** @type {Promise<void> | undefined} */
     let stopping;
     return {
       url,

@@ -1,4 +1,4 @@
-import type { PreviousFull } from "./full-integration-admission.ts";
+import { decideAdmission, type PreviousFull } from "./full-integration-admission.ts";
 
 const repositoryId = 1350208775;
 const workflowId = 351990468;
@@ -16,17 +16,14 @@ const aggregate = "Full Integration Aggregate";
 const admittedStep = "Confirm full admission marker";
 const exercisedStep = "Confirm full coverage marker";
 const executionPrefix = "Execute / ";
-const fullOnlyJobs = new Set([
-  "Shared Runtime Image",
-  "Shared Runtime Image / Build ordinary CI runtime",
-  "Reuse successful same-SHA CI",
-]);
+// Targeted dispatches can build the shared image. CI reuse still requires run_all.
+const reuseJob = "Reuse successful same-SHA CI";
 const nonSuiteJobs = new Set([
   preflight,
   aggregate,
   "Approve manual integration",
   "Reject missing or inconsistent selection",
-  "Reuse successful same-SHA CI",
+  reuseJob,
 ]);
 
 type Json = Record<string, unknown>;
@@ -45,9 +42,35 @@ type History = {
   lastExercisedSha: string | null;
 };
 
+type HistoryOperation =
+  | "main-ref"
+  | "event-context"
+  | "admission-markers"
+  | "push-history"
+  | "manual-history"
+  | "coverage-markers";
+
+type FailureKind = "request-failed" | "invalid-metadata";
+
+class HistoryError extends Error {
+  readonly kind: FailureKind;
+
+  constructor(kind: FailureKind) {
+    super(kind);
+    this.kind = kind;
+  }
+}
+
+type UnknownHistory = {
+  previousFull: { status: "unknown" };
+  mainSha: null;
+  lastExercisedSha: null;
+  failure?: { operation: HistoryOperation; kind: FailureKind };
+};
+
 function requireValid(value: unknown): asserts value {
   if (!value) {
-    throw new Error("Uncertain Full Integration metadata");
+    throw new HistoryError("invalid-metadata");
   }
 }
 
@@ -143,6 +166,26 @@ function executionJobName(job: Json): string {
   return name.startsWith(executionPrefix) ? name.slice(executionPrefix.length) : name;
 }
 
+function skippedFullPreparation(job: Json): boolean {
+  if (
+    executionJobName(job) !== preflight ||
+    job.status !== "completed" ||
+    job.conclusion !== "success" ||
+    !Array.isArray(job.steps)
+  ) {
+    return false;
+  }
+  const steps = job.steps.map(record);
+  return ["Prepare fresh lane fallback", "Prepare full admission marker"].every((name) => {
+    const matches = steps.filter((step) => step.name === name);
+    return (
+      matches.length === 1 &&
+      matches[0]?.status === "completed" &&
+      matches[0]?.conclusion === "skipped"
+    );
+  });
+}
+
 function requireMarkerStep(jobs: Json[], jobName: string, stepName: string): number {
   const legacy = jobs.filter((job) => job.name === jobName);
   const execution = jobs.filter((job) => job.name === executionPrefix + jobName);
@@ -200,6 +243,7 @@ async function readUnmarkedClock(
   read: ReadGithub,
   event: UnmarkedEvent,
   now: number,
+  markedManualRuns?: ReadonlySet<number>,
 ): Promise<PreviousFull> {
   const recent = (await workflowRuns(read, event)).filter((run) => {
     requireValid(
@@ -229,20 +273,44 @@ async function readUnmarkedClock(
     };
     const run = await officialAttempt(read, marker);
     requireValid(run && run.event === event);
+    if (markedManualRuns?.has(marker.runId)) {
+      continue;
+    }
     const jobs = await attemptJobs(read, marker);
     const live = ["queued", "in_progress", "pending", "waiting", "requested"].includes(
       String(run.status),
     );
+    requireValid(live || (run.status === "completed" && typeof run.conclusion === "string"));
+    const occupied = jobs.filter(
+      (job) =>
+        !nonSuiteJobs.has(executionJobName(job)) &&
+        job.conclusion !== "skipped" &&
+        job.started_at != null,
+    );
+    let selectionUnknown = false;
     if (event === "workflow_dispatch") {
-      const fullOnly = jobs.filter((job) => fullOnlyJobs.has(executionJobName(job)));
-      requireValid(fullOnly.length <= fullOnlyJobs.size);
-      if (!fullOnly.some((job) => job.conclusion !== "skipped")) {
-        // An unapproved request has no started preflight. While an approved
-        // preflight is active or its selected jobs are still being recorded,
-        // the manual lane is uncertain.
+      const reuseJobs = jobs.filter((job) => executionJobName(job) === reuseJob);
+      requireValid(reuseJobs.length <= 1);
+      const [reuse] = reuseJobs;
+      // The execution workflow gates these suite jobs on full selection.
+      const fullSuiteWork = occupied.some((job) => {
+        const name = executionJobName(job);
+        return name === "Runtime Image Fixture" || name.startsWith("Same-SHA ");
+      });
+      if (!fullSuiteWork) {
+        // Cancellation can skip reuse. Only explicit full-only preparation
+        // skips on a successful preflight establish a targeted selection.
+        const skippedReuse = reuse?.conclusion === "skipped";
+        if (skippedReuse && run.conclusion !== "cancelled" && jobs.some(skippedFullPreparation)) {
+          continue;
+        }
+        selectionUnknown = !reuse || skippedReuse;
+      }
+      if (live) {
+        // Started suite work or a started, viable preflight may still be full.
         if (
-          live &&
-          fullOnly.length === 0 &&
+          !selectionUnknown ||
+          occupied.length > 0 ||
           jobs.some(
             (job) =>
               executionJobName(job) === preflight &&
@@ -252,37 +320,24 @@ async function readUnmarkedClock(
         ) {
           return { status: "active" };
         }
-        if (live && fullOnly.length === 0) {
-          // Approval is visible, but the selected jobs can lag behind. Do not
-          // mistake an approved and unclassified run for pending approval.
-          requireValid(
-            !jobs.some(
-              (job) =>
-                job.name === "Approve manual integration" &&
-                job.status === "completed" &&
-                job.conclusion === "success",
-            ),
-          );
-        }
+        // Approval can be visible before the selected jobs are recorded.
+        requireValid(
+          !jobs.some(
+            (job) =>
+              job.name === "Approve manual integration" &&
+              job.status === "completed" &&
+              job.conclusion === "success",
+          ),
+        );
         continue;
       }
-      if (live) {
-        return { status: "active" };
-      }
     }
-    const occupied = jobs.filter(
-      (job) =>
-        !nonSuiteJobs.has(executionJobName(job)) &&
-        job.conclusion !== "skipped" &&
-        job.started_at != null,
-    );
     if (live) {
       if (run.status === "in_progress" || occupied.length > 0) {
         return { status: "active" };
       }
       continue;
     }
-    requireValid(run.status === "completed" && typeof run.conclusion === "string");
     if (occupied.length === 0) {
       continue;
     }
@@ -292,6 +347,20 @@ async function readUnmarkedClock(
       ...occupied.map((job) => timestamp(job.completed_at)),
     );
     requireValid(startedAt <= finishedAt && finishedAt <= now);
+    if (selectionUnknown) {
+      // Shared work with uncertain selection can still affect cadence.
+      // Ignore it once even the visible suite start and run finish allow admission.
+      requireValid(
+        decideAdmission({
+          now,
+          eventSha: marker.sha,
+          mainSha: marker.sha,
+          previousFull: { status: "finished", startedAt, finishedAt },
+          lastExercisedSha: null,
+        }).result === "admit",
+      );
+      continue;
+    }
     latestStart = Math.max(latestStart ?? startedAt, startedAt);
     latestFinish = Math.max(latestFinish ?? finishedAt, finishedAt);
   }
@@ -300,7 +369,11 @@ async function readUnmarkedClock(
     : { status: "finished", startedAt: latestStart, finishedAt: latestFinish };
 }
 
-async function readPrevious(read: ReadGithub, currentRunId: number): Promise<PreviousFull> {
+async function readPrevious(
+  read: ReadGithub,
+  currentRunId: number,
+  markedManualRuns: Set<number>,
+): Promise<PreviousFull> {
   const previous = await markers(read, admissionName);
   let clock: PreviousFull = { status: "none" };
   for (const marker of previous) {
@@ -332,6 +405,9 @@ async function readPrevious(read: ReadGithub, currentRunId: number): Promise<Pre
     );
     requireValid(startedAt <= finishedAt);
     clock = combineClocks(clock, { status: "finished", startedAt, finishedAt });
+    if (run.event === "workflow_dispatch") {
+      markedManualRuns.add(marker.runId);
+    }
   }
   return clock;
 }
@@ -381,38 +457,48 @@ export async function readScheduleHistory(
   eventSha: string,
   currentRunId: number,
   now: number,
-): Promise<
-  History | { previousFull: { status: "unknown" }; mainSha: null; lastExercisedSha: null }
-> {
+): Promise<History | UnknownHistory> {
+  let operation: HistoryOperation = "main-ref";
+  async function request(path: string) {
+    try {
+      return await read(path);
+    } catch {
+      throw new HistoryError("request-failed");
+    }
+  }
   async function readMain() {
-    const ref = record(await read("/git/ref/heads/main"));
+    const ref = record(await request("/git/ref/heads/main"));
     requireValid(ref.ref === main && record(ref.object).type === "commit");
     return sha(record(ref.object).sha);
   }
   const attemptReads = new Map<string, Promise<unknown>>();
   const readHistory: ReadGithub = (path) => {
     if (!path.startsWith("/actions/runs/")) {
-      return read(path);
+      return request(path);
     }
     const existing = attemptReads.get(path);
     if (existing) {
       return existing;
     }
-    const pending = read(path);
+    const pending = request(path);
     attemptReads.set(path, pending);
     return pending;
   };
   try {
     const firstMain = await readMain();
+    operation = "event-context";
     requireValid(
       sha(eventSha) === eventSha && id(currentRunId) === currentRunId && Number.isSafeInteger(now),
     );
     if (firstMain !== eventSha) {
       return { previousFull: { status: "none" }, mainSha: firstMain, lastExercisedSha: null };
     }
-    const marked = await readPrevious(readHistory, currentRunId);
+    operation = "admission-markers";
+    const markedManualRuns = new Set<number>();
+    const marked = await readPrevious(readHistory, currentRunId, markedManualRuns);
     // Receipt-only deployment was best effort. An older marker cannot hide a
     // more recent legacy push that executed with no admission marker.
+    operation = "push-history";
     const legacy =
       marked.status === "active"
         ? ({ status: "none" } as const)
@@ -420,18 +506,29 @@ export async function readScheduleHistory(
     const observed = combineClocks(marked, legacy);
     // Approved manual full runs keep their existing approval path. Their
     // best-effort marker can be absent even when the full-only jobs ran.
+    operation = "manual-history";
     const manual =
       observed.status === "active"
         ? ({ status: "none" } as const)
-        : await readUnmarkedClock(readHistory, "workflow_dispatch", now);
+        : await readUnmarkedClock(readHistory, "workflow_dispatch", now, markedManualRuns);
     const previousFull = combineClocks(observed, manual);
+    operation = "coverage-markers";
     const lastExercisedSha =
       previousFull.status === "active"
         ? null
         : await readCovered(readHistory, firstMain, currentRunId);
+    operation = "main-ref";
     const mainSha = await readMain();
     return { previousFull, mainSha, lastExercisedSha };
-  } catch {
-    return { previousFull: { status: "unknown" }, mainSha: null, lastExercisedSha: null };
+  } catch (error) {
+    const unknown: UnknownHistory = {
+      previousFull: { status: "unknown" },
+      mainSha: null,
+      lastExercisedSha: null,
+    };
+    if (error instanceof HistoryError) {
+      unknown.failure = { operation, kind: error.kind };
+    }
+    return unknown;
   }
 }

@@ -245,6 +245,17 @@ jobs:
           node-version: "24.22.1"
           artifact-prefix: qa-advisory-oidc-agent-chat
           job-timeout-minutes: 120
+      - name: Retain OIDC browser evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: oidc-agent-chat-browser-${{ github.run_attempt }}
+          path: |
+            /tmp/openclaw-oidc-agent-chat-*/oidc-operator-chat.webm
+            /tmp/openclaw-oidc-agent-chat-*/oidc-operator-chat.png
+            /tmp/openclaw-oidc-agent-chat-*/oidc-chat-failure.png
+          if-no-files-found: ignore
+          retention-days: 7
 
   openshell:
     name: QA advisory (OpenShell / ${{ matrix.shard }})

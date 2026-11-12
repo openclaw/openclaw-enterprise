@@ -20,7 +20,7 @@ import {
 } from "../fixtures/repository-credentials/service.mjs";
 import { startStaticTokenService } from "../fixtures/repository-credentials/service-resources.mjs";
 import { fileCompileCache } from "../helpers/compile-cache.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 
 // Each case starts its own service, Git and GitHub fixtures and spends most of
 // its time waiting on stock Git children. The cases register here and run two at

@@ -637,96 +637,19 @@ export async function verifyCompletedMigrationHistory(
   );
 }
 
-export async function rehearsePopulatedReturn({
-  controllers,
+export function rehearsalPlane({
+  kube,
+  get,
+  run,
+  release,
+  localCluster,
   kubeconfig,
   context,
   namespace,
-  release,
-  directory,
-  occ,
-  occEnv,
-  namespaceId,
-  tenant,
-  runtime,
-  run,
-  kubectl,
-  api,
-  externalRequest,
-  custody,
-  localCluster,
-  waitFor,
-  record,
-}: Rehearsal) {
-  const { previous, candidate } = controllers;
-  const helmArgs = [
-    `--kubeconfig=${kubeconfig}`,
-    `--kube-context=${context}`,
-    `--namespace=${namespace}`,
-  ];
-  const helm = (...args: string[]) => run("helm", [...args, ...helmArgs], { timeout: 330_000 });
-  const kubeArgs = [
-    `--kubeconfig=${kubeconfig}`,
-    `--context=${context}`,
-    `--namespace=${namespace}`,
-  ];
-  const kube = (...args: string[]) => kubectl("--namespace", namespace, ...args);
-  const get = async (resource: string) => JSON.parse(await kube("get", resource, "-o", "json"));
-  const startupSecret = (name = "occ-installation-startup") =>
-    readImmutableInstallationSecret(run, kubeArgs, name);
-  const installationPath = "/installation";
-  const namespacePath = `/namespaces/${encodeURIComponent(namespaceId)}`;
-  const agentPath = `${namespacePath}/agents`;
-  const readAgent = async (id: string) =>
-    returnedAgentSnapshot(await api("GET", `${agentPath}/${encodeURIComponent(id)}`));
-  const helmStatus = async () => JSON.parse(await helm("status", release, "-o", "json"));
-  const phase = async <T>(name: string, action: () => Promise<T>) => {
-    const startedAt = new Date().toISOString();
-    const start = performance.now();
-    await writeFile(
-      join(directory, "return-progress.json"),
-      JSON.stringify({ phase: name, startedAt }) + "\n",
-      { mode: 0o600 },
-    );
-    const result = await action();
-    await record(name, {
-      startedAt,
-      finishedAt: new Date().toISOString(),
-      elapsedMs: Math.round(performance.now() - start),
-    });
-    return result;
-  };
-  const { postgres } = custody;
-  const sql = async (database: string, query: string) =>
-    (
-      await postgres("psql", "-XAt", "-v", "ON_ERROR_STOP=1", `--dbname=${database}`, "-c", query)
-    ).trim();
-  const dump = (file: string) =>
-    postgres("pg_dump", "--format=custom", `--file=${file}`, originalDatabase);
-  const restore = async (database: string, file: string) => {
-    await postgres("createdb", "--template=template0", database);
-    await postgres(
-      "pg_restore",
-      "--exit-on-error",
-      "--single-transaction",
-      `--dbname=${database}`,
-      file,
-    );
-    await sql(database, `GRANT CREATE ON DATABASE ${database} TO occ_migrator`);
-  };
-  const migrationReceipts = (database: string) =>
-    sql(database, "SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id");
-  const databaseAgents = async (database: string) =>
-    (
-      JSON.parse(
-        await sql(
-          database,
-          `SELECT COALESCE(json_agg(json_build_object(
-      'id', id, 'namespaceId', namespace_id, 'name', name, 'configurationId', configuration_id
-    )), '[]') FROM occ.agents`,
-        ),
-      ) as unknown[]
-    ).map(agentIdentity);
+}: Pick<Rehearsal, "run" | "release" | "localCluster" | "kubeconfig" | "context" | "namespace"> & {
+  kube: Kubectl;
+  get: (resource: string) => Promise<ReturnType<typeof JSON.parse>>;
+}) {
   const pods = async () =>
     (
       JSON.parse(
@@ -828,12 +751,116 @@ export async function rehearsePopulatedReturn({
           deploymentUID: deployment.metadata.uid,
           serviceAccountUID: account.metadata.uid,
           ip: pod.status.podIP,
+          containerID: status.containerID,
           imageID: status.imageID,
           imageDigest,
         };
       }),
     );
   };
+  return { pods, verifyPodImage, controlPlane, claimIdentity };
+}
+
+export async function rehearsePopulatedReturn({
+  controllers,
+  kubeconfig,
+  context,
+  namespace,
+  release,
+  directory,
+  occ,
+  occEnv,
+  namespaceId,
+  tenant,
+  runtime,
+  run,
+  kubectl,
+  api,
+  externalRequest,
+  custody,
+  localCluster,
+  waitFor,
+  record,
+}: Rehearsal) {
+  const { previous, candidate } = controllers;
+  const helmArgs = [
+    `--kubeconfig=${kubeconfig}`,
+    `--kube-context=${context}`,
+    `--namespace=${namespace}`,
+  ];
+  const helm = (...args: string[]) => run("helm", [...args, ...helmArgs], { timeout: 330_000 });
+  const kubeArgs = [
+    `--kubeconfig=${kubeconfig}`,
+    `--context=${context}`,
+    `--namespace=${namespace}`,
+  ];
+  const kube = (...args: string[]) => kubectl("--namespace", namespace, ...args);
+  const get = async (resource: string) => JSON.parse(await kube("get", resource, "-o", "json"));
+  const startupSecret = (name = "occ-installation-startup") =>
+    readImmutableInstallationSecret(run, kubeArgs, name);
+  const installationPath = "/installation";
+  const namespacePath = `/namespaces/${encodeURIComponent(namespaceId)}`;
+  const agentPath = `${namespacePath}/agents`;
+  const readAgent = async (id: string) =>
+    returnedAgentSnapshot(await api("GET", `${agentPath}/${encodeURIComponent(id)}`));
+  const helmStatus = async () => JSON.parse(await helm("status", release, "-o", "json"));
+  const phase = async <T>(name: string, action: () => Promise<T>) => {
+    const startedAt = new Date().toISOString();
+    const start = performance.now();
+    await writeFile(
+      join(directory, "return-progress.json"),
+      JSON.stringify({ phase: name, startedAt }) + "\n",
+      { mode: 0o600 },
+    );
+    const result = await action();
+    await record(name, {
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      elapsedMs: Math.round(performance.now() - start),
+    });
+    return result;
+  };
+  const { postgres } = custody;
+  const sql = async (database: string, query: string) =>
+    (
+      await postgres("psql", "-XAt", "-v", "ON_ERROR_STOP=1", `--dbname=${database}`, "-c", query)
+    ).trim();
+  const dump = (file: string) =>
+    postgres("pg_dump", "--format=custom", `--file=${file}`, originalDatabase);
+  const restore = async (database: string, file: string) => {
+    await postgres("createdb", "--template=template0", database);
+    await postgres(
+      "pg_restore",
+      "--exit-on-error",
+      "--single-transaction",
+      `--dbname=${database}`,
+      file,
+    );
+    await sql(database, `GRANT CREATE ON DATABASE ${database} TO occ_migrator`);
+  };
+  const migrationReceipts = (database: string) =>
+    sql(database, "SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id");
+  const databaseAgents = async (database: string) =>
+    (
+      JSON.parse(
+        await sql(
+          database,
+          `SELECT COALESCE(json_agg(json_build_object(
+      'id', id, 'namespaceId', namespace_id, 'name', name, 'configurationId', configuration_id
+    )), '[]') FROM occ.agents`,
+        ),
+      ) as unknown[]
+    ).map(agentIdentity);
+  const { pods, controlPlane, verifyPodImage, claimIdentity } = rehearsalPlane({
+    kube,
+    get,
+    run,
+    release,
+    localCluster,
+    kubeconfig,
+    context,
+    namespace,
+  });
   const candidateConnections = () =>
     sql(
       "postgres",

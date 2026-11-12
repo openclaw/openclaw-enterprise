@@ -7,6 +7,12 @@ import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { createOccLogger, resemblesCredential } from "../../apps/controller/src/logging.ts";
+import {
+  redactLogLine,
+  redactOutputLine,
+  redactFailureDetail,
+} from "../../scripts/ci/failure-redaction.mjs";
 import {
   k3sImage,
   kubectlVersion,
@@ -15,6 +21,11 @@ import {
   selectKubectlAsset,
   validateOpenShellSelection,
 } from "../../scripts/ci/openshell.mjs";
+import {
+  agentSandboxControllerForNodes,
+  preloadAgentSandboxController,
+  verifyPreloadedAgentSandbox,
+} from "../../scripts/ci/agent-sandbox.ts";
 import { withEnvironment } from "../helpers/environment.ts";
 import { commandCalls, prependPath, writeCommand } from "../helpers/fake-commands.ts";
 import {
@@ -22,8 +33,13 @@ import {
   openShellStaleRelay,
   openShellSettingsChange,
   observeSandboxProbe,
-} from "../helpers/k3d-failure-diagnostics.mjs";
-import { listen } from "../helpers/listen.mjs";
+  summarizeWorkerEvents,
+  createOpenShellWorkerLogEmitter,
+  workerDiagnosticLines,
+  workerFailureDetail,
+  rethrowOpenShellFailure,
+} from "../helpers/k3d-failure-diagnostics.ts";
+import { listen } from "../helpers/listen.ts";
 import {
   createOpenShellInstallationConfiguration,
   createOpenShellKubernetesFixture,
@@ -42,6 +58,59 @@ async function fixture(t, prefix = "ci-openshell-test") {
   return root;
 }
 
+test("OpenShell failure summaries retain bounded Compute causes without provider or chat text", () => {
+  const revisionId = "rev_10000000-0000-4000-8000-000000000003";
+  const failure = {
+    event: "worker.compute-prepare-failed",
+    revisionId,
+    code: "KUBERNETES_API_REJECTED",
+    step: "gateway_deployment",
+    errorClass: "KubernetesApiError",
+    status: 422,
+    candidatePreparationReached: false,
+  };
+  // The worker can retry the same preparation failure many times before the wait ends.
+  const events = ["2026-11-11T20:00:00.000Z", "2026-11-11T20:01:00.000Z"].map((observedAt) => ({
+    ...failure,
+    observedAt,
+    message: "private provider response",
+    chat: "private chat",
+  }));
+  events.push({
+    event: "worker.completed",
+    revisionId,
+    code: "WORKSPACE_NODE_PENDING",
+    cleanupCause: "SANDBOX_DELETE_PENDING",
+    observedAt: "2026-11-11T20:02:00.000Z",
+  });
+  assert.deepEqual(summarizeWorkerEvents(events, revisionId), [
+    { ...failure, count: 2, firstAt: events[0].observedAt, lastAt: events[1].observedAt },
+    {
+      event: "worker.completed",
+      revisionId,
+      code: "WORKSPACE_NODE_PENDING",
+      cleanupCause: "SANDBOX_DELETE_PENDING",
+      at: events[2].observedAt,
+    },
+  ]);
+  assert.equal(summarizeWorkerEvents(events, revisionId, 1).length, 1);
+  assert.deepEqual(
+    summarizeWorkerEvents(
+      [
+        {
+          ...failure,
+          step: "x".repeat(161),
+          errorClass: "sk-" + "s".repeat(30),
+          status: Number.POSITIVE_INFINITY,
+          candidatePreparationReached: "private provider response",
+        },
+      ],
+      revisionId,
+    ),
+    [{ event: failure.event, revisionId, code: failure.code, at: undefined }],
+  );
+});
+
 function ownedCluster(root, name = "openclaw-k8s-openshell-test") {
   return {
     name,
@@ -50,6 +119,180 @@ function ownedCluster(root, name = "openclaw-k8s-openshell-test") {
     context: `k3d-${name}`,
   };
 }
+
+test("OpenShell worker sinks omit response text and share both credential checks", () => {
+  const lines = [];
+  const emit = createOpenShellWorkerLogEmitter(
+    createOccLogger({
+      component: "openshell-test-worker",
+      destination: { write: (line) => lines.push(JSON.parse(line)) },
+    }),
+  );
+  const token = "ghs_" + "a_b".repeat(6);
+  assert.equal(resemblesCredential(token), true);
+  assert.equal(redactLogLine(token, [], 160), token, "CI redaction alone misses this shape");
+  const event = {
+    event: "worker.compute-prepare-failed",
+    revisionId: "rev_test",
+    code: "KUBERNETES_API_REJECTED",
+    step: "gateway_deployment",
+    status: 422,
+    errorClass: "KubernetesApiError",
+    validationCategory: "PVC_ADMISSION_LABELS",
+    reason: "PrivateResponseWord",
+    message: "private response text",
+    cause: token,
+  };
+  emit(event);
+  emit({ event: "worker.completed", code: "AUTHORIZATION_DENIED" });
+  emit({ event: "worker.error", code: "DEPENDENCY_UNAVAILABLE", cleanupCause: token });
+  emit({ event: "worker.health", message: "private health text" });
+  assert.equal(lines.length, 3, "health stays at the suppressed debug level");
+  const { time: _time, ...first } = lines[0];
+  assert.deepEqual(first, {
+    severity: "ERROR",
+    service: "openshell-test-worker",
+    event: event.event,
+    revisionId: event.revisionId,
+    code: event.code,
+    step: event.step,
+    status: event.status,
+    errorClass: event.errorClass,
+    validationCategory: event.validationCategory,
+  });
+  assert.equal(lines[2].severity, "ERROR");
+  assert.equal(lines[2].cleanupCause, undefined);
+  assert.equal(lines[1].code, "ACCESS_DENIED");
+  assert.equal(redactOutputLine(JSON.stringify(lines[1]), [], "", 1000), JSON.stringify(lines[1]));
+  const summaries = summarizeWorkerEvents(
+    [
+      event,
+      {
+        event: "worker.completed",
+        code: "AUTHORIZATION_DENIED",
+        cleanupCause: token,
+      },
+    ],
+    "rev_test",
+  );
+  assert.equal(summaries[0].cause, undefined);
+  assert.equal(summaries[0].validationCategory, event.validationCategory);
+  assert.equal(
+    summaries[1].code,
+    "AUTHORIZATION_DENIED",
+    "returned evidence retains the exact fixed code",
+  );
+  assert.equal(summaries[1].cleanupCause, undefined);
+  assert.match(workerDiagnosticLines({ events: summaries }).at(-1), /PVC_ADMISSION_LABELS/);
+});
+
+test("OpenShell persisted queue records survive the reporter's per-line limit", () => {
+  const revisionId = "rev_10000000-0000-4000-8000-000000000003";
+  const queue = Array.from({ length: 8 }, (_, index) => ({
+    operation: "agent_revision.reconcile",
+    revisionId: revisionId.slice(0, -1) + index,
+    state: "queued",
+    attempt: index,
+    completed: false,
+  }));
+  const lines = workerDiagnosticLines({
+    operation: "agent_revision.reconcile",
+    revisionId,
+    persisted: { activeRevisionId: revisionId, revision: { revisionId, revisionNumber: 2 }, queue },
+    events: [{ event: "worker.completed", code: "AUTHORIZATION_DENIED" }],
+  });
+  assert.equal(lines.length, 10);
+  assert.deepEqual(
+    lines.slice(1, 9).map((line) => JSON.parse(line.slice(line.indexOf("{")))),
+    queue,
+  );
+  for (const line of lines) {
+    assert.ok(line.length <= 1000);
+    assert.equal(redactOutputLine(line, [], "", 1000), line);
+    assert.doesNotThrow(() => JSON.parse(line.slice(line.indexOf("{"))));
+  }
+  assert.match(lines.at(-1), /ACCESS_DENIED/);
+});
+
+test("OpenShell activation diagnostics share one deadline and preserve the original failure", async (t) => {
+  const lines = [];
+  t.mock.method(process.stderr, "write", (line) => {
+    lines.push(line);
+    return true;
+  });
+  const original = new Error("activation failed");
+  await assert.rejects(
+    rethrowOpenShellFailure(original, () => {
+      throw new Error("diagnostic output failed");
+    }),
+    (error) => error === original,
+  );
+  let release;
+  const read = new Promise((resolve) => {
+    release = resolve;
+  });
+  let complete;
+  const completed = new Promise((resolve) => {
+    complete = resolve;
+  });
+  let lateLines;
+  await assert.rejects(
+    rethrowOpenShellFailure(
+      original,
+      async () => {
+        await read;
+        lateLines = workerDiagnosticLines({ events: [] });
+        complete();
+      },
+      {
+        timeoutMs: 20,
+        provisioningFailure: new Error("sandbox prepare failed: private-provider-detail"),
+        secrets: [["private-provider-detail", "PROVIDER_DETAIL"]],
+      },
+    ),
+    (error) => error === original,
+  );
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /^First OpenShell provisioning failure: sandbox prepare failed:/);
+  assert.doesNotMatch(lines[0], /private-provider-detail/);
+  assert.equal(lines[1], "OpenShell activation diagnostics timed out\n");
+  release();
+  await completed;
+  assert.deepEqual(
+    lateLines,
+    [],
+    "a read finishing after the shared deadline cannot emit late evidence",
+  );
+  assert.equal(lines.length, 2);
+  t.mock.method(process.stderr, "write", () => {
+    throw new Error("output unavailable");
+  });
+  await assert.rejects(
+    rethrowOpenShellFailure(original, async () => {}, { provisioningFailure: new Error("cached") }),
+    (error) => error === original,
+  );
+});
+
+test("OpenShell replacement failure detail preserves denied and adjacent worker state", () => {
+  const worker = {
+    persisted: { revision: { revisionNumber: 2 }, queue: [{ state: "queued" }] },
+    events: summarizeWorkerEvents(
+      [
+        { event: "worker.error", code: "DEPENDENCY_UNAVAILABLE" },
+        { event: "worker.completed", code: "AUTHORIZATION_DENIED" },
+      ],
+      "rev_test",
+    ),
+  };
+  const detail = workerFailureDetail(worker, []);
+  const published = redactFailureDetail(new Error(`activation failed\n${detail}`), [], "");
+  assert.equal(published.message, `activation failed\n${detail}`);
+  assert.match(published.message, /ACCESS_DENIED/);
+  assert.match(published.message, /DEPENDENCY_UNAVAILABLE/);
+  assert.match(published.message, /"revisionNumber":2/);
+  assert.match(published.message, /"state":"queued"/);
+  assert.equal(worker.events[1].code, "AUTHORIZATION_DENIED");
+});
 
 test("OpenShell turnover accepts established relay failures, not connection admission denials", () => {
   const domain = "gateway.fixture.svc.cluster.local";
@@ -210,18 +453,25 @@ test("the OpenShell installation wait surfaces terminal deployment refusals on t
   const waitOnce = (description, read) => waitFor(description, read, { timeoutMs: 0 });
   const refusalCode = "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE";
   const privateDetail = "private requirements detail";
-  const activate = (deployment, activeRevisionId = null, workerEvents = []) =>
+  const activate = (
+    deployment,
+    activeRevisionId = null,
+    workerEvents = [],
+    checkDeploymentBeforeActivation = false,
+    deploymentStatus = 200,
+  ) =>
     waitForOpenShellRevisionActivation(waitOnce, {
       agentPath,
       revisionId,
       workerEvents,
+      checkDeploymentBeforeActivation,
       request: async (method, path) => {
         assert.equal(method, "GET");
         if (path === agentPath) {
           return { status: 200, data: { activeRevisionId } };
         }
         assert.equal(path, `${agentPath}/deployments/${revisionId}`);
-        return { status: 200, data: deployment };
+        return { status: deploymentStatus, data: deployment };
       },
     });
 
@@ -277,6 +527,26 @@ test("the OpenShell installation wait surfaces terminal deployment refusals on t
   assert.deepEqual(await activate({ status: "succeeded", error: null }, revisionId), {
     activeRevisionId: revisionId,
   });
+  // Replacement reconciliation can fail after publishing the active pointer.
+  await assert.rejects(
+    activate({ status: "failed", error: { code: refusalCode } }, revisionId, [], true),
+    {
+      code: refusalCode,
+      message: `OpenShell revision ${revisionId} deployment failed (${refusalCode}).`,
+    },
+  );
+  await assert.rejects(activate(undefined, revisionId, [], true, 503), {
+    name: "AssertionError",
+    message: /OpenShell deployment status read failed/,
+  });
+  assert.deepEqual(await activate({ status: "succeeded" }, revisionId, [], true), {
+    activeRevisionId: revisionId,
+  });
+  assert.deepEqual(
+    await activate(undefined, revisionId, [], false, 503),
+    { activeRevisionId: revisionId },
+    "initial activation keeps its existing pointer-first behavior",
+  );
 });
 
 // Finding 1846: the worker can claim the work again between reads. The status is read only once
@@ -1759,4 +2029,249 @@ test("prepareOpenShell fails before downloads when the k3d node lacks the select
       cluster.context,
     ]);
   }
+});
+
+function controllerNodes(architecture = "amd64") {
+  return {
+    items: [
+      {
+        metadata: { name: "k3d-owned-server-0" },
+        status: { nodeInfo: { operatingSystem: "linux", architecture } },
+      },
+    ],
+  };
+}
+
+// This exercises manifest preparation and its image-registration boundary, not a cluster.
+test("Agent Sandbox preparation uses the imported image and preserves unrelated manifest bytes", async (t) => {
+  const directory = await fixture(t);
+  const manifest = join(directory, "sandbox.yaml");
+  const source = [
+    "# upstream namespace",
+    "apiVersion: v1",
+    "kind: Namespace",
+    "metadata:",
+    "  name: agent-sandbox-system",
+    "---",
+    "apiVersion: apps/v1",
+    "kind: Deployment",
+    "metadata:",
+    "  name: agent-sandbox-controller",
+    "spec:",
+    "  template:",
+    "    spec:",
+    "      containers:",
+    "      - name: agent-sandbox-controller",
+    "        image: registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2",
+    "        args: [--leader-elect=true]",
+    "      - name: unrelated",
+    "        image: example.invalid/other:v1",
+    "---",
+    "# schemas and remaining resources stay unchanged",
+    "kind: CustomResourceDefinition",
+    "",
+  ].join("\n");
+  await writeFile(manifest, source);
+  const imported = `localhost/owned/controller@sha256:${"a".repeat(64)}`;
+  const output = await preloadAgentSandboxController(
+    manifest,
+    controllerNodes(),
+    async (image, _description, nativeSelection) => {
+      assert.equal(
+        image,
+        "registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2@sha256:c28ca6f2366160f2470013c4588821cf7ebd21538d62c1016b6afc93583830d6",
+      );
+      assert.deepEqual(nativeSelection, {
+        platform: "linux/amd64",
+        configDigest: "sha256:5b6c81129dc7491b3d260940e34ff68323fb6f7f21450d42129be5169e52ab17",
+        cacheIndex:
+          "registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2@sha256:dbbad861e6c2cc0df1f7ec37dd0e2827b3d2bc051eb45855e01f94e697440403",
+      });
+      await assert.rejects(readFile(join(directory, "agent-sandbox-local.yaml")), {
+        code: "ENOENT",
+      });
+      return imported;
+    },
+  );
+  const prepared = await readFile(output, "utf8");
+  const replacement = `        image: ${imported}\n        imagePullPolicy: Never\n`;
+  assert.equal(prepared.split(replacement).length, 2);
+  assert.equal(
+    prepared.replace(
+      replacement,
+      "        image: registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2\n",
+    ),
+    source,
+  );
+  assert.equal(await readFile(manifest, "utf8"), source);
+});
+
+test("Agent Sandbox preparation rejects changed manifests and failed imports before producing deployment input", async (t) => {
+  const directory = await fixture(t);
+  const manifest = join(directory, "sandbox.yaml");
+  const controller =
+    "      - name: agent-sandbox-controller\n        image: registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2\n";
+  for (const invalid of ["kind: Namespace\n", controller + controller]) {
+    await writeFile(manifest, invalid);
+    await assert.rejects(
+      preloadAgentSandboxController(manifest, controllerNodes(), async () =>
+        assert.fail("invalid manifest must not import an image"),
+      ),
+      /exactly one expected controller image/,
+    );
+  }
+  await writeFile(manifest, controller);
+  const failure = new Error("image import failed");
+  await assert.rejects(
+    preloadAgentSandboxController(manifest, controllerNodes(), async () => {
+      throw failure;
+    }),
+    (error) => error === failure,
+  );
+  await assert.rejects(readFile(join(directory, "agent-sandbox-local.yaml")), { code: "ENOENT" });
+});
+
+// The selected native child must follow the node, regardless of the host cache.
+test("Agent Sandbox selects the native node platform and rejects unknown or mixed nodes", () => {
+  assert.equal(
+    agentSandboxControllerForNodes(controllerNodes("arm64")).source,
+    "registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2@sha256:7e273b836b1f7e5e33c08c68bcf539959ca2b298cb29153e1fab60fd05851248",
+  );
+  for (const nodes of [
+    controllerNodes("ppc64le"),
+    { items: [] },
+    { items: [...controllerNodes().items, ...controllerNodes("arm64").items] },
+  ]) {
+    assert.throws(() => agentSandboxControllerForNodes(nodes), /node platform/);
+  }
+});
+
+// Fixture observations exercise the verifier, not image transport or a real cluster.
+// The retained upstream manifest is the actual v0.5.2 linux/amd64 child.
+test("Agent Sandbox installed verification binds readiness and CRI identity to the native release", async () => {
+  const manifest = await readFile(
+    new URL("../fixtures/agent-sandbox-v0.5.2-amd64-manifest.json.txt", import.meta.url),
+    "utf8",
+  );
+  const source =
+    "registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2@sha256:c28ca6f2366160f2470013c4588821cf7ebd21538d62c1016b6afc93583830d6";
+  const reference =
+    "docker.io/owned/controller@sha256:c28ca6f2366160f2470013c4588821cf7ebd21538d62c1016b6afc93583830d6";
+  const config = "sha256:5b6c81129dc7491b3d260940e34ff68323fb6f7f21450d42129be5169e52ab17";
+  const observations = {
+    nodes: controllerNodes(),
+    pods: {
+      items: [
+        {
+          metadata: {
+            name: "agent-sandbox-controller-5cdd-7kr6b",
+            namespace: "agent-sandbox-system",
+          },
+          spec: {
+            nodeName: "k3d-owned-server-0",
+            containers: [
+              { name: "agent-sandbox-controller", image: reference, imagePullPolicy: "Never" },
+            ],
+          },
+          status: {
+            conditions: [{ type: "Ready", status: "True" }],
+            containerStatuses: [
+              {
+                name: "agent-sandbox-controller",
+                ready: true,
+                imageID: config,
+                state: { running: { startedAt: "2026-11-11T21:00:00Z" } },
+              },
+            ],
+          },
+        },
+      ],
+    },
+    content: manifest,
+    cri: {
+      [reference]: { status: { id: config } },
+      [config]: { status: { id: config } },
+    },
+  };
+  const verify = (data, overrides = {}) =>
+    verifyPreloadedAgentSandbox({
+      source,
+      reference,
+      kubectl: [],
+      engine: "docker",
+      ownedNodes: ["k3d-owned-server-0"],
+      ...overrides,
+      execFile: async (file, args) => {
+        if (file === "kubectl" && args[0] === "get") {
+          return { stdout: JSON.stringify(data[args[1]]) };
+        }
+        if (file === "docker" && args[0] === "exec" && args[2] === "ctr") {
+          return { stdout: data.content };
+        }
+        if (file === "docker" && args[0] === "exec" && args[2] === "crictl") {
+          assert.equal(args[3], "inspecti");
+          const image = data.cri[args[4]];
+          assert.ok(image, `unexpected CRI image ${args[4]}`);
+          return { stdout: JSON.stringify(image) };
+        }
+        assert.fail(`unexpected verification command ${file} ${args.join(" ")}`);
+      },
+    });
+  await verify(observations);
+  for (const [change, expected] of [
+    [
+      (data) => {
+        data.pods.items[0].spec.containers[0].image = `docker.io/wrong/controller@sha256:${"a".repeat(64)}`;
+      },
+      /exact imported reference/,
+    ],
+    [
+      (data) => {
+        data.pods.items[0].spec.containers[0].imagePullPolicy = "IfNotPresent";
+      },
+      /exact imported reference/,
+    ],
+    [
+      (data) => {
+        data.pods.items[0].status.conditions[0].status = "False";
+      },
+      /Ready/,
+    ],
+    [
+      (data) => {
+        data.cri[reference].status.id = `sha256:${"a".repeat(64)}`;
+      },
+      /running image/,
+    ],
+    [
+      (data) => {
+        // The imported alias is still correct; only the running Pod resolves
+        // to the wrong config. Querying the alias twice must not pass.
+        data.cri[config].status.id = `sha256:${"a".repeat(64)}`;
+      },
+      /running image/,
+    ],
+    [
+      (data) => {
+        data.content += " ";
+      },
+      /imported manifest/,
+    ],
+    [
+      (data) => {
+        data.pods.items[0].spec.nodeName = "unowned-node";
+      },
+      /owned node/,
+    ],
+  ]) {
+    const changed = structuredClone(observations);
+    change(changed);
+    await assert.rejects(verify(changed), expected);
+  }
+  await assert.rejects(
+    verify(observations, {
+      source: agentSandboxControllerForNodes(controllerNodes("arm64")).source,
+    }),
+    /node platform release/,
+  );
 });

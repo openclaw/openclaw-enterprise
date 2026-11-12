@@ -1909,6 +1909,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       method: request.method,
       route: request.routeOptions.url ?? "unmatched",
       status: reply.statusCode,
+      nativeAdmissionReason: nativeAdmin.httpAdmissionReason(request),
       ...(durationMs === undefined ? {} : { durationMs: Math.round(durationMs * 1000) / 1000 }),
     });
   });
@@ -4648,7 +4649,24 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         getController: () => controller,
         getContext: (request) => contexts.get(request),
         auditEvent: (request, context, target) =>
-          event(connectionCallbackOperation, request, target, "mutation", context),
+          event(
+            connectionCallbackOperation,
+            request,
+            target,
+            "mutation",
+            context,
+            undefined,
+            undefined,
+            {
+              action: "create",
+              // OCC supplies the saved connection after consuming and authorizing its attempt.
+              resource: {
+                kind: "credential_source",
+                id: target.namespaceId!,
+                namespaceId: target.namespaceId!,
+              },
+            },
+          ),
         auditFailure: (request, context, reasonCode) =>
           rejectedMutation(connectionCallbackOperation, request, context, reasonCode),
       }),

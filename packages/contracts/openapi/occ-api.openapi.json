@@ -1205,6 +1205,11 @@
                 "type": "array"
               },
               "message": { "maxLength": 256, "minLength": 1, "type": "string" },
+              "reason": {
+                "const": "credential_registration_pending",
+                "description": "On credential source DELETE with 503 DEPENDENCY_UNAVAILABLE, registration may still be completing. Retry after the whole seconds in the Retry-After header; the source remains until deletion completes.",
+                "type": "string"
+              },
               "remainingResources": {
                 "description": "Present for NAMESPACE_NOT_EMPTY. Each remaining resource kind reports its total count and up to 20 IDs, only of resources the caller can read. Pending Agent provisioning has no resource IDs. Remove the listed resources and retry to discover any others.",
                 "items": {
@@ -36086,10 +36091,16 @@
                 "examples": {
                   "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
                 },
-                "schema": { "$ref": "#/components/schemas/def-7" }
+                "schema": { "allOf": [{ "$ref": "#/components/schemas/def-7" }] }
               }
             },
-            "description": "A required dependency is unavailable."
+            "description": "A required dependency is unavailable.",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds before retrying DELETE when error.reason is credential_registration_pending. Absent for other dependency failures.",
+                "schema": { "pattern": "^[1-9][0-9]*$", "type": "string" }
+              }
+            }
           }
         },
         "summary": "Remove an unreferenced credential source from the Credential Gateway",

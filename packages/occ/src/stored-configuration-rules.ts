@@ -57,7 +57,7 @@ export function canSpell(literals: readonly string[], value: string): boolean {
  * The optional workspace files agents.defaults.skipOptionalBootstrapFiles may name. The pinned
  * OpenClaw (openclaw/openclaw `src/config/zod-schema.agent-defaults-base.ts` at the commit in
  * `deploy/runtime/openclaw-source.json`) refuses any other name, and Compute copies the setting
- * into native workspace setup. tests/integration/runtime-image-managed-files.test.mjs compares
+ * into native workspace setup. tests/integration/runtime-image-managed-files.test.ts compares
  * this list with the runtime image's config schema; update it when that pin changes.
  */
 export const OPTIONAL_BOOTSTRAP_FILES: readonly string[] = [

@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { createServer } from "node:https";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { createProductionTuiRequest } from "../helpers/production-tui-request.ts";
 import { delimiter, join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -1579,3 +1579,23 @@ test(
     assert.ok(Number(await readFile(heartbeat, "utf8")) > before);
   },
 );
+
+test("fixture command reports independently signalled child as unsettled", async () => {
+  await assert.rejects(
+    runFixtureCommand(process.execPath, ["-e", 'process.kill(process.pid, "SIGTERM")']),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      const failure = error as Error & { settled?: boolean; outcome?: unknown };
+      assert.equal(failure.settled, false);
+      assert.deepEqual(failure.outcome, {
+        exitCode: null,
+        signal: "SIGTERM",
+        timedOut: false,
+        interrupted: false,
+        spawned: true,
+        terminationFailed: false,
+      });
+      return true;
+    },
+  );
+});
