@@ -49,15 +49,16 @@ import {
   continuityPodReference,
   continuityRevision,
 } from "../helpers/production-upgrade-continuity-fixture.ts";
-import { registerDispatchRestoreTests } from "../helpers/production-upgrade-dispatch-restore.ts";
+import {
+  registerAcceptedAgentDeployNoticeTest,
+  registerDispatchRestoreTests,
+  registerUnknownAgentDeploymentResumeTest,
+} from "../helpers/production-upgrade-dispatch-restore.ts";
 import {
   preflightIdentities,
   registerPreflightCleanupTests,
 } from "../helpers/production-upgrade-preflight-cleanup.ts";
-import {
-  registerRetainedFleetPreflightTests,
-  restartInventory,
-} from "../helpers/production-upgrade-retained-fleet-preflight.ts";
+import { registerRetainedFleetPreflightTests } from "../helpers/production-upgrade-retained-fleet-preflight.ts";
 
 // Every case owns its command server, state, and evidence directory. Two sibling
 // cases can overlap while the existing nested groups keep their own limits.
@@ -4260,31 +4261,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.equal((await f.events()).filter((event) => event === "migration").length, 2);
   });
 
-  test("resume stops on an unknown Agent deployment until an accepted revision is confirmed", async (t) => {
-    // A normal runtime upgrade can replace a worker-bound revision, but a lost
-    // response must never turn that planned replacement into a second deployment.
-    const inventory = restartInventory("original-worker-required");
-    const f = await fixture(t, { agent: true, inventoryResponses: [inventory, inventory] });
-    await f.failNext("lost-agent-response");
-    await assert.rejects(f.run(), /deployment outcome is unknown/);
-    const calls = f.commands.length;
-    await assert.rejects(f.run("--resume"), /unknown deployment outcome/);
-    assert.equal(f.commands.length, calls);
-    assert.equal((await f.state()).dispatches, 1);
-    const receipt = join(f.evidence, "dispatch/ns_test--agt_test.json");
-    // An arbitrary or baseline revision cannot resolve the pending dispatch.
-    for (const id of ["rev_missing", "rev_old"]) {
-      await writeFile(receipt, JSON.stringify({ id }), { mode: 0o600 });
-      await assert.rejects(f.run("--resume"), /unknown deployment outcome/);
-      assert.equal((await f.state()).dispatches, 1);
-    }
-    // Simulate the operator confirming this revision in durable history and
-    // recording the accepted request before resuming the readiness checks.
-    await writeFile(receipt, JSON.stringify({ id: "rev_new" }), { mode: 0o600 });
-    await f.run("--resume");
-    assert.equal((await f.state()).dispatches, 1);
-    assert.equal((await f.state()).inventoryReadCount, 2);
-  });
+  registerUnknownAgentDeploymentResumeTest(fixture);
 
   describe("resume evidence directory ownership", { concurrency: 2 }, () => {
     test("resume binds stale prepared copies to the original evidence directory before live access", async (t) => {
@@ -4565,28 +4542,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     });
   }
 
-  // occ's notices about an accepted deploy, such as a revision with no Harness overrides to
-  // retain, must reach the operator in the run output and not only the evidence directory.
-  // A control character in a notice must not reach the terminal.
-  test("an accepted Agent deploy shows occ's notices in the run output", async (t) => {
-    const f = await fixture(t, { agent: true });
-    const notice =
-      "revision rev_old has unreadable saved settings (SAVED_CONFIGURATION_UNREADABLE: configuration) and records no Harness overrides, so none are retained; the deployment uses current Installation defaults.";
-    const state = await f.state();
-    state.deployNotices = { agt_test: `notice: ${notice}\u001b[2J` };
-    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
-    const result = await f.run();
-    assert.ok(
-      result.stderr
-        .split("\n")
-        .includes(`upgrade-production-images: Agent agt_test in Namespace ns_test: ${notice}?[2J`),
-      result.stderr,
-    );
-    assert.equal(
-      await readFile(join(f.evidence, "dispatch/ns_test--agt_test.error"), "utf8"),
-      `notice: ${notice}\u001b[2J\n`,
-    );
-  });
+  registerAcceptedAgentDeployNoticeTest(fixture);
 
   // Doctor shares the serving gateway container's memory limit, and an out-of-memory
   // kill there stops the gateway too (finding 2697). Doctor, with a 384 MiB heap cap,

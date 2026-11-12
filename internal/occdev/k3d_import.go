@@ -21,14 +21,25 @@ const k3dImportOutputLimit = 64 << 10
 // the platform child directly lets the importer save one complete image.
 // If the child is unavailable, the caller can still export the original source.
 func (r *runner) stageDevelopmentPlatformChild(ctx context.Context, source, platform, stagingTag string) (bool, error) {
+	resolved, err := r.resolveDevelopmentPlatformChild(ctx, source, platform)
+	if err != nil || resolved == source {
+		return false, err
+	}
+	if err := r.run(ctx, r.engine, "tag", resolved, stagingTag); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (r *runner) resolveDevelopmentPlatformChild(ctx context.Context, source, platform string) (string, error) {
 	if !strings.Contains(source, "@") {
-		return false, nil
+		return source, nil
 	}
 	child, err := r.developmentPlatformChild(ctx, source, platform)
 	if err != nil || child == "" {
 		// A locally selected candidate image has no registry listing, and its
 		// reference already names one image.
-		return false, nil
+		return source, nil
 	}
 	name, _, _ := strings.Cut(source, "@")
 	resolved := name + "@" + child
@@ -37,16 +48,13 @@ func (r *runner) stageDevelopmentPlatformChild(ctx context.Context, source, plat
 			// The cached source can still export on stores that keep it
 			// complete, so a failed child pull must not abort the import.
 			fmt.Fprintf(r.opts.Out, "Could not pull the platform child of %s; saving the pinned reference instead.\n", name)
-			return false, nil
+			return source, nil
 		}
 	}
 	if resolved == source {
-		return false, nil
+		return source, nil
 	}
-	if err := r.run(ctx, r.engine, "tag", resolved, stagingTag); err != nil {
-		return false, err
-	}
-	return true, nil
+	return resolved, nil
 }
 
 // developmentPlatformChild names the manifest-list child the registry serves

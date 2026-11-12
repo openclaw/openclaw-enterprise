@@ -66,7 +66,7 @@ jq -e '.success==true' "$RUN_DIR/github-worker-check.json" >/dev/null
 request GET "$base/agents/$agent/repository-options" |
   jq -e --arg ref "$ref" 'any(.data[];.repositoryRef==$ref and (.allowedProfiles|index("github-repository"))!=null)' >/dev/null
 guide_step() {
-  node "$dir/guide-bash.mjs" "$guide" "$1" > "$RUN_DIR/git-guide-step.sh"
+  node "$dir/guide-bash.ts" "$guide" "$1" > "$RUN_DIR/git-guide-step.sh"
   source "$RUN_DIR/git-guide-step.sh"
 }
 GIT_SESSION_MODE=owner guide_step 'stop_git_test()'

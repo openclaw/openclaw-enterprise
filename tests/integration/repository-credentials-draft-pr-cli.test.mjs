@@ -4,7 +4,7 @@ import { createServer as createHttpsServer } from "node:https";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
-import { refusingPort } from "../helpers/available-port.mjs";
+import { refusingPort } from "../helpers/available-port.ts";
 import { signedLeaf } from "../helpers/certificates.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { listen } from "../helpers/listen.ts";

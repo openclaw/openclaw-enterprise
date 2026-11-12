@@ -88,7 +88,7 @@ import {
   workerDiagnosticLines,
   workerFailureDetail,
   rethrowOpenShellFailure,
-} from "../helpers/k3d-failure-diagnostics.mjs";
+} from "../helpers/k3d-failure-diagnostics.ts";
 import {
   createEnvoyWorkspaceGatewayPlan,
   ensureEnvoyGatewayControllers,

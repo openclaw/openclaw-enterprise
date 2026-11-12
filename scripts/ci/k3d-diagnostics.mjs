@@ -5,14 +5,16 @@ import { once } from "node:events";
 import { mkdir, open, readdir, readFile, rm, statfs, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
+import { failureSecrets } from "./failure-redaction.mjs";
 import {
-  failureSecrets,
-  isCredentialLine,
-  maskPrivateKeyLines,
-  redactLogLine,
-  redactOutputLine,
-} from "./failure-redaction.mjs";
-import { compareEventTimes, eventObservedTime } from "./kubernetes-event-time.ts";
+  compareEventTimestamps,
+  eventStatus,
+  podStatus,
+  projectContainerLog,
+} from "./k3d-container-log.ts";
+import { nodeLogExcerpt, redactCredentialLine } from "./k3d-node-log.ts";
+
+export { nodeLogExcerpt, projectContainerLog, redactCredentialLine };
 
 export async function k3dHostMetrics(directory) {
   const disk = await statfs(directory).catch(() => undefined);
@@ -35,15 +37,6 @@ export async function k3dHostMetrics(directory) {
   };
 }
 
-// Bootstrap logs can contain K3s join tokens. Never publish credential-bearing
-// lines, full object specs, kubeconfigs, or container environments.
-const CREDENTIAL_LINE =
-  /token|password|secret|credential|authorization|bearer|private.?key|https?:\/\/[^\s/]+@/i;
-
-export function redactCredentialLine(line) {
-  return CREDENTIAL_LINE.test(line) ? "[redacted credential-bearing line]" : line;
-}
-
 function safeText(value) {
   if (typeof value !== "string") {
     return value;
@@ -51,192 +44,11 @@ function safeText(value) {
   return value.split("\n").map(redactCredentialLine).join("\n").slice(-8_000);
 }
 
-// k3d's node entrypoint starts K3s in the background and retries `kubectl
-// uncordon` every 3 seconds until it succeeds, so a plain tail of a node whose
-// K3s never came up holds nothing else (findings 15 and 1174). The retries go to
-// localhost:8080 until K3s writes its kubeconfig, then to its API port. If K3s
-// exits, the loop keeps the container running and k3d waits for K3s forever;
-// only the switch to "connection refused" on the API port dates the exit. The
-// excerpt drops the retries, notes each target and outcome with its first and
-// last time, keeps the start of each node's log, its first and last error and
-// warning lines, and its end, and stays under about 40 KB per node.
-
-// kubectl's own klog error line; K3s's logrus lines never match it.
-const KUBECTL_DISCOVERY_RETRY =
-  /^\S+ E\d{4} [\d:.]+\s+\d+ memcache\.go:\d+\] .*couldn't get current server API group list: (.*)$/;
-const KUBECTL_REFUSED_RETRY = /^\S+ The connection to the server (\S+) was refused/;
-const KUBECTL_SERVER_RETRY =
-  /^\S+ (?:Error from server \((\w+)\): |error: You must be logged in to the server \((\w+)\)|Unable to connect to the server: (.*)$)/;
-const KUBECTL_RETRY_KINDS = 12;
-
-function retryOutcome(detail) {
-  if (/connection refused/.test(detail)) {
-    return "connection refused";
-  }
-  if (/unable to handle the request/.test(detail)) {
-    return "ServiceUnavailable";
-  }
-  return detail.split(": ").at(-1).slice(0, 80);
-}
-
-// The target and outcome of one kubectl retry line, or undefined for any other line.
-function kubectlRetry(line) {
-  const discovery = KUBECTL_DISCOVERY_RETRY.exec(line);
-  if (discovery) {
-    // The error ends at err="..."'s first unescaped quote; a logger field may follow.
-    const detail = discovery[1].replace(/(?<!\\)".*$/u, "");
-    const server = /Get \\?"https?:\/\/([^/\\"]+)/.exec(detail)?.[1];
-    return `${server ?? "the API server"} (${retryOutcome(detail)})`;
-  }
-  const refused = KUBECTL_REFUSED_RETRY.exec(line);
-  if (refused) {
-    return `${refused[1]} (connection refused)`;
-  }
-  const answered = KUBECTL_SERVER_RETRY.exec(line);
-  if (answered) {
-    return `the API server (${answered[1] ?? answered[2] ?? retryOutcome(answered[3])})`;
-  }
-  return undefined;
-}
-
-// docker logs --timestamps stamps every line; anything else is a fragment.
-const DOCKER_TIMESTAMP = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/;
-// logrus level=error/warning/fatal, or a klog E/W/F header after the timestamp.
-const PROBLEM_LINE = /\blevel=(?:error|warning|fatal)\b|^\S+ [EWF]\d{4} /;
-const NODE_LOG_LINE_CHARS = 1_000;
-const NODE_LOG_HEAD = { lines: 60, chars: 8_000 };
-const NODE_LOG_FIRST_PROBLEMS = { lines: 20, chars: 4_000 };
-const NODE_LOG_LAST_PROBLEMS = { lines: 100, chars: 12_000 };
-const NODE_LOG_TAIL_CHARS = 16_000;
 // Each diagnostic command is bounded; a hung one must not replace the failure.
 const diagnosticCommandTimeoutMs =
   Number(process.env.OPENCLAW_CI_K3D_DIAGNOSTICS_TIMEOUT_MS) > 0
     ? Number(process.env.OPENCLAW_CI_K3D_DIAGNOSTICS_TIMEOUT_MS)
     : 10_000;
-
-function takeWithin(lines, { lines: maxLines = Infinity, chars }, fromEnd = false) {
-  const ordered = fromEnd ? [...lines].reverse() : lines;
-  const taken = [];
-  let size = 0;
-  for (const line of ordered) {
-    if (taken.length >= maxLines || size + line.length + 1 > chars) {
-      break;
-    }
-    taken.push(line);
-    size += line.length + 1;
-  }
-  return fromEnd ? taken.reverse() : taken;
-}
-
-// Canonical UTC keys contain ASCII digits and punctuation, independent of locale.
-function compareTimestamps(left, right) {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-
-// Docker returns a container's stdout and stderr separately; --timestamps lets
-// the excerpt restore their order. Unstamped fragments (an output cap can cut a
-// stream mid-line) are dropped unread, and a redacted line keeps only its
-// timestamp.
-export function nodeLogExcerpt(stdout = "", stderr = "", note) {
-  const entries = [];
-  let fragments = 0;
-  for (const [stream, text] of [
-    [0, stdout],
-    [1, stderr],
-  ]) {
-    for (const raw of String(text ?? "").split("\n")) {
-      if (raw.trim() === "") {
-        continue;
-      }
-      const stamp = raw.split(" ", 1)[0];
-      if (!DOCKER_TIMESTAMP.test(stamp)) {
-        fragments += 1;
-        continue;
-      }
-      entries.push({
-        // Docker timestamps are UTC. Canonical decimal fractions preserve precision
-        // and compare equal when their only difference is trailing zeroes.
-        at: stamp.replace(
-          /(?:\.(\d+))?Z$/u,
-          (_match, fraction = "") => `.${fraction.replace(/0+$/u, "")}`,
-        ),
-        stream,
-        index: entries.length,
-        // Test the whole line for credentials before truncating it.
-        redacted: CREDENTIAL_LINE.test(raw),
-        line: raw.slice(0, NODE_LOG_LINE_CHARS),
-        stamp,
-      });
-    }
-  }
-  entries.sort((a, b) => compareTimestamps(a.at, b.at) || a.stream - b.stream || a.index - b.index);
-  const kept = [];
-  const problems = new Set();
-  const retries = new Map();
-  for (const { at, line, redacted, stamp } of entries) {
-    const retry = kubectlRetry(line);
-    if (retry !== undefined) {
-      const seen = retries.get(retry) ?? { count: 0, first: stamp };
-      seen.count += 1;
-      seen.last = stamp;
-      seen.lastAt = at;
-      retries.set(retry, seen);
-      continue;
-    }
-    if (PROBLEM_LINE.test(line)) {
-      problems.add(kept.length);
-    }
-    kept.push(redacted ? `${stamp} [redacted credential-bearing line]` : line);
-  }
-  const notes = [
-    ...(note ? [`[diagnostics: ${note}]`] : []),
-    ...(fragments > 0 ? [`[diagnostics dropped ${fragments} unstamped line fragments]`] : []),
-    // The latest kinds date the end of the log, so a long list keeps those, in
-    // the order they first appeared.
-    ...[...retries]
-      .map((entry, order) => ({ entry, order }))
-      .sort((a, b) => compareTimestamps(b.entry[1].lastAt, a.entry[1].lastAt))
-      .slice(0, KUBECTL_RETRY_KINDS)
-      .sort((a, b) => a.order - b.order)
-      .map(
-        ({ entry: [target, { count, first, last }] }) =>
-          `[diagnostics omitted ${count} kubectl retry lines against ${target}, ${first} to ${last}]`,
-      ),
-    ...(retries.size > KUBECTL_RETRY_KINDS
-      ? [
-          `[diagnostics omitted ${retries.size - KUBECTL_RETRY_KINDS} earlier kinds of kubectl retry lines]`,
-        ]
-      : []),
-  ];
-  const budget =
-    NODE_LOG_HEAD.chars +
-    NODE_LOG_FIRST_PROBLEMS.chars +
-    NODE_LOG_LAST_PROBLEMS.chars +
-    NODE_LOG_TAIL_CHARS;
-  if (kept.join("\n").length <= budget) {
-    return [...notes, ...kept].join("\n");
-  }
-  const head = takeWithin(kept, NODE_LOG_HEAD);
-  const tail = takeWithin(kept.slice(head.length), { chars: NODE_LOG_TAIL_CHARS }, true);
-  const middleEnd = kept.length - tail.length;
-  const middle = kept
-    .slice(head.length, middleEnd)
-    .filter((_, offset) => problems.has(head.length + offset));
-  // An early root cause must survive later repeated warnings.
-  const first = takeWithin(middle, NODE_LOG_FIRST_PROBLEMS);
-  const last = takeWithin(middle.slice(first.length), NODE_LOG_LAST_PROBLEMS, true);
-  const shown = first.length + last.length;
-  return [
-    ...notes,
-    ...head,
-    `[diagnostics omitted ${middleEnd - head.length - shown} lines; ${shown} of ${middle.length} error and warning lines between head and tail follow]`,
-    ...first,
-    ...(middle.length > shown ? ["[...]"] : []),
-    ...last,
-    "[diagnostics: end of log follows]",
-    ...tail,
-  ].join("\n");
-}
 
 function conditions(values = []) {
   return values.slice(0, 12).map(({ type, status, reason, message }) => ({
@@ -421,44 +233,6 @@ function* watchLines(text) {
   }
 }
 
-function podStatus(type, pod) {
-  return {
-    namespace: pod.metadata.namespace,
-    name: pod.metadata.name,
-    watch: type,
-    createdAt: pod.metadata.creationTimestamp,
-    deletedAt: pod.metadata.deletionTimestamp,
-    node: pod.spec?.nodeName,
-    phase: pod.status?.phase,
-    conditions: (pod.status?.conditions ?? []).slice(0, 12).map((condition) => ({
-      type: condition.type,
-      status: condition.status,
-      reason: condition.reason,
-      at: condition.lastTransitionTime,
-    })),
-    containers: [
-      ...(pod.status?.initContainerStatuses ?? []),
-      ...(pod.status?.containerStatuses ?? []),
-    ]
-      .slice(0, 16)
-      .map((container) => ({
-        name: container.name,
-        ready: container.ready,
-        restarts: container.restartCount,
-        startedAt: container.state?.running?.startedAt,
-        waitingReason: container.state?.waiting?.reason,
-        terminatedReason: container.state?.terminated?.reason,
-        exitCode: container.state?.terminated?.exitCode,
-        finishedAt: container.state?.terminated?.finishedAt,
-      })),
-  };
-}
-
-// Projected events carry their latest observation as lastTimestamp (eventStatus).
-function compareEventTimestamps(left, right) {
-  return compareEventTimes(left.lastTimestamp, right.lastTimestamp);
-}
-
 // Projects raw watch streams into bounded Agent namespace activity: Pod status
 // transitions for Compute-managed Pods and the Kubernetes events of the
 // namespaces that ran them. Pod specs, environments and credential-bearing
@@ -506,7 +280,7 @@ export function projectAgentNamespaceActivity(eventsText, podsText, secrets = []
 }
 
 // Tests that follow a container's log write one JSON record per failed wait into
-// this directory (tests/helpers/container-log-capture.mjs); `finish` publishes a
+// this directory (tests/helpers/container-log-capture.ts); `finish` publishes a
 // bounded, redacted projection. Passing tests write nothing.
 export const CONTAINER_LOG_DIRECTORY_VARIABLE = "OPENCLAW_CI_CONTAINER_LOG_DIR";
 // A file keeps its first records (the earliest failure is the likeliest cause);
@@ -514,112 +288,6 @@ export const CONTAINER_LOG_DIRECTORY_VARIABLE = "OPENCLAW_CI_CONTAINER_LOG_DIR";
 const MAX_CONTAINER_LOG_FILES = 4;
 const MAX_CONTAINER_LOG_RECORDS = 8;
 const MAX_CONTAINER_LOG_INPUT_BYTES = 4 * 1024 * 1024;
-const CONTAINER_LOG_LINES = 1_500;
-const CONTAINER_LOG_LINE_CHARS = 1_000;
-
-function eventStatus(object, secrets = []) {
-  return {
-    namespace: object.metadata?.namespace ?? object.involvedObject?.namespace,
-    kind: object.involvedObject?.kind,
-    name: object.involvedObject?.name,
-    type: object.type,
-    reason: object.reason,
-    // Mask whole multiline keys and registered values before the publication limit.
-    message:
-      typeof object.message === "string"
-        ? maskPrivateKeyLines(object.message.split("\n"))
-            .map((line) => redactLogLine(redactCredentialLine(line), secrets, 512))
-            .join("\n")
-            .slice(0, 512)
-        : undefined,
-    count: object.series?.count ?? object.count,
-    firstTimestamp: object.firstTimestamp ?? object.eventTime,
-    lastTimestamp: eventObservedTime(object),
-  };
-}
-
-/**
- * Projects one test-written container log record: the target, the test's
- * timeline markers, Pod status and events snapshots (never specs), and the
- * log's last lines with every secret value and shape redacted.
- */
-export function projectContainerLog(value, secrets = []) {
-  const record = (field) => typeof field === "object" && field !== null && !Array.isArray(field);
-  if (!record(value) || !Array.isArray(value.lines)) {
-    return undefined;
-  }
-  const text = (field, limit = 200) =>
-    typeof field === "string" ? redactLogLine(field, secrets, limit) : undefined;
-  const count = (field) => (Number.isSafeInteger(field) && field >= 0 ? field : 0);
-  // Lines are redacted one at a time, so a private key's body lines go first.
-  const lines = maskPrivateKeyLines(value.lines.filter((line) => typeof line === "string"));
-  const kept = lines
-    .slice(-CONTAINER_LOG_LINES)
-    // Value-level redaction keeps the credential lifecycle lines a slow stop
-    // needs; lines that name a credential are dropped whole.
-    .map((line) => redactOutputLine(line, secrets, "", CONTAINER_LOG_LINE_CHARS));
-  const stream = record(value.stream) ? value.stream : {};
-  const markers = (Array.isArray(value.markers) ? value.markers : []).filter(record);
-  return {
-    test: text(value.test),
-    reason: text(value.reason),
-    namespace: text(value.namespace),
-    pod: text(value.pod),
-    container: text(value.container),
-    // The last marker names the failed wait.
-    markers: (markers.length > 20 ? [...markers.slice(0, 19), markers.at(-1)] : markers).map(
-      (marker) => ({ label: text(marker.label), at: text(marker.at, 40) }),
-    ),
-    stream: {
-      startedAt: text(stream.startedAt, 40),
-      endedAt: text(stream.endedAt, 40),
-      ended: stream.ended === true,
-      exitCode: Number.isInteger(stream.exitCode) ? stream.exitCode : undefined,
-      // kubectl's own complaint when the follow failed (Pod gone, API error).
-      error:
-        typeof stream.error === "string"
-          ? text(
-              maskPrivateKeyLines(stream.error.split("\n"))
-                .map((line) =>
-                  isCredentialLine(line) ? "[redacted credential-bearing line]" : line,
-                )
-                .join("\n"),
-              2_000,
-            )
-          : undefined,
-    },
-    snapshots: (Array.isArray(value.snapshots) ? value.snapshots : [])
-      .filter(record)
-      .slice(0, 4)
-      .map((snapshot) => ({
-        label: text(snapshot.label),
-        at: text(snapshot.at, 40),
-        // A failed read must not look like a Pod that is already gone.
-        ...(snapshot.unavailable === true ? { unavailable: true } : {}),
-        pods: (Array.isArray(snapshot.pods) ? snapshot.pods : [])
-          .filter((pod) => record(pod?.metadata))
-          .slice(0, 8)
-          .map((pod) => {
-            const { watch: _watch, ...status } = podStatus("SNAPSHOT", pod);
-            return {
-              ...status,
-              uid: pod.metadata.uid,
-              deletionGracePeriodSeconds: pod.metadata.deletionGracePeriodSeconds,
-            };
-          }),
-        events: (Array.isArray(snapshot.events) ? snapshot.events : [])
-          .filter(record)
-          .map((event) => {
-            return eventStatus(event, secrets);
-          })
-          .sort(compareEventTimestamps)
-          .slice(-MAX_ACTIVITY_RECORDS),
-      })),
-    omittedLines: count(value.omittedLines) + lines.length - kept.length,
-    lines: kept,
-  };
-}
-
 async function readContainerLogs(directory, secrets) {
   const names = (await readdir(directory).catch(() => []))
     .filter((name) => name.endsWith(".json"))

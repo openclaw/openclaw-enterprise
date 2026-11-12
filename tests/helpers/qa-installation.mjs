@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { prepareNativeAdminConfiguration } from "../../apps/controller/src/gateway/native-admin.ts";
 import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
-import { availablePort } from "./available-port.mjs";
+import { availablePort } from "./available-port.ts";
 import { selectComposeSubnet } from "./compose-network.mjs";
 import { createNativePluginAssertions } from "./plugin-driver-real.mjs";
 import { prepareHybridInstallation } from "./qa-hybrid.mjs";

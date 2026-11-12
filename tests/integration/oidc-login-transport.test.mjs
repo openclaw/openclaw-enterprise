@@ -16,7 +16,7 @@ import {
   startProviderServer,
   testOversizedProviderBodies,
 } from "../helpers/human-login-transport.mjs";
-import { refusingPort } from "../helpers/available-port.mjs";
+import { refusingPort } from "../helpers/available-port.ts";
 
 const subject = "auth0|65f0c1d2e3a4b5c6d7e8f901";
 const environment = {

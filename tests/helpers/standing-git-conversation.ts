@@ -8,7 +8,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { text } from "node:stream/consumers";
 import type { TestContext } from "node:test";
-import { reservePort, reservedPortArgs } from "./available-port.mjs";
+import { reservePort, reservedPortArgs } from "./available-port.ts";
 import { harnessTlsFixture } from "./harness-tls.mjs";
 import { listen } from "./listen.ts";
 import { waitFor } from "./wait-for.mjs";

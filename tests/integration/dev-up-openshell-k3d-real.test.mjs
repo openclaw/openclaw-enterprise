@@ -10,6 +10,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
+import { verifyPreloadedAgentSandbox } from "../../scripts/ci/agent-sandbox.ts";
 import { failureSecrets, redactLogLine } from "../../scripts/ci/failure-redaction.mjs";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
@@ -18,6 +19,7 @@ import {
   preflightOpenShellOwnerBrowser,
   verifyOpenShellOwnerSession,
 } from "../helpers/openshell-owner-session.mjs";
+import { firstAgentComposeImages } from "../helpers/local-first-agent-stack.mjs";
 import { localOpenShellGatewayOptions } from "../helpers/local-openshell-gateway.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
 import { attachDevUpStartupDisposition } from "../helpers/dev-up-startup-disposition.ts";
@@ -35,9 +37,9 @@ const devDown = join(repository, "scripts", "dev-down");
 const selected = process.env.OCC_TEST_DEV_UP_OPENSHELL_REAL === "1";
 const composeSelected = process.env.OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL === "1";
 
-async function startDevelopment(environment) {
+async function startDevelopment(environment, args = []) {
   try {
-    return await execute(devUp, [], {
+    return await execute(devUp, args, {
       cwd: repository,
       env: environment,
       timeout: 1_100_000,
@@ -108,6 +110,39 @@ async function waitForNamespaceReady(environment, apiPort, stateDirectory, names
     await delay(500);
   }
   throw new Error(`OCC Namespace ${namespaceId} did not become ready.`);
+}
+
+async function verifyDevelopmentAgentSandbox(kubectl, environment, output, state) {
+  const imports = [
+    ...output.matchAll(
+      /^OpenShell agent-sandbox-controller image: source=(\S+) containerd=(\S+)$/gm,
+    ),
+  ];
+  assert.equal(imports.length, 1, "startup must report the exact Agent Sandbox import");
+  // Match the launcher's recorded endpoint, including Podman's selectors.
+  const engineEnvironment = { ...environment, DOCKER_HOST: state.dockerHost };
+  delete engineEnvironment.DOCKER_CONTEXT;
+  delete engineEnvironment.DOCKER_TLS_VERIFY;
+  delete engineEnvironment.DOCKER_CERT_PATH;
+  if (state.containerEngine === "podman") {
+    engineEnvironment.CONTAINER_HOST = state.dockerHost;
+    engineEnvironment.CONTAINER_CONNECTION = "";
+    engineEnvironment.OCC_CONTAINER_ENGINE_SOCKET = state.dockerHost.replace(/^unix:\/\//, "");
+  }
+  await verifyPreloadedAgentSandbox({
+    execFile: (file, args) =>
+      execute(file, args, {
+        cwd: repository,
+        env: engineEnvironment,
+        timeout: 30_000,
+        maxBuffer: 4 * 1024 * 1024,
+      }),
+    kubectl,
+    engine: state.containerEngine,
+    ownedNodes: [`k3d-${state.cluster}-server-0`],
+    source: imports[0][1],
+    reference: imports[0][2],
+  });
 }
 
 async function runGatewayProbe({
@@ -289,6 +324,7 @@ test(
       "--context",
       `k3d-${cluster}`,
     ];
+    await verifyDevelopmentAgentSandbox(kubectl, environment, result.stdout, state);
     const { stdout: helmList } = await execute(
       "helm",
       [
@@ -954,7 +990,41 @@ test(
       await rm(root, { recursive: true, force: true });
     });
 
-    const result = await startDevelopment(environment);
+    const startupArguments = [];
+    const controllerImage = environment.OCC_TEST_DEV_UP_COMPOSE_CONTROLLER_IMAGE;
+    if (controllerImage !== undefined) {
+      assert.equal(environment.OCC_DEVELOPMENT_CONTAINER_ENGINE, "docker");
+      const runtimeImage = environment.OCC_KUBERNETES_RUNTIME_IMAGE;
+      assert.match(runtimeImage ?? "", /@sha256:[a-f0-9]{64}$/);
+      const override = firstAgentComposeImages(controllerImage);
+      const { stdout: revision } = await execute("git", ["rev-parse", "HEAD"], {
+        cwd: repository,
+        timeout: 10_000,
+      });
+      // Prepared images replace builds only; they must still represent this checkout.
+      for (const image of [controllerImage, runtimeImage]) {
+        const { stdout: imageRevision } = await execute(
+          "docker",
+          [
+            "image",
+            "inspect",
+            "--format",
+            '{{ index .Config.Labels "org.opencontainers.image.revision" }}',
+            image,
+          ],
+          { env: environment, timeout: 30_000, maxBuffer: 1024 * 1024 },
+        );
+        assert.equal(imageRevision.trim(), revision.trim(), `Prepared image source: ${image}`);
+      }
+      const imageFile = join(root, "controller-images.yaml");
+      await writeFile(imageFile, override, { mode: 0o600, flag: "wx" });
+      startupArguments.push("--", "-f", imageFile);
+      t.diagnostic(
+        "Prepared controller/runtime images selected; OCE image builds are not covered.",
+      );
+    }
+
+    const result = await startDevelopment(environment, startupArguments);
     assert.match(result.stdout, /Control plane: Compose/);
     assert.match(result.stdout, /Sandbox Driver: openshell/);
 
@@ -987,6 +1057,18 @@ test(
       assert.equal((await stat(join(stateDirectory, path))).mode & 0o077, 0);
     }
     const compose = loadYaml(await readFile(join(stateDirectory, "compose.yaml"), "utf8"));
+    if (controllerImage !== undefined) {
+      for (const name of [
+        "migrate",
+        "bootstrap",
+        "controller",
+        "worker-kubernetes",
+        "browser-proxy",
+      ]) {
+        assert.equal(compose.services[name].image, controllerImage);
+        assert.equal(compose.services[name].build, undefined);
+      }
+    }
     for (const serviceName of ["controller", "worker-kubernetes"]) {
       const service = compose.services[serviceName];
       assert.equal(
@@ -1020,6 +1102,7 @@ test(
       "--context",
       `k3d-${cluster}`,
     ];
+    await verifyDevelopmentAgentSandbox(kubectl, environment, result.stdout, state);
     const envoySelector =
       "app.kubernetes.io/component=proxy,app.kubernetes.io/managed-by=envoy-gateway," +
       "gateway.envoyproxy.io/owning-gateway-namespace=oce-system," +

@@ -440,6 +440,9 @@ async function pnpmImpactOutput(f, overrides = {}, args = []) {
       GITHUB_EVENT_NAME: "pull_request",
       GITHUB_EVENT_PATH: f.eventPath,
       GITHUB_SHA: f.tested,
+      GITHUB_RUN_ID: "17",
+      GITHUB_RUN_ATTEMPT: "2",
+      SHADOW_WORKFLOW_SHA: f.tested,
       ...overrides,
     },
   });
@@ -448,6 +451,180 @@ async function pnpmImpactOutput(f, overrides = {}, args = []) {
 }
 
 const affectedPackages = async (f, overrides) => JSON.parse(await pnpmImpactOutput(f, overrides));
+
+test("asset reader shadow uses the CI manifest and includes the standalone Storybook build", async (t) => {
+  const asset = "apps/controller/src/console-assets.ts";
+  const index = "scripts/ci/test-suites.json";
+  const initial = {
+    ...workspaceFiles(),
+    [asset]: "export const paths = [];\n",
+    "apps/controller/package.json": JSON.stringify({
+      name: "@openclaw-enterprise/controller",
+      version: "1.0.0",
+    }),
+    [index]: read(index),
+  };
+  for (const target of Object.values(JSON.parse(initial[index]).lanes)) {
+    const path = join("scripts/ci", target);
+    initial[path] = read(path);
+  }
+  for (const path of [
+    "tests/integration/console-api.test.ts",
+    "tests/integration/console-build-metadata.test.ts",
+    "tests/integration/console-theme.test.ts",
+    "tests/browser/console-shell.test.ts",
+    "tests/browser/console-agents.test.ts",
+    "tests/integration/production-image-startup.test.mjs",
+  ]) {
+    initial[path] = "";
+  }
+  const storybookWorkflow = ".github/workflows/console-storybook.yml";
+  const preparer = "scripts/console-storybook/prepare-assets.ts";
+  const standalone = "scripts/console-storybook/package.json";
+  const withScripts = (manifest, scripts) => JSON.stringify({ ...JSON.parse(manifest), scripts });
+  initial["package.json"] = withScripts(initial["package.json"], {
+    "storybook:build": "pnpm --dir scripts/console-storybook build",
+  });
+  initial[standalone] = withScripts("{}", {
+    build:
+      "pnpm typecheck && node prepare-assets.ts && storybook build --output-dir dist/site --disable-telemetry",
+  });
+  for (const path of [storybookWorkflow, preparer]) {
+    initial[path] = existsSync(join(repositoryRoot, path)) ? read(path) : "";
+  }
+  const change = ({ put }) => put(asset, "export const paths = ['/console/'];\n");
+  const f = await fixture(t, change, initial);
+  // The advisory must tolerate an unrelated change to the workflow or preparer
+  // on main. Exercise the positive receipt for the verified consumer revisions
+  // and require broad coverage if the checkout supplies different sources.
+  const consumerBlobs = await f.git("rev-parse", "HEAD:" + storybookWorkflow, "HEAD:" + preparer);
+  const knownConsumer =
+    consumerBlobs ===
+    "08676f57d84dcdec23bb01aae2ebed6c1882f9f2\n47cc6129264ecdfb5271be15c51441e48e990323";
+  const mode = knownConsumer ? "candidate" : "broad";
+  const artifact = join(f.dir, "receipt.json");
+  assert.match(
+    await pnpmImpactOutput(f, {}, ["--summary", artifact]),
+    new RegExp("Shadow lane prediction: " + mode),
+  );
+  const receipt = JSON.parse(readFileSync(artifact, "utf8"));
+  assert.deepEqual(receipt, {
+    version: 1,
+    run: { runId: "17", attempt: "2", workflowSha: f.tested },
+    identity: { base: f.base, tested: f.tested, head: f.head },
+    mode,
+    reason: knownConsumer ? "console_asset_reader" : "unverified_storybook",
+    lanes: [
+      "checks-baseline-1",
+      "checks-baseline-2",
+      "checks-browser",
+      "checks-browser-2",
+      "images-packaging",
+    ],
+    companionJobs: knownConsumer ? ["console-storybook.yml/build"] : [],
+  });
+  const jobs = laneTable().filter((row) => receipt.lanes.includes(row.lane));
+  assert.equal(jobs.length, receipt.lanes.length);
+  assert.match(await f.select(), /^mode=full$/m);
+
+  const unbound = JSON.parse(await pnpmImpactOutput(f, { GITHUB_RUN_ATTEMPT: "" }, ["--shadow"]));
+  assert.equal(unbound.mode, "broad");
+  assert.equal(unbound.reason, "missing_run_identity");
+
+  const manifestPath = "scripts/ci/test-suites/images-packaging.json";
+  const missing = await fixture(t, change, { ...initial, [manifestPath]: '{"files":[]}' });
+  const incomplete = JSON.parse(await pnpmImpactOutput(missing, {}, ["--shadow"]));
+  assert.equal(incomplete.mode, "broad");
+  assert.equal(incomplete.reason, "incomplete_manifest");
+  assert.deepEqual(incomplete.lanes, []);
+
+  const other = await fixture(
+    t,
+    (ctx) => {
+      change(ctx);
+      sharedChange(ctx);
+    },
+    initial,
+  );
+  const mixed = JSON.parse(await pnpmImpactOutput(other, {}, ["--shadow"]));
+  assert.equal(mixed.mode, "broad");
+  assert.equal(mixed.reason, knownConsumer ? "mixed_scope" : "unverified_storybook");
+  assert.deepEqual(mixed.lanes, receipt.lanes);
+  assert.deepEqual(mixed.companionJobs, receipt.companionJobs);
+  for (const [path, content] of [
+    [storybookWorkflow, initial[storybookWorkflow].replace(/^ {2}build:$/m, "  docs-preview:")],
+    [preparer, "export {};\n"],
+  ]) {
+    const changedConsumer = await fixture(
+      t,
+      (ctx) => {
+        change(ctx);
+        ctx.put(path, content);
+      },
+      initial,
+    );
+    const shadow = JSON.parse(await pnpmImpactOutput(changedConsumer, {}, ["--shadow"]));
+    assert.equal(shadow.reason, "unverified_storybook");
+    assert.equal(shadow.mode, "broad");
+    assert.deepEqual(shadow.lanes, receipt.lanes);
+    assert.deepEqual(shadow.companionJobs, []);
+  }
+  const stale = await fixture(t, change, {
+    ...initial,
+    [storybookWorkflow]: initial[storybookWorkflow].replace(
+      '      - "apps/controller/src/console-assets.ts"\n',
+      "",
+    ),
+  });
+  const priorChange = JSON.parse(await pnpmImpactOutput(stale, {}, ["--shadow"]));
+  assert.equal(priorChange.reason, "unverified_storybook");
+  assert.equal(priorChange.mode, "broad");
+  assert.deepEqual(priorChange.lanes, receipt.lanes);
+  assert.deepEqual(priorChange.companionJobs, []);
+
+  for (const [path, scripts] of [
+    ["package.json", {}],
+    [standalone, { build: "tsc --pretty false" }],
+  ]) {
+    const redirected = withScripts(initial[path], scripts);
+    const alongside = await fixture(
+      t,
+      (ctx) => {
+        change(ctx);
+        ctx.put(path, redirected);
+      },
+      initial,
+    );
+    const alreadyChanged = await fixture(t, change, { ...initial, [path]: redirected });
+    for (const input of [alongside, alreadyChanged]) {
+      const shadow = JSON.parse(await pnpmImpactOutput(input, {}, ["--shadow"]));
+      assert.equal(shadow.mode, "broad");
+      assert.deepEqual(shadow.companionJobs, []);
+      assert.equal(shadow.reason, "unverified_storybook");
+      assert.deepEqual(shadow.lanes, receipt.lanes);
+    }
+  }
+  const metadata = await fixture(
+    t,
+    (ctx) => {
+      change(ctx);
+      ctx.put(
+        standalone,
+        JSON.stringify({ ...JSON.parse(initial[standalone]), description: "Updated description" }),
+      );
+    },
+    initial,
+  );
+  const unrelated = JSON.parse(await pnpmImpactOutput(metadata, {}, ["--shadow"]));
+  assert.equal(unrelated.mode, "broad");
+  assert.deepEqual(unrelated.companionJobs, receipt.companionJobs);
+  const shared = await fixture(t, sharedChange, initial);
+  const unmapped = JSON.parse(await pnpmImpactOutput(shared, {}, ["--shadow"]));
+  assert.equal(unmapped.mode, "broad");
+  assert.equal(unmapped.reason, "unmapped_scope");
+  assert.deepEqual(unmapped.lanes, []);
+  assert.deepEqual(unmapped.companionJobs, []);
+});
 
 test("pnpm impact reports a changed workspace package and its dependents", async (t) => {
   const f = await fixture(t, sharedChange, workspaceFiles());
@@ -616,7 +793,7 @@ test("affected-package advisory is isolated from required jobs and tolerates sum
   await all(["", join(dir, "missing", "summary")], async (summary) => {
     const result = await run("bash", ["-e", "-c", script], {
       cwd: repositoryRoot,
-      env: { ...process.env, GITHUB_STEP_SUMMARY: summary },
+      env: { ...process.env, RUNNER_TEMP: dir, GITHUB_STEP_SUMMARY: summary },
     });
     assert.equal(result.status, 0, result.stderr);
   });
@@ -1538,7 +1715,7 @@ test("Suite Audit and Static Checks runs the audit and every check the lanes ski
     "bash scripts/ci/setup-tools.sh workflows",
     "actionlint .github/workflows/*.yml",
     "node scripts/ci/run-tests.mjs audit",
-    ...skipped.map((step) => step.run),
+    ...skipped.map(({ run }) => (run === "pnpm lint" ? "pnpm lint --concurrency 2" : run)),
   ];
   const checks = staticChecks.steps.filter((step) => commands.includes(step.run));
   assert.deepEqual(

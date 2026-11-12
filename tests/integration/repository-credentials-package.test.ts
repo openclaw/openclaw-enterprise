@@ -36,7 +36,7 @@ import {
   bindReservedPortInProcess,
   reservePort,
   reservedPortArgs,
-} from "../helpers/available-port.mjs";
+} from "../helpers/available-port.ts";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";

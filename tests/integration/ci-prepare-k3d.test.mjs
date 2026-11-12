@@ -650,16 +650,19 @@ describe("CI k3d preparation", { concurrency: true }, () => {
 
   // Only external commands are substituted: the preparation CLI owns child deadlines,
   // cleanup inventory, and publication. These cases do not exercise Docker or Kubernetes.
-  for (const stage of ["fixture-engine-version", "fixture-image-build"]) {
+  const fixtureImageStages = ["fixture-engine-version", "fixture-image-build"];
+  for (const stage of fixtureImageStages) {
     test(`fixture preparation bounds ${stage} before publishing test inputs`, async (t) => {
       const version = stage === "fixture-engine-version";
-      const commands = await fixtureImageCommands(t, "success", "k3d-fixture-network", {
+      const buildBudgetMs = 8_000;
+      const reserveMs = 2_000;
+      const lane = "k3d-fixture-network";
+      const commands = await fixtureImageCommands(t, "success", lane, {
         OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS: version ? "3000" : "30000",
         OPENCLAW_CI_COMMAND_KILL_GRACE_MS: version ? "3000" : "100",
-        OPENCLAW_CI_IMAGE_BUILD_TEST_RESERVE_MS: "2000",
-        // Invalid deadlines still need a finite engine-probe limit. The build uses
-        // the real remaining lane budget rather than waiting for its full command limit.
-        CI_RUNNER_DEADLINE_MS: version ? "invalid" : String(Date.now() + 8_000),
+        OPENCLAW_CI_IMAGE_BUILD_TEST_RESERVE_MS: String(reserveMs),
+        // Invalid deadlines still need a finite engine-probe limit.
+        ...(version ? { CI_RUNNER_DEADLINE_MS: "invalid" } : {}),
       });
       const pidFile = join(dirname(commands.statePath), "fixture-command-pids");
       const privateUrl = syntheticCredentialUrl({
@@ -720,14 +723,50 @@ describe("CI k3d preparation", { concurrency: true }, () => {
         }
         return undefined;
       });
-      const result = await commands.prepare();
+      // Start the build budget at CLI launch, after synthetic shim setup.
+      const result = version
+        ? await commands.prepare()
+        : await commands.prepare([], {
+            env: { CI_RUNNER_DEADLINE_MS: String(Date.now() + buildBudgetMs) },
+          });
       assert.equal(
         result.error,
         undefined,
         "the outer test watchdog must not enforce the deadline",
       );
-      assert.equal(result.status, 1, result.stderr);
-      const pids = (await readFile(pidFile, "utf8")).trim().split("\n").map(Number);
+      assert.equal(result.status, 1, "fixture preparation must fail");
+      const pidText = await readFile(pidFile, "utf8").catch((error) => {
+        if (version || error.code !== "ENOENT") {
+          throw error;
+        }
+        const lines = result.stderr.split("\n");
+        const refused = fixtureImageStages.find((candidate) =>
+          lines.includes(
+            `Fixture image preparation ${candidate} was not started: the lane keeps ` +
+              `${reserveMs} ms before its deadline for remaining preparation and tests.`,
+          ),
+        );
+        if (refused) {
+          assert.fail(`missing build PID witness: ${refused} refused the remaining lane budget`);
+        }
+        let metrics;
+        try {
+          metrics = fixturePreparationMetrics(result.stderr, lane);
+        } catch {
+          assert.fail("missing build PID witness: invalid CI preparation metric");
+        }
+        const failedAttempt = metrics.findLast(
+          (metric) =>
+            metric.status === "failed" &&
+            (fixtureImageStages.includes(metric.stage) || metric.stage === "k3d-create"),
+        );
+        assert.fail(
+          failedAttempt
+            ? `missing build PID witness: ${failedAttempt.stage} reported a failed attempt`
+            : "missing build PID witness: prepare stage unknown",
+        );
+      });
+      const pids = pidText.trim().split("\n").map(Number);
       t.after(() => {
         for (const pid of pids) {
           if (processRunning(pid)) {
@@ -741,32 +780,49 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       for (const pid of pids) {
         assert.equal(processRunning(pid), false, `fixture command process ${pid} must stop`);
       }
-      assertStderrMatch(
-        result.stderr,
-        new RegExp(`Fixture image preparation ${stage} timed out after [0-9]+ ms`),
+      const timeout = result.stderr.match(
+        new RegExp(`Fixture image preparation ${stage} timed out after ([0-9]+) ms`),
       );
-      assertStderrMatch(result.stderr, new RegExp(`"stage":"${stage}","status":"started"`));
-      assertStderrMatch(result.stderr, new RegExp(`"stage":"${stage}","status":"failed"`));
+      assert.ok(timeout, "expected fixture command timeout");
+      if (!version) {
+        const timeoutMs = Number(timeout[1]);
+        assert.ok(
+          timeoutMs > 0 && timeoutMs <= buildBudgetMs - reserveMs,
+          "reported build timeout must leave the reserve for remaining preparation and tests",
+        );
+      }
+      const metrics = fixturePreparationMetrics(result.stderr, lane);
+      assert.ok(
+        metrics.some((metric) => metric.stage === stage && metric.status === "started"),
+        "expected fixture command start",
+      );
+      const failed = metrics.find((metric) => metric.stage === stage && metric.status === "failed");
+      assert.ok(failed, "expected fixture command failure");
       if (version) {
-        const failed = result.stderr
-          .split("\n")
-          .find((line) => line.includes(`"stage":"${stage}","status":"failed"`));
-        const { elapsedMs } = JSON.parse(failed.slice(failed.indexOf("{")));
+        const { elapsedMs } = failed;
         // A prompt child exit releases its supervisor; do not wait on a stale
         // group number until the three-second escalation grace expires.
         // Two seconds of scheduling margin still excludes deadline + full grace.
         assert.ok(elapsedMs < 5000, `prompt timeout settlement took ${elapsedMs} ms`);
       }
       if (!version) {
-        assertStderrMatch(
-          result.stderr,
-          /Fixture image build steps \(captured tail\): #1 \[1\/4\] FROM DONE; #2 \[2\/4\] RUN$/m,
+        assert.ok(
+          /Fixture image build steps \(captured tail\): #1 \[1\/4\] FROM DONE; #2 \[2\/4\] RUN$/m.test(
+            result.stderr,
+          ),
+          "expected sanitized build steps",
         );
       }
       assert.ok(!result.stderr.includes(privateUrl));
-      assert.doesNotMatch(result.stderr, /fixture-password|private terminal text/);
+      assert.ok(
+        !/fixture-password|private terminal text/.test(result.stderr),
+        "build progress must omit private text",
+      );
       assert.ok(!result.stderr.includes("\u001b"));
-      assert.doesNotMatch(result.stderr, /private build output/);
+      assert.ok(
+        !result.stderr.includes("private build output"),
+        "build progress must omit raw output",
+      );
       const state = await commands.readState();
       const image = state.resources.find(({ kind }) => kind === "image-tag");
       if (version) {
@@ -1941,6 +1997,22 @@ test("node log retry summaries retain the latest kinds within one millisecond", 
   assert.match(excerpt, /omitted 1 earlier kinds of kubectl retry lines/u);
 });
 
+test("node log retry summaries omit credential-bearing endpoints", () => {
+  const endpoint = syntheticCredentialUrl({
+    username: "fixture-user",
+    password: "fixture-value",
+    host: "diagnostic.example.test",
+  });
+  // Retry summaries may echo the endpoint and error detail into the published report.
+  const stdout = `2026-10-21T00:00:00Z The connection to the server ${endpoint} was refused`;
+  const stderr = `2026-10-21T00:00:01Z Unable to connect to the server: Get ${endpoint}`;
+  assert.equal(
+    nodeLogExcerpt(stdout, stderr),
+    "2026-10-21T00:00:00Z [redacted credential-bearing line]\n" +
+      "2026-10-21T00:00:01Z [redacted credential-bearing line]",
+  );
+});
+
 test("node log chronology and retry retention do not depend on the process locale", () => {
   const moduleUrl = new URL("../../scripts/ci/k3d-diagnostics.mjs", import.meta.url).href;
   const script = `
@@ -1980,5 +2052,278 @@ test("node log chronology and retry retention do not depend on the process local
     assert.doesNotMatch(result.retries, /against 127\.0\.0\.1:2000 /u, locale);
     assert.match(result.retries, /against 127\.0\.0\.1:2001 /u, locale);
     assert.match(result.retries, /omitted 1 earlier kinds of kubectl retry lines/u, locale);
+  }
+});
+
+// Exercise the prepare-lane closure, importer journal and ordinary cleanup. Only
+// unrelated installation/bootstrap dependencies are substituted; the real preload
+// derives the native selection and calls the real registration closure twice.
+test("Agent Sandbox preparation imports its native cache and verifies reuse", async (t) => {
+  const repository = "registry.k8s.io/agent-sandbox/agent-sandbox-controller";
+  const child = "sha256:c28ca6f2366160f2470013c4588821cf7ebd21538d62c1016b6afc93583830d6";
+  const index = "sha256:dbbad861e6c2cc0df1f7ec37dd0e2827b3d2bc051eb45855e01f94e697440403";
+  const config = "sha256:5b6c81129dc7491b3d260940e34ff68323fb6f7f21450d42129be5169e52ab17";
+  const source = `${repository}:v0.5.2@${child}`;
+  const cached = `${repository}:v0.5.2@${index}`;
+  // Re-encode the independent pinned manifest to model transport changing its
+  // digest without changing the selected native config.
+  const content =
+    JSON.stringify(
+      JSON.parse(
+        readFileSync(
+          new URL("../fixtures/agent-sandbox-v0.5.2-amd64-manifest.json.txt", import.meta.url),
+          "utf8",
+        ),
+      ),
+    ) + "\n";
+  const transport = "sha256:" + createHash("sha256").update(content).digest("hex");
+  assert.notEqual(transport, child);
+  for (const scenario of [
+    "index-only",
+    "config-id",
+    "lost-descriptor",
+    "falsy-descriptor",
+    "inspect-error",
+    "mixed-error",
+    "reuse-config",
+    "reuse-cri",
+  ]) {
+    await t.test(scenario, async (t) => {
+      const commands = await fixtureImageCommands(t, "success", "openshell", {
+        NODE_BASE_IMAGE: nodeBaseImage,
+        CODEX_ACCESS_TOKEN: "synthetic-native-preparation-token",
+        OPENAI_API_KEY: "synthetic-native-preparation-key",
+        OCC_TEST_OPENAI_MODEL: "synthetic-model",
+        OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: immutableImage,
+        OCC_TEST_KUBERNETES_GATEWAY_IMAGE: immutableImage,
+        OCC_TEST_KUBERNETES_AGENT_IMAGE: immutableImage,
+      });
+      const root = dirname(commands.statePath);
+      const reused = join(root, "reuse");
+      const body = join(root, "manifest.json");
+      await writeFile(body, content);
+      const calls = [];
+      let tag;
+      let reference;
+      let removedHost = false;
+      const removedNode = new Set();
+      const held = {
+        Id: index,
+        RepoDigests: [`${repository}@${index}`],
+        Os: "linux",
+        Architecture: "amd64",
+        Descriptor: { digest: index, mediaType: "application/vnd.oci.image.index.v1+json" },
+      };
+      const selected = {
+        ...held,
+        Id: child,
+        Descriptor: {
+          digest: child,
+          mediaType: "application/vnd.oci.image.manifest.v1+json",
+          platform: { os: "linux", architecture: "amd64" },
+        },
+      };
+      if (scenario === "config-id") {
+        held.Id = config;
+        delete held.Descriptor;
+      }
+      if (scenario === "lost-descriptor") {
+        selected.Id = config;
+        delete selected.Descriptor;
+      }
+      if (scenario === "falsy-descriptor") {
+        held.Id = config;
+        held.Descriptor = false;
+      }
+      await interceptFixtureDocker(t, commands, async (args) => {
+        calls.push(args);
+        const output = (value) => `printf '%s\\n' ${bashString(JSON.stringify(value))}; exit 0`;
+        if (args[0] === "image" && args[1] === "inspect" && args.at(-1) === source) {
+          const diagnostic =
+            scenario === "inspect-error"
+              ? "Cannot connect to the Docker daemon"
+              : scenario === "mixed-error"
+                ? `Cannot connect to the Docker daemon: No such image: ${source}`
+                : `Error response from daemon: No such image: ${source}`;
+          return `printf '%s\\n' ${bashString(diagnostic)} >&2; exit 1`;
+        }
+        if (args[0] === "image" && args[1] === "inspect" && args.at(-1) === cached) {
+          if (args.includes("--platform")) {
+            assert.notEqual(
+              scenario,
+              "config-id",
+              "verified single-native cache needs no optional platform inspect",
+            );
+            return output([selected]);
+          }
+          return output([held]);
+        }
+        if (args[0] === "pull" && args[1].startsWith(repository)) {
+          return "echo offline-registry >&2; exit 61";
+        }
+        if (args[0] === "tag" && args[1].startsWith(repository)) {
+          assert.equal(
+            args[1],
+            cached,
+            "stage the locally available index, not its absent child alias",
+          );
+          tag = args[2];
+          return "exit 0";
+        }
+        if (tag && args[0] === "image" && args[1] === "save" && args.at(-1) === tag) {
+          assert.deepEqual(args, ["image", "save", "--platform", "linux/amd64", tag]);
+          return "printf native-archive; exit 0";
+        }
+        if (tag && args[0] === "image" && args[1] === "rm" && args.at(-1) === tag) {
+          removedHost = true;
+          return "exit 0";
+        }
+        if (tag && args[0] === "exec") {
+          if (args[1] === "-i") {
+            return "/bin/cat >/dev/null; exit 0";
+          }
+          const operation = args.slice(2).join(" ");
+          if (operation === "ctr -n k8s.io images list") {
+            return `printf '%s\\n' ${bashString(`${tag} application/vnd.oci.image.manifest.v1+json ${transport} 1 linux/amd64 -`)} ${reference ? bashString(`${reference} application/vnd.oci.image.manifest.v1+json ${transport} 1 linux/amd64 -`) : ""}; exit 0`;
+          }
+          if (operation.startsWith("ctr -n k8s.io images tag ")) {
+            reference = args.at(-1);
+            return "exit 0";
+          }
+          if (operation.startsWith("ctr -n k8s.io images label ")) {
+            return "exit 0";
+          }
+          if (operation.startsWith("ctr -n k8s.io images rm ")) {
+            removedNode.add(args.at(-1));
+            return "exit 0";
+          }
+          if (operation === `ctr -n k8s.io content get ${transport}`) {
+            const present = await stat(reused).then(
+              () => true,
+              () => false,
+            );
+            return present && scenario === "reuse-config"
+              ? 'printf \'{"config":{"digest":"wrong"}}\'; exit 0'
+              : `/bin/cat ${bashString(body)}; exit 0`;
+          }
+          if (operation === `crictl inspecti ${reference}`) {
+            const present = await stat(reused).then(
+              () => true,
+              () => false,
+            );
+            return output({
+              status: {
+                id: present && scenario === "reuse-cri" ? `sha256:${"f".repeat(64)}` : config,
+                repoDigests: [reference],
+                pinned: true,
+              },
+            });
+          }
+        }
+        return undefined;
+      });
+      const helper = join(root, "native-preparation.mjs");
+      await writeFile(
+        helper,
+        `
+import { mock } from "node:test";
+import { mkdir, writeFile, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import * as openshell from ${JSON.stringify(new URL("../../scripts/ci/openshell.mjs", import.meta.url).href)};
+import * as routing from ${JSON.stringify(new URL("../../scripts/ci/routing.mjs", import.meta.url).href)};
+import { preloadAgentSandboxController } from ${JSON.stringify(new URL("../../scripts/ci/agent-sandbox.ts", import.meta.url).href)};
+mock.module(${JSON.stringify(new URL("../../scripts/ci/routing.mjs", import.meta.url).href)}, { exports: { ...routing, prepareGatewayRouting: async () => ({ env: {} }) } });
+mock.module(${JSON.stringify(new URL("../../scripts/ci/openshell.mjs", import.meta.url).href)}, { exports: {
+  ...openshell,
+  prepareOpenShellClusterBootstrap: async () => ({ k3sImage: ${JSON.stringify(defaultK3sImage)}, kubectl: process.env.OCC_KUBECTL_BIN, runtimeClass: "openshell-sandbox", runtimeHandler: "runc" }),
+  prepareOpenShellPodSecurityAdmission: async () => ({ k3dArgs: [] }),
+  prepareOpenShell: async ({ cluster, registerImage }) => {
+    const nodes = { items: cluster.nodes.map(name => ({ metadata: { name }, status: { nodeInfo: { operatingSystem: "linux", architecture: "amd64" } } })) };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const directory = join(cluster.directory, "preload-" + attempt);
+      await mkdir(directory);
+      const manifest = join(directory, "sandbox.yaml");
+      await writeFile(manifest, "      - name: agent-sandbox-controller\\n        image: registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2\\n");
+      const result = await preloadAgentSandboxController(manifest, nodes, registerImage);
+      await writeFile(${JSON.stringify(join(root, "result-"))} + attempt, await readFile(result));
+      await writeFile(${JSON.stringify(reused)}, "reuse");
+    }
+    throw new Error("native-registration-complete");
+  }
+} });
+const { prepareLane } = await import(${JSON.stringify(new URL("../../scripts/ci/prepare.mjs", import.meta.url).href)});
+try { await prepareLane({ lane: "openshell", statePath: ${JSON.stringify(commands.statePath)} }); }
+catch (error) { console.error(error); process.exitCode = 1; }
+`,
+      );
+      const result = await commands.runShell(
+        `node --experimental-test-module-mocks ${bashString(helper)}`,
+      );
+      assert.equal(result.status, 1, result.stderr);
+      const state = await commands.readState();
+      const imported = state.resources.filter(
+        (resource) =>
+          resource.kind === "k3d-image" && resource.envName === "Agent Sandbox controller",
+      );
+      if (["inspect-error", "mixed-error"].includes(scenario)) {
+        assertStderrMatch(result.stderr, /Cannot connect to the Docker daemon/, scenario);
+        assert.equal(imported.length, 0);
+        assert.equal(tag, undefined);
+      } else if (["lost-descriptor", "falsy-descriptor"].includes(scenario)) {
+        assertStderrMatch(
+          result.stderr,
+          /(?:lost its descriptor|invalid local image descriptor)/,
+          scenario,
+        );
+        assert.equal(imported.length, 0);
+        assert.equal(tag, undefined);
+      } else {
+        assertStderrMatch(
+          result.stderr,
+          scenario === "reuse-config"
+            ? /imported manifest does not match/
+            : scenario === "reuse-cri"
+              ? /imported CRI image does not match/
+              : /native-registration-complete/,
+          scenario,
+        );
+        assert.equal(imported.length, 1);
+        assert.equal(imported[0].status, "ready");
+        assert.equal(imported[0].sourceImage, source);
+        assert.equal(imported[0].acquisitionReference, cached);
+        assert.equal(imported[0].hostImageId, held.Id);
+        assert.equal(imported[0].reference, reference);
+        assert.equal(reference, tag.replace(/:local$/, "") + "@" + transport);
+        assert.deepEqual(imported[0].nativeSelection, {
+          platform: "linux/amd64",
+          configDigest: config,
+          cacheIndex: cached,
+        });
+        assert.equal(calls.filter((args) => args[0] === "tag" && args[1] === cached).length, 1);
+        assert.equal(
+          calls.filter(
+            (args) => args[0] === "image" && args[1] === "inspect" && args.at(-1) === source,
+          ).length,
+          1,
+          "reuse must not reacquire the source",
+        );
+        assert.match(await readFile(join(root, "result-0"), "utf8"), /imagePullPolicy: Never/);
+      }
+      assert.equal(
+        calls.filter((args) => args[0] === "pull" && args[1].startsWith(repository)).length,
+        0,
+      );
+      await commands.cleanupSuccessfully();
+      if (tag) {
+        assert.equal(removedHost, true);
+        assert.ok(removedNode.has(reference));
+      }
+      assert.ok(
+        !calls.some(
+          (args) =>
+            args[0] === "image" && args[1] === "rm" && [source, cached].includes(args.at(-1)),
+        ),
+      );
+    });
   }
 });

@@ -76,7 +76,7 @@ Interrupted or over-limit captures are omitted. A running-container check alone
 does not prove that the loopback listener bound.
 
 To check relay startup diagnostics with an existing local runtime image, run
-`OCC_TEST_RUNTIME_IMAGE=<local-image> node --test tests/helpers/workspace-gateway-relay-container.test.mjs`.
+`OCC_TEST_RUNTIME_IMAGE=<local-image> node --test tests/helpers/workspace-gateway-relay-container.test.ts`.
 These cases disable container networking and check real process exits, launch
 errors, log redaction, and cleanup. They do not exercise Kubernetes or Gateway
 routing and do not pull images.
@@ -144,14 +144,14 @@ OCC_TEST_PRODUCTION_IMAGE="$CONTROLLER_IMAGE" OCC_TEST_RUNTIME_IMAGE="$RUNTIME_I
     tests/integration/runtime-image-startup-probe.test.mjs \
     tests/integration/runtime-image-codex-readiness.test.ts \
     tests/integration/runtime-image-startup-termination.test.ts \
-    tests/integration/runtime-image-gateway-unclean-restart.test.mjs \
+    tests/integration/runtime-image-gateway-unclean-restart.test.ts \
     tests/integration/runtime-image-gateway-retained-state.test.mjs \
     tests/integration/runtime-image-gateway-peer.test.mjs \
     tests/integration/runtime-image-native-worker.test.mjs \
     tests/integration/runtime-image-state-migration.test.mjs \
     tests/integration/runtime-image-managed-files.test.ts \
     tests/integration/runtime-image-native-listener.test.mjs \
-    tests/integration/repository-runtime-volume.test.mjs
+    tests/integration/repository-runtime-volume.test.ts
 ```
 
 All cases must pass without skips for the exact pair before installation. Repeat
@@ -191,7 +191,7 @@ required `yq` fails the cases; the logging Helm checks also require Helm.
 
 ## Repository image-pair qualification
 
-For fixture coverage, run `node --test tests/integration/production-image-qualification.test.mjs`.
+For fixture coverage, run `node --test tests/integration/production-image-qualification.test.ts`.
 For real image-pair compatibility, use Linux as UID 1000 and stage immutable
 images for the native Docker architecture. Set `OCC_PROBE_CONTROLLER_IMAGE`,
 `OCC_PROBE_BROKER_IMAGE`, `OCC_PROBE_OLD_CONTROLLER_IMAGE` and
@@ -231,7 +231,7 @@ image test files side by side.
 
 ## Repository runtime volume test environment
 
-The runtime suite includes `repository-runtime-volume.test.mjs`, which requires
+The runtime suite includes `repository-runtime-volume.test.ts`, which requires
 Docker `volume-subpath` support. It exercises the installed client and removes
 its owned container and volume. It does not prove Kubernetes fsGroup or live
 GitHub behavior.
