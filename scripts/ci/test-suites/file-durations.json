@@ -179,7 +179,7 @@
     "tests/integration/codex-model-probe.test.mjs": 63100,
     "tests/integration/codex-plugin-startup-reads.test.mjs": 15000,
     "tests/integration/common-logging.test.mjs": 1600,
-    "tests/integration/compute-singleton-worker-postgres.test.mjs": 9100,
+    "tests/integration/compute-singleton-worker-postgres.test.ts": 9100,
     "tests/integration/compute-singleton-worker.test.mjs": 500,
     "tests/integration/configuration-body-limits.test.mjs": 1300,
     "tests/integration/configuration-controller.test.mjs": 6700,
