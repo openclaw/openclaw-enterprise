@@ -307,7 +307,7 @@
     "tests/integration/postgres-worker-agent-revision-teardown.test.mjs": 49700,
     "tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.ts": 93300,
     "tests/integration/postgres-worker-agent-revision.test.mjs": 73600,
-    "tests/integration/postgres-worker-harness-exposure.test.mjs": 12600,
+    "tests/integration/postgres-worker-harness-exposure.test.ts": 12600,
     "tests/integration/postgres-worker-process-shutdown.test.ts": 2400,
     "tests/integration/postgres-worker-stale-claim.test.mjs": 7700,
     "tests/integration/postgres-workspace-setup.test.mjs": 500,
