@@ -267,7 +267,7 @@
     "tests/integration/postgres-openshell-standing-git-transfer.test.ts": 133000,
     "tests/integration/postgres-openshell-standing-repository-set.test.ts": 6000,
     "tests/integration/postgres-openshell-standing-route.test.ts": 2300,
-    "tests/integration/postgres-password-sign-in-limit.test.mjs": 28900,
+    "tests/integration/postgres-password-sign-in-limit.test.ts": 28900,
     "tests/integration/postgres-platform-state.test.mjs": 12100,
     "tests/integration/postgres-prepared-git-route-selection.test.ts": 2700,
     "tests/integration/postgres-prepared-github-git-use.test.mjs": 7700,

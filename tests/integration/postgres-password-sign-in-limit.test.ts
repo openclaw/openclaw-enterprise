@@ -9,9 +9,19 @@ import {
   consoleOrigin as origin,
   defaultInstallSettings,
   memoryLogger,
-  passwordSignIn,
 } from "../helpers/production-sign-in.mjs";
-import { injectLocalhost } from "../helpers/inject-json.mjs";
+import {
+  account,
+  events,
+  first,
+  injectLocalhost,
+  passwordSignIn,
+  record,
+  text,
+  type App,
+  type Credentials,
+  type InjectedResponse,
+} from "../helpers/postgres-sign-in-test-boundaries.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { scryptPasswordHasher } from "../helpers/password-hasher.mjs";
 import { assertSpentDeviceProofRefusal } from "../helpers/password-proof-refusal.mjs";
@@ -20,10 +30,14 @@ import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-i
 const ingress = "10.0.0.9";
 const wrongPassword = "wrong-guess-password";
 
-const median = (values) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
+const median = (values: readonly number[]) => {
+  const value = [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
+  assert.ok(value !== undefined);
+  return value;
+};
 
 // A subtest sets this to see the slow-lane floors start and to keep them from ending.
-let floorWatch;
+let floorWatch: { started(): void; released: Promise<void> } | undefined;
 // Every slow-lane floor started so far: an attempt that starts none was not paced.
 let floorsStarted = 0;
 
@@ -35,7 +49,7 @@ let floorsStarted = 0;
 const slowLane = {
   floorMs: 250,
   maxFloorMs: 500,
-  async waitFloor(floorMs) {
+  async waitFloor(floorMs: number) {
     const watch = floorWatch;
     floorsStarted += 1;
     watch?.started();
@@ -45,9 +59,9 @@ const slowLane = {
 };
 
 // Counts the floors that start from now on and holds each one past its time until release().
-function watchFloors(expected) {
-  const reached = Promise.withResolvers();
-  const release = Promise.withResolvers();
+function watchFloors(expected: number) {
+  const reached = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
   const watch = {
     count: 0,
     released: release.promise,
@@ -58,7 +72,7 @@ function watchFloors(expected) {
       }
     },
     // Resolves once `expected` floors have started; fails after the deadline.
-    async reached(deadlineMs) {
+    async reached(deadlineMs: number) {
       const timeout = new AbortController();
       try {
         await Promise.race([
@@ -89,32 +103,17 @@ test(
   "password-only sign-in limits failures per client and email with a reserved administrator lane",
   requiresPostgres,
   async (t) => {
-    let app;
-    let plainApp;
+    const apps: { app?: App; plainApp?: App } = {};
     const { pool, onboard, composeApp } = await preparePostgresSignInInstallation(
       t,
-      () => [app, plainApp],
+      () => [apps.app, apps.plainApp],
       {
         email: "limit-admin@example.test",
         password: "limit-account-password",
         secrets: { "occ-auth/secret": "password-limit-auth-test-secret-at-least-32-bytes" },
       },
     );
-    const {
-      admin,
-      accounts: {
-        member,
-        target,
-        secondAdmin,
-        plainAdmin,
-        typist,
-        knownMember,
-        knownOther,
-        knownAdmin,
-        knownReset,
-        proofFairness,
-      },
-    } = await onboard({
+    const onboarded = await onboard({
       // The limiter and its timing parity are under test: keep the real scrypt cost.
       passwordHasher: scryptPasswordHasher,
       accounts: {
@@ -131,43 +130,56 @@ test(
         proofFairness: { email: "limit-proof-fairness@example.test" },
       },
     });
+    const admin = account(onboarded.admin);
+    const accounts = record(onboarded.accounts);
+    const member = account(accounts.member);
+    const target = account(accounts.target);
+    const secondAdmin = account(accounts.secondAdmin);
+    const plainAdmin = account(accounts.plainAdmin);
+    const typist = account(accounts.typist);
+    const knownMember = account(accounts.knownMember);
+    const knownOther = account(accounts.knownOther);
+    const knownAdmin = account(accounts.knownAdmin);
+    const knownReset = account(accounts.knownReset);
+    const proofFairness = account(accounts.proofFairness);
     const proxiedLog = memoryLogger();
-    app = await composeApp(
+    const app = (apps.app = await composeApp(
       { ...defaultInstallSettings, OCC_AUTH_TRUSTED_PROXY_CIDRS: "10.0.0.0/24" },
       {
         logger: proxiedLog.logger,
         passwordSlowLaneFloors: slowLane,
         passwordHasher: scryptPasswordHasher,
       },
-    );
+    ));
     const plainLog = memoryLogger();
-    plainApp = await composeApp(
+    const plainApp = (apps.plainApp = await composeApp(
       { ...defaultInstallSettings },
       {
         logger: plainLog.logger,
         passwordSlowLaneFloors: slowLane,
         passwordHasher: scryptPasswordHasher,
       },
-    );
+    ));
     // Without a trusted proxy every browser reaches the API from the ingress address.
-    const plainSignIn = (account) => passwordSignIn(plainApp, origin, account, ingress);
-    const signIn = (client, account) =>
+    const plainSignIn = (account: Credentials) =>
+      passwordSignIn(plainApp, origin, account, ingress);
+    const signIn = (client: string, account: Credentials) =>
       injectLocalhost(app, "POST", "/api/auth/sign-in/email", {
         remoteAddress: ingress,
         headers: { origin, "x-forwarded-for": client },
         body: { email: account.email, password: account.password },
       });
-    const timed = async (client, account) => {
+    const timed = async (client: string, account: Credentials) => {
       const started = performance.now();
       const response = await signIn(client, account);
       return { response, elapsed: performance.now() - started };
     };
-    const limitWarnings = (events) =>
-      events.filter((event) => event.event === "authentication.sign-in-limit-warning");
+    const limitWarnings = (logEvents: readonly unknown[]) =>
+      events(logEvents).filter((event) => event.event === "authentication.sign-in-limit-warning");
 
     await t.test("startup warns once when no trusted proxy enables the address lane", () => {
       assert.equal(limitWarnings(plainLog.events).length, 1);
-      assert.equal(limitWarnings(plainLog.events)[0].code, "TRUSTED_PROXY_NOT_CONFIGURED");
+      assert.equal(first(limitWarnings(plainLog.events)).code, "TRUSTED_PROXY_NOT_CONFIGURED");
       assert.equal(limitWarnings(proxiedLog.events).length, 0);
     });
 
@@ -241,13 +253,13 @@ test(
     await t.test(
       "a limited email lane logs one warning with a keyed hash and no email or address",
       () => {
-        const limited = plainLog.events.filter(
+        const limited = events(plainLog.events).filter(
           (event) => event.event === "authentication.sign-in-limited",
         );
         for (const event of limited) {
           assert.equal(event.severity, "WARN");
           assert.equal(event.lane, "email");
-          assert.match(event.keyHash, /^[a-f0-9]{16}$/);
+          assert.match(text(event.keyHash), /^[a-f0-9]{16}$/);
         }
         // One report per lane per window: the slowed administrator and the spent target.
         assert.equal(limited.length, 2, `reports: ${limited.length}`);
@@ -369,7 +381,7 @@ test(
     );
 
     await t.test("a limited client address is reported with the address lane", () => {
-      const lanes = proxiedLog.events
+      const lanes = events(proxiedLog.events)
         .filter((event) => event.event === "authentication.sign-in-limited")
         .map((event) => event.lane);
       assert.ok(lanes.includes("address"), `lanes: ${lanes.join(", ")}`);
@@ -383,17 +395,18 @@ test(
     // budget for that email, so strangers who know the email cannot keep it out (T1) or
     // crowd an administrator's attempt out of the slow lane (T2).
     const knownDeviceName = "__Host-occ_known_device";
-    const knownDeviceOf = (response) =>
+    const knownDeviceOf = (response: InjectedResponse) =>
       [response.headers["set-cookie"] ?? []]
         .flat()
         .find((value) => value.startsWith(`${knownDeviceName}=`));
-    const plainSignInWith = (cookie, account) =>
+    const cookieValue = (value: unknown) => first(text(value).split(";", 1));
+    const plainSignInWith = (cookie: string, account: Credentials) =>
       injectLocalhost(plainApp, "POST", "/api/auth/sign-in/email", {
         remoteAddress: ingress,
         headers: { origin, cookie },
         body: { email: account.email, password: account.password },
       });
-    let memberDevice;
+    let memberDevice: string;
 
     await t.test("the known-device cookie is set only after a successful sign-in", async () => {
       const failed = await plainSignIn({ ...knownMember, password: wrongPassword });
@@ -408,7 +421,7 @@ test(
         /^__Host-occ_known_device=v2\.[^;]+; Max-Age=7776000; Path=\/; HttpOnly; Secure; SameSite=Strict$/,
       );
       assert.equal(setCookie.includes("limit-known"), false, "the cookie does not carry the email");
-      memberDevice = setCookie.split(";", 1)[0];
+      memberDevice = cookieValue(setCookie);
     });
 
     await t.test(
@@ -426,7 +439,7 @@ test(
           const response = await plainSignInWith(memberDevice, knownMember);
           assert.equal(response.statusCode, 200, `sign-in ${index}: ${response.body}`);
           assert.equal(floorsStarted, floorsBefore, "not paced");
-          memberDevice = knownDeviceOf(response).split(";", 1)[0];
+          memberDevice = cookieValue(knownDeviceOf(response));
         }
         // The cookie is bound to its account: it does not open another account's spent lane.
         for (let index = 0; index < 10; index += 1) {
@@ -461,7 +474,7 @@ test(
       async (t) => {
         const signedIn = await plainSignIn(proofFairness);
         assert.equal(signedIn.statusCode, 200, signedIn.body);
-        const cookie = knownDeviceOf(signedIn).split(";", 1)[0];
+        const cookie = cookieValue(knownDeviceOf(signedIn));
         // Keep one cookie: changing it would select another device instead of exercising
         // the transition from a verified device to an unavailable proof on the same entry.
         for (let index = 0; index < 10; index += 1) {
@@ -472,25 +485,34 @@ test(
           assert.equal(response.statusCode, 401, `attempt ${index}: ${response.body}`);
         }
         await assertSpentDeviceProofRefusal({
-          installReader(holdRead) {
+          installReader(holdRead: (read: () => unknown) => Promise<unknown>) {
             const query = pg.Pool.prototype.query;
-            return t.mock.method(pg.Pool.prototype, "query", function (...args) {
-              const [statement, parameters] = args;
-              // This is passwordKnownDeviceState's read, not a replacement SQL result.
-              // Unrelated queries, callback signatures and other accounts pass through.
-              if (
-                typeof statement === "string" &&
-                statement.includes(
-                  "SELECT u.id AS user_id, m.id AS method_id, m.authentication_version",
-                ) &&
-                statement.includes("WHERE u.email = $1") &&
-                parameters?.[0] === proofFairness.email &&
-                typeof args[2] !== "function"
-              ) {
-                return holdRead(() => query.apply(this, args));
-              }
-              return query.apply(this, args);
-            });
+            return t.mock.method(
+              pg.Pool.prototype,
+              "query",
+              function (this: pg.Pool, ...args: unknown[]) {
+                const [statement, parameters] = args;
+                // This is passwordKnownDeviceState's read, not a replacement SQL result.
+                // Unrelated queries, callback signatures and other accounts pass through.
+                if (
+                  typeof statement === "string" &&
+                  statement.includes(
+                    "SELECT u.id AS user_id, m.id AS method_id, m.authentication_version",
+                  ) &&
+                  statement.includes("WHERE u.email = $1") &&
+                  Array.isArray(parameters) &&
+                  parameters[0] === proofFairness.email &&
+                  typeof args[2] !== "function"
+                ) {
+                  return holdRead(() => {
+                    const result: unknown = Reflect.apply(query, this, args);
+                    return result;
+                  });
+                }
+                const result: unknown = Reflect.apply(query, this, args);
+                return result;
+              },
+            );
           },
           signIn: () => plainSignInWith(cookie, { ...proofFairness, password: wrongPassword }),
           knownDeviceOf,
@@ -501,22 +523,22 @@ test(
     await t.test("a password reset revokes known-device exemptions issued before it", async () => {
       const before = await plainSignIn(knownReset);
       assert.equal(before.statusCode, 200, before.body);
-      const staleDevice = knownDeviceOf(before).split(";", 1)[0];
+      const staleDevice = cookieValue(knownDeviceOf(before));
       // An operator resets the password; the database bumps the method's authentication
       // version, which the entry is bound to.
       const newPassword = "limit-known-reset-new-password";
-      const { rows } = await pool.query(
+      const { rows } = await pool.query<{ authentication_version: number }>(
         `UPDATE occ.account m SET password = $1 FROM occ."user" u
            WHERE m.user_id = u.id AND u.email = $2 AND m.provider_id = 'credential'
            RETURNING m.authentication_version`,
         [await hashLocalPassword(newPassword), knownReset.email],
       );
       assert.equal(rows.length, 1);
-      assert.ok(rows[0].authentication_version > 1);
+      assert.ok(first(rows).authentication_version > 1);
       const reset = { ...knownReset, password: newPassword };
       const after = await plainSignIn(reset);
       assert.equal(after.statusCode, 200, after.body);
-      const currentDevice = knownDeviceOf(after).split(";", 1)[0];
+      const currentDevice = cookieValue(knownDeviceOf(after));
       for (let index = 0; index < 10; index += 1) {
         const response = await plainSignIn({ ...reset, password: wrongPassword });
         assert.equal(response.statusCode, 401, `guess ${index}: ${response.body}`);
@@ -538,7 +560,7 @@ test(
       async () => {
         const signedIn = await plainSignIn(knownAdmin);
         assert.equal(signedIn.statusCode, 200, signedIn.body);
-        const adminDevice = knownDeviceOf(signedIn).split(";", 1)[0];
+        const adminDevice = cookieValue(knownDeviceOf(signedIn));
         for (let index = 0; index < 10; index += 1) {
           const response = await plainSignIn({ ...knownAdmin, password: wrongPassword });
           assert.equal(response.statusCode, 401, `guess ${index}: ${response.body}`);
@@ -548,8 +570,8 @@ test(
         // ending until the known browser has its answer.
         const floors = watchFloors(passwordFailureBudget.slow.concurrentPerEmail);
         const deadline = new AbortController();
-        let flood;
-        let answered;
+        let flood: Promise<InjectedResponse>[];
+        let answered: { response: InjectedResponse; floors: number } | undefined;
         try {
           flood = Array.from({ length: 4 }, () =>
             plainSignIn({ ...knownAdmin, password: wrongPassword }),
