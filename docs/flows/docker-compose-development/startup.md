@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
 updated: 2026-11-12
-last_updated_session: authoring-run/40b08b7d-d158-4f4d-8a93-1e53f45a5999
+last_updated_session: authoring-run/289927cc-a9eb-477c-8cfa-1f6c9aa9f291
 ---
 
 # Compose development startup
@@ -245,21 +245,20 @@ precedes resources. `setKubernetesBridgeGateway` preserves an explicit gateway
 or selects the subnet's first usable address. A private Compose snapshot pins
 startup and cleanup against later `.env` edits.
 
-Before saving the snapshot, `internal/occdev/compose.go:prepareComposeBootstrapSQL`
-copies default SQL as `0644` for PostgreSQL despite restrictive umasks. It redirects
-only the default read-only bind, including checkout aliases; custom and writable
-mounts and original permissions stay unchanged. State remains `0700`. Cleanup
-removes the copy. Pre-start failures remove incomplete state even with
-`OCC_DEVELOPMENT_KEEP_ON_FAILURE`; retention requires a recoverable snapshot and
-resource startup.
+`internal/occdev/compose.go:prepareComposeBootstrapSQL` snapshots default SQL as
+`0644` for PostgreSQL. Only the default read-only bind, including checkout aliases,
+is redirected; custom and writable mounts and original permissions stay unchanged.
+State remains `0700`. Cleanup removes the copy. Pre-start failures remove incomplete
+state despite `OCC_DEVELOPMENT_KEEP_ON_FAILURE`; retention requires a recoverable
+snapshot and resource startup.
 
 Kubernetes-only mode enters `internal/occdev/openshell_k3d.go:upK3d` before Compose rendering.
 
-`internal/occdev/repository_k3d.go` validates inputs, waits for authenticated bootstrap
-and Namespace readiness, binds the server-assigned Namespace ID, generates CA and
-exact-host certificates, then upgrades Helm with Kubernetes inputs, Repo Driver and
-worker sidecar. Discovery checks approved references and profiles; execution remains
-unverified. See [required inputs](../../guides/deploy/local-repository-credentials.md#prepare-the-approved-inputs).
+`internal/occdev/repository_k3d.go` validates inputs. After `upK3d` completes
+authenticated bootstrap and Namespace readiness, repository setup binds the
+server-assigned Namespace ID, generates CA and exact-host certificates, and upgrades
+Helm with Kubernetes inputs, Repo Driver and worker sidecar. Discovery only checks
+approved references and profiles. See [required inputs](../../guides/deploy/local-repository-credentials.md#prepare-the-approved-inputs).
 
 `OCC_DEVELOPMENT_CONTROL_PLANE` defaults to `compose` for Docker Compute, else
 `kubernetes`; unsupported values fail before resource creation.
@@ -417,6 +416,8 @@ Ambiguity, success and cleanup yield none; stdout is unauthenticated.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 00:24: Correct readiness ownership. (authoring-run/289927cc-a9eb-477c-8cfa-1f6c9aa9f291 - 6b44940d40419e4cd9889cf4b0316d95a798be56)
 
 - 2026-11-12 00:18: Handle checkout aliases and clean incomplete pre-start state. (authoring-run/40b08b7d-d158-4f4d-8a93-1e53f45a5999 - 2d5cf2bf7138c2d7bd40b3fa630a4c9d8b9dafe4)
 

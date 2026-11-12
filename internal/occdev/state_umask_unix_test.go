@@ -89,6 +89,7 @@ func TestComposeBootstrapSQLWithRestrictiveUmask(t *testing.T) {
     if [ "$1" = -f ]; then
       [ -z "$snapshot" ] || exit 42
       shift; snapshot=$1
+      [ -n "$snapshot" ] || exit 42
     fi
     shift
   done
@@ -100,7 +101,8 @@ func TestComposeBootstrapSQLWithRestrictiveUmask(t *testing.T) {
 				"k3d": `"cluster list -o json") echo '[]' ;;`, "kubectl": "", "node": "",
 			})
 			for key, value := range map[string]string{
-				"OCC_DEVELOPMENT_CONTROL_PLANE": "compose", "OCC_DEVELOPMENT_SANDBOX_DRIVER": "none",
+				"OCC_DEVELOPMENT_COMPUTE_DRIVER": "kubernetes",
+				"OCC_DEVELOPMENT_CONTROL_PLANE":  "compose", "OCC_DEVELOPMENT_SANDBOX_DRIVER": "none",
 				"OCC_DEVELOPMENT_CONTAINER_ENGINE": "docker", "DOCKER_HOST": "unix:///run/occ-test/docker.sock",
 				"OCC_DEVELOPMENT_STATE_DIRECTORY": state, "OPENCLAW_DEV_PORT": "4000", "OCC_DEVELOPMENT_KUBERNETES_API_PORT": "6443",
 				"OCC_DEVELOPMENT_CONTROLLER_IMAGE": "", "OCC_KUBERNETES_RUNTIME_IMAGE": "", "OCC_DEVELOPMENT_KEEP_ON_FAILURE": "",
