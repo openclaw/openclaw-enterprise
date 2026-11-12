@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { readPrivateBootstrapOutput } from "../helpers/bootstrap-output.ts";
 import { join } from "node:path";
 import test from "node:test";
 import pg from "pg";
@@ -224,9 +224,7 @@ test(
     assert.equal(serviceBinding.namespaceId, undefined);
     assert.equal(serviceBinding.resourceKind, undefined);
 
-    const outputStatus = await stat(bootstrapServiceKeyFile);
-    assert.equal(outputStatus.mode & 0o777, 0o600);
-    const output = record(parseJson(await readFile(bootstrapServiceKeyFile, "utf8")));
+    const output = record(parseJson(await readPrivateBootstrapOutput(bootstrapServiceKeyFile)));
     const outputMeta = record(output.meta);
     const outputData = record(output.data);
     const outputId = text(outputData.id);
@@ -237,7 +235,10 @@ test(
       "bootstrap Principal must match",
     );
     assert.ok(outputData.name === "bootstrap-admin", "bootstrap key name must match");
-    assert.ok(/^occ_/.test(outputKey), "bootstrap key must use the expected prefix");
+    assert.ok(
+      outputKey.startsWith("occ_") && outputKey.length > "occ_".length && !/[^!-~]/.test(outputKey),
+      "invalid bootstrap service-key format",
+    );
     const stored = await observerPool.query<Record<string, unknown>>(
       "SELECT key, reference_id, metadata FROM occ.apikey WHERE id = $1",
       [outputId],
@@ -253,7 +254,10 @@ test(
 
     const authorized = await injectJson(app, "GET", "/installation", { key: outputKey });
     assert.equal(authorized.statusCode, 200);
-    assert.ok(recordData(authorized.json()).id === installation.id);
+    assert.ok(
+      recordData(parseJson(authorized.body)).id === installation.id,
+      "bootstrap key must authorize the installed Installation",
+    );
     const defaultNamespace = await observerPool.query<Record<string, unknown>>(
       `SELECT namespace.id, namespace.name, namespace.status, work.idempotency_key
        FROM occ.namespaces AS namespace

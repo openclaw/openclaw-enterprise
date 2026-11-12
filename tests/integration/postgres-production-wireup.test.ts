@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { constants } from "node:fs";
-import { open, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { Pool } from "pg";
 import type { App, Request, Session } from "./postgres-production-sharing-cases.ts";
 import type { InstallationRuntimeDrivers } from "../../apps/controller/src/composition/installation-config.ts";
@@ -54,6 +53,7 @@ import {
   OpenClawController,
 } from "../../packages/occ/src/index.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { readPrivateBootstrapOutput } from "../helpers/bootstrap-output.ts";
 import { waitUntil } from "../helpers/wait-for.mjs";
 import { createDriver as createProtectedFixture } from "../fixtures/driver-packages/protected-execution-driver/index.ts";
 
@@ -93,19 +93,6 @@ async function signInWithEmailPassword({
     Array.isArray(setCookie) && setCookie.every((value: unknown) => typeof value === "string"),
   );
   return { ...session, setCookie };
-}
-
-async function readPrivateBootstrapOutput(path: string): Promise<string> {
-  // Check and read the same regular file so a path replacement cannot change which file is read.
-  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  try {
-    const metadata = await handle.stat();
-    assert.ok(metadata.isFile(), "bootstrap output must be a regular file");
-    assert.equal(metadata.mode & 0o777, 0o600);
-    return await handle.readFile("utf8");
-  } finally {
-    await handle.close();
-  }
 }
 
 async function defaultNamespaceRows(pool: Pool) {
