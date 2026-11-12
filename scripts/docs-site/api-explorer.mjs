@@ -32,7 +32,8 @@ if (root) {
     forceDarkModeState: theme(),
     hideDarkModeToggle: true,
     hideClientButton: true,
-    defaultHttpClient: { targetKey: "shell", clientKey: "curl" },
+    // Scalar defaults to Shell/curl. Reapplying an explicit default would reset
+    // the reader's selected client whenever the theme configuration changes.
   });
   const syncTheme = () => {
     const mode = theme();
