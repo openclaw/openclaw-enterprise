@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { captureChild } from "../helpers/child-processes.mjs";
 import {
@@ -222,9 +223,24 @@ test("the upgrade hook check passes an Installation API startup accepts", async 
   const result = await runCheck(
     t,
     configuration,
-    { "presets/team.json": JSON.stringify({ name: "Team Codex", template: {} }) },
-    // The documented example bundle, as the chart mounts it for the API.
-    () => ({ OCC_CONSOLE_THEME_DIR: resolve("deploy/examples/console-theme") }),
+    {
+      "presets/team.json": JSON.stringify({ name: "Team Codex", template: {} }),
+      "unavailable-transport.mjs": `
+        import { registerHooks } from "node:module";
+        registerHooks({
+          resolve(specifier, context, nextResolve) {
+            if (specifier === "@grpc/grpc-js") {
+              throw new Error("OpenShell transport is unavailable");
+            }
+            return nextResolve(specifier, context);
+          },
+        });
+      `,
+    },
+    (directory) => ({
+      OCC_CONSOLE_THEME_DIR: resolve("deploy/examples/console-theme"),
+      NODE_OPTIONS: `--import=${pathToFileURL(join(directory, "unavailable-transport.mjs")).href}`,
+    }),
   );
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "installation-startup-ready\n");
