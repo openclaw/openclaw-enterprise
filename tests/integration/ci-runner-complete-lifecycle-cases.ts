@@ -81,11 +81,10 @@ function isPreparationProcess(value: unknown): value is PreparationProcess {
 
 function isDetachedProcess(value: unknown): value is DetachedProcess {
   return (
-    isJsonObject(value) &&
-    isProcessId(value.pid) &&
-    value.pid > 1 &&
-    isProcessId(value.pgid) &&
+    isPreparationProcess(value) &&
+    "ppid" in value &&
     isProcessId(value.ppid) &&
+    "start" in value &&
     typeof value.start === "string" &&
     /^\d+$/u.test(value.start)
   );
@@ -142,10 +141,9 @@ async function lifecycleFixture(
     }
     for (const path of [paths.ready, paths.child]) {
       const record = parseJson(await readFile(path, "utf8").catch(() => "null"));
-      if (record === null) {
+      if (!isPreparationProcess(record)) {
         continue;
       }
-      assert.ok(isPreparationProcess(record), "invalid preparation process record");
       if (procStat(record.pid)?.pgid === record.pgid) {
         try {
           process.kill(record.pid, "SIGKILL");
@@ -289,21 +287,12 @@ async function lifecycleFixture(
 }
 
 function lifecycleProcess(pid: number) {
-  try {
-    const fields = readFileSync(`/proc/${pid}/stat`, "utf8")
-      .replace(/^.*\) /su, "")
-      .trim()
-      .split(/\s+/u);
-    const state = fields[0];
-    const pgid = Number(fields[2]);
-    const start = fields[19];
-    if (state === undefined || start === undefined) {
-      return undefined;
-    }
-    return { state, pgid, start };
-  } catch {
+  const stat = procStat(pid);
+  if (!stat) {
     return undefined;
   }
+  const { state, pgid, start } = stat;
+  return state === undefined || start === undefined ? undefined : { state, pgid, start };
 }
 
 function lifecycleProcessLive(record: DetachedProcess) {

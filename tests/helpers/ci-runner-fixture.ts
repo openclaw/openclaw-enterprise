@@ -248,7 +248,7 @@ export function procStat(pid: number) {
     const fields = readFileSync(`/proc/${pid}/stat`, "utf8")
       .replace(/^.*\) /su, "")
       .split(" ");
-    return { state: fields[0], pgid: Number(fields[2]) };
+    return { state: fields[0], pgid: Number(fields[2]), start: fields[19] };
   } catch {
     return undefined;
   }
