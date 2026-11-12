@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-11"
-last_updated_session: "authoring-run/89773c17-5c87-4c2d-aa19-3b5a0af84b68"
+updated: "2026-11-12"
+last_updated_session: "authoring-run/da0f3f3f-c550-48b6-8ef4-60e3f2d1b973"
 ---
 
 # Production Startup Flow
@@ -116,34 +116,34 @@ change controller configuration.
 
 ### 3. Run Helm initialization
 
-`internal/occcli/installation_receipt.go:installationInstallCommand` privately
-snapshots kubeconfig/chart/values, checks all release states and syncs
-`intent.json` and its directory entry. On stdout notice write error, it keeps
-intent, names the receipt directory and exits before `dispatch.json` or Helm
-install. Otherwise it syncs the unknown marker and starts Helm.
-`observeInstallationJob` records the first recognized Job UID matching the
-attempt annotation (installs only). Helm's outcome is separate. A final report
-write error also fails the command without changing that saved outcome or
-replaying the install.
+`internal/occcli/installation_receipt.go:installationInstallCommand` snapshots
+kubeconfig/chart/values, checks release states and syncs intent and its directory.
+A failed stdout notice preserves and names intent, stopping before dispatch or
+Helm. Otherwise it syncs the unknown marker and starts Helm.
+`observeInstallationJob` records the first recognized attempt-matched Job UID
+(installs only). Helm's outcome stays separate; final report write errors fail
+the command without changing that outcome or replaying install.
+
+Reported template failures add static [offline-render guidance](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff),
+including settings for the suffix refusal. Stderr stays in memory (4 MiB); excess is discarded without affecting Helm. Raw diagnostics are never
+printed or saved. Receipt and recovery decisions stay unchanged.
 
 `deploy/helm/openclaw-enterprise/templates/bootstrap-networkpolicies.yaml:1`
 installs isolation before the Job; it and later policies grant configured
 DNS peers UDP/TCP `53` and `5353`
 ([Helm DNS contract](../reference/settings/production.md#required-production-controller-environment)).
 
-`deploy/helm/openclaw-enterprise/templates/jobs.yaml:8` stops a connected install
-if its named Job exists or cannot be read. Offline rendering cannot check this.
-The lookup neither locks the name nor verifies database or volume freshness.
+`deploy/helm/openclaw-enterprise/templates/jobs.yaml:8` refuses existing or unreadable
+Jobs during connected installs. Offline rendering cannot check this; lookup
+neither locks names nor verifies database/volume freshness.
 
 `openclaw.validate` in `deploy/helm/openclaw-enterprise/templates/_helpers.tpl`
-checks private routing inputs, port syntax and peer labels. Operators supply the
-GatewayClass, CRDs, controllers and Secrets. Disabling routing omits its resources
-and mounts and requires disabling native admin and sandbox routing. Database and
-API ports accept 1–65535 without leading zeros. The Compute Driver rejects malformed
-IPv4 hostnames and numeric or hexadecimal sandbox domain suffixes.
-See [routing prerequisites and opt-out](../guides/deploy/workspace-routing.md#explicit-opt-out)
-and [values the candidate refuses](../guides/deploy/production-upgrade-recovery.md#correct-values-the-candidate-refuses).
-The metrics and repository listeners share a worker Pod and need different ports.
+checks routing, ports and peer labels. Operators supply GatewayClass, CRDs,
+controllers and Secrets. [Disabling routing](../guides/deploy/workspace-routing.md#explicit-opt-out)
+omits its resources/mounts and requires disabling native admin and sandbox routing.
+Database/API ports accept 1–65535 without leading zeros; worker metrics/repository
+ports must differ. The Compute Driver rejects malformed IPv4 hostnames and
+numeric/hexadecimal sandbox suffixes. See [refused values](../guides/deploy/production-upgrade-recovery.md#correct-values-the-candidate-refuses).
 
 On upgrades, `deploy/helm/openclaw-enterprise/files/check-installation.mjs` validates
 Installation without database/Kubernetes access; refusal stops migration and API
@@ -389,6 +389,8 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 06:35: Document static Helm template refusal guidance without changing recovery. (authoring-run/da0f3f3f-c550-48b6-8ef4-60e3f2d1b973 - 64358aae61847dea8a3834fbe06bed079b5727cc)
 
 - 2026-11-11 17:05: Coalesce database readiness. (authoring-run/89773c17-5c87-4c2d-aa19-3b5a0af84b68 - 755ebc38280f84b3ec420cc0b2a475ed1fb2be0a)
 
