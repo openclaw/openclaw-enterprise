@@ -312,8 +312,8 @@ export function createLoginFixture({
       );
     } catch (error) {
       recordedErrors.push(error);
-      throw new Error("Authentication transport call failed");
     }
+    throw new Error("Authentication transport call failed");
   };
   return {
     auth,
