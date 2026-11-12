@@ -192,6 +192,11 @@ func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, 
 	if err != nil {
 		return nil, err
 	}
+	advance("openshell-agent-sandbox-image")
+	manifest, err = r.preloadAgentSandboxController(ctx, state, root, manifest)
+	if err != nil {
+		return nil, err
+	}
 	advance("openshell-runtime-class")
 	runtimeClass := filepath.Join(root, "runtime-class.yaml")
 	if err := exclusiveWrite(runtimeClass, []byte(strings.Join([]string{
@@ -236,7 +241,7 @@ func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, 
 		{"supervisor", images.supervisor, &assets.supervisorImage},
 	} {
 		advance("openshell-" + selected.component + "-import")
-		imported, err := r.importOpenShellImage(ctx, state, root, selected.component, selected.source, images.revision != "")
+		imported, err := r.importOpenShellImage(ctx, state, root, selected.component, selected.source, images.revision != "", nil)
 		if err != nil {
 			return nil, err
 		}
@@ -296,43 +301,56 @@ func (r *runner) renderOpenShellWorkspaceResources(ctx context.Context, chart, g
 	return resources, nil
 }
 
-func (r *runner) importOpenShellImage(ctx context.Context, state *developmentState, root, component, source string, localOnly bool) (result string, resultErr error) {
-	if _, err := r.output(ctx, r.engine, "image", "inspect", source); err != nil {
-		if localOnly {
-			return "", fmt.Errorf("OpenShell candidate image must still exist locally at import: %s", source)
-		}
-		if err := r.run(ctx, r.engine, "pull", source); err != nil {
+func (r *runner) importOpenShellImage(ctx context.Context, state *developmentState, root, component, source string, localOnly bool, selected *nativeImageSelection) (result string, resultErr error) {
+	acquisition := source
+	platform := ""
+	id := ""
+	childStaged := false
+	if selected != nil {
+		var err error
+		acquisition, id, err = r.selectNativeImage(ctx, source, selected, localOnly)
+		if err != nil {
 			return "", err
 		}
+		platform = selected.platform
+	} else {
+		if _, err := r.output(ctx, r.engine, "image", "inspect", source); err != nil {
+			if localOnly {
+				return "", fmt.Errorf("OpenShell candidate image must still exist locally at import: %s", source)
+			}
+			if err := r.run(ctx, r.engine, "pull", source); err != nil {
+				return "", err
+			}
+		}
+		data, err := r.output(ctx, r.engine, "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", source)
+		if err != nil {
+			return "", err
+		}
+		platform = string(data)
+		if !strings.HasPrefix(platform, "linux/") {
+			return "", fmt.Errorf("OpenShell %s image must contain a Linux platform", component)
+		}
+		acquisition, err = r.resolveDevelopmentPlatformChild(ctx, source, platform)
+		if err != nil {
+			return "", err
+		}
+		childStaged = acquisition != source
+		held, err := r.inspectLocalImage(ctx, acquisition, "")
+		if err != nil {
+			return "", err
+		}
+		if held == nil {
+			return "", fmt.Errorf("OpenShell image disappeared before staging")
+		}
+		id = held.ID
 	}
 	stagingTag := "openclaw-development/openshell-" + component + ":" + state.Cluster
-	if _, err := r.output(ctx, r.engine, "image", "inspect", stagingTag); err == nil {
-		return "", fmt.Errorf("OpenShell development staging image already exists: %s", stagingTag)
-	}
-	if err := r.run(ctx, r.engine, "tag", source, stagingTag); err != nil {
+	// Intent precedes tag mutation, including commands whose outcome is unknown.
+	defer r.finishOpenShellImage(ctx, state, &resultErr)
+	if err := r.stageOpenShellImage(ctx, state, acquisition, stagingTag, id); err != nil {
 		return "", err
 	}
-	defer func() {
-		if _, err := r.output(context.WithoutCancel(ctx), r.engine, "image", "rm", stagingTag); err != nil {
-			resultErr = errors.Join(resultErr, fmt.Errorf("remove OpenShell %s staging image: %w", component, err))
-		}
-	}()
-	// Use the name the engine recorded for the staging tag. Podman qualifies it
-	// with the `localhost` registry, and containerd stores whatever reference
-	// was imported, so the verification below has to look for that name.
 	recorded, err := r.engineImageReference(ctx, stagingTag)
-	if err != nil {
-		return "", err
-	}
-	platformData, err := r.output(ctx, r.engine, "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", source)
-	if err != nil {
-		return "", err
-	}
-	platform := string(platformData)
-	if !strings.HasPrefix(platform, "linux/") {
-		return "", fmt.Errorf("OpenShell %s image must contain a Linux platform", component)
-	}
-	childStaged, err := r.stageDevelopmentPlatformChild(ctx, source, platform, stagingTag)
 	if err != nil {
 		return "", err
 	}
@@ -393,6 +411,11 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 	runtimeReference := untagged + "@" + digest
 	if err := r.run(ctx, r.engine, "exec", server, "ctr", "-n", "k8s.io", "images", "tag", imported, runtimeReference); err != nil {
 		return "", fmt.Errorf("register imported OpenShell %s image digest: %w", component, err)
+	}
+	if selected != nil {
+		if err := r.verifyNativeImportedImage(ctx, server, runtimeReference, selected.configDigest); err != nil {
+			return "", err
+		}
 	}
 	fmt.Fprintf(r.opts.Out, "OpenShell %s image: source=%s containerd=%s\n", component, source, runtimeReference)
 	return runtimeReference, nil

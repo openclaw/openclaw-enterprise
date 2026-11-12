@@ -10,6 +10,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
+import { verifyPreloadedAgentSandbox } from "../../scripts/ci/agent-sandbox.ts";
 import { failureSecrets, redactLogLine } from "../../scripts/ci/failure-redaction.mjs";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
@@ -108,6 +109,39 @@ async function waitForNamespaceReady(environment, apiPort, stateDirectory, names
     await delay(500);
   }
   throw new Error(`OCC Namespace ${namespaceId} did not become ready.`);
+}
+
+async function verifyDevelopmentAgentSandbox(kubectl, environment, output, state) {
+  const imports = [
+    ...output.matchAll(
+      /^OpenShell agent-sandbox-controller image: source=(\S+) containerd=(\S+)$/gm,
+    ),
+  ];
+  assert.equal(imports.length, 1, "startup must report the exact Agent Sandbox import");
+  // Match the launcher's recorded endpoint, including Podman's selectors.
+  const engineEnvironment = { ...environment, DOCKER_HOST: state.dockerHost };
+  delete engineEnvironment.DOCKER_CONTEXT;
+  delete engineEnvironment.DOCKER_TLS_VERIFY;
+  delete engineEnvironment.DOCKER_CERT_PATH;
+  if (state.containerEngine === "podman") {
+    engineEnvironment.CONTAINER_HOST = state.dockerHost;
+    engineEnvironment.CONTAINER_CONNECTION = "";
+    engineEnvironment.OCC_CONTAINER_ENGINE_SOCKET = state.dockerHost.replace(/^unix:\/\//, "");
+  }
+  await verifyPreloadedAgentSandbox({
+    execFile: (file, args) =>
+      execute(file, args, {
+        cwd: repository,
+        env: engineEnvironment,
+        timeout: 30_000,
+        maxBuffer: 4 * 1024 * 1024,
+      }),
+    kubectl,
+    engine: state.containerEngine,
+    ownedNodes: [`k3d-${state.cluster}-server-0`],
+    source: imports[0][1],
+    reference: imports[0][2],
+  });
 }
 
 async function runGatewayProbe({
@@ -289,6 +323,7 @@ test(
       "--context",
       `k3d-${cluster}`,
     ];
+    await verifyDevelopmentAgentSandbox(kubectl, environment, result.stdout, state);
     const { stdout: helmList } = await execute(
       "helm",
       [
@@ -1020,6 +1055,7 @@ test(
       "--context",
       `k3d-${cluster}`,
     ];
+    await verifyDevelopmentAgentSandbox(kubectl, environment, result.stdout, state);
     const envoySelector =
       "app.kubernetes.io/component=proxy,app.kubernetes.io/managed-by=envoy-gateway," +
       "gateway.envoyproxy.io/owning-gateway-namespace=oce-system," +

@@ -3103,10 +3103,9 @@ test("OpenShell browser runner retains the destination for refusal before Local 
       // Use the real test and its imports. An absent CLI stops accepted selections
       // before setup; no fixture replaces the destination guard or runner filtering.
       await writeFile(join(root, file.path), await readFile(join(repositoryRoot, file.path)));
-      await symlink(
-        join(repositoryRoot, "scripts/ci/failure-redaction.mjs"),
-        join(root, "scripts/ci/failure-redaction.mjs"),
-      );
+      for (const path of ["scripts/ci/failure-redaction.mjs", "scripts/ci/agent-sandbox.ts"]) {
+        await symlink(join(repositoryRoot, path), join(root, path));
+      }
       for (const path of ["apps", "node_modules", "tests/helpers"]) {
         await symlink(join(repositoryRoot, path), join(root, path), "dir");
       }
@@ -8601,6 +8600,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
           args: "secretauthvalue-args",
         }),
         measurement({ ...runtimeFailure, nonzeroExitCount: 1, signaledCount: 1 }),
+        measurement({ ...runtimeFailure, stage: "openshell-agent-sandbox-image" }),
         measurement({
           ...runtimeFailure,
           elapsedMs: 201,
@@ -8855,6 +8855,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
         elapsedMs: 100,
       },
       { ...runtimeFailure, nonzeroExitCount: 1, signaledCount: 1 },
+      { ...runtimeFailure, stage: "openshell-agent-sandbox-image" },
       { ...runtimeFailure, elapsedMs: 201 },
       { ...runtimeFailure, elapsedMs: 202 },
       { ...runtimeFailure, elapsedMs: 203, stage: "controller-build" },
