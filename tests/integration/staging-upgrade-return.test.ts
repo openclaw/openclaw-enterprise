@@ -973,10 +973,25 @@ test(
             requestId?: string;
             elapsedMs: number;
             gapMs: number | null;
+            startGapMs: number | null;
+            scheduledSlot: number | null;
+            scheduleDelayMs: number | null;
             outcome: string;
             status: number | undefined;
           }[];
           upgradeSucceeded: boolean;
+          schemaVersion: number;
+          intervalAfterResponseMs: null;
+          nominalIntervalMs: number;
+          cadence: {
+            scheduledSlots: number;
+            probedSlots: number;
+            unprobedSlots: number;
+            complete: boolean;
+          };
+          maxStartGapMs: number;
+          tailGapMs: number;
+          complete: boolean;
         }
       | undefined;
     // Exercise the real HTTPS helper while the action succeeds despite failed
@@ -1036,7 +1051,41 @@ test(
       assert.ok(sample.elapsedMs >= 0);
     }
     assert.ok((evidence.samples[7]?.elapsedMs ?? 0) >= 4_900);
-    assert.ok(evidence.samples.slice(2, 8).every(({ gapMs }) => gapMs !== null && gapMs >= 900));
+    assert.equal(evidence.schemaVersion, 2, "receipt must identify the nominal-cadence contract");
+    assert.equal(evidence.intervalAfterResponseMs, null);
+    assert.equal(evidence.nominalIntervalMs, 1_000);
+    assert.equal(evidence.complete, true);
+    assert.equal(evidence.cadence.complete, true);
+    assert.equal(evidence.cadence.probedSlots, 7);
+    assert.ok(
+      evidence.cadence.unprobedSlots >= 4,
+      "the five-second request leaves nominal slots unprobed",
+    );
+    assert.equal(
+      evidence.cadence.scheduledSlots,
+      evidence.cadence.probedSlots + evidence.cadence.unprobedSlots,
+    );
+    assert.equal(evidence.samples[0]?.scheduledSlot, null);
+    assert.equal(evidence.samples[8]?.scheduledSlot, null);
+    const during = evidence.samples.slice(1, 8);
+    assert.ok(
+      during.every(
+        ({ scheduledSlot, scheduleDelayMs }) =>
+          scheduledSlot !== null &&
+          scheduleDelayMs !== null &&
+          scheduleDelayMs >= 0 &&
+          scheduleDelayMs < 1_000,
+      ),
+    );
+    assert.ok(
+      during.slice(1).every(({ startGapMs }) => startGapMs !== null && startGapMs >= 1_000),
+    );
+    assert.ok(
+      (evidence.samples[8]?.startGapMs ?? 0) >= 4_900,
+      "the final in-flight request must remain visible in the start-to-start gap",
+    );
+    assert.ok(evidence.maxStartGapMs >= 4_900);
+    assert.ok(evidence.tailGapMs >= 0);
     assert.equal(peakActive, 1);
     assert.equal(active, 0);
     assert.ok(
@@ -1048,6 +1097,114 @@ test(
     assert.ok(!JSON.stringify(evidence).includes(privateBytes));
   },
 );
+
+test("upgrade availability accounts for stalled slots and final tails on a monotonic clock", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "oce-availability-clock-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let now = 100;
+  t.mock.method(performance, "now", () => now);
+  t.mock.timers.enable({ apis: ["Date"], now: 30_000 });
+  const settled = Promise.withResolvers<string>();
+  let requests = 0;
+  // Synthetic time is limited to scheduler arithmetic. The adjacent TLS test
+  // owns transport deadlines and serialization. No fake replaces that proof.
+  const result = await measureUpgradeAvailability(
+    async () => {
+      requests++;
+      switch (requests) {
+        case 1:
+          now = 110;
+          break;
+        case 2:
+          // Slots 2 and 3 pass while the first during request is in flight.
+          now = 4_610;
+          t.mock.timers.setTime(1_000);
+          break;
+        case 3:
+          now = 5_610;
+          settled.resolve("complete");
+          break;
+        case 4:
+          now = 6_010;
+          break;
+        default:
+          assert.fail("missed slots must not trigger catch-up requests");
+      }
+      return { status: 200, body: { data: { id: "original-installation" } } };
+    },
+    "original-installation",
+    directory,
+    () => {
+      // Synchronous action work delays admission past slot 0.
+      now = 1_360;
+      return settled.promise;
+    },
+    async () => {},
+  );
+  assert.equal(result, "complete");
+  const evidence = JSON.parse(
+    await readFile(join(directory, "forward-api-availability.json"), "utf8"),
+  );
+  assert.deepEqual(evidence.cadence, {
+    startOffsetMs: 10,
+    endOffsetMs: 5_510,
+    complete: true,
+    scheduledSlots: 6,
+    probedSlots: 2,
+    unprobedSlots: 4,
+  });
+  assert.deepEqual(
+    evidence.samples.map((sample: { scheduledSlot: number | null }) => sample.scheduledSlot),
+    [null, 1, 4, null],
+  );
+  assert.deepEqual(
+    evidence.samples.map((sample: { scheduleDelayMs: number | null }) => sample.scheduleDelayMs),
+    [null, 250, 500, null],
+  );
+  assert.deepEqual(
+    evidence.samples.map((sample: { startGapMs: number | null }) => sample.startGapMs),
+    [null, 1_260, 3_250, 1_000],
+  );
+  assert.deepEqual(
+    evidence.samples.map((sample: { gapMs: number | null }) => sample.gapMs),
+    [null, 1_250, 0, 0],
+  );
+  assert.equal(evidence.maxStartGapMs, 3_250);
+  assert.equal(evidence.tailGapMs, 400);
+  assert.equal(evidence.throughOffsetMs, 5_910);
+  assert.equal(evidence.complete, true);
+  assert.ok(evidence.samples[1].finishedAt < evidence.samples[1].startedAt);
+  assert.equal(evidence.samples[1].elapsedMs, 3_250);
+
+  // Even zero elapsed time has the initial opportunity. The closed endpoint
+  // includes a slot exactly at settlement; neither may create a fake sample.
+  const failure = new Error("synchronous failure");
+  for (const duration of [0, 1_000]) {
+    await assert.rejects(
+      measureUpgradeAvailability(
+        async () => ({ status: 200, body: { data: { id: "original-installation" } } }),
+        "original-installation",
+        directory,
+        () => {
+          now += duration;
+          throw failure;
+        },
+        async () => {},
+      ),
+      (error: unknown) => error === failure,
+    );
+    const failed = JSON.parse(
+      await readFile(join(directory, "forward-api-availability.json"), "utf8"),
+    );
+    assert.equal(failed.cadence.scheduledSlots, duration === 0 ? 1 : 2);
+    assert.equal(failed.cadence.unprobedSlots, failed.cadence.scheduledSlots);
+    assert.equal(failed.cadence.probedSlots, 0);
+    assert.deepEqual(
+      failed.samples.map((sample: { phase: string }) => sample.phase),
+      ["before", "after"],
+    );
+  }
+});
 
 test(
   "upgrade availability retains incomplete observations when its process is killed",
@@ -1064,6 +1221,13 @@ test(
       assert.equal(incoming.url, "/installation");
       assert.equal(incoming.headers["x-api-key"], key);
       requests++;
+      if (requests === 3) {
+        // Kill with a real TLS request in flight. The saved boundary must not
+        // imply that this request completed or that its later slots were observed.
+        response.writeHead(200);
+        response.write(" ");
+        return;
+      }
       response.writeHead(requests === 1 ? 200 : 503);
       response.end(
         JSON.stringify(
@@ -1107,12 +1271,17 @@ test(
       await closed;
     });
     let persisted:
-      | { upgradeSucceeded: boolean | null; samples: { phase: string; outcome: string }[] }
+      | {
+          upgradeSucceeded: boolean | null;
+          complete: boolean;
+          throughOffsetMs: number;
+          cadence: { complete: boolean; probedSlots: number };
+          samples: { phase: string; outcome: string }[];
+        }
       | undefined;
     const deadline = Date.now() + 10_000;
-    // Kill only after a completed failed HTTPS observation has reached disk.
     // The pending action never returns; no finally block can rescue the evidence.
-    while (persisted?.samples.at(-1)?.phase !== "during") {
+    while (persisted?.samples.at(-1)?.phase !== "during" || requests < 3) {
       assert.ok(Date.now() < deadline, "no during-upgrade observation was persisted");
       try {
         persisted = JSON.parse(await readFile(snapshot, "utf8"));
@@ -1126,16 +1295,21 @@ test(
     runner.kill("SIGKILL");
     assert.deepEqual(await closed, { code: null, signal: "SIGKILL" });
     const completedPrefix = persisted.samples;
+    const completedThrough = persisted.throughOffsetMs;
     const retained = await readFile(snapshot, "utf8");
     persisted = JSON.parse(retained);
     assert.ok(persisted);
     assert.equal(persisted.upgradeSucceeded, null);
+    assert.equal(persisted.complete, false);
+    assert.equal(persisted.cadence.complete, false);
+    assert.equal(persisted.cadence.probedSlots, 1);
+    assert.equal(persisted.throughOffsetMs, completedThrough);
+    assert.equal(persisted.samples.length, 2);
     assert.deepEqual(persisted.samples.slice(0, completedPrefix.length), completedPrefix);
     assert.equal(persisted.samples[0]?.phase, "before");
     assert.equal(persisted.samples[0]?.outcome, "ok");
     assert.ok(!("requestId" in persisted.samples[0]));
     assert.ok(persisted.samples.length >= 2);
-    // Scheduling may allow more observations before SIGKILL takes effect.
     assert.ok(
       persisted.samples
         .slice(1)
@@ -1206,6 +1380,14 @@ test("upgrade availability preserves action and evidence-write failures", async 
   );
   assert.ok(!JSON.stringify(failedSnapshot).includes(malformedId));
   assert.equal(failedSnapshot.upgradeSucceeded, false);
+  assert.equal(failedSnapshot.complete, true);
+  assert.equal(failedSnapshot.cadence.complete, true);
+  assert.equal(failedSnapshot.cadence.probedSlots, 0);
+  assert.equal(failedSnapshot.cadence.unprobedSlots, failedSnapshot.cadence.scheduledSlots);
+  assert.deepEqual(
+    failedSnapshot.samples.map((sample: { scheduledSlot: number | null }) => sample.scheduledSlot),
+    [null, null],
+  );
   assert.equal(failedSnapshot.samples.at(-1)?.outcome, "ok");
 
   // An unusable destination fails each checkpoint while the real asynchronous
