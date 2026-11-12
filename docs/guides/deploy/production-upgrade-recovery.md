@@ -95,6 +95,12 @@ Attest the checked outcome with `--resume --migration-history-checked`. The help
 and records the next expected revision before retrying. Prefer a reviewed forward
 fix; neither Helm rollback nor the helper reverses committed migrations.
 
+Consider an image-only return when the earlier image can read retained state and
+meets the applicable rollback guidance.
+If the older controller rejects the committed migration history, a return requires
+a compatible recovery point verified as described in [Record the database](upgrade-baseline.md#record-the-database).
+Before reopening traffic, [preserve the migrated database and reconcile accepted and uncertain writes](upgrade-baseline.md#restore-the-retained-candidate-database).
+
 After an unknown Agent dispatch, requests in the same batch may still finish.
 Before resuming, inspect the Agent's revision history, status and audit records.
 A read showing the earlier revision cannot establish rejection. If you cannot

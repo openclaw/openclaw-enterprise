@@ -782,12 +782,22 @@ test("Docker prepares configuration before starting a managed Gateway", async ()
   // Same OpenClaw commit, built before the OCE managed skill control was added.
   const { patches, ...olderImage } = JSON.parse(gatewayRuntimeProvenance);
   assert.ok(patches);
-  run(JSON.stringify(olderImage));
-  assert.equal(
-    events.some((event) => event.args),
-    false,
-  );
-  assert.match(errors.at(-1), /requires an OCE runtime image that enforces skill/);
+  for (const [image, diagnosis] of [
+    [olderImage, /requires an OCE runtime image that enforces skill/],
+    [
+      { ...olderImage, patches: { "openclaw-managed-skill-installs.patch": "0".repeat(64) } },
+      /requires an OCE runtime image that enforces skill/,
+    ],
+    // An old core revision has its own diagnosis even when it also lacks the patch.
+    [{ ...olderImage, commit: "0".repeat(40) }, /does not match the controller's pinned OpenClaw/],
+  ]) {
+    run(JSON.stringify(image));
+    assert.equal(
+      events.some((event) => event.args),
+      false,
+    );
+    assert.match(errors.pop(), diagnosis);
+  }
   events.length = 0;
   run(gatewayRuntimeProvenance);
   assert.equal(events.length, 2);

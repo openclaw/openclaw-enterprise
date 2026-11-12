@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-12"
-last_updated_session: "authoring-run/a05e47bb-d115-4f74-b4a7-8c9455c30057"
+last_updated_session: "authoring-run/86c357a9-a36e-44f0-98ad-4cc95273808b"
 ---
 
 # Production image upgrade flow
@@ -365,8 +365,8 @@ Unsaved exact-name reuse requires no Agents or Secrets.
   `preflight-<api|worker|migration>.log`, `-logs.err` and `-status.json` for rejected candidates;
   use the current `upgrade-preflight-resume.*` directory on resume.
 - Inspect `native-command-failures.tsv` for scale, Helm upgrade or rollout failures; see [upgrade recovery](../guides/deploy/production-upgrade-recovery.md).
-- For runtime failures, inspect `dispatch/*.error`, `dispatch/*.rejected`,
-  version history, and `status/*.json`. Doctor failures: `status/*.doctor.json` and `status/*.doctor.error`.
+- Inspect `dispatch/*.error`, `dispatch/*.rejected` and version history. Deployment status files in
+  `status/` retain the last successful poll. Doctor writes `*.doctor.json` and `*.doctor.error` there.
 - Compare `before-workloads.json` and `after-workloads.json`: controller-only releases
   roll affected Agents' same-image Pod templates once. Separately check broker-affected
   repository versions.
@@ -389,6 +389,7 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 
 ## Changelog
 
+- 2026-11-12 20:49: Preserve status after polling errors. (authoring-run/86c357a9-a36e-44f0-98ad-4cc95273808b - a627e44694987459dbbf9aa59a3d76b9a97f48a7)
 - 2026-11-12 07:07: Check candidate writer database identity, connection prerequisites and rollback recovery. (authoring-run/a05e47bb-d115-4f74-b4a7-8c9455c30057 - c7da19f78a8125fe0a7dec649b5417a23ded1d8e)
 - 2026-11-12 03:35: Preserve JSON values. (authoring-run/9680374b-51c1-4f5e-a3d5-a7c0c1006b92 - b80d084ba843cb8e9ff99e9550bb35dcf6b820f6)
 
