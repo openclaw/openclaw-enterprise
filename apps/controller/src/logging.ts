@@ -265,6 +265,9 @@ function safeNumber(key: string, value: number): number | undefined {
   if (key === "durationMs") {
     return value >= 0 ? Math.round(value * 1000) / 1000 : undefined;
   }
+  if (key === "elapsedMs") {
+    return value >= 0 && value <= Number.MAX_SAFE_INTEGER ? value : undefined;
+  }
   if (!Number.isSafeInteger(value)) {
     return undefined;
   }

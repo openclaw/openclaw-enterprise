@@ -2616,6 +2616,7 @@ export class OpenClawController {
   ): Promise<Readonly<Omit<InstallationCapabilities, "agentProvisioning">>> {
     this.namespaceIdentity(namespaceId);
     await this.authorize(principalId, "create", { kind: "agent", namespaceId, id: namespaceId });
+    await this.read((state) => this.exactNamespace(state, namespaceId));
     const { agentProvisioning: _administratorOnly, ...capabilities } = await this.capabilities();
     return immutableCopy(capabilities);
   }

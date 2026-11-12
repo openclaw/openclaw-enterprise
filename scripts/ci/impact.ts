@@ -376,7 +376,7 @@ function selectTestLanes(mergeBase: string, tested: string, tests: string[], man
   return [...selected].sort();
 }
 
-export function classify(): Classification {
+export function classify(mainTestAdvisory = false): Classification {
   const push = process.env.GITHUB_EVENT_NAME === "push";
   const canonicalPush =
     push &&
@@ -559,7 +559,15 @@ export function classify(): Classification {
           : manifestPath.test(path)
             ? "manifest"
             : null;
-      if (!kind || (push && kind !== "docs")) {
+      // The separate reporting command may inspect one modified test on a push.
+      // Selection and verification retain the documentation-only push policy.
+      const advisoryTest =
+        mainTestAdvisory &&
+        canonicalPush &&
+        fields.length === 2 &&
+        kind === "test" &&
+        header[3] === "M";
+      if (!kind || (push && kind !== "docs" && !advisoryTest)) {
         throw new InspectionError(
           "diff contains a path or change outside the documentation allowlist",
           "ineligible_change",
@@ -653,6 +661,11 @@ export function respond(args: string[], result: Classification) {
 
 function main() {
   const args = process.argv.slice(2);
+  if (args.length === 1 && args[0] === "--main-test-advisory") {
+    const result = process.env.GITHUB_EVENT_NAME === "push" ? classify(true) : undefined;
+    console.log(JSON.stringify(result?.mode === "tests" ? result.lanes : []));
+    return;
+  }
   checkArguments(args);
   const { line, verified, output } = respond(args, classify());
   console.log(line);

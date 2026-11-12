@@ -744,11 +744,15 @@ test(
   async (context) => {
     const { Pool } = await import("pg");
     const pool = new Pool({ connectionString: databaseUrl });
+    const observer = new Pool({ connectionString: databaseUrl });
     context.after(() => pool.end());
+    context.after(() => observer.end());
     const state = new PostgresPlatformState(pool);
     const iam = new NativeIAMDriver(state, { id: "postgres-namespace-iam-rollback" });
     const { installation, namespace, secret } = await createNamespaceAgentState(state);
     const roleId = identifier("role");
+    const servicePrincipalId = identifier("spn");
+    let servicePrincipalAuditAppended = false;
 
     await assert.rejects(
       state.transact(async (unit) => {
@@ -760,6 +764,23 @@ test(
             permissions: [{ action: "operate", resourceKind: "secret" }],
           },
         );
+        await iam.createNamespaceServicePrincipal(
+          { policy: unit.iamPolicy },
+          { id: servicePrincipalId, namespaceId: namespace.id },
+        );
+        // The valid create event must be rolled back with its identity when the later
+        // invalid-scope audit rejects the transaction.
+        await unit.audit.append({
+          ...auditEvent(
+            installation.id,
+            namespace.id,
+            "principal-postgres-namespace-iam",
+            "openclaw.iam.service_principals.create",
+            { kind: "namespace", id: namespace.id, namespaceId: namespace.id },
+          ),
+          details: { servicePrincipalId },
+        });
+        servicePrincipalAuditAppended = true;
         await unit.audit.append(
           auditEvent(
             installation.id,
@@ -772,11 +793,41 @@ test(
       }),
       { name: "ScopeViolationError" },
     );
+    assert.equal(servicePrincipalAuditAppended, true);
 
     const rolledBack = await state.read((unit) =>
       iam.getNamespaceRole({ policy: unit.iamPolicy }, namespace.id, roleId),
     );
     assert.equal(rolledBack, undefined);
+    // Observe committed rows through a separate pool, outside the rejected unit.
+    assert.deepEqual(
+      (
+        await observer.query("SELECT id FROM occ.iam_identities WHERE id = $1", [
+          servicePrincipalId,
+        ])
+      ).rows,
+      [],
+    );
+    assert.deepEqual(
+      (
+        await observer.query(
+          "SELECT id FROM occ.iam_access_bindings WHERE identity_subject_id = $1",
+          [servicePrincipalId],
+        )
+      ).rows,
+      [],
+    );
+    assert.deepEqual(
+      (
+        await observer.query(
+          `SELECT id FROM occ.audit_events
+           WHERE action = 'openclaw.iam.service_principals.create' AND outcome = 'success'
+             AND details->>'servicePrincipalId' = $1`,
+          [servicePrincipalId],
+        )
+      ).rows,
+      [],
+    );
   },
 );
 

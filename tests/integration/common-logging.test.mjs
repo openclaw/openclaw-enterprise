@@ -586,18 +586,25 @@ test("worker emitter reports health at debug and failures at error", () => {
     namespaceId: "ns_test",
     outcome: "success",
   });
-  emit({
+  const deploymentCompletion = {
     event: "worker.completed",
     workId: "agent_revision:rev_test:reconcile",
     attempt: 1,
+    operation: "agent_revision.reconcile",
+    namespaceId: "ns_test",
+    agentId: "agt_test",
+    revisionId: "rev_test",
+    result: "success",
     outcome: "success",
-    durationMs: 120,
+    code: "REVISION_ACTIVATED",
+    durationMs: 125.25,
     deployPasses: 3,
     prepareMs: 450,
     readinessWaitMs: 2100,
     activationMs: 80,
-    elapsedMs: 2900,
-  });
+    elapsedMs: 2900.123456,
+  };
+  emit(deploymentCompletion);
   emit({
     event: "worker.error",
     code: "DEPENDENCY_UNAVAILABLE",
@@ -645,14 +652,38 @@ test("worker emitter reports health at debug and failures at error", () => {
       elapsedMs: deployed.elapsedMs,
     },
     {
-      durationMs: 120,
+      durationMs: 125.25,
       deployPasses: 3,
       prepareMs: 450,
       readinessWaitMs: 2100,
       activationMs: 80,
-      elapsedMs: 2900,
+      elapsedMs: 2900.123456,
     },
   );
+
+  // Work age advances on the monotonic clock and can retain sub-millisecond precision.
+  for (const elapsedMs of [2900, 0, Number.MAX_SAFE_INTEGER]) {
+    emit({ ...deploymentCompletion, elapsedMs });
+    assert.equal(output.lines.at(-1).elapsedMs, elapsedMs);
+    assert.equal(typeof output.lines.at(-1).elapsedMs, "number");
+  }
+  for (const elapsedMs of [-1, -0.5, NaN, Infinity, -Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+    emit({ ...deploymentCompletion, elapsedMs });
+    assert.equal(
+      Object.hasOwn(output.lines.at(-1), "elapsedMs"),
+      false,
+      `elapsedMs: ${String(elapsedMs)}`,
+    );
+  }
+
+  // Allowing fractional work ages must not allow fractional attempt or deployment counts.
+  emit({ ...deploymentCompletion, attempt: 1.5, deployPasses: 3.5, stopYields: 1.5 });
+  const fractionalCounts = output.lines.at(-1);
+  assert.equal(Object.hasOwn(fractionalCounts, "attempt"), false);
+  assert.equal(Object.hasOwn(fractionalCounts, "deployPasses"), false);
+  assert.equal(Object.hasOwn(fractionalCounts, "stopYields"), false);
+  assert.equal(fractionalCounts.elapsedMs, 2900.123456);
+  assert.equal(fractionalCounts.durationMs, 125.25);
 });
 
 test("worker stop-yield counts survive local JSON logging on pending and completed passes", () => {

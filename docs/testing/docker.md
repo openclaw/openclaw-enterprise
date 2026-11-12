@@ -161,9 +161,19 @@ GitHub read case uses stock Codex to read a pull request title from a local fixt
 
 The [native release workflow](../release/containers.md#check-native-images-without-publication)
 runs a larger suite and prepares the Envoy image and reviewed Codex seccomp profile.
-Use the reviewed `OCC_TEST_CODEX_SECCOMP_PROFILE` in CI and when the Docker default
-blocks the Codex sandbox. The [Image Runtime Startup lane](../../scripts/ci/test-suites/images-runtime-startup.json)
-selects this preparation. The controller check expects an unreachable database; it does
+For a prepared [Image Runtime Startup lane](../../scripts/ci/test-suites/images-runtime-startup.json),
+[run the tests with the original state file](ci/run-lanes.md#keep-an-owned-service-between-file-runs)
+before cleanup. The runner supplies the profile, and the tests check its path and SHA-256
+against the preparation record. Cleanup removes the file with the run-owned cluster directory.
+
+For a standalone run of the default Codex version where Docker's default profile blocks
+the sandbox, obtain the reviewed manual file separately from the image export and set
+`OCC_TEST_CODEX_SECCOMP_PROFILE` to its path. The [smoke helper](../../tests/helpers/runtime-image-startup.mjs)
+checks the versioned filename and the file's SHA-256 against its manual pin.
+Use the prepared lane when the manual file is unavailable or when testing a supported
+historical Codex version.
+
+The controller check expects an unreachable database; it does
 not prove connectivity. Runtime checks do not prove a model turn or Slack delivery.
 
 ### Build images from the checkout
