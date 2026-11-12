@@ -438,7 +438,7 @@ def verify_hook(desired, actual, nonce, kube):
     return None
 
 
-def recover(directory, release, kubeconfig, context, namespace):
+def recover(directory, release, kubeconfig, context, namespace, check_only=False):
     root, record = attempt(directory)
     submission = load(directory / "helm-started")
     require(load(root / "intent.json") == submission
@@ -496,6 +496,12 @@ def recover(directory, release, kubeconfig, context, namespace):
         secret = load(directory / "current-live-installation-secret.json")
         observed.append((secret, secret))
     target = directory / "helm-recovery"
+    require(not target.exists() and not target.is_symlink(), "Helm recovery already started; never replay")
+    if check_only:
+        # Admission before application preflight creates anything. The dispatch
+        # call repeats every check against the same immutable original attempt.
+        print(record["nonce"])
+        return
     target.mkdir(mode=0o700)
     # The exclusive marker's parent entry must survive a host crash too.
     sync_directory(directory)
@@ -679,6 +685,8 @@ def main():
         predecessor_matches(directory)
     elif action == "record":
         record_submission(directory, args[0])
+    elif action == "check-recovery":
+        recover(directory, *args, check_only=True)
     elif action == "recover":
         recover(directory, *args)
     elif action == "verify-recovery":
