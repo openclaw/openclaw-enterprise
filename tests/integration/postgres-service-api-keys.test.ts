@@ -219,6 +219,34 @@ test(
       body?: unknown,
     ): Promise<InjectedResponse> =>
       response(await injectJson(app, method, url, { key, body, host }));
+    const installation = await admin("GET", "/installation");
+    assert.equal(installation.statusCode, 200);
+    const installationId = id(installation);
+    const activeSession = await admin("GET", "/api/auth/session");
+    assert.equal(activeSession.statusCode, 200);
+    const adminAccount = await observer.query<Record<string, unknown>>(
+      "SELECT principal_id FROM occ.human_authentication_accounts WHERE user_id = $1",
+      [stringField(record(data(activeSession)).user, "id")],
+    );
+    assert.equal(adminAccount.rowCount, 1);
+    const adminPrincipalId = stringField(adminAccount.rows[0], "principal_id");
+    const servicePrincipalEffects = async (namespaceId: string) => ({
+      identities: (
+        await observer.query<Record<string, unknown>>(
+          `SELECT id FROM occ.iam_identities
+           WHERE kind = 'service_principal' AND namespace_id = $1 ORDER BY id`,
+          [namespaceId],
+        )
+      ).rows,
+      successAudits: (
+        await observer.query<Record<string, unknown>>(
+          `SELECT id FROM occ.audit_events
+           WHERE action = 'openclaw.iam.service_principals.create'
+             AND namespace_id = $1 AND outcome = 'success' ORDER BY id`,
+          [namespaceId],
+        )
+      ).rows,
+    });
     const namespaceIds = [];
     for (const name of [
       `sp-team-${randomUUID().slice(0, 8)}`,
@@ -229,6 +257,8 @@ test(
       namespaceIds.push(id(created));
     }
     const [teamId, otherId] = namespaceIds;
+    assert.ok(teamId);
+    assert.ok(otherId);
     const base = `/namespaces/${teamId}/iam/service-principals`;
 
     const created = await admin("POST", base, {});
@@ -251,14 +281,53 @@ test(
       ).rows,
       [{ kind: "service_principal", namespace_id: teamId, agent_id: null }],
     );
+    assert.deepEqual(
+      (
+        await observer.query<Record<string, unknown>>(
+          "SELECT id FROM occ.iam_access_bindings WHERE identity_subject_id = $1",
+          [principalId],
+        )
+      ).rows,
+      [],
+    );
     const audit = await observer.query<Record<string, unknown>>(
-      `SELECT outcome, details FROM occ.audit_events
+      `SELECT actor_id, namespace_id, resource_kind, resource_id, outcome FROM occ.audit_events
        WHERE action = 'openclaw.iam.service_principals.create'
          AND details->>'servicePrincipalId' = $1`,
       [principalId],
     );
-    assert.equal(audit.rowCount, 1);
-    assert.equal(stringField(audit.rows[0], "outcome"), "success");
+    assert.deepEqual(audit.rows, [
+      {
+        actor_id: adminPrincipalId,
+        namespace_id: teamId,
+        resource_kind: "namespace",
+        resource_id: teamId,
+        outcome: "success",
+      },
+    ]);
+
+    // A genuine Agent owns another ServicePrincipal in the same Namespace. Ordinary
+    // policy discovery must exclude that workload identity, even when its ID is known.
+    const agentConfiguration = await admin("POST", `/namespaces/${teamId}/configurations`, {
+      kind: "agent",
+      values: {},
+    });
+    assert.equal(agentConfiguration.statusCode, 201);
+    const agent = await admin("POST", `/namespaces/${teamId}/agents`, {
+      name: `sp-agent-${randomUUID().slice(0, 8)}`,
+      configurationId: id(agentConfiguration),
+    });
+    assert.equal(agent.statusCode, 201);
+    const agentPrincipalId = stringField(data(agent), "servicePrincipalId");
+    assert.deepEqual(
+      (
+        await observer.query<Record<string, unknown>>(
+          "SELECT kind, namespace_id, agent_id FROM occ.iam_identities WHERE id = $1",
+          [agentPrincipalId],
+        )
+      ).rows,
+      [{ kind: "service_principal", namespace_id: teamId, agent_id: id(agent) }],
+    );
 
     const listed = await admin("GET", base);
     assert.equal(listed.statusCode, 200);
@@ -266,16 +335,19 @@ test(
       isDeepStrictEqual(data(listed), [principal]),
       "listing must contain the created principal",
     );
+    const found = await admin("GET", `${base}/${principalId}`);
+    assert.equal(found.statusCode, 200);
     assert.ok(
-      isDeepStrictEqual(data(await admin("GET", `${base}/${principalId}`)), principal),
+      isDeepStrictEqual(data(found), principal),
       "lookup must return the created principal",
     );
+    const agentPrincipal = await admin("GET", `${base}/${agentPrincipalId}`);
+    assert.equal(agentPrincipal.statusCode, 404);
     // The principal belongs only to its own Namespace.
+    const siblingList = await admin("GET", `/namespaces/${otherId}/iam/service-principals`);
+    assert.equal(siblingList.statusCode, 200);
     assert.ok(
-      isDeepStrictEqual(
-        data(await admin("GET", `/namespaces/${otherId}/iam/service-principals`)),
-        [],
-      ),
+      isDeepStrictEqual(data(siblingList), []),
       "sibling namespace must have no principals",
     );
     assert.equal(
@@ -284,6 +356,95 @@ test(
       404,
     );
     assert.equal((await admin("POST", base, { name: "unsupported" })).statusCode, 400);
+
+    // Seed an Installation-scoped automation identity with only administer on the
+    // Installation and read on the sibling Namespace. A real key must not turn the
+    // Installation grant into read access to every Namespace.
+    const policyAdminId = `spn_${randomUUID()}`;
+    const policyAdminRoleId = `role_${randomUUID()}`;
+    await observer.query(
+      "INSERT INTO occ.iam_identities (id, kind) VALUES ($1, 'service_principal')",
+      [policyAdminId],
+    );
+    await observer.query("INSERT INTO occ.iam_roles (id, permissions) VALUES ($1, $2::jsonb)", [
+      policyAdminRoleId,
+      JSON.stringify([
+        { action: "administer", resourceKind: "installation" },
+        { action: "read", resourceKind: "namespace" },
+      ]),
+    ]);
+    await observer.query(
+      `INSERT INTO occ.iam_access_bindings
+         (id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id)
+       VALUES ($1, NULL, $3, $4, 'installation', $5), ($2, $6, $3, $4, 'namespace', $6)`,
+      [
+        `binding_${randomUUID()}`,
+        `binding_${randomUUID()}`,
+        policyAdminId,
+        policyAdminRoleId,
+        installationId,
+        otherId,
+      ],
+    );
+    const policyAdminKey = await admin("POST", "/api/auth/service-keys", {
+      servicePrincipalId: policyAdminId,
+      name: "namespace-policy-administrator",
+    });
+    assert.equal(policyAdminKey.statusCode, 201);
+    const policyKeyId = id(policyAdminKey);
+    const policyKey = stringField(data(policyAdminKey), "key");
+    const effectsBeforePolicyDenials = await servicePrincipalEffects(teamId);
+    for (const [method, url, payload] of [
+      ["GET", base],
+      ["GET", `${base}/${principalId}`],
+      ["POST", base, {}],
+    ] satisfies Array<[string, string, unknown?]>) {
+      const denied = await withKey(policyKey, method, url, payload);
+      assert.equal(denied.statusCode, 403, `${method} ${url}`);
+      assert.equal(stringField(record(parseJson(denied.body)).error, "code"), "FORBIDDEN");
+    }
+    assert.deepEqual(await servicePrincipalEffects(teamId), effectsBeforePolicyDenials);
+    const policyDenials = await observer.query<Record<string, unknown>>(
+      `SELECT actor_id, action, namespace_id, resource_kind, resource_id, outcome,
+              details->'__occAuditMetadata'->'authorization' AS authorization
+       FROM occ.audit_events
+       WHERE kind = 'authorization_denial' AND details->>'actorServiceKeyId' = $1
+       ORDER BY action`,
+      [policyKeyId],
+    );
+    assert.deepEqual(
+      policyDenials.rows,
+      ["create", "list", "read"].map((operation) => ({
+        actor_id: policyAdminId,
+        action: `openclaw.iam.service_principals.${operation}`,
+        namespace_id: teamId,
+        resource_kind: "namespace",
+        resource_id: teamId,
+        outcome: "denied",
+        authorization: {
+          principalId: policyAdminId,
+          action: "read",
+          resource: { kind: "namespace", id: teamId, namespaceId: teamId },
+        },
+      })),
+    );
+
+    // The same grants and key permit all three operations in the readable Namespace.
+    const otherBase = `/namespaces/${otherId}/iam/service-principals`;
+    const otherPrincipal = await withKey(policyKey, "POST", otherBase, {});
+    assert.equal(otherPrincipal.statusCode, 201);
+    const otherPrincipalData = data(otherPrincipal);
+    const otherPrincipals = await withKey(policyKey, "GET", otherBase);
+    assert.equal(otherPrincipals.statusCode, 200);
+    assert.deepEqual(data(otherPrincipals), [otherPrincipalData]);
+    const otherPrincipalRead = await withKey(
+      policyKey,
+      "GET",
+      `${otherBase}/${id(otherPrincipal)}`,
+    );
+    assert.equal(otherPrincipalRead.statusCode, 200);
+    assert.deepEqual(data(otherPrincipalRead), otherPrincipalData);
+    assert.equal((await admin("DELETE", `/api/auth/service-keys/${policyKeyId}`)).statusCode, 200);
 
     // The key route already issues Namespace keys; it now has a principal to target.
     const issued = await admin("POST", "/api/auth/service-keys", {
@@ -387,11 +548,13 @@ test(
 
     // The key cannot reach another Namespace, Installation operations, policy management,
     // or credential issuance, including minting principals or keys for itself.
+    const effectsBeforeKeyDenials = await servicePrincipalEffects(teamId);
     for (const [method, url, payload] of [
       ["GET", `/namespaces/${otherId}`],
       ["GET", "/installation"],
       ["POST", base, {}],
       ["GET", base],
+      ["GET", `${base}/${principalId}`],
       [
         "POST",
         `/namespaces/${teamId}/iam/roles`,
@@ -412,14 +575,33 @@ test(
       const denied = await withKey(key.key, method, url, payload);
       assert.equal(denied.statusCode, 403, `${method} ${url}`);
     }
-    assert.equal(
+    assert.deepEqual(await servicePrincipalEffects(teamId), effectsBeforeKeyDenials);
+    assert.deepEqual(
       (
         await observer.query<Record<string, unknown>>(
-          "SELECT 1 FROM occ.iam_identities WHERE namespace_id = $1",
-          [teamId],
+          `SELECT actor_id, namespace_id, resource_kind, resource_id, outcome,
+                  details->'__occAuditMetadata'->'authorization' AS authorization
+           FROM occ.audit_events
+           WHERE kind = 'authorization_denial'
+             AND action = 'openclaw.iam.service_principals.read'
+             AND details->>'actorServiceKeyId' = $1`,
+          [key.id],
         )
-      ).rowCount,
-      1,
+      ).rows,
+      [
+        {
+          actor_id: principalId,
+          namespace_id: teamId,
+          resource_kind: "namespace",
+          resource_id: teamId,
+          outcome: "denied",
+          authorization: {
+            principalId,
+            action: "administer",
+            resource: { kind: "installation", id: installationId },
+          },
+        },
+      ],
     );
 
     // An unknown Namespace gets no principal.
@@ -432,7 +614,7 @@ test(
     assert.equal(revoked.statusCode, 200);
     assert.equal((await withKey(key.key, "GET", `/namespaces/${teamId}`)).statusCode, 401);
 
-    // Each of the key's seven refusals above (the read before its binding and the six
+    // Each of the key's eight refusals above (the read before its binding and the seven
     // out-of-scope requests) names the key; issuance and revocation by the session name the
     // key acted on and its name, with no acting key. No row holds the credential.
     const denials = await observer.query<Record<string, unknown>>(
@@ -440,7 +622,7 @@ test(
        WHERE kind = 'authorization_denial' AND details->>'actorServiceKeyId' = $1`,
       [key.id],
     );
-    assert.equal(denials.rowCount, 7);
+    assert.equal(denials.rowCount, 8);
     assert.ok(denials.rows.every((row) => stringField(row, "actor_id") === principalId));
     const managed = await observer.query<Record<string, unknown>>(
       `SELECT action, details->>'serviceKeyName' AS name, details ? 'actorServiceKeyId' AS keyed
