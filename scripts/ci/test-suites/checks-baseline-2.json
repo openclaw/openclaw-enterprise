@@ -38,6 +38,7 @@
     "tests/integration/model-provider.test.ts",
     "tests/integration/repository-credentials-service-loss.test.ts",
     "tests/integration/ci-runner.test.mjs",
+    "tests/integration/ci-runner-file-outcomes.test.ts",
     "tests/integration/ci-runner-deadline.test.ts",
     "tests/integration/ci-runner-cleanup-allowance.test.ts",
     "tests/integration/ci-runner-preparation.test.ts",
@@ -257,6 +258,16 @@
         "complete lifecycle restricts manifest selection before effects",
         "complete lifecycle losing an attempt claim cannot run phases or clean its winner",
         "complete lifecycle owns detached test groups after deadline or coordinator loss"
+      ]
+    },
+    {
+      "path": "tests/integration/ci-runner-file-outcomes.test.ts",
+      "expectedTests": [
+        "run preserves nonzero child Node exits and rejects zero-case files",
+        "run annotates the first failed file before the lane finishes",
+        "run finishes file accounting and cleanup after a reporter pipe read error",
+        "run records a sanitized file failure after all reported cases pass",
+        "run records failed, skipped, todo, and passed dispositions separately"
       ]
     },
     {
