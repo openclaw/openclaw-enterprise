@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
-updated: 2026-11-05
-last_updated_session: authoring-run/7e95100b-4e77-456d-85a2-e31dc72ccf5e
+updated: 2026-11-12
+last_updated_session: authoring-run/1dda383f-486f-4161-bcd4-fdb427a1adb7
 ---
 
 # Repository credential service flow
@@ -300,6 +300,8 @@ Grace expiry reports unresolved obligations without proving disposal. The origin
 broker writes `DISPOSED` to the worker's receipt journal before reporting it,
 and gives pending terminal writes a separate ten-second window before graceful exit. The Helm worker is a
 restartable init container so its receipt listener outlives broker shutdown.
+When the Worker stops, its private receipt and prepared Git listeners disconnect clients
+and wait for admitted handlers before the Worker closes the database pool.
 Only a committed observation survives restart. Uncommitted or uncertain
 provider inventory remains unknown. The original issuer retains token cleanup;
 the sender closes its TLS and session material after shutdown disposition.
@@ -355,6 +357,8 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 09:05: Describe how Worker shutdown drains private repository handlers. (authoring-run/1dda383f-486f-4161-bcd4-fdb427a1adb7 - 8d3352ca6e3be12cbc6729aa95ccd44f02137b94)
 
 - 2026-11-05 13:04: Refresh session construction while preserving current admission and shutdown behavior. (authoring-run/7e95100b-4e77-456d-85a2-e31dc72ccf5e - ec30be0251ac912467c78856edb3a9c989c1ec00)
 
