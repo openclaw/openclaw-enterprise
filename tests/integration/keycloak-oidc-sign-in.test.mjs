@@ -1108,7 +1108,7 @@ test(
         const count = async () =>
           (await prepared.pool.query('SELECT count(*)::int AS n FROM occ."user"')).rows[0].n;
         const before = await count();
-        await serveConsole(subtest, "client_secret_post", {
+        const served = await serveConsole(subtest, "client_secret_post", {
           secrets: {
             "occ-oidc-login/client-id": clientId,
             "occ-oidc-login/client-secret": clientSecret,
@@ -1126,7 +1126,7 @@ test(
           },
         });
         const open = async () => {
-          const flow = await openPage(subtest, prepared);
+          const flow = await openPage(subtest, served);
           await flow.page.goto(`${origin}/console/`);
           await flow.page.getByRole("button", { name: "Continue with Keycloak" }).click();
           await flow.page.waitForURL((url) => url.origin === new URL(issuer).origin);
