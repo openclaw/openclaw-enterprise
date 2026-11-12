@@ -890,8 +890,9 @@ export function registerCompleteLifecycleCases() {
               return false;
             }
           }, 7_000);
-          assert.ok(isJsonArray(records) && records.every(isDetachedProcess), fixture.stderr());
-          fixture.remember(records);
+          assert.ok(isJsonArray(records), fixture.stderr());
+          fixture.remember(records.filter(isDetachedProcess));
+          assert.ok(records.every(isDetachedProcess), fixture.stderr());
           const coordinator = records.at(-1);
           const body = records[0];
           assert.ok(coordinator && body, "expected recorded coordinator and test body");
