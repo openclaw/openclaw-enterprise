@@ -1,7 +1,7 @@
 ---
 created: "2026-09-20"
-updated: 2026-11-04
-last_updated_session: "claude/session_01HzmRt1DGB79VEnEWHt7PRy"
+updated: 2026-11-12
+last_updated_session: "authoring-run/51e5643c-98f0-4498-9876-768fbfd19f63"
 ---
 
 # Namespace IAM Policy Flow
@@ -39,9 +39,10 @@ graph TD
   C -->|read| D["Controller asks selected IAM Driver to read Namespace policy"]
   C -->|create/delete| S{"Human-session caller?"}
   S -->|yes| L{"Assigning session current?"}
-  L -->|yes, held through transaction| E["Controller validates Role, subject, and exact target"]
+  L -->|yes, held through transaction| CFI["Hold shared IAM configuration lock"]
   L -->|revoked or expired| X["Roll back and deny"]
-  S -->|no| E
+  S -->|no| CFI
+  CFI --> E["Controller validates Role, subject, and exact target"]
   E --> T{"IAM Driver joins transaction?"}
   T -->|yes| F["Selected IAM Driver mutates platform IAM policy"]
   T -->|no| U["Reject with 503 before policy write"]
@@ -77,8 +78,8 @@ and return policy metadata. Create and delete operations use the handler's `tran
 only after the transaction commits. For human sessions, authentication wraps
 `controller.transact` and retains the admitted session before the IAM command and
 checks its expiry again after the command and audit append. PostgreSQL locks the
-user before the session, then the controller takes its existing Namespace and
-account locks. Guarded profiles first reuse
+user before the session, then the controller takes the shared IAM configuration
+lock before its existing Namespace and account locks. Guarded profiles first reuse
 `packages/occ/src/state/human-authentication.ts:PostgresHumanAuthentication.holdSession`,
 which validates the bound account and sign-in method through the existing actor guard.
 Session retention takes shared user locks and preserves the policy transaction's
@@ -104,7 +105,14 @@ issues and revokes its keys.
 
 ### 3. OCC validates policy ownership
 
+`packages/occ/src/index.ts:holdIAMPolicyAuthority`
 `packages/occ/src/index.ts:createIAMAccessBinding`
+
+Each Role and AccessBinding mutation calls `holdIAMPolicyAuthority`, which takes
+the shared configuration fence before the Namespace lock and final checks.
+A configured-read withdrawal therefore commits before authorization or after
+the policy write. A denied write saves no policy change or success audit.
+Configured Roles still cannot grant Installation permissions.
 
 Role creation accepts only nonempty, duplicate-free permissions for Namespace
 resource kinds; `namespace` permissions support only `read`. `iamRolePermissions`
@@ -226,8 +234,9 @@ behavior.
   `groupIds`. `insertNativeIAMPrincipal` takes the IAM configuration lock shared
   and inserts each membership with the account.
 - **Authority fence.** `performFenced` runs each session request inside
-  `controller.withAuthorityFence`. The create paths below and
-  `deployAgentWithAuthorization` call `holdAuthority` first, which holds the
+  `controller.withAuthorityFence`. The four Namespace Role and AccessBinding
+  mutations, the create paths below, and `deployAgentWithAuthorization` call
+  `holdAuthority` first, which holds the
   session through COMMIT and takes the IAM configuration lock shared. Each
   create in a Namespace and the deploy authorize again after `lockNamespace`,
   which AccessBinding deletes also take.
@@ -272,8 +281,9 @@ behavior.
   checks that an unknown commit does not wait for a later rollback query.
 - The production bootstrap Sharing case in
   `tests/integration/postgres-production-wireup.test.ts` checks revocation after
-  real HTTP admission, cross-replica logout ordering, expiry during policy work,
-  and expiry after the final client check with COMMIT paused at the transport. It uses
+  real HTTP admission, both commit orders for configured Namespace and target-read
+  withdrawal, cross-replica logout ordering, expiry during policy work, and expiry
+  after the final client check with COMMIT paused at the transport. It uses
   real authentication, IAM and PostgreSQL; its passive Compute does not prove a native Gateway.
 - The guarded activation case in
   `tests/integration/postgres-password-default-activation.test.ts` checks a
@@ -299,6 +309,7 @@ behavior.
 
 ## Changelog
 
+- 2026-11-12 13:00: Fence Namespace Role and AccessBinding writes against configured read withdrawal. (authoring-run/51e5643c-98f0-4498-9876-768fbfd19f63 - ea43cfdb21e17e6025b53e3d3585977b7df6dcde)
 - 2026-11-04 12:00: Replace the built-in Roles, Group, and membership routes with the configured policy and membership at account creation; deploy grants for any Role. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
 - 2026-11-04 02:25: Recheck Agent update permission under the Namespace lock. (authoring-run/fbfcb29f-156c-4cfd-af1d-fa15224dd2e5 - fdca6e74421067adc66dce4f141d153af0355f68)
 - 2026-11-02 10:00: Trace Owner bindings for every create, the default Namespace binding, and the Namespace Creator setting; drop the Namespace limit. (claude/session_01HzmRt1DGB79VEnEWHt7PRy - aba993606)
