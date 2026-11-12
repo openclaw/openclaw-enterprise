@@ -3,6 +3,7 @@ import test from "node:test";
 import vm from "node:vm";
 import {
   PLUGIN_RUNTIME_TRANSLATOR_SOURCE,
+  PUBLIC_GITHUB_READ_TRANSLATOR_SOURCE,
   type pluginRuntimeTranslator,
 } from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
 
@@ -126,34 +127,38 @@ test("serialized Agent startup ignores template metadata and configures only con
 });
 
 test("serialized Agent startup carries repository broker policy into bridge config", () => {
-  const overlay = translator.codexOpenClawConfiguration({}, [], {
-    repositoryBrokerNetworkPolicy: {
-      host: "git.openclaw-system.svc.cluster.local",
-      domains: { "github.com": "allow" },
-    },
-  });
-
-  assert.ok(overlay);
-  assertRecord(overlay.plugins);
-  assertRecord(overlay.plugins.entries);
-  assertRecord(overlay.plugins.entries.codex);
-  assert.deepEqual(normalizeVmValue(overlay.plugins.entries.codex.config), {
-    appServer: {
-      networkProxy: {
-        enabled: true,
-        mode: "full",
-        allowLocalBinding: true,
-        readOnlyPaths: [
-          "/app/node_modules/openclaw",
-          "/home/node/.openclaw/plugin-skills",
-          "/home/node/openclaw-runtime-assets/plugin-skills",
-          "/opt/oce/repository-credentials",
-          "/run/oce/repository-credentials",
-        ],
-        domains: { "github.com": "allow", "git.openclaw-system.svc.cluster.local": "allow" },
+  for (const source of [PLUGIN_RUNTIME_TRANSLATOR_SOURCE, PUBLIC_GITHUB_READ_TRANSLATOR_SOURCE]) {
+    const current: unknown = vm.runInNewContext(`(${source})()`);
+    assertSerializedTranslator(current);
+    const overlay = current.codexOpenClawConfiguration({}, [], {
+      repositoryBrokerNetworkPolicy: {
+        host: "git.openclaw-system.svc.cluster.local",
+        domains: { "github.com": "allow" },
       },
-    },
-  });
+    });
+
+    assert.ok(overlay);
+    assertRecord(overlay.plugins);
+    assertRecord(overlay.plugins.entries);
+    assertRecord(overlay.plugins.entries.codex);
+    assert.deepEqual(normalizeVmValue(overlay.plugins.entries.codex.config), {
+      appServer: {
+        networkProxy: {
+          enabled: true,
+          mode: "full",
+          allowLocalBinding: true,
+          readOnlyPaths: [
+            "/app/node_modules/openclaw",
+            "/home/node/.openclaw/plugin-skills",
+            "/home/node/openclaw-runtime-assets/plugin-skills",
+            "/opt/oce/repository-credentials",
+            "/run/oce/repository-credentials",
+          ],
+          domains: { "github.com": "allow", "git.openclaw-system.svc.cluster.local": "allow" },
+        },
+      },
+    });
+  }
 });
 
 test("serialized Agent startup cannot use templates in place of a concrete app mapping", () => {

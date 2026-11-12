@@ -1106,7 +1106,13 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
   };
 }
 
-export const PLUGIN_RUNTIME_TRANSLATOR_SOURCE = `() => (${createPluginRuntimeTranslator.toString()})(${JSON.stringify(OPENCLAW_PLUGIN_CATALOG)})`;
+// JSON is embedded in JavaScript source. Escape HTML delimiters and line separators
+// without changing the current catalog's serialized bytes or immutable launches.
+const serializedPluginCatalog = JSON.stringify(OPENCLAW_PLUGIN_CATALOG).replace(
+  /[<>\u2028\u2029]/g,
+  (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+);
+export const PLUGIN_RUNTIME_TRANSLATOR_SOURCE = `() => (${createPluginRuntimeTranslator.toString()})(${serializedPluginCatalog})`;
 
 type Translator = ReturnType<typeof createPluginRuntimeTranslator>;
 

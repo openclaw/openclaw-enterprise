@@ -1,3 +1,5 @@
+import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
+import { openShellNamespaceObjects } from "../helpers/openshell-workspace-protocol.mjs";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -158,13 +160,26 @@ async function fixture(
     },
   );
   let now = Date.parse("2026-10-05T12:00:00Z");
+  const admissionCompute = createTestKubernetesComputeDriver("credential-source-admission", {
+    gatewayRuntime: true,
+    modelProvider,
+  });
   const computeDriver = {
     ...createDevelopmentComputeDriver({ id: "credential-source-compute" }),
     async resolveSandboxNamespace(namespace) {
       return namespace;
     },
+    async resolveSandboxNamespaceContext(namespace, signal) {
+      return { namespace, kubernetes: openShellNamespaceObjects(), signal };
+    },
     ...(runtimeCredentials
       ? {
+          // Keep transport simulated while exercising the current Compute-owned
+          // provider resolution and source destination checks through deployment.
+          resolveHarnessConfiguration:
+            admissionCompute.resolveHarnessConfiguration.bind(admissionCompute),
+          validateHarnessCredentialSources:
+            admissionCompute.validateHarnessCredentialSources.bind(admissionCompute),
           async getAgentRuntimeCredentialStatus() {
             return { transportConfigured: true };
           },
@@ -633,6 +648,14 @@ test("regular QA Agent follows selected Gateway authentication on Compose and Ku
           },
           { id: "openshell-sandbox", backend: f.backend },
         );
+        // Bind the real Sandbox lifecycle adapter to this fixture's Compute
+        // placement, as production composition requires before selection.
+        Object.assign(sandbox, {
+          namespaceLifecycleHooks: sandboxNamespaceLifecycleBinding(
+            f.controller.selectedDriver("compute"),
+            sandbox,
+          ).hooks,
+        });
         f.controller.registerDriver(sandbox);
         f.controller.selectDriver("sandbox", sandbox.id);
       }
@@ -720,15 +743,16 @@ test("regular QA Agent follows selected Gateway authentication on Compose and Ku
           apiKeyAuth: !account,
         });
       if (outcome === "endpoint-mismatch") {
-        await assert.rejects(create(), /HTTP 400 .*must match/);
-        assert.equal(qa.agents.length, 0);
+        // Source registration permits a distinct endpoint. Deployment must
+        // refuse it when the resolved Harness selects a different destination.
+        await assert.rejects(create(), /HTTP 409 .*authorized_base_url/);
+        assert.equal(qa.agents.length, 1);
+        const [source] = await api("GET", `/namespaces/${f.namespace.id}/credential-sources`);
+        assert.equal(source.config.authorized_base_url, "https://other.example.test/v1");
         assert.equal(
-          (await api("GET", `/namespaces/${f.namespace.id}/credential-sources`)).length,
+          (await api("GET", `/namespaces/${f.namespace.id}/agents/${qa.agents[0].id}/revisions`))
+            .length,
           0,
-        );
-        assert.equal(
-          f.secretDriver.calls.some((x) => x.operation === "withValue"),
-          false,
         );
         return;
       }

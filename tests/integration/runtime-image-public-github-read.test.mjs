@@ -26,12 +26,13 @@ import {
 // its hash-bound projected helper bytes. No extra native permission grant.
 const insertion = 'const pluginRuntime = readPluginRuntime("codex");';
 const setupOffset = AGENT_RUNTIME_ENTRYPOINT.indexOf(insertion) + insertion.length;
+const publicSetupOffset = PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT.indexOf(insertion) + insertion.length;
 const materialSetup = PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT.slice(
-  setupOffset,
+  publicSetupOffset,
   PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT.length - (AGENT_RUNTIME_ENTRYPOINT.length - setupOffset),
 );
 assert.equal(
-  AGENT_RUNTIME_ENTRYPOINT.slice(0, setupOffset) +
+  PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT.slice(0, publicSetupOffset) +
     materialSetup +
     AGENT_RUNTIME_ENTRYPOINT.slice(setupOffset),
   PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT,

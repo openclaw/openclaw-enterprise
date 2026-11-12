@@ -13,8 +13,6 @@ import { stopQaAgent } from "./qa-repository.mjs";
 import { loadYaml } from "./qa-utils.mjs";
 import { protectedModelApiKey, redactQaError } from "./qa-secrets.mjs";
 
-const supervisor =
-  "ghcr.io/nvidia/openshell/supervisor:0.1.6@sha256:ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b";
 const url = "https://github.com/octocat/Hello-World.git";
 
 function assertNoDirectGithubPolicy(defaults, additions) {
@@ -231,6 +229,19 @@ console.log(JSON.stringify({ node: fs.realpathSync(process.execPath), skillPath,
 // The stock supervisor loads native system roots. Add only this journey's
 // public reader CA, preserving its binary and certificate verification.
 async function trustReader(f, ca) {
+  // Use Local Setup's immutable supplier pin and the matching retained chart.
+  // An independent pin here can silently test an older supervisor after an upgrade.
+  const supplier = await readFile(
+    new URL("../../internal/occdev/openshell.go", import.meta.url),
+    "utf8",
+  );
+  const supervisor = supplier.match(/openShellSupervisorImage\s*=\s*"([^"]+)"/u)?.[1];
+  const selected =
+    /^ghcr\.io\/nvidia\/openshell\/supervisor:(\d+\.\d+\.\d+)@sha256:[a-f0-9]{64}$/u.exec(
+      supervisor ?? "",
+    );
+  assert.ok(selected, "Local Setup must select an immutable stock OpenShell supervisor");
+  const version = selected[1];
   const peer = f.configuration.drivers.compute.configuration.network.providerHarness;
   const namespace = peer?.namespace;
   const release = peer?.podLabels?.["app.kubernetes.io/instance"];
@@ -296,7 +307,11 @@ async function trustReader(f, ca) {
     const metadata = loadYaml(
       await f.run("helm", ["show", "chart", join(f.stateDirectory, "openshell", file)]),
     );
-    if (metadata.name === "helm-chart" && metadata.version === "0.1.6") {
+    if (
+      metadata.name === "helm-chart" &&
+      metadata.version === version &&
+      metadata.appVersion === version
+    ) {
       chart = file;
       break;
     }

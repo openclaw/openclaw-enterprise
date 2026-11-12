@@ -2559,6 +2559,9 @@ test("Agent deployment freezes Compute service access from source before Sandbox
     }),
     ...(scope?.serviceAccess?.length ? { serviceAccess: change(scope.serviceAccess) } : {}),
   });
+  Object.assign(sandbox, {
+    namespaceLifecycleHooks: sandboxNamespaceLifecycleBinding(compute, sandbox).hooks,
+  });
   f.controller.registerDriver(sandbox);
   f.controller.selectDriver("sandbox", sandbox.id);
   const agent = await f.createAgent({ executionMode: "dedicated" });
