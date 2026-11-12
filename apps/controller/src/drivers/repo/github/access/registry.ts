@@ -321,13 +321,16 @@ export function validateGitHubRepositoryRegistry(
 }
 
 function repositoryTransportPermissions(
-  transport: GitHubRepositoryRegistration["namespaces"][number]["transport"],
-  profile: GitHubProfile,
-): Readonly<Record<string, string>> {
-  if (transport === "git-only") {
+  policy: GitHubRepositoryRegistration["namespaces"][number],
+  profile: GitHubProfile | "github-repository",
+): Readonly<Record<string, string>> | undefined {
+  if (profile === "github-repository") {
+    return policy.permissions;
+  }
+  if (policy.transport === "git-only") {
     return permissionsForProfile("git-ref-write");
   }
-  if (transport === "git-and-draft-pr") {
+  if (policy.transport === "git-and-draft-pr") {
     return permissionsForProfile("git-ref-draft-pr");
   }
   return permissionsForProfile(profile);
@@ -421,10 +424,7 @@ export function resolveGitHubRepositoryBinding(
           ? {}
           : { pullRequestBase: policy.pullRequestBase }),
         ...(policy.draftPullLimit === undefined ? {} : { draftPullLimit: policy.draftPullLimit }),
-        permissions:
-          selectedProfile === "github-repository"
-            ? policy.permissions
-            : repositoryTransportPermissions(policy.transport, selectedProfile),
+        permissions: repositoryTransportPermissions(policy, selectedProfile),
         capabilityPolicy:
           policy.transport === "git-only"
             ? gitOnlyCapabilityPolicy
@@ -446,6 +446,20 @@ export function resolveGitHubRepositoryBinding(
   });
 }
 
+/** Re-resolve saved authority and require the entire admitted binding to remain current. */
+export function resolveCurrentGitHubRepositoryBinding(
+  registry: GitHubRepositoryRegistry,
+  namespaceId: string,
+  binding: AdmittedRepositoryBinding,
+): AdmittedRepositoryBinding | undefined {
+  const current = resolveGitHubRepositoryBinding(registry, {
+    namespaceId,
+    repositoryRef: binding.repositoryRef,
+    profile: binding.profile,
+  });
+  return isDeepStrictEqual(current, binding) ? current : undefined;
+}
+
 /** Resolve the policy ceiling independently of provider token material. */
 export function resolveGitHubStandingApprovalScope(
   registry: GitHubRepositoryRegistry,
@@ -458,12 +472,7 @@ export function resolveGitHubStandingApprovalScope(
   if (!scope) {
     return;
   }
-  const current = resolveGitHubRepositoryBinding(registry, {
-    namespaceId: input.namespaceId,
-    repositoryRef: input.binding.repositoryRef,
-    profile: input.binding.profile,
-  });
-  if (!isDeepStrictEqual(current, input.binding)) {
+  if (!resolveCurrentGitHubRepositoryBinding(registry, input.namespaceId, input.binding)) {
     return;
   }
   return scope;
@@ -516,10 +525,10 @@ function standingApprovalScope(
     pullRequestBase: policy.pullRequestBase ?? null,
     draftPullLimit:
       policy.transport === "git-and-draft-pr" ? (policy.draftPullLimit ?? "one-per-grant") : null,
-    apiPermissions:
-      input.binding.profile === "github-repository"
-        ? policy.permissions!
-        : repositoryTransportPermissions(policy.transport, input.binding.profile as GitHubProfile),
+    apiPermissions: repositoryTransportPermissions(
+      policy,
+      input.binding.profile as GitHubProfile | "github-repository",
+    )!,
     maximumSessionDurationSeconds: registry.maximumDurationSeconds,
     installationPolicyAllowsStanding: true,
     namespacePolicyAllowsStanding: true,
@@ -559,12 +568,8 @@ export function createGitHubRepositoryDeliveryResolver(
     if (!state || state.bindings.length !== 1 || !binding) {
       throw new Error("Repository Git delivery requires one admitted binding.");
     }
-    const resolved = resolveGitHubRepositoryBinding(registry, {
-      namespaceId: revision.namespaceId,
-      repositoryRef: binding.repositoryRef,
-      profile: binding.profile,
-    });
-    if (!isDeepStrictEqual(binding, resolved)) {
+    const resolved = resolveCurrentGitHubRepositoryBinding(registry, revision.namespaceId, binding);
+    if (!resolved) {
       throw new Error("Repository Git delivery requires the current exact registry grant.");
     }
     if (binding.profile === githubInstallationProfile) {
@@ -633,14 +638,7 @@ export function resolveSelectedRepositoryScope(
     .map((binding) => {
       if (
         binding.profile !== "github-repository" ||
-        !isDeepStrictEqual(
-          binding,
-          resolveGitHubRepositoryBinding(registry, {
-            namespaceId,
-            repositoryRef: binding.repositoryRef,
-            profile: binding.profile,
-          }),
-        )
+        !resolveCurrentGitHubRepositoryBinding(registry, namespaceId, binding)
       ) {
         throw new Error("selected-repository-grant-changed");
       }

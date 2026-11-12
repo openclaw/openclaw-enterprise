@@ -138,9 +138,10 @@ Set the immutable `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` references, then run:
 docker pull "$CONTROLLER_IMAGE"
 docker pull "$RUNTIME_IMAGE"
 OCC_TEST_PRODUCTION_IMAGE="$CONTROLLER_IMAGE" OCC_TEST_RUNTIME_IMAGE="$RUNTIME_IMAGE" \
-  node --test tests/integration/production-image-startup.test.mjs \
+  node --test --test-concurrency=1 tests/integration/production-image-startup.test.mjs \
     tests/integration/runtime-image-startup.test.mjs \
     tests/integration/runtime-image-gateway-workspace.test.ts \
+    tests/integration/runtime-image-public-github-read.test.mjs \
     tests/integration/runtime-image-startup-probe.test.mjs \
     tests/integration/runtime-image-codex-readiness.test.ts \
     tests/integration/runtime-image-startup-termination.test.ts \
@@ -154,10 +155,15 @@ OCC_TEST_PRODUCTION_IMAGE="$CONTROLLER_IMAGE" OCC_TEST_RUNTIME_IMAGE="$RUNTIME_I
     tests/integration/repository-runtime-volume.test.ts
 ```
 
-All cases must pass without skips for the exact pair before installation. Repeat
-for changed digests. An unset image selector skips its cases. Runtime checks need
-`OCC_TEST_CODEX_SECCOMP_PROFILE` in CI and when the Docker default blocks the
-Codex sandbox. The controller check expects an unreachable database; it does
+All selected cases must pass without skips for the exact pair before installation.
+Repeat for changed digests. An unset image selector skips its cases. The public
+GitHub read case uses stock Codex to read a pull request title from a local fixture.
+
+The [native release workflow](../release/containers.md#check-native-images-without-publication)
+runs a larger suite and prepares the Envoy image and reviewed Codex seccomp profile.
+Use the reviewed `OCC_TEST_CODEX_SECCOMP_PROFILE` in CI and when the Docker default
+blocks the Codex sandbox. The [Image Runtime Startup lane](../../scripts/ci/test-suites/images-runtime-startup.json)
+selects this preparation. The controller check expects an unreachable database; it does
 not prove connectivity. Runtime checks do not prove a model turn or Slack delivery.
 
 ### Build images from the checkout

@@ -12,9 +12,9 @@ environment; this procedure does not establish production support.
 
 ## Prepare images and trust
 
-Select official OpenShell `v0.1.6`, source commit
-`ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47`, for the gateway, supervisor, and
-static sandbox launcher. Use the immutable digests of the stable `0.1.6` image
+Select official OpenShell `v0.1.8`, source commit
+`f3d976590d3eb1379690a2abaf0f0e26c21d487d`, for the gateway, supervisor, and
+static sandbox launcher. Use the immutable digests of the stable `0.1.8` image
 tags and gateway/Workspace Helm charts from that version. The stable release
 rebuilds its images, so the source-commit image tags select different digests. This release includes emSign public-key distrust from
 [OpenShell #4794](https://github.com/NVIDIA/OpenShell/pull/4794), as well as operator `GetProviderCredentials`
@@ -23,9 +23,9 @@ resolver correction in [#4390](https://github.com/NVIDIA/OpenShell/pull/4390).
 
 | Component               | Immutable image                                                                                               |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------- |
-| Gateway                 | `ghcr.io/nvidia/openshell/gateway@sha256:f0b36dba21d282c52e498c25289658cfd6cd4f343b0069fde5609e25b002cdea`    |
-| Supervisor              | `ghcr.io/nvidia/openshell/supervisor@sha256:ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b` |
-| Static sandbox launcher | `ghcr.io/nvidia/openshell/sandbox@sha256:1038eb5c1f191fa3c34684fd7041b891c78ec570979d487f36e06e08f91bfb63`    |
+| Gateway                 | `ghcr.io/nvidia/openshell/gateway@sha256:d66352a54c680b652e5ddd7d19b9c1189568d18016f360b9b8c64014f13d89c4`    |
+| Supervisor              | `ghcr.io/nvidia/openshell/supervisor@sha256:deadeacfdba6d12ca27e538d0002696369d4de5a4fcad075ab503495503af9d1` |
+| Static sandbox launcher | `ghcr.io/nvidia/openshell/sandbox@sha256:f0fe7dbf18d833acb5da99c405231124718f23b524aa8e3c0108e6f37530033b`    |
 
 OCE keeps its JWT wrapper: Codex needs the local account claims, while the
 supervisor replaces the whole alias with the live credential. Stable-handle
@@ -38,15 +38,9 @@ imports these same pins. When installing separately, select all three immutable
 references through `gateway.image`, `supervisor.image`, and `sandboxRuntime.image`.
 Selecting local charts alone does not select those binaries. Record actual launched
 versions. Earlier `dev.8` and `dev.47` evidence remains bound to its tested pins;
-neither qualifies `v0.1.6`. The release update does not establish a fix for the
+neither qualifies `v0.1.8`. The release update does not establish a fix for the
 known provider-environment disconnect or a successful restart/withdrawal proof.
 
-The previous selection was `v0.1.5`, source commit
-`bdb956f2cd65a635f1294fccf1d138d263bf650f`.
-
-Upgrade the supervisor and static sandbox launcher together. New 0.1.6
-sandboxes reverse the control-connection direction; mixed runtime binaries are
-unsupported. Preserve the configured gateway JWT, OIDC or mTLS authentication.
 The opt-in observed-hook repository credential preview admits 0.1.5 and 0.1.6.
 Use patched 0.1.6 with the existing dedicated workspace, held-launcher challenge
 and live policy/recipient checks. This remains startup observation, not mandatory

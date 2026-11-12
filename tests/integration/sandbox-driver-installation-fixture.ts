@@ -9,6 +9,32 @@ import { loadInstallationFile } from "../helpers/installation-file.ts";
 
 type RefusalDetail = ConfigurationValidationError["error"]["details"][number];
 
+export function openShellWorkspaceHarnessConfiguration() {
+  return {
+    gateway: { workspaceMode: "operator" },
+    kubernetes: {
+      runtimeClassName: "openshell-sandbox",
+      userNamespaces: false,
+      serviceAccount: { mode: "gatewayConfigured" },
+      sandboxDataMount: {
+        subPath: "workspace",
+        mountPath: "/sandbox/enterprise",
+        readOnly: false,
+      },
+    },
+    policy: {
+      process: { runAsUser: "1000", runAsGroup: "1000" },
+      networkPolicies: [
+        {
+          name: "model-egress",
+          endpoints: [{ host: "api.openai.com", ports: [443] }],
+          binaries: [{ path: "/app/bin/model-client" }],
+        },
+      ],
+    },
+  };
+}
+
 export function buildSandboxInstallation() {
   const base = createInstallationDriverConfiguration();
   return {
@@ -40,29 +66,7 @@ export function buildSandboxInstallation() {
       },
       sandbox: {
         id: "openshell-sandbox",
-        configuration: {
-          gateway: { workspaceMode: "operator" },
-          kubernetes: {
-            runtimeClassName: "openshell-sandbox",
-            userNamespaces: false,
-            serviceAccount: { mode: "gatewayConfigured" },
-            sandboxDataMount: {
-              subPath: "workspace",
-              mountPath: "/sandbox/enterprise",
-              readOnly: false,
-            },
-          },
-          policy: {
-            process: { runAsUser: "1000", runAsGroup: "1000" },
-            networkPolicies: [
-              {
-                name: "model-egress",
-                endpoints: [{ host: "api.openai.com", ports: [443] }],
-                binaries: [{ path: "/app/bin/model-client" }],
-              },
-            ],
-          },
-        },
+        configuration: openShellWorkspaceHarnessConfiguration(),
       },
     },
   };

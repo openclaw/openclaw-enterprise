@@ -1061,7 +1061,7 @@ async function validateLaneInputsBeforeSideEffects(lane, { file, modelSelectors 
     }
   }
   const requiredInputs =
-    name === "openshell-installers" && file === undefined
+    isOpenShellLane(name) && file === undefined
       ? [
           ...new Set(
             laneDefinition(name).files.flatMap((entry) =>

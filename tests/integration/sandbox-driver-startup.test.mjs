@@ -9,7 +9,6 @@ import { openShellWorkspaceChartResources } from "../fixtures/openshell-workspac
 import { ConfigurationValidationError as SharedConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { inflateRawSync } from "node:zlib";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
@@ -33,14 +32,16 @@ import {
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
-  PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
+import { inspectOpenShellCodexCommand } from "../fixtures/openshell-codex-command.ts";
 import {
-  nodeProgramArguments,
-  withoutLineComments,
-} from "../../apps/controller/src/drivers/compute/node-program.ts";
+  captureOpenShellHarness,
+  providerEndpointFixture,
+  tlsPinnedWorkspaceSetupCode,
+} from "../fixtures/kubernetes-provider-endpoint.mjs";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
   assertNoManagedMcpRouteOverlap,
@@ -73,7 +74,10 @@ import {
   WORKSPACE_DEFAULTS_ID,
 } from "../../packages/contracts/src/workspace-defaults.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
-import { labelSelectorLabels } from "../helpers/kubernetes-routed-scenarios.mjs";
+import {
+  admitRevisionHarness,
+  labelSelectorLabels,
+} from "../helpers/kubernetes-routed-scenarios.mjs";
 import {
   bindReservedPortInProcess,
   reservedPortArgs,
@@ -1891,8 +1895,6 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
     runtimeSandboxFixture,
     conformanceKubernetesOptions,
     KubernetesComputeDriver,
-    inflateRawSync,
-    withoutLineComments,
   });
   assert.ok(spec.providers.includes(`oce-cs-${"b".repeat(24)}`));
   const runtimeProvider = spec.providers.find((name) => name.startsWith("oce-runtime-"));
@@ -1949,6 +1951,152 @@ test("OpenShell holds withdrawn Codex authentication after a Harness restart", a
   await codexHarnessChecks.holdWithdrawnCodexAuthentication(t);
 });
 
+// The command budget applies after Compute adds the workspace verifier and
+// OpenShell adds links, setup wait and any account bootstrap to CreateSandbox.
+test("OpenShell composes immutable commands from admitted Compute revisions", async (t) => {
+  for (const [loginMode, hasSetup, admitted] of [
+    ["codex_pat", true, true],
+    ["codex_pat", false, true],
+    ["codex_pat", true, false],
+    ["codex_pat", false, false],
+    ["chatgptAuthTokens", true, true],
+  ]) {
+    await t.test(`${loginMode}, setup ${hasSetup}, new admission ${admitted}`, async (t) => {
+      const fixture = providerEndpointFixture({
+        servicePrincipalCredentials: { mode: "disabled" },
+        revisionOverrides: {
+          id: "rev_2c9250cd-6aa2-4493-a73e-2422ec6c1537",
+          agentId: "agt_9bee809d-62ec-4d41-b68d-25ead74b3a4d",
+          servicePrincipalId: "spn_02aa5adc-0b5c-417d-b8d4-1a1de5157809",
+        },
+      });
+      const { driver: compute, revision, sandbox } = fixture;
+      const capture = captureOpenShellHarness(fixture, sandbox);
+      const source = {
+        id: "cs_324fc26c-59b3-43e0-b057-53fce26a2f19",
+        namespaceId: revision.namespaceId,
+        type: loginMode === "codex_pat" ? "codex-pat" : "codex-oauth",
+        name: "fixture source",
+        config: {},
+        secrets: {},
+        ownerCapability: "credential_gateway",
+        driverId: "openshell-credentials",
+        state: "ready",
+        createdAt: revision.createdAt,
+      };
+      const ref = openShellProviderName(source.id);
+      revision.harnessAuth = {
+        method: "credential_source",
+        sourceId: source.id,
+        sourceType: source.type,
+        credentialGatewayId: source.driverId,
+        loginMode,
+      };
+      compute.credentialGatewayDriver = {
+        id: source.driverId,
+        capability: "credential_gateway",
+        implementation: "openshell",
+        listSourceTypes: async () => [
+          { type: source.type, harnessAuth: { loginMode, modelProvider: "openai" } },
+        ],
+        attachForRevision: async () => [
+          {
+            sourceId: source.id,
+            ref,
+            ...(loginMode === "chatgptAuthTokens" && {
+              externalChatgptAuth: {
+                accessTokenPlaceholder: `openshell:resolve:env:s${"1".repeat(64)}_CODEX_ACCESS_TOKEN`,
+                accountId: "fixture-account",
+                planType: "business",
+              },
+            }),
+          },
+        ],
+      };
+      revision.configuration = capture.openshell.configureAgent(
+        revision.configuration,
+        revision.harness,
+      );
+      admitRevisionHarness(compute, revision);
+      if (!admitted) {
+        // Pre-upgrade PAT revisions did not save a Compute admission.
+        delete revision.compute.admission;
+      }
+      const workspaceSetup = {
+        id: "workspace-setup-1f8d6823-aa87-4cba-ae3e-62352e892d12",
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        defaultsId: WORKSPACE_DEFAULTS_ID,
+        completed: false,
+        files: { ...WORKSPACE_DEFAULTS, "AGENTS.md": "Private initial Agent instructions\n" },
+      };
+      const context = {
+        harnessAuth: { ...revision.harnessAuth, source },
+        ...(hasSetup && { workspaceSetup }),
+      };
+      const createSetup = compute.nodeEnrollment.createSetup;
+      compute.nodeEnrollment.createSetup = async (url, nodeUrl) => {
+        const setup = await createSetup(url, nodeUrl);
+        return { ...setup, setupCode: tlsPinnedWorkspaceSetupCode(nodeUrl, setup.expiresAtMs) };
+      };
+
+      await fixture.prepare(undefined, context);
+      fixture.setGatewayServing();
+      // Let the real Compute enrollment write the Agent-owned Secret.
+      const provision = (input = context) =>
+        assert.rejects(fixture.prepare(undefined, input), (error) => error === capture.provisioned);
+      await provision();
+      const { name, spec } = capture.request;
+      const { loader, supervisor, codex } = inspectOpenShellCodexCommand(t, spec.command, {
+        compact: admitted && (hasSetup || loginMode === "codex_pat"),
+        current: admitted,
+      });
+      if (!admitted) {
+        // Stock 0.1.6 Compute and OpenShell at 4d68b3b7 render these exact commands.
+        // Revisions with initial setup embed that release's workspace verifier.
+        assert.equal(
+          createHash("sha256").update(JSON.stringify(spec.command)).digest("hex"),
+          hasSetup
+            ? "b491545115bb907a872b0fe34b56cfc850dd684cd495ec280bb86e4a3f1cf3bc"
+            : "a0d8025d10aeb7dbf26ca8271ad2cecb0eacb3ef1cd0bfafbf22ce251d9bd1fa",
+        );
+      }
+      assert.equal((loader + supervisor).includes(".oce-workspace-setup.json"), hasSetup);
+      if (hasSetup) {
+        assert.match(supervisor, new RegExp(workspaceSetup.id));
+        assert.doesNotMatch(supervisor, /Private initial Agent instructions/);
+      }
+      assert.equal(
+        codex.includes("unsupported_l7_protocol"),
+        admitted && loginMode === "codex_pat",
+      );
+      assert.equal(spec.environment.CODEX_LOGIN_MODE, loginMode);
+      assert.equal(
+        spec.environment.OCE_CODEX_CREDENTIAL_SOURCE,
+        loginMode === "codex_pat" ? "1" : undefined,
+      );
+      assert.equal(
+        (loader + supervisor).includes("OCE_CODEX_CHATGPT_ACCOUNT"),
+        loginMode === "chatgptAuthTokens",
+      );
+
+      if (!admitted && hasSetup) {
+        // Completing setup keeps the legacy Sandbox adoptable, while even one
+        // byte of command drift in its stored spec must be refused.
+        await provision({
+          ...context,
+          workspaceSetup: { ...workspaceSetup, files: {}, completed: true },
+        });
+        capture.gateway.sandboxes.get(name).spec.command[7] += " ";
+        await assert.rejects(
+          fixture.prepare(undefined, context),
+          /without exact AgentRevision ownership and content/,
+        );
+      }
+    });
+  }
+});
+
 for (const harnessId of ["codex", "openclaw"]) {
   test(`OpenShell delivers ${harnessId} initial workspace files privately after supervisor readiness`, async (t) => {
     const gatewayClient = workspaceGatewayClient();
@@ -1956,15 +2104,6 @@ for (const harnessId of ["codex", "openclaw"]) {
     const { context, revision, requirements, prepared } = runtimeSandboxFixture(driver, {
       harnessId,
     });
-    if (harnessId === "codex") {
-      requirements.command = harnessRuntimeCommand(PROTECTED_CODEX_WITH_NODE_ENTRYPOINT);
-      requirements.loginMode = "chatgptAuthTokens";
-      requirements.credentialAttachments[0].externalChatgptAuth = {
-        accessTokenPlaceholder: `openshell:resolve:env:s${"1".repeat(64)}_CODEX_ACCESS_TOKEN`,
-        accountId: "account",
-        planType: "business",
-      };
-    }
     const setup = {
       id: "initial-workspace",
       namespaceId: revision.namespaceId,
@@ -2023,12 +2162,6 @@ for (const harnessId of ["codex", "openclaw"]) {
     const provision = () => driver.provisionHarness({ ...context, revision, requirements });
 
     await provision();
-    const commandBytes = Buffer.byteLength(JSON.stringify(sandbox.spec.command));
-    assert.ok(
-      commandBytes <= 65_536,
-      `final OpenShell command with workspace setup is ${commandBytes} bytes`,
-    );
-    t.diagnostic(`Final ${harnessId} command with workspace setup: ${commandBytes} bytes`);
     assert.equal(executions.length, 0, "private initialization waits for supervisor readiness");
     assert.equal(prepared.length, harnessId === "openclaw" ? 1 : 0);
     sandbox.phase = "SANDBOX_PHASE_READY";
@@ -3647,7 +3780,7 @@ test(
         protectedGit.computeDriver.validateExecutionAdmission(rev, owner);
         assert.match(
           protectedGit.computeDriver.admitRevision(rev),
-          /^model-provider:v1:[a-f0-9]{64}:protected-codex-no-connection-retry:v1$/,
+          /^model-provider:v1:[a-f0-9]{64}:openshell-codex-launch:v1:protected-codex-no-connection-retry:v1$/,
         );
         protectedGit.computeDriver.validateRepositoryCredentials(rev.harness, sandbox.id);
         // Preparation accepts the configured facilities independently of the release label.

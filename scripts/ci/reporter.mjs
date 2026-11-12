@@ -1115,6 +1115,7 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
   ];
   const vocabularies = {
     proofRpcCode: ["UNAVAILABLE", "INVALID_REQUEST", "NOT_FOUND", "UNAUTHORIZED", "FORBIDDEN"],
+    placementReadFailure: ["request-start-timeout", "session-model-catalog-unavailable"],
     historyExecErrorFlag: ["none", "false", "true", "absent", "other", "mixed"],
     historyExecOuterStatus: ["completed", "failed", "waiting"],
     historyExecOuterCode: [

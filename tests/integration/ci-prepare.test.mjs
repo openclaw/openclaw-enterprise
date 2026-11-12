@@ -1015,6 +1015,7 @@ describe("CI preparation", { concurrency }, () => {
       OCC_CI_SUITE_VIEW: "full-integration",
       NODE_BASE_IMAGE: packagingNodeBaseImage,
       CODEX_ACCESS_TOKEN: "synthetic-model-credential",
+      OPENAI_API_KEY: "synthetic-model-credential",
       OCC_TEST_OPENAI_MODEL: "synthetic-model",
       BUILDX_BUILDER: "owned-installer-builder",
     });
@@ -3724,7 +3725,7 @@ if (args[0] === "pull") {
     const other = "tests/integration/local-first-agent-openshell-real.test.mjs";
     const cases = [
       { harness: "codex", credentials: ["CODEX_ACCESS_TOKEN", "OPENAI_API_KEY"] },
-      { harness: "codex", credentials: ["CODEX_ACCESS_TOKEN"] },
+      { harness: "codex", credentials: ["CODEX_ACCESS_TOKEN"], missing: "OPENAI_API_KEY" },
       { harness: "codex", credentials: ["OPENAI_API_KEY"], missing: "CODEX_ACCESS_TOKEN" },
       { harness: "openclaw", credentials: ["OPENAI_API_KEY"], missing: "CODEX_ACCESS_TOKEN" },
       { harness: "openclaw", credentials: ["OPENAI_API_KEY"], file: owner },
@@ -3908,56 +3909,62 @@ if (args[0] === "pull") {
     }
   });
 
-  // The complete installer cohort includes API-key workflows and a finite-Git
-  // PAT workflow. Reject either missing input before creating shared resources.
-  for (const harness of ["codex", "openclaw"]) {
-    for (const credentials of [
-      [],
-      ["OPENAI_API_KEY"],
-      ["CODEX_ACCESS_TOKEN"],
-      ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"],
-    ]) {
-      test(`whole OpenShell installer admission with ${harness} and ${credentials.join("+") || "no credentials"}`, async (t) => {
-        const root = await fixture(t);
-        const statePath = join(root, "installers.json");
-        const result = await runProgram(
-          `const { prepareLane } = await import(process.argv[1]);
-           await prepareLane({ lane: "openshell-installers", statePath: process.argv[2] });`,
-          statePath,
-          {
-            ...process.env,
-            GITHUB_ENV: "",
-            GITHUB_OUTPUT: "",
-            OCC_CI_SUITE_VIEW: "full-integration",
-            OPENAI_API_KEY: "",
-            CODEX_ACCESS_TOKEN: "",
-            ...Object.fromEntries(
-              credentials.map((name) => [name, "synthetic-fixture-credential"]),
-            ),
-            OCC_TEST_OPENAI_MODEL: "fixture-model",
-            OCC_TEST_OPENSHELL_HARNESS: harness,
-            OCC_TEST_OPENSHELL_MODEL_BASE_URL: "",
-            OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE: "",
-            // Valid credential admission stops here instead of creating resources.
-            OCC_TEST_KUBERNETES_GATEWAY_IMAGE: mutableImage,
-          },
-          10_000,
-        );
-        assert.equal(result.status, 1);
-        const missing = ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"].filter(
-          (name) => !credentials.includes(name),
-        );
-        if (missing.length) {
-          assert.match(result.stderr, /Missing required CI input/u);
-          for (const name of missing) {
-            assert.ok(result.stderr.includes(name), `missing credential ${name} must be reported`);
+  // Each complete OpenShell cohort includes API-key and PAT workflows. Reject
+  // either missing input before creating shared resources.
+  for (const lane of ["openshell", "openshell-policy", "openshell-installers"]) {
+    for (const harness of ["codex", "openclaw"]) {
+      for (const credentials of [
+        [],
+        ["OPENAI_API_KEY"],
+        ["CODEX_ACCESS_TOKEN"],
+        ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"],
+      ]) {
+        test(`whole ${lane} admission with ${harness} and ${credentials.join("+") || "no credentials"}`, async (t) => {
+          const root = await fixture(t);
+          const statePath = join(root, "cohort.json");
+          const result = await runProgram(
+            `const { prepareLane } = await import(process.argv[1]);
+           await prepareLane({ lane: ${JSON.stringify(lane)}, statePath: process.argv[2] });`,
+            statePath,
+            {
+              ...process.env,
+              GITHUB_ENV: "",
+              GITHUB_OUTPUT: "",
+              OCC_CI_SUITE_VIEW: lane === "openshell" ? "default" : "full-integration",
+              OPENAI_API_KEY: "",
+              CODEX_ACCESS_TOKEN: "",
+              ...Object.fromEntries(
+                credentials.map((name) => [name, "synthetic-fixture-credential"]),
+              ),
+              OCC_TEST_OPENAI_MODEL: "fixture-model",
+              OCC_TEST_OPENSHELL_HARNESS: harness,
+              OCC_K3D_HARNESS: harness,
+              OCC_TEST_OPENSHELL_MODEL_BASE_URL: "",
+              OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE: "",
+              // Valid credential admission stops here instead of creating resources.
+              OCC_TEST_KUBERNETES_GATEWAY_IMAGE: mutableImage,
+            },
+            10_000,
+          );
+          assert.equal(result.status, 1);
+          const missing = ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"].filter(
+            (name) => !credentials.includes(name),
+          );
+          if (missing.length) {
+            assert.match(result.stderr, /Missing required CI input/u);
+            for (const name of missing) {
+              assert.ok(
+                result.stderr.includes(name),
+                `missing credential ${name} must be reported`,
+              );
+            }
+            assert.doesNotMatch(result.stderr, /must be an immutable/u);
+          } else {
+            assert.match(result.stderr, /OCC_TEST_KUBERNETES_GATEWAY_IMAGE must be an immutable/u);
           }
-          assert.doesNotMatch(result.stderr, /must be an immutable/u);
-        } else {
-          assert.match(result.stderr, /OCC_TEST_KUBERNETES_GATEWAY_IMAGE must be an immutable/u);
-        }
-        await assert.rejects(stat(statePath), { code: "ENOENT" });
-      });
+          await assert.rejects(stat(statePath), { code: "ENOENT" });
+        });
+      }
     }
   }
 
@@ -4009,7 +4016,7 @@ if (args[0] === "pull") {
       OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: immutableImage,
     };
     for (const [name, version] of [
-      ["stock", { OCC_TEST_OPENSHELL_CHART_VERSION: "0.1.6" }],
+      ["stock", { OCC_TEST_OPENSHELL_CHART_VERSION: "0.1.8" }],
       [
         "candidate",
         {

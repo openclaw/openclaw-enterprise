@@ -623,7 +623,7 @@ function environment(
     if ("valueFrom" in entry) {
       throw new SandboxRevisionUnsupportedError(
         "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED",
-        `OpenShell v0.1.5 cannot receive secretKeyRef environment ${entry.name}; upstream Secret projection support is required.`,
+        `OpenShell cannot receive secretKeyRef environment ${entry.name}; upstream Secret projection support is required.`,
       );
     }
     // Account claims are opaque data, not paths inside the Harness filesystem.
@@ -1354,8 +1354,8 @@ function sandboxCommand(
     prelude + loader,
     ...command.slice(loaderIndex + 1),
   ];
-  // Preserve existing immutable Sandbox commands that fit. Larger preludes use
-  // the same codec as the Harness so the complete command retains its 64 KiB budget.
+  // Keep the existing command encoding. Pack larger preludes with the program
+  // to reduce their size, including for revisions above the 64 KiB design target.
   return Buffer.byteLength(JSON.stringify(composed)) <= 65_536
     ? composed
     : [
@@ -3414,7 +3414,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (context.requirements.workloadIdentity !== undefined) {
       throw new SandboxRevisionUnsupportedError(
         "SANDBOX_HARNESS_UNSUPPORTED",
-        "OpenShell v0.1.5 cannot preserve an Agent ServiceAccount and projected identity token; disable ServicePrincipal credentials or select another Sandbox Driver.",
+        "OpenShell cannot preserve an Agent ServiceAccount and projected identity token; disable ServicePrincipal credentials or select another Sandbox Driver.",
       );
     }
     labels(context.requirements.labels, "Harness workload labels");
