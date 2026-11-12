@@ -129,11 +129,12 @@ function safeStatus(value: unknown) {
     : undefined;
 }
 
+const podPhases = ["Pending", "Running", "Succeeded", "Failed", "Unknown"];
+
 function pluginStatusPods(value: unknown) {
   if (!isUnknownArray(value)) {
     return undefined;
   }
-  const phases = ["Pending", "Running", "Succeeded", "Failed", "Unknown"];
   const reasons = [
     "ContainerCreating",
     "PodInitializing",
@@ -153,7 +154,7 @@ function pluginStatusPods(value: unknown) {
     .slice(0, 3)
     .filter(
       (pod): pod is Record<string, unknown> & { phase: string } =>
-        isRecord(pod) && includes(phases, pod.phase),
+        isRecord(pod) && includes(podPhases, pod.phase),
     )
     .map((pod) => ({
       phase: pod.phase,
@@ -216,11 +217,17 @@ function schedulingFailureClasses(value: unknown) {
   if (!isUnknownArray(value) || value.length > allowed.length) {
     return ["other"];
   }
-  const unknown = value.some((entry) => !includes(allowed, entry));
+  const hasUnrecognizedClass = value.some((entry) => !includes(allowed, entry));
   const classes = allowed.filter(
-    (entry) => value.includes(entry) || (entry === "other" && unknown),
+    (entry) => value.includes(entry) || (entry === "other" && hasUnrecognizedClass),
   );
   return classes.length > 0 ? classes : ["other"];
+}
+
+function nonnegativeSafeInteger(value: unknown, maximum = Number.MAX_SAFE_INTEGER) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= maximum
+    ? value
+    : undefined;
 }
 
 function relayPodDiagnostic(value: unknown) {
@@ -232,14 +239,10 @@ function relayPodDiagnostic(value: unknown) {
   }
   const closed = (field: unknown, allowed: string[]) =>
     includes(allowed, field) ? field : "other";
-  const integer = (field: unknown, maximum: number) =>
-    typeof field === "number" && Number.isSafeInteger(field) && field >= 0 && field <= maximum
-      ? field
-      : undefined;
   const boolean = (field: unknown) => (typeof field === "boolean" ? field : undefined);
   return {
     lookup: "found",
-    phase: closed(value.phase, ["Pending", "Running", "Succeeded", "Failed", "Unknown"]),
+    phase: closed(value.phase, podPhases),
     scheduled: closed(value.scheduled, ["True", "False", "Unknown"]),
     scheduledReason:
       value.scheduledReason === undefined
@@ -265,8 +268,8 @@ function relayPodDiagnostic(value: unknown) {
       "OOMKilled",
       "ContainerCannotRun",
     ]),
-    exitCode: integer(value.exitCode, 255),
-    restartCount: integer(value.restartCount, 2 ** 31 - 1),
+    exitCode: nonnegativeSafeInteger(value.exitCode, 255),
+    restartCount: nonnegativeSafeInteger(value.restartCount, 2 ** 31 - 1),
     nodeAssigned: boolean(value.nodeAssigned),
     imageIdPresent: boolean(value.imageIdPresent),
     containerIdPresent: boolean(value.containerIdPresent),
@@ -277,13 +280,11 @@ function filesystemCounters(value: unknown) {
   if (!isRecord(value)) {
     return undefined;
   }
-  const integer = (field: unknown) =>
-    typeof field === "number" && Number.isSafeInteger(field) && field >= 0 ? field : undefined;
   return {
-    availableBytes: integer(value.availableBytes),
-    capacityBytes: integer(value.capacityBytes),
-    inodesFree: integer(value.inodesFree),
-    inodes: integer(value.inodes),
+    availableBytes: nonnegativeSafeInteger(value.availableBytes),
+    capacityBytes: nonnegativeSafeInteger(value.capacityBytes),
+    inodesFree: nonnegativeSafeInteger(value.inodesFree),
+    inodes: nonnegativeSafeInteger(value.inodes),
   };
 }
 
@@ -337,25 +338,23 @@ function relayNodeDiagnostic(value: unknown) {
   if (value.lookup !== "found") {
     return { lookup: value.lookup === "unavailable" ? "unavailable" : "other" };
   }
-  const condition = (field: unknown) =>
-    includes(["True", "False", "Unknown"], field) ? field : "other";
-  const count = (field: unknown) =>
-    typeof field === "number" && Number.isSafeInteger(field) && field >= 0 && field <= 2 ** 31 - 1
-      ? field
-      : undefined;
+  const condition = (key: string) => {
+    const field = optionalProperty(value.conditions, key);
+    return includes(["True", "False", "Unknown"], field) ? field : "other";
+  };
   return {
     lookup: "found",
     conditions: {
-      ready: condition(optionalProperty(value.conditions, "ready")),
-      diskPressure: condition(optionalProperty(value.conditions, "diskPressure")),
-      memoryPressure: condition(optionalProperty(value.conditions, "memoryPressure")),
-      pidPressure: condition(optionalProperty(value.conditions, "pidPressure")),
-      networkUnavailable: condition(optionalProperty(value.conditions, "networkUnavailable")),
+      ready: condition("ready"),
+      diskPressure: condition("diskPressure"),
+      memoryPressure: condition("memoryPressure"),
+      pidPressure: condition("pidPressure"),
+      networkUnavailable: condition("networkUnavailable"),
     },
     unschedulable: typeof value.unschedulable === "boolean" ? value.unschedulable : undefined,
     taints: nodeTaintDiagnostics(value.taints),
-    taintCount: count(value.taintCount),
-    unrecognizedTaintCount: count(value.unrecognizedTaintCount),
+    taintCount: nonnegativeSafeInteger(value.taintCount, 2 ** 31 - 1),
+    unrecognizedTaintCount: nonnegativeSafeInteger(value.unrecognizedTaintCount, 2 ** 31 - 1),
     filesystems: nodeFilesystemDiagnostic(value.filesystems),
   };
 }
