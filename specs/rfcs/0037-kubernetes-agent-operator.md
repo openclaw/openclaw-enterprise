@@ -8,7 +8,7 @@ author: uggy-ug
 
 - **ID:** RFC-0037
 - **Created:** 2026-11-11
-- **Last updated:** 2026-11-11
+- **Last updated:** 2026-11-12
 - **Implementation plan:** [Operator delivery](../plans/0037-kubernetes-agent-operator.md)
 - **Related:** [Platform architecture](../../docs/design.md),
   [Agent provisioning](../../docs/flows/agent-provisioning.md),
@@ -227,6 +227,17 @@ Credential rotation preserves the registered authority; it does not create a
 new owner. Recreating a CR with a new UID cannot silently adopt old resources.
 Resolved Connection/Namespace UIDs and OCC identities are immutable for that
 binding. Reusing a referenced Kubernetes name cannot retarget an existing Agent.
+
+For first-time managed creation, require Agent `create` and `administer` on the
+Namespace collection plus Configuration `create`, and the existing exact source
+permissions. This delegates creation within that Namespace without Installation
+administration. Ordinary provisioning keeps its Installation `administer`
+requirement. Persist the source, actor and initial generation in the provisioning
+plan, then publish external ownership atomically with Agent creation. The worker
+reauthorizes that same delegated scope. Recover the accepted request by its
+original actor, Namespace and request ID before applying newer desired input;
+status loss must not create another job. A released owner cannot reacquire the
+Agent through creation replay.
 
 Add authorized apply, read, and release operations with these semantics:
 
