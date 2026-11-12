@@ -10,10 +10,12 @@ import {
   type fakeGoogle,
 } from "../helpers/production-sign-in.mjs";
 import {
+  authOperation,
   accountPrincipalId,
   first,
   injectLocalhost,
   integer,
+  parseAuthResponse,
   readAccount,
   record,
   recordData,
@@ -67,15 +69,6 @@ type GuardedProfileContext = {
     claims?: Record<string, unknown>,
   ) => Promise<GoogleSignIn>;
 };
-
-// Authentication helpers can include response bodies in errors; preserve the operation without echoing credentials.
-export async function authOperation<T>(label: string, operation: () => Promise<T>): Promise<T> {
-  try {
-    return await operation();
-  } catch {
-    throw new Error(`${label} failed`);
-  }
-}
 
 function authorizationUrl(value: string): URL {
   try {
@@ -135,12 +128,15 @@ export async function runGoogleGuardedProfileCases(
     async () => {
       const providers = await app.inject({ url: "/api/auth/providers" });
       assert.ok(
-        isDeepStrictEqual(recordData(providers.json()), {
-          google: true,
-          oidc: false,
-          password: true,
-          sessionBinding: true,
-        }),
+        isDeepStrictEqual(
+          recordData(parseAuthResponse("read configured authentication providers", providers)),
+          {
+            google: true,
+            oidc: false,
+            password: true,
+            sessionBinding: true,
+          },
+        ),
       );
       assert.deepEqual(
         (
@@ -152,7 +148,10 @@ export async function runGoogleGuardedProfileCases(
       );
       const recovery = await app.inject({ url: "/api/auth/recovery", headers: adminHeaders });
       assert.equal(recovery.statusCode, 200);
-      assert.ok(recordData(recovery.json()).userId === admin.id);
+      assert.ok(
+        recordData(parseAuthResponse("read the authentication recovery user", recovery)).userId ===
+          admin.id,
+      );
       // OIDC stays unconfigured on a Google-only install.
       const oidcStart = await injectLocalhost(app, "POST", "/api/auth/providers/oidc/start", {
         remoteAddress: address(),
@@ -162,7 +161,9 @@ export async function runGoogleGuardedProfileCases(
       // The controller's fixed endpoints are the ones Google's discovery document names.
       const start = await startGoogle();
       assert.equal(start.statusCode, 200);
-      const authorize = authorizationUrl(text(recordData(start.json()).url));
+      const authorize = authorizationUrl(
+        text(recordData(parseAuthResponse("start Google authorization", start)).url),
+      );
       // Compare the authorization URL without printing provider-supplied values on failure.
       assert.ok(
         `${authorize.origin}${authorize.pathname}` === google.discovery.authorization_endpoint,
@@ -215,11 +216,14 @@ export async function runGoogleGuardedProfileCases(
     const account = await authOperation("read member account", () =>
       readAccount(app, adminHeaders, member.id),
     );
-    assert.deepEqual(
-      account.methods
-        .filter(({ providerId }) => providerId !== "credential")
-        .map(({ providerId, subject }) => [providerId, subject]),
-      [[googleProviderId, memberSubject]],
+    assert.ok(
+      isDeepStrictEqual(
+        account.methods
+          .filter(({ providerId }) => providerId !== "credential")
+          .map(({ providerId, subject }) => [providerId, subject]),
+        [[googleProviderId, memberSubject]],
+      ),
+      "the member account has its attached Google identity",
     );
 
     const signIn = await assertGoogleSignIn(memberSubject, member.id);
@@ -259,8 +263,13 @@ export async function runGoogleGuardedProfileCases(
     );
     const exchanged = await result({ cookie, origin }, signIn.attemptId);
     assert.equal(exchanged.statusCode, 200);
-    const sessionKey = text(recordData(exchanged.json()).sessionKey);
-    assert.ok(text(record(await currentSession(app, cookie)).sessionKey) === sessionKey);
+    const sessionKey = text(
+      recordData(parseAuthResponse("exchange the Google login receipt", exchanged)).sessionKey,
+    );
+    const session = await authOperation<unknown>("read the exchanged Google session", () =>
+      currentSession(app, cookie),
+    );
+    assert.ok(text(record(session).sessionKey) === sessionKey);
     const replay = await result({ cookie, origin }, signIn.attemptId);
     assert.equal(replay.statusCode, 401, "the receipt is one-use");
 
@@ -344,7 +353,7 @@ export async function runGoogleGuardedProfileCases(
     assert.deepEqual(await counts(), before);
 
     const start = await startGoogle();
-    const url = text(recordData(start.json()).url);
+    const url = text(recordData(parseAuthResponse("start Google authorization", start)).url);
     const attemptState = text(authorizationUrl(url).searchParams.get("state"));
     const tokensBefore = google.tokens.length;
     const unbound = await googleCallback(attemptState, url);

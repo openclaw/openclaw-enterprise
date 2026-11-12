@@ -18,10 +18,12 @@ import {
   fixtureOidcIssuer,
 } from "../helpers/production-sign-in.mjs";
 import {
+  authOperation,
   changeAccount,
   injectLocalhost,
   oidcSignIn,
   onboarded,
+  parseAuthResponse,
   passwordSignIn,
   readAccount,
   recordData,
@@ -31,7 +33,6 @@ import {
   type SignInApp,
 } from "../helpers/postgres-sign-in-test-boundaries.ts";
 import {
-  authOperation,
   runGoogleGuardedProfileCases,
   type GoogleAuthorization,
   type GoogleSignIn,
@@ -246,7 +247,9 @@ test(
         payload: { expectedVersion: account.version },
       });
       assert.equal(detached.statusCode, 200);
-      const session: unknown = await currentSession(app, cookie);
+      const session = await authOperation<unknown>("read the revoked Google session", () =>
+        currentSession(app, cookie),
+      );
       assert.ok(session === null, "the Google session ends");
       await assertGoogleRefused({ subject: memberSubject }, "detached subject");
       // The reserved-lane check above spent the member's email budget. The browser's
@@ -264,7 +267,9 @@ test(
       const { cookie } = await assertGoogleSignIn(disabledSubject, disabled.id);
       const disable = await changeAccount(app, adminHeaders, disabled.id, "disable");
       assert.equal(disable.statusCode, 200);
-      const session: unknown = await currentSession(app, cookie);
+      const session = await authOperation<unknown>("read the revoked Google session", () =>
+        currentSession(app, cookie),
+      );
       assert.ok(session === null);
       await assertGoogleRefused(
         { subject: disabledSubject },
@@ -293,7 +298,12 @@ test(
       );
       assert.ok(
         isDeepStrictEqual(
-          recordData((await dualApp.inject({ url: "/api/auth/providers" })).json()),
+          recordData(
+            parseAuthResponse(
+              "read configured authentication providers",
+              await dualApp.inject({ url: "/api/auth/providers" }),
+            ),
+          ),
           {
             oidc: true,
             google: true,
@@ -328,10 +338,13 @@ test(
           [both.id],
         )
       ).rows;
-      assert.deepEqual(methods, [
-        { provider_id: googleProviderId, account_id: bothSubject },
-        { provider_id: oidcProviderId, account_id: bothOidcSubject },
-      ]);
+      assert.ok(
+        isDeepStrictEqual(methods, [
+          { provider_id: googleProviderId, account_id: bothSubject },
+          { provider_id: oidcProviderId, account_id: bothOidcSubject },
+        ]),
+        "each provider keeps its own attached subject",
+      );
       assert.notEqual(oidcProviderId, googleProviderId);
       // A Google subject never signs in through OIDC, nor the reverse.
       const crossed = await authOperation("crossed OIDC sign-in", () =>
@@ -340,7 +353,10 @@ test(
       assert.ok(crossed.callback.headers.location === "/console/?authError=oidc");
       await assertGoogleRefused({ subject: bothOidcSubject }, "OIDC subject at Google");
       const recovery = await dualApp.inject({ url: "/api/auth/recovery", headers: adminHeaders });
-      assert.ok(recordData(recovery.json()).userId === admin.id);
+      assert.ok(
+        recordData(parseAuthResponse("read the authentication recovery user", recovery)).userId ===
+          admin.id,
+      );
     });
   },
 );

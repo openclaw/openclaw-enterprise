@@ -8,8 +8,10 @@ import { assertSessionUser, consoleOrigin as origin } from "../helpers/productio
 import { assertSpentDeviceProofRefusal } from "../helpers/password-proof-refusal.mjs";
 import { signInRateLimited } from "../helpers/refusal-text.mjs";
 import {
+  authOperation,
   changeAccount,
   injectLocalhost,
+  parseAuthResponse,
   passwordSignIn,
   record,
   text,
@@ -115,7 +117,9 @@ export async function runPasswordFallbackCases(t: TestContext, context: Password
       );
       const known = await signInWith(device, member, "192.0.2.62");
       assert.equal(known.statusCode, 200);
-      await assertSessionUser(app, known, member.id);
+      await authOperation("verify the password fallback session", () =>
+        assertSessionUser(app, known, member.id),
+      );
       // The cookie is bound to its account and grants nothing for another email.
       const foreign = await signInWith(device, { ...other, password: wrong }, "192.0.2.62");
       assert.equal(foreign.statusCode, 401);
@@ -198,11 +202,15 @@ export async function runPasswordFallbackCases(t: TestContext, context: Password
     const slowed = await passwordSignIn(app, origin, admin, "192.0.2.65");
     assert.equal(slowed.statusCode, 200);
     assert.ok(performance.now() - started >= slowLane.maxFloorMs - 10, "the attempt was slowed");
-    await assertSessionUser(app, slowed, admin.id);
+    await authOperation("verify the password fallback session", () =>
+      assertSessionUser(app, slowed, admin.id),
+    );
     // The browser that signed in before spends its own lane instead.
     const known = await signInWith(device, admin, "192.0.2.64");
     assert.equal(known.statusCode, 200);
-    await assertSessionUser(app, known, admin.id);
+    await authOperation("verify the password fallback session", () =>
+      assertSessionUser(app, known, admin.id),
+    );
   });
 
   // A known-device entry is bound to the account's password and enabled state: a password
@@ -273,7 +281,7 @@ export async function runPasswordFallbackCases(t: TestContext, context: Password
     assert.equal(withCookie.statusCode, 401);
     assert.equal(withoutCookie.statusCode, 401);
     const bodyOf = (response: InjectedResponse): Record<string, unknown> => ({
-      ...record(response.json()),
+      ...record(parseAuthResponse("read the password refusal", response)),
       meta: undefined,
     });
     assert.ok(

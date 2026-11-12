@@ -141,6 +141,26 @@ export function response(value: unknown): InjectedResponse {
   return value;
 }
 
+// Authentication responses and parser errors can include credentials.
+export function parseAuthResponse(
+  label: string,
+  response: Pick<InjectedResponse, "json">,
+): unknown {
+  try {
+    return response.json();
+  } catch {
+    throw new Error(`${label} returned invalid JSON`);
+  }
+}
+
+export async function authOperation<T>(label: string, operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch {
+    throw new Error(`${label} failed`);
+  }
+}
+
 export function recordData(value: unknown): Record<string, unknown> {
   return record(record(value).data);
 }

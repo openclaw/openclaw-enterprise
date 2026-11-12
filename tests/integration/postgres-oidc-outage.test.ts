@@ -11,6 +11,7 @@ import {
   oidcUpgradeSettings,
 } from "../helpers/production-sign-in.mjs";
 import {
+  authOperation,
   injectLocalhost,
   integer,
   onboarded,
@@ -33,14 +34,6 @@ const memberSubject = 7_000_001;
 // email three times in a window reaches the 4 s floor otherwise. The slots and budgets stay
 // the production values.
 const slowLane = { floorMs: 250, maxFloorMs: 500 };
-
-async function withoutSensitiveFailure<T>(stage: string, operation: () => Promise<T>): Promise<T> {
-  try {
-    return await operation();
-  } catch {
-    throw new Error(`${stage} failed; authentication details omitted`);
-  }
-}
 
 function assertRedirect(location: unknown, expected: string) {
   assert.ok(location === expected, `redirect matches ${expected}`);
@@ -77,7 +70,7 @@ test(
     // Installation but do not administer it, so a spent email refuses them.
     assert.ok(provider, "OIDC provider fixture is configured");
     const { admin, accounts } = onboarded(
-      await withoutSensitiveFailure("Password onboarding", () =>
+      await authOperation("Password onboarding", () =>
         onboard({
           accounts: {
             member: { email: "outage-member@example.test" },
@@ -90,15 +83,15 @@ test(
       ["member", "other", "resetMember", "disabledMember"],
     );
     const { member, other, resetMember, disabledMember } = accounts;
-    const app = (apps.app = await withoutSensitiveFailure("Production composition", () =>
+    const app = (apps.app = await authOperation("Production composition", () =>
       composeApp(oidcUpgradeSettings(admin.id), { passwordSlowLaneFloors: slowLane }),
     ));
-    const adminHeaders = await withoutSensitiveFailure("Administrator sign-in", () =>
+    const adminHeaders = await authOperation("Administrator sign-in", () =>
       signedInHeaders(app, origin, admin),
     );
     assert.equal(
       response(
-        await withoutSensitiveFailure("Provider attachment", () =>
+        await authOperation("Provider attachment", () =>
           attachProvider(app, adminHeaders, member.id, "oidc", String(memberSubject)),
         ),
       ).statusCode,
@@ -107,7 +100,7 @@ test(
 
     const memberOIDCSignIn = async (remoteAddress = "192.0.2.70") =>
       (
-        await withoutSensitiveFailure("OIDC sign-in", () =>
+        await authOperation("OIDC sign-in", () =>
           oidcSignIn(app, origin, provider, { subject: String(memberSubject) }, remoteAddress),
         )
       ).callback;
@@ -125,7 +118,9 @@ test(
     await t.test("the fixture provider signs the attached account in while up", async () => {
       const callback = await memberOIDCSignIn();
       assertRedirect(callback.headers.location, "/console/");
-      await assertSessionUser(app, callback, member.id);
+      await authOperation("verify the OIDC session", () =>
+        assertSessionUser(app, callback, member.id),
+      );
     });
 
     await t.test("provider 5xx fails closed; password sign-in keeps working", async () => {
@@ -134,12 +129,18 @@ test(
       await assertFailedClosed(await memberOIDCSignIn(), before);
       const signedIn = await passwordSignIn(app, origin, member);
       assert.equal(signedIn.statusCode, 200);
-      const cookie = text(await assertSessionUser(app, signedIn, member.id));
+      const cookie = text(
+        await authOperation<unknown>("verify the password fallback session", () =>
+          assertSessionUser(app, signedIn, member.id),
+        ),
+      );
       const signedOut = await injectLocalhost(app, "POST", "/api/auth/sign-out", {
         session: { cookie, origin },
       });
       assert.equal(signedOut.statusCode, 200);
-      const session: unknown = await currentSession(app, cookie);
+      const session = await authOperation<unknown>("read the signed-out session", () =>
+        currentSession(app, cookie),
+      );
       assert.ok(session === null, "signed-out session is absent");
     });
 
