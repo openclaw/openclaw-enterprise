@@ -1,18 +1,99 @@
 import assert from "node:assert/strict";
 import { isDeepStrictEqual } from "node:util";
-import { createWorkerLogEmitter, resemblesCredential } from "../../apps/controller/src/logging.ts";
+import {
+  createWorkerLogEmitter,
+  resemblesCredential,
+  type OccLogger,
+} from "../../apps/controller/src/logging.ts";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import {
   isCredentialLine,
-  maskPrivateKeyLines,
   newestMatchingLogLines,
   redactLogLine,
 } from "../../scripts/ci/failure-redaction.mjs";
+import { maskPrivateKeyLogLines } from "../../scripts/ci/k3d-node-log.ts";
 import { compareEvents, eventObservedTime } from "../../scripts/ci/kubernetes-event-time.ts";
 import {
   diagnosticDeadlinePassed,
   diagnosticRequestTimeout,
   withinDiagnosticDeadline,
 } from "./kubernetes-real.mjs";
+
+type Secrets = readonly (readonly [string, string])[];
+
+type ContainerState = {
+  waiting?: { reason?: string; message?: string };
+  terminated?: { reason?: string; exitCode?: number; signal?: number; message?: string };
+  running?: { startedAt?: string | null };
+};
+
+type ContainerStatus = {
+  name: string;
+  ready?: boolean;
+  restartCount?: number;
+  state?: ContainerState | null;
+  lastState?: ContainerState | null;
+};
+
+type Pod = {
+  metadata: {
+    name: string;
+    creationTimestamp?: string | null;
+    labels?: Record<string, string> | null;
+  };
+  status?: {
+    phase?: string;
+    reason?: string;
+    conditions?: { type?: string; status?: string; reason?: string; message?: string }[] | null;
+    initContainerStatuses?: ContainerStatus[] | null;
+    containerStatuses?: ContainerStatus[] | null;
+  } | null;
+};
+
+type KubernetesEvent = NonNullable<Parameters<typeof compareEvents>[0]> & {
+  type?: string;
+  reason?: string;
+  message?: string;
+  involvedObject?: { kind?: string; name?: string } | null;
+  series?: { count?: number; lastObservedTime?: string | null } | null;
+  count?: number;
+};
+
+type TurnItem = {
+  id?: unknown;
+  type?: unknown;
+  command?: unknown;
+  exitCode?: unknown;
+  [key: string]: unknown;
+};
+
+type TurnMessage = {
+  id?: unknown;
+  method?: string;
+  error?: { message?: unknown };
+  result?: unknown;
+  params?: {
+    item?: TurnItem | null;
+    willRetry?: unknown;
+    error?: { message?: unknown };
+    turn?: { status?: unknown; error?: { message?: unknown } };
+    [key: string]: unknown;
+  };
+};
+
+type CompletedCommand = TurnItem & { id: string; command: string; exitCode: number };
+type TurnResult = { items: readonly TurnMessage[] };
+type EchoCommand = { command?: unknown; aggregatedOutput?: unknown; exitCode?: unknown };
+type EchoReply = Record<string, unknown> & { shown: string };
+
+type GatewayOutcome = {
+  status: string;
+  runId: string;
+  error?: unknown;
+  stopReason?: unknown;
+  timeoutPhase?: unknown;
+  providerStarted?: unknown;
+};
 
 // Failure evidence for k3d tests whose own error says too little. Everything here is
 // redacted before it is clipped: a value cut in half could no longer be matched.
@@ -22,54 +103,86 @@ const maxPods = 5;
 const maxLogContainers = 6;
 const credentialLineMarker = "[redacted credential-bearing line]";
 
+type WorkerEvent = Readonly<Record<string, unknown>>;
+type WorkerEventSummary = Record<string, string | number | boolean>;
+type CollapsedWorkerEvent = {
+  summary: WorkerEventSummary;
+  count: number;
+  firstAt: unknown;
+  lastAt: unknown;
+};
+type WorkerDiagnostic = {
+  operation?: unknown;
+  revisionId?: unknown;
+  persisted?: (Record<string, unknown> & { queue?: readonly unknown[] }) | null;
+  events: readonly WorkerEvent[];
+};
+type DiagnosticOptions = {
+  provisioningFailure?: { message?: unknown };
+  secrets?: Secrets;
+  timeoutMs?: number;
+  sleep?: (
+    milliseconds: number,
+    value: undefined,
+    options: { signal: AbortSignal },
+  ) => Promise<unknown>;
+};
+
 // Only worker-owned identifiers and classifications; never provider messages or chat text.
-function summarizeWorkerEvent(event) {
-  return Object.fromEntries(
-    [
-      "event",
-      "operation",
-      "revisionId",
-      "outcome",
-      "code",
-      "attempt",
-      "cause",
-      "failure",
-      "dependency",
-      "method",
-      "grpcStatus",
-      "step",
-      "errorClass",
-      "status",
-      "candidatePreparationReached",
-      "cleanupCause",
-      "validationCategory",
-    ]
-      .map((key) => [key, event[key]])
-      .filter(
-        ([key, value]) =>
-          (typeof value === "string" &&
-            /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u.test(value) &&
-            !resemblesCredential(value) &&
-            ((key === "code" && value === "AUTHORIZATION_DENIED") ||
-              (!isCredentialLine(value) && redactLogLine(value, [], 160) === value))) ||
-          (typeof value === "number" && Number.isSafeInteger(value)) ||
-          (key === "candidatePreparationReached" && typeof value === "boolean"),
-      ),
-  );
+function summarizeWorkerEvent(event: WorkerEvent): WorkerEventSummary {
+  const summary: WorkerEventSummary = {};
+  for (const key of [
+    "event",
+    "operation",
+    "revisionId",
+    "outcome",
+    "code",
+    "attempt",
+    "cause",
+    "failure",
+    "dependency",
+    "method",
+    "grpcStatus",
+    "step",
+    "errorClass",
+    "status",
+    "candidatePreparationReached",
+    "cleanupCause",
+    "validationCategory",
+  ]) {
+    const value = event[key];
+    if (
+      (typeof value === "string" &&
+        /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u.test(value) &&
+        !resemblesCredential(value) &&
+        ((key === "code" && value === "AUTHORIZATION_DENIED") ||
+          (!isCredentialLine(value) && redactLogLine(value, [], 160) === value))) ||
+      (typeof value === "number" && Number.isSafeInteger(value)) ||
+      (key === "candidatePreparationReached" && typeof value === "boolean")
+    ) {
+      summary[key] = value;
+    }
+  }
+  return summary;
 }
 
 // The reporter drops whole lines naming authorization. Preserve the exact code in
 // returned evidence, but render this one fixed worker classification without that keyword.
-function workerEventForOutput(event) {
+function workerEventForOutput(event: WorkerEvent): WorkerEvent {
   return event.code === "AUTHORIZATION_DENIED" ? { ...event, code: "ACCESS_DENIED" } : event;
 }
 
-export function createOpenShellWorkerLogEmitter(logger) {
+export function createOpenShellWorkerLogEmitter(logger: OccLogger) {
   const emit = createWorkerLogEmitter(logger);
-  return (event) => emit(workerEventForOutput(summarizeWorkerEvent(event)));
+  return (event: WorkerEvent) => emit(workerEventForOutput(summarizeWorkerEvent(event)));
 }
 
-export function workerDiagnosticLines({ operation, revisionId, persisted, events }) {
+export function workerDiagnosticLines({
+  operation,
+  revisionId,
+  persisted,
+  events,
+}: WorkerDiagnostic): string[] {
   if (diagnosticDeadlinePassed()) {
     return [];
   }
@@ -84,7 +197,10 @@ export function workerDiagnosticLines({ operation, revisionId, persisted, events
 }
 
 // Replacement failure messages use the same safe spelling as standalone event output.
-export function workerFailureDetail(worker, secrets) {
+export function workerFailureDetail(
+  worker: (Record<string, unknown> & { events?: readonly WorkerEvent[] }) | null | undefined,
+  secrets: Secrets,
+): string {
   return `Worker: ${redactLogLine(
     JSON.stringify({
       ...worker,
@@ -95,7 +211,7 @@ export function workerFailureDetail(worker, secrets) {
   )}`;
 }
 
-function writeFailureEvidence(line) {
+function writeFailureEvidence(line: string): void {
   try {
     process.stderr.write(`${line}\n`);
   } catch {
@@ -106,10 +222,10 @@ function writeFailureEvidence(line) {
 // Both activation catches share one budget and always preserve the original failure,
 // including when collecting, formatting, or writing diagnostics itself fails.
 export async function rethrowOpenShellFailure(
-  error,
-  diagnose,
-  { provisioningFailure, secrets = [], ...options } = {},
-) {
+  error: unknown,
+  diagnose: (signal: AbortSignal) => unknown,
+  { provisioningFailure, secrets = [], ...options }: DiagnosticOptions = {},
+): Promise<never> {
   const timedOut = Symbol("diagnostic timeout");
   try {
     if (provisioningFailure !== undefined) {
@@ -121,7 +237,12 @@ export async function rethrowOpenShellFailure(
     // Even malformed cached evidence must leave the diagnostic and original error intact.
   }
   try {
-    if ((await withinDiagnosticDeadline(diagnose, { ...options, timedOut })) === timedOut) {
+    // The JavaScript helper accepts any timeout sentinel, although its inferred default is a string.
+    const result: unknown = await Reflect.apply(withinDiagnosticDeadline, undefined, [
+      diagnose,
+      { ...options, timedOut },
+    ]);
+    if (result === timedOut) {
       writeFailureEvidence("OpenShell activation diagnostics timed out");
     }
   } catch {
@@ -133,8 +254,12 @@ export async function rethrowOpenShellFailure(
 // Identical events collapse into one entry with a count and their first and last receipt
 // times, ordered by last receipt: a namespace.ensure retried every poll (finding 1532) would
 // otherwise fill the list and push the persisted revision and queue state out of the message.
-export function summarizeWorkerEvents(events, revisionId, limit = 40) {
-  const collapsed = new Map();
+export function summarizeWorkerEvents(
+  events: readonly WorkerEvent[],
+  revisionId: string,
+  limit = 40,
+): WorkerEvent[] {
+  const collapsed = new Map<string, CollapsedWorkerEvent>();
   for (const event of events) {
     const summary = summarizeWorkerEvent(event);
     if (
@@ -148,7 +273,7 @@ export function summarizeWorkerEvents(events, revisionId, limit = 40) {
     const previous = collapsed.get(key);
     collapsed.delete(key);
     collapsed.set(key, {
-      ...summary,
+      summary,
       count: (previous?.count ?? 0) + 1,
       firstAt: previous?.firstAt ?? event.observedAt,
       lastAt: event.observedAt,
@@ -156,23 +281,36 @@ export function summarizeWorkerEvents(events, revisionId, limit = 40) {
   }
   return [...collapsed.values()]
     .slice(-limit)
-    .map(({ count, firstAt, lastAt, ...summary }) =>
+    .map(({ summary, count, firstAt, lastAt }) =>
       count === 1 ? { ...summary, at: lastAt } : { ...summary, count, firstAt, lastAt },
     );
 }
 
-function openShellEvent(line) {
-  const json = /\bOCSF-JSON (\{.*\})$/.exec(line);
-  let event;
+function openShellEvent(line: string) {
+  const json = /\bOCSF-JSON (\{.*\})$/.exec(line)?.[1];
+  if (json === undefined) {
+    return null;
+  }
   try {
-    event = json && JSON.parse(json[1]);
+    const event = asRecord(JSON.parse(json));
+    const time = event?.time;
+    if (!event || typeof time !== "number" || !Number.isSafeInteger(time) || time <= 0) {
+      return null;
+    }
+    return {
+      time,
+      class_uid: event.class_uid,
+      activity_id: event.activity_id,
+      status_id: event.status_id,
+      message: event.message,
+      dst_endpoint: asRecord(event.dst_endpoint),
+    };
   } catch {
     return null;
   }
-  return Number.isSafeInteger(event?.time) && event.time > 0 ? event : null;
 }
 
-export function openShellSettingsChange(line) {
+export function openShellSettingsChange(line: string) {
   const event = openShellEvent(line);
   if (
     event?.class_uid !== 5019 ||
@@ -187,7 +325,7 @@ export function openShellSettingsChange(line) {
     /^Settings poll: config change detected \[old_revision:(\d+) new_revision:(\d+) policy_changed:(true|false) provider_env_changed:(true|false)\]$/.exec(
       event.message,
     );
-  return match
+  return match?.[1] !== undefined && match[2] !== undefined
     ? {
         atMs: event.time,
         oldRevision: match[1],
@@ -200,7 +338,7 @@ export function openShellSettingsChange(line) {
 
 // Only established relay failures carry both this event type and message.
 // Open/DENIED events can instead describe a new connection refused at admission.
-export function openShellStaleRelay(line, domain) {
+export function openShellStaleRelay(line: string, domain: string) {
   const event = openShellEvent(line);
   if (
     event?.class_uid !== 4001 ||
@@ -226,7 +364,13 @@ export function openShellStaleRelay(line, domain) {
     : null;
 }
 
-export async function assertGatewayPolicyRunSucceeded(client, outcome, protectedUpdate) {
+export async function assertGatewayPolicyRunSucceeded(
+  client: {
+    request(method: string, params: { id: string }, options: { timeoutMs: number }): unknown;
+  },
+  outcome: GatewayOutcome,
+  protectedUpdate?: { attempt: string; before: { id: string } } | null,
+): Promise<void> {
   if (outcome.status === "ok") {
     return;
   }
@@ -251,9 +395,11 @@ export async function assertGatewayPolicyRunSucceeded(client, outcome, protected
   for (const [field, known] of [
     ["stopReason", ["error", "timeout", "aborted", "restart", "superseded", "rpc", "stop"]],
     ["timeoutPhase", ["queue", "preflight", "provider", "post_turn", "gateway_draining"]],
-  ]) {
+  ] as const) {
     if (outcome[field] !== undefined) {
-      details.push(`${field}=${known.includes(outcome[field]) ? outcome[field] : "other"}`);
+      details.push(
+        `${field}=${known.some((value) => value === outcome[field]) ? outcome[field] : "other"}`,
+      );
     }
   }
   if (typeof outcome.providerStarted === "boolean") {
@@ -266,8 +412,8 @@ export async function assertGatewayPolicyRunSucceeded(client, outcome, protected
   );
 }
 
-function containerState(state, secrets) {
-  const message = (text) =>
+function containerState(state: ContainerState | null | undefined, secrets: Secrets) {
+  const message = (text: unknown) =>
     typeof text === "string" && text.length > 0
       ? { message: redactedLine(text, secrets, fieldChars) }
       : {};
@@ -289,7 +435,7 @@ function containerState(state, secrets) {
   return undefined;
 }
 
-function describeContainers(statuses, secrets) {
+function describeContainers(statuses: ContainerStatus[] | null | undefined, secrets: Secrets) {
   return (statuses ?? []).map((status) => {
     const last = containerState(status.lastState, secrets);
     return {
@@ -302,7 +448,7 @@ function describeContainers(statuses, secrets) {
   });
 }
 
-function describePod(pod, secrets) {
+function describePod(pod: Pod, secrets: Secrets) {
   const status = pod.status ?? {};
   const unmet = (status.conditions ?? [])
     .filter((condition) => condition.status !== "True")
@@ -323,7 +469,7 @@ function describePod(pod, secrets) {
 }
 
 // A container has logs once it started; a restarted one that waits again has its last run's.
-function loggedContainers(pod) {
+function loggedContainers(pod: Pod) {
   const status = pod.status ?? {};
   return [...(status.initContainerStatuses ?? []), ...(status.containerStatuses ?? [])]
     .filter(
@@ -340,7 +486,7 @@ function loggedContainers(pod) {
 
 // A line that names a credential goes whole, tested on the raw text and again after
 // redaction, as redactOutputLine does: redaction can consume the keyword.
-function redactedLine(line, secrets, limit) {
+function redactedLine(line: string, secrets: Secrets, limit: number): string {
   if (isCredentialLine(line)) {
     return credentialLineMarker;
   }
@@ -348,19 +494,136 @@ function redactedLine(line, secrets, limit) {
   return isCredentialLine(redacted) ? credentialLineMarker : redacted;
 }
 
-function redactedLogTail(logs, secrets, budget) {
+function redactedLogTail(logs: string, secrets: Secrets, budget: number): string {
   // Private keys are masked across lines first; then any line that names a credential goes.
-  const lines = maskPrivateKeyLines(String(logs).split("\n")).map((line) =>
+  const lines = maskPrivateKeyLogLines(String(logs).split("\n")).map((line: string) =>
     isCredentialLine(line) ? credentialLineMarker : line,
   );
   return newestMatchingLogLines(lines.join("\n"), secrets, {
     pattern: /\S/u,
+    exclude: undefined,
     budget,
     lineChars: logLineChars,
   })
     .split("\n")
     .map((line) => (isCredentialLine(line) ? credentialLineMarker : line))
     .join("\n");
+}
+
+function optionalStrings(record: Record<string, unknown>, ...keys: string[]): boolean {
+  return keys.every((key) => record[key] === undefined || typeof record[key] === "string");
+}
+
+function optionalNumbers(record: Record<string, unknown>, ...keys: string[]): boolean {
+  return keys.every((key) => record[key] === undefined || typeof record[key] === "number");
+}
+
+function timestamp(value: unknown): boolean {
+  return value == null || typeof value === "string";
+}
+
+function optionalObject(
+  value: unknown,
+  check: (record: Record<string, unknown>) => boolean,
+): boolean {
+  if (value === undefined) {
+    return true;
+  }
+  const record = asRecord(value);
+  return record !== undefined && check(record);
+}
+
+function optionalList(value: unknown, check: (value: unknown) => boolean): boolean {
+  return value == null || (Array.isArray(value) && value.every(check));
+}
+
+function validContainerState(value: unknown): boolean {
+  return (
+    value === null ||
+    optionalObject(
+      value,
+      (state) =>
+        optionalObject(state.waiting, (waiting) => optionalStrings(waiting, "reason", "message")) &&
+        optionalObject(
+          state.terminated,
+          (terminated) =>
+            optionalStrings(terminated, "reason", "message") &&
+            optionalNumbers(terminated, "exitCode", "signal"),
+        ) &&
+        optionalObject(state.running, (running) => timestamp(running.startedAt)),
+    )
+  );
+}
+
+function validContainer(value: unknown): boolean {
+  const container = asRecord(value);
+  return (
+    container !== undefined &&
+    typeof container.name === "string" &&
+    (container.ready === undefined || typeof container.ready === "boolean") &&
+    optionalNumbers(container, "restartCount") &&
+    validContainerState(container.state) &&
+    validContainerState(container.lastState)
+  );
+}
+
+function isPod(value: unknown): value is Pod {
+  const pod = asRecord(value);
+  const metadata = asRecord(pod?.metadata);
+  return (
+    pod !== undefined &&
+    metadata !== undefined &&
+    typeof metadata.name === "string" &&
+    timestamp(metadata.creationTimestamp) &&
+    (metadata.labels === null ||
+      optionalObject(metadata.labels, (labels) =>
+        Object.values(labels).every((label) => typeof label === "string"),
+      )) &&
+    (pod.status === null ||
+      optionalObject(
+        pod.status,
+        (status) =>
+          optionalStrings(status, "phase", "reason") &&
+          optionalList(status.conditions, (value) => {
+            const condition = asRecord(value);
+            return (
+              condition !== undefined &&
+              optionalStrings(condition, "type", "status", "reason", "message")
+            );
+          }) &&
+          optionalList(status.initContainerStatuses, validContainer) &&
+          optionalList(status.containerStatuses, validContainer),
+      ))
+  );
+}
+
+function isKubernetesEvent(value: unknown): value is KubernetesEvent {
+  const event = asRecord(value);
+  return (
+    event !== undefined &&
+    optionalStrings(event, "type", "reason", "message") &&
+    optionalNumbers(event, "count") &&
+    timestamp(event.lastTimestamp) &&
+    timestamp(event.eventTime) &&
+    timestamp(event.firstTimestamp) &&
+    (event.series === null ||
+      optionalObject(
+        event.series,
+        (series) => optionalNumbers(series, "count") && timestamp(series.lastObservedTime),
+      )) &&
+    (event.metadata === null ||
+      optionalObject(event.metadata, (metadata) => timestamp(metadata.creationTimestamp))) &&
+    (event.involvedObject === null ||
+      optionalObject(event.involvedObject, (object) => optionalStrings(object, "kind", "name")))
+  );
+}
+
+function resourceItems<T>(stdout: string, valid: (value: unknown) => value is T): T[] {
+  const items = asRecord(JSON.parse(stdout))?.items;
+  if (!Array.isArray(items) || !items.every(valid)) {
+    throw new TypeError("kubectl returned an invalid resource list");
+  }
+  return items;
 }
 
 /**
@@ -380,23 +643,38 @@ export async function podFailureDiagnostic({
   logTail = 200,
   secrets = [],
   budgets: { pods: podBudget = 3_000, events: eventBudget = 3_000, logs: logBudget = 6_000 } = {},
-}) {
+}: {
+  kubectl: (...args: string[]) => Promise<string>;
+  namespace: string;
+  selector?: string;
+  eventPrefix?: string;
+  logLabels?: Record<string, string>;
+  logTail?: number;
+  secrets?: Secrets;
+  budgets?: { pods?: number; events?: number; logs?: number };
+}): Promise<string> {
   const sections = [];
-  const read = (...args) => {
+  const read = (...args: string[]) => {
     if (diagnosticDeadlinePassed()) {
       throw new Error("diagnostic deadline passed");
     }
     return kubectl(diagnosticRequestTimeout, ...args);
   };
-  const unavailable = (label, error) =>
-    `${label} unavailable: ${redactedLine(error?.message ?? String(error), secrets, fieldChars)}`;
-  const logged = (pod) =>
+  const unavailable = (label: string, error: unknown) =>
+    `${label} unavailable: ${redactedLine(
+      typeof error === "object" && error !== null && "message" in error
+        ? String(error.message ?? String(error))
+        : String(error),
+      secrets,
+      fieldChars,
+    )}`;
+  const logged = (pod: Pod) =>
     logLabels !== undefined &&
     Object.entries(logLabels).every(([key, value]) => pod.metadata?.labels?.[key] === value);
-  let pods = [];
+  let pods: Pod[] = [];
   const scope = selector === undefined ? "" : ` (${selector})`;
   try {
-    const items = JSON.parse(
+    const items = resourceItems(
       await read(
         "get",
         "pods",
@@ -406,7 +684,8 @@ export async function podFailureDiagnostic({
         "-o",
         "json",
       ),
-    ).items;
+      isPod,
+    );
     // Newest first: a rollout or a Job retry leaves its latest Pod there. Pods whose logs are
     // read come first, so newer ones (a Helm --wait timeout's API and worker) cannot crowd out
     // the hook Job's Pod.
@@ -428,8 +707,12 @@ export async function podFailureDiagnostic({
     sections.push(unavailable(`Pods in ${namespace}`, error));
   }
   try {
-    const events = JSON.parse(await read("get", "events", "--namespace", namespace, "-o", "json"))
-      .items.filter(
+    const items = resourceItems(
+      await read("get", "events", "--namespace", namespace, "-o", "json"),
+      isKubernetesEvent,
+    );
+    const events = items
+      .filter(
         (event) =>
           eventPrefix === undefined ||
           String(event.involvedObject?.name ?? "").startsWith(eventPrefix),
@@ -494,8 +777,8 @@ export async function podFailureDiagnostic({
   return `\n${sections.join("\n")}`;
 }
 
-function codexTurnStep(message, secrets) {
-  const text = (value) => redactedLine(String(value ?? ""), secrets, fieldChars);
+function codexTurnStep(message: TurnMessage | null | undefined, secrets: Secrets): string {
+  const text = (value: unknown) => redactedLine(String(value ?? ""), secrets, fieldChars);
   if (message?.method === undefined) {
     if (message?.error !== undefined) {
       return `response ${message.id}: error ${text(message.error.message)}`;
@@ -503,8 +786,16 @@ function codexTurnStep(message, secrets) {
     const result = message?.result;
     const keys =
       result !== null && typeof result === "object" ? Object.keys(result).sort().join(",") : "";
-    const sandbox =
-      typeof result?.sandbox?.type === "string" ? ` sandbox=${result.sandbox.type}` : "";
+    const sandboxType =
+      typeof result === "object" &&
+      result !== null &&
+      "sandbox" in result &&
+      typeof result.sandbox === "object" &&
+      result.sandbox !== null &&
+      "type" in result.sandbox
+        ? result.sandbox.type
+        : undefined;
+    const sandbox = typeof sandboxType === "string" ? ` sandbox=${sandboxType}` : "";
     return `response ${message?.id}: {${keys}}${sandbox}`;
   }
   const { method, params } = message;
@@ -534,8 +825,12 @@ function codexTurnStep(message, secrets) {
  * step collapse into a count. Item text, commands and output are left out, and every step is
  * redacted. Past `budget` characters the middle steps give way, keeping the start and end.
  */
-export function codexTurnTrace(messages, secrets = [], budget = 3_000) {
-  const steps = [];
+export function codexTurnTrace(
+  messages: readonly (TurnMessage | null | undefined)[] | null | undefined,
+  secrets: Secrets = [],
+  budget = 3_000,
+): string {
+  const steps: { step: string; count: number }[] = [];
   for (const message of messages ?? []) {
     // Free text was filtered above. Redact the assembled step too, including RPC metadata.
     const step = redactLogLine(codexTurnStep(message, secrets), secrets, fieldChars);
@@ -552,13 +847,13 @@ export function codexTurnTrace(messages, secrets = [], budget = 3_000) {
   if (total <= budget) {
     return shown.join(separator);
   }
-  const head = [];
-  const tail = [];
+  const head: string[] = [];
+  const tail: string[] = [];
   let used = 0;
   for (let start = 0, end = shown.length - 1; start <= end;) {
     const fromStart = head.length <= tail.length;
     const step = fromStart ? shown[start] : shown[end];
-    if (used + step.length + separator.length > budget) {
+    if (step === undefined || used + step.length + separator.length > budget) {
       break;
     }
     used += step.length + separator.length;
@@ -576,7 +871,18 @@ export function codexTurnTrace(messages, secrets = [], budget = 3_000) {
 
 // Ask again only when no recognized probe or unsettled command was observed. requestTurn
 // owns the transport, the pause before another turn, and checking the raw result for secrets.
-export async function observeSandboxProbe({ nonce, requestTurn, traceSecrets }) {
+export async function observeSandboxProbe<T extends TurnResult>({
+  nonce,
+  requestTurn,
+  traceSecrets,
+}: {
+  nonce: string;
+  requestTurn: (attempt: number) => Promise<T>;
+  traceSecrets?: Secrets;
+}): Promise<
+  | { result: T; run: CompletedCommand; traces: string[] }
+  | { result?: never; run?: never; traces: string[] }
+> {
   const traces = [];
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     const result = await requestTurn(attempt);
@@ -584,8 +890,9 @@ export async function observeSandboxProbe({ nonce, requestTurn, traceSecrets }) 
     // hide its literal name in a start event, and a turn can end before its command.
     const completed = completedSandboxCommands(result.items);
     const probes = completed?.filter(({ command }) => command.includes(nonce));
-    if (probes?.length === 1) {
-      return { result, run: probes[0], traces };
+    const probe = probes?.[0];
+    if (probes?.length === 1 && probe !== undefined) {
+      return { result, run: probe, traces };
     }
     if (probes === undefined || probes.length > 1) {
       // A completed turn is not a completed command. Preserve the unknown outcome
@@ -600,11 +907,22 @@ export async function observeSandboxProbe({ nonce, requestTurn, traceSecrets }) 
   return { traces };
 }
 
+function isCompletedCommand(item: TurnItem): item is CompletedCommand {
+  return (
+    typeof item.id === "string" &&
+    typeof item.command === "string" &&
+    typeof item.exitCode === "number" &&
+    Number.isSafeInteger(item.exitCode)
+  );
+}
+
 // Return terminal commands, or undefined if any command's outcome is uncertain.
 // A completion can settle a command even when its start was not in the transcript.
-function completedSandboxCommands(messages) {
-  const pending = new Map();
-  const completed = new Map();
+function completedSandboxCommands(
+  messages: readonly TurnMessage[],
+): CompletedCommand[] | undefined {
+  const pending = new Map<string, unknown>();
+  const completed = new Map<string, CompletedCommand>();
   for (const { method, params } of messages) {
     const item = params?.item;
     if (
@@ -625,10 +943,9 @@ function completedSandboxCommands(messages) {
     } else {
       const startedCommand = pending.get(id);
       if (
-        typeof command !== "string" ||
-        !command.trim() ||
-        !Number.isSafeInteger(item.exitCode) ||
-        (startedCommand && command !== startedCommand)
+        !isCompletedCommand(item) ||
+        !item.command.trim() ||
+        (startedCommand && item.command !== startedCommand)
       ) {
         return undefined;
       }
@@ -649,7 +966,7 @@ const placeholderValue = /(openshell:resolve:)[^\s"'\\,;}\]]*/gu;
 const echoDigest = /("digest":\s*")[0-9a-f]{64}/gu;
 
 // Whitespace is collapsed only after redaction, so a secret value keeps its exact shape.
-function shownEchoText(text, secrets, limit) {
+function shownEchoText(text: unknown, secrets: Secrets, limit: number): string {
   const masked = String(text ?? "")
     .replace(placeholderValue, "$1[placeholder]")
     .replace(echoDigest, "$1[sha256]");
@@ -660,7 +977,11 @@ function shownEchoText(text, secrets, limit) {
  * The echo's reply to the Harness command that called `url`, with `shown`: that command, its
  * exit code and the start of its output, redacted, for an assertion message.
  */
-export function tokenEchoReply(commands, url, secrets) {
+export function tokenEchoReply(
+  commands: readonly EchoCommand[],
+  url: string,
+  secrets: Secrets,
+): EchoReply {
   const echo = commands.find(({ command }) => String(command).includes(url));
   assert.ok(echo, `the Harness must call ${url}`);
   const output = String(echo.aggregatedOutput ?? "").trim();
@@ -668,7 +989,7 @@ export function tokenEchoReply(commands, url, secrets) {
   const shown =
     `\`${shownEchoText(echo.command, secrets, echoShownChars)}\` ` +
     `(exit ${echo.exitCode ?? "unknown"}) printed ${printed}`;
-  let reply;
+  let reply: unknown;
   try {
     reply = JSON.parse(output);
   } catch {
@@ -686,9 +1007,10 @@ export function tokenEchoReply(commands, url, secrets) {
  * commands read as digest `undefined`). JSON without a digest, such as OpenShell's credential
  * refusal, gives `undefined`, for the caller to judge with `reply.shown` in its message.
  */
-export function tokenEchoDigest(reply) {
-  if (reply.unparsed !== undefined) {
-    assert.fail(`the token echo call must print JSON: ${reply.shown}`);
+export function tokenEchoDigest(reply: unknown): string | undefined {
+  const value = asRecord(reply);
+  if (value?.unparsed !== undefined) {
+    assert.fail(`the token echo call must print JSON: ${value.shown}`);
   }
-  return typeof reply.digest === "string" ? reply.digest : undefined;
+  return typeof value?.digest === "string" ? value.digest : undefined;
 }
