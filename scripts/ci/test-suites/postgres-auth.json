@@ -101,7 +101,8 @@
     {
       "path": "tests/integration/postgres-service-api-keys.test.ts",
       "expectedTests": [
-        "PostgreSQL Better Auth keys remain hashed, scoped, and revocable across instances"
+        "PostgreSQL Better Auth keys remain hashed, scoped, and revocable across instances",
+        "a Namespace ServicePrincipal created through the policy API carries only its bound access"
       ]
     },
     {
