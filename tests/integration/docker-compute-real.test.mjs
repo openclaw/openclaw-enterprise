@@ -17,7 +17,7 @@ import {
   createOtelLogObservation,
   OTEL_RESOURCE,
 } from "../helpers/logging-otel-observation.mjs";
-import { availablePort } from "../helpers/available-port.mjs";
+import { availablePort } from "../helpers/available-port.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { browserEnvironment } from "../helpers/compose.mjs";
 

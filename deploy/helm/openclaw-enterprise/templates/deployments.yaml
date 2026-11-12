@@ -13,7 +13,7 @@ metadata:
 spec:
   {{- if eq $component "api" }}
   replicas: 1
-  # One serving controller: sign-in limits and session admission are process-local.
+  # Each API process has its own sign-in attempt and concurrency limits.
   strategy:
     type: Recreate
   {{- else }}

@@ -39,7 +39,7 @@ FROM dependencies AS development
 ENV NODE_ENV=development
 WORKDIR /app
 
-COPY --chown=node:node package.json pnpm-workspace.yaml ./
+COPY --chown=node:node package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY --chown=node:node packages packages
 COPY --chown=node:node apps/controller apps/controller
 COPY --from=console-build --chown=node:node /app/apps/controller/src/console/index.html apps/controller/src/console/index.html

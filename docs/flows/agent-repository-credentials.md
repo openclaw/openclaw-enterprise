@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: "2026-11-10"
-last_updated_session: "authoring-run/c50e0843-88eb-48ee-9b60-f931b56fa440"
+updated: "2026-11-12"
+last_updated_session: "authoring-run/93133b1c-f1c2-4bf8-859a-a8594e012fca"
 ---
 
 # Agent repository credential flow
@@ -145,20 +145,15 @@ Protected `repository.preparedGitHub` uses the installed Sandbox/Credential Prox
 Driver. Finite sessions need no native sender, control socket, broker CA or session files.
 
 `repository.nativeSender` selects `GitHubNativeRepositorySender`, which owns native
-sessions and files without an App key. Before cutover, drain accepted work on its
-original owner. Cleanup uses recorded identity without resolving policy or restoring
-authority. The worker's prepared provider issues and holds credentials.
+sessions and files without an App key. Before cutover, drain accepted work on its original owner. Cleanup uses recorded identity without policy resolution or reauthorization. The worker's prepared provider issues and holds credentials.
 
 ### 3. Record ownership before opening a session
 
 `apps/controller/src/worker/repository-credentials.ts:RepositoryCredentialLifecycle.prepare`
 rechecks actor, Namespace, Agent, revision, Driver, grant and deadline.
 `GitHubNativeRepositorySender.checkAdmissionReady` checks broker capability with a
-two-second timeout. Failure blocks fresh admission, not recovery or cleanup. Each fresh
-OPEN carries `preparedOnly: true`: an old parser rejects it after socket replacement,
-and current control requires a prepared backend.
-Under the live claim and Namespace/Agent locks, State records immutable cleanup
-context before calling the Driver. Stopped or deleting owners are rejected.
+two-second timeout. Failure blocks only fresh admission. Fresh OPEN includes `preparedOnly: true`. After socket replacement, old parsers reject it. Current control requires a prepared backend.
+With a live claim and Namespace/Agent locks, State records immutable cleanup context before Driver invocation. It rejects stopped or deleting owners.
 State stores identifiers and phases, never bearers or files.
 
 `apps/controller/src/backends/repository-credentials/control-client.ts:UnixRepositoryCredentialControlClient`
@@ -268,26 +263,23 @@ session, selects private configuration and preserves HOME and shared selection.
 OpenShell's
 `apps/controller/src/drivers/repo/github/access/routes/request-selection.ts:requestHead`
 accepts [CLI metadata](../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository).
-For `git-write`, `draftScope` omits the accepted timezone header from planner input.
-The current grant owner authorizes the signed request.
+`git-write` `draftScope` excludes the timezone header from planning. The current grant owner authorizes signed requests.
 `apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts:validBinding`
 uses `normalizePushRefAllowlist` for Git-only policies, including terminal `/*`.
-Draft heads require concrete refs. Receive-pack rejects disallowed refs before
-durable approval. See [access levels](../reference/repository-credentials/access-levels.md).
+Draft heads require concrete refs. Receive-pack rejects disallowed refs before durable approval. See [access levels](../reference/repository-credentials/access-levels.md).
 
-The [service exchange flow](repository-credentials.md#4-reserve-acquire-and-dispatch)
-checks bearer, fixed repository/profile, capacity and deadlines. It refreshes
-installation tokens under the same grant until the version deadline.
+[Service exchange](repository-credentials.md#4-reserve-acquire-and-dispatch)
+checks bearer, fixed repository/profile, capacity and deadlines. Installation token refresh uses that grant until version expiry.
 
 ### 6. Maintain, recover and retire ownership
 
-The [worker](../../apps/controller/src/worker.mjs) supplies `ProtectedRepositoryGitAuthority`
-to the [binder](../../apps/controller/src/composition/repository-credentials/transport.ts).
-Missing authority or mismatched Drivers prevent binding. Serial `reconcile` runs
-with a 25-second timeout and one-second interval. Close aborts and joins;
-readback cannot restore authority.
+The [worker](../../apps/controller/src/worker.mjs) [binds](../../apps/controller/src/composition/repository-credentials/transport.ts)
+`ProtectedRepositoryGitAuthority` with matching Drivers. `OpenShellGitRuntime.start`
+reserves one instance before installing worker dependencies. Failed setup permits retry.
+Close is terminal. Serial `reconcile` uses a 25-second timeout and one-second interval.
+Close aborts and joins. Readback cannot restore authority.
 
-[The gRPC client](../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts) checks profile identity before defaulting omitted endpoint/credential lists to empty arrays.
+[The gRPC client](../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts) verifies profile identity before treating omitted endpoint/credential lists as empty.
 [Withdrawal](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts) accepts files-only profiles, refusing missing, mismatched or Git-overlapping profiles.
 
 Maintenance uses 30 seconds, the sender interval or shorter Compute interval. Restart invalidates missing sessions without reminting.
@@ -373,6 +365,8 @@ Verify live PR updates, denial before provider contact and continued chat separa
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 00:58: Document worker binding startup and retry. (authoring-run/93133b1c-f1c2-4bf8-859a-a8594e012fca - 63a65bbca29f4aac3bbd9e86c734947e4cc31943)
 
 - 2026-11-10 11:39: Trace scoped GitHub CLI draft request validation. (authoring-run/c50e0843-88eb-48ee-9b60-f931b56fa440 - e8131a4495a3dd34f02bf6f9a5107c994568a313)
 

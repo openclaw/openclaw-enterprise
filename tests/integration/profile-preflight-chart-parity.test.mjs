@@ -12,7 +12,7 @@ import { clientAddressConfiguration } from "../../apps/controller/src/auth/clien
 import { createKubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.mjs";
+import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.ts";
 import {
   RenderRefusal,
   renderInstallationProfile,

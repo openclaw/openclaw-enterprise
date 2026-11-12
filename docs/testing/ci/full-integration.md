@@ -131,9 +131,19 @@ Raw test output and diagnostics remain private. Failed native operations report 
 If the installed proof fails and the job can continue, look for
 `attempt-<attempt>-full-failure-skipper-prepared-git-installed`, retained for seven
 days. Its single JSON file records the run, attempt, source SHA, failed outcome,
-last recorded stage and installed cleanup status. A missed checkpoint write can
-leave an earlier stage visible. Missing or unrecognized
-checkpoints become `unknown`; they do not establish successful cleanup.
+last recorded stage and installed cleanup status. For `selected-test`, the
+receipt also records the allowlisted `testOperation` and `lastTestCheckpoint`,
+with `unknown` for missing or unrecognized values. For a selected structured
+Gateway chat refusal, the receipt includes `gatewayChatPhase` when it can identify
+ordinary chat before private Git (`before-private-git`), a native Git turn
+(`native-git`), or ordinary chat after Git withdrawal (`after-withdrawal`).
+After a failed runner, the writer uses complete valid ledger rows before the
+first malformed or non-object row. It ignores blank rows and selects the last
+recognized checkpoint for the selected mode, excluding retirement. A missing
+or unreadable ledger leaves the checkpoint `unknown` but preserves a verified
+operation. Optional failure evidence cannot replace the selected-test failure;
+passing proof still requires strict ledger parsing. A missed stage write can leave an earlier stage
+visible. Checkpoints do not establish successful cleanup.
 
 Cleanup `passed` covers registered teardown callbacks, verified cluster and
 network removal, released installation ports and model-directory removal. It
@@ -144,8 +154,12 @@ proof does not exercise this failure upload.
 
 Checkout image-build failures identify each failed role (controller or runtime), exit code, known error code or signal, killed flag, elapsed time and configured budget. Process fields come only from Docker command failures; journal and pre-dispatch failures leave them `unknown`. Accessor-backed fields also stay `unknown`. A signal or elapsed time alone does not prove a timeout. The [build helper](../../../tests/helpers/dev-up-model-provider.mjs) preserves original errors for local inspection but excludes their command arguments and output from CI summaries.
 
-The `openshell` dispatch runs two OpenShell lanes on separate VMs. Each runs
-its assigned files serially, and the aggregate requires both results. QA Advisory uses
+The `openshell` dispatch runs two OpenShell lanes on separate VMs. Before either
+starts, the protected environment resolves their controller base image and the
+shared cache warmer exports both image caches from the selected commit. A failed
+export or cleanup blocks the lanes. Their source builds still run; another export,
+eviction, or import failure can cause a cache miss. Each lane runs its assigned
+files serially, and the aggregate requires both results. QA Advisory uses
 [parallel per-file runners](qa-advisory.md#openshell-file-coverage).
 Use the [shared cleanup procedure](run-lanes.md#results-and-cleanup) for local runs.
 
@@ -161,7 +175,10 @@ failure alone does not fail the workflow. Aggregation reads
 retained results only for a successful plan; abandoned uploads cannot replace
 fresh evidence. The aggregate applies the same
 case and cleanup rules to both sources; reuse is not independent execution.
-Hosted discovery, publication and final reuse accounting remain unverified.
+To confirm that reused results reached the aggregate, check that both
+`Download committed reused results` and `Combine committed reused results` succeeded.
+In [Full Integration run 43103074336](https://github.com/openclaw/openclaw-enterprise/actions/runs/43103074336/job/130836667906),
+both steps succeeded before `Aggregate full suite` failed.
 
 ## Files
 

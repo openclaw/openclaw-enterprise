@@ -3,10 +3,11 @@ import { randomBytes } from "node:crypto";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { stripTypeScriptTypes } from "node:module";
 import { describe, test } from "node:test";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { runWritableGatewayRestart } from "../fixtures/runtime-gateway-writable-restart.mjs";
+import { runWritableGatewayRestart } from "../fixtures/runtime-gateway-writable-restart.ts";
 import {
   GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
   PLUGIN_APP_SERVER_TOKEN_HMAC_DOMAIN,
@@ -179,7 +180,7 @@ describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
           waitUntilReady: false,
         });
         const fixture = await readFile(
-          new URL("../fixtures/runtime-gateway-peer-respawn.mjs", import.meta.url),
+          new URL("../fixtures/runtime-gateway-peer-respawn.ts", import.meta.url),
           "utf8",
         );
         let stdout;
@@ -196,7 +197,7 @@ describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
               "node",
               "--input-type=module",
               "-e",
-              fixture,
+              stripTypeScriptTypes(fixture),
             ],
             { timeout: 780_000 * imageSmokeTimeoutMultiplier },
           ));
@@ -312,7 +313,7 @@ describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
       waitUntilReady: false,
     });
     const fixture = await readFile(
-      new URL("../fixtures/runtime-gateway-peer-respawn.mjs", import.meta.url),
+      new URL("../fixtures/runtime-gateway-peer-respawn.ts", import.meta.url),
       "utf8",
     );
     let failure;
@@ -328,7 +329,7 @@ describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
           "node",
           "--input-type=module",
           "-e",
-          fixture,
+          stripTypeScriptTypes(fixture),
         ],
         { timeout: 300_000 * imageSmokeTimeoutMultiplier },
       );

@@ -29,8 +29,8 @@ import {
   withBoundedTeardown,
   withinDiagnosticDeadline,
 } from "../helpers/kubernetes-real.mjs";
-import { refusingPort } from "../helpers/available-port.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { refusingPort } from "../helpers/available-port.ts";
+import { listen } from "../helpers/listen.ts";
 import { withEnvironment } from "../helpers/environment.ts";
 import { commandPath, prependPath, writeCommand } from "../helpers/fake-commands.ts";
 import { readJsonLines } from "../helpers/json-lines.mjs";
@@ -1291,7 +1291,13 @@ test(
       import { registerOpenShellInstallationCleanups } from ${JSON.stringify(openShellHelperUrl)};
       const attempt = (name) => process.stdout.write("attempted " + name + "\\n");
       test("proof", async (testContext) => {
-        const { context } = boundedTeardown(testContext, { stepLimitMs: 200, exitGraceMs: 50 });
+        const { context } = boundedTeardown(testContext, {
+          stepLimitMs: 200,
+          exitGraceMs: 50,
+          onOutcome: (outcome) => testContext.diagnostic(
+            "openclaw-ci-measurement " + JSON.stringify({ kind: "openshell-fixture-teardown", outcome }),
+          ),
+        });
         let poll;
         registerOpenShellInstallationCleanups(context, {
           workerStop: () => {
@@ -1317,6 +1323,10 @@ test(
       "attempted workload Namespace",
       "attempted temporary directory",
     ]);
+    assert.match(
+      exited.stdout,
+      /openclaw-ci-measurement \{"kind":"openshell-fixture-teardown","outcome":"failed"\}/,
+    );
     assert.match(
       exited.stderr,
       /teardown: cleanup workerStop registered at openshell-kubernetes-real\.mjs:\d+ failed: did not finish within 200 ms/,
@@ -1842,10 +1852,19 @@ const topologyStandIn = (exported: string[]) => `
     throw new Error("topology setup failed");
   }
   // The live Slack proof checks both bots before it arranges the topology.
-  export async function slackApi(method, token) {
+  export async function slackApi(method, token, query) {
     return method === "auth.test"
       ? { team_id: "T0", user_id: token }
-      : { channel: { is_member: true } };
+      : {
+          channel: {
+            id: query.channel,
+            is_channel: true,
+            is_private: false,
+            is_im: false,
+            is_mpim: false,
+            is_member: true,
+          },
+        };
   }
   ${exported
     .filter((name) => !["arrangeProductionTopology", "slackApi"].includes(name))

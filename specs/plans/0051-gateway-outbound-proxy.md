@@ -1,5 +1,5 @@
 ---
-rfc: ../rfcs/0037-gateway-outbound-proxy.md
+rfc: ../rfcs/0039-gateway-outbound-proxy.md
 ---
 
 # Implementation plan: one Gateway outbound proxy
@@ -8,7 +8,7 @@ rfc: ../rfcs/0037-gateway-outbound-proxy.md
 - **Delivery status:** In progress
 - **Owner:** OCE contributors
 - **Authority:** [Platform design](../../docs/design.md) and existing Kubernetes Compute/networking owners.
-- **Proposal:** [RFC-0037](../rfcs/0037-gateway-outbound-proxy.md), not yet accepted.
+- **Proposal:** [RFC-0037](../rfcs/0039-gateway-outbound-proxy.md), not yet accepted.
 - **Original experiment baseline:** `80725162a946f80652b939a32a57ee4e922eeb5c`
 - **Refreshed upstream baseline:** `324fbad6f248bce4606e175fbb67ac506cd824ff`
 

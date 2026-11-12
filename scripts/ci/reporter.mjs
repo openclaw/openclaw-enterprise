@@ -410,6 +410,7 @@ function safeMeasurement(value) {
         "openshell-assets-directory",
         "openshell-charts",
         "openshell-agent-sandbox-manifest",
+        "openshell-agent-sandbox-image",
         "openshell-runtime-class",
         "openshell-agent-sandbox-apply",
         "openshell-agent-sandbox-rollout",

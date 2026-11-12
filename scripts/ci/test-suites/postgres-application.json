@@ -8,11 +8,11 @@
     "tests/integration/postgres-worker-agent-revision.test.mjs",
     "tests/integration/postgres-worker-repository-roles.test.ts",
     "tests/integration/postgres-worker-agent-revision-replacement.test.mjs",
-    "tests/integration/postgres-worker-agent-revision-refused-wait.test.mjs",
+    "tests/integration/postgres-worker-agent-revision-refused-wait.test.ts",
     "tests/integration/postgres-worker-agent-revision-cleanup-failure.test.ts",
-    "tests/integration/postgres-worker-agent-revision-stop.test.mjs",
-    "tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.mjs",
-    "tests/integration/postgres-worker-agent-revision-refused-stop.test.mjs",
+    "tests/integration/postgres-worker-agent-revision-stop.test.ts",
+    "tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.ts",
+    "tests/integration/postgres-worker-agent-revision-refused-stop.test.ts",
     "tests/integration/postgres-worker-agent-revision-credential-sources.test.mjs",
     "tests/integration/postgres-worker-agent-revision-health.test.mjs",
     "tests/integration/postgres-native-iam-policy-barrier.test.mjs",
@@ -119,7 +119,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-worker-agent-revision-refused-stop.test.mjs",
+      "path": "tests/integration/postgres-worker-agent-revision-refused-stop.test.ts",
       "expectedTests": [
         "a refused candidate whose stop keeps failing shows the refusal in deployment status"
       ]
@@ -131,7 +131,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.mjs",
+      "path": "tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.ts",
       "expectedTests": [
         "a redeploy's predecessor stop yields during its Gateway drain and the replacement starts after it",
         "a newer deployment admitted while a predecessor stop is yielded supersedes it and starts last",
@@ -146,7 +146,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-worker-agent-revision-refused-wait.test.mjs",
+      "path": "tests/integration/postgres-worker-agent-revision-refused-wait.test.ts",
       "expectedTests": [
         "a refused candidate superseded while its stop fails is stopped before it completes"
       ]
@@ -170,7 +170,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-worker-agent-revision-stop.test.mjs",
+      "path": "tests/integration/postgres-worker-agent-revision-stop.test.ts",
       "expectedTests": [
         "deployment inventory survives retained completed repository cleanup and preserves deployment guards",
         "Agent deletion completes with unresolved repository sessions retained as evidence",
