@@ -100,14 +100,14 @@ selecting tests or gating CI. Base-loaded policy cannot prevent PR workflow chan
 Focused jobs verify SHA and ordered PR parents. QA materializes only the
 [selected credential](../testing/ci/qa-advisory.md#trigger).
 
-[Full Integration admission](../testing/ci/full-integration.md#trigger) pins
-`github.sha`, then rechecks main, cadence and receipts under lock.
+Full Integration pins `github.sha`. [Scheduled admission](../testing/ci/full-integration.md#trigger)
+rechecks main, cadence and receipts under lock.
 `scripts/ci/full-integration-schedule-history.ts:readUnmarkedClock` requires explicit
-targeted selection to ignore live shared work.
+targeting to ignore live shared work.
 `scripts/ci/full-integration-preflight.mjs:fetchGithubJson` distinguishes malformed
 JSON from request failures; diagnostics omit raw content.
 Manual dispatch verifies dispatcher, team and environment.
-Slack serializes channel/app access; installation and Skipper Git serialize branches.
+Slack serializes channel/app access; installation and Skipper Git serialize per branch.
 Retries require [approved dispatch](../testing/ci/configuration.md#environments).
 
 First-attempt `all` reuse requires completed execution
