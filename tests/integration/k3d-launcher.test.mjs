@@ -712,12 +712,19 @@ test("native OpenClaw preparation requires its API key instead of a Codex token"
     ["openclaw", "test-only-value", /CI state already exists/],
     ["openclaw", "", /Missing required CI input\(s\): OPENAI_API_KEY/],
   ]) {
-    // An existing owned state stops bootstrap before infrastructure effects. Only the
-    // native helper's explicit selection may pass credential admission without Codex.
+    // An existing owned state stops bootstrap before infrastructure effects. The
+    // native helper selects its single workflow to avoid unrelated PAT requirements.
     await assert.rejects(
       execute(
         process.execPath,
-        ["scripts/ci/prepare.mjs", "--lane", "openshell", "--state", existingState],
+        [
+          "scripts/ci/prepare.mjs",
+          "--lane",
+          "openshell",
+          ...(helperHarness === "openclaw" ? ["--selected-file", nativeFile] : []),
+          "--state",
+          existingState,
+        ],
         {
           env: {
             ...process.env,
