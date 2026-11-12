@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { setTimeout } from "node:timers/promises";
 import type {
   AgentManagementApply,
   HarnessAuthBinding,
@@ -349,6 +350,9 @@ export class AgentReconciler {
       // admitted versions too; observing only an old active pointer can miss it.
       const revisions = await api.call<{ id: string }[]>("GET", `${path}/revisions`);
       for (const revision of revisions) {
+        // Runtime reads share a two-per-second bucket for this principal/Agent.
+        // Pace long histories so retries can finish instead of restarting at a 429.
+        await setTimeout(600, undefined, { signal: this.signal });
         const runtime = await api.call<{ revisionId: string; observedAt: string; pods: unknown[] }>(
           "GET",
           `${path}/deployments/${encodeURIComponent(revision.id)}/runtime`,

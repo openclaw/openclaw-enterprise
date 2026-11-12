@@ -101,8 +101,9 @@ the prior desired state and reconciler for a reviewed ownership release rollback
 ## Required verification
 
 The table lists the full target proof, not completed acceptance. API, PostgreSQL
-and scoped Kubernetes SDK cases have passed locally; full Argo/runtime proof
-remains pending. Document checks are not product proof.
+and scoped Kubernetes SDK cases have passed locally. Live Argo adoption,
+Git updates, stopped intent and Retain prune/re-adoption have also passed;
+restored live runtime and channel proof remain pending. Document checks are not product proof.
 Use [enterprise-testing](../../.agents/skills/enterprise-testing/SKILL.md) and
 [test-audit](../../.agents/skills/test-audit/SKILL.md) when implementing tests.
 Register TypeScript integration tests in the CI lane that actually runs them.
@@ -142,9 +143,19 @@ versioned apply receipts, emergency-stop suspension and Retain release. See the
 Local proof: three production API/IAM cases, one PostgreSQL API/persistence case
 and one real Kubernetes SDK/Lease/TLS/identity case passed without skips. A
 populated backup upgrade preserved Agent/revision/Namespace counts; fresh and
-logical-restore catalog differences were measured. Live adoption and Git polling
-are not yet verified. Required image checks, independent review and maintainer
-feedback remain merge requirements.
+logical-restore catalog differences were measured. An existing local installation
+then verified Argo Git polling, exact-ID adoption without a new revision,
+a configuration update reaching deployment, and Degraded status when the
+selected runtime failed its provenance gate. Git stopped intent removed all
+runtime Pods. Retain prune and fresh reviewed re-adoption preserved the Agent,
+Configuration and revision count. Stopped verification exposed the runtime API
+rate limit; reads now wait 600 milliseconds between revisions and completed
+against a populated history.
+
+The live channel remains stopped while a compatible runtime is built. Successful
+Gateway/model/Telegram operation after the update, running-state restart and
+Git rollback proof remain pending. Required native image checks, independent
+review and maintainer feedback remain merge requirements.
 
 The RFC exceeds the 1,500-word review threshold and stays below the 2,500-word
 limit. It remains one document because ownership, credential handling and

@@ -100,7 +100,8 @@ or private input fingerprints.
 
 The Operator watches its four kinds and resynchronizes every 30 seconds. Writes
 use resource versions. API calls have a 10-second deadline and 2 MiB response
-limit. Retries back off from 2 to 30 seconds. A 30-second leader Lease renews every
+limit. Stopped-state verification checks every Agent revision at most once per
+600 milliseconds to stay within the runtime API rate limit. Retries back off from 2 to 30 seconds. A 30-second leader Lease renews every
 10 seconds; processing stops and in-flight HTTP calls abort after 20 seconds
 without renewal. OCC version and source-generation checks also reject stale work.
 

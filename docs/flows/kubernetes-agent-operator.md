@@ -73,7 +73,10 @@ versions/generations conflict. See [deployment worker flow](controller-worker.md
 `reconciler.ts:agent` compares the receipt's requested revision with the active
 revision, deployment status, fresh runtime Pods and current Gateway diagnostics. `report` writes status with
 a resource-version precondition. `argocd-health.lua` rejects stale generations
-and timestamps; failed deployment or ownership conflict is Degraded.
+and timestamps; failed deployment or ownership conflict is Degraded. Stopped-state
+verification waits for the active pointer to clear and checks every Agent
+revision for remaining Pods. It spaces reads by 600 milliseconds to respect
+the runtime API limit and aborts the wait on leader loss.
 
 `guardExternalManagement` rejects ordinary competing mutations. A normal manual
 stop suspends management. Retain finalization calls the authorized release API,
@@ -99,5 +102,7 @@ and status failures. Test scope and commands are in the [test guide](../testing/
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-12 08:08: Pace stopped-state history checks within the runtime API limit (codex/kubernetes-agent-operator - cdff3a4)
 
 - 2026-11-11 21:05: Trace alpha adoption, versioned apply, observation and Retain release (codex/kubernetes-agent-operator - 6790396)
