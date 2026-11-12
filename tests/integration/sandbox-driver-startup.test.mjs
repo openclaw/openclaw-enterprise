@@ -38,11 +38,6 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import {
-  assertNoManagedMcpRouteOverlap,
-  managedMcpNetwork,
-  managedMcpProviderEndpoint,
-} from "../../apps/controller/src/drivers/sandbox/openshell-managed-mcp-policy.ts";
 import { openShellEgressConfiguration } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { formatStartupConfigurationFailure } from "../../apps/controller/src/startup-failure.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
@@ -84,7 +79,7 @@ import { createCredentialGatewayContexts } from "./sandbox-driver-credential-fix
 import { createSandboxHarnessLifecycleChecks } from "./sandbox-driver-harness-lifecycle-cases.ts";
 import { createSandboxCodexHarnessChecks } from "./sandbox-driver-codex-harness-cases.ts";
 import { createCredentialWithdrawalChecks } from "./sandbox-driver-credential-withdrawal-cases.ts";
-import { assertManagedMcpProjection } from "./sandbox-driver-managed-mcp-rules-cases.ts";
+import { verifyManagedMcpProjection } from "./sandbox-driver-managed-mcp-rules-cases.ts";
 import { createSandboxStartupGuardChecks } from "./sandbox-driver-startup-guard-cases.ts";
 import {
   verifySharedBackendComposition,
@@ -1001,23 +996,10 @@ test("a selected Google account keeps its request guard alongside an independent
   assert.equal(created.spec.policy.network_policies["oce-google-requests"], undefined);
 });
 
-test("OpenShell builds managed MCP rules for the declared endpoint and upstream tool name", () => {
-  const endpoint = { host: "mcp.tools.example", port: 8443, path: "/api/mcp" };
-  const install = {
-    runtimeName: "inventory",
-    endpoint,
-    binaryPath: "/opt/inventory/bin/client",
-    mcpVersions: ["2025-11-25"],
-  };
-  const provider = managedMcpProviderEndpoint(install);
-  const network = managedMcpNetwork(install, ["read_inventory"]);
-  assertManagedMcpProjection({
-    install,
-    provider,
-    network,
-    checkOverlap: (policies) => assertNoManagedMcpRouteOverlap(policies, install, [network.name]),
-  });
-});
+test(
+  "OpenShell builds managed MCP rules for the declared endpoint and upstream tool name",
+  verifyManagedMcpProjection,
+);
 
 test("OpenShell limits a Slack connection to the revision's exact MCP tools and recovers after detach", async () => {
   assert.ok(managedSlackInstall);
