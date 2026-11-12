@@ -16,7 +16,8 @@ Argo CD creates, updates, observes and prunes the corresponding Enterprise
 resources. No local sync runner is part of this path. Deliver the RFC's
 [acceptance criteria](../rfcs/0037-kubernetes-agent-operator.md#acceptance-criteria)
 through the regular Agent workflow. The alpha implementation covers existing-resource references, reviewed Agent
-adoption, versioned apply and Retain release. Creation, Secret import/rotation
+adoption, first-time dedicated Agent creation, versioned apply and Retain release.
+Namespace creation, Secret import/rotation
 and Delete cleanup remain unimplemented.
 
 Human OAuth consent, Installation-selected Drivers, credential creation outside
@@ -181,6 +182,23 @@ The RFC exceeds the 1,500-word review threshold and stays below the 2,500-word
 limit. It remains one document because ownership, credential handling and
 cleanup define one Operator contract. Execution steps and proof are separate
 in this plan.
+
+## Creation phase
+
+The next phase uses ordinary provisioning with an external source descriptor,
+Namespace-scoped creation authority and actor/request-ID recovery. Ownership
+commits with Agent creation. Bootstrap delegates an existing configured IAM Role
+to an exact non-Agent ServicePrincipal, with audit and ordinary binding revocation.
+No IAM Driver contract or namespace-binding semantics change.
+
+The PostgreSQL provisioning file passed 64 cases without skips, including the
+new managed creation, API restart/replay, no duplicate initial deployment,
+competing input refusal, role delegation and revocation case. Configuration and
+runtime effects use the existing test Drivers. The Kubernetes branch of QA
+`external-management` now creates another Agent through provisioning and checks a
+real model turn; that credentialed QA lane has not run for this phase. Live Argo
+creation proof is pending. Namespace creation, Secret import/rotation, Delete
+cleanup and cancellation of an unobserved initial create remain outside this phase.
 
 ## Manual Notes
 

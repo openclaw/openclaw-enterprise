@@ -1,17 +1,17 @@
 ---
 created: "2026-11-11"
-updated: "2026-11-11"
-last_updated_session: codex/kubernetes-agent-operator
+updated: "2026-11-12"
+last_updated_session: authoring-run/65cb4899-2d56-4014-aa48-d1d20f550b78
 ---
 
 # Kubernetes Agent reconciliation flow
 
 ## Overview
 
-Argo CD applies an existing Agent's desired state as Kubernetes custom resources.
+Argo CD applies a new or reviewed existing Agent's desired state as Kubernetes custom resources.
 The namespace-scoped Operator uses authorized OCC HTTP operations; it never
-creates runtime Pods directly. This flow describes the alpha adoption/update
-path, not the complete proposed RFC lifecycle.
+creates runtime Pods directly. This flow covers dedicated creation in an existing
+Namespace, adoption and updates, not the full proposed RFC lifecycle.
 
 ## Entry Points
 
@@ -19,7 +19,7 @@ path, not the complete proposed RFC lifecycle.
 - `apps/operator/src/operator.ts:KubernetesAgentOperator.start`: watches, leader Lease, queue and health server.
 - `apps/operator/src/reconciler.ts:AgentReconciler.reconcile`: finalizers and kind dispatch.
 - `apps/controller/src/http/agents.ts:createAgentHandlers`: public management routes and native browser preparation.
-- Preconditions: ready existing OCC Namespace, existing Agent/private Configuration, authorized credentials, reviewed exact-ID adoption and supported immutable runtime images.
+- Preconditions: ready existing OCC Namespace, authorized credentials and supported immutable runtime images; either delegated creation permissions or reviewed exact-ID adoption.
 
 ## Flow
 
@@ -28,7 +28,11 @@ graph TD
   Git["Git commit"] --> Argo["Argo CD applies CR"]
   Argo --> Queue["Operator watch and leader queue"]
   Queue --> API["OCC API: authenticate and authorize"]
-  API --> Claim["Review and lock external ownership"]
+  API --> Mode{"Existing Agent?"}
+  Mode -->|Adopt| Claim["Review and lock external ownership"]
+  Mode -->|Create| Provision["Recover or admit provisioning request"]
+  Provision --> First["Worker creates and deploys owned Agent"]
+  First --> Apply
   Claim --> Apply["Update Configuration and admit deployment"]
   Apply --> Worker["Existing worker and Drivers"]
   Worker --> Runtime["Agent runtime"]
@@ -50,7 +54,28 @@ checks the selected Namespace's Installation identity. `enterprise-client.ts`
 keeps TLS verification and Host/SNI even with an explicit socket address. It
 refuses redirects and returns bounded, sanitized errors.
 
-### 2. Adopt and settle one desired input
+### 2. Create or adopt, then settle desired input
+
+Without `spec.adopt`, `AgentReconciler.provisioningRequestId` derives a stable
+UUID from the registered source. `OpenClawController.getAgentProvisioningByRequest`
+authorizes Namespace creation scope and resolves only the caller's original
+request. If absent, `agent` submits ordinary provisioning with the source, initial
+generation, Configuration and existing Harness credentials. Status is progress,
+not an identity store. A pending or failed job cannot become a new POST plan.
+
+`OpenClawController.provisionAgent` requires Namespace Agent create/administer
+for managed requests; ordinary requests keep Installation administer. The worker
+reauthorizes the stored scope. `processAgentProvisioningConfiguration` saves the
+new Agent and external owner in one transaction. Fenced handoff uses that exact
+source and actor in the management context; suspended ownership still refuses
+it. The initial revision is saved in the receipt, so the first unchanged apply
+needs no second deployment. See [Agent provisioning](agent-provisioning.md).
+
+An administrator bootstraps these permissions with
+`OpenClawController.delegateNamespaceRole`, through the IAM HTTP handler. It checks
+a configured Role and same-Namespace non-Agent ServicePrincipal under the
+existing IAM policy locks, recovers an identical binding, and uses the selected
+IAM Driver's configured binding capability. The normal AccessBinding API revokes it.
 
 `reconciler.ts:agent` reads the exact Agent and verifies dedicated execution.
 `OpenClawController.adoptAgentManagement` authorizes under the Namespace lock,
@@ -84,7 +109,7 @@ the runtime API limit and aborts the wait on leader loss.
 `guardExternalManagement` rejects ordinary competing mutations. A normal manual
 stop suspends management. Retain finalization calls the authorized release API,
 keeps its version tombstone and removes the finalizer. Referenced resources wait
-for dependent CRs. Unsupported create/import/Delete paths stop before their
+for dependent CRs. Unsupported Namespace creation/import/Delete paths stop before their
 unimplemented effects.
 
 ## Debugging and Verification
@@ -105,6 +130,8 @@ and status failures. Test scope and commands are in the [test guide](../testing/
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-12 12:25: Trace delegated creation and durable provisioning recovery (authoring-run/65cb4899-2d56-4014-aa48-d1d20f550b78 - d278426)
 
 - 2026-11-12 10:24: Apply Slack diagnostics only to Agents that configure Slack (codex/kubernetes-agent-operator - 95e3b2b)
 

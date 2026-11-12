@@ -41,6 +41,7 @@ import {
   conformanceKubernetesOptions,
   createTestKubernetesComputeDriver,
 } from "../helpers/kubernetes-compute.mjs";
+import { controllerIAMConfiguration } from "../helpers/default-users-iam.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -363,6 +364,273 @@ async function claimProvisioningWork(pool, workId, { ifQueued = false } = {}) {
   assert.equal(claimed.rowCount, 1, "test must claim the exact queued provisioning work");
   return { idempotencyKey: workId, claimToken };
 }
+
+test(
+  "managed provisioning recovers its request after API restart and owns one Agent before handoff",
+  { ...requiresPostgres, timeout: 90_000 },
+  async (context) => {
+    // Production HTTP/auth/IAM, PostgreSQL and the ordinary provisioning/deployment
+    // worker are real. Existing test Drivers simulate external runtime effects.
+    const iam = {
+      defaultUserGroups: [],
+      roleBindings: [],
+      roles: [
+        {
+          id: "managed_creator",
+          permissions: [
+            "agent:create",
+            "agent:read",
+            "agent:update",
+            "agent:administer",
+            "agent:operate",
+            "agent:deploy",
+            "configuration:create",
+            "configuration:read",
+            "configuration:update",
+            "secret:read",
+            "secret:operate",
+            "agent_revision:read",
+            "namespace:read",
+          ],
+        },
+      ],
+    };
+    const fixture = await createFixture(context, { iam: controllerIAMConfiguration(iam) });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const principal = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/iam/service-principals`,
+      { body: {} },
+    );
+    assert.equal(principal.status, 201, JSON.stringify(principal.body));
+    const foreignNamespace = await fixture.bootstrapNamespace();
+    const foreignPrincipal = await fixture.request(
+      "POST",
+      `/namespaces/${foreignNamespace.id}/iam/service-principals`,
+      { body: {} },
+    );
+    assert.equal(foreignPrincipal.status, 201, JSON.stringify(foreignPrincipal.body));
+    const delegation = `/namespaces/${namespace.id}/iam/role-delegations`;
+    const grant = { servicePrincipalId: principal.data.id, roleId: "managed_creator" };
+    assert.equal(
+      (await fixture.request("POST", delegation, { body: { ...grant, roleId: "not_configured" } }))
+        .status,
+      400,
+    );
+    assert.equal(
+      (
+        await fixture.request("POST", delegation, {
+          body: { ...grant, servicePrincipalId: foreignPrincipal.data.id },
+        })
+      ).status,
+      404,
+      "delegation cannot target a foreign Namespace principal",
+    );
+    const binding = await fixture.request("POST", delegation, { body: grant });
+    assert.equal(binding.status, 201, JSON.stringify(binding.body));
+    fixture.revokeAccessBindingAtTeardown(namespace.id, binding.data.id);
+    const repeatedGrant = await fixture.request("POST", delegation, { body: grant });
+    assert.equal(repeatedGrant.status, 201, JSON.stringify(repeatedGrant.body));
+    assert.equal(
+      repeatedGrant.data.id,
+      binding.data.id,
+      "bootstrap replay must not add another binding",
+    );
+    const key = await fixture.request("POST", "/api/auth/service-keys", {
+      body: {
+        servicePrincipalId: principal.data.id,
+        namespaceId: namespace.id,
+        name: "managed-provisioning-test",
+      },
+    });
+    assert.equal(key.status, 201, JSON.stringify(key.body));
+    const request = (method, path, options = {}) =>
+      fixture.request(method, path, {
+        ...options,
+        session: null,
+        headers: { "x-api-key": key.data.key },
+      });
+    assert.equal(
+      (await request("POST", delegation, { body: grant })).status,
+      403,
+      "Operator cannot delegate roles to itself",
+    );
+    const sourceId = `managed-creation/${randomUUID()}`;
+    const body = provisioningBody(namespace.id, secrets, {
+      externalManagement: { sourceId, sourceGeneration: 1, retryNonce: "initial" },
+    });
+    const ordinary = { ...body };
+    delete ordinary.externalManagement;
+    assert.equal(
+      (
+        await request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+          body: ordinary,
+        })
+      ).status,
+      403,
+      "ordinary provisioning still requires Installation administration",
+    );
+    assert.equal(
+      (await request("POST", `/namespaces/${foreignNamespace.id}/agents/provision`, { body }))
+        .status,
+      403,
+      "Namespace-scoped automation cannot create in another Namespace",
+    );
+    const base = `/namespaces/${namespace.id}/agents`;
+    const recovery = `${base}/provision/requests/${body.requestId}`;
+    assert.equal((await request("GET", recovery)).status, 404);
+    const admitted = await request("POST", `${base}/provision`, { body });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    fixture.cancelQueuedWorkAtTeardown(
+      admitted.data.provisioning.workId,
+      "managed creation test cleanup",
+    );
+    const polled = await request("GET", admitted.data.provisioning.url);
+    assert.equal(polled.status, 200, JSON.stringify(polled.body));
+    const stillQueued = await request("POST", `${admitted.data.provisioning.url}/retry`);
+    assert.equal(stillQueued.status, 202, JSON.stringify(stillQueued.body));
+    assert.equal(stillQueued.data.workId, admitted.data.provisioning.workId);
+    // Discard the POST receipt and restart the API. Recovery reads the original
+    // actor/Namespace request; it never needs Kubernetes status or a display-name lookup.
+    await fixture.restartApi();
+    const recovered = await request("GET", recovery);
+    assert.equal(recovered.status, 200, JSON.stringify(recovered.body));
+    assert.equal(recovered.data.workId, admitted.data.provisioning.workId);
+    const replay = await request("POST", `${base}/provision`, { body });
+    assert.equal(replay.status, 202, JSON.stringify(replay.body));
+    assert.equal(replay.data.provisioning.workId, recovered.data.workId);
+    const changed = await request("POST", `${base}/provision`, {
+      body: { ...body, name: "different accepted plan" },
+    });
+    assert.equal(changed.status, 409);
+    await fixture.startWorker();
+    const status = await waitFor(
+      "managed provisioning to finish its ordinary deployment",
+      async () => {
+        const result = await request("GET", recovery);
+        assert.equal(result.status, 200, JSON.stringify(result.body));
+        assert.notEqual(result.data.status, "failed", JSON.stringify(result.body));
+        return result.data.status === "succeeded" ? result.data : undefined;
+      },
+    );
+    const path = `${base}/${status.agentId}`;
+    const managed = await request("GET", `${path}/management`);
+    assert.equal(managed.status, 200, JSON.stringify(managed.body));
+    assert.equal(managed.data.management.sourceId, sourceId);
+    assert.equal(managed.data.management.version, 1);
+    assert.equal(managed.data.management.requestedRevisionId, status.revisionId);
+    // The new owner blocks ordinary competing edits; the worker handoff was
+    // nevertheless authorized through the exact persisted source and actor.
+    const edit = await request(
+      "PATCH",
+      `/namespaces/${namespace.id}/configurations/${status.configurationId}`,
+      {
+        body: { values: body.configuration.values, expectedGeneration: 1 },
+      },
+    );
+    assert.equal(edit.status, 409);
+    const apply = await request("POST", `${path}/management/apply`, {
+      body: {
+        sourceId,
+        sourceGeneration: 1,
+        expectedVersion: 1,
+        requestKey: "first-observation",
+        desiredRuntimeState: "running",
+        configuration: {
+          values: body.configuration.values,
+          secretBindings: body.configuration.secretBindings,
+        },
+        harnessAuth: body.harnessAuth,
+        retryNonce: "initial",
+      },
+    });
+    assert.equal(apply.status, 200, JSON.stringify(apply.body));
+    assert.equal(apply.data.management.requestedRevisionId, status.revisionId);
+    const revisions = await request("GET", `${path}/revisions`);
+    assert.equal(revisions.status, 200);
+    assert.equal(revisions.data.length, 1, "initial observation must not deploy twice");
+    assert.deepEqual(await storedProvisioningCounts(fixture.pool, namespace.id), {
+      jobs: 1,
+      agents: 1,
+    });
+    const released = await request("DELETE", `${path}/management`, {
+      body: { sourceId, expectedVersion: apply.data.management.version },
+    });
+    assert.equal(released.status, 200, JSON.stringify(released.body));
+    assert.equal((await request("POST", `${base}/provision`, { body })).status, 202);
+    const retained = await request("GET", `${path}/management`);
+    assert.equal(
+      retained.data.management.released,
+      true,
+      "creation replay must not reacquire released ownership",
+    );
+    assert.deepEqual(await storedProvisioningCounts(fixture.pool, namespace.id), {
+      jobs: 1,
+      agents: 1,
+    });
+    await fixture.stopWorker();
+    const retryBody = provisioningBody(namespace.id, secrets, {
+      externalManagement: { sourceId: `managed-retry/${randomUUID()}`, sourceGeneration: 1 },
+    });
+    const waiting = await request("POST", `${base}/provision`, { body: retryBody });
+    assert.equal(waiting.status, 202, JSON.stringify(waiting.body));
+    fixture.cancelQueuedWorkAtTeardown(
+      waiting.data.provisioning.workId,
+      "managed retry test cleanup",
+    );
+    // Revocation before the next worker claim must prevent all resource creation.
+    const revoked = await fixture.request(
+      "DELETE",
+      `/namespaces/${namespace.id}/iam/access-bindings/${binding.data.id}`,
+    );
+    assert.equal(revoked.status, 204, JSON.stringify(revoked.body));
+    assert.equal((await request("GET", recovery)).status, 403);
+    assert.equal((await request("GET", `${base}/provision/requests/${requestId()}`)).status, 403);
+    await fixture.startWorker();
+    const failed = await waitFor("the worker to refuse revoked managed creation", async () => {
+      const row = await fixture.state.read((view) =>
+        view.provisioning.findByRequest(namespace.id, principal.data.id, retryBody.requestId),
+      );
+      return row?.status === "failed" ? row : undefined;
+    });
+    assert.equal(failed.agentId, undefined);
+    assert.equal(failed.configurationId, undefined);
+    assert.deepEqual(await storedProvisioningCounts(fixture.pool, namespace.id), {
+      jobs: 2,
+      agents: 1,
+    });
+    // Restore only the Namespace delegation, then retry as the original actor.
+    const restored = await fixture.request("POST", delegation, { body: grant });
+    assert.equal(restored.status, 201, JSON.stringify(restored.body));
+    const retried = await request("POST", `${waiting.data.provisioning.url}/retry`);
+    assert.equal(retried.status, 202, JSON.stringify(retried.body));
+    const recoveredRetry = await waitFor(
+      "managed creation retry to keep its original job",
+      async () => {
+        const result = await request("GET", `${base}/provision/requests/${retryBody.requestId}`);
+        assert.equal(result.status, 200, JSON.stringify(result.body));
+        assert.notEqual(result.data.status, "failed", JSON.stringify(result.body));
+        return result.data.status === "succeeded" ? result.data : undefined;
+      },
+    );
+    assert.equal(recoveredRetry.workId, waiting.data.provisioning.workId);
+    assert.deepEqual(await storedProvisioningCounts(fixture.pool, namespace.id), {
+      jobs: 2,
+      agents: 2,
+    });
+    await fixture.stopWorker();
+    assert.equal(
+      (
+        await fixture.request(
+          "DELETE",
+          `/namespaces/${namespace.id}/iam/access-bindings/${restored.data.id}`,
+        )
+      ).status,
+      204,
+    );
+  },
+);
 
 test(
   "provisioning API queues one job with existing Secret references and replays only the exact same request",

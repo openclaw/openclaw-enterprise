@@ -37,6 +37,7 @@ type WorkerStatementHook = (
 ) => void | Promise<void>;
 
 interface FixtureOptions extends Partial<FixtureDrivers> {
+  iam?: InstallationRuntimeDrivers["installation"]["iam"];
   nativeAdmin?: boolean;
   beforeWorkerStatement?: WorkerStatementHook;
   leaseDurationMs?: number;
@@ -100,6 +101,7 @@ type RequestMethod = "DELETE" | "GET" | "HEAD" | "OPTIONS" | "PATCH" | "POST" | 
 interface RequestOptions {
   body?: unknown;
   session?: FixtureSession | string | null;
+  headers?: Record<string, string>;
 }
 
 interface ResponseEnvelope<Data> {
@@ -117,20 +119,24 @@ interface SessionData {
   user: { id: string };
 }
 
-function installationDrivers({
-  computeDriver,
-  configurationDriver,
-  secretDriver,
-  repoDriver,
-  pluginDriver,
-  sandboxDriver,
-  credentialGatewayDriver,
-}: FixtureDrivers): InstallationRuntimeDrivers {
+function installationDrivers(
+  {
+    computeDriver,
+    configurationDriver,
+    secretDriver,
+    repoDriver,
+    pluginDriver,
+    sandboxDriver,
+    credentialGatewayDriver,
+  }: FixtureDrivers,
+  iam?: InstallationRuntimeDrivers["installation"]["iam"],
+): InstallationRuntimeDrivers {
   return {
     // The fixture injects Drivers directly and omits loader-only definitions and a logging level.
     installation: {
       occ: { cluster: "postgres-agent-provisioning" },
       logging: {},
+      ...(iam === undefined ? {} : { iam }),
       backend: [
         ...(repoDriver === undefined
           ? []
@@ -290,15 +296,19 @@ export async function createProvisioningFixture(
   const revokedBindings: RevokedBindingRow[] = [];
   const teardownCancellations: { namespaceId: string; agentId: string }[] = [];
   const teardownWorkCancellations: { workId: string; message: string }[] = [];
-  const drivers = installationDrivers({
-    computeDriver,
-    configurationDriver,
-    secretDriver,
-    repoDriver: options.repoDriver,
-    pluginDriver: options.pluginDriver,
-    sandboxDriver: options.sandboxDriver,
-    credentialGatewayDriver: options.credentialGatewayDriver,
-  });
+  const teardownBindings: { namespaceId: string; bindingId: string }[] = [];
+  const drivers = installationDrivers(
+    {
+      computeDriver,
+      configurationDriver,
+      secretDriver,
+      repoDriver: options.repoDriver,
+      pluginDriver: options.pluginDriver,
+      sandboxDriver: options.sandboxDriver,
+      credentialGatewayDriver: options.credentialGatewayDriver,
+    },
+    options.iam,
+  );
   const origin = options.nativeAdmin ? "https://console.oce.localhost:9443" : authBaseURL;
   let nativeAdminSettings: Pick<PostgresDevelopmentConfig, "nativeAdmin" | "gatewayApiKeyPath"> = {
     nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
@@ -360,6 +370,16 @@ export async function createProvisioningFixture(
           assert.equal(cancelled.status, "cancelled", workId);
         }
       }
+      for (const { namespaceId, bindingId } of teardownBindings) {
+        const response = await request(
+          "DELETE",
+          `/namespaces/${namespaceId}/iam/access-bindings/${bindingId}`,
+        );
+        assert.ok(
+          response.status === 204 || response.status === 404,
+          JSON.stringify(response.body),
+        );
+      }
     } finally {
       await app.close?.();
       await pool.end();
@@ -369,13 +389,14 @@ export async function createProvisioningFixture(
   async function request<Data = unknown>(
     method: RequestMethod,
     path: string,
-    { body, session: selectedSession = session }: RequestOptions = {},
+    { body, session: selectedSession = session, headers: extraHeaders }: RequestOptions = {},
   ) {
     const headers = {
       ...(selectedSession === null ? {} : authenticatedHeaders(selectedSession)),
       ...(body === undefined ? {} : { "content-type": "application/json" }),
       ...(method === "GET" ? {} : { origin }),
       host: new URL(origin).host,
+      ...extraHeaders,
     };
     const response = await app.inject({
       method,
@@ -507,6 +528,10 @@ export async function createProvisioningFixture(
     teardownWorkCancellations.push({ workId, message });
   }
 
+  function revokeAccessBindingAtTeardown(namespaceId: string, bindingId: string) {
+    teardownBindings.push({ namespaceId, bindingId });
+  }
+
   return {
     administratorPrincipalId,
     app,
@@ -517,6 +542,7 @@ export async function createProvisioningFixture(
     pool,
     configurationDriver,
     revokeCurrentPrincipal,
+    revokeAccessBindingAtTeardown,
     restartApi,
     request,
     secretDriver,

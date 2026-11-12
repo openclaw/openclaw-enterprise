@@ -3072,6 +3072,82 @@ export class OpenClawController {
     return Object.freeze(groups.map(configuredGroupId));
   }
 
+  async delegateNamespaceRole(
+    principalId: string,
+    namespaceId: string,
+    input: { readonly servicePrincipalId: string; readonly roleId: string },
+  ): Promise<Readonly<AccessBinding>> {
+    const namespace = await this.admitIAMPolicyOperation(principalId, namespaceId);
+    const role = this.iamConfiguration?.roles.find((value) => value.id === input.roleId);
+    if (role === undefined) {
+      throw new IAMPolicyValidationError(
+        "/roleId",
+        "Select a Role from the Installation iam configuration.",
+      );
+    }
+    const driver = this.occBindingDriver("createOwnerBinding");
+    if (driver === undefined) {
+      throw new DependencyUnavailableError(
+        "The selected IAM Driver does not support configured Namespace delegation.",
+      );
+    }
+    const principals = this.iamPolicyDriver("getNamespaceServicePrincipal");
+    return this.mutate(async (state) => {
+      await this.holdIAMPolicyAuthority(state, principalId, namespace.id);
+      const subject = await this.iamPolicyOperation(() =>
+        principals.getNamespaceServicePrincipal!(
+          { policy: state.iamPolicy },
+          namespace.id,
+          input.servicePrincipalId,
+        ),
+      );
+      if (
+        subject === undefined ||
+        subject.namespaceId !== namespace.id ||
+        subject.agentId !== undefined
+      ) {
+        throw new ScopeViolationError(
+          "Select an existing non-Agent ServicePrincipal in this Namespace.",
+        );
+      }
+      const id =
+        "binding_owner_delegation_" +
+        createHash("sha256")
+          .update(`${namespace.id}\0${subject.id}\0${role.id}`)
+          .digest("hex")
+          .slice(0, 32);
+      const reader = this.iamPolicyDriver("getNamespaceAccessBinding");
+      const existing = await this.iamPolicyOperation(() =>
+        reader.getNamespaceAccessBinding!({ policy: state.iamPolicy }, namespace.id, id),
+      );
+      if (existing !== undefined) {
+        if (
+          existing.subjectKind !== "identity" ||
+          existing.subjectId !== subject.id ||
+          existing.roleId !== configuredRoleId(role.id) ||
+          existing.resourceKind !== undefined ||
+          existing.resourceId !== undefined
+        ) {
+          throw new ResourceStateConflictError(
+            "The Namespace delegation identity has a different binding.",
+          );
+        }
+        return existing;
+      }
+      return this.iamPolicyOperation(() =>
+        driver.createOwnerBinding!(
+          { policy: state.iamPolicy },
+          {
+            id,
+            namespaceId: namespace.id,
+            principalId: subject.id,
+            roleId: configuredRoleId(role.id),
+          },
+        ),
+      );
+    });
+  }
+
   async createIAMAccessBinding(
     principalId: string,
     input: CreateIAMAccessBindingInput,
@@ -3663,7 +3739,11 @@ export class OpenClawController {
     // caller without them gets the same audited denial whatever the body says, and never a
     // validation answer about a Namespace they cannot provision in. A replay needs these too
     // (authorizeProvisioningRecord), so the order changes no authorized outcome.
-    await this.authorizeProvisioningRequest(principalId, input.namespaceId);
+    await this.authorizeProvisioningRequest(
+      principalId,
+      input.namespaceId,
+      input.externalManagement !== undefined,
+    );
     const requestId = requireProvisioningRequestId(input.requestId);
     if (!isName(input.name)) {
       throw new ScopeViolationError("The Agent name is invalid.");
@@ -3716,6 +3796,9 @@ export class OpenClawController {
       requestId,
       namespaceId: input.namespaceId,
       name: input.name,
+      ...(input.externalManagement === undefined
+        ? {}
+        : { externalManagement: input.externalManagement }),
       configuration: configurationInput,
       ...(configurationPreparation === undefined
         ? {}
@@ -3927,6 +4010,9 @@ export class OpenClawController {
         requestFingerprint: requestFingerprintHex,
         plan: {
           name: input.name,
+          ...(input.externalManagement === undefined
+            ? {}
+            : { externalManagement: input.externalManagement }),
           ...(reservedAgentId === undefined ? {} : { reservedAgentId }),
           configuration: configurationInput,
           harnessAuth,
@@ -3977,12 +4063,42 @@ export class OpenClawController {
     });
   }
 
+  async getAgentProvisioningByRequest(
+    principalId: string,
+    namespaceId: string,
+    requestId: string,
+  ): Promise<Readonly<ProvisionAgentResult>> {
+    await this.authorizeProvisioningRequest(principalId, namespaceId, true);
+    const id = requireProvisioningRequestId(requestId);
+    const record = await this.read((state) =>
+      state.provisioning.findByRequest(namespaceId, principalId, id),
+    );
+    if (record === undefined) {
+      throw new ScopeViolationError(
+        "The provisioning request does not belong to this actor and Namespace.",
+      );
+    }
+    // The lookup cannot turn an ordinary provisioning job into delegated work.
+    if (record.plan.externalManagement === undefined) {
+      await this.authorizeProvisioningRequest(principalId, namespaceId);
+    }
+    return this.readAgentProvisioningProgress(principalId, namespaceId, record.workId);
+  }
+
   async getAgentProvisioning(
     principalId: string,
     namespaceId: string,
     workId: string,
   ): Promise<Readonly<ProvisionAgentResult>> {
-    await this.authorizeProvisioningRequest(principalId, namespaceId);
+    await this.authorizeProvisioningRequest(principalId, namespaceId, "either");
+    return this.readAgentProvisioningProgress(principalId, namespaceId, workId);
+  }
+
+  private async readAgentProvisioningProgress(
+    principalId: string,
+    namespaceId: string,
+    workId: string,
+  ): Promise<Readonly<ProvisionAgentResult>> {
     return this.mutate(async (state) => {
       const { record, work } = await this.exactProvisioningWork(
         state,
@@ -4054,7 +4170,7 @@ export class OpenClawController {
     namespaceId: string,
     workId: string,
   ): Promise<Readonly<ProvisionAgentResult>> {
-    await this.authorizeProvisioningRequest(principalId, namespaceId);
+    await this.authorizeProvisioningRequest(principalId, namespaceId, "either");
     return this.mutate(async (state) => {
       const namespace = await this.lockNamespace(state, namespaceId);
       const { record, work: observed } = await this.exactProvisioningWork(
@@ -4211,13 +4327,38 @@ export class OpenClawController {
           );
         }
         await this.fenceAgentProvisioning(state, claim);
-        const revision = await this.provisioningContext.run(claim, () =>
-          this.deployAgent(
-            current.actorId,
-            { namespaceId: current.namespaceId, agentId: current.agentId! },
-            resolveHarness,
-          ),
-        );
+        const deploy = () =>
+          this.provisioningContext.run(claim, () =>
+            this.deployAgent(
+              current.actorId,
+              { namespaceId: current.namespaceId, agentId: current.agentId! },
+              resolveHarness,
+            ),
+          );
+        const owner = asRecord(current.plan.externalManagement);
+        const revision =
+          owner === undefined
+            ? await deploy()
+            : await this.externalManagementContext.run(
+                {
+                  principalId: current.actorId,
+                  sourceId: String(owner.sourceId),
+                  agentId: current.agentId,
+                },
+                deploy,
+              );
+        if (owner !== undefined) {
+          const agent = await state.agents.lockAgent(current.namespaceId, current.agentId);
+          if (agent?.externalManagement?.request === undefined) {
+            throw new ResourceStateConflictError(
+              "The provisioning management receipt is unavailable.",
+            );
+          }
+          await state.agents.setExternalManagement(current.namespaceId, current.agentId, {
+            ...agent.externalManagement,
+            request: { ...agent.externalManagement.request, revisionId: revision.id },
+          });
+        }
         await this.commitProvisioningCheckpoint(state, claim, {
           completedPhase: "handoff",
           status: "running",
@@ -14250,7 +14391,7 @@ export class OpenClawController {
         "An older source generation cannot replace accepted desired state.",
       );
     }
-    const secretBindings = input.configuration.secretBindings ?? {};
+    const secretBindings = this.bindings(input.configuration.secretBindings);
     const configurationChanged =
       !isDeepStrictEqual(current.values, input.configuration.values) ||
       !isDeepStrictEqual(current.secretBindings ?? {}, secretBindings);
@@ -15693,6 +15834,7 @@ export class OpenClawController {
   private async authorizeProvisioningRequest(
     principalId: string,
     namespaceId: string,
+    managed: boolean | "either" = false,
   ): Promise<void> {
     this.namespaceIdentity(namespaceId);
     await this.authorize(principalId, "create", { kind: "agent", namespaceId, id: namespaceId });
@@ -15701,10 +15843,23 @@ export class OpenClawController {
       namespaceId,
       id: namespaceId,
     });
-    await this.authorize(principalId, "administer", {
-      kind: "installation",
-      id: this.installation.id,
-    });
+    if (managed === "either") {
+      const delegated = await this.authorizationDecision(principalId, "administer", {
+        kind: "agent",
+        namespaceId,
+        id: namespaceId,
+      });
+      if (delegated.decision.allowed) {
+        return;
+      }
+    }
+    await this.authorize(
+      principalId,
+      "administer",
+      managed === true
+        ? { kind: "agent", namespaceId, id: namespaceId }
+        : { kind: "installation", id: this.installation.id },
+    );
   }
 
   private async authorizeProvisioningRecord(
@@ -15717,7 +15872,11 @@ export class OpenClawController {
     }: { readonly statusRead?: "status" | "retry"; readonly admission?: boolean } = {},
   ): Promise<void> {
     const namespaceId = record.namespaceId;
-    await this.authorizeProvisioningRequest(principalId, namespaceId);
+    await this.authorizeProvisioningRequest(
+      principalId,
+      namespaceId,
+      record.plan.externalManagement !== undefined,
+    );
     if (record.agentId !== undefined) {
       for (const action of ["read", "operate", "deploy"] as const) {
         await this.authorize(principalId, action, {
@@ -16744,6 +16903,24 @@ export class OpenClawController {
           status: "active",
           createdAt: this.timestamp(),
         });
+        const owner = asRecord(planRecord.externalManagement);
+        if (owner !== undefined) {
+          // Publish ownership in the Agent creation transaction, before any caller
+          // can edit the Configuration or race the provisioning handoff.
+          await state.agents.setExternalManagement(namespace.id, agent.id, {
+            sourceId: String(owner.sourceId),
+            principalId: record.actorId,
+            version: 1,
+            suspended: false,
+            released: false,
+            request: {
+              key: "provision-" + record.requestId,
+              fingerprint: record.requestFingerprint,
+              sourceGeneration: Number(owner.sourceGeneration),
+              ...(owner.retryNonce === undefined ? {} : { retryNonce: String(owner.retryNonce) }),
+            },
+          });
+        }
         await this.bindCreator(state, record.actorId, {
           kind: "agent",
           id: agent.id,

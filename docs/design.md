@@ -111,10 +111,10 @@ and metrics integrations have their own [operational contracts](guides/observabi
 ## Control Plane
 
 The optional [Kubernetes Agent Operator](reference/kubernetes-agent-operator.md)
-adds reviewed adoption and updates of existing dedicated Agents through the
-same authorized API. Git/Kubernetes own declarations; OCC retains resource,
-work and runtime ownership. First-time CR provisioning and Secret import are
-not implemented in this alpha.
+creates dedicated Agents in existing Namespaces and adopts or updates reviewed
+existing Agents through the same authorized API. Git/Kubernetes own declarations;
+OCC retains resource, work and runtime ownership. Namespace creation and Secret
+import remain unimplemented.
 
 The API serves the console and authorized resource operations. An independent
 worker claims operations from the queue and calls the selected Drivers. PostgreSQL stores

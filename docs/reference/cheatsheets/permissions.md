@@ -34,7 +34,7 @@ principal. Rerunning bootstrap does not add missing permissions to existing Role
 | [`service_account`](../api.md#service-accounts) | `create`, `read`, `update`, `delete`                                                                  | Namespace for create; exact ServiceAccount otherwise. Credential creation also uses `update`.                                                                                                                                                                                                                                                              |
 | [`secret`](../api.md#secrets)                   | `create`, `read`, `update`, `delete`, `operate`                                                       | Namespace collection for create; list needs Namespace `read` and returns only Secrets with exact `read`. Other actions target the exact Secret. `operate` is checked when a Secret is bound or used.                                                                                                                                                       |
 | [`credential_source`](../credential-sources.md) | `create`, `read`, `update`, `delete`, `operate`                                                       | Namespace collection for create; list needs Namespace `read` and returns only sources with exact `read`. Other actions target the exact source. `operate` is checked when a source is bound or deployed. `update` also gates rotation and needs `secret:operate` on each Secret it reads; Roles bootstrapped before `update` existed must have it granted. |
-| [`agent`](../api.md#agents)                     | `create`, `read`, `update`, `delete`, `deploy`, `operate`, `administer`, `read_logs`, `manage_policy` | Namespace for create; exact Agent otherwise. Native chat and administration require a human session. Bootstrap does not grant `read_logs`.                                                                                                                                                                                                                 |
+| [`agent`](../api.md#agents)                     | `create`, `read`, `update`, `delete`, `deploy`, `operate`, `administer`, `read_logs`, `manage_policy` | Namespace collection for create and managed-provisioning administer; exact Agent otherwise. Native chat and administration require a human session. Bootstrap does not grant `read_logs`.                                                                                                                                                                  |
 | [`sandbox_policy`](../sandbox-policies.md)      | `read`, `update`                                                                                      | Exact Agent-owned policy, or an exact binding on its Agent. Reads and discovery require Agent read; preview/save/apply require Agent manage_policy and enabled editing; apply also requires `read`, as do Agent deploy and an Agent update with repository bindings when saved additions exist.                                                            |
 | [`agent_revision`](../api.md#agent-revisions)   | `read`                                                                                                | Exact AgentRevision, or an exact binding on its Agent; deployment-status reads use this permission too.                                                                                                                                                                                                                                                    |
 
@@ -85,6 +85,12 @@ provisioning status.` A denial that names no grant says `The exact platform
 operation was not authorized.`
 
 ## Additional checks
+
+- Managed first-time provisioning needs Namespace Agent `create/administer`,
+  Configuration `create` and exact source permissions. Ordinary provisioning
+  keeps Installation `administer`. An administrator can
+  [delegate a configured Role](../authorization/default-users.md#delegate-a-configured-role-to-automation)
+  to a Namespace ServicePrincipal; this grants no Installation permission.
 
 - [Experimental personal Codex login](../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login)
   (device login) requires Namespace `agent:create`, or exact `agent:read` and

@@ -9,10 +9,9 @@ last_verified: "2026-11-04"
 
 ## Overview
 
-Scheduled QA runs Console Secret management on Compose/Kubernetes, OpenShell
-security and lifecycle files, local installation, and OIDC Agent chat. Jobs use
-real dependencies on disposable installations. Results are advisory, not merge
-or publication gates.
+Scheduled QA tests Console Secrets, OpenShell security/lifecycle, local installation
+and OIDC chat with real dependencies on disposable installations. Results are
+advisory; they do not gate merges or publication.
 
 <a id="when-it-runs"></a>
 
@@ -55,7 +54,7 @@ manual advisory run.
 
 ## Scenarios
 
-QA `external-management` checks [ownership and apply](../kubernetes-agent-operator.md).
+QA `external-management` checks [ownership/apply](../kubernetes-agent-operator.md), plus managed creation and a model turn on Kubernetes/Codex.
 
 The [QA matrix](../../../scripts/ci/test-suites/qa-matrix.json) creates separate
 Agents on disposable control planes with Kubernetes compute, preserving existing

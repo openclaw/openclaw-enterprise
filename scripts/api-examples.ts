@@ -257,6 +257,7 @@ const savedAccount = {
 };
 
 export const parameterExamples = {
+  requestId: id("req"),
   "x-occ-session-key": "s".repeat(43),
   origin: "https://console.example.com",
   oauthClientId,
@@ -304,6 +305,7 @@ export const parameterExamples = {
 };
 
 export const requestExamples = {
+  delegateNamespaceRole: { servicePrincipalId: "example-automation", roleId: "agent_creator" },
   adoptAgentManagement: {
     sourceId: "example-controller/resource-uid",
     expectedConfigurationId: configurationId,
@@ -439,6 +441,13 @@ export const requestExamples = {
 
 // Values below are data members. The generator adds the common meta envelope.
 export const responseExamples = {
+  delegateNamespaceRole: {
+    id: "binding_owner_delegation_example",
+    namespaceId,
+    subjectKind: "identity",
+    subjectId: "example-automation",
+    roleId: "role_config_agent_creator",
+  },
   getNamespaceIdentity: { installationId: id("ins"), namespaceId },
   getAgentManagement: {
     management: null,
@@ -580,6 +589,7 @@ export const responseExamples = {
   provisionAgent: { provisioning },
   retryAgentProvisioning: provisioning,
   getAgentProvisioning: provisioning,
+  getAgentProvisioningByRequest: provisioning,
   getAgentDeployment: {
     namespaceId,
     agentId,

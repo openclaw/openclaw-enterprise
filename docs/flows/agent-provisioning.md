@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
-updated: 2026-11-10
-last_updated_session: authoring-run/8df1087c-23a7-43b9-8a29-537fd34e2d6e
+updated: "2026-11-12"
+last_updated_session: authoring-run/65cb4899-2d56-4014-aa48-d1d20f550b78
 ---
 
 # Agent provisioning flow
@@ -83,7 +83,18 @@ For Harness authentication from a credential source, OCC reads the catalog entry
 from the recorded Gateway. Compute validates that same entry and its login mode
 for this admission. A later provisioning request reads the catalog again.
 
-OCC first authorizes Agent `create`, Configuration `create` and Installation `administer` for the Namespace, as status and retry do, so a caller without them gets `403` whatever the body says. It then validates the accepted Configuration, references, workspace inputs, supported execution mode and current authority, then refuses a taken Agent name with Agent create's `409`. Reserved Secret destinations, cross-Namespace Secret references, and missing or `runtime` Harness authentication give `400 INVALID_REQUEST` naming the rule; a Secret absent from the Namespace stays `404`. Before the Compute plan check, a Secret binding gets Agent save's Harness authentication check and its named `400`.
+Ordinary requests require Agent `create`, Configuration `create` and Installation
+`administer`. Managed requests instead require Namespace Agent `create/administer`
+and Configuration `create`. Status and retry reauthorize the stored scope.
+Admission validates Configuration, references, workspace, mode and authority,
+then rejects a taken name with `409`. Reserved Secret destinations, cross-Namespace
+references and missing or `runtime` Harness auth give `400`; an absent Secret
+gives `404`. These checks precede channel credential and Compute plan checks.
+
+Managed creation stores its external source descriptor in the accepted plan.
+Ownership commits with Agent creation. Fenced handoff uses that actor/source;
+competing writes remain blocked. Request-ID recovery returns progress without
+Configuration or secrets. See the [Operator flow](kubernetes-agent-operator.md).
 
 A selected Credential Gateway requires a supported, ready model Credential Source the caller can `operate`, and OCC preserves its canonical binding. Unsupported authentication methods fail before a job or external resource is created.
 
@@ -221,6 +232,8 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 12:25: Add delegated managed provisioning and request recovery (authoring-run/65cb4899-2d56-4014-aa48-d1d20f550b78 - d278426)
 
 - 2026-11-10 23:12: Explain how the deployment summary shows a recorded wait at handoff. (authoring-run/8df1087c-23a7-43b9-8a29-537fd34e2d6e - cdd1e754e36d)
 

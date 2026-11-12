@@ -4,6 +4,9 @@ import { waitFor } from "./qa-utils.mjs";
 
 /** Existing real Agent workflow; this proves OCC management, not Argo or Operator watches. */
 export async function verifyQaExternalManagement(f, agent) {
+  if (f.controlPlane === "kubernetes" && agent.preset === "Codex") {
+    await verifyManagedCreation(f, agent);
+  }
   const base = `/namespaces/${agent.namespaceId}/agents/${agent.id}`;
   const path = `${base}/management`;
   const sourceId = `qa-controller/${randomUUID()}`;
@@ -88,5 +91,90 @@ export async function verifyQaExternalManagement(f, agent) {
   } finally {
     const current = await f.api("GET", path);
     await f.api("DELETE", path, { sourceId, expectedVersion: current.management.version });
+  }
+}
+
+/** Create through the shipped provisioning caller; keep the source Agent's channels untouched. */
+async function verifyManagedCreation(f, original) {
+  const namespaceId = original.namespaceId;
+  const namespace = `/namespaces/${namespaceId}`;
+  const current = await f.api("GET", `${namespace}/agents/${original.id}`);
+  const configuration = await f.api(
+    "GET",
+    `${namespace}/configurations/${current.configurationId}`,
+  );
+  const values = structuredClone(configuration.values);
+  delete values.channels;
+  // A second Agent must not start another poller/listener with the source bot's credentials.
+  for (const channel of ["telegram", "slack"]) {
+    if (values.plugins?.entries) {
+      delete values.plugins.entries[channel];
+    }
+    if (Array.isArray(values.plugins?.allow)) {
+      values.plugins.allow = values.plugins.allow.filter((id) => id !== channel);
+    }
+  }
+  const requestId = `req_${randomUUID()}`;
+  const sourceId = `qa-created/${randomUUID()}`;
+  const recovery = `${namespace}/agents/provision/requests/${requestId}`;
+  let created;
+  try {
+    await f.api("POST", `${namespace}/agents/provision`, {
+      requestId,
+      name: `managed-created-${randomUUID().slice(0, 8)}`,
+      executionMode: "dedicated",
+      nativeAdmin: true,
+      externalManagement: { sourceId, sourceGeneration: 1 },
+      configuration: { kind: "agent", values },
+      harnessAuth: current.harnessAuth,
+    });
+    const first = await f.api("GET", recovery);
+    const status = await waitFor(
+      "managed creation and its first real deployment",
+      async () => {
+        const job = await f.api("GET", recovery);
+        assert.equal(job.workId, first.workId);
+        assert.notEqual(job.status, "failed", "managed creation failed");
+        return job.status === "succeeded" ? job : false;
+      },
+      600_000,
+    );
+    const live = await f.api("GET", `${namespace}/agents/${status.agentId}`);
+    assert.equal(live.activeRevisionId, status.revisionId);
+    created = { ...live, revision: { id: status.revisionId } };
+    f.agents.push(created);
+    const revisions = await f.api("GET", `${namespace}/agents/${created.id}/revisions`);
+    assert.equal(revisions.length, 1, "creation admits only the initial revision");
+    const owner = await f.api("GET", `${namespace}/agents/${created.id}/management`);
+    assert.equal(owner.management.sourceId, sourceId);
+    assert.equal(owner.management.requestedRevisionId, status.revisionId);
+    const nonce = `CREATED_${randomUUID()}`;
+    await original.native.normalGatewayTurn({
+      agent: created,
+      prompt: `Reply with exactly ${nonce}`,
+      expectedPatterns: [new RegExp(nonce)],
+    });
+    assert.equal((await f.api("GET", recovery)).agentId, created.id);
+  } catch (error) {
+    if (created === undefined) {
+      f.retained = true;
+    }
+    throw error;
+  } finally {
+    if (created !== undefined) {
+      const base = `${namespace}/agents/${created.id}`;
+      const owner = await f.api("GET", `${base}/management`);
+      await f.api("DELETE", `${base}/management`, {
+        sourceId,
+        expectedVersion: owner.management.version,
+      });
+      await f.api("POST", `${base}/stop`);
+      await waitFor(
+        "created Agent cleanup to stop its runtime",
+        async () => !(await f.api("GET", base)).activeRevisionId,
+        600_000,
+      );
+      created.stopped = true;
+    }
   }
 }

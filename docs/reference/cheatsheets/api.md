@@ -19,6 +19,7 @@
 - [IAM access bindings](#iam-access-bindings)
 - [IAM roles](#iam-roles)
 - [IAM service principals](#iam-service-principals)
+- [IAM](#iam)
 - [Secrets](#secrets)
 - [Service accounts](#service-accounts)
 - [Service account credentials](#service-account-credentials)
@@ -97,6 +98,7 @@
 - [`getAgentHarnessStatus`](../api.md#get-namespacesnamespaceidagentsagentidharnessstatus): Read the Sandbox Driver's record of a running Agent's dedicated Harness Sandbox.
 - [`getAgentManagement`](../api.md#get-namespacesnamespaceidagentsagentidmanagement): Inspect external ownership and the exact Agent adoption snapshot.
 - [`getAgentProvisioning`](../api.md#get-namespacesnamespaceidagentsprovisionworkid): Get first-time provisioning status for one exact work item.
+- [`getAgentProvisioningByRequest`](../api.md#get-namespacesnamespaceidagentsprovisionrequestsrequestid): Recover the caller's provisioning work by its original request ID.
 - [`getAgentRuntimeImages`](../api.md#get-namespacesnamespaceidagentsagentidruntimeimages): Read observed images and source commits for an Agent's active runtime.
 - [`getAgentSandboxPolicy`](../api.md#get-namespacesnamespaceidagentsagentidsandboxpolicyfacet): Read one Agent sandbox policy and delegation ceiling.
 - [`getAgentSandboxRecommendations`](../api.md#get-namespacesnamespaceidagentsagentidrevisionsrevisionidsandboxpolicyfacetrecommendations): Read policy suggestions for the requested Agent revision.
@@ -186,6 +188,10 @@
 - [`listIAMServicePrincipals`](../api.md#get-namespacesnamespaceidiamserviceprincipals): List the Namespace's non-Agent ServicePrincipals.
 - [`getIAMServicePrincipal`](../api.md#get-namespacesnamespaceidiamserviceprincipalsserviceprincipalid): Get an exact Namespace ServicePrincipal.
 - [`createIAMServicePrincipal`](../api.md#post-namespacesnamespaceidiamserviceprincipals): Create a Namespace ServicePrincipal with no grants for automation or CLI keys.
+
+### IAM
+
+- [`delegateNamespaceRole`](../api.md#post-namespacesnamespaceidiamroledelegations): Delegate a configured Role to one non-Agent ServicePrincipal in this Namespace.
 
 ### Secrets
 

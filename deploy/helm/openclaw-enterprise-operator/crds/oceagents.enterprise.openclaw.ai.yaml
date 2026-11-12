@@ -83,6 +83,12 @@
                     "type": "string",
                     "enum": [
                       "dedicated"
+                    ],
+                    "x-kubernetes-validations": [
+                      {
+                        "rule": "self == oldSelf",
+                        "message": "Reference is immutable"
+                      }
                     ]
                   },
                   "desiredState": {
@@ -272,6 +278,16 @@
                     "maxLength": 256
                   },
                   "operationId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "provisioningRequestId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "provisioningWorkId": {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 256

@@ -1,19 +1,21 @@
 # Manage an existing Agent with Argo CD
 
-Install the alpha Operator, review ownership of an existing dedicated Agent,
-and let Argo CD apply its desired Configuration. First-time resource creation is
-not supported in this delivery. Read the [current limits](../reference/kubernetes-agent-operator.md)
+Install the alpha Operator and let Argo CD create a dedicated Agent or manage
+an explicitly reviewed existing Agent. Read the [current limits](../reference/kubernetes-agent-operator.md)
 before preparing manifests.
 
 ## Prepare administrator-owned dependencies
 
 1. Install OCC and its worker/PostgreSQL through the supported Kubernetes setup.
    Use controller code containing the external-management API and migration 0077.
-2. Provision a dedicated Agent with its own Configuration, ready Harness auth and
-   required Secret bindings through the ordinary Agent workflow.
+2. Prepare ready Harness auth and required Secret references in the target OCC
+   Namespace. Create no Agent when using the creation path below.
 3. Create a non-Agent ServicePrincipal and issue a service key. Grant exact
    Namespace read, Agent read/update/administer/deploy/operate, Configuration
    read/update, revision read and required Secret/credential-source permissions.
+   For creation, also delegate a configured Role with Agent `create/administer`
+   on the Namespace collection and Configuration `create`, using the
+   [administrative delegation procedure](../reference/authorization/default-users.md#delegate-a-configured-role-to-automation).
    These are independent grants; administer does not imply other actions.
 4. Store the service key and optional public CA in private Kubernetes Secrets in
    the Operator namespace. Keep model and Telegram credential values in their
@@ -48,6 +50,65 @@ The NetworkPolicy allows DNS, the selected Kubernetes API endpoints and the
 selected Enterprise destination only. Allow translated API addresses where the
 cluster dataplane requires them. Verify allowed and denied traffic on the chosen
 cluster; a declared NetworkPolicy alone does not prove enforcement.
+
+## Create an Agent from Git
+
+Add an `OCEAgent` without `spec.adopt`. Use an existing `OCENamespace` reference
+and a ready, authorized credential source. This example uses a dedicated Codex
+Harness; replace the source ID and select a model that the credential supports.
+
+```yaml
+apiVersion: enterprise.openclaw.ai/v1alpha1
+kind: OCEAgent
+metadata:
+  name: new-assistant
+  namespace: oce-agent-operator
+spec:
+  namespaceRef: tenant
+  executionMode: dedicated
+  desiredState: running
+  deletionPolicy: Retain
+  nativeAdmin: true
+  harnessAuth:
+    method: credential_source
+    sourceId: cs_REPLACE_WITH_READY_SOURCE
+  configuration:
+    values:
+      gateway:
+        mode: local
+      agents:
+        defaults:
+          model: codex/gpt-5.1-codex
+          models:
+            codex/gpt-5.1-codex:
+              agentRuntime: { id: codex }
+      models:
+        providers:
+          codex:
+            api: openai-responses
+            baseUrl: http://127.0.0.1:9
+            models:
+              - { id: gpt-5.1-codex, name: gpt-5.1-codex }
+      plugins:
+        allow: [codex]
+        entries:
+          codex:
+            enabled: true
+            config:
+              appServer:
+                mode: guardian
+                approvalPolicy: on-request
+                sandbox: read-only
+                transport: websocket
+                url: ${APP_SERVER_URL}
+                authToken: ${APP_SERVER_TOKEN}
+```
+
+Commit and push the file. Argo applies it; `ProvisioningPending` identifies the
+accepted job. Wait for Synced and Healthy, then check the new Agent in OCC and
+perform a real model turn. No local provisioning script is part of this path.
+Keep an existing Telegram bot on one Agent; do not copy its channel into another
+Agent while its poller is running. See [creation limits and recovery](../reference/kubernetes-agent-operator.md#first-time-creation).
 
 ## Review and declare an Agent
 

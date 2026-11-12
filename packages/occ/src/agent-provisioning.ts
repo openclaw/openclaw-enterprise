@@ -32,6 +32,11 @@ export interface AgentProvisioningConfigurationInput {
 
 export interface ProvisionAgentInput {
   readonly requestId: string;
+  readonly externalManagement?: {
+    readonly sourceId: string;
+    readonly sourceGeneration: number;
+    readonly retryNonce?: string;
+  };
   readonly namespaceId: string;
   readonly name: string;
   readonly configuration: AgentProvisioningConfigurationInput;

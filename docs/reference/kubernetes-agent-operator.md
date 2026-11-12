@@ -4,13 +4,12 @@ The optional Operator reconciles namespaced Kubernetes resources through the
 OCC HTTP API. Argo CD can apply these resources from Git. OCC still owns IAM,
 Configuration, deployment admission, work, audit and runtime Drivers.
 
-This alpha supports **reviewed adoption of an existing dedicated Agent**,
-Configuration updates, running or stopped intent, and Retain finalization.
-Namespace and Secret resources reference existing OCC resources. First-time
-Agent/Namespace creation, Secret import/rotation and Delete cleanup are not
-implemented. Those requests remain pending without performing the unsupported
-operation. [RFC-0037](../../specs/rfcs/0037-kubernetes-agent-operator.md) describes
-that larger proposed contract; it is not the current feature inventory.
+This alpha creates dedicated Agents in an existing OCC Namespace, supports
+reviewed adoption, reconciles Configuration and running/stopped intent, and
+releases ownership on Retain. Namespace and Secret CRs reference existing OCC
+resources. Namespace creation, Secret import/rotation and Delete cleanup remain
+unimplemented. [RFC-0037](../../specs/rfcs/0037-kubernetes-agent-operator.md)
+describes the larger proposed contract.
 
 ## Kubernetes resources
 
@@ -18,12 +17,12 @@ All four kinds use `enterprise.openclaw.ai/v1alpha1` and must share the Operator
 Kubernetes namespace. The generated structural schemas are installed by the
 [Operator chart](../../deploy/helm/openclaw-enterprise-operator/Chart.yaml).
 
-| Kind            | Supported selection                                                                                                      | Ownership                                                                         |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
-| `OCEConnection` | HTTPS origin, Installation ID, service key and optional public CA Secret references; approved existing OCC Namespace IDs | Administrator-owned trust configuration                                           |
-| `OCENamespace`  | `connectionRef`, `existingId`, `deletionPolicy: Retain`                                                                  | Reference only; no tenant creation                                                |
-| `OCESecret`     | `namespaceRef`, `existingId`, `deletionPolicy: Retain`                                                                   | Metadata reference; no credential value retrieval                                 |
-| `OCEAgent`      | `namespaceRef`, `executionMode: dedicated`, `adopt`, Configuration, Harness auth, desired state, optional native UI      | Exclusive external management of the existing Agent and its private Configuration |
+| Kind            | Supported selection                                                                                                          | Ownership                                                                               |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `OCEConnection` | HTTPS origin, Installation ID, service key and optional public CA Secret references; approved existing OCC Namespace IDs     | Administrator-owned trust configuration                                                 |
+| `OCENamespace`  | `connectionRef`, `existingId`, `deletionPolicy: Retain`                                                                      | Reference only; no tenant creation                                                      |
+| `OCESecret`     | `namespaceRef`, `existingId`, `deletionPolicy: Retain`                                                                       | Metadata reference; no credential value retrieval                                       |
+| `OCEAgent`      | `namespaceRef`, `executionMode: dedicated`, optional `adopt`, Configuration, Harness auth, desired state, optional native UI | Exclusive management of a new or explicitly adopted Agent and its private Configuration |
 
 The Connection endpoint is an HTTPS origin without credentials, path, query or
 fragment. Redirects are refused. An optional `address` selects an IP for the
@@ -56,6 +55,35 @@ preparation. It requires native administration to be enabled on the Installation
 It does not grant a service key permission to use the human browser session.
 Native Telegram support also depends on the selected runtime/Installation;
 installing this Operator does not add a Telegram Driver profile.
+
+## First-time creation
+
+The selected Compute and Configuration Drivers must support ordinary provisioning;
+the current Kubernetes profile does. Unsupported Drivers fail closed.
+
+Omit `spec.adopt` to create an Agent named after the CR. Set `desiredState: running`;
+an initially stopped declaration stays `CreationPaused` and creates nothing.
+The Connection needs Agent `create/administer` on the Namespace collection,
+Configuration `create`, ordinary management permissions and exact credential
+permissions. It does not need Installation administration. An administrator
+must [delegate a configured Role](authorization/default-users.md#delegate-a-configured-role-to-automation)
+during bootstrap; the Operator cannot grant itself these rights.
+
+The Operator derives a stable UUID request ID from its source identity and
+recovers the caller's original provisioning request before creating one. The
+normal provisioning worker owns Configuration, Agent, credential grants and
+initial deployment. It saves external ownership atomically with Agent creation.
+Repeated sync, a lost HTTP response, cleared Kubernetes status or an API restart
+recover the same request. A spec changed during provisioning waits for that
+original plan, then applies the latest desired input. Names never recover ownership.
+
+`ProvisioningPending` is not Ready. `ProvisioningFailed` is Degraded: the initiating
+authority must inspect and explicitly retry the existing provisioning job;
+a new sync does not silently replace its accepted plan. Job status/retry reauthorize the stored scope: managed jobs use Namespace
+delegation; ordinary jobs retain Installation administration. Delegated
+request recovery uses `GET /namespaces/:namespaceId/agents/provision/requests/:requestId`.
+A changed `retryNonce` retries deployments after initial provisioning, not a
+failed initial provisioning job.
 
 ## Adoption and apply
 
@@ -112,6 +140,12 @@ The supplied Argo health script checks the current generation and observation
 age. It requires standard Lua libraries to be enabled for these trusted
 customizations and Argo to use UTC. An old status becomes Progressing rather
 than remaining Healthy after Operator failure.
+
+For a created Agent, Retain waits for provisioning to settle before release.
+If the original request is not observable, `ProvisioningUnresolved` holds the
+finalizer: cancellation of an uncertain create is not implemented. Do not prune
+an unobserved initial creation or remove its finalizer to guess the outcome.
+Recreating a retained CR requires a new Agent name or explicit reviewed adoption.
 
 `Retain` deletion releases exact Agent ownership before removing its finalizer;
 it leaves the Agent, Configuration and credentials intact. Reference CRs wait

@@ -102,7 +102,7 @@ const agent: Schema = {
   ],
   properties: {
     namespaceRef: reference,
-    executionMode: { type: "string", enum: ["dedicated"] },
+    executionMode: { type: "string", enum: ["dedicated"], ...immutable },
     desiredState: { type: "string", enum: ["running", "stopped"], default: "running" },
     nativeAdmin: { type: "boolean", default: false },
     configuration: {
@@ -235,6 +235,8 @@ export function operatorCustomResourceDefinitions(): readonly Readonly<Record<st
                     activeRevisionId: opaqueId,
                     requestedRevisionId: opaqueId,
                     operationId: opaqueId,
+                    provisioningRequestId: opaqueId,
+                    provisioningWorkId: opaqueId,
                     managementVersion: { type: "integer", format: "int64", minimum: 1 },
                     lastObservedTime: { type: "string", format: "date-time" },
                     conditions,

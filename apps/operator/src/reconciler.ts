@@ -8,7 +8,7 @@ import type {
   SecretBindings,
 } from "@openclaw-enterprise/contracts";
 import { ClusterResources, type Resource } from "./cluster.ts";
-import { EnterpriseClient } from "./enterprise-client.ts";
+import { EnterpriseClient, EnterpriseRequestError } from "./enterprise-client.ts";
 
 const FINALIZER = "enterprise.openclaw.ai/management";
 
@@ -41,6 +41,15 @@ interface Management {
     activeRevisionId?: string;
     fingerprint: string;
   };
+}
+
+interface Provisioning {
+  readonly requestId: string;
+  readonly workId: string;
+  readonly status: "queued" | "running" | "failed" | "succeeded";
+  readonly agentId?: string;
+  readonly configurationId?: string;
+  readonly revisionId?: string;
 }
 
 interface Tenant {
@@ -225,49 +234,46 @@ export class AgentReconciler {
     return { bindings, dependencies: dependencies.sort() };
   }
 
+  private provisioningRequestId(resource: Resource): string {
+    // The stable source includes Namespace and CR UIDs. UUID shape is the normal
+    // provisioning API contract; no Kubernetes status is needed for recovery.
+    const hex = this.source(resource).slice(0, 32).split("");
+    hex[12] = "4";
+    hex[16] = ((Number.parseInt(hex[16]!, 16) & 3) | 8).toString(16);
+    const value = hex.join("");
+    return (
+      "req_" +
+      [
+        value.slice(0, 8),
+        value.slice(8, 12),
+        value.slice(12, 16),
+        value.slice(16, 20),
+        value.slice(20),
+      ].join("-")
+    );
+  }
+
+  private async provisioning(
+    resource: Resource,
+    api: EnterpriseClient,
+    namespaceId: string,
+  ): Promise<Provisioning | undefined> {
+    try {
+      return await api.call<Provisioning>(
+        "GET",
+        `/namespaces/${encodeURIComponent(namespaceId)}/agents/provision/requests/${encodeURIComponent(this.provisioningRequestId(resource))}`,
+      );
+    } catch (error) {
+      if (error instanceof EnterpriseRequestError && error.status === 404) {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
   private async agent(resource: Resource): Promise<Record<string, unknown>> {
     const { api, namespaceId } = await this.tenant(resource);
-    if (resource.spec.adopt === undefined) {
-      // TODO RFC-0037: recover first-time provisioning by external source before creating new Agents.
-      throw new ReconcilePending(
-        "AgentCreationUnavailable",
-        "First-time provisioning receipts are not implemented; use explicit reviewed adoption.",
-      );
-    }
-    const adopt = record(resource.spec.adopt);
-    const agentId = text(adopt.agentId);
-    const path = `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(agentId)}`;
-    const original = await api.call<{ executionMode: string }>("GET", path);
-    if (original.executionMode !== resource.spec.executionMode) {
-      throw new ReconcilePending(
-        "ExecutionModeMismatch",
-        "Adoption cannot change the Agent execution mode.",
-      );
-    }
     const sourceId = this.source(resource);
-    let ownership = await api.call<Management>("GET", `${path}/management`);
-    if (ownership.management === null || ownership.management.released) {
-      ownership = await api.call<Management>("PUT", `${path}/management`, {
-        sourceId,
-        expectedConfigurationId: text(adopt.configurationId),
-        expectedConfigurationGeneration: adopt.configurationGeneration,
-        ...(adopt.activeRevisionId === undefined
-          ? {}
-          : { expectedActiveRevisionId: text(adopt.activeRevisionId) }),
-        expectedFingerprint: text(adopt.fingerprint),
-        expectedManagementVersion: adopt.managementVersion,
-      });
-    }
-    const owner = ownership.management;
-    if (owner === null || owner.released || owner.sourceId !== sourceId) {
-      throw new ReconcilePending("OwnershipConflict", "The Agent has a different external owner.");
-    }
-    if (owner.suspended) {
-      throw new ReconcilePending(
-        "ManagementSuspended",
-        "An administrator stopped the Agent. Release and explicitly review ownership before resuming.",
-      );
-    }
     const { bindings, dependencies } = await this.bindings(resource, namespaceId);
     const harnessAuth = record(resource.spec.harnessAuth);
     let modelAuthentication: HarnessAuthBinding;
@@ -309,6 +315,101 @@ export class AgentReconciler {
         }),
       )
       .digest("hex");
+    let agentId: string;
+    if (resource.spec.adopt === undefined) {
+      let job = await this.provisioning(resource, api, namespaceId);
+      if (job === undefined) {
+        if (resource.spec.desiredState === "stopped") {
+          throw new ReconcilePending(
+            "CreationPaused",
+            "Set running to start first-time provisioning.",
+            { namespaceId },
+          );
+        }
+        const response = await api.call<{ provisioning: Provisioning }>(
+          "POST",
+          `/namespaces/${encodeURIComponent(namespaceId)}/agents/provision`,
+          {
+            requestId: this.provisioningRequestId(resource),
+            name: resource.metadata.name,
+            executionMode: resource.spec.executionMode,
+            nativeAdmin: resource.spec.nativeAdmin === true,
+            externalManagement: {
+              sourceId,
+              sourceGeneration: resource.metadata.generation,
+              ...(resource.spec.retryNonce === undefined
+                ? {}
+                : { retryNonce: resource.spec.retryNonce }),
+            },
+            configuration: {
+              kind: "agent",
+              values: record(record(resource.spec.configuration).values),
+              secretBindings: bindings,
+            },
+            harnessAuth: modelAuthentication,
+          },
+        );
+        job = response.provisioning;
+      }
+      const progress = {
+        namespaceId,
+        provisioningRequestId: job.requestId,
+        provisioningWorkId: job.workId,
+        agentId: job.agentId,
+        configurationId: job.configurationId,
+        requestedRevisionId: job.revisionId,
+      };
+      if (job.status !== "succeeded") {
+        throw new ReconcilePending(
+          job.status === "failed" ? "ProvisioningFailed" : "ProvisioningPending",
+          job.status === "failed"
+            ? "First-time provisioning failed; inspect and explicitly retry the existing job in Enterprise."
+            : "Enterprise is provisioning the new Agent.",
+          progress,
+        );
+      }
+      agentId = text(job.agentId);
+    } else {
+      agentId = text(record(resource.spec.adopt).agentId);
+    }
+    const path = `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(agentId)}`;
+    const original = await api.call<{ executionMode: string }>("GET", path);
+    if (original.executionMode !== resource.spec.executionMode) {
+      throw new ReconcilePending(
+        "ExecutionModeMismatch",
+        "The Agent execution mode cannot change.",
+      );
+    }
+    let ownership = await api.call<Management>("GET", `${path}/management`);
+    if (
+      resource.spec.adopt !== undefined &&
+      (ownership.management === null || ownership.management.released)
+    ) {
+      const adopt = record(resource.spec.adopt);
+      ownership = await api.call<Management>("PUT", `${path}/management`, {
+        sourceId,
+        expectedConfigurationId: text(adopt.configurationId),
+        expectedConfigurationGeneration: adopt.configurationGeneration,
+        ...(adopt.activeRevisionId === undefined
+          ? {}
+          : { expectedActiveRevisionId: text(adopt.activeRevisionId) }),
+        expectedFingerprint: text(adopt.fingerprint),
+        expectedManagementVersion: adopt.managementVersion,
+      });
+    }
+    const owner = ownership.management;
+    if (owner === null || owner.released || owner.sourceId !== sourceId) {
+      throw new ReconcilePending(
+        "OwnershipConflict",
+        "The Agent has a different or released external owner.",
+      );
+    }
+    if (owner.suspended) {
+      throw new ReconcilePending(
+        "ManagementSuspended",
+        "An administrator stopped the Agent. Release and explicitly review ownership before resuming.",
+      );
+    }
     const input: AgentManagementApply & { nativeAdmin: boolean } = {
       sourceId,
       sourceGeneration: resource.metadata.generation,
@@ -510,9 +611,29 @@ export class AgentReconciler {
       );
       return;
     }
-    const adopt = record(resource.spec.adopt);
     const { api, namespaceId } = await this.tenant(resource);
-    const agentId = text(adopt.agentId);
+    let agentId: string;
+    if (resource.spec.adopt === undefined) {
+      const job = await this.provisioning(resource, api, namespaceId);
+      if (job === undefined || job.status === "queued" || job.status === "running") {
+        // TODO RFC-0037: cancellation by source needs a durable tombstone for a
+        // create request whose acceptance is uncertain. Never clear its finalizer.
+        throw new ReconcilePending(
+          "ProvisioningUnresolved",
+          "Retain waits for the original provisioning request to settle; restore reconciliation before pruning an unobserved creation.",
+        );
+      }
+      if (job.agentId === undefined) {
+        await this.cluster.finalizers(
+          resource,
+          (resource.metadata.finalizers ?? []).filter((value) => value !== FINALIZER),
+        );
+        return;
+      }
+      agentId = job.agentId;
+    } else {
+      agentId = text(record(resource.spec.adopt).agentId);
+    }
     const path = `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(agentId)}`;
     const ownership = await api.call<Management>("GET", `${path}/management`);
     if (ownership.management !== null && !ownership.management.released) {

@@ -1,22 +1,17 @@
 ---
 created: "2026-09-20"
-updated: 2026-11-04
-last_updated_session: "claude/session_01HzmRt1DGB79VEnEWHt7PRy"
+updated: "2026-11-12"
+last_updated_session: authoring-run/65cb4899-2d56-4014-aa48-d1d20f550b78
 ---
 
 # Namespace IAM Policy Flow
 
 ## Overview
 
-Namespace IAM policy management begins when an authenticated caller uses the OCC
-API or CLI to list, create, read, or delete a Namespace Role or exact
-AccessBinding, or to list, create, or read a Namespace ServicePrincipal. OCC authorizes the administrator, validates that the policy entry
-belongs to the requested Namespace, and delegates the policy mutation to the
-selected IAM Driver. The flow stops after the policy and audit event commit
-together in the platform state transaction. Phase 6 covers the other policy
-writes: the configured Roles, Groups, and Group bindings, Group membership at
-account creation, the Owner binding that each create writes, and the Agent
-grants that a deploy writes.
+An admitted administrator manages Namespace Roles, exact AccessBindings and
+non-Agent ServicePrincipals through OCC. The selected IAM Driver writes policy;
+policy and audit commit together. Phase 6 covers configured policy, account
+Group membership, creator ownership and deployment grants.
 
 ## Entry Points
 
@@ -118,6 +113,10 @@ the caller can read it before asking the IAM Driver to create the binding.
 `assertAccessBindingRoleApplies` then refuses, with `400`, a Role that has no
 Permission for the target's kind, or a `create` Permission stored before Role
 creation refused them, because evaluation would drop those grants.
+
+`OpenClawController.delegateNamespaceRole` authorizes the administrator, resolves
+a configured Role and exact non-Agent ServicePrincipal, and creates or recovers a
+Namespace-wide configured binding. Ordinary AccessBinding deletion revokes it.
 
 ### 4. The IAM Driver persists or reads policy
 
@@ -298,6 +297,8 @@ behavior.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 12:41: Trace configured Namespace delegation (authoring-run/65cb4899-2d56-4014-aa48-d1d20f550b78 - d278426)
 
 - 2026-11-04 12:00: Replace the built-in Roles, Group, and membership routes with the configured policy and membership at account creation; deploy grants for any Role. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
 - 2026-11-04 02:25: Recheck Agent update permission under the Namespace lock. (authoring-run/fbfcb29f-156c-4cfd-af1d-fa15224dd2e5 - fdca6e74421067adc66dce4f141d153af0355f68)

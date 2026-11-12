@@ -456,6 +456,24 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       const agents = await controller.listAgents(context.actorId, namespaceId);
       reply.send({ data: agents.map(clientAgent), meta: { requestId: request.id } });
     },
+    async getAgentProvisioningByRequest({
+      controller,
+      context,
+      request,
+      reply,
+      params,
+      namespaceId,
+    }) {
+      const result = await controller.getAgentProvisioningByRequest(
+        context.actorId,
+        namespaceId,
+        params.requestId!,
+      );
+      reply.header("cache-control", "no-store").send({
+        data: clientAgentProvisioning(result.provisioning, namespaceId),
+        meta: { requestId: request.id },
+      });
+    },
     async getAgentProvisioning({ controller, context, request, reply, params, namespaceId }) {
       const workId = params.workId;
       if (!workId) {

@@ -10,6 +10,15 @@ None alone proves Git polling, a genuine model turn or Telegram delivery.
 | `operator-kubernetes-real.test.ts`           | Real Kubernetes SDK, CRD schemas, watches, Lease, TLS and scoped Enterprise identity              | Genuine model or Argo              |
 | QA `external-management`                     | Shipped installation, existing Agent adoption, update, revision convergence and release           | Kubernetes Operator or Git polling |
 
+`postgres-agent-provisioning.test.mjs` also exercises delegated managed creation
+through production API/auth/IAM, PostgreSQL and the ordinary worker: API restart
+recovery, exact replay, competing-plan refusal, ownership before handoff, initial
+observation without another revision, privilege separation and revocation. Its
+Configuration/runtime Drivers simulate external effects; it is not model proof.
+The Kubernetes/Codex branch of QA `external-management` creates an additional Agent
+through provisioning, performs a real model turn, releases management and stops
+it. The source Agent's native channels are not copied into that Agent.
+
 Run the first test with the repository's supported Node version:
 
 ```sh
@@ -39,6 +48,6 @@ evidence. If the selected native channel requires real sender IDs in its
 allowlist, store that configuration in a private repository. Do not publish
 its history or raw test data.
 
-RFC-0037's first-time creation, credential import/rotation and Delete cleanup
+RFC-0037's Namespace creation, credential import/rotation and Delete cleanup
 remain unimplemented and unqualified. The alpha's existing-resource proof must
 not be reported as completion of those acceptance criteria.

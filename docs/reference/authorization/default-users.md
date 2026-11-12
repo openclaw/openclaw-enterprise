@@ -100,6 +100,31 @@ iam:
 Do not bind the Owner Role to a Group: a Namespace-wide Owner binding gives
 every member every permission on every resource in that Namespace.
 
+## Delegate a configured Role to automation
+
+An Installation administrator can grant an already configured Role to one
+non-Agent ServicePrincipal across one Namespace. First append a narrow Role to
+`iam.roles` in the Installation startup configuration and apply that configuration;
+keep existing Roles and bindings. For managed Agent creation, include
+`agent:create`, `agent:administer` and `configuration:create`, plus the normal
+management and exact credential permissions. Do not grant Installation permissions.
+
+Send `POST /namespaces/:namespaceId/iam/role-delegations` with:
+
+```json
+{ "servicePrincipalId": "spn_EXISTING_NAMESPACE_PRINCIPAL", "roleId": "gitops_creator" }
+```
+
+`roleId` is the configured ID, without `role_config_`. The caller needs current
+Installation `administer` and Namespace `read`. OCC verifies the principal and
+configured Role, locks the Namespace, and saves an audited binding. Repeating
+this request returns the same binding. The target principal receives no rights
+outside that Namespace and cannot delegate Roles itself.
+
+Revoke it with the returned binding ID through the ordinary Namespace
+AccessBinding DELETE operation. Namespace Role creation still cannot define
+`create` permissions, and exact-resource bindings keep their existing meaning.
+
 ## How OCC applies the configuration
 
 At startup, and right after Installation bootstrap, OCC writes the configuration

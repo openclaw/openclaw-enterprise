@@ -48,6 +48,7 @@ import {
   AgentDeploymentBody,
   FirstDeploymentRecoveryTuple,
   AgentId,
+  RequestId,
   NamespaceId,
   SecretId,
   AgentProvisioningParams,
@@ -919,6 +920,29 @@ export const occApiRoutes = [
     },
   },
   {
+    operationId: "delegateNamespaceRole",
+    method: "POST",
+    path: "/namespaces/:namespaceId/iam/role-delegations",
+    action: "openclaw.iam.role_delegations.create",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "namespace_iam",
+    summary: "Delegate a configured Role to one non-Agent ServicePrincipal in this Namespace",
+    tags: ["IAM"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      body: Type.Object(
+        {
+          servicePrincipalId: Type.String({ minLength: 1, maxLength: 200 }),
+          roleId: Type.String({ pattern: "^[a-z0-9_-]{1,63}$" }),
+        },
+        { additionalProperties: false },
+      ),
+      response: { 201: IAMAccessBindingResponse, ...createErrors },
+    },
+  },
+  {
     operationId: "createIAMAccessBinding",
     method: "POST",
     path: "/namespaces/:namespaceId/iam/access-bindings",
@@ -1611,6 +1635,25 @@ export const occApiRoutes = [
         501: ErrorResponseRef,
         ...createErrors,
       },
+    },
+  },
+  {
+    operationId: "getAgentProvisioningByRequest",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/provision/requests/:requestId",
+    action: "openclaw.agents.provision.read_by_request",
+    iamAction: "create",
+    resourceKind: "agent",
+    authorizationTarget: "namespace_collection",
+    summary: "Recover the caller's provisioning work by its original request ID",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: Type.Object(
+        { namespaceId: NamespaceId, requestId: RequestId },
+        { additionalProperties: false },
+      ),
+      response: { 200: AgentProvisioningStatusResponse, ...readErrors },
     },
   },
   {

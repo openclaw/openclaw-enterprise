@@ -121,6 +121,28 @@ export const iamHandlers = {
       meta: { requestId: request.id },
     });
   },
+  async delegateNamespaceRole({
+    controller,
+    context,
+    request,
+    reply,
+    body,
+    namespaceId,
+    mutationEvent,
+    transactIAM,
+  }) {
+    const binding = await transactIAM(async (unit) => {
+      const created = await controller.delegateNamespaceRole(context.actorId, namespaceId, {
+        servicePrincipalId: body?.servicePrincipalId as string,
+        roleId: body?.roleId as string,
+      });
+      await unit.audit.append(
+        mutationEvent(bindingAuditResource(created, namespaceId), bindingAuditDetails(created)),
+      );
+      return clientIAMAccessBinding(created);
+    });
+    reply.status(201).send({ data: binding, meta: { requestId: request.id } });
+  },
   async createIAMAccessBinding({
     controller,
     context,

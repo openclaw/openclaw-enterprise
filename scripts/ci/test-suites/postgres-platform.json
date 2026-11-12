@@ -236,7 +236,8 @@
         "provisioning worker reauthorizes an accepted source after only its exact operate grant is revoked",
         "source provisioning status preserves saved work when its Gateway catalog is unavailable",
         "source provisioning worker rejects a withdrawn type while failed status remains readable",
-        "native admin opt-in provisions the exact origin in the first version and preserves retry identity"
+        "native admin opt-in provisions the exact origin in the first version and preserves retry identity",
+        "managed provisioning recovers its request after API restart and owns one Agent before handoff"
       ]
     },
     {

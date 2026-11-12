@@ -238,8 +238,9 @@ test(
                     async (agent, step) => {
                       const { verifyQaExternalManagement } =
                         await import("../helpers/qa-external-management.mjs");
-                      await step("adopt, apply once, observe real revision/model and release", () =>
-                        verifyQaExternalManagement(f, agent),
+                      await step(
+                        "create on Kubernetes, adopt, apply once, observe real model and release",
+                        () => verifyQaExternalManagement(f, agent),
                       );
                     },
                   ],

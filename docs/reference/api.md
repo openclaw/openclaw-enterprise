@@ -86,12 +86,12 @@ the paths.
 | [Connections](#connections) | 15 operations |
 | [Installation](#installation) | 5 operations |
 | [Namespaces](#namespaces) | 8 operations |
-| [Agents](#agents) | 56 operations |
+| [Agents](#agents) | 57 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
 | [Credential sources](#credential-sources) | 6 operations |
-| [IAM](#iam) | 11 operations |
+| [IAM](#iam) | 12 operations |
 | [Presets](#presets) | 5 operations |
 | [Secrets](#secrets) | 5 operations |
 | [Service accounts](#service-accounts) | 6 operations |
@@ -3855,6 +3855,7 @@ Example response
 | [`POST /namespaces/{namespaceId}/agents/plugins`](#post-namespacesnamespaceidagentsplugins) | List or search available plugins for Agent creation using the selected Driver |
 | [`POST /namespaces/{namespaceId}/agents/plugins/details`](#post-namespacesnamespaceidagentspluginsdetails) | Read plugin details using the selected Driver |
 | [`POST /namespaces/{namespaceId}/agents/provision`](#post-namespacesnamespaceidagentsprovision) | Create a new Agent and queue first-time provisioning |
+| [`GET /namespaces/{namespaceId}/agents/provision/requests/{requestId}`](#get-namespacesnamespaceidagentsprovisionrequestsrequestid) | Recover the caller's provisioning work by its original request ID |
 | [`GET /namespaces/{namespaceId}/agents/provision/{workId}`](#get-namespacesnamespaceidagentsprovisionworkid) | Get first-time provisioning status for one exact work item |
 | [`POST /namespaces/{namespaceId}/agents/provision/{workId}/retry`](#post-namespacesnamespaceidagentsprovisionworkidretry) | Retry failed first-time provisioning for one exact work item |
 | [`GET /namespaces/{namespaceId}/agents/repository-options`](#get-namespacesnamespaceidagentsrepositoryoptions) | List approved repository choices for Agent creation in one Namespace |
@@ -4710,6 +4711,10 @@ Create a new Agent and queue first-time provisioning
 | `configuration.secretBindings` | `object<string, object>` | No | Optional Secret binding map. Keys are destination environment variable names; at most 64 bindings are accepted. Each value must contain `source.kind`, `source.namespaceId`, and `source.id`, and may contain `delivery.type: "env"`. Admission rejects reserved or process-control destinations such as `OPENCLAW_*`, `CODEX_*`, `OPENAI_*`, `ANTHROPIC_*`, `OCC_*`, `KUBERNETES_*`, `PATH`, `HOME`, and proxy variables. Model authentication belongs to Agent.harnessAuth. |
 | `configuration.values` | `object<string, SafeJsonValue>` | Yes | A native OpenClaw configuration document. |
 | `executionMode` | `"embedded" or "dedicated"` | No | — |
+| `externalManagement` | `object` | No | — |
+| `externalManagement.retryNonce` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9._~-]+$` |
+| `externalManagement.sourceGeneration` | `integer` | Yes | minimum: 1; maximum: 9007199254740991 |
+| `externalManagement.sourceId` | `string` | Yes | pattern: `^[A-Za-z0-9][A-Za-z0-9._:/~-]{0,511}$` |
 | `gatewayManagedMode` | `boolean` | No | Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment. |
 | `harnessAuth` | `object or object or object or object or null` | No | Dedicated Harness authentication, required. Omitted, null and `runtime` are refused with 400 INVALID_REQUEST. A ready model `credential_source` is supported when the selected Credential Gateway owns it and the caller has source `operate` permission. |
 | `initialWorkspaceFiles` | `object` | No | — |
@@ -4876,6 +4881,81 @@ Example response
       "url": "/namespaces/ns_123e4567-e89b-42d3-a456-426614174000/agents/provision/provision-docs-assistant",
       "workId": "provision-docs-assistant"
     }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `GET /namespaces/{namespaceId}/agents/provision/requests/{requestId}`
+
+<span id="get-namespacesnamespaceidagentsprovisionrequestsrequestid"></span>
+
+Recover the caller's provisioning work by its original request ID
+
+**Operation ID:** `getAgentProvisioningByRequest`
+
+**Permissions:** Requires create permission for Agent resources in the requested Namespace.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `create` | `agent` | `namespace` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `requestId` | path | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "req_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.agentId` | `string` | No | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.attemptCount` | `integer` | Yes | minimum: 0 |
+| `data.configurationId` | `string` | No | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.error` | `object` | No | — |
+| `data.error.code` | `string` | Yes | min length: 1; max length: 64 |
+| `data.error.message` | `string` | Yes | min length: 1; max length: 256 |
+| `data.phase` | `"admitted" or "configuration" or "transport" or "handoff"` | Yes | — |
+| `data.progress` | `object` | No | Present while a job past handoff is queued or running. The job defers without spending attempts while it waits, so `attemptCount` can stay 0. |
+| `data.progress.lastAttempt` | `null or object` | Yes | With `agent_revision:read`, this can report the deployment's named wait. Otherwise it reports the job's own `PROVISIONING_DEPLOYMENT_PENDING`, or null if the job has not recorded that wait. The controller writes the message; a refusal can include a code restricted to uppercase letters, digits, and underscores. |
+| `data.progress.phase` | `"deployment"` | Yes | Handoff is done; the job waits for its initial deployment. |
+| `data.requestId` | `string` | No | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`; The client request ID stored when this job was admitted. Older controllers omit it. The separate meta.requestId identifies the current HTTP request. |
+| `data.revisionId` | `string` | No | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.status` | `"queued" or "running" or "succeeded" or "failed"` | Yes | — |
+| `data.updatedAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
+| `data.url` | `string` | Yes | min length: 1 |
+| `data.workId` | `string` | Yes | min length: 1; max length: 200 |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "attemptCount": 0,
+    "phase": "admitted",
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000",
+    "status": "queued",
+    "updatedAt": "2026-10-01T12:00:00.000Z",
+    "url": "/namespaces/ns_123e4567-e89b-42d3-a456-426614174000/agents/provision/provision-docs-assistant",
+    "workId": "provision-docs-assistant"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -10864,6 +10944,7 @@ Example response
 | [`POST /namespaces/{namespaceId}/iam/access-bindings`](#post-namespacesnamespaceidiamaccessbindings) | Create an immutable exact-resource Namespace IAM AccessBinding |
 | [`DELETE /namespaces/{namespaceId}/iam/access-bindings/{bindingId}`](#delete-namespacesnamespaceidiamaccessbindingsbindingid) | Delete one exact Namespace IAM AccessBinding |
 | [`GET /namespaces/{namespaceId}/iam/access-bindings/{bindingId}`](#get-namespacesnamespaceidiamaccessbindingsbindingid) | Get an exact Namespace IAM AccessBinding |
+| [`POST /namespaces/{namespaceId}/iam/role-delegations`](#post-namespacesnamespaceidiamroledelegations) | Delegate a configured Role to one non-Agent ServicePrincipal in this Namespace |
 | [`GET /namespaces/{namespaceId}/iam/roles`](#get-namespacesnamespaceidiamroles) | List exact Namespace IAM Roles |
 | [`POST /namespaces/{namespaceId}/iam/roles`](#post-namespacesnamespaceidiamroles) | Create an immutable Namespace IAM Role |
 | [`DELETE /namespaces/{namespaceId}/iam/roles/{roleId}`](#delete-namespacesnamespaceidiamrolesroleid) | Delete an unreferenced exact Namespace IAM Role |
@@ -11125,6 +11206,84 @@ Example response
     "resourceKind": "secret",
     "roleId": "role-secret-operator",
     "subjectId": "principal-docs-agent",
+    "subjectKind": "identity"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /namespaces/{namespaceId}/iam/role-delegations`
+
+<span id="post-namespacesnamespaceidiamroledelegations"></span>
+
+Delegate a configured Role to one non-Agent ServicePrincipal in this Namespace
+
+**Operation ID:** `delegateNamespaceRole`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `roleId` | `string` | Yes | pattern: `^[a-z0-9_-]{1,63}$` |
+| `servicePrincipalId` | `string` | Yes | min length: 1; max length: 200 |
+
+Example request
+```json
+{
+  "roleId": "agent_creator",
+  "servicePrincipalId": "example-automation"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `201` | Created |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`201` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object or object` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "id": "binding_owner_delegation_example",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "roleId": "role_config_agent_creator",
+    "subjectId": "example-automation",
     "subjectKind": "identity"
   },
   "meta": {

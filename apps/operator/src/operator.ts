@@ -270,6 +270,7 @@ export class KubernetesAgentOperator {
               "OwnershipConflict",
               "ExecutionModeMismatch",
               "DeploymentFailed",
+              "ProvisioningFailed",
             ].includes(reason)
           ) {
             ready = "False";

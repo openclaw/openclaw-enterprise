@@ -824,6 +824,18 @@ export const ProvisionAgentConfigurationBody = Type.Object(
 export const ProvisionAgentBody = Type.Object(
   {
     requestId: RequestId,
+    externalManagement: Type.Optional(
+      Type.Object(
+        {
+          sourceId: Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9._:/~-]{0,511}$" }),
+          sourceGeneration: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+          retryNonce: Type.Optional(
+            Type.String({ minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._~-]+$" }),
+          ),
+        },
+        { additionalProperties: false },
+      ),
+    ),
     nativeAdmin: Type.Optional(
       Type.Boolean({
         description:
