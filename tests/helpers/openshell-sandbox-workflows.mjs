@@ -9467,6 +9467,7 @@ export function registerGatewayToolPolicyTest() {
           revisionId: redeployed.data.id,
           workerEvents: topology.workerEvents,
           checkDeploymentBeforeActivation: true,
+          reportDeploymentStatusOnTimeout: true,
         });
       } catch (error) {
         // Read the replacement's worker state before teardown removes its workloads.
