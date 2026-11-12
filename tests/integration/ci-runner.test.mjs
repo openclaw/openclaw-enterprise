@@ -7773,9 +7773,16 @@ test("startup", async (t) => {
       assert.equal(await readFile(join(root, "cleanup.txt"), "utf8"), "done");
       const privateValues =
         /stdout-must-stay-private|private-header-value|invented-fixture-input|private-nested-value|private-key-body|private-cut-tail|opaque-object-canary|opaque-block-canary/;
-      assert.doesNotMatch(
-        result.stdout + result.stderr + (await readFile(resultsPath, "utf8")),
-        privateValues,
+      const artifact = await readFile(resultsPath, "utf8");
+      assert.doesNotMatch(result.stdout + result.stderr + artifact, privateValues);
+      const setupStages = JSON.parse(artifact)
+        .files[0].measurements.filter(({ kind }) => kind === "local-first-agent-setup-point")
+        .map(({ stage }) => stage);
+      assert.deepEqual(
+        setupStages,
+        scenario === "last setup point"
+          ? ["database-start", "openshell-assets-start", "controller-start"]
+          : ["database-start"],
       );
       if (scenario === "success") {
         return;
