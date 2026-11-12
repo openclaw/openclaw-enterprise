@@ -347,7 +347,7 @@ try {
         (httpStatus === 0 ||
           (Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599)) &&
         typeof category === "string" &&
-        /^(gateway-credential-unavailable|authentication|permission|workspace|agent-runtime|timeout|unavailable|unclassified|transport|response-body|response-json)$/.test(
+        /^(gateway-credential-unavailable|authentication|permission|workspace|agent-runtime|timeout|unavailable|unclassified|transport|client-deadline|response-body|response-json)$/.test(
           category,
         ) &&
         [modelTurns, modelAnswers, tlsErrors].every(
